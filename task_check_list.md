@@ -19,9 +19,9 @@
 - **测试覆盖度**：`backend/tests/test_strategy_api.py` 利用 FastAPI TestClient 校验 (1) `rollingN` 窗口被裁剪到指定长度并在样本不足时返回 400；(2) 再平衡任务会自动顺延首个可用日期并返回对应日期列表。
 
 ## 任务 4：保持回测输出结构稳定
-- [ ] 状态：待处理
+- [x] 状态：已完成
 - **说明**：顺延首期后需确保 `series` 与 `markers` 同步：首个再平衡点的 markers 中 `date`、`value` 与 series 对应点相符，静态策略仍无 markers。若顺延导致序列头部缺口，应在前端提示。
-- **测试覆盖度**：计划通过回测函数集成测试校验 `markers`/`series` 对齐、静态策略无 markers，以及 JSON 输出结构稳定。
+- **测试覆盖度**：`backend/tests/test_backtest_output.py` 验证静态策略无 markers、再平衡策略 `dates`/`series` 等长且 markers 值与序列对齐；同时联合前述测试确保顺延逻辑与标记一致。
 
 ## 任务 5：文档与沟通
 - [ ] 状态：待处理

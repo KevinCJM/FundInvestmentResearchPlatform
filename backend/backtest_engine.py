@@ -252,6 +252,7 @@ def backtest_portfolio(
         base_weights = base_weights / max(1e-12, base_weights.sum())
         out = pd.Series(index=nav.index, dtype=float)
         cur_val = 1.0
+        all_markers: List[Dict[str, Any]] = []
         for i, d0 in enumerate(rset):
             d1 = rset[i + 1] if i + 1 < len(rset) else nav.index[-1]
             seg = nav.loc[d0:d1]
@@ -265,6 +266,7 @@ def backtest_portfolio(
             rel = seg.divide(base, axis=1)
             part = (rel * w_seg).sum(axis=1)
             markers.append({'date': d0.date().isoformat(), 'weights': w_seg.tolist(), 'value': float(cur_val * float(part.iloc[0]))})
+            all_markers.append({'date': d0, 'weights': w_seg.tolist(), 'value': float(cur_val * float(part.iloc[0]))})
             out.loc[seg.index] = cur_val * part.values
             cur_val = float(out.loc[seg.index[-1]])
         return out, markers
@@ -282,7 +284,8 @@ def backtest_portfolio(
         if not s.get('weights'):
             s['weights'] = [1.0 / max(1, nav_wide.shape[1]) for _ in nav_wide.columns]
         series, markers = _static_or_rebalanced(nav_wide, s)
-        series_out[name] = [float(x) for x in series.values]
+        series_full = series.reindex(idx)
+        series_out[name] = [None if pd.isna(x) else float(x) for x in series_full]
         marker_out[name] = markers
     return {"dates": [d.strftime('%Y-%m-%d') for d in idx], "series": series_out, "markers": marker_out, "asset_names": list(nav_wide.columns)}
 
