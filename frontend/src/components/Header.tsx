@@ -3,12 +3,11 @@ import { NavLink } from 'react-router-dom';
 
 const navItems = [
   { path: '/', label: '主界面' },
+  { path: '/research', label: '产品研究' },
   { path: '/manual-construction', label: '手动构建大类' },
-  { path: '/kmeans-construction', label: 'K-mean分层构建大类' },
+  { path: '/auto-classification', label: '自动构建大类' },
   { path: '/class-allocation', label: '大类资产配置' },
-  { path: '/auto-classification', label: '自动ETF分类' },
-  { path: '/research', label: 'ETF产品研究' },
-  { path: '/portfolio-construction', label: 'ETF组合构建' },
+  { path: '/portfolio-construction', label: '产品组合构建' },
 ];
 
 export default function Header() {
@@ -24,7 +23,7 @@ export default function Header() {
             <NavLink
               key={item.label}
               to={item.path}
-              end // `end` is important for the root path to not match every path
+              end={item.path === '/'} // `end` 仅用于根路径，避免前缀匹配
               className={({ isActive }) => `${baseStyle} ${isActive ? activeStyle : inactiveStyle}`}
             >
               {item.label}

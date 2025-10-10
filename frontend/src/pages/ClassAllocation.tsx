@@ -750,7 +750,7 @@ export default function ClassAllocation() {
                     <div className="grid grid-cols-3 gap-3 items-end">
                       <div>
                         <label className="block text-xs text-gray-600">窗口模式</label>
-                        <select value={s.cfg?.window_mode || 'rollingN'} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, cfg: { ...(x.cfg||{}), window_mode: e.target.value } } : x))} className="mt-1 w-full rounded border-gray-300">
+                        <select value={s.cfg?.window_mode || 'all'} onChange={e=> setStrategies(prev=> prev.map(x=> x.id===s.id? { ...x, cfg: { ...(x.cfg||{}), window_mode: e.target.value } } : x))} className="mt-1 w-full rounded border-gray-300">
                           <option value="all">所有数据</option>
                           <option value="rollingN">最近N条</option>
                         </select>
@@ -924,7 +924,7 @@ export default function ClassAllocation() {
                       <div className="rounded border p-3 text-sm space-y-3">
                         <div>
                           <label className="block text-xs text-gray-600">收益指标</label>
-                          <select value={s.cfg?.return_metric||'annual'} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, return_metric:e.target.value}}:x))} className="mt-1 w-full rounded border-gray-300">
+                          <select value={s.cfg?.return_metric||'cumulative'} onChange={e=> setStrategies(prev=>prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, return_metric:e.target.value}}:x))} className="mt-1 w-full rounded border-gray-300">
                             <option value="annual">年化收益率</option>
                             <option value="annual_mean">年化收益率均值</option>
                             <option value="cumulative">累计收益率</option>
@@ -1087,7 +1087,7 @@ export default function ClassAllocation() {
                         setBusyStrategy(s.id);
                         if (s.rebalance?.enabled && s.rebalance?.recalc) {
                           setBtBusy(true);
-                          const payload = { alloc_name: selectedAlloc, start_date: btStart || undefined, strategy: { type:'target', name:s.name, classes: s.rows.map(r=>({ name:r.className })), rebalance: s.rebalance, model: { target: s.cfg?.target, return_metric: s.cfg?.return_metric, return_type: s.cfg?.return_type, days: s.cfg?.ret_days ?? 252, ret_alpha: s.cfg?.ret_alpha, ret_window: s.cfg?.ret_window, risk_metric: s.cfg?.risk_metric || 'vol', risk_days: s.cfg?.risk_days, risk_alpha: s.cfg?.risk_alpha, risk_window: s.cfg?.risk_window, risk_confidence: s.cfg?.risk_confidence, risk_free_rate: (riskFreePct/100), constraints: { single_limits: singleLimits, group_limits: groupLimits }, window_mode: s.cfg?.window_mode || 'rollingN', data_len: s.cfg?.data_len, target_return: s.cfg?.target_return, target_risk: s.cfg?.target_risk } } };
+                          const payload = { alloc_name: selectedAlloc, start_date: btStart || undefined, strategy: { type:'target', name:s.name, classes: s.rows.map(r=>({ name:r.className })), rebalance: s.rebalance, model: { target: s.cfg?.target, return_metric: s.cfg?.return_metric, return_type: s.cfg?.return_type, days: s.cfg?.ret_days ?? 252, ret_alpha: s.cfg?.ret_alpha, ret_window: s.cfg?.ret_window, risk_metric: s.cfg?.risk_metric || 'vol', risk_days: s.cfg?.risk_days, risk_alpha: s.cfg?.risk_alpha, risk_window: s.cfg?.risk_window, risk_confidence: s.cfg?.risk_confidence, risk_free_rate: (riskFreePct/100), constraints: { single_limits: singleLimits, group_limits: groupLimits }, window_mode: s.cfg?.window_mode || 'all', data_len: s.cfg?.data_len, target_return: s.cfg?.target_return, target_risk: s.cfg?.target_risk } } };
                           const res = await fetch('/api/strategy/compute-schedule-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
                           const dat = await res.json();
                           if(!res.ok) throw new Error(dat.detail||'权重计算失败');
@@ -1097,7 +1097,7 @@ export default function ClassAllocation() {
                           setStrategies(prev=> prev.map(x=> x.id===s.id?{...x, rows: x.rows.map((r,i)=> ({...r, weight: last[i]!=null? Number((last[i]*100).toFixed(2)) : r.weight }))}:x));
                           setBtBusy(false);
                         } else {
-                          const payload = { alloc_name: selectedAlloc, data_len: (s.cfg?.window_mode==='all') ? undefined : (s.cfg?.data_len ?? 60), window_mode: s.cfg?.window_mode || 'rollingN', strategy: { type:'target', name:s.name, classes: s.rows.map(r=>({ name:r.className })), target: s.cfg?.target, return_metric: s.cfg?.return_metric, return_type: s.cfg?.return_type, days: s.cfg?.ret_days ?? 252, risk_metric: s.cfg?.risk_metric || 'vol', window: s.cfg?.risk_window, confidence: s.cfg?.risk_confidence, risk_free_rate: (riskFreePct/100), constraints: { single_limits: singleLimits, group_limits: groupLimits }, target_return: s.cfg?.target_return, target_risk: s.cfg?.target_risk } };
+                          const payload = { alloc_name: selectedAlloc, data_len: (s.cfg?.window_mode==='all') ? undefined : (s.cfg?.data_len ?? 60), window_mode: s.cfg?.window_mode || 'all', strategy: { type:'target', name:s.name, classes: s.rows.map(r=>({ name:r.className })), target: s.cfg?.target, return_metric: s.cfg?.return_metric, return_type: s.cfg?.return_type, days: s.cfg?.ret_days ?? 252, risk_metric: s.cfg?.risk_metric || 'vol', window: s.cfg?.risk_window, confidence: s.cfg?.risk_confidence, risk_free_rate: (riskFreePct/100), constraints: { single_limits: singleLimits, group_limits: groupLimits }, target_return: s.cfg?.target_return, target_risk: s.cfg?.target_risk } };
                           const res = await fetch('/api/strategy/compute-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
                           const dat = await res.json();
                           if(!res.ok) throw new Error(dat.detail||'计算失败');
@@ -1151,7 +1151,7 @@ export default function ClassAllocation() {
                         setStrategies(prev => {
                           const rows = assetNames.map(n=> ({ className:n, weight: null }));
                           const name = uniqueStrategyName('指定目标策略', prev);
-                          return [...prev, { id, type: t, name, rows, cfg: { target:'min_risk', return_metric:'annual', window_mode:'rollingN', data_len:60 } }];
+                          return [...prev, { id, type: t, name, rows, cfg: { target:'min_risk', return_metric:'cumulative', window_mode:'all', data_len:60 } }];
                         });
                       }
                       setShowAddPicker(false);
