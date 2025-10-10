@@ -35,6 +35,7 @@ frontend/dist/
 
 # Tooling metadata
 .gemini/
+.codex/
 .specify/
 
 # Secrets
