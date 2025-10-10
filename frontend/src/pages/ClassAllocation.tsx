@@ -1270,8 +1270,10 @@ export default function ClassAllocation() {
                   series: [
                     ...Object.keys(btSeries.series||{}).map((k:string)=> ({ name:k, type:'line', showSymbol:false, data: btSeries.series[k] })),
                     ...Object.keys(btSeries.markers||{}).flatMap((k:string)=> {
-                      const arr = (btSeries.markers[k]||[]).map((m:any)=> ({ value: [m.date, m.value], weights: m.weights }));
-                      return [{ name: `${k}-rebal`, type:'scatter', symbolSize:6, data: arr }];
+                      const raw = btSeries.markers[k] || [];
+                      if (!Array.isArray(raw) || raw.length === 0) return [];
+                      const arr = raw.map((m:any)=> ({ value: [m.date, m.value], weights: m.weights }));
+                      return arr.length > 0 ? [{ name: `${k}-rebal`, type:'scatter', symbolSize:6, data: arr }] : [];
                     })
                   ]
                 }}/>

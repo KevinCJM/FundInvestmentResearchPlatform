@@ -202,8 +202,7 @@ def backtest_portfolio(
             base = nav.iloc[0]
             rel = nav.divide(base, axis=1)
             series = (rel * base_weights).sum(axis=1)
-            markers.append({'date': nav.index[0].date().isoformat(), 'weights': base_weights.tolist(), 'value': float(series.iloc[0])})
-            return series, markers
+            return series, []
         # ensure first day included
         rset = sorted([d for d in rebal_dates if d in nav.index])
         if not rset or rset[0] != nav.index[0]:
