@@ -1,0 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 小调整匹配示意图风格 */
+body { @apply bg-gray-50; }
+

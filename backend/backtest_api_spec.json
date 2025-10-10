@@ -1,0 +1,37 @@
+{
+  "name": "Portfolio Backtest API",
+  "description": "Backtest class-portfolio NAVs with optional rebalancing using data/asset_nv.parquet.",
+  "files": {
+    "data": "data/asset_nv.parquet (columns: asset_alloc_name, asset_name, date, nv, creat_time)",
+    "engine": "backend/backtest_engine.py"
+  },
+  "request": {
+    "alloc_name": "string - name of saved allocation in asset_nv.parquet",
+    "start_date": "string(YYYY-MM-DD) | null - first date to include",
+    "strategies": [
+      {
+        "name": "string",
+        "weights": "number[] - weights aligned with columns of alloc's nav_wide (order is asset_name ascending)",
+        "rebalance": {
+          "enabled": "boolean",
+          "mode": "'weekly'|'monthly'|'yearly'|'fixed'",
+          "which": "'nth'|'first'|'last' (ignored for 'fixed')",
+          "N": "integer - for 'nth' (weekly:1..5, monthly:1..30, yearly:1..360)",
+          "unit": "'trading'|'natural' - for 'nth' pick trading day or nearest trading day after natural day",
+          "fixedInterval": "integer - step in trading days when mode='fixed'"
+        }
+      }
+    ]
+  },
+  "response": {
+    "dates": "string[] YYYY-MM-DD",
+    "series": { "<strategy_name>": "number[] portfolio NAV starting at 1.0" }
+  },
+  "cli_usage": "python backend/backtest_engine.py backend/backtest_example.json",
+  "notes": [
+    "No rebal: P(t) = sum_i w_i * NAV_i(t)/NAV_i(t0)",
+    "Rebal: at each rebalance date, reset base and reinvest total NAV by weights",
+    "Weights must sum to 1; engine will normalize if needed"
+  ]
+}
+

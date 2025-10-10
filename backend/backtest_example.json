@@ -1,0 +1,28 @@
+{
+  "alloc_name": "示例方案A",
+  "start_date": "2020-01-01",
+  "strategies": [
+    {
+      "name": "静态等权",
+      "weights": [0.5, 0.5],
+      "rebalance": { "enabled": false }
+    },
+    {
+      "name": "每月第1个交易日再平衡",
+      "weights": [0.5, 0.5],
+      "rebalance": {
+        "enabled": true,
+        "mode": "monthly",
+        "which": "nth",
+        "N": 1,
+        "unit": "trading"
+      }
+    },
+    {
+      "name": "固定区间20日",
+      "rebalance": { "enabled": true, "mode": "fixed", "fixedInterval": 20 },
+      "weights": [0.5, 0.5]
+    }
+  ]
+}
+

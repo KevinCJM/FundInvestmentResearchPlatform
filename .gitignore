@@ -1,6 +1,7 @@
 # IDE & OS
 .DS_Store
 .idea/
+.vscode/
 
 # Python
 __pycache__/
@@ -9,9 +10,18 @@ __pycache__/
 .venv/
 venv/
 
+# Local runtime cruft
+*.log
+
+# Data notebooks / reports
+report_paper/
+data/previews/
+
 # Local data outputs
 .data/
 data/
+!data/fixtures/
+!data/fixtures/**
 parquet_cache/
 *.parquet
 *.csv
@@ -29,3 +39,7 @@ frontend/dist/
 
 # Secrets
 .env
+.env.*
+
+# Local-only helpers
+local_test.py
