@@ -466,14 +466,17 @@ export default function ClassAllocation() {
             {rounds.map((r, idx) => (
               <div key={r.id} className="grid grid-cols-12 items-center gap-2">
                 <div className="col-span-2 text-sm text-gray-600">第{idx}轮</div>
-                <label className="col-span-3 text-xs text-gray-600 flex items-center gap-1">样本点
+                <label className="col-span-3 text-xs text-gray-600 flex items-center gap-1">
+                  <span className="whitespace-nowrap">样本点</span>
                   <input type="number" min={1} value={r.samples} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, samples: Number(e.target.value) } : x))} className="ml-1 w-full rounded-md border-gray-300 px-2 py-1 text-xs" />
                 </label>
-                <label className="col-span-3 text-xs text-gray-600 flex items-center gap-1">步长
+                <label className="col-span-3 text-xs text-gray-600 flex items-center gap-1">
+                  <span className="whitespace-nowrap">步长</span>
                   <input type="number" step={0.01} min={0} max={1} value={r.step} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, step: Number(e.target.value) } : x))} className="ml-1 w-full rounded-md border-gray-300 px-2 py-1 text-xs" />
                 </label>
                 {idx > 0 && (
-                  <label className="col-span-3 text-xs text-gray-600 flex items-center gap-1">分桶
+                  <label className="col-span-3 text-xs text-gray-600 flex items-center gap-1">
+                    <span className="whitespace-nowrap">分桶</span>
                     <input type="number" min={1} value={(r as any).buckets ?? 50} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, buckets: Number(e.target.value) } : x))} className="ml-1 w-full rounded-md border-gray-300 px-2 py-1 text-xs" />
                   </label>
                 )}
@@ -496,7 +499,7 @@ export default function ClassAllocation() {
             </div>
             <div className="flex items-end gap-2">
               <label className="flex items-center gap-2 text-sm text-gray-700">
-                <input type="checkbox" checked={useRefine} onChange={e => setUseRefine(e.target.checked)} /> 使用 SLSQP 最终精炼
+                <input type="checkbox" checked={useRefine} onChange={e => setUseRefine(e.target.checked)} /> 使用 SLSQP 精炼
               </label>
               {useRefine && (
                 <input type="number" min={1} value={refineCount} onChange={e => setRefineCount(Number(e.target.value))} className="w-28 rounded-md border-gray-300 px-2 py-1 text-sm" placeholder="精炼数量" />

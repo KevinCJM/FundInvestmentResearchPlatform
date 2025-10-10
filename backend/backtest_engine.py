@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
+from trading_calendar import get_trading_days
+
 
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -43,6 +45,10 @@ def gen_rebalance_dates(
     fixed_interval: Optional[int] = None,
 ) -> List[pd.Timestamp]:
     idx = pd.DatetimeIndex(index).sort_values()
+    try:
+        trading_idx = get_trading_days(idx[0], idx[-1], exchange="SSE")
+    except Exception:
+        trading_idx = pd.DatetimeIndex([])
     if mode == 'fixed':
         k = int(fixed_interval or 20)
         k = max(1, k)
@@ -79,8 +85,20 @@ def gen_rebalance_dates(
                 pick = next((t for t in arr if t >= target), arr[-1])
                 out.append(pick)
             else:
-                i = min(max(N - 1, 0), len(arr) - 1)
-                out.append(arr[i])
+                period_start = pd.Timestamp(arr[0]).normalize()
+                period_end = pd.Timestamp(arr[-1]).normalize()
+                if trading_idx.size:
+                    mask = trading_idx[(trading_idx >= period_start) & (trading_idx <= period_end)]
+                else:
+                    mask = pd.DatetimeIndex([])
+                if mask.size:
+                    t_index = min(max(N - 1, 0), mask.size - 1)
+                    target = mask[t_index]
+                    pick = next((t for t in arr if t >= target), arr[-1])
+                    out.append(pick)
+                else:
+                    i = min(max(N - 1, 0), len(arr) - 1)
+                    out.append(arr[i])
     return out
 
 

@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from optimizer import calculate_risk, calculate_return, calculate_efficient_frontier_exploration
+from trading_calendar import get_trading_days
 
 
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -229,6 +230,10 @@ def compute_target_weights(
 
 def _gen_rebalance_dates(index: pd.DatetimeIndex, mode: str, N: Optional[int] = None, which: Optional[str] = None, unit: Optional[str] = None, fixed_interval: Optional[int] = None) -> List[pd.Timestamp]:
     idx = pd.DatetimeIndex(index).sort_values()
+    try:
+        trading_idx = get_trading_days(idx[0], idx[-1], exchange="SSE")
+    except Exception:
+        trading_idx = pd.DatetimeIndex([])
     if mode == 'fixed':
         k = int(fixed_interval or 20)
         return list(idx[::k])
@@ -258,15 +263,25 @@ def _gen_rebalance_dates(index: pd.DatetimeIndex, mode: str, N: Optional[int] = 
             out.append(arr[-1])
         else:
             if unit == 'natural':
-                # approximate: use calendar within the period
                 base = arr[0]
                 cand = base + pd.Timedelta(days=N - 1)
-                # pick nearest trading day in arr not before cand
                 pick = next((t for t in arr if t >= cand), arr[-1])
                 out.append(pick)
             else:
-                idxn = min(max(N - 1, 0), len(arr) - 1)
-                out.append(arr[idxn])
+                period_start = pd.Timestamp(arr[0]).normalize()
+                period_end = pd.Timestamp(arr[-1]).normalize()
+                if trading_idx.size:
+                    mask = trading_idx[(trading_idx >= period_start) & (trading_idx <= period_end)]
+                else:
+                    mask = pd.DatetimeIndex([])
+                if mask.size:
+                    t_index = min(max(N - 1, 0), mask.size - 1)
+                    target = mask[t_index]
+                    pick = next((t for t in arr if t >= target), arr[-1])
+                    out.append(pick)
+                else:
+                    idxn = min(max(N - 1, 0), len(arr) - 1)
+                    out.append(arr[idxn])
     return out
 
 
