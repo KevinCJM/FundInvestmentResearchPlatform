@@ -22,6 +22,17 @@ from pathlib import Path
 from trading_calendar import get_trading_days
 
 
+def slice_fit_data(nav: pd.DataFrame, up_to: pd.Timestamp, window_mode: Optional[str], data_len: Optional[int]) -> pd.DataFrame:
+    """Return fitting window ending at ``up_to`` according to window_mode/data_len."""
+
+    win = nav.loc[:up_to]
+    mode = (window_mode or 'all').lower()
+    if mode != 'rollingn':
+        return win
+    n = max(2, int(data_len or 0))
+    return win.tail(n)
+
+
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
         if 'date' in df.columns:
@@ -115,19 +126,11 @@ def backtest_portfolio(
         nav_wide = nav_wide[nav_wide.index >= pd.to_datetime(start_date)]
     idx = nav_wide.index
 
-    def _slice_fit_data(nav: pd.DataFrame, up_to: pd.Timestamp, use_all: bool, data_len: Optional[int], window_mode: Optional[str] = None) -> pd.DataFrame:
-        win = nav.loc[:up_to]
-        if use_all or (window_mode == 'all') or not data_len or data_len <= 0:
-            return win
-        # 仅 rollingN：使用最近 N 个交易日
-        return win.tail(max(2, int(data_len)))
-
     def _compute_model_weights(nav: pd.DataFrame, s: Dict[str, Any], up_to: pd.Timestamp) -> Optional[np.ndarray]:
         model = s.get('model') or {}
-        use_all = bool(model.get('use_all_data', True))
         data_len = model.get('data_len', None)
-        window_mode = model.get('window_mode') or ('all' if use_all else 'rollingN')
-        nav_fit = _slice_fit_data(nav, up_to, use_all, data_len, window_mode=window_mode)
+        window_mode = model.get('window_mode') or 'all'
+        nav_fit = slice_fit_data(nav, up_to, window_mode, data_len)
         stype = s.get('type')
         if stype == 'risk_budget':
             # collect budgets from classes
