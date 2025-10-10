@@ -186,6 +186,40 @@ def backtest_portfolio(
             return np.asarray(w, dtype=float)
         return None
 
+    def _first_valid_rebalance(nav: pd.DataFrame, dates: List[pd.Timestamp], s: Dict[str, Any]) -> Tuple[List[pd.Timestamp], pd.DataFrame]:
+        """Return trimmed rebalance set and corresponding nav after skipping insufficient windows."""
+
+        model = s.get('model') or {}
+        window_mode = model.get('window_mode') or 'all'
+        data_len = model.get('data_len', None)
+        required = max(2, int(data_len or 0)) if window_mode.lower() == 'rollingn' else 2
+
+        nav_sorted = nav.sort_index()
+        valid_dates: List[pd.Timestamp] = []
+        first_idx: Optional[pd.Timestamp] = None
+        for d in dates:
+            if d not in nav_sorted.index:
+                continue
+            sub = nav_sorted.loc[:d]
+            if window_mode.lower() == 'rollingn':
+                if len(sub) < required:
+                    continue
+            else:
+                if len(sub) < 2:
+                    continue
+            if first_idx is None:
+                first_idx = d
+            valid_dates.append(d)
+
+        if not valid_dates:
+            raise ValueError('可用样本不足，无法计算任一调仓窗口，请检查 window_mode/data_len 配置。')
+
+        # ensure first element equals first_idx
+        valid_dates = [first_idx] + [d for d in valid_dates if d > first_idx]
+
+        nav_trimmed = nav_sorted[nav_sorted.index >= first_idx]
+        return valid_dates, nav_trimmed
+
     def _static_or_rebalanced(nav: pd.DataFrame, s: Dict[str, Any]):
         base_weights = np.asarray(s.get('weights') or [], dtype=float)
         base_weights = base_weights / max(1e-12, base_weights.sum())
@@ -206,10 +240,12 @@ def backtest_portfolio(
             rel = nav.divide(base, axis=1)
             series = (rel * base_weights).sum(axis=1)
             return series, []
-        # ensure first day included
+        # ensure the first valid date has enough samples
         rset = sorted([d for d in rebal_dates if d in nav.index])
-        if not rset or rset[0] != nav.index[0]:
-            rset = [nav.index[0]] + rset
+        if not rset:
+            raise ValueError('未找到可用的调仓日期。')
+        rset, nav = _first_valid_rebalance(nav, rset, s)
+        base_weights = base_weights / max(1e-12, base_weights.sum())
         out = pd.Series(index=nav.index, dtype=float)
         cur_val = 1.0
         for i, d0 in enumerate(rset):

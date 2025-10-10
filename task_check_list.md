@@ -6,12 +6,12 @@
 - **测试覆盖度**：`backend/tests/test_window_slice.py` 覆盖 (1) `all` 模式全量、(2) `rollingN` 基础, (3) data_len 小于 2 时的下限保护, (4) `window_mode=None` 默认行为, (5) 大小写不敏感, (6) `data_len=None` 时的最少样本约束。
 
 ## 任务 2：实现“样本不足顺延”机制
-- [ ] 状态：待处理
+- [x] 状态：已完成
 - **说明**：在 `_static_or_rebalanced` 内判断各调仓日是否拥有足够数据：
   - `all` 模式至少 2 条记录。
   - `rollingN` 模式至少 `data_len` 条（若 `data_len` 大于可用样本上限时，需在策略层报错或回退）。
   - 若首批数据不足，将调仓日期顺延到首个满足条件的日期，并以该日期权重作为初始权重。若全程都不足，返回可读错误。
-- **测试覆盖度**：计划新增单测与集成测试，覆盖 `all`/`rollingN` 在数据不足时的顺延、完全不足时的报错、以及首个权重与 markers 对齐。
+- **测试覆盖度**：`backend/tests/test_rebalance_window.py` 验证 (1) `rollingN` 模式首个调仓顺延、(2) `all` 模式首个有效日期为第二条样本、(3) 数据永远不足时抛出 `ValueError`。
 
 ## 任务 3：统一前后端权重计算接口
 - [ ] 状态：待处理
