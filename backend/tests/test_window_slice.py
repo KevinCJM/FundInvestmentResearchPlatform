@@ -35,3 +35,25 @@ def test_slice_rollingn_enforces_minimum_two_rows():
     out = slice_fit_data(nav, up_to, 'rollingN', 1)
     assert len(out) == 2
     assert list(out.index) == list(nav.index[:2])
+
+
+def test_slice_mode_none_defaults_to_all():
+    nav = _make_nav()
+    up_to = nav.index[4]
+    out = slice_fit_data(nav, up_to, None, 5)
+    assert list(out.index) == list(nav.index[:5])
+
+
+def test_slice_rollingn_case_insensitive():
+    nav = _make_nav()
+    up_to = nav.index[-2]
+    out = slice_fit_data(nav, up_to, 'ROLLINGn', 3)
+    assert list(out.index) == list(nav.index[-4:-1])
+
+
+def test_slice_rollingn_with_none_data_len_uses_two_rows():
+    nav = _make_nav()
+    up_to = nav.index[5]
+    out = slice_fit_data(nav, up_to, 'rollingN', None)
+    assert len(out) == 2
+    assert list(out.index) == list(nav.index[4:6])
