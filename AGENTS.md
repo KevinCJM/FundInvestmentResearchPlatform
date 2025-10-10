@@ -23,6 +23,12 @@
 - 前端测试使用 Vitest + React Testing Library，测试文件与组件同级，命名 `*.test.tsx`。
 - 所有测试需可重复执行，使用 `data/fixtures/` 提供固定样本，禁止网络调用。
 
+## 回测窗口与样本要求
+- 再平衡与权重反推统一使用 `slice_fit_data`：`window_mode='all'` 表示从首条数据到目标日全部样本，`rollingN` 表示取最近 `data_len` 个上交所交易日（不少于 2 条）。
+- 当窗口长度超过可用样本时，接口与回测会返回 400/抛错，需放宽窗口或缩短 `data_len`；静态策略将默认保持旧权重。
+- `ensure_valid_rebalance_window` 会自动顺延到首个样本充足的调仓日，首日 markers 与 series 保持对齐；此前日期由前端负责提示。
+- `SSE` 交易日日历来源 `data/trade_day_df.parquet`，新增数据时需保证 `exchange='SSE'`、`is_open=1`。
+
 ## 提交与合并请求规范
 - 提交信息遵循 `feat:`, `fix:`, `docs:` 等前缀，聚焦单一改动并描述影响面。
 - PR 需说明目的、关键变化、运行过的命令，并在涉及 UI 时附上截图或视频。
