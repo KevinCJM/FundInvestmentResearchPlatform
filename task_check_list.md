@@ -14,9 +14,9 @@
 - **测试覆盖度**：`backend/tests/test_rebalance_window.py` 验证 (1) `rollingN` 模式首个调仓顺延、(2) `all` 模式首个有效日期为第二条样本、(3) 数据永远不足时抛出 `ValueError`。
 
 ## 任务 3：统一前后端权重计算接口
-- [ ] 状态：待处理
+- [x] 状态：已完成
 - **说明**：`backend/services/strategy_routes.py` 的 `compute-weights` 与 `compute-schedule-weights` API 必须复用与回测一致的窗口逻辑，避免硬编码 `window_mode='rollingN'`。可将截取/顺延逻辑提取为共用函数。
-- **测试覆盖度**：计划使用 FastAPI 测试客户端构造 `all` 与 `rollingN` 案例，对比接口响应与内部函数的权重，确保截取逻辑一致。
+- **测试覆盖度**：`backend/tests/test_strategy_api.py` 利用 FastAPI TestClient 校验 (1) `rollingN` 窗口被裁剪到指定长度并在样本不足时返回 400；(2) 再平衡任务会自动顺延首个可用日期并返回对应日期列表。
 
 ## 任务 4：保持回测输出结构稳定
 - [ ] 状态：待处理

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from strategy import compute_risk_budget_weights, compute_target_weights
-from backtest_engine import backtest_portfolio, gen_rebalance_dates
+from backtest_engine import backtest_portfolio, gen_rebalance_dates, slice_fit_data, ensure_valid_rebalance_window
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -65,6 +65,15 @@ def api_compute_weights(req: ComputeWeightsRequest):
     class_names = [c.name for c in req.strategy.classes]
     nav_wide = nav_wide[class_names].dropna(how='all').dropna(axis=0)
 
+    if nav_wide.empty:
+        return JSONResponse(status_code=400, content={"detail": "净值数据不足，无法计算权重"})
+
+    window_mode = req.window_mode or (req.strategy.model or {}).get('window_mode') or 'all'
+    data_len = req.data_len if req.data_len is not None else (req.strategy.model or {}).get('data_len')
+    nav_fit = slice_fit_data(nav_wide, nav_wide.index[-1], window_mode, data_len)
+    if len(nav_fit) < 2 or (window_mode.lower() == 'rollingn' and data_len and len(nav_fit) < int(data_len)):
+        return JSONResponse(status_code=400, content={"detail": "样本不足，无法根据当前窗口计算权重"})
+
     if req.strategy.type == 'fixed':
         weights = []
         for c in req.strategy.classes:
@@ -87,7 +96,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
             risk_cfg["window"] = int(req.strategy.window)
         if req.strategy.risk_metric in {"var", "es"} and req.strategy.confidence is not None:
             risk_cfg["confidence"] = float(req.strategy.confidence)
-        weights = compute_risk_budget_weights(nav_wide, risk_cfg, budgets, window_len=req.data_len, window_mode=(req.window_mode or 'rollingN'))
+        weights = compute_risk_budget_weights(nav_fit, risk_cfg, budgets, window_len=None, window_mode=None)
         return {"weights": weights}
 
     if req.strategy.type == 'target':
@@ -100,7 +109,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
             risk_cfg["confidence"] = float(req.strategy.confidence)
         ret_cfg = {"metric": req.strategy.return_metric or "annual", "days": int(req.strategy.days or 252)}
         # map constraints
-        asset_names = list(nav_wide.columns)
+        asset_names = list(nav_fit.columns)
         single_limits: List[Tuple[float, float]] = [(0.0, 1.0) for _ in asset_names]
         group_limits: Dict[Tuple[int, ...], Tuple[float, float]] = {}
         if req.strategy.constraints and isinstance(req.strategy.constraints.get('single_limits', None), dict):
@@ -120,12 +129,12 @@ def api_compute_weights(req: ComputeWeightsRequest):
                     group_limits[idxs] = (lo, hi)
 
         weights = compute_target_weights(
-            nav_wide,
+            nav_fit,
             ret_cfg,
             risk_cfg,
             target=req.strategy.target or 'min_risk',
-            window_len=req.data_len,
-            window_mode=(req.window_mode or 'rollingN'),
+            window_len=None,
+            window_mode=None,
             single_limits=single_limits,
             group_limits=group_limits,
             risk_free_rate=float(req.strategy.risk_free_rate or 0.0),
@@ -211,11 +220,12 @@ def _compute_weight_for_date(args: Dict[str, Any]) -> Dict[str, Any]:
     nav = nav.loc[nav.index <= up_to]
     stype = args['stype']
     model = args['model'] or {}
-    window_mode = model.get('window_mode') or 'rollingN'
-    n = int(model.get('data_len') or 0)
-    if window_mode != 'all' and n > 0:
-        nav = nav.tail(n)
-    asset_names = list(nav.columns)
+    window_mode = model.get('window_mode') or 'all'
+    data_len = model.get('data_len')
+    nav_fit = slice_fit_data(nav, up_to, window_mode, data_len)
+    if len(nav_fit) < 2 or (window_mode.lower() == 'rollingn' and data_len and len(nav_fit) < int(data_len)):
+        raise ValueError('样本不足，无法计算调仓权重')
+    asset_names = list(nav_fit.columns)
     if stype == 'risk_budget':
         budgets = args['budgets']
         risk_cfg = {'metric': model.get('risk_metric') or 'vol'}
@@ -225,7 +235,7 @@ def _compute_weight_for_date(args: Dict[str, Any]) -> Dict[str, Any]:
             risk_cfg['window'] = int(model.get('window'))
         if model.get('confidence') is not None:
             risk_cfg['confidence'] = float(model.get('confidence'))
-        w = compute_risk_budget_weights(nav, risk_cfg, budgets, window_len=None)
+        w = compute_risk_budget_weights(nav_fit, risk_cfg, budgets, window_len=None)
         return {'date': args['date'], 'weights': [float(x) for x in w]}
     else:
         ret_cfg = {
@@ -255,7 +265,7 @@ def _compute_weight_for_date(args: Dict[str, Any]) -> Dict[str, Any]:
             if idxs:
                 group_limits[idxs] = (float(g.get('lo', 0.0)), float(g.get('hi', 1.0)))
         w = compute_target_weights(
-            nav, ret_cfg, risk_cfg,
+            nav_fit, ret_cfg, risk_cfg,
             target=str(model.get('target') or 'min_risk'),
             window_len=None, window_mode=None,
             single_limits=single_limits, group_limits=group_limits,
@@ -280,21 +290,30 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         nav_wide = nav_wide[nav_wide.index >= pd.to_datetime(req.start_date)]
     class_names = [c.name for c in req.strategy.classes]
     nav_wide = nav_wide[class_names].dropna(how='all').dropna(axis=0)
+    if nav_wide.empty:
+        return JSONResponse(status_code=400, content={"detail": "净值数据不足，无法计算权重"})
+
     asset_names = list(nav_wide.columns)
+    model_cfg = (req.strategy.model or {}).copy() if req.strategy.model else {}
 
     rb = req.strategy.rebalance or {}
-    if not rb.get('enabled') or not rb.get('recalc'):
-        rset = [nav_wide.index[0]]
-    else:
-        mode = str(rb.get('mode', 'monthly'))
-        which = str(rb.get('which', 'nth'))
-        N = int(rb.get('N', 1))
-        unit = str(rb.get('unit', 'trading'))
-        fixed_interval = int(rb.get('fixedInterval', 20)) if mode == 'fixed' else None
-        rset = gen_rebalance_dates(nav_wide.index, mode, N=N, which=which, unit=unit, fixed_interval=fixed_interval)
-        rset = sorted([d for d in rset if d in nav_wide.index])
-        if not rset or rset[0] != nav_wide.index[0]:
-            rset = [nav_wide.index[0]] + rset
+    try:
+        if not rb.get('enabled') or not rb.get('recalc'):
+            rset = [nav_wide.index[0]]
+            rset, first_idx = ensure_valid_rebalance_window(nav_wide, rset, model_cfg)
+        else:
+            mode = str(rb.get('mode', 'monthly'))
+            which = str(rb.get('which', 'nth'))
+            N = int(rb.get('N', 1))
+            unit = str(rb.get('unit', 'trading'))
+            fixed_interval = int(rb.get('fixedInterval', 20)) if mode == 'fixed' else None
+            rset = gen_rebalance_dates(nav_wide.index, mode, N=N, which=which, unit=unit, fixed_interval=fixed_interval)
+            rset = sorted([d for d in rset if d in nav_wide.index])
+            if not rset:
+                return JSONResponse(status_code=400, content={"detail": "未找到可用调仓日期"})
+            rset, first_idx = ensure_valid_rebalance_window(nav_wide, rset, model_cfg)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     nav_split = {'index': [d.isoformat() for d in nav_wide.index], 'columns': asset_names, 'data': nav_wide.values.tolist()}
     tasks: List[Dict[str, Any]] = []
@@ -305,9 +324,8 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
             'days': req.strategy.days,
             'window': req.strategy.window,
             'confidence': req.strategy.confidence,
-            'window_mode': 'rollingN',
-            'data_len': 60,
         }
+        model.update({'window_mode': model_cfg.get('window_mode', 'rollingN'), 'data_len': model_cfg.get('data_len')})
         for d in rset:
             tasks.append({'date': d.date().isoformat(), 'nav_split': nav_split, 'stype': 'risk_budget', 'model': model, 'budgets': budgets})
     else:
@@ -325,10 +343,10 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
             'risk_confidence': req.strategy.confidence,
             'risk_free_rate': req.strategy.risk_free_rate or 0.0,
             'constraints': req.strategy.constraints or {},
-            'window_mode': 'rollingN', 'data_len': 60,
             'target_return': req.strategy.target_return,
             'target_risk': req.strategy.target_risk,
         }
+        model.update({'window_mode': model_cfg.get('window_mode', 'rollingN'), 'data_len': model_cfg.get('data_len')})
         for d in rset:
             tasks.append({'date': d.date().isoformat(), 'nav_split': nav_split, 'stype': 'target', 'model': model, 'budgets': None})
 
@@ -346,4 +364,3 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         results = [_compute_weight_for_date(t) for t in tasks]
     results.sort(key=lambda x: x['date'])
     return {"asset_names": asset_names, "dates": [r['date'] for r in results], "weights": [r['weights'] for r in results]}
-

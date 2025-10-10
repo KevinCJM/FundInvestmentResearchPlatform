@@ -33,6 +33,42 @@ def slice_fit_data(nav: pd.DataFrame, up_to: pd.Timestamp, window_mode: Optional
     return win.tail(n)
 
 
+def ensure_valid_rebalance_window(
+    nav: pd.DataFrame,
+    candidate_dates: List[pd.Timestamp],
+    model: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[pd.Timestamp], pd.Timestamp]:
+    """Return valid rebalance dates and the first viable rebalance timestamp."""
+
+    model = model or {}
+    nav_sorted = nav.sort_index()
+    window_mode = (model.get('window_mode') or 'all').lower()
+    data_len = model.get('data_len')
+    required = max(2, int(data_len or 0)) if window_mode == 'rollingn' else 2
+
+    valid_dates: List[pd.Timestamp] = []
+    first_idx: Optional[pd.Timestamp] = None
+    for d in candidate_dates:
+        if d not in nav_sorted.index:
+            continue
+        sub = nav_sorted.loc[:d]
+        if window_mode == 'rollingn':
+            if len(sub) < required:
+                continue
+        else:
+            if len(sub) < 2:
+                continue
+        if first_idx is None:
+            first_idx = d
+        valid_dates.append(d)
+
+    if not valid_dates or first_idx is None:
+        raise ValueError('可用样本不足，无法计算任一调仓窗口，请检查 window_mode/data_len 配置。')
+
+    valid_dates = [first_idx] + [d for d in valid_dates if d > first_idx]
+    return valid_dates, first_idx
+
+
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
         if 'date' in df.columns:
@@ -186,40 +222,6 @@ def backtest_portfolio(
             return np.asarray(w, dtype=float)
         return None
 
-    def _first_valid_rebalance(nav: pd.DataFrame, dates: List[pd.Timestamp], s: Dict[str, Any]) -> Tuple[List[pd.Timestamp], pd.DataFrame]:
-        """Return trimmed rebalance set and corresponding nav after skipping insufficient windows."""
-
-        model = s.get('model') or {}
-        window_mode = model.get('window_mode') or 'all'
-        data_len = model.get('data_len', None)
-        required = max(2, int(data_len or 0)) if window_mode.lower() == 'rollingn' else 2
-
-        nav_sorted = nav.sort_index()
-        valid_dates: List[pd.Timestamp] = []
-        first_idx: Optional[pd.Timestamp] = None
-        for d in dates:
-            if d not in nav_sorted.index:
-                continue
-            sub = nav_sorted.loc[:d]
-            if window_mode.lower() == 'rollingn':
-                if len(sub) < required:
-                    continue
-            else:
-                if len(sub) < 2:
-                    continue
-            if first_idx is None:
-                first_idx = d
-            valid_dates.append(d)
-
-        if not valid_dates:
-            raise ValueError('可用样本不足，无法计算任一调仓窗口，请检查 window_mode/data_len 配置。')
-
-        # ensure first element equals first_idx
-        valid_dates = [first_idx] + [d for d in valid_dates if d > first_idx]
-
-        nav_trimmed = nav_sorted[nav_sorted.index >= first_idx]
-        return valid_dates, nav_trimmed
-
     def _static_or_rebalanced(nav: pd.DataFrame, s: Dict[str, Any]):
         base_weights = np.asarray(s.get('weights') or [], dtype=float)
         base_weights = base_weights / max(1e-12, base_weights.sum())
@@ -244,7 +246,9 @@ def backtest_portfolio(
         rset = sorted([d for d in rebal_dates if d in nav.index])
         if not rset:
             raise ValueError('未找到可用的调仓日期。')
-        rset, nav = _first_valid_rebalance(nav, rset, s)
+        rset, first_idx = ensure_valid_rebalance_window(nav, rset, s.get('model'))
+        full_nav = nav.sort_index()
+        nav = full_nav.loc[first_idx:]
         base_weights = base_weights / max(1e-12, base_weights.sum())
         out = pd.Series(index=nav.index, dtype=float)
         cur_val = 1.0
@@ -253,7 +257,8 @@ def backtest_portfolio(
             seg = nav.loc[d0:d1]
             w_seg = base_weights
             if recalc:
-                w_calc = _compute_model_weights(nav.loc[:d0], s, d0)
+                history = full_nav.loc[:d0]
+                w_calc = _compute_model_weights(history, s, d0)
                 if w_calc is not None and np.isfinite(w_calc).all() and w_calc.sum() > 0:
                     w_seg = (w_calc / w_calc.sum())
             base = seg.iloc[0]
