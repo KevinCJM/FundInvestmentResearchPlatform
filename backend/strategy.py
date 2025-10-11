@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+import math
 import numpy as np
 import pandas as pd
 
@@ -109,6 +110,56 @@ def compute_target_weights(
             {'type': 'ineq', 'fun': lambda w, i=idx, h=hi: h - np.sum(w[i])},
         )
 
+    mean_vec = returns.mean(axis=0).to_numpy(dtype=float)
+    sum_vec = returns.sum(axis=0).to_numpy(dtype=float)
+    cov_mat = np.cov(X, rowvar=False, ddof=1) if X.shape[0] > 1 else np.eye(n, dtype=float)
+    days_ret = int(return_cfg.get('days', 252) or 252)
+    days_risk = int(risk_cfg.get('days', 252) or 252)
+    ret_metric = str(return_cfg.get('metric', 'mean'))
+    ret_type = str(return_cfg.get('type', 'simple'))
+    risk_metric = str(risk_cfg.get('metric', 'vol'))
+    risk_type = str(risk_cfg.get('type', 'simple'))
+
+    fast_return = (
+        ret_type == 'simple'
+        and ret_metric in {'mean', 'annual', 'annual_mean', 'cumulative'}
+    )
+
+    fast_risk = (
+        risk_type == 'simple'
+        and risk_metric in {'vol', 'annual_vol'}
+    )
+
+    def fast_ret(w: np.ndarray) -> float:
+        if ret_metric == 'mean':
+            return float(mean_vec @ w)
+        if ret_metric in {'annual', 'annual_mean'}:
+            return float((mean_vec @ w) * days_ret)
+        if ret_metric == 'cumulative':
+            return float(sum_vec @ w)
+        return float(mean_vec @ w)
+
+    def fast_rsk(w: np.ndarray) -> float:
+        var = float(w @ cov_mat @ w)
+        var = max(var, 0.0)
+        vol = math.sqrt(var)
+        if risk_metric == 'annual_vol':
+            return vol * math.sqrt(days_risk)
+        return vol
+
+    def cached_portfolio_returns(w: np.ndarray) -> np.ndarray:
+        return X @ w
+
+    def portfolio_return_value(w: np.ndarray) -> float:
+        if fast_return:
+            return fast_ret(w)
+        return float(calculate_return(cached_portfolio_returns(w), return_cfg))
+
+    def portfolio_risk_value(w: np.ndarray) -> float:
+        if fast_risk:
+            return fast_rsk(w)
+        return float(calculate_risk(cached_portfolio_returns(w), risk_cfg))
+
     results = None
     if use_exploration:
         results = calculate_efficient_frontier_exploration(
@@ -135,8 +186,8 @@ def compute_target_weights(
         # fast path: SLSQP directly minimize risk under constraints
         from scipy.optimize import minimize
         def risk_of(w: np.ndarray) -> float:
-            return calculate_risk(X @ w, risk_cfg)
-        res = minimize(lambda w: risk_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter':400,'ftol':1e-9})
+            return portfolio_risk_value(w)
+        res = minimize(risk_of, np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter':400,'ftol':1e-9})
         w = res.x if res.success else np.full(n, 1.0/n)
         return [float(x) for x in w / max(1e-12, w.sum())]
     elif target == 'max_return':
@@ -148,7 +199,7 @@ def compute_target_weights(
         # fast path: SLSQP directly maximize return
         from scipy.optimize import minimize
         def ret_of(w: np.ndarray) -> float:
-            return calculate_return(X @ w, return_cfg)
+            return portfolio_return_value(w)
         res = minimize(lambda w: -ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter':400,'ftol':1e-9})
         w = res.x if res.success else np.full(n, 1.0/n)
         return [float(x) for x in w / max(1e-12, w.sum())]
@@ -158,10 +209,13 @@ def compute_target_weights(
         days = int(return_cfg.get('days', 252)) # Still need days for annualization
         
         def neg_traditional_sharpe(w: np.ndarray) -> float:
-            p = X @ w
-            # Hardcoded traditional metrics
-            r = calculate_return(p, {'metric': 'annual', 'days': days})
-            v = calculate_risk(p, {'metric': 'annual_vol', 'days': days})
+            if fast_return and fast_risk:
+                r = float((mean_vec @ w) * days)
+                v = float(math.sqrt(max(w @ cov_mat @ w, 0.0)) * math.sqrt(days))
+            else:
+                p = cached_portfolio_returns(w)
+                r = calculate_return(p, {'metric': 'annual', 'days': days})
+                v = calculate_risk(p, {'metric': 'annual_vol', 'days': days})
             if v <= 1e-12:
                 return 1e6
             # Traditional formula with risk-free rate
@@ -174,9 +228,8 @@ def compute_target_weights(
     elif target == 'max_sharpe':
         from scipy.optimize import minimize
         def neg_sharpe(w: np.ndarray) -> float:
-            p = X @ w
-            r = calculate_return(p, return_cfg)
-            v = calculate_risk(p, risk_cfg)
+            r = portfolio_return_value(w)
+            v = portfolio_risk_value(w)
             if v <= 1e-12:
                 return 1e6
             return - r / v
@@ -190,9 +243,9 @@ def compute_target_weights(
         if target_return is None:
             raise ValueError('需要提供目标收益率')
         def risk_of(w: np.ndarray) -> float:
-            return calculate_risk(X @ w, risk_cfg)
+            return portfolio_risk_value(w)
         def ret_of(w: np.ndarray) -> float:
-            return calculate_return(X @ w, return_cfg)
+            return portfolio_return_value(w)
         # find feasible range for return using SLSQP on bounds/constraints
         res_max = minimize(lambda w: -ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons)
         res_min = minimize(lambda w: ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons)

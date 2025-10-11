@@ -236,11 +236,30 @@ def backtest_portfolio(
             rebal_dates = gen_rebalance_dates(nav.index, mode, N=N, which=which, unit=unit, fixed_interval=fixed_interval)
         recalc = bool(rb.get('recalc', False))
         markers: List[Dict[str, Any]] = []
+        nav_values = nav.to_numpy(dtype=np.float64)
         if not rebal_dates:
-            # no rebalance: static weights
-            base = nav.iloc[0]
-            rel = nav.divide(base, axis=1)
-            series = (rel * base_weights).sum(axis=1)
+            # no rebalance: static weights (vectorised)
+            start_row = nav_values[0]
+            valid_mask = np.isfinite(start_row) & (start_row != 0.0)
+            if not np.any(valid_mask):
+                series = pd.Series(np.zeros(len(nav_values), dtype=float), index=nav.index, dtype=float)
+                return series, []
+            weights_full = base_weights.copy()
+            weights_full[~valid_mask] = 0.0
+            total = weights_full.sum()
+            if total <= 0:
+                series = pd.Series(np.zeros(len(nav_values), dtype=float), index=nav.index, dtype=float)
+                return series, []
+            weights_full /= total
+            ratios = np.divide(
+                nav_values[:, valid_mask],
+                start_row[valid_mask],
+                out=np.zeros((nav_values.shape[0], valid_mask.sum()), dtype=np.float64),
+                where=start_row[valid_mask] != 0.0
+            )
+            ratios = np.nan_to_num(ratios, nan=0.0, posinf=0.0, neginf=0.0)
+            series_np = ratios @ weights_full[valid_mask]
+            series = pd.Series(series_np, index=nav.index, dtype=float)
             return series, []
         # ensure the first valid date has enough samples
         rset = sorted([d for d in rebal_dates if d in nav.index])
@@ -250,25 +269,59 @@ def backtest_portfolio(
         full_nav = nav.sort_index()
         nav = full_nav.loc[first_idx:]
         base_weights = base_weights / max(1e-12, base_weights.sum())
-        out = pd.Series(index=nav.index, dtype=float)
-        cur_val = 1.0
-        all_markers: List[Dict[str, Any]] = []
+        nav_values_trim = nav.to_numpy(dtype=np.float64)
+        index_lookup = {ts: idx for idx, ts in enumerate(nav.index)}
+
+        def prepare_weights(weight_vec: np.ndarray, base_row: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
+            mask = np.isfinite(base_row) & (base_row != 0.0)
+            if not np.any(mask):
+                return mask, None, None
+            weights_full = weight_vec.astype(np.float64).copy()
+            weights_full[~mask] = 0.0
+            total = weights_full.sum()
+            if total <= 0:
+                return mask, None, None
+            weights_full /= total
+            return mask, weights_full, weights_full[mask]
+
+        series_np = np.full(nav_values_trim.shape[0], np.nan, dtype=np.float64)
+        current_val = 1.0
         for i, d0 in enumerate(rset):
             d1 = rset[i + 1] if i + 1 < len(rset) else nav.index[-1]
-            seg = nav.loc[d0:d1]
+            start_idx = index_lookup[d0]
+            end_idx = index_lookup[d1]
             w_seg = base_weights
             if recalc:
                 history = full_nav.loc[:d0]
                 w_calc = _compute_model_weights(history, s, d0)
                 if w_calc is not None and np.isfinite(w_calc).all() and w_calc.sum() > 0:
                     w_seg = (w_calc / w_calc.sum())
-            base = seg.iloc[0]
-            rel = seg.divide(base, axis=1)
-            part = (rel * w_seg).sum(axis=1)
-            markers.append({'date': d0.date().isoformat(), 'weights': w_seg.tolist(), 'value': float(cur_val * float(part.iloc[0]))})
-            all_markers.append({'date': d0, 'weights': w_seg.tolist(), 'value': float(cur_val * float(part.iloc[0]))})
-            out.loc[seg.index] = cur_val * part.values
-            cur_val = float(out.loc[seg.index[-1]])
+            mask, weights_full, weights_compact = prepare_weights(w_seg, nav_values_trim[start_idx])
+            seg_index = slice(start_idx, end_idx + 1)
+            if weights_full is None or weights_compact is None:
+                segment_path = np.full(end_idx - start_idx + 1, current_val, dtype=np.float64)
+                marker_weights = [0.0 for _ in range(len(base_weights))]
+            else:
+                segment_nav = nav_values_trim[seg_index][:, mask]
+                base_row = nav_values_trim[start_idx, mask]
+                ratios = np.divide(
+                    segment_nav,
+                    base_row,
+                    out=np.zeros_like(segment_nav),
+                    where=base_row != 0.0
+                )
+                ratios = np.nan_to_num(ratios, nan=0.0, posinf=0.0, neginf=0.0)
+                rel_path = ratios @ weights_compact
+                segment_path = rel_path * current_val
+                marker_weights = [float(x) for x in weights_full]
+            series_np[seg_index] = segment_path
+            markers.append({
+                'date': d0.date().isoformat(),
+                'weights': marker_weights,
+                'value': float(segment_path[0])
+            })
+            current_val = float(segment_path[-1])
+        out = pd.Series(series_np, index=nav.index, dtype=float)
         return out, markers
 
     series_out: Dict[str, List[float]] = {}
@@ -287,7 +340,61 @@ def backtest_portfolio(
         series_full = series.reindex(idx)
         series_out[name] = [None if pd.isna(x) else float(x) for x in series_full]
         marker_out[name] = markers
-    return {"dates": [d.strftime('%Y-%m-%d') for d in idx], "series": series_out, "markers": marker_out, "asset_names": list(nav_wide.columns)}
+
+    def _safe_float(val: float) -> Optional[float]:
+        return float(val) if np.isfinite(val) else None
+
+    metrics_rows: List[Dict[str, Optional[float]]] = []
+    ann_factor = 252.0
+    for name, values in series_out.items():
+        nav_series = pd.Series(values, index=idx, dtype=float).dropna()
+        if nav_series.empty or len(nav_series) < 2:
+            metrics_rows.append({
+                "name": name,
+                "annual_return": None,
+                "annual_vol": None,
+                "sharpe": None,
+                "var99": None,
+                "es99": None,
+                "max_drawdown": None,
+                "calmar": None,
+            })
+            continue
+        returns = nav_series.pct_change().dropna()
+        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+        mean_ann = returns.mean() * ann_factor if not returns.empty else float("nan")
+        vol_ann = returns.std(ddof=1) * np.sqrt(ann_factor) if len(returns) > 1 else float("nan")
+        sharpe = mean_ann / vol_ann if np.isfinite(mean_ann) and np.isfinite(vol_ann) and vol_ann != 0 else float("nan")
+        if not returns.empty:
+            q01 = returns.quantile(0.01)
+            var99 = -float(q01)
+            tail = returns[returns <= q01]
+            es99 = -float(tail.mean()) if len(tail) > 0 else float("nan")
+        else:
+            var99 = float("nan")
+            es99 = float("nan")
+        roll_max = nav_series.cummax()
+        drawdown = nav_series.divide(roll_max, axis=0) - 1.0
+        max_dd = float(drawdown.min()) if not drawdown.empty else float("nan")
+        calmar = mean_ann / abs(max_dd) if np.isfinite(mean_ann) and np.isfinite(max_dd) and max_dd != 0 else float("nan")
+        metrics_rows.append({
+            "name": name,
+            "annual_return": _safe_float(mean_ann),
+            "annual_vol": _safe_float(vol_ann),
+            "sharpe": _safe_float(sharpe),
+            "var99": _safe_float(var99),
+            "es99": _safe_float(es99),
+            "max_drawdown": _safe_float(max_dd),
+            "calmar": _safe_float(calmar),
+        })
+
+    return {
+        "dates": [d.strftime('%Y-%m-%d') for d in idx],
+        "series": series_out,
+        "markers": marker_out,
+        "asset_names": list(nav_wide.columns),
+        "metrics": metrics_rows,
+    }
 
 
 def load_nav_wide_from_parquet(data_dir: Path, alloc_name: str) -> pd.DataFrame:

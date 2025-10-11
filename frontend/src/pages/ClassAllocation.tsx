@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import ReactECharts from 'echarts-for-react';
+import HorizontalMetricComparison, { PerformanceQuadrantChart } from '../components/HorizontalMetricComparison';
 
 // Helper component for section titles
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -20,8 +21,8 @@ interface ConfigDetail {
 
 export default function ClassAllocation() {
   // State for UI interaction
-  const [returnMetric, setReturnMetric] = useState('annual');
-  const [riskMetric, setRiskMetric] = useState('var');
+  const [returnMetric, setReturnMetric] = useState('annual_mean');
+  const [riskMetric, setRiskMetric] = useState('annual_vol');
   const [startDate, setStartDate] = useState('2020-01-01');
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
 
@@ -82,6 +83,187 @@ export default function ClassAllocation() {
   const [busyStrategy, setBusyStrategy] = useState<string | null>(null);
   const [showAddPicker, setShowAddPicker] = useState(false);
   const [btBusy, setBtBusy] = useState(false);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const backtestButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [overlayOffset, setOverlayOffset] = useState<number | null>(null);
+  const [btYAxisRange, setBtYAxisRange] = useState<{ min: number; max: number } | null>(null);
+
+  useEffect(() => {
+    const handleReposition = () => {
+      if (!pageRef.current || !backtestButtonRef.current) {
+        setOverlayOffset(null);
+        return;
+      }
+      const containerRect = pageRef.current.getBoundingClientRect();
+      const buttonRect = backtestButtonRef.current.getBoundingClientRect();
+      setOverlayOffset(Math.max(0, buttonRect.top - containerRect.top));
+    };
+
+    if (loading || isCalculating || btBusy) {
+      handleReposition();
+      window.addEventListener('resize', handleReposition);
+      return () => window.removeEventListener('resize', handleReposition);
+    } else {
+      setOverlayOffset(null);
+    }
+  }, [loading, isCalculating, btBusy]);
+
+  const parseMetricValue = useCallback((value: any) => {
+    if (value === null || value === undefined) return NaN;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : NaN;
+  }, []);
+
+  const backtestDateIndex = useMemo(() => {
+    if (!btSeries?.dates || !Array.isArray(btSeries.dates)) return new Map<string, number>();
+    const map = new Map<string, number>();
+    btSeries.dates.forEach((d: string, idx: number) => {
+      map.set(String(d), idx);
+    });
+    return map;
+  }, [btSeries?.dates]);
+
+  const computeBtYAxisRange = useCallback(
+    (startIdx?: number, endIdx?: number) => {
+      if (!btSeries?.series || !btSeries.dates) return null;
+      const total = btSeries.dates.length;
+      if (total === 0) return null;
+      const lo = Math.max(0, startIdx ?? 0);
+      const hi = Math.min(total - 1, endIdx ?? total - 1);
+      if (lo > hi) return null;
+
+      const values: number[] = [];
+
+      Object.values(btSeries.series || {}).forEach((arr: any) => {
+        if (!Array.isArray(arr)) return;
+        for (let i = lo; i <= hi; i += 1) {
+          const v = arr[i];
+          if (Number.isFinite(v)) values.push(Number(v));
+        }
+      });
+
+      Object.values(btSeries.markers || {}).forEach((arr: any) => {
+        if (!Array.isArray(arr)) return;
+        arr.forEach((item: any) => {
+          const xVal = item?.date ?? (Array.isArray(item?.value) ? item.value[0] : undefined);
+          const idx = xVal !== undefined ? backtestDateIndex.get(String(xVal)) : undefined;
+          if (idx === undefined || idx < lo || idx > hi) return;
+          const val = Array.isArray(item?.value) ? Number(item.value[1]) : Number(item?.value);
+          if (Number.isFinite(val)) values.push(val);
+        });
+      });
+
+      if (values.length === 0) return null;
+      let min = Math.min(...values);
+      let max = Math.max(...values);
+      if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+      if (min === max) {
+        const delta = min === 0 ? 1 : Math.abs(min) * 0.05;
+        return { min: min - delta, max: max + delta };
+      }
+      const padding = (max - min) * 0.05;
+      return { min: min - padding, max: max + padding };
+    },
+    [btSeries, backtestDateIndex]
+  );
+
+  useEffect(() => {
+    if (!btSeries) {
+      setBtYAxisRange(null);
+      return;
+    }
+    setBtYAxisRange(computeBtYAxisRange());
+  }, [btSeries, computeBtYAxisRange]);
+
+  const handleBacktestZoom = useCallback(
+    (params: any) => {
+      if (!btSeries?.dates || btSeries.dates.length === 0) return;
+      const payload = Array.isArray(params?.batch) && params.batch.length > 0 ? params.batch[0] : params;
+      const total = btSeries.dates.length;
+      let startIdx: number | undefined;
+      let endIdx: number | undefined;
+
+      if (payload?.startValue !== undefined) {
+        const idx = backtestDateIndex.get(String(payload.startValue));
+        if (idx !== undefined) startIdx = idx;
+      } else if (typeof payload?.start === 'number') {
+        startIdx = Math.round((payload.start / 100) * (total - 1));
+      }
+
+      if (payload?.endValue !== undefined) {
+        const idx = backtestDateIndex.get(String(payload.endValue));
+        if (idx !== undefined) endIdx = idx;
+      } else if (typeof payload?.end === 'number') {
+        endIdx = Math.round((payload.end / 100) * (total - 1));
+      }
+
+      if (startIdx === undefined) startIdx = 0;
+      if (endIdx === undefined) endIdx = total - 1;
+      if (startIdx > endIdx) {
+        const tmp = startIdx;
+        startIdx = endIdx;
+        endIdx = tmp;
+      }
+
+      const range = computeBtYAxisRange(startIdx, endIdx);
+      setBtYAxisRange(range);
+    },
+    [btSeries, backtestDateIndex, computeBtYAxisRange]
+  );
+
+  const backtestMetricsSummary = useMemo(() => {
+    const metrics = btSeries?.metrics;
+    if (!Array.isArray(metrics) || metrics.length === 0) {
+      return {
+        columns: [] as string[],
+        rows: [] as any[],
+        points: [] as { name: string; volatility: number; cumulativeReturn: number }[],
+      };
+    }
+    const columns = metrics.map((m: any) => m?.name ?? '');
+    const seriesMap = btSeries?.series || {};
+    const toNavNumber = (value: any) => {
+      if (value === null || value === undefined) return NaN;
+      const num = Number(value);
+      return Number.isFinite(num) ? num : NaN;
+    };
+    const computeCumulative = (name: string): number => {
+      const values = seriesMap?.[name];
+      if (!Array.isArray(values)) return NaN;
+      const cleaned = values.map(toNavNumber).filter(v => Number.isFinite(v));
+      if (cleaned.length === 0) return NaN;
+      const first = cleaned.find(v => v !== 0) ?? cleaned[0];
+      const last = cleaned[cleaned.length - 1];
+      if (!Number.isFinite(first) || !Number.isFinite(last) || first === 0) return NaN;
+      return last / first - 1;
+    };
+    const cumulativeValues = columns.map(name => computeCumulative(name));
+    const cumulativePercentValues = cumulativeValues.map(v => (Number.isFinite(v) ? v * 100 : NaN));
+    const rows = [
+      { label: '累计收益率', values: cumulativeValues },
+      { label: '累计收益率(%)', values: cumulativePercentValues },
+      { label: '年化收益率(%)', values: metrics.map((m: any) => parseMetricValue(m.annual_return) * 100) },
+      { label: '年化波动率(%)', values: metrics.map((m: any) => parseMetricValue(m.annual_vol) * 100) },
+      { label: '夏普比率', values: metrics.map((m: any) => parseMetricValue(m.sharpe)) },
+      { label: '99%VaR(日)(%)', values: metrics.map((m: any) => parseMetricValue(m.var99) * 100), reverseScale: true },
+      { label: '99%ES(日)(%)', values: metrics.map((m: any) => parseMetricValue(m.es99) * 100), reverseScale: true },
+      { label: '最大回撤(%)', values: metrics.map((m: any) => parseMetricValue(m.max_drawdown) * 100) },
+      { label: '卡玛比率', values: metrics.map((m: any) => parseMetricValue(m.calmar)) },
+    ];
+    const points = columns.map((name, idx) => {
+      const volatility = parseMetricValue(metrics[idx]?.annual_vol);
+      return {
+        name,
+        volatility: Number.isFinite(volatility) ? volatility : NaN,
+        cumulativeReturn: cumulativeValues[idx],
+      };
+    });
+    return { columns, rows, points };
+  }, [btSeries?.metrics, btSeries?.series, parseMetricValue]);
+
+  const backtestMetricColumns = backtestMetricsSummary.columns;
+  const backtestMetricRows = backtestMetricsSummary.rows;
+  const backtestQuadrantPoints = backtestMetricsSummary.points;
 
   function computeEqualPercents(names: string[]): number[] {
     const n = Math.max(1, names.length);
@@ -251,10 +433,15 @@ export default function ClassAllocation() {
   };
 
   return (
-    <div className="mx-auto max-w-5xl p-6 relative">
+    <div ref={pageRef} className="mx-auto max-w-5xl p-6 relative">
       {(loading || isCalculating || btBusy) && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 rounded-2xl">
-          <div className="rounded-xl bg-white px-6 py-4 shadow text-sm">{btBusy ? '计算中...' : (isCalculating ? '正在计算，请稍候...' : '正在加载...')}</div>
+        <div className={`absolute inset-0 z-50 flex justify-center bg-black/40 rounded-2xl ${overlayOffset !== null ? 'items-start' : 'items-center'}`}>
+          <div
+            className="rounded-xl bg-white px-6 py-4 shadow text-sm"
+            style={overlayOffset !== null ? { marginTop: overlayOffset } : undefined}
+          >
+            {btBusy ? '计算中...' : (isCalculating ? '正在计算，请稍候...' : '正在加载...')}
+          </div>
         </div>
       )}
 
@@ -389,10 +576,15 @@ export default function ClassAllocation() {
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-gray-600">窗口长度</label>
-                        <input type="number" value={ewmWindowRisk} onChange={e => setEwmWindowRisk(Number(e.target.value))} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" />
+                    <input type="number" value={ewmWindowRisk} onChange={e => setEwmWindowRisk(Number(e.target.value))} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" />
                     </div>
                 </div>
             )}
+          </div>
+
+          {/* 夏普比率参数 */}
+          <div className="space-y-3 rounded-lg border p-4 md:col-span-2">
+            <h3 className="font-medium text-gray-700">📊 夏普比率参数</h3>
             <div>
               <label className="block text-sm font-medium text-gray-600">年化无风险收益率(%)</label>
               <input
@@ -404,6 +596,9 @@ export default function ClassAllocation() {
               />
               <p className="mt-1 text-xs text-gray-500">用于计算最大夏普率，默认 1.5%</p>
             </div>
+            <p className="text-xs text-gray-500">
+              计算逻辑：夏普比率 = (年化收益率均值 - 年化无风险利率) / 年化标准差。
+            </p>
           </div>
         </div>
 
@@ -1170,7 +1365,11 @@ export default function ClassAllocation() {
             <div className="mt-2 flex items-center gap-3">
               <label className="text-sm text-gray-600">选择开始日期</label>
               <input type="date" value={btStart} onChange={e=> setBtStart(e.target.value)} className="rounded border-gray-300 px-2 py-1"/>
-              <button disabled={btBusy} className="rounded bg-indigo-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={async ()=>{
+              <button
+                ref={backtestButtonRef}
+                disabled={btBusy}
+                className="rounded bg-indigo-600 px-3 py-2 text-sm text-white disabled:opacity-50"
+                onClick={async ()=>{
                 try{
                   if(!selectedAlloc){ alert('请先选择方案'); return; }
                   setBtBusy(true);
@@ -1240,8 +1439,11 @@ export default function ClassAllocation() {
               }}>开始策略回测</button>
             </div>
             {btSeries && (
-              <div className="mt-4">
-                <ReactECharts style={{height: 360}} option={{
+              <div className="mt-4 space-y-6">
+                <ReactECharts
+                  style={{height: 360}}
+                  onEvents={{ datazoom: handleBacktestZoom }}
+                  option={{
                   tooltip: { 
                     trigger:'axis',
                     formatter: (params: any) => {
@@ -1259,14 +1461,31 @@ export default function ClassAllocation() {
                       return `${header}<br/>${lines.join('<br/>')}`;
                     }
                   },
-                  legend: { top: 0 },
+                  legend: {
+                    type: 'scroll',
+                    orient: 'horizontal',
+                    top: 0,
+                    left: 16,
+                    right: 16,
+                    height: 60,
+                    itemWidth: 12,
+                    itemHeight: 8,
+                    itemGap: 16,
+                    textStyle: { fontSize: 11, overflow: 'break', width: 80 },
+                  },
                   dataZoom: [
                     { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
                     { type: 'slider', xAxisIndex: 0, filterMode: 'none', bottom: 24, height: 20 }
                   ],
-                  grid: { top: 40, right: 10, bottom: 80, left: 60 },
+                  grid: { top: 90, right: 10, bottom: 80, left: 60 },
                   xAxis: { type:'category', data: btSeries.dates },
-                  yAxis: { type:'value', name:'组合净值', axisLabel: { formatter: (v: any) => Number(v).toFixed(2) } },
+                  yAxis: {
+                    type:'value',
+                    name:'组合净值',
+                    axisLabel: { formatter: (v: any) => Number(v).toFixed(2) },
+                    scale: true,
+                    ...(btYAxisRange ? { min: btYAxisRange.min, max: btYAxisRange.max } : {})
+                  },
                   series: [
                     ...Object.keys(btSeries.series||{}).map((k:string)=> ({ name:k, type:'line', showSymbol:false, data: btSeries.series[k] })),
                     ...Object.keys(btSeries.markers||{}).flatMap((k:string)=> {
@@ -1277,6 +1496,16 @@ export default function ClassAllocation() {
                     })
                   ]
                 }}/>
+                {backtestMetricColumns.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-semibold mb-2">横向指标对比</h4>
+                    <HorizontalMetricComparison columns={backtestMetricColumns} rows={backtestMetricRows} />
+                    <div className="mt-4">
+                      <h5 className="text-sm font-semibold mb-2 text-gray-700">收益风险象限图</h5>
+                      <PerformanceQuadrantChart points={backtestQuadrantPoints} />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

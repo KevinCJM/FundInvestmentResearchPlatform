@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react'
 import ReactECharts from 'echarts-for-react'
+import HorizontalMetricComparison, { PerformanceQuadrantChart } from '../components/HorizontalMetricComparison'
 
 type WeightMode = 'custom' | 'equal' | 'risk'
 type RiskMetric = 'vol' | 'var' | 'es'
@@ -103,6 +104,53 @@ export default function AssetClassConstructionPage() {
   const [rollWindow, setRollWindow] = useState<number>(60)
   const classOptions = useMemo(()=> classes.map(c=> c.name), [classes])
   const [rollTargetClass, setRollTargetClass] = useState<string>('')
+
+  const metricsSummary = useMemo(() => {
+    if (!fitResult?.metrics || !Array.isArray(fitResult.metrics)) {
+      return { columns: [] as string[], rows: [] as any[], points: [] as { name: string; volatility: number; cumulativeReturn: number }[] }
+    }
+    const columns = fitResult.metrics.map(m => m.name)
+    const toNumber = (value: any) => {
+      if (value === null || value === undefined) return NaN
+      const num = Number(value)
+      return Number.isFinite(num) ? num : NaN
+    }
+    const computeCumulative = (values: any[]): number => {
+      if (!Array.isArray(values)) return NaN
+      const cleaned = values.map(toNumber).filter(v => Number.isFinite(v))
+      if (cleaned.length === 0) return NaN
+      const first = cleaned.find(v => v !== 0) ?? cleaned[0]
+      const last = cleaned[cleaned.length - 1]
+      if (!Number.isFinite(first) || !Number.isFinite(last) || first === 0) return NaN
+      return last / first - 1
+    }
+    const cumulativeValues = columns.map(name => computeCumulative(fitResult.navs?.[name] ?? []))
+    const cumulativePercentValues = cumulativeValues.map(v => Number.isFinite(v) ? v * 100 : NaN)
+    const rows = [
+      { label: '累计收益率', values: cumulativeValues },
+      { label: '累计收益率(%)', values: cumulativePercentValues },
+      { label: '年化收益率(%)', values: fitResult.metrics.map(m => Number((m.annual_return ?? NaN) * 100)) },
+      { label: '年化波动率(%)', values: fitResult.metrics.map(m => Number((m.annual_vol ?? NaN) * 100)) },
+      { label: '夏普比率', values: fitResult.metrics.map(m => Number(m.sharpe ?? NaN)) },
+      { label: '99%VaR(日)(%)', values: fitResult.metrics.map(m => Number((m.var99 ?? NaN) * 100)) },
+      { label: '99%ES(日)(%)', values: fitResult.metrics.map(m => Number((m.es99 ?? NaN) * 100)) },
+      { label: '最大回撤(%)', values: fitResult.metrics.map(m => Number((m.max_drawdown ?? NaN) * 100)) },
+      { label: '卡玛比率', values: fitResult.metrics.map(m => Number(m.calmar ?? NaN)) },
+    ]
+    const points = columns.map((name, idx) => {
+      const volatility = Number(fitResult.metrics[idx].annual_vol ?? NaN)
+      return {
+        name,
+        volatility: Number.isFinite(volatility) ? volatility : NaN,
+        cumulativeReturn: cumulativeValues[idx],
+      }
+    })
+    return { columns, rows, points }
+  }, [fitResult])
+
+  const metricColumns = metricsSummary.columns
+  const metricRows = metricsSummary.rows
+  const quadrantPoints = metricsSummary.points
 
   // --- Save/Load States ---
   const [saveModal, setSaveModal] = useState(false)
@@ -705,58 +753,11 @@ export default function AssetClassConstructionPage() {
             </div>
             <div>
               <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
-              {(() => {
-                const classes = fitResult.metrics.map(m => m.name)
-                const rows = [
-                  { label: '年化收益率(%)', values: fitResult.metrics.map(m=> Number((m.annual_return ?? NaN) * 100)) },
-                  { label: '年化波动率(%)', values: fitResult.metrics.map(m=> Number((m.annual_vol ?? NaN) * 100)) },
-                  { label: '夏普比率', values: fitResult.metrics.map(m=> Number(m.sharpe ?? NaN)) },
-                  { label: '99%VaR(日)(%)', values: fitResult.metrics.map(m=> Number((m.var99 ?? NaN) * 100)) },
-                  { label: '99%ES(日)(%)', values: fitResult.metrics.map(m=> Number((m.es99 ?? NaN) * 100)) },
-                  { label: '最大回撤(%)', values: fitResult.metrics.map(m=> Number((m.max_drawdown ?? NaN) * 100)) },
-                  { label: '卡玛比率', values: fitResult.metrics.map(m=> Number(m.calmar ?? NaN)) },
-                ]
-                const color = (val:number, min:number, max:number) => {
-                  if (!Number.isFinite(val)) return { background: '#f3f4f6', color: '#6b7280' }
-                  if (max <= min) return { background: '#d1fae5', color: '#065f46' }
-                  const t = (val - min) / (max - min)
-                  // 绿色渐变：低值浅， 高值深
-                  const start = [209, 250, 229]
-                  const end = [5, 150, 105]
-                  const mix = (a:number,b:number)=> Math.round(a + (b-a)*t)
-                  const bg = `rgb(${mix(start[0],end[0])},${mix(start[1],end[1])},${mix(start[2],end[2])})`
-                  const txt = t > 0.6 ? '#ffffff' : '#065f46'
-                  return { background: bg, color: txt }
-                }
-                return (
-                  <div className="overflow-auto">
-                    <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr>
-                          <th className="border px-2 py-2">指标</th>
-                          {classes.map(c => <th key={'mh'+c} className="border px-2 py-2">{c}</th>)}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows.map((row) => {
-                          const finiteVals = row.values.filter(v=> Number.isFinite(v))
-                          const min = finiteVals.length ? Math.min(...finiteVals) : 0
-                          const max = finiteVals.length ? Math.max(...finiteVals) : 0
-                          return (
-                            <tr key={'mr'+row.label}>
-                              <td className="border px-2 py-3 font-medium">{row.label}</td>
-                              {row.values.map((v,i)=> {
-                                const st = color(v, min, max)
-                                return <td key={'mc'+row.label+'-'+i} className="border px-2 py-3 text-right" style={{ background: st.background, color: st.color }}>{Number.isFinite(v)? v.toFixed(2): '-'}</td>
-                              })}
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )
-              })()}
+              <HorizontalMetricComparison columns={metricColumns} rows={metricRows} />
+              <div className="mt-4">
+                <h4 className="text-sm font-semibold mb-2 text-gray-700">收益风险象限图</h4>
+                <PerformanceQuadrantChart points={quadrantPoints} />
+              </div>
             </div>
           </div>
         )}
