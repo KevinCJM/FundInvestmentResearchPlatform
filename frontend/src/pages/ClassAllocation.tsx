@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import ReactECharts from 'echarts-for-react';
-import HorizontalMetricComparison, { PerformanceQuadrantChart } from '../components/HorizontalMetricComparison';
+import HorizontalMetricComparison, {
+  DEFAULT_METRIC_TABLE_HEIGHT,
+  PerformanceQuadrantChart,
+} from '../components/HorizontalMetricComparison';
+import { buildAnnualMetricRows, computeAnnualMetrics } from '../utils/performance';
 
 // Helper component for section titles
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -18,6 +22,25 @@ interface ConfigDetail {
   name: string;
   weight: string;
 }
+
+const normalizeForKey = (value: any): any => {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeForKey(item));
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value)
+      .filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => [k, normalizeForKey(v)] as const)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return entries.reduce<Record<string, any>>((acc, [k, v]) => {
+      acc[k] = v;
+      return acc;
+    }, {});
+  }
+  return value;
+};
+
+const stableStringify = (value: any): string => JSON.stringify(normalizeForKey(value));
 
 export default function ClassAllocation() {
   // State for UI interaction
@@ -75,11 +98,12 @@ export default function ClassAllocation() {
   // ---- 策略制定与回测 ----
   type StrategyType = 'fixed' | 'risk_budget' | 'target';
   type StrategyRow = { id: string; type: StrategyType; name: string; rows: { className: string; weight?: number | null; budget?: number }[]; cfg: any; rebalance?: any };
+  type ScheduleEntry = { markers: { date: string; weights: number[] }[]; cacheKey?: string | null; spec?: string | null };
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
   const [btStart, setBtStart] = useState<string>('');
   const [navCount, setNavCount] = useState<number>(0);
   const [btSeries, setBtSeries] = useState<any>(null);
-  const [scheduleMarkers, setScheduleMarkers] = useState<Record<string, {date:string, weights:number[]}[]>>({});
+  const [scheduleMarkers, setScheduleMarkers] = useState<Record<string, ScheduleEntry>>({});
   const [busyStrategy, setBusyStrategy] = useState<string | null>(null);
   const [showAddPicker, setShowAddPicker] = useState(false);
   const [btBusy, setBtBusy] = useState(false);
@@ -87,6 +111,207 @@ export default function ClassAllocation() {
   const backtestButtonRef = useRef<HTMLButtonElement | null>(null);
   const [overlayOffset, setOverlayOffset] = useState<number | null>(null);
   const [btYAxisRange, setBtYAxisRange] = useState<{ min: number; max: number } | null>(null);
+
+  const formatWeightPercent = useCallback((value: number) => {
+    if (!Number.isFinite(value)) return null;
+    return Number((value * 100).toFixed(2));
+  }, []);
+
+  const applyWeightVector = useCallback((strategy: StrategyRow, weights: number[]): StrategyRow => {
+    const nextRows = strategy.rows.map((row, idx) => {
+      const raw = weights[idx];
+      if (raw === undefined || raw === null || Number.isNaN(raw)) {
+        return { ...row };
+      }
+      const formatted = formatWeightPercent(Number(raw));
+      return { ...row, weight: formatted ?? row.weight ?? 0 };
+    });
+    return { ...strategy, rows: nextRows };
+  }, [formatWeightPercent]);
+
+  const buildTargetConstraints = useCallback(() => ({
+    single_limits: Object.entries(singleLimits).reduce<Record<string, { lo: number; hi: number }>>((acc, [k, v]) => {
+      acc[k] = { lo: Number(v?.lo ?? 0), hi: Number(v?.hi ?? 1) };
+      return acc;
+    }, {}),
+    group_limits: groupLimits.map((g) => ({
+      id: g.id,
+      assets: g.assets,
+      lo: Number(g.lo),
+      hi: Number(g.hi),
+    })),
+  }), [singleLimits, groupLimits]);
+
+  const buildSchedulePayload = useCallback((strategy: StrategyRow) => {
+    if (!selectedAlloc) return null;
+    const base: Record<string, any> = {
+      alloc_name: selectedAlloc,
+      start_date: btStart || undefined,
+      strategy: {
+        type: strategy.type,
+        name: strategy.name,
+        classes: strategy.rows.map((r) =>
+          strategy.type === 'risk_budget'
+            ? { name: r.className, budget: r.budget ?? 100 }
+            : { name: r.className }
+        ),
+        rebalance: strategy.rebalance,
+      },
+    };
+    if (strategy.type === 'risk_budget') {
+      base.strategy.model = {
+        risk_metric: strategy.cfg?.risk_metric || 'vol',
+        days: strategy.cfg?.days ?? null,
+        window: strategy.cfg?.window ?? null,
+        confidence: strategy.cfg?.confidence ?? null,
+        window_mode: strategy.cfg?.window_mode || 'rollingN',
+        data_len: strategy.cfg?.data_len ?? null,
+      };
+    } else if (strategy.type === 'target') {
+      base.strategy.model = {
+        target: strategy.cfg?.target || 'min_risk',
+        return_metric: strategy.cfg?.return_metric || 'annual',
+        return_type: strategy.cfg?.return_type || 'simple',
+        days: strategy.cfg?.ret_days ?? strategy.cfg?.days ?? 252,
+        ret_alpha: strategy.cfg?.ret_alpha ?? null,
+        ret_window: strategy.cfg?.ret_window ?? null,
+        risk_metric: strategy.cfg?.risk_metric || 'vol',
+        risk_days: strategy.cfg?.risk_days ?? strategy.cfg?.days ?? null,
+        risk_alpha: strategy.cfg?.risk_alpha ?? null,
+        risk_window: strategy.cfg?.risk_window ?? null,
+        risk_confidence: strategy.cfg?.risk_confidence ?? null,
+        risk_free_rate: Number((riskFreePct ?? 0) / 100),
+        constraints: buildTargetConstraints(),
+        target_return: strategy.cfg?.target_return ?? null,
+        target_risk: strategy.cfg?.target_risk ?? null,
+        window_mode: strategy.cfg?.window_mode || 'all',
+        data_len: strategy.cfg?.data_len ?? null,
+      };
+    }
+    return base;
+  }, [selectedAlloc, btStart, buildTargetConstraints, riskFreePct]);
+
+  const buildComputeWeightsPayload = useCallback((strategy: StrategyRow) => {
+    if (!selectedAlloc) return null;
+    if (strategy.type === 'fixed') return null;
+    const windowMode = strategy.cfg?.window_mode || 'all';
+    const base: any = {
+      alloc_name: selectedAlloc,
+      window_mode: windowMode,
+      data_len: windowMode === 'all' ? undefined : strategy.cfg?.data_len ?? 60,
+      strategy: {
+        type: strategy.type,
+        name: strategy.name,
+        classes: strategy.rows.map((r) =>
+          strategy.type === 'risk_budget'
+            ? { name: r.className, budget: r.budget ?? 100 }
+            : { name: r.className }
+        ),
+      },
+    };
+    if (strategy.type === 'risk_budget') {
+      base.strategy.risk_metric = strategy.cfg?.risk_metric;
+      base.strategy.confidence = strategy.cfg?.confidence;
+      base.strategy.days = strategy.cfg?.days;
+    } else if (strategy.type === 'target') {
+      base.strategy = {
+        ...base.strategy,
+        target: strategy.cfg?.target,
+        return_metric: strategy.cfg?.return_metric,
+        return_type: strategy.cfg?.return_type,
+        days: strategy.cfg?.ret_days ?? 252,
+        risk_metric: strategy.cfg?.risk_metric || 'vol',
+        window: strategy.cfg?.risk_window,
+        confidence: strategy.cfg?.risk_confidence,
+        risk_free_rate: Number((riskFreePct ?? 0) / 100),
+        constraints: buildTargetConstraints(),
+        target_return: strategy.cfg?.target_return,
+        target_risk: strategy.cfg?.target_risk,
+      };
+    }
+    return base;
+  }, [selectedAlloc, buildTargetConstraints, riskFreePct]);
+
+  const fetchScheduleWeights = useCallback(
+    async (strategy: StrategyRow) => {
+      const payload = buildSchedulePayload(strategy);
+      if (!payload) throw new Error('缺少方案配置，请先选择资产配置方案');
+      const response = await fetch('/api/strategy/compute-schedule-weights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || '批量调仓权重计算失败');
+      }
+      const markers = (data.dates || []).map((d: string, idx: number) => ({
+        date: d,
+        weights: (data.weights && data.weights[idx]) || [],
+      }));
+      const entry: ScheduleEntry = {
+        markers,
+        cacheKey: data.cache_key ?? null,
+        spec: getScheduleSpecKey(strategy),
+      };
+      const lastWeights = markers.length ? markers[markers.length - 1].weights : [];
+      return { entry, lastWeights };
+    },
+    [buildSchedulePayload, getScheduleSpecKey]
+  );
+
+  const fetchPointWeights = useCallback(
+    async (strategy: StrategyRow) => {
+      const payload = buildComputeWeightsPayload(strategy);
+      if (!payload) throw new Error('缺少方案配置，请先选择资产配置方案');
+      const response = await fetch('/api/strategy/compute-weights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        const fallback = strategy.type === 'risk_budget' ? '风险预算权重计算失败' : '指定目标权重计算失败';
+        throw new Error(data?.detail || fallback);
+      }
+      return (data.weights || []) as number[];
+    },
+    [buildComputeWeightsPayload]
+  );
+
+  const buildBacktestModel = useCallback((strategy: StrategyRow) => {
+    if (strategy.type === 'risk_budget') {
+      return {
+        risk_metric: strategy.cfg?.risk_metric,
+        days: strategy.cfg?.days,
+        confidence: strategy.cfg?.confidence,
+        window_mode: strategy.cfg?.window_mode || 'all',
+        data_len: strategy.cfg?.data_len,
+      };
+    }
+    if (strategy.type === 'target') {
+      return {
+        target: strategy.cfg?.target,
+        return_metric: strategy.cfg?.return_metric,
+        return_type: strategy.cfg?.return_type,
+        days: strategy.cfg?.ret_days ?? 252,
+        ret_alpha: strategy.cfg?.ret_alpha,
+        ret_window: strategy.cfg?.ret_window,
+        risk_metric: strategy.cfg?.risk_metric,
+        risk_days: strategy.cfg?.risk_days,
+        risk_alpha: strategy.cfg?.risk_alpha,
+        risk_window: strategy.cfg?.risk_window,
+        risk_confidence: strategy.cfg?.risk_confidence,
+        risk_free_rate: Number((riskFreePct ?? 0) / 100),
+        constraints: buildTargetConstraints(),
+        target_return: strategy.cfg?.target_return,
+        target_risk: strategy.cfg?.target_risk,
+        window_mode: strategy.cfg?.window_mode || 'all',
+        data_len: strategy.cfg?.data_len,
+      };
+    }
+    return undefined;
+  }, [buildTargetConstraints, riskFreePct]);
 
   useEffect(() => {
     const handleReposition = () => {
@@ -167,6 +392,24 @@ export default function ClassAllocation() {
     [btSeries, backtestDateIndex]
   );
 
+  const getScheduleSpecKey = useCallback(
+    (strategy: StrategyRow): string | null => {
+      if (!strategy.rebalance?.enabled || !strategy.rebalance?.recalc) return null;
+      const schedule = buildSchedulePayload(strategy);
+      if (!schedule) return null;
+      const spec = schedule.strategy || {};
+      return stableStringify({
+        alloc_name: schedule.alloc_name,
+        start_date: schedule.start_date ?? null,
+        type: spec.type,
+        rebalance: spec.rebalance || {},
+        model: spec.model || {},
+        classes: spec.classes || [],
+      });
+    },
+    [buildSchedulePayload]
+  );
+
   useEffect(() => {
     if (!btSeries) {
       setBtYAxisRange(null);
@@ -174,6 +417,22 @@ export default function ClassAllocation() {
     }
     setBtYAxisRange(computeBtYAxisRange());
   }, [btSeries, computeBtYAxisRange]);
+
+  useEffect(() => {
+    setScheduleMarkers((prev) => {
+      let mutated = false;
+      const next: Record<string, ScheduleEntry> = { ...prev };
+      Object.entries(prev).forEach(([name, entry]) => {
+        const strategy = strategies.find((item) => item.name === name);
+        const specKey = strategy ? getScheduleSpecKey(strategy) : null;
+        if (!strategy || !specKey || entry.spec !== specKey) {
+          delete next[name];
+          mutated = true;
+        }
+      });
+      return mutated ? next : prev;
+    });
+  }, [strategies, getScheduleSpecKey]);
 
   const handleBacktestZoom = useCallback(
     (params: any) => {
@@ -217,7 +476,6 @@ export default function ClassAllocation() {
       return {
         columns: [] as string[],
         rows: [] as any[],
-        points: [] as { name: string; volatility: number; cumulativeReturn: number }[],
       };
     }
     const columns = metrics.map((m: any) => m?.name ?? '');
@@ -250,20 +508,18 @@ export default function ClassAllocation() {
       { label: '最大回撤(%)', values: metrics.map((m: any) => parseMetricValue(m.max_drawdown) * 100) },
       { label: '卡玛比率', values: metrics.map((m: any) => parseMetricValue(m.calmar)) },
     ];
-    const points = columns.map((name, idx) => {
-      const volatility = parseMetricValue(metrics[idx]?.annual_vol);
-      return {
-        name,
-        volatility: Number.isFinite(volatility) ? volatility : NaN,
-        cumulativeReturn: cumulativeValues[idx],
-      };
+    const annualSeriesMap: Record<string, Array<number | null | undefined>> = {};
+    columns.forEach((name) => {
+      annualSeriesMap[name] = Array.isArray(seriesMap?.[name]) ? seriesMap?.[name] : [];
     });
-    return { columns, rows, points };
+    const annualMetrics = computeAnnualMetrics(btSeries?.dates, annualSeriesMap);
+    const annualRows = buildAnnualMetricRows(columns, annualMetrics);
+    const mergedRows = annualRows.length > 0 ? [...rows, ...annualRows] : rows;
+    return { columns, rows: mergedRows };
   }, [btSeries?.metrics, btSeries?.series, parseMetricValue]);
 
   const backtestMetricColumns = backtestMetricsSummary.columns;
   const backtestMetricRows = backtestMetricsSummary.rows;
-  const backtestQuadrantPoints = backtestMetricsSummary.points;
 
   function computeEqualPercents(names: string[]): number[] {
     const n = Math.max(1, names.length);
@@ -967,71 +1223,70 @@ export default function ClassAllocation() {
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button disabled={busyStrategy===s.id} className="rounded bg-gray-100 px-3 py-1 text-sm disabled:opacity-50" onClick={async ()=>{
-                      try{
-                        setBusyStrategy(s.id);
-                        if (s.rebalance?.enabled && s.rebalance?.recalc) {
-                          // 调用批量时点权重
-                          setBtBusy(true);
-                          const payload = { alloc_name: selectedAlloc, start_date: btStart || undefined, strategy: { type:'risk_budget', name:s.name, classes: s.rows.map(r=>({ name:r.className, budget:r.budget??100 })), rebalance: s.rebalance, model: { risk_metric: s.cfg?.risk_metric, days: s.cfg?.days, confidence: s.cfg?.confidence, window_mode: s.cfg?.window_mode || 'rollingN', data_len: s.cfg?.data_len, } } };
-                          const res = await fetch('/api/strategy/compute-schedule-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                          const dat = await res.json();
-                          if(!res.ok) throw new Error(dat.detail||'权重计算失败');
-                          const markers = (dat.dates||[]).map((d:string, idx:number)=> ({ date: d, weights: dat.weights[idx]||[] }));
-                          setScheduleMarkers(prev => ({ ...prev, [s.name]: markers }));
-                          // 同时回填当前权重为最新一列
-                          const last = dat.weights && dat.weights.length ? dat.weights[dat.weights.length-1] : [];
-                          setStrategies(prev=> prev.map(x=> x.id===s.id?{...x, rows: x.rows.map((r,i)=> ({...r, weight: last[i]!=null? Number((last[i]*100).toFixed(2)) : r.weight }))}:x));
+                    <button
+                      disabled={busyStrategy===s.id}
+                      className="rounded bg-gray-100 px-3 py-1 text-sm disabled:opacity-50"
+                      onClick={async ()=>{
+                        try{
+                          setBusyStrategy(s.id);
+                          if (s.rebalance?.enabled && s.rebalance?.recalc) {
+                            setBtBusy(true);
+                            const { entry, lastWeights } = await fetchScheduleWeights(s);
+                            setScheduleMarkers(prev => ({ ...prev, [s.name]: entry }));
+                            if (lastWeights.length) {
+                              setStrategies(prev => prev.map(x => x.id === s.id ? applyWeightVector(x, lastWeights) : x));
+                            }
+                          } else {
+                            const weights = await fetchPointWeights(s);
+                            setStrategies(prev => prev.map(x => x.id === s.id ? applyWeightVector(x, weights) : x));
+                          }
+                        }catch(e:any){
+                          alert(e?.message || '反推失败');
+                        }finally{
+                          setBusyStrategy(null);
                           setBtBusy(false);
-                        } else {
-                          const payload = { alloc_name: selectedAlloc, data_len: (s.cfg?.window_mode==='all') ? undefined : (s.cfg?.data_len ?? 60), window_mode: s.cfg?.window_mode || 'rollingN', strategy: { type:'risk_budget', name:s.name, classes: s.rows.map(r=>({ name:r.className, budget:r.budget??100 })), risk_metric: s.cfg?.risk_metric, confidence: s.cfg?.confidence, days: s.cfg?.days } };
-                          const res = await fetch('/api/strategy/compute-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                          const dat = await res.json();
-                          if(!res.ok) throw new Error(dat.detail||'计算失败');
-                          const weights: number[] = dat.weights || [];
-                          setStrategies(prev=> prev.map(x=> x.id===s.id?{...x, rows: x.rows.map((r,i)=> ({...r, weight: Number((weights[i]*100).toFixed(2)) }))}:x));
                         }
-                      }catch(e:any){ alert(e.message||'反推失败'); }
-                      finally { setBusyStrategy(null); }
-                    }}>反推资金权重</button>
+                      }}
+                    >反推资金权重</button>
                   </div>
                   {busyStrategy===s.id && <div className="text-xs text-gray-500">计算中，请稍候…</div>}
 
                   {/* 再平衡横向权重表（来自回测后的 markers） */}
-                  {s.rebalance?.enabled && s.rebalance?.recalc && (scheduleMarkers[s.name] || (btSeries && (btSeries.markers?.[s.name]))) && (
-                    <div className="mt-3">
-                      <div className="rounded border overflow-x-auto">
-                        {(() => {
-                          const markers = scheduleMarkers[s.name] || (btSeries.markers[s.name]||[]);
-                          const dates: string[] = markers.map((m:any)=> m.date);
-                          const names: string[] = (btSeries?.asset_names || assetNames);
-                          const weightsByAsset: number[][] = names.map((_:any, i:number)=> markers.map((m:any)=> (m.weights?.[i] ?? 0)));
-                          return (
-                            <table className="min-w-full whitespace-nowrap text-sm">
-                              <thead className="bg-gray-50">
-                                <tr>
-                                  <th className="px-3 py-2 text-left text-xs text-gray-600">大类名称</th>
-                                  {dates.map((d)=> (
-                                    <th key={d} className="px-3 py-2 text-left text-xs text-gray-600">{d}</th>
+                  {(() => {
+                    if (!s.rebalance?.enabled || !s.rebalance?.recalc) return null;
+                    const entry = scheduleMarkers[s.name];
+                    const markers = entry?.markers || (btSeries?.markers?.[s.name] || []);
+                    if (!markers || markers.length === 0) return null;
+                    const dates: string[] = markers.map((m: any) => m.date);
+                    const names: string[] = (btSeries?.asset_names || assetNames);
+                    const weightsByAsset: number[][] = names.map((_: any, i: number) => markers.map((m: any) => (m.weights?.[i] ?? 0)));
+                    return (
+                      <div className="mt-3">
+                        <div className="rounded border overflow-x-auto">
+                          <table className="min-w-full whitespace-nowrap text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="px-3 py-2 text-left text-xs text-gray-600">大类名称</th>
+                                {dates.map((d) => (
+                                  <th key={d} className="px-3 py-2 text-left text-xs text-gray-600">{d}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {names.map((n, rIdx) => (
+                                <tr key={n} className="border-t">
+                                  <td className="px-3 py-2">{n}</td>
+                                  {weightsByAsset[rIdx].map((w, cIdx) => (
+                                    <td key={cIdx} className="px-3 py-2">{(w*100).toFixed(2)}%</td>
                                   ))}
                                 </tr>
-                              </thead>
-                              <tbody>
-                                {names.map((n, rIdx)=> (
-                                  <tr key={n} className="border-t">
-                                    <td className="px-3 py-2">{n}</td>
-                                    {weightsByAsset[rIdx].map((w, cIdx)=> (
-                                      <td key={cIdx} className="px-3 py-2">{(w*100).toFixed(2)}%</td>
-                                    ))}
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          );
-                        })()}
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               )}
 
@@ -1209,38 +1464,39 @@ export default function ClassAllocation() {
                   )}
 
                   {/* 结果表格：若开启 recalc 且有回测数据，则横向展示每次再平衡的权重，否则展示当前权重 */}
-                  {s.rebalance?.enabled && s.rebalance?.recalc && (scheduleMarkers[s.name] || (btSeries && (btSeries.markers?.[s.name]))) ? (
-                    <div className="rounded border overflow-x-auto">
-                      {(() => {
-                        const markers = scheduleMarkers[s.name] || (btSeries.markers[s.name]||[]);
-                        const dates: string[] = markers.map((m:any)=> m.date);
-                        const names: string[] = (btSeries?.asset_names || assetNames);
-                        const weightsByAsset: number[][] = names.map((_:any, i:number)=> markers.map((m:any)=> (m.weights?.[i] ?? 0)));
-                        return (
-                          <table className="min-w-full whitespace-nowrap text-sm">
-                            <thead className="bg-gray-50">
-                              <tr>
-                                <th className="px-3 py-2 text-left text-xs text-gray-600">大类名称</th>
-                                {dates.map((d)=> (
-                                  <th key={d} className="px-3 py-2 text-left text-xs text-gray-600">{d}</th>
+                  {(() => {
+                    if (!s.rebalance?.enabled || !s.rebalance?.recalc) return null;
+                    const entry = scheduleMarkers[s.name];
+                    const markers = entry?.markers || (btSeries?.markers?.[s.name] || []);
+                    if (!markers || markers.length === 0) return null;
+                    const dates: string[] = markers.map((m: any) => m.date);
+                    const names: string[] = (btSeries?.asset_names || assetNames);
+                    const weightsByAsset: number[][] = names.map((_: any, i: number) => markers.map((m: any) => (m.weights?.[i] ?? 0)));
+                    return (
+                      <div className="rounded border overflow-x-auto">
+                        <table className="min-w-full whitespace-nowrap text-sm">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-3 py-2 text-left text-xs text-gray-600">大类名称</th>
+                              {dates.map((d) => (
+                                <th key={d} className="px-3 py-2 text-left text-xs text-gray-600">{d}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {names.map((n, rIdx) => (
+                              <tr key={n} className="border-t">
+                                <td className="px-3 py-2">{n}</td>
+                                {weightsByAsset[rIdx].map((w, cIdx) => (
+                                  <td key={cIdx} className="px-3 py-2">{(w*100).toFixed(2)}%</td>
                                 ))}
                               </tr>
-                            </thead>
-                            <tbody>
-                              {names.map((n, rIdx)=> (
-                                <tr key={n} className="border-t">
-                                  <td className="px-3 py-2">{n}</td>
-                                  {weightsByAsset[rIdx].map((w, cIdx)=> (
-                                    <td key={cIdx} className="px-3 py-2">{(w*100).toFixed(2)}%</td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        );
-                      })()}
-                    </div>
-                  ) : (
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })() || (
                     <div className="rounded border">
                       <table className="min-w-full">
                         <thead className="bg-gray-50 text-xs text-gray-600"><tr><th className="px-3 py-2 text-left">大类名称</th><th className="px-3 py-2 text-left">资金权重(%)</th></tr></thead>
@@ -1280,31 +1536,31 @@ export default function ClassAllocation() {
                   </div>
 
                   <div>
-                    <button disabled={busyStrategy===s.id} className="rounded bg-gray-100 px-3 py-1 text-sm disabled:opacity-50" onClick={async ()=>{
-                      try{
-                        setBusyStrategy(s.id);
-                        if (s.rebalance?.enabled && s.rebalance?.recalc) {
-                          setBtBusy(true);
-                          const payload = { alloc_name: selectedAlloc, start_date: btStart || undefined, strategy: { type:'target', name:s.name, classes: s.rows.map(r=>({ name:r.className })), rebalance: s.rebalance, model: { target: s.cfg?.target, return_metric: s.cfg?.return_metric, return_type: s.cfg?.return_type, days: s.cfg?.ret_days ?? 252, ret_alpha: s.cfg?.ret_alpha, ret_window: s.cfg?.ret_window, risk_metric: s.cfg?.risk_metric || 'vol', risk_days: s.cfg?.risk_days, risk_alpha: s.cfg?.risk_alpha, risk_window: s.cfg?.risk_window, risk_confidence: s.cfg?.risk_confidence, risk_free_rate: (riskFreePct/100), constraints: { single_limits: singleLimits, group_limits: groupLimits }, window_mode: s.cfg?.window_mode || 'all', data_len: s.cfg?.data_len, target_return: s.cfg?.target_return, target_risk: s.cfg?.target_risk } } };
-                          const res = await fetch('/api/strategy/compute-schedule-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                          const dat = await res.json();
-                          if(!res.ok) throw new Error(dat.detail||'权重计算失败');
-                          const markers = (dat.dates||[]).map((d:string, idx:number)=> ({ date: d, weights: dat.weights[idx]||[] }));
-                          setScheduleMarkers(prev => ({ ...prev, [s.name]: markers }));
-                          const last = dat.weights && dat.weights.length ? dat.weights[dat.weights.length-1] : [];
-                          setStrategies(prev=> prev.map(x=> x.id===s.id?{...x, rows: x.rows.map((r,i)=> ({...r, weight: last[i]!=null? Number((last[i]*100).toFixed(2)) : r.weight }))}:x));
+                    <button
+                      disabled={busyStrategy===s.id}
+                      className="rounded bg-gray-100 px-3 py-1 text-sm disabled:opacity-50"
+                      onClick={async ()=>{
+                        try{
+                          setBusyStrategy(s.id);
+                          if (s.rebalance?.enabled && s.rebalance?.recalc) {
+                            setBtBusy(true);
+                            const { entry, lastWeights } = await fetchScheduleWeights(s);
+                            setScheduleMarkers(prev => ({ ...prev, [s.name]: entry }));
+                            if (lastWeights.length) {
+                              setStrategies(prev => prev.map(x => x.id === s.id ? applyWeightVector(x, lastWeights) : x));
+                            }
+                          } else {
+                            const weights = await fetchPointWeights(s);
+                            setStrategies(prev => prev.map(x => x.id === s.id ? applyWeightVector(x, weights) : x));
+                          }
+                        }catch(e:any){
+                          alert(e?.message || '反推失败');
+                        }finally{
+                          setBusyStrategy(null);
                           setBtBusy(false);
-                        } else {
-                          const payload = { alloc_name: selectedAlloc, data_len: (s.cfg?.window_mode==='all') ? undefined : (s.cfg?.data_len ?? 60), window_mode: s.cfg?.window_mode || 'all', strategy: { type:'target', name:s.name, classes: s.rows.map(r=>({ name:r.className })), target: s.cfg?.target, return_metric: s.cfg?.return_metric, return_type: s.cfg?.return_type, days: s.cfg?.ret_days ?? 252, risk_metric: s.cfg?.risk_metric || 'vol', window: s.cfg?.risk_window, confidence: s.cfg?.risk_confidence, risk_free_rate: (riskFreePct/100), constraints: { single_limits: singleLimits, group_limits: groupLimits }, target_return: s.cfg?.target_return, target_risk: s.cfg?.target_risk } };
-                          const res = await fetch('/api/strategy/compute-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-                          const dat = await res.json();
-                          if(!res.ok) throw new Error(dat.detail||'计算失败');
-                          const weights: number[] = dat.weights || [];
-                          setStrategies(prev=> prev.map(x=> x.id===s.id?{...x, rows: x.rows.map((r,i)=> ({...r, weight: Number((weights[i]*100).toFixed(2)) }))}:x));
                         }
-                      }catch(e:any){ alert(e.message||'反推失败'); }
-                      finally { setBusyStrategy(null); }
-                    }}>反推资金权重</button>
+                      }}
+                    >反推资金权重</button>
                   </div>
 
                   {/* 已替换为横向表格展示（见上）*/}
@@ -1373,68 +1629,58 @@ export default function ClassAllocation() {
                 try{
                   if(!selectedAlloc){ alert('请先选择方案'); return; }
                   setBtBusy(true);
-                  // 1) 预计算需要模型计算的策略权重（风险预算/指定目标）
-                  const updated = await Promise.all(strategies.map(async (s)=>{
-                    if (s.type === 'risk_budget') {
-                      const payloadCW = { alloc_name: selectedAlloc, data_len: (s.cfg?.window_mode==='all') ? undefined : (s.cfg?.data_len ?? 60), window_mode: s.cfg?.window_mode || 'all', strategy: { type:'risk_budget', name:s.name, classes: s.rows.map(r=>({ name:r.className, budget:r.budget??100 })), risk_metric: s.cfg?.risk_metric, confidence: s.cfg?.confidence, days: s.cfg?.days } };
-                      const res = await fetch('/api/strategy/compute-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payloadCW)});
-                      const dat = await res.json();
-                      if(!res.ok) throw new Error(dat.detail||'风险预算权重计算失败');
-                      const ws: number[] = dat.weights || [];
-                      return { ...s, rows: s.rows.map((r,i)=> ({...r, weight: Number((ws[i]*100).toFixed(2)) })) } as StrategyRow;
+                  const markersDraft: Record<string, ScheduleEntry> = { ...scheduleMarkers };
+                  const prepared: StrategyRow[] = [];
+                  for (const strategy of strategies) {
+                    let working: StrategyRow = { ...strategy, rows: strategy.rows.map(r => ({ ...r })) };
+                    if (strategy.type !== 'fixed') {
+                      if (strategy.rebalance?.enabled && strategy.rebalance?.recalc) {
+                        const specKey = getScheduleSpecKey(strategy);
+                        const cached = specKey ? markersDraft[strategy.name] : undefined;
+                        if (!cached || cached.spec !== specKey) {
+                          const { entry, lastWeights } = await fetchScheduleWeights(strategy);
+                          markersDraft[strategy.name] = entry;
+                          if (lastWeights.length) {
+                            working = applyWeightVector(working, lastWeights);
+                          }
+                        } else {
+                          const lastWeights = cached.markers.length ? cached.markers[cached.markers.length - 1].weights : [];
+                          if (lastWeights.length) {
+                            working = applyWeightVector(working, lastWeights);
+                          }
+                        }
+                      } else {
+                        const weights = await fetchPointWeights(strategy);
+                        working = applyWeightVector(working, weights);
+                      }
                     }
-                    if (s.type === 'target') {
-                      const payloadCW = { alloc_name: selectedAlloc, data_len: (s.cfg?.window_mode==='all') ? undefined : (s.cfg?.data_len ?? 60), window_mode: s.cfg?.window_mode || 'all', strategy: { type:'target', name:s.name, classes: s.rows.map(r=>({ name:r.className })), target: s.cfg?.target, return_metric: s.cfg?.return_metric, return_type: s.cfg?.return_type, days: s.cfg?.ret_days ?? 252, risk_metric: s.cfg?.risk_metric || 'vol', window: s.cfg?.risk_window, confidence: s.cfg?.risk_confidence, risk_free_rate: (riskFreePct/100), constraints: { single_limits: singleLimits, group_limits: groupLimits }, target_return: s.cfg?.target_return, target_risk: s.cfg?.target_risk } };
-                      const res = await fetch('/api/strategy/compute-weights',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payloadCW)});
-                      const dat = await res.json();
-                      if(!res.ok) throw new Error(dat.detail||'指定目标权重计算失败');
-                      const ws: number[] = dat.weights || [];
-                      return { ...s, rows: s.rows.map((r,i)=> ({...r, weight: Number((ws[i]*100).toFixed(2)) })) } as StrategyRow;
-                    }
-                    return s;
-                  }));
-                  setStrategies(updated);
-                  // 2) 发送回测
-                  const payload = { 
-                    alloc_name: selectedAlloc, 
-                    start_date: btStart || undefined, 
-                    strategies: updated.map(s=> ({ 
-                      type:s.type, 
-                      name:s.name, 
-                      classes: s.rows.map(r=> ({ name: r.className, weight: (r.weight??0)/100, budget: r.budget })), 
-                      rebalance: s.rebalance,
-                      model: (s.type==='risk_budget') ? {
-                        risk_metric: s.cfg?.risk_metric, 
-                        days: s.cfg?.days, 
-                        confidence: s.cfg?.confidence,
-                        window_mode: s.cfg?.window_mode || 'all', 
-                        data_len: s.cfg?.data_len
-                      } : (s.type==='target') ? {
-                        target: s.cfg?.target,
-                        return_metric: s.cfg?.return_metric,
-                        return_type: s.cfg?.return_type,
-                        days: s.cfg?.ret_days ?? 252,
-                        ret_alpha: s.cfg?.ret_alpha,
-                        ret_window: s.cfg?.ret_window,
-                        risk_metric: s.cfg?.risk_metric,
-                        risk_days: s.cfg?.risk_days,
-                        risk_alpha: s.cfg?.risk_alpha,
-                        risk_window: s.cfg?.risk_window,
-                        risk_confidence: s.cfg?.risk_confidence,
-                        risk_free_rate: (riskFreePct/100),
-                        constraints: { single_limits: singleLimits, group_limits: groupLimits },
-                        target_return: s.cfg?.target_return,
-                        target_risk: s.cfg?.target_risk,
-                        window_mode: s.cfg?.window_mode || 'all',
-                        data_len: s.cfg?.data_len
-                      } : undefined
-                    })) 
+                    prepared.push(working);
+                  }
+                  setScheduleMarkers(markersDraft);
+                  setStrategies(prepared);
+
+                  const payload = {
+                    alloc_name: selectedAlloc,
+                    start_date: btStart || undefined,
+                    strategies: prepared.map((s) => {
+                      const specKey = getScheduleSpecKey(s);
+                      const entry = specKey ? markersDraft[s.name] : undefined;
+                      const precomputedKey = specKey && entry && entry.spec === specKey ? entry.cacheKey ?? undefined : undefined;
+                      return {
+                        type: s.type,
+                        name: s.name,
+                        classes: s.rows.map((r) => ({ name: r.className, weight: (r.weight ?? 0) / 100, budget: r.budget })),
+                        rebalance: s.rebalance,
+                        model: buildBacktestModel(s),
+                        precomputed: precomputedKey,
+                      };
+                    }),
                   };
                   const res = await fetch('/api/strategy/backtest',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                   const dat = await res.json();
                   if(!res.ok) throw new Error(dat.detail||'回测失败');
                   setBtSeries(dat);
-                }catch(e:any){ alert(e.message||'回测失败'); }
+                }catch(e:any){ alert(e?.message||'回测失败'); }
                 finally { setBtBusy(false); }
               }}>开始策略回测</button>
             </div>
@@ -1499,10 +1745,19 @@ export default function ClassAllocation() {
                 {backtestMetricColumns.length > 0 && (
                   <div>
                     <h4 className="text-sm font-semibold mb-2">横向指标对比</h4>
-                    <HorizontalMetricComparison columns={backtestMetricColumns} rows={backtestMetricRows} />
+                    <HorizontalMetricComparison
+                      columns={backtestMetricColumns}
+                      rows={backtestMetricRows}
+                      height={DEFAULT_METRIC_TABLE_HEIGHT}
+                    />
                     <div className="mt-4">
                       <h5 className="text-sm font-semibold mb-2 text-gray-700">收益风险象限图</h5>
-                      <PerformanceQuadrantChart points={backtestQuadrantPoints} />
+                      <PerformanceQuadrantChart
+                        columns={backtestMetricColumns}
+                        rows={backtestMetricRows}
+                        defaultXAxis="年化波动率(%)"
+                        defaultYAxis="累计收益率(%)"
+                      />
                     </div>
                   </div>
                 )}

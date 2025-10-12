@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple, Dict, Any
 from pathlib import Path
+from collections import OrderedDict
+from threading import Lock
+import hashlib
+import json
 
 import pandas as pd
 from fastapi import APIRouter
@@ -17,6 +21,51 @@ DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
 router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 
 
+_SCHEDULE_CACHE_SIZE = 64
+_schedule_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_schedule_cache_lock = Lock()
+
+
+def _normalize_for_cache(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalized_items = []
+        for k in sorted(value.keys()):
+            v = value[k]
+            if v is None:
+                continue
+            normalized_items.append((k, _normalize_for_cache(v)))
+        return {k: v for k, v in normalized_items}
+    if isinstance(value, list):
+        return [_normalize_for_cache(v) for v in value]
+    return value
+
+
+def _schedule_cache_key(spec: Dict[str, Any]) -> str:
+    canonical = _normalize_for_cache(spec)
+    payload = json.dumps(canonical, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _store_schedule_cache(key: Optional[str], payload: Dict[str, Any]) -> None:
+    if not key:
+        return
+    with _schedule_cache_lock:
+        _schedule_cache[key] = payload
+        _schedule_cache.move_to_end(key)
+        while len(_schedule_cache) > _SCHEDULE_CACHE_SIZE:
+            _schedule_cache.popitem(last=False)
+
+
+def _get_schedule_cache(key: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not key:
+        return None
+    with _schedule_cache_lock:
+        payload = _schedule_cache.get(key)
+        if payload is None:
+            return None
+        _schedule_cache.move_to_end(key)
+        return payload
+
 class StrategyClassItem(BaseModel):
     name: str
     weight: Optional[float] = None
@@ -29,6 +78,7 @@ class StrategySpec(BaseModel):
     classes: List[StrategyClassItem]
     rebalance: Optional[Dict[str, Any]] = None
     model: Optional[Dict[str, Any]] = None
+    precomputed: Optional[str] = None
     # risk budget params (legacy compute-weights)
     risk_metric: Optional[str] = None
     return_type: Optional[str] = None
@@ -42,6 +92,68 @@ class StrategySpec(BaseModel):
     target_return: Optional[float] = None
     target_risk: Optional[float] = None
     constraints: Optional[Dict[str, Any]] = None
+
+
+def _effective_model_config(strategy: StrategySpec) -> Dict[str, Any]:
+    base = dict(strategy.model or {})
+    if strategy.type == 'risk_budget':
+        model = dict(base)
+        model.setdefault('risk_metric', strategy.risk_metric or 'vol')
+        if model.get('risk_metric') in {'annual_vol', 'ewm_vol'} and model.get('days') is None and strategy.days is not None:
+            model['days'] = int(strategy.days)
+        if model.get('risk_metric') == 'ewm_vol' and model.get('window') is None and strategy.window is not None:
+            model['window'] = int(strategy.window)
+        if model.get('risk_metric') in {'var', 'es'} and model.get('confidence') is None and strategy.confidence is not None:
+            model['confidence'] = float(strategy.confidence)
+        model.setdefault('window_mode', model.get('window_mode') or 'rollingN')
+        if 'data_len' not in model and strategy.model and strategy.model.get('data_len') is not None:
+            model['data_len'] = strategy.model.get('data_len')
+        return model
+
+    model = dict(base)
+    if strategy.type == 'target':
+        model.setdefault('target', strategy.target or 'min_risk')
+        model.setdefault('return_metric', strategy.return_metric or 'annual')
+        model.setdefault('return_type', strategy.return_type or 'simple')
+        if model.get('days') is None and strategy.days is not None:
+            model['days'] = int(strategy.days)
+        model.setdefault('risk_metric', strategy.risk_metric or 'vol')
+        if model.get('risk_free_rate') is None and strategy.risk_free_rate is not None:
+            model['risk_free_rate'] = float(strategy.risk_free_rate)
+        if model.get('constraints') is None and strategy.constraints is not None:
+            model['constraints'] = strategy.constraints
+        if model.get('target_return') is None and strategy.target_return is not None:
+            model['target_return'] = strategy.target_return
+        if model.get('target_risk') is None and strategy.target_risk is not None:
+            model['target_risk'] = strategy.target_risk
+    model.setdefault('window_mode', model.get('window_mode') or 'rollingN')
+    if 'data_len' not in model and strategy.model and strategy.model.get('data_len') is not None:
+        model['data_len'] = strategy.model.get('data_len')
+    return model
+
+
+def _build_schedule_spec(
+    alloc_name: str,
+    start_date: Optional[str],
+    strategy: StrategySpec,
+    model: Dict[str, Any],
+) -> Dict[str, Any]:
+    if strategy.type == 'risk_budget':
+        classes = [
+            {'name': c.name, 'budget': float(c.budget or 0.0)}
+            for c in strategy.classes
+        ]
+    else:
+        classes = [{'name': c.name} for c in strategy.classes]
+    rebalance = strategy.rebalance or {}
+    return {
+        'alloc_name': alloc_name,
+        'start_date': start_date,
+        'type': strategy.type,
+        'rebalance': rebalance,
+        'model': model,
+        'classes': classes,
+    }
 
 
 class ComputeWeightsRequest(BaseModel):
@@ -170,9 +282,28 @@ def api_backtest(req: BacktestRequest):
         cls_map = {c.name: c for c in s.classes}
         weights = [float(cls_map.get(n).weight) if (n in cls_map and cls_map[n].weight is not None) else 0.0 for n in class_names]
         rb = s.rebalance if isinstance(s.rebalance, dict) else None
-        sdict = {"name": s.name or s.type, "type": s.type, "weights": weights, "rebalance": rb, "classes": [c.dict() for c in s.classes]}
-        if s.model:
-            sdict["model"] = s.model
+        model_cfg = _effective_model_config(s)
+        cache_spec = _build_schedule_spec(req.alloc_name, req.start_date, s, model_cfg)
+        computed_key = _schedule_cache_key(cache_spec)
+        sdict = {
+            "name": s.name or s.type,
+            "type": s.type,
+            "weights": weights,
+            "rebalance": rb,
+            "classes": [c.dict() for c in s.classes],
+        }
+        if model_cfg:
+            sdict["model"] = model_cfg
+        precomputed_weights: Optional[Dict[pd.Timestamp, Any]] = None
+        if s.precomputed and s.precomputed == computed_key:
+            cached = _get_schedule_cache(s.precomputed)
+            if cached and cached.get('asset_names') == class_names:
+                weight_map = cached.get('weights') or {}
+                precomputed_weights = {
+                    pd.to_datetime(k): v for k, v in weight_map.items()
+                }
+        if precomputed_weights:
+            sdict["precomputed_weights"] = precomputed_weights
         strat_list.append(sdict)
 
     res = backtest_portfolio(nav_wide, strat_list, start_date=req.start_date)
@@ -294,7 +425,9 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         return JSONResponse(status_code=400, content={"detail": "净值数据不足，无法计算权重"})
 
     asset_names = list(nav_wide.columns)
-    model_cfg = (req.strategy.model or {}).copy() if req.strategy.model else {}
+    model_cfg = _effective_model_config(req.strategy)
+    cache_spec = _build_schedule_spec(req.alloc_name, req.start_date, req.strategy, model_cfg)
+    cache_key = _schedule_cache_key(cache_spec)
 
     rb = req.strategy.rebalance or {}
     try:
@@ -319,36 +452,23 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
     tasks: List[Dict[str, Any]] = []
     if req.strategy.type == 'risk_budget':
         budgets = [float(c.budget or 0.0) for c in req.strategy.classes]
-        model = {
-            'risk_metric': req.strategy.risk_metric or 'vol',
-            'days': req.strategy.days,
-            'window': req.strategy.window,
-            'confidence': req.strategy.confidence,
-        }
-        model.update({'window_mode': model_cfg.get('window_mode', 'rollingN'), 'data_len': model_cfg.get('data_len')})
         for d in rset:
-            tasks.append({'date': d.date().isoformat(), 'nav_split': nav_split, 'stype': 'risk_budget', 'model': model, 'budgets': budgets})
+            tasks.append({
+                'date': d.date().isoformat(),
+                'nav_split': nav_split,
+                'stype': 'risk_budget',
+                'model': model_cfg,
+                'budgets': budgets,
+            })
     else:
-        model = {
-            'target': req.strategy.target,
-            'return_metric': req.strategy.return_metric or 'annual',
-            'return_type': req.strategy.return_type or 'simple',
-            'days': req.strategy.days or 252,
-            'ret_alpha': None,
-            'ret_window': None,
-            'risk_metric': req.strategy.risk_metric or 'vol',
-            'risk_days': req.strategy.days,
-            'risk_alpha': None,
-            'risk_window': req.strategy.window,
-            'risk_confidence': req.strategy.confidence,
-            'risk_free_rate': req.strategy.risk_free_rate or 0.0,
-            'constraints': req.strategy.constraints or {},
-            'target_return': req.strategy.target_return,
-            'target_risk': req.strategy.target_risk,
-        }
-        model.update({'window_mode': model_cfg.get('window_mode', 'rollingN'), 'data_len': model_cfg.get('data_len')})
         for d in rset:
-            tasks.append({'date': d.date().isoformat(), 'nav_split': nav_split, 'stype': 'target', 'model': model, 'budgets': None})
+            tasks.append({
+                'date': d.date().isoformat(),
+                'nav_split': nav_split,
+                'stype': 'target',
+                'model': model_cfg,
+                'budgets': None,
+            })
 
     results: List[Dict[str, Any]] = []
     try:
@@ -363,4 +483,15 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
     except Exception:
         results = [_compute_weight_for_date(t) for t in tasks]
     results.sort(key=lambda x: x['date'])
-    return {"asset_names": asset_names, "dates": [r['date'] for r in results], "weights": [r['weights'] for r in results]}
+    weight_map = {r['date']: r['weights'] for r in results}
+    _store_schedule_cache(cache_key, {
+        'spec': cache_spec,
+        'asset_names': asset_names,
+        'weights': weight_map,
+    })
+    return {
+        "asset_names": asset_names,
+        "dates": [r['date'] for r in results],
+        "weights": [r['weights'] for r in results],
+        "cache_key": cache_key,
+    }

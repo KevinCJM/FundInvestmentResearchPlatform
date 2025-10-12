@@ -1,6 +1,10 @@
 import React, { useMemo, useState, useEffect } from 'react'
 import ReactECharts from 'echarts-for-react'
-import HorizontalMetricComparison, { PerformanceQuadrantChart } from '../components/HorizontalMetricComparison'
+import HorizontalMetricComparison, {
+  DEFAULT_METRIC_TABLE_HEIGHT,
+  PerformanceQuadrantChart,
+} from '../components/HorizontalMetricComparison'
+import { buildAnnualMetricRows, computeAnnualMetrics } from '../utils/performance'
 
 type WeightMode = 'custom' | 'equal' | 'risk'
 type RiskMetric = 'vol' | 'var' | 'es'
@@ -107,7 +111,7 @@ export default function AssetClassConstructionPage() {
 
   const metricsSummary = useMemo(() => {
     if (!fitResult?.metrics || !Array.isArray(fitResult.metrics)) {
-      return { columns: [] as string[], rows: [] as any[], points: [] as { name: string; volatility: number; cumulativeReturn: number }[] }
+      return { columns: [] as string[], rows: [] as any[] }
     }
     const columns = fitResult.metrics.map(m => m.name)
     const toNumber = (value: any) => {
@@ -137,20 +141,18 @@ export default function AssetClassConstructionPage() {
       { label: '最大回撤(%)', values: fitResult.metrics.map(m => Number((m.max_drawdown ?? NaN) * 100)) },
       { label: '卡玛比率', values: fitResult.metrics.map(m => Number(m.calmar ?? NaN)) },
     ]
-    const points = columns.map((name, idx) => {
-      const volatility = Number(fitResult.metrics[idx].annual_vol ?? NaN)
-      return {
-        name,
-        volatility: Number.isFinite(volatility) ? volatility : NaN,
-        cumulativeReturn: cumulativeValues[idx],
-      }
+    const annualSeriesMap: Record<string, Array<number | null | undefined>> = {}
+    columns.forEach(name => {
+      annualSeriesMap[name] = Array.isArray(fitResult.navs?.[name]) ? fitResult.navs?.[name] : []
     })
-    return { columns, rows, points }
+    const annualMetrics = computeAnnualMetrics(fitResult.dates, annualSeriesMap)
+    const annualRows = buildAnnualMetricRows(columns, annualMetrics)
+    const mergedRows = annualRows.length > 0 ? [...rows, ...annualRows] : rows
+    return { columns, rows: mergedRows }
   }, [fitResult])
 
   const metricColumns = metricsSummary.columns
   const metricRows = metricsSummary.rows
-  const quadrantPoints = metricsSummary.points
 
   // --- Save/Load States ---
   const [saveModal, setSaveModal] = useState(false)
@@ -753,10 +755,19 @@ export default function AssetClassConstructionPage() {
             </div>
             <div>
               <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
-              <HorizontalMetricComparison columns={metricColumns} rows={metricRows} />
+              <HorizontalMetricComparison
+                columns={metricColumns}
+                rows={metricRows}
+                height={DEFAULT_METRIC_TABLE_HEIGHT}
+              />
               <div className="mt-4">
                 <h4 className="text-sm font-semibold mb-2 text-gray-700">收益风险象限图</h4>
-                <PerformanceQuadrantChart points={quadrantPoints} />
+                <PerformanceQuadrantChart
+                  columns={metricColumns}
+                  rows={metricRows}
+                  defaultXAxis="年化波动率(%)"
+                  defaultYAxis="累计收益率(%)"
+                />
               </div>
             </div>
           </div>
