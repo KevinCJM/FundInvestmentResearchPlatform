@@ -232,6 +232,43 @@ export default function ClassAllocation() {
     return base;
   }, [selectedAlloc, buildTargetConstraints, riskFreePct]);
 
+  const fetchPointWeights = useCallback(
+    async (strategy: StrategyRow) => {
+      const payload = buildComputeWeightsPayload(strategy);
+      if (!payload) throw new Error('缺少方案配置，请先选择资产配置方案');
+      const response = await fetch('/api/strategy/compute-weights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        const fallback = strategy.type === 'risk_budget' ? '风险预算权重计算失败' : '指定目标权重计算失败';
+        throw new Error(data?.detail || fallback);
+      }
+      return (data.weights || []) as number[];
+    },
+    [buildComputeWeightsPayload]
+  );
+
+  const getScheduleSpecKey = useCallback(
+    (strategy: StrategyRow): string | null => {
+      if (!strategy.rebalance?.enabled || !strategy.rebalance?.recalc) return null;
+      const schedule = buildSchedulePayload(strategy);
+      if (!schedule) return null;
+      const spec = schedule.strategy || {};
+      return stableStringify({
+        alloc_name: schedule.alloc_name,
+        start_date: schedule.start_date ?? null,
+        type: spec.type,
+        rebalance: spec.rebalance || {},
+        model: spec.model || {},
+        classes: spec.classes || [],
+      });
+    },
+    [buildSchedulePayload]
+  );
+
   const fetchScheduleWeights = useCallback(
     async (strategy: StrategyRow) => {
       const payload = buildSchedulePayload(strategy);
@@ -258,25 +295,6 @@ export default function ClassAllocation() {
       return { entry, lastWeights };
     },
     [buildSchedulePayload, getScheduleSpecKey]
-  );
-
-  const fetchPointWeights = useCallback(
-    async (strategy: StrategyRow) => {
-      const payload = buildComputeWeightsPayload(strategy);
-      if (!payload) throw new Error('缺少方案配置，请先选择资产配置方案');
-      const response = await fetch('/api/strategy/compute-weights', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        const fallback = strategy.type === 'risk_budget' ? '风险预算权重计算失败' : '指定目标权重计算失败';
-        throw new Error(data?.detail || fallback);
-      }
-      return (data.weights || []) as number[];
-    },
-    [buildComputeWeightsPayload]
   );
 
   const buildBacktestModel = useCallback((strategy: StrategyRow) => {
@@ -390,24 +408,6 @@ export default function ClassAllocation() {
       return { min: min - padding, max: max + padding };
     },
     [btSeries, backtestDateIndex]
-  );
-
-  const getScheduleSpecKey = useCallback(
-    (strategy: StrategyRow): string | null => {
-      if (!strategy.rebalance?.enabled || !strategy.rebalance?.recalc) return null;
-      const schedule = buildSchedulePayload(strategy);
-      if (!schedule) return null;
-      const spec = schedule.strategy || {};
-      return stableStringify({
-        alloc_name: schedule.alloc_name,
-        start_date: schedule.start_date ?? null,
-        type: spec.type,
-        rebalance: spec.rebalance || {},
-        model: spec.model || {},
-        classes: spec.classes || [],
-      });
-    },
-    [buildSchedulePayload]
   );
 
   useEffect(() => {
