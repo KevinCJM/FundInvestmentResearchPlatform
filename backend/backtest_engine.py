@@ -63,7 +63,16 @@ def ensure_valid_rebalance_window(
         valid_dates.append(d)
 
     if not valid_dates or first_idx is None:
-        raise ValueError('可用样本不足，无法计算任一调仓窗口，请检查 window_mode/data_len 配置。')
+        nav_len = len(nav_sorted)
+        if nav_len < required:
+            raise ValueError('可用样本不足，无法计算任一调仓窗口，请检查 window_mode/data_len 配置。')
+        fallback_idx = nav_sorted.index[required - 1]
+        follow_ups = [d for d in candidate_dates if d > fallback_idx]
+        deduped = []
+        for d in [fallback_idx] + follow_ups:
+            if d not in deduped:
+                deduped.append(d)
+        return deduped, fallback_idx
 
     valid_dates = [first_idx] + [d for d in valid_dates if d > first_idx]
     return valid_dates, first_idx
@@ -237,6 +246,11 @@ def backtest_portfolio(
         recalc = bool(rb.get('recalc', False))
         markers: List[Dict[str, Any]] = []
         nav_values = nav.to_numpy(dtype=np.float64)
+        raw_precomputed = s.get('precomputed_weights') or {}
+        precomputed_lookup: Dict[pd.Timestamp, np.ndarray] = {}
+        for key, value in raw_precomputed.items():
+            ts = key if isinstance(key, pd.Timestamp) else pd.to_datetime(key)
+            precomputed_lookup[ts] = np.asarray(value, dtype=float)
         if not rebal_dates:
             # no rebalance: static weights (vectorised)
             start_row = nav_values[0]
@@ -292,8 +306,10 @@ def backtest_portfolio(
             end_idx = index_lookup[d1]
             w_seg = base_weights
             if recalc:
-                history = full_nav.loc[:d0]
-                w_calc = _compute_model_weights(history, s, d0)
+                w_calc = precomputed_lookup.get(d0)
+                if w_calc is None:
+                    history = full_nav.loc[:d0]
+                    w_calc = _compute_model_weights(history, s, d0)
                 if w_calc is not None and np.isfinite(w_calc).all() and w_calc.sum() > 0:
                     w_seg = (w_calc / w_calc.sum())
             mask, weights_full, weights_compact = prepare_weights(w_seg, nav_values_trim[start_idx])
