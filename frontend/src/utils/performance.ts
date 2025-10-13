@@ -1,8 +1,11 @@
 export interface AnnualMetrics {
   cumulative: number | null;
   volatility: number | null;
+  annualReturn: number | null;
+  annualVolatility: number | null;
   sharpe: number | null;
   maxDrawdown: number | null;
+  calmar: number | null;
 }
 
 export interface AnnualMetricsResult {
@@ -108,19 +111,58 @@ export function computeAnnualMetrics(
         cumulative = 0;
       }
 
-      let volatility: number | null = null;
-      let sharpe: number | null = null;
-      if (returns.length >= 2) {
-        const mean = returns.reduce((acc, cur) => acc + cur, 0) / returns.length;
-        const variance = returns.reduce((acc, cur) => acc + (cur - mean) ** 2, 0) / (returns.length - 1);
-        const dailyVol = Math.sqrt(Math.max(variance, 0));
-        const vol = dailyVol * Math.sqrt(annFactor);
-        if (Number.isFinite(vol)) {
-          volatility = vol;
+      const periods = returns.length;
+
+      let dailyMean: number | null = null;
+      if (periods > 0) {
+        const sum = returns.reduce((acc, cur) => acc + cur, 0);
+        const mean = sum / periods;
+        if (Number.isFinite(mean)) {
+          dailyMean = mean;
         }
-        const annualMean = mean * annFactor;
-        if (volatility && Math.abs(volatility) > 1e-12 && Number.isFinite(annualMean)) {
-          sharpe = annualMean / volatility;
+      }
+
+      let volatility: number | null = null;
+      let annualVolatility: number | null = null;
+      if (periods >= 2) {
+        const varianceBase = dailyMean ?? 0;
+        const variance = returns.reduce((acc, cur) => acc + (cur - varianceBase) ** 2, 0) / (periods - 1);
+        const dailyVol = Math.sqrt(Math.max(variance, 0));
+        if (Number.isFinite(dailyVol)) {
+          volatility = dailyVol;
+          const annVol = dailyVol * Math.sqrt(annFactor);
+          if (Number.isFinite(annVol)) {
+            annualVolatility = annVol;
+          }
+        }
+      }
+
+      let annualReturn: number | null = null;
+      if (navs.length >= 2) {
+        const first = navs[0];
+        const last = navs[navs.length - 1];
+        const ratio = first !== 0 ? last / first : null;
+        if (ratio && Number.isFinite(ratio) && ratio > 0) {
+          const periodsCount = Math.max(periods, 1);
+          const exponent = annFactor / periodsCount;
+          const annRet = ratio ** exponent - 1;
+          if (Number.isFinite(annRet)) {
+            annualReturn = annRet;
+          }
+        }
+      } else if (navs.length === 1) {
+        annualReturn = 0;
+      }
+
+      let sharpe: number | null = null;
+      if (
+        dailyMean !== null &&
+        annualVolatility !== null &&
+        Math.abs(annualVolatility) > 1e-12
+      ) {
+        const annualMean = dailyMean * annFactor;
+        if (Number.isFinite(annualMean)) {
+          sharpe = annualMean / annualVolatility;
         }
       }
 
@@ -132,11 +174,25 @@ export function computeAnnualMetrics(
         }
       }
 
+      let calmar: number | null = null;
+      if (annualReturn !== null && maxDrawdown !== null) {
+        const drawdownAbs = Math.abs(maxDrawdown);
+        if (drawdownAbs > 1e-12) {
+          const ratio = annualReturn / drawdownAbs;
+          if (Number.isFinite(ratio)) {
+            calmar = ratio;
+          }
+        }
+      }
+
       stats[year] = {
         cumulative,
         volatility,
+        annualReturn,
+        annualVolatility,
         sharpe,
         maxDrawdown,
+        calmar,
       };
     }
 
@@ -176,9 +232,12 @@ export function buildAnnualMetricRows(
 
     return [
       { label: `${year}累计收益率(%)`, values: getValues('cumulative', 100) },
-      { label: `${year}年化波动率(%)`, values: getValues('volatility', 100) },
+      { label: `${year}波动率(%)`, values: getValues('volatility', 100) },
+      { label: `${year}年化收益率(%)`, values: getValues('annualReturn', 100) },
+      { label: `${year}年化波动率(%)`, values: getValues('annualVolatility', 100) },
       { label: `${year}夏普比率`, values: getValues('sharpe') },
       { label: `${year}最大回撤(%)`, values: getValues('maxDrawdown', 100) },
+      { label: `${year}卡玛比率`, values: getValues('calmar') },
     ];
   });
 }
