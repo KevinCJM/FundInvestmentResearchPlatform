@@ -255,7 +255,7 @@ export function PerformanceQuadrantChart({
   const selectorControls = (
     <div className="flex flex-wrap gap-4 text-xs">
       <label className="flex flex-col gap-1 text-gray-600">
-        <span>风险指标</span>
+        <span>X轴指标</span>
         <select
           className="rounded border border-gray-300 px-2 py-1"
           value={xMetric}
@@ -269,7 +269,7 @@ export function PerformanceQuadrantChart({
         </select>
       </label>
       <label className="flex flex-col gap-1 text-gray-600">
-        <span>收益指标</span>
+        <span>Y轴指标</span>
         <select
           className="rounded border border-gray-300 px-2 py-1"
           value={yMetric}
