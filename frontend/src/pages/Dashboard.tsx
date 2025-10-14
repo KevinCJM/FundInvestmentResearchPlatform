@@ -62,13 +62,6 @@ interface AnalyticsResponse {
 const numberFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
 const decimalFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 
-const formatPercent = (value?: number | null) => {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return '--';
-  }
-  return `${decimalFormatter.format(value)}%`;
-};
-
 const formatIssueAmount = (value?: number | null) => {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return '--';
@@ -326,33 +319,6 @@ export default function Dashboard() {
 
         {analytics && (
           <>
-            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <p className="text-sm text-slate-500">平均管理费率</p>
-                <p className="mt-3 text-2xl font-semibold">{formatPercent(summary?.avg_m_fee)}</p>
-                <p className="text-xs text-slate-400">ETF管理费率均值，以年化口径统计</p>
-              </div>
-              <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <p className="text-sm text-slate-500">平均托管费率</p>
-                <p className="mt-3 text-2xl font-semibold">{formatPercent(summary?.avg_c_fee)}</p>
-                <p className="text-xs text-slate-400">主要托管人费用水平</p>
-              </div>
-              <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <p className="text-sm text-slate-500">平均预期收益</p>
-                <p className="mt-3 text-2xl font-semibold">{formatPercent(summary?.avg_exp_return)}</p>
-                <p className="text-xs text-slate-400">部分主动ETF披露的预期收益</p>
-              </div>
-              <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <p className="text-sm text-slate-500">平均存续期限</p>
-                <p className="mt-3 text-2xl font-semibold">
-                  {summary && summary.avg_duration_year !== null && summary.avg_duration_year !== undefined
-                    ? `${decimalFormatter.format(summary.avg_duration_year)} 年`
-                    : '--'}
-                </p>
-                <p className="text-xs text-slate-400">产品合同约定的期限中枢</p>
-              </div>
-            </section>
-
             <section className="grid gap-6 lg:grid-cols-2">
               <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <ReactECharts option={topManagementOption} style={{ height: 360 }} notMerge lazyUpdate />
@@ -370,7 +336,7 @@ export default function Dashboard() {
                 <ReactECharts option={pieOption('投资风格分布', analytics.invest_type_distribution)} style={{ height: 360 }} notMerge lazyUpdate />
               </div>
               <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <ReactECharts option={pieOption('交易市场分布', analytics.market_distribution)} style={{ height: 360 }} notMerge lazyUpdate />
+                <ReactECharts option={pieOption('产品类型分布', analytics.fund_type_distribution)} style={{ height: 360 }} notMerge lazyUpdate />
               </div>
               <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <ReactECharts option={pieOption('产品状态概览', analytics.status_breakdown)} style={{ height: 360 }} notMerge lazyUpdate />
