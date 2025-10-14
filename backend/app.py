@@ -1886,6 +1886,7 @@ def etf_products(
         "invest_type",
         "market",
         "status",
+        "benchmark",
         "issue_amount",
         "m_fee",
         "c_fee",
@@ -2025,11 +2026,9 @@ def _match_product_by_identifier(df: pd.DataFrame, identifier: str) -> Optional[
 def _generate_synthetic_price_series(
     identifier: str,
     issue_amount: Optional[float] = None,
-    periods: int = 120,
+    start_date: Optional[str] = None,
+    periods: Optional[int] = 120,
 ) -> List[Dict[str, Any]]:
-    if periods <= 0:
-        return []
-
     seed = abs(hash(identifier)) % (2 ** 32)
     rng = np.random.default_rng(seed)
 
@@ -2042,7 +2041,25 @@ def _generate_synthetic_price_series(
             base_price = 1.0
 
     today = pd.Timestamp.today().normalize()
-    dates = pd.bdate_range(end=today, periods=periods)
+    start_dt: Optional[pd.Timestamp] = None
+    if start_date:
+        try:
+            parsed = pd.to_datetime(start_date, errors="coerce")
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            if getattr(parsed, "tzinfo", None) is not None:
+                parsed = parsed.tz_convert(None)
+            start_dt = parsed
+            if start_dt > today:
+                start_dt = today
+
+    if start_dt is not None:
+        dates = pd.bdate_range(start=start_dt, end=today)
+    else:
+        if not periods or periods <= 0:
+            periods = 120
+        dates = pd.bdate_range(end=today, periods=periods)
     if len(dates) == 0:
         return []
 
@@ -2111,6 +2128,7 @@ def etf_product_detail(product_id: str):
         "invest_type",
         "market",
         "status",
+        "benchmark",
         "found_date",
         "issue_date",
         "list_date",
@@ -2142,9 +2160,17 @@ def etf_product_detail(product_id: str):
     }
 
     identifier = base_info.get("ts_code") or base_info.get("code") or product_id
+    start_date = (
+        base_info.get("list_date")
+        or base_info.get("found_date")
+        or base_info.get("issue_date")
+        or base_info.get("purc_startdate")
+        or None
+    )
     time_series = _generate_synthetic_price_series(
         str(identifier),
         issue_amount=metrics.get("issue_amount"),
+        start_date=str(start_date) if start_date else None,
     )
 
     response = {

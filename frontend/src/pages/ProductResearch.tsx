@@ -13,6 +13,7 @@ interface ProductItem {
   invest_type?: string | null;
   market?: string | null;
   status?: string | null;
+  benchmark?: string | null;
   issue_amount?: number | null;
   m_fee?: number | null;
   c_fee?: number | null;
@@ -66,13 +67,6 @@ const formatIssueAmount = (value?: number | null) => {
     return `${decimalFormatter.format(value / 10000)} 亿`;
   }
   return `${decimalFormatter.format(value)} 万`;
-};
-
-const formatDuration = (value?: number | null) => {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return '--';
-  }
-  return `${decimalFormatter.format(value)} 年`;
 };
 
 const formatDate = (value?: string | null) => {
@@ -452,7 +446,7 @@ export default function ProductResearch() {
                     <SortButton label="发行规模" activeKey={sortKey} columnKey="issue_amount" direction={sortDir} onClick={toggleSort} />
                   </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    <SortButton label="费用 / 预期" activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
+                    <SortButton label="费用 / 基准" activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
                   </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                     <SortButton label="上市日" activeKey={sortKey} columnKey="list_date" direction={sortDir} onClick={toggleSort} />
@@ -501,7 +495,7 @@ export default function ProductResearch() {
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">管理费 {formatPercent(item.m_fee)} / 托管费 {formatPercent(item.c_fee)}</div>
-                        <div className="text-xs text-slate-400">预期收益 {formatPercent(item.exp_return)} · 存续期 {formatDuration(item.duration_year)}</div>
+                        <div className="text-xs text-slate-400">基准 {formatText(item.benchmark)} · 产品类型 {formatText(item.fund_type)}</div>
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">{formatDate(item.list_date)}</div>
