@@ -5,6 +5,8 @@ import Dashboard from './pages/Dashboard';
 import ManualConstruction from './pages/ManualConstruction';
 import ClassAllocation from './pages/ClassAllocation';
 import Placeholder from './pages/Placeholder';
+import ProductResearch from './pages/ProductResearch';
+import ProductDetail from './pages/ProductDetail';
 
 export default function App() {
   return (
@@ -14,7 +16,8 @@ export default function App() {
         <main>
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/research" element={<Placeholder title="产品研究" />} />
+            <Route path="/research" element={<ProductResearch />} />
+            <Route path="/product/:productId" element={<ProductDetail />} />
             <Route path="/manual-construction" element={<ManualConstruction />} />
             <Route path="/auto-classification" element={<Placeholder title="自动构建大类" />} />
             <Route path="/class-allocation" element={<ClassAllocation />} />
