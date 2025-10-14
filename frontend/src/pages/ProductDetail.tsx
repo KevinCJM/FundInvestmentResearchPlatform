@@ -622,7 +622,8 @@ export default function ProductDetail() {
         link: [{ xAxisIndex: 'all' }],
       },
       legend: {
-        bottom: hasKDJ ? 90 : 70,
+        top: 10,
+        left: 'center',
         icon: 'roundRect',
         textStyle: { color: '#475569', fontSize: 12 },
       },
