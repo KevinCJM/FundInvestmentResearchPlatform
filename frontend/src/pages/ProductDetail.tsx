@@ -69,13 +69,6 @@ const formatPercent = (value?: number | null) => {
   return `${decimalFormatter.format(value)}%`;
 };
 
-const formatDuration = (value?: number | null) => {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return '--';
-  }
-  return `${decimalFormatter.format(value)} 年`;
-};
-
 const formatText = (value?: string | number | null) => {
   if (value === null || value === undefined) {
     return '未知';
@@ -649,7 +642,7 @@ export default function ProductDetail() {
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => navigate(-1)}
+          onClick={() => navigate('/research')}
           className="inline-flex items-center rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-600"
         >
           ← 返回
@@ -681,7 +674,7 @@ export default function ProductDetail() {
           <section className="space-y-6 rounded-3xl bg-white p-8 shadow-sm ring-1 ring-slate-100">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className="text-sm font-semibold uppercase tracking-wide text-emerald-500">ETF 产品研究</div>
+                <div className="text-sm font-semibold uppercase tracking-wide text-emerald-500">产品研究</div>
                 <h1 className="mt-2 text-3xl font-bold text-slate-900">{detail.name ?? '--'}</h1>
                 <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-500">
                   {tsCode && <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-emerald-600">{tsCode}</span>}
@@ -705,8 +698,6 @@ export default function ProductDetail() {
                   value={`${formatPercent(metrics.m_fee)} / ${formatPercent(metrics.c_fee)}`}
                   description="产品费用率概览"
                 />
-                <MetricCard title="预期收益" value={formatPercent(metrics.exp_return)} description="披露的目标收益区间" />
-                <MetricCard title="存续期" value={formatDuration(metrics.duration_year)} description="产品预计存续年限" />
               </div>
             </div>
           </section>
