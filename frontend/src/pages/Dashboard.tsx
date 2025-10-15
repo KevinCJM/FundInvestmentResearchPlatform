@@ -150,15 +150,24 @@ export default function Dashboard() {
     if (!data || data.length === 0) {
       return createEmptyOption(title);
     }
+    const needsVerticalLegend = data.length > 8;
     return {
       title: { text: title, left: 'center', textStyle: { fontSize: 16 } },
       tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-      legend: { bottom: 0, type: 'scroll' },
+      legend: needsVerticalLegend
+        ? {
+            type: 'scroll',
+            orient: 'vertical',
+            right: 0,
+            top: 'middle',
+            align: 'left'
+          }
+        : { bottom: 0, type: 'scroll' },
       series: [
         {
           type: 'pie',
           radius: ['35%', '65%'],
-          center: ['50%', '45%'],
+          center: needsVerticalLegend ? ['44%', '50%'] : ['50%', '45%'],
           itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
           data
         }
