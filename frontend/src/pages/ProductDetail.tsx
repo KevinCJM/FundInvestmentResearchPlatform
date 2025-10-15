@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
 
 interface TimeSeriesPoint {
@@ -22,8 +22,6 @@ interface ProductDetailResponse {
     issue_amount?: number | null;
     m_fee?: number | null;
     c_fee?: number | null;
-    exp_return?: number | null;
-    duration_year?: number | null;
   };
   timeseries: TimeSeriesPoint[];
 }
@@ -171,7 +169,6 @@ const cloneOverlaySettings = (): OverlaySettings => ({
 
 export default function ProductDetail() {
   const params = useParams<{ productId?: string }>();
-  const navigate = useNavigate();
   const [detail, setDetail] = useState<ProductDetailResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -642,7 +639,7 @@ export default function ProductDetail() {
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => navigate('/research')}
+          onClick={() => window.open('/research', '_self')}
           className="inline-flex items-center rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-600"
         >
           ← 返回

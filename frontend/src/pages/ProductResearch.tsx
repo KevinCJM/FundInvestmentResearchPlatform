@@ -17,8 +17,6 @@ interface ProductItem {
   issue_amount?: number | null;
   m_fee?: number | null;
   c_fee?: number | null;
-  exp_return?: number | null;
-  duration_year?: number | null;
   list_date?: string | null;
   found_date?: string | null;
   issue_date?: string | null;
@@ -31,8 +29,6 @@ interface ProductsSummary {
   recent_listings_12m?: number | null;
   avg_m_fee?: number | null;
   avg_c_fee?: number | null;
-  avg_exp_return?: number | null;
-  avg_duration_year?: number | null;
   total_issue_amount?: number | null;
   median_issue_amount?: number | null;
   unique_managements?: number | null;
@@ -276,9 +272,9 @@ export default function ProductResearch() {
             description="单位：按万转亿换算"
           />
           <MetricCard
-            title="平均管理费 / 预期收益"
-            value={`${formatPercent(summary?.avg_m_fee)} · ${formatPercent(summary?.avg_exp_return)}`}
-            description="费用与收益均按筛选样本均值"
+            title="平均管理费 / 托管费"
+            value={`${formatPercent(summary?.avg_m_fee)} · ${formatPercent(summary?.avg_c_fee)}`}
+            description="费用率均值按当前筛选样本统计"
           />
         </div>
       </div>
