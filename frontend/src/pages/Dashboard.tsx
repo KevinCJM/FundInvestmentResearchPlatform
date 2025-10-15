@@ -229,8 +229,8 @@ export default function Dashboard() {
     return {
       title: { text: '管理/托管费率对比', left: 'center', textStyle: { fontSize: 16 } },
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      legend: { top: 0 },
-      grid: { left: '3%', right: '6%', bottom: '3%', containLabel: true },
+      legend: { top: 40, left: 'center' },
+      grid: { top: 90, left: '6%', right: '6%', bottom: '3%', containLabel: true },
       xAxis: { type: 'value', axisLabel: { color: '#475569', formatter: '{value}%' } },
       yAxis: { type: 'category', data: labels, axisLabel: { color: '#475569' } },
       series: [
