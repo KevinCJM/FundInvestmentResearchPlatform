@@ -378,6 +378,11 @@ export default function ProductDetail() {
     }
 
     const dates = detail.timeseries.map((item) => item.date);
+    const totalPoints = dates.length;
+    const defaultWindow = 252;
+    const startIndex = Math.max(0, totalPoints - defaultWindow);
+    const startValue = dates[startIndex];
+    const endValue = dates[totalPoints - 1];
     const klineValues = detail.timeseries.map((item) => [item.open, item.close, item.low, item.high]);
     const volumes = detail.timeseries.map((item) => ({
       value: item.volume,
@@ -534,8 +539,8 @@ export default function ProductDetail() {
       {
         type: 'inside',
         xAxisIndex: hasKDJ ? [0, 1, 2] : [0, 1],
-        start: 40,
-        end: 100,
+        startValue,
+        endValue,
       },
       {
         show: true,
@@ -543,8 +548,8 @@ export default function ProductDetail() {
         type: 'slider',
         height: 18,
         bottom: hasKDJ ? 50 : 40,
-        start: 40,
-        end: 100,
+        startValue,
+        endValue,
       },
     ];
 
@@ -710,7 +715,6 @@ export default function ProductDetail() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">价格与成交量</h2>
-                <p className="text-sm text-slate-500">最近 {detail.timeseries.length} 个交易日</p>
               </div>
               <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
