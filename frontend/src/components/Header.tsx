@@ -25,7 +25,7 @@ export default function Header() {
     return null;
   }
 
-  const baseStyle = 'px-4 py-2 rounded-md text-sm font-medium';
+  const baseStyle = 'px-3 py-2 rounded-md text-sm font-medium';
   const activeStyle = 'bg-gray-900 text-white';
   const inactiveStyle = 'text-gray-300 hover:bg-gray-700 hover:text-white';
 
@@ -33,23 +33,25 @@ export default function Header() {
 
   return (
     <header className="bg-gray-800 shadow">
-      <nav className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
-        <div className="flex items-center space-x-3">
-          <span className="text-lg font-semibold text-white">基金投研平台</span>
-          <div className="flex items-center space-x-2">
-            {allowedItems.map((item) => (
-              <NavLink
-                key={item.label}
-                to={item.path}
-                end={item.path === '/'}
-                className={({ isActive }) => `${baseStyle} ${isActive ? activeStyle : inactiveStyle}`}
-              >
-                {item.label}
-              </NavLink>
-            ))}
+      <nav className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-6 py-3">
+        <div className="flex min-w-0 flex-1 items-center space-x-3">
+          <span className="shrink-0 text-lg font-semibold text-white">基金投研平台</span>
+          <div className="flex min-w-0 flex-1 items-center">
+            <div className="flex w-full items-center space-x-2 overflow-x-auto whitespace-nowrap [&::-webkit-scrollbar]:hidden">
+              {allowedItems.map((item) => (
+                <NavLink
+                  key={item.label}
+                  to={item.path}
+                  end={item.path === '/'}
+                  className={({ isActive }) => `${baseStyle} ${isActive ? activeStyle : inactiveStyle}`}
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="flex items-center space-x-3 text-sm text-gray-200">
+        <div className="flex shrink-0 items-center space-x-3 text-sm text-gray-200">
           <div className="rounded-full bg-gray-700 px-3 py-1 text-xs font-medium text-gray-200">
             {roleLabels[user.role] ?? user.role}
           </div>
