@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as echarts from 'echarts';
 import ReactECharts from 'echarts-for-react';
+import FilterDropdown, { FilterOption as FilterDropdownOption } from '../components/FilterDropdown';
 
 interface DistributionItem {
   name: string;
@@ -54,10 +55,44 @@ interface AnalyticsResponse {
   market_issue_summary: MarketIssueItem[];
   status_breakdown: DistributionItem[];
   list_trend: TrendItem[];
+  list_trend_filters?: ListTrendFilters;
   fee_by_fund_type: FeeByFundTypeItem[];
   top_issue_amount: TableItem[];
   recent_listings: TableItem[];
 }
+
+interface ListTrendFilters {
+  [key: string]: DistributionItem[] | undefined;
+  type?: DistributionItem[];
+  invest_type?: DistributionItem[];
+  fund_type?: DistributionItem[];
+  management?: DistributionItem[];
+}
+
+interface ListTrendResponse {
+  dimension: string;
+  values: string[];
+  list_trend: TrendItem[];
+  filters?: ListTrendFilters;
+}
+
+type ListTrendDimension = 'all' | 'type' | 'invest_type' | 'fund_type' | 'management';
+
+const LIST_TREND_DIMENSIONS: { value: ListTrendDimension; label: string }[] = [
+  { value: 'all', label: '全部ETF' },
+  { value: 'type', label: '基金机构类型' },
+  { value: 'invest_type', label: '投资风格' },
+  { value: 'fund_type', label: '产品类型' },
+  { value: 'management', label: '基金管理人' },
+];
+
+const LIST_TREND_DIMENSION_LABEL: Record<ListTrendDimension, string> = {
+  all: '全部ETF',
+  type: '基金机构类型',
+  invest_type: '投资风格',
+  fund_type: '产品类型',
+  management: '基金管理人',
+};
 
 const numberFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
 const decimalFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
@@ -94,6 +129,12 @@ export default function Dashboard() {
   const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [listTrendSeries, setListTrendSeries] = useState<TrendItem[]>([]);
+  const [listTrendFilters, setListTrendFilters] = useState<ListTrendFilters | null>(null);
+  const [listTrendDimension, setListTrendDimension] = useState<ListTrendDimension>('all');
+  const [listTrendValues, setListTrendValues] = useState<string[]>([]);
+  const [listTrendLoading, setListTrendLoading] = useState(false);
+  const [listTrendError, setListTrendError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -106,6 +147,11 @@ export default function Dashboard() {
         }
         const data = (await resp.json()) as AnalyticsResponse;
         setAnalytics(data);
+        setListTrendSeries(data.list_trend ?? []);
+        setListTrendFilters(data.list_trend_filters ?? null);
+        setListTrendDimension('all');
+        setListTrendValues([]);
+        setListTrendError(null);
       } catch (err) {
         console.error('Failed to load ETF analytics', err);
         setError('统计信息加载失败，请稍后重试。');
@@ -116,6 +162,91 @@ export default function Dashboard() {
 
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (!analytics) {
+      return;
+    }
+
+    if (listTrendDimension === 'all') {
+      setListTrendSeries(analytics.list_trend ?? []);
+      setListTrendLoading(false);
+      setListTrendError(null);
+      return;
+    }
+
+    if (listTrendValues.length === 0) {
+      setListTrendSeries([]);
+      setListTrendLoading(false);
+      setListTrendError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const params = new URLSearchParams();
+    params.set('dimension', listTrendDimension);
+    listTrendValues.forEach((value) => params.append('values', value));
+
+    const fetchTrend = async () => {
+      try {
+        setListTrendLoading(true);
+        setListTrendError(null);
+        const resp = await fetch(`/api/etf/analytics/list_trend?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        if (!resp.ok) {
+          throw new Error('failed to fetch');
+        }
+        const result = (await resp.json()) as ListTrendResponse;
+        setListTrendSeries(result.list_trend ?? []);
+        if (result.filters) {
+          setListTrendFilters(result.filters);
+        }
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') {
+          return;
+        }
+        console.error('Failed to load filtered list trend', err);
+        setListTrendError('上市节奏数据加载失败，请稍后重试。');
+      } finally {
+        setListTrendLoading(false);
+      }
+    };
+
+    fetchTrend();
+
+    return () => controller.abort();
+  }, [analytics, listTrendDimension, listTrendValues]);
+
+  const currentTrendFilterOptions = useMemo<FilterDropdownOption[]>(() => {
+    if (!listTrendFilters) {
+      return [];
+    }
+    const candidates = listTrendFilters[listTrendDimension] ?? [];
+    return candidates.map((item) => ({
+      value: item.name,
+      label: item.name,
+      count: item.value,
+    }));
+  }, [listTrendDimension, listTrendFilters]);
+
+  const listTrendSummary = useMemo(() => {
+    const baseLabel = LIST_TREND_DIMENSION_LABEL[listTrendDimension];
+    if (listTrendDimension === 'all' || listTrendValues.length === 0 || !listTrendFilters) {
+      return `范围：${baseLabel}`;
+    }
+    const candidates = listTrendFilters[listTrendDimension] ?? [];
+    const labels = candidates
+      .filter((item) => listTrendValues.includes(item.name))
+      .map((item) => item.name);
+    if (labels.length === 0) {
+      return `范围：${baseLabel}`;
+    }
+    if (labels.length <= 2) {
+      return `范围：${baseLabel} · ${labels.join('、')}`;
+    }
+    return `范围：${baseLabel} · ${labels.slice(0, 2).join('、')} 等 ${labels.length} 项`;
+  }, [listTrendDimension, listTrendValues, listTrendFilters]);
 
   const topManagementOption = useMemo(() => {
     if (!analytics?.top_management?.length) {
@@ -176,12 +307,12 @@ export default function Dashboard() {
   };
 
   const trendOption = useMemo(() => {
-    if (!analytics?.list_trend?.length) {
+    if (!listTrendSeries.length) {
       return createEmptyOption('ETF上市节奏');
     }
-    const years = analytics.list_trend.map((item) => item.year);
-    const counts = analytics.list_trend.map((item) => item.count);
-    const issueAmounts = analytics.list_trend.map((item) => item.total_issue_amount ?? null);
+    const years = listTrendSeries.map((item) => item.year);
+    const counts = listTrendSeries.map((item) => item.count);
+    const issueAmounts = listTrendSeries.map((item) => item.total_issue_amount ?? null);
     return {
       title: { text: 'ETF上市节奏', left: 'center', textStyle: { fontSize: 16 } },
       tooltip: {
@@ -226,7 +357,7 @@ export default function Dashboard() {
         }
       ]
     };
-  }, [analytics]);
+  }, [listTrendSeries]);
 
   const feeOption = useMemo(() => {
     if (!analytics?.fee_by_fund_type?.length) {
@@ -328,12 +459,59 @@ export default function Dashboard() {
 
         {analytics && (
           <>
-            <section className="grid gap-6 lg:grid-cols-2">
-              <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <ReactECharts option={topManagementOption} style={{ height: 360 }} notMerge lazyUpdate />
+            <section className="rounded-2xl bg-white p-5 shadow-sm">
+              <ReactECharts option={topManagementOption} style={{ height: 360 }} notMerge lazyUpdate />
+            </section>
+
+            <section className="rounded-2xl bg-white p-6 shadow-sm">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-800">ETF上市节奏</h2>
+                  <p className="text-xs text-slate-400">{listTrendSummary}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <select
+                    value={listTrendDimension}
+                    onChange={(event) => {
+                      const nextDimension = event.target.value as ListTrendDimension;
+                      setListTrendDimension(nextDimension);
+                      setListTrendValues([]);
+                    }}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  >
+                    {LIST_TREND_DIMENSIONS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                  {listTrendDimension !== 'all' && (
+                    <FilterDropdown
+                      label="筛选项"
+                      options={currentTrendFilterOptions}
+                      selected={listTrendValues}
+                      placeholder="全部"
+                      onChange={(next) => setListTrendValues(next)}
+                    />
+                  )}
+                </div>
               </div>
-              <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <ReactECharts option={trendOption} style={{ height: 360 }} notMerge lazyUpdate />
+              <div className="mt-6">
+                {listTrendError ? (
+                  <div className="flex h-80 items-center justify-center rounded-xl border border-dashed border-red-200 bg-red-50 text-sm text-red-500">
+                    {listTrendError}
+                  </div>
+                ) : listTrendLoading ? (
+                  <div className="flex h-80 items-center justify-center text-sm text-slate-400">正在加载上市节奏...</div>
+                ) : listTrendSeries.length ? (
+                  <ReactECharts option={trendOption} style={{ height: 360 }} notMerge lazyUpdate />
+                ) : (
+                  <div className="flex h-80 items-center justify-center rounded-xl border border-dashed border-slate-200 text-sm text-slate-400">
+                    {listTrendDimension !== 'all' && listTrendValues.length === 0
+                      ? '请选择筛选条件以查看上市节奏'
+                      : '暂无符合条件的数据'}
+                  </div>
+                )}
               </div>
             </section>
 

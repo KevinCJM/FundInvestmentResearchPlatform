@@ -1585,6 +1585,43 @@ def _value_distribution(series: Optional[pd.Series], top_n: Optional[int] = None
     return [{"name": str(idx), "value": int(val)} for idx, val in counts.items()]
 
 
+def _build_list_trend_series(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    list_trend: List[Dict[str, Any]] = []
+    if "list_date" not in df.columns or df.empty:
+        return list_trend
+
+    working = df.dropna(subset=["list_date"]).copy()
+    if working.empty:
+        return list_trend
+
+    working["year"] = working["list_date"].dt.year
+    year_counts = working.groupby("year").size().sort_index()
+    if "issue_amount" in working.columns:
+        year_issue = working.groupby("year")["issue_amount"].sum()
+    else:
+        year_issue = pd.Series(dtype=float)
+
+    for year, count in year_counts.items():
+        list_trend.append(
+            {
+                "year": int(year),
+                "count": int(count),
+                "total_issue_amount": _safe_float(year_issue.get(year)) if not year_issue.empty else None,
+            }
+        )
+
+    return list_trend
+
+
+def _build_list_trend_filters(df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
+    return {
+        "type": _value_distribution(df.get("type"), None),
+        "invest_type": _value_distribution(df.get("invest_type"), None),
+        "fund_type": _value_distribution(df.get("fund_type"), None),
+        "management": _value_distribution(df.get("management"), None),
+    }
+
+
 @app.get("/api/etf/analytics")
 def etf_analytics():
     df = _load_etf_info_df()
@@ -1650,24 +1687,8 @@ def etf_analytics():
             key=lambda item: (item.get("total_issue_amount") or 0.0, item.get("count") or 0), reverse=True
         )
 
-    list_trend: List[Dict[str, Any]] = []
-    if "list_date" in working.columns:
-        list_df = working.dropna(subset=["list_date"]).copy()
-        if not list_df.empty:
-            list_df["year"] = list_df["list_date"].dt.year
-            year_counts = list_df.groupby("year").size().sort_index()
-            if "issue_amount" in list_df.columns:
-                year_issue = list_df.groupby("year")["issue_amount"].sum()
-            else:
-                year_issue = pd.Series(dtype=float)
-            for year, count in year_counts.items():
-                list_trend.append(
-                    {
-                        "year": int(year),
-                        "count": int(count),
-                        "total_issue_amount": _safe_float(year_issue.get(year)) if not year_issue.empty else None,
-                    }
-                )
+    list_trend = _build_list_trend_series(working)
+    list_trend_filters = _build_list_trend_filters(df)
 
     fee_by_fund_type: List[Dict[str, Any]] = []
     if "fund_type" in working.columns and ("m_fee" in working.columns or "c_fee" in working.columns):
@@ -1734,12 +1755,59 @@ def etf_analytics():
         "market_issue_summary": market_issue_summary,
         "status_breakdown": status_distribution,
         "list_trend": list_trend,
+        "list_trend_filters": list_trend_filters,
         "fee_by_fund_type": fee_by_fund_type,
         "top_issue_amount": top_issue_amount,
         "recent_listings": recent_listings,
     }
 
     return JSONResponse(response)
+
+
+@app.get("/api/etf/analytics/list_trend")
+def etf_list_trend(
+    dimension: str = Query("all", description="筛选维度，可选 all/type/invest_type/fund_type/management"),
+    values: Optional[List[str]] = Query(None, description="筛选值，可传多个"),
+):
+    df = _load_etf_info_df()
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
+
+    dimension = (dimension or "all").lower()
+    dimension_map = {
+        "all": None,
+        "type": "type",
+        "invest_type": "invest_type",
+        "fund_type": "fund_type",
+        "management": "management",
+    }
+
+    column = dimension_map.get(dimension)
+    working = df.copy()
+
+    applied_values = _coerce_filter_list(values)
+    if column and applied_values:
+        normalized = (
+            working[column]
+            .fillna("未知")
+            .astype(str)
+            .replace({"": "未知", "nan": "未知"})
+        )
+        working = working[normalized.isin(applied_values)]
+    elif column:
+        # 没有提供具体值时直接返回空序列，避免误导
+        working = working.iloc[0:0]
+
+    series = _build_list_trend_series(working)
+
+    return JSONResponse(
+        {
+            "dimension": dimension,
+            "values": applied_values,
+            "list_trend": series,
+            "filters": _build_list_trend_filters(df),
+        }
+    )
 
 
 def _coerce_filter_list(raw: Optional[List[str]]) -> List[str]:
