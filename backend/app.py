@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
 from functools import lru_cache
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from pydantic import BaseModel, Field
 from starlette.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Tuple, Dict, Any
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, FileResponse
+
+BACKEND_DIR = Path(__file__).resolve().parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.append(str(BACKEND_DIR))
+
 from optimizer import calculate_efficient_frontier_exploration
 from backtest_engine import backtest_portfolio, gen_rebalance_dates
 from fit import compute_rolling_corr_classes, compute_class_consistency
@@ -1021,6 +1028,407 @@ def api_default_start(alloc_name: str):
 
 # -------------------- ETF Universe from data/ --------------------
 DATA_DIR = (Path(__file__).resolve().parents[1] / "data").resolve()
+ETF_INFO_FILENAMES = ("etf_info_df.parquet",)
+
+
+DEMO_ETF_INFO_ROWS = [
+    {
+        "ts_code": "510050.SH",
+        "code": "510050",
+        "name": "上证50ETF",
+        "management": "华夏基金",
+        "custodian": "中国银行",
+        "trustee": "中国银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "宽基指数",
+        "market": "上交所",
+        "status": "上市交易",
+        "issue_amount": 450000,
+        "m_fee": 0.5,
+        "c_fee": 0.1,
+        "exp_return": 12.3,
+        "duration_year": 18.0,
+        "list_date": "2004-02-23",
+        "found_date": "2004-02-05",
+        "issue_date": "2004-02-10",
+        "due_date": None,
+        "purc_startdate": "2004-02-12",
+        "redm_startdate": "2004-02-12",
+    },
+    {
+        "ts_code": "512000.SH",
+        "code": "512000",
+        "name": "券商ETF",
+        "management": "国泰基金",
+        "custodian": "招商银行",
+        "trustee": "招商银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "行业指数",
+        "market": "上交所",
+        "status": "上市交易",
+        "issue_amount": 160000,
+        "m_fee": 0.6,
+        "c_fee": 0.2,
+        "exp_return": 11.5,
+        "duration_year": 9.0,
+        "list_date": "2015-04-23",
+        "found_date": "2015-04-15",
+        "issue_date": "2015-04-20",
+        "due_date": None,
+        "purc_startdate": "2015-04-21",
+        "redm_startdate": "2015-04-21",
+    },
+    {
+        "ts_code": "159915.SZ",
+        "code": "159915",
+        "name": "创业板ETF",
+        "management": "易方达基金",
+        "custodian": "中国建设银行",
+        "trustee": "中国建设银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "宽基指数",
+        "market": "深交所",
+        "status": "上市交易",
+        "issue_amount": 320000,
+        "m_fee": 0.5,
+        "c_fee": 0.1,
+        "exp_return": 15.2,
+        "duration_year": 12.0,
+        "list_date": "2011-06-13",
+        "found_date": "2011-05-20",
+        "issue_date": "2011-05-25",
+        "due_date": None,
+        "purc_startdate": "2011-05-26",
+        "redm_startdate": "2011-05-26",
+    },
+    {
+        "ts_code": "560800.BJ",
+        "code": "560800",
+        "name": "科创精选ETF",
+        "management": "工银瑞信",
+        "custodian": "交通银行",
+        "trustee": "交通银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "科技创新",
+        "market": "北交所",
+        "status": "上市交易",
+        "issue_amount": 38000,
+        "m_fee": 0.8,
+        "c_fee": 0.15,
+        "exp_return": 18.4,
+        "duration_year": 3.0,
+        "list_date": "2022-08-30",
+        "found_date": "2022-08-10",
+        "issue_date": "2022-08-18",
+        "due_date": None,
+        "purc_startdate": "2022-08-19",
+        "redm_startdate": "2022-08-19",
+    },
+    {
+        "ts_code": "513050.SH",
+        "code": "513050",
+        "name": "中概互联网ETF",
+        "management": "华夏基金",
+        "custodian": "中国银行",
+        "trustee": "中国银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "主题策略",
+        "market": "上交所",
+        "status": "上市交易",
+        "issue_amount": 240000,
+        "m_fee": 0.6,
+        "c_fee": 0.15,
+        "exp_return": 16.8,
+        "duration_year": 6.0,
+        "list_date": "2017-09-11",
+        "found_date": "2017-08-25",
+        "issue_date": "2017-09-05",
+        "due_date": None,
+        "purc_startdate": "2017-09-06",
+        "redm_startdate": "2017-09-06",
+    },
+    {
+        "ts_code": "588000.SH",
+        "code": "588000",
+        "name": "科创50ETF",
+        "management": "华夏基金",
+        "custodian": "中国银行",
+        "trustee": "中国银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "科技创新",
+        "market": "上交所",
+        "status": "上市交易",
+        "issue_amount": 280000,
+        "m_fee": 0.6,
+        "c_fee": 0.15,
+        "exp_return": 17.5,
+        "duration_year": 4.0,
+        "list_date": "2019-11-05",
+        "found_date": "2019-10-15",
+        "issue_date": "2019-10-25",
+        "due_date": None,
+        "purc_startdate": "2019-10-28",
+        "redm_startdate": "2019-10-28",
+    },
+    {
+        "ts_code": "159949.SZ",
+        "code": "159949",
+        "name": "创业板50ETF",
+        "management": "嘉实基金",
+        "custodian": "中国工商银行",
+        "trustee": "中国工商银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "宽基指数",
+        "market": "深交所",
+        "status": "上市交易",
+        "issue_amount": 210000,
+        "m_fee": 0.55,
+        "c_fee": 0.1,
+        "exp_return": 14.8,
+        "duration_year": 8.0,
+        "list_date": "2013-09-30",
+        "found_date": "2013-09-02",
+        "issue_date": "2013-09-12",
+        "due_date": None,
+        "purc_startdate": "2013-09-13",
+        "redm_startdate": "2013-09-13",
+    },
+    {
+        "ts_code": "513500.SH",
+        "code": "513500",
+        "name": "标普500ETF",
+        "management": "南方基金",
+        "custodian": "中国银行",
+        "trustee": "中国银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "海外指数",
+        "market": "上交所",
+        "status": "上市交易",
+        "issue_amount": 180000,
+        "m_fee": 0.7,
+        "c_fee": 0.12,
+        "exp_return": 9.6,
+        "duration_year": 7.0,
+        "list_date": "2013-06-28",
+        "found_date": "2013-06-06",
+        "issue_date": "2013-06-18",
+        "due_date": None,
+        "purc_startdate": "2013-06-19",
+        "redm_startdate": "2013-06-19",
+    },
+    {
+        "ts_code": "560010.BJ",
+        "code": "560010",
+        "name": "绿色发展ETF",
+        "management": "中金基金",
+        "custodian": "中国农业银行",
+        "trustee": "中国农业银行",
+        "fund_type": "场内ETF",
+        "type": "公募基金",
+        "invest_type": "ESG主题",
+        "market": "北交所",
+        "status": "存续",
+        "issue_amount": 42000,
+        "m_fee": 0.75,
+        "c_fee": 0.18,
+        "exp_return": 13.2,
+        "duration_year": 2.0,
+        "list_date": "2021-12-15",
+        "found_date": "2021-12-01",
+        "issue_date": "2021-12-08",
+        "due_date": None,
+        "purc_startdate": "2021-12-09",
+        "redm_startdate": "2021-12-09",
+    },
+]
+
+
+_COMMON_NULLS = {"", "nan", "none", "null", "-", "--", "暂无", "缺失"}
+
+
+def _normalize_numeric_value(
+    value: Any,
+    *,
+    percent: bool = False,
+    amount_to_wan: bool = False,
+    strip_suffixes: Optional[Tuple[str, ...]] = None,
+) -> Optional[float]:
+    """Coerce messy numeric strings to float.
+
+    - percent=True will drop trailing '%' but keep the numeric in percentage points (0.5 -> 0.5).
+    - amount_to_wan=True will normalise Chinese units to "万" (e.g. 3亿 -> 30000).
+    - strip_suffixes removes textual units such as '年'.
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            if math.isnan(value):
+                return None
+        except Exception:
+            pass
+        return float(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in _COMMON_NULLS:
+        return None
+
+    if percent and text.endswith("%"):
+        text = text[:-1]
+
+    if strip_suffixes:
+        for suffix in strip_suffixes:
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+                break
+
+    multiplier = 1.0
+    if amount_to_wan:
+        unit_map = {
+            "亿元": 10000.0,
+            "亿": 10000.0,
+            "万元": 1.0,
+            "万": 1.0,
+            "元": 0.0001,
+        }
+        for suffix, factor in unit_map.items():
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+                multiplier = factor
+                break
+
+    text = text.replace(",", "").replace("，", "").replace(" ", "")
+    match = re.search(r"[-+]?\d*\.?\d+", text)
+    if not match:
+        return None
+    try:
+        number = float(match.group())
+    except ValueError:
+        return None
+    return number * multiplier
+
+
+@lru_cache(maxsize=1)
+def _cached_etf_info_df(_mtime: float) -> pd.DataFrame:  # noqa: ARG001
+    """Load the ETF info DataFrame from parquet with caching."""
+    for fname in ETF_INFO_FILENAMES:
+        path = DATA_DIR / fname
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_parquet(path)
+            if not isinstance(df, pd.DataFrame):
+                continue
+            df = df.copy()
+            df.columns = [str(c) for c in df.columns]
+            date_cols = [
+                "found_date",
+                "due_date",
+                "list_date",
+                "issue_date",
+                "delist_date",
+                "purc_startdate",
+                "redm_startdate",
+            ]
+            for col in date_cols:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
+            numeric_cols = [
+                "issue_amount",
+                "m_fee",
+                "c_fee",
+                "duration_year",
+                "p_value",
+                "min_amount",
+                "exp_return",
+            ]
+            for col in numeric_cols:
+                if col in df.columns:
+                    if col in {"issue_amount", "min_amount"}:
+                        df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, amount_to_wan=True))
+                    elif col in {"m_fee", "c_fee", "exp_return"}:
+                        df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, percent=True))
+                    elif col == "duration_year":
+                        df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, strip_suffixes=("年", "yrs", "year", "years")))
+                    else:
+                        df[col] = df[col].apply(_normalize_numeric_value)
+            return df
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
+def _build_demo_etf_info_df() -> pd.DataFrame:
+    if not DEMO_ETF_INFO_ROWS:
+        return pd.DataFrame()
+    df = pd.DataFrame(DEMO_ETF_INFO_ROWS)
+    df = df.copy()
+    df.columns = [str(c) for c in df.columns]
+    date_cols = [
+        "found_date",
+        "due_date",
+        "list_date",
+        "issue_date",
+        "delist_date",
+        "purc_startdate",
+        "redm_startdate",
+    ]
+    for col in date_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    numeric_cols = [
+        "issue_amount",
+        "m_fee",
+        "c_fee",
+        "duration_year",
+        "p_value",
+        "min_amount",
+        "exp_return",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _ensure_demo_etf_info_df() -> pd.DataFrame:
+    df = _build_demo_etf_info_df()
+    if df.empty:
+        return df
+    path = DATA_DIR / "etf_info_df.parquet"
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            try:
+                df.to_parquet(path, index=False)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return df
+
+
+def _load_etf_info_df() -> pd.DataFrame:
+    mtimes = []
+    for fname in ETF_INFO_FILENAMES:
+        path = DATA_DIR / fname
+        if path.exists():
+            mtimes.append(path.stat().st_mtime)
+    if not mtimes:
+        return _ensure_demo_etf_info_df()
+    return _cached_etf_info_df(max(mtimes))
 
 
 def _load_universe() -> List[dict]:
@@ -1152,22 +1560,744 @@ def etf_search(
     return JSONResponse({"items": items, "total": total, "page": page, "page_size": page_size})
 
 
+def _safe_float(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _value_distribution(series: Optional[pd.Series], top_n: Optional[int] = None) -> List[Dict[str, Any]]:
+    if series is None:
+        return []
+    clean = series.fillna("未知").astype(str)
+    clean = clean.replace({"": "未知", "nan": "未知"})
+    counts = clean.value_counts()
+    if top_n is not None:
+        counts = counts.head(top_n)
+    return [{"name": str(idx), "value": int(val)} for idx, val in counts.items()]
+
+
+def _build_list_trend_series(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    list_trend: List[Dict[str, Any]] = []
+    if "list_date" not in df.columns or df.empty:
+        return list_trend
+
+    working = df.dropna(subset=["list_date"]).copy()
+    if working.empty:
+        return list_trend
+
+    working["year"] = working["list_date"].dt.year
+    year_counts = working.groupby("year").size().sort_index()
+    if "issue_amount" in working.columns:
+        year_issue = working.groupby("year")["issue_amount"].sum()
+    else:
+        year_issue = pd.Series(dtype=float)
+
+    for year, count in year_counts.items():
+        list_trend.append(
+            {
+                "year": int(year),
+                "count": int(count),
+                "total_issue_amount": _safe_float(year_issue.get(year)) if not year_issue.empty else None,
+            }
+        )
+
+    return list_trend
+
+
+def _build_list_trend_filters(df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
+    return {
+        "type": _value_distribution(df.get("type"), None),
+        "invest_type": _value_distribution(df.get("invest_type"), None),
+        "fund_type": _value_distribution(df.get("fund_type"), None),
+        "management": _value_distribution(df.get("management"), None),
+    }
+
+
+@app.get("/api/etf/analytics")
+def etf_analytics():
+    df = _load_etf_info_df()
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
+
+    working = df.copy()
+
+    issue_amount_total = _safe_float(working.get("issue_amount").sum()) if "issue_amount" in working.columns else None
+    avg_m_fee = _safe_float(working.get("m_fee").mean()) if "m_fee" in working.columns else None
+    avg_c_fee = _safe_float(working.get("c_fee").mean()) if "c_fee" in working.columns else None
+    avg_exp_return = _safe_float(working.get("exp_return").mean()) if "exp_return" in working.columns else None
+    avg_duration_year = _safe_float(working.get("duration_year").mean()) if "duration_year" in working.columns else None
+
+    status_series = working.get("status")
+    active_count: Optional[int] = None
+    if status_series is not None:
+        clean_status = status_series.fillna("未知").astype(str)
+        inactive_keywords = ("终止", "退市", "清盘", "暂停", "到期")
+        active_mask = ~clean_status.str.contains("|".join(inactive_keywords), case=False, na=False)
+        active_count = int(active_mask.sum())
+
+    management_summary: List[Dict[str, Any]] = []
+    if "management" in working.columns:
+        mgmt_df = working.copy()
+        mgmt_df["management"] = mgmt_df["management"].fillna("未知")
+        mgmt_counts = mgmt_df.groupby("management").size().sort_values(ascending=False).head(10)
+        mgmt_issue = (
+            mgmt_df.groupby("management")["issue_amount"].sum()
+            if "issue_amount" in working.columns
+            else pd.Series(dtype=float)
+        )
+        for name, count in mgmt_counts.items():
+            management_summary.append(
+                {
+                    "name": str(name),
+                    "count": int(count),
+                    "total_issue_amount": _safe_float(mgmt_issue.get(name)) if not mgmt_issue.empty else None,
+                }
+            )
+
+    organization_type_distribution = _value_distribution(working.get("type"), None)
+    fund_type_distribution = _value_distribution(working.get("fund_type"), None)
+    invest_type_distribution = _value_distribution(working.get("invest_type"), None)
+    market_distribution = _value_distribution(working.get("market"), None)
+    status_distribution = _value_distribution(status_series, None)
+
+    market_issue_summary: List[Dict[str, Any]] = []
+    if "market" in working.columns:
+        market_df = working.copy()
+        market_df["market"] = market_df["market"].fillna("未知")
+        grouped = market_df.groupby("market")
+        issue_series = grouped["issue_amount"].sum() if "issue_amount" in market_df.columns else pd.Series(dtype=float)
+        for market, sub_df in grouped:
+            market_issue_summary.append(
+                {
+                    "market": str(market),
+                    "count": int(len(sub_df)),
+                    "total_issue_amount": _safe_float(issue_series.get(market)) if not issue_series.empty else None,
+                }
+            )
+        market_issue_summary.sort(
+            key=lambda item: (item.get("total_issue_amount") or 0.0, item.get("count") or 0), reverse=True
+        )
+
+    list_trend = _build_list_trend_series(working)
+    list_trend_filters = _build_list_trend_filters(df)
+
+    fee_by_fund_type: List[Dict[str, Any]] = []
+    if "fund_type" in working.columns and ("m_fee" in working.columns or "c_fee" in working.columns):
+        fee_df = working.copy()
+        fee_df["fund_type"] = fee_df["fund_type"].fillna("未知")
+        fee_groups = fee_df.groupby("fund_type")
+        m_fee_series = fee_groups["m_fee"].mean() if "m_fee" in fee_df.columns else pd.Series(dtype=float)
+        c_fee_series = fee_groups["c_fee"].mean() if "c_fee" in fee_df.columns else pd.Series(dtype=float)
+        order_series = m_fee_series if not m_fee_series.empty else c_fee_series
+        for fund_type in order_series.sort_values(ascending=False).index:
+            fee_by_fund_type.append(
+                {
+                    "fund_type": str(fund_type),
+                    "avg_m_fee": _safe_float(m_fee_series.get(fund_type)) if not m_fee_series.empty else None,
+                    "avg_c_fee": _safe_float(c_fee_series.get(fund_type)) if not c_fee_series.empty else None,
+                }
+            )
+
+    top_issue_amount: List[Dict[str, Any]] = []
+    if "issue_amount" in working.columns:
+        cols = [c for c in ["ts_code", "name", "issue_amount", "list_date", "market"] if c in working.columns]
+        top_issue_df = working.dropna(subset=["issue_amount"]).sort_values("issue_amount", ascending=False).head(10)
+        for _, row in top_issue_df.iterrows():
+            item = {c: row.get(c) for c in cols}
+            item["issue_amount"] = _safe_float(item.get("issue_amount"))
+            if "list_date" in item:
+                if pd.notna(item["list_date"]):
+                    item["list_date"] = str(pd.to_datetime(item["list_date"]).date())
+                else:
+                    item["list_date"] = None
+            top_issue_amount.append(item)
+
+    recent_listings: List[Dict[str, Any]] = []
+    if "list_date" in working.columns:
+        recent_cols = [c for c in ["ts_code", "name", "list_date", "market", "issue_amount"] if c in working.columns]
+        recent_df = working.dropna(subset=["list_date"]).sort_values("list_date", ascending=False).head(10)
+        for _, row in recent_df.iterrows():
+            item = {c: row.get(c) for c in recent_cols}
+            if "list_date" in item:
+                if pd.notna(item["list_date"]):
+                    item["list_date"] = str(pd.to_datetime(item["list_date"]).date())
+                else:
+                    item["list_date"] = None
+            if "issue_amount" in item:
+                item["issue_amount"] = _safe_float(item.get("issue_amount"))
+            recent_listings.append(item)
+
+    response = {
+        "summary": {
+            "total_count": int(len(working)),
+            "active_count": active_count,
+            "unique_managements": int(working["management"].nunique(dropna=True)) if "management" in working.columns else None,
+            "total_issue_amount": issue_amount_total,
+            "avg_m_fee": avg_m_fee,
+            "avg_c_fee": avg_c_fee,
+            "avg_exp_return": avg_exp_return,
+            "avg_duration_year": avg_duration_year,
+        },
+        "top_management": management_summary,
+        "organization_type_distribution": organization_type_distribution,
+        "fund_type_distribution": fund_type_distribution,
+        "invest_type_distribution": invest_type_distribution,
+        "market_distribution": market_distribution,
+        "market_issue_summary": market_issue_summary,
+        "status_breakdown": status_distribution,
+        "list_trend": list_trend,
+        "list_trend_filters": list_trend_filters,
+        "fee_by_fund_type": fee_by_fund_type,
+        "top_issue_amount": top_issue_amount,
+        "recent_listings": recent_listings,
+    }
+
+    return JSONResponse(response)
+
+
+@app.get("/api/etf/analytics/list_trend")
+def etf_list_trend(
+    dimension: str = Query("all", description="筛选维度，可选 all/type/invest_type/fund_type/management"),
+    values: Optional[List[str]] = Query(None, description="筛选值，可传多个"),
+):
+    df = _load_etf_info_df()
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
+
+    dimension = (dimension or "all").lower()
+    dimension_map = {
+        "all": None,
+        "type": "type",
+        "invest_type": "invest_type",
+        "fund_type": "fund_type",
+        "management": "management",
+    }
+
+    column = dimension_map.get(dimension)
+    working = df.copy()
+
+    applied_values = _coerce_filter_list(values)
+    if column and applied_values:
+        normalized = (
+            working[column]
+            .fillna("未知")
+            .astype(str)
+            .replace({"": "未知", "nan": "未知"})
+        )
+        working = working[normalized.isin(applied_values)]
+    elif column:
+        # 没有提供具体值时直接返回空序列，避免误导
+        working = working.iloc[0:0]
+
+    series = _build_list_trend_series(working)
+
+    return JSONResponse(
+        {
+            "dimension": dimension,
+            "values": applied_values,
+            "list_trend": series,
+            "filters": _build_list_trend_filters(df),
+        }
+    )
+
+
+def _coerce_filter_list(raw: Optional[List[str]]) -> List[str]:
+    values: List[str] = []
+    if not raw:
+        return values
+    for entry in raw:
+        if entry is None:
+            continue
+        text = str(entry)
+        parts = [text] if "," not in text else text.split(",")
+        for part in parts:
+            norm = part.strip()
+            if norm:
+                values.append(norm)
+    return values
+
+
+def _build_filter_options(df: pd.DataFrame, column: str, *, top_n: Optional[int] = None) -> List[Dict[str, Any]]:
+    if column not in df.columns:
+        return []
+    series = df[column].fillna("未知").astype(str)
+    series = series.replace({"": "未知", "nan": "未知"})
+    counts = series.value_counts()
+    if top_n is not None:
+        counts = counts.head(top_n)
+    return [
+        {"value": str(idx), "label": str(idx), "count": int(count)}
+        for idx, count in counts.items()
+    ]
+
+
+def _serialize_value(value: Any) -> Any:
+    try:
+        if isinstance(value, (pd.Timestamp, datetime)):
+            if pd.isna(value):
+                return None
+            return value.strftime("%Y-%m-%d")
+        if isinstance(value, np.datetime64):
+            ts = pd.to_datetime(value, errors="coerce")
+            if pd.isna(ts):
+                return None
+            return ts.strftime("%Y-%m-%d")
+        if isinstance(value, (np.floating, float)):
+            if pd.isna(value):
+                return None
+            return float(value)
+        if isinstance(value, (np.integer, int)):
+            return int(value)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    text = str(value).strip()
+    return text or None
+
+
+@app.get("/api/etf/products")
+def etf_products(
+    q: Optional[str] = Query(default=""),
+    fund_type: Optional[List[str]] = Query(default=None),
+    organization_type: Optional[List[str]] = Query(default=None, alias="type"),
+    invest_type: Optional[List[str]] = Query(default=None),
+    market: Optional[List[str]] = Query(default=None),
+    status: Optional[List[str]] = Query(default=None),
+    management: Optional[List[str]] = Query(default=None),
+    custodian: Optional[List[str]] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+    sort_by: str = Query(default="issue_amount"),
+    sort_dir: str = Query(default="desc"),
+):
+    df = _load_etf_info_df()
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
+
+    working = df.copy()
+
+    # Apply text search across 核心信息
+    keyword = (q or "").strip()
+    if keyword:
+        lowered = keyword.lower()
+        search_cols = [col for col in ["ts_code", "code", "name", "management"] if col in working.columns]
+        if search_cols:
+            mask = pd.Series(False, index=working.index)
+            for col in search_cols:
+                series = working[col].astype(str).str.lower()
+                mask = mask | series.str.contains(lowered, na=False)
+            working = working[mask]
+
+    filters = {
+        "fund_type": _coerce_filter_list(fund_type),
+        "type": _coerce_filter_list(organization_type),
+        "invest_type": _coerce_filter_list(invest_type),
+        "market": _coerce_filter_list(market),
+        "status": _coerce_filter_list(status),
+        "management": _coerce_filter_list(management),
+        "custodian": _coerce_filter_list(custodian),
+    }
+
+    for column, values in filters.items():
+        if not values or column not in working.columns:
+            continue
+        candidates = {v.lower() for v in values}
+        series = working[column].fillna("未知").astype(str)
+        series = series.replace({"": "未知", "nan": "未知"})
+        mask = series.str.lower().isin(candidates)
+        working = working[mask]
+
+    sortable_map = {
+        "issue_amount": "issue_amount",
+        "m_fee": "m_fee",
+        "c_fee": "c_fee",
+        "exp_return": "exp_return",
+        "duration_year": "duration_year",
+        "list_date": "list_date",
+        "found_date": "found_date",
+        "issue_date": "issue_date",
+        "name": "name",
+    }
+    sort_col = sortable_map.get(sort_by, "issue_amount")
+    ascending = sort_dir.lower() == "asc"
+    if sort_col in working.columns:
+        working = working.sort_values(by=sort_col, ascending=ascending, na_position="last", kind="mergesort")
+
+    total_filtered = int(len(working))
+    start = (page - 1) * page_size
+    end = start + page_size
+    paged = working.iloc[start:end].copy()
+
+    preferred_cols = [
+        "ts_code",
+        "code",
+        "name",
+        "management",
+        "custodian",
+        "fund_type",
+        "type",
+        "invest_type",
+        "market",
+        "status",
+        "benchmark",
+        "issue_amount",
+        "m_fee",
+        "c_fee",
+        "exp_return",
+        "duration_year",
+        "list_date",
+        "found_date",
+        "issue_date",
+        "due_date",
+        "purc_startdate",
+        "redm_startdate",
+    ]
+    present_cols = [col for col in preferred_cols if col in paged.columns]
+    items: List[Dict[str, Any]] = []
+    for _, row in paged.iterrows():
+        record: Dict[str, Any] = {}
+        for col in present_cols:
+            record[col] = _serialize_value(row[col])
+        items.append(record)
+
+    def _safe_series_mean(column: str) -> Optional[float]:
+        if column not in working.columns:
+            return None
+        return _safe_float(working[column].mean())
+
+    def _safe_series_sum(column: str) -> Optional[float]:
+        if column not in working.columns:
+            return None
+        return _safe_float(working[column].sum())
+
+    def _safe_series_median(column: str) -> Optional[float]:
+        if column not in working.columns:
+            return None
+        try:
+            val = working[column].median()
+            if pd.isna(val):
+                return None
+            return float(val)
+        except Exception:
+            return None
+
+    active_count: Optional[int] = None
+    if "status" in working.columns:
+        status_series = working["status"].fillna("未知").astype(str)
+        inactive_keywords = ("终止", "退市", "清盘", "暂停", "到期")
+        active_mask = ~status_series.str.contains("|".join(inactive_keywords), case=False, na=False)
+        active_count = int(active_mask.sum())
+
+    recent_listings: Optional[int] = None
+    if "list_date" in working.columns:
+        today = pd.Timestamp.today().normalize()
+        twelve_months_ago = today - pd.DateOffset(months=12)
+        list_dates = pd.to_datetime(working["list_date"], errors="coerce")
+        recent_mask = (list_dates.notna()) & (list_dates >= twelve_months_ago)
+        recent_listings = int(recent_mask.sum())
+
+    summary = {
+        "universe_total": int(len(df)),
+        "filtered_total": total_filtered,
+        "active_count": active_count,
+        "recent_listings_12m": recent_listings,
+        "avg_m_fee": _safe_series_mean("m_fee"),
+        "avg_c_fee": _safe_series_mean("c_fee"),
+        "avg_exp_return": _safe_series_mean("exp_return"),
+        "avg_duration_year": _safe_series_mean("duration_year"),
+        "total_issue_amount": _safe_series_sum("issue_amount"),
+        "median_issue_amount": _safe_series_median("issue_amount"),
+        "unique_managements": int(working["management"].nunique()) if "management" in working.columns else None,
+    }
+
+    available_filters = {
+        "fund_type": _build_filter_options(df, "fund_type"),
+        "type": _build_filter_options(df, "type"),
+        "invest_type": _build_filter_options(df, "invest_type"),
+        "market": _build_filter_options(df, "market"),
+        "status": _build_filter_options(df, "status"),
+        "management": _build_filter_options(df, "management", top_n=30),
+        "custodian": _build_filter_options(df, "custodian", top_n=30),
+    }
+
+    response = {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total_filtered,
+        "summary": summary,
+        "available_filters": available_filters,
+        "sort_by": sort_col,
+        "sort_dir": "asc" if ascending else "desc",
+    }
+    return JSONResponse(response)
+
+
+def _match_product_by_identifier(df: pd.DataFrame, identifier: str) -> Optional[pd.Series]:
+    if df.empty:
+        return None
+    token = (identifier or "").strip()
+    if not token:
+        return None
+    lowered = token.lower()
+    lowered_nosfx = lowered.split(".")[0]
+
+    def _match_series(column: str) -> Optional[pd.Series]:
+        if column not in df.columns:
+            return None
+        series = df[column].astype(str).str.lower()
+        exact = df[series == lowered]
+        if not exact.empty:
+            return exact.iloc[0]
+        if lowered_nosfx and lowered_nosfx != lowered:
+            nosfx_match = series.str.split(".").str[0] == lowered_nosfx
+            subset = df[nosfx_match]
+            if not subset.empty:
+                return subset.iloc[0]
+        contains = df[series.str.contains(lowered, na=False)]
+        if not contains.empty:
+            return contains.iloc[0]
+        return None
+
+    for col in ["ts_code", "code"]:
+        record = _match_series(col)
+        if record is not None:
+            return record
+
+    if "name" in df.columns:
+        names = df["name"].astype(str).str.lower()
+        name_match = df[names == lowered]
+        if not name_match.empty:
+            return name_match.iloc[0]
+        contains = df[names.str.contains(lowered, na=False)]
+        if not contains.empty:
+            return contains.iloc[0]
+
+    return None
+
+
+def _generate_synthetic_price_series(
+    identifier: str,
+    issue_amount: Optional[float] = None,
+    start_date: Optional[str] = None,
+    periods: Optional[int] = 120,
+) -> List[Dict[str, Any]]:
+    seed = abs(hash(identifier)) % (2 ** 32)
+    rng = np.random.default_rng(seed)
+
+    base_price = 1.0
+    if issue_amount is not None:
+        try:
+            base_price = float(issue_amount) / 5000.0
+            base_price = float(np.clip(base_price, 0.8, 8.0))
+        except Exception:
+            base_price = 1.0
+
+    today = pd.Timestamp.today().normalize()
+    start_dt: Optional[pd.Timestamp] = None
+    if start_date:
+        try:
+            parsed = pd.to_datetime(start_date, errors="coerce")
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            if getattr(parsed, "tzinfo", None) is not None:
+                parsed = parsed.tz_convert(None)
+            start_dt = parsed
+            if start_dt > today:
+                start_dt = today
+
+    if start_dt is not None:
+        dates = pd.bdate_range(start=start_dt, end=today)
+    else:
+        if not periods or periods <= 0:
+            periods = 120
+        dates = pd.bdate_range(end=today, periods=periods)
+    if len(dates) == 0:
+        return []
+
+    closes = np.empty(len(dates))
+    closes[0] = max(base_price, 0.5)
+    for i in range(1, len(dates)):
+        drift = rng.normal(0.0006, 0.018)
+        closes[i] = max(0.2, closes[i - 1] * (1 + drift))
+
+    opens = np.empty_like(closes)
+    opens[0] = closes[0] * (1 + rng.normal(0.0, 0.004))
+    for i in range(1, len(dates)):
+        opens[i] = closes[i - 1] * (1 + rng.normal(0.0, 0.006))
+
+    highs = np.maximum(opens, closes) * (1 + rng.uniform(0.002, 0.02, size=len(dates)))
+    lows = np.minimum(opens, closes) * (1 - rng.uniform(0.002, 0.02, size=len(dates)))
+
+    volume_base = 80000.0
+    if issue_amount is not None:
+        try:
+            volume_base = float(issue_amount) * 120.0
+            volume_base = float(np.clip(volume_base, 20000.0, 5_000_000.0))
+        except Exception:
+            volume_base = 80000.0
+    volumes = volume_base * rng.uniform(0.5, 1.6, size=len(dates))
+
+    series: List[Dict[str, Any]] = []
+    for idx, dt in enumerate(dates):
+        high = float(max(highs[idx], opens[idx], closes[idx]))
+        low = float(min(lows[idx], opens[idx], closes[idx]))
+        if high < low:
+            high = low
+        low = max(low, 0.1)
+        series.append(
+            {
+                "date": dt.strftime("%Y-%m-%d"),
+                "open": round(float(opens[idx]), 4),
+                "close": round(float(closes[idx]), 4),
+                "high": round(high, 4),
+                "low": round(low, 4),
+                "volume": float(np.round(volumes[idx], 0)),
+            }
+        )
+    return series
+
+
+@app.get("/api/etf/products/{product_id}")
+def etf_product_detail(product_id: str):
+    df = _load_etf_info_df()
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
+
+    record = _match_product_by_identifier(df, product_id)
+    if record is None:
+        return JSONResponse(status_code=404, content={"detail": f"未找到编号为 {product_id} 的产品"})
+
+    preferred_info_cols = [
+        "ts_code",
+        "code",
+        "name",
+        "management",
+        "custodian",
+        "trustee",
+        "fund_type",
+        "type",
+        "invest_type",
+        "market",
+        "status",
+        "benchmark",
+        "found_date",
+        "issue_date",
+        "list_date",
+        "due_date",
+        "purc_startdate",
+        "redm_startdate",
+    ]
+    metric_cols = [
+        "issue_amount",
+        "m_fee",
+        "c_fee",
+        "exp_return",
+        "duration_year",
+        "p_value",
+        "min_amount",
+    ]
+
+    base_info: Dict[str, Any] = {}
+    for col in preferred_info_cols + metric_cols:
+        if col in record.index:
+            base_info[col] = _serialize_value(record[col])
+
+    metrics = {
+        "issue_amount": _safe_float(record.get("issue_amount")),
+        "m_fee": _safe_float(record.get("m_fee")),
+        "c_fee": _safe_float(record.get("c_fee")),
+        "exp_return": _safe_float(record.get("exp_return")),
+        "duration_year": _safe_float(record.get("duration_year")),
+    }
+
+    identifier = base_info.get("ts_code") or base_info.get("code") or product_id
+    start_date = (
+        base_info.get("list_date")
+        or base_info.get("found_date")
+        or base_info.get("issue_date")
+        or base_info.get("purc_startdate")
+        or None
+    )
+    time_series = _generate_synthetic_price_series(
+        str(identifier),
+        issue_amount=metrics.get("issue_amount"),
+        start_date=str(start_date) if start_date else None,
+    )
+
+    response = {
+        "product_id": identifier,
+        "name": base_info.get("name") or identifier,
+        "management": base_info.get("management"),
+        "custodian": base_info.get("custodian"),
+        "status": base_info.get("status"),
+        "base_info": base_info,
+        "metrics": metrics,
+        "timeseries": time_series,
+    }
+    return JSONResponse(response)
+
+
 # ---- 静态页面托管（可选：将前端构建产物放到 frontend/dist 下） ----
 DIST_DIR = (Path(__file__).resolve().parents[1] / "frontend" / "dist").resolve()
-if DIST_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="static")
+app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True, check_dir=False), name="static")
 
 
-@app.get("/{full_path:path}")
-def spa_fallback(full_path: str):
-    print(f"[DEBUG] SPA Fallback triggered for path: {full_path}")
-    if full_path.startswith("api"):
-        return {"detail": "Not Found"}
+@app.exception_handler(404)
+async def spa_fallback(request: Request, exc):  # noqa: ARG001
+    """Serve the built frontend for unknown non-API routes."""
+    path = request.url.path
+    if path.startswith("/api"):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    # Attempt to serve asset files directly when 静态资源已经生成
+    last_segment = path.rsplit("/", 1)[-1]
+    if "." in last_segment:
+        suffix = Path(last_segment).suffix.lower()
+        asset_suffixes = {
+            ".js",
+            ".css",
+            ".ico",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".svg",
+            ".webp",
+            ".json",
+            ".txt",
+            ".map",
+            ".woff",
+            ".woff2",
+            ".ttf",
+        }
+        if suffix in asset_suffixes:
+            asset_path = (DIST_DIR / path.lstrip("/")).resolve()
+            try:
+                asset_path.relative_to(DIST_DIR)
+            except ValueError:
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+            if asset_path.exists() and asset_path.is_file():
+                return FileResponse(asset_path)
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
     index_file = DIST_DIR / "index.html"
     if index_file.exists():
         return HTMLResponse(index_file.read_text(encoding="utf-8"))
-    return HTMLResponse("<h3>Frontend not built. Run: cd frontend && npm install && npm run build</h3>",
-                        status_code=200)
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
 
 
 if __name__ == "__main__":

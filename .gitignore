@@ -19,7 +19,7 @@ data/previews/
 
 # Local data outputs
 .data/
-data/
+data/*
 !data/fixtures/
 !data/fixtures/**
 parquet_cache/
@@ -44,3 +44,4 @@ frontend/dist/
 
 # Local-only helpers
 local_test.py
+
