@@ -1,0 +1,8 @@
+{
+    "periods_per_year": 252.0,
+    "risk_free_rate_per_period": 0.0001,
+    "ddof": 1,
+    "win_threshold": 0.0,
+    "loss_threshold": 0.0,
+    "initial_nav": 1.0
+}
