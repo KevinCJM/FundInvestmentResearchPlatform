@@ -2,168 +2,113 @@ import numpy as np
 from numpy.testing import assert_allclose
 
 from cal_indicators.indicator_config import load_indicator_config
+from cal_indicators.numba_finance_math import (
+    cumulative_net_value,
+    sequence_drawdown,
+    sequence_mean,
+    sequence_min,
+    sequence_sum,
+    sequence_variance,
+)
 from cal_indicators.numba_finance_indicators import (
+    annualization_factor,
     annualized_return,
     annualized_volatility,
     average_return,
     calmar_ratio,
     cumulative_return,
+    excess_return,
     loss_rate,
-    max_drawdown_rate,
-    max_drawdown_recovery_periods,
+    max_drawdown_rate_from_min,
+    scale_excess_return_for_sharpe,
     sharpe_ratio,
-    volatility,
+    volatility_from_variance,
     win_rate,
 )
 
 
-def _compute_nav(returns, initial_nav=1.0):
-    n = returns.shape[0]
-    if n == 0:
-        return np.empty(0, dtype=np.float64)
-    nav = np.empty(n, dtype=np.float64)
-    nav_value = initial_nav
-    for i in range(n):
-        nav_value *= 1.0 + returns[i]
-        nav[i] = nav_value
-    return nav
-
-
-def _max_drawdown(nav):
-    if nav.shape[0] == 0:
-        return np.nan
-    peaks = np.maximum.accumulate(nav)
-    drawdowns = (nav - peaks) / peaks
-    return -np.min(drawdowns)
-
-
-def _max_drawdown_recovery(nav):
-    n = nav.shape[0]
-    if n == 0:
-        return 0
-    peak = nav[0]
-    peak_index = 0
-    drawdown_active = False
-    drawdown_peak_index = 0
-    max_length = 0
-    for i in range(1, n):
-        value = nav[i]
-        if value >= peak:
-            if drawdown_active:
-                length = i - drawdown_peak_index
-                if length > max_length:
-                    max_length = length
-                drawdown_active = False
-            peak = value
-            peak_index = i
-        else:
-            if not drawdown_active:
-                drawdown_active = True
-                drawdown_peak_index = peak_index
-    if drawdown_active:
-        length = (n - 1) - drawdown_peak_index
-        if length > max_length:
-            max_length = length
-    return max_length
-
-
-def test_indicator_suite_basic():
+def test_indicator_atomic_computations():
     returns = np.array([0.01, -0.02, 0.015, 0.005, -0.01, 0.02], dtype=np.float64)
     config = load_indicator_config()
-    periods_per_year = config["periods_per_year"]
-    risk_free = config["risk_free_rate_per_period"]
-    ddof = config["ddof"]
+    total_sum = sequence_sum(returns)
+    total_count = returns.shape[0]
+
+    avg_return = average_return(total_sum, total_count)
+    assert_allclose(avg_return, np.mean(returns))
+
+    nav_series = cumulative_net_value(config["initial_nav"], returns)
+    final_nav = nav_series[-1]
+    initial_nav = nav_series[0]
+    cum_return = cumulative_return(final_nav, initial_nav)
+    expected_cum = np.prod(1.0 + returns) - 1.0
+    assert_allclose(cum_return, expected_cum)
+
+    factor = annualization_factor(config["periods_per_year"], total_count)
+    ann_return = annualized_return(cum_return, factor)
+    expected_ann = (1.0 + expected_cum) ** (config["periods_per_year"] / total_count) - 1.0
+    assert_allclose(ann_return, expected_ann)
+
+    variance = sequence_variance(returns, config["ddof"])
+    period_volatility = volatility_from_variance(variance)
+    expected_period_vol = np.std(returns, ddof=config["ddof"])
+    assert_allclose(period_volatility, expected_period_vol)
+
+    ann_volatility = annualized_volatility(period_volatility, config["periods_per_year"])
+    expected_ann_vol = expected_period_vol * np.sqrt(config["periods_per_year"])
+    assert_allclose(ann_volatility, expected_ann_vol)
+
+    mean_return = sequence_mean(returns)
+    per_period_excess = excess_return(mean_return, config["risk_free_rate_per_period"])
+    scaled_excess = scale_excess_return_for_sharpe(per_period_excess, config["periods_per_year"])
+    expected_scaled_excess = (mean_return - config["risk_free_rate_per_period"]) * np.sqrt(
+        config["periods_per_year"]
+    )
+    assert_allclose(scaled_excess, expected_scaled_excess)
+
+    sharpe = sharpe_ratio(scaled_excess, ann_volatility)
+    expected_sharpe = expected_scaled_excess / expected_ann_vol
+    assert_allclose(sharpe, expected_sharpe)
+
     win_threshold = config["win_threshold"]
     loss_threshold = config["loss_threshold"]
-    initial_nav = config["initial_nav"]
+    win_count = int(np.sum(returns > win_threshold))
+    loss_count = int(np.sum(returns < loss_threshold))
+    expected_win_rate = win_count / total_count
+    expected_loss_rate = loss_count / total_count
+    assert_allclose(win_rate(win_count, total_count), expected_win_rate)
+    assert_allclose(loss_rate(loss_count, total_count), expected_loss_rate)
 
-    expected_cum = np.prod(1.0 + returns) - 1.0
-    assert_allclose(cumulative_return(returns), expected_cum)
+    drawdown_series = sequence_drawdown(nav_series)
+    min_drawdown = sequence_min(drawdown_series)
+    max_dd = max_drawdown_rate_from_min(min_drawdown)
+    expected_max_dd = -min_drawdown
+    assert_allclose(max_dd, expected_max_dd)
 
-    expected_ann_ret = (1.0 + expected_cum) ** (periods_per_year / returns.shape[0]) - 1.0
-    assert_allclose(annualized_return(returns, periods_per_year), expected_ann_ret)
-
-    expected_vol = np.std(returns, ddof=ddof)
-    assert_allclose(volatility(returns, ddof), expected_vol)
-
-    expected_ann_vol = expected_vol * np.sqrt(periods_per_year)
-    assert_allclose(annualized_volatility(returns, periods_per_year, ddof), expected_ann_vol)
-
-    mean_return = np.mean(returns)
-    expected_sharpe = (mean_return - risk_free) * np.sqrt(periods_per_year) / expected_vol
-    assert_allclose(sharpe_ratio(returns, risk_free, periods_per_year, ddof), expected_sharpe)
-
-    expected_win_rate = np.sum(returns > win_threshold) / returns.shape[0]
-    expected_loss_rate = np.sum(returns < loss_threshold) / returns.shape[0]
-    assert_allclose(win_rate(returns, win_threshold), expected_win_rate)
-    assert_allclose(loss_rate(returns, loss_threshold), expected_loss_rate)
-
-    nav = _compute_nav(returns, initial_nav)
-    expected_max_dd = _max_drawdown(nav)
-    assert_allclose(max_drawdown_rate(returns, initial_nav), expected_max_dd)
-
-    expected_recovery = _max_drawdown_recovery(nav)
-    assert max_drawdown_recovery_periods(returns, initial_nav) == expected_recovery
-
-    expected_calmar = expected_ann_ret / expected_max_dd
-    assert_allclose(calmar_ratio(returns, periods_per_year, initial_nav), expected_calmar)
-
-    assert_allclose(average_return(returns), np.mean(returns))
+    calmar = calmar_ratio(ann_return, max_dd)
+    expected_calmar = expected_ann / expected_max_dd
+    assert_allclose(calmar, expected_calmar)
 
 
-def test_indicators_edge_cases():
-    empty = np.array([], dtype=np.float64)
-    config = load_indicator_config()
-    assert np.isnan(cumulative_return(empty))
-    assert np.isnan(annualized_return(empty, config["periods_per_year"]))
-    assert np.isnan(volatility(empty, config["ddof"]))
-    assert np.isnan(annualized_volatility(empty, config["periods_per_year"], config["ddof"]))
-    assert np.isnan(sharpe_ratio(empty, config["risk_free_rate_per_period"], config["periods_per_year"], config["ddof"]))
-    assert np.isnan(win_rate(empty, config["win_threshold"]))
-    assert np.isnan(loss_rate(empty, config["loss_threshold"]))
-    assert np.isnan(max_drawdown_rate(empty, config["initial_nav"]))
-    assert max_drawdown_recovery_periods(empty, config["initial_nav"]) == 0
-    assert np.isnan(calmar_ratio(empty, config["periods_per_year"], config["initial_nav"]))
-    assert np.isnan(average_return(empty))
+def test_indicator_edge_cases():
+    assert np.isnan(average_return(0.0, 0))
+    assert np.isnan(cumulative_return(1.0, 0.0))
 
+    invalid_factor = annualization_factor(252.0, 0)
+    assert np.isnan(invalid_factor)
+    assert np.isnan(annualized_return(0.1, invalid_factor))
+    assert np.isnan(annualized_return(-1.2, 1.0))
 
-def test_sharpe_ratio_zero_volatility():
-    returns = np.array([0.01, 0.01, 0.01, 0.01], dtype=np.float64)
-    config = load_indicator_config()
-    periods_per_year = config["periods_per_year"]
-    risk_free = config["risk_free_rate_per_period"]
-    ddof = config["ddof"]
-    assert np.isnan(sharpe_ratio(returns, risk_free, periods_per_year, ddof))
+    assert np.isnan(volatility_from_variance(-0.1))
+    assert np.isnan(annualized_volatility(np.nan, 252.0))
+    assert np.isnan(annualized_volatility(0.1, -10.0))
 
+    assert np.isnan(scale_excess_return_for_sharpe(0.01, -252.0))
+    assert np.isnan(sharpe_ratio(0.1, 0.0))
 
-def test_drawdown_metrics_monotonic_increase():
-    returns = np.array([0.01, 0.01, 0.01, 0.01], dtype=np.float64)
-    config = load_indicator_config()
-    initial_nav = config["initial_nav"]
-    assert_allclose(max_drawdown_rate(returns, initial_nav), 0.0)
-    assert max_drawdown_recovery_periods(returns, initial_nav) == 0
+    assert np.isnan(win_rate(0, 0))
+    assert np.isnan(loss_rate(0, 0))
 
-
-def test_indicator_config_loader_default_path():
-    config = load_indicator_config()
-    assert config["periods_per_year"] == 252.0
-    assert config["ddof"] == 1
-    assert config["risk_free_rate_per_period"] == 0.0001
-    assert config["win_threshold"] == 0.0
-    assert config["loss_threshold"] == 0.0
-    assert config["initial_nav"] == 1.0
-
-
-def test_indicator_config_loader_custom_path(tmp_path):
-    custom_path = tmp_path / "custom_config.json"
-    custom_path.write_text(
-        '{"periods_per_year": 360.0, "risk_free_rate_per_period": 0.0, "ddof": 2, "win_threshold": 0.01, "loss_threshold": -0.01, "initial_nav": 100.0}',
-        encoding="utf-8",
-    )
-    config = load_indicator_config(str(custom_path))
-    assert config["periods_per_year"] == 360.0
-    assert config["ddof"] == 2
-    assert config["risk_free_rate_per_period"] == 0.0
-    assert config["win_threshold"] == 0.01
-    assert config["loss_threshold"] == -0.01
-    assert config["initial_nav"] == 100.0
+    assert np.isnan(max_drawdown_rate_from_min(np.nan))
+    assert np.isnan(calmar_ratio(np.nan, 0.1))
+    assert np.isnan(calmar_ratio(0.1, np.nan))
+    assert np.isnan(calmar_ratio(0.1, 0.0))

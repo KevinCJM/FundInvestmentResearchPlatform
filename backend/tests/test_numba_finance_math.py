@@ -1,9 +1,20 @@
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
 from cal_indicators.numba_finance_math import (
+    absolute,
+    add,
+    clip,
     cumulative_net_value,
     cumulative_simple_returns,
+    divide,
+    maximum,
+    minimum,
+    multiply,
+    negate,
+    power,
+    reciprocal,
     sequence_add,
     sequence_compound_annual_growth_rate,
     sequence_cumsum,
@@ -22,6 +33,8 @@ from cal_indicators.numba_finance_math import (
     sequence_subtract,
     sequence_sum,
     sequence_variance,
+    max_drawdown_rate_and_recovery_days,
+    subtract,
 )
 
 
@@ -144,7 +157,7 @@ def test_cumulative_simple_returns_and_nav():
     expected_cum = np.array([0.1, 0.045, 0.254], dtype=np.float64)
     assert_allclose(cumulative_simple_returns(returns), expected_cum, rtol=1e-9, atol=1e-9)
     nav_path = cumulative_net_value(100.0, returns)
-    assert_allclose(nav_path, np.array([110.0, 104.5, 125.4], dtype=np.float64))
+    assert_allclose(nav_path, np.array([100.0, 110.0, 104.5, 125.4], dtype=np.float64))
 
 
 def test_sequence_geometric_mean():
@@ -180,3 +193,72 @@ def test_sequence_excess_return():
     bench = np.array([0.03, 0.01, 0.0], dtype=np.float64)
     expected = np.array([0.02, 0.01, -0.01], dtype=np.float64)
     assert_allclose(sequence_excess_return(asset, bench), expected)
+
+
+def test_scalar_operators_basic():
+    assert_allclose(add(1.2, 3.4), 4.6)
+    assert_allclose(subtract(5.0, 2.5), 2.5)
+    assert_allclose(multiply(1.5, -2.0), -3.0)
+    assert np.isnan(divide(1.0, 0.0))
+    assert_allclose(divide(9.0, 3.0), 3.0)
+    assert_allclose(negate(-4.0), 4.0)
+    assert_allclose(absolute(-7.2), 7.2)
+    assert_allclose(reciprocal(2.0), 0.5)
+    assert np.isnan(reciprocal(0.0))
+
+
+def test_scalar_operators_extended():
+    assert_allclose(power(2.0, 3.0), 8.0)
+    assert np.isnan(power(-1.0, 0.5))
+    assert_allclose(maximum(2.0, 5.0), 5.0)
+    assert_allclose(minimum(2.0, 5.0), 2.0)
+    assert_allclose(clip(5.0, 0.0, 10.0), 5.0)
+    assert_allclose(clip(-1.0, 0.0, 10.0), 0.0)
+    assert_allclose(clip(12.0, 0.0, 10.0), 10.0)
+    with pytest.raises(ValueError):
+        clip(1.0, 5.0, 0.0)
+
+
+def test_max_drawdown_rate_and_recovery_days_no_drawdown():
+    nav = np.array([1.0, 1.1, 1.2, 1.3], dtype=np.float64)
+    rate, recovery = max_drawdown_rate_and_recovery_days(nav)
+    assert_allclose(rate, 0.0)
+    assert_allclose(recovery, 0.0)
+
+
+def test_max_drawdown_rate_and_recovery_days_full_recovery():
+    nav = np.array([1.0, 1.2, 0.8, 1.05, 1.2], dtype=np.float64)
+    rate, recovery = max_drawdown_rate_and_recovery_days(nav)
+    expected_rate = (1.2 - 0.8) / 1.2
+    assert_allclose(rate, expected_rate)
+    assert_allclose(recovery, 3.0)
+
+
+def test_max_drawdown_rate_and_recovery_days_not_recovered():
+    nav = np.array([1.0, 1.3, 0.9, 1.0, 1.1], dtype=np.float64)
+    rate, recovery = max_drawdown_rate_and_recovery_days(nav)
+    expected_rate = (1.3 - 0.9) / 1.3
+    assert_allclose(rate, expected_rate)
+    assert np.isnan(recovery)
+
+
+def test_vectorized_operator_behaviour():
+    lhs = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    rhs = np.array([4.0, 1.0, 0.0], dtype=np.float64)
+    assert_allclose(add(lhs, rhs), np.array([5.0, 3.0, 3.0], dtype=np.float64))
+    assert_allclose(subtract(lhs, rhs), np.array([-3.0, 1.0, 3.0], dtype=np.float64))
+    assert_allclose(multiply(lhs, rhs), np.array([4.0, 2.0, 0.0], dtype=np.float64))
+    division = divide(lhs, rhs)
+    assert_allclose(division[0], 0.25)
+    assert np.isnan(division[2])
+    assert_allclose(maximum(lhs, rhs), np.array([4.0, 2.0, 3.0], dtype=np.float64))
+    assert_allclose(minimum(lhs, rhs), np.array([1.0, 1.0, 0.0], dtype=np.float64))
+
+    broadcast = add(lhs, 1.5)
+    assert_allclose(broadcast, np.array([2.5, 3.5, 4.5], dtype=np.float64))
+
+    assert_allclose(negate(lhs), np.array([-1.0, -2.0, -3.0], dtype=np.float64))
+    assert_allclose(absolute(np.array([-1.0, 0.0, 2.0], dtype=np.float64)), np.array([1.0, 0.0, 2.0], dtype=np.float64))
+    recip = reciprocal(np.array([2.0, -4.0, 0.0], dtype=np.float64))
+    assert_allclose(recip[:2], np.array([0.5, -0.25], dtype=np.float64))
+    assert np.isnan(recip[2])

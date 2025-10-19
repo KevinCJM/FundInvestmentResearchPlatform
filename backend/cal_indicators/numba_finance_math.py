@@ -1,5 +1,103 @@
 import numpy as np
-from numba import njit
+from numba import njit, vectorize
+
+
+@vectorize(["float64(float64, float64)"], nopython=True, target="cpu")
+def add(lhs, rhs):
+    """
+    计算两个输入（可为标量或等长向量）的逐元素和。
+    """
+    return lhs + rhs
+
+
+@vectorize(["float64(float64, float64)"], nopython=True, target="cpu")
+def subtract(lhs, rhs):
+    """
+    计算两个输入（可为标量或等长向量）的逐元素差值（lhs - rhs）。
+    """
+    return lhs - rhs
+
+
+@vectorize(["float64(float64, float64)"], nopython=True, target="cpu")
+def multiply(lhs, rhs):
+    """
+    计算两个输入（可为标量或等长向量）的逐元素乘积。
+    """
+    return lhs * rhs
+
+
+@vectorize(["float64(float64, float64)"], nopython=True, target="cpu")
+def divide(lhs, rhs):
+    """
+    计算两个输入（可为标量或等长向量）的逐元素商，除数接近0时返回np.nan。
+    """
+    if np.abs(rhs) < 1e-12:
+        return np.nan
+    return lhs / rhs
+
+
+@vectorize(["float64(float64)"], nopython=True, target="cpu")
+def negate(value):
+    """
+    计算输入（标量或向量）的逐元素相反数。
+    """
+    return -value
+
+
+@vectorize(["float64(float64)"], nopython=True, target="cpu")
+def absolute(value):
+    """
+    计算输入（标量或向量）的逐元素绝对值。
+    """
+    return value if value >= 0.0 else -value
+
+
+@vectorize(["float64(float64, float64)"], nopython=True, target="cpu")
+def power(base, exponent):
+    """
+    计算输入（可为标量或向量）的逐元素幂运算。
+    """
+    return np.power(base, exponent)
+
+
+@vectorize(["float64(float64, float64)"], nopython=True, target="cpu")
+def maximum(lhs, rhs):
+    """
+    返回两个输入（可为标量或等长向量）的逐元素较大值。
+    """
+    return lhs if lhs >= rhs else rhs
+
+
+@vectorize(["float64(float64, float64)"], nopython=True, target="cpu")
+def minimum(lhs, rhs):
+    """
+    返回两个输入（可为标量或等长向量）的逐元素较小值。
+    """
+    return lhs if lhs <= rhs else rhs
+
+
+@njit("float64(float64, float64, float64)", nogil=True, fastmath=True)
+def clip(value, lower, upper):
+    """
+    将输入标量裁剪到给定区间 [lower, upper]。
+    """
+    if lower > upper:
+        raise ValueError("lower 不得大于 upper")
+    if value < lower:
+        return lower
+    if value > upper:
+        return upper
+    return value
+
+
+@vectorize(["float64(float64)"], nopython=True, target="cpu")
+def reciprocal(value):
+    """
+    计算输入（标量或向量）的逐元素倒数，值接近0时返回np.nan。
+    """
+    if np.abs(value) < 1e-12:
+        return np.nan
+    return 1.0 / value
 
 
 @njit("float64(float64[:])", nogil=True, fastmath=True)
@@ -285,6 +383,60 @@ def sequence_drawdown(nav_series):
         else:
             result[i] = (nav_series[i] - peak) / peak
     return result
+
+
+@njit("UniTuple(float64, 2)(float64[:])", nogil=True, fastmath=True)
+def max_drawdown_rate_and_recovery_days(nav_series):
+    """
+    计算最大回撤率以及回撤修复天数（峰值到完全恢复期间的步数）。
+    """
+    n = nav_series.shape[0]
+    if n == 0:
+        return np.nan, np.nan
+
+    drawdowns = sequence_drawdown(nav_series)
+    if drawdowns.shape[0] == 0:
+        return np.nan, np.nan
+
+    min_drawdown = sequence_min(drawdowns)
+    if np.isnan(min_drawdown):
+        return np.nan, np.nan
+
+    if min_drawdown >= 0.0:
+        return 0.0, 0.0
+
+    max_drawdown_rate_value = -min_drawdown
+
+    peak_value = nav_series[0]
+    peak_index = 0
+    max_drawdown_peak_index = -1
+    max_drawdown_trough_index = -1
+
+    for i in range(n):
+        current_nav = nav_series[i]
+        if current_nav > peak_value:
+            peak_value = current_nav
+            peak_index = i
+
+        current_drawdown = drawdowns[i]
+        if np.isnan(current_drawdown):
+            continue
+
+        if current_drawdown == min_drawdown:
+            max_drawdown_peak_index = peak_index
+            max_drawdown_trough_index = i
+            break
+
+    recovery_days_value = np.nan
+    if max_drawdown_peak_index >= 0 and max_drawdown_trough_index >= 0:
+        peak_nav = nav_series[max_drawdown_peak_index]
+        if peak_nav > 0.0:
+            for j in range(max_drawdown_trough_index + 1, n):
+                if nav_series[j] >= peak_nav:
+                    recovery_days_value = float(j - max_drawdown_peak_index)
+                    break
+
+    return max_drawdown_rate_value, recovery_days_value
 
 
 @njit("float64[:](float64[:], float64[:])", nogil=True, fastmath=True)
