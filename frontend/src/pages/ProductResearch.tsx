@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import FilterDropdown, { FilterOption } from '../components/FilterDropdown';
 
 interface ProductItem {
@@ -136,6 +136,8 @@ export default function ProductResearch() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [searchInput, setSearchInput] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [selectedProducts, setSelectedProducts] = useState<Record<string, { id: string; name: string; code: string }>>({});
+  const navigate = useNavigate();
 
   useEffect(() => {
     const handler = window.setTimeout(() => {
@@ -245,6 +247,40 @@ export default function ProductResearch() {
   };
 
   const appliedFiltersCount = activeFilterChips.length;
+  const selectedList = useMemo(() => Object.values(selectedProducts), [selectedProducts]);
+  const selectedCount = selectedList.length;
+
+  const toggleProductSelection = (productId: string | null | undefined, productName?: string | null, productCode?: string | null) => {
+    if (!productId) {
+      return;
+    }
+    setSelectedProducts((prev) => {
+      if (prev[productId]) {
+        const { [productId]: _removed, ...rest } = prev;
+        return rest;
+      }
+      if (Object.keys(prev).length >= 10) {
+        window.alert('最多选择 10 个产品进行对比');
+        return prev;
+      }
+      return {
+        ...prev,
+        [productId]: {
+          id: productId,
+          name: productName ?? productId,
+          code: productCode ?? productId,
+        },
+      };
+    });
+  };
+
+  const goToComparison = () => {
+    if (selectedCount === 0) {
+      return;
+    }
+    const ids = selectedList.map((item) => encodeURIComponent(item.id)).join(',');
+    navigate(`/product-compare?ids=${ids}`);
+  };
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -379,9 +415,12 @@ export default function ProductResearch() {
       </section>
 
       <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
-        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
-          <h2 className="text-lg font-semibold text-slate-900">产品列表</h2>
-          <div className="flex items-center gap-3 text-sm text-slate-500">
+        <div className="flex flex-col gap-3 border-b border-slate-100 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">产品列表</h2>
+            <div className="mt-1 text-xs text-slate-500">勾选最多 10 个产品进行对比分析</div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
             <span>每页</span>
             <select
               value={pageSize}
@@ -398,6 +437,18 @@ export default function ProductResearch() {
               ))}
             </select>
             <span className="text-slate-400">共 {response?.total ?? 0} 条</span>
+            <div className="flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600">
+              已选 {selectedCount} / 10
+            </div>
+            <button
+              type="button"
+              onClick={goToComparison}
+              disabled={selectedCount === 0}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-1 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+            >
+              产品对比
+              {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-600">{selectedCount}</span>}
+            </button>
           </div>
         </div>
 
@@ -423,9 +474,12 @@ export default function ProductResearch() {
           <div className="px-6 py-24 text-center text-slate-500">暂无符合筛选条件的ETF。</div>
         ) : (
           <div className="h-[520px] w-full overflow-auto">
-            <table className="min-w-[1200px] divide-y divide-slate-100">
+            <table className="min-w-[1280px] divide-y divide-slate-100">
               <thead className="bg-slate-50">
                 <tr>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    选择
+                  </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                     产品
                   </th>
@@ -456,8 +510,19 @@ export default function ProductResearch() {
                 {response?.items.map((item) => {
                   const code = item.ts_code ?? item.code ?? '--';
                   const detailPath = code && code !== '--' ? `/product/${encodeURIComponent(code)}` : undefined;
+                  const selectionId = item.ts_code ?? item.code ?? null;
+                  const isSelected = selectionId ? Boolean(selectedProducts[selectionId]) : false;
                   return (
                     <tr key={`${code}-${item.name}`} className="hover:bg-emerald-50/40">
+                      <td className="px-6 py-4">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          checked={isSelected}
+                          onChange={() => toggleProductSelection(selectionId, item.name, code)}
+                          disabled={!selectionId}
+                        />
+                      </td>
                       <td className="px-6 py-4">
                         {detailPath ? (
                           <Link to={detailPath} target="_blank" rel="noreferrer" className="group block">
@@ -533,6 +598,22 @@ export default function ProductResearch() {
                 下一页
               </button>
             </div>
+          </div>
+        )}
+        {selectedCount > 0 && (
+          <div className="flex flex-wrap gap-2 border-t border-slate-100 px-6 py-4 text-xs text-emerald-600">
+            {selectedList.map((item) => (
+              <span key={item.id} className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1">
+                {item.name}
+                <button
+                  type="button"
+                  className="text-emerald-500 hover:text-emerald-700"
+                  onClick={() => toggleProductSelection(item.id, item.name, item.code)}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
           </div>
         )}
       </section>
