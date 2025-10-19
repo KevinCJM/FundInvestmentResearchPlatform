@@ -7,6 +7,7 @@ import ClassAllocation from './pages/ClassAllocation';
 import Placeholder from './pages/Placeholder';
 import ProductResearch from './pages/ProductResearch';
 import ProductDetail from './pages/ProductDetail';
+import ProductCompare from './pages/ProductCompare';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/research" element={<ProductResearch />} />
             <Route path="/product/:productId" element={<ProductDetail />} />
+            <Route path="/product-compare" element={<ProductCompare />} />
             <Route path="/manual-construction" element={<ManualConstruction />} />
             <Route path="/auto-classification" element={<Placeholder title="自动构建大类" />} />
             <Route path="/class-allocation" element={<ClassAllocation />} />
