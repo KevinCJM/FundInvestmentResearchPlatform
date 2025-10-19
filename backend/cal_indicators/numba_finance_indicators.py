@@ -1,190 +1,138 @@
 import numpy as np
 from numba import njit
 
-try:
-    from backend.cal_indicators.numba_finance_math import (
-        cumulative_net_value,
-        cumulative_simple_returns,
-        sequence_compound_annual_growth_rate,
-        sequence_drawdown,
-        sequence_mean,
-        sequence_mean_variance_std,
-        sequence_min,
-    )
-except ImportError:
-    from cal_indicators.numba_finance_math import (
-        cumulative_net_value,
-        cumulative_simple_returns,
-        sequence_compound_annual_growth_rate,
-        sequence_drawdown,
-        sequence_mean,
-        sequence_mean_variance_std,
-        sequence_min,
-    )
 
-
-@njit("float64(float64[:])", nogil=True, fastmath=True)
-def cumulative_return(returns):
+@njit("float64(float64, int64)", nogil=True, fastmath=True)
+def average_return(total_sum, observation_count):
     """
-    计算累计收益率，返回最终累计值。
+    根据总和与样本量计算平均收益率。
     """
-    cumulative = cumulative_simple_returns(returns)
-    if cumulative.shape[0] == 0:
+    if observation_count <= 0:
         return np.nan
-    return cumulative[-1]
+    return total_sum / observation_count
 
 
-@njit("float64(float64[:], float64)", nogil=True, fastmath=True)
-def annualized_return(returns, periods_per_year):
+@njit("float64(float64, float64)", nogil=True, fastmath=True)
+def cumulative_return(final_nav, initial_nav):
     """
-    根据普通收益率序列计算年化收益率。
+    根据期末与期初净值计算累计收益率。
+    """
+    if initial_nav <= 0.0:
+        return np.nan
+    return (final_nav / initial_nav) - 1.0
+
+
+@njit("float64(float64, int64)", nogil=True, fastmath=True)
+def annualization_factor(periods_per_year, total_periods):
+    """
+    计算年化幂次系数。
+    """
+    if periods_per_year <= 0.0 or total_periods <= 0:
+        return np.nan
+    return periods_per_year / total_periods
+
+
+@njit("float64(float64, float64)", nogil=True, fastmath=True)
+def annualized_return(cumulative_return_value, annualization_factor_value):
+    """
+    根据累计收益率与年化幂次系数计算年化收益率。
+    """
+    if (
+            np.isnan(annualization_factor_value)
+            or annualization_factor_value <= 0.0
+            or (1.0 + cumulative_return_value) <= 0.0
+    ):
+        return np.nan
+    return (1.0 + cumulative_return_value) ** annualization_factor_value - 1.0
+
+
+@njit("float64(float64)", nogil=True, fastmath=True)
+def volatility_from_variance(variance_value):
+    """
+    根据方差计算波动率（标准差）。
+    """
+    if variance_value < 0.0:
+        return np.nan
+    return np.sqrt(variance_value)
+
+
+@njit("float64(float64, float64)", nogil=True, fastmath=True)
+def annualized_volatility(period_volatility, periods_per_year):
+    """
+    根据周期波动率与年化频率计算年化波动率。
+    """
+    if periods_per_year <= 0.0 or np.isnan(period_volatility):
+        return np.nan
+    return period_volatility * np.sqrt(periods_per_year)
+
+
+@njit("float64(float64, float64)", nogil=True, fastmath=True)
+def excess_return(mean_return, risk_free_rate_per_period):
+    """
+    计算超额收益率（单期）。
+    """
+    return mean_return - risk_free_rate_per_period
+
+
+@njit("float64(float64, float64)", nogil=True, fastmath=True)
+def scale_excess_return_for_sharpe(excess_return_per_period, periods_per_year):
+    """
+    将单期超额收益率缩放至年化夏普比率的分子。
     """
     if periods_per_year <= 0.0:
         return np.nan
-    return sequence_compound_annual_growth_rate(returns, periods_per_year)
+    return excess_return_per_period * np.sqrt(periods_per_year)
 
 
-@njit("float64(float64[:], int64)", nogil=True, fastmath=True)
-def volatility(returns, ddof=1):
+@njit("float64(float64, float64)", nogil=True, fastmath=True)
+def sharpe_ratio(annualized_excess_return, annualized_volatility_value):
     """
-    计算收益率序列的波动率（标准差）。
+    根据年化超额收益率与年化波动率计算夏普比率。
     """
-    n = returns.shape[0]
-    if n == 0 or n <= ddof:
+    if np.isnan(annualized_volatility_value) or annualized_volatility_value <= 1e-12:
         return np.nan
-    _, _, std_val = sequence_mean_variance_std(returns, ddof)
-    return std_val
+    return annualized_excess_return / annualized_volatility_value
 
 
-@njit("float64(float64[:], float64, int64)", nogil=True, fastmath=True)
-def annualized_volatility(returns, periods_per_year, ddof=1):
+@njit("float64(int64, int64)", nogil=True, fastmath=True)
+def win_rate(win_count, total_count):
     """
-    计算收益率序列的年化波动率。
+    根据胜利次数与样本总数计算胜率。
     """
-    if periods_per_year <= 0.0:
+    if total_count <= 0:
         return np.nan
-    std_val = volatility(returns, ddof)
-    if np.isnan(std_val):
+    return win_count / total_count
+
+
+@njit("float64(int64, int64)", nogil=True, fastmath=True)
+def loss_rate(loss_count, total_count):
+    """
+    根据失败次数与样本总数计算败率。
+    """
+    if total_count <= 0:
         return np.nan
-    return std_val * np.sqrt(periods_per_year)
+    return loss_count / total_count
 
 
-@njit("float64(float64[:], float64, float64, int64)", nogil=True, fastmath=True)
-def sharpe_ratio(returns, risk_free_rate_per_period, periods_per_year, ddof=1):
+@njit("float64(float64)", nogil=True, fastmath=True)
+def max_drawdown_rate_from_min(min_drawdown_value):
     """
-    计算年化夏普比率。
+    将最小回撤（负值）转换为正的最大回撤率。
     """
-    n = returns.shape[0]
-    if n == 0 or n <= ddof or periods_per_year <= 0.0:
+    if np.isnan(min_drawdown_value):
         return np.nan
-    mean_val, _, std_val = sequence_mean_variance_std(returns, ddof)
-    if np.isnan(std_val) or std_val <= 1e-12:
+    return -min_drawdown_value
+
+
+@njit("float64(float64, float64)", nogil=True, fastmath=True)
+def calmar_ratio(annual_return_value, max_drawdown_rate_value):
+    """
+    根据年化收益率与最大回撤率计算卡玛比率。
+    """
+    if (
+            np.isnan(annual_return_value)
+            or np.isnan(max_drawdown_rate_value)
+            or max_drawdown_rate_value <= 1e-12
+    ):
         return np.nan
-    excess_mean = mean_val - risk_free_rate_per_period
-    return (excess_mean * np.sqrt(periods_per_year)) / std_val
-
-
-@njit("float64(float64[:], float64)", nogil=True, fastmath=True)
-def win_rate(returns, threshold=0.0):
-    """
-    计算日胜率（收益率大于0的概率）。
-    """
-    n = returns.shape[0]
-    if n == 0:
-        return np.nan
-    wins = 0
-    for i in range(n):
-        if returns[i] > threshold:
-            wins += 1
-    return wins / n
-
-
-@njit("float64(float64[:], float64)", nogil=True, fastmath=True)
-def loss_rate(returns, threshold=0.0):
-    """
-    计算日败率（收益率小于0的概率）。
-    """
-    n = returns.shape[0]
-    if n == 0:
-        return np.nan
-    losses = 0
-    for i in range(n):
-        if returns[i] < threshold:
-            losses += 1
-    return losses / n
-
-
-@njit("float64(float64[:], float64)", nogil=True, fastmath=True)
-def max_drawdown_rate(returns, initial_nav=1.0):
-    """
-    计算最大回撤率（正值表示回撤幅度）。
-    """
-    nav = cumulative_net_value(initial_nav, returns)
-    if nav.shape[0] == 0:
-        return np.nan
-    drawdown = sequence_drawdown(nav)
-    if drawdown.shape[0] == 0:
-        return np.nan
-    min_drawdown = sequence_min(drawdown)
-    if np.isnan(min_drawdown):
-        return np.nan
-    return -min_drawdown
-
-
-@njit("int64(float64[:], float64)", nogil=True, fastmath=True)
-def max_drawdown_recovery_periods(returns, initial_nav=1.0):
-    """
-    计算最大回撤修复天数（按数据点计）。
-    """
-    nav = cumulative_net_value(initial_nav, returns)
-    n = nav.shape[0]
-    if n == 0:
-        return 0
-
-    peak = nav[0]
-    peak_index = 0
-    drawdown_active = False
-    drawdown_peak_index = 0
-    max_length = 0
-
-    for i in range(1, n):
-        value = nav[i]
-        if value >= peak:
-            if drawdown_active:
-                length = i - drawdown_peak_index
-                if length > max_length:
-                    max_length = length
-                drawdown_active = False
-            peak = value
-            peak_index = i
-        else:
-            if not drawdown_active:
-                drawdown_active = True
-                drawdown_peak_index = peak_index
-
-    if drawdown_active:
-        length = (n - 1) - drawdown_peak_index
-        if length > max_length:
-            max_length = length
-
-    return max_length
-
-
-@njit("float64(float64[:], float64, float64)", nogil=True, fastmath=True)
-def calmar_ratio(returns, periods_per_year, initial_nav=1.0):
-    """
-    计算卡玛比率：年化收益率 / 最大回撤率。
-    """
-    annual_ret = annualized_return(returns, periods_per_year)
-    max_dd = max_drawdown_rate(returns, initial_nav)
-    if np.isnan(annual_ret) or np.isnan(max_dd) or max_dd <= 1e-12:
-        return np.nan
-    return annual_ret / max_dd
-
-
-@njit("float64(float64[:])", nogil=True, fastmath=True)
-def average_return(returns):
-    """
-    计算平均收益率（单次循环结果）。
-    """
-    return sequence_mean(returns)
+    return annual_return_value / max_drawdown_rate_value

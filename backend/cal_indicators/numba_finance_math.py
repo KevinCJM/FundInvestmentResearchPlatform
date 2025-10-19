@@ -237,14 +237,15 @@ def sequence_geometric_mean(values):
 @njit("float64[:](float64, float64[:])", nogil=True, fastmath=True)
 def cumulative_net_value(initial_nav, returns):
     """
-    根据初始净值和普通收益率序列计算净值轨迹。
+    根据初始净值和普通收益率序列计算净值轨迹，首位保留初始净值。
     """
     n = returns.shape[0]
-    result = np.empty(n, dtype=np.float64)
+    result = np.empty(n + 1, dtype=np.float64)
     nav = initial_nav
+    result[0] = nav
     for i in range(n):
         nav *= 1.0 + returns[i]
-        result[i] = nav
+        result[i + 1] = nav
     return result
 
 
