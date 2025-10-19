@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import FilterDropdown, { FilterOption } from '../components/FilterDropdown';
 
@@ -249,6 +249,21 @@ export default function ProductResearch() {
   const appliedFiltersCount = activeFilterChips.length;
   const selectedList = useMemo(() => Object.values(selectedProducts), [selectedProducts]);
   const selectedCount = selectedList.length;
+  const selectHeaderRef = useRef<HTMLTableCellElement | null>(null);
+  const [selectColOffset, setSelectColOffset] = useState<number>(0);
+
+  useLayoutEffect(() => {
+    const updateOffset = () => {
+      if (selectHeaderRef.current) {
+        setSelectColOffset(selectHeaderRef.current.offsetWidth);
+      }
+    };
+    updateOffset();
+    window.addEventListener('resize', updateOffset);
+    return () => window.removeEventListener('resize', updateOffset);
+  }, [response, pageSize, sortKey, sortDir]);
+
+  const productLeft = selectColOffset || selectHeaderRef.current?.offsetWidth || 0;
 
   const toggleProductSelection = (productId: string | null | undefined, productName?: string | null, productCode?: string | null) => {
     if (!productId) {
@@ -474,34 +489,42 @@ export default function ProductResearch() {
           <div className="px-6 py-24 text-center text-slate-500">暂无符合筛选条件的ETF。</div>
         ) : (
           <div className="h-[520px] w-full overflow-auto">
-            <table className="min-w-[1280px] divide-y divide-slate-100">
+            <table className="products-table min-w-[1280px] divide-y divide-slate-100">
               <thead className="bg-slate-50">
                 <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th
+                    scope="col"
+                    ref={selectHeaderRef}
+                    className="sticky left-0 top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap w-[120px] min-w-[120px]"
+                  >
                     选择
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th
+                    scope="col"
+                    className="sticky top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap"
+                    style={{ left: productLeft }}
+                  >
                     产品
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     机构 / 类型
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     风格 / 市场
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     管理 / 托管
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     <SortButton label="发行规模" activeKey={sortKey} columnKey="issue_amount" direction={sortDir} onClick={toggleSort} />
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     <SortButton label="费用 / 基准" activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     <SortButton label="上市日" activeKey={sortKey} columnKey="list_date" direction={sortDir} onClick={toggleSort} />
                   </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     状态
                   </th>
                 </tr>
@@ -513,17 +536,22 @@ export default function ProductResearch() {
                   const selectionId = item.ts_code ?? item.code ?? null;
                   const isSelected = selectionId ? Boolean(selectedProducts[selectionId]) : false;
                   return (
-                    <tr key={`${code}-${item.name}`} className="hover:bg-emerald-50/40">
-                      <td className="px-6 py-4">
+                    <tr key={`${code}-${item.name}`} className="group hover:bg-emerald-50/40">
+                      <td
+                        className="sticky left-0 z-40 border-r border-slate-100 bg-white px-6 py-4 whitespace-nowrap group-hover:bg-emerald-50/40 w-[120px] min-w-[120px]"
+                      >
                         <input
                           type="checkbox"
                           className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                           checked={isSelected}
-                          onChange={() => toggleProductSelection(selectionId, item.name, code)}
                           disabled={!selectionId}
+                          onChange={() => toggleProductSelection(selectionId, item.name, code)}
                         />
                       </td>
-                      <td className="px-6 py-4">
+                      <td
+                        className="sticky z-40 border-r border-slate-100 bg-white px-6 py-4 group-hover:bg-emerald-50/40"
+                        style={{ left: productLeft }}
+                      >
                         {detailPath ? (
                           <Link to={detailPath} target="_blank" rel="noreferrer" className="group block">
                             <div className="text-sm font-semibold text-emerald-600 group-hover:text-emerald-700">
@@ -635,7 +663,7 @@ function SortButton({ label, columnKey, activeKey, direction, onClick }: SortBut
     <button
       type="button"
       onClick={() => onClick(columnKey)}
-      className={`inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider ${isActive ? 'text-emerald-600' : 'text-slate-500'}`}
+      className={`inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider whitespace-nowrap ${isActive ? 'text-emerald-600' : 'text-slate-500'}`}
     >
       {label}
       <svg className={`h-3 w-3 ${isActive ? 'text-emerald-500' : 'text-slate-400'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

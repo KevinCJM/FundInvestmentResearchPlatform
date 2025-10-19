@@ -8,6 +8,7 @@ const navItems = [
   { path: '/auto-classification', label: '自动构建大类' },
   { path: '/class-allocation', label: '大类资产配置' },
   { path: '/portfolio-construction', label: '产品组合构建' },
+  { path: '/holding-diagnosis', label: '持仓诊断' },
 ];
 
 export default function Header() {

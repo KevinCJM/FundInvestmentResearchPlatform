@@ -24,6 +24,7 @@ export default function App() {
             <Route path="/auto-classification" element={<Placeholder title="自动构建大类" />} />
             <Route path="/class-allocation" element={<ClassAllocation />} />
             <Route path="/portfolio-construction" element={<Placeholder title="产品组合构建" />} />
+            <Route path="/holding-diagnosis" element={<Placeholder title="持仓诊断" />} />
           </Routes>
         </main>
       </div>
