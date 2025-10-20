@@ -8,6 +8,7 @@ import Placeholder from './pages/Placeholder';
 import ProductResearch from './pages/ProductResearch';
 import ProductDetail from './pages/ProductDetail';
 import ProductCompare from './pages/ProductCompare';
+import EvaluationPlan from './pages/EvaluationPlan';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/research" element={<ProductResearch />} />
+            <Route path="/evaluation-plan" element={<EvaluationPlan />} />
             <Route path="/product/:productId" element={<ProductDetail />} />
             <Route path="/product-compare" element={<ProductCompare />} />
             <Route path="/manual-construction" element={<ManualConstruction />} />
