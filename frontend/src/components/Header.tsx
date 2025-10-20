@@ -4,6 +4,7 @@ import { NavLink } from 'react-router-dom';
 const navItems = [
   { path: '/', label: '主界面' },
   { path: '/research', label: '产品研究' },
+  { path: '/evaluation-plan', label: '评价方案' },
   { path: '/manual-construction', label: '手动构建大类' },
   { path: '/auto-classification', label: '自动构建大类' },
   { path: '/class-allocation', label: '大类资产配置' },
