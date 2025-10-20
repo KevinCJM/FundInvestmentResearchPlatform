@@ -10,7 +10,6 @@ CURRENT_DIR = Path(__file__).resolve().parent
 TARGET_FILE = CURRENT_DIR / "numba_finance_math.py"
 OUTPUT_FILE = CURRENT_DIR / "numba_finance_math_dsl.json"
 DSL_VERSION = "1.0.0"
-INDICATOR_DSL_FILE = CURRENT_DIR / "indicator_dsl.json"
 
 
 def escape_identifier(identifier: str) -> str:
@@ -55,9 +54,9 @@ LATEX_PATTERNS: Dict[str, Callable[[List[str]], str]] = {
     "minimum": lambda args: f"\\min\\left({args[0]}, {args[1]}\\right)",
     "reciprocal": lambda args: f"\\frac{{1}}{{{args[0]}}}",
     "clip": lambda args: f"\\operatorname{{clip}}\\left({args[0]}, {args[1]}, {args[2]}\\right)",
-    "sequence_sum": lambda args: f"\\sum {args[0]}",
+    "sequence_sum": lambda args: f"\\sum\\left({args[0]}\\right)",
     "sequence_mean": lambda args: f"\\overline{{{args[0]}}}",
-    "sequence_prod": lambda args: f"\\prod {args[0]}",
+    "sequence_prod": lambda args: f"\\prod\\left({args[0]}\\right)",
     "sequence_std": lambda args: f"\\operatorname{{std}}\\left({args[0]}, {args[1]}\\right)",
     "sequence_variance": lambda args: f"\\operatorname{{var}}\\left({args[0]}, {args[1]}\\right)",
     "sequence_min": lambda args: f"\\min\\left({args[0]}\\right)",
@@ -255,25 +254,11 @@ def build_operators() -> Tuple[List[Dict[str, object]], Dict[str, str]]:
     return operators, latex_map
 
 
-def update_indicator_latex(operator_latex: Dict[str, str]) -> None:
-    if not INDICATOR_DSL_FILE.exists():
-        return
-    with INDICATOR_DSL_FILE.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
-    payload["operator_latex"] = operator_latex
-    metadata = payload.get("metadata")
-    if isinstance(metadata, dict):
-        metadata["operator_latex_version"] = DSL_VERSION
-    with INDICATOR_DSL_FILE.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(f"指示器 DSL 已更新: {INDICATOR_DSL_FILE}")
-
-
 def main() -> None:
     """
     构建算子 DSL 并写出到 JSON 文件。
     """
-    operators, operator_latex = build_operators()
+    operators, _ = build_operators()
     metadata = {
         "module": MODULE_NAME,
         "version": DSL_VERSION,
@@ -289,7 +274,6 @@ def main() -> None:
         encoding="utf-8",
     )
     print(f"DSL 已写入: {OUTPUT_FILE}")
-    update_indicator_latex(operator_latex)
 
 
 if __name__ == "__main__":
