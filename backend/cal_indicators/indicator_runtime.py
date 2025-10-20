@@ -186,8 +186,8 @@ class IndicatorRuntime:
         }
 
 
-def demo() -> None:
-    runtime = IndicatorRuntime(version="指标计算示例模板")
+def demo(version, period) -> None:
+    runtime = IndicatorRuntime(version=version)
     print("可用指标版本:", runtime.available_versions)
     print("当前使用版本:", runtime.version)
     returns = np.array(
@@ -198,7 +198,6 @@ def demo() -> None:
         "returns": returns,
         "risk_free_rate_per_period": metadata.get("annual_risk_free_rate_per_period", 0.0001),
     }
-    period = runtime.available_periods[0]
     outputs = runtime.compute_period(period, context)
     print(f"周期 {period} 指标结果：")
     for name, value in outputs.items():
@@ -214,4 +213,4 @@ def demo() -> None:
 
 
 if __name__ == "__main__":
-    demo()
+    demo("指标计算示例模板", "2M")
