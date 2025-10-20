@@ -5,6 +5,7 @@
 根据指定版本与周期，在给定上下文下依序计算指标数值。
 """
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -55,6 +56,22 @@ def load_callable_map(dsl_path: Path) -> Dict[str, Any]:
     return mapping
 
 
+PERIOD_UNIT_FACTORS = {
+    "W": 1.0 / 52.0,
+    "M": 1.0 / 12.0,
+    "Y": 1.0,
+}
+
+BASE_FREQUENCY_FACTORS = {
+    "日": 1.0 / 252.0,
+    "周": 1.0 / 52.0,
+    "月": 1.0 / 12.0,
+}
+
+RE_NUM_UNIT = re.compile(r"^(?P<num>\d+)(?P<unit>[WMY])$", re.IGNORECASE)
+RE_UNIT_NUM = re.compile(r"^(?P<unit>[WMY])(?P<num>\d+)$", re.IGNORECASE)
+
+
 def _normalize_value(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         return value
@@ -103,6 +120,41 @@ class IndicatorRuntime:
     @property
     def available_periods(self) -> List[str]:
         return list(self.executor.roots.keys())
+
+    def _annual_rate_decimal(self) -> float:
+        rate_percent = self.metadata.get("annual_risk_free_rate_percent")
+        try:
+            return float(rate_percent) / 100.0 if rate_percent is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _base_period_fraction(self) -> float:
+        freq = str(self.metadata.get("data_frequency", "日"))
+        return BASE_FREQUENCY_FACTORS.get(freq, 1.0)
+
+    def _period_fraction(self, period: str) -> float:
+        if not period or period == "__default__":
+            return self._base_period_fraction()
+        token = period.upper()
+        match = RE_NUM_UNIT.match(token)
+        if not match:
+            match = RE_UNIT_NUM.match(token)
+        if match:
+            unit = match.group("unit").upper()
+            try:
+                num = float(match.group("num"))
+            except (TypeError, ValueError):
+                num = 1.0
+            factor = PERIOD_UNIT_FACTORS.get(unit, 1.0)
+            return num * factor
+        return self._base_period_fraction()
+
+    def _risk_free_rate_for_period(self, period: str) -> float:
+        annual = self._annual_rate_decimal()
+        fraction = self._period_fraction(period)
+        if fraction <= 0.0:
+            return 0.0
+        return (1.0 + annual) ** fraction - 1.0
 
     def _evaluate_nodes(
             self, order: Iterable[DAGNode], context: Dict[str, Any]
@@ -174,10 +226,14 @@ class IndicatorRuntime:
             Dict[str, Any]: 指标名称到其计算结果的映射。
         """
         # 获取当前周期下所有节点的拓扑排序
+        context_local = dict(context)
+        context_local["annual_risk_free_rate_decimal"] = self._annual_rate_decimal()
+        context_local["risk_free_rate_per_period"] = self._risk_free_rate_for_period(period)
+
         order = self.executor.topo_order_for_period(period)
 
         # 执行节点计算，得到所有节点的结果缓存
-        values = self._evaluate_nodes(order, context)
+        values = self._evaluate_nodes(order, context_local)
 
         # 收集该周期下所有根节点（即指标表达式的最终结果节点）的值
         return {
@@ -186,17 +242,16 @@ class IndicatorRuntime:
         }
 
 
-def demo(version, period) -> None:
+def demo(version: str, period: str) -> None:
     runtime = IndicatorRuntime(version=version)
     print("可用指标版本:", runtime.available_versions)
     print("当前使用版本:", runtime.version)
+    print("可用周期:", runtime.available_periods)
     returns = np.array(
         [0.01, -0.005, 0.007, 0.012, -0.003], dtype=np.float64
     )
-    metadata = runtime.metadata
     context = {
         "returns": returns,
-        "risk_free_rate_per_period": metadata.get("annual_risk_free_rate_per_period", 0.0001),
     }
     outputs = runtime.compute_period(period, context)
     print(f"周期 {period} 指标结果：")
@@ -213,4 +268,4 @@ def demo(version, period) -> None:
 
 
 if __name__ == "__main__":
-    demo("指标计算示例模板", "2M")
+    demo("指标计算示例模板", "1W")

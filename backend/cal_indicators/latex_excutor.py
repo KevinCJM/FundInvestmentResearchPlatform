@@ -67,6 +67,7 @@ class LatexExpressionParser:
         self.variable_map = {
             "\\mathbf{r}": "returns",
             "\\mathbf{\\ell}": "log_returns",
+            "r_{f}^{annual}": "annual_risk_free_rate_decimal",
             "r_{f}": "risk_free_rate_per_period",
         }
         self.special_tokens = [

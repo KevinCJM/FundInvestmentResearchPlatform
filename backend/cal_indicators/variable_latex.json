@@ -1,0 +1,38 @@
+{
+  "metadata": {
+    "description": "基础变量的 LaTeX 表达及类型说明，区分标量与序列。",
+    "version": "0.1",
+    "generated_at": "2025-10-19",
+    "author": "Hardcoded"
+  },
+  "variables": [
+    {
+      "name": "returns",
+      "label": "指定频率普通收益率序列",
+      "value_type": "vector",
+      "dtype": "float64[:]",
+      "latex": "\\mathbf{r}"
+    },
+    {
+      "name": "log_returns",
+      "label": "指定频率对数收益率序列",
+      "value_type": "vector",
+      "dtype": "float64[:]",
+      "latex": "\\mathbf{\\ell}"
+    },
+    {
+      "name": "annual_risk_free_rate_decimal",
+      "label": "年化无风险收益率（小数）",
+      "value_type": "scalar",
+      "dtype": "float64",
+      "latex": "r_{f}^{annual}"
+    },
+    {
+      "name": "risk_free_rate_per_period",
+      "label": "指定频率无风险收益率标量（由年化利率换算）",
+      "value_type": "scalar",
+      "dtype": "float64",
+      "latex": "r_{f}"
+    }
+  ]
+}
