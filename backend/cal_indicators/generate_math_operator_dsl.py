@@ -1,3 +1,9 @@
+"""
+为 numba_finance_math 生成 DSL 元数据及 LaTeX 模板。
+
+脚本会解析 math 模块中的函数定义，提取类型签名与参数占位符，
+并写入 numba_finance_math_dsl.json，供运行时动态加载算子功能。
+"""
 import ast
 import json
 import textwrap

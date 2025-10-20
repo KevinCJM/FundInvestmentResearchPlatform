@@ -1,3 +1,9 @@
+"""
+提供金融领域常用的数值算子，支持 numba 加速。
+
+包含标量/向量通用的基础运算（加减乘除、幂、裁剪等）和
+各种序列统计函数（累计、均值、标准差、回撤等），是指标计算的底层库。
+"""
 import numpy as np
 from numba import njit, vectorize
 
