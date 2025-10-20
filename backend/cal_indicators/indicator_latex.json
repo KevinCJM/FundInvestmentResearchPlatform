@@ -1,0 +1,43 @@
+{
+  "指标计算示例模板": {
+    "metadata": {
+      "description": "示例指标 LaTeX 表达式，供用户参考并自定义金融指标计算逻辑。",
+      "version": "0.1",
+      "generated_at": "2025-10-19",
+      "data_frequency": "日",
+      "annual_risk_free_rate_percent": 1.5,
+      "net_value_completion": {
+        "enabled": true,
+        "dimension": "交易日",
+        "method": "取前值填充"
+      },
+      "annual_risk_free_rate_per_period": 0.0001
+    },
+    "indicators": [
+      {
+        "name": "示例1: 累计收益率",
+        "dsl_expression": "\\left(\\prod\\left(\\mathbf{r} + 1\\right)\\right) - 1",
+        "periods": [
+          "1W"
+        ]
+      },
+      {
+        "name": "示例2: 波动率",
+        "dsl_expression": "\\operatorname{std}\\left(\\mathbf{r}, 1\\right)",
+        "periods": [
+          "1W",
+          "2M"
+        ]
+      },
+      {
+        "name": "示例3: 夏普比率",
+        "dsl_expression": "\\frac{\\left(\\overline{\\mathbf{r}} - r_{f}\\right) \\times \\sqrt{252}}{\\operatorname{std}\\left(\\mathbf{r}, 1\\right)}",
+        "periods": [
+          "1W",
+          "2M",
+          "3M"
+        ]
+      }
+    ]
+  }
+}
