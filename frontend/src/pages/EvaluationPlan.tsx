@@ -14,6 +14,7 @@ type Product = {
   sharpe: number;
   maxDrawdown: number;
   expenseRatio: number;
+  metrics: Record<TimeRange, Record<IndicatorKey, number>>;
 };
 
 type IndicatorKey = 'return1Y' | 'sharpe' | 'maxDrawdown' | 'expenseRatio';
@@ -41,6 +42,13 @@ const PRODUCTS: Product[] = [
     sharpe: 1.21,
     maxDrawdown: -9.8,
     expenseRatio: 1.3,
+    metrics: {
+      '3M': { return1Y: 5.2, sharpe: 1.35, maxDrawdown: -4.8, expenseRatio: 1.3 },
+      '6M': { return1Y: 9.4, sharpe: 1.28, maxDrawdown: -6.7, expenseRatio: 1.3 },
+      '1Y': { return1Y: 14.6, sharpe: 1.21, maxDrawdown: -9.8, expenseRatio: 1.3 },
+      '3Y': { return1Y: 42.3, sharpe: 1.1, maxDrawdown: -18.4, expenseRatio: 1.3 },
+      '5Y': { return1Y: 68.5, sharpe: 1.03, maxDrawdown: -24.2, expenseRatio: 1.3 },
+    },
   },
   {
     id: 'EQT-002',
@@ -54,6 +62,13 @@ const PRODUCTS: Product[] = [
     sharpe: 0.97,
     maxDrawdown: -12.4,
     expenseRatio: 1.1,
+    metrics: {
+      '3M': { return1Y: 2.8, sharpe: 0.92, maxDrawdown: -5.4, expenseRatio: 1.1 },
+      '6M': { return1Y: 6.5, sharpe: 0.95, maxDrawdown: -8.6, expenseRatio: 1.1 },
+      '1Y': { return1Y: 9.8, sharpe: 0.97, maxDrawdown: -12.4, expenseRatio: 1.1 },
+      '3Y': { return1Y: 26.1, sharpe: 0.88, maxDrawdown: -19.7, expenseRatio: 1.1 },
+      '5Y': { return1Y: 44.9, sharpe: 0.85, maxDrawdown: -27.5, expenseRatio: 1.1 },
+    },
   },
   {
     id: 'FIX-001',
@@ -67,6 +82,13 @@ const PRODUCTS: Product[] = [
     sharpe: 0.68,
     maxDrawdown: -3.7,
     expenseRatio: 0.6,
+    metrics: {
+      '3M': { return1Y: 1.8, sharpe: 0.55, maxDrawdown: -1.4, expenseRatio: 0.6 },
+      '6M': { return1Y: 3.2, sharpe: 0.6, maxDrawdown: -2.1, expenseRatio: 0.6 },
+      '1Y': { return1Y: 5.6, sharpe: 0.68, maxDrawdown: -3.7, expenseRatio: 0.6 },
+      '3Y': { return1Y: 14.7, sharpe: 0.73, maxDrawdown: -6.2, expenseRatio: 0.6 },
+      '5Y': { return1Y: 24.9, sharpe: 0.76, maxDrawdown: -8.4, expenseRatio: 0.6 },
+    },
   },
   {
     id: 'ALT-001',
@@ -80,6 +102,13 @@ const PRODUCTS: Product[] = [
     sharpe: 1.05,
     maxDrawdown: -6.1,
     expenseRatio: 1.8,
+    metrics: {
+      '3M': { return1Y: 2.4, sharpe: 0.98, maxDrawdown: -3.2, expenseRatio: 1.8 },
+      '6M': { return1Y: 4.9, sharpe: 1.02, maxDrawdown: -4.8, expenseRatio: 1.8 },
+      '1Y': { return1Y: 7.3, sharpe: 1.05, maxDrawdown: -6.1, expenseRatio: 1.8 },
+      '3Y': { return1Y: 21.5, sharpe: 1.08, maxDrawdown: -9.7, expenseRatio: 1.8 },
+      '5Y': { return1Y: 35.2, sharpe: 1.1, maxDrawdown: -13.5, expenseRatio: 1.8 },
+    },
   },
 ];
 
@@ -265,33 +294,58 @@ function MultiSelect({
   );
 }
 
+function getIndicatorValue(product: Product, indicatorKey: IndicatorKey, timeRange: TimeRange) {
+  const rangeMetrics = product.metrics[timeRange];
+  if (!rangeMetrics) {
+    return undefined;
+  }
+  const value = rangeMetrics[indicatorKey];
+  return typeof value === 'number' ? value : undefined;
+}
+
 function normalizeScores(
   products: Product[],
   indicatorKey: IndicatorKey,
   direction: Direction,
+  timeRange: TimeRange,
 ): Record<string, number> {
   if (products.length === 0) {
     return {};
   }
 
-  const values = products.map((product) => product[indicatorKey]);
+  const availableValues = products
+    .map((product) => {
+      const value = getIndicatorValue(product, indicatorKey, timeRange);
+      if (value === undefined) {
+        return undefined;
+      }
+      return { productId: product.id, value };
+    })
+    .filter(Boolean) as { productId: string; value: number }[];
+
+  if (availableValues.length === 0) {
+    return {};
+  }
+
+  const values = availableValues.map(({ value }) => value);
   const dataMax = Math.max(...values);
   const dataMin = Math.min(...values);
 
   if (dataMax === dataMin) {
-    return Object.fromEntries(products.map((product) => [product.id, 100]));
+    return Object.fromEntries(availableValues.map(({ productId }) => [productId, 100]));
   }
 
-  return Object.fromEntries(
-    products.map((product) => {
-      const raw = product[indicatorKey];
-      const normalized =
-        direction === 'desc'
-          ? ((raw - dataMin) / (dataMax - dataMin)) * 100
-          : ((dataMax - raw) / (dataMax - dataMin)) * 100;
-      return [product.id, Number(normalized.toFixed(2))];
-    }),
-  );
+  const result: Record<string, number> = {};
+
+  availableValues.forEach(({ productId, value }) => {
+    const normalized =
+      direction === 'desc'
+        ? ((value - dataMin) / (dataMax - dataMin)) * 100
+        : ((dataMax - value) / (dataMax - dataMin)) * 100;
+    result[productId] = Number(normalized.toFixed(2));
+  });
+
+  return result;
 }
 
 export default function EvaluationPlan() {
@@ -345,15 +399,15 @@ export default function EvaluationPlan() {
   const totalWeight = indicatorEntries.reduce((sum, entry) => sum + entry.weight, 0);
 
   const normalizedScores = useMemo(() => {
-    const result: Record<string, Record<IndicatorKey, number>> = {};
+    const result: Record<string, Record<string, number>> = {};
 
     indicatorEntries.forEach((entry) => {
-      const scores = normalizeScores(filteredProducts, entry.key, entry.direction);
+      const scores = normalizeScores(filteredProducts, entry.key, entry.direction, entry.timeRange);
       Object.entries(scores).forEach(([productId, score]) => {
         if (!result[productId]) {
-          result[productId] = {} as Record<IndicatorKey, number>;
+          result[productId] = {};
         }
-        result[productId][entry.key] = score;
+        result[productId][entry.id] = score;
       });
     });
 
@@ -364,7 +418,7 @@ export default function EvaluationPlan() {
     return filteredProducts.map((product) => {
       const total = indicatorEntries.reduce((sum, entry) => {
         const indicatorWeightShare = totalWeight > 0 ? entry.weight / totalWeight : 0;
-        const score = normalizedScores[product.id]?.[entry.key] ?? 0;
+        const score = normalizedScores[product.id]?.[entry.id] ?? 0;
         return sum + score * indicatorWeightShare;
       }, 0);
 
@@ -768,7 +822,7 @@ export default function EvaluationPlan() {
                     <div className="text-xs text-gray-500">代码：{product.id}</div>
                   </td>
                   {indicatorEntries.map((entry) => {
-                    const score = normalizedScores[product.id]?.[entry.key];
+                    const score = normalizedScores[product.id]?.[entry.id];
                     const weightShare = totalWeight > 0 ? (entry.weight / totalWeight) * 100 : 0;
                     const timeRangeLabel = TIME_RANGE_OPTIONS.find((option) => option.value === entry.timeRange)?.label;
                     return (
