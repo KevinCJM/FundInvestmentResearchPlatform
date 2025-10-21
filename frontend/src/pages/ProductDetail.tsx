@@ -125,6 +125,9 @@ const generateMockTimeSeries = (seed: string, days = 180): TimeSeriesPoint[] => 
   return series;
 };
 
+const PRODUCT_DETAIL_DEMO_ENABLED =
+  typeof import.meta !== 'undefined' && Boolean((import.meta as any)?.env?.VITE_ENABLE_PRODUCT_DETAIL_DEMO === 'true');
+
 const generateMockProductDetail = (productId: string): ProductDetailResponse => {
   const normalizedId = productId || 'demo-etf';
   const nameSuffix = normalizedId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase() || 'DEMO';
@@ -582,6 +585,7 @@ export default function ProductDetail() {
   const [detail, setDetail] = useState<ProductDetailResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [demoNotice, setDemoNotice] = useState<string | null>(null);
   const [selectedOverlays, setSelectedOverlays] = useState<OverlayId[]>(['PRICE_MA', 'VOLUME_MA']);
   const [overlaySettings, setOverlaySettings] = useState<OverlaySettings>(() => cloneOverlaySettings());
   const [histogramBinWidth, setHistogramBinWidth] = useState<number>(0.2);
@@ -736,37 +740,62 @@ export default function ProductDetail() {
     if (!productId) {
       setError('未指定产品标识');
       setDetail(null);
+      setDemoNotice(null);
       return;
     }
     const controller = new AbortController();
     const fetchDetail = async () => {
-      const hydrateWithMock = () => {
+      const hydrateWithMock = (reason: string) => {
+        if (!PRODUCT_DETAIL_DEMO_ENABLED) {
+          return false;
+        }
         const mockDetail = generateMockProductDetail(productId);
         setDetail(mockDetail);
+        setDemoNotice(`演示模式：${reason}，已展示示例内容。`);
         setError(null);
+        return true;
       };
       try {
         setLoading(true);
         setError(null);
+        setDemoNotice(null);
         const resp = await fetch(`/api/etf/products/${encodeURIComponent(productId)}`, { signal: controller.signal });
         if (!resp.ok) {
-          console.warn('Use mock product detail due to response status', resp.status);
-          hydrateWithMock();
+          console.warn('Product detail request responded with non-OK status', resp.status);
+          if (hydrateWithMock(`接口返回状态 ${resp.status}`)) {
+            return;
+          }
+          if (resp.status === 404) {
+            setError('未找到对应的产品，请检查产品标识。');
+          } else {
+            setError('产品详情加载失败，请稍后重试。');
+          }
+          setDetail(null);
           return;
         }
         const data = (await resp.json()) as ProductDetailResponse;
         if (!data?.timeseries || data.timeseries.length === 0) {
-          console.warn('Received product detail without timeseries, fallback to mock data');
-          hydrateWithMock();
+          console.warn('Received product detail without timeseries, unable to render chart');
+          if (hydrateWithMock('接口缺少时间序列数据')) {
+            return;
+          }
+          setError('产品详情数据缺失，无法展示。');
+          setDetail(null);
           return;
         }
         setDetail(data);
+        setDemoNotice(null);
       } catch (err) {
         if ((err as DOMException).name === 'AbortError') {
           return;
         }
         console.error('Failed to load product detail', err);
-        hydrateWithMock();
+        if (hydrateWithMock('无法连接到后台服务')) {
+          return;
+        }
+        setError('产品详情加载失败，请稍后重试。');
+        setDetail(null);
+        setDemoNotice(null);
       } finally {
         setLoading(false);
       }
@@ -1331,6 +1360,11 @@ export default function ProductDetail() {
         <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">暂无可展示的产品详情。</div>
       ) : (
         <>
+          {demoNotice && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              {demoNotice}
+            </div>
+          )}
           <section className="space-y-6 rounded-3xl bg-white p-8 shadow-sm ring-1 ring-slate-100">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
