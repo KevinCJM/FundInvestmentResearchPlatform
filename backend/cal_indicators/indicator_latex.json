@@ -28,8 +28,8 @@
         ]
       },
       {
-        "name": "示例3: 夏普比率",
-        "dsl_expression": "\\frac{\\left(\\overline{\\mathbf{r}} - r_{f}\\right) \\times \\sqrt{252}}{\\operatorname{std}\\left(\\mathbf{r}, 1\\right)}",
+        "name": "示例3: 收益风险比",
+        "dsl_expression": "\\frac{\\left(\\prod\\left(\\mathbf{r} + 1\\right)\\right) - 1}{\\operatorname{std}\\left(\\mathbf{r}, 1\\right)}",
         "periods": [
           "1W",
           "2M",
