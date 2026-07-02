@@ -16,13 +16,14 @@ API:
 
 保存：Excel + Parquet
 """
-import math
 import time
 import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import requests
+
+from config import require_lixinger_token
 
 # ======== pandas 显示选项 ========
 pd.set_option('display.max_columns', None)
@@ -205,8 +206,7 @@ def fetch_index_info(token: str,
 
 
 if __name__ == "__main__":
-    # 请替换为你的 Token
-    LIXINGER_TOKEN = "d555552c-a42a-403c-a498-0c863ee219c3"
+    LIXINGER_TOKEN = require_lixinger_token()
 
     client = ApiClient(base_timeout=30, max_retries=3, backoff=1.5)
 

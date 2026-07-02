@@ -30,6 +30,7 @@ _load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # 公开配置项 ---------------------------------------------------------------
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
+LIXINGER_TOKEN = os.getenv("LIXINGER_TOKEN", "")
 
 
 def require_tushare_token() -> str:
@@ -40,3 +41,13 @@ def require_tushare_token() -> str:
             "未检测到 TUSHARE_TOKEN 环境变量，请在 shell 中导出或在 .env 文件中配置."
         )
     return TUSHARE_TOKEN
+
+
+def require_lixinger_token() -> str:
+    """获取理杏仁令牌，未设置时抛出解释性错误."""
+
+    if not LIXINGER_TOKEN:
+        raise RuntimeError(
+            "未检测到 LIXINGER_TOKEN 环境变量，请在 shell 中导出或在 .env 文件中配置."
+        )
+    return LIXINGER_TOKEN
