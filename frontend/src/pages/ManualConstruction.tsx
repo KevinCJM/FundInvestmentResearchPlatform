@@ -5,6 +5,8 @@ import HorizontalMetricComparison, {
   PerformanceQuadrantChart,
 } from '../components/HorizontalMetricComparison'
 import { buildAnnualMetricRows, computeAnnualMetrics } from '../utils/performance'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { buildReturnNavigationState, type ReturnNavigationState } from '../utils/returnNavigation'
 
 type WeightMode = 'custom' | 'equal' | 'risk'
 type RiskMetric = 'vol' | 'var' | 'es'
@@ -17,6 +19,7 @@ interface ETFItem {
   solved?: boolean
   management?: string
   found_date?: string
+  instrument_type?: 'etf' | 'fund'
 }
 
 interface AssetClass {
@@ -88,7 +91,18 @@ function equalWeights(n: number): number[] {
   return arr
 }
 
+function productKind(item: ETFItem): 'etf' | 'fund' {
+  if (item.instrument_type === 'fund' || item.code.toUpperCase().endsWith('.OF')) return 'fund'
+  return 'etf'
+}
+
 export default function AssetClassConstructionPage() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const productReturnState = useMemo(
+    () => buildReturnNavigationState(location, '返回手动构建大类'),
+    [location.hash, location.pathname, location.search],
+  )
   const [classes, setClasses] = useState<AssetClass[]>([])
 
   const [loading, setLoading] = useState(false)
@@ -350,12 +364,29 @@ export default function AssetClassConstructionPage() {
     }
   }, [])
 
+  const enterPortfolioResearch = () => {
+    const constituents = classes.flatMap((assetClass) => assetClass.etfs.map((item) => ({
+      kind: item.instrument_type ?? 'etf',
+      product_id: item.code,
+      code: item.code,
+      name: item.name,
+      weight: 0,
+      risk_budget: 0,
+    })))
+    sessionStorage.setItem('portfolioResearchImport', JSON.stringify({
+      name: '来自手动大类的研究组合',
+      method: 'equal_weight',
+      constituents,
+    }))
+    navigate('/portfolio-construction')
+  }
+
   // 页面初始化：从后端读取默认两类
   useEffect(() => {
     const init = async () => {
       try {
         const fetchTop = async (keyword: string) => {
-          const resp = await fetch(`/api/etf/search?q=${encodeURIComponent(keyword)}&page=1&page_size=2&sort_by=name&sort_dir=asc`)
+          const resp = await fetch(`/api/instruments/search?kind=all&q=${encodeURIComponent(keyword)}&page=1&page_size=2&sort_by=name&sort_dir=asc`)
           if (!resp.ok) throw new Error('search failed')
           const data = await resp.json()
           const items = (data.items || []) as ETFItem[]
@@ -392,7 +423,7 @@ export default function AssetClassConstructionPage() {
     if (classes.length === 0) init()
   }, [])
 
-  // 搜索：优先从后端读取 data 下的 ETF 列表（JSON/Parquet），失败时回退本地模糊匹配；支持排序与分页
+  // 搜索：统一读取 ETF 与场外公募基金候选池，失败时回退本地样本；支持排序与分页
   useEffect(() => {
     const controller = new AbortController()
     const doFetch = async () => {
@@ -404,7 +435,8 @@ export default function AssetClassConstructionPage() {
           page: String(page),
           page_size: String(pageSize),
         })
-        const url = `/api/etf/search?${params.toString()}`
+        params.set('kind', 'all')
+        const url = `/api/instruments/search?${params.toString()}`
         const resp = await fetch(url, { signal: controller.signal })
         if (!resp.ok) throw new Error(`status ${resp.status}`)
         const data = await resp.json()
@@ -513,7 +545,7 @@ export default function AssetClassConstructionPage() {
         </div>
       )}
       <h1 className="text-2xl font-semibold">资产大类构建模块</h1>
-      <p className="text-sm text-gray-500 mt-1">配置资产大类、ETF 选择与权重；风险平价支持手动风险贡献、最大杠杆与后端反推权重</p>
+      <p className="text-sm text-gray-500 mt-1">配置资产大类、ETF/公募基金选择与权重；风险平价支持手动风险贡献、最大杠杆与后端反推权重</p>
 
       <div className="mt-5 rounded-2xl border border-gray-200 bg-white p-4">
         <div className="flex justify-between items-center">
@@ -539,6 +571,13 @@ export default function AssetClassConstructionPage() {
               onSetRiskContribution={(idx, v) => setRiskContribution(ac.id, idx, v)}
               onSetMaxLeverage={(v) => setMaxLeverage(ac.id, v)}
               onSolve={() => onSolveRiskWeights(ac.id)}
+              onCompare={() => {
+                const params = new URLSearchParams()
+                params.set('ids', ac.etfs.map((item) => item.code).join(','))
+                params.set('kinds', ac.etfs.map(productKind).join(','))
+                navigate(`/product-compare?${params.toString()}`, { state: productReturnState })
+              }}
+              returnState={productReturnState}
               loading={loading}
             />
           ))}
@@ -549,11 +588,18 @@ export default function AssetClassConstructionPage() {
         </div>
       </div>
 
-      <div className="mt-6 text-center">
+      <div className="mt-6 flex flex-wrap justify-center gap-3 text-center">
           <button 
             className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
             onClick={() => setSaveModal(true)} >
               保存当前大类配置
+          </button>
+          <button
+            className="rounded-lg border border-emerald-700 bg-white px-6 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={enterPortfolioResearch}
+            disabled={!classes.some((assetClass) => assetClass.etfs.length > 0)}
+          >
+            保存为研究组合 / 进入组合指标
           </button>
       </div>
 
@@ -612,7 +658,7 @@ export default function AssetClassConstructionPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold">添加 ETF</h3>
+              <h3 className="text-lg font-semibold">添加 ETF / 公募基金</h3>
               <button className="text-gray-500" onClick={() => setSearchOpen({ open: false })}>✕</button>
             </div>
             <input
@@ -637,6 +683,11 @@ export default function AssetClassConstructionPage() {
                   <div className="flex-1 flex items-center gap-2">
                     <span className="font-mono text-sm">{etf.code}</span>
                     <span className="truncate px-2 text-sm text-gray-700">{etf.name}</span>
+                    {etf.instrument_type && (
+                      <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
+                        {etf.instrument_type === 'etf' ? 'ETF' : '公募基金'}
+                      </span>
+                    )}
                   </div>
                   <div className="hidden md:block text-right text-xs text-gray-500 mr-3">
                     <div>基金公司：{etf.management || '—'}</div>
@@ -909,6 +960,8 @@ function AssetClassCard({
   onSetRiskContribution,
   onSetMaxLeverage,
   onSolve,
+  onCompare,
+  returnState,
   loading,
 }: {
   ac: AssetClass
@@ -922,6 +975,8 @@ function AssetClassCard({
   onSetRiskContribution: (idx: number, val: number) => void
   onSetMaxLeverage: (val: number) => void
   onSolve: () => void
+  onCompare: () => void
+  returnState: ReturnNavigationState
   loading: boolean
 }) {
   const [editing, setEditing] = useState(false)
@@ -946,8 +1001,8 @@ function AssetClassCard({
 
   return (
     <div className="rounded-xl border border-gray-200">
-      <div className="flex items-center justify-between border-b bg-gray-50/80 px-3 py-2">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 border-b bg-gray-50/80 px-3 py-2 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {editing ? (
             <input
               value={tempName}
@@ -965,7 +1020,7 @@ function AssetClassCard({
             {editing ? '保存' : '重命名'}
           </button>
 
-          <div className="ml-3 flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 lg:ml-3">
             <ModePill label="自定义权重" active={ac.mode === 'custom'} onClick={() => onModeChange('custom')} />
             <ModePill label="等权重" active={ac.mode === 'equal'} onClick={() => onModeChange('equal')} />
             <ModePill label="风险平价" active={ac.mode === 'risk'} onClick={() => onModeChange('risk')} />
@@ -1007,13 +1062,24 @@ function AssetClassCard({
             )}
           </div>
         </div>
-        <button className="rounded-md border border-red-200 px-3 py-1 text-xs text-red-600 hover:bg-red-50" onClick={on删除}>
-          删除这个大类
-        </button>
+        <div className="flex shrink-0 items-center gap-2 self-end lg:self-auto">
+          <button
+            type="button"
+            onClick={onCompare}
+            disabled={ac.etfs.length < 2}
+            title={ac.etfs.length < 2 ? '至少添加两个产品后才能进行对比' : `对比“${ac.name}”下的 ${ac.etfs.length} 个产品`}
+            className="rounded-md border border-blue-200 bg-white px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
+          >
+            产品对比{ac.etfs.length >= 2 ? `（${ac.etfs.length}）` : ''}
+          </button>
+          <button className="rounded-md border border-red-200 px-3 py-1 text-xs text-red-600 hover:bg-red-50" onClick={on删除}>
+            删除这个大类
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-12 items-center gap-2 px-3 py-2 text-xs text-gray-500">
-        <div className="col-span-7">ETF</div>
+        <div className="col-span-7">产品（ETF / 公募基金）</div>
         <div className="col-span-3 text-right">{isRisk ? (showSolved ? '风险贡献（%） / 资金权重（%）' : '风险贡献（%）') : '权重（%）'}</div>
         <div className="col-span-2 text-right">操作</div>
       </div>
@@ -1027,7 +1093,14 @@ function AssetClassCard({
                 <div className="min-w-0 flex-1 truncate text-sm">
                   <div className="flex items-center gap-2">
                     <span className="font-mono">{e.code}</span>
-                    <span className="text-gray-700">{e.name}</span>
+                    <Link
+                      to={`/product/${encodeURIComponent(e.code)}?kind=${productKind(e)}`}
+                      state={returnState}
+                      className="truncate font-medium text-blue-700 hover:text-blue-600 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                      title={`查看${e.name}的产品研究`}
+                    >
+                      {e.name}
+                    </Link>
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5">基金公司：{e.management || '—'} ｜ 成立日期：{e.found_date || '—'}</div>
                 </div>
@@ -1077,7 +1150,7 @@ function AssetClassCard({
 
         <div className="px-3 py-2">
           <button onClick={onAddETF} className="w-full rounded-lg border border-dashed border-gray-300 py-2 text-sm hover:bg-gray-50">
-            + 添加新的 ETF
+            + 添加新的产品
           </button>
         </div>
       </div>

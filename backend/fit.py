@@ -7,6 +7,11 @@ import pandas as pd
 from pathlib import Path
 import math
 
+try:
+    from backend.market_data import resolve_market_data_file
+except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from market_data import resolve_market_data_file
+
 
 @dataclass
 class ETFSpec:
@@ -30,36 +35,43 @@ def _code_nosfx(x: str) -> str:
 
 
 def _load_adj_nav(data_dir: Path, codes: Iterable[str], names: Iterable[str]) -> pd.DataFrame:
-    """高效读取：只取所需列，尽量用 filters 过滤所需 code/name（pyarrow 引擎）。"""
-    pq = data_dir / "etf_daily_df.parquet"
-    if not pq.exists():
-        raise FileNotFoundError("data/etf_daily_df.parquet 不存在")
+    """Read requested ETF/public-fund NAV rows from their physically separate datasets."""
+
+    paths = [
+        resolve_market_data_file("etf_daily_df.parquet", data_dir),
+        resolve_market_data_file("fund_nav_df.parquet", data_dir),
+    ]
+    existing_paths = [path for path in paths if path.exists()]
+    if not existing_paths:
+        raise FileNotFoundError("data/etf_daily_df.parquet 与 data/fund_nav_df.parquet 均不存在")
     cols = ["ts_code", "name", "date", "adj_nav"]
-    # 使用 pyarrow 过滤（OR 组合）
     codes = [c for c in set(codes) if c]
     names = [n for n in set(names) if n]
-    df: pd.DataFrame
-    try:
-        filters = None
-        # pandas.read_parquet(filters=...) 需要 engine='pyarrow'
-        filt_list = []
-        if codes:
-            filt_list.append([("ts_code", "in", codes)])
-        if names:
-            filt_list.append([("name", "in", names)])
-        if filt_list:
-            filters = filt_list  # 这是 OR 逻辑
-        df = pd.read_parquet(pq, columns=cols, engine="pyarrow", filters=filters)
-        if df.empty and not (codes or names):
-            # 兜底情况
-            df = pd.read_parquet(pq, columns=cols, engine="pyarrow")
-    except Exception:
-        # 回退：读取列后再 pandas 过滤
-        df = pd.read_parquet(pq, columns=cols)
-        if codes:
-            df = df[df["ts_code"].astype(str).isin(codes)]
-        if names:
-            df = pd.concat([df, df[df["name"].astype(str).isin(names)]], axis=0).drop_duplicates()
+    frames: list[pd.DataFrame] = []
+    for path in existing_paths:
+        try:
+            filters = []
+            if codes:
+                filters.append([("ts_code", "in", codes)])
+            if names:
+                filters.append([("name", "in", names)])
+            frame = pd.read_parquet(
+                path,
+                columns=cols,
+                engine="pyarrow",
+                filters=filters or None,
+            )
+        except Exception:
+            frame = pd.read_parquet(path, columns=cols)
+            if codes or names:
+                code_mask = frame["ts_code"].astype(str).isin(codes) if codes else False
+                name_mask = frame["name"].astype(str).isin(names) if names else False
+                frame = frame[code_mask | name_mask]
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        return pd.DataFrame(columns=cols)
+    df = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["ts_code", "date"], keep="last")
     # 规范
     for c in cols:
         if c not in df.columns:

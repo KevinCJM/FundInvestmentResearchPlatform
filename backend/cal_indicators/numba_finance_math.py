@@ -106,7 +106,7 @@ def reciprocal(value):
     return 1.0 / value
 
 
-@njit("float64(float64[:])", nogil=True, fastmath=True)
+@njit("float64(float64[:])", nogil=True, fastmath=True, cache=True)
 def sequence_sum(values):
     """
     计算序列求和，空序列返回0.0。
@@ -117,7 +117,7 @@ def sequence_sum(values):
     return total
 
 
-@njit("float64[:](float64[:])", nogil=True, fastmath=True)
+@njit("float64[:](float64[:])", nogil=True, fastmath=True, cache=True)
 def sequence_cumsum(values):
     """
     计算序列的累计和。
@@ -131,7 +131,7 @@ def sequence_cumsum(values):
     return result
 
 
-@njit("float64(float64[:])", nogil=True, fastmath=True)
+@njit("float64(float64[:])", nogil=True, fastmath=True, cache=True)
 def sequence_prod(values):
     """
     计算序列乘积，空序列返回1.0。
@@ -142,7 +142,7 @@ def sequence_prod(values):
     return product
 
 
-@njit("float64[:](float64[:])", nogil=True, fastmath=True)
+@njit("float64[:](float64[:])", nogil=True, fastmath=True, cache=True)
 def sequence_cumprod(values):
     """
     计算序列的累计乘积。
@@ -156,7 +156,7 @@ def sequence_cumprod(values):
     return result
 
 
-@njit("float64(float64[:])", nogil=True, fastmath=True)
+@njit("float64(float64[:])", nogil=True, fastmath=True, cache=True)
 def sequence_mean(values):
     """
     计算序列均值，空序列返回np.nan。
@@ -167,7 +167,7 @@ def sequence_mean(values):
     return sequence_sum(values) / n
 
 
-@njit("UniTuple(float64, 3)(float64[:], int64)", nogil=True, fastmath=True)
+@njit("UniTuple(float64, 3)(float64[:], int64)", nogil=True, fastmath=True, cache=True)
 def sequence_mean_variance_std(values, ddof=1):
     """
     单次循环计算均值、方差和标准差。
@@ -197,7 +197,7 @@ def sequence_mean_variance_std(values, ddof=1):
     return mean_val, variance, std
 
 
-@njit("float64(float64[:], int64)", nogil=True, fastmath=True)
+@njit("float64(float64[:], int64)", nogil=True, fastmath=True, cache=True)
 def sequence_variance(values, ddof=1):
     """
     计算序列样本方差（默认ddof=1），样本不足返回np.nan。
@@ -208,7 +208,7 @@ def sequence_variance(values, ddof=1):
     return variance
 
 
-@njit("float64(float64[:], int64)", nogil=True, fastmath=True)
+@njit("float64(float64[:], int64)", nogil=True, fastmath=True, cache=True)
 def sequence_std(values, ddof=1):
     """
     计算序列样本标准差，样本不足返回np.nan。
@@ -219,7 +219,7 @@ def sequence_std(values, ddof=1):
     return std
 
 
-@njit("float64(float64[:])", nogil=True, fastmath=True)
+@njit("float64(float64[:])", nogil=True, fastmath=True, cache=True)
 def sequence_min(values):
     """
     计算序列最小值，空序列返回np.nan。
@@ -234,7 +234,7 @@ def sequence_min(values):
     return current_min
 
 
-@njit("float64(float64[:])", nogil=True, fastmath=True)
+@njit("float64(float64[:])", nogil=True, fastmath=True, cache=True)
 def sequence_max(values):
     """
     计算序列最大值，空序列返回np.nan。
@@ -308,7 +308,7 @@ def sequence_divide(lhs, rhs):
     return result
 
 
-@njit("float64[:](float64[:])", nogil=True, fastmath=True)
+@njit("float64[:](float64[:])", nogil=True, fastmath=True, cache=True)
 def cumulative_simple_returns(returns):
     """
     计算普通收益率的累计收益率，返回与输入等长的序列。

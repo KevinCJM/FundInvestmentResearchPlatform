@@ -9,6 +9,10 @@ import ProductResearch from './pages/ProductResearch';
 import ProductDetail from './pages/ProductDetail';
 import ProductCompare from './pages/ProductCompare';
 import EvaluationPlan from './pages/EvaluationPlan';
+import IndicatorStudio from './pages/IndicatorStudio';
+import PortfolioConstruction from './pages/PortfolioConstruction';
+import HoldingDiagnosis from './pages/HoldingDiagnosis';
+import IndexData from './pages/IndexData';
 
 export default function App() {
   return (
@@ -20,13 +24,15 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/research" element={<ProductResearch />} />
             <Route path="/evaluation-plan" element={<EvaluationPlan />} />
+            <Route path="/indicator-studio" element={<IndicatorStudio />} />
             <Route path="/product/:productId" element={<ProductDetail />} />
             <Route path="/product-compare" element={<ProductCompare />} />
             <Route path="/manual-construction" element={<ManualConstruction />} />
             <Route path="/auto-classification" element={<Placeholder title="自动构建大类" />} />
             <Route path="/class-allocation" element={<ClassAllocation />} />
-            <Route path="/portfolio-construction" element={<Placeholder title="产品组合构建" />} />
-            <Route path="/holding-diagnosis" element={<Placeholder title="持仓诊断" />} />
+            <Route path="/portfolio-construction" element={<PortfolioConstruction />} />
+            <Route path="/holding-diagnosis" element={<HoldingDiagnosis />} />
+            <Route path="/index-data" element={<IndexData />} />
           </Routes>
         </main>
       </div>

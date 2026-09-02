@@ -1,6 +1,28 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
+import {
+  evaluateCustomIndicators,
+  getCustomIndicatorMeta,
+  indicatorsForContext,
+  listCustomIndicators,
+  type EvaluationTarget,
+  type EvaluationResult,
+  type IndicatorDefinition,
+  type ProductKind,
+} from '../services/customIndicators';
+import {
+  MetricDefinitionDrawer,
+  MetricMatrix,
+  MetricSelector,
+} from '../components/metrics/MetricDisplay';
+import {
+  groupIndicatorsByPeriod,
+  normalizeMetricPeriods,
+  useMetricDisplayPreference,
+  withSelectedIndicators,
+} from '../components/metrics/useMetricDisplayPreference';
+import { readReturnNavigationState, returnToOrigin } from '../utils/returnNavigation';
 
 interface TimeSeriesPoint {
   date: string;
@@ -22,6 +44,8 @@ interface ProductDetailResponse {
   };
   timeseries: TimeSeriesPoint[];
 }
+
+type LoadedProductDetail = ProductDetailResponse & { instrument_kind?: ProductKind };
 
 const decimalFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 
@@ -57,6 +81,14 @@ const formatText = (value?: string | number | null) => {
   const text = String(value).trim();
   return text.length === 0 ? '未知' : text;
 };
+
+const CORE_RESEARCH_INDICATOR_IDS = [
+  'builtin-total-return-v2',
+  'builtin-annualized-return-v2',
+  'builtin-annualized-volatility-v2',
+  'builtin-maximum-drawdown-v2',
+  'builtin-annualized-sharpe-v2',
+];
 
 interface DerivedMetrics {
   cumulativeReturn: number | null;
@@ -1016,8 +1048,11 @@ const formatRatio = (value?: number | null, suffix = '') => {
 
 export default function ProductCompare() {
   const [searchParams] = useSearchParams();
+  const defaultProductKind: ProductKind = searchParams.get('kind') === 'fund' ? 'fund' : 'etf';
   const navigate = useNavigate();
-  const [products, setProducts] = useState<ProductDetailResponse[]>([]);
+  const location = useLocation();
+  const returnNavigation = readReturnNavigationState(location.state);
+  const [products, setProducts] = useState<LoadedProductDetail[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedIds, setFailedIds] = useState<string[]>([]);
@@ -1030,6 +1065,20 @@ export default function ProductCompare() {
   const [rollingWindowDays, setRollingWindowDays] = useState(DEFAULT_ROLLING_WINDOW_DAYS);
   const [rollingWindowInputValue, setRollingWindowInputValue] = useState<string>(
     String(DEFAULT_ROLLING_WINDOW_DAYS),
+  );
+  const [customIndicators, setCustomIndicators] = useState<IndicatorDefinition[]>([]);
+  const [customIndicatorPeriods, setCustomIndicatorPeriods] = useState<string[]>(['1Y']);
+  const [customIndicatorResults, setCustomIndicatorResults] = useState<EvaluationResult[]>([]);
+  const [customIndicatorLoading, setCustomIndicatorLoading] = useState(false);
+  const [customIndicatorError, setCustomIndicatorError] = useState<string | null>(null);
+  const [customIndicatorAsOf, setCustomIndicatorAsOf] = useState('');
+  const [definitionIndicator, setDefinitionIndicator] = useState<IndicatorDefinition | null>(null);
+  const [metricPreference, setMetricPreference] = useMetricDisplayPreference(
+    'product-compare',
+    'single_product',
+    CORE_RESEARCH_INDICATOR_IDS,
+    '1Y',
+    customIndicators.map((indicator) => indicator.id),
   );
 
   const idsFromQuery = useMemo(() => {
@@ -1050,10 +1099,26 @@ export default function ProductCompare() {
     return unique;
   }, [searchParams]);
 
+  const targetsFromQuery = useMemo(() => {
+    const rawKinds = (searchParams.get('kinds') ?? '').split(',').map((item) => item.trim());
+    return idsFromQuery.map((id, index) => ({
+      id,
+      kind: rawKinds[index] === 'fund' || rawKinds[index] === 'etf'
+        ? rawKinds[index] as ProductKind
+        : defaultProductKind,
+    }));
+  }, [defaultProductKind, idsFromQuery, searchParams]);
+
   const previewMode = searchParams.get('preview') === 'demo';
-  const limitedIds = useMemo(() => (previewMode ? [] : idsFromQuery.slice(0, 10)), [idsFromQuery, previewMode]);
-  const truncatedIds = !previewMode && idsFromQuery.length > limitedIds.length;
-  const hasRemoteIds = limitedIds.length > 0;
+  const limitedTargets = useMemo(() => (previewMode ? [] : targetsFromQuery.slice(0, 10)), [previewMode, targetsFromQuery]);
+  const limitedIds = useMemo(() => limitedTargets.map((target) => target.id), [limitedTargets]);
+  const truncatedIds = !previewMode && targetsFromQuery.length > limitedTargets.length;
+  const hasRemoteIds = limitedTargets.length > 0;
+  const comparisonProductKind = useMemo<ProductKind | null>(() => {
+    if (previewMode) return defaultProductKind;
+    const kinds = new Set(limitedTargets.map((target) => target.kind));
+    return kinds.size === 1 ? limitedTargets[0]?.kind ?? defaultProductKind : null;
+  }, [defaultProductKind, limitedTargets, previewMode]);
 
   useEffect(() => {
     if (previewMode) {
@@ -1077,19 +1142,20 @@ export default function ProductCompare() {
         setError(null);
         setFailedIds([]);
         const results = await Promise.allSettled(
-          limitedIds.map(async (id) => {
-            const resp = await fetch(`/api/etf/products/${encodeURIComponent(id)}`, { signal: controller.signal });
+          limitedTargets.map(async ({ id, kind }) => {
+            const detailUrl = `/api/instruments/products/${encodeURIComponent(id)}?kind=${kind}`;
+            const resp = await fetch(detailUrl, { signal: controller.signal });
             if (!resp.ok) {
               throw new Error(`无法获取产品 ${id} 的详情`);
             }
             const data = (await resp.json()) as ProductDetailResponse;
-            return data;
+            return { ...data, instrument_kind: kind };
           }),
         );
         if (controller.signal.aborted) {
           return;
         }
-        const succeeded: ProductDetailResponse[] = [];
+        const succeeded: LoadedProductDetail[] = [];
         const failed: string[] = [];
         results.forEach((result, index) => {
           if (result.status === 'fulfilled') {
@@ -1099,7 +1165,7 @@ export default function ProductCompare() {
             if (reason?.name === 'AbortError') {
               return;
             }
-            failed.push(limitedIds[index]);
+            failed.push(limitedTargets[index].id);
           }
         });
         setProducts(succeeded);
@@ -1121,7 +1187,7 @@ export default function ProductCompare() {
     };
     fetchData();
     return () => controller.abort();
-  }, [hasRemoteIds, limitedIds, previewMode]);
+  }, [hasRemoteIds, limitedTargets, previewMode]);
 
   const detailColumns = useMemo(
     () => [
@@ -1226,10 +1292,60 @@ export default function ProductCompare() {
           (product.base_info?.code as string) ??
           product.product_id ??
           '--';
-        return { key, product, displayName, code };
+        return { key, product, displayName, code, kind: product.instrument_kind ?? defaultProductKind };
       }),
-    [products],
+    [defaultProductKind, products],
   );
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      listCustomIndicators({
+        contextKind: 'single_product',
+        ...(comparisonProductKind ? { productKind: comparisonProductKind } : {}),
+      }),
+      getCustomIndicatorMeta(),
+    ])
+      .then(([{ items }, metadata]) => {
+        if (!active) return;
+        setCustomIndicators(indicatorsForContext(items, 'single_product'));
+        const runtimePeriods = metadata.periods.map((item) => item.value);
+        setCustomIndicatorPeriods(runtimePeriods);
+        setMetricPreference((current) => normalizeMetricPeriods(current, runtimePeriods, '1Y'));
+      })
+      .catch(() => { if (active) setCustomIndicatorError('自定义指标库暂时不可用。'); });
+    return () => { active = false; };
+  }, [comparisonProductKind]);
+
+  useEffect(() => {
+    if (metricPreference.indicatorIds.length === 0 || productPresentations.length === 0) {
+      setCustomIndicatorResults([]);
+      return;
+    }
+    let active = true;
+    setCustomIndicatorLoading(true);
+    setCustomIndicatorError(null);
+    const targets = productPresentations.map<EvaluationTarget>(({ code, kind, product }) => ({
+      kind,
+      product_id: code === '--' ? product.product_id ?? '' : code,
+    })).filter((target) => target.product_id.length > 0);
+    Promise.all(groupIndicatorsByPeriod(metricPreference, '1Y').map(({ indicatorIds, period }) => (
+      evaluateCustomIndicators({
+        indicator_ids: indicatorIds,
+        targets,
+        period,
+        as_of: customIndicatorAsOf || undefined,
+      })
+    )))
+      .then((responses) => { if (active) setCustomIndicatorResults(responses.flatMap(({ results }) => results)); })
+      .catch(() => { if (active) setCustomIndicatorError('部分或全部产品暂时无法计算该指标。'); })
+      .finally(() => { if (active) setCustomIndicatorLoading(false); });
+    return () => { active = false; };
+  }, [customIndicatorAsOf, metricPreference.indicatorIds, metricPreference.periodsByIndicator, productPresentations]);
+
+  const selectedCustomIndicators = useMemo(() => metricPreference.indicatorIds
+    .map((id) => customIndicators.find((indicator) => indicator.id === id))
+    .filter((indicator): indicator is IndicatorDefinition => Boolean(indicator)), [customIndicators, metricPreference.indicatorIds]);
 
   const performanceColumns = useMemo<MetricColumn[]>(
     () => [
@@ -2217,7 +2333,7 @@ export default function ProductCompare() {
         <div>
           <h1 className="text-3xl font-bold text-slate-900">产品对比</h1>
           <p className="mt-2 text-base text-slate-600">
-            对比已选 ETF 产品的基本信息、费用与虚拟净值走势，辅助判断配置优先级。
+            对比已选 ETF / 场外公募基金的基本信息、费用与虚拟净值走势，辅助判断配置优先级。
           </p>
           {truncatedIds && (
             <p className="mt-1 text-xs text-amber-600">
@@ -2233,10 +2349,10 @@ export default function ProductCompare() {
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            onClick={() => navigate(-1)}
+            onClick={() => returnToOrigin(navigate, location, `/research?kind=${defaultProductKind}`)}
             className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:border-emerald-400 hover:text-emerald-600"
           >
-            返回上一页
+            ← {returnNavigation?.returnLabel ?? '返回上一页'}
           </button>
           <Link
             to="/research"
@@ -2325,12 +2441,35 @@ export default function ProductCompare() {
             </div>
           </section>
 
+          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-violet-100" aria-labelledby="custom-indicator-comparison-title">
+            <div className="border-b border-violet-100 px-6 py-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h2 id="custom-indicator-comparison-title" className="text-lg font-semibold text-slate-900">研究指标矩阵</h2>
+                  <p className="mt-1 text-xs text-slate-500">所有标量指标统一由指标引擎计算；每个指标可独立选择计算区间，并与下方图表显示区间相互独立。</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <MetricSelector indicators={customIndicators} selectedIds={metricPreference.indicatorIds} onChange={(indicatorIds) => setMetricPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))} maxSelected={10} label="选择比较指标" />
+                  <label className="text-sm text-slate-600">截止日<input type="date" value={customIndicatorAsOf} onChange={(event) => setCustomIndicatorAsOf(event.target.value)} className="ml-2 min-h-11 rounded-lg border border-slate-200 px-3 text-sm" /></label>
+                  {comparisonProductKind ? (
+                    <Link to={`/indicator-studio?kind=${comparisonProductKind}&ids=${encodeURIComponent(limitedIds.join(','))}`} className="inline-flex min-h-11 items-center rounded-lg border border-violet-200 px-3 text-sm font-medium text-violet-700 hover:bg-violet-50">指标中心</Link>
+                  ) : (
+                    <span title="混合产品对比请直接使用本页研究指标矩阵" className="inline-flex min-h-11 cursor-not-allowed items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-400">指标中心</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="overflow-auto px-6 py-4" aria-live="polite">
+              {customIndicatorLoading ? <p className="text-sm text-slate-500">正在批量计算指标…</p> : customIndicatorError ? <p className="text-sm text-amber-700">{customIndicatorError}</p> : selectedCustomIndicators.length === 0 ? <p className="text-sm text-slate-500">选择一个或多个指标以显示比较矩阵。</p> : <MetricMatrix indicators={selectedCustomIndicators} targets={productPresentations.flatMap(({ displayName, code, kind, product }) => { const productId = code === '--' ? product.product_id ?? '' : code; return productId ? [{ kind, product_id: productId, name: displayName }] : []; })} results={customIndicatorResults} periodsByIndicator={metricPreference.periodsByIndicator} periodOptions={customIndicatorPeriods} onPeriodChange={(indicatorId, period) => setMetricPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))} onDefinition={setDefinitionIndicator} />}
+            </div>
+          </section>
+
           <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
             <div className="border-b border-slate-100 px-6 py-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-900">收益指标对比</h2>
-                  <p className="mt-1 text-xs text-slate-500">集中查看收益表现及走势，评估短中期配置价值。</p>
+                  <h2 className="text-lg font-semibold text-slate-900">收益走势</h2>
+                  <p className="mt-1 text-xs text-slate-500">这里的区间只控制序列图显示，不改变上方各指标独立设置的计算区间。</p>
                 </div>
                 <RangeSelector
                   id="performance-range"
@@ -2344,17 +2483,6 @@ export default function ProductCompare() {
               </div>
             </div>
             <div className="space-y-6 px-6 pb-6 pt-4">
-              <div
-                className="overflow-auto"
-                style={{
-                  height: METRIC_TABLE_VIEWPORT.height,
-                  maxHeight: METRIC_TABLE_VIEWPORT.height,
-                  width: METRIC_TABLE_VIEWPORT.width,
-                  maxWidth: '100%',
-                }}
-              >
-                {renderMetricTable(performanceColumns, performanceMetricsByProduct, 'performance')}
-              </div>
               <div>
                 <h3 className="text-base font-semibold text-slate-900">虚拟净值走势</h3>
                 <p className="mt-1 text-xs text-slate-500">
@@ -2381,8 +2509,8 @@ export default function ProductCompare() {
             <div className="border-b border-slate-100 px-6 py-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-900">风险指标对比</h2>
-                  <p className="mt-1 text-xs text-slate-500">关注波动与回撤，衡量目标产品在震荡行情下的承压能力。</p>
+                  <h2 className="text-lg font-semibold text-slate-900">风险走势</h2>
+                  <p className="mt-1 text-xs text-slate-500">回撤和滚动波动为序列诊断，标量风险值统一在上方指标矩阵展示。</p>
                 </div>
                 <RangeSelector
                   id="risk-range"
@@ -2396,17 +2524,6 @@ export default function ProductCompare() {
               </div>
             </div>
             <div className="px-6 pb-6 pt-4">
-              <div
-                className="overflow-auto"
-                style={{
-                  height: METRIC_TABLE_VIEWPORT.height,
-                  maxHeight: METRIC_TABLE_VIEWPORT.height,
-                  width: METRIC_TABLE_VIEWPORT.width,
-                  maxWidth: '100%',
-                }}
-              >
-                {renderMetricTable(riskColumns, riskMetricsByProduct, 'risk')}
-              </div>
               <div className="mt-6 space-y-6">
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">最大回撤</h3>
@@ -2485,6 +2602,7 @@ export default function ProductCompare() {
               </div>
             </div>
           </section>
+          <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
 
           <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
             <div className="border-b border-slate-100 px-6 py-4">

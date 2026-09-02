@@ -1,6 +1,24 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import FilterDropdown, { FilterOption } from '../components/FilterDropdown';
+import {
+  evaluateCustomIndicators,
+  getCustomIndicatorMeta,
+  listCustomIndicators,
+  type EvaluationResult,
+  type IndicatorDefinition,
+} from '../services/customIndicators';
+import {
+  MetricDefinitionDrawer,
+  MetricMatrix,
+  MetricSelector,
+} from '../components/metrics/MetricDisplay';
+import {
+  groupIndicatorsByPeriod,
+  normalizeMetricPeriods,
+  useMetricDisplayPreference,
+  withSelectedIndicators,
+} from '../components/metrics/useMetricDisplayPreference';
 
 interface ProductItem {
   ts_code?: string | null;
@@ -20,6 +38,32 @@ interface ProductItem {
   list_date?: string | null;
   found_date?: string | null;
   issue_date?: string | null;
+  instrument_type?: 'etf' | 'fund' | string | null;
+  condition_values?: Record<string, number | string | null>;
+}
+
+type ProductConditionOperator = 'gte' | 'lte' | 'gt' | 'lt' | 'eq';
+
+interface ProductCondition {
+  field: string;
+  operator: ProductConditionOperator;
+  value: string;
+}
+
+interface ProductConditionField {
+  field: string;
+  label: string;
+  data_type: 'date' | 'number';
+  unit_label?: string | null;
+  input_scale?: number;
+  source: 'fund_basic' | 'instrument_metrics_snapshot' | string;
+  available: boolean;
+}
+
+interface ProductConditionOperatorOption {
+  value: ProductConditionOperator;
+  label: string;
+  symbol: string;
 }
 
 interface ProductsSummary {
@@ -41,6 +85,9 @@ interface ProductsResponse {
   total: number;
   summary: ProductsSummary;
   available_filters: Record<string, FilterOption[]>;
+  condition_fields?: ProductConditionField[];
+  condition_operators?: ProductConditionOperatorOption[];
+  snapshot?: { status?: string | null; as_of?: string | null };
   sort_by: string;
   sort_dir: 'asc' | 'desc' | string;
 }
@@ -94,8 +141,8 @@ const statusTone = (status?: string | null) => {
 };
 
 const filterLabels: Record<string, string> = {
-  fund_type: '基金类型',
-  type: '机构类型',
+  fund_type: '投资类型',
+  type: '基金类型',
   invest_type: '投资风格',
   market: '交易市场',
   status: '产品状态',
@@ -123,29 +170,128 @@ const initialFilterState: FilterState = {
   custodian: [],
 };
 
-const PAGE_SIZE_OPTIONS = [15, 30, 50];
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+const CORE_RESEARCH_INDICATOR_IDS = [
+  'builtin-total-return-v2',
+  'builtin-annualized-return-v2',
+  'builtin-annualized-volatility-v2',
+  'builtin-maximum-drawdown-v2',
+  'builtin-annualized-sharpe-v2',
+];
+const FILTER_KEYS = Object.keys(initialFilterState) as (keyof FilterState)[];
+const CONDITION_OPERATORS = new Set<ProductConditionOperator>(['gte', 'lte', 'gt', 'lt', 'eq']);
+
+const readProductKind = (value: string | null): 'etf' | 'fund' => value === 'fund' ? 'fund' : 'etf';
+
+const readPositiveInteger = (value: string | null, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const filtersFromSearchParams = (params: URLSearchParams): FilterState => {
+  const next = { ...initialFilterState };
+  FILTER_KEYS.forEach((key) => { next[key] = params.getAll(key).filter(Boolean); });
+  return next;
+};
+
+const conditionsFromSearchParams = (params: URLSearchParams): ProductCondition[] => params
+  .getAll('condition')
+  .flatMap((entry) => {
+    const [field, operator, value] = entry.split('|', 3);
+    if (!field || !value || !CONDITION_OPERATORS.has(operator as ProductConditionOperator)) {
+      return [];
+    }
+    return [{ field, operator: operator as ProductConditionOperator, value }];
+  });
+
+const fallbackConditionFields = (kind: 'etf' | 'fund'): ProductConditionField[] => [{
+  field: kind === 'etf' ? 'list_date' : 'found_date',
+  label: kind === 'etf' ? '上市日期' : '成立日期',
+  data_type: 'date',
+  unit_label: null,
+  input_scale: 1,
+  source: 'fund_basic',
+  available: true,
+}];
 
 export default function ProductResearch() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [productKind, setProductKind] = useState<'etf' | 'fund'>(() => readProductKind(searchParams.get('kind')));
   const [response, setResponse] = useState<ProductsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
-  const [filters, setFilters] = useState<FilterState>(initialFilterState);
-  const [sortKey, setSortKey] = useState('issue_amount');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
-  const [searchInput, setSearchInput] = useState('');
-  const [searchKeyword, setSearchKeyword] = useState('');
+  const [page, setPage] = useState(() => readPositiveInteger(searchParams.get('page'), 1));
+  const [pageSize, setPageSize] = useState(() => {
+    const requested = readPositiveInteger(searchParams.get('page_size'), PAGE_SIZE_OPTIONS[0]);
+    return PAGE_SIZE_OPTIONS.includes(requested) ? requested : PAGE_SIZE_OPTIONS[0];
+  });
+  const [filters, setFilters] = useState<FilterState>(() => filtersFromSearchParams(searchParams));
+  const [conditions, setConditions] = useState<ProductCondition[]>(() => conditionsFromSearchParams(searchParams));
+  const [sortKey, setSortKey] = useState(() => searchParams.get('sort_by') || 'issue_amount');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => searchParams.get('sort_dir') === 'asc' ? 'asc' : 'desc');
+  const [searchInput, setSearchInput] = useState(() => searchParams.get('q') ?? '');
+  const [searchKeyword, setSearchKeyword] = useState(() => searchParams.get('q')?.trim() ?? '');
   const [selectedProducts, setSelectedProducts] = useState<Record<string, { id: string; name: string; code: string }>>({});
+  const [allMatchingSelected, setAllMatchingSelected] = useState(false);
+  const [excludedProductIds, setExcludedProductIds] = useState<Set<string>>(() => new Set());
+  const [viewMode, setViewMode] = useState<'basic' | 'metrics'>('basic');
+  const [researchIndicators, setResearchIndicators] = useState<IndicatorDefinition[]>([]);
+  const [researchPeriods, setResearchPeriods] = useState<string[]>(['1Y']);
+  const [researchResults, setResearchResults] = useState<EvaluationResult[]>([]);
+  const [researchLoading, setResearchLoading] = useState(false);
+  const [researchError, setResearchError] = useState<string | null>(null);
+  const [researchAsOf, setResearchAsOf] = useState('');
+  const [definitionIndicator, setDefinitionIndicator] = useState<IndicatorDefinition | null>(null);
+  const [researchPreference, setResearchPreference] = useMetricDisplayPreference(
+    'product-research',
+    'single_product',
+    CORE_RESEARCH_INDICATOR_IDS,
+    '1Y',
+    researchIndicators.map((indicator) => indicator.id),
+  );
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     const handler = window.setTimeout(() => {
-      setSearchKeyword(searchInput.trim());
+      const nextKeyword = searchInput.trim();
+      if (nextKeyword !== searchKeyword) {
+        setSelectedProducts({});
+        setAllMatchingSelected(false);
+        setExcludedProductIds(new Set());
+      }
+      setSearchKeyword(nextKeyword);
       setPage(1);
     }, 400);
     return () => window.clearTimeout(handler);
-  }, [searchInput]);
+  }, [searchInput, searchKeyword]);
+
+  useEffect(() => {
+    if (location.pathname !== '/research') {
+      return;
+    }
+    const next = new URLSearchParams();
+    next.set('kind', productKind);
+    if (searchKeyword) {
+      next.set('q', searchKeyword);
+    }
+    FILTER_KEYS.forEach((key) => filters[key].forEach((value) => next.append(key, value)));
+    conditions.forEach((condition) => next.append(
+      'condition',
+      `${condition.field}|${condition.operator}|${condition.value}`,
+    ));
+    next.set('sort_by', sortKey);
+    next.set('sort_dir', sortDir);
+    if (page > 1) {
+      next.set('page', String(page));
+    }
+    if (pageSize !== PAGE_SIZE_OPTIONS[0]) {
+      next.set('page_size', String(pageSize));
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [conditions, filters, location.pathname, page, pageSize, productKind, searchKeyword, searchParams, setSearchParams, sortDir, sortKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -166,14 +312,20 @@ export default function ProductResearch() {
             params.append(key, value);
           });
         });
-        const resp = await fetch(`/api/etf/products?${params.toString()}`, { signal: controller.signal });
+        conditions.forEach((condition) => params.append(
+          'condition',
+          `${condition.field}|${condition.operator}|${condition.value}`,
+        ));
+        params.set('kind', productKind);
+        const resp = await fetch(`/api/instruments/products?${params.toString()}`, { signal: controller.signal });
         if (!resp.ok) {
           if (resp.status === 404) {
             setResponse(null);
-            setError('未找到ETF产品信息，请确认数据文件是否就绪。');
+            setError(`未找到${productKind === 'etf' ? 'ETF' : '场外公募基金'}产品信息，请先在主页更新对应数据模块。`);
             return;
           }
-          throw new Error('加载产品列表失败');
+          const payload = await resp.json().catch(() => null) as { detail?: string } | null;
+          throw new Error(payload?.detail || '加载产品列表失败');
         }
         const data = (await resp.json()) as ProductsResponse;
         setResponse(data);
@@ -181,15 +333,76 @@ export default function ProductResearch() {
         if ((err as DOMException).name === 'AbortError') {
           return;
         }
-        console.error('Failed to load ETF products', err);
-        setError('产品数据加载失败，请稍后重试。');
+        console.error('Failed to load products', err);
+        setError(err instanceof Error ? err.message : '产品数据加载失败，请稍后重试。');
       } finally {
         setLoading(false);
       }
     };
     fetchData();
     return () => controller.abort();
-  }, [page, pageSize, sortKey, sortDir, searchKeyword, filters]);
+  }, [conditions, page, pageSize, sortKey, sortDir, searchKeyword, filters, productKind]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      listCustomIndicators({ contextKind: 'single_product', productKind }),
+      getCustomIndicatorMeta(),
+    ]).then(([catalog, metadata]) => {
+      if (!active) return;
+      setResearchIndicators(catalog.items);
+      const periods = metadata.periods.map((item) => item.value);
+      setResearchPeriods(periods);
+      setResearchPreference((current) => normalizeMetricPeriods(current, periods, '1Y'));
+    }).catch(() => { if (active) setResearchError('指标目录暂时不可用。'); });
+    return () => { active = false; };
+  }, [productKind]);
+
+  const currentPageTargets = useMemo(() => (response?.items ?? []).flatMap((item) => {
+    const productId = item.ts_code ?? item.code;
+    return productId ? [{ kind: productKind, product_id: productId, name: item.name ?? productId }] : [];
+  }), [productKind, response?.items]);
+  const selectedResearchIndicators = useMemo(() => researchPreference.indicatorIds
+    .map((id) => researchIndicators.find((indicator) => indicator.id === id))
+    .filter((indicator): indicator is IndicatorDefinition => Boolean(indicator)), [researchIndicators, researchPreference.indicatorIds]);
+
+  useEffect(() => {
+    if (viewMode !== 'metrics' || currentPageTargets.length === 0 || selectedResearchIndicators.length === 0) {
+      setResearchResults([]);
+      return;
+    }
+    let active = true;
+    setResearchLoading(true); setResearchError(null);
+    const selectedPreference = {
+      ...researchPreference,
+      indicatorIds: selectedResearchIndicators.map((indicator) => indicator.id),
+    };
+    Promise.all(groupIndicatorsByPeriod(selectedPreference, '1Y').map(({ indicatorIds, period }) => (
+      evaluateCustomIndicators({
+        indicator_ids: indicatorIds,
+        targets: currentPageTargets.map(({ kind, product_id }) => ({ kind, product_id })),
+        period,
+        as_of: researchAsOf || undefined,
+      })
+    ))).then((responses) => { if (active) setResearchResults(responses.flatMap(({ results }) => results)); })
+      .catch(() => { if (active) { setResearchResults([]); setResearchError('当前页指标计算失败，请检查真实数据与样本窗口。'); } })
+      .finally(() => { if (active) setResearchLoading(false); });
+    return () => { active = false; };
+  }, [currentPageTargets, researchAsOf, researchPreference.periodsByIndicator, selectedResearchIndicators, viewMode]);
+
+  const switchProductKind = (kind: 'etf' | 'fund') => {
+    setProductKind(kind);
+    setPage(1);
+    setFilters(initialFilterState);
+    setConditions([]);
+    setSelectedProducts({});
+    setAllMatchingSelected(false);
+    setExcludedProductIds(new Set());
+    if (sortKey === 'list_date' || sortKey === 'found_date') {
+      setSortKey(kind === 'etf' ? 'list_date' : 'found_date');
+      setSortDir('desc');
+    }
+  };
 
   const summary = response?.summary;
   const totalPages = useMemo(() => {
@@ -201,11 +414,34 @@ export default function ProductResearch() {
 
   const handleFilterChange = (key: keyof FilterState) => (values: string[]) => {
     setFilters((prev) => ({ ...prev, [key]: values }));
+    setSelectedProducts({});
+    setAllMatchingSelected(false);
+    setExcludedProductIds(new Set());
     setPage(1);
   };
 
   const clearAllFilters = () => {
     setFilters(initialFilterState);
+    setConditions([]);
+    setSelectedProducts({});
+    setAllMatchingSelected(false);
+    setExcludedProductIds(new Set());
+    setPage(1);
+  };
+
+  const addCondition = (condition: ProductCondition) => {
+    setConditions((current) => [...current, condition]);
+    setSelectedProducts({});
+    setAllMatchingSelected(false);
+    setExcludedProductIds(new Set());
+    setPage(1);
+  };
+
+  const removeCondition = (index: number) => {
+    setConditions((current) => current.filter((_, itemIndex) => itemIndex !== index));
+    setSelectedProducts({});
+    setAllMatchingSelected(false);
+    setExcludedProductIds(new Set());
     setPage(1);
   };
 
@@ -234,6 +470,9 @@ export default function ProductResearch() {
       ...prev,
       [chipKey]: prev[chipKey].filter((item) => item !== value),
     }));
+    setSelectedProducts({});
+    setAllMatchingSelected(false);
+    setExcludedProductIds(new Set());
     setPage(1);
   };
 
@@ -242,13 +481,17 @@ export default function ProductResearch() {
       setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortKey(key);
-      setSortDir(key === 'list_date' ? 'desc' : 'asc');
+      setSortDir(key === 'list_date' || key === 'found_date' ? 'desc' : 'asc');
     }
   };
 
-  const appliedFiltersCount = activeFilterChips.length;
+  const appliedFiltersCount = activeFilterChips.length + conditions.length;
   const selectedList = useMemo(() => Object.values(selectedProducts), [selectedProducts]);
-  const selectedCount = selectedList.length;
+  const selectedCount = allMatchingSelected
+    ? Math.max(0, (response?.total ?? 0) - excludedProductIds.size)
+    : selectedList.length;
+  const conditionFields = response?.condition_fields ?? fallbackConditionFields(productKind);
+  const conditionOperators = response?.condition_operators ?? [];
   const selectHeaderRef = useRef<HTMLTableCellElement | null>(null);
   const [selectColOffset, setSelectColOffset] = useState<number>(0);
 
@@ -265,18 +508,68 @@ export default function ProductResearch() {
 
   const productLeft = selectColOffset || selectHeaderRef.current?.offsetWidth || 0;
 
+  const currentPageSelectableProducts = (response?.items ?? []).flatMap((item) => {
+    const id = item.ts_code ?? item.code;
+    return id ? [{ id, name: item.name ?? id, code: item.ts_code ?? item.code ?? id }] : [];
+  });
+  const isProductSelected = (productId: string) => (
+    allMatchingSelected ? !excludedProductIds.has(productId) : Boolean(selectedProducts[productId])
+  );
+  const currentPageAllSelected = currentPageSelectableProducts.length > 0
+    && currentPageSelectableProducts.every((item) => isProductSelected(item.id));
+
+  const toggleCurrentPageSelection = () => {
+    const ids = currentPageSelectableProducts.map((item) => item.id);
+    if (allMatchingSelected) {
+      setExcludedProductIds((current) => {
+        const next = new Set(current);
+        ids.forEach((id) => {
+          if (currentPageAllSelected) next.add(id);
+          else next.delete(id);
+        });
+        return next;
+      });
+      return;
+    }
+    setSelectedProducts((current) => {
+      const next = { ...current };
+      currentPageSelectableProducts.forEach((item) => {
+        if (currentPageAllSelected) delete next[item.id];
+        else next[item.id] = item;
+      });
+      return next;
+    });
+  };
+
+  const toggleAllMatchingSelection = () => {
+    if (allMatchingSelected) {
+      setAllMatchingSelected(false);
+      setExcludedProductIds(new Set());
+      setSelectedProducts({});
+      return;
+    }
+    setAllMatchingSelected(true);
+    setExcludedProductIds(new Set());
+    setSelectedProducts({});
+  };
+
   const toggleProductSelection = (productId: string | null | undefined, productName?: string | null, productCode?: string | null) => {
     if (!productId) {
+      return;
+    }
+    if (allMatchingSelected) {
+      setExcludedProductIds((current) => {
+        const next = new Set(current);
+        if (next.has(productId)) next.delete(productId);
+        else next.add(productId);
+        return next;
+      });
       return;
     }
     setSelectedProducts((prev) => {
       if (prev[productId]) {
         const { [productId]: _removed, ...rest } = prev;
         return rest;
-      }
-      if (Object.keys(prev).length >= 10) {
-        window.alert('最多选择 10 个产品进行对比');
-        return prev;
       }
       return {
         ...prev,
@@ -290,27 +583,64 @@ export default function ProductResearch() {
   };
 
   const goToComparison = () => {
-    if (selectedCount === 0) {
+    if (allMatchingSelected || selectedCount === 0 || selectedCount > 10) {
       return;
     }
     const ids = selectedList.map((item) => encodeURIComponent(item.id)).join(',');
-    navigate(`/product-compare?ids=${ids}`);
+    navigate(`/product-compare?ids=${ids}&kind=${productKind}`);
   };
+
+  const goToIndicatorStudio = () => {
+    if (allMatchingSelected || selectedCount === 0 || selectedCount > 10) {
+      return;
+    }
+    const params = new URLSearchParams({
+      kind: productKind,
+      ids: selectedList.map((item) => item.id).join(','),
+    });
+    navigate(`/indicator-studio?${params.toString()}`);
+  };
+  const canAnalyzeSelection = !allMatchingSelected && selectedCount > 0 && selectedCount <= 10;
+  const selectionActionHint = allMatchingSelected
+    ? '全选筛选结果是逻辑选择；请取消全选后手动选择最多 10 个产品进行分析。'
+    : selectedCount > 10
+      ? '产品对比和指标分析最多支持 10 个产品。'
+      : undefined;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
       <div className="mb-8 space-y-4">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900">产品研究</h1>
-          <p className="mt-2 text-base text-slate-600">
-            浏览并筛选ETF产品，比较发行规模、费用结构与投资风格，为组合构建提供灵感支撑。
-          </p>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-900">产品研究</h1>
+            <p className="mt-2 text-base text-slate-600">
+              分别研究 ETF 与场外公募基金的规模、费率、投资风格和管理人，为统一资产配置提供候选池。
+            </p>
+          </div>
+          <div className="inline-flex self-start rounded-xl bg-slate-100 p-1">
+            {(['etf', 'fund'] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                onClick={() => switchProductKind(kind)}
+                className={`rounded-lg px-5 py-2 text-sm font-semibold transition ${
+                  productKind === kind ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {kind === 'etf' ? 'ETF' : '场外公募基金'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="inline-flex self-start rounded-xl border border-slate-200 bg-white p-1" aria-label="产品研究视图">
+          <button type="button" onClick={() => setViewMode('basic')} className={`min-h-11 rounded-lg px-5 text-sm font-semibold ${viewMode === 'basic' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>基础资料</button>
+          <button type="button" aria-label="切换到研究指标视图" onClick={() => setViewMode('metrics')} className={`min-h-11 rounded-lg px-5 text-sm font-semibold ${viewMode === 'metrics' ? 'bg-violet-600 text-white' : 'text-slate-600'}`}><span aria-hidden="true">指标分析</span></button>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             title="当前筛选产品"
             value={summary ? `${integerFormatter.format(summary.filtered_total)} / ${integerFormatter.format(summary.universe_total)}` : '--'}
-            description="筛选结果 / 全部ETF"
+            description={`筛选结果 / 全部${productKind === 'etf' ? 'ETF' : '场外公募基金'}产品代码`}
           />
           <MetricCard
             title="有效存续产品"
@@ -318,7 +648,7 @@ export default function ProductResearch() {
             description={summary?.filtered_total ? `占比 ${decimalFormatter.format((summary.active_count ?? 0) / summary.filtered_total * 100)}%` : '存续状态估算'}
           />
           <MetricCard
-            title="筛选合计发行规模"
+            title="筛选合计发行规模（非AUM）"
             value={formatIssueAmount(summary?.total_issue_amount)}
             description="单位：按万转亿换算"
           />
@@ -361,13 +691,13 @@ export default function ProductResearch() {
         </div>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           <FilterDropdown
-            label="基金类型"
+            label="投资类型"
             options={response?.available_filters?.fund_type ?? []}
             selected={filters.fund_type}
             onChange={handleFilterChange('fund_type')}
           />
           <FilterDropdown
-            label="机构类型"
+            label="基金类型"
             options={response?.available_filters?.type ?? []}
             selected={filters.type}
             onChange={handleFilterChange('type')}
@@ -403,6 +733,14 @@ export default function ProductResearch() {
             onChange={handleFilterChange('custodian')}
           />
         </div>
+        <ProductConditionBuilder
+          fields={conditionFields}
+          operators={conditionOperators}
+          conditions={conditions}
+          snapshotStatus={response?.snapshot?.status}
+          onAdd={addCondition}
+          onRemove={removeCondition}
+        />
         {activeFilterChips.length > 0 && (
           <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
             {activeFilterChips.map((chip) => (
@@ -432,12 +770,22 @@ export default function ProductResearch() {
       <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
         <div className="flex flex-col gap-3 border-b border-slate-100 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">产品列表</h2>
-            <div className="mt-1 text-xs text-slate-500">勾选最多 10 个产品进行对比分析</div>
+            <h2 className="text-lg font-semibold text-slate-900">{viewMode === 'basic' ? '产品列表' : '当前页指标矩阵'}</h2>
+            <div className="mt-1 text-xs text-slate-500">
+              {viewMode === 'basic' ? '支持本页全选和当前筛选结果全选；产品对比与指标分析最多使用 10 个产品' : '只批量计算当前分页产品；每个指标可独立选择计算区间'}
+            </div>
+            {selectionActionHint && selectedCount > 0 && (
+              <div className="mt-2 max-w-xl text-xs font-medium text-amber-700" role="status">{selectionActionHint}</div>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
+            {viewMode === 'metrics' && <>
+              <MetricSelector indicators={researchIndicators} selectedIds={researchPreference.indicatorIds} onChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))} maxSelected={5} label="选择展示指标" />
+              <label className="text-xs font-medium text-slate-600">截止日<input type="date" value={researchAsOf} onChange={(event) => setResearchAsOf(event.target.value)} className="ml-2 min-h-11 rounded-lg border border-slate-200 px-3 text-sm" /></label>
+            </>}
             <span>每页</span>
             <select
+              aria-label="产品研究每页产品数量"
               value={pageSize}
               onChange={(event) => {
                 setPageSize(Number(event.target.value));
@@ -452,22 +800,53 @@ export default function ProductResearch() {
               ))}
             </select>
             <span className="text-slate-400">共 {response?.total ?? 0} 条</span>
+            <button
+              type="button"
+              onClick={toggleCurrentPageSelection}
+              disabled={currentPageSelectableProducts.length === 0}
+              className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-600 hover:border-emerald-400 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {currentPageAllSelected ? '取消本页全选' : '本页全选'}
+            </button>
+            <button
+              type="button"
+              onClick={toggleAllMatchingSelection}
+              disabled={!response || response.total === 0}
+              className={`rounded-lg border px-3 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${allMatchingSelected ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600 hover:border-emerald-400 hover:text-emerald-600'}`}
+            >
+              {allMatchingSelected ? '取消全选' : `全选 ${integerFormatter.format(response?.total ?? 0)} 条`}
+            </button>
             <div className="flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600">
-              已选 {selectedCount} / 10
+              已选 {integerFormatter.format(selectedCount)}
             </div>
             <button
               type="button"
               onClick={goToComparison}
-              disabled={selectedCount === 0}
+              disabled={!canAnalyzeSelection}
+              title={selectionActionHint}
               className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-1 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               产品对比
               {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-600">{selectedCount}</span>}
             </button>
+            <button
+              type="button"
+              onClick={goToIndicatorStudio}
+              disabled={!canAnalyzeSelection}
+              title={selectionActionHint}
+              className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+            >
+              在指标中心分析
+              {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-violet-600">{selectedCount}</span>}
+            </button>
           </div>
         </div>
 
-        {loading ? (
+        {viewMode === 'metrics' ? (
+          <div className="p-4">
+            {loading || researchLoading ? <div className="py-20 text-center text-slate-500">正在计算当前页指标…</div> : error || researchError ? <div className="py-20 text-center text-rose-600">{error ?? researchError}</div> : currentPageTargets.length === 0 ? <div className="py-20 text-center text-slate-500">当前页没有可计算产品。</div> : <MetricMatrix indicators={selectedResearchIndicators} targets={currentPageTargets} results={researchResults} periodsByIndicator={researchPreference.periodsByIndicator} periodOptions={researchPeriods} onPeriodChange={(indicatorId, period) => setResearchPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))} onDefinition={setDefinitionIndicator} />}
+          </div>
+        ) : loading ? (
           <div className="flex items-center justify-center px-6 py-24 text-slate-400">
             <div className="flex items-center gap-3">
               <svg className="h-5 w-5 animate-spin text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -486,7 +865,7 @@ export default function ProductResearch() {
             </div>
           </div>
         ) : response && response.items.length === 0 ? (
-          <div className="px-6 py-24 text-center text-slate-500">暂无符合筛选条件的ETF。</div>
+          <div className="px-6 py-24 text-center text-slate-500">暂无符合筛选条件的{productKind === 'etf' ? 'ETF' : '场外公募基金'}。</div>
         ) : (
           <div className="h-[520px] w-full overflow-auto">
             <table className="products-table min-w-[1280px] divide-y divide-slate-100">
@@ -507,7 +886,7 @@ export default function ProductResearch() {
                     产品
                   </th>
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
-                    机构 / 类型
+                    基金类型 / 投资类型
                   </th>
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     风格 / 市场
@@ -522,7 +901,7 @@ export default function ProductResearch() {
                     <SortButton label="费用 / 基准" activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
                   </th>
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
-                    <SortButton label="上市日" activeKey={sortKey} columnKey="list_date" direction={sortDir} onClick={toggleSort} />
+                    <SortButton label={productKind === 'etf' ? '上市日' : '成立日'} activeKey={sortKey} columnKey={productKind === 'etf' ? 'list_date' : 'found_date'} direction={sortDir} onClick={toggleSort} />
                   </th>
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     状态
@@ -532,9 +911,11 @@ export default function ProductResearch() {
               <tbody className="divide-y divide-slate-100 bg-white">
                 {response?.items.map((item) => {
                   const code = item.ts_code ?? item.code ?? '--';
-                  const detailPath = code && code !== '--' ? `/product/${encodeURIComponent(code)}` : undefined;
+                  const detailPath = code && code !== '--'
+                    ? `/product/${encodeURIComponent(code)}?kind=${productKind}`
+                    : undefined;
                   const selectionId = item.ts_code ?? item.code ?? null;
-                  const isSelected = selectionId ? Boolean(selectedProducts[selectionId]) : false;
+                  const isSelected = selectionId ? isProductSelected(selectionId) : false;
                   return (
                     <tr key={`${code}-${item.name}`} className="group hover:bg-emerald-50/40">
                       <td
@@ -545,6 +926,7 @@ export default function ProductResearch() {
                           className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                           checked={isSelected}
                           disabled={!selectionId}
+                          aria-label={`选择 ${item.name ?? code}`}
                           onChange={() => toggleProductSelection(selectionId, item.name, code)}
                         />
                       </td>
@@ -587,8 +969,8 @@ export default function ProductResearch() {
                         <div className="text-xs text-slate-400">基准 {formatText(item.benchmark)} · 产品类型 {formatText(item.fund_type)}</div>
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
-                        <div className="font-medium text-slate-700">{formatDate(item.list_date)}</div>
-                        <div className="text-xs text-slate-400">成立：{formatDate(item.found_date ?? item.issue_date)}</div>
+                        <div className="font-medium text-slate-700">{formatDate(productKind === 'etf' ? item.list_date : item.found_date)}</div>
+                        <div className="text-xs text-slate-400">{productKind === 'etf' ? `成立：${formatDate(item.found_date ?? item.issue_date)}` : `发行：${formatDate(item.issue_date)}`}</div>
                       </td>
                       <td className="px-6 py-4">
                         <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusTone(item.status)}`}>
@@ -630,21 +1012,174 @@ export default function ProductResearch() {
         )}
         {selectedCount > 0 && (
           <div className="flex flex-wrap gap-2 border-t border-slate-100 px-6 py-4 text-xs text-emerald-600">
-            {selectedList.map((item) => (
-              <span key={item.id} className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1">
-                {item.name}
-                <button
-                  type="button"
-                  className="text-emerald-500 hover:text-emerald-700"
-                  onClick={() => toggleProductSelection(item.id, item.name, item.code)}
-                >
-                  ×
-                </button>
+            {allMatchingSelected ? (
+              <span className="rounded-full bg-emerald-50 px-3 py-1 font-semibold">
+                已选择全部符合筛选条件的产品{excludedProductIds.size > 0 ? `，排除 ${excludedProductIds.size} 个` : ''}
               </span>
-            ))}
+            ) : (
+              <>
+                {selectedList.slice(0, 20).map((item) => (
+                  <span key={item.id} className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1">
+                    {item.name}
+                    <button
+                      type="button"
+                      aria-label={`取消选择 ${item.name}`}
+                      className="text-emerald-500 hover:text-emerald-700"
+                      onClick={() => toggleProductSelection(item.id, item.name, item.code)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {selectedList.length > 20 && <span className="px-2 py-1">另有 {selectedList.length - 20} 个已选产品</span>}
+              </>
+            )}
           </div>
         )}
       </section>
+      <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
+    </div>
+  );
+}
+
+const defaultConditionOperators: ProductConditionOperatorOption[] = [
+  { value: 'gte', label: '大于等于', symbol: '≥' },
+  { value: 'lte', label: '小于等于', symbol: '≤' },
+  { value: 'gt', label: '大于', symbol: '>' },
+  { value: 'lt', label: '小于', symbol: '<' },
+  { value: 'eq', label: '等于', symbol: '=' },
+];
+
+interface ProductConditionBuilderProps {
+  fields: ProductConditionField[];
+  operators: ProductConditionOperatorOption[];
+  conditions: ProductCondition[];
+  snapshotStatus?: string | null;
+  onAdd: (condition: ProductCondition) => void;
+  onRemove: (index: number) => void;
+}
+
+function formatProductCondition(
+  condition: ProductCondition,
+  fields: ProductConditionField[],
+  operators: ProductConditionOperatorOption[],
+) {
+  const field = fields.find((item) => item.field === condition.field);
+  const operator = operators.find((item) => item.value === condition.operator);
+  return `${field?.label ?? condition.field} ${operator?.symbol ?? condition.operator} ${condition.value}${field?.unit_label ?? ''}`;
+}
+
+function ProductConditionBuilder({
+  fields,
+  operators,
+  conditions,
+  snapshotStatus,
+  onAdd,
+  onRemove,
+}: ProductConditionBuilderProps) {
+  const availableFields = useMemo(() => fields.filter((field) => field.available), [fields]);
+  const resolvedOperators = operators.length > 0 ? operators : defaultConditionOperators;
+  const [fieldName, setFieldName] = useState('');
+  const [operator, setOperator] = useState<ProductConditionOperator>('gte');
+  const [value, setValue] = useState('');
+
+  useEffect(() => {
+    if (!availableFields.some((field) => field.field === fieldName)) {
+      setFieldName(availableFields[0]?.field ?? '');
+      setValue('');
+    }
+  }, [availableFields, fieldName]);
+
+  const selectedField = fields.find((field) => field.field === fieldName);
+  const snapshotReady = snapshotStatus === 'ready';
+  const addCondition = () => {
+    if (!selectedField || !value.trim()) return;
+    onAdd({ field: selectedField.field, operator, value: value.trim() });
+    setValue('');
+  };
+
+  return (
+    <div className="space-y-4 border-t border-slate-100 pt-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-800">日期与快照指标筛选</h3>
+          <p className="mt-1 text-xs leading-5 text-slate-500">
+            指标直接读取已生成的分析快照，不实时扫描完整净值历史；指标为空的产品不会按 0 处理。
+          </p>
+        </div>
+        <span className={`self-start rounded-full px-3 py-1 text-xs font-semibold ${snapshotReady ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+          指标快照：{snapshotReady ? '可用' : '未就绪'}
+        </span>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <label className="space-y-1 text-xs font-medium text-slate-600">
+          筛选字段
+          <select
+            aria-label="筛选字段"
+            value={fieldName}
+            onChange={(event) => { setFieldName(event.target.value); setValue(''); }}
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+          >
+            {fields.map((field) => (
+              <option key={field.field} value={field.field} disabled={!field.available}>
+                {field.label}{field.source === 'instrument_metrics_snapshot' ? '（快照）' : ''}{!field.available ? ' · 未就绪' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs font-medium text-slate-600">
+          比较方式
+          <select
+            aria-label="比较方式"
+            value={operator}
+            onChange={(event) => setOperator(event.target.value as ProductConditionOperator)}
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+          >
+            {resolvedOperators.map((item) => (
+              <option key={item.value} value={item.value}>{item.label}（{item.symbol}）</option>
+            ))}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs font-medium text-slate-600">
+          筛选值{selectedField?.unit_label ? `（${selectedField.unit_label}）` : ''}
+          <input
+            aria-label="筛选值"
+            type={selectedField?.data_type === 'date' ? 'date' : 'number'}
+            step={selectedField?.data_type === 'number' ? 'any' : undefined}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') { event.preventDefault(); addCondition(); }
+            }}
+            placeholder={selectedField?.unit_label === '%' ? '如 10 表示 10%' : '请输入数值'}
+            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={addCondition}
+          disabled={!selectedField || !value.trim()}
+          className="min-h-11 self-end rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+        >
+          添加条件
+        </button>
+      </div>
+      {conditions.length > 0 && (
+        <div className="flex flex-wrap gap-2" aria-label="已添加的日期与指标条件">
+          {conditions.map((condition, index) => (
+            <button
+              key={`${condition.field}-${condition.operator}-${condition.value}-${index}`}
+              type="button"
+              onClick={() => onRemove(index)}
+              aria-label={`移除条件 ${formatProductCondition(condition, fields, resolvedOperators)}`}
+              className="inline-flex items-center gap-2 rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-100"
+            >
+              {formatProductCondition(condition, fields, resolvedOperators)}
+              <span aria-hidden="true">×</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

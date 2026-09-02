@@ -1,0 +1,2132 @@
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import ReactECharts from 'echarts-for-react'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
+import {
+  evaluationStatusLabel,
+  formatIndicatorDiagnostic,
+  humanizeIndicatorMessage,
+  humanizeIndicatorTechnicalText,
+} from '../utils/indicatorDiagnostics'
+import {
+  CustomIndicatorApiError,
+  composeCustomIndicator,
+  createCustomIndicator,
+  deleteCustomIndicator,
+  evaluateCustomIndicators,
+  evaluatePortfolioCustomIndicators,
+  getCustomIndicatorMeta,
+  getPortfolioRuns,
+  getVariableAvailability,
+  inferCustomIndicator,
+  indicatorsForContext,
+  listCustomIndicators,
+  searchInstruments,
+  updateCustomIndicator,
+  validateCustomIndicator,
+  type EvaluationResult,
+  type EvaluationTarget,
+  type IndicatorDefinition,
+  type IndicatorDag,
+  type IndicatorDagNode,
+  type IndicatorDraft,
+  type IndicatorContextDomain,
+  type IndicatorMeta,
+  type IndicatorOperator,
+  type IndicatorOperatorParameter,
+  type IndicatorShape,
+  type IndicatorVariable,
+  type InferenceResponse,
+  type InstrumentSearchItem,
+  type ProductKind,
+  type PortfolioRun,
+  type ValidationResponse,
+  type VariableAvailabilityItem,
+} from '../services/customIndicators'
+import { MetricUnavailableReason } from '../components/metrics/MetricDisplay'
+
+const FALLBACK_PERIODS = [
+  { value: '1W', label: '近 1 周', description: '最近 5 个收益观察值' },
+  { value: '1M', label: '近 1 月', description: '自然月窗口' },
+  { value: '3M', label: '近 3 月', description: '自然月窗口' },
+  { value: '6M', label: '近 6 月', description: '自然月窗口' },
+  { value: '1Y', label: '近 1 年', description: '自然年窗口' },
+  { value: '2Y', label: '近 2 年', description: '自然年窗口' },
+  { value: '3Y', label: '近 3 年', description: '自然年窗口' },
+  { value: '5Y', label: '近 5 年', description: '自然年窗口' },
+  { value: '10Y', label: '近 10 年', description: '自然年窗口' },
+  { value: '20Y', label: '近 20 年', description: '自然年窗口' },
+  { value: '30Y', label: '近 30 年', description: '自然年窗口' },
+  { value: 'W1', label: '上周', description: '上一个完整自然周（周一至周日）' },
+  { value: 'W2', label: '上上周', description: '截止日前第二个完整自然周' },
+  { value: 'M1', label: '上月', description: '上一个完整自然月' },
+  { value: 'M2', label: '上上月', description: '截止日前第二个完整自然月' },
+  { value: 'Y1', label: '去年', description: '上一个完整自然年度' },
+  { value: 'Y2', label: '前年', description: '截止日前第二个完整自然年度' },
+  { value: 'ALL', label: '成立以来', description: '首个真实净值点至有效截止日' },
+]
+
+const EMPTY_DRAFT: IndicatorDraft = {
+  name: '未命名指标',
+  description: '',
+  expression: '',
+  unit: '',
+  display_format: 'number',
+  precision: 3,
+  direction: 'higher_better',
+  indicator_type: 'return',
+  annual_risk_free_rate_percent: 1.5,
+  dsl_version: '2.2.0',
+  operator_registry_version: '2.2.0',
+  numeric_kernel_version: '2.2.0',
+  variable_registry_version: '2.1.0',
+  context_schema_version: 'typed-context-v2',
+  data_contract_version: 'tushare-eod-v2',
+  period_policy: 'all_supported',
+  context_kind: 'single_product',
+  output_contract: 'scalar',
+  output_measure: 'dimensionless',
+  template_origin: null,
+}
+
+type MobileTab = 'library' | 'editor' | 'preview'
+type CatalogTab = 'variables' | 'operators' | 'indicators'
+type EditorMode = 'guided' | 'advanced'
+type ComposerSource = 'variable' | 'constant' | 'operator' | 'indicator' | 'omitted'
+type ComposerApplyMode = 'replace_formula' | 'replace_selection' | 'insert_cursor'
+
+type ComposerItem = {
+  id: string
+  label: string
+  kind: 'operator'
+  signature: string
+  essence: string
+  semantic: string
+  outputShape: IndicatorShape
+  outputType?: string
+  domains: IndicatorContextDomain[]
+  parameters: IndicatorOperatorParameter[]
+  categoryId: string
+  categoryLabel: string
+  aliases: string[]
+  tags: string[]
+  examples: string[]
+  displayTemplate?: string
+  costEstimate?: string | number
+  version?: string
+  executionBackend?: string
+}
+
+type ComposerArgument = {
+  parameter: IndicatorOperatorParameter
+  source: ComposerSource
+  value: string
+  nested?: ComposerNode
+}
+
+type ComposerNode = {
+  item: ComposerItem
+  arguments: ComposerArgument[]
+}
+
+type ComposerState = {
+  node: ComposerNode
+  applyMode: ComposerApplyMode
+  selectionStart: number
+  selectionEnd: number
+} | null
+
+const MOBILE_TABS: [MobileTab, string][] = [
+  ['library', '指标库'],
+  ['editor', '编辑'],
+  ['preview', '预览'],
+]
+
+type StudioTarget = EvaluationTarget & { name: string }
+
+const MAX_PREVIEW_TARGETS = 10
+
+const INDICATOR_PROTOCOL_FIELDS = [
+  'variable_registry_version',
+  'data_contract_version',
+  'context_schema_version',
+] as const
+
+function indicatorReferenceKey(indicator: IndicatorDefinition) {
+  return `${indicator.id}@${indicator.revision}`
+}
+
+function indicatorIsComposable(
+  indicator: IndicatorDefinition,
+  draft: IndicatorDraft,
+  contextDomain: IndicatorContextDomain,
+) {
+  if ((indicator.context_kind ?? 'single_product') !== contextDomain) return false
+  if ((indicator.output_contract ?? 'scalar') !== 'scalar') return false
+  if (!indicator.expression.trim() || !String(indicator.dsl_version || '').startsWith('2.')) return false
+  // A referenced indicator is expanded into plain formula text and then
+  // compiled against the current draft protocol.  Therefore typed v2.0/v2.1
+  // formulas remain reusable in v2.2 without carrying an executable reference.
+  return INDICATOR_PROTOCOL_FIELDS.every((field) => (
+    !draft[field]
+    || !indicator[field]
+    || String(draft[field]) === String(indicator[field])
+  ))
+}
+
+function composableProtocolPriority(indicator: IndicatorDefinition, draft: IndicatorDraft) {
+  const dsl = String(indicator.dsl_version || '')
+  const operatorRegistry = String(indicator.operator_registry_version || '')
+  if (dsl === draft.dsl_version && operatorRegistry === draft.operator_registry_version) return 3
+  if (dsl.startsWith('2.2') && operatorRegistry.startsWith('2.2')) return 2
+  if (dsl.startsWith('2.1') && operatorRegistry.startsWith('2.1')) return 1
+  return 0
+}
+
+function indicatorCategory(indicator: IndicatorDefinition) {
+  return {
+    id: indicator.category_id || indicator.indicator_type || 'other',
+    label: indicator.category_label || indicator.presentation?.category_label || '其他指标',
+  }
+}
+
+function parameterAcceptsIndicator(parameter: IndicatorOperatorParameter) {
+  if (!acceptedShapes(parameter).some((shape) => shape === 'scalar' || shape === 'unknown')) return false
+  return !['ddof', 'periods', 'probability'].includes(parameter.name)
+}
+
+const FALLBACK_VARIABLES: IndicatorVariable[] = [
+  { name: 'returns', label: '普通收益率序列', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{r}', shape: 'series', semantic: '当前产品在计算窗口内的普通收益率序列。', source: '真实复权净值', domains: ['single_product'], category_id: 'returns', category_label: '收益与变化' },
+  { name: 'log_returns', label: '对数收益率序列', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{\\ell}', shape: 'series', semantic: '当前产品在计算窗口内的对数收益率序列。', source: '真实复权净值', domains: ['single_product'], category_id: 'returns', category_label: '收益与变化' },
+  { name: 'risk_free_rate_per_observation', label: '单观察期无风险收益率', value_type: 'scalar', dtype: 'float64', latex: 'r_{f}', shape: 'scalar', semantic: '由年化无风险利率按当前观察频率换算。', source: '指标配置', domains: ['single_product', 'portfolio'], category_id: 'configuration', category_label: '基准与配置' },
+]
+
+function inferShape(variable: IndicatorVariable): IndicatorShape {
+  if (variable.dtype === 'bool' || /mask/i.test(variable.value_type)) return 'mask'
+  if (variable.shape) return variable.shape
+  if (['returns', 'log_returns', 'benchmark_returns'].includes(variable.name)) return 'series'
+  if (['asset_returns', 'asset_log_returns', 'weight_path'].includes(variable.name)) return 'matrix'
+  if (variable.name === 'asset_weights') return 'vector'
+  if (/risk_free|periods_per_year/i.test(variable.name)) return 'scalar'
+  if (/matrix|covariance|square/i.test(variable.value_type)) return 'matrix'
+  if (/series|returns|time/i.test(variable.value_type)) return 'series'
+  if (/vector|array/i.test(variable.value_type)) return 'vector'
+  return /tuple/i.test(variable.value_type) ? 'tuple' : 'scalar'
+}
+
+function acceptedShapes(parameter: IndicatorOperatorParameter): IndicatorShape[] {
+  return parameter.allowed_shapes || (parameter.shape
+    ? [parameter.shape]
+    : ['scalar', 'series', 'vector', 'matrix', 'mask', 'tuple', 'unknown'])
+}
+
+function supportsVariableDomain(variable: IndicatorVariable, contextDomain: IndicatorContextDomain) {
+  if (variable.domains) return variable.domains.includes(contextDomain)
+  return contextDomain === 'portfolio'
+    ? ['asset_returns', 'asset_log_returns', 'asset_weights', 'weight_path', 'benchmark_returns'].includes(variable.name)
+    : !['asset_returns', 'asset_log_returns', 'asset_weights', 'weight_path', 'benchmark_returns'].includes(variable.name)
+}
+
+function availabilitySupportsVariable(item: VariableAvailabilityItem | undefined) {
+  if (!item || item.status === 'declared') return true
+  if (item.status === 'available') return true
+  return item.status === 'partial' && item.actual_shape !== null && item.actual_shape !== undefined
+}
+
+function variableIsUsable(
+  variable: IndicatorVariable,
+  item: VariableAvailabilityItem | undefined,
+  runtimeAvailabilityRequired: boolean,
+  availabilityLoading: boolean,
+  availabilityError: string | null,
+) {
+  if (variable.availability === 'unavailable' || variable.availability === 'not_applicable') return false
+  if (!runtimeAvailabilityRequired) return true
+  if (availabilityLoading || availabilityError || !item) return false
+  return availabilitySupportsVariable(item)
+}
+
+function isCompatibleVariable(
+  variable: IndicatorVariable,
+  parameter: IndicatorOperatorParameter,
+  contextDomain: IndicatorContextDomain,
+) {
+  if (!acceptedShapes(parameter).includes(inferShape(variable))) return false
+  if (!supportsVariableDomain(variable, contextDomain)) return false
+  const roles = parameter.allowed_semantic_roles ?? []
+  const role = variable.semantic_role || variable.semantic
+  return roles.length === 0 || !role || roles.includes(role)
+}
+
+function normalizedVariableMeasure(variable: IndicatorVariable) {
+  if (variable.measure) return variable.measure
+  const role = variable.semantic_role || ''
+  if (/ordinary_return|log_return|benchmark_return|quote_return/.test(role)) return 'return_decimal'
+  if (/risk_free_rate/.test(role)) return 'rate_decimal'
+  if (/raw_.*price|raw_price/.test(role)) return 'raw_market_price'
+  if (/volume/.test(role)) return 'volume'
+  if (/turnover|net_asset|dividend/.test(role)) return 'currency_amount'
+  if (/weight/.test(role)) return 'dimensionless'
+  return ''
+}
+
+function measuresCanCombine(left: IndicatorVariable, right: IndicatorVariable) {
+  const leftMeasure = normalizedVariableMeasure(left)
+  const rightMeasure = normalizedVariableMeasure(right)
+  if (!leftMeasure || !rightMeasure || leftMeasure === rightMeasure) {
+    return !left.price_basis || !right.price_basis || left.price_basis === right.price_basis
+  }
+  const returnAndRate = new Set([leftMeasure, rightMeasure])
+  if (returnAndRate.size === 2 && returnAndRate.has('return_decimal') && returnAndRate.has('rate_decimal')) return true
+  return false
+}
+
+function isCompatibleWithComposerSiblings(
+  variable: IndicatorVariable,
+  argumentIndex: number,
+  node: ComposerNode,
+  variables: IndicatorVariable[],
+) {
+  const binaryAligned = new Set([
+    'add', 'subtract', 'multiply', 'divide', 'minimum', 'maximum',
+    'equal', 'not_equal', 'less_than', 'less_equal', 'greater_than', 'greater_equal',
+    'dot', 'outer',
+  ])
+  const semanticAligned = new Set([
+    'add', 'subtract', 'minimum', 'maximum',
+    'equal', 'not_equal', 'less_than', 'less_equal', 'greater_than', 'greater_equal',
+  ])
+  const branchIndexes = node.item.id === 'where' ? [1, 2] : binaryAligned.has(node.item.id) ? [0, 1] : []
+  if (!branchIndexes.includes(argumentIndex)) return true
+  const siblingIndex = branchIndexes.find((index) => index !== argumentIndex)
+  if (siblingIndex === undefined) return true
+  const sibling = node.arguments[siblingIndex]
+  if (!sibling || sibling.source !== 'variable') return true
+  const siblingVariable = variables.find((item) => item.name === sibling.value)
+  if (!siblingVariable) return true
+  const candidateShape = inferShape(variable)
+  const siblingShape = inferShape(siblingVariable)
+  if (node.item.id === 'dot' || node.item.id === 'outer') {
+    if (candidateShape !== siblingShape || candidateShape === 'scalar') return false
+  } else if (candidateShape !== siblingShape && candidateShape !== 'scalar' && siblingShape !== 'scalar') {
+    return false
+  }
+  if ((semanticAligned.has(node.item.id) || node.item.id === 'where') && !measuresCanCombine(variable, siblingVariable)) {
+    return false
+  }
+  return true
+}
+
+function initialComposerArgument(
+  parameter: IndicatorOperatorParameter,
+  variables: IndicatorVariable[],
+  contextDomain: IndicatorContextDomain,
+): ComposerArgument {
+  if (parameter.optional && parameter.default == null) {
+    return { parameter, source: 'omitted', value: '' }
+  }
+  if (typeof parameter.default === 'number') {
+    return { parameter, source: 'constant', value: String(parameter.default) }
+  }
+  const compatibleVariables = variables.filter((variable) => isCompatibleVariable(variable, parameter, contextDomain))
+  const defaultVariable = compatibleVariables.find((variable) => variable.name === parameter.default)
+  const variable = defaultVariable ?? compatibleVariables[0]
+  if (variable) return { parameter, source: 'variable', value: variable.name }
+  return { parameter, source: acceptedShapes(parameter).includes('scalar') ? 'constant' : 'variable', value: '' }
+}
+
+function initialComposerNode(
+  item: ComposerItem,
+  variables: IndicatorVariable[],
+  contextDomain: IndicatorContextDomain,
+): ComposerNode {
+  return {
+    item,
+    arguments: item.parameters.map((parameter) => initialComposerArgument(parameter, variables, contextDomain)),
+  }
+}
+
+function composerNodeFromDag(
+  dag: IndicatorDag | null | undefined,
+  operators: ComposerItem[],
+): ComposerNode | null {
+  if (!dag) return null
+  const nodeById = new Map(dag.nodes.map((node) => [String(node.id), node]))
+  const operatorById = new Map(operators.map((operator) => [operator.id, operator]))
+  const incoming = new Map<string, typeof dag.edges>()
+  dag.edges.forEach((edge) => {
+    const target = String(edge.target)
+    incoming.set(target, [...(incoming.get(target) ?? []), edge].sort((left, right) => (left.order ?? 0) - (right.order ?? 0)))
+  })
+
+  const build = (nodeId: string | number, visiting: Set<string>): ComposerNode | null => {
+    const key = String(nodeId)
+    if (visiting.has(key)) return null
+    const node = nodeById.get(key)
+    if (!node) return null
+    const operatorId = node.operator?.id || node.operator_id || node.label
+    const item = operatorById.get(operatorId)
+    if (!item) return null
+    const nextVisiting = new Set(visiting).add(key)
+    const namedInputs = new Map((node.arguments ?? []).map((argument) => [argument.name, argument.input_node_id]))
+    const orderedInputs = node.inputs?.length
+      ? node.inputs
+      : (incoming.get(key) ?? []).map((edge) => edge.source)
+    const argumentsForNode = item.parameters.map((parameter, index): ComposerArgument => {
+      const childId = namedInputs.get(parameter.name) ?? orderedInputs[index]
+      if (childId === undefined) {
+        if (typeof parameter.default === 'number') {
+          return { parameter, source: 'constant', value: String(parameter.default) }
+        }
+        return parameter.optional
+          ? { parameter, source: 'omitted', value: '' }
+          : { parameter, source: 'variable', value: '' }
+      }
+      const child = nodeById.get(String(childId))
+      if (!child) return { parameter, source: 'variable', value: '' }
+      if (child.kind === 'variable') return { parameter, source: 'variable', value: child.label }
+      if (child.kind === 'constant') return { parameter, source: 'constant', value: child.formula_fragment || child.label }
+      const nested = build(childId, nextVisiting)
+      return nested
+        ? { parameter, source: 'operator', value: nested.item.id, nested }
+        : { parameter, source: 'variable', value: '' }
+    })
+    return { item, arguments: argumentsForNode }
+  }
+
+  const rootId = dag.roots.result ?? Object.values(dag.roots)[0]
+  return rootId === undefined ? null : build(rootId, new Set())
+}
+
+function composerNodeCount(node: ComposerNode): number {
+  return 1 + node.arguments.reduce(
+    (total, argument) => total + (argument.nested ? composerNodeCount(argument.nested) : 0),
+    0,
+  )
+}
+
+function isCompatibleNestedOperator(
+  item: ComposerItem,
+  parameter: IndicatorOperatorParameter,
+  contextDomain: IndicatorContextDomain,
+) {
+  if (!item.domains.includes(contextDomain)) return false
+  const expected = acceptedShapes(parameter)
+  return item.outputShape === 'unknown' || expected.includes('unknown') || expected.includes(item.outputShape)
+}
+
+function isComposerNodeValid(
+  node: ComposerNode,
+  variables: IndicatorVariable[],
+  indicators: IndicatorDefinition[],
+  contextDomain: IndicatorContextDomain,
+): boolean {
+  return node.arguments.every((argument, index) => (
+    isComposerArgumentValid(argument, variables, indicators, contextDomain, node, index)
+  ))
+}
+
+function updateComposerNodeArgument(
+  node: ComposerNode,
+  path: number[],
+  nextArgument: ComposerArgument,
+): ComposerNode {
+  const [argumentIndex, ...nestedPath] = path
+  return {
+    ...node,
+    arguments: node.arguments.map((argument, index) => {
+      if (index !== argumentIndex) return argument
+      if (nestedPath.length === 0) return nextArgument
+      if (!argument.nested) return argument
+      return { ...argument, nested: updateComposerNodeArgument(argument.nested, nestedPath, nextArgument) }
+    }),
+  }
+}
+
+function firstInvalidComposerArgument(
+  node: ComposerNode,
+  variables: IndicatorVariable[],
+  indicators: IndicatorDefinition[],
+  contextDomain: IndicatorContextDomain,
+): ComposerArgument | null {
+  for (const [index, argument] of node.arguments.entries()) {
+    if (!isComposerArgumentValid(argument, variables, indicators, contextDomain, node, index)) return argument
+    if (argument.source === 'operator' && argument.nested) {
+      const nestedInvalid = firstInvalidComposerArgument(argument.nested, variables, indicators, contextDomain)
+      if (nestedInvalid) return nestedInvalid
+    }
+  }
+  return null
+}
+
+function firstComposerSiblingIssue(
+  node: ComposerNode,
+  variables: IndicatorVariable[],
+): string | null {
+  for (const [index, argument] of node.arguments.entries()) {
+    if (argument.source === 'variable' && argument.value) {
+      const variable = variables.find((item) => item.name === argument.value)
+      if (variable && !isCompatibleWithComposerSiblings(variable, index, node, variables)) {
+        const sibling = node.arguments.find((_, siblingIndex) => siblingIndex !== index && (
+          node.item.id === 'where'
+            ? [1, 2].includes(siblingIndex)
+            : siblingIndex < 2
+        ))
+        const currentLabel = argument.parameter.label || argument.parameter.name
+        const siblingLabel = sibling?.parameter.label || sibling?.parameter.name || '另一输入'
+        return `${currentLabel} 与 ${siblingLabel} 的类型、轴、语义量纲或价格口径不兼容；请为两个参数选择可配对的变量。`
+      }
+    }
+    if (argument.source === 'operator' && argument.nested) {
+      const nestedIssue = firstComposerSiblingIssue(argument.nested, variables)
+      if (nestedIssue) return nestedIssue
+    }
+  }
+  return null
+}
+
+function isComposerArgumentValid(
+  argument: ComposerArgument,
+  variables: IndicatorVariable[],
+  indicators: IndicatorDefinition[],
+  contextDomain: IndicatorContextDomain,
+  node?: ComposerNode,
+  argumentIndex?: number,
+) {
+  if (argument.source === 'omitted') return Boolean(argument.parameter.optional)
+  if (!argument.value.trim()) return false
+  if (argument.source === 'constant') return Number.isFinite(Number(argument.value))
+  if (argument.source === 'operator') {
+    return Boolean(
+      argument.nested
+      && isCompatibleNestedOperator(argument.nested.item, argument.parameter, contextDomain)
+      && isComposerNodeValid(argument.nested, variables, indicators, contextDomain),
+    )
+  }
+  if (argument.source === 'indicator') {
+    return parameterAcceptsIndicator(argument.parameter)
+      && indicators.some((indicator) => indicatorReferenceKey(indicator) === argument.value)
+  }
+  const variable = variables.find((item) => item.name === argument.value)
+  return Boolean(
+    variable
+    && isCompatibleVariable(variable, argument.parameter, contextDomain)
+    && (!node || argumentIndex === undefined || isCompatibleWithComposerSiblings(variable, argumentIndex, node, variables)),
+  )
+}
+
+function shapeLabel(shape: IndicatorShape, valueType = '') {
+  if (shape === 'unknown' && /same\s*\(/i.test(valueType)) return '与输入相同的数据类型'
+  if (shape === 'unknown' && /one_dimensional/i.test(valueType)) return '一维数据（按所选轴计算）'
+  if (shape === 'unknown' && valueType.includes('|')) {
+    const alternatives = [
+      /scalar/i.test(valueType) ? '有限标量' : '',
+      /series/i.test(valueType) ? '时间序列' : '',
+      /vector/i.test(valueType) ? '资产向量' : '',
+      /matrix<time\s*,\s*asset>/i.test(valueType) ? '时间—资产矩阵' : /matrix/i.test(valueType) ? '矩阵' : '',
+    ].filter(Boolean)
+    if (alternatives.length > 1) return `依入参推导（${alternatives.join(' / ')}）`
+  }
+  const matrixLabel = /matrix<time\s*,\s*asset>|matrix<asset\s*,\s*time>/i.test(valueType)
+    ? '时间—资产矩阵'
+    : /matrix<asset\s*,\s*asset>|square|covariance|\[n\s*,\s*n\]|n_n/i.test(valueType)
+      ? '资产方阵'
+      : '矩阵'
+  const maskLabel = /mask<time\s*,\s*asset>|mask<asset\s*,\s*time>/i.test(valueType)
+    ? '时间—资产布尔掩码'
+    : /mask<time>/i.test(valueType)
+      ? '时间序列布尔掩码'
+      : /mask<asset>/i.test(valueType)
+        ? '资产布尔掩码'
+        : '布尔掩码'
+  return ({ scalar: '有限标量', series: '时间序列', vector: '资产向量', matrix: matrixLabel, mask: maskLabel, tuple: '多结果值（旧版）', unknown: '数据类型待推导' } as Record<IndicatorShape, string>)[shape]
+}
+
+function humanizeTechnicalTypes(value: unknown, fallbackShape: IndicatorShape = 'unknown'): string {
+  if (value === null || value === undefined || value === '') return shapeLabel(fallbackShape)
+  if (Array.isArray(value)) return value.map((item) => humanizeTechnicalTypes(item)).join(' / ')
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if (record.display) return humanizeTechnicalTypes(record.display, fallbackShape)
+    if (record.kind) return humanizeTechnicalTypes(record.kind, fallbackShape)
+    return '由输入数据类型决定'
+  }
+  return humanizeIndicatorTechnicalText(value)
+}
+
+function userFacingErrorMessage(error: unknown, fallback = '请求失败，请稍后重试。') {
+  if (error instanceof CustomIndicatorApiError) return formatIndicatorDiagnostic(error.code, error.message)
+  const message = error instanceof Error ? error.message : fallback
+  return humanizeIndicatorMessage(message, fallback)
+}
+
+function actualDataSizeLabel(actualShape: number[] | null | undefined, shape: IndicatorShape, valueType = '') {
+  if (actualShape === null || actualShape === undefined) return '尚未形成运行窗口'
+  if (actualShape.length === 0) return '单个数值'
+  if (actualShape.length === 1) {
+    if (shape === 'series' || /<time>/i.test(valueType)) return `${actualShape[0]} 个时间点`
+    if (shape === 'vector' || /<asset>/i.test(valueType)) return `${actualShape[0]} 个资产`
+    return `${actualShape[0]} 个元素`
+  }
+  if (actualShape.length === 2 && /asset\s*,\s*asset/i.test(valueType)) return `${actualShape[0]} × ${actualShape[1]}（资产 × 资产）`
+  if (actualShape.length === 2 && /time\s*,\s*asset|asset\s*,\s*time/i.test(valueType)) return `${actualShape[0]} × ${actualShape[1]}（时间点 × 资产）`
+  return `${actualShape.join(' × ')} 个元素`
+}
+
+function symbolicDataSizeLabel(symbolicShape: string | Array<string | number> | null | undefined, shape: IndicatorShape, valueType = '') {
+  const shapeText = Array.isArray(symbolicShape)
+    ? `[${symbolicShape.map((axis) => String(axis)).join(',')}]`
+    : typeof symbolicShape === 'string'
+      ? symbolicShape
+      : ''
+  const normalized = shapeText.replace(/\s+/g, '').toUpperCase()
+  if (!normalized || normalized === '[]') return shape === 'scalar' ? '单个数值' : '由输入数据规模决定'
+  if (normalized === '[T]') return '随计算窗口变化的时间点数量'
+  if (normalized === '[L]') return '包含窗口边界点的净值或价格观察数'
+  if (normalized === '[N]') return '随组合成分变化的资产数量'
+  if (normalized === '[T,N]' || normalized === '[N,T]') return '时间点数量 × 资产数量'
+  if (normalized === '[N,N]') return '资产数量 × 资产数量'
+  return /scalar/i.test(valueType) ? '单个数值' : '由输入数据规模决定'
+}
+
+function diagnosticMessage(code: string, message: string) {
+  return formatIndicatorDiagnostic(code, message)
+}
+
+function nodeKindLabel(kind: string) {
+  return ({ variable: '输入变量', constant: '数值常量', call: '计算算子', binary: '基础运算', unary: '一元运算', comparison: '比较运算' } as Record<string, string>)[kind] || '计算节点'
+}
+
+function availabilityStatusLabel(status: string) {
+  return ({ available: '可用', partial: '部分产品可用', conditional: '有条件可用', source_unavailable: '缺少对应数据源', field_missing: '缺少数据字段', no_observations: '没有有效观察值', unavailable: '不可用', not_applicable: '不适用', missing: '数据缺失', insufficient: '样本不足', insufficient_window: '当前区间样本不足', checking: '核对中', availability_check_failed: '可用性核对失败', error: '读取失败' } as Record<string, string>)[status] || '状态待确认'
+}
+
+function scopeLabel(scope: string) {
+  return ({ single_product: '单产品', portfolio: '组合', etf: 'ETF', fund: '场外基金' } as Record<string, string>)[scope] || scope
+}
+
+function measureLabel(measure: string | undefined) {
+  return ({ return_decimal: '收益率', rate_decimal: '利率', adjusted_nav: '复权净值', reported_nav: '披露净值', raw_market_price: '市场价格', volume: '成交量', currency_amount: '金额', count: '数量', calendar_days: '日历天数', dimensionless: '无量纲数值' } as Record<string, string>)[measure || 'dimensionless'] || '数值'
+}
+
+function parameterLabel(parameter: string | undefined, fallback: string) {
+  if (!parameter) return fallback
+  if (fallback && fallback !== parameter && /[^\u0000-\u007f]/.test(fallback)) return fallback
+  return ({
+    lhs: '输入 A', rhs: '输入 B', left: '输入 A', right: '输入 B',
+    values: '待处理数值', value: '待处理数值', x: '输入数值', y: '参考数值',
+    lower: '允许的最小值', upper: '允许的最大值', threshold: '比较阈值',
+    q: '分位点', ddof: '自由度修正', axis: '计算维度', periods: '间隔期数',
+    matrix: '输入矩阵', vector: '输入向量', mask: '判断条件', condition: '判断条件',
+  } as Record<string, string>)[parameter] || fallback
+}
+
+function parameterDescription(parameter: IndicatorOperatorParameter) {
+  const description = humanizeTechnicalTypes(parameter.description || '')
+  if (description && !/^允许类型\s*[:：]/i.test(description)) return description
+  const label = parameterLabel(parameter.name, parameter.label || parameter.name)
+  return `${label}在当前数学运算中的数值。`
+}
+
+function operatorContractDescription(item: ComposerItem) {
+  const inputs = item.parameters.map((parameter) => {
+    const types = acceptedShapes(parameter).map((shape) => shapeLabel(shape)).join('、') || '由上下文决定'
+    return `${parameterLabel(parameter.name, parameter.label || parameter.name)}支持${types}`
+  }).join('；')
+  return `${inputs || '无需输入参数'}；返回${shapeLabel(item.outputShape, item.outputType)}。`
+}
+
+function costEstimateLabel(cost: string | number | undefined) {
+  if (cost === null || cost === undefined || cost === '') return '由系统根据输入规模估算'
+  if (typeof cost === 'number') return `约 ${cost} 个基础计算单元`
+  const normalized = cost.replace(/\s+/g, '').toLowerCase()
+  if (normalized === 'elementwise') return '逐元素计算'
+  if (normalized === 'reduction') return '单次遍历归约'
+  if (/o\([^)]*\^?3[^)]*\)/.test(normalized)) return '随矩阵维度呈立方增长'
+  if (/o\([^)]*\^?2[^)]*\)/.test(normalized)) return '随输入规模呈平方增长'
+  if (/^o\(/.test(normalized)) return '随输入规模线性增长'
+  return humanizeTechnicalTypes(cost)
+}
+
+function executionBackendLabel(backend: string | undefined) {
+  if (backend === 'numba_njit_fixed_signature') return '高性能编译计算（已固定输入输出类型）'
+  if (backend === 'numpy_blas_lapack') return '高性能线性代数计算'
+  return '数组向量化计算'
+}
+
+function MathNotation({ latex, label }: { latex: string; label: string }) {
+  try {
+    const markup = katex.renderToString(latex, { throwOnError: true, displayMode: true })
+    return <div aria-label={label} className="overflow-x-auto text-slate-900" dangerouslySetInnerHTML={{ __html: markup }} />
+  } catch {
+    return <p aria-label={label} className="text-sm text-slate-500">数学排版暂不可用</p>
+  }
+}
+
+function mathFormulaForDisplay(preferred?: string | null, fallback?: string | null) {
+  const display = preferred?.trim()
+  if (display) return display
+  const legacyLatex = fallback?.trim()
+  return legacyLatex?.includes('\\') ? legacyLatex : null
+}
+
+function operatorOptionContract(item: ComposerItem) {
+  const inputs = item.parameters.map((parameter) => {
+    const shapes = acceptedShapes(parameter).map((shape) => shapeLabel(shape)).join('/')
+    return `${parameter.label || parameter.name}:${shapes}`
+  }).join(' + ')
+  return `${inputs || '无参数'} → ${shapeLabel(item.outputShape, item.outputType)}`
+}
+
+function variableCategory(variable: IndicatorVariable) {
+  if (variable.category_id || variable.category || variable.category_label) {
+    return {
+      id: variable.category_id || variable.category || variable.category_label || 'other',
+      label: variable.category_label || variable.category || '其他变量',
+    }
+  }
+  const token = `${variable.name} ${variable.semantic_role || ''} ${variable.source || ''}`.toLowerCase()
+  if (/weight|asset_|portfolio|benchmark/.test(token)) return { id: 'portfolio', label: '组合上下文' }
+  if (/risk_free|periods_per_year|annualization|config/.test(token)) return { id: 'configuration', label: '基准与配置' }
+  if (/return|change|pct/.test(token)) return { id: 'returns', label: '收益与变化' }
+  if (/open|high|low|close|nav|price/.test(token)) return { id: 'price', label: '净值与价格' }
+  if (/volume|amount|turnover|liquid/.test(token)) return { id: 'trading', label: '成交与流动性' }
+  if (/share|size|aum|scale/.test(token)) return { id: 'scale', label: '规模与份额' }
+  if (/flow|money|margin|northbound/.test(token)) return { id: 'flow', label: '资金与持仓' }
+  return { id: 'other', label: '其他变量' }
+}
+
+function operatorCategory(operator: IndicatorOperator) {
+  if (operator.category_id || operator.category || operator.category_label) {
+    return {
+      id: operator.category_id || operator.category || operator.category_label || 'other',
+      label: operator.category_label || operator.category || '其他算子',
+    }
+  }
+  const name = operator.name.toLowerCase()
+  if (/matmul|matvec|dot|outer|transpose|trace|solve|diag|quadratic/.test(name)) return { id: 'linear_algebra', label: '线性代数' }
+  if (/covariance|correlation|variance|std/.test(name)) return { id: 'statistics', label: '统计计算' }
+  if (/cumulative|last/.test(name)) return { id: 'cumulative', label: '累计与时序' }
+  if (/mean|sum|product|min_value|max_value|_time|_asset/.test(name)) return { id: 'reduction', label: '归约与轴计算' }
+  if (/add|subtract|multiply|divide|power/.test(name)) return { id: 'arithmetic', label: '基础运算' }
+  return { id: 'transform', label: '逐元素变换' }
+}
+
+function mergeParameterContracts(
+  primary: IndicatorOperatorParameter[],
+  overload: IndicatorOperatorParameter[],
+) {
+  return primary.map((parameter, index) => {
+    const alternative = overload[index]
+    if (!alternative) return parameter
+    const roles = parameter.allowed_semantic_roles ?? []
+    const alternativeRoles = alternative.allowed_semantic_roles ?? []
+    return {
+      ...parameter,
+      allowed_shapes: [...new Set([...acceptedShapes(parameter), ...acceptedShapes(alternative)])],
+      allowed_types: [...new Set([...(parameter.allowed_types ?? []), ...(alternative.allowed_types ?? [])])],
+      allowed_semantic_roles: roles.length && alternativeRoles.length
+        ? [...new Set([...roles, ...alternativeRoles])]
+        : undefined,
+    }
+  })
+}
+
+function operatorParameterChoices(operator: IndicatorOperator, fallback: IndicatorOperatorParameter[]) {
+  const preferred = operator.parameters?.length ? operator.parameters : fallback
+  const choices: IndicatorOperatorParameter[][] = []
+  for (const parameters of [preferred, ...(operator.parameter_sets ?? []).map((item) => item.parameters)]) {
+    if (!parameters.length) continue
+    const key = parameters.map((parameter) => parameter.name).join('|')
+    const existingIndex = choices.findIndex((item) => item.map((parameter) => parameter.name).join('|') === key)
+    if (existingIndex >= 0) choices[existingIndex] = mergeParameterContracts(choices[existingIndex], parameters)
+    else choices.push(parameters)
+  }
+  return choices.length ? choices : [fallback]
+}
+
+function operatorParametersForContext(
+  operator: IndicatorOperator,
+  fallback: IndicatorOperatorParameter[],
+  variables: IndicatorVariable[],
+  contextDomain: IndicatorContextDomain,
+) {
+  const choices = operatorParameterChoices(operator, fallback)
+  return choices.find((parameters) => parameters.every((parameter) => (
+    parameter.optional
+    || parameter.default !== null && parameter.default !== undefined
+    || variables.some((variable) => isCompatibleVariable(variable, parameter, contextDomain))
+  ))) ?? choices[0]
+}
+
+function operatorToComposer(operator: IndicatorOperator, variables: IndicatorVariable[], contextDomain: IndicatorContextDomain): ComposerItem {
+  const fallbackParameters: IndicatorOperatorParameter[] = (operator.input_shapes ?? ['scalar'])
+    .map((shape, index) => ({ name: `input_${index + 1}`, label: `输入 ${index + 1}`, shape }))
+  const parameters = operatorParametersForContext(operator, fallbackParameters, variables, contextDomain)
+  const category = operatorCategory(operator)
+  return {
+    id: operator.name, label: operator.label || operator.name, kind: 'operator', signature: operator.signature,
+    essence: operator.mathematical_essence || operator.signature || '受控数学算子。',
+    semantic: operator.semantic || operator.mathematical_essence || '使用白名单函数对输入值进行计算。', outputShape: operator.output_shape || (/returns|vector|array/i.test(operator.return_type) ? 'vector' : 'scalar'),
+    outputType: operator.return_type,
+    domains: operator.domains || ['single_product', 'portfolio'], parameters,
+    categoryId: category.id,
+    categoryLabel: category.label,
+    aliases: operator.aliases || [],
+    tags: operator.tags || [],
+    examples: operator.examples || [],
+    displayTemplate: operator.display_latex_template || operator.latex_template,
+    costEstimate: operator.cost_estimate,
+    version: operator.version,
+    executionBackend: operator.execution_backend,
+  }
+}
+
+function asDraft(indicator: IndicatorDefinition): IndicatorDraft {
+  const { id: _id, revision: _revision, source: _source, read_only: _readOnly, created_at: _createdAt, updated_at: _updatedAt, display_latex: _displayLatex, math_notation_version: _mathNotationVersion, ...draft } = indicator
+  return draft
+}
+
+function normalizeDraft(draft: IndicatorDraft): IndicatorDraft {
+  const { periods: _legacyPeriods, ...definition } = draft
+  return {
+    ...definition,
+    name: draft.name.trim() || '未命名指标',
+    description: draft.description.trim(),
+    expression: draft.expression.trim(),
+    precision: Math.min(8, Math.max(0, Number.isFinite(draft.precision) ? draft.precision : 2)),
+    annual_risk_free_rate_percent: Number.isFinite(draft.annual_risk_free_rate_percent)
+      ? draft.annual_risk_free_rate_percent
+      : 0,
+    dsl_version: draft.dsl_version || '2.0.0',
+    operator_registry_version: draft.operator_registry_version || '2.0.0',
+    context_kind: draft.context_kind || 'single_product',
+    output_contract: 'scalar',
+    template_origin: draft.template_origin ?? null,
+  }
+}
+
+function draftForCurrentRegistries(
+  metadata: IndicatorMeta | null,
+  contextKind: IndicatorContextDomain,
+): IndicatorDraft {
+  return {
+    ...EMPTY_DRAFT,
+    dsl_version: metadata?.dsl_version || EMPTY_DRAFT.dsl_version,
+    operator_registry_version: metadata?.operator_registry_version || EMPTY_DRAFT.operator_registry_version,
+    numeric_kernel_version: metadata?.numeric_kernel_version || EMPTY_DRAFT.numeric_kernel_version,
+    variable_registry_version: metadata?.variable_registry_version || EMPTY_DRAFT.variable_registry_version,
+    context_schema_version: metadata?.context_schema_version || EMPTY_DRAFT.context_schema_version,
+    data_contract_version: metadata?.data_contract_version || EMPTY_DRAFT.data_contract_version,
+    context_kind: contextKind,
+  }
+}
+
+function displayValue(result: EvaluationResult, indicator: IndicatorDraft): string {
+  if (result.value === null || !Number.isFinite(result.value)) return '不可计算'
+  const value = result.value
+  const digits = indicator.precision
+  return indicator.display_format === 'percent'
+    ? `${(value * 100).toFixed(digits)}%`
+    : value.toFixed(digits)
+}
+
+function targetFromItem(item: InstrumentSearchItem): StudioTarget | null {
+  const productId = item.code ?? item.ts_code
+  if (!productId) return null
+  const kind = item.instrument_type === 'fund' ? 'fund' : 'etf'
+  return { kind, product_id: productId, name: item.name || productId }
+}
+
+function portfolioSnapshotWindow(run: PortfolioRun | null): string {
+  if (!run) return '选择运行后显示锁定窗口'
+  const windowValue = run.window
+  const window = windowValue && typeof windowValue === 'object'
+    ? windowValue as Record<string, unknown>
+    : null
+  const start = String(window?.start_date || run.start_date || run.common_start_date || '').trim()
+  const end = String(window?.end_date || run.end_date || run.effective_as_of || '').trim()
+  if (start && end) return `${start} 至 ${end}`
+  if (end) return `截至 ${end}`
+  return '窗口已由运行快照锁定'
+}
+
+function ApiMessage({ error }: { error: unknown }) {
+  if (!error) return null
+  const message = userFacingErrorMessage(error)
+  return <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{message}</p>
+}
+
+export default function IndicatorStudio() {
+  const [searchParams] = useSearchParams()
+  const [meta, setMeta] = useState<IndicatorMeta | null>(null)
+  const [indicators, setIndicators] = useState<IndicatorDefinition[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [draft, setDraft] = useState<IndicatorDraft>(EMPTY_DRAFT)
+  const [baseline, setBaseline] = useState(JSON.stringify(EMPTY_DRAFT))
+  const [validation, setValidation] = useState<ValidationResponse | null>(null)
+  const [results, setResults] = useState<EvaluationResult[]>([])
+  const [targets, setTargets] = useState<StudioTarget[]>([])
+  const [searchKind, setSearchKind] = useState<ProductKind | 'all'>((searchParams.get('kind') as ProductKind) || 'all')
+  const [searchText, setSearchText] = useState('')
+  const [searchResults, setSearchResults] = useState<InstrumentSearchItem[]>([])
+  const [period, setPeriod] = useState(searchParams.get('period') || '1Y')
+  const [asOf, setAsOf] = useState(searchParams.get('as_of') || '')
+  const [mobileTab, setMobileTab] = useState<MobileTab>('library')
+  const [catalogTab, setCatalogTab] = useState<CatalogTab>('variables')
+  const [editorMode, setEditorMode] = useState<EditorMode>('guided')
+  const [catalogOpen, setCatalogOpen] = useState(false)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [insertingIndicatorId, setInsertingIndicatorId] = useState<string | null>(null)
+  const [contextDomain, setContextDomain] = useState<IndicatorContextDomain>('single_product')
+  const [portfolioRuns, setPortfolioRuns] = useState<PortfolioRun[]>([])
+  const [portfolioRunsLoading, setPortfolioRunsLoading] = useState(false)
+  const [portfolioRunId, setPortfolioRunId] = useState('')
+  const [variableAvailability, setVariableAvailability] = useState<Record<string, VariableAvailabilityItem>>({})
+  const [availabilityLoading, setAvailabilityLoading] = useState(false)
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null)
+  const [composer, setComposer] = useState<ComposerState>(null)
+  const [guidedTree, setGuidedTree] = useState<ComposerNode | null>(null)
+  const [composerLoading, setComposerLoading] = useState(false)
+  const [composerError, setComposerError] = useState<string | null>(null)
+  const [inference, setInference] = useState<InferenceResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [validating, setValidating] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [includeRollingSeries, setIncludeRollingSeries] = useState(false)
+  const [searching, setSearching] = useState(false)
+  const [indicatorQuery, setIndicatorQuery] = useState('')
+  const [indicatorSourceFilter, setIndicatorSourceFilter] = useState<'all' | 'built_in' | 'custom'>('all')
+  const [indicatorCategoryFilter, setIndicatorCategoryFilter] = useState('all')
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const expressionRef = useRef<HTMLTextAreaElement>(null)
+
+  const selectedIndicator = indicators.find((item) => item.id === selectedId) ?? null
+  const periods = meta?.periods?.length ? meta.periods : FALLBACK_PERIODS
+  const isDirty = baseline !== JSON.stringify(normalizeDraft(draft))
+  const activePeriod = periods.some((item) => item.value === period) ? period : periods[0]?.value || ''
+  const selectedPortfolioRun = portfolioRuns.find((run) => run.id === portfolioRunId) ?? null
+  const contextIndicators = indicatorsForContext(indicators, contextDomain)
+  const normalizedIndicatorQuery = indicatorQuery.trim().toLowerCase()
+  const visibleIndicators = contextIndicators.filter((item) => (
+    (indicatorSourceFilter === 'all' || item.source === indicatorSourceFilter)
+    && (indicatorCategoryFilter === 'all' || item.category_id === indicatorCategoryFilter)
+    && (!normalizedIndicatorQuery || `${item.name} ${item.description} ${item.expression}`.toLowerCase().includes(normalizedIndicatorQuery))
+  ))
+  const customIndicators = visibleIndicators.filter((item) => item.source === 'custom')
+  const builtInIndicators = visibleIndicators.filter((item) => item.source === 'built_in')
+  const indicatorCategories = meta?.indicator_types?.length
+    ? meta.indicator_types
+    : meta?.indicator_categories?.length
+      ? meta.indicator_categories
+    : [...new Map(contextIndicators.filter((item) => item.category_id).map((item) => [item.category_id as string, item.category_label || item.category_id as string])).entries()].map(([id, label]) => ({ id, label }))
+  const variables = meta?.variables?.length ? meta.variables : FALLBACK_VARIABLES
+  const runtimeAvailabilityRequired = contextDomain === 'single_product' && targets.length > 0
+  const composerVariables = variables.filter((variable) => variableIsUsable(
+    variable,
+    variableAvailability[variable.name],
+    runtimeAvailabilityRequired,
+    availabilityLoading,
+    availabilityError,
+  ))
+  const operatorItems = (meta?.operators ?? []).map((operator) => operatorToComposer(operator, composerVariables, contextDomain))
+  const composableIndicators = contextIndicators
+    .filter((indicator) => indicatorIsComposable(indicator, draft, contextDomain))
+    .sort((left, right) => (
+      composableProtocolPriority(right, draft) - composableProtocolPriority(left, draft)
+      || left.name.localeCompare(right.name, 'zh-CN')
+    ))
+  const composerReady = composer
+    ? isComposerNodeValid(composer.node, composerVariables, composableIndicators, contextDomain)
+    : false
+  const resourceLabels = useMemo(() => new Map<string, string>([
+    ...variables.map((variable) => [variable.name, variable.label] as const),
+    ...operatorItems.map((operator) => [operator.id, operator.label] as const),
+  ]), [operatorItems, variables])
+
+  const displayLatex = inference?.display_latex
+    || validation?.display_latex
+    || (selectedIndicator && selectedIndicator.expression === draft.expression
+      ? selectedIndicator.display_latex
+      : null)
+  const formulaMarkup = useMemo(() => {
+    try {
+      const formula = displayLatex
+        || (draft.expression
+          ? '\\text{请先推导或校验公式以生成数学排版}'
+          : '\\text{等待输入公式}')
+      return { __html: katex.renderToString(formula, { throwOnError: true, displayMode: true }) }
+    } catch {
+      return { __html: '<span>公式排版不可用</span>' }
+    }
+  }, [displayLatex, draft.expression])
+
+  const dagView = useMemo(() => {
+    const dag = validation?.dag
+    if (!dag) return { period: '', dag: null as IndicatorDag | null }
+    const availableRootKeys = Object.keys(dag.roots)
+    const rootKey = Object.prototype.hasOwnProperty.call(dag.roots, 'result')
+      ? 'result'
+      : activePeriod && Object.prototype.hasOwnProperty.call(dag.roots, activePeriod)
+        ? activePeriod
+        : availableRootKeys[0] || ''
+    const rootId = dag.roots[rootKey]
+    const runtimePeriod = activePeriod || (rootKey === 'result' ? '' : rootKey)
+    if (rootId === undefined) return { period: runtimePeriod, dag: null as IndicatorDag | null }
+
+    const incoming = new Map<string, Array<string | number>>()
+    dag.edges.forEach((edge) => {
+      const target = String(edge.target)
+      incoming.set(target, [...(incoming.get(target) ?? []), edge.source])
+    })
+    const reachable = new Set<string>()
+    const pending: Array<string | number> = [rootId]
+    while (pending.length) {
+      const nodeId = pending.pop()
+      if (nodeId === undefined || reachable.has(String(nodeId))) continue
+      reachable.add(String(nodeId))
+      pending.push(...(incoming.get(String(nodeId)) ?? []))
+    }
+
+    const nodes = dag.nodes.filter((node) => reachable.has(String(node.id)))
+    const edges = dag.edges.filter((edge) => reachable.has(String(edge.source)) && reachable.has(String(edge.target)))
+    const nodesById = new Map(nodes.map((node) => [String(node.id), node]))
+    const incomingIndex = new Map<string, number>()
+    const operatorsById = new Map(
+      operatorItems.flatMap((operator) => [
+        [operator.id, operator] as const,
+        [operator.label, operator] as const,
+      ]),
+    )
+    const namedEdges = edges.map((edge) => {
+      const target = String(edge.target)
+      const index = incomingIndex.get(target) ?? 0
+      incomingIndex.set(target, index + 1)
+      const targetNode = nodesById.get(target)
+      const targetOperator = targetNode ? operatorsById.get(targetNode.operator_id || targetNode.label) : undefined
+      const rawParameter = edge.parameter || edge.parameter_name || edge.input_name || targetOperator?.parameters[index]?.name
+      const parameter = parameterLabel(rawParameter, targetOperator?.parameters[index]?.label || `输入 ${index + 1}`)
+      return { ...edge, parameter, order: edge.order ?? index }
+    })
+
+    return {
+      period: runtimePeriod,
+      dag: {
+        nodes,
+        edges: namedEdges,
+        roots: { result: rootId },
+      },
+    }
+  }, [activePeriod, operatorItems, validation])
+
+  const dagOption = useMemo(() => {
+    if (!dagView.dag) return null
+    const dag = dagView.dag
+    const incoming = new Map<string, string[]>()
+    dag.edges.forEach((edge) => {
+      const target = String(edge.target)
+      incoming.set(target, [...(incoming.get(target) ?? []), String(edge.source)])
+    })
+    const depths = new Map<string, number>()
+    const depthOf = (nodeId: string, visiting = new Set<string>()): number => {
+      const cached = depths.get(nodeId)
+      if (cached !== undefined) return cached
+      if (visiting.has(nodeId)) return 0
+      const parents = incoming.get(nodeId) ?? []
+      const nextVisiting = new Set(visiting).add(nodeId)
+      const depth = parents.length ? Math.max(...parents.map((parent) => depthOf(parent, nextVisiting))) + 1 : 0
+      depths.set(nodeId, depth)
+      return depth
+    }
+    dag.nodes.forEach((node) => depthOf(String(node.id)))
+    const layers = new Map<number, typeof dag.nodes>()
+    dag.nodes.forEach((node) => {
+      const depth = depths.get(String(node.id)) ?? 0
+      layers.set(depth, [...(layers.get(depth) ?? []), node])
+    })
+    const rootIds = new Set(Object.values(dag.roots).map(String))
+    const maxDepth = Math.max(0, ...depths.values())
+    const positionedNodes = [...layers.entries()].flatMap(([depth, nodes]) => nodes.map((node, index) => {
+      const isRoot = rootIds.has(String(node.id))
+      return {
+        id: String(node.id),
+        name: resourceLabels.get(node.operator_id || node.label) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind),
+        value: node.kind,
+        period: node.period,
+        shape: node.shape || (node.kind === 'variable' ? 'series' : 'scalar'),
+        valueType: node.value_type || node.kind,
+        x: (index - (nodes.length - 1) / 2) * 190,
+        y: depth * 120,
+        symbol: 'roundRect',
+        symbolSize: isRoot ? [124, 52] : [112, 46],
+        itemStyle: {
+          color: isRoot ? '#6d28d9' : node.kind === 'variable' ? '#0284c7' : node.kind === 'constant' ? '#64748b' : '#8b5cf6',
+          borderColor: isRoot ? '#ddd6fe' : '#ffffff',
+          borderWidth: isRoot ? 4 : 2,
+          shadowBlur: isRoot ? 10 : 4,
+          shadowColor: 'rgba(76, 29, 149, 0.18)',
+        },
+      }
+    }))
+    return {
+      animationDuration: 300,
+      animationDurationUpdate: 250,
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: { dataType?: string; data?: { name?: string; period?: string; shape?: string; valueType?: string; source?: string; target?: string; parameter?: string } }) => {
+          if (params.dataType === 'edge') return `输入参数：${params.data?.parameter || '依赖关系'}`
+          const data = params.data ?? {}
+          return `${data.name ?? ''}${data.period ? `<br/>计算区间：${data.period}` : ''}${data.shape ? `<br/>数据类型：${shapeLabel(data.shape as IndicatorShape, data.valueType)}` : ''}`
+        },
+      },
+      series: [{
+        type: 'graph',
+        layout: 'none',
+        roam: true,
+        label: { show: true, position: 'inside', fontSize: 11, fontWeight: 600, color: '#ffffff' },
+        edgeSymbol: ['none', 'arrow'],
+        edgeSymbolSize: [0, 9],
+        edgeLabel: { show: true, formatter: (params: { data?: { parameter?: string } }) => params.data?.parameter || '', fontSize: 10, color: '#475569', backgroundColor: '#ffffff', padding: [2, 4] },
+        lineStyle: { color: '#8b5cf6', width: 2.2, opacity: 0.8, curveness: 0 },
+        emphasis: { focus: 'adjacency', lineStyle: { width: 3.5, opacity: 1 } },
+        data: positionedNodes,
+        links: dag.edges.map((edge) => ({ source: String(edge.source), target: String(edge.target), parameter: edge.parameter })),
+      }],
+      chartHeight: Math.min(560, Math.max(320, 150 + maxDepth * 80)),
+    }
+  }, [dagView, resourceLabels])
+
+  const refreshCatalog = async () => {
+    const response = await listCustomIndicators()
+    setIndicators(response.items)
+    return response.items
+  }
+
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      try {
+        setLoading(true)
+        setError(null)
+        const [metadata, catalog] = await Promise.all([getCustomIndicatorMeta(), listCustomIndicators()])
+        if (!active) return
+        setMeta(metadata)
+        setIndicators(catalog.items)
+        const initialDraft = draftForCurrentRegistries(metadata, 'single_product')
+        setDraft(initialDraft)
+        setBaseline(JSON.stringify(normalizeDraft(initialDraft)))
+        const availablePeriods = metadata.periods.map((item) => item.value)
+        if (!availablePeriods.includes(period)) setPeriod(availablePeriods[0] || '1Y')
+      } catch (loadError) {
+        if (active) setError(loadError)
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    void load()
+    return () => { active = false }
+  }, []) // load once; the selected formula is local state
+
+  useEffect(() => {
+    const ids = (searchParams.get('ids') || '').split(',').map((id) => id.trim()).filter(Boolean)
+    if (!ids.length) return
+    const kind = (searchParams.get('kind') as ProductKind) || 'etf'
+    const previewIds = [...new Set(ids)].slice(0, MAX_PREVIEW_TARGETS)
+    setTargets(previewIds.map((product_id) => ({ kind, product_id, name: product_id })))
+    setResults([])
+    if (ids.length > MAX_PREVIEW_TARGETS) {
+      setMessage(`校验与预览最多选择 ${MAX_PREVIEW_TARGETS} 个产品，已保留前 ${MAX_PREVIEW_TARGETS} 个。`)
+    }
+    void searchInstruments({ kind, query: previewIds.join(' '), pageSize: MAX_PREVIEW_TARGETS })
+      .then((response) => {
+        const names = new Map(response.items.map((item) => [item.code ?? item.ts_code, item.name]))
+        setTargets((current) => current.map((target) => ({ ...target, name: names.get(target.product_id) || target.name })))
+      })
+      .catch(() => undefined)
+  }, [searchParams])
+
+  useEffect(() => {
+    if (contextDomain !== 'single_product' || !targets.length || !activePeriod || !meta) {
+      setVariableAvailability({})
+      setAvailabilityLoading(false)
+      setAvailabilityError(null)
+      return
+    }
+    let active = true
+    const loadAvailability = async () => {
+      try {
+        setAvailabilityLoading(true)
+        setAvailabilityError(null)
+        const response = await getVariableAvailability({
+          targets: targets.map(({ name: _name, ...target }) => target),
+          variable_ids: variables
+            .filter((variable) => supportsVariableDomain(variable, 'single_product'))
+            .map((variable) => variable.name),
+          period: activePeriod,
+          as_of: asOf || undefined,
+        })
+        if (!active) return
+        setVariableAvailability(Object.fromEntries((response.items || []).map((item) => [item.variable_id, item])))
+      } catch (availabilityFailure) {
+        if (active) {
+          setVariableAvailability({})
+          setAvailabilityError(userFacingErrorMessage(availabilityFailure, '变量可用性核对失败。'))
+        }
+      } finally {
+        if (active) setAvailabilityLoading(false)
+      }
+    }
+    void loadAvailability()
+    return () => { active = false }
+  }, [activePeriod, asOf, contextDomain, meta, targets, variables])
+
+  useEffect(() => {
+    setDraft((current) => current.context_kind === contextDomain ? current : { ...current, context_kind: contextDomain })
+    setValidation(null)
+    setInference(null)
+    setGuidedTree(null)
+    setResults([])
+  }, [contextDomain])
+
+  useEffect(() => {
+    if (contextDomain !== 'portfolio') return
+    let active = true
+    const loadPortfolioRuns = async () => {
+      try {
+        setPortfolioRunsLoading(true)
+        setError(null)
+        const response = await getPortfolioRuns()
+        if (!active) return
+        setPortfolioRuns(response.items)
+        setPortfolioRunId((current) => response.items.some((item) => item.id === current) ? current : response.items[0]?.id || '')
+      } catch (portfolioError) {
+        if (active) setError(portfolioError)
+      } finally {
+        if (active) setPortfolioRunsLoading(false)
+      }
+    }
+    void loadPortfolioRuns()
+    return () => { active = false }
+  }, [contextDomain])
+
+  const selectDraft = (indicator: IndicatorDefinition) => {
+    if (isDirty && !window.confirm('当前未保存的修改将被替换，是否继续？')) return
+    const next = normalizeDraft(asDraft(indicator))
+    setSelectedId(indicator.id)
+    setDraft(next)
+    setContextDomain(next.context_kind || 'single_product')
+    setBaseline(JSON.stringify(next))
+    setValidation(null)
+    setInference(null)
+    setGuidedTree(null)
+    setResults([])
+    setMessage(indicator.read_only ? '已载入内置指标。可编辑后另存为工作区自定义指标。' : `已载入版本 ${indicator.revision}。`)
+    setMobileTab('editor')
+  }
+
+  const createNew = () => {
+    if (isDirty && !window.confirm('当前未保存的修改将被替换，是否继续？')) return
+    const next = draftForCurrentRegistries(meta, contextDomain)
+    setSelectedId(null)
+    setDraft(next)
+    setBaseline(JSON.stringify(next))
+    setValidation(null)
+    setInference(null)
+    setGuidedTree(null)
+    setResults([])
+    setEditorMode('guided')
+    setMessage('已创建新指标草稿。请从变量、数学算子或已有指标开始构建公式。')
+    setMobileTab('editor')
+  }
+
+  const patchDraft = (patch: Partial<IndicatorDraft>) => {
+    setDraft((current) => ({ ...current, ...patch }))
+    setValidation(null)
+    setInference(null)
+    setGuidedTree(null)
+    setResults([])
+    if (Object.prototype.hasOwnProperty.call(patch, 'expression')) setMessage('公式已更改，需要重新推导并校验。')
+  }
+
+  const insertExpression = (token: string) => {
+    if (editorMode === 'guided') {
+      patchDraft({ expression: token, template_origin: null })
+      setCatalogOpen(false)
+      setMessage('变量已设为当前公式；可以继续用数学算子构建标量结果。')
+      return
+    }
+    const textarea = expressionRef.current
+    const start = textarea?.selectionStart ?? draft.expression.length
+    const end = textarea?.selectionEnd ?? draft.expression.length
+    const expression = `${draft.expression.slice(0, start)}${token}${draft.expression.slice(end)}`
+    patchDraft({ expression })
+    window.requestAnimationFrame(() => {
+      textarea?.focus()
+      textarea?.setSelectionRange(start + token.length, start + token.length)
+    })
+    setCatalogOpen(false)
+  }
+
+  const insertIndicator = async (indicator: IndicatorDefinition) => {
+    try {
+      setCatalogError(null)
+      setInsertingIndicatorId(indicator.id)
+      const response = await composeCustomIndicator({
+        indicator_id: indicator.id,
+        indicator_revision: indicator.revision,
+        arguments: [],
+        context: contextDomain,
+        dsl_version: draft.dsl_version,
+        operator_registry_version: draft.operator_registry_version,
+        variable_registry_version: draft.variable_registry_version,
+        data_contract_version: draft.data_contract_version,
+        context_schema_version: draft.context_schema_version,
+      })
+      const expanded = response.expression || response.latex
+      const textarea = expressionRef.current
+      const replaceFullFormula = editorMode === 'guided' || !draft.expression.trim()
+      const start = replaceFullFormula ? 0 : textarea?.selectionStart ?? draft.expression.length
+      const end = replaceFullFormula ? draft.expression.length : textarea?.selectionEnd ?? start
+      const token = replaceFullFormula ? expanded : `(${expanded})`
+      const expression = `${draft.expression.slice(0, start)}${token}${draft.expression.slice(end)}`
+      patchDraft({ expression, template_origin: null })
+      if (replaceFullFormula) {
+        setInference(response)
+        setGuidedTree(composerNodeFromDag(response.dag, operatorItems))
+      }
+      setCatalogOpen(false)
+      setMessage(
+        `“${indicator.name}” v${indicator.revision} 已按锁定版本展开${replaceFullFormula ? '为当前公式' : '到高级公式'}；原指标后续更新不会影响本草稿。`,
+      )
+    } catch (insertError) {
+      setCatalogError(userFacingErrorMessage(insertError, '已有指标展开失败，请稍后重试。'))
+    } finally {
+      setInsertingIndicatorId(null)
+    }
+  }
+
+  const openComposer = (item: ComposerItem) => {
+    const textarea = expressionRef.current
+    const selectionStart = textarea?.selectionStart ?? draft.expression.length
+    const selectionEnd = textarea?.selectionEnd ?? selectionStart
+    setComposerError(null)
+    setCatalogOpen(false)
+    setComposer({
+      node: initialComposerNode(item, composerVariables, contextDomain),
+      applyMode: editorMode === 'advanced' && selectionEnd > selectionStart ? 'replace_selection' : 'replace_formula',
+      selectionStart,
+      selectionEnd,
+    })
+  }
+
+  const updateComposerArgument = (path: number[], nextArgument: ComposerArgument) => {
+    setComposerError(null)
+    setComposer((current) => current ? {
+      ...current,
+      node: updateComposerNodeArgument(current.node, path, nextArgument),
+    } : current)
+  }
+
+  const inferFormula = async () => {
+    try {
+      setError(null)
+      const response = await inferCustomIndicator({
+        expression: draft.expression,
+        context: contextDomain,
+        dsl_version: draft.dsl_version,
+        operator_registry_version: draft.operator_registry_version,
+      })
+      setInference(response)
+      const parsed = composerNodeFromDag(response.dag, operatorItems)
+      setGuidedTree(parsed)
+      setMessage(`类型推导完成：${shapeLabel(response.shape)}${parsed ? '，并已同步为可编辑的结构化表达式树' : ''}。`)
+    } catch (inferenceError) {
+      setError(inferenceError)
+    }
+  }
+
+  const applyComposer = async () => {
+    if (!composer) return
+    const invalid = firstInvalidComposerArgument(composer.node, composerVariables, composableIndicators, contextDomain)
+    if (invalid) {
+      setComposerError(
+        firstComposerSiblingIssue(composer.node, composerVariables)
+        || `请为“${invalid.parameter.label || invalid.parameter.name}”选择兼容变量、有限常量或嵌套算子。`,
+      )
+      return
+    }
+    try {
+      setComposerLoading(true)
+      setComposerError(null)
+      setError(null)
+      const composeNode = async (node: ComposerNode): Promise<InferenceResponse> => {
+        const argumentsForRequest = []
+        for (const argument of node.arguments) {
+          if (argument.source === 'omitted') continue
+          if (argument.source === 'operator' && argument.nested) {
+            const nested = await composeNode(argument.nested)
+            argumentsForRequest.push({ parameter: argument.parameter.name, source: 'expression' as const, value: nested.expression || nested.latex })
+          } else if (argument.source === 'indicator') {
+            const indicator = composableIndicators.find((item) => indicatorReferenceKey(item) === argument.value)
+            if (!indicator) throw new Error('所选已有指标已不可用，请重新选择。')
+            const nested = await composeCustomIndicator({
+              indicator_id: indicator.id,
+              indicator_revision: indicator.revision,
+              arguments: [],
+              context: contextDomain,
+              dsl_version: draft.dsl_version,
+              operator_registry_version: draft.operator_registry_version,
+              variable_registry_version: draft.variable_registry_version,
+              data_contract_version: draft.data_contract_version,
+              context_schema_version: draft.context_schema_version,
+            })
+            argumentsForRequest.push({ parameter: argument.parameter.name, source: 'expression' as const, value: nested.expression || nested.latex })
+          } else {
+            argumentsForRequest.push({
+              parameter: argument.parameter.name,
+              source: argument.source as 'variable' | 'constant',
+              value: argument.source === 'constant' ? Number(argument.value) : argument.value,
+            })
+          }
+        }
+        return composeCustomIndicator({
+          operator_id: node.item.id,
+          context: contextDomain,
+          dsl_version: draft.dsl_version,
+          operator_registry_version: draft.operator_registry_version,
+          arguments: argumentsForRequest,
+        })
+      }
+      const response = await composeNode(composer.node)
+      const start = composer.applyMode === 'replace_formula' ? 0 : composer.selectionStart
+      const end = composer.applyMode === 'replace_formula'
+        ? draft.expression.length
+        : composer.applyMode === 'replace_selection'
+          ? composer.selectionEnd
+          : composer.selectionStart
+      const executableExpression = response.expression || response.latex
+      const expression = `${draft.expression.slice(0, start)}${executableExpression}${draft.expression.slice(end)}`
+      patchDraft({
+        expression,
+        template_origin: null,
+      })
+      setInference(response)
+      setGuidedTree(composer.node)
+      setComposer(null)
+      setComposerError(null)
+      setMessage(`${composer.node.item.label} 已安全展开并${composer.applyMode === 'replace_formula' ? '替换完整公式' : composer.applyMode === 'replace_selection' ? '替换选中内容' : '插入光标位置'}。`)
+    } catch (composeError) {
+      setComposerError(userFacingErrorMessage(composeError, '公式展开失败，请检查参数后重试。'))
+    } finally {
+      setComposerLoading(false)
+    }
+  }
+
+  const validate = async (): Promise<ValidationResponse | null> => {
+    const normalized = normalizeDraft({ ...draft, context_kind: contextDomain })
+    try {
+      setValidating(true)
+      setError(null)
+      const response = await validateCustomIndicator(normalized)
+      setValidation(response)
+      if (response.valid) setGuidedTree(composerNodeFromDag(response.dag, operatorItems))
+      setMessage(response.valid ? '公式校验通过，已生成计算 DAG。' : '公式存在需要修复的问题。')
+      return response
+    } catch (validateError) {
+      setValidation(null)
+      setError(validateError)
+      return null
+    } finally {
+      setValidating(false)
+    }
+  }
+
+  const save = async () => {
+    const normalized = normalizeDraft({ ...draft, context_kind: contextDomain })
+    const checked = validation?.valid ? validation : await validate()
+    if (!checked?.valid) {
+      setMobileTab('editor')
+      return
+    }
+    try {
+      setSaving(true)
+      setError(null)
+      let saved: IndicatorDefinition
+      if (selectedIndicator && !selectedIndicator.read_only) {
+        saved = await updateCustomIndicator(selectedIndicator.id, normalized, selectedIndicator.revision)
+      } else {
+        const copyName = selectedIndicator?.read_only && normalized.name === selectedIndicator.name
+          ? `${normalized.name} 副本`
+          : normalized.name
+        saved = await createCustomIndicator({ ...normalized, name: copyName })
+      }
+      const catalog = await refreshCatalog()
+      setSelectedId(saved.id)
+      const savedDraft = normalizeDraft(asDraft(catalog.find((item) => item.id === saved.id) || saved))
+      setDraft(savedDraft)
+      setBaseline(JSON.stringify(savedDraft))
+      setMessage(selectedIndicator?.read_only ? '内置指标已复制到工作区共享库。' : `已保存为版本 ${saved.revision}。`)
+    } catch (saveError) {
+      setError(saveError)
+      if (saveError instanceof CustomIndicatorApiError && saveError.status === 409) {
+        setMessage('保存冲突：该指标已被其他人更新。请重新载入最新版本后再合并修改。')
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeSelected = async () => {
+    if (!selectedIndicator || selectedIndicator.read_only) return
+    if (!window.confirm(`确定删除“${selectedIndicator.name}”吗？被评价方案引用的指标不能删除。`)) return
+    try {
+      setError(null)
+      await deleteCustomIndicator(selectedIndicator.id, selectedIndicator.revision)
+      await refreshCatalog()
+      createNew()
+      setMessage('指标已删除。')
+    } catch (deleteError) {
+      setError(deleteError)
+    }
+  }
+
+  const lookupProducts = async () => {
+    try {
+      setSearching(true)
+      setError(null)
+      const response = await searchInstruments({ kind: searchKind, query: searchText, pageSize: 30 })
+      setSearchResults(response.items)
+    } catch (lookupError) {
+      setError(lookupError)
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const addTarget = (item: InstrumentSearchItem) => {
+    const target = targetFromItem(item)
+    if (!target) return
+    if (targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)) return
+    if (targets.length >= MAX_PREVIEW_TARGETS) {
+      setMessage(`校验与预览最多选择 ${MAX_PREVIEW_TARGETS} 个产品，请先移除一个产品。`)
+      return
+    }
+    setTargets((current) => [...current, target])
+    setResults([])
+    setMessage(`已添加预览产品（${targets.length + 1}/${MAX_PREVIEW_TARGETS}），请运行计算。`)
+  }
+
+  const preview = async () => {
+    const checked = validation?.valid ? validation : await validate()
+    if (!checked?.valid) {
+      setMobileTab('editor')
+      return
+    }
+    if (contextDomain === 'single_product' && !targets.length) {
+      setMessage('请至少选择一个真实 ETF 或公募基金。')
+      setMobileTab('preview')
+      return
+    }
+    if (contextDomain === 'portfolio' && !portfolioRunId) {
+      setMessage('请先选择一个不可变组合运行。')
+      setMobileTab('preview')
+      return
+    }
+    try {
+      setPreviewing(true)
+      setError(null)
+      const calculationPeriod = activePeriod
+      if (contextDomain === 'single_product' && !calculationPeriod) {
+        setMessage('请选择本次预览的计算周期。')
+        return
+      }
+      const response = contextDomain === 'portfolio'
+        ? await evaluatePortfolioCustomIndicators({
+          run_id: portfolioRunId,
+          inline_definition: normalizeDraft({ ...draft, context_kind: contextDomain }),
+        })
+        : await evaluateCustomIndicators({
+          inline_definition: normalizeDraft({ ...draft, context_kind: contextDomain }),
+          targets: targets.map(({ name: _name, ...target }) => target),
+          period: calculationPeriod,
+          as_of: asOf || undefined,
+          include_series: includeRollingSeries,
+        })
+      setResults(response.results)
+      setMessage(`预览完成：${response.summary.ok} 个成功，${response.summary.warning + response.summary.error} 个需关注。`)
+      setMobileTab('preview')
+    } catch (previewError) {
+      setError(previewError)
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  const statusText = loading ? '正在加载指标中心…' : message
+
+  const handleMobileTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, tab: MobileTab) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      setMobileTab(tab)
+      return
+    }
+
+    const currentIndex = MOBILE_TABS.findIndex(([id]) => id === tab)
+    let nextIndex = currentIndex
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % MOBILE_TABS.length
+    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + MOBILE_TABS.length) % MOBILE_TABS.length
+    else if (event.key === 'Home') nextIndex = 0
+    else if (event.key === 'End') nextIndex = MOBILE_TABS.length - 1
+    else return
+
+    event.preventDefault()
+    const nextTab = MOBILE_TABS[nextIndex][0]
+    setMobileTab(nextTab)
+    requestAnimationFrame(() => document.getElementById(`indicator-tab-${nextTab}`)?.focus())
+  }
+
+  return (
+    <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mb-6 flex flex-col gap-4 rounded-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-violet-950 px-5 py-5 text-white shadow-lg sm:px-7 sm:py-6 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-violet-200">工作区共享 · 统一研究指标层</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">指标中心</h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-300">用受限 DSL / LaTeX 定义研究指标，以规范数学符号查看公式与计算图，并基于真实数据预览 ETF 与公募基金。</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={createNew} className="rounded-lg border border-white/25 px-4 py-2 text-sm font-semibold transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white">新建指标</button>
+          <button type="button" onClick={() => void save()} disabled={saving || loading || !draft.expression.trim()} className="rounded-lg bg-violet-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">{saving ? '保存中…' : '保存到工作区'}</button>
+        </div>
+      </div>
+
+      <div className="mb-4 grid min-w-0 grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-white p-1 md:hidden" role="tablist" aria-label="指标中心区域">
+        {MOBILE_TABS.map(([id, label]) => (
+          <button key={id} id={`indicator-tab-${id}`} type="button" role="tab" aria-controls={`indicator-panel-${id}`} aria-selected={mobileTab === id} tabIndex={mobileTab === id ? 0 : -1} onClick={() => setMobileTab(id)} onKeyDown={(event) => handleMobileTabKeyDown(event, id)} className={`min-w-0 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${mobileTab === id ? 'bg-violet-600 text-white' : 'text-slate-600'}`}>{label}</button>
+        ))}
+      </div>
+
+      <div aria-live="polite" className="mb-4 min-h-6 text-sm text-slate-600">{statusText}</div>
+      <ApiMessage error={error} />
+
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 md:grid-cols-[minmax(220px,0.78fr)_minmax(340px,1.2fr)] xl:grid-cols-[minmax(245px,0.72fr)_minmax(410px,1.1fr)_minmax(350px,0.95fr)]">
+        <aside id="indicator-panel-library" role="tabpanel" aria-labelledby="indicator-tab-library" className={`${mobileTab === 'library' ? 'block' : 'hidden'} min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm md:block`}>
+          <div className="border-b border-slate-100 px-4 py-4">
+            <div className="flex items-center justify-between"><h2 className="font-semibold text-slate-900">指标库</h2><span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{visibleIndicators.length}</span></div>
+            <p className="mt-1 text-xs text-slate-500">当前计算域的内置指标可直接使用；复制后可在工作区维护。</p>
+            <div className="mt-3 grid gap-2">
+              <label className="text-xs font-semibold text-slate-600">搜索指标<input type="search" aria-label="搜索指标" value={indicatorQuery} onChange={(event) => setIndicatorQuery(event.target.value)} placeholder="名称、说明或公式" className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-xs font-semibold text-slate-600">来源<select aria-label="指标来源" value={indicatorSourceFilter} onChange={(event) => setIndicatorSourceFilter(event.target.value as 'all' | 'built_in' | 'custom')} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"><option value="all">全部来源</option><option value="built_in">内置指标</option><option value="custom">工作区指标</option></select></label>
+                <label className="text-xs font-semibold text-slate-600">分类<select aria-label="指标分类" value={indicatorCategoryFilter} onChange={(event) => setIndicatorCategoryFilter(event.target.value)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"><option value="all">全部分类</option>{indicatorCategories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>
+              </div>
+            </div>
+          </div>
+          <div className="max-h-[65vh] space-y-5 overflow-y-auto p-3">
+            {loading ? <p className="p-3 text-sm text-slate-500">正在读取指标库…</p> : visibleIndicators.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{contextIndicators.length > 0 ? '当前筛选条件下没有指标。' : '当前计算域暂无指标。可以新建指标或切换计算域。'}</div> : <>
+              <IndicatorGroup title="内置指标" items={builtInIndicators} selectedId={selectedId} onSelect={selectDraft} />
+              <IndicatorGroup title="我的工作区指标" items={customIndicators} selectedId={selectedId} onSelect={selectDraft} empty="尚未保存自定义指标" />
+            </>}
+          </div>
+        </aside>
+
+        <section id="indicator-panel-editor" role="tabpanel" aria-labelledby="indicator-tab-editor indicator-editor-title" className={`${mobileTab === 'editor' ? 'block' : 'hidden'} min-w-0 space-y-5 md:block`}>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 id="indicator-editor-title" className="font-semibold text-slate-900">指标定义</h2><p className="mt-1 text-xs text-slate-500">{selectedIndicator?.read_only ? '内置指标：保存时将创建工作区副本。' : selectedIndicator ? `工作区指标 · 当前版本 ${selectedIndicator.revision}` : '未保存草稿'}</p></div>{selectedIndicator && !selectedIndicator.read_only && <button type="button" onClick={() => void removeSelected()} className="rounded-lg px-3 py-2 text-sm font-medium text-rose-600 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-300">删除</button>}</div>
+            <div className="mt-5 grid gap-4 sm:grid-cols-3">
+              <label className="text-sm font-medium text-slate-700">名称<input value={draft.name} onChange={(event) => patchDraft({ name: event.target.value })} maxLength={80} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+              <label className="text-sm font-medium text-slate-700">指标类型<select aria-label="指标类型" value={draft.indicator_type ?? 'other'} onChange={(event) => patchDraft({ indicator_type: event.target.value as IndicatorDraft['indicator_type'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{indicatorCategories.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <label className="text-sm font-medium text-slate-700">优劣方向<select value={draft.direction} onChange={(event) => patchDraft({ direction: event.target.value as IndicatorDraft['direction'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="higher_better">越高越好</option><option value="lower_better">越低越好</option></select></label>
+              <label className="sm:col-span-3 text-sm font-medium text-slate-700">说明<textarea value={draft.description} onChange={(event) => patchDraft({ description: event.target.value })} rows={2} maxLength={300} className="mt-1 block w-full resize-y rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+            </div>
+            <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+              指标类型用于指标库分组、跨页面筛选与评价解释；优劣方向仍按指标本身独立定义。指标定义默认支持全部计算周期，周期只在预览或评价运行时选择。
+            </div>
+            <div className="mt-4 grid gap-4 sm:grid-cols-3">
+              <label className="text-sm font-medium text-slate-700">单位<input value={draft.unit} onChange={(event) => patchDraft({ unit: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+              <label className="text-sm font-medium text-slate-700">展示格式<select value={draft.display_format} onChange={(event) => patchDraft({ display_format: event.target.value as IndicatorDraft['display_format'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="percent">百分比</option><option value="number">数值</option></select></label>
+              <label className="text-sm font-medium text-slate-700">小数位<input aria-label="小数位" type="number" min="0" max="8" value={draft.precision} onChange={(event) => patchDraft({ precision: Number(event.target.value) })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+            </div>
+          </div>
+
+          <fieldset className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-describedby="context-domain-help">
+            <legend className="px-1 font-semibold text-slate-900">计算域</legend>
+            <p id="context-domain-help" className="mt-1 text-xs text-slate-500">组合域基于一个已锁定、不可变的组合运行计算；它不是多产品批量计算，也不支持跨产品双序列公式。</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {([['single_product', '单产品域', '定义按单个产品计算的指标，并可用最多 10 个产品批量验证。'], ['portfolio', '组合运行域', '选择一个锁定版本的组合运行，以其真实运行上下文计算。']] as [IndicatorContextDomain, string, string][]).map(([value, label, description]) => <label key={value} className={`cursor-pointer rounded-xl border p-3 ${contextDomain === value ? 'border-violet-400 bg-violet-50' : 'border-slate-200'}`}><input type="radio" name="context-domain" value={value} aria-label={label} checked={contextDomain === value} onChange={() => setContextDomain(value)} className="sr-only" /><span className="block text-sm font-semibold text-slate-800">{label}</span><span className="mt-1 block text-xs text-slate-500">{description}</span></label>)}
+            </div>
+          </fieldset>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-slate-900">指标公式</h2>
+                <p className="mt-1 text-xs text-slate-500">先用类型化目录构建；熟悉语法后可切换到高级公式模式。计算源码与数学排版分开管理。</p>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => void inferFormula()} disabled={!draft.expression.trim()} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">推导类型</button>
+                <button type="button" onClick={() => void validate()} disabled={validating || !draft.expression.trim()} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{validating ? '校验中…' : '校验公式'}</button>
+              </div>
+            </div>
+            <div className="mt-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1" role="tablist" aria-label="公式编辑方式">
+              <button id="formula-mode-guided" type="button" role="tab" aria-controls="formula-guided-panel" aria-selected={editorMode === 'guided'} onClick={() => setEditorMode('guided')} className={`rounded-md px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${editorMode === 'guided' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-600'}`}>构建向导</button>
+              <button id="formula-mode-advanced" type="button" role="tab" aria-controls="formula-advanced-panel" aria-selected={editorMode === 'advanced'} onClick={() => setEditorMode('advanced')} className={`rounded-md px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${editorMode === 'advanced' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-600'}`}>高级公式模式</button>
+            </div>
+            {editorMode === 'guided' ? <div id="formula-guided-panel" role="tabpanel" aria-labelledby="formula-mode-guided" className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              {draft.expression.trim() ? <>
+                <div className="flex items-center justify-between gap-3"><p className="text-xs font-semibold text-slate-600">当前计算逻辑</p><span className="text-xs text-slate-400">已生成</span></div>
+                <p className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-600">公式已由结构化构建器生成。下方使用数学符号展示计算逻辑；如需查看或编辑公式源码，可切换到高级公式模式。</p>
+                {guidedTree ? <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2"><div><p className="text-xs font-semibold text-emerald-800">结构化表达式已同步</p><p className="mt-0.5 text-xs text-emerald-700">根算子：{guidedTree.item.label} · {composerNodeCount(guidedTree)} 个算子节点</p></div><button type="button" onClick={() => setComposer({ node: guidedTree, applyMode: 'replace_formula', selectionStart: 0, selectionEnd: draft.expression.length })} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-300">编辑解析后的结构</button></div> : <p className="mt-2 text-xs text-slate-500">高级公式可先“推导类型”或“校验公式”，成功后会恢复为可编辑的结构化表达式树。</p>}
+              </> : <div className="rounded-lg border border-dashed border-violet-200 bg-white p-4 text-center">
+                <p className="font-semibold text-slate-800">从变量、数学算子或已有指标开始</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">目录会解释数据与类型契约；已有指标按锁定版本展开，算子配置会屏蔽不兼容输入。</p>
+              </div>}
+              <button type="button" onClick={() => { setCatalogError(null); setCatalogOpen(true) }} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-300">浏览公式构建资源</button>
+            </div> : <div id="formula-advanced-panel" role="tabpanel" aria-labelledby="formula-mode-advanced" className="mt-4">
+              <label className="block text-sm font-semibold text-slate-700" htmlFor="indicator-expression">受限公式源码（DSL / LaTeX）</label>
+              <p className="mt-1 text-xs text-slate-500">源码中的函数 ID 用于保证计算语义；下方排版预览会统一转换为数学符号。</p>
+              <textarea id="indicator-expression" ref={expressionRef} value={draft.expression} onChange={(event) => patchDraft({ expression: event.target.value, template_origin: null })} maxLength={1000} spellCheck={false} rows={6} className="mt-2 block w-full rounded-xl border border-slate-300 bg-slate-950 p-4 font-mono text-sm leading-6 text-emerald-200 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200" />
+              <div className="mt-2 flex items-center justify-between gap-3"><button type="button" onClick={() => { setCatalogError(null); setCatalogOpen(true) }} className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-300">浏览公式构建资源</button><span className="text-xs text-slate-400">{draft.expression.length} / 1000</span></div>
+            </div>}
+            <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">数学排版预览</p><div data-testid="formula-preview" className="mt-3 overflow-x-auto text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /></div>
+            {inference && <InferencePanel inference={inference} />}
+            {validation && <ValidationPanel validation={validation} resourceLabels={resourceLabels} />}
+          </div>
+        </section>
+
+        <section id="indicator-panel-preview" role="tabpanel" aria-labelledby="indicator-tab-preview indicator-preview-title" className={`${mobileTab === 'preview' ? 'block' : 'hidden'} min-w-0 space-y-5 md:col-span-2 md:block xl:col-span-1`}>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 id="indicator-preview-title" className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs text-slate-500">{contextDomain === 'portfolio' ? '选择不可变组合运行后按当前草稿计算；不会回填或伪造运行上下文。' : `最多选择 ${MAX_PREVIEW_TARGETS} 个真实产品并分别计算同一指标；不会合并为组合，也不会使用模拟数据。`}</p>
+            {contextDomain === 'portfolio' ? <>
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3"><label className="text-sm font-medium text-slate-700">组合运行<select aria-label="组合运行" value={portfolioRunId} onChange={(event) => { setPortfolioRunId(event.target.value); setResults([]); setMessage('组合运行已更改，请按新快照重新预览。') }} disabled={portfolioRunsLoading || portfolioRuns.length === 0} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none"><option value="">{portfolioRunsLoading ? '正在加载组合运行…' : '选择不可变组合运行'}</option>{portfolioRuns.map((run) => <option key={run.id} value={run.id}>{run.target_name} · v{run.target_revision} · 截止 {run.effective_as_of || '—'}</option>)}</select></label><div className="mt-3 rounded-lg border border-violet-100 bg-white px-3 py-2"><p className="text-xs font-semibold text-violet-700">快照窗口</p><p className="mt-1 text-sm text-slate-700">{portfolioSnapshotWindow(selectedPortfolioRun)}</p></div><p className="mt-2 text-xs text-slate-500">窗口、成分、权重与截止日由不可变运行快照锁定；这里不发送可编辑周期。</p></div>
+              <button type="button" onClick={() => void preview()} disabled={previewing || !portfolioRunId || !draft.expression.trim()} className="mt-4 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '按快照窗口预览'}</button>
+            </> : <>
+              <div className="mt-4 flex gap-2"><select aria-label="产品类型" value={searchKind} onChange={(event) => setSearchKind(event.target.value as ProductKind | 'all')} className="rounded-lg border border-slate-200 bg-white px-2 text-sm focus:border-violet-500 focus:outline-none"><option value="all">全部</option><option value="etf">ETF</option><option value="fund">公募基金</option></select><input aria-label="搜索产品" value={searchText} onChange={(event) => setSearchText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void lookupProducts() }} placeholder="名称或代码" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /><button type="button" onClick={() => void lookupProducts()} disabled={searching} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">{searching ? '搜索中' : '搜索'}</button></div>
+              {searchResults.length > 0 && <ul className="mt-2 max-h-40 overflow-auto rounded-lg border border-slate-100" aria-label="搜索结果">{searchResults.map((item, index) => { const target = targetFromItem(item); const selected = Boolean(target && targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)); const atLimit = targets.length >= MAX_PREVIEW_TARGETS; return <li key={`${target?.product_id || index}-${item.instrument_type}`} className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0 text-sm text-slate-700"><span className="font-medium">{item.name || target?.product_id}</span><span className="ml-2 text-xs text-slate-400">{target?.product_id}</span></span><button type="button" onClick={() => addTarget(item)} disabled={!target || selected || atLimit} title={!selected && atLimit ? `最多选择 ${MAX_PREVIEW_TARGETS} 个产品` : undefined} className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:text-slate-300">{selected ? '已添加' : atLimit ? '已达上限' : '添加'}</button></li> })}</ul>}
+              <div className="mt-4"><p className="text-sm font-medium text-slate-700">已选产品 <span aria-live="polite" className="text-slate-400">{targets.length} / {MAX_PREVIEW_TARGETS}</span></p><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((target) => <span key={`${target.kind}-${target.product_id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-3 pr-1 text-xs text-slate-700"><span>{target.name}</span><span className="text-slate-400">{target.product_id !== target.name ? target.product_id : ''}</span><button type="button" aria-label={`移除 ${target.name}`} onClick={() => { setTargets((current) => current.filter((item) => item.kind !== target.kind || item.product_id !== target.product_id)); setResults([]); setMessage('预览产品已移除，请重新计算。') }} className="rounded-full px-1.5 py-0.5 text-slate-400 hover:bg-white hover:text-rose-600">×</button></span>) : <p className="text-sm text-slate-400">尚未选择产品</p>}</div></div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label></div><label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700"><input type="checkbox" checked={includeRollingSeries} onChange={(event) => { setIncludeRollingSeries(event.target.checked); setResults([]); setMessage(event.target.checked ? '已启用滚动曲线，请重新计算。' : '已关闭滚动曲线，请重新计算。') }} /><span>同时计算滚动曲线</span><span className="ml-auto text-xs text-slate-400">最多 500 点，耗时较长</span></label><p className={`mt-2 text-xs ${availabilityError ? 'text-rose-700' : 'text-slate-500'}`} role={availabilityError ? 'alert' : undefined}>{availabilityLoading ? '正在核对所选产品的变量覆盖率…' : availabilityError ? `变量可用性核对失败：${availabilityError}。为避免误用，相关变量已暂时禁用。` : targets.length ? '变量目录已按所选产品、周期和截止日标注真实可用性。' : '选择产品后将核对变量可用性。'}</p><button type="button" onClick={() => void preview()} disabled={previewing || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '预览指标'}</button>
+            </>}
+          </div>
+
+          <DagPanel validation={validation} dag={dagView.dag} period={dagView.period} option={dagOption} contextDomain={contextDomain} resourceLabels={resourceLabels} operators={operatorItems} />
+          <ResultsPanel results={results} draft={draft} contextDomain={contextDomain} />
+          <p className="px-1 text-xs text-slate-500">指标定义和评价方案在当前工作区共享。数据缺失、样本不足或无效数值会明确标为不可计算。</p>
+          <Link to="/research" className="inline-flex px-1 text-sm font-semibold text-violet-700 underline decoration-violet-300 underline-offset-4 hover:text-violet-900">返回产品研究</Link>
+        </section>
+      </div>
+
+      <CatalogDrawer open={catalogOpen} onClose={() => setCatalogOpen(false)}>
+        <TypedCatalog tabsValue={catalogTab} onTabChange={setCatalogTab} variables={variables} operators={operatorItems} indicators={composableIndicators} contextDomain={contextDomain} availability={variableAvailability} availabilityLoading={availabilityLoading} availabilityError={availabilityError} runtimeAvailabilityRequired={runtimeAvailabilityRequired} onInsertVariable={insertExpression} onInsertIndicator={insertIndicator} onOpenComposer={openComposer} variableActionLabel={editorMode === 'guided' ? '设为当前公式' : '插入到光标'} indicatorActionLabel={editorMode === 'guided' ? '展开为当前公式' : '插入锁定版本公式'} insertingIndicatorId={insertingIndicatorId} actionError={catalogError} />
+      </CatalogDrawer>
+      <ComposerDrawer composer={composer} variables={composerVariables} operators={operatorItems} indicators={composableIndicators} contextDomain={contextDomain} loading={composerLoading} canApply={composerReady} error={composerError} onClose={() => { setComposer(null); setComposerError(null) }} onChange={updateComposerArgument} onApplyModeChange={(applyMode) => setComposer((current) => current ? { ...current, applyMode } : current)} onApply={() => void applyComposer()} />
+      <div className="sticky bottom-0 z-10 mt-5 flex gap-2 border-t border-slate-200 bg-white/95 p-3 backdrop-blur md:hidden"><button type="button" onClick={() => void validate()} disabled={validating || !draft.expression.trim()} className="flex-1 rounded-lg border border-violet-200 py-2 text-sm font-semibold text-violet-700 disabled:opacity-50">校验</button><button type="button" onClick={() => void save()} disabled={saving || !draft.expression.trim()} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300">保存</button><button type="button" onClick={() => void preview()} disabled={previewing || !draft.expression.trim() || (contextDomain === 'portfolio' ? !portfolioRunId : !targets.length || !activePeriod)} className="flex-1 rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white disabled:bg-slate-300">预览</button></div>
+    </div>
+  )
+}
+
+type SearchableOption = {
+  value: string
+  label: string
+  description?: string
+  keywords?: string
+  disabled?: boolean
+}
+
+function SearchableCombobox({ label, value, options, placeholder, onChange }: { label: string; value: string; options: SearchableOption[]; placeholder: string; onChange: (value: string) => void }) {
+  const virtualThreshold = 80
+  const virtualWindowSize = 24
+  const virtualRowHeight = 60
+  const id = useId()
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [highlightedIndex, setHighlightedIndex] = useState(0)
+  const [virtualStart, setVirtualStart] = useState(0)
+  const selected = options.find((option) => option.value === value)
+  const normalizedQuery = query.trim().toLowerCase()
+  const filtered = options.filter((option) => !normalizedQuery || `${option.label} ${option.description || ''} ${option.keywords || ''}`.toLowerCase().includes(normalizedQuery))
+  const safeIndex = Math.max(0, Math.min(highlightedIndex, Math.max(0, filtered.length - 1)))
+  const virtualized = filtered.length > virtualThreshold
+  const windowStart = virtualized ? Math.max(0, Math.min(virtualStart, filtered.length - virtualWindowSize)) : 0
+  const visibleOptions = virtualized
+    ? filtered.slice(windowStart, windowStart + virtualWindowSize)
+    : filtered
+
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', closeOutside)
+    return () => document.removeEventListener('mousedown', closeOutside)
+  }, [open])
+
+  useEffect(() => {
+    if (!virtualized) {
+      setVirtualStart(0)
+      return
+    }
+    setVirtualStart((current) => {
+      if (safeIndex < current) return safeIndex
+      if (safeIndex >= current + virtualWindowSize) {
+        return Math.max(0, safeIndex - virtualWindowSize + 1)
+      }
+      return current
+    })
+  }, [safeIndex, virtualized])
+
+  const moveHighlight = (direction: 1 | -1) => {
+    if (!filtered.length) return
+    let next = safeIndex
+    for (let count = 0; count < filtered.length; count += 1) {
+      next = (next + direction + filtered.length) % filtered.length
+      if (!filtered[next].disabled) break
+    }
+    setHighlightedIndex(next)
+  }
+
+  const choose = (option: SearchableOption | undefined) => {
+    if (!option || option.disabled) return
+    onChange(option.value)
+    setOpen(false)
+    setQuery('')
+  }
+
+  return <div ref={containerRef} className="relative">
+    <label id={`${id}-label`} className="block text-xs font-semibold text-slate-600">{label}</label>
+    <button type="button" role="combobox" aria-labelledby={`${id}-label`} aria-expanded={open} aria-controls={`${id}-listbox`} aria-activedescendant={open && filtered[safeIndex] ? `${id}-option-${safeIndex}` : undefined} onClick={() => { setOpen((current) => !current); setQuery(''); setVirtualStart(0); setHighlightedIndex(Math.max(0, options.findIndex((option) => option.value === value))) }} onKeyDown={(event) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        if (!open) setOpen(true)
+        else moveHighlight(event.key === 'ArrowDown' ? 1 : -1)
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        if (!open) setOpen(true)
+        else choose(filtered[safeIndex])
+      } else if (event.key === 'Escape') setOpen(false)
+    }} className="mt-1 flex min-h-11 w-full items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-700 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">
+      <span className="min-w-0 truncate">{selected?.label || placeholder}</span><span aria-hidden="true" className="text-slate-400">⌄</span>
+    </button>
+    {open && <div className="absolute z-20 mt-1 w-full rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+      <input autoFocus type="search" aria-label={`搜索${label}`} value={query} onChange={(event) => { setQuery(event.target.value); setHighlightedIndex(0); setVirtualStart(0) }} onKeyDown={(event) => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); moveHighlight(event.key === 'ArrowDown' ? 1 : -1) }
+        else if (event.key === 'Home') { event.preventDefault(); setHighlightedIndex(0) }
+        else if (event.key === 'End') { event.preventDefault(); setHighlightedIndex(Math.max(0, filtered.length - 1)) }
+        else if (event.key === 'Enter') { event.preventDefault(); choose(filtered[safeIndex]) }
+        else if (event.key === 'Escape') { event.preventDefault(); setOpen(false) }
+      }} placeholder={placeholder} className="block w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" />
+      {virtualized && <p className="mt-2 px-2 text-[11px] text-slate-400" role="status">大目录按需渲染：当前 {windowStart + 1}–{Math.min(filtered.length, windowStart + visibleOptions.length)} / {filtered.length}</p>}
+      <ul id={`${id}-listbox`} role="listbox" aria-labelledby={`${id}-label`} onScroll={(event) => { if (virtualized) setVirtualStart(Math.floor(event.currentTarget.scrollTop / virtualRowHeight)) }} className="mt-2 max-h-64 overflow-auto py-1">
+        {virtualized && windowStart > 0 && <li role="presentation" aria-hidden="true" style={{ height: windowStart * virtualRowHeight }} />}
+        {visibleOptions.map((option, relativeIndex) => { const index = windowStart + relativeIndex; return <li key={option.value} id={`${id}-option-${index}`} role="option" aria-setsize={filtered.length} aria-posinset={index + 1} aria-selected={option.value === value} aria-disabled={option.disabled || undefined} onMouseDown={(event) => { event.preventDefault(); choose(option) }} onMouseEnter={() => setHighlightedIndex(index)} style={virtualized ? { minHeight: virtualRowHeight } : undefined} className={`rounded-lg px-3 py-2 ${option.disabled ? 'cursor-not-allowed text-slate-300' : 'cursor-pointer'} ${index === safeIndex ? 'bg-violet-50 text-violet-900' : 'text-slate-700'}`}><span className="block text-sm font-medium">{option.label}</span>{option.description && <span className="mt-0.5 block text-xs text-slate-400">{option.description}</span>}</li> })}
+        {virtualized && windowStart + visibleOptions.length < filtered.length && <li role="presentation" aria-hidden="true" style={{ height: (filtered.length - windowStart - visibleOptions.length) * virtualRowHeight }} />}
+        {!filtered.length && <li className="px-3 py-4 text-center text-sm text-slate-400">没有匹配项</li>}
+      </ul>
+    </div>}
+  </div>
+}
+
+function CatalogDrawer({ open, onClose, children }: { open: boolean; onClose: () => void; children: React.ReactNode }) {
+  const dialogRef = useRef<HTMLElement | null>(null)
+  const closeRef = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    if (!open) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    requestAnimationFrame(() => closeRef.current?.focus())
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !dialogRef.current) return
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', trapFocus)
+    return () => { document.removeEventListener('keydown', trapFocus); previous?.focus() }
+  }, [open])
+  if (!open) return null
+  return <div className="fixed inset-0 z-40 flex justify-end bg-slate-950/40" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="catalog-drawer-title" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }} className="flex h-full w-full flex-col bg-white shadow-2xl sm:max-w-2xl">
+      <div className="flex items-start justify-between border-b border-slate-200 px-4 py-4 sm:px-5"><div><p className="text-xs font-semibold text-violet-700">公式构建资源</p><h2 id="catalog-drawer-title" className="mt-1 text-lg font-bold text-slate-900">变量、算子与已有指标</h2><p className="mt-1 text-xs text-slate-500">按资源类型、分类、条目逐级定位；已有指标会按所选版本展开为独立公式。</p></div><button ref={closeRef} type="button" onClick={onClose} aria-label="关闭资源目录" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-300">关闭</button></div>
+      <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-5">{children}</div>
+    </section>
+  </div>
+}
+
+function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators, contextDomain, availability, availabilityLoading, availabilityError, runtimeAvailabilityRequired, onInsertVariable, onInsertIndicator, onOpenComposer, variableActionLabel, indicatorActionLabel, insertingIndicatorId, actionError }: { tabsValue: CatalogTab; onTabChange: (tab: CatalogTab) => void; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; availability: Record<string, VariableAvailabilityItem>; availabilityLoading: boolean; availabilityError: string | null; runtimeAvailabilityRequired: boolean; onInsertVariable: (token: string) => void; onInsertIndicator: (indicator: IndicatorDefinition) => Promise<void> | void; onOpenComposer: (item: ComposerItem) => void; variableActionLabel: string; indicatorActionLabel: string; insertingIndicatorId: string | null; actionError: string | null }) {
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Record<CatalogTab, string>>({ variables: '', operators: '', indicators: '' })
+  const [selectedItemIds, setSelectedItemIds] = useState<Record<CatalogTab, string>>({ variables: '', operators: '', indicators: '' })
+  const catalogLabels: Record<CatalogTab, string> = { variables: '变量', operators: '计算算子', indicators: '已有指标' }
+  const rawEntries = tabsValue === 'variables'
+    ? variables.map((variable) => {
+      const category = variableCategory(variable)
+      const runtimeAvailability = availability[variable.name]
+      const supported = supportsVariableDomain(variable, contextDomain) && variableIsUsable(variable, runtimeAvailability, runtimeAvailabilityRequired, availabilityLoading, availabilityError)
+      const availabilityDescription = runtimeAvailability
+        ? runtimeAvailability.reason?.message || `运行状态：${availabilityStatusLabel(runtimeAvailability.status)}`
+        : availabilityLoading
+          ? '正在核对真实数据可用性'
+          : ''
+      return { id: variable.name, categoryId: category.id, categoryLabel: category.label, supported, label: variable.label, description: [shapeLabel(inferShape(variable), variable.value_type), availabilityDescription].filter(Boolean).join(' · '), keywords: `${variable.name} ${variable.description || ''} ${variable.semantic || ''} ${(variable.aliases || []).join(' ')} ${(variable.tags || []).join(' ')}` }
+    })
+    : tabsValue === 'operators'
+      ? operators.map((operator) => ({ id: operator.id, categoryId: operator.categoryId, categoryLabel: operator.categoryLabel, supported: operator.domains.includes(contextDomain), label: operator.label, description: operatorOptionContract(operator), keywords: `${operator.id} ${operator.essence} ${operator.semantic} ${operator.signature} ${operator.aliases.join(' ')} ${operator.tags.join(' ')}` }))
+      : indicators.map((indicator) => {
+        const category = indicatorCategory(indicator)
+        const source = indicator.source === 'built_in' ? '内置' : '工作区'
+        return { id: indicatorReferenceKey(indicator), categoryId: category.id, categoryLabel: category.label, supported: true, label: indicator.name, description: `${source} · 版本 ${indicator.revision} · 有限标量`, keywords: `${indicator.id} ${indicator.name} ${indicator.description} ${indicator.expression} ${source} ${category.label}` }
+      })
+  const availableEntries = rawEntries.filter((entry) => entry.supported)
+  const categoryMap = new Map<string, { label: string; count: number }>()
+  availableEntries.forEach((entry) => {
+    // Different registry families may share one product-facing label. Group by
+    // that label so the catalog does not expose duplicate UI categories.
+    const current = categoryMap.get(entry.categoryLabel) ?? { label: entry.categoryLabel, count: 0 }
+    categoryMap.set(entry.categoryLabel, { ...current, count: current.count + 1 })
+  })
+  const categories = [...categoryMap.entries()].map(([value, item]) => ({ value, label: `${item.label}（${item.count}）`, keywords: item.label }))
+  const requestedCategory = selectedCategoryIds[tabsValue]
+  const selectedCategory = categories.some((item) => item.value === requestedCategory) ? requestedCategory : categories[0]?.value || ''
+  const entries = availableEntries.filter((entry) => entry.categoryLabel === selectedCategory)
+  const requestedItem = selectedItemIds[tabsValue]
+  const selectedId = entries.some((entry) => entry.id === requestedItem && entry.supported) ? requestedItem : entries.find((entry) => entry.supported)?.id || entries[0]?.id || ''
+  const selectedVariable = tabsValue === 'variables' ? variables.find((variable) => variable.name === selectedId) ?? null : null
+  const selectedComposer = tabsValue === 'operators' ? operators.find((operator) => operator.id === selectedId) ?? null : null
+  const selectedIndicator = tabsValue === 'indicators' ? indicators.find((indicator) => indicatorReferenceKey(indicator) === selectedId) ?? null : null
+  const selectedAvailability = selectedVariable ? availability[selectedVariable.name] : undefined
+  const selectedSupported = selectedVariable
+    ? supportsVariableDomain(selectedVariable, contextDomain) && variableIsUsable(selectedVariable, selectedAvailability, runtimeAvailabilityRequired, availabilityLoading, availabilityError)
+    : selectedComposer
+      ? selectedComposer.domains.includes(contextDomain)
+      : Boolean(selectedIndicator)
+
+  return <section aria-label="类型化计算目录">
+    <div className="flex items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-slate-800">三级资源目录</h3><p className="mt-1 text-xs text-slate-500">目录规模增长后仍可按分类和关键词定位，不需要滚动浏览卡片墙。</p></div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">{rawEntries.filter((entry) => entry.supported).length} 项可用</span></div>
+    <div className="mt-4 grid gap-3">
+      <label className="text-xs font-semibold text-slate-600">资源类型<select aria-label="资源类型" value={tabsValue} onChange={(event) => onTabChange(event.target.value as CatalogTab)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="variables">变量</option><option value="operators">计算算子</option><option value="indicators">已有指标</option></select></label>
+      <SearchableCombobox label="资源分类" value={selectedCategory} options={categories} placeholder="搜索分类" onChange={(value) => setSelectedCategoryIds((current) => ({ ...current, [tabsValue]: value }))} />
+      <SearchableCombobox label={`选择${catalogLabels[tabsValue]}`} value={selectedId} options={entries.map((entry) => ({ value: entry.id, label: entry.label, description: entry.description, keywords: entry.keywords, disabled: !entry.supported }))} placeholder={`搜索${catalogLabels[tabsValue]}名称、别名或含义`} onChange={(value) => setSelectedItemIds((current) => ({ ...current, [tabsValue]: value }))} />
+    </div>
+    {!entries.length && <p className="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-500" role="status">此分类暂无{catalogLabels[tabsValue]}。</p>}
+    {selectedVariable && <article className={`mt-4 rounded-xl border p-4 ${selectedSupported ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'}`}>
+      <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h4 className="text-base font-semibold text-slate-900">{selectedVariable.label}</h4><div className="mt-1 max-w-40 text-violet-700">{selectedVariable.latex ? <MathNotation latex={selectedVariable.latex} label={`${selectedVariable.label}的数学符号`} /> : <span className="text-xs text-slate-400">暂未配置数学符号</span>}</div></div><ShapeBadge shape={inferShape(selectedVariable)} valueType={selectedVariable.value_type} /></div>
+      <p className="mt-3 text-sm leading-6 text-slate-600">{selectedVariable.description || selectedVariable.semantic || `${shapeLabel(inferShape(selectedVariable), selectedVariable.value_type)}输入。`}</p>
+      <dl className="mt-4 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
+        <div><dt className="font-semibold text-slate-700">变量含义</dt><dd className="mt-1 text-slate-500">{selectedVariable.description || selectedVariable.semantic || `${selectedVariable.label}在当前计算窗口内的数值。`}</dd></div>
+        <div><dt className="font-semibold text-slate-700">数据类型</dt><dd className="mt-1 text-slate-500">{shapeLabel(inferShape(selectedVariable), selectedVariable.value_type)}</dd></div>
+        <div><dt className="font-semibold text-slate-700">数据来源</dt><dd className="mt-1 text-slate-500">{selectedVariable.source || '由指标运行上下文提供'}</dd></div>
+        <div><dt className="font-semibold text-slate-700">口径 / 频率 / 单位</dt><dd className="mt-1 text-slate-500">{[selectedVariable.data_basis, selectedVariable.frequency, selectedVariable.unit].filter(Boolean).join(' · ') || '由运行上下文决定'}</dd></div>
+        <div><dt className="font-semibold text-slate-700">适用范围</dt><dd className="mt-1 text-slate-500">{(selectedVariable.product_kinds || selectedVariable.domains || [contextDomain]).map(scopeLabel).join(' / ')}</dd></div>
+        <div><dt className="font-semibold text-slate-700">可用状态</dt><dd className="mt-1 text-slate-500">{availabilityStatusLabel(availabilityError && runtimeAvailabilityRequired ? 'availability_check_failed' : selectedAvailability?.status || selectedVariable.availability || (availabilityLoading ? 'checking' : selectedSupported ? 'available' : 'unavailable'))}{availabilityError && runtimeAvailabilityRequired ? ` · ${humanizeTechnicalTypes(availabilityError)}` : selectedAvailability?.reason ? ` · ${diagnosticMessage(selectedAvailability.reason.code || 'VARIABLE_UNAVAILABLE', selectedAvailability.reason.message || '')}` : ''}</dd></div>
+        <div><dt className="font-semibold text-slate-700">实际数据规模 / 覆盖率</dt><dd className="mt-1 text-slate-500">{actualDataSizeLabel(selectedAvailability?.actual_shape, inferShape(selectedVariable), selectedVariable.value_type)}{typeof selectedAvailability?.coverage_ratio === 'number' ? ` · ${(selectedAvailability.coverage_ratio * 100).toFixed(1)}%` : typeof selectedAvailability?.coverage?.coverage_ratio === 'number' ? ` · ${(selectedAvailability.coverage.coverage_ratio * 100).toFixed(1)}%` : ''}</dd></div>
+        <div><dt className="font-semibold text-slate-700">实际窗口 / 数据最新</dt><dd className="mt-1 text-slate-500">{selectedAvailability?.window ? `${selectedAvailability.window.start_date || '—'} 至 ${selectedAvailability.window.end_date || '—'} · ${selectedAvailability.window.observation_count} 个收益观察` : '选择真实产品后显示'}{selectedAvailability?.window?.data_latest_date ? ` · 最新 ${selectedAvailability.window.data_latest_date}` : ''}</dd></div>
+      </dl>
+      {selectedAvailability?.target_statuses && selectedAvailability.target_statuses.length > 0 && <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs"><p className="font-semibold text-slate-700">所选产品可用性</p><ul className="mt-2 space-y-1 text-slate-600">{selectedAvailability.target_statuses.map((item) => <li key={`${item.target.kind}:${item.target.product_id}`}><span className="font-medium">{item.target.name}</span>：{availabilityStatusLabel(item.status)}{item.reason?.message ? ` · ${humanizeTechnicalTypes(item.reason.message)}` : ''}</li>)}</ul></div>}
+      <button type="button" disabled={!selectedSupported} onClick={() => onInsertVariable(selectedVariable.latex || selectedVariable.name)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{selectedSupported ? variableActionLabel : selectedAvailability?.reason ? diagnosticMessage(selectedAvailability.reason.code || 'VARIABLE_UNAVAILABLE', selectedAvailability.reason.message || '') : '当前目标不可用'}</button>
+    </article>}
+    {selectedComposer && <article className={`mt-4 rounded-xl border p-4 ${selectedSupported ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'}`}>
+      <div className="flex items-start justify-between gap-3"><div><h4 className="text-base font-semibold text-slate-900">{selectedComposer.label}</h4><p className="mt-1 text-xs text-slate-500">{humanizeTechnicalTypes(selectedComposer.essence)}</p></div><ShapeBadge shape={selectedComposer.outputShape} valueType={selectedComposer.outputType} /></div>
+      <p className="mt-3 text-sm leading-6 text-slate-600">{humanizeTechnicalTypes(selectedComposer.semantic)}</p><p className="mt-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600" aria-label="算子输入输出说明">{operatorContractDescription(selectedComposer)}</p>
+      <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[440px] text-left text-xs"><caption className="sr-only">{selectedComposer.label} 参数要求</caption><thead><tr className="border-b border-slate-200 text-slate-500"><th className="pb-2 pr-3">参数</th><th className="pb-2 pr-3">支持的数据</th><th className="pb-2">参数含义</th></tr></thead><tbody>{selectedComposer.parameters.map((parameter) => <tr key={parameter.name} className="border-b border-slate-100 align-top last:border-0"><td className="py-2 pr-3 font-semibold text-slate-700">{parameterLabel(parameter.name, parameter.label || parameter.name)}{parameter.optional ? '（可选）' : ''}</td><td className="py-2 pr-3 text-slate-500">{acceptedShapes(parameter).map((shape) => shapeLabel(shape)).join(' / ')}</td><td className="py-2 text-slate-500">{parameterDescription(parameter)}</td></tr>)}</tbody></table></div>
+      <dl className="mt-4 grid gap-2 text-xs text-slate-500 sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">返回结果</dt><dd className="mt-1">{shapeLabel(selectedComposer.outputShape, selectedComposer.outputType)}</dd></div><div><dt className="font-semibold text-slate-700">计算特点</dt><dd className="mt-1">{costEstimateLabel(selectedComposer.costEstimate)}</dd></div><div><dt className="font-semibold text-slate-700">所属分类</dt><dd className="mt-1">{selectedComposer.categoryLabel}</dd></div><div><dt className="font-semibold text-slate-700">执行方式</dt><dd className="mt-1">{executionBackendLabel(selectedComposer.executionBackend)}</dd></div>{selectedComposer.displayTemplate && <div className="sm:col-span-2"><dt className="font-semibold text-slate-700">数学符号示例</dt><dd className="mt-1 rounded-lg border border-violet-100 bg-violet-50/40 px-3 py-2"><MathNotation latex={selectedComposer.displayTemplate} label={`${selectedComposer.label}的数学符号示例`} /></dd></div>}</dl>
+      <button type="button" disabled={!selectedSupported} onClick={() => onOpenComposer(selectedComposer)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{selectedSupported ? '配置算子参数' : '当前计算域不可用'}</button>
+    </article>}
+    {selectedIndicator && <article className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-3"><div><h4 className="text-base font-semibold text-slate-900">{selectedIndicator.name}</h4><p className="mt-1 text-xs text-slate-500">{selectedIndicator.source === 'built_in' ? '内置指标' : '工作区指标'} · 锁定 v{selectedIndicator.revision}</p></div><ShapeBadge shape="scalar" valueType="scalar" /></div>
+      <p className="mt-3 text-sm leading-6 text-slate-600">{selectedIndicator.description || '已保存的标量指标公式。'}</p>
+      <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/40 px-3 py-2">{mathFormulaForDisplay(selectedIndicator.display_latex, selectedIndicator.expression) ? <MathNotation latex={mathFormulaForDisplay(selectedIndicator.display_latex, selectedIndicator.expression)!} label={`${selectedIndicator.name}的数学公式`} /> : <p className="text-xs text-slate-500">该兼容指标暂未提供数学符号排版；可在高级公式模式中查看源码。</p>}</div>
+      <dl className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+        <div><dt className="font-semibold text-slate-700">指标类型</dt><dd className="mt-1 text-slate-500">{indicatorCategory(selectedIndicator).label}</dd></div>
+        <div><dt className="font-semibold text-slate-700">方向 / 单位</dt><dd className="mt-1 text-slate-500">{selectedIndicator.direction === 'higher_better' ? '越高越好' : '越低越好'} · {selectedIndicator.unit || '无单位'}</dd></div>
+        <div><dt className="font-semibold text-slate-700">计算语义</dt><dd className="mt-1 text-slate-500">{selectedIndicator.catalog_status === 'compatibility' ? '兼容旧版指标逻辑' : '当前类型化指标逻辑'}，已锁定版本</dd></div>
+        <div><dt className="font-semibold text-slate-700">输出契约</dt><dd className="mt-1 text-slate-500">有限标量 · {measureLabel(selectedIndicator.output_measure)}</dd></div>
+      </dl>
+      <p className="mt-4 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">插入时由服务端按当前 revision 重新校验并展开为普通公式，不建立可变引用；原指标以后更新不会改变本草稿。</p>
+      <button type="button" disabled={insertingIndicatorId !== null} onClick={() => void onInsertIndicator(selectedIndicator)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{insertingIndicatorId === selectedIndicator.id ? '正在展开锁定版本…' : indicatorActionLabel}</button>
+    </article>}
+    {actionError && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>}
+  </section>
+}
+
+function ShapeBadge({ shape, valueType }: { shape: IndicatorShape; valueType?: string }) {
+  const tone: Record<IndicatorShape, string> = { scalar: 'bg-slate-100 text-slate-700', series: 'bg-sky-100 text-sky-800', vector: 'bg-cyan-100 text-cyan-800', matrix: 'bg-indigo-100 text-indigo-800', mask: 'bg-emerald-100 text-emerald-800', tuple: 'bg-amber-100 text-amber-800', unknown: 'bg-slate-100 text-slate-500' }
+  return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${tone[shape]}`}>{shapeLabel(shape, valueType)}</span>
+}
+
+function InferencePanel({ inference }: { inference: InferenceResponse }) {
+  return <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4" role="status"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-sky-900">类型推导</p><ShapeBadge shape={inference.shape} valueType={inference.inferred_type} /></div><div className="mt-2 rounded-lg bg-white/70 px-3 py-2"><MathNotation latex={inference.display_latex || inference.latex} label="推导后的数学公式" /></div>{inference.semantic_warnings.length > 0 && <ul className="mt-2 space-y-1 text-xs text-amber-800">{inference.semantic_warnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{diagnosticMessage(warning.code, warning.message)}</li>)}</ul>}</div>
+}
+
+function ComposerNodeFields({ node, path, variables, operators, indicators, contextDomain, depth, onChange }: { node: ComposerNode; path: number[]; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; depth: number; onChange: (path: number[], argument: ComposerArgument) => void }) {
+  return <div className="space-y-4">
+    {node.arguments.map((argument, index) => {
+      const argumentPath = [...path, index]
+      const needs = acceptedShapes(argument.parameter)
+      // Keep per-parameter eligibility separate from cross-parameter compatibility.
+      // Otherwise the default value of B can prevent the user from changing A to a
+      // different, otherwise valid measure/shape and then pairing B with it.
+      const compatibleVariables = variables.filter((variable) => (
+        isCompatibleVariable(variable, argument.parameter, contextDomain)
+      ))
+      const compatibleOperators = operators.filter((operator) => isCompatibleNestedOperator(operator, argument.parameter, contextDomain))
+      const compatibleIndicators = parameterAcceptsIndicator(argument.parameter) ? indicators : []
+      const constantAllowed = needs.includes('scalar') || needs.includes('unknown')
+      const nestedAllowed = depth < 3 && compatibleOperators.length > 0
+      const label = parameterLabel(argument.parameter.name, argument.parameter.label || argument.parameter.name)
+      return <fieldset key={`${argument.parameter.name}-${argumentPath.join('-')}`} className={`rounded-xl border p-3 ${depth > 0 ? 'border-violet-100 bg-violet-50/30' : 'border-slate-200'}`}>
+        <legend className="px-1 text-sm font-semibold text-slate-800">{label} <span className="font-normal text-slate-400">· {needs.map((shape) => shapeLabel(shape)).join(' / ')}</span></legend>
+        <p className="mt-1 text-xs leading-5 text-slate-500">{parameterDescription(argument.parameter)}</p>
+        <label className="mt-3 block text-xs font-semibold text-slate-600">输入来源<select aria-label={`${label} 输入来源`} value={argument.source} onChange={(event) => {
+          const source = event.target.value as ComposerSource
+          if (source === 'variable') {
+            const variable = compatibleVariables[0]
+            onChange(argumentPath, { ...argument, source, value: variable?.name || '', nested: undefined })
+          } else if (source === 'constant') {
+            const value = typeof argument.parameter.default === 'number' ? String(argument.parameter.default) : ''
+            onChange(argumentPath, { ...argument, source, value, nested: undefined })
+          } else if (source === 'operator') {
+            const nestedItem = compatibleOperators[0]
+            onChange(argumentPath, { ...argument, source, value: nestedItem?.id || '', nested: nestedItem ? initialComposerNode(nestedItem, variables, contextDomain) : undefined })
+          } else if (source === 'indicator') {
+            const indicator = compatibleIndicators[0]
+            onChange(argumentPath, { ...argument, source, value: indicator ? indicatorReferenceKey(indicator) : '', nested: undefined })
+          } else {
+            onChange(argumentPath, { ...argument, source, value: '', nested: undefined })
+          }
+        }} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">
+          <option value="variable" disabled={compatibleVariables.length === 0}>兼容变量</option>
+          <option value="constant" disabled={!constantAllowed}>有限数值常量</option>
+          <option value="operator" disabled={!nestedAllowed}>嵌套算子{depth >= 3 ? '（已达层级上限）' : ''}</option>
+          <option value="indicator" disabled={compatibleIndicators.length === 0}>已有标量指标</option>
+          {argument.parameter.optional && <option value="omitted">省略可选参数</option>}
+        </select></label>
+        {argument.source === 'variable' && <>
+          <label className="mt-3 block text-xs font-semibold text-slate-600">选择兼容变量<select aria-label={`${label} 变量`} value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value })} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">选择兼容变量</option>{variables.map((variable) => {
+            const compatible = isCompatibleVariable(variable, argument.parameter, contextDomain)
+            return <option key={variable.name} value={variable.name} disabled={!compatible}>{variable.label} · {shapeLabel(inferShape(variable), variable.value_type)}{compatible ? '' : '（类型、语义或计算域不兼容）'}</option>
+          })}</select></label>
+          {compatibleVariables.length === 0 && <p className="mt-2 text-xs text-amber-700">当前计算域没有满足该参数类型与语义约束的变量，可改用嵌套算子构造。</p>}
+        </>}
+        {argument.source === 'constant' && <label className="mt-3 block text-xs font-semibold text-slate-600">有限数值常量<input aria-label={`${label} 有限常量`} type="number" step="any" value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value })} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>}
+        {argument.source === 'indicator' && <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/40 p-3">
+          <label className="block text-xs font-semibold text-sky-800">选择已有标量指标<select aria-label={`${label} 已有指标`} value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value, nested: undefined })} className="mt-1 block min-h-11 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">选择同协议指标</option>{compatibleIndicators.map((indicator) => <option key={indicatorReferenceKey(indicator)} value={indicatorReferenceKey(indicator)}>{indicator.name} · {indicator.source === 'built_in' ? '内置' : '工作区'} v{indicator.revision}</option>)}</select></label>
+          <p className="mt-2 text-xs leading-5 text-sky-700">提交时按锁定版本安全展开为表达式，不建立运行时指标依赖。</p>
+        </div>}
+        {argument.source === 'operator' && <div className="mt-3 rounded-xl border border-violet-200 bg-white p-3">
+          <label className="block text-xs font-semibold text-violet-800">嵌套数学算子<select aria-label={`${label} 嵌套算子`} value={argument.nested?.item.id || argument.value} onChange={(event) => {
+            const nestedItem = compatibleOperators.find((operator) => operator.id === event.target.value)
+            onChange(argumentPath, { ...argument, value: nestedItem?.id || '', nested: nestedItem ? initialComposerNode(nestedItem, variables, contextDomain) : undefined })
+          }} className="mt-1 block min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">选择输出类型兼容的算子</option>{compatibleOperators.map((operator) => <option key={operator.id} value={operator.id}>{operator.label} · {operatorOptionContract(operator)}</option>)}</select></label>
+          {argument.nested && <div className="mt-3 border-l-2 border-violet-200 pl-3"><div className="mb-3 flex items-center justify-between gap-2"><p className="text-xs font-semibold text-violet-800">第 {depth + 1} 层 · {argument.nested.item.label}</p><ShapeBadge shape={argument.nested.item.outputShape} valueType={argument.nested.item.outputType} /></div><ComposerNodeFields node={argument.nested} path={argumentPath} variables={variables} operators={operators} indicators={indicators} contextDomain={contextDomain} depth={depth + 1} onChange={onChange} /></div>}
+        </div>}
+        {argument.source === 'omitted' && <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">不会提交该参数，服务端使用注册表声明的默认行为。</p>}
+      </fieldset>
+    })}
+  </div>
+}
+
+function ComposerDrawer({ composer, variables, operators, indicators, contextDomain, loading, canApply, error, onClose, onChange, onApplyModeChange, onApply }: { composer: ComposerState; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; loading: boolean; canApply: boolean; error: string | null; onClose: () => void; onChange: (path: number[], argument: ComposerArgument) => void; onApplyModeChange: (mode: ComposerApplyMode) => void; onApply: () => void }) {
+  const dialogRef = useRef<HTMLElement | null>(null)
+  const closeRef = useRef<HTMLButtonElement | null>(null)
+  const composerOpen = Boolean(composer)
+  const siblingIssue = composer ? firstComposerSiblingIssue(composer.node, variables) : null
+  useEffect(() => {
+    if (!composerOpen) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    requestAnimationFrame(() => closeRef.current?.focus())
+    const trapFocus = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !dialogRef.current) return
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href]')]
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', trapFocus)
+    return () => { document.removeEventListener('keydown', trapFocus); previous?.focus() }
+  }, [composerOpen])
+  if (!composer) return null
+
+  return <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="composer-title" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }} className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+      <div className="flex items-start justify-between border-b border-slate-200 p-5"><div><p className="text-xs font-semibold text-violet-700">计算算子</p><h2 id="composer-title" className="mt-1 text-lg font-bold text-slate-900">配置 {composer.node.item.label}</h2><p className="mt-1 text-sm text-slate-600">{composer.node.item.essence}</p></div><button ref={closeRef} type="button" onClick={onClose} className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-300" aria-label="关闭参数配置">关闭</button></div>
+      <div className="flex-1 space-y-4 overflow-auto p-5">
+        <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3"><p className="text-xs font-semibold text-violet-800">输入与返回结果</p><p className="mt-1 text-xs leading-5 text-violet-900">{operatorContractDescription(composer.node.item)}</p><p className="mt-2 text-xs text-violet-800">嵌套算子会先安全展开，再作为上级算子的输入；系统会在插入前检查数据类型和含义是否兼容。</p></div>
+        <ComposerNodeFields node={composer.node} path={[]} variables={variables} operators={operators} indicators={indicators} contextDomain={contextDomain} depth={0} onChange={onChange} />
+        <label className="block rounded-xl border border-slate-200 p-3 text-sm font-semibold text-slate-700">应用方式<select aria-label="应用方式" value={composer.applyMode} onChange={(event) => onApplyModeChange(event.target.value as ComposerApplyMode)} className="mt-2 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="replace_formula">替换完整公式</option><option value="replace_selection" disabled={composer.selectionEnd <= composer.selectionStart}>替换高级模式选中内容</option><option value="insert_cursor">插入高级模式光标位置</option></select><span className="mt-2 block text-xs font-normal text-slate-500">选择后再执行展开，系统不会隐式猜测插入位置。</span></label>
+        {error && <p id="composer-error" role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+        {!canApply && !error && <p id="composer-help" role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{siblingIssue || '请完成所有必填参数后再展开；不兼容的参数组合不会被提交。'}</p>}
+      </div>
+      <div className="flex gap-3 border-t border-slate-200 p-5"><button type="button" onClick={onClose} className="flex-1 rounded-lg border border-slate-200 py-2 text-sm font-semibold text-slate-700">取消</button><button type="button" onClick={onApply} disabled={loading || !canApply} aria-describedby={!canApply ? 'composer-help' : error ? 'composer-error' : undefined} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{loading ? '展开中…' : '展开到公式'}</button></div>
+    </section>
+  </div>
+}
+
+function IndicatorGroup({ title, items, selectedId, onSelect, empty }: { title: string; items: IndicatorDefinition[]; selectedId: string | null; onSelect: (item: IndicatorDefinition) => void; empty?: string }) {
+  return <section><h3 className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3><div className="mt-2 space-y-1">{items.map((item) => <button key={item.id} type="button" onClick={() => onSelect(item)} className={`w-full rounded-xl px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-violet-300 ${item.id === selectedId ? 'bg-violet-100 text-violet-900' : 'hover:bg-slate-50 text-slate-700'}`}><span className="flex items-center justify-between gap-2"><span className="truncate text-sm font-semibold">{item.name}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${item.read_only ? 'bg-slate-200 text-slate-600' : 'bg-violet-50 text-violet-700'}`}>{item.read_only ? '内置' : `v${item.revision}`}</span></span><span className="mt-1 block line-clamp-2 text-xs text-slate-500">{item.description || item.expression}</span></button>)}{!items.length && empty && <p className="px-2 py-3 text-sm text-slate-400">{empty}</p>}</div></section>
+}
+
+function InsertionPalette({ title, items, fallback, onInsert }: { title: string; items: { key: string; label: string; token: string }[]; fallback: { key: string; label: string; token: string }[]; onInsert: (token: string) => void }) {
+  const list = items.length ? items : fallback
+  return <div><p className="text-xs font-semibold text-slate-500">{title}</p><div className="mt-2 flex max-h-24 flex-wrap gap-2 overflow-auto">{list.map((item) => <button key={item.key} type="button" title={`插入 ${item.token}`} onClick={() => onInsert(item.token)} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 hover:border-violet-300 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-200">{item.label}</button>)}</div></div>
+}
+
+function ValidationPanel({ validation, resourceLabels }: { validation: ValidationResponse; resourceLabels: Map<string, string> }) {
+  return <div className={`mt-4 rounded-xl border p-4 ${validation.valid ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50'}`} role={validation.valid ? 'status' : 'alert'}><p className={`font-semibold ${validation.valid ? 'text-emerald-800' : 'text-rose-800'}`}>{validation.valid ? '校验通过' : '校验未通过'}</p>{validation.dependencies.length > 0 && <p className="mt-1 text-xs text-slate-600">所需数据：{validation.dependencies.map((dependency) => resourceLabels.get(dependency) || '公式所需变量').join('、')}</p>}<ul className="mt-2 space-y-2 text-sm text-slate-700">{validation.diagnostics.map((item, index) => <li key={`${item.code}-${index}`}><span>{diagnosticMessage(item.code, item.message)}</span>{(item.node_id !== undefined || item.expected !== undefined || item.actual !== undefined) && <span className="mt-0.5 block text-xs text-slate-500">{item.node_id !== undefined ? '问题位于公式中的一个计算步骤' : '数据要求'}{item.expected !== undefined ? ` · 需要 ${humanizeTechnicalTypes(item.expected)}` : ''}{item.actual !== undefined ? ` · 当前是 ${humanizeTechnicalTypes(item.actual)}` : ''}</span>}</li>)}</ul></div>
+}
+
+function DagPanel({ validation, dag, period, option, contextDomain, resourceLabels, operators }: { validation: ValidationResponse | null; dag: IndicatorDag | null; period: string; option: ({ chartHeight?: number } & Record<string, unknown>) | null; contextDomain: IndicatorContextDomain; resourceLabels: Map<string, string>; operators: ComposerItem[] }) {
+  const [showTable, setShowTable] = useState(true)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [chartRevision, setChartRevision] = useState(0)
+  useEffect(() => {
+    setSelectedNodeId(null)
+    setChartRevision((current) => current + 1)
+  }, [dag])
+  if (!validation) return <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-500">校验公式后会在这里展示计算 DAG 与可访问的拓扑步骤。</div>
+  if (!validation.valid || !dag) return null
+  const { chartHeight = 360, ...echartsOption } = option ?? {}
+  const nodeById = new Map(dag.nodes.map((node) => [String(node.id), node]))
+  const incoming = new Map<string, typeof dag.edges>()
+  dag.edges.forEach((edge) => {
+    const target = String(edge.target)
+    incoming.set(target, [...(incoming.get(target) ?? []), edge].sort((left, right) => (left.order ?? 0) - (right.order ?? 0)))
+  })
+  const roots = new Set(Object.values(dag.roots).map(String))
+  const operatorById = new Map(operators.flatMap((operator) => [[operator.id, operator] as const, [operator.label, operator] as const]))
+  const inputLabel = (node: IndicatorDagNode, edge: IndicatorDag['edges'][number], index: number) => {
+    const operator = operatorById.get(node.operator_id || node.label)
+    return parameterLabel(
+      edge.parameter || edge.parameter_name || edge.input_name || operator?.parameters[index]?.name,
+      operator?.parameters[index]?.label || `输入 ${index + 1}`,
+    )
+  }
+  const selectedNode = nodeById.get(selectedNodeId || '') ?? nodeById.get(String(dag.roots.result)) ?? dag.nodes[0]
+  const selectedInputs = selectedNode ? incoming.get(String(selectedNode.id)) ?? [] : []
+  const selectedOperator = selectedNode ? operatorById.get(selectedNode.operator_id || selectedNode.label) : undefined
+  const selectedFormula = selectedNode
+    ? mathFormulaForDisplay(selectedNode.latex_fragment || selectedOperator?.displayTemplate, selectedNode.formula_fragment)
+    : null
+  return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="dag-title">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="dag-title" className="font-semibold text-slate-900">层级计算 DAG</h2><p className="mt-1 text-xs text-slate-500">单根、自上而下：输入位于顶部，带参数名的箭头指向计算节点，最终标量位于底部。</p></div><span className="shrink-0 rounded-full bg-violet-100 px-2.5 py-1 text-xs font-semibold text-violet-700">{contextDomain === 'portfolio' ? '快照窗口 · 结构视图' : `预览周期：${period}`}</span></div>
+    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500" aria-label="DAG 图例"><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-sky-600" />输入</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-slate-500" />常量</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-violet-500" />计算</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm border-2 border-violet-200 bg-violet-700" />最终结果</span></div>
+    {option && <ReactECharts key={chartRevision} option={echartsOption} style={{ height: chartHeight }} notMerge lazyUpdate aria-label={contextDomain === 'portfolio' ? '组合快照指标计算 DAG 图' : `${period} 指标计算 DAG 图`} onEvents={{ click: (params: { dataType?: string; data?: { id?: string | number } }) => { if (params.dataType === 'node' && params.data?.id !== undefined) setSelectedNodeId(String(params.data.id)) } }} />}
+    <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3"><button type="button" onClick={() => setChartRevision((current) => current + 1)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-300">适配并复位图谱</button><button type="button" aria-expanded={showTable} aria-controls="dag-data-table" onClick={() => setShowTable((current) => !current)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{showTable ? '隐藏计算数据表' : '显示计算数据表'}</button><span className="self-center text-[11px] text-slate-400">滚轮缩放，拖动平移；选择节点查看契约。</span></div>
+    {selectedNode && <article className="mt-3 rounded-xl border border-violet-100 bg-violet-50/50 p-3" aria-live="polite" aria-label="DAG 节点详情"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-violet-900">{resourceLabels.get(selectedNode.operator_id || selectedNode.label) ?? selectedNode.label}</p>{roots.has(String(selectedNode.id)) && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</div><dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">数学公式</dt><dd className="mt-0.5 rounded-lg bg-white/70 px-2 py-1">{selectedFormula ? <MathNotation latex={selectedFormula} label="当前计算步骤的数学公式" /> : <span className="text-slate-500">该步骤的数学符号由完整公式上下文决定</span>}</dd></div><div><dt className="font-semibold text-slate-700">输出数据</dt><dd className="mt-0.5 text-slate-600">{shapeLabel(selectedNode.shape || 'unknown', selectedNode.value_type)} · 理论规模：{symbolicDataSizeLabel(selectedNode.symbolic_shape, selectedNode.shape || 'unknown', selectedNode.value_type)}{selectedNode.actual_shape ? ` · 实际规模：${actualDataSizeLabel(selectedNode.actual_shape, selectedNode.shape || 'unknown', selectedNode.value_type)}` : ''}</dd></div><div><dt className="font-semibold text-slate-700">输入参数</dt><dd className="mt-0.5 text-slate-600">{selectedInputs.length ? selectedInputs.map((edge, index) => inputLabel(selectedNode, edge, index)).join('、') : '无'}</dd></div><div><dt className="font-semibold text-slate-700">计算特征</dt><dd className="mt-0.5 text-slate-600">{nodeKindLabel(selectedNode.kind)}{selectedNode.cost_estimate !== undefined ? ` · ${costEstimateLabel(selectedNode.cost_estimate)}` : ''}</dd></div></dl>{selectedNode.diagnostics && selectedNode.diagnostics.length > 0 && <ul className="mt-2 space-y-1 text-xs text-rose-700">{selectedNode.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${index}`}>{diagnosticMessage(diagnostic.code, diagnostic.message)}</li>)}</ul>}</article>}
+    {showTable && <div id="dag-data-table" className="mt-3 max-h-72 overflow-auto rounded-xl border border-slate-200"><table className="w-full min-w-[620px] text-left text-xs"><caption className="sr-only">DAG 节点、输入参数和输出类型数据表</caption><thead className="sticky top-0 bg-slate-50 text-slate-600"><tr><th className="px-3 py-2">步骤</th><th className="px-3 py-2">节点</th><th className="px-3 py-2">类别</th><th className="px-3 py-2">命名输入</th><th className="px-3 py-2">输出数据</th></tr></thead><tbody>{dag.nodes.map((node, index) => {
+      const inputs = incoming.get(String(node.id)) ?? []
+      const nodeResourceId = node.operator_id || node.label
+      const nodeShape = node.shape || (node.kind === 'variable' ? 'series' : 'scalar')
+      return <tr key={node.id} className="border-t border-slate-100 align-top"><td className="px-3 py-2 text-slate-400">{index + 1}</td><td className="px-3 py-2"><button type="button" onClick={() => setSelectedNodeId(String(node.id))} className="text-left font-semibold text-slate-800 underline decoration-slate-200 underline-offset-2 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-300">{resourceLabels.get(nodeResourceId) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind)}</button>{roots.has(String(node.id)) && <span className="ml-2 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</td><td className="px-3 py-2 text-slate-600">{nodeKindLabel(node.kind)}</td><td className="px-3 py-2 text-slate-600">{inputs.length ? <ul className="space-y-1">{inputs.map((edge, edgeIndex) => { const source = nodeById.get(String(edge.source)); const sourceResourceId = source?.operator_id || source?.label || ''; return <li key={`${edge.source}-${edgeIndex}`}><span className="font-semibold text-violet-700">{inputLabel(node, edge, edgeIndex)}</span> ← {source ? resourceLabels.get(sourceResourceId) ?? resourceLabels.get(source.label) ?? nodeKindLabel(source.kind) : '上一计算步骤'}</li> })}</ul> : '—'}</td><td className="px-3 py-2 text-slate-600"><span>{shapeLabel(nodeShape, node.value_type)}</span>{node.symbolic_shape && <span className="mt-0.5 block">理论规模：{symbolicDataSizeLabel(node.symbolic_shape, nodeShape, node.value_type)}</span>}{node.actual_shape && <span className="mt-0.5 block">实际规模：{actualDataSizeLabel(node.actual_shape, nodeShape, node.value_type)}</span>}</td></tr>
+    })}</tbody></table></div>}
+  </section>
+}
+
+function ResultsPanel({ results, draft, contextDomain }: { results: EvaluationResult[]; draft: IndicatorDraft; contextDomain: IndicatorContextDomain }) {
+  if (!results.length) return <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-500">选择产品并预览后显示真实净值计算结果。</div>
+  const computedCount = results.filter((result) => result.value !== null).length
+  return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="preview-results-title"><div className="flex flex-wrap items-center justify-between gap-2"><h2 id="preview-results-title" className="font-semibold text-slate-900">结果预览</h2><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">可计算 {computedCount}/{results.length} 个产品</span></div><div className="mt-3 space-y-3">{results.map((result, index) => <article key={`${result.target.kind}-${result.target.product_id}-${index}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3"><div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-slate-800">{result.target.name}</p><p className="text-xs text-slate-500">{result.target.product_id} · {contextDomain === 'portfolio' ? '快照窗口' : result.period}</p></div><strong className={result.value === null ? 'text-amber-700' : 'text-violet-700'}>{displayValue(result, draft)}</strong></div><p className="mt-2 text-xs text-slate-500">实际窗口 {result.window.start_date || '—'} 至 {result.window.end_date || '—'} · {result.window.observation_count} 个观测 · 数据最新 {result.window.data_latest_date || result.target_data?.data_latest_date || '—'}</p><MetricUnavailableReason result={result} />{result.warnings.length > 0 && !result.input_requirements && <ul className="mt-2 space-y-1 text-xs text-amber-800">{result.warnings.map((warning) => <li key={warning.code}>{diagnosticMessage(warning.code, warning.message)}</li>)}</ul>}</article>)}</div><div className="sr-only"><table><caption>指标结果数据表</caption><thead><tr><th>产品</th><th>指标值</th><th>状态</th></tr></thead><tbody>{results.map((result, index) => <tr key={index}><td>{result.target.name}</td><td>{displayValue(result, draft)}</td><td>{evaluationStatusLabel(result.status)}</td></tr>)}</tbody></table></div></section>
+}

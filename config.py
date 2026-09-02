@@ -1,53 +1,35 @@
 # -*- encoding: utf-8 -*-
-"""集中管理本地开发配置."""
+"""集中管理本地开发配置和本机 Tushare 凭据。"""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 
-def _load_dotenv(env_path: Path) -> None:
-    """Minimal .env loader so secrets stay outside版本控制."""
-
-    if not env_path.exists():
-        return
-
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key, value = key.strip(), value.strip()
-        if key and key not in os.environ:
-            os.environ[key] = value
+PROJECT_ROOT = Path(__file__).resolve().parent
+TUSHARE_CREDENTIAL_PATH = PROJECT_ROOT / "data" / ".tushare_token"
 
 
-# 尝试加载项目根目录的 .env（若存在）
-_load_dotenv(Path(__file__).resolve().parent / ".env")
+def read_tushare_token(path: Path | None = None) -> str:
+    """读取前端写入的本机凭据文件，不读取进程环境变量。"""
 
-# 公开配置项 ---------------------------------------------------------------
-TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "")
-LIXINGER_TOKEN = os.getenv("LIXINGER_TOKEN", "")
+    credential_path = (path or TUSHARE_CREDENTIAL_PATH).expanduser()
+    if credential_path.is_symlink():
+        raise RuntimeError("Tushare Token 凭据文件不能是符号链接。")
+    if not credential_path.is_file():
+        return ""
+    try:
+        return credential_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError("无法读取本机 Tushare Token 凭据文件。") from exc
 
 
 def require_tushare_token() -> str:
-    """获取 Tushare 令牌，未设置时抛出解释性错误."""
+    """获取前端配置的 Tushare 令牌，未设置时给出用户可执行的提示。"""
 
-    if not TUSHARE_TOKEN:
+    token = read_tushare_token()
+    if not token:
         raise RuntimeError(
-            "未检测到 TUSHARE_TOKEN 环境变量，请在 shell 中导出或在 .env 文件中配置."
+            "尚未配置 Tushare Token，请在主界面的“数据管理”中先保存 Token。"
         )
-    return TUSHARE_TOKEN
-
-
-def require_lixinger_token() -> str:
-    """获取理杏仁令牌，未设置时抛出解释性错误."""
-
-    if not LIXINGER_TOKEN:
-        raise RuntimeError(
-            "未检测到 LIXINGER_TOKEN 环境变量，请在 shell 中导出或在 .env 文件中配置."
-        )
-    return LIXINGER_TOKEN
+    return token

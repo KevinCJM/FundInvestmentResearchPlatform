@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 export interface FilterOption {
   value: string;
@@ -45,6 +45,9 @@ export default function FilterDropdown({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const panelId = useId();
 
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
@@ -58,6 +61,22 @@ export default function FilterDropdown({
     return () => {
       document.removeEventListener('mousedown', handleClick);
     };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    searchRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
   }, [open]);
 
   const filteredOptions = useMemo(() => {
@@ -86,8 +105,12 @@ export default function FilterDropdown({
   return (
     <div ref={containerRef} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        aria-haspopup="dialog"
         className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-500"
       >
         <span>{label}</span>
@@ -107,12 +130,14 @@ export default function FilterDropdown({
       </button>
 
       {open && (
-        <div className="absolute z-30 mt-2 w-64 rounded-xl border border-slate-200 bg-white shadow-xl">
+        <div id={panelId} role="dialog" aria-label={`${label}筛选`} className="absolute right-0 z-30 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl sm:left-0 sm:right-auto">
           <div className="border-b border-slate-100 px-4 py-2">
             <input
+              ref={searchRef}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="搜索选项"
+              aria-label={`搜索${label}选项`}
               className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
             />
           </div>

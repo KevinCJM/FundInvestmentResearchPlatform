@@ -1,0 +1,1558 @@
+"""Shared real-data series provider for product pages and indicator evaluation."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Iterable, Literal, Optional
+
+import numpy as np
+import pandas as pd
+import pyarrow.dataset as arrow_dataset
+import pyarrow.parquet as arrow_parquet
+
+try:  # Package imports in tests; top-level imports when uvicorn starts in backend/.
+    from backend.market_data import resolve_tushare_data_dir
+    from backend.series_quality import (
+        adjusted_nav_anomaly_dates,
+        assess_period_window,
+        load_sse_open_dates,
+    )
+except ModuleNotFoundError:  # pragma: no cover - exercised by integrated app startup
+    from market_data import resolve_tushare_data_dir
+    from series_quality import (
+        adjusted_nav_anomaly_dates,
+        assess_period_window,
+        load_sse_open_dates,
+    )
+
+from .errors import ValidationError
+from .periods import get_period_spec, resolve_period_bounds
+from .variable_registry import (
+    DATA_CONTRACT_VERSION,
+    canonicalize_variables,
+    get_variable,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
+@dataclass
+class InstrumentIdentity:
+    kind: Literal["etf", "fund"]
+    product_id: str
+    ts_code: str
+    name: str
+
+
+@dataclass
+class ProductSeries:
+    identity: InstrumentIdentity
+    frame: pd.DataFrame
+    fingerprint: str
+    data_latest_date: str
+    open_dates: pd.DatetimeIndex = field(default_factory=lambda: pd.DatetimeIndex([]))
+
+
+@dataclass
+class PeriodWindow:
+    frame: pd.DataFrame
+    returns: np.ndarray
+    log_returns: np.ndarray
+    requested_as_of: Optional[str]
+    effective_as_of: str
+    start_date: str
+    end_date: str
+    observation_count: int
+    data_latest_date: str
+    warnings: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class ProductVariableSeries:
+    """Dependency-specific product frame with source provenance.
+
+    ``frame`` contains only dates where every requested physical input exists.
+    It is intentionally an inner join: missing prices, volumes, NAV disclosures,
+    or announcement dates are never forward-filled or replaced with zero.
+    """
+
+    identity: InstrumentIdentity
+    frame: pd.DataFrame
+    fingerprints: dict[str, str]
+    fingerprint: str
+    data_latest_date: str | None
+    requested_variables: tuple[str, ...]
+    open_dates: pd.DatetimeIndex = field(default_factory=lambda: pd.DatetimeIndex([]))
+    lineage: list[dict[str, Any]] = field(default_factory=list)
+    coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    warnings: list[dict[str, str]] = field(default_factory=list)
+    unavailable_variables: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass
+class VariablePeriodWindow(PeriodWindow):
+    context: dict[str, Any] = field(default_factory=dict)
+    fingerprints: dict[str, str] = field(default_factory=dict)
+    lineage: list[dict[str, Any]] = field(default_factory=list)
+    coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    common_date_hash: str = ""
+    unavailable_variables: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class VariableWindowIndex:
+    """NumPy search index reused by every period for one product series."""
+
+    date_days: np.ndarray
+    anomaly_days: np.ndarray
+    open_days: np.ndarray
+
+
+def _effective_data_dir(data_dir: Path) -> Path:
+    candidate = Path(data_dir).expanduser().resolve()
+    if candidate == DEFAULT_DATA_DIR.resolve():
+        return resolve_tushare_data_dir(DEFAULT_DATA_DIR)
+    return candidate
+
+
+def _file_fingerprint(path: Path) -> str:
+    stat = path.stat()
+    raw = f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def market_data_generation(data_dir: Path = DEFAULT_DATA_DIR) -> str:
+    """Return a cheap, deterministic generation for active indicator inputs."""
+
+    resolved = _effective_data_dir(data_dir)
+    inventory: list[tuple[str, int, int]] = []
+    for filename in (
+        "etf_info_df.parquet",
+        "fund_info_df.parquet",
+        "etf_daily_df.parquet",
+        "fund_nav_df.parquet",
+        "etf_daily_candle_df.parquet",
+        "trade_day_df.parquet",
+    ):
+        path = resolved / filename
+        if path.exists():
+            stat = path.stat()
+            inventory.append((filename, int(stat.st_size), int(stat.st_mtime_ns)))
+    payload = {"directory": str(resolved), "files": inventory}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+
+
+def _match_code(frame: pd.DataFrame, identifier: str) -> pd.DataFrame:
+    if "ts_code" not in frame.columns:
+        return frame.iloc[0:0]
+    token = identifier.strip().lower()
+    token_no_suffix = token.split(".", 1)[0]
+    codes = frame["ts_code"].astype(str).str.lower()
+    matched = frame[codes == token]
+    if matched.empty:
+        matched = frame[codes.str.split(".").str[0] == token_no_suffix]
+    return matched
+
+
+@lru_cache(maxsize=16)
+def _identity_rows(
+    path_text: str,
+    size: int,
+    modified_ns: int,
+) -> tuple[tuple[str, str, str], ...]:
+    del size, modified_ns
+    path = Path(path_text)
+    if not path.exists():
+        return ()
+    columns = set(arrow_parquet.read_schema(path).names)
+    requested = [name for name in ("ts_code", "code", "name") if name in columns]
+    if "ts_code" not in requested:
+        return ()
+    frame = pd.read_parquet(path, columns=requested)
+    rows: list[tuple[str, str, str]] = []
+    for row in frame.itertuples(index=False):
+        payload = row._asdict()
+        ts_code = str(payload.get("ts_code") or "")
+        if not ts_code:
+            continue
+        rows.append(
+            (
+                ts_code,
+                str(payload.get("code") or ts_code.split(".", 1)[0]),
+                str(payload.get("name") or ts_code),
+            )
+        )
+    return tuple(rows)
+
+
+def resolve_identities(
+    kind: Literal["etf", "fund"],
+    product_ids: Iterable[str],
+    data_dir: Path = DEFAULT_DATA_DIR,
+) -> dict[str, InstrumentIdentity]:
+    """Resolve a target set with one cached info-table read."""
+
+    resolved_dir = _effective_data_dir(data_dir)
+    info_path = resolved_dir / (
+        "etf_info_df.parquet" if kind == "etf" else "fund_info_df.parquet"
+    )
+    rows: tuple[tuple[str, str, str], ...] = ()
+    if info_path.exists():
+        stat = info_path.stat()
+        rows = _identity_rows(
+            str(info_path.resolve()), int(stat.st_size), int(stat.st_mtime_ns)
+        )
+    by_token: dict[str, tuple[str, str]] = {}
+    for ts_code, code, name in rows:
+        by_token[ts_code.strip().lower()] = (ts_code, name)
+        by_token[code.strip().lower()] = (ts_code, name)
+        by_token[ts_code.split(".", 1)[0].strip().lower()] = (ts_code, name)
+        by_token[name.strip().lower()] = (ts_code, name)
+    output: dict[str, InstrumentIdentity] = {}
+    for raw_id in product_ids:
+        product_id = str(raw_id)
+        match = by_token.get(product_id.strip().lower())
+        ts_code, name = match if match is not None else (product_id, product_id)
+        output[product_id] = InstrumentIdentity(kind, ts_code, ts_code, name)
+    return output
+
+
+def resolve_identity(
+    kind: Literal["etf", "fund"],
+    product_id: str,
+    data_dir: Path = DEFAULT_DATA_DIR,
+) -> InstrumentIdentity:
+    return resolve_identities(kind, [product_id], data_dir)[product_id]
+
+
+def _read_candidate(path: Path, ts_code: str, value_column: str) -> pd.DataFrame:
+    try:
+        frame = pd.read_parquet(path, filters=[("ts_code", "==", ts_code)])
+    except Exception:
+        frame = pd.read_parquet(path)
+    if frame.empty or "ts_code" not in frame.columns:
+        return frame.iloc[0:0]
+    frame = _match_code(frame, ts_code)
+    if frame.empty or "date" not in frame.columns or value_column not in frame.columns:
+        return frame.iloc[0:0]
+    optional_columns = [
+        column
+        for column in ("open", "high", "low", "vol", "unit_nav", "accum_nav")
+        if column in frame.columns and column != value_column
+    ]
+    result = frame[["date", value_column, *optional_columns]].copy().rename(
+        columns={value_column: "value", "vol": "volume"}
+    )
+    result["date"] = pd.to_datetime(result["date"], errors="coerce")
+    result["value"] = pd.to_numeric(result["value"], errors="coerce")
+    for column in ("open", "high", "low", "volume"):
+        if column in result.columns:
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+    result = result.replace([np.inf, -np.inf], np.nan).dropna(subset=["date", "value"])
+    result = result[result["value"] > 0]
+    return result.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+
+
+def load_product_series(
+    kind: Literal["etf", "fund"],
+    product_id: str,
+    data_dir: Path = DEFAULT_DATA_DIR,
+) -> Optional[ProductSeries]:
+    data_dir = _effective_data_dir(data_dir)
+    identity = resolve_identity(kind, product_id, data_dir)
+    open_dates = load_sse_open_dates(data_dir / "trade_day_df.parquet")
+    candidates = (
+        [
+            (data_dir / "etf_daily_candle_df.parquet", "close"),
+            (data_dir / "etf_daily_df.parquet", "adj_nav"),
+        ]
+        if kind == "etf"
+        else [(data_dir / "fund_nav_df.parquet", "adj_nav")]
+    )
+    for path, value_column in candidates:
+        if not path.exists():
+            continue
+        frame = _read_candidate(path, identity.ts_code, value_column)
+        if frame.empty and identity.ts_code != product_id:
+            frame = _read_candidate(path, product_id, value_column)
+        if frame.empty:
+            continue
+        resolved_id = identity.ts_code
+        return ProductSeries(
+            identity=InstrumentIdentity(kind, resolved_id, resolved_id, identity.name),
+            frame=frame,
+            fingerprint=_file_fingerprint(path),
+            data_latest_date=frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
+            open_dates=open_dates,
+        )
+    return None
+
+
+def load_adjusted_product_series(
+    kind: Literal["etf", "fund"],
+    product_id: str,
+    data_dir: Path = DEFAULT_DATA_DIR,
+) -> Optional[ProductSeries]:
+    """Load the adjusted-NAV series used by typed-v2 portfolio research.
+
+    The legacy single-product evaluator intentionally keeps its existing
+    ``load_product_series`` precedence.  Typed-v2 portfolio calculations use a
+    separate entry point so their data contract cannot silently fall back to
+    exchange close prices.
+    """
+
+    data_dir = _effective_data_dir(data_dir)
+    identity = resolve_identity(kind, product_id, data_dir)
+    open_dates = load_sse_open_dates(data_dir / "trade_day_df.parquet")
+    path = data_dir / ("etf_daily_df.parquet" if kind == "etf" else "fund_nav_df.parquet")
+    if not path.exists():
+        return None
+    frame = _read_candidate(path, identity.ts_code, "adj_nav")
+    if frame.empty and identity.ts_code != product_id:
+        frame = _read_candidate(path, product_id, "adj_nav")
+    if frame.empty:
+        return None
+    resolved_id = identity.ts_code
+    return ProductSeries(
+        identity=InstrumentIdentity(kind, resolved_id, resolved_id, identity.name),
+        frame=frame,
+        fingerprint=_file_fingerprint(path),
+        data_latest_date=frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
+        open_dates=open_dates,
+    )
+
+
+def load_price_points(
+    kind: Literal["etf", "fund"],
+    product_id: str,
+    data_dir: Path = DEFAULT_DATA_DIR,
+) -> list[dict[str, object]]:
+    product_series = load_product_series(kind, product_id, data_dir)
+    if product_series is None:
+        return []
+    points: list[dict[str, object]] = []
+    for _, row in product_series.frame.iterrows():
+        value = float(row["value"])
+        points.append(
+            {
+                "date": row["date"].strftime("%Y-%m-%d"),
+                "open": float(row.get("open", value)) if pd.notna(row.get("open", value)) else value,
+                "high": float(row.get("high", value)) if pd.notna(row.get("high", value)) else value,
+                "low": float(row.get("low", value)) if pd.notna(row.get("low", value)) else value,
+                "close": value,
+                "volume": float(row.get("volume", 0)) if pd.notna(row.get("volume", 0)) else 0,
+            }
+        )
+    return points
+
+
+def _parse_as_of(as_of: Optional[str]) -> Optional[pd.Timestamp]:
+    if not as_of:
+        return None
+    try:
+        parsed = pd.Timestamp(as_of)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("INVALID_AS_OF", "as_of 必须是有效日期。", field="as_of") from exc
+    if pd.isna(parsed):
+        raise ValidationError("INVALID_AS_OF", "as_of 必须是有效日期。", field="as_of")
+    if parsed.tzinfo is not None:
+        parsed = parsed.tz_localize(None)
+    return parsed.normalize()
+
+
+def select_period_window(
+    product_series: ProductSeries,
+    period: str,
+    as_of: Optional[str] = None,
+    max_observations: int = 5000,
+) -> PeriodWindow:
+    spec = get_period_spec(period)
+    if spec is None:
+        raise ValidationError("INVALID_PERIOD", "不支持的评价周期。", field="period")
+    requested_date = _parse_as_of(as_of)
+    frame = product_series.frame
+    if requested_date is not None:
+        eligible = frame[frame["date"] <= requested_date].copy()
+    else:
+        eligible = frame.copy()
+    if eligible.empty:
+        raise ValidationError("NO_DATA_AS_OF", "截止日期之前没有可用净值数据。", field="as_of")
+
+    effective_reference = pd.Timestamp(eligible.iloc[-1]["date"]).normalize()
+    reference_date = requested_date or pd.Timestamp.today().normalize()
+    bounds = resolve_period_bounds(
+        spec,
+        effective_data_date=effective_reference,
+        reference_date=reference_date,
+        first_data_date=pd.Timestamp(eligible.iloc[0]["date"]),
+    )
+    period_eligible = eligible[eligible["date"] <= bounds.calendar_end].copy()
+    if period_eligible.empty:
+        raise ValidationError(
+            "NO_DATA_FOR_PERIOD",
+            f"{spec.label}没有可用净值数据。",
+            field="period",
+        )
+    actual_end = pd.Timestamp(period_eligible.iloc[-1]["date"]).normalize()
+    anomalies = adjusted_nav_anomaly_dates(period_eligible, value_column="value")
+    quality = assess_period_window(
+        period_eligible["date"],
+        target_date=bounds.anchor_target,
+        effective_date=bounds.calendar_end,
+        open_dates=product_series.open_dates,
+        anomaly_dates=anomalies,
+    )
+    if quality.reason in {"insufficient_span", "start_anchor_too_old"}:
+        raise ValidationError(
+            "INSUFFICIENT_SAMPLE",
+            f"现有历史未完整覆盖 {period} 自然周期。",
+        )
+    if quality.reason in {"insufficient_density", "internal_gap", "insufficient_observations"}:
+        coverage = (
+            f"{quality.coverage_ratio * 100:.1f}%"
+            if quality.coverage_ratio is not None
+            else "不可计算"
+        )
+        raise ValidationError(
+            "INCOMPLETE_PERIOD_COVERAGE",
+            f"{period} 区间内净值覆盖不完整（覆盖率 {coverage}），指标不予计算。",
+        )
+    if quality.reason == "adjusted_nav_anomaly":
+        raise ValidationError(
+            "ADJUSTED_NAV_ANOMALY",
+            f"{period} 区间内复权净值存在异常跳变，指标不予计算。",
+        )
+    if quality.anchor_date is None:
+        raise ValidationError("INSUFFICIENT_SAMPLE", f"现有历史不足以覆盖 {period} 自然周期。")
+    selected = period_eligible[period_eligible["date"] >= quality.anchor_date].copy()
+
+    warnings: list[dict[str, str]] = []
+    max_points = max_observations + 1
+    if len(selected) > max_points:
+        selected = selected.iloc[-max_points:].copy()
+        warnings.append(
+            {
+                "code": "SERIES_TRUNCATED",
+                "message": f"输入序列已截取最近 {max_observations} 个收益观察值。",
+            }
+        )
+    values = np.ascontiguousarray(selected["value"].to_numpy(dtype=np.float64))
+    returns = np.ascontiguousarray(values[1:] / values[:-1] - 1.0)
+    log_returns = np.ascontiguousarray(np.log(values[1:] / values[:-1]))
+    if returns.size == 0:
+        raise ValidationError("INSUFFICIENT_SAMPLE", "至少需要两个有效净值点。")
+    return PeriodWindow(
+        frame=selected,
+        returns=returns,
+        log_returns=log_returns,
+        requested_as_of=as_of,
+        effective_as_of=actual_end.strftime("%Y-%m-%d"),
+        start_date=selected.iloc[0]["date"].strftime("%Y-%m-%d"),
+        end_date=selected.iloc[-1]["date"].strftime("%Y-%m-%d"),
+        observation_count=int(returns.size),
+        data_latest_date=product_series.data_latest_date,
+        warnings=warnings,
+    )
+
+
+@lru_cache(maxsize=32)
+def _parquet_columns_cached(
+    path_text: str,
+    size: int,
+    modified_ns: int,
+) -> frozenset[str]:
+    del size, modified_ns
+    try:
+        return frozenset(arrow_parquet.read_schema(path_text).names)
+    except Exception:
+        try:
+            return frozenset(pd.read_parquet(path_text).columns)
+        except Exception:
+            return frozenset()
+
+
+def _parquet_columns(path: Path) -> set[str]:
+    """Read a Parquet schema once per immutable file generation."""
+
+    source = Path(path).expanduser().resolve()
+    if not source.exists():
+        return set()
+    stat = source.stat()
+    return set(
+        _parquet_columns_cached(
+            str(source), int(stat.st_size), int(stat.st_mtime_ns)
+        )
+    )
+
+
+def _date_values(values: pd.Series) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(values):
+        return pd.to_datetime(values, errors="coerce").dt.tz_localize(None)
+    tokens = values.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
+    compact = tokens.str.fullmatch(r"\d{8}", na=False)
+    parsed = pd.to_datetime(tokens, errors="coerce")
+    if compact.any():
+        parsed.loc[compact] = pd.to_datetime(tokens.loc[compact], format="%Y%m%d", errors="coerce")
+    try:
+        return parsed.dt.tz_localize(None)
+    except TypeError:
+        return parsed
+
+
+def _source_path(kind: Literal["etf", "fund"], dataset: str, data_dir: Path) -> Path | None:
+    if dataset == "nav":
+        return data_dir / ("etf_daily_df.parquet" if kind == "etf" else "fund_nav_df.parquet")
+    if dataset == "candle" and kind == "etf":
+        return data_dir / "etf_daily_candle_df.parquet"
+    return None
+
+
+def _source_unavailable_detail(
+    variable_id: str,
+    kind: Literal["etf", "fund"],
+) -> dict[str, str]:
+    definition = get_variable(variable_id)
+    label = definition.label if definition is not None else variable_id
+    kind_label = "ETF" if kind == "etf" else "场外公募基金"
+    return {
+        "code": "SOURCE_UNAVAILABLE_FOR_PRODUCT",
+        "message": f"{kind_label}没有可供计算“{label}”的真实数据源。",
+    }
+
+
+def _variable_label(variable_id: str) -> str:
+    definition = get_variable(variable_id)
+    return definition.label if definition is not None else variable_id
+
+
+def _read_source_frame(
+    *,
+    identity: InstrumentIdentity,
+    product_id: str,
+    dataset: str,
+    variable_ids: tuple[str, ...],
+    data_dir: Path,
+    as_of: Optional[str],
+) -> tuple[
+    pd.DataFrame,
+    str | None,
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, str]],
+    list[dict[str, str]],
+    dict[str, Any] | None,
+    str | None,
+]:
+    """Load a single physical dataset and expose canonical columns."""
+
+    path = _source_path(identity.kind, dataset, data_dir)
+    coverage: dict[str, dict[str, Any]] = {}
+    unavailable: dict[str, dict[str, str]] = {}
+    warnings: list[dict[str, str]] = []
+    if path is None:
+        for variable_id in variable_ids:
+            unavailable[variable_id] = _source_unavailable_detail(
+                variable_id, identity.kind
+            )
+        return pd.DataFrame(), None, coverage, unavailable, warnings, None, None
+    if not path.exists():
+        for variable_id in variable_ids:
+            unavailable[variable_id] = {
+                "code": "SOURCE_DATASET_MISSING",
+                "message": f"“{_variable_label(variable_id)}”所需的本地数据集不存在。",
+            }
+        return pd.DataFrame(), None, coverage, unavailable, warnings, None, None
+
+    schema = _parquet_columns(path)
+    date_field = "date" if "date" in schema else "nav_date" if "nav_date" in schema else None
+    if date_field is None or "ts_code" not in schema:
+        for variable_id in variable_ids:
+            unavailable[variable_id] = {
+                "code": "SOURCE_SCHEMA_MISMATCH",
+                "message": f"变量 {variable_id} 的数据集缺少 ts_code 或日期字段。",
+            }
+        return pd.DataFrame(), _file_fingerprint(path), coverage, unavailable, warnings, None, None
+    if dataset == "nav" and as_of is not None and "ann_date" not in schema:
+        for variable_id in variable_ids:
+            unavailable[variable_id] = {
+                "code": "ANN_DATE_UNAVAILABLE",
+                "message": (
+                    f"变量 {variable_id} 的净值数据缺少 ann_date，"
+                    "无法证明历史截止日当时已经披露。"
+                ),
+            }
+        warnings.append(
+            {
+                "code": "ANN_DATE_UNAVAILABLE",
+                "message": "历史 as-of 计算要求 ann_date；未使用 nav_date 代替公告时点。",
+            }
+        )
+        return (
+            pd.DataFrame(),
+            _file_fingerprint(path),
+            coverage,
+            unavailable,
+            warnings,
+            {
+                "dataset": path.name,
+                "fingerprint": _file_fingerprint(path),
+                "source_fields": [],
+                "rows_before_as_of": 0,
+                "rows_after_as_of": 0,
+                "availability_filter": "ann_date <= as_of (required)",
+            },
+            None,
+        )
+
+    fields_by_variable = {
+        variable_id: str(get_variable(variable_id).source_field)
+        for variable_id in variable_ids
+        if get_variable(variable_id) is not None and get_variable(variable_id).source_field
+    }
+    present_fields = {field_name for field_name in fields_by_variable.values() if field_name in schema}
+    requested_columns = ["ts_code", date_field, *sorted(present_fields)]
+    if dataset == "nav" and "ann_date" in schema:
+        requested_columns.append("ann_date")
+    try:
+        raw = pd.read_parquet(
+            path,
+            columns=list(dict.fromkeys(requested_columns)),
+            filters=[("ts_code", "==", identity.ts_code)],
+        )
+    except Exception:
+        raw = pd.read_parquet(path, columns=list(dict.fromkeys(requested_columns)))
+    matched = _match_code(raw, identity.ts_code)
+    if matched.empty and identity.ts_code != product_id:
+        matched = _match_code(raw, product_id)
+    raw = matched.copy()
+    fingerprint = _file_fingerprint(path)
+    if raw.empty:
+        for variable_id in variable_ids:
+            unavailable[variable_id] = {
+                "code": "PRODUCT_DATA_NOT_FOUND",
+                "message": f"数据集未找到产品 {product_id} 的变量 {variable_id}。",
+            }
+        lineage = {
+            "dataset": path.name,
+            "fingerprint": fingerprint,
+            "source_fields": sorted(present_fields),
+            "rows_before_as_of": 0,
+            "rows_after_as_of": 0,
+            "availability_filter": "ann_date <= as_of" if dataset == "nav" else "date <= as_of",
+        }
+        return pd.DataFrame(), fingerprint, coverage, unavailable, warnings, lineage, None
+
+    raw["date"] = _date_values(raw[date_field])
+    raw = raw.dropna(subset=["date"])
+    dataset_latest = raw["date"].max().strftime("%Y-%m-%d") if not raw.empty else None
+    rows_before = len(raw)
+    cutoff = _parse_as_of(as_of)
+    if cutoff is not None:
+        raw = raw[raw["date"] <= cutoff].copy()
+    availability_field = "date"
+    if dataset == "nav":
+        if "ann_date" in raw.columns:
+            raw["available_date"] = _date_values(raw["ann_date"])
+            availability_field = "ann_date"
+            if cutoff is not None:
+                raw = raw[raw["available_date"].notna() & (raw["available_date"] <= cutoff)].copy()
+        elif cutoff is not None:
+            warnings.append(
+                {
+                    "code": "ANN_DATE_UNAVAILABLE",
+                    "message": "净值数据缺少 ann_date，按净值日期截断；该数据集不具备严格公告时点证明。",
+                }
+            )
+    sort_columns = ["date"] + (["available_date"] if "available_date" in raw.columns else [])
+    raw = raw.sort_values(sort_columns).drop_duplicates(subset=["date"], keep="last")
+
+    output = raw[["date"]].copy()
+    if "available_date" in raw.columns:
+        output["_available_date_nav"] = raw["available_date"]
+    for variable_id in variable_ids:
+        definition = get_variable(variable_id)
+        source_field = fields_by_variable.get(variable_id)
+        if definition is None or source_field is None:
+            unavailable[variable_id] = {
+                "code": "UNKNOWN_VARIABLE",
+                "message": f"未知变量 {variable_id}。",
+            }
+            continue
+        if source_field not in schema:
+            unavailable[variable_id] = {
+                "code": "SOURCE_FIELD_MISSING",
+                "message": f"数据集缺少“{_variable_label(variable_id)}”所需字段 {source_field}。",
+            }
+            coverage[variable_id] = {
+                "source_rows": len(raw),
+                "non_null_rows": 0,
+                "coverage_ratio": 0.0,
+                "first_date": None,
+                "latest_date": None,
+            }
+            continue
+        values = pd.to_numeric(raw[source_field], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        if definition.transform == "pct_chg / 100":
+            values = values / 100.0
+        valid = values.notna()
+        dates = raw.loc[valid, "date"]
+        coverage[variable_id] = {
+            "source_rows": int(len(raw)),
+            "non_null_rows": int(valid.sum()),
+            "coverage_ratio": round(float(valid.mean()), 8) if len(valid) else 0.0,
+            "first_date": dates.min().strftime("%Y-%m-%d") if not dates.empty else None,
+            "latest_date": dates.max().strftime("%Y-%m-%d") if not dates.empty else None,
+            "conditional": bool(definition.conditional),
+        }
+        if not valid.any():
+            unavailable[variable_id] = {
+                "code": "VARIABLE_NO_OBSERVATIONS",
+                "message": f"“{_variable_label(variable_id)}”在当前产品和截止日没有有效观察值。",
+            }
+            continue
+        output[variable_id] = values
+
+    lineage = {
+        "dataset": path.name,
+        "fingerprint": fingerprint,
+        "source_fields": sorted(present_fields),
+        "rows_before_as_of": int(rows_before),
+        "rows_after_as_of": int(len(raw)),
+        "dataset_latest_date": dataset_latest,
+        "availability_field": availability_field,
+        "as_of": as_of,
+    }
+    return output, fingerprint, coverage, unavailable, warnings, lineage, dataset_latest
+
+
+def _scan_source_batch(
+    *,
+    kind: Literal["etf", "fund"],
+    dataset: str,
+    variable_ids: tuple[str, ...],
+    identities: dict[str, InstrumentIdentity],
+    data_dir: Path,
+    as_of: Optional[str],
+) -> tuple[
+    dict[str, pd.DataFrame],
+    str | None,
+    dict[str, dict[str, dict[str, Any]]],
+    dict[str, dict[str, dict[str, str]]],
+    dict[str, list[dict[str, str]]],
+    dict[str, dict[str, Any]],
+    dict[str, str | None],
+]:
+    """Scan one physical Parquet dataset once for an entire target set."""
+
+    path = _source_path(kind, dataset, data_dir)
+    frames = {product_id: pd.DataFrame() for product_id in identities}
+    coverage = {product_id: {} for product_id in identities}
+    unavailable = {product_id: {} for product_id in identities}
+    warnings = {product_id: [] for product_id in identities}
+    lineage: dict[str, dict[str, Any]] = {}
+    latest_dates: dict[str, str | None] = {product_id: None for product_id in identities}
+
+    if path is None or not path.exists():
+        code = "SOURCE_UNAVAILABLE_FOR_PRODUCT" if path is None else "SOURCE_DATASET_MISSING"
+        for product_id in identities:
+            for variable_id in variable_ids:
+                unavailable[product_id][variable_id] = (
+                    _source_unavailable_detail(variable_id, kind)
+                    if path is None
+                    else {
+                        "code": code,
+                        "message": f"“{_variable_label(variable_id)}”所需的本地数据集不存在。",
+                    }
+                )
+        return frames, None, coverage, unavailable, warnings, lineage, latest_dates
+
+    schema = _parquet_columns(path)
+    fingerprint = _file_fingerprint(path)
+    date_field = "date" if "date" in schema else "nav_date" if "nav_date" in schema else None
+    if date_field is None or "ts_code" not in schema:
+        for product_id in identities:
+            for variable_id in variable_ids:
+                unavailable[product_id][variable_id] = {
+                    "code": "SOURCE_SCHEMA_MISMATCH",
+                    "message": f"变量 {variable_id} 的数据集缺少 ts_code 或日期字段。",
+                }
+        return frames, fingerprint, coverage, unavailable, warnings, lineage, latest_dates
+
+    if dataset == "nav" and as_of is not None and "ann_date" not in schema:
+        for product_id in identities:
+            for variable_id in variable_ids:
+                unavailable[product_id][variable_id] = {
+                    "code": "ANN_DATE_UNAVAILABLE",
+                    "message": (
+                        f"变量 {variable_id} 的净值数据缺少 ann_date，"
+                        "无法证明历史截止日当时已经披露。"
+                    ),
+                }
+            warnings[product_id].append(
+                {
+                    "code": "ANN_DATE_UNAVAILABLE",
+                    "message": "历史 as-of 计算要求 ann_date；未使用 nav_date 代替公告时点。",
+                }
+            )
+        return frames, fingerprint, coverage, unavailable, warnings, lineage, latest_dates
+
+    fields_by_variable = {
+        variable_id: str(get_variable(variable_id).source_field)
+        for variable_id in variable_ids
+        if get_variable(variable_id) is not None and get_variable(variable_id).source_field
+    }
+    present_fields = {
+        field_name for field_name in fields_by_variable.values() if field_name in schema
+    }
+    requested_columns = ["ts_code", date_field, *sorted(present_fields)]
+    if dataset == "nav" and "ann_date" in schema:
+        requested_columns.append("ann_date")
+    requested_columns = list(dict.fromkeys(requested_columns))
+    codes = sorted({identity.ts_code for identity in identities.values()})
+    try:
+        source = arrow_dataset.dataset(path, format="parquet")
+        table = source.to_table(
+            columns=requested_columns,
+            filter=arrow_dataset.field("ts_code").isin(codes),
+            use_threads=True,
+        )
+        raw = table.to_pandas(split_blocks=True, self_destruct=True)
+    except Exception:
+        raw = pd.read_parquet(path, columns=requested_columns)
+        raw = raw[raw["ts_code"].astype(str).isin(codes)]
+
+    if raw.empty:
+        groups: dict[str, pd.DataFrame] = {}
+    else:
+        raw["_code_key"] = raw["ts_code"].astype(str).str.lower()
+        groups = {
+            str(code): frame.drop(columns=["_code_key"])
+            for code, frame in raw.groupby("_code_key", sort=False)
+        }
+    cutoff = _parse_as_of(as_of)
+
+    for product_id, identity in identities.items():
+        product_raw = groups.get(identity.ts_code.lower(), pd.DataFrame()).copy()
+        if product_raw.empty:
+            for variable_id in variable_ids:
+                unavailable[product_id][variable_id] = {
+                    "code": "PRODUCT_DATA_NOT_FOUND",
+                    "message": f"数据集未找到产品 {product_id} 的变量 {variable_id}。",
+                }
+            lineage[product_id] = {
+                "dataset": path.name,
+                "fingerprint": fingerprint,
+                "source_fields": sorted(present_fields),
+                "rows_before_as_of": 0,
+                "rows_after_as_of": 0,
+                "availability_filter": "ann_date <= as_of" if dataset == "nav" else "date <= as_of",
+                "batch_scan": True,
+            }
+            continue
+
+        product_raw["date"] = _date_values(product_raw[date_field])
+        product_raw = product_raw.dropna(subset=["date"])
+        dataset_latest = (
+            product_raw["date"].max().strftime("%Y-%m-%d")
+            if not product_raw.empty
+            else None
+        )
+        latest_dates[product_id] = dataset_latest
+        rows_before = len(product_raw)
+        if cutoff is not None:
+            product_raw = product_raw[product_raw["date"] <= cutoff].copy()
+        availability_field = "date"
+        if dataset == "nav" and "ann_date" in product_raw.columns:
+            product_raw["available_date"] = _date_values(product_raw["ann_date"])
+            availability_field = "ann_date"
+            if cutoff is not None:
+                product_raw = product_raw[
+                    product_raw["available_date"].notna()
+                    & (product_raw["available_date"] <= cutoff)
+                ].copy()
+        sort_columns = ["date"] + (
+            ["available_date"] if "available_date" in product_raw.columns else []
+        )
+        product_raw = product_raw.sort_values(sort_columns).drop_duplicates(
+            subset=["date"], keep="last"
+        )
+        output = product_raw[["date"]].copy()
+        if "available_date" in product_raw.columns:
+            output["_available_date_nav"] = product_raw["available_date"]
+
+        for variable_id in variable_ids:
+            definition = get_variable(variable_id)
+            source_field = fields_by_variable.get(variable_id)
+            if definition is None or source_field is None:
+                unavailable[product_id][variable_id] = {
+                    "code": "UNKNOWN_VARIABLE",
+                    "message": f"未知变量 {variable_id}。",
+                }
+                continue
+            if source_field not in schema:
+                unavailable[product_id][variable_id] = {
+                    "code": "SOURCE_FIELD_MISSING",
+                    "message": f"数据集缺少“{_variable_label(variable_id)}”所需字段 {source_field}。",
+                }
+                coverage[product_id][variable_id] = {
+                    "source_rows": int(len(product_raw)),
+                    "non_null_rows": 0,
+                    "coverage_ratio": 0.0,
+                    "first_date": None,
+                    "latest_date": None,
+                }
+                continue
+            values = pd.to_numeric(product_raw[source_field], errors="coerce").replace(
+                [np.inf, -np.inf], np.nan
+            )
+            if definition.transform == "pct_chg / 100":
+                values = values / 100.0
+            valid = values.notna()
+            dates = product_raw.loc[valid, "date"]
+            coverage[product_id][variable_id] = {
+                "source_rows": int(len(product_raw)),
+                "non_null_rows": int(valid.sum()),
+                "coverage_ratio": round(float(valid.mean()), 8) if len(valid) else 0.0,
+                "first_date": dates.min().strftime("%Y-%m-%d") if not dates.empty else None,
+                "latest_date": dates.max().strftime("%Y-%m-%d") if not dates.empty else None,
+                "conditional": bool(definition.conditional),
+            }
+            if not valid.any():
+                unavailable[product_id][variable_id] = {
+                    "code": "VARIABLE_NO_OBSERVATIONS",
+                    "message": f"“{_variable_label(variable_id)}”在当前产品和截止日没有有效观察值。",
+                }
+                continue
+            output[variable_id] = values.to_numpy(copy=False)
+
+        frames[product_id] = output
+        lineage[product_id] = {
+            "dataset": path.name,
+            "fingerprint": fingerprint,
+            "source_fields": sorted(present_fields),
+            "rows_before_as_of": int(rows_before),
+            "rows_after_as_of": int(len(product_raw)),
+            "dataset_latest_date": dataset_latest,
+            "availability_field": availability_field,
+            "as_of": as_of,
+            "batch_scan": True,
+        }
+
+    return frames, fingerprint, coverage, unavailable, warnings, lineage, latest_dates
+
+
+def load_product_variable_series_batch(
+    kind: Literal["etf", "fund"],
+    product_ids: Iterable[str],
+    dependencies: Iterable[str],
+    data_dir: Path = DEFAULT_DATA_DIR,
+    as_of: Optional[str] = None,
+) -> dict[str, ProductVariableSeries]:
+    """Load one dependency signature for many products with one scan per file."""
+
+    resolved_dir = _effective_data_dir(data_dir)
+    ordered_ids = tuple(dict.fromkeys(str(item) for item in product_ids))
+    identities = resolve_identities(kind, ordered_ids, resolved_dir)
+    open_dates = load_sse_open_dates(resolved_dir / "trade_day_df.parquet")
+    requested = canonicalize_variables(dependencies)
+    physical = list(requested)
+    if "adjusted_nav" not in physical:
+        physical.append("adjusted_nav")
+
+    base_unavailable: dict[str, dict[str, dict[str, str]]] = {
+        product_id: {} for product_id in ordered_ids
+    }
+    by_dataset: dict[str, list[str]] = {}
+    for variable_id in physical:
+        definition = get_variable(variable_id)
+        for product_id in ordered_ids:
+            if definition is None:
+                base_unavailable[product_id][variable_id] = {
+                    "code": "UNKNOWN_VARIABLE",
+                    "message": f"未知变量 {variable_id}。",
+                }
+            elif "single_product" not in definition.domains:
+                base_unavailable[product_id][variable_id] = {
+                    "code": "VARIABLE_CONTEXT_MISMATCH",
+                    "message": f"变量 {variable_id} 不适用于单产品域。",
+                }
+            elif kind not in definition.product_kinds:
+                base_unavailable[product_id][variable_id] = (
+                    _source_unavailable_detail(variable_id, kind)
+                )
+        if (
+            definition is not None
+            and "single_product" in definition.domains
+            and kind in definition.product_kinds
+            and definition.source_dataset
+        ):
+            by_dataset.setdefault(definition.source_dataset, []).append(variable_id)
+
+    source_frames: dict[str, list[pd.DataFrame]] = {product_id: [] for product_id in ordered_ids}
+    fingerprints: dict[str, str] = {}
+    coverages: dict[str, dict[str, Any]] = {product_id: {} for product_id in ordered_ids}
+    warnings: dict[str, list[dict[str, str]]] = {product_id: [] for product_id in ordered_ids}
+    lineages: dict[str, list[dict[str, Any]]] = {product_id: [] for product_id in ordered_ids}
+    latest_dates: dict[str, list[str]] = {product_id: [] for product_id in ordered_ids}
+
+    for dataset, variable_ids in by_dataset.items():
+        (
+            frames,
+            fingerprint,
+            source_coverage,
+            source_unavailable,
+            source_warnings,
+            source_lineage,
+            source_latest,
+        ) = _scan_source_batch(
+            kind=kind,
+            dataset=dataset,
+            variable_ids=tuple(variable_ids),
+            identities=identities,
+            data_dir=resolved_dir,
+            as_of=as_of,
+        )
+        if fingerprint:
+            fingerprints[dataset] = fingerprint
+        for product_id in ordered_ids:
+            coverages[product_id].update(source_coverage[product_id])
+            base_unavailable[product_id].update(source_unavailable[product_id])
+            warnings[product_id].extend(source_warnings[product_id])
+            if product_id in source_lineage:
+                lineages[product_id].append(source_lineage[product_id])
+            if source_latest[product_id]:
+                latest_dates[product_id].append(str(source_latest[product_id]))
+            frame = frames[product_id]
+            available_columns = [name for name in variable_ids if name in frame.columns]
+            technical_columns = [
+                name for name in frame.columns if name.startswith("_available_date_")
+            ]
+            if available_columns:
+                source_frames[product_id].append(
+                    frame[["date", *technical_columns, *available_columns]].copy()
+                )
+
+    combined_payload = {
+        "contract": DATA_CONTRACT_VERSION,
+        "files": fingerprints,
+        "variables": requested,
+    }
+    combined = hashlib.sha256(
+        json.dumps(combined_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    output: dict[str, ProductVariableSeries] = {}
+    for product_id in ordered_ids:
+        frames = source_frames[product_id]
+        if not frames or "adjusted_nav" in base_unavailable[product_id]:
+            merged = pd.DataFrame()
+        else:
+            merged = frames[0]
+            for frame in frames[1:]:
+                merged = merged.merge(frame, on="date", how="inner", validate="one_to_one")
+            required_physical = [name for name in physical if name in merged.columns]
+            merged = merged.replace([np.inf, -np.inf], np.nan).dropna(
+                subset=required_physical
+            )
+            merged = merged[merged["adjusted_nav"] > 0]
+            merged = (
+                merged.sort_values("date")
+                .drop_duplicates(subset=["date"], keep="last")
+                .reset_index(drop=True)
+            )
+        for variable_id in requested:
+            item = coverages[product_id].setdefault(variable_id, {})
+            item["common_rows"] = (
+                int(len(merged)) if variable_id in merged.columns else 0
+            )
+            item["common_latest_date"] = (
+                merged.iloc[-1]["date"].strftime("%Y-%m-%d")
+                if variable_id in merged.columns and not merged.empty
+                else None
+            )
+        output[product_id] = ProductVariableSeries(
+            identity=identities[product_id],
+            frame=merged,
+            fingerprints=dict(fingerprints),
+            fingerprint=combined if not merged.empty else "missing",
+            data_latest_date=(
+                min(latest_dates[product_id]) if latest_dates[product_id] else None
+            ),
+            requested_variables=requested,
+            open_dates=open_dates,
+            lineage=lineages[product_id],
+            coverage=coverages[product_id],
+            warnings=warnings[product_id],
+            unavailable_variables=base_unavailable[product_id],
+        )
+    return output
+
+
+def load_product_variable_series(
+    kind: Literal["etf", "fund"],
+    product_id: str,
+    dependencies: Iterable[str],
+    data_dir: Path = DEFAULT_DATA_DIR,
+    as_of: Optional[str] = None,
+) -> ProductVariableSeries | None:
+    """Load only the physical variables required by one typed expression."""
+
+    data_dir = _effective_data_dir(data_dir)
+    identity = resolve_identity(kind, product_id, data_dir)
+    open_dates = load_sse_open_dates(data_dir / "trade_day_df.parquet")
+    requested = canonicalize_variables(dependencies)
+    physical = list(requested)
+    # Every single-product window is anchored to adjusted NAV.  This keeps one
+    # stable period contract even when the formula itself only uses quote data.
+    if "adjusted_nav" not in physical:
+        physical.append("adjusted_nav")
+
+    by_dataset: dict[str, list[str]] = {}
+    unavailable: dict[str, dict[str, str]] = {}
+    for variable_id in physical:
+        definition = get_variable(variable_id)
+        if definition is None:
+            unavailable[variable_id] = {
+                "code": "UNKNOWN_VARIABLE",
+                "message": f"未知变量 {variable_id}。",
+            }
+            continue
+        if "single_product" not in definition.domains:
+            unavailable[variable_id] = {
+                "code": "VARIABLE_CONTEXT_MISMATCH",
+                "message": f"变量 {variable_id} 不适用于单产品域。",
+            }
+            continue
+        if kind not in definition.product_kinds:
+            unavailable[variable_id] = _source_unavailable_detail(variable_id, kind)
+            continue
+        if definition.source_dataset:
+            by_dataset.setdefault(definition.source_dataset, []).append(variable_id)
+
+    frames: list[pd.DataFrame] = []
+    fingerprints: dict[str, str] = {}
+    coverage: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, str]] = []
+    lineage: list[dict[str, Any]] = []
+    latest_dates: list[str] = []
+    for dataset, variable_ids in by_dataset.items():
+        (
+            frame,
+            fingerprint,
+            source_coverage,
+            source_unavailable,
+            source_warnings,
+            source_lineage,
+            dataset_latest,
+        ) = _read_source_frame(
+            identity=identity,
+            product_id=product_id,
+            dataset=dataset,
+            variable_ids=tuple(variable_ids),
+            data_dir=data_dir,
+            as_of=as_of,
+        )
+        if fingerprint:
+            fingerprints[dataset] = fingerprint
+        coverage.update(source_coverage)
+        unavailable.update(source_unavailable)
+        warnings.extend(source_warnings)
+        if source_lineage:
+            lineage.append(source_lineage)
+        if dataset_latest:
+            latest_dates.append(dataset_latest)
+        available_columns = [name for name in variable_ids if name in frame.columns]
+        technical_columns = [name for name in frame.columns if name.startswith("_available_date_")]
+        if available_columns:
+            frames.append(frame[["date", *technical_columns, *available_columns]].copy())
+
+    if not frames or "adjusted_nav" in unavailable:
+        return ProductVariableSeries(
+            identity=identity,
+            frame=pd.DataFrame(),
+            fingerprints=fingerprints,
+            fingerprint="missing",
+            data_latest_date=min(latest_dates) if latest_dates else None,
+            requested_variables=requested,
+            open_dates=open_dates,
+            lineage=lineage,
+            coverage=coverage,
+            warnings=warnings,
+            unavailable_variables=unavailable,
+        )
+
+    merged = frames[0]
+    for frame in frames[1:]:
+        merged = merged.merge(frame, on="date", how="inner", validate="one_to_one")
+    required_physical = [name for name in physical if name in merged.columns]
+    merged = merged.replace([np.inf, -np.inf], np.nan).dropna(subset=required_physical)
+    merged = merged[merged["adjusted_nav"] > 0]
+    merged = merged.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+    for variable_id in requested:
+        item = coverage.setdefault(variable_id, {})
+        item["common_rows"] = int(len(merged)) if variable_id in merged.columns else 0
+        item["common_latest_date"] = (
+            merged.iloc[-1]["date"].strftime("%Y-%m-%d")
+            if variable_id in merged.columns and not merged.empty
+            else None
+        )
+    combined_payload = {
+        "contract": DATA_CONTRACT_VERSION,
+        "files": fingerprints,
+        "variables": requested,
+    }
+    combined = hashlib.sha256(
+        json.dumps(combined_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    return ProductVariableSeries(
+        identity=identity,
+        frame=merged,
+        fingerprints=fingerprints,
+        fingerprint=combined,
+        data_latest_date=min(latest_dates) if latest_dates else None,
+        requested_variables=requested,
+        open_dates=open_dates,
+        lineage=lineage,
+        coverage=coverage,
+        warnings=warnings,
+        unavailable_variables=unavailable,
+    )
+
+
+def select_variable_window(
+    product_series: ProductVariableSeries,
+    period: str,
+    as_of: Optional[str] = None,
+    max_observations: int = 5000,
+) -> VariablePeriodWindow:
+    unavailable = {
+        name: detail
+        for name, detail in product_series.unavailable_variables.items()
+        if name in product_series.requested_variables or name == "adjusted_nav"
+    }
+    if unavailable:
+        first_name, detail = next(iter(unavailable.items()))
+        raise ValidationError(
+            detail.get("code") or "VARIABLE_UNAVAILABLE",
+            detail.get("message") or f"变量 {first_name} 不可用。",
+            field="expression",
+            diagnostics=[{"variable": name, **item} for name, item in unavailable.items()],
+        )
+    if product_series.frame.empty:
+        raise ValidationError("DATA_NOT_FOUND", "没有满足所需变量共同日期的数据。")
+    eligible_frame = product_series.frame
+    cutoff = _parse_as_of(as_of)
+    if cutoff is not None and "_available_date_nav" in eligible_frame.columns:
+        eligible_frame = eligible_frame[
+            eligible_frame["_available_date_nav"].notna()
+            & (eligible_frame["_available_date_nav"] <= cutoff)
+        ].copy()
+    anchor = ProductSeries(
+        identity=product_series.identity,
+        frame=eligible_frame.rename(columns={"adjusted_nav": "value"}),
+        fingerprint=product_series.fingerprint,
+        data_latest_date=product_series.data_latest_date or product_series.frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
+        open_dates=product_series.open_dates,
+    )
+    base = select_period_window(anchor, period, as_of, max_observations)
+    selected = base.frame.rename(columns={"value": "adjusted_nav"})
+    elapsed_days = int((selected.iloc[-1]["date"] - selected.iloc[0]["date"]).days)
+    context: dict[str, Any] = {
+        "returns": base.returns,
+        "log_returns": base.log_returns,
+        "observation_count": float(base.observation_count),
+        "window_elapsed_days": float(elapsed_days),
+    }
+    for variable_id in product_series.requested_variables:
+        if variable_id in {"returns", "log_returns", "observation_count", "window_elapsed_days"}:
+            continue
+        if variable_id in selected.columns:
+            context[variable_id] = np.ascontiguousarray(
+                selected[variable_id].to_numpy(dtype=np.float64)
+            )
+    copy_coverage = {
+        name: dict(details) for name, details in product_series.coverage.items()
+    }
+    for variable_id in product_series.requested_variables:
+        details = copy_coverage.setdefault(variable_id, {})
+        details["window_rows"] = (
+            int(selected[variable_id].notna().sum()) if variable_id in selected.columns else base.observation_count
+        )
+        details["window_start_date"] = base.start_date
+        details["window_end_date"] = base.end_date
+    date_tokens = "|".join(selected["date"].dt.strftime("%Y-%m-%d").tolist())
+    common_date_hash = hashlib.sha256(date_tokens.encode("utf-8")).hexdigest()[:20]
+    return VariablePeriodWindow(
+        frame=selected,
+        returns=base.returns,
+        log_returns=base.log_returns,
+        requested_as_of=base.requested_as_of,
+        effective_as_of=base.effective_as_of,
+        start_date=base.start_date,
+        end_date=base.end_date,
+        observation_count=base.observation_count,
+        data_latest_date=base.data_latest_date,
+        warnings=[*product_series.warnings, *base.warnings],
+        context=context,
+        fingerprints=dict(product_series.fingerprints),
+        lineage=[dict(item) for item in product_series.lineage],
+        coverage=copy_coverage,
+        common_date_hash=common_date_hash,
+        unavailable_variables=dict(product_series.unavailable_variables),
+    )
+
+
+def prepare_variable_window_index(
+    product_series: ProductVariableSeries,
+) -> VariableWindowIndex:
+    """Precompute date and anomaly arrays once for all requested periods."""
+
+    if product_series.frame.empty:
+        empty = np.empty(0, dtype=np.int64)
+        return VariableWindowIndex(empty, empty, empty)
+    dates = pd.DatetimeIndex(product_series.frame["date"])
+    date_days = np.ascontiguousarray(dates.asi8 // 86_400_000_000_000, dtype=np.int64)
+    anomaly_frame = product_series.frame.rename(columns={"adjusted_nav": "value"})
+    anomaly_dates = adjusted_nav_anomaly_dates(anomaly_frame, value_column="value")
+    anomaly_days = np.ascontiguousarray(
+        anomaly_dates.asi8 // 86_400_000_000_000, dtype=np.int64
+    )
+    open_days = np.ascontiguousarray(
+        product_series.open_dates.asi8 // 86_400_000_000_000, dtype=np.int64
+    )
+    return VariableWindowIndex(date_days, anomaly_days, open_days)
+
+
+def _longest_false_run(values: np.ndarray) -> int:
+    missing = np.flatnonzero(~values)
+    if missing.size == 0:
+        return 0
+    boundaries = np.flatnonzero(np.diff(missing) > 1)
+    starts = np.concatenate((np.asarray([0]), boundaries + 1))
+    ends = np.concatenate((boundaries, np.asarray([missing.size - 1])))
+    return int(np.max(ends - starts + 1))
+
+
+def select_variable_window_fast(
+    product_series: ProductVariableSeries,
+    period: str,
+    as_of: Optional[str] = None,
+    max_observations: int = 5000,
+    *,
+    index: VariableWindowIndex | None = None,
+) -> VariablePeriodWindow:
+    """Select a period with reusable NumPy indices and zero-copy source views."""
+
+    unavailable = {
+        name: detail
+        for name, detail in product_series.unavailable_variables.items()
+        if name in product_series.requested_variables or name == "adjusted_nav"
+    }
+    if unavailable:
+        first_name, detail = next(iter(unavailable.items()))
+        raise ValidationError(
+            detail.get("code") or "VARIABLE_UNAVAILABLE",
+            detail.get("message") or f"变量 {first_name} 不可用。",
+            field="expression",
+            diagnostics=[{"variable": name, **item} for name, item in unavailable.items()],
+        )
+    if product_series.frame.empty:
+        raise ValidationError("DATA_NOT_FOUND", "没有满足所需变量共同日期的数据。")
+    spec = get_period_spec(period)
+    if spec is None:
+        raise ValidationError("INVALID_PERIOD", "不支持的评价周期。", field="period")
+
+    prepared = index or prepare_variable_window_index(product_series)
+    date_days = prepared.date_days
+    requested_date = _parse_as_of(as_of)
+    if requested_date is None:
+        effective_position = date_days.size - 1
+    else:
+        requested_day = int(requested_date.value // 86_400_000_000_000)
+        effective_position = int(np.searchsorted(date_days, requested_day, side="right") - 1)
+    if effective_position < 0:
+        raise ValidationError("NO_DATA_AS_OF", "截止日期之前没有可用净值数据。", field="as_of")
+    effective_reference = pd.Timestamp(
+        product_series.frame.iloc[effective_position]["date"]
+    ).normalize()
+    reference_date = requested_date or pd.Timestamp.today().normalize()
+    bounds = resolve_period_bounds(
+        spec,
+        effective_data_date=effective_reference,
+        reference_date=reference_date,
+        first_data_date=pd.Timestamp(product_series.frame.iloc[0]["date"]),
+    )
+    calendar_end_day = int(bounds.calendar_end.value // 86_400_000_000_000)
+    effective_position = int(
+        np.searchsorted(date_days, calendar_end_day, side="right") - 1
+    )
+    if effective_position < 0:
+        raise ValidationError(
+            "NO_DATA_FOR_PERIOD",
+            f"{spec.label}没有可用净值数据。",
+            field="period",
+        )
+    effective_date = pd.Timestamp(
+        product_series.frame.iloc[effective_position]["date"]
+    ).normalize()
+    boundary_day = int(bounds.anchor_target.value // 86_400_000_000_000)
+    anchor_position = int(
+        np.searchsorted(
+            date_days[: effective_position + 1], boundary_day, side="right"
+        )
+        - 1
+    )
+    if anchor_position < 0:
+        raise ValidationError("INSUFFICIENT_SAMPLE", f"现有历史不足以覆盖 {period} 自然周期。")
+    anchor_day = int(date_days[anchor_position])
+    if spec.kind != "lifetime" and boundary_day - anchor_day > 10:
+        raise ValidationError("INSUFFICIENT_SAMPLE", f"现有历史未完整覆盖 {period} 自然周期。")
+
+    selected_days = date_days[anchor_position : effective_position + 1]
+    open_days = prepared.open_days
+    has_full_calendar = bool(
+        open_days.size
+        and open_days[0] <= boundary_day
+        and open_days[-1] >= calendar_end_day
+    )
+    if has_full_calendar:
+        expected_start = int(np.searchsorted(open_days, boundary_day, side="left"))
+        expected_end = int(
+            np.searchsorted(open_days, calendar_end_day, side="right")
+        )
+        expected = open_days[expected_start:expected_end]
+        required_coverage = 0.90
+        max_missing_allowed = 5
+    else:
+        expected_dates = pd.bdate_range(bounds.anchor_target, bounds.calendar_end)
+        expected = np.ascontiguousarray(
+            expected_dates.asi8 // 86_400_000_000_000, dtype=np.int64
+        )
+        required_coverage = 0.80
+        max_missing_allowed = 10
+    present = np.isin(expected, selected_days, assume_unique=True)
+    coverage_ratio = (
+        min(float(np.count_nonzero(present)) / expected.size, 1.0)
+        if expected.size
+        else None
+    )
+    max_missing = _longest_false_run(present) if expected.size else 0
+    anomaly_start = int(
+        np.searchsorted(prepared.anomaly_days, anchor_day, side="right")
+    )
+    anomaly_end = int(
+        np.searchsorted(
+            prepared.anomaly_days, date_days[effective_position], side="right"
+        )
+    )
+    if anomaly_end > anomaly_start:
+        raise ValidationError(
+            "ADJUSTED_NAV_ANOMALY",
+            f"{period} 区间内复权净值存在异常跳变，指标不予计算。",
+        )
+    if selected_days.size < 2:
+        raise ValidationError("INCOMPLETE_PERIOD_COVERAGE", f"{period} 区间内净值覆盖不完整，指标不予计算。")
+    if coverage_ratio is not None and coverage_ratio < required_coverage:
+        raise ValidationError(
+            "INCOMPLETE_PERIOD_COVERAGE",
+            f"{period} 区间内净值覆盖不完整（覆盖率 {coverage_ratio * 100:.1f}%），指标不予计算。",
+        )
+    if max_missing > max_missing_allowed:
+        raise ValidationError(
+            "INCOMPLETE_PERIOD_COVERAGE",
+            f"{period} 区间内净值覆盖不完整（覆盖率 {coverage_ratio * 100:.1f}%），指标不予计算。",
+        )
+
+    warnings: list[dict[str, str]] = []
+    start_position = anchor_position
+    max_points = max_observations + 1
+    if effective_position - start_position + 1 > max_points:
+        start_position = effective_position - max_points + 1
+        warnings.append(
+            {
+                "code": "SERIES_TRUNCATED",
+                "message": f"输入序列已截取最近 {max_observations} 个收益观察值。",
+            }
+        )
+    selected = product_series.frame.iloc[start_position : effective_position + 1]
+    adjusted_nav = selected["adjusted_nav"].to_numpy(dtype=np.float64, copy=False)
+    returns = np.ascontiguousarray(adjusted_nav[1:] / adjusted_nav[:-1] - 1.0)
+    log_returns = np.ascontiguousarray(np.log(adjusted_nav[1:] / adjusted_nav[:-1]))
+    elapsed_days = int((selected.iloc[-1]["date"] - selected.iloc[0]["date"]).days)
+    context: dict[str, Any] = {
+        "returns": returns,
+        "log_returns": log_returns,
+        "observation_count": float(returns.size),
+        "window_elapsed_days": float(elapsed_days),
+    }
+    for variable_id in product_series.requested_variables:
+        if variable_id in {"returns", "log_returns", "observation_count", "window_elapsed_days"}:
+            continue
+        if variable_id in selected.columns:
+            context[variable_id] = np.ascontiguousarray(
+                selected[variable_id].to_numpy(dtype=np.float64, copy=False)
+            )
+    copy_coverage = {
+        name: dict(details) for name, details in product_series.coverage.items()
+    }
+    start_date = selected.iloc[0]["date"].strftime("%Y-%m-%d")
+    end_date = selected.iloc[-1]["date"].strftime("%Y-%m-%d")
+    for variable_id in product_series.requested_variables:
+        details = copy_coverage.setdefault(variable_id, {})
+        details["window_rows"] = (
+            int(selected[variable_id].notna().sum())
+            if variable_id in selected.columns
+            else int(returns.size)
+        )
+        details["window_start_date"] = start_date
+        details["window_end_date"] = end_date
+    selected_day_view = prepared.date_days[start_position : effective_position + 1]
+    common_date_hash = hashlib.sha256(selected_day_view.tobytes()).hexdigest()[:20]
+    return VariablePeriodWindow(
+        frame=selected,
+        returns=returns,
+        log_returns=log_returns,
+        requested_as_of=as_of,
+        effective_as_of=effective_date.strftime("%Y-%m-%d"),
+        start_date=start_date,
+        end_date=end_date,
+        observation_count=int(returns.size),
+        data_latest_date=(
+            product_series.data_latest_date
+            or product_series.frame.iloc[-1]["date"].strftime("%Y-%m-%d")
+        ),
+        warnings=[*product_series.warnings, *warnings],
+        context=context,
+        fingerprints=dict(product_series.fingerprints),
+        lineage=[dict(item) for item in product_series.lineage],
+        coverage=copy_coverage,
+        common_date_hash=common_date_hash,
+        unavailable_variables=dict(product_series.unavailable_variables),
+    )
+
+
+__all__ = [
+    "DEFAULT_DATA_DIR",
+    "InstrumentIdentity",
+    "PeriodWindow",
+    "ProductSeries",
+    "ProductVariableSeries",
+    "VariableWindowIndex",
+    "VariablePeriodWindow",
+    "load_adjusted_product_series",
+    "load_price_points",
+    "load_product_series",
+    "load_product_variable_series",
+    "load_product_variable_series_batch",
+    "market_data_generation",
+    "resolve_identity",
+    "resolve_identities",
+    "select_period_window",
+    "select_variable_window",
+    "prepare_variable_window_index",
+    "select_variable_window_fast",
+]

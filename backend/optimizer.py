@@ -1,18 +1,28 @@
 
 from __future__ import annotations
+from functools import lru_cache
 from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 import pandas as pd
-from numba import jit
+import numba
+from numba import njit, types
+from numba.core.registry import CPUDispatcher
 from scipy.optimize import minimize
+
+
+OPTIMIZER_NUMBA_KERNEL_VERSION = "1.0.0"
+_FLOAT64_1D = types.float64[::1]
+_FLOAT64_2D = types.float64[:, ::1]
+_PORTFOLIO_RESULT = types.UniTuple(types.float64, 2)
 
 # --- 收益指标计算 ---
 
-@jit(nopython=True)
+@njit(_FLOAT64_1D(_FLOAT64_1D), cache=True, nogil=True)
 def get_log_returns(nav_series: np.ndarray) -> np.ndarray:
     return np.log(nav_series[1:] / nav_series[:-1])
 
-@jit(nopython=True)
+
+@njit(_FLOAT64_1D(_FLOAT64_1D), cache=True, nogil=True)
 def get_simple_returns(nav_series: np.ndarray) -> np.ndarray:
     return nav_series[1:] / nav_series[:-1] - 1
 
@@ -76,13 +86,22 @@ def calculate_risk(returns: np.ndarray, config: Dict[str, Any]) -> float:
 
 # --- Numba 加速的组合计算 ---
 
-@jit(nopython=True)
+@njit(
+    _PORTFOLIO_RESULT(_FLOAT64_1D, _FLOAT64_1D, _FLOAT64_2D),
+    cache=True,
+    nogil=True,
+)
 def compute_portfolio_performance(weights: np.ndarray, mean_returns: np.ndarray, cov_matrix: np.ndarray) -> tuple[float, float]:
     port_return = np.sum(mean_returns * weights)
     port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
     return port_return, port_vol
 
-@jit(nopython=True)
+
+@njit(
+    _FLOAT64_2D(types.int64, types.int64, _FLOAT64_1D, _FLOAT64_2D),
+    cache=True,
+    nogil=True,
+)
 def generate_random_portfolios(n_portfolios: int, n_assets: int, mean_returns: np.ndarray, cov_matrix: np.ndarray) -> np.ndarray:
     results = np.zeros((2, n_portfolios))
     for i in range(n_portfolios):
@@ -96,13 +115,63 @@ def generate_random_portfolios(n_portfolios: int, n_assets: int, mean_returns: n
         results[1, i] = port_return
     return results
 
+
+OPTIMIZER_NUMBA_KERNELS: tuple[CPUDispatcher, ...] = (
+    get_log_returns,
+    get_simple_returns,
+    compute_portfolio_performance,
+    generate_random_portfolios,
+)
+
+
+def optimizer_numba_status(*, warmed: bool = False) -> dict[str, Any]:
+    signatures = {
+        dispatcher.py_func.__name__: [str(signature) for signature in dispatcher.signatures]
+        for dispatcher in OPTIMIZER_NUMBA_KERNELS
+    }
+    ready = sum(bool(items) for items in signatures.values())
+    return {
+        "version": OPTIMIZER_NUMBA_KERNEL_VERSION,
+        "numba_version": numba.__version__,
+        "warmed": warmed,
+        "kernel_coverage": f"{ready}/{len(signatures)}",
+        "compiled_signatures": signatures,
+    }
+
+
+@lru_cache(maxsize=1)
+def warm_optimizer_numba_kernels() -> dict[str, Any]:
+    """Verify every fixed-signature optimizer kernel before the API starts."""
+
+    nav = np.ascontiguousarray([1.0, 1.01, 1.02], dtype=np.float64)
+    weights = np.ascontiguousarray([0.5, 0.5], dtype=np.float64)
+    mean_returns = np.ascontiguousarray([0.05, 0.08], dtype=np.float64)
+    covariance = np.ascontiguousarray(
+        [[0.10, 0.02], [0.02, 0.20]], dtype=np.float64
+    )
+    get_log_returns(nav)
+    get_simple_returns(nav)
+    compute_portfolio_performance(weights, mean_returns, covariance)
+    generate_random_portfolios(2, 2, mean_returns, covariance)
+    status = optimizer_numba_status(warmed=True)
+    if status["kernel_coverage"] != f"{len(OPTIMIZER_NUMBA_KERNELS)}/{len(OPTIMIZER_NUMBA_KERNELS)}":
+        raise RuntimeError("optimizer NJIT kernel warmup incomplete")
+    return status
+
 # --- 主函数：计算有效前沿 ---
 
 def calculate_efficient_frontier(asset_returns: pd.DataFrame, return_config: Dict[str, Any], risk_config: Dict[str, Any], n_portfolios: int = 10000, risk_free_rate: float = 0.0):
     
     # 1. 计算每个资产的预期收益和风险 (转换为 numpy)
-    mean_returns_annual_np = (asset_returns.mean() * 252).to_numpy()
-    cov_matrix_annual_np = (asset_returns.cov() * 252).to_numpy()
+    # Keep production inputs on the exact C-contiguous float64 signatures warmed
+    # during application startup.  This prevents a strided pandas view from
+    # causing an unexpected first-request Numba specialization.
+    mean_returns_annual_np = np.ascontiguousarray(
+        (asset_returns.mean() * 252).to_numpy(dtype=np.float64),
+    )
+    cov_matrix_annual_np = np.ascontiguousarray(
+        (asset_returns.cov() * 252).to_numpy(dtype=np.float64),
+    )
     n_assets = len(mean_returns_annual_np)
 
     # 2. 蒙特卡洛模拟 (可配置空间)

@@ -7,8 +7,10 @@
 import json
 import re
 import sys
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import numpy as np
 
@@ -19,7 +21,13 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from cal_indicators import numba_finance_math as math_ops  # noqa: E402
-from cal_indicators.latex_excutor import DAGNode, LatexExecutor  # noqa: E402
+from cal_indicators.generate_math_operator_dsl import build_operators  # noqa: E402
+from cal_indicators.latex_excutor import (  # noqa: E402
+    DAGBuildError,
+    DAGNode,
+    ExpressionPolicy,
+    LatexExecutor,
+)
 
 
 def _binary_op(label: str) -> Any:
@@ -40,11 +48,76 @@ BINARY_LABELS = {"add", "subtract", "multiply", "divide", "power"}
 UNARY_LABELS = {"negate"}
 
 
-def load_callable_map(dsl_path: Path) -> Dict[str, Any]:
-    with dsl_path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
+@dataclass(frozen=True)
+class OperatorSpec:
+    name: str
+    arity: int
+    input_types: tuple[str, ...]
+    output_type: str
+    signature: str
+    description: str
+    latex: str
+    is_ufunc: bool = False
+
+
+def _dsl_type(raw: object) -> str:
+    token = str(raw or "")
+    if "Tuple" in token or "tuple" in token.lower():
+        return "tuple"
+    if "[:]" in token or "array" in token.lower():
+        return "vector"
+    return "scalar"
+
+
+@lru_cache(maxsize=4)
+def load_operator_entries(dsl_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """从可选产物加载算子；产物缺失时直接从受控源码构建。"""
+
+    if dsl_path is not None and dsl_path.exists():
+        with dsl_path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return list(payload.get("operators", []))
+    operators, _ = build_operators()
+    return operators
+
+
+@lru_cache(maxsize=4)
+def load_operator_specs(dsl_path: Optional[Path] = None) -> Dict[str, OperatorSpec]:
+    specs: Dict[str, OperatorSpec] = {}
+    for operator in load_operator_entries(dsl_path):
+        name = str(operator["name"])
+        inputs = tuple(_dsl_type(item.get("type")) for item in operator.get("inputs", []))
+        output = _dsl_type(operator.get("output", {}).get("type"))
+        spec = OperatorSpec(
+            name=name,
+            arity=len(inputs),
+            input_types=inputs,
+            output_type=output,
+            signature=str(operator.get("signature", "")),
+            description=str(operator.get("description", "")),
+            latex=str(operator.get("latex", "")),
+            is_ufunc=bool(operator.get("is_ufunc", False)),
+        )
+        specs[name] = spec
+        for alias in operator.get("aliases", []):
+            specs[str(alias)] = spec
+    specs["sqrt"] = OperatorSpec(
+        name="sqrt",
+        arity=1,
+        input_types=("scalar",),
+        output_type="scalar",
+        signature="float64(float64)",
+        description="计算非负标量的平方根。",
+        latex=r"\sqrt{x}",
+        is_ufunc=True,
+    )
+    return specs
+
+
+@lru_cache(maxsize=4)
+def load_callable_map(dsl_path: Optional[Path] = None) -> Dict[str, Any]:
     mapping: Dict[str, Any] = {}
-    for operator in payload.get("operators", []):
+    for operator in load_operator_entries(dsl_path):
         name = operator["name"]
         func = getattr(math_ops, name, None)
         if callable(func):
@@ -103,15 +176,57 @@ class IndicatorRuntime:
     并支持按周期（period）对多个指标进行批量计算。
     """
 
-    def __init__(self, version: str) -> None:
+    def __init__(
+            self,
+            version: Optional[str] = None,
+            profile_payload: Optional[Dict[str, object]] = None,
+            dsl_path: Optional[Path] = None,
+            max_nodes: int = 128,
+            max_depth: int = 20,
+    ) -> None:
         """初始化 IndicatorRuntime 实例。"""
-        if not version:
-            raise ValueError("必须指定指标版本名称。")
-        self.executor = LatexExecutor(version=version)
-        self.executor.build()
-        self.callables = load_callable_map(BASE_DIR / "numba_finance_math_dsl.json")
+        if not version and profile_payload is None:
+            raise ValueError("必须指定指标版本名称或内存指标定义。")
+        self.operator_specs = load_operator_specs(dsl_path)
+        self.callables = load_callable_map(dsl_path)
+        self.executor = LatexExecutor(version=version, profile_payload=profile_payload)
+        variable_names = set(self.executor.variables) or {
+            "returns",
+            "log_returns",
+            "annual_risk_free_rate_decimal",
+            "risk_free_rate_per_period",
+        }
+        policy = ExpressionPolicy(
+            allowed_variables=variable_names,
+            function_arity={name: spec.arity for name, spec in self.operator_specs.items()},
+            max_nodes=max_nodes,
+            max_depth=max_depth,
+        )
+        self.executor.build(policy=policy)
+        self._validate_types()
         self.version = self.executor.version
         self.metadata = self.executor.metadata
+
+    @classmethod
+    def from_definition(
+            cls,
+            name: str,
+            expression: str,
+            periods: List[str],
+            metadata: Optional[Dict[str, object]] = None,
+            **kwargs: Any,
+    ) -> "IndicatorRuntime":
+        profile: Dict[str, object] = {
+            "metadata": dict(metadata or {}),
+            "indicators": [
+                {
+                    "name": name,
+                    "dsl_expression": expression,
+                    "periods": periods or ["__default__"],
+                }
+            ],
+        }
+        return cls(profile_payload=profile, **kwargs)
 
     @property
     def available_versions(self) -> List[str]:
@@ -120,6 +235,58 @@ class IndicatorRuntime:
     @property
     def available_periods(self) -> List[str]:
         return list(self.executor.roots.keys())
+
+    def _variable_types(self) -> Mapping[str, str]:
+        variable_types = {
+            name: "vector" if str(entry.get("value_type")) == "vector" else "scalar"
+            for name, entry in self.executor.variables.items()
+        }
+        if variable_types:
+            return variable_types
+        return {
+            "returns": "vector",
+            "log_returns": "vector",
+            "annual_risk_free_rate_decimal": "scalar",
+            "risk_free_rate_per_period": "scalar",
+        }
+
+    def _validate_types(self) -> None:
+        variables = self._variable_types()
+        for period in self.executor.roots:
+            inferred: Dict[int, str] = {}
+            for node in self.executor.topo_order_for_period(period):
+                if node.kind == "constant":
+                    inferred[node.node_id] = "scalar"
+                elif node.kind == "variable":
+                    inferred[node.node_id] = variables[node.label]
+                elif node.kind == "unary":
+                    input_type = inferred[node.inputs[0]]
+                    if input_type == "tuple":
+                        raise DAGBuildError("tuple 不能参与一元运算")
+                    inferred[node.node_id] = input_type
+                elif node.kind == "binary":
+                    input_types = [inferred[input_id] for input_id in node.inputs]
+                    if "tuple" in input_types:
+                        raise DAGBuildError("tuple 不能参与二元运算")
+                    inferred[node.node_id] = "vector" if "vector" in input_types else "scalar"
+                elif node.kind == "call":
+                    spec = self.operator_specs[node.label]
+                    actual_types = [inferred[input_id] for input_id in node.inputs]
+                    for index, (actual, expected) in enumerate(zip(actual_types, spec.input_types), start=1):
+                        vectorized_scalar = spec.is_ufunc and expected == "scalar" and actual == "vector"
+                        if actual != expected and not vectorized_scalar:
+                            raise DAGBuildError(
+                                f"函数 {node.label} 第 {index} 个参数需要 {expected}，实际为 {actual}"
+                            )
+                    if spec.is_ufunc and "vector" in actual_types:
+                        inferred[node.node_id] = "vector"
+                    else:
+                        inferred[node.node_id] = spec.output_type
+                else:  # pragma: no cover - builder guarantees node kinds
+                    raise DAGBuildError(f"未知节点类型: {node.kind}")
+            for name, root_id in self.executor.roots[period].items():
+                if inferred[root_id] != "scalar":
+                    raise DAGBuildError(f"指标 {name} 的最终结果必须是标量")
 
     def _annual_rate_decimal(self) -> float:
         rate_percent = self.metadata.get("annual_risk_free_rate_percent")

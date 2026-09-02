@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactECharts from 'echarts-for-react';
+import type { MetricPresentation } from '../services/customIndicators';
+import { formatMetricValue } from './metrics/MetricDisplay';
 
 export interface HorizontalMetricRow {
   label: string;
   values: Array<number | null | undefined>;
   formatter?: (value: number) => string;
   reverseScale?: boolean;
+  presentation?: MetricPresentation;
 }
 
 export const DEFAULT_METRIC_TABLE_HEIGHT = 320;
@@ -24,9 +27,10 @@ function formatExportCell(value: string): string {
   return value;
 }
 
-function formatValue(value: number, formatter?: (value: number) => string): string {
+function formatValue(value: number, formatter?: (value: number) => string, presentation?: MetricPresentation): string {
   if (!Number.isFinite(value)) return '-';
   if (formatter) return formatter(value);
+  if (presentation) return formatMetricValue(value, presentation);
   return value.toFixed(2);
 }
 
@@ -66,7 +70,7 @@ export default function HorizontalMetricComparison({
         const rawValue = row.values[idx];
         const numeric = Number(rawValue);
         if (Number.isFinite(numeric)) {
-          return formatValue(numeric, row.formatter);
+          return formatValue(numeric, row.formatter, row.presentation);
         }
         return emptyText;
       }),
@@ -140,14 +144,14 @@ export default function HorizontalMetricComparison({
                         );
                       }
                       const value = Number(rawValue);
-                      const style = computeCellStyle(value, min, max, row.reverseScale);
+                      const style = computeCellStyle(value, min, max, row.reverseScale ?? row.presentation?.direction === 'lower_better');
                       return (
                         <td
                           key={`metric-cell-${row.label}-${idx}`}
                           className="border px-2 py-3 text-right"
                           style={style}
                         >
-                          {formatValue(value, row.formatter)}
+                          {formatValue(value, row.formatter, row.presentation)}
                         </td>
                       );
                     })}
@@ -182,7 +186,8 @@ export function PerformanceQuadrantChart({
   interface SanitizedMetricRow {
     label: string;
     values: Array<number | null>;
-    formatter?: (value: number) => string;
+    formatter: ((value: number) => string) | undefined;
+    presentation: MetricPresentation | undefined;
   }
 
   const sanitizedRows: SanitizedMetricRow[] = useMemo(() => {
@@ -200,6 +205,7 @@ export function PerformanceQuadrantChart({
           label: row.label,
           values,
           formatter: row.formatter,
+          presentation: row.presentation,
         };
       })
       .filter((row): row is SanitizedMetricRow => row !== null);
@@ -293,9 +299,7 @@ export function PerformanceQuadrantChart({
     if (row?.formatter) {
       return row.formatter(value);
     }
-    if (row && /%/.test(row.label)) {
-      return `${value.toFixed(2)}%`;
-    }
+    if (row?.presentation) return formatMetricValue(value, row.presentation);
     return value.toFixed(2);
   };
 

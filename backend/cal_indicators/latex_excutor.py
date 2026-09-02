@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, List, Mapping, Optional, Set, Tuple
 
 try:
     import networkx as nx
@@ -22,6 +22,16 @@ class LatexParseError(Exception):
 
 class DAGBuildError(Exception):
     """指示 DAG 构建过程中发生的错误。"""
+
+
+@dataclass(frozen=True)
+class ExpressionPolicy:
+    """受限指标表达式的编译边界。"""
+
+    allowed_variables: Set[str]
+    function_arity: Mapping[str, int]
+    max_nodes: int = 128
+    max_depth: int = 20
 
 
 def _extract_braced(expr: str, start: int) -> Tuple[str, int]:
@@ -60,6 +70,16 @@ def _replace_sqrt(expr: str) -> str:
     return expr
 
 
+def _normalize_redundant_variable_styles(expr: str) -> str:
+    """折叠变量外层重复的 ``\\mathbf``，不放宽可执行表达式白名单。"""
+
+    for variable in (r"\mathbf{r}", r"\mathbf{\ell}"):
+        redundant = rf"\mathbf{{{variable}}}"
+        while redundant in expr:
+            expr = expr.replace(redundant, variable)
+    return expr
+
+
 class LatexExpressionParser:
     """将受限的 LaTeX 表达式转换为 Python 表达式字符串，再解析为 AST。"""
 
@@ -84,6 +104,7 @@ class LatexExpressionParser:
 
     def to_python(self, latex: str) -> str:
         expr = latex.strip()
+        expr = _normalize_redundant_variable_styles(expr)
         expr = expr.replace("\\left", "").replace("\\right", "")
         expr = expr.replace("\\,", "").replace("\\ ", "")
         expr = _replace_frac(expr)
@@ -125,11 +146,12 @@ class DAGNode:
 
 
 class DAGBuilder:
-    def __init__(self) -> None:
+    def __init__(self, policy: Optional[ExpressionPolicy] = None) -> None:
         self.nodes: Dict[int, DAGNode] = {}
         self.adjacency: Dict[int, List[int]] = {}
         self._id_gen = count()
         self._cache: Dict[Tuple[str, str], int] = {}
+        self.policy = policy
 
     def _record_edge(self, child: int, parent: int) -> None:
         self.adjacency.setdefault(child, [])
@@ -137,6 +159,8 @@ class DAGBuilder:
             self.adjacency[child].append(parent)
 
     def _next_id(self) -> int:
+        if self.policy and len(self.nodes) >= self.policy.max_nodes:
+            raise DAGBuildError(f"表达式节点数不能超过 {self.policy.max_nodes}")
         return next(self._id_gen)
 
     def add_expression(self, period: str, node: ast.AST) -> int:
@@ -145,12 +169,21 @@ class DAGBuilder:
     def _cache_key(self, period: str, node: ast.AST) -> Tuple[str, str]:
         return period, ast.dump(node)
 
-    def _build(self, node: ast.AST, period: str) -> int:
+    def _build(self, node: ast.AST, period: str, depth: int = 1) -> int:
+        if self.policy and depth > self.policy.max_depth:
+            raise DAGBuildError(f"表达式深度不能超过 {self.policy.max_depth}")
         key = self._cache_key(period, node)
         if key in self._cache:
             return self._cache[key]
 
         if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise DAGBuildError("仅允许有限数值常量")
+            try:
+                if not float("-inf") < float(node.value) < float("inf"):
+                    raise DAGBuildError("仅允许有限数值常量")
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise DAGBuildError("仅允许有限数值常量") from exc
             node_id = self._next_id()
             self.nodes[node_id] = DAGNode(
                 node_id=node_id,
@@ -163,6 +196,8 @@ class DAGBuilder:
             return node_id
 
         if isinstance(node, ast.Name):
+            if self.policy and node.id not in self.policy.allowed_variables:
+                raise DAGBuildError(f"未知变量: {node.id}")
             node_id = self._next_id()
             self.nodes[node_id] = DAGNode(
                 node_id=node_id,
@@ -175,7 +210,7 @@ class DAGBuilder:
             return node_id
 
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            operand_id = self._build(node.operand, period)
+            operand_id = self._build(node.operand, period, depth + 1)
             node_id = self._next_id()
             self.nodes[node_id] = DAGNode(
                 node_id=node_id,
@@ -190,8 +225,8 @@ class DAGBuilder:
             return node_id
 
         if isinstance(node, ast.BinOp):
-            left_id = self._build(node.left, period)
-            right_id = self._build(node.right, period)
+            left_id = self._build(node.left, period, depth + 1)
+            right_id = self._build(node.right, period, depth + 1)
             op_map = {
                 ast.Add: "add",
                 ast.Sub: "subtract",
@@ -219,7 +254,17 @@ class DAGBuilder:
 
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             func_name = node.func.id
-            arg_ids = [self._build(arg, period) for arg in node.args]
+            if node.keywords:
+                raise DAGBuildError("函数调用不允许关键字参数")
+            if self.policy:
+                expected = self.policy.function_arity.get(func_name)
+                if expected is None:
+                    raise DAGBuildError(f"未知函数: {func_name}")
+                if len(node.args) != expected:
+                    raise DAGBuildError(
+                        f"函数 {func_name} 需要 {expected} 个参数，实际为 {len(node.args)} 个"
+                    )
+            arg_ids = [self._build(arg, period, depth + 1) for arg in node.args]
             node_id = self._next_id()
             self.nodes[node_id] = DAGNode(
                 node_id=node_id,
@@ -267,11 +312,13 @@ class LatexExecutor:
             indicator_file: Optional[Path] = None,
             variable_file: Optional[Path] = None,
             version: Optional[str] = None,
+            profile_payload: Optional[Dict[str, object]] = None,
     ) -> None:
         base_dir = Path(__file__).resolve().parent
         self.indicator_path = indicator_file or (base_dir / "indicator_latex.json")
         self.variable_path = variable_file or (base_dir / "variable_latex.json")
         self.version = version
+        self.profile_payload = profile_payload
         self.available_versions: List[str] = []
         self.parser = LatexExpressionParser()
         self.builder: DAGBuilder = DAGBuilder()
@@ -282,8 +329,11 @@ class LatexExecutor:
         self._load()
 
     def _load(self) -> None:
-        with self.indicator_path.open("r", encoding="utf-8") as f:
-            raw_payload = json.load(f)
+        if self.profile_payload is not None:
+            raw_payload: object = self.profile_payload
+        else:
+            with self.indicator_path.open("r", encoding="utf-8") as f:
+                raw_payload = json.load(f)
 
         if not isinstance(raw_payload, dict):
             raise ValueError("indicator_latex.json 必须是 dict 格式。")
@@ -321,8 +371,8 @@ class LatexExecutor:
             for entry in var_payload.get("variables", []):
                 self.variables[entry["name"]] = entry
 
-    def build(self) -> None:
-        self.builder = DAGBuilder()
+    def build(self, policy: Optional[ExpressionPolicy] = None) -> None:
+        self.builder = DAGBuilder(policy=policy)
         self.roots = {}
         for descriptor in self.indicators:
             try:
@@ -352,20 +402,53 @@ class LatexExecutor:
         write_dot(subgraph, str(output_path))
 
     def topo_order_for_period(self, period: str) -> List[DAGNode]:
-        if nx is None:
-            raise RuntimeError("networkx 未安装，无法执行拓扑排序。")
-        graph = self.builder.to_networkx()
         if period not in self.roots:
             raise ValueError(f"未发现周期 {period} 的指标。")
-        selected: Set[int] = set()
-        for root_id in self.roots[period].values():
-            selected.add(root_id)
-            selected.update(nx.ancestors(graph, root_id))
-        subgraph = graph.subgraph(selected)
+        permanent: Set[int] = set()
+        temporary: Set[int] = set()
         order: List[DAGNode] = []
-        for node_id in nx.topological_sort(subgraph):
+
+        def visit(node_id: int) -> None:
+            if node_id in permanent:
+                return
+            if node_id in temporary:
+                raise DAGBuildError("指标表达式包含循环依赖")
+            temporary.add(node_id)
+            for input_id in self.builder.nodes[node_id].inputs:
+                visit(input_id)
+            temporary.remove(node_id)
+            permanent.add(node_id)
             order.append(self.builder.nodes[node_id])
+
+        for root_id in self.roots[period].values():
+            visit(root_id)
         return order
+
+    def graph_payload(self, period: str) -> Dict[str, object]:
+        """返回前端可直接消费的 DAG 节点、边和根节点。"""
+
+        order = self.topo_order_for_period(period)
+        selected = {node.node_id for node in order}
+        nodes = [
+            {
+                "id": node.node_id,
+                "label": node.label,
+                "kind": node.kind,
+                "period": node.period,
+            }
+            for node in order
+        ]
+        edges = [
+            {"source": input_id, "target": node.node_id}
+            for node in order
+            for input_id in node.inputs
+            if input_id in selected
+        ]
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "roots": dict(self.roots[period]),
+        }
 
 
 def main(version: str) -> None:

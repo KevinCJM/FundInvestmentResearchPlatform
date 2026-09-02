@@ -1,0 +1,756 @@
+{
+  "schema_version": "1.2",
+  "scope_mode": "subtree_only",
+  "routing_policy": {
+    "operational_list_owner": "docs/repo_map.json",
+    "route_to_module_field": "first_read_modules",
+    "expand_module_field": "expand_to_modules",
+    "operational_list_resolution": {
+      "apply_to_fields": [
+        "first_read_files",
+        "then_check_files",
+        "related_tests",
+        "related_configs",
+        "minimum_regression"
+      ],
+      "selected_modules_order": "first_read_modules_then_expand_to_modules_when_triggered",
+      "merge_strategy": "stable_order_union",
+      "dedupe": "exact_string",
+      "route_level_override": "forbidden"
+    },
+    "grounding_gate": {
+      "blocking_fact_status": [
+        "mixed",
+        "needs_code_confirmation"
+      ],
+      "required_action": "read_grounding_unsampled_paths_before_claim"
+    }
+  },
+  "rule_catalog": {
+    "expand_search": {
+      "read_reference_map_first": {
+        "action": "read_reference_map"
+      },
+      "read_frontend_backend_pair": {
+        "action": "expand_to_coupled_frontend_or_backend_modules_before_api_shape_changes"
+      },
+      "inspect_window_and_cache_contract": {
+        "action": "expand_to_strategy_backtest_and_allocation_ui_when_rebalance_or_cache_fields_change"
+      },
+      "inspect_data_schema_contract": {
+        "action": "expand_to_data_ingestion_config_when parquet columns or DATA_DIR behavior are relevant"
+      },
+      "inspect_dual_route_definitions": {
+        "action": "check backend/app.py inline endpoints and services routers before changing shared API paths"
+      },
+      "inspect_security_surface": {
+        "action": "check config and ingestion scripts before token, CORS, or external API changes"
+      }
+    },
+    "stop_and_verify": {
+      "run_minimum_regression": {
+        "action": "run_minimum_regression"
+      },
+      "run_backend_strategy_regression": {
+        "action": "run_strategy_backtest_window_pytest_subset"
+      },
+      "run_backend_analytics_regression": {
+        "action": "run_analytics_pytest_subset"
+      },
+      "run_frontend_build_when_deps_available": {
+        "action": "run_vitest_and_vite_build_after_node_dependencies_are_installed"
+      },
+      "validate_ai_routing": {
+        "action": "run_ai_routing_validate_and_route_task_smoke"
+      }
+    },
+    "fact_check": {
+      "read_reference_map_first": {
+        "action": "read_reference_map"
+      },
+      "read_unsampled_module_paths": {
+        "action": "read_grounding_unsampled_paths"
+      },
+      "verify_parquet_schema_or_tmp_fixture": {
+        "action": "verify data schema through docs, tests, or temporary parquet fixtures before runtime claims"
+      },
+      "verify_no_secret_values": {
+        "action": "do not reproduce token values; verify frontend-managed credentials stay in an ignored private local file and are never returned or logged"
+      },
+      "verify_api_payload_shape": {
+        "action": "compare frontend fetch payloads with backend Pydantic/request handling before editing"
+      },
+      "verify_restricted_formula_contract": {
+        "action": "verify AST whitelist, operator signatures, DAG limits, and finite scalar public output with runtime tests"
+      },
+      "verify_real_series_window_and_revision_lock": {
+        "action": "verify real parquet-only windows, null plus warning semantics, optimistic revisions, and plan-locked indicator history"
+      },
+      "verify_typed_context_and_portfolio_snapshot": {
+        "action": "verify nominal typed-v2 axes/context separation, strict common-date alignment, next-common-day weight effectiveness, and immutable snapshot fields"
+      },
+      "verify_typed_21_registry_and_availability": {
+        "action": "verify DSL/operator/variable/data/context version locks, nominal axes, semantic dimensions, price bases, bool-mask signatures, pure-mathematics public operators, typed 2.0 compatibility, dependency-driven multi-target field availability, and fail-closed target/period/as-of checks"
+      },
+      "verify_locked_metric_presentation_and_unavailable_states": {
+        "action": "verify locked MetricPresentation metadata drives scale, precision, unit, direction, null status, ranking contribution, and browser preference behavior, while structured input requirements explain runtime field availability across modules"
+      },
+      "verify_generation_bound_batch_arrays_and_worker_cleanup": {
+        "action": "verify dependency-grouped scans, generation-bound data and window caches, shared descriptor transport, single-owner cleanup, worker retry, timeout, and CPU admission behavior"
+      },
+      "verify_fused_kernel_parity_and_paged_result_contract": {
+        "action": "verify all fused built-in values and statuses against typed runtime, strict ranking parity, execution metadata, paged result retention, 410 expiration, and busy Retry-After contracts"
+      },
+      "verify_market_snapshot_and_dashboard_boundaries": {
+        "action": "verify active-manifest resolution, full-snapshot validation before activation, request-path small-table reads, distinct ETF/fund date semantics, and null-not-zero metric handling"
+      }
+    }
+  },
+  "routes": [
+    {
+      "id": "R01",
+      "task_type": "general_project_orientation_or_cross_cutting_change",
+      "match_keywords": [
+        "project",
+        "repo",
+        "architecture",
+        "README",
+        "overview",
+        "run",
+        "test",
+        "build",
+        "cross-cutting",
+        "全局",
+        "项目",
+        "架构"
+      ],
+      "negative_keywords": [
+        "repo_map",
+        "task_routes",
+        "pitfalls",
+        "AI routing",
+        "Hermes"
+      ],
+      "route_priority": 10,
+      "first_read_modules": [
+        "project_docs"
+      ],
+      "expand_to_modules": [
+        "backend_api_shell",
+        "frontend_app_shell",
+        "data_ingestion_config",
+        "market_data_snapshot_lifecycle",
+        "backend_instrument_analytics"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P05"
+      ],
+      "expand_search_codes": [
+        "read_reference_map_first"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "read_unsampled_module_paths"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "orientation"
+      ]
+    },
+    {
+      "id": "R02",
+      "task_type": "ai_routing_initialization_or_maintenance",
+      "match_keywords": [
+        "AGENTS.md",
+        "repo_map",
+        "task_routes",
+        "pitfalls",
+        "AI routing",
+        "Hermes",
+        "evolve_ai_routing",
+        "validate_ai_routing",
+        "routing memory",
+        "routing files",
+        "路由层",
+        "Hermes 结构"
+      ],
+      "negative_keywords": [],
+      "route_priority": 100,
+      "first_read_modules": [
+        "ai_routing_files",
+        "project_docs"
+      ],
+      "expand_to_modules": [],
+      "pitfall_ids": [
+        "P01",
+        "P02"
+      ],
+      "expand_search_codes": [
+        "read_reference_map_first"
+      ],
+      "stop_and_verify_codes": [
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "read_reference_map_first"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "routing_memory_coverage_check"
+      ]
+    },
+    {
+      "id": "R10",
+      "task_type": "backend_fastapi_entrypoint_static_hosting_or_shared_api",
+      "match_keywords": [
+        "FastAPI",
+        "uvicorn",
+        "CORS",
+        "static",
+        "SPA",
+        "health",
+        "backend/app.py",
+        "/api",
+        "router",
+        "api",
+        "后端",
+        "接口"
+      ],
+      "negative_keywords": [
+        "frontend only",
+        "CSS only"
+      ],
+      "route_priority": 60,
+      "first_read_modules": [
+        "backend_api_shell"
+      ],
+      "expand_to_modules": [
+        "backend_strategy_routes",
+        "backend_analytics_routes",
+        "backend_etf_product_api",
+        "backend_instrument_analytics",
+        "market_data_snapshot_lifecycle",
+        "data_ingestion_config",
+        "frontend_app_shell"
+      ],
+      "pitfall_ids": [
+        "P03",
+        "P05",
+        "P07"
+      ],
+      "expand_search_codes": [
+        "inspect_dual_route_definitions",
+        "read_frontend_backend_pair"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_parquet_schema_or_tmp_fixture"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "backend"
+      ]
+    },
+    {
+      "id": "R20",
+      "task_type": "strategy_weights_rebalance_schedule_or_backtest",
+      "match_keywords": [
+        "strategy",
+        "compute-weights",
+        "compute-schedule-weights",
+        "backtest",
+        "rebalance",
+        "rollingN",
+        "window_mode",
+        "data_len",
+        "risk_budget",
+        "target",
+        "precomputed",
+        "cache_key",
+        "markers",
+        "权重",
+        "调仓",
+        "回测",
+        "策略"
+      ],
+      "negative_keywords": [
+        "product detail only",
+        "ETF product list only"
+      ],
+      "route_priority": 90,
+      "first_read_modules": [
+        "backend_strategy_routes",
+        "backend_quant_core"
+      ],
+      "expand_to_modules": [
+        "frontend_allocation_workflows",
+        "data_ingestion_config"
+      ],
+      "pitfall_ids": [
+        "P04",
+        "P08"
+      ],
+      "expand_search_codes": [
+        "inspect_window_and_cache_contract",
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_backend_strategy_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_parquet_schema_or_tmp_fixture"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "backend_strategy"
+      ]
+    },
+    {
+      "id": "R30",
+      "task_type": "asset_class_fit_rolling_corr_or_efficient_frontier",
+      "match_keywords": [
+        "fit-classes",
+        "rolling-corr",
+        "rolling-corr-classes",
+        "efficient-frontier",
+        "frontier",
+        "ClassSpec",
+        "ETFSpec",
+        "compute_classes_nav",
+        "compute_class_consistency",
+        "optimizer",
+        "大类",
+        "相关",
+        "效率前沿",
+        "资产配置"
+      ],
+      "negative_keywords": [
+        "product detail only"
+      ],
+      "route_priority": 80,
+      "first_read_modules": [
+        "backend_analytics_routes",
+        "backend_quant_core"
+      ],
+      "expand_to_modules": [
+        "frontend_allocation_workflows",
+        "data_ingestion_config"
+      ],
+      "pitfall_ids": [
+        "P05"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_backend_analytics_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_parquet_schema_or_tmp_fixture"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "backend_analytics"
+      ]
+    },
+    {
+      "id": "R40",
+      "task_type": "etf_public_fund_dashboard_product_research_or_detail",
+      "match_keywords": [
+        "ETF",
+        "etf",
+        "product",
+        "products",
+        "analytics",
+        "list_trend",
+        "ProductResearch",
+        "ProductDetail",
+        "ProductCompare",
+        "Dashboard",
+        "/api/instruments/analytics",
+        "instrument_metrics_snapshot",
+        "etf_info_df",
+        "synthetic",
+        "产品",
+        "基金",
+        "场外公募",
+        "全景驾驶舱",
+        "看板",
+        "详情",
+        "对比"
+      ],
+      "negative_keywords": [
+        "strategy backtest",
+        "rebalance only"
+      ],
+      "route_priority": 75,
+      "first_read_modules": [
+        "backend_instrument_analytics",
+        "backend_etf_product_api",
+        "frontend_etf_research_pages"
+      ],
+      "expand_to_modules": [
+        "market_data_snapshot_lifecycle",
+        "data_ingestion_config",
+        "frontend_allocation_workflows"
+      ],
+      "pitfall_ids": [
+        "P05",
+        "P07",
+        "P10",
+        "P11",
+        "P15",
+        "P16"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression",
+        "run_frontend_build_when_deps_available"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_parquet_schema_or_tmp_fixture",
+        "verify_market_snapshot_and_dashboard_boundaries"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "etf_public_fund_dashboard_and_product_flow"
+      ]
+    },
+    {
+      "id": "R50",
+      "task_type": "frontend_app_navigation_vite_or_shared_ui",
+      "match_keywords": [
+        "frontend",
+        "React",
+        "Vite",
+        "Tailwind",
+        "route",
+        "navigation",
+        "Header",
+        "App.tsx",
+        "package.json",
+        "Vitest",
+        "页面",
+        "前端",
+        "导航"
+      ],
+      "negative_keywords": [
+        "backend only",
+        "API only"
+      ],
+      "route_priority": 65,
+      "first_read_modules": [
+        "frontend_app_shell"
+      ],
+      "expand_to_modules": [
+        "frontend_etf_research_pages",
+        "frontend_allocation_workflows",
+        "backend_api_shell",
+        "backend_instrument_analytics"
+      ],
+      "pitfall_ids": [
+        "P07"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair"
+      ],
+      "stop_and_verify_codes": [
+        "run_frontend_build_when_deps_available"
+      ],
+      "fact_check_codes": [
+        "read_unsampled_module_paths"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "frontend"
+      ]
+    },
+    {
+      "id": "R60",
+      "task_type": "frontend_manual_construction_allocation_strategy_ui",
+      "match_keywords": [
+        "ManualConstruction",
+        "ClassAllocation",
+        "EvaluationPlan",
+        "save-allocation",
+        "load-allocation",
+        "risk-parity",
+        "strategy UI",
+        "backtest chart",
+        "efficient frontier UI",
+        "手工构建",
+        "配置",
+        "组合",
+        "策略页面"
+      ],
+      "negative_keywords": [
+        "ETF dashboard only",
+        "product detail only"
+      ],
+      "route_priority": 85,
+      "first_read_modules": [
+        "frontend_allocation_workflows"
+      ],
+      "expand_to_modules": [
+        "backend_analytics_routes",
+        "backend_strategy_routes",
+        "backend_etf_product_api",
+        "data_ingestion_config"
+      ],
+      "pitfall_ids": [
+        "P04",
+        "P07",
+        "P08"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_window_and_cache_contract",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_frontend_build_when_deps_available",
+        "run_backend_strategy_regression",
+        "run_backend_analytics_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_parquet_schema_or_tmp_fixture"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "frontend_allocation"
+      ]
+    },
+    {
+      "id": "R75",
+      "task_type": "portfolio_research_target_snapshot_or_holding_diagnosis",
+      "match_keywords": [
+        "PortfolioConstruction",
+        "HoldingDiagnosis",
+        "research-targets",
+        "portfolio-runs",
+        "portfolio snapshot",
+        "strict_intersection",
+        "holding diagnosis",
+        "组合研究",
+        "组合构建",
+        "研究对象",
+        "运行快照",
+        "持仓诊断",
+        "权重路径",
+        "情景分析"
+      ],
+      "negative_keywords": [
+        "product ranking only",
+        "legacy class allocation only"
+      ],
+      "route_priority": 95,
+      "first_read_modules": [
+        "backend_portfolio_research",
+        "frontend_portfolio_research"
+      ],
+      "expand_to_modules": [
+        "backend_typed_indicator_v2",
+        "backend_custom_indicator_service",
+        "backend_etf_product_api",
+        "data_ingestion_config",
+        "project_docs"
+      ],
+      "pitfall_ids": [
+        "P07",
+        "P13",
+        "P14"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_frontend_build_when_deps_available",
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_parquet_schema_or_tmp_fixture",
+        "verify_typed_context_and_portfolio_snapshot"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "portfolio_research",
+        "immutable_snapshot"
+      ]
+    },
+    {
+      "id": "R70",
+      "task_type": "indicator_dsl_latex_or_numba_finance_math",
+      "match_keywords": [
+        "indicator",
+        "cal_indicators",
+        "numba",
+        "finance_math",
+        "latex",
+        "DAG",
+        "DSL",
+        "IndicatorRuntime",
+        "custom-indicators",
+        "indicator-studio",
+        "evaluation plan",
+        "ranking",
+        "batch engine",
+        "process pool",
+        "shared memory",
+        "mmap",
+        "PyArrow",
+        "prange",
+        "performance",
+        "evaluation-plan-runs",
+        "typed-v2",
+        "typed-v2.1",
+        "ValueType",
+        "semantic_dimension",
+        "price_basis",
+        "mask",
+        "variable_registry",
+        "variable availability",
+        "Tushare variables",
+        "guided formula builder",
+        "compose_expression",
+        "infer_expression",
+        "portfolio indicator",
+        "MetricPresentation",
+        "指标展示协议",
+        "指标选择器",
+        "指标",
+        "算子",
+        "公式",
+        "评价方案",
+        "排名"
+      ],
+      "negative_keywords": [],
+      "route_priority": 70,
+      "first_read_modules": [
+        "backend_indicator_runtime",
+        "backend_typed_indicator_v2",
+        "backend_custom_indicator_service"
+      ],
+      "expand_to_modules": [
+        "backend_portfolio_research",
+        "frontend_indicator_studio",
+        "frontend_metric_presentation",
+        "market_data_snapshot_lifecycle",
+        "frontend_etf_research_pages",
+        "frontend_allocation_workflows",
+        "frontend_portfolio_research",
+        "backend_etf_product_api",
+        "project_docs"
+      ],
+      "pitfall_ids": [
+        "P06",
+        "P12",
+        "P13",
+        "P14",
+        "P17",
+        "P18"
+      ],
+      "expand_search_codes": [
+        "read_reference_map_first"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "verify_restricted_formula_contract",
+        "verify_typed_21_registry_and_availability",
+        "verify_real_series_window_and_revision_lock",
+        "verify_typed_context_and_portfolio_snapshot",
+        "verify_locked_metric_presentation_and_unavailable_states",
+        "verify_generation_bound_batch_arrays_and_worker_cleanup",
+        "verify_fused_kernel_parity_and_paged_result_contract"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "indicators",
+        "typed_2_1"
+      ]
+    },
+    {
+      "id": "R80",
+      "task_type": "data_ingestion_refresh_versioned_snapshot_or_parquet_schema",
+      "match_keywords": [
+        "data",
+        "parquet",
+        "Tushare",
+        "trade_day_df",
+        "asset_nv",
+        "etf_daily_df",
+        "etf_info_df",
+        "DATA_DIR",
+        "TUSHARE_DATA_DIR",
+        "TUSHARE_TOKEN",
+        ".tushare_token",
+        "/api/data/token",
+        "tushare_active",
+        "instrument_metrics_snapshot",
+        "data refresh",
+        ".env",
+        "config.py",
+        "数据",
+        "采集",
+        "行情",
+        "增量",
+        "全量",
+        "快照",
+        "令牌"
+      ],
+      "negative_keywords": [],
+      "route_priority": 80,
+      "first_read_modules": [
+        "data_ingestion_config"
+      ],
+      "expand_to_modules": [
+        "backend_instrument_analytics",
+        "backend_quant_core",
+        "backend_etf_product_api",
+        "backend_analytics_routes",
+        "backend_strategy_routes"
+      ],
+      "pitfall_ids": [
+        "P05",
+        "P09",
+        "P11",
+        "P15",
+        "P16"
+      ],
+      "expand_search_codes": [
+        "inspect_data_schema_contract",
+        "inspect_security_surface"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "verify_parquet_schema_or_tmp_fixture",
+        "verify_no_secret_values",
+        "verify_market_snapshot_and_dashboard_boundaries"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "data_config"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1097 @@
+{
+  "schema_version": "1.1",
+  "scope_mode": "subtree_only",
+  "pitfalls": [
+    {
+      "id": "P01",
+      "title": "routing_facts_need_runtime_grounding_before_claims",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "over_learning_from_static_routes",
+        "mixed_grounding_requires_followup"
+      ],
+      "symptoms": [
+        "A module is marked mixed because code was read but its runtime smoke was not run.",
+        "Future agents treat static route facts as proof that UI or external integration works."
+      ],
+      "trigger_actions": [
+        "use Hermes routes for a task touching mixed modules",
+        "promote implementation facts after only reading documentation",
+        "edit frontend or data-ingestion behavior without running the listed smoke commands"
+      ],
+      "related_paths": [
+        "docs/repo_map.json",
+        "docs/task_routes.json",
+        "docs/pitfalls.json"
+      ],
+      "affected_modules": [
+        "project_docs",
+        "backend_etf_product_api",
+        "backend_indicator_runtime",
+        "frontend_app_shell",
+        "frontend_etf_research_pages",
+        "frontend_allocation_workflows",
+        "data_ingestion_config",
+        "ai_routing_files"
+      ],
+      "blast_radius": [
+        "future task routing",
+        "agent confidence calibration"
+      ],
+      "check_before_edit": [
+        "Read grounding.unsampled_paths for selected modules.",
+        "Run the module minimum_regression command before claiming runtime behavior.",
+        "Keep new facts in repo_map/task_routes/pitfalls, not AGENTS.md."
+      ],
+      "safe_observation_methods": [
+        "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id <id> --mode context",
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+      ]
+    },
+    {
+      "id": "P02",
+      "title": "routing_files_are_machine_owned_contracts",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "routing_memory_drift",
+        "routing_only_scope_leak"
+      ],
+      "symptoms": [
+        "task_routes duplicates repo_map operational file lists.",
+        "routing-only changes accidentally include business code.",
+        "AGENTS.md is used as a dumping ground for project facts instead of protocol."
+      ],
+      "trigger_actions": [
+        "edit AGENTS.md or docs routing JSON",
+        "prepare routing-only commit",
+        "change project-local AI Hermes scripts"
+      ],
+      "related_paths": [
+        "AGENTS.md",
+        "docs/repo_map.json",
+        "docs/task_routes.json",
+        "docs/pitfalls.json",
+        "docs/ai_routing_evolution_policy.json",
+        "skills/ai-hermes-self-evolve/README.md",
+        "skills/ai-hermes-self-evolve/SKILL.md",
+        "skills/ai-hermes-self-evolve/agents/openai.yaml",
+        "skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/route_task.py",
+        "skills/ai-hermes-routing-init/README.md",
+        "skills/ai-hermes-routing-init/SKILL.md",
+        "skills/ai-hermes-routing-init/agents/openai.yaml",
+        "skills/ai-hermes-routing-init/scripts/init_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/evolve_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/validate_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/route_task.py"
+      ],
+      "affected_modules": [
+        "ai_routing_files"
+      ],
+      "blast_radius": [
+        "AI Hermes routing",
+        "future agent task narrowing"
+      ],
+      "check_before_edit": [
+        "Keep routing facts in JSON owners.",
+        "Run evolve and validate after routing changes.",
+        "Use routing-only changed-file lists for routing-only work."
+      ],
+      "safe_observation_methods": [
+        "python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --routing-only --changed-file <path> --json",
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+      ]
+    },
+    {
+      "id": "P03",
+      "title": "backend_app_contains_legacy_inline_routes_and_includes_modular_routers",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "duplicate_api_implementation",
+        "route_shadowing",
+        "large_file_feature_boundary"
+      ],
+      "symptoms": [
+        "A change is made only in services/strategy_routes.py or services/analytics_routes.py while backend/app.py still has older inline endpoints with the same paths.",
+        "Tests import service routers directly, but integrated uvicorn behavior also depends on backend/app.py include order and exception swallowing.",
+        "A route appears to work in a unit test but differs when served through the app shell."
+      ],
+      "trigger_actions": [
+        "change any /api/strategy endpoint",
+        "change /api/fit-classes, /api/rolling-corr, or /api/efficient-frontier",
+        "change app.include_router handling or FastAPI app setup"
+      ],
+      "related_paths": [
+        "backend/app.py",
+        "backend/services/strategy_routes.py",
+        "backend/services/analytics_routes.py",
+        "backend/tests/test_strategy_api.py",
+        "backend/tests/test_analytics_routes.py"
+      ],
+      "affected_modules": [
+        "backend_api_shell",
+        "backend_strategy_routes",
+        "backend_analytics_routes",
+        "backend_etf_product_api"
+      ],
+      "blast_radius": [
+        "all /api route behavior",
+        "local integrated demo",
+        "frontend fetch contracts"
+      ],
+      "check_before_edit": [
+        "Search backend/app.py and services routers for the same path before changing endpoint behavior.",
+        "Prefer the modular router as the behavioral owner when tests import it directly, but verify app-level registration.",
+        "Run service-router tests and at least py_compile for backend/app.py."
+      ],
+      "safe_observation_methods": [
+        "rg -n \"@app|@router|/api/strategy|/api/fit-classes|/api/efficient-frontier\" backend/app.py backend/services",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+      ]
+    },
+    {
+      "id": "P04",
+      "title": "rebalance_window_contract_is_shared_across_api_backtest_and_ui",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "window_mode_regression",
+        "marker_alignment_regression",
+        "insufficient_sample_handling"
+      ],
+      "symptoms": [
+        "rollingN requests silently use too few samples or start before enough history exists.",
+        "Backtest markers no longer align with returned series dates.",
+        "Static strategy behavior changes when a model window is invalid."
+      ],
+      "trigger_actions": [
+        "edit slice_fit_data",
+        "edit ensure_valid_rebalance_window",
+        "edit gen_rebalance_dates",
+        "edit compute-schedule-weights or backtest handling",
+        "change ClassAllocation window_mode/data_len payloads"
+      ],
+      "related_paths": [
+        "backend/backtest_engine.py",
+        "backend/services/strategy_routes.py",
+        "backend/tests/test_window_slice.py",
+        "backend/tests/test_rebalance_window.py",
+        "backend/tests/test_backtest_output.py",
+        "frontend/src/pages/ClassAllocation.tsx"
+      ],
+      "affected_modules": [
+        "backend_quant_core",
+        "backend_strategy_routes",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "dynamic strategy weights",
+        "schedule cache dates",
+        "backtest markers",
+        "frontend date warnings"
+      ],
+      "check_before_edit": [
+        "Preserve all mode as full history to the target date.",
+        "Preserve rollingN as the latest data_len trading rows with a minimum of two rows.",
+        "Keep first valid rebalance date aligned with markers and returned series.",
+        "Run the window, rebalance, backtest, and strategy API tests."
+      ],
+      "safe_observation_methods": [
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py -q"
+      ]
+    },
+    {
+      "id": "P05",
+      "title": "local_parquet_data_is_required_but_not_present_in_bootstrap_checkout",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "missing_local_data",
+        "schema_drift",
+        "test_fixture_required"
+      ],
+      "symptoms": [
+        "Data-backed APIs return 400 or 404 when parquet files are absent.",
+        "A code change assumes data/ exists in every checkout.",
+        "Trading-calendar behavior changes because the SSE calendar parquet is unavailable or has different columns."
+      ],
+      "trigger_actions": [
+        "change DATA_DIR behavior",
+        "change parquet column names",
+        "change ETF ingestion scripts",
+        "change strategy, analytics, or product APIs that read parquet data"
+      ],
+      "related_paths": [
+        "config.py",
+        "T01_get_data.py",
+        "backend/app.py",
+        "backend/fit.py",
+        "backend/trading_calendar.py",
+        "backend/services/analytics_routes.py",
+        "backend/services/strategy_routes.py",
+        "docs/requirements.md",
+        "backend/tests/test_strategy_api.py",
+        "backend/tests/test_analytics_routes.py"
+      ],
+      "affected_modules": [
+        "backend_api_shell",
+        "backend_quant_core",
+        "backend_strategy_routes",
+        "backend_analytics_routes",
+        "backend_etf_product_api",
+        "data_ingestion_config"
+      ],
+      "blast_radius": [
+        "ETF universe search and analytics",
+        "class NAV fitting",
+        "efficient frontier",
+        "strategy backtests",
+        "rebalance calendar"
+      ],
+      "check_before_edit": [
+        "Use tmp parquet fixtures or monkeypatch DATA_DIR in tests; do not require network calls.",
+        "Keep documented schemas aligned with readers in backend/app.py, fit.py, and trading_calendar.py.",
+        "Do not add large or sensitive local data files as routing references unless they are intentionally tracked artifacts."
+      ],
+      "safe_observation_methods": [
+        "rg -n \"read_parquet|to_parquet|DATA_DIR|trade_day_df|asset_nv|etf_info_df|etf_daily_df\" backend config.py T01_get_data.py docs/requirements.md",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+      ]
+    },
+    {
+      "id": "P06",
+      "title": "indicator_runtime_must_preserve_restricted_ast_and_scalar_output_contracts",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "unsafe_expression_escape",
+        "operator_signature_drift",
+        "non_scalar_public_result",
+        "dag_limit_bypass"
+      ],
+      "symptoms": [
+        "A parser or operator change admits attribute access, subscripting, keywords, imports, or other non-whitelisted AST nodes.",
+        "Generated operator metadata diverges from callable arity or input/output types.",
+        "A public indicator returns an array or tuple instead of a finite scalar, or bypasses node/depth limits."
+      ],
+      "trigger_actions": [
+        "edit cal_indicators runtime",
+        "edit LaTeX executor",
+        "change the controlled operator registry",
+        "change expression validation, topology, or final result handling"
+      ],
+      "related_paths": [
+        "backend/cal_indicators/indicator_runtime.py",
+        "backend/cal_indicators/generate_math_operator_dsl.py",
+        "backend/cal_indicators/latex_excutor.py",
+        "backend/cal_indicators/numba_finance_math.py",
+        "backend/tests/test_numba_finance_math.py",
+        "backend/tests/test_numba_finance_indicators.py"
+      ],
+      "affected_modules": [
+        "backend_indicator_runtime",
+        "backend_custom_indicator_service"
+      ],
+      "blast_radius": [
+        "indicator computation",
+        "math operator tests",
+        "LaTeX DAG execution"
+      ],
+      "check_before_edit": [
+        "Keep runtime definitions in memory and treat generated DSL JSON as optional metadata only.",
+        "Run malicious/invalid AST, operator arity/type, DAG limit, and finite scalar-output contract tests.",
+        "Keep NetworkX optional and do not make execution topology depend on DOT export support."
+      ],
+      "safe_observation_methods": [
+        "cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q",
+        "rg -n \"ExpressionPolicy|allowed_variables|allowed_functions|max_nodes|max_depth|finite scalar\" backend/cal_indicators backend/tests"
+      ]
+    },
+    {
+      "id": "P07",
+      "title": "frontend_pages_are_tightly_coupled_to_backend_payload_and_browser_rendering_contracts",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "api_shape_coupling",
+        "responsive_state_drift",
+        "chart_accessibility_regression"
+      ],
+      "symptoms": [
+        "Frontend pages have many direct fetch calls whose payloads must match backend route models.",
+        "Vitest can cover state and API flows while ECharts, KaTeX, responsive layout, and keyboard focus still require browser acceptance.",
+        "A route or mobile navigation change can create duplicate or inaccessible links."
+      ],
+      "trigger_actions": [
+        "edit frontend pages",
+        "edit fetch payloads or response interfaces",
+        "edit Vite proxy or package dependencies",
+        "change backend response shapes used by frontend",
+        "edit responsive navigation, ECharts, KaTeX, or accessible fallbacks"
+      ],
+      "related_paths": [
+        "frontend/package.json",
+        "frontend/package-lock.json",
+        "frontend/vite.config.ts",
+        "frontend/src/App.tsx",
+        "frontend/src/pages/Dashboard.tsx",
+        "frontend/src/components/dashboard/useInstrumentDashboard.ts",
+        "frontend/src/components/dashboard/useDataRefresh.ts",
+        "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+        "frontend/src/pages/ProductResearch.tsx",
+        "frontend/src/pages/ProductDetail.tsx",
+        "frontend/src/pages/ProductCompare.tsx",
+        "frontend/src/pages/IndicatorStudio.tsx",
+        "frontend/src/services/customIndicators.ts",
+        "frontend/src/pages/ManualConstruction.tsx",
+        "frontend/src/pages/ClassAllocation.tsx",
+        "backend/app.py",
+        "backend/services/instrument_analytics.py",
+        "backend/services/instrument_routes.py",
+        "backend/services/data_routes.py",
+        "backend/services/analytics_routes.py",
+        "backend/services/strategy_routes.py"
+      ],
+      "affected_modules": [
+        "frontend_app_shell",
+        "frontend_indicator_studio",
+        "frontend_etf_research_pages",
+        "frontend_allocation_workflows",
+        "backend_api_shell",
+        "backend_instrument_analytics",
+        "backend_etf_product_api",
+        "backend_strategy_routes",
+        "backend_analytics_routes"
+      ],
+      "blast_radius": [
+        "all frontend routes",
+        "API payload compatibility",
+        "chart rendering and accessible alternatives"
+      ],
+      "check_before_edit": [
+        "Run full Vitest and Vite build after modifying routes, payloads, or dependencies.",
+        "Compare each changed fetch payload with the backend request model or query parameters.",
+        "Keep chart data available as text/table and use browser checks at 320px, 768px, and 1440px when available."
+      ],
+      "safe_observation_methods": [
+        "rg -n \"fetch\\(|/api/\" frontend/src backend/app.py backend/services",
+        "npm run test --prefix frontend -- --run",
+        "npm run build --prefix frontend"
+      ]
+    },
+    {
+      "id": "P08",
+      "title": "schedule_cache_is_in_memory_and_asset_order_sensitive",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "cache_key_mismatch",
+        "asset_order_mismatch",
+        "process_local_cache"
+      ],
+      "symptoms": [
+        "Backtest recomputes weights even though a schedule was just computed.",
+        "Cached precomputed weights are rejected because asset_names order differs from nav_wide columns.",
+        "A cache hit works in the same process but is unavailable after server restart or worker change."
+      ],
+      "trigger_actions": [
+        "edit _schedule_cache_key or _normalize_for_cache",
+        "edit compute-schedule-weights response",
+        "edit backtest precomputed handling",
+        "change frontend buildSchedulePayload or stableStringify"
+      ],
+      "related_paths": [
+        "backend/services/strategy_routes.py",
+        "backend/backtest_engine.py",
+        "backend/tests/test_strategy_api.py",
+        "frontend/src/pages/ClassAllocation.tsx",
+        "docs/weight_reuse_task_plan.md"
+      ],
+      "affected_modules": [
+        "backend_strategy_routes",
+        "backend_quant_core",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "dynamic rebalance latency",
+        "backtest correctness",
+        "frontend schedule markers"
+      ],
+      "check_before_edit": [
+        "Preserve canonical JSON normalization for cache keys.",
+        "Verify asset_names equality before reusing cached weights.",
+        "Keep tests for cache hit skipping recomputation and cached/uncached result parity."
+      ],
+      "safe_observation_methods": [
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py -q",
+        "rg -n \"cache_key|precomputed|_schedule_cache|asset_names|buildSchedulePayload\" backend frontend/src/pages/ClassAllocation.tsx"
+      ]
+    },
+    {
+      "id": "P09",
+  "title": "frontend_managed_external_api_tokens_must_remain_local_private_and_redacted",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "secret_exposure",
+        "external_api_token",
+        "config_drift"
+      ],
+      "symptoms": [
+        "A data ingestion script contains a hardcoded third-party API token value.",
+    "A future agent quotes token values in summaries, logs, or routing memory.",
+      "A Token configuration endpoint returns the submitted value or persists it in task state.",
+      "Tushare integration reads the legacy process environment instead of the frontend-managed local credential.",
+      "Calling tushare.set_token writes an extra tk.csv credential file in the user's home directory."
+      ],
+      "trigger_actions": [
+        "edit data ingestion scripts",
+        "summarize config or token handling",
+        "add logs around external API calls",
+        "prepare commits touching data scripts"
+      ],
+      "related_paths": [
+        "T01_get_data.py",
+        "config.py",
+        "backend/services/data_refresh.py",
+    "backend/services/data_routes.py",
+    "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+    "frontend/src/components/dashboard/useDataRefresh.ts",
+        "AGENTS.md"
+      ],
+      "affected_modules": [
+        "data_ingestion_config"
+      ],
+      "blast_radius": [
+        "secret leakage",
+        "external account abuse",
+        "repository hygiene"
+      ],
+      "check_before_edit": [
+        "Do not copy or quote token literal values.",
+    "Persist the frontend-supplied Token only in the ignored data/.tushare_token file with 0600 permissions and atomic replacement.",
+      "Never return the Token, put it in command arguments or persisted job state, or allow changes while the refresh lock is held.",
+      "Keep config.require_tushare_token on the same local credential file and explicitly ignore legacy TUSHARE_TOKEN environment values.",
+      "Pass the frontend-managed Token directly to tushare.pro_api(token); do not call tushare.set_token or create a second home-directory credential file."
+      ],
+      "safe_observation_methods": [
+    "rg -n \"TOKEN|token|TUSHARE\" config.py T01_get_data.py backend/services/data_refresh.py backend/services/data_routes.py frontend/src/components/dashboard",
+    "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py -q",
+    "npm run test --prefix frontend -- --run src/App.test.tsx src/components/dashboard/useDataRefresh.test.tsx"
+      ]
+    },
+    {
+      "id": "P10",
+      "title": "legacy_etf_detail_endpoint_still_has_a_synthetic_price_series_fallback",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "synthetic_data_misread_as_market_data",
+        "today_dependent_output",
+        "chart_contract"
+      ],
+      "symptoms": [
+        "A new caller uses legacy /api/etf/products/{product_id} and receives plausible synthetic prices when no real series is loaded.",
+        "Legacy endpoint output changes over time because synthetic dates are generated to the current business day.",
+        "The active ProductDetail and ProductCompare flows regress from /api/instruments/products back to the legacy endpoint."
+      ],
+      "trigger_actions": [
+        "edit /api/etf/products/{product_id}",
+        "edit ProductDetail or ProductCompare data-loading logic",
+        "replace synthetic fallback with real candle parquet data",
+        "change ETF product fields or date handling"
+      ],
+      "related_paths": [
+        "backend/app.py",
+        "backend/services/instrument_routes.py",
+        "backend/custom_indicators/series_provider.py",
+        "frontend/src/pages/ProductDetail.tsx",
+        "frontend/src/pages/ProductCompare.tsx",
+        "docs/requirements.md"
+      ],
+      "affected_modules": [
+        "backend_etf_product_api",
+        "frontend_etf_research_pages"
+      ],
+      "blast_radius": [
+        "product detail charts",
+        "product comparison analytics",
+        "user interpretation of ETF price history"
+      ],
+      "check_before_edit": [
+        "Keep active research pages on /api/instruments/products so missing data is empty instead of synthetic.",
+        "Verify chart code accepts the unified real-series response shape after backend changes.",
+        "Cover both ETF and public-fund detail series plus missing-parquet behavior with tmp fixtures."
+      ],
+      "safe_observation_methods": [
+        "rg -n \"_generate_synthetic_price_series|/api/etf/products|/api/instruments/products\" backend/app.py frontend/src/pages",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q"
+      ]
+    },
+    {
+      "id": "P11",
+      "title": "cli_and_web_refresh_share_a_filesystem_lock_and_atomic_promotion_contract",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "nonshared_filesystem_duplicate_jobs",
+        "browser_triggered_writes",
+        "unbounded_subprocess_output",
+        "full_refresh_partial_exposure",
+      "snapshot_failure_duplicate_fetch",
+      "incremental_overlap_regression",
+      "incremental_date_schema_drift",
+      "parallel_refresh_rate_limit_or_concurrent_write",
+      "unchanged_incremental_rewrites_full_history"
+      ],
+      "symptoms": [
+        "CLI and Web jobs run simultaneously because they do not use the same lock file on the same local filesystem.",
+        "A public production deployment exposes a write endpoint without an explicit enable decision.",
+        "Full-refresh files become visible before read-only validation and atomic manifest activation complete.",
+      "A successful Tushare fetch is repeated because local snapshot post-processing failed.",
+      "Late or revised observations are skipped because incremental overlap rows do not replace matching stored keys.",
+      "Incremental merge mixes string or integer stored dates with Timestamp values and Arrow conversion fails before schema alignment.",
+      "Independent worker limiters or worker-side Parquet writes exceed the account quota or expose partially merged data.",
+      "An empty or identical incremental window rewrites a multi-gigabyte Parquet file and rebuilds the complete analytics snapshot even though no observable data changed."
+      ],
+      "trigger_actions": [
+        "enable DATA_REFRESH_ENABLED in production",
+        "change refresh lock, persisted state, heartbeat, subprocess logging, or timeout behavior",
+      "change full-refresh staging, validation, or manifest activation",
+      "change date overlap, merge precedence, checkpoint, empty response, or atomic write behavior",
+      "change refresh worker count, request frequency, or date/code thread-pool scheduling"
+      ],
+      "related_paths": [
+        "T01_get_data.py",
+        "backend/services/refresh_runtime.py",
+        "backend/services/data_refresh.py",
+        "backend/services/data_routes.py",
+        "backend/market_data.py",
+        "backend/market_data_validation.py",
+        "backend/services/instrument_analytics.py",
+        "frontend/src/pages/Dashboard.tsx",
+        "frontend/src/components/dashboard/useDataRefresh.ts",
+        "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+        "docs/tushare_data_refresh_design.md"
+      ],
+      "affected_modules": [
+        "data_ingestion_config",
+        "market_data_snapshot_lifecycle",
+        "backend_instrument_analytics",
+        "backend_api_shell",
+        "frontend_app_shell",
+        "frontend_etf_research_pages"
+      ],
+      "blast_radius": [
+        "local parquet integrity",
+        "Tushare request quota",
+        "active dataset version",
+        "production write security",
+        "refresh process memory"
+      ],
+      "check_before_edit": [
+        "Keep production refresh disabled unless the deployment protects the endpoint.",
+        "Keep CLI, Web, and local snapshot rebuild on the same non-blocking filesystem lock; preserve inherited child ownership and persisted heartbeat/state.",
+        "Stream a bounded, redacted log tail instead of capture_output, and retain checkpoints after interruption.",
+        "Write full refreshes to an isolated version, build the local metrics snapshot, validate it, and atomically switch the manifest; keep the old manifest on any failure.",
+      "Treat analytics rebuild or promotion failure as a warning after successful fetching so operators can rebuild locally without another Tushare call.",
+      "Refetch the configured trading-day overlap and let incoming rows replace matching keys while preserving atomic sorted output.",
+      "Normalize date values before deduplication, then serialize them back to the existing Parquet Arrow date-column type before conversion and atomic replacement.",
+      "Make every worker share one thread-safe RateLimiter and retry policy; keep pagination sequential within each date and perform checkpoint or final Parquet writes only after worker results return to the coordinator.",
+      "Copy untouched instrument groups in Arrow, preserve the original Parquet when the merged content is identical, and reuse a non-stale analytics snapshot only when every analytics source fingerprint is unchanged."
+      ],
+      "safe_observation_methods": [
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_market_data.py backend/tests/test_market_data_validation.py -q",
+        "npm run test --prefix frontend -- --run src/components/dashboard/useDataRefresh.test.tsx src/pages/Dashboard.test.tsx"
+      ]
+    },
+    {
+      "id": "P15",
+      "title": "all_tushare_readers_must_resolve_one_validated_active_snapshot",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "mixed_snapshot_read",
+        "manifest_escape_or_corruption",
+        "validation_toctou",
+        "legacy_path_bypass"
+      ],
+      "symptoms": [
+        "One reader bypasses resolve_tushare_data_dir or resolve_market_data_file and serves legacy data while other readers use the active version.",
+        "An invalid manifest or operator override escapes the project data boundary or silently points at an incomplete directory.",
+        "A parquet file changes after validation but before activation, making the validation report stale.",
+        "A full candidate replaces the active manifest even though a required ETF, fund, calendar, or analytics file is absent."
+      ],
+      "trigger_actions": [
+        "add or change any Tushare-backed reader",
+        "change TUSHARE_DATA_DIR or active-manifest handling",
+        "change snapshot validation, activation, or required-file inventory",
+        "change full-refresh promotion or rollback"
+      ],
+      "related_paths": [
+        "backend/market_data.py",
+        "backend/market_data_validation.py",
+        "backend/services/data_refresh.py",
+        "backend/services/instrument_analytics.py",
+        "backend/services/instrument_routes.py",
+        "backend/custom_indicators/series_provider.py",
+        "backend/custom_indicators/portfolio_service.py",
+        "backend/fit.py",
+        "backend/trading_calendar.py",
+        "backend/app.py"
+      ],
+      "affected_modules": [
+        "market_data_snapshot_lifecycle",
+        "data_ingestion_config",
+        "backend_instrument_analytics",
+        "backend_etf_product_api",
+        "backend_quant_core",
+        "backend_custom_indicator_service",
+        "backend_portfolio_research"
+      ],
+      "blast_radius": [
+        "all Tushare-backed APIs and research calculations",
+        "atomic full-data rollout and rollback",
+        "cross-page data consistency"
+      ],
+      "check_before_edit": [
+        "Resolve the active version at operation time and use the legacy data root only when no valid manifest exists or a documented compatibility fallback applies.",
+        "Keep snapshot directories inside the data root and require every core ETF, fund, calendar, and analytics file before activation.",
+        "Bind activation to a passed validation report for the same directory and recheck each required file size and mtime before replacing the manifest.",
+        "Use atomic JSON replacement and keep the previous manifest untouched on validation, inventory, or write failure."
+      ],
+      "safe_observation_methods": [
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_market_data.py backend/tests/test_market_data_validation.py -q",
+        "rg -n \"resolve_tushare_data_dir|resolve_market_data_file|read_parquet\" backend"
+      ]
+    },
+    {
+      "id": "P16",
+      "title": "dashboard_analytics_preserve_share_class_date_and_missing_metric_semantics",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "full_history_request_scan",
+        "etf_fund_semantic_mix",
+        "stale_snapshot_ranking",
+        "missing_metric_as_zero",
+        "mixed_issue_amount_aggregate",
+        "incomplete_period_metric",
+        "adjusted_nav_discontinuity"
+      ],
+      "symptoms": [
+        "A Dashboard request opens the complete NAV or candle history instead of info tables, parquet metadata, and the metrics snapshot.",
+        "ETF list_date and public-fund found_date are merged into one ambiguous trend or current AUM is inferred from disclosed issue_amount.",
+        "A short-history or stale share class ranks with a zero metric or stale value rather than null/exclusion.",
+        "A product that does not cover the complete selected interval is still ranked, or a discontinuous adjusted NAV creates implausible return and volatility values.",
+        "ETF price/NAV premium is calculated from adjusted NAV instead of same-date unit_nav.",
+        "Partial fund or snapshot availability makes the whole Dashboard unavailable instead of degrading only affected sections."
+      ],
+      "trigger_actions": [
+        "edit instrument analytics summaries, trends, rankings, or snapshot builder",
+        "edit Dashboard data hooks, scope tabs, cards, charts, or ranking tables",
+        "change metric definitions, observation thresholds, freshness rules, or status_code lifecycle mapping",
+        "change ETF premium/liquidity calculations"
+      ],
+      "related_paths": [
+        "backend/services/instrument_analytics.py",
+        "backend/services/instrument_routes.py",
+        "backend/series_quality.py",
+        "backend/custom_indicators/series_provider.py",
+        "backend/tests/test_instrument_analytics.py",
+        "backend/tests/test_series_quality.py",
+        "frontend/src/pages/Dashboard.tsx",
+        "frontend/src/pages/Dashboard.test.tsx",
+        "frontend/src/components/dashboard/useInstrumentDashboard.ts",
+        "frontend/src/components/dashboard/DashboardOverviewCards.tsx",
+        "frontend/src/components/dashboard/DashboardChartCard.tsx",
+        "frontend/src/components/dashboard/DashboardRankingTable.tsx",
+        "frontend/src/components/dashboard/types.ts"
+      ],
+      "affected_modules": [
+        "backend_instrument_analytics",
+        "backend_custom_indicator_service",
+        "backend_etf_product_api",
+        "frontend_etf_research_pages",
+        "market_data_snapshot_lifecycle"
+      ],
+      "blast_radius": [
+        "Dashboard KPI and trend interpretation",
+        "ETF/public-fund rankings",
+        "API latency and request memory",
+        "partial-data user experience"
+      ],
+      "check_before_edit": [
+        "Keep request paths on cached info tables, parquet metadata, and instrument_metrics_snapshot; stream full history only in the local builder or validator.",
+        "Count each (instrument_type, ts_code) share class independently, keep ETF list_date and fund found_date series separate, and never combine issue_amount across kinds.",
+        "Use adj_nav for common performance, require the product to cover the complete selected interval, reject adjusted-NAV discontinuities using unit_nav or accum_nav as a reference, and preserve quality failures as null or ranking exclusion.",
+        "Return complete, partial, or unavailable per available section so one missing kind or snapshot does not erase the other kind's structure data."
+      ],
+      "safe_observation_methods": [
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q",
+        "npm run test --prefix frontend -- --run src/pages/Dashboard.test.tsx src/components/dashboard/useDataRefresh.test.tsx"
+      ]
+    },
+    {
+      "id": "P13",
+      "title": "typed_v22_axes_semantics_version_pairs_and_njit_kernels_are_context_bound",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "legacy_revision_rewrite",
+        "axis_broadcast_error",
+        "semantic_dimension_or_price_basis_mix",
+        "mask_signature_metadata_drift",
+        "typed_20_version_pair_drift",
+        "product_portfolio_context_leak",
+        "typed_api_contract_drift",
+        "njit_kernel_coverage_drift",
+        "python_operator_fallback"
+      ],
+      "symptoms": [
+        "A typed-v2.2 change edits or reinterprets persisted typed 2.0, typed 2.1, or legacy v1 indicator definitions in place.",
+        "A time series, asset vector, or time-asset matrix is combined through implicit positional broadcasting.",
+        "Values with incompatible semantic dimensions or price bases are accepted by additive/comparison operators, or a numeric tensor is accepted where a bool mask is required.",
+        "Public operator parameters, mask shapes, or overload names drift from the versioned signatures consumed by the guided builder.",
+        "A DSL 2.0 definition runs against a 2.1 operator registry, or a saved 2.1 definition advertises a variable/data/context protocol version that is not installed.",
+        "A product formula accepts portfolio-only variables, or a portfolio formula silently uses a single-product-only variable.",
+        "The public compose/infer/validate/evaluate-portfolio payload drifts from the typed service, or portfolio evaluation is detached from an immutable run snapshot.",
+        "A public or canonical operator lacks a warmed fixed-signature KernelSpec, or production evaluation silently calls a Python operator fallback."
+      ],
+      "trigger_actions": [
+        "edit typed_types, typed_operators, typed_dsl, or typed_service",
+        "edit variable_registry or public typed meta",
+        "add typed-v2.2 composition/inference routes or KernelSpec signatures",
+        "add portfolio custom indicator evaluation",
+        "migrate legacy indicator definitions"
+      ],
+      "related_paths": [
+        "backend/cal_indicators/typed_types.py",
+        "backend/cal_indicators/typed_operators.py",
+        "backend/cal_indicators/typed_latex.py",
+        "backend/cal_indicators/typed_numba_kernels.py",
+        "backend/cal_indicators/typed_numba_plan.py",
+        "backend/cal_indicators/typed_dsl.py",
+        "backend/custom_indicators/variable_registry.py",
+        "backend/custom_indicators/typed_service.py",
+        "backend/custom_indicators/service.py",
+        "backend/services/custom_indicator_routes.py",
+        "backend/tests/test_typed_indicator_types.py",
+        "backend/tests/test_typed_indicator_catalog.py",
+        "backend/tests/test_typed_indicator_compiler.py",
+        "backend/tests/test_typed_indicator_runtime.py",
+        "backend/tests/test_typed_numba_v22.py",
+        "backend/tests/test_typed_indicator_product_service.py",
+        "backend/tests/test_custom_indicator_variables.py"
+      ],
+      "affected_modules": [
+        "backend_indicator_runtime",
+        "backend_typed_indicator_v2",
+        "backend_custom_indicator_service",
+        "backend_portfolio_research",
+        "frontend_indicator_studio"
+      ],
+      "blast_radius": [
+        "typed formula validity",
+        "public variable/operator metadata and guided composition",
+        "typed DAG and runtime output",
+        "legacy indicator reproducibility",
+        "portfolio indicator availability"
+      ],
+      "check_before_edit": [
+        "Keep typed-v2.2, typed-v2.1, typed-v2.0, and persisted legacy v1 definitions separate; adapt execution plans without rewriting historical formulas.",
+        "Require exact nominal axes unless a documented operator explicitly supports scalar broadcast.",
+        "Require compatible semantic dimensions and price bases for additive/comparison operations, and preserve bool-mask dtype and mask signatures through public metadata.",
+        "Keep executable expression source separate from display_latex; render code identifiers only after escaping text and use canonical variable symbols with text-style subscripts.",
+        "Pair each saved DSL version with its installed operator/variable/data/context versions; keep business indicator formulas out of the public pure-mathematics operator catalog.",
+        "Validate context requirements before evaluation; portfolio formulas must run only against an immutable portfolio-run snapshot through evaluate-portfolio.",
+        "Require 97/97 canonical and 92/92 public KernelSpec coverage, successful startup warmup, python_fallback=0, and python_operator_calls=0.",
+        "Run typed type, catalog, compiler, NJIT kernel, runtime, and product-service tests together."
+      ],
+      "safe_observation_methods": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py -q'",
+        "rg -n \"ValueType|semantic_dimension|price_basis|is_mask|operator_registry_version|variable_registry_version|context_requirements\" backend/cal_indicators backend/custom_indicators backend/tests"
+      ]
+    },
+    {
+      "id": "P14",
+      "title": "portfolio_runs_require_strict_common_dates_and_immutable_effective_weight_paths",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "forward_fill_or_zero_return",
+        "same_day_rebalance_lookahead",
+        "snapshot_mutation",
+        "product_portfolio_ranking_mix",
+        "structured_warning_rendering"
+      ],
+      "symptoms": [
+        "A missing asset observation is forward-filled, converted to a zero return, or causes an implicit reweight.",
+        "A rebalance decision changes returns on its own decision date rather than the next common trading date.",
+        "A target update rewrites an existing run, or target deletion ignores a run reference.",
+        "A portfolio snapshot is inserted into product-only evaluation ranking rows.",
+        "The frontend renders a structured warning object instead of its message or misreads effective_date/array weights."
+      ],
+      "trigger_actions": [
+        "edit PortfolioResearchService, portfolio repositories, or portfolio routes",
+        "change series alignment, rebalancing, snapshot persistence, diagnosis, scenario, or export",
+        "edit PortfolioConstruction, HoldingDiagnosis, or portfolioResearch client"
+      ],
+      "related_paths": [
+        "backend/custom_indicators/portfolio_service.py",
+        "backend/custom_indicators/portfolio_repository.py",
+        "backend/services/portfolio_routes.py",
+        "backend/tests/test_portfolio_research.py",
+        "frontend/src/pages/PortfolioConstruction.tsx",
+        "frontend/src/pages/HoldingDiagnosis.tsx",
+        "frontend/src/services/portfolioResearch.ts",
+        "frontend/src/services/portfolioResearch.test.ts"
+      ],
+      "affected_modules": [
+        "backend_portfolio_research",
+        "frontend_portfolio_research",
+        "backend_etf_product_api"
+      ],
+      "blast_radius": [
+        "portfolio NAV, drawdown, and weights",
+        "diagnostic matrices and contributions",
+        "scenario reproducibility and exports",
+        "workspace research object lifecycle"
+      ],
+      "check_before_edit": [
+        "Use adjusted NAV on strict_intersection only; reject other alignment modes and do not ffill, zero-fill, or silently reweight.",
+        "Persist decision_date and effective_date, and apply a decision only on the next common data day.",
+        "Keep run snapshots append-only and reject target deletion while a snapshot references it.",
+        "Keep product rankings and portfolio research targets separate; normalize warning.message and weight paths in the frontend client."
+      ],
+      "safe_observation_methods": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_portfolio_research.py -q'",
+        "npm run test --prefix frontend -- --run src/pages/PortfolioConstruction.test.tsx src/pages/HoldingDiagnosis.test.tsx src/services/portfolioResearch.test.ts",
+        "rg -n \"strict_intersection|effective_date|decision_date|references_target|warningMessages\" backend/custom_indicators backend/services frontend/src"
+      ]
+    },
+    {
+      "id": "P12",
+      "title": "custom_indicator_results_depend_on_real_series_windows_and_locked_revisions",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "synthetic_data_leak",
+        "period_boundary_drift",
+      "variable_availability_fail_open",
+      "static_product_kind_blocks_real_fields",
+      "existing_indicator_composition_revision_drift",
+        "as_of_announcement_lookahead",
+        "optimistic_lock_bypass",
+        "ranking_missing_as_zero",
+        "mutable_plan_reproduction"
+      ],
+      "symptoms": [
+        "A missing parquet file silently falls back to simulated prices or a zero-valued metric.",
+        "1W or calendar-month/year windows use a different boundary rule across preview, detail, comparison, and ranking.",
+      "A conditional Tushare variable is offered without checking the selected product, period, and historical as-of date, or an availability-service failure is treated as available.",
+      "An indicator is rejected only because its catalog product-kind hint differs, without checking the formula's actual required fields for that product.",
+      "An existing indicator is inserted by mutable ID or copied from stale client state instead of being resolved and checked by locked revision and matching protocol versions.",
+        "A fund NAV field is exposed for a historical as-of date before its announcement date, or partial field coverage is silently treated as complete.",
+        "An update or delete omits revision, or a saved plan runs the latest indicator instead of its locked historical version.",
+        "A product with any missing selected metric is normalized as zero and included in ranking."
+      ],
+      "trigger_actions": [
+        "edit custom indicator CRUD, evaluate, or plan routes",
+        "edit variable registry, availability API, series provider, or period selection",
+        "edit JSON persistence, cache keys, or invalidation",
+      "edit IndicatorStudio variable catalog or guided operator parameters",
+      "add existing-indicator composition or formula reuse",
+        "edit detail, comparison, or evaluation-plan indicator integration"
+      ],
+      "related_paths": [
+        "backend/custom_indicators/service.py",
+        "backend/custom_indicators/repository.py",
+        "backend/custom_indicators/series_provider.py",
+        "backend/custom_indicators/variable_registry.py",
+        "backend/services/custom_indicator_routes.py",
+        "backend/services/instrument_routes.py",
+        "frontend/src/services/customIndicators.ts",
+        "frontend/src/pages/IndicatorStudio.tsx",
+        "frontend/src/pages/ProductDetail.tsx",
+        "frontend/src/pages/ProductCompare.tsx",
+        "frontend/src/pages/EvaluationPlan.tsx",
+        "backend/tests/test_custom_indicator_variables.py",
+        "frontend/src/pages/IndicatorStudio.test.tsx",
+        "docs/custom_indicator_design.md"
+      ],
+      "affected_modules": [
+        "backend_custom_indicator_service",
+        "backend_etf_product_api",
+        "frontend_indicator_studio",
+        "frontend_etf_research_pages",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "published indicator values",
+        "guided formula inputs and historical availability",
+        "workspace definition history",
+        "saved evaluation-plan reproducibility",
+        "cross-product ranking eligibility"
+      ],
+      "check_before_edit": [
+        "Use real or fixture parquet only; missing data must return null plus a warning.",
+        "Keep 1W at five return observations and calendar M/Y windows anchored by the latest observation before the boundary.",
+      "Resolve variable availability for every selected product, period, and as-of date; fail closed in both the catalog and operator parameter drawer when all relevant targets fail.",
+      "Treat applicable_product_kinds as a catalog hint only; compile required_variables and report source, field, observation, coverage, or common-window blockers per product before calculation.",
+      "Resolve inserted indicators by indicator_id plus revision on the server, require matching context and DSL/registry/data/schema versions, and expand to an independent scalar expression rather than a mutable runtime reference.",
+        "Respect ann_date <= as_of for reported NAV fields and surface partial coverage instead of silently filling or claiming full availability.",
+        "Require revision for every mutable update/delete and run plans against locked indicator revisions.",
+        "Exclude products missing any selected metric from ranking instead of treating missing values as zero."
+      ],
+      "safe_observation_methods": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_instrument_routes.py -q'",
+        "npm run test --prefix frontend -- --run",
+        "npm run build --prefix frontend"
+      ]
+    },
+    {
+      "id": "P17",
+      "title": "metric_values_require_locked_presentation_and_explicit_unavailable_states",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "name_based_unit_inference",
+        "percent_scale_drift",
+        "null_rendered_as_zero",
+        "current_catalog_reinterprets_historical_result",
+        "runtime_field_unavailability_hidden",
+        "browser_preference_stores_runtime_data"
+      ],
+      "symptoms": [
+        "The same raw indicator value is rendered with different scaling, precision, or unit across detail, comparison, evaluation, and portfolio pages.",
+        "A frontend infers percent or currency formatting from an indicator name instead of MetricPresentation.",
+        "A missing, insufficient, failed, or inapplicable result is displayed as zero or loses its stable reason code.",
+        "A historical evaluation result is formatted by looking up the latest catalog revision rather than using the locked presentation embedded in the result.",
+        "A selector hides an indicator only from a static ETF/fund label, or shows it without explaining which selected products lack the required fields.",
+        "localStorage persists products, results, or historical as-of values instead of only indicator IDs and the runtime period."
+      ],
+      "trigger_actions": [
+        "edit MetricPresentation construction or evaluate result payloads",
+        "edit shared metric selectors, value/status components, or browser preferences",
+        "edit product research, detail, comparison, evaluation-plan, dashboard, or portfolio metric displays"
+      ],
+      "related_paths": [
+        "backend/custom_indicators/presentation.py",
+        "backend/custom_indicators/service.py",
+        "backend/custom_indicators/portfolio_service.py",
+        "frontend/src/services/customIndicators.ts",
+        "frontend/src/components/metrics/MetricDisplay.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.ts",
+        "frontend/src/pages/ProductResearch.tsx",
+        "frontend/src/pages/ProductDetail.tsx",
+        "frontend/src/pages/ProductCompare.tsx",
+        "frontend/src/pages/EvaluationPlan.tsx",
+        "frontend/src/pages/HoldingDiagnosis.tsx",
+        "frontend/e2e/metric-display.spec.ts"
+      ],
+      "affected_modules": [
+        "backend_custom_indicator_service",
+        "frontend_metric_presentation",
+        "frontend_etf_research_pages",
+        "frontend_allocation_workflows",
+        "frontend_portfolio_research"
+      ],
+      "blast_radius": [
+        "published metric values and units",
+        "ranking eligibility and contribution explanations",
+        "historical plan reproducibility",
+        "cross-page indicator selection and browser defaults"
+      ],
+      "check_before_edit": [
+        "Embed the locked MetricPresentation in every evaluation result and use it directly in frontend rendering.",
+        "Keep value_scale, display_format, precision, unit, notation, direction, version, and applicability explicit; never infer them from display names.",
+        "Render null as an explicit unavailable state with warnings and never coerce it to zero or include it in ranking.",
+        "Filter selectors by calculation context, keep field-dependent indicators visible, and use per-product input requirements to explain full or partial runtime availability while preserving hidden compatibility definitions for historical locked runs.",
+        "Keep indicator-display:v1 preferences limited to valid indicator IDs and runtime period."
+      ],
+      "safe_observation_methods": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_routes.py tests/test_custom_indicator_service.py tests/test_portfolio_research.py -q'",
+        "npm run test --prefix frontend -- --run",
+        "npm run test:e2e --prefix frontend",
+        "npm run build --prefix frontend"
+      ]
+    },
+    {
+      "id": "P18",
+      "title": "indicator_batch_workers_require_generation_bound_arrays_and_single_owner_cleanup",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "repeated_parquet_scan",
+        "large_array_pickle",
+        "stale_generation_cache",
+        "process_thread_oversubscription",
+        "shared_array_leak",
+        "worker_cold_compile",
+        "paged_result_expiration_drift"
+      ],
+      "symptoms": [
+        "One evaluation plan rereads the same Parquet source for each metric or period.",
+        "Worker tasks serialize NumPy payloads instead of passing shared-memory or mmap descriptors and integer window bounds.",
+        "A data refresh reuses cached arrays or windows from an older snapshot generation.",
+        "Multiple Uvicorn workers each create a process pool, or BLAS and Numba threads multiply process-level concurrency.",
+        "Timeout, cancellation, worker failure, or service restart leaves shared arrays or mmap files behind.",
+        "A request performs first-use Numba compilation instead of using lifespan-prewarmed fixed signatures.",
+        "Large paged results outlive their bounded TTL or return an unstable missing/expired contract."
+      ],
+      "trigger_actions": [
+        "edit indicator batch loading, window caching, fused kernels, process scheduling, or scoring",
+        "edit shared-memory, mmap, worker lifespan, timeout, or admission logic",
+        "edit evaluation-plan result pagination, retention, or execution metadata",
+        "change Docker worker, shm, BLAS, Numba, or indicator cache configuration"
+      ],
+      "related_paths": [
+        "backend/custom_indicators/service.py",
+        "backend/custom_indicators/series_provider.py",
+        "backend/custom_indicators/parallel_engine.py",
+        "backend/custom_indicators/run_result_repository.py",
+        "backend/cal_indicators/typed_numba_kernels.py",
+        "backend/cal_indicators/typed_numba_plan.py",
+        "backend/cal_indicators/builtin_batch_kernel.py",
+        "backend/services/custom_indicator_routes.py",
+        "backend/app.py",
+        "backend/benchmark_indicator_engine.py",
+        "backend/tests/test_indicator_parallel_engine.py",
+        "backend/tests/test_typed_numba_v22.py",
+        "backend/tests/test_evaluation_run_results.py",
+        "backend/tests/test_custom_indicator_service.py",
+        "docker-compose.yml",
+        ".env.example"
+      ],
+      "affected_modules": [
+        "backend_custom_indicator_service",
+        "backend_api_shell",
+        "market_data_snapshot_lifecycle"
+      ],
+      "blast_radius": [
+        "evaluation-plan latency and numerical parity",
+        "API process availability and CPU saturation",
+        "market-data refresh visibility",
+        "temporary shared resources and paged result retention"
+      ],
+      "check_before_edit": [
+        "Resolve locked formulas and physical dependencies once, scan each required Parquet source once, and key data/window/result caches by active data generation.",
+        "Pass only shared-memory or mmap descriptors and numeric plans to workers; keep strings and presentation assembly in the API process.",
+        "Use one Uvicorn worker per container, prewarm fixed Numba signatures in lifespan workers, and cap BLAS, process, and Numba concurrency with CPU tokens.",
+        "Keep parent ownership of unlink, terminate failed workers before shared cleanup, and remove only protected orphan resources whose owner PID is gone.",
+        "Keep result-cache TTL, 410 RESULT_EXPIRED, page bounds, and Retry-After busy responses stable."
+      ],
+      "safe_observation_methods": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_indicator_parallel_engine.py tests/test_evaluation_run_results.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py -q'",
+        "/bin/sh -c 'cd backend && INDICATOR_PROCESS_WORKERS=7 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1 /Users/chenjunming/Desktop/myenv_312/bin/python3.12 benchmark_indicator_engine.py <plan-id> --repeat 2'",
+        "rg -n \"SharedArrayOwner|data_generation|INDICATOR_PROCESS_WORKERS|evaluation-plan-runs\" backend docker-compose.yml .env.example"
+      ]
+    }
+  ]
+}

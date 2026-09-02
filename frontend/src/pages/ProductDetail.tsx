@@ -1,6 +1,45 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
+import {
+  evaluateCustomIndicators,
+  getCustomIndicatorMeta,
+  indicatorsForContext,
+  listCustomIndicators,
+  type EvaluationResult,
+  type IndicatorDefinition,
+} from '../services/customIndicators';
+import {
+  MetricDefinitionDrawer,
+  MetricResultCard,
+  MetricSelector,
+} from '../components/metrics/MetricDisplay';
+import {
+  groupIndicatorsByPeriod,
+  metricPeriodFor,
+  normalizeMetricPeriods,
+  useMetricDisplayPreference,
+  withSelectedIndicators,
+} from '../components/metrics/useMetricDisplayPreference';
+import {
+  BOOTSTRAP_BLOCK_LENGTH_OPTIONS,
+  MIN_SIMULATION_OBSERVATIONS,
+  MONTE_CARLO_HORIZON_OPTIONS,
+  MONTE_CARLO_PATH_OPTIONS,
+  STATISTICS_PERIOD_OPTIONS,
+  buildNormalQqData,
+  buildTerminalNavDensity,
+  compareSimulations,
+  interpretExcessKurtosis,
+  interpretSkewness,
+  selectStatisticsWindow,
+  simulateParametricMonteCarlo,
+  simulateStationaryBlockBootstrap,
+  type DistributionInterpretation,
+  type SimulationMethod,
+  type StatisticsPeriod,
+} from '../utils/statisticalAnalysis';
+import { readReturnNavigationState, returnToOrigin } from '../utils/returnNavigation';
 
 interface TimeSeriesPoint {
   date: string;
@@ -16,6 +55,14 @@ interface DailyReturnPoint {
   return: number;
 }
 
+const CORE_RESEARCH_INDICATOR_IDS = [
+  'builtin-total-return-v2',
+  'builtin-annualized-return-v2',
+  'builtin-annualized-volatility-v2',
+  'builtin-maximum-drawdown-v2',
+  'builtin-annualized-sharpe-v2',
+];
+
 interface ProductDetailResponse {
   product_id: string | null;
   name: string | null;
@@ -25,6 +72,9 @@ interface ProductDetailResponse {
   base_info: Record<string, string | number | null>;
   metrics: {
     issue_amount?: number | null;
+    current_size?: number | null;
+    current_size_as_of?: string | null;
+    current_size_source?: 'total_netasset' | 'net_asset' | null;
     m_fee?: number | null;
     c_fee?: number | null;
   };
@@ -66,96 +116,6 @@ interface BoxPlotResult {
   whiskers: { lower: number; upper: number };
 }
 
-const formatDateISO = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const createSeededRandom = (seedText: string) => {
-  let seed = 0;
-  for (let index = 0; index < seedText.length; index += 1) {
-    seed = (seed * 31 + seedText.charCodeAt(index)) >>> 0;
-  }
-  if (seed === 0) {
-    seed = 1;
-  }
-  return () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 0x100000000;
-  };
-};
-
-const generateMockTimeSeries = (seed: string, days = 180): TimeSeriesPoint[] => {
-  const random = createSeededRandom(seed);
-  const cursor = new Date();
-  cursor.setHours(0, 0, 0, 0);
-  const dates: Date[] = [];
-  while (dates.length < days) {
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) {
-      dates.push(new Date(cursor));
-    }
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  dates.reverse();
-
-  const series: TimeSeriesPoint[] = [];
-  let previousClose = 100 + random() * 20;
-
-  dates.forEach((date) => {
-    const drift = (random() - 0.45) * 0.04;
-    const open = previousClose * (1 + (random() - 0.5) * 0.015);
-    const close = Math.max(1, previousClose * (1 + drift));
-    const high = Math.max(open, close) * (1 + random() * 0.012);
-    const low = Math.min(open, close) * (1 - random() * 0.012);
-    const volumeBase = 900000 + random() * 400000;
-    series.push({
-      date: formatDateISO(date),
-      open: Number(open.toFixed(2)),
-      close: Number(close.toFixed(2)),
-      high: Number(high.toFixed(2)),
-      low: Number(low.toFixed(2)),
-      volume: Math.max(1, Math.round(volumeBase * (1 + ((close - previousClose) / previousClose) * 3))),
-    });
-    previousClose = close;
-  });
-
-  return series;
-};
-
-const PRODUCT_DETAIL_DEMO_ENABLED =
-  typeof import.meta !== 'undefined' && Boolean((import.meta as any)?.env?.VITE_ENABLE_PRODUCT_DETAIL_DEMO === 'true');
-
-const generateMockProductDetail = (productId: string): ProductDetailResponse => {
-  const normalizedId = productId || 'demo-etf';
-  const nameSuffix = normalizedId.replace(/[^a-zA-Z0-9]/g, '').toUpperCase() || 'DEMO';
-  const timeseries = generateMockTimeSeries(`${normalizedId}-series`);
-  const random = createSeededRandom(`${normalizedId}-meta`);
-  const issueAmount = Math.round((random() * 800000 + 200000) / 100) * 100; // 单位：万
-  return {
-    product_id: normalizedId,
-    name: `示例ETF-${nameSuffix}`,
-    management: '模拟资产管理有限公司',
-    custodian: '示例银行股份有限公司',
-    status: '存续',
-    base_info: {
-      ts_code: `${nameSuffix}.OF`,
-      issue_date: '2021-01-15',
-      benchmark: '沪深300指数',
-      listing_exchange: '上海证券交易所',
-      fund_type: 'ETF',
-    },
-    metrics: {
-      issue_amount: issueAmount,
-      m_fee: Number((random() * 0.3 + 0.2).toFixed(2)),
-      c_fee: Number((random() * 0.1 + 0.05).toFixed(2)),
-    },
-    timeseries,
-  };
-};
-
 const overlayOptions: OverlayOption[] = [
   { id: 'PRICE_MA', label: '收盘价均线', description: '自定义多个周期观察趋势' },
   { id: 'VOLUME_MA', label: '成交量均线', description: '识别量能变化节奏' },
@@ -170,6 +130,8 @@ const histogramBinWidthOptions = [
   { label: '0.50%', value: 0.5 },
   { label: '1.00%', value: 1 },
 ];
+
+const FUTURE_SIMULATION_INITIAL_NAV = 1;
 
 type OverlaySettings = {
   PRICE_MA: { periods: string };
@@ -272,6 +234,20 @@ const formatText = (value?: string | number | null) => {
   }
   const text = String(value).trim();
   return text.length > 0 ? text : '未知';
+};
+
+const formatDate = (value?: string | number | null) => {
+  if (value === null || value === undefined) {
+    return '未披露';
+  }
+  const text = String(value).trim();
+  if (!text) {
+    return '未披露';
+  }
+  if (/^\d{8}$/.test(text)) {
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  }
+  return text.slice(0, 10);
 };
 
 const calculateMovingAverage = (values: number[], period: number) => {
@@ -414,13 +390,13 @@ const calculateReturnStatistics = (values: number[]): ReturnStatistics => {
     const standardized = filtered.map((item) => (item - mean) / std);
     if (n > 2) {
       const skewNumerator = standardized.reduce((acc, cur) => acc + cur ** 3, 0);
-      skewness = (n / ((n - 1) * (n - 2))) * skewNumerator;
+      skewness = (Math.sqrt(n * (n - 1)) / (n - 2)) * (skewNumerator / n);
     }
     if (n > 3) {
       const kurtNumerator = standardized.reduce((acc, cur) => acc + cur ** 4, 0);
-      kurtosis =
-        ((n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3))) * kurtNumerator -
-        (3 * (n - 1) ** 2) / ((n - 2) * (n - 3));
+      const populationExcessKurtosis = kurtNumerator / n - 3;
+      kurtosis = ((n - 1) / ((n - 2) * (n - 3)))
+        * ((n + 1) * populationExcessKurtosis + 6);
     }
     if (skewness !== null && kurtosis !== null) {
       const jb = (n / 6) * ((skewness ** 2) + (kurtosis ** 2) / 4);
@@ -545,6 +521,27 @@ function MetricCard({ title, value, description }: { title: string; value: strin
   );
 }
 
+function DistributionMetricCard({
+  title,
+  value,
+  interpretation,
+}: {
+  title: string;
+  value: string;
+  interpretation: DistributionInterpretation;
+}) {
+  return (
+    <div className="rounded-2xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-5 shadow-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-emerald-500">{title}</div>
+      <div className="mt-2 text-2xl font-bold text-slate-900">{value}</div>
+      <div className="mt-3 inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+        {interpretation.label}
+      </div>
+      <p className="mt-2 text-xs leading-5 text-slate-600">{interpretation.meaning}</p>
+    </div>
+  );
+}
+
 function ExtremesCard({ best, worst }: { best: string; worst: string }) {
   const bestClass = best === '--' ? 'text-slate-400' : 'text-emerald-600';
   const worstClass = worst === '--' ? 'text-slate-400' : 'text-rose-500';
@@ -582,13 +579,38 @@ const cloneOverlaySettings = (): OverlaySettings => ({
 
 export default function ProductDetail() {
   const params = useParams<{ productId?: string }>();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const returnNavigation = readReturnNavigationState(location.state);
+  const productKind = searchParams.get('kind') === 'fund' ? 'fund' : 'etf';
   const [detail, setDetail] = useState<ProductDetailResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [demoNotice, setDemoNotice] = useState<string | null>(null);
   const [selectedOverlays, setSelectedOverlays] = useState<OverlayId[]>(['PRICE_MA', 'VOLUME_MA']);
   const [overlaySettings, setOverlaySettings] = useState<OverlaySettings>(() => cloneOverlaySettings());
   const [histogramBinWidth, setHistogramBinWidth] = useState<number>(0.2);
+  const [researchIndicators, setResearchIndicators] = useState<IndicatorDefinition[]>([]);
+  const [researchPeriods, setResearchPeriods] = useState<string[]>(['1Y']);
+  const [researchResults, setResearchResults] = useState<EvaluationResult[]>([]);
+  const [researchAsOf, setResearchAsOf] = useState('');
+  const [researchLoading, setResearchLoading] = useState(false);
+  const [researchError, setResearchError] = useState<string | null>(null);
+  const [definitionIndicator, setDefinitionIndicator] = useState<IndicatorDefinition | null>(null);
+  const [statisticsPeriod, setStatisticsPeriod] = useState<StatisticsPeriod>('ALL');
+  const [simulationMethod, setSimulationMethod] = useState<SimulationMethod>('parametric');
+  const [simulationHorizon, setSimulationHorizon] = useState(252);
+  const [simulationPathCount, setSimulationPathCount] = useState(500);
+  const [bootstrapBlockLength, setBootstrapBlockLength] = useState(20);
+  const [simulationTargetReturn, setSimulationTargetReturn] = useState(5);
+  const [simulationRun, setSimulationRun] = useState(0);
+  const [researchPreference, setResearchPreference] = useMetricDisplayPreference(
+    'product-detail',
+    'single_product',
+    CORE_RESEARCH_INDICATOR_IDS,
+    '1Y',
+    researchIndicators.map((indicator) => indicator.id),
+  );
 
   const productId = useMemo(() => {
     if (!params.productId) {
@@ -601,6 +623,13 @@ export default function ProductDetail() {
       return params.productId;
     }
   }, [params.productId]);
+
+  const selectedResearchIndicators = useMemo(
+    () => researchPreference.indicatorIds
+      .map((id) => researchIndicators.find((item) => item.id === id))
+      .filter((item): item is IndicatorDefinition => Boolean(item)),
+    [researchIndicators, researchPreference.indicatorIds],
+  );
 
   const toggleOverlay = (overlayId: OverlayId) => {
     setSelectedOverlays((prev) => {
@@ -740,31 +769,17 @@ export default function ProductDetail() {
     if (!productId) {
       setError('未指定产品标识');
       setDetail(null);
-      setDemoNotice(null);
       return;
     }
     const controller = new AbortController();
     const fetchDetail = async () => {
-      const hydrateWithMock = (reason: string) => {
-        if (!PRODUCT_DETAIL_DEMO_ENABLED) {
-          return false;
-        }
-        const mockDetail = generateMockProductDetail(productId);
-        setDetail(mockDetail);
-        setDemoNotice(`演示模式：${reason}，已展示示例内容。`);
-        setError(null);
-        return true;
-      };
       try {
         setLoading(true);
         setError(null);
-        setDemoNotice(null);
-        const resp = await fetch(`/api/etf/products/${encodeURIComponent(productId)}`, { signal: controller.signal });
+        const detailUrl = `/api/instruments/products/${encodeURIComponent(productId)}?kind=${productKind}`;
+        const resp = await fetch(detailUrl, { signal: controller.signal });
         if (!resp.ok) {
           console.warn('Product detail request responded with non-OK status', resp.status);
-          if (hydrateWithMock(`接口返回状态 ${resp.status}`)) {
-            return;
-          }
           if (resp.status === 404) {
             setError('未找到对应的产品，请检查产品标识。');
           } else {
@@ -776,37 +791,92 @@ export default function ProductDetail() {
         const data = (await resp.json()) as ProductDetailResponse;
         if (!data?.timeseries || data.timeseries.length === 0) {
           console.warn('Received product detail without timeseries, unable to render chart');
-          if (hydrateWithMock('接口缺少时间序列数据')) {
-            return;
-          }
           setError('产品详情数据缺失，无法展示。');
           setDetail(null);
           return;
         }
         setDetail(data);
-        setDemoNotice(null);
       } catch (err) {
         if ((err as DOMException).name === 'AbortError') {
           return;
         }
         console.error('Failed to load product detail', err);
-        if (hydrateWithMock('无法连接到后台服务')) {
-          return;
-        }
         setError('产品详情加载失败，请稍后重试。');
         setDetail(null);
-        setDemoNotice(null);
       } finally {
         setLoading(false);
       }
     };
     fetchDetail();
     return () => controller.abort();
-  }, [productId]);
+  }, [productId, productKind]);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([listCustomIndicators({ contextKind: 'single_product', productKind }), getCustomIndicatorMeta()])
+      .then(([{ items }, metadata]) => {
+        if (!active) return;
+        const singleProductIndicators = indicatorsForContext(items, 'single_product');
+        setResearchIndicators(singleProductIndicators);
+        const runtimePeriods = metadata.periods.map((item) => item.value);
+        setResearchPeriods(runtimePeriods);
+        setResearchPreference((current) => normalizeMetricPeriods(current, runtimePeriods, '1Y'));
+      })
+      .catch(() => {
+        if (active) setResearchError('自定义指标库暂时不可用，请稍后重试。');
+      });
+    return () => { active = false; };
+  }, [productKind]);
+
+  useEffect(() => {
+    if (selectedResearchIndicators.length === 0 || !productId) {
+      setResearchResults([]);
+      return;
+    }
+    let active = true;
+    setResearchLoading(true);
+    setResearchError(null);
+    const selectedPreference = {
+      ...researchPreference,
+      indicatorIds: selectedResearchIndicators.map((indicator) => indicator.id),
+    };
+    Promise.all(groupIndicatorsByPeriod(selectedPreference, '1Y').map(({ indicatorIds, period }) => (
+      evaluateCustomIndicators({
+        indicator_ids: indicatorIds,
+        targets: [{ kind: productKind, product_id: productId }],
+        period,
+        as_of: researchAsOf || undefined,
+      })
+    )))
+      .then((responses) => {
+        if (active) setResearchResults(responses.flatMap(({ results }) => results));
+      })
+      .catch(() => {
+        if (active) {
+          setResearchResults([]);
+          setResearchError('该指标当前无法计算，请检查真实净值数据和样本窗口。');
+        }
+      })
+      .finally(() => { if (active) setResearchLoading(false); });
+    return () => { active = false; };
+  }, [productId, productKind, researchAsOf, researchPreference.periodsByIndicator, selectedResearchIndicators]);
 
   const metrics = detail?.metrics ?? {};
   const baseInfo = detail?.base_info ?? {};
   const tsCode = baseInfo['ts_code'];
+  const inceptionDateLabel = productKind === 'etf' ? '上市日期' : '成立日期';
+  const inceptionDate = productKind === 'etf' ? baseInfo['list_date'] : baseInfo['found_date'];
+  const endDate = productKind === 'etf'
+    ? baseInfo['delist_date']
+    : (baseInfo['due_date'] ?? baseInfo['delist_date']);
+  const endDateLabel = productKind === 'etf'
+    ? '退市日期'
+    : (baseInfo['due_date'] ? '到期日期' : '终止日期');
+  const inceptionDateText = formatDate(inceptionDate);
+  const endDateText = formatDate(endDate);
+  const currentSizeDescription = metrics.current_size_as_of
+    ? `截至 ${formatDate(metrics.current_size_as_of)} · ${metrics.current_size_source === 'total_netasset' ? '最新披露合计资产净值' : '最新披露资产净值'}（非实时）`
+    : '净值数据暂未披露资产净值';
 
   const chartOption = useMemo(() => {
     if (!detail?.timeseries || detail.timeseries.length === 0) {
@@ -1080,9 +1150,15 @@ export default function ProductDetail() {
     return selectedOverlays.includes('KDJ') ? 700 : 540;
   }, [selectedOverlays]);
 
-  const dailyReturns = useMemo(() => {
-    return calculateDailyReturns(detail?.timeseries ?? []);
-  }, [detail?.timeseries]);
+  const statisticsWindow = useMemo(
+    () => selectStatisticsWindow(detail?.timeseries ?? [], statisticsPeriod),
+    [detail?.timeseries, statisticsPeriod],
+  );
+
+  const dailyReturns = useMemo(
+    () => calculateDailyReturns(statisticsWindow.series),
+    [statisticsWindow.series],
+  );
 
   const dailyReturnValues = useMemo(() => dailyReturns.map((item) => item.return), [dailyReturns]);
 
@@ -1104,8 +1180,28 @@ export default function ProductDetail() {
     [returnStats.mean, returnStats.std, returnStats.sampleSize, histogramBins, histogramBinWidth]
   );
   const boxPlotData = useMemo(() => calculateBoxPlot(dailyReturnValues), [dailyReturnValues]);
+  const normalQqData = useMemo(() => buildNormalQqData(dailyReturnValues), [dailyReturnValues]);
+  const normalQqTableRows = useMemo(() => {
+    if (!normalQqData) {
+      return [];
+    }
+    const targetPercentiles = [0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99];
+    return targetPercentiles
+      .map((target) => normalQqData.points.reduce((closest, point) => (
+        Math.abs(point.percentile - target) < Math.abs(closest.percentile - target) ? point : closest
+      )))
+      .filter((point, index, points) => points.findIndex((candidate) => candidate.percentile === point.percentile) === index);
+  }, [normalQqData]);
+  const skewnessInterpretation = useMemo(
+    () => interpretSkewness(returnStats.skewness),
+    [returnStats.skewness],
+  );
+  const kurtosisInterpretation = useMemo(
+    () => interpretExcessKurtosis(returnStats.kurtosis),
+    [returnStats.kurtosis],
+  );
   const normalityConclusion = useMemo(() => {
-    if (!returnStats.normalityPValue || !Number.isFinite(returnStats.normalityPValue)) {
+    if (returnStats.normalityPValue === null || !Number.isFinite(returnStats.normalityPValue)) {
       return '样本不足，无法进行检验';
     }
     return returnStats.normalityPValue < 0.05 ? '拒绝正态假设（5% 显著性水平）' : '无法拒绝正态假设（5% 显著性水平）';
@@ -1268,21 +1364,25 @@ export default function ProductDetail() {
           return lines.join('<br/>');
         },
       },
-      grid: { left: '10%', right: '6%', bottom: 40, top: 30 },
+      grid: { left: 20, right: 28, bottom: 56, top: 28, containLabel: true },
       xAxis: {
+        type: 'value',
+        name: '日收益率',
+        nameLocation: 'middle',
+        nameGap: 36,
+        axisLabel: {
+          color: '#475569',
+          formatter: (value: number) => `${value.toFixed(1)}%`,
+        },
+        axisLine: { lineStyle: { color: '#cbd5f5' } },
+        splitLine: { lineStyle: { color: '#e2e8f0' } },
+      },
+      yAxis: {
         type: 'category',
         data: ['日收益率'],
         axisLabel: { color: '#475569' },
         axisTick: { show: false },
         axisLine: { lineStyle: { color: '#cbd5f5' } },
-      },
-      yAxis: {
-        type: 'value',
-        axisLabel: {
-          color: '#475569',
-          formatter: (value: number) => `${value.toFixed(1)}%`,
-        },
-        splitLine: { lineStyle: { color: '#e2e8f0' } },
       },
       series: [
         {
@@ -1299,13 +1399,19 @@ export default function ProductDetail() {
             color: '#bae6fd',
             borderColor: '#0ea5e9',
           },
+          markLine: {
+            symbol: 'none',
+            data: [{ xAxis: 0 }],
+            lineStyle: { type: 'dashed', color: '#94a3b8' },
+            label: { show: false },
+          },
         },
         ...(boxPlotData.outliers.length > 0
           ? [
               {
                 name: '离群值',
                 type: 'scatter',
-                data: boxPlotData.outliers.map((value) => [0, Number(value.toFixed(2))]),
+                data: boxPlotData.outliers.map((value) => [Number(value.toFixed(2)), 0]),
                 symbolSize: 8,
                 itemStyle: { color: '#f97316' },
               },
@@ -1314,6 +1420,381 @@ export default function ProductDetail() {
       ],
     };
   }, [boxPlotData]);
+
+  const normalQqOption = useMemo(() => {
+    if (!normalQqData) {
+      return undefined;
+    }
+    const pointsForTail = (tail: 'lower' | 'center' | 'upper') => normalQqData.points
+      .filter((point) => point.tail === tail)
+      .map((point) => [
+        Number(point.theoreticalQuantile.toFixed(4)),
+        Number(point.observedReturn.toFixed(4)),
+        point.percentile,
+      ]);
+    return {
+      backgroundColor: '#ffffff',
+      aria: {
+        enabled: true,
+        decal: { show: true },
+        description: `正态 Q-Q 图，比较 ${normalQqData.sampleSize} 个实际日收益率分位点与理论正态分位点。`,
+      },
+      legend: {
+        data: ['正态参考线', '下行尾部', '中部样本', '上行尾部'],
+        top: 0,
+        textStyle: { color: '#475569', fontSize: 10 },
+      },
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: any) => {
+          const data = Array.isArray(params?.data) ? params.data : [];
+          if (data.length < 3) {
+            return params?.seriesName ?? '';
+          }
+          return [
+            `${params.seriesName} · 第 ${(Number(data[2]) * 100).toFixed(1)} 百分位`,
+            `理论正态分位数：${Number(data[0]).toFixed(2)}`,
+            `实际日收益率：${formatSignedPercent(Number(data[1]), 2)}`,
+          ].join('<br/>');
+        },
+      },
+      grid: { left: 20, right: 24, bottom: 56, top: 52, containLabel: true },
+      xAxis: {
+        type: 'value',
+        name: '理论正态分位数',
+        nameLocation: 'middle',
+        nameGap: 34,
+        axisLabel: { color: '#475569' },
+        axisLine: { lineStyle: { color: '#cbd5f5' } },
+        splitLine: { lineStyle: { color: '#e2e8f0' } },
+      },
+      yAxis: {
+        type: 'value',
+        name: '实际日收益率',
+        nameLocation: 'middle',
+        nameGap: 48,
+        axisLabel: {
+          color: '#475569',
+          formatter: (value: number) => `${value.toFixed(1)}%`,
+        },
+        splitLine: { lineStyle: { color: '#e2e8f0' } },
+      },
+      series: [
+        {
+          name: '正态参考线',
+          type: 'line',
+          data: normalQqData.points.map((point) => [
+            Number(point.theoreticalQuantile.toFixed(4)),
+            Number(point.referenceReturn.toFixed(4)),
+          ]),
+          symbol: 'none',
+          silent: true,
+          lineStyle: { width: 2, type: 'dashed', color: '#64748b' },
+          tooltip: { show: false },
+        },
+        {
+          name: '下行尾部',
+          type: 'scatter',
+          data: pointsForTail('lower'),
+          symbolSize: 7,
+          itemStyle: { color: '#f43f5e' },
+        },
+        {
+          name: '中部样本',
+          type: 'scatter',
+          data: pointsForTail('center'),
+          symbolSize: 5,
+          itemStyle: { color: '#38bdf8', opacity: 0.72 },
+        },
+        {
+          name: '上行尾部',
+          type: 'scatter',
+          data: pointsForTail('upper'),
+          symbolSize: 7,
+          itemStyle: { color: '#10b981' },
+        },
+      ],
+    };
+  }, [normalQqData]);
+
+  const simulationInitialNav = FUTURE_SIMULATION_INITIAL_NAV;
+  const simulationSeed = `${productId}-${statisticsPeriod}-${simulationHorizon}-${simulationPathCount}-${simulationRun}`;
+  const parametricSimulation = useMemo(() => simulateParametricMonteCarlo({
+    returnsPercent: dailyReturnValues,
+    initialNav: simulationInitialNav,
+    horizonDays: simulationHorizon,
+    pathCount: simulationPathCount,
+    targetReturnPercent: simulationTargetReturn,
+    seed: `${simulationSeed}-parametric`,
+  }), [
+    dailyReturnValues,
+    simulationHorizon,
+    simulationInitialNav,
+    simulationPathCount,
+    simulationSeed,
+    simulationTargetReturn,
+  ]);
+  const bootstrapSimulation = useMemo(() => simulateStationaryBlockBootstrap({
+    returnsPercent: dailyReturnValues,
+    initialNav: simulationInitialNav,
+    horizonDays: simulationHorizon,
+    pathCount: simulationPathCount,
+    targetReturnPercent: simulationTargetReturn,
+    averageBlockLength: bootstrapBlockLength,
+    seed: `${simulationSeed}-bootstrap`,
+  }), [
+    bootstrapBlockLength,
+    dailyReturnValues,
+    simulationHorizon,
+    simulationInitialNav,
+    simulationPathCount,
+    simulationSeed,
+    simulationTargetReturn,
+  ]);
+  const activeSimulation = simulationMethod === 'parametric' ? parametricSimulation : bootstrapSimulation;
+  const simulationComparison = useMemo(() => (
+    parametricSimulation && bootstrapSimulation
+      ? compareSimulations(parametricSimulation, bootstrapSimulation)
+      : null
+  ), [bootstrapSimulation, parametricSimulation]);
+  const terminalNavDensity = useMemo(
+    () => buildTerminalNavDensity(activeSimulation?.terminalValues ?? []),
+    [activeSimulation],
+  );
+
+  const simulationOption = useMemo(() => {
+    if (!activeSimulation || !terminalNavDensity || simulationInitialNav === null) {
+      return undefined;
+    }
+    const percentileSeries = [
+      { name: '5% 分位', data: activeSimulation.percentiles.p05, color: '#f43f5e', type: 'dashed', width: 1.5 },
+      { name: '25% 分位', data: activeSimulation.percentiles.p25, color: '#f59e0b', type: 'dashed', width: 1 },
+      { name: '中位路径', data: activeSimulation.percentiles.p50, color: '#7c3aed', type: 'solid', width: 2.5 },
+      { name: '75% 分位', data: activeSimulation.percentiles.p75, color: '#0ea5e9', type: 'dashed', width: 1 },
+      { name: '95% 分位', data: activeSimulation.percentiles.p95, color: '#10b981', type: 'dashed', width: 1.5 },
+    ];
+    const navValues = [
+      ...activeSimulation.percentiles.p05,
+      ...activeSimulation.percentiles.p95,
+      terminalNavDensity.minNav,
+      terminalNavDensity.maxNav,
+    ];
+    const observedMin = Math.min(...navValues);
+    const observedMax = Math.max(...navValues);
+    const navPadding = Math.max((observedMax - observedMin) * 0.04, Math.abs(observedMax) * 0.001, 0.0001);
+    const navAxisMin = Math.max(0, observedMin - navPadding);
+    const navAxisMax = observedMax + navPadding;
+    const histogramBinWidth = Math.max(
+      terminalNavDensity.histogram[0]?.upperNav - terminalNavDensity.histogram[0]?.lowerNav,
+      Number.EPSILON,
+    );
+    const densityCountFactor = terminalNavDensity.sampleSize * histogramBinWidth;
+    const densityCountPoints = terminalNavDensity.points.map((point) => ({
+      nav: point.nav,
+      count: point.density * densityCountFactor,
+    }));
+    const countAxisMax = Math.max(
+      1,
+      Math.ceil(
+        Math.max(
+          ...terminalNavDensity.histogram.map((bin) => bin.count),
+          ...densityCountPoints.map((point) => point.count),
+        ) * 1.08,
+      ),
+    );
+    return {
+      animation: false,
+      aria: {
+        enabled: true,
+        decal: { show: true },
+        description: `${activeSimulation.methodLabel}虚拟净值路径图，右侧叠加 ${terminalNavDensity.sampleSize} 条模拟期末净值的横向直方图与概率密度曲线。`,
+      },
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (value: number | string) => formatDecimal(Number(value), 4),
+      },
+      legend: {
+        data: percentileSeries.map((series) => series.name),
+        top: 4,
+        textStyle: { color: '#475569', fontSize: 11 },
+      },
+      graphic: [{
+        type: 'text',
+        left: '84%',
+        top: 48,
+        silent: true,
+        style: { text: '期末净值分布', fill: '#64748b', fontSize: 11, fontWeight: 600 },
+      }],
+      grid: [
+        { left: 52, right: '19%', bottom: 58, top: 58 },
+        { left: '83%', right: '2.5%', bottom: 58, top: 58 },
+      ],
+      xAxis: [
+        {
+          type: 'category',
+          gridIndex: 0,
+          name: '未来交易日',
+          data: activeSimulation.days,
+          boundaryGap: false,
+          axisLabel: { color: '#475569' },
+          axisLine: { lineStyle: { color: '#cbd5e1' } },
+        },
+        {
+          type: 'value',
+          gridIndex: 1,
+          name: '路径数',
+          nameLocation: 'middle',
+          nameGap: 28,
+          min: 0,
+          max: countAxisMax,
+          minInterval: 1,
+          splitNumber: 2,
+          axisLabel: { show: true, color: '#64748b', fontSize: 9, formatter: (value: number) => Math.round(value) },
+          axisTick: { show: false },
+          splitLine: { show: false },
+          axisLine: { lineStyle: { color: '#cbd5e1' } },
+          nameTextStyle: { color: '#64748b', fontSize: 10 },
+        },
+      ],
+      yAxis: [
+        {
+          type: 'value',
+          gridIndex: 0,
+          name: '虚拟净值',
+          min: navAxisMin,
+          max: navAxisMax,
+          axisLabel: { color: '#475569', formatter: (value: number) => formatDecimal(value, 3) },
+          splitLine: { lineStyle: { color: '#e2e8f0' } },
+        },
+        {
+          type: 'value',
+          gridIndex: 1,
+          min: navAxisMin,
+          max: navAxisMax,
+          axisLabel: { show: false },
+          axisTick: { show: false },
+          splitLine: { show: false },
+          axisLine: { show: true, lineStyle: { color: '#cbd5e1' } },
+        },
+      ],
+      dataZoom: simulationHorizon > 126
+        ? [
+            { type: 'inside', xAxisIndex: 0, start: 0, end: 100 },
+            { xAxisIndex: 0, start: 0, end: 100, left: 52, right: '19%' },
+          ]
+        : [],
+      series: [
+        ...activeSimulation.samplePaths.map((path, index) => ({
+          name: `样本路径 ${index + 1}`,
+          type: 'line',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: path,
+          showSymbol: false,
+          silent: true,
+          lineStyle: { width: 0.7, color: '#94a3b8', opacity: 0.22 },
+          emphasis: { disabled: true },
+        })),
+        ...percentileSeries.map((series) => ({
+          name: series.name,
+          type: 'line',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: series.data,
+          showSymbol: false,
+          lineStyle: { width: series.width, color: series.color, type: series.type },
+        })),
+        {
+          name: '期末净值密度填充',
+          type: 'custom',
+          coordinateSystem: 'cartesian2d',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          silent: true,
+          z: 1,
+          data: [[countAxisMax, terminalNavDensity.minNav]],
+          renderItem: (_params: any, api: any) => {
+            const curve = densityCountPoints.map((point) => api.coord([point.count, point.nav]));
+            const baseline = densityCountPoints
+              .slice()
+              .reverse()
+              .map((point) => api.coord([0, point.nav]));
+            return {
+              type: 'polygon',
+              shape: { points: [...curve, ...baseline] },
+              style: { fill: 'rgba(124, 58, 237, 0.08)' },
+            };
+          },
+        },
+        {
+          name: '期末净值直方图',
+          type: 'custom',
+          coordinateSystem: 'cartesian2d',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          z: 2,
+          data: terminalNavDensity.histogram.map((bin) => [bin.count, bin.lowerNav, bin.upperNav]),
+          renderItem: (_params: any, api: any) => {
+            const lower = api.coord([0, api.value(1)]);
+            const upper = api.coord([api.value(0), api.value(2)]);
+            const height = Math.max(1, lower[1] - upper[1] - 1);
+            return {
+              type: 'rect',
+              shape: { x: lower[0], y: upper[1] + 0.5, width: Math.max(0, upper[0] - lower[0]), height },
+              style: { fill: 'rgba(124, 58, 237, 0.18)', stroke: 'rgba(124, 58, 237, 0.34)', lineWidth: 0.5 },
+            };
+          },
+          tooltip: {
+            trigger: 'item',
+            formatter: (params: any) => {
+              const data = Array.isArray(params?.data) ? params.data : [];
+              return [
+                '期末净值直方图',
+                `${formatDecimal(Number(data[1]), 4)} ~ ${formatDecimal(Number(data[2]), 4)}`,
+                `路径数：${Number(data[0]) || 0}`,
+              ].join('<br/>');
+            },
+          },
+        },
+        {
+          name: '期末净值概率密度',
+          type: 'line',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: densityCountPoints.map((point) => [point.count, point.nav]),
+          showSymbol: false,
+          lineStyle: { width: 2, color: '#7c3aed' },
+          emphasis: { disabled: true },
+          z: 3,
+          tooltip: {
+            trigger: 'item',
+            formatter: (params: any) => {
+              const nav = Number(Array.isArray(params?.data) ? params.data[1] : Number.NaN);
+              const estimatedCount = Number(Array.isArray(params?.data) ? params.data[0] : Number.NaN);
+              const simulatedReturn = Number.isFinite(nav) ? nav / simulationInitialNav - 1 : Number.NaN;
+              return [
+                '期末净值概率密度',
+                `期末净值：${formatDecimal(nav, 4)}`,
+                `区间估算路径数：${Number.isFinite(estimatedCount) ? formatDecimal(estimatedCount, 1) : '--'}`,
+                `相对当前收益率：${Number.isFinite(simulatedReturn) ? formatRatioPercent(simulatedReturn) : '--'}`,
+              ].join('<br/>');
+            },
+          },
+        },
+        {
+          name: '期末中位数参考线',
+          type: 'line',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: [[0, activeSimulation.terminal.p50], [countAxisMax, activeSimulation.terminal.p50]],
+          showSymbol: false,
+          silent: true,
+          lineStyle: { width: 1.5, type: 'dotted', color: '#7c3aed' },
+          z: 4,
+        },
+      ],
+    };
+  }, [activeSimulation, simulationHorizon, simulationInitialNav, terminalNavDensity]);
 
   const statisticsRange = useMemo(() => {
     if (dailyReturns.length === 0) {
@@ -1331,10 +1812,10 @@ export default function ProductDetail() {
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => window.open('/research', '_self')}
+          onClick={() => returnToOrigin(navigate, location, `/research?kind=${productKind}`)}
           className="inline-flex items-center rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-600"
         >
-          ← 返回
+          ← {returnNavigation?.returnLabel ?? '返回上一页'}
         </button>
       </div>
 
@@ -1360,13 +1841,8 @@ export default function ProductDetail() {
         <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">暂无可展示的产品详情。</div>
       ) : (
         <>
-          {demoNotice && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              {demoNotice}
-            </div>
-          )}
           <section className="space-y-6 rounded-3xl bg-white p-8 shadow-sm ring-1 ring-slate-100">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
               <div>
                 <div className="text-sm font-semibold uppercase tracking-wide text-emerald-500">产品研究</div>
                 <h1 className="mt-2 text-3xl font-bold text-slate-900">{detail.name ?? '--'}</h1>
@@ -1374,6 +1850,14 @@ export default function ProductDetail() {
                   {tsCode && <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-emerald-600">{tsCode}</span>}
                   {detail.management && <span>管理人：{formatText(detail.management)}</span>}
                   {detail.custodian && <span>托管人：{formatText(detail.custodian)}</span>}
+                  <span aria-label={`${inceptionDateLabel}：${inceptionDateText}`}>
+                    {inceptionDateLabel}：{inceptionDateText}
+                  </span>
+                  {endDate && (
+                    <span aria-label={`${endDateLabel}：${endDateText}`}>
+                      {endDateLabel}：{endDateText}
+                    </span>
+                  )}
                   {detail.status && (
                     <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
                       {formatText(detail.status)}
@@ -1381,11 +1865,16 @@ export default function ProductDetail() {
                   )}
                 </div>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-2 xl:min-w-[650px] xl:grid-cols-3">
                 <MetricCard
                   title="发行规模"
                   value={formatIssueAmount(metrics.issue_amount)}
                   description="基于信息表披露的发行规模"
+                />
+                <MetricCard
+                  title="当前规模"
+                  value={formatIssueAmount(metrics.current_size)}
+                  description={currentSizeDescription}
                 />
                 <MetricCard
                   title="管理 / 托管费"
@@ -1395,6 +1884,69 @@ export default function ProductDetail() {
               </div>
             </div>
           </section>
+
+          <section className="rounded-3xl border border-violet-100 bg-violet-50/40 p-6 shadow-sm" aria-labelledby="custom-research-indicators-title">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 id="custom-research-indicators-title" className="text-lg font-semibold text-slate-900">自定义研究指标</h2>
+                <p className="mt-1 max-w-2xl text-sm text-slate-600">
+                  使用工作区已保存的公式，基于该产品的真实净值计算研究指标。它们与下方仅用于图表叠加的 MA、BOLL、KDJ 技术辅助线相互独立。
+                </p>
+              </div>
+              <Link
+                to={`/indicator-studio?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
+                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2"
+              >
+                在指标中心分析
+              </Link>
+            </div>
+            {researchIndicators.length > 0 && (
+              <div className="mt-4 rounded-2xl border border-violet-100 bg-white p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                  <MetricSelector
+                    indicators={researchIndicators}
+                    selectedIds={researchPreference.indicatorIds}
+                    onChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))}
+                    maxSelected={8}
+                    label="选择研究指标"
+                  />
+                  <div className="grid gap-3">
+                    <label className="text-sm font-medium text-slate-700">截止日（可选）
+                      <input type="date" value={researchAsOf} onChange={(event) => setResearchAsOf(event.target.value)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" />
+                    </label>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs text-slate-500">每个指标可独立选择计算区间；系统会按区间分组计算。</p>
+                <div className="mt-4" aria-live="polite">
+                  {researchLoading && <p className="mb-3 text-sm text-slate-500">正在基于真实数据批量计算…</p>}
+                  {researchError ? <p className="text-sm text-rose-600">{researchError}</p> : (
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      {selectedResearchIndicators.map((indicator) => <MetricResultCard
+                        key={indicator.id}
+                        indicator={indicator}
+                        result={researchResults.find((result) => result.indicator_id === indicator.id)}
+                        period={metricPeriodFor(researchPreference, indicator.id, '1Y')}
+                        periodOptions={researchPeriods}
+                        onPeriodChange={(period) => setResearchPreference((current) => ({
+                          ...current,
+                          periodsByIndicator: { ...current.periodsByIndicator, [indicator.id]: period },
+                        }))}
+                        onRemove={() => setResearchPreference((current) => withSelectedIndicators(
+                          current,
+                          current.indicatorIds.filter((id) => id !== indicator.id),
+                          '1Y',
+                        ))}
+                        onDefinition={() => setDefinitionIndicator(indicator)}
+                      />)}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            {researchIndicators.length === 0 && !researchError && <div className="mt-4 rounded-2xl border border-dashed border-violet-200 bg-white px-4 py-3 text-sm text-slate-600">工作区尚无保存的自定义指标。请先在指标中心新建或复制内置指标。</div>}
+            {researchIndicators.length === 0 && researchError && <p className="mt-4 text-sm text-rose-600" role="status">{researchError}</p>}
+          </section>
+          <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
 
           <section className="space-y-6 rounded-3xl bg-white p-8 shadow-sm ring-1 ring-slate-100">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1464,16 +2016,33 @@ export default function ProductDetail() {
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">统计分析</h2>
-                <p className="text-sm text-slate-500">基于日度收盘价计算收益率，辅助评估分布特征与波动水平。</p>
+                <p className="text-sm text-slate-500">基于所选区间的日度收盘价计算收益率，辅助评估分布特征与波动水平。</p>
               </div>
-              {statisticsRange && (
-                <div className="text-xs text-slate-500">
-                  样本区间：{statisticsRange.start} ~ {statisticsRange.end}（共 {statisticsRange.count} 个交易日）
-                </div>
-              )}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
+                  统计区间
+                  <select
+                    aria-label="统计区间"
+                    value={statisticsPeriod}
+                    onChange={(event) => setStatisticsPeriod(event.target.value as StatisticsPeriod)}
+                    className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-sm focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
+                  >
+                    {STATISTICS_PERIOD_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {statisticsRange && (
+                  <div className="text-xs text-slate-500">
+                    样本区间：{statisticsRange.start} ~ {statisticsRange.end}（共 {statisticsRange.count} 个交易日）
+                  </div>
+                )}
+              </div>
             </div>
             {dailyReturns.length === 0 ? (
-              <div className="rounded-2xl bg-slate-50 p-10 text-center text-slate-400">暂无足够的日度收益数据用于统计分析。</div>
+              <div className="rounded-2xl bg-slate-50 p-10 text-center text-slate-500">
+                {statisticsWindow.message ?? '暂无足够的日度收益数据用于统计分析。'}
+              </div>
             ) : (
               <>
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
@@ -1484,15 +2053,15 @@ export default function ProductDetail() {
                   <ExtremesCard best={formatSignedPercent(returnStats.best)} worst={formatSignedPercent(returnStats.worst)} />
                 </div>
                 <div className="grid gap-4 md:grid-cols-3">
-                  <MetricCard
+                  <DistributionMetricCard
                     title="偏度"
                     value={formatSignedDecimal(returnStats.skewness)}
-                    description="衡量分布左/右尾的偏移程度"
+                    interpretation={skewnessInterpretation}
                   />
-                  <MetricCard
+                  <DistributionMetricCard
                     title="峰度（超额）"
                     value={formatSignedDecimal(returnStats.kurtosis)}
-                    description="评估尾部厚度与尖峰程度"
+                    interpretation={kurtosisInterpretation}
                   />
                   <MetricCard
                     title="正态性检验"
@@ -1547,47 +2116,279 @@ export default function ProductDetail() {
                     </div>
                   </div>
                 </div>
-                <div className="rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
-                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-900">箱形图</h3>
-                      <p className="text-xs text-slate-500">观察中位数、分位区间与离群值</p>
+                <div data-testid="distribution-diagnostics-grid" className="grid gap-6 lg:grid-cols-2">
+                  <div className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-900">箱形图</h3>
+                        <p className="text-xs text-slate-500">横向观察中位数、分位区间与离群值</p>
+                      </div>
+                      {boxPlotData && (
+                        <span className="text-xs text-slate-500">离群值：{boxPlotData.outliers.length} 个</span>
+                      )}
+                    </div>
+                    <div className="mt-4">
+                      {boxPlotOption ? (
+                        <ReactECharts option={boxPlotOption} style={{ height: 280 }} notMerge lazyUpdate />
+                      ) : (
+                        <div className="h-[280px] rounded-2xl bg-white/60 text-center text-sm leading-[280px] text-slate-400">
+                          样本量不足，无法构建箱形图
+                        </div>
+                      )}
                     </div>
                     {boxPlotData && (
-                      <span className="text-xs text-slate-500">离群值：{boxPlotData.outliers.length} 个</span>
+                      <dl className="mt-4 grid gap-4 text-xs text-slate-600 sm:grid-cols-3">
+                        <div>
+                          <dt className="font-medium text-slate-500">中位数</dt>
+                          <dd className="mt-1 text-sm font-semibold text-slate-900">
+                            {formatSignedPercent(boxPlotData.quartiles.median, 2)}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="font-medium text-slate-500">四分位距 (IQR)</dt>
+                          <dd className="mt-1 text-sm font-semibold text-slate-900">
+                            {formatSignedPercent(boxPlotData.quartiles.q3 - boxPlotData.quartiles.q1, 2)}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="font-medium text-slate-500">箱须范围</dt>
+                          <dd className="mt-1 text-sm font-semibold text-slate-900">
+                            {formatSignedPercent(boxPlotData.whiskers.lower, 2)} ~ {formatSignedPercent(boxPlotData.whiskers.upper, 2)}
+                          </dd>
+                        </div>
+                      </dl>
                     )}
                   </div>
-                  <div className="mt-4">
-                    {boxPlotOption ? (
-                      <ReactECharts option={boxPlotOption} style={{ height: 260 }} notMerge lazyUpdate />
-                    ) : (
-                      <div className="h-[260px] rounded-2xl bg-white/60 text-center text-sm leading-[260px] text-slate-400">
-                        样本量不足，无法构建箱形图
+                  <div className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-900">正态 Q-Q 图</h3>
+                        <p className="text-xs text-slate-500">实际收益率分位点与理论正态分位点比较</p>
                       </div>
+                      <span className="w-fit rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
+                        {skewnessInterpretation.label} · {kurtosisInterpretation.label}
+                      </span>
+                    </div>
+                    <div className="mt-4">
+                      {normalQqOption ? (
+                        <ReactECharts option={normalQqOption} style={{ height: 280 }} notMerge lazyUpdate />
+                      ) : (
+                        <div className="flex h-[280px] items-center justify-center rounded-2xl bg-white/60 text-sm text-slate-400">
+                          至少需要 3 个有效日收益率才能构建 Q-Q 图
+                        </div>
+                      )}
+                    </div>
+                    <p className="mt-4 text-xs leading-5 text-slate-500">
+                      左端低于参考线表示下行尾部更厚；右端高于参考线表示上行尾部更厚；两端同时外扩通常意味着极端涨跌多于正态分布。
+                    </p>
+                    {normalQqTableRows.length > 0 && (
+                      <details className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+                        <summary className="cursor-pointer font-medium text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                          查看关键分位点数据
+                        </summary>
+                        <div className="mt-2 max-h-56 overflow-auto">
+                          <table className="min-w-full divide-y divide-slate-200 text-left">
+                            <caption className="sr-only">正态 Q-Q 图关键分位点数据表</caption>
+                            <thead>
+                              <tr>
+                                <th scope="col" className="px-2 py-2 text-slate-500">样本分位</th>
+                                <th scope="col" className="px-2 py-2 text-right text-slate-500">理论分位数</th>
+                                <th scope="col" className="px-2 py-2 text-right text-slate-500">实际日收益率</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {normalQqTableRows.map((point) => (
+                                <tr key={point.percentile}>
+                                  <td className="px-2 py-2 text-slate-600">{(point.percentile * 100).toFixed(1)}%</td>
+                                  <td className="px-2 py-2 text-right tabular-nums text-slate-600">{point.theoreticalQuantile.toFixed(2)}</td>
+                                  <td className="px-2 py-2 text-right tabular-nums text-slate-900">{formatSignedPercent(point.observedReturn, 2)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </details>
                     )}
                   </div>
-                  {boxPlotData && (
-                    <dl className="mt-4 grid gap-4 text-xs text-slate-600 sm:grid-cols-3">
-                      <div>
-                        <dt className="font-medium text-slate-500">中位数</dt>
-                        <dd className="mt-1 text-sm font-semibold text-slate-900">
-                          {formatSignedPercent(boxPlotData.quartiles.median, 2)}
-                        </dd>
+                </div>
+                <div className="rounded-2xl border border-violet-100 bg-violet-50/40 p-5" aria-labelledby="future-simulation-title">
+                  <div>
+                    <div className="max-w-2xl">
+                      <h3 id="future-simulation-title" className="text-base font-semibold text-slate-900">未来虚拟净值模拟</h3>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">
+                        参数化蒙特卡洛使用 sinh-arcsinh 分布同时校准历史对数收益的均值、波动率、偏度与超额峰度；区块 Bootstrap 成段抽取历史收益，额外保留短期时序依赖。
+                      </p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                        所有路径统一从虚拟净值 1.0000 出发；期末 0.9000 表示亏损 10%，1.1000 表示盈利 10%。
+                      </p>
+                    </div>
+                    <div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                      <label className="text-xs font-medium text-slate-600">
+                        模拟未来区间
+                        <select
+                          aria-label="模拟未来区间"
+                          value={simulationHorizon}
+                          onChange={(event) => setSimulationHorizon(Number(event.target.value))}
+                          className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                        >
+                          {MONTE_CARLO_HORIZON_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="text-xs font-medium text-slate-600">
+                        模拟路径数
+                        <select
+                          aria-label="模拟路径数"
+                          value={simulationPathCount}
+                          onChange={(event) => setSimulationPathCount(Number(event.target.value))}
+                          className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                        >
+                          {MONTE_CARLO_PATH_OPTIONS.map((count) => (
+                            <option key={count} value={count}>{count} 条</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="text-xs font-medium text-slate-600">
+                        Bootstrap 平均区块
+                        <select
+                          aria-label="Bootstrap 平均区块长度"
+                          value={bootstrapBlockLength}
+                          onChange={(event) => setBootstrapBlockLength(Number(event.target.value))}
+                          className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                        >
+                          {BOOTSTRAP_BLOCK_LENGTH_OPTIONS.map((length) => (
+                            <option key={length} value={length}>{length} 个交易日</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="text-xs font-medium text-slate-600">
+                        目标期末收益率
+                        <span className="relative mt-1 block">
+                          <input
+                            aria-label="目标期末收益率"
+                            type="number"
+                            min="-100"
+                            max="1000"
+                            step="1"
+                            value={simulationTargetReturn}
+                            onChange={(event) => setSimulationTargetReturn(Math.max(-100, Math.min(1000, Number(event.target.value) || 0)))}
+                            className="min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 pr-8 text-sm"
+                          />
+                          <span className="pointer-events-none absolute right-3 top-2.5 text-sm text-slate-400">%</span>
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setSimulationRun((current) => current + 1)}
+                        className="min-h-10 self-end rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2"
+                      >
+                        重新模拟
+                      </button>
+                    </div>
+                  </div>
+                  <fieldset className="mt-5">
+                    <legend className="sr-only">模拟方法</legend>
+                    <div className="inline-flex rounded-xl border border-violet-200 bg-white p-1" aria-label="模拟方法">
+                      {([
+                        ['parametric', '参数化蒙特卡洛'],
+                        ['block_bootstrap', '区块 Bootstrap'],
+                      ] as Array<[SimulationMethod, string]>).map(([method, label]) => (
+                        <label
+                          key={method}
+                          className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-semibold transition ${simulationMethod === method ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-violet-50'}`}
+                        >
+                          <input
+                            className="sr-only"
+                            type="radio"
+                            name="simulation-method"
+                            value={method}
+                            checked={simulationMethod === method}
+                            onChange={() => setSimulationMethod(method)}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  {activeSimulation && simulationOption ? (
+                    <>
+                      <p className="mt-3 text-xs leading-5 text-slate-600" aria-live="polite">
+                        当前方法：{activeSimulation.methodLabel}；样本 {activeSimulation.assumptions.sourceObservationCount} 个日收益观察值。
+                        {activeSimulation.method === 'parametric'
+                          ? ` 日均对数收益 ${formatRatioPercent(activeSimulation.assumptions.meanDailyLogReturn)}，日波动 ${formatRatioPercent(activeSimulation.assumptions.dailyLogVolatility)}；历史对数收益偏度 ${formatDecimal(activeSimulation.assumptions.historicalLogSkewness, 2)}、超额峰度 ${formatDecimal(activeSimulation.assumptions.historicalLogExcessKurtosis, 2)}，拟合值分别为 ${formatDecimal(activeSimulation.assumptions.fittedLogSkewness, 2)}、${formatDecimal(activeSimulation.assumptions.fittedLogExcessKurtosis, 2)}（${activeSimulation.assumptions.shapeCalibrationStatus === 'matched' ? '四矩校准已匹配' : activeSimulation.assumptions.shapeCalibrationStatus === 'approximate' ? '四矩近似校准' : '正态安全降级'}）。`
+                          : ` 平均区块长度 ${activeSimulation.assumptions.averageBlockLength} 个交易日；区块边界随机，实际区块长度会变化。`}
+                      </p>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-live="polite">
+                        <MetricCard title="期末 5% 分位" value={formatDecimal(activeSimulation.terminal.p05, 4)} description="偏悲观情景，不等同于最大损失" />
+                        <MetricCard title="期末中位净值" value={formatDecimal(activeSimulation.terminal.p50, 4)} description="一半路径高于该值" />
+                        <MetricCard title="期末 95% 分位" value={formatDecimal(activeSimulation.terminal.p95, 4)} description="偏乐观情景，不等同于收益承诺" />
+                        <MetricCard title="期末亏损概率" value={formatRatioPercent(activeSimulation.terminal.lossProbability)} description={`${simulationPathCount} 条虚拟路径中的样本比例`} />
+                        <MetricCard title="95% VaR（损失）" value={formatRatioPercent(activeSimulation.terminal.valueAtRisk95)} description="期末收益 5% 分位对应的损失幅度" />
+                        <MetricCard title="95% CVaR（预期短缺）" value={formatRatioPercent(activeSimulation.terminal.conditionalValueAtRisk95)} description="最差 5% 期末情景的平均损失" />
+                        <MetricCard title="平均最大回撤" value={formatRatioPercent(activeSimulation.terminal.averageMaxDrawdown)} description="每条模拟路径最大回撤的平均值" />
+                        <MetricCard title={`达到 ${simulationTargetReturn}% 概率`} value={formatRatioPercent(activeSimulation.terminal.targetHitProbability)} description="期末收益达到目标的路径比例" />
                       </div>
-                      <div>
-                        <dt className="font-medium text-slate-500">四分位距 (IQR)</dt>
-                        <dd className="mt-1 text-sm font-semibold text-slate-900">
-                          {formatSignedPercent(boxPlotData.quartiles.q3 - boxPlotData.quartiles.q1, 2)}
-                        </dd>
+                      <div
+                        data-testid="monte-carlo-combined-chart"
+                        aria-label={`${activeSimulation.methodLabel}：路径与期末净值概率分布组合图`}
+                        className="mt-4 rounded-2xl bg-white p-3"
+                      >
+                        <ReactECharts option={simulationOption} style={{ height: 360 }} notMerge lazyUpdate />
                       </div>
-                      <div>
-                        <dt className="font-medium text-slate-500">箱体范围</dt>
-                        <dd className="mt-1 text-sm font-semibold text-slate-900">
-                          {formatSignedPercent(boxPlotData.whiskers.lower, 2)} ~ {formatSignedPercent(boxPlotData.whiskers.upper, 2)}
-                        </dd>
-                      </div>
-                    </dl>
+                      <p className="mt-2 text-xs leading-5 text-slate-500">
+                        右侧约占图表六分之一：横向柱状图按期末净值区间展示实际路径数，共计 {terminalNavDensity?.sampleSize ?? 0} 条；紫色曲线为同一批模拟结果的平滑概率密度，并按区间路径数尺度对齐。
+                      </p>
+                      {parametricSimulation && bootstrapSimulation && simulationComparison && simulationInitialNav !== null && (
+                        <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                          <div className="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <h4 className="text-sm font-semibold text-slate-900">双模型结果对比</h4>
+                              <p className="mt-1 text-xs text-slate-500">同一历史区间、未来周期、路径数、目标收益与随机轮次。</p>
+                            </div>
+                            <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${simulationComparison.level === 'high' ? 'bg-rose-100 text-rose-700' : simulationComparison.level === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                              模型敏感度：{simulationComparison.level === 'high' ? '高' : simulationComparison.level === 'medium' ? '中' : '低'}
+                            </span>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
+                              <caption className="sr-only">参数化蒙特卡洛与区块 Bootstrap 模拟结果对比</caption>
+                              <thead className="bg-slate-50 text-slate-500">
+                                <tr>
+                                  <th scope="col" className="px-4 py-3">模型</th>
+                                  <th scope="col" className="px-3 py-3 text-right">5% 分位收益</th>
+                                  <th scope="col" className="px-3 py-3 text-right">中位收益</th>
+                                  <th scope="col" className="px-3 py-3 text-right">亏损概率</th>
+                                  <th scope="col" className="px-3 py-3 text-right">95% CVaR</th>
+                                  <th scope="col" className="px-3 py-3 text-right">平均最大回撤</th>
+                                  <th scope="col" className="px-4 py-3 text-right">目标达成概率</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 text-slate-700">
+                                {[parametricSimulation, bootstrapSimulation].map((simulation) => (
+                                  <tr key={simulation.method}>
+                                    <th scope="row" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">{simulation.methodLabel}</th>
+                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.p05 / simulationInitialNav - 1)}</td>
+                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.p50 / simulationInitialNav - 1)}</td>
+                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.lossProbability)}</td>
+                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.conditionalValueAtRisk95)}</td>
+                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.averageMaxDrawdown)}</td>
+                                    <td className="px-4 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.targetHitProbability)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <p className="border-t border-slate-100 px-4 py-3 text-xs leading-5 text-slate-600">{simulationComparison.message}</p>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="mt-5 rounded-2xl bg-white p-8 text-center text-sm text-slate-500">所选区间至少需要 {MIN_SIMULATION_OBSERVATIONS} 个有效日收益观察值，当前无法进行模拟。</div>
                   )}
+                  <p className="mt-3 text-xs leading-5 text-slate-500">
+                    两种方法都是基于历史样本和模型假设的情景生成，不预测市场状态切换、结构性变化或未来事件，不构成收益预测或投资建议。
+                  </p>
                 </div>
               </>
             )}

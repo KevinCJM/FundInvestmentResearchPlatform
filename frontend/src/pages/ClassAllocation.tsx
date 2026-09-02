@@ -5,6 +5,7 @@ import HorizontalMetricComparison, {
   PerformanceQuadrantChart,
 } from '../components/HorizontalMetricComparison';
 import { buildAnnualMetricRows, computeAnnualMetrics } from '../utils/performance';
+import { useNavigate } from 'react-router-dom';
 
 // Helper component for section titles
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -43,6 +44,7 @@ const normalizeForKey = (value: any): any => {
 const stableStringify = (value: any): string => JSON.stringify(normalizeForKey(value));
 
 export default function ClassAllocation() {
+  const navigate = useNavigate();
   // State for UI interaction
   const [returnMetric, setReturnMetric] = useState('annual_mean');
   const [riskMetric, setRiskMetric] = useState('annual_vol');
@@ -111,6 +113,21 @@ export default function ClassAllocation() {
   const backtestButtonRef = useRef<HTMLButtonElement | null>(null);
   const [overlayOffset, setOverlayOffset] = useState<number | null>(null);
   const [btYAxisRange, setBtYAxisRange] = useState<{ min: number; max: number } | null>(null);
+
+  const enterPortfolioResearch = useCallback(() => {
+    const seen = new Set<string>();
+    const constituents = (configDetails ?? []).flatMap((item) => {
+      if (!item.code || seen.has(item.code)) return [];
+      seen.add(item.code);
+      return [{ kind: 'etf', product_id: item.code, code: item.code, name: item.name, weight: 0, risk_budget: 0 }];
+    });
+    sessionStorage.setItem('portfolioResearchImport', JSON.stringify({
+      name: selectedAlloc ? `${selectedAlloc} · 产品研究组合` : '来自大类配置的研究组合',
+      method: 'equal_weight',
+      constituents,
+    }));
+    navigate('/portfolio-construction');
+  }, [configDetails, navigate, selectedAlloc]);
 
   const formatWeightPercent = useCallback((value: number) => {
     if (!Number.isFinite(value)) return null;
@@ -704,6 +721,14 @@ export default function ClassAllocation() {
       
       <h1 className="text-2xl font-semibold">大类资产配置</h1>
       <p className="text-sm text-gray-500 mt-1">通过配置风险和收益指标，计算并可视化给定大类构建方案的可配置空间与有效前沿。</p>
+      <button
+        type="button"
+        onClick={enterPortfolioResearch}
+        disabled={!configDetails?.length}
+        className="mt-3 rounded-lg border border-emerald-700 bg-white px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        保存为研究组合 / 进入组合指标
+      </button>
 
       <Section title="选择大类构建方案">
         {loading && <p>正在加载方案列表...</p>}

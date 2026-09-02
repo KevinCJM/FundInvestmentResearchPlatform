@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sys
+from contextlib import asynccontextmanager
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -20,11 +22,16 @@ BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.append(str(BACKEND_DIR))
 
-from optimizer import calculate_efficient_frontier_exploration
+from optimizer import (
+    calculate_efficient_frontier_exploration,
+    warm_optimizer_numba_kernels,
+)
 from backtest_engine import backtest_portfolio, gen_rebalance_dates
 from fit import compute_rolling_corr_classes, compute_class_consistency
 from strategy import compute_risk_budget_weights, compute_target_weights
-from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
+from fit import ClassSpec, ETFSpec, _load_adj_nav, compute_classes_nav, compute_rolling_corr
+from market_data import resolve_market_data_file
+from cal_indicators.typed_numeric_backend import warm_typed_numeric_backend
 
 
 class FrontierRequest(BaseModel):
@@ -103,18 +110,55 @@ class RollingResponse(BaseModel):
     metrics: List[dict]
 
 
-app = FastAPI(title="Risk Parity Backend")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Fail closed until every main-process and worker NJIT lane is hot."""
 
-# 允许前端本地开发联调（Vite 默认 5173 端口）
+    optimizer_status = warm_optimizer_numba_kernels()
+    typed_status = warm_typed_numeric_backend()
+    from services.custom_indicator_routes import indicator_service
+
+    indicator_service.start_compute_engine()
+    _app.state.numba_warmup = {
+        "complete": True,
+        "optimizer": optimizer_status,
+        "indicators": typed_status,
+        "workers": indicator_service.compute_engine.status(),
+    }
+    try:
+        yield
+    finally:
+        indicator_service.close_compute_engine()
+
+
+app = FastAPI(title="Fund Investment Research Platform", lifespan=lifespan)
+
+
+def _cors_origins() -> List[str]:
+    """Read a comma-separated CORS allowlist without permitting wildcard origins."""
+
+    configured = os.getenv("CORS_ALLOW_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+
+    if os.getenv("APP_ENV", "development").lower() != "production":
+        return [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]
+
+    # The built frontend is served from this same FastAPI origin in production,
+    # so cross-origin requests are unnecessary unless explicitly configured.
+    return []
+
+
+# CORS is only needed for separate frontend deployments. Production defaults to
+# same-origin access and never falls back to an unrestricted wildcard.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "*",
-    ],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -133,11 +177,25 @@ try:
     app.include_router(analytics_router)
 except Exception:
     pass
+from services.data_routes import router as data_router
+from services.custom_indicator_routes import router as custom_indicator_router
+from services.instrument_routes import router as instrument_router
+from services.index_routes import router as index_router
+from services.portfolio_routes import router as portfolio_router
+
+app.include_router(data_router)
+app.include_router(custom_indicator_router)
+app.include_router(instrument_router)
+app.include_router(index_router)
+app.include_router(portfolio_router)
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "numba_warmup": getattr(app.state, "numba_warmup", {"complete": False}),
+    }
 
 
 def _round2(n: float) -> float:
@@ -147,15 +205,14 @@ def _round2(n: float) -> float:
 @app.post("/api/risk-parity/solve", response_model=SolveResponse)
 def solve(req: SolveRequest):
     """
-    风险平价求解（使用 data/etf_daily_df.parquet 的 adj_nav 复权净值计算日收益 → 协方差矩阵）：
+    风险平价求解（使用 ETF 与场外公募基金的 adj_nav 复权净值计算日收益 → 协方差矩阵）：
     - 支持目标风险预算（来自前端 riskContribution，占比合计 100）；若未提供则等预算。
     - 非负权重，权重和=1；若 maxLeverage>0，则线性放大到 1+maxLeverage。
     - 目前仅实现基于波动率的风险度量（riskMetric 参数暂不影响计算）。
     """
 
     # 读取并准备收益序列
-    pq = DATA_DIR / "etf_daily_df.parquet"
-    if not pq.exists():
+    if not any(resolve_market_data_file(name, DATA_DIR).exists() for name in ("etf_daily_df.parquet", "fund_nav_df.parquet")):
         # 回退为占比分配
         rc = [max(0.0, float(x.riskContribution)) for x in req.etfs]
         s = sum(rc)
@@ -165,14 +222,7 @@ def solve(req: SolveRequest):
         scale = 1.0 + max(0.0, float(req.maxLeverage))
         return SolveResponse(weights=[_round2(float(w * 100 * scale)) for w in base])
 
-    df = pd.read_parquet(pq)
-    # 规范列
-    for c in ["adj_nav", "ts_code", "name", "date"]:
-        if c not in df.columns:
-            raise ValueError(f"parquet 缺少必要列：{c}")
-    df = df[["ts_code", "name", "date", "adj_nav"]].copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date", "adj_nav"]).sort_values("date")
+    df = _load_adj_nav(DATA_DIR, [item.code for item in req.etfs], [item.name for item in req.etfs])
 
     # 根据前端给的 code/name 匹配 ts_code/name
     series_list: List[pd.Series] = []
@@ -1320,54 +1370,50 @@ def _normalize_numeric_value(
     return number * multiplier
 
 
-@lru_cache(maxsize=1)
-def _cached_etf_info_df(_mtime: float) -> pd.DataFrame:  # noqa: ARG001
+@lru_cache(maxsize=4)
+def _cached_etf_info_df(path_text: str, _mtime_ns: int, _size: int) -> pd.DataFrame:  # noqa: ARG001
     """Load the ETF info DataFrame from parquet with caching."""
-    for fname in ETF_INFO_FILENAMES:
-        path = DATA_DIR / fname
-        if not path.exists():
-            continue
-        try:
-            df = pd.read_parquet(path)
-            if not isinstance(df, pd.DataFrame):
-                continue
-            df = df.copy()
-            df.columns = [str(c) for c in df.columns]
-            date_cols = [
-                "found_date",
-                "due_date",
-                "list_date",
-                "issue_date",
-                "delist_date",
-                "purc_startdate",
-                "redm_startdate",
-            ]
-            for col in date_cols:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors="coerce")
-            numeric_cols = [
-                "issue_amount",
-                "m_fee",
-                "c_fee",
-                "duration_year",
-                "p_value",
-                "min_amount",
-                "exp_return",
-            ]
-            for col in numeric_cols:
-                if col in df.columns:
-                    if col in {"issue_amount", "min_amount"}:
-                        df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, amount_to_wan=True))
-                    elif col in {"m_fee", "c_fee", "exp_return"}:
-                        df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, percent=True))
-                    elif col == "duration_year":
-                        df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, strip_suffixes=("年", "yrs", "year", "years")))
-                    else:
-                        df[col] = df[col].apply(_normalize_numeric_value)
-            return df
-        except Exception:
-            continue
-    return pd.DataFrame()
+    path = Path(path_text)
+    try:
+        df = pd.read_parquet(path)
+        if not isinstance(df, pd.DataFrame):
+            return pd.DataFrame()
+        df = df.copy()
+        df.columns = [str(c) for c in df.columns]
+        date_cols = [
+            "found_date",
+            "due_date",
+            "list_date",
+            "issue_date",
+            "delist_date",
+            "purc_startdate",
+            "redm_startdate",
+        ]
+        for col in date_cols:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+        numeric_cols = [
+            "issue_amount",
+            "m_fee",
+            "c_fee",
+            "duration_year",
+            "p_value",
+            "min_amount",
+            "exp_return",
+        ]
+        for col in numeric_cols:
+            if col in df.columns:
+                if col in {"issue_amount", "min_amount"}:
+                    df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, amount_to_wan=True))
+                elif col in {"m_fee", "c_fee", "exp_return"}:
+                    df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, percent=True))
+                elif col == "duration_year":
+                    df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, strip_suffixes=("年", "yrs", "year", "years")))
+                else:
+                    df[col] = df[col].apply(_normalize_numeric_value)
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 def _build_demo_etf_info_df() -> pd.DataFrame:
@@ -1421,45 +1467,22 @@ def _ensure_demo_etf_info_df() -> pd.DataFrame:
 
 
 def _load_etf_info_df() -> pd.DataFrame:
-    mtimes = []
     for fname in ETF_INFO_FILENAMES:
-        path = DATA_DIR / fname
+        path = resolve_market_data_file(fname, DATA_DIR)
         if path.exists():
-            mtimes.append(path.stat().st_mtime)
-    if not mtimes:
-        return _ensure_demo_etf_info_df()
-    return _cached_etf_info_df(max(mtimes))
+            stat = path.stat()
+            return _cached_etf_info_df(str(path), stat.st_mtime_ns, stat.st_size)
+    return _ensure_demo_etf_info_df()
 
 
 def _load_universe() -> List[dict]:
-    """Load ETF universe from JSON or Parquet under data/.
-    Priority: etf_universe.json -> etf_info_df.parquet -> empty list
+    """Load the ETF universe through the active Tushare manifest.
+
+    Priority: active etf_info_df.parquet -> legacy JSON fallback -> empty list
     Expected fields: ts_code/code and name
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    json_path = DATA_DIR / "etf_universe.json"
-    pq_path = DATA_DIR / "etf_info_df.parquet"
-    if json_path.exists():
-        try:
-            arr = json.loads(json_path.read_text(encoding="utf-8"))
-            out = []
-            for x in arr:
-                code = x.get("code") or x.get("ts_code")
-                name = x.get("name") or x.get("fund_name") or ""
-                mgmt = x.get("management") or x.get("manager")
-                fd = x.get("found_date") or x.get("foundation_date")
-                if code and name:
-                    out.append(
-                        {
-                            "code": str(code),
-                            "name": str(name),
-                            "management": None if mgmt is None else str(mgmt),
-                            "found_date": _normalize_date(fd),
-                        }
-                    )
-            return out
-        except Exception:
-            pass
+    pq_path = resolve_market_data_file("etf_info_df.parquet", DATA_DIR)
     if pq_path.exists():
         try:
             df = pd.read_parquet(pq_path)
@@ -1490,6 +1513,28 @@ def _load_universe() -> List[dict]:
                 return items
         except Exception:
             pass
+    json_path = resolve_market_data_file("etf_universe.json", DATA_DIR)
+    if json_path.exists():
+        try:
+            arr = json.loads(json_path.read_text(encoding="utf-8"))
+            out = []
+            for x in arr:
+                code = x.get("code") or x.get("ts_code")
+                name = x.get("name") or x.get("fund_name") or ""
+                mgmt = x.get("management") or x.get("manager")
+                fd = x.get("found_date") or x.get("foundation_date")
+                if code and name:
+                    out.append(
+                        {
+                            "code": str(code),
+                            "name": str(name),
+                            "management": None if mgmt is None else str(mgmt),
+                            "found_date": _normalize_date(fd),
+                        }
+                    )
+            return out
+        except Exception:
+            pass
     return []
 
 
@@ -1510,19 +1555,19 @@ def _normalize_date(v) -> Optional[str]:
 
 
 @lru_cache(maxsize=1)
-def _cached_universe_with_mtime(mtime: float) -> List[dict]:  # noqa: ARG001
+def _cached_universe_with_mtime(identity: tuple[tuple[str, int, int], ...]) -> List[dict]:  # noqa: ARG001
     return _load_universe()
 
 
 def _get_universe() -> List[dict]:
     # Invalidate cache when files change
-    mtimes = []
+    identities = []
     for fname in ("etf_universe.json", "etf_info_df.parquet"):
-        p = DATA_DIR / fname
+        p = resolve_market_data_file(fname, DATA_DIR)
         if p.exists():
-            mtimes.append(p.stat().st_mtime)
-    m = max(mtimes) if mtimes else 0.0
-    return _cached_universe_with_mtime(m)
+            stat = p.stat()
+            identities.append((str(p), stat.st_mtime_ns, stat.st_size))
+    return _cached_universe_with_mtime(tuple(identities))
 
 
 @app.get("/api/etf/search")

@@ -32,16 +32,30 @@ parquet_cache/
 # Frontend build
 frontend/node_modules/
 frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Tooling metadata
 .gemini/
 .codex/
 .specify/
+.codegraph/
+
+# Local visual QA artifacts
+design-qa.md
+design-qa-*.png
 
 # Secrets
 .env
 .env.*
+!.env.example
 
 # Local-only helpers
 local_test.py
-
