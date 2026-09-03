@@ -167,6 +167,17 @@ class EvaluateRequest(BaseModel):
     include_series: bool = False
 
 
+class SnapshotIndicatorItem(BaseModel):
+    indicator_id: str = Field(min_length=1, max_length=120)
+    indicator_revision: int = Field(ge=1)
+    period: str = Field(min_length=1, max_length=12)
+
+
+class SnapshotIndicatorConfigUpdate(BaseModel):
+    revision: int = Field(ge=1)
+    items: list[SnapshotIndicatorItem] = Field(default_factory=list, max_length=30)
+
+
 class EvaluatePortfolioRequest(BaseModel):
     run_id: str = Field(min_length=1, max_length=100)
     indicator_ids: list[str] = Field(default_factory=list, max_length=10)
@@ -314,6 +325,20 @@ def list_custom_indicators(
 @router.post("/api/custom-indicators", status_code=status.HTTP_201_CREATED)
 def create_custom_indicator(request: IndicatorDraft):
     return _call(indicator_service.create_indicator, request.model_dump())
+
+
+@router.get("/api/custom-indicators/snapshot-config")
+def get_snapshot_indicator_config():
+    return _call(indicator_service.get_snapshot_config)
+
+
+@router.put("/api/custom-indicators/snapshot-config")
+def update_snapshot_indicator_config(request: SnapshotIndicatorConfigUpdate):
+    return _call(
+        indicator_service.update_snapshot_config,
+        request.revision,
+        [item.model_dump() for item in request.items],
+    )
 
 
 @router.get("/api/custom-indicators/{indicator_id}")

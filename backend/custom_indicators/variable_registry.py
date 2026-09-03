@@ -41,6 +41,7 @@ SEMANTIC_ROLES = {
     "total_net_asset": "reported_total_net_asset",
     "asset_returns": "ordinary_return_matrix",
     "asset_log_returns": "log_return_matrix",
+    "portfolio_returns": "realized_portfolio_return",
     "asset_weights": "weight",
     "weight_path": "weight_path",
     "benchmark_returns": "benchmark_return",
@@ -493,8 +494,15 @@ _VARIABLES = (
         "不可变组合运行快照",
     ),
     VariableDefinition(
-        "asset_weights", "资产权重向量", r"\mathbf{w}", "vector", ("asset",), ("N",),
-        "dimensionless", None, "decimal", "当前快照末期资产权重。", ("portfolio",),
+        "portfolio_returns", "组合实际收益率", r"\mathbf{r}_{\mathrm{portfolio}}", "series",
+        ("time",), ("T",), "return_decimal", "adjusted_nav", "decimal",
+        "按每日生效权重与当日各底层产品收益逐日汇总得到的组合收益率序列。",
+        ("portfolio",), ("etf", "fund"), "不可变组合运行快照",
+    ),
+    VariableDefinition(
+        "asset_weights", "期末资产权重向量", r"\mathbf{w}", "vector", ("asset",), ("N",),
+        "dimensionless", None, "decimal",
+        "当前快照末期资产权重，仅用于当前截面风险或情景估算，不代表整个历史区间权重。", ("portfolio",),
         ("etf", "fund"), "不可变组合运行快照",
     ),
     VariableDefinition(

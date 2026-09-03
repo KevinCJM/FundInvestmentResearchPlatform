@@ -26,6 +26,8 @@ def test_product_catalog_exposes_math_operators_and_hides_deprecated_templates()
     assert meta["predefined_calculations_deprecated"] is True
     variables = {item["name"]: item for item in meta["variables"]}
     assert variables["asset_returns"]["shape"] == "matrix"
+    assert variables["portfolio_returns"]["shape"] == "series"
+    assert variables["portfolio_returns"]["semantic_role"] == "realized_portfolio_return"
     assert variables["asset_weights"]["shape"] == "vector"
     assert variables["weight_path"]["symbolic_shape"] == ["T", "N"]
     assert variables["adjusted_nav"]["latex"] == r"\mathbf{p}_{\mathrm{adj}}"

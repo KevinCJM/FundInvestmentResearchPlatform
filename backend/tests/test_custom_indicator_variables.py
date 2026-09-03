@@ -126,8 +126,15 @@ def test_period_policy_and_exact_scalar_builtin_catalog(tmp_path: Path) -> None:
         for item in service.list_indicators()["items"]
         if item.get("source") == "built_in" and item.get("dsl_version") == "2.2.0"
     ]
-    assert len(typed_builtins) == 35
-    assert sum(item["applicable_product_kinds"] == ["etf"] for item in typed_builtins) == 5
+    product_builtins = [
+        item for item in typed_builtins if item.get("context_kind") == "single_product"
+    ]
+    portfolio_builtins = [
+        item for item in typed_builtins if item.get("context_kind") == "portfolio"
+    ]
+    assert len(product_builtins) == 35
+    assert len(portfolio_builtins) == 2
+    assert sum(item["applicable_product_kinds"] == ["etf"] for item in product_builtins) == 5
     for definition in typed_builtins:
         result = service.validate(definition)
         assert result["valid"], (definition["id"], result["diagnostics"])

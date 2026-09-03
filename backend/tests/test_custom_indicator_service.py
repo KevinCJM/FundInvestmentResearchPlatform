@@ -4,6 +4,7 @@ import copy
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -165,6 +166,66 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     for definition in portfolio_built_ins:
         validation = service.validate(definition)
         assert validation["valid"], validation["diagnostics"]
+
+
+def test_portfolio_indicators_use_realized_daily_weight_path(tmp_path: Path) -> None:
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    asset_returns = np.asarray(
+        [[0.10, 0.00], [0.00, 0.10], [0.05, -0.02]], dtype=np.float64
+    )
+    daily_weights = np.asarray(
+        [[0.50, 0.50], [11.0 / 21.0, 10.0 / 21.0], [0.60, 0.40]],
+        dtype=np.float64,
+    )
+    realized_returns = np.sum(asset_returns * daily_weights, axis=1)
+    snapshot = {
+        "id": "run-dynamic-weights",
+        "target_name": "动态权重组合",
+        "context_schema": "portfolio-v2",
+        "asset_order": ["etf:A", "fund:B"],
+        "data_fingerprints": {"etf:A": "one", "fund:B": "two"},
+        "common_date_hash": "dates-hash",
+        "requested_as_of": None,
+        "effective_as_of": "2026-01-06",
+        "actual_start_date": "2026-01-02",
+        "actual_end_date": "2026-01-06",
+        "observation_count": 3,
+        "asset_returns": asset_returns,
+        "daily_weights": daily_weights,
+        "portfolio_returns": realized_returns,
+        "benchmark_returns": None,
+        "warnings": [],
+    }
+
+    response = service.evaluate_portfolio_snapshot(
+        [
+            "builtin-portfolio-realized-cumulative-return",
+            "builtin-portfolio-realized-volatility",
+        ],
+        snapshot,
+    )
+    values = {item["indicator_name"]: item["value"] for item in response["results"]}
+
+    assert values["组合累计收益率"] == pytest.approx(
+        float(np.prod(1.0 + realized_returns) - 1.0), rel=1e-12, abs=1e-12
+    )
+    assert values["组合波动率"] == pytest.approx(
+        float(np.std(realized_returns, ddof=1)), rel=1e-12, abs=1e-12
+    )
+    terminal_weight_history = np.prod(1.0 + asset_returns @ daily_weights[-1]) - 1.0
+    assert values["组合累计收益率"] != pytest.approx(terminal_weight_history)
+
+
+def test_portfolio_context_rejects_inconsistent_realized_returns(tmp_path: Path) -> None:
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    snapshot = {
+        "asset_returns": [[0.01, 0.02], [0.03, -0.01]],
+        "daily_weights": [[0.60, 0.40], [0.61, 0.39]],
+        "portfolio_returns": [0.018, 0.50],
+    }
+
+    with pytest.raises(ValidationError, match="组合收益序列与每日生效权重"):
+        service._portfolio_context(snapshot, {})
 
 
 def test_existing_indicator_composition_locks_revision_and_protocol(
@@ -725,3 +786,34 @@ def test_large_result_contract_returns_first_page_and_result_id(
     assert first_page["pagination"]["page"] == 1
     assert second_page["pagination"]["page"] == 2
     assert second_page["rows"][0]["rank"] == 2
+
+
+def test_snapshot_indicator_config_locks_versions_and_protects_references(tmp_path: Path) -> None:
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    initial = service.get_snapshot_config()
+
+    assert initial["revision"] == 1
+    assert initial["items"]
+    assert all(item["status"] == "ready" for item in initial["items"])
+
+    created = service.create_indicator(_draft(periods=None))
+    updated = service.update_snapshot_config(
+        initial["revision"],
+        [
+            {
+                "indicator_id": created["id"],
+                "indicator_revision": created["revision"],
+                "period": "1Y",
+            }
+        ],
+    )
+
+    assert updated["revision"] == 2
+    assert updated["items"][0]["indicator_id"] == created["id"]
+    assert updated["items"][0]["field"].startswith("metric_")
+    with pytest.raises(ConflictError) as stale:
+        service.update_snapshot_config(initial["revision"], [])
+    assert stale.value.code == "REVISION_CONFLICT"
+    with pytest.raises(ConflictError) as referenced:
+        service.delete_indicator(created["id"], created["revision"])
+    assert referenced.value.code == "INDICATOR_IN_SNAPSHOT_CONFIG"

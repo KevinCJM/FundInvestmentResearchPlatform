@@ -66,7 +66,8 @@ def test_v22_registry_has_complete_fixed_signature_njit_coverage() -> None:
 def test_all_context_variables_are_numeric_float64_contracts() -> None:
     variables = variable_catalog()
 
-    assert len(variables) == 28
+    assert len(variables) == 29
+    assert any(variable["id"] == "portfolio_returns" for variable in variables)
     assert all(variable["dtype"] == "float64" for variable in variables)
     assert all(
         variable["structural_type"]

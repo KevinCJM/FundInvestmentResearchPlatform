@@ -41,6 +41,9 @@ def indicator_type(definition: dict[str, Any]) -> str:
 def catalog_status(definition: dict[str, Any]) -> str:
     """Classify frozen DSL v1 definitions without hiding custom history."""
 
+    explicit = definition.get("catalog_status_override")
+    if explicit in {"current", "compatibility"}:
+        return str(explicit)
     return (
         "compatibility"
         if str(definition.get("dsl_version") or "1.0.0") == "1.0.0"
@@ -51,6 +54,8 @@ def catalog_status(definition: dict[str, Any]) -> str:
 def ui_exposed(definition: dict[str, Any]) -> bool:
     """New selectors hide compatibility built-ins but keep custom definitions visible."""
 
+    if definition.get("ui_exposed_override") is False:
+        return False
     return not (
         definition.get("source") == "built_in"
         and catalog_status(definition) == "compatibility"

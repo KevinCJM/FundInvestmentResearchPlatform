@@ -20,6 +20,11 @@ import numpy as np
 import pandas as pd
 import numba
 
+try:
+    from backend.market_data import resolve_tushare_data_dir
+except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from market_data import resolve_tushare_data_dir
+
 from cal_indicators.indicator_runtime import IndicatorRuntime
 from cal_indicators.builtin_batch_kernel import (
     BUILTIN_METRIC_CODE,
@@ -74,7 +79,12 @@ from .presentation import (
     ui_exposed,
 )
 from .periods import SUPPORTED_PERIODS, period_cache_reference, period_metadata
-from .repository import IndicatorRepository, PlanRepository
+from .repository import (
+    IndicatorRepository,
+    PlanRepository,
+    SnapshotIndicatorConfigRepository,
+)
+from .snapshot_config import MAX_SNAPSHOT_INDICATORS, normalized_snapshot_item
 from .run_result_repository import EvaluationRunResultRepository
 from .series_provider import (
     DEFAULT_DATA_DIR,
@@ -196,7 +206,7 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         "applicable_product_kinds": ["etf", "fund"],
         "availability_status": "ready",
     }
-    portfolio_common = {
+    portfolio_compatibility_common = {
         "revision": 1,
         "source": "built_in",
         "read_only": True,
@@ -213,6 +223,36 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         "required_variables": ["asset_returns", "asset_weights"],
         "applicable_product_kinds": ["portfolio"],
         "availability_status": "ready",
+        "catalog_status_override": "compatibility",
+        "ui_exposed_override": False,
+    }
+    portfolio_common = {
+        "revision": 1,
+        "source": "built_in",
+        "read_only": True,
+        "periods": list(SUPPORTED_PERIODS),
+        "period_policy": "all_supported",
+        "annual_risk_free_rate_percent": 1.5,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "dsl_version": TYPED_DSL_VERSION,
+        "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
+        "variable_registry_version": VARIABLE_REGISTRY_VERSION,
+        "data_contract_version": DATA_CONTRACT_VERSION,
+        "context_schema_version": CONTEXT_SCHEMA_VERSION,
+        "context_kind": "portfolio",
+        "output_contract": "scalar",
+        "output_measure": "dimensionless",
+        "required_variables": ["portfolio_returns"],
+        "applicable_product_kinds": ["portfolio"],
+        "availability_status": "ready",
+        "formula_version": TYPED_DSL_VERSION,
+        "data_basis": "运行快照中的真实底层产品收益、每日生效权重与严格共同日期",
+        "semantic_differences": [
+            "组合历史收益使用每日生效权重，不将期末权重回填至历史",
+            "非有限结果和样本不足返回诊断，不静默置零",
+        ],
     }
     items = [
         {
@@ -260,11 +300,11 @@ def _built_in_indicators() -> list[dict[str, Any]]:
             "methodology": "窗口累计收益除以普通收益率样本标准差。",
         },
         {
-            **portfolio_common,
+            **portfolio_compatibility_common,
             "id": "builtin-portfolio-cumulative-return",
             "indicator_type": "return",
-            "name": "组合累计收益率",
-            "description": "将多资产收益按固定权重合成后计算累计收益率。",
+            "name": "固定期末权重组合累计收益率（兼容）",
+            "description": "兼容旧公式：将快照期末权重应用于整段历史收益矩阵。该口径不代表真实组合历史表现。",
             "expression": (
                 r"\prod\left(\operatorname{matvec}\left(\mathbf{R},"
                 r"\mathbf{w}\right)+1\right)-1"
@@ -273,7 +313,7 @@ def _built_in_indicators() -> list[dict[str, Any]]:
             "display_format": "percent",
             "precision": 2,
             "direction": "higher_better",
-            "methodology": "固定权重组合收益序列的逐期增长因子累乘。",
+            "methodology": "旧版固定期末权重口径，仅用于复现历史结果。",
             "output_measure": "return_decimal",
             "template_origin": {
                 "template_id": "portfolio-cumulative-return",
@@ -294,11 +334,11 @@ def _built_in_indicators() -> list[dict[str, Any]]:
             },
         },
         {
-            **portfolio_common,
+            **portfolio_compatibility_common,
             "id": "builtin-portfolio-volatility",
             "indicator_type": "risk",
-            "name": "组合波动率",
-            "description": "根据收益协方差矩阵和资产权重计算组合波动率。",
+            "name": "固定期末权重组合波动率（兼容）",
+            "description": "兼容旧公式：用快照期末权重和历史协方差估算当前截面波动，不代表真实组合历史波动。",
             "expression": (
                 r"\sqrt{\operatorname{dot}\left(\mathbf{w},"
                 r"\operatorname{matvec}\left(\operatorname{covariance}"
@@ -308,7 +348,7 @@ def _built_in_indicators() -> list[dict[str, Any]]:
             "display_format": "percent",
             "precision": 2,
             "direction": "lower_better",
-            "methodology": "权重向量与收益协方差矩阵的二次型开方。",
+            "methodology": "旧版期末权重协方差二次型口径，仅用于复现历史结果。",
             "output_measure": "return_decimal",
             "template_origin": {
                 "template_id": "portfolio-volatility",
@@ -327,6 +367,38 @@ def _built_in_indicators() -> list[dict[str, Any]]:
                 ],
                 "detached": False,
             },
+        },
+        {
+            **portfolio_common,
+            "id": "builtin-portfolio-realized-cumulative-return",
+            "indicator_type": "return",
+            "name": "组合累计收益率",
+            "description": "根据每日生效权重与底层产品当日收益形成的真实组合收益序列计算累计收益率。",
+            "expression": r"\prod\left(\mathbf{r}_{\mathrm{portfolio}}+1\right)-1",
+            "unit": "%",
+            "display_format": "percent",
+            "precision": 2,
+            "direction": "higher_better",
+            "methodology": "每日先按当日生效权重汇总底层产品收益，再对逐日组合增长因子累乘。",
+            "output_measure": "return_decimal",
+            "minimum_observations": 1,
+            "template_origin": None,
+        },
+        {
+            **portfolio_common,
+            "id": "builtin-portfolio-realized-volatility",
+            "indicator_type": "risk",
+            "name": "组合波动率",
+            "description": "组合真实逐日收益率的样本标准差，已反映持仓市值变化和调仓后的每日权重。",
+            "expression": r"\operatorname{std}\left(\mathbf{r}_{\mathrm{portfolio}},1\right)",
+            "unit": "%",
+            "display_format": "percent",
+            "precision": 2,
+            "direction": "lower_better",
+            "methodology": "对运行快照中的真实逐日组合收益率计算样本标准差（ddof=1）。",
+            "output_measure": "return_decimal",
+            "minimum_observations": 2,
+            "template_origin": None,
         },
     ]
     return items + _typed_builtin_indicators(timestamp)
@@ -599,6 +671,9 @@ class CustomIndicatorService:
             _built_in_indicators(),
         )
         self.plans = PlanRepository(self.workspace_data_dir / "evaluation_plans.json")
+        self.snapshot_config = SnapshotIndicatorConfigRepository(
+            self.workspace_data_dir / "snapshot_indicator_config.json"
+        )
         self.portfolio_runs = PortfolioRunRepository(self.workspace_data_dir / "portfolio_runs.json")
         self.cache = cache or BoundedTTLCache()
         self.plan_cache = BoundedTTLCache(
@@ -1647,9 +1722,233 @@ class CustomIndicatorService:
                 "INDICATOR_IN_USE",
                 "该指标正在被评价方案引用，请先调整或删除相关方案。",
             )
+        if self.snapshot_config.references_indicator(indicator_id):
+            raise ConflictError(
+                "INDICATOR_IN_SNAPSHOT_CONFIG",
+                "该指标已配置为快照指标，请先从快照加速配置中移除。",
+            )
         self.indicators.delete(indicator_id, revision)
         self.cache.clear()
         self.plan_cache.clear()
+
+    def get_snapshot_config(self) -> dict[str, Any]:
+        config = self.snapshot_config.get()
+        items: list[dict[str, Any]] = []
+        for item in config.get("items", []):
+            resolved = dict(item)
+            try:
+                definition = self._decorate_definition(
+                    self.indicators.get(
+                        str(item["indicator_id"]),
+                        int(item["indicator_revision"]),
+                    )
+                )
+                resolved.update(
+                    {
+                        "name": definition["name"],
+                        "source": definition["source"],
+                        "presentation": definition.get("presentation"),
+                        "status": "ready",
+                        "status_message": "将在数据刷新后预计算并写入产品快照。",
+                    }
+                )
+            except IndicatorDomainError as exc:
+                resolved.update(
+                    {
+                        "name": str(item.get("indicator_id") or "未知指标"),
+                        "status": "definition_missing",
+                        "status_message": exc.message,
+                    }
+                )
+            items.append(resolved)
+        snapshot_data_dir = self._snapshot_data_dir()
+        metadata_path = snapshot_data_dir / "instrument_metrics_snapshot.meta.json"
+        snapshot: dict[str, Any] | None = None
+        if metadata_path.exists():
+            try:
+                raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    snapshot = {
+                        "generated_at": raw.get("generated_at"),
+                        "config_revision": raw.get("config_revision"),
+                        "configured_count": raw.get("configured_count"),
+                        "data_generation": raw.get("data_generation"),
+                    }
+            except (OSError, json.JSONDecodeError):
+                snapshot = None
+        return {
+            **config,
+            "items": items,
+            "max_items": MAX_SNAPSHOT_INDICATORS,
+            "snapshot": snapshot,
+            "snapshot_status": (
+                "ready"
+                if snapshot
+                and int(snapshot.get("config_revision") or 0) == int(config.get("revision") or 0)
+                and snapshot.get("data_generation") == market_data_generation(self.market_data_dir)
+                else ("stale" if snapshot else "missing")
+            ),
+        }
+
+    def update_snapshot_config(
+        self,
+        revision: int,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if len(items) > MAX_SNAPSHOT_INDICATORS:
+            raise ValidationError(
+                "SNAPSHOT_INDICATOR_LIMIT_EXCEEDED",
+                f"快照指标最多配置 {MAX_SNAPSHOT_INDICATORS} 个指标与周期组合。",
+                field="items",
+            )
+        normalized: list[dict[str, Any]] = []
+        current_fields = {
+            (
+                str(item.get("indicator_id")),
+                int(item.get("indicator_revision") or 0),
+                str(item.get("period") or "").upper(),
+            ): str(item.get("field") or "")
+            for item in self.snapshot_config.get().get("items", [])
+        }
+        seen_keys: set[tuple[str, int, str]] = set()
+        seen_fields: set[str] = set()
+        revisions_by_indicator: dict[str, int] = {}
+        for index, raw in enumerate(items):
+            raw_key = (
+                str(raw.get("indicator_id") or "").strip(),
+                int(raw.get("indicator_revision") or 0),
+                str(raw.get("period") or "").strip().upper(),
+            )
+            item = normalized_snapshot_item(
+                {**raw, "field": raw.get("field") or current_fields.get(raw_key)}
+            )
+            if not item["indicator_id"] or int(item["indicator_revision"]) < 1:
+                raise ValidationError(
+                    "INVALID_SNAPSHOT_INDICATOR",
+                    "快照指标必须指定有效的指标及版本。",
+                    field=f"items.{index}",
+                )
+            if item["period"] not in SUPPORTED_PERIODS:
+                raise ValidationError(
+                    "INVALID_PERIOD",
+                    f"不支持快照周期 {item['period']}。",
+                    field=f"items.{index}.period",
+                )
+            key = (
+                item["indicator_id"],
+                int(item["indicator_revision"]),
+                item["period"],
+            )
+            if key in seen_keys:
+                raise ValidationError(
+                    "DUPLICATE_SNAPSHOT_INDICATOR",
+                    "同一指标版本和周期不能重复配置。",
+                    field=f"items.{index}",
+                )
+            previous_revision = revisions_by_indicator.get(item["indicator_id"])
+            if previous_revision is not None and previous_revision != int(item["indicator_revision"]):
+                raise ValidationError(
+                    "SNAPSHOT_VERSION_CONFLICT",
+                    "同一个指标在快照配置中必须统一锁定到同一版本。",
+                    field=f"items.{index}.indicator_revision",
+                )
+            if item["field"] in seen_fields:
+                raise ValidationError(
+                    "DUPLICATE_SNAPSHOT_FIELD",
+                    "快照字段发生冲突，请重新选择指标或周期。",
+                    field=f"items.{index}",
+                )
+            definition = self.indicators.get(
+                item["indicator_id"], int(item["indicator_revision"])
+            )
+            if definition.get("context_kind", "single_product") != "single_product":
+                raise ValidationError(
+                    "SNAPSHOT_CONTEXT_MISMATCH",
+                    "只有单产品标量指标可以配置为产品快照。",
+                    field=f"items.{index}.indicator_id",
+                )
+            if definition.get("output_contract", "scalar") != "scalar":
+                raise ValidationError(
+                    "SNAPSHOT_OUTPUT_MISMATCH",
+                    "快照指标的最终结果必须是单个数值。",
+                    field=f"items.{index}.indicator_id",
+                )
+            self._compile_runtime(definition, item["period"])
+            normalized.append(item)
+            seen_keys.add(key)
+            seen_fields.add(item["field"])
+            revisions_by_indicator[item["indicator_id"]] = int(item["indicator_revision"])
+        self.warm_snapshot_numba_plans(normalized)
+        self.snapshot_config.update(revision, normalized)
+        return self.get_snapshot_config()
+
+    def warm_snapshot_numba_plans(
+        self,
+        items: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, int]:
+        """Compile only the plans needed by the data-refresh snapshot job."""
+
+        selected = items if items is not None else self.snapshot_config.get().get("items", [])
+        groups: dict[
+            tuple[tuple[str, ...], str],
+            list[tuple[dict[str, Any], TypedIndicatorRuntime]],
+        ] = {}
+        singleton_count = 0
+        for item in selected:
+            definition = self.indicators.get(
+                str(item["indicator_id"]), int(item["indicator_revision"])
+            )
+            runtime = self._compile_runtime(definition, str(item["period"]))
+            if not isinstance(runtime, TypedIndicatorRuntime):
+                raise ValidationError(
+                    "NJIT_RUNTIME_REQUIRED",
+                    "快照指标必须能够编译为 NJIT 计算计划。",
+                )
+            dependencies = self._physical_dependency_signature(
+                runtime.plan.context_requirements
+            )
+            physical_columns = tuple(
+                dict.fromkeys(
+                    [
+                        "adjusted_nav",
+                        *[
+                            name
+                            for name in dependencies
+                            if name not in {"returns", "log_returns", "adjusted_nav"}
+                        ],
+                    ]
+                )
+            )
+            compile_numba_batch_plan(
+                (runtime.plan,),
+                (definition,),
+                physical_columns,
+            )
+            singleton_count += 1
+            groups.setdefault((dependencies, str(item["period"])), []).append(
+                (definition, runtime)
+            )
+        for (dependencies, _period), entries in groups.items():
+            physical_columns = tuple(
+                dict.fromkeys(
+                    [
+                        "adjusted_nav",
+                        *[
+                            name
+                            for name in dependencies
+                            if name not in {"returns", "log_returns", "adjusted_nav"}
+                        ],
+                    ]
+                )
+            )
+            for start in range(0, len(entries), MAX_INDICATORS):
+                batch = entries[start : start + MAX_INDICATORS]
+                compile_numba_batch_plan(
+                    tuple(runtime.plan for _, runtime in batch),
+                    tuple(definition for definition, _ in batch),
+                    physical_columns,
+                )
+        return {"singletons": singleton_count, "batches": len(groups)}
 
     @staticmethod
     def _validate_targets(
@@ -1776,6 +2075,226 @@ class CustomIndicatorService:
             "unit": definition.get("unit", ""),
             "display_format": definition.get("display_format", "number"),
             "presentation": metric_presentation(definition),
+        }
+
+    def _snapshot_data_dir(self) -> Path:
+        candidate = Path(self.market_data_dir).expanduser().resolve()
+        if candidate == DEFAULT_DATA_DIR.resolve():
+            return resolve_tushare_data_dir(DEFAULT_DATA_DIR)
+        return candidate
+
+    def _evaluate_from_snapshot(
+        self,
+        definitions: list[dict[str, Any]],
+        targets: list[dict[str, str]],
+        period: str,
+    ) -> dict[str, Any] | None:
+        """Return an exact current snapshot hit, or ``None`` for live evaluation."""
+
+        config = self.snapshot_config.get()
+        configured = {
+            (
+                str(item.get("indicator_id")),
+                int(item.get("indicator_revision") or 0),
+                str(item.get("period") or "").upper(),
+            ): str(item.get("field") or "")
+            for item in config.get("items", [])
+        }
+        fields: dict[tuple[str, int], str] = {}
+        for definition in definitions:
+            key = (
+                str(definition.get("id") or ""),
+                int(definition.get("revision") or 0),
+                period,
+            )
+            field = configured.get(key)
+            if not field:
+                return None
+            fields[(key[0], key[1])] = field
+
+        data_dir = self._snapshot_data_dir()
+        snapshot_path = data_dir / "instrument_metrics_snapshot.parquet"
+        metadata_path = data_dir / "instrument_metrics_snapshot.meta.json"
+        if not snapshot_path.exists() or not metadata_path.exists():
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        if int(metadata.get("config_revision") or 0) != int(config.get("revision") or 0):
+            return None
+        generation = market_data_generation(self.market_data_dir)
+        if metadata.get("data_generation") != generation:
+            return None
+
+        suffixes = (
+            "status",
+            "observation_count",
+            "start_date",
+            "end_date",
+            "effective_as_of",
+            "warning_code",
+            "warning_message",
+        )
+        columns = {"instrument_type", "ts_code", "latest_date"}
+        for field in fields.values():
+            columns.add(field)
+            columns.update(f"{field}__{suffix}" for suffix in suffixes)
+        try:
+            snapshot = pd.read_parquet(snapshot_path, columns=sorted(columns))
+        except (OSError, ValueError, KeyError):
+            return None
+        if snapshot.empty:
+            return None
+        snapshot["instrument_type"] = snapshot["instrument_type"].astype(str)
+        snapshot["ts_code"] = snapshot["ts_code"].astype(str)
+        snapshot = snapshot.set_index(["instrument_type", "ts_code"], drop=False)
+
+        results: list[dict[str, Any]] = []
+        for definition in definitions:
+            definition_key = (
+                str(definition.get("id") or ""),
+                int(definition.get("revision") or 0),
+            )
+            field = fields[definition_key]
+            required_count = len(definition.get("required_variables") or [])
+            for target in targets:
+                row_key = (target["kind"], target["product_id"])
+                base = self._result_base(
+                    definition,
+                    target,
+                    target["product_id"],
+                    period,
+                )
+                if row_key not in snapshot.index:
+                    results.append(
+                        {
+                            **base,
+                            "value": None,
+                            "status": "unavailable",
+                            "warnings": [
+                                {
+                                    "code": "SNAPSHOT_TARGET_MISSING",
+                                    "message": "当前数据快照中没有该产品的预计算结果。",
+                                }
+                            ],
+                            "window": self._empty_window(None, None),
+                            "input_requirements": {
+                                "status": "blocked",
+                                "required_count": required_count,
+                                "available_count": 0,
+                                "blocking_inputs": [],
+                            },
+                            "target_data": {
+                                "available_datasets": [],
+                                "available_variables": [],
+                                "data_latest_date": None,
+                            },
+                        }
+                    )
+                    continue
+                row = snapshot.loc[row_key]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+                raw_value = row.get(field)
+                value = (
+                    float(raw_value)
+                    if raw_value is not None
+                    and not pd.isna(raw_value)
+                    and np.isfinite(float(raw_value))
+                    else None
+                )
+                raw_status = row.get(f"{field}__status")
+                status = (
+                    ""
+                    if raw_status is None or pd.isna(raw_status)
+                    else str(raw_status).strip().lower()
+                )
+                if status not in {"ok", "warning", "unavailable", "error"}:
+                    status = "ok" if value is not None else "unavailable"
+                warning_code = row.get(f"{field}__warning_code")
+                warning_message = row.get(f"{field}__warning_message")
+                warnings = []
+                if warning_message is not None and not pd.isna(warning_message):
+                    warnings.append(
+                        {
+                            "code": str(warning_code or "SNAPSHOT_WARNING"),
+                            "message": str(warning_message),
+                        }
+                    )
+                data_latest = row.get("latest_date")
+                data_latest_value = (
+                    None
+                    if data_latest is None or pd.isna(data_latest)
+                    else pd.Timestamp(data_latest).strftime("%Y-%m-%d")
+                )
+                raw_observation_count = row.get(f"{field}__observation_count")
+                observation_count = (
+                    0
+                    if raw_observation_count is None or pd.isna(raw_observation_count)
+                    else int(raw_observation_count)
+                )
+
+                def date_value(suffix: str) -> str | None:
+                    raw_date = row.get(f"{field}__{suffix}")
+                    if raw_date is None or pd.isna(raw_date):
+                        return None
+                    return str(raw_date)[:10]
+                results.append(
+                    {
+                        **base,
+                        "value": value,
+                        "status": status,
+                        "warnings": warnings,
+                        "window": {
+                            "requested_as_of": None,
+                            "effective_as_of": date_value("effective_as_of"),
+                            "start_date": date_value("start_date"),
+                            "end_date": date_value("end_date"),
+                            "observation_count": observation_count,
+                            "data_latest_date": data_latest_value,
+                        },
+                        "input_requirements": {
+                            "status": "ready" if value is not None else "blocked",
+                            "required_count": required_count,
+                            "available_count": required_count if value is not None else 0,
+                            "blocking_inputs": [],
+                        },
+                        "target_data": {
+                            "available_datasets": ["指标预计算快照"],
+                            "available_variables": list(
+                                definition.get("required_variables") or []
+                            ),
+                            "data_latest_date": data_latest_value,
+                        },
+                    }
+                )
+
+        status_counts = {
+            status: sum(item["status"] == status for item in results)
+            for status in ("ok", "warning", "error", "unavailable")
+        }
+        return {
+            "results": results,
+            "summary": {"total": len(results), **status_counts},
+            "cache": {"hits": len(results), "misses": 0},
+            "execution": {
+                **kernel_registry_status(),
+                "engine_version": "indicator-snapshot-v1",
+                "data_generation": generation,
+                "snapshot_config_revision": int(config.get("revision") or 0),
+                "snapshot_hits": len(results),
+                "compile_cache_hits": 0,
+                "compile_cache_misses": 0,
+                "kernel_cache_hits": len(results),
+                "kernel_cache_misses": 0,
+                "compiled_plan_ids": [],
+                "parallel_tasks": 0,
+                "python_fallback": 0,
+                "python_operator_calls": 0,
+            },
         }
 
     @staticmethod
@@ -2302,6 +2821,7 @@ class CustomIndicatorService:
         as_of: Optional[str] = None,
         include_series: bool = False,
         indicator_versions: Optional[dict[str, int]] = None,
+        prefer_snapshot: bool = True,
     ) -> dict[str, Any]:
         period = period.upper()
         if period not in SUPPORTED_PERIODS:
@@ -2333,6 +2853,20 @@ class CustomIndicatorService:
                 f"以下组合指标不能在产品评价中运行：{'、'.join(wrong_domain)}。",
                 field="indicator_ids",
             )
+
+        if (
+            prefer_snapshot
+            and inline_definition is None
+            and as_of is None
+            and not include_series
+        ):
+            snapshot_result = self._evaluate_from_snapshot(
+                definitions,
+                normalized_targets,
+                period,
+            )
+            if snapshot_result is not None:
+                return snapshot_result
 
         runtimes = {
             self._definition_cache_key(item): self._compile_runtime(item, period)
@@ -2589,9 +3123,38 @@ class CustomIndicatorService:
             raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的收益矩阵无效。")
         if weight_path.shape != asset_returns.shape:
             raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的权重路径与收益矩阵不一致。")
+        if not np.all(np.isfinite(asset_returns)) or not np.all(np.isfinite(weight_path)):
+            raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照包含非有限收益或权重。")
+        if not np.allclose(np.sum(weight_path, axis=1), 1.0, rtol=0.0, atol=1e-8):
+            raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的每日生效权重合计必须为 1。")
+
+        # daily_weights stores the beginning-of-day weights that are effective
+        # for the matching asset_returns row.  This is the realized portfolio
+        # path: after each return, holdings drift with market value until the
+        # next scheduled rebalance.  A terminal weight vector must never be
+        # applied retrospectively to the full history.
+        derived_portfolio_returns = np.sum(weight_path * asset_returns, axis=1)
+        stored_returns = snapshot.get("portfolio_returns")
+        if stored_returns is None:
+            portfolio_returns = derived_portfolio_returns
+        else:
+            portfolio_returns = np.asarray(stored_returns, dtype=np.float64)
+            if portfolio_returns.shape != (asset_returns.shape[0],):
+                raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的组合收益序列长度无效。")
+            if not np.all(np.isfinite(portfolio_returns)) or not np.allclose(
+                portfolio_returns,
+                derived_portfolio_returns,
+                rtol=1e-10,
+                atol=1e-12,
+            ):
+                raise ValidationError(
+                    "SNAPSHOT_DATA_INVALID",
+                    "组合收益序列与每日生效权重及底层产品收益不一致。",
+                )
         context: dict[str, Any] = {
             "asset_returns": asset_returns,
             "asset_log_returns": np.log1p(asset_returns),
+            "portfolio_returns": np.ascontiguousarray(portfolio_returns),
             "asset_weights": weight_path[-1],
             "weight_path": weight_path,
             **cls._risk_free_context(
@@ -2673,6 +3236,7 @@ class CustomIndicatorService:
                 continue
 
             definition_key = self._definition_cache_key(definition)
+            snapshot_portfolio_returns = snapshot.get("portfolio_returns")
             cache_payload = {
                 "kind": "portfolio-indicator-v2",
                 "definition": definition_key,
@@ -2685,6 +3249,12 @@ class CustomIndicatorService:
                 "data_fingerprints": snapshot.get("data_fingerprints"),
                 "weight_path": hashlib.sha256(
                     np.asarray(snapshot.get("daily_weights"), dtype=np.float64).tobytes()
+                ).hexdigest(),
+                "portfolio_returns": hashlib.sha256(
+                    np.asarray(
+                        [] if snapshot_portfolio_returns is None else snapshot_portfolio_returns,
+                        dtype=np.float64,
+                    ).tobytes()
                 ).hexdigest(),
             }
             cache_key = hashlib.sha256(
@@ -2711,6 +3281,16 @@ class CustomIndicatorService:
                     dsl_version,
                     registry_version,
                 )
+                if {"asset_returns", "asset_weights"}.issubset(plan.context_requirements):
+                    warnings.append(
+                        {
+                            "code": "STATIC_WEIGHT_HISTORY_ASSUMPTION",
+                            "message": (
+                                "该兼容公式会把期末权重应用于整段历史收益，仅适合当前截面估算；"
+                                "历史组合表现应使用组合实际收益率序列。"
+                            ),
+                        }
+                    )
                 runtime = TypedIndicatorRuntime.from_plan(plan)
                 context = self._portfolio_context(snapshot, definition)
                 with np.errstate(all="ignore"):
@@ -4208,6 +4788,68 @@ class CustomIndicatorService:
                     "typed": isinstance(runtime, TypedIndicatorRuntime),
                 }
             )
+        snapshot_item_count = 0
+        snapshot_cell_hits = 0
+        if as_of is None:
+            configured_keys = {
+                (
+                    str(item.get("indicator_id")),
+                    int(item.get("indicator_revision") or 0),
+                    str(item.get("period") or "").upper(),
+                )
+                for item in self.snapshot_config.get().get("items", [])
+            }
+            snapshot_groups: dict[str, list[dict[str, Any]]] = {}
+            for entry in prepared:
+                item = entry["item"]
+                key = (
+                    str(item["indicator_id"]),
+                    int(item["indicator_revision"]),
+                    str(item["period"]).upper(),
+                )
+                if key in configured_keys:
+                    snapshot_groups.setdefault(key[2], []).append(entry)
+            snapshot_indexes: set[int] = set()
+            for snapshot_period, snapshot_entries in snapshot_groups.items():
+                snapshot_response = self._evaluate_from_snapshot(
+                    [entry["definition"] for entry in snapshot_entries],
+                    plan["targets"],
+                    snapshot_period,
+                )
+                if snapshot_response is None:
+                    continue
+                entries_by_definition = {
+                    (
+                        str(entry["item"]["indicator_id"]),
+                        int(entry["item"]["indicator_revision"]),
+                    ): entry
+                    for entry in snapshot_entries
+                }
+                for snapshot_result in snapshot_response["results"]:
+                    entry = entries_by_definition[
+                        (
+                            str(snapshot_result["indicator_id"]),
+                            int(snapshot_result["indicator_revision"]),
+                        )
+                    ]
+                    target = snapshot_result["target"]
+                    row_index = target_index[
+                        (str(target["kind"]), str(target["product_id"]))
+                    ]
+                    output_index = int(entry["index"])
+                    values_by_target[row_index][output_index] = self._plan_value_payload(
+                        entry["item"], entry["definition"], snapshot_result
+                    )
+                    target_names[row_index] = str(target.get("name") or target["product_id"])
+                    snapshot_cell_hits += 1
+                    snapshot_indexes.add(output_index)
+                snapshot_item_count += len(snapshot_entries)
+            prepared = [
+                entry for entry in prepared if int(entry["index"]) not in snapshot_indexes
+            ]
+            typed_dependencies = {
+                entry["data_dependencies"] for entry in prepared if entry["typed"]
+            }
         planning_ms = (time.perf_counter() - planning_started) * 1000.0
 
         product_kind = str(plan.get("product_kind") or plan["targets"][0]["kind"])
@@ -4322,7 +4964,7 @@ class CustomIndicatorService:
             selected_windows=selected_windows,
             thread_budget=thread_budget,
         )
-        cell_hits = 0
+        cell_hits = snapshot_cell_hits
         cell_misses = 0
         typed_item_count = 0
         compatibility_item_count = 0
@@ -4533,6 +5175,7 @@ class CustomIndicatorService:
                 "execution_lanes": {
                     "numba_fused": fused_meta["metric_items"],
                     "numba_blas": 0,
+                    **({"snapshot": snapshot_item_count} if snapshot_item_count else {}),
                     "python_fallback": 0,
                 },
                 "typed_batch_fallback": 0,

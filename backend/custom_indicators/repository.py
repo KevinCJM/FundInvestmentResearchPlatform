@@ -18,6 +18,11 @@ except ImportError:  # pragma: no cover - Windows fallback remains process-safe
     fcntl = None
 
 from .errors import ConflictError, IndicatorDomainError, NotFoundError
+from .snapshot_config import (
+    DEFAULT_SNAPSHOT_INDICATORS,
+    SNAPSHOT_CONFIG_SCHEMA_VERSION,
+    normalized_snapshot_item,
+)
 
 
 def utc_now() -> str:
@@ -185,6 +190,63 @@ class IndicatorRepository:
                 self.store.write_unlocked(payload)
                 return
             raise NotFoundError("INDICATOR_NOT_FOUND", "未找到指定指标。")
+
+
+class SnapshotIndicatorConfigRepository:
+    """Versioned workspace selection of indicator-period snapshot columns."""
+
+    def __init__(self, path: Path) -> None:
+        self.store = AtomicJsonStore(path)
+
+    @staticmethod
+    def _default_payload() -> dict[str, Any]:
+        return {
+            "schema_version": SNAPSHOT_CONFIG_SCHEMA_VERSION,
+            "revision": 1,
+            "updated_at": None,
+            "items": [dict(item) for item in DEFAULT_SNAPSHOT_INDICATORS],
+        }
+
+    def get(self) -> dict[str, Any]:
+        with self.store.locked():
+            if not self.store.path.exists():
+                return self._default_payload()
+            payload = self.store.read_unlocked()
+        return {
+            "schema_version": int(payload.get("schema_version") or SNAPSHOT_CONFIG_SCHEMA_VERSION),
+            "revision": int(payload.get("revision") or 1),
+            "updated_at": payload.get("updated_at"),
+            "items": [normalized_snapshot_item(item) for item in payload.get("items", [])],
+        }
+
+    def update(self, expected_revision: int, items: list[dict[str, Any]]) -> dict[str, Any]:
+        with self.store.locked():
+            current = (
+                self.store.read_unlocked()
+                if self.store.path.exists()
+                else self._default_payload()
+            )
+            current_revision = int(current.get("revision") or 1)
+            if current_revision != expected_revision:
+                raise ConflictError(
+                    "REVISION_CONFLICT",
+                    "快照指标配置已被其他操作更新，请刷新后重试。",
+                    field="revision",
+                )
+            payload = {
+                "schema_version": SNAPSHOT_CONFIG_SCHEMA_VERSION,
+                "revision": current_revision + 1,
+                "updated_at": utc_now(),
+                "items": [normalized_snapshot_item(item) for item in items],
+            }
+            self.store.write_unlocked(payload)
+        return dict(payload)
+
+    def references_indicator(self, indicator_id: str) -> bool:
+        return any(
+            item.get("indicator_id") == indicator_id
+            for item in self.get().get("items", [])
+        )
 
 
 class PlanRepository:

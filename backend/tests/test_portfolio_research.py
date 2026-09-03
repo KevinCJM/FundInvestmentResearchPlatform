@@ -4,6 +4,7 @@ import io
 import zipfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from fastapi import FastAPI
@@ -129,6 +130,16 @@ def test_strict_intersection_adjusted_nav_and_next_day_weight_contract(tmp_path:
     assert list(run["weight_path"][0]["weights"]) == run["asset_order"]
     assert run["common_date_hash"]
     assert len(run["daily_weights"]) == run["observation_count"]
+    daily_weights = np.asarray(run["daily_weights"], dtype=np.float64)
+    asset_returns = np.asarray(run["asset_returns"], dtype=np.float64)
+    portfolio_returns = np.asarray(run["portfolio_returns"], dtype=np.float64)
+    assert np.allclose(
+        portfolio_returns,
+        np.sum(daily_weights * asset_returns, axis=1),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    assert np.any(np.abs(daily_weights[1:] - daily_weights[:-1]) > 1e-12)
 
     diagnosis = service.diagnose(run["id"])
     assert diagnosis["correlation"]["labels"] == run["asset_order"]

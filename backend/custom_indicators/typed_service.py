@@ -71,10 +71,16 @@ VARIABLE_METADATA: dict[str, dict[str, Any]] = {
         "source": "严格共同日期后的真实复权净值",
         "domains": ["portfolio"],
     },
+    "portfolio_returns": {
+        "label": "组合实际收益率序列",
+        "semantic_role": "realized_portfolio_return",
+        "source": "逐日生效权重与底层产品真实收益",
+        "domains": ["portfolio"],
+    },
     "asset_weights": {
-        "label": "资产权重向量",
+        "label": "期末资产权重向量",
         "semantic_role": "weight",
-        "source": "锁定研究对象或运行快照",
+        "source": "运行快照最后一个时点，仅用于当前截面估算",
         "domains": ["portfolio"],
     },
     "weight_path": {

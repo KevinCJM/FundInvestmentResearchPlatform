@@ -96,7 +96,7 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     )
     compatibility = client.get("/api/custom-indicators?include_compatibility=true")
     assert compatibility.status_code == 200
-    assert compatibility.json()["total"] == 40
+    assert compatibility.json()["total"] == 42
     hidden_legacy = next(
         item
         for item in compatibility.json()["items"]
@@ -535,6 +535,8 @@ def test_integrated_app_registers_each_custom_route_once() -> None:
         ("/api/custom-indicators/infer", "POST"),
         ("/api/custom-indicators/evaluate", "POST"),
         ("/api/custom-indicators/evaluate-portfolio", "POST"),
+        ("/api/custom-indicators/snapshot-config", "GET"),
+        ("/api/custom-indicators/snapshot-config", "PUT"),
         ("/api/evaluation-plans", "GET"),
         ("/api/evaluation-plans", "POST"),
         ("/api/evaluation-plan-runs/{result_id}", "GET"),
@@ -544,3 +546,34 @@ def test_integrated_app_registers_each_custom_route_once() -> None:
         operation = schema["paths"][path][method.lower()]
         operation_ids.append(operation["operationId"])
     assert len(operation_ids) == len(set(operation_ids))
+
+
+def test_snapshot_indicator_config_routes(monkeypatch, tmp_path: Path) -> None:
+    client = _client(monkeypatch, tmp_path)
+
+    current = client.get("/api/custom-indicators/snapshot-config")
+    assert current.status_code == 200
+    assert current.json()["items"]
+
+    updated = client.put(
+        "/api/custom-indicators/snapshot-config",
+        json={
+            "revision": current.json()["revision"],
+            "items": [
+                {
+                    "indicator_id": "builtin-total-return-v2",
+                    "indicator_revision": 1,
+                    "period": "ALL",
+                }
+            ],
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["items"][0]["period"] == "ALL"
+
+    stale = client.put(
+        "/api/custom-indicators/snapshot-config",
+        json={"revision": current.json()["revision"], "items": []},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "REVISION_CONFLICT"
