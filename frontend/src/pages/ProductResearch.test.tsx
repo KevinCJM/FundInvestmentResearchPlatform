@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -26,9 +26,14 @@ describe('ProductResearch', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        items: [{ ts_code: '510300.SH', name: '沪深300ETF', type: 'ETF', fund_type: '股票型', invest_type: '宽基', market: '上交所', status: '上市', management: '华泰柏瑞', custodian: '中国银行', issue_amount: 100, m_fee: 0.5, c_fee: 0.1, list_date: '2012-05-28' }],
+        items: [{ ts_code: '510300.SH', name: '沪深300ETF', type: 'ETF', fund_type: '股票型', invest_type: '宽基', market: '上交所', status: '上市', management: '华泰柏瑞', custodian: '中国银行', issue_amount: 100, snapshot_values: { current_size: 12345.67, return_1y: 0.0821 }, snapshot_value_dates: { current_size: '2026-08-28', return_1y: '2026-08-31' }, m_fee: 0.5, c_fee: 0.1, list_date: '2012-05-28' }],
         page: 1, page_size: 10, total: 1,
         summary: { universe_total: 1, filtered_total: 1, active_count: 1, recent_listings_12m: 0, avg_m_fee: 0.5, avg_c_fee: 0.1, total_issue_amount: 100, median_issue_amount: 100, unique_managements: 1 },
+        snapshot_metric_fields: [
+          { field: 'current_size', label: '当前规模', data_type: 'number', source: 'instrument_metrics_snapshot', metric_source: 'system_derived', metric_source_label: '系统衍生指标', metric_type: 'scale', metric_type_label: '规模指标', unit: 'project_normalized_wan', description: 'ETF 总份额 × 同期单位净值', available: true },
+          { field: 'return_1y', label: '累计收益率（1Y）', data_type: 'number', source: 'instrument_metrics_snapshot', metric_source: 'built_in', metric_source_label: '内置指标', metric_type: 'return', metric_type_label: '收益型指标', unit: 'ratio', description: '指标中心预计算', available: true },
+        ],
+        snapshot: { status: 'ready', as_of: '2026-08-31' },
         available_filters: { fund_type: [], type: [], invest_type: [], market: [], status: [], management: [], custodian: [] }, sort_by: 'issue_amount', sort_dir: 'desc',
       }),
     }))
@@ -92,17 +97,35 @@ describe('ProductResearch', () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('page_size=20'))).toBe(true))
   })
 
-  it('携带产品种类和所选产品标识进入指标中心', async () => {
+  it('提示产品名称可进入单产品研究并提供明确链接语义', async () => {
+    render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
+
+    await screen.findByText('沪深300ETF')
+    expect(screen.getByText('提示：点击产品名称可进入单产品研究页面')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '进入沪深300ETF的单产品研究页面' })).toHaveAttribute(
+      'href',
+      '/product/510300.SH?kind=etf',
+    )
+  })
+
+  it('按来源、类型和名称逐级选择快照指标', async () => {
     const user = userEvent.setup()
-    await act(async () => { render(<MemoryRouter initialEntries={['/research']}><ProductResearch /><CurrentLocation /></MemoryRouter>) })
+    render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
 
-    await waitFor(() => expect(screen.getByText('沪深300ETF')).toBeInTheDocument())
-    await act(async () => {
-      await user.click(screen.getByRole('checkbox'))
-      await user.click(screen.getByRole('button', { name: /在指标中心分析/ }))
-    })
+    await screen.findByText('沪深300ETF')
+    expect(screen.queryByRole('columnheader', { name: /当前规模/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /展示快照指标/ }))
+    await user.selectOptions(screen.getByLabelText('快照指标来源'), 'system_derived')
+    expect(screen.getByRole('option', { name: '规模指标' })).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('快照指标类型'), 'scale')
+    await user.selectOptions(screen.getByLabelText('快照指标名称'), 'current_size')
 
-    expect(screen.getByTestId('location')).toHaveTextContent('/indicator-studio?kind=etf&ids=510300.SH')
+    expect(await screen.findByRole('columnheader', { name: /当前规模/ })).toBeInTheDocument()
+    expect(screen.getByText('1.23 亿')).toBeInTheDocument()
+    expect(screen.getByText('快照截至 2026-08-28')).toBeInTheDocument()
+    expect(screen.getByText('发行披露口径（非当前 AUM）')).toBeInTheDocument()
+    expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('snapshot_metric=current_size'))).toBe(true)
+    expect(screen.queryByRole('button', { name: /在指标中心分析/ })).not.toBeInTheDocument()
   })
 
   it('从 URL 初始化场外基金、筛选和成立日排序', async () => {
@@ -197,7 +220,7 @@ describe('ProductResearch', () => {
     expect(screen.getByText('已选 12')).toBeInTheDocument()
     expect(screen.getByText('已选择全部符合筛选条件的产品')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /产品对比/ })).toBeDisabled()
-    expect(screen.getByText('全选筛选结果是逻辑选择；请取消全选后手动选择最多 10 个产品进行分析。')).toBeInTheDocument()
+    expect(screen.getByText('全选筛选结果是逻辑选择；请取消全选后手动选择最多 10 个产品进行对比。')).toBeInTheDocument()
 
     await user.click(screen.getByRole('checkbox', { name: '选择 产品一' }))
     expect(screen.getByText('已选 11')).toBeInTheDocument()

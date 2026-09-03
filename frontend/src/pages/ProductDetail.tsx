@@ -74,7 +74,9 @@ interface ProductDetailResponse {
     issue_amount?: number | null;
     current_size?: number | null;
     current_size_as_of?: string | null;
-    current_size_source?: 'total_netasset' | 'net_asset' | null;
+    current_size_source?: 'instrument_metrics_snapshot' | null;
+    current_share?: number | null;
+    current_unit_nav?: number | null;
     m_fee?: number | null;
     c_fee?: number | null;
   };
@@ -875,8 +877,10 @@ export default function ProductDetail() {
   const inceptionDateText = formatDate(inceptionDate);
   const endDateText = formatDate(endDate);
   const currentSizeDescription = metrics.current_size_as_of
-    ? `截至 ${formatDate(metrics.current_size_as_of)} · ${metrics.current_size_source === 'total_netasset' ? '最新披露合计资产净值' : '最新披露资产净值'}（非实时）`
-    : '净值数据暂未披露资产净值';
+    ? `快照截至 ${formatDate(metrics.current_size_as_of)} · ${decimalFormatter.format(metrics.current_share ?? 0)} 万份 × ${decimalFormatter.format(metrics.current_unit_nav ?? 0)} 元/份`
+    : productKind === 'fund'
+      ? 'Tushare 暂无场外基金份额数据'
+      : '暂无可匹配的份额与单位净值';
 
   const chartOption = useMemo(() => {
     if (!detail?.timeseries || detail.timeseries.length === 0) {

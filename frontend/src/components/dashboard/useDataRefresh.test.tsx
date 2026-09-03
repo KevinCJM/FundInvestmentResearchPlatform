@@ -2,8 +2,8 @@ import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useDataRefresh } from './useDataRefresh';
 
-function Probe() {
-  useDataRefresh(vi.fn());
+function Probe({ onCompleted = vi.fn() }: { onCompleted?: () => void }) {
+  useDataRefresh(onCompleted);
   return null;
 }
 
@@ -31,29 +31,50 @@ describe('useDataRefresh polling', () => {
     vi.useRealTimers();
   });
 
-  it('运行前一分钟每 10 秒检查一次', async () => {
+  it('运行中每 2 秒读取一次轻量进度状态', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => runningStatus('2026-09-01T00:00:00Z') }));
     render(<Probe />);
     await act(async () => { await Promise.resolve(); });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenLastCalledWith('/api/data/refresh/status', { cache: 'no-store' });
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(9_999); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_999); });
     expect(fetch).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith('/api/data/refresh/status?progress_only=true', { cache: 'no-store' });
   });
 
-  it('长任务降频为每 60 秒检查一次', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => runningStatus('2026-08-31T23:58:00Z') }));
-    render(<Probe />);
-    await act(async () => { await Promise.resolve(); });
-    expect(fetch).toHaveBeenCalledTimes(1);
+  it('轻量轮询发现完成后立即刷新完整状态并触发完成回调', async () => {
+    const completed = vi.fn();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => runningStatus('2026-09-01T00:00:00Z') })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...runningStatus('2026-09-01T00:00:00Z'),
+          refresh_locked: false,
+          job: { job_id: 'job-1', status: 'succeeded', message: '下载完成' },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...runningStatus('2026-09-01T00:00:00Z'),
+          refresh_locked: false,
+          job: { job_id: 'job-1', status: 'succeeded', message: '下载完成' },
+          datasets: { fund_nav: { exists: true, rows: 10 } },
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(59_999); });
-    expect(fetch).toHaveBeenCalledTimes(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    render(<Probe onCompleted={completed} />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/data/refresh/status?progress_only=true', { cache: 'no-store' });
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/data/refresh/status', { cache: 'no-store' });
+    expect(completed).toHaveBeenCalledTimes(1);
   });
 
   it('页面恢复焦点时立即检查运行中任务', async () => {
@@ -65,5 +86,6 @@ describe('useDataRefresh polling', () => {
     await act(async () => { window.dispatchEvent(new Event('focus')); });
 
     expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith('/api/data/refresh/status?progress_only=true', { cache: 'no-store' });
   });
 });

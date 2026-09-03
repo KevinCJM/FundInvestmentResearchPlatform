@@ -1,6 +1,10 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import FilterDropdown, { FilterOption } from '../components/FilterDropdown';
+import FilterDropdown, {
+  FilterOption,
+  SnapshotMetricSelector,
+  type SnapshotMetricOption,
+} from '../components/FilterDropdown';
 import {
   evaluateCustomIndicators,
   getCustomIndicatorMeta,
@@ -40,6 +44,10 @@ interface ProductItem {
   issue_date?: string | null;
   instrument_type?: 'etf' | 'fund' | string | null;
   condition_values?: Record<string, number | string | null>;
+  snapshot_values?: Record<string, number | string | null>;
+  snapshot_value_dates?: Record<string, string | null>;
+  snapshot_statuses?: Record<string, string | null>;
+  snapshot_warnings?: Record<string, string | null>;
 }
 
 type ProductConditionOperator = 'gte' | 'lte' | 'gt' | 'lt' | 'eq';
@@ -58,6 +66,11 @@ interface ProductConditionField {
   input_scale?: number;
   source: 'fund_basic' | 'instrument_metrics_snapshot' | string;
   available: boolean;
+}
+
+interface SnapshotMetricField extends ProductConditionField, SnapshotMetricOption {
+  unit: string;
+  description: string;
 }
 
 interface ProductConditionOperatorOption {
@@ -87,6 +100,8 @@ interface ProductsResponse {
   available_filters: Record<string, FilterOption[]>;
   condition_fields?: ProductConditionField[];
   condition_operators?: ProductConditionOperatorOption[];
+  snapshot_metric_fields?: SnapshotMetricField[];
+  selected_snapshot_metrics?: string[];
   snapshot?: { status?: string | null; as_of?: string | null };
   sort_by: string;
   sort_dir: 'asc' | 'desc' | string;
@@ -110,6 +125,20 @@ const formatIssueAmount = (value?: number | null) => {
     return `${decimalFormatter.format(value / 10000)} 亿`;
   }
   return `${decimalFormatter.format(value)} 万`;
+};
+
+const formatSnapshotValue = (value: number | string | null | undefined, unit?: string) => {
+  if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) {
+    return '--';
+  }
+  const numeric = Number(value);
+  if (unit === 'ratio') {
+    return `${decimalFormatter.format(numeric * 100)}%`;
+  }
+  if (unit === 'project_normalized_wan') {
+    return formatIssueAmount(numeric);
+  }
+  return decimalFormatter.format(numeric);
 };
 
 const formatDate = (value?: string | null) => {
@@ -227,6 +256,9 @@ export default function ProductResearch() {
   });
   const [filters, setFilters] = useState<FilterState>(() => filtersFromSearchParams(searchParams));
   const [conditions, setConditions] = useState<ProductCondition[]>(() => conditionsFromSearchParams(searchParams));
+  const [snapshotMetrics, setSnapshotMetrics] = useState<string[]>(() => (
+    Array.from(new Set(searchParams.getAll('snapshot_metric').filter(Boolean))).slice(0, 8)
+  ));
   const [sortKey, setSortKey] = useState(() => searchParams.get('sort_by') || 'issue_amount');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => searchParams.get('sort_dir') === 'asc' ? 'asc' : 'desc');
   const [searchInput, setSearchInput] = useState(() => searchParams.get('q') ?? '');
@@ -280,6 +312,7 @@ export default function ProductResearch() {
       'condition',
       `${condition.field}|${condition.operator}|${condition.value}`,
     ));
+    snapshotMetrics.forEach((metric) => next.append('snapshot_metric', metric));
     next.set('sort_by', sortKey);
     next.set('sort_dir', sortDir);
     if (page > 1) {
@@ -291,7 +324,7 @@ export default function ProductResearch() {
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true });
     }
-  }, [conditions, filters, location.pathname, page, pageSize, productKind, searchKeyword, searchParams, setSearchParams, sortDir, sortKey]);
+  }, [conditions, filters, location.pathname, page, pageSize, productKind, searchKeyword, searchParams, setSearchParams, snapshotMetrics, sortDir, sortKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -316,6 +349,7 @@ export default function ProductResearch() {
           'condition',
           `${condition.field}|${condition.operator}|${condition.value}`,
         ));
+        snapshotMetrics.forEach((metric) => params.append('snapshot_metric', metric));
         params.set('kind', productKind);
         const resp = await fetch(`/api/instruments/products?${params.toString()}`, { signal: controller.signal });
         if (!resp.ok) {
@@ -341,7 +375,7 @@ export default function ProductResearch() {
     };
     fetchData();
     return () => controller.abort();
-  }, [conditions, page, pageSize, sortKey, sortDir, searchKeyword, filters, productKind]);
+  }, [conditions, page, pageSize, sortKey, sortDir, searchKeyword, filters, productKind, snapshotMetrics]);
 
   useEffect(() => {
     let active = true;
@@ -395,6 +429,7 @@ export default function ProductResearch() {
     setPage(1);
     setFilters(initialFilterState);
     setConditions([]);
+    setSnapshotMetrics([]);
     setSelectedProducts({});
     setAllMatchingSelected(false);
     setExcludedProductIds(new Set());
@@ -491,6 +526,11 @@ export default function ProductResearch() {
     ? Math.max(0, (response?.total ?? 0) - excludedProductIds.size)
     : selectedList.length;
   const conditionFields = response?.condition_fields ?? fallbackConditionFields(productKind);
+  const snapshotMetricFields = response?.snapshot_metric_fields ?? [];
+  const selectedSnapshotMetricFields = snapshotMetrics.flatMap((field) => {
+    const definition = snapshotMetricFields.find((item) => item.field === field);
+    return definition ? [definition] : [];
+  });
   const conditionOperators = response?.condition_operators ?? [];
   const selectHeaderRef = useRef<HTMLTableCellElement | null>(null);
   const [selectColOffset, setSelectColOffset] = useState<number>(0);
@@ -590,21 +630,11 @@ export default function ProductResearch() {
     navigate(`/product-compare?ids=${ids}&kind=${productKind}`);
   };
 
-  const goToIndicatorStudio = () => {
-    if (allMatchingSelected || selectedCount === 0 || selectedCount > 10) {
-      return;
-    }
-    const params = new URLSearchParams({
-      kind: productKind,
-      ids: selectedList.map((item) => item.id).join(','),
-    });
-    navigate(`/indicator-studio?${params.toString()}`);
-  };
-  const canAnalyzeSelection = !allMatchingSelected && selectedCount > 0 && selectedCount <= 10;
+  const canCompareSelection = !allMatchingSelected && selectedCount > 0 && selectedCount <= 10;
   const selectionActionHint = allMatchingSelected
-    ? '全选筛选结果是逻辑选择；请取消全选后手动选择最多 10 个产品进行分析。'
+    ? '全选筛选结果是逻辑选择；请取消全选后手动选择最多 10 个产品进行对比。'
     : selectedCount > 10
-      ? '产品对比和指标分析最多支持 10 个产品。'
+      ? '产品对比最多支持 10 个产品。'
       : undefined;
 
   return (
@@ -772,13 +802,30 @@ export default function ProductResearch() {
           <div>
             <h2 className="text-lg font-semibold text-slate-900">{viewMode === 'basic' ? '产品列表' : '当前页指标矩阵'}</h2>
             <div className="mt-1 text-xs text-slate-500">
-              {viewMode === 'basic' ? '支持本页全选和当前筛选结果全选；产品对比与指标分析最多使用 10 个产品' : '只批量计算当前分页产品；每个指标可独立选择计算区间'}
+              {viewMode === 'basic' ? (
+                <>
+                  <span className="font-medium text-emerald-600">提示：点击产品名称可进入单产品研究页面</span>
+                  <span aria-hidden="true" className="mx-1 text-slate-300">·</span>
+                  <span>支持本页全选和当前筛选结果全选；产品对比最多使用 10 个产品</span>
+                </>
+              ) : '只批量计算当前分页产品；每个指标可独立选择计算区间'}
             </div>
             {selectionActionHint && selectedCount > 0 && (
               <div className="mt-2 max-w-xl text-xs font-medium text-amber-700" role="status">{selectionActionHint}</div>
             )}
           </div>
           <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
+            {viewMode === 'basic' && (
+              <SnapshotMetricSelector
+                options={snapshotMetricFields}
+                selected={snapshotMetrics}
+                onChange={(metrics) => {
+                  setSnapshotMetrics(metrics.slice(0, 8));
+                  setPage(1);
+                }}
+                maxSelected={8}
+              />
+            )}
             {viewMode === 'metrics' && <>
               <MetricSelector indicators={researchIndicators} selectedIds={researchPreference.indicatorIds} onChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))} maxSelected={5} label="选择展示指标" />
               <label className="text-xs font-medium text-slate-600">截止日<input type="date" value={researchAsOf} onChange={(event) => setResearchAsOf(event.target.value)} className="ml-2 min-h-11 rounded-lg border border-slate-200 px-3 text-sm" /></label>
@@ -822,22 +869,12 @@ export default function ProductResearch() {
             <button
               type="button"
               onClick={goToComparison}
-              disabled={!canAnalyzeSelection}
+              disabled={!canCompareSelection}
               title={selectionActionHint}
               className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-1 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               产品对比
               {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-600">{selectedCount}</span>}
-            </button>
-            <button
-              type="button"
-              onClick={goToIndicatorStudio}
-              disabled={!canAnalyzeSelection}
-              title={selectionActionHint}
-              className="inline-flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-            >
-              在指标中心分析
-              {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-violet-600">{selectedCount}</span>}
             </button>
           </div>
         </div>
@@ -897,6 +934,17 @@ export default function ProductResearch() {
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     <SortButton label="发行规模" activeKey={sortKey} columnKey="issue_amount" direction={sortDir} onClick={toggleSort} />
                   </th>
+                  {selectedSnapshotMetricFields.map((field) => (
+                    <th
+                      key={field.field}
+                      scope="col"
+                      title={field.description}
+                      className="sticky top-0 z-40 bg-violet-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-violet-700 whitespace-nowrap"
+                    >
+                      {field.label}
+                      <span className="ml-1 font-normal text-violet-400">快照</span>
+                    </th>
+                  ))}
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     <SortButton label="费用 / 基准" activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
                   </th>
@@ -935,7 +983,14 @@ export default function ProductResearch() {
                         style={{ left: productLeft }}
                       >
                         {detailPath ? (
-                          <Link to={detailPath} target="_blank" rel="noreferrer" className="group block">
+                          <Link
+                            to={detailPath}
+                            target="_blank"
+                            rel="noreferrer"
+                            aria-label={`进入${item.name ?? code}的单产品研究页面`}
+                            title="点击进入单产品研究页面"
+                            className="group block rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                          >
                             <div className="text-sm font-semibold text-emerald-600 group-hover:text-emerald-700">
                               {item.name ?? '--'}
                             </div>
@@ -962,8 +1017,30 @@ export default function ProductResearch() {
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-semibold text-slate-800">{formatIssueAmount(item.issue_amount)}</div>
-                        <div className="text-xs text-slate-400">中位规模：{formatIssueAmount(summary?.median_issue_amount)}</div>
+                        <div className="text-xs text-slate-400">发行披露口径（非当前 AUM）</div>
                       </td>
+                      {selectedSnapshotMetricFields.map((field) => {
+                        const value = item.snapshot_values?.[field.field];
+                        const asOf = item.snapshot_value_dates?.[field.field];
+                        const snapshotStatus = item.snapshot_statuses?.[field.field];
+                        const snapshotWarning = item.snapshot_warnings?.[field.field];
+                        return (
+                          <td key={field.field} className="bg-violet-50/30 px-6 py-4 text-sm text-slate-600">
+                            <div className="font-semibold text-slate-800">
+                              {formatSnapshotValue(value, field.unit)}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              {snapshotWarning
+                                ? snapshotWarning
+                                : asOf
+                                  ? `快照截至 ${formatDate(asOf)}`
+                                  : snapshotStatus === 'unavailable'
+                                    ? '该产品当前不可计算此指标'
+                                    : '快照暂无可用值'}
+                            </div>
+                          </td>
+                        );
+                      })}
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">管理费 {formatPercent(item.m_fee)} / 托管费 {formatPercent(item.c_fee)}</div>
                         <div className="text-xs text-slate-400">基准 {formatText(item.benchmark)} · 产品类型 {formatText(item.fund_type)}</div>

@@ -74,7 +74,9 @@ describe('ProductDetail custom indicators', () => {
           issue_amount: 100,
           current_size: 123456.78,
           current_size_as_of: '2026-06-30',
-          current_size_source: 'total_netasset',
+          current_size_source: 'instrument_metrics_snapshot',
+          current_share: 100000,
+          current_unit_nav: 1.2345678,
           m_fee: 0.5,
           c_fee: 0.1,
         },
@@ -120,7 +122,7 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.getByLabelText('退市日期：2026-12-31')).toBeInTheDocument()
     expect(screen.getByText('当前规模')).toBeInTheDocument()
     expect(screen.getByText('12.35 亿')).toBeInTheDocument()
-    expect(screen.getByText('截至 2026-06-30 · 最新披露合计资产净值（非实时）')).toBeInTheDocument()
+    expect(screen.getByText('快照截至 2026-06-30 · 100,000 万份 × 1.23 元/份')).toBeInTheDocument()
     expect(screen.getByLabelText('统计区间')).toHaveValue('ALL')
     expect(screen.getByRole('heading', { name: '未来虚拟净值模拟' })).toBeInTheDocument()
     expect(screen.getByText(/所有路径统一从虚拟净值 1\.0000 出发/)).toBeInTheDocument()

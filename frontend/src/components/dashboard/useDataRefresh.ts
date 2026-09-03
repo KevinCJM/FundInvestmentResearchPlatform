@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DataRefreshStatus, IndexScope, RefreshMode, RefreshModule } from './types';
+import type { DataRefreshStatus, RefreshMode, RefreshModule, RefreshModuleScopes } from './types';
 
-const FAST_POLL_INTERVAL_MS = 10_000;
-const SLOW_POLL_INTERVAL_MS = 60_000;
-const FAST_POLL_WINDOW_MS = 60_000;
+const RUNNING_POLL_INTERVAL_MS = 2_000;
+const REFRESH_STATUS_URL = '/api/data/refresh/status';
+
+const isRunning = (status: DataRefreshStatus) => (
+  status.job.status === 'running' || status.refresh_locked === true
+);
 
 const completionKey = (status: DataRefreshStatus) => {
   const job = status.job;
@@ -17,16 +20,29 @@ export function useDataRefresh(onCompleted: () => void) {
   const [rebuilding, setRebuilding] = useState(false);
   const [savingToken, setSavingToken] = useState(false);
   const handledCompletion = useRef<string | null>(null);
-  const runningSeenAt = useRef<number | null>(null);
+  const refreshSubmissionInFlight = useRef(false);
 
-  const fetchStatus = useCallback(async () => {
+  const fetchStatus = useCallback(async (progressOnly = false) => {
     try {
-      const response = await fetch('/api/data/refresh/status', { cache: 'no-store' });
+      const statusUrl = progressOnly ? `${REFRESH_STATUS_URL}?progress_only=true` : REFRESH_STATUS_URL;
+      let response = await fetch(statusUrl, { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      const payload = (await response.json()) as DataRefreshStatus;
-      setStatus(payload);
+      let payload = (await response.json()) as DataRefreshStatus;
+      if (progressOnly && !isRunning(payload)) {
+        response = await fetch(REFRESH_STATUS_URL, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        payload = (await response.json()) as DataRefreshStatus;
+        progressOnly = false;
+      }
+      setStatus((current) => (
+        progressOnly && current
+          ? { ...current, ...payload, datasets: current.datasets }
+          : payload
+      ));
       setError(null);
       return payload;
     } catch (requestError) {
@@ -40,29 +56,21 @@ export function useDataRefresh(onCompleted: () => void) {
   }, [fetchStatus]);
 
   useEffect(() => {
-    if (status?.job.status !== 'running') {
-      runningSeenAt.current = null;
+    const refreshRunning = status?.job.status === 'running' || status?.refresh_locked === true;
+    if (!refreshRunning) {
       return;
     }
-    if (runningSeenAt.current === null) {
-      runningSeenAt.current = Date.now();
-    }
-
-    const startedAt = status.job.started_at ? Date.parse(status.job.started_at) : Number.NaN;
-    const effectiveStartedAt = Number.isFinite(startedAt) ? startedAt : runningSeenAt.current;
     let cancelled = false;
     let timer: number | undefined;
     const schedule = () => {
-      const elapsed = Date.now() - effectiveStartedAt;
-      const interval = elapsed < FAST_POLL_WINDOW_MS ? FAST_POLL_INTERVAL_MS : SLOW_POLL_INTERVAL_MS;
       timer = window.setTimeout(async () => {
         if (!document.hidden) {
-          await fetchStatus();
+          await fetchStatus(true);
         }
         if (!cancelled) {
           schedule();
         }
-      }, interval);
+      }, RUNNING_POLL_INTERVAL_MS);
     };
     schedule();
     return () => {
@@ -71,12 +79,12 @@ export function useDataRefresh(onCompleted: () => void) {
         window.clearTimeout(timer);
       }
     };
-  }, [fetchStatus, status?.job.started_at, status?.job.status]);
+  }, [fetchStatus, status?.job.started_at, status?.job.status, status?.refresh_locked]);
 
   useEffect(() => {
     const checkOnResume = () => {
-      if (!document.hidden && status?.job.status === 'running') {
-        fetchStatus();
+      if (!document.hidden && (status?.job.status === 'running' || status?.refresh_locked === true)) {
+        fetchStatus(true);
       }
     };
     document.addEventListener('visibilitychange', checkOnResume);
@@ -85,7 +93,7 @@ export function useDataRefresh(onCompleted: () => void) {
       document.removeEventListener('visibilitychange', checkOnResume);
       window.removeEventListener('focus', checkOnResume);
     };
-  }, [fetchStatus, status?.job.status]);
+  }, [fetchStatus, status?.job.status, status?.refresh_locked]);
 
   useEffect(() => {
     if (!status || status.job.status !== 'succeeded') {
@@ -101,8 +109,16 @@ export function useDataRefresh(onCompleted: () => void) {
   const startRefresh = useCallback(async (
     modules: RefreshModule[],
     mode: RefreshMode,
-    indexScopes: IndexScope[] = [],
+    moduleScopes: RefreshModuleScopes,
   ) => {
+    if (
+      refreshSubmissionInFlight.current
+      || status?.job.status === 'running'
+      || status?.refresh_locked === true
+    ) {
+      setError('已有数据更新任务正在后台运行，请等待其完成后再启动新的下载。');
+      return false;
+    }
     if (modules.length === 0) {
       setError('请至少选择一个数据模块。');
       return false;
@@ -111,17 +127,24 @@ export function useDataRefresh(onCompleted: () => void) {
       ? '全量重建可能运行数小时，并会逐只基金循环抓取历史净值'
       : '增量更新会从本地最新日期开始补抓';
     const moduleLabels: Record<RefreshModule, string> = { base: '基础信息', etf: 'ETF', fund: '场外公募基金', index: '指数' };
-    const scopeLabels: Record<IndexScope, string> = {
-      catalog: '指数目录', domestic: '境内指数', industry: '行业指数', concept: '概念板块',
-      global: '国际指数', futures: '商品期货指数', valuation: '指数估值', constituents: '成分与权重',
+    const scopeLabels: Record<RefreshModule, Record<string, string>> = {
+      base: { calendar: '交易日历', stock_basic: '股票目录', fund_company: '基金公司' },
+      etf: { info: '产品基础信息', nav: '净值', share: '份额与规模', candle: '交易行情' },
+      fund: { info: '产品基础信息', nav: '复权净值' },
+      index: {
+        catalog: '指数目录', domestic: '境内指数', industry: '行业指数', concept: '概念板块',
+        global: '国际指数', futures: '商品期货指数', valuation: '指数估值', constituents: '成分与权重',
+      },
     };
     const moduleText = modules.map((item) => moduleLabels[item]).join('、');
-    const scopeText = modules.includes('index')
-      ? `\n指数范围：${indexScopes.map((item) => scopeLabels[item]).join('、')}`
-      : '';
+    const scopeText = modules.map((module) => {
+      const selected = moduleScopes[module] ?? [];
+      return `\n${moduleLabels[module]}下载内容：${selected.map((scope) => scopeLabels[module][scope] ?? scope).join('、')}`;
+    }).join('');
     if (mode === 'full' && !window.confirm(`${modeText}。\n模块：${moduleText}${scopeText}\n是否继续？`)) {
       return false;
     }
+    refreshSubmissionInFlight.current = true;
     try {
       setSubmitting(true);
       setError(null);
@@ -131,11 +154,17 @@ export function useDataRefresh(onCompleted: () => void) {
         body: JSON.stringify({
           modules,
           mode,
-          ...(modules.includes('index') ? { index_scopes: indexScopes } : {}),
+          module_scopes: modules.reduce<RefreshModuleScopes>((selected, module) => {
+            selected[module] = moduleScopes[module] ?? [];
+            return selected;
+          }, {}),
         }),
       });
       const payload = await response.json();
       if (!response.ok) {
+        if (response.status === 409) {
+          await fetchStatus();
+        }
         throw new Error(payload.detail || '无法启动数据更新');
       }
       setStatus(payload as DataRefreshStatus);
@@ -144,9 +173,10 @@ export function useDataRefresh(onCompleted: () => void) {
       setError(requestError instanceof Error ? requestError.message : '无法启动数据更新。');
       return false;
     } finally {
+      refreshSubmissionInFlight.current = false;
       setSubmitting(false);
     }
-  }, []);
+  }, [fetchStatus, status?.job.status, status?.refresh_locked]);
 
   const saveToken = useCallback(async (token: string) => {
     if (!token.trim()) {

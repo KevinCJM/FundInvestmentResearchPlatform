@@ -1,11 +1,13 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type {
+  DataRefreshStatus,
   DashboardDataQuality,
   DashboardStatus,
+  RefreshModuleScopes,
   RefreshMode,
   RefreshModule,
-  IndexScope,
+  RefreshScope,
   SegmentDataQuality,
   SegmentKind,
 } from './types';
@@ -13,29 +15,133 @@ import { useDataRefresh } from './useDataRefresh';
 
 const integerFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
 const percentFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
+const RECENT_REFRESH_COMPLETION_MS = 10 * 60 * 1000;
 
-const moduleOptions: { value: RefreshModule; label: string; description: string }[] = [
-  { value: 'base', label: '基础信息', description: '交易日历、股票、基金公司等目录' },
-  { value: 'etf', label: 'ETF', description: 'ETF 基础信息、净值与交易行情' },
-  { value: 'fund', label: '场外公募基金', description: '基金基础信息与复权净值' },
-  { value: 'index', label: '指数', description: '情景模拟所需的指数目录、行情、估值与成分' },
+const padDatePart = (value: number) => String(value).padStart(2, '0');
+
+const localDateTime = (timestamp: number) => {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())} ${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+};
+
+const relativeFinishedTime = (ageMs: number) => {
+  const safeAge = Math.max(0, ageMs);
+  if (safeAge < 60_000) return '刚刚';
+  if (safeAge < 3_600_000) return `${Math.floor(safeAge / 60_000)} 分钟前`;
+  if (safeAge < 86_400_000) return `${Math.floor(safeAge / 3_600_000)} 小时前`;
+  return `${Math.floor(safeAge / 86_400_000)} 天前`;
+};
+
+const cleanCompletionMessage = (message: string) => message
+  .replace(/^下载完成\s*[：:·-]?\s*/, '')
+  .replace(/^Tushare\s*/, '')
+  .trim();
+
+export function completedRefreshSummary(
+  job: DataRefreshStatus['job'],
+  nowMs = Date.now(),
+) {
+  const modeLabel = job.mode === 'full' ? '全量更新' : job.mode === 'incremental' ? '增量更新' : '数据更新';
+  const finishedAt = Date.parse(job.finished_at ?? '');
+  if (!Number.isFinite(finishedAt)) {
+    return `最近一次${modeLabel}已结束 · 完成时间未知`;
+  }
+  const ageMs = Math.max(0, nowMs - finishedAt);
+  const completedAt = localDateTime(finishedAt);
+  if (ageMs <= RECENT_REFRESH_COMPLETION_MS) {
+    const detail = cleanCompletionMessage(job.message);
+    return `刚刚完成 · ${modeLabel} · ${completedAt}${detail ? ` · ${detail}` : ''}`;
+  }
+  return `上次更新于 ${completedAt}（${relativeFinishedTime(ageMs)}）· ${modeLabel}`;
+}
+
+interface RefreshScopeOption {
+  value: RefreshScope;
+  label: string;
+  description: string;
+}
+
+interface RefreshModuleOption {
+  value: RefreshModule;
+  label: string;
+  description: string;
+  scopes: RefreshScopeOption[];
+}
+
+const moduleOptions: RefreshModuleOption[] = [
+  {
+    value: 'base',
+    label: '基础信息',
+    description: '市场与机构公共目录',
+    scopes: [
+      { value: 'calendar', label: '交易日历', description: '沪深交易日与开闭市状态' },
+      { value: 'stock_basic', label: '股票目录', description: '股票代码、名称与上市状态' },
+      { value: 'fund_company', label: '基金公司', description: '基金管理人基础目录' },
+    ],
+  },
+  {
+    value: 'etf',
+    label: 'ETF',
+    description: 'ETF 产品与交易数据',
+    scopes: [
+      { value: 'info', label: '产品基础信息', description: 'ETF 代码、类型、管理人与上市信息' },
+      { value: 'nav', label: '净值', description: '单位净值与复权净值历史' },
+      { value: 'share', label: '份额与规模', description: '总份额、单位净值；当前规模按两者相乘计算' },
+      { value: 'candle', label: '交易行情', description: '日线价格、成交量与成交额' },
+    ],
+  },
+  {
+    value: 'fund',
+    label: '场外公募基金',
+    description: '场外基金产品与净值数据',
+    scopes: [
+      { value: 'info', label: '产品基础信息', description: '基金代码、类型、管理人与存续状态' },
+      { value: 'nav', label: '复权净值', description: '单位净值、累计净值与复权净值历史' },
+    ],
+  },
+  {
+    value: 'index',
+    label: '指数',
+    description: '情景模拟所需的指数数据底座',
+    scopes: [
+      { value: 'catalog', label: '指数目录', description: 'index_basic、etf_index 及行业/概念目录' },
+      { value: 'domestic', label: '境内指数', description: 'index_daily' },
+      { value: 'industry', label: '行业指数', description: 'sw_daily、ci_daily' },
+      { value: 'concept', label: '概念板块', description: 'ths_daily、dc_daily、tdx_daily' },
+      { value: 'global', label: '国际指数', description: 'index_global' },
+      { value: 'futures', label: '商品期货指数', description: 'fut_index_daily' },
+      { value: 'valuation', label: '指数估值', description: 'index_dailybasic' },
+      { value: 'constituents', label: '成分与权重', description: '成分目录与最新可用权重' },
+    ],
+  },
 ];
 
-const defaultIndexScopes: IndexScope[] = ['catalog', 'domestic', 'industry', 'global'];
-const indexScopeOptions: { value: IndexScope; label: string; description: string }[] = [
-  { value: 'catalog', label: '指数目录', description: 'index_basic、etf_index 及行业/概念目录' },
-  { value: 'domestic', label: '境内指数', description: 'index_daily' },
-  { value: 'industry', label: '行业指数', description: 'sw_daily、ci_daily' },
-  { value: 'concept', label: '概念板块', description: 'ths_daily、dc_daily、tdx_daily' },
-  { value: 'global', label: '国际指数', description: 'index_global' },
-  { value: 'futures', label: '商品期货指数', description: 'fut_index_daily' },
-  { value: 'valuation', label: '指数估值', description: 'index_dailybasic' },
-  { value: 'constituents', label: '成分与权重', description: '成分目录与最新可用权重' },
-];
+const defaultModuleScopes: Record<RefreshModule, RefreshScope[]> = {
+  base: ['calendar', 'stock_basic', 'fund_company'],
+  etf: ['info', 'nav', 'share', 'candle'],
+  fund: ['info', 'nav'],
+  index: ['catalog', 'domestic', 'industry', 'global'],
+};
+
+const normaliseScopeSelection = (module: RefreshModule, values: RefreshScope[]) => {
+  const selected = new Set(values);
+  if (module === 'etf' && (selected.has('nav') || selected.has('share') || selected.has('candle'))) selected.add('info');
+  if (module === 'fund' && selected.has('nav')) selected.add('info');
+  if (module === 'index' && selected.size > 0) selected.add('catalog');
+  const option = moduleOptions.find((item) => item.value === module);
+  return option?.scopes.map((scope) => scope.value).filter((scope) => selected.has(scope)) ?? [];
+};
+
+const scopeIsDependency = (module: RefreshModule, scope: RefreshScope, values: RefreshScope[]) => (
+  (module === 'etf' && scope === 'info' && (values.includes('nav') || values.includes('share') || values.includes('candle')))
+  || (module === 'fund' && scope === 'info' && values.includes('nav'))
+  || (module === 'index' && scope === 'catalog' && values.some((item) => item !== 'catalog'))
+);
 
 const datasetLabels: Record<string, string> = {
   etf_info: 'ETF 基础信息',
   etf_nav: 'ETF 净值',
+  etf_share: 'ETF 份额与规模',
   etf_candle: 'ETF 交易行情',
   fund_info: '场外基金基础信息',
   fund_nav: '场外基金净值',
@@ -59,7 +165,7 @@ const datasetLabels: Record<string, string> = {
   index_coverage: '指数覆盖快照',
 };
 
-const healthDatasetKeys = ['etf_info', 'etf_nav', 'etf_candle', 'fund_info', 'fund_nav', 'instrument_metrics'] as const;
+const healthDatasetKeys = ['etf_info', 'etf_nav', 'etf_share', 'etf_candle', 'fund_info', 'fund_nav', 'instrument_metrics'] as const;
 
 const statusTone: Record<DashboardStatus, string> = {
   complete: 'bg-emerald-100 text-emerald-800',
@@ -86,11 +192,16 @@ export function refreshStatusSummary(message?: string | null, logTail?: string |
   const messageCandidates = (message ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const candidates = [...messageCandidates, ...logCandidates];
   const latest = [...candidates].reverse().find((line) => (
-    (line.includes('进度') || line.startsWith('[OK]'))
-    && !/^\[(?:INFO|OK|WARN|ERROR)\]$/.test(line)
+    (
+      line.includes('进度')
+      || line.startsWith('[STAGE]')
+      || line.startsWith('[DONE]')
+      || line.startsWith('[OK]')
+    )
+    && !/^\[(?:INFO|STAGE|DONE|OK|WARN|ERROR)\]$/.test(line)
   ));
   const selected = latest ?? messageCandidates.at(-1) ?? '';
-  const cleaned = selected.replace(/^\[(?:INFO|OK)\]\s*/, '');
+  const cleaned = selected.replace(/^\[(?:INFO|STAGE|DONE|OK)\]\s*/, '');
   const progress = cleaned.match(/^(.*?)\s+(?:分段|增量)?进度\s+(\d+)\/(\d+)(.*)$/);
   if (!progress) {
     return cleaned;
@@ -152,12 +263,21 @@ export default function DataHealthRefreshPanel({
     removeToken,
   } = useDataRefresh(onRefreshCompleted);
   const [modules, setModules] = useState<RefreshModule[]>(['base', 'etf', 'fund', 'index']);
-  const [indexScopes, setIndexScopes] = useState<IndexScope[]>(defaultIndexScopes);
+  const [moduleScopes, setModuleScopes] = useState<Record<RefreshModule, RefreshScope[]>>(() => ({
+    base: [...defaultModuleScopes.base],
+    etf: [...defaultModuleScopes.etf],
+    fund: [...defaultModuleScopes.fund],
+    index: [...defaultModuleScopes.index],
+  }));
+  const [expandedModule, setExpandedModule] = useState<RefreshModule | null>(null);
   const [mode, setMode] = useState<RefreshMode>('incremental');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [tokenInput, setTokenInput] = useState('');
+  const [statusClock, setStatusClock] = useState(() => Date.now());
   const drawerButtonRef = useRef<HTMLButtonElement>(null);
-  const running = status?.job.status === 'running';
+  const serverDefaultsApplied = useRef(false);
+  const running = status?.job.status === 'running' || status?.refresh_locked === true;
+  const refreshControlsLocked = submitting || running;
   const recoverableCandidate = Boolean(
     status?.job.fetch_complete
     && status.job.staging_data_dir
@@ -172,11 +292,19 @@ export default function DataHealthRefreshPanel({
   }, [status?.available_modules]);
 
   useEffect(() => {
-    if (!status?.default_index_scopes?.length) {
+    if (serverDefaultsApplied.current || !status?.default_module_scopes) {
       return;
     }
-    setIndexScopes((current) => current.length ? current : status.default_index_scopes ?? defaultIndexScopes);
-  }, [status?.default_index_scopes]);
+    setModuleScopes((current) => {
+      const next = { ...current };
+      moduleOptions.forEach(({ value }) => {
+        const serverDefault = status.default_module_scopes?.[value];
+        if (serverDefault?.length) next[value] = normaliseScopeSelection(value, serverDefault);
+      });
+      return next;
+    });
+    serverDefaultsApplied.current = true;
+  }, [status?.default_module_scopes]);
 
   useEffect(() => {
     if (!drawerOpen) {
@@ -194,19 +322,24 @@ export default function DataHealthRefreshPanel({
     return () => document.removeEventListener('keydown', closeOnEscape);
   }, [drawerOpen]);
 
+  useEffect(() => {
+    if (status?.job.status !== 'succeeded' || !status.job.finished_at) return undefined;
+    const timer = window.setInterval(() => setStatusClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [status?.job.finished_at, status?.job.status]);
+
   const warningCount = dataQuality?.warnings?.length ?? 0;
   const snapshotText = dataQuality?.snapshot?.exists
     ? `指标快照 ${integerFormatter.format(dataQuality.snapshot.rows)} 行 · 截至 ${dataQuality.snapshot.as_of ?? asOf ?? '--'}`
     : '业绩指标快照尚未生成';
-  const refreshDisabled = submitting
-    || running
+  const refreshDisabled = refreshControlsLocked
     || modules.length === 0
     || !status?.enabled
     || !status?.token_configured
     || (mode === 'full' && !status?.full_refresh_enabled);
-  const rebuildDisabled = rebuilding || running || !status?.enabled;
+  const rebuildDisabled = rebuilding || refreshControlsLocked || !status?.enabled;
   const tokenControlsDisabled = savingToken
-    || running
+    || refreshControlsLocked
     || !status?.token_configuration_enabled
     || !status?.token_editable;
   const datasets = useMemo(() => Object.entries(status?.datasets ?? {}), [status?.datasets]);
@@ -219,8 +352,14 @@ export default function DataHealthRefreshPanel({
   );
   const refreshMessage = error ?? (
     status?.job.status === 'running'
-      ? refreshStatusSummary(status.job.message, status.job.log_tail)
-      : status?.job.message
+      ? `后台更新中（下载入口已锁定）· ${refreshStatusSummary(status.job.message, status.job.log_tail)}`
+      : status?.refresh_locked
+        ? '检测到后台数据任务正在运行，新的下载入口已锁定。'
+        : status?.job.status === 'succeeded'
+          ? completedRefreshSummary(status.job, statusClock)
+          : status?.job.status === 'failed'
+            ? `下载失败 · ${status.job.message}`
+            : status?.job.message
   ) ?? '正在检查数据源状态...';
 
   const submitToken = async (event: FormEvent<HTMLFormElement>) => {
@@ -237,6 +376,33 @@ export default function DataHealthRefreshPanel({
     if (await removeToken()) {
       setTokenInput('');
     }
+  };
+
+  const toggleModule = (module: RefreshModule, checked: boolean) => {
+    if (checked) {
+      setModules((current) => current.includes(module) ? current : [...current, module]);
+      setModuleScopes((current) => ({
+        ...current,
+        [module]: current[module].length ? current[module] : [...defaultModuleScopes[module]],
+      }));
+      return;
+    }
+    setModules((current) => current.filter((item) => item !== module));
+    setModuleScopes((current) => ({ ...current, [module]: [] }));
+  };
+
+  const toggleScope = (module: RefreshModule, scope: RefreshScope, checked: boolean) => {
+    const next = normaliseScopeSelection(
+      module,
+      checked
+        ? [...moduleScopes[module], scope]
+        : moduleScopes[module].filter((item) => item !== scope),
+    );
+    setModuleScopes((current) => ({ ...current, [module]: next }));
+    setModules((current) => {
+      if (!next.length) return current.filter((item) => item !== module);
+      return current.includes(module) ? current : [...current, module];
+    });
   };
 
   return (
@@ -374,8 +540,8 @@ export default function DataHealthRefreshPanel({
             <legend className="text-sm font-semibold text-slate-800">更新模式</legend>
             <div className="mt-3 flex flex-wrap gap-3">
               {(['incremental', 'full'] as RefreshMode[]).map((option) => (
-                <label key={option} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-4 py-3 text-sm ${mode === option ? 'border-indigo-300 bg-indigo-50 text-indigo-800' : 'border-slate-200 text-slate-600'}`}>
-                  <input type="radio" name="refresh-mode" value={option} checked={mode === option} disabled={running || (option === 'full' && !status?.full_refresh_enabled)} onChange={() => setMode(option)} className="text-indigo-600 focus:ring-indigo-500" />
+                <label key={option} className={`flex items-center gap-2 rounded-xl border px-4 py-3 text-sm ${mode === option ? 'border-indigo-300 bg-indigo-50 text-indigo-800' : 'border-slate-200 text-slate-600'} ${refreshControlsLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+                  <input type="radio" name="refresh-mode" value={option} checked={mode === option} disabled={refreshControlsLocked || (option === 'full' && !status?.full_refresh_enabled)} onChange={() => setMode(option)} className="text-indigo-600 focus:ring-indigo-500" />
                   <span className="font-semibold">{option === 'incremental' ? '增量更新' : '全量更新'}</span>
                 </label>
               ))}
@@ -385,58 +551,103 @@ export default function DataHealthRefreshPanel({
 
           <fieldset>
             <legend className="text-sm font-semibold text-slate-800">数据模块</legend>
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              默认可直接更新全部常用数据；需要精细控制时，可展开任一模块选择具体下载内容。
+            </p>
             <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               {moduleOptions.map((option) => {
                 const checked = modules.includes(option.value);
                 const unavailable = Boolean(status?.available_modules && !status.available_modules.includes(option.value));
+                const expanded = expandedModule === option.value;
+                const selectedScopes = moduleScopes[option.value];
+                const availableScopes = status?.available_module_scopes?.[option.value]
+                  ?? (option.value === 'index' ? status?.available_index_scopes : undefined);
+                const scopeRegionId = `refresh-module-${option.value}-scopes`;
                 return (
-                  <label key={option.value} className={`cursor-pointer rounded-xl border p-4 ${checked ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white'} ${unavailable ? 'cursor-not-allowed opacity-50' : ''}`}>
-                    <span className="flex items-center gap-2 text-sm font-semibold text-slate-800"><input type="checkbox" checked={checked} disabled={running || unavailable} onChange={() => setModules((current) => checked ? current.filter((item) => item !== option.value) : [...current, option.value])} className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />{option.label}</span>
-                    <span className="mt-1 block text-xs leading-5 text-slate-500">{option.description}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </fieldset>
-
-          {modules.includes('index') && (
-            <fieldset className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
-              <legend className="px-1 text-sm font-semibold text-slate-800">指数下载范围</legend>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <span className="text-xs font-semibold text-indigo-700">情景模拟数据底座</span>
-                <Link to="/index-data" className="text-sm font-semibold text-indigo-700 hover:text-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500">查看指数数据中心 →</Link>
-              </div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">默认勾选“情景模拟核心”。选择任一范围都会自动包含指数目录。</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                {indexScopeOptions.map((option) => {
-                  const checked = indexScopes.includes(option.value);
-                  const unavailable = Boolean(status?.available_index_scopes && !status.available_index_scopes.includes(option.value));
-                  const catalogLocked = option.value === 'catalog';
-                  return (
-                    <label key={option.value} className={`rounded-lg border bg-white p-3 ${checked ? 'border-indigo-300' : 'border-slate-200'} ${unavailable ? 'opacity-50' : ''}`}>
-                      <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  <section aria-label={`${option.label}模块`} key={option.value} className={`min-w-0 rounded-xl border ${expanded ? 'md:col-span-2 xl:col-span-4' : ''} ${checked ? 'border-indigo-300 bg-indigo-50/70' : 'border-slate-200 bg-white'} ${unavailable ? 'opacity-50' : ''}`}>
+                    <div className="p-4">
+                      <label className={`flex items-start gap-2 ${refreshControlsLocked || unavailable ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
                         <input
                           type="checkbox"
                           checked={checked}
-                          disabled={running || unavailable || catalogLocked}
-                          onChange={() => setIndexScopes((current) => checked
-                            ? current.filter((item) => item !== option.value)
-                            : Array.from(new Set<IndexScope>(['catalog', ...current, option.value])))}
-                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                          disabled={refreshControlsLocked || unavailable}
+                          onChange={(event) => toggleModule(option.value, event.target.checked)}
+                          className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                         />
-                        {option.label}
-                      </span>
-                      <span className="mt-1 block text-xs text-slate-500">{option.description}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </fieldset>
-          )}
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold text-slate-800">{option.label}</span>
+                          <span className="mt-1 block text-xs leading-5 text-slate-500">{option.description}</span>
+                        </span>
+                      </label>
+                    </div>
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-controls={scopeRegionId}
+                      onClick={() => setExpandedModule(expanded ? null : option.value)}
+                      className="flex w-full items-center justify-between gap-3 border-t border-slate-200/80 px-4 py-3 text-left text-xs font-semibold text-indigo-700 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-500"
+                    >
+                      <span>下载内容</span>
+                      <span className="tabular-nums">已选 {selectedScopes.length}/{option.scopes.length} {expanded ? '收起' : '展开'}</span>
+                    </button>
+                    {expanded && (
+                      <fieldset id={scopeRegionId} className="grid gap-2 border-t border-slate-200/80 bg-white/80 p-3 sm:grid-cols-2 xl:grid-cols-4">
+                        <legend className="sr-only">{option.label}下载内容</legend>
+                        {option.scopes.map((scope) => {
+                          const scopeChecked = selectedScopes.includes(scope.value);
+                          const dependency = scopeIsDependency(option.value, scope.value, selectedScopes);
+                          const scopeUnavailable = Boolean(availableScopes && !availableScopes.includes(scope.value));
+                          const scopeDisabled = refreshControlsLocked || unavailable || scopeUnavailable || dependency;
+                          return (
+                            <label key={scope.value} className={`block rounded-lg border p-3 ${scopeChecked ? 'border-indigo-200 bg-indigo-50/60' : 'border-slate-200 bg-white'} ${scopeDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                              <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                                <input
+                                  type="checkbox"
+                                  checked={scopeChecked}
+                                  disabled={scopeDisabled}
+                                  onChange={(event) => toggleScope(option.value, scope.value, event.target.checked)}
+                                  className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                />
+                                {scope.label}
+                                {dependency && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">自动依赖</span>}
+                              </span>
+                              <span className="mt-1 block text-xs leading-5 text-slate-500">{scope.description}</span>
+                            </label>
+                          );
+                        })}
+                        {option.value === 'index' && (
+                          <Link to="/index-data" className="inline-flex py-1 text-sm font-semibold text-indigo-700 hover:text-indigo-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 sm:col-span-2 xl:col-span-4">
+                            查看指数数据中心 →
+                          </Link>
+                        )}
+                      </fieldset>
+                    )}
+                  </section>
+                );
+              })}
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-500">
+              系统会自动补齐必要的产品目录；增量更新历史数据时会同步交易日历，避免日期断层。
+            </p>
+          </fieldset>
 
           {error && <div role="alert" className="rounded-xl bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}
           {status && (!status.enabled || !status.token_configured) && (
             <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">{!status.enabled ? '当前环境未开启网页数据刷新。' : '请先在上方保存 Tushare Token，再启动数据更新。'}</div>
+          )}
+          {refreshControlsLocked && (
+            <div
+              id="refresh-background-notice"
+              aria-live="polite"
+              className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900"
+            >
+              <div className="font-semibold">
+                {submitting ? '正在启动后台数据更新…' : '数据更新正在后台运行，下载入口已锁定。'}
+              </div>
+              <p className="mt-1 text-xs leading-5 text-indigo-700">
+                您可以收起数据管理并继续使用系统其他功能；当前任务结束前，不能启动新的增量更新、全量更新或分析快照重建。
+              </p>
+            </div>
           )}
           {status?.job.log_tail && (
             <details className="rounded-xl border border-slate-200 bg-slate-950 p-4 text-xs text-slate-200"><summary className="cursor-pointer font-semibold">查看任务日志尾部</summary><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap">{status.job.log_tail}</pre></details>
@@ -455,8 +666,8 @@ export default function DataHealthRefreshPanel({
               <button type="button" onClick={() => rebuildAnalytics(recoverableCandidate)} disabled={rebuildDisabled} className="inline-flex min-w-44 items-center justify-center rounded-xl border border-indigo-200 bg-white px-5 py-3 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
                 {rebuilding ? '正在重建...' : recoverableCandidate ? '重建并接入候选快照' : '仅重建分析快照'}
               </button>
-              <button type="button" onClick={() => startRefresh(modules, mode, indexScopes)} disabled={refreshDisabled} className="inline-flex min-w-44 items-center justify-center rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300">
-                {submitting ? '正在启动...' : running ? '数据更新运行中...' : '开始数据更新'}
+              <button type="button" aria-describedby={refreshControlsLocked ? 'refresh-background-notice' : undefined} onClick={() => startRefresh(modules, mode, moduleScopes)} disabled={refreshDisabled} className="inline-flex min-w-44 items-center justify-center rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">
+                {submitting ? '正在启动后台任务...' : running ? '后台更新中（已锁定）' : '开始数据更新'}
               </button>
             </div>
           </div>

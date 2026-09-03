@@ -104,7 +104,7 @@ describe('App', () => {
           ok: true,
           json: async () => ({
             ...refreshResponse,
-            job: { job_id: 'job-1', status: 'succeeded', started_at: '2026-08-28T00:00:00Z', finished_at: '2026-08-28T00:01:00Z', message: 'Tushare 数据更新完成' },
+            job: { job_id: 'job-1', status: 'succeeded', mode: 'incremental', started_at: new Date(Date.now() - 60_000).toISOString(), finished_at: new Date().toISOString(), message: 'Tushare 数据更新完成' },
           }),
         };
       }
@@ -150,10 +150,18 @@ describe('App', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/data/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modules: ['base', 'etf', 'fund'], mode: 'incremental' }),
+      body: JSON.stringify({
+        modules: ['base', 'etf', 'fund'],
+        mode: 'incremental',
+        module_scopes: {
+          base: ['calendar', 'stock_basic', 'fund_company'],
+          etf: ['info', 'nav', 'share', 'candle'],
+          fund: ['info', 'nav'],
+        },
+      }),
     }));
     expect(confirm).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByText(/Tushare 数据更新完成/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/刚刚完成 · 增量更新/)).toBeInTheDocument());
     await waitFor(() => {
       const analyticsCalls = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).startsWith('/api/instruments/analytics?'));
       expect(analyticsCalls.length).toBeGreaterThanOrEqual(2);

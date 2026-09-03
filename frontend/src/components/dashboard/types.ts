@@ -178,13 +178,22 @@ export type DashboardFilters = Record<DashboardFilterKey, string[]>;
 export type RefreshJobStatus = 'idle' | 'running' | 'succeeded' | 'failed';
 export type RefreshModule = 'base' | 'etf' | 'fund' | 'index';
 export type RefreshMode = 'incremental' | 'full';
+export type BaseRefreshScope = 'calendar' | 'stock_basic' | 'fund_company';
+export type EtfRefreshScope = 'info' | 'nav' | 'share' | 'candle';
+export type FundRefreshScope = 'info' | 'nav';
 export type IndexScope = 'catalog' | 'domestic' | 'industry' | 'concept' | 'global' | 'futures' | 'valuation' | 'constituents';
+export type RefreshScope = BaseRefreshScope | EtfRefreshScope | FundRefreshScope | IndexScope;
+export type RefreshModuleScopes = Partial<Record<RefreshModule, RefreshScope[]>>;
 
 export interface DataRefreshStatus {
   source: 'tushare';
+  execution_mode?: 'background';
+  refresh_locked?: boolean;
   enabled: boolean;
   full_refresh_enabled: boolean;
   available_modules: RefreshModule[];
+  available_module_scopes?: RefreshModuleScopes;
+  default_module_scopes?: RefreshModuleScopes;
   available_index_scopes?: IndexScope[];
   default_index_scopes?: IndexScope[];
   token_configured: boolean;
@@ -198,6 +207,7 @@ export interface DataRefreshStatus {
     started_at?: string | null;
     finished_at?: string | null;
     modules?: RefreshModule[];
+    module_scopes?: RefreshModuleScopes;
     index_scopes?: IndexScope[];
     mode?: RefreshMode | null;
     message: string;

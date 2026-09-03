@@ -93,6 +93,33 @@ export interface IndicatorDefinition extends IndicatorDraft {
   }
 }
 
+export interface SnapshotIndicatorConfigItem {
+  indicator_id: string
+  indicator_revision: number
+  period: string
+  field: string
+  name?: string
+  source?: IndicatorSource
+  status?: 'ready' | 'definition_missing' | string
+  status_message?: string
+  presentation?: MetricPresentation
+}
+
+export interface SnapshotIndicatorConfig {
+  schema_version: number
+  revision: number
+  updated_at?: string | null
+  max_items: number
+  items: SnapshotIndicatorConfigItem[]
+  snapshot?: {
+    generated_at?: string | null
+    config_revision?: number | null
+    configured_count?: number | null
+    data_generation?: string | null
+  } | null
+  snapshot_status?: 'ready' | 'stale' | 'missing' | string
+}
+
 export interface IndicatorVariable {
   name: string
   label: string
@@ -272,6 +299,17 @@ export interface IndicatorDagNode {
   period?: string | null
   value_type?: string
   shape?: IndicatorShape
+  /** Raw typed compose/infer responses keep the complete inferred value contract nested here. */
+  inferred_type?: string | {
+    kind?: string
+    dtype?: string
+    axes?: string[]
+    shape?: Array<string | number>
+    semantic_dimension?: string
+    price_basis?: string | null
+    is_mask?: boolean
+    display?: string
+  }
   semantic?: string
   signature?: string
   operator_id?: string
@@ -666,6 +704,15 @@ export interface InstrumentProductItem extends InstrumentSearchItem {
   list_date?: string | null
   issue_date?: string | null
   condition_values?: Record<string, number | string | null>
+  snapshot_values?: Record<string, number | string | null>
+  snapshot_value_dates?: Record<string, string | null>
+  snapshot_statuses?: Record<string, string | null>
+  snapshot_warnings?: Record<string, string | null>
+}
+
+export interface SnapshotMetricField extends ProductConditionField {
+  unit: string
+  description: string
 }
 
 export interface InstrumentProductsResponse {
@@ -682,6 +729,8 @@ export interface InstrumentProductsResponse {
   available_filters: Record<string, InstrumentFilterOption[]>
   condition_fields?: ProductConditionField[]
   condition_operators?: ProductConditionOperatorOption[]
+  snapshot_metric_fields?: SnapshotMetricField[]
+  selected_snapshot_metrics?: string[]
   snapshot?: { status?: string | null; as_of?: string | null }
   sort_by: string
   sort_dir: 'asc' | 'desc' | string
@@ -702,6 +751,7 @@ export interface InstrumentProductQueryOptions {
   sortDir?: 'asc' | 'desc'
   filters?: Partial<Record<'fund_type' | 'type' | 'invest_type' | 'market' | 'status' | 'management' | 'custodian', string[]>>
   conditions?: ProductCondition[]
+  snapshotMetrics?: string[]
   signal?: AbortSignal
 }
 
@@ -815,6 +865,17 @@ export const deleteCustomIndicator = (id: string, revision: number) =>
     method: 'DELETE',
   })
 
+export const getSnapshotIndicatorConfig = () =>
+  apiRequest<SnapshotIndicatorConfig>('/api/custom-indicators/snapshot-config')
+
+export const updateSnapshotIndicatorConfig = (
+  revision: number,
+  items: Array<Pick<SnapshotIndicatorConfigItem, 'indicator_id' | 'indicator_revision' | 'period'>>,
+) => apiRequest<SnapshotIndicatorConfig>('/api/custom-indicators/snapshot-config', {
+  method: 'PUT',
+  body: JSON.stringify({ revision, items }),
+})
+
 export const validateCustomIndicator = (input: IndicatorDraft) =>
   apiRequest<ValidationResponse>('/api/custom-indicators/validate', {
     method: 'POST',
@@ -899,6 +960,9 @@ const instrumentProductParams = (options: InstrumentProductQueryOptions, include
   options.conditions?.forEach((condition) => {
     params.append('condition', `${condition.field}|${condition.operator}|${condition.value}`)
   })
+  if (includePage) {
+    options.snapshotMetrics?.forEach((metric) => params.append('snapshot_metric', metric))
+  }
   return params
 }
 
