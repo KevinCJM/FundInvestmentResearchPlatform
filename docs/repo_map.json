@@ -593,7 +593,7 @@
       "name": "Unified ETF/public-fund dashboard analytics and metric snapshots",
       "path": "backend/services/instrument_analytics.py",
       "kind": "backend_analytics_feature",
-      "purpose": "Serves small-table ETF/public-fund summaries, independent trend series, filtered rankings, data-quality metadata, and builds one-row-per-share-class risk/liquidity snapshots by streaming NAV and candle parquet row groups; shared series-quality gates require complete metric windows and reject adjusted-NAV discontinuities.",
+      "purpose": "Serves small-table ETF/public-fund summaries, independent trend series, filtered rankings, and data-quality metadata; during data refresh it streams NAV and candle parquet row groups, then materializes the exact Indicator Center revisions and periods selected by the workspace snapshot configuration. Shared series-quality gates require complete metric windows and reject adjusted-NAV discontinuities.",
       "module_tags": [
         "backend",
         "analytics",
@@ -633,6 +633,7 @@
         "backend/tests/test_instrument_routes.py"
       ],
       "upstream_dependencies": [
+        "backend_custom_indicator_service",
         "market_data_snapshot_lifecycle",
         "data_ingestion_config"
       ],
@@ -896,7 +897,7 @@
       "name": "Custom indicator workspace service, persistence, and API",
       "path": "backend/custom_indicators/service.py",
       "kind": "backend_api_feature",
-      "purpose": "Workspace-shared indicator and evaluation-plan CRUD, revision history, locked-revision expansion of existing scalar indicators into independent typed formulas, atomic JSON persistence, versioned typed-variable metadata, dependency-driven field availability for batches of up to ten products, structured input and target-data diagnostics, locked metric-presentation metadata, dependency-grouped PyArrow loading, generation/data/window/result caches, shared-memory or mmap transport, persistent warmed workers, fixed-signature fused Numba built-in kernels, vectorized strict-complete scoring, and paged large-result APIs.",
+      "purpose": "Workspace-shared indicator, snapshot-acceleration configuration, and evaluation-plan CRUD; revision history; locked-revision expansion of existing scalar indicators into independent typed formulas; atomic JSON persistence; versioned typed-variable metadata; dependency-driven field availability for batches of up to ten products; structured input and target-data diagnostics; locked metric-presentation metadata; dependency-grouped PyArrow loading; generation/data/window/result caches; shared-memory or mmap transport; persistent warmed workers; fixed-signature fused Numba built-in kernels; vectorized strict-complete scoring; and paged large-result APIs.",
       "module_tags": [
         "backend",
         "custom-indicators",
@@ -918,6 +919,7 @@
         "backend/custom_indicators/service.py",
         "backend/custom_indicators/presentation.py",
         "backend/custom_indicators/repository.py",
+        "backend/custom_indicators/snapshot_config.py",
         "backend/custom_indicators/periods.py",
         "backend/custom_indicators/series_provider.py",
         "backend/custom_indicators/parallel_engine.py",
@@ -932,6 +934,7 @@
         "CustomIndicatorService",
         "IndicatorRepository",
         "PlanRepository",
+        "SnapshotIndicatorConfigRepository",
         "AtomicJsonStore",
         "BoundedTTLCache",
         "BoundedObjectTTLCache",
@@ -962,6 +965,7 @@
         "backend/services/custom_indicator_routes.py",
         "backend/custom_indicators/variable_registry.py",
         "backend/custom_indicators/repository.py",
+        "backend/custom_indicators/snapshot_config.py",
         "backend/custom_indicators/periods.py",
         "backend/custom_indicators/series_provider.py",
         "backend/custom_indicators/parallel_engine.py",
@@ -1023,11 +1027,14 @@
         "shared_resource_cleanup_required",
         "process_and_numba_thread_oversubscription",
         "data_generation_cache_invalidation",
+        "snapshot_config_locks_indicator_revision_and_period",
+        "snapshot_read_requires_matching_config_revision_and_data_generation",
         "large_result_expiration_contract"
       ],
       "edit_risk": "high",
       "blast_radius": [
         "indicator catalog and version history",
+        "workspace-selected precomputed indicator snapshots",
         "typed variable catalog and field-driven multi-target availability",
         "ETF/public-fund indicator values",
         "evaluation plan reproducibility",
@@ -1056,6 +1063,7 @@
           "backend/custom_indicators/service.py",
           "backend/custom_indicators/presentation.py",
           "backend/custom_indicators/repository.py",
+          "backend/custom_indicators/snapshot_config.py",
           "backend/custom_indicators/periods.py",
           "backend/custom_indicators/series_provider.py",
           "backend/custom_indicators/parallel_engine.py",
@@ -1449,7 +1457,7 @@
       "name": "Custom indicator studio and API client",
       "path": "frontend/src/pages/IndicatorStudio.tsx",
       "kind": "frontend_feature_page",
-      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a single-result DAG plus accessible table, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types.",
+      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, a reusable focus-aware remote-search dropdown, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a single-result DAG plus accessible table, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types.",
       "module_tags": [
         "frontend",
         "custom-indicators",
@@ -1463,11 +1471,13 @@
       ],
       "entry_files": [
         "frontend/src/pages/IndicatorStudio.tsx",
+        "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/services/customIndicators.ts",
         "frontend/src/pages/IndicatorStudio.test.tsx"
       ],
       "key_symbols": [
         "IndicatorStudio",
+        "SearchDropdown",
         "TypedCatalog",
         "variableIsUsable",
         "inferCustomIndicator",
@@ -1479,6 +1489,7 @@
       "child_modules": [],
       "first_read_files": [
         "frontend/src/pages/IndicatorStudio.tsx",
+        "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/services/customIndicators.ts"
       ],
       "then_check_files": [
@@ -1515,6 +1526,7 @@
         "single_result_dag_contract",
         "echarts_browser_rendering",
         "katex_formula_rendering",
+        "search_dropdown_must_close_when_focus_leaves_or_escape_is_pressed",
         "optimistic_revision_conflicts"
       ],
       "edit_risk": "medium",
@@ -1542,6 +1554,7 @@
         "fact_status": "grounded",
         "evidence": [
           "frontend/src/pages/IndicatorStudio.tsx",
+          "frontend/src/components/FilterDropdown.tsx",
           "frontend/src/services/customIndicators.ts",
           "frontend/src/pages/IndicatorStudio.test.tsx",
           "frontend/e2e/indicator-studio.spec.ts",

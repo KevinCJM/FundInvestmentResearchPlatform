@@ -510,6 +510,7 @@ def validate_tushare_snapshot(
             raise SnapshotValidationError(
                 f"{HISTORY_FILES[dataset][0]} 包含未来最新日期: {latest.date()}"
             )
+    for dataset, latest in latest_dates.items():
         lag_days = int((newest - latest).days)
         datasets[dataset]["lag_to_snapshot_latest_days"] = lag_days
         if lag_days > MAX_DATASET_LAG_DAYS:

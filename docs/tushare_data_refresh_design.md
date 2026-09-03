@@ -98,14 +98,16 @@ CLI、网页刷新和本地快照重建共用跨进程文件锁，状态为 `idl
 
 用户在主界面“数据管理”中保存或清除 Token。后端原子写入 `data/.tushare_token` 并设置 `0600` 权限，抓取脚本只读取该本机凭据文件，不再读取 `TUSHARE_TOKEN` 环境变量。Token 不进入命令行参数、持久任务状态或日志；数据刷新运行期间禁止修改凭据。
 
-增量与全量分别使用独立超时：
+增量与全量分别使用独立的“无进度输出超时”。只要下载器持续输出节点、进度或归并状态，计时就会重置，不会因为任务总时长较长而误杀。另有默认关闭的绝对总时限；设置为 `0` 表示不限制总运行时间。旧的 `DATA_REFRESH_TIMEOUT_SECONDS` / `DATA_FULL_REFRESH_TIMEOUT_SECONDS` 仍兼容读取，但语义同样是无输出超时。
 
 ```dotenv
 DATA_REFRESH_ENABLED=true
 TUSHARE_TOKEN_CONFIG_ENABLED=true
-DATA_REFRESH_TIMEOUT_SECONDS=1800
+DATA_REFRESH_IDLE_TIMEOUT_SECONDS=1800
+DATA_REFRESH_MAX_RUNTIME_SECONDS=0
 DATA_FULL_REFRESH_ENABLED=false
-DATA_FULL_REFRESH_TIMEOUT_SECONDS=86400
+DATA_FULL_REFRESH_IDLE_TIMEOUT_SECONDS=7200
+DATA_FULL_REFRESH_MAX_RUNTIME_SECONDS=0
 TUSHARE_MAX_CALLS_PER_MINUTE=450
 TUSHARE_MIN_CALL_INTERVAL_SECONDS=0.13
 TUSHARE_MAX_WORKERS=16

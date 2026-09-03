@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -36,7 +37,6 @@ from .index_data import (
     INDEX_DATASET_SPECS,
     INDEX_SCOPES,
     index_required_files,
-    normalise_index_scopes,
     validate_index_snapshot,
 )
 
@@ -54,9 +54,11 @@ TOKEN_CONFIG_LOCK_FILENAME = ".tushare_token.lock"
 MAX_LOG_TAIL_CHARS = 8000
 LOG_STATE_FLUSH_INTERVAL_SECONDS = 1.0
 LEGACY_CHECKPOINT_ACTIVE_SECONDS = 30 * 60
+PROCESS_WAIT_POLL_SECONDS = 5.0
 DATASET_SPECS = {
     "etf_info": ("etf_info_df.parquet", None),
     "etf_nav": ("etf_daily_df.parquet", "date"),
+    "etf_share": ("etf_share_size_df.parquet", "date"),
     "etf_candle": ("etf_daily_candle_df.parquet", "date"),
     "fund_info": ("fund_info_df.parquet", None),
     "fund_nav": ("fund_nav_df.parquet", "date"),
@@ -72,6 +74,7 @@ ANALYTICS_SOURCE_FILENAMES = (
     "etf_daily_df.parquet",
     "fund_nav_df.parquet",
     "etf_daily_candle_df.parquet",
+    "etf_share_size_df.parquet",
     "trade_day_df.parquet",
 )
 
@@ -81,16 +84,72 @@ STAGING_COPY_EXCLUDES = {
     "tushare_active.json",
 }
 
-MODULE_FLAGS = {
-    "base": ["--calendar", "--stock-basic", "--fund-company"],
-    "etf": ["--etf-info", "--nav", "--candle"],
-    "fund": ["--fund-info", "--fund-nav"],
-    "index": [],
-}
 INDEX_SCOPE_FLAGS = {scope: f"--index-{scope}" for scope in INDEX_SCOPES}
+MODULE_SCOPES = {
+    "base": ("calendar", "stock_basic", "fund_company"),
+    "etf": ("info", "nav", "share", "candle"),
+    "fund": ("info", "nav"),
+    "index": INDEX_SCOPES,
+}
+DEFAULT_MODULE_SCOPES = {
+    "base": MODULE_SCOPES["base"],
+    "etf": MODULE_SCOPES["etf"],
+    "fund": MODULE_SCOPES["fund"],
+    "index": DEFAULT_INDEX_SCOPES,
+}
+MODULE_SCOPE_FLAGS = {
+    "base": {
+        "calendar": "--calendar",
+        "stock_basic": "--stock-basic",
+        "fund_company": "--fund-company",
+    },
+    "etf": {
+        "info": "--etf-info",
+        "nav": "--nav",
+        "share": "--etf-share",
+        "candle": "--candle",
+    },
+    "fund": {"info": "--fund-info", "nav": "--fund-nav"},
+    "index": INDEX_SCOPE_FLAGS,
+}
+MODULE_SCOPE_DEPENDENCIES = {
+    "etf": {"nav": ("info",), "share": ("info",), "candle": ("info",)},
+    "fund": {"nav": ("info",)},
+}
 
 TUSHARE_TOKEN_VALUE = re.compile(r"^[A-Za-z0-9._-]{16,256}$")
-LOG_LEVEL_ONLY = re.compile(r"^\[(?:INFO|OK|WARN|ERROR)\]$")
+LOG_LEVEL_ONLY = re.compile(r"^\[(?:INFO|STAGE|DONE|OK|WARN|ERROR)\]$")
+
+
+class _RefreshProcessTimeout(TimeoutError):
+    def __init__(self, kind: str, seconds: int) -> None:
+        self.kind = kind
+        self.seconds = seconds
+        super().__init__(f"refresh process {kind} timeout after {seconds} seconds")
+
+
+def _next_process_wait_seconds(
+    *,
+    now: float,
+    started_at: float,
+    last_output_at: float,
+    idle_timeout: int,
+    max_runtime: int,
+) -> float:
+    """Return a short wait while enforcing inactivity and optional hard limits."""
+
+    remaining = [PROCESS_WAIT_POLL_SECONDS]
+    if idle_timeout > 0:
+        idle_remaining = idle_timeout - (now - last_output_at)
+        if idle_remaining <= 0:
+            raise _RefreshProcessTimeout("idle", idle_timeout)
+        remaining.append(idle_remaining)
+    if max_runtime > 0:
+        runtime_remaining = max_runtime - (now - started_at)
+        if runtime_remaining <= 0:
+            raise _RefreshProcessTimeout("max_runtime", max_runtime)
+        remaining.append(runtime_remaining)
+    return max(0.01, min(remaining))
 
 
 def utc_now() -> str:
@@ -112,7 +171,12 @@ def _latest_complete_status_line(value: str) -> str | None:
         stripped = line.strip()
         if not stripped or LOG_LEVEL_ONLY.fullmatch(stripped):
             continue
-        if "进度" in stripped or stripped.startswith("[OK]"):
+        if (
+            "进度" in stripped
+            or stripped.startswith("[STAGE]")
+            or stripped.startswith("[DONE]")
+            or stripped.startswith("[OK]")
+        ):
             return stripped[-500:]
     return None
 
@@ -267,14 +331,71 @@ def normalise_refresh_request(modules: list[str], mode: str) -> tuple[list[str],
     return clean_modules, clean_mode
 
 
+def normalise_module_scopes(
+    modules: list[str],
+    module_scopes: dict[str, list[str]] | None = None,
+    *,
+    legacy_index_scopes: list[str] | None = None,
+) -> dict[str, list[str]]:
+    """Validate sub-selections and expand only documented dependencies."""
+
+    clean_modules = list(dict.fromkeys(str(item).strip().lower() for item in modules))
+    requested = module_scopes or {}
+    clean_keys = {str(key).strip().lower() for key in requested}
+    unknown_modules = clean_keys - REFRESH_MODULES
+    if unknown_modules:
+        raise ValueError(f"不支持的数据模块范围: {', '.join(sorted(unknown_modules))}")
+    unselected_modules = clean_keys - set(clean_modules)
+    if unselected_modules:
+        raise ValueError(
+            f"未选择的数据模块不能配置下载内容: {', '.join(sorted(unselected_modules))}"
+        )
+
+    resolved: dict[str, list[str]] = {}
+    for module in clean_modules:
+        if module in requested:
+            raw_scopes = requested[module]
+        elif module == "index" and legacy_index_scopes is not None:
+            raw_scopes = legacy_index_scopes
+        else:
+            raw_scopes = list(DEFAULT_MODULE_SCOPES[module])
+        clean_scopes = list(
+            dict.fromkeys(
+                str(item).strip().lower() for item in raw_scopes if str(item).strip()
+            )
+        )
+        if not clean_scopes:
+            raise ValueError(f"数据模块 {module} 至少选择一项下载内容。")
+        unknown_scopes = set(clean_scopes) - set(MODULE_SCOPES[module])
+        if unknown_scopes:
+            raise ValueError(
+                f"数据模块 {module} 不支持下载内容: {', '.join(sorted(unknown_scopes))}"
+            )
+        expanded = set(clean_scopes)
+        for scope in clean_scopes:
+            expanded.update(MODULE_SCOPE_DEPENDENCIES.get(module, {}).get(scope, ()))
+        if module == "index" and expanded:
+            expanded.add("catalog")
+        resolved[module] = [scope for scope in MODULE_SCOPES[module] if scope in expanded]
+    return resolved
+
+
 def refresh_request_fingerprint(
-    modules: list[str], mode: str, index_scopes: list[str] | None = None
+    modules: list[str],
+    mode: str,
+    index_scopes: list[str] | None = None,
+    *,
+    module_scopes: dict[str, list[str]] | None = None,
 ) -> str:
     modules, mode = normalise_refresh_request(modules, mode)
-    scopes = normalise_index_scopes(index_scopes) if "index" in modules else []
+    scopes = normalise_module_scopes(
+        modules,
+        module_scopes,
+        legacy_index_scopes=index_scopes,
+    )
     payload = {
         "modules": modules,
-        "index_scopes": scopes,
+        "module_scopes": scopes,
         "mode": mode,
         "start_date": os.getenv("TUSHARE_FULL_START_DATE", "20100101"),
         "end_date": os.getenv("TUSHARE_FULL_END_DATE", "").strip()
@@ -290,11 +411,16 @@ def build_refresh_command(
     mode: str,
     *,
     index_scopes: list[str] | None = None,
+    module_scopes: dict[str, list[str]] | None = None,
     data_dir: Path | None = None,
     resume: bool = False,
 ) -> list[str]:
     modules, mode = normalise_refresh_request(modules, mode)
-    scopes = normalise_index_scopes(index_scopes) if "index" in modules else []
+    scopes = normalise_module_scopes(
+        modules,
+        module_scopes,
+        legacy_index_scopes=index_scopes,
+    )
     output_dir = Path(data_dir) if data_dir is not None else DATA_DIR
     max_calls = os.getenv("TUSHARE_MAX_CALLS_PER_MINUTE", "450")
     min_interval = os.getenv("TUSHARE_MIN_CALL_INTERVAL_SECONDS", "0.13")
@@ -344,11 +470,15 @@ def build_refresh_command(
         if resume:
             command.append("--resume")
     flags: list[str] = []
-    if mode == "incremental" and any(module in {"etf", "fund", "index"} for module in modules):
+    history_selected = bool(
+        set(scopes.get("etf", [])) & {"nav", "share", "candle"}
+        or "nav" in scopes.get("fund", [])
+        or set(scopes.get("index", [])) - {"catalog"}
+    )
+    if mode == "incremental" and history_selected:
         flags.append("--calendar")
     for module in modules:
-        flags.extend(MODULE_FLAGS[module])
-    flags.extend(INDEX_SCOPE_FLAGS[scope] for scope in scopes)
+        flags.extend(MODULE_SCOPE_FLAGS[module][scope] for scope in scopes[module])
     command.extend(dict.fromkeys(flags))
     return command
 
@@ -540,7 +670,11 @@ def _sanitise_output(
     return re.sub(r"(?i)(TUSHARE_TOKEN\s*=\s*)\S+", r"\1[REDACTED]", output)[-MAX_LOG_TAIL_CHARS:]
 
 
-def rebuild_local_analytics_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
+def rebuild_local_analytics_snapshot(
+    data_dir: Path | None = None,
+    *,
+    workspace_data_dir: Path | None = None,
+) -> dict[str, Any]:
     """Invoke the local-only analytics builder without touching Tushare."""
 
     from . import instrument_analytics
@@ -549,12 +683,27 @@ def rebuild_local_analytics_snapshot(data_dir: Path | None = None) -> dict[str, 
     if not callable(builder):
         raise RuntimeError("instrument_analytics 未提供可调用的本地快照 builder。")
     directory = Path(data_dir) if data_dir is not None else DATA_DIR
-    result = builder(data_dir=directory)
+    result = builder(
+        data_dir=directory,
+        workspace_data_dir=workspace_data_dir or DATA_DIR,
+    )
     if result is None:
         return {"status": "succeeded"}
     if not isinstance(result, dict):
         raise RuntimeError("分析快照 builder 必须返回字典结果。")
     return result
+
+
+def _rebuild_for_workspace(data_dir: Path, workspace_data_dir: Path) -> dict[str, Any]:
+    """Keep test/custom builders compatible while passing the config root."""
+
+    parameters = inspect.signature(rebuild_local_analytics_snapshot).parameters
+    if "workspace_data_dir" in parameters:
+        return rebuild_local_analytics_snapshot(
+            data_dir,
+            workspace_data_dir=workspace_data_dir,
+        )
+    return rebuild_local_analytics_snapshot(data_dir)
 
 
 def _empty_job() -> dict[str, Any]:
@@ -564,6 +713,7 @@ def _empty_job() -> dict[str, Any]:
         "started_at": None,
         "finished_at": None,
         "modules": [],
+        "module_scopes": {},
         "index_scopes": [],
         "mode": None,
         "message": "尚未启动更新",
@@ -595,6 +745,7 @@ class DataRefreshManager:
         self._active_process_lock: InterProcessFileLock | None = None
         self._active_job_id: str | None = None
         self._active_token: str | None = None
+        self._child_output_at: dict[str, float] = {}
         self._last_log_state_flush = 0.0
         persisted = self._read_persisted_job()
         if persisted is not None:
@@ -625,6 +776,7 @@ class DataRefreshManager:
         self,
         *,
         modules: list[str],
+        module_scopes: dict[str, list[str]],
         index_scopes: list[str],
         mode: str,
         request_fingerprint: str,
@@ -633,6 +785,14 @@ class DataRefreshManager:
         if mode != "full" or previous.get("mode") != "full":
             return None, False
         if list(previous.get("modules") or []) != modules:
+            return None, False
+        previous_module_scopes = previous.get("module_scopes")
+        if not isinstance(previous_module_scopes, dict) or not previous_module_scopes:
+            previous_module_scopes = normalise_module_scopes(
+                modules,
+                legacy_index_scopes=list(previous.get("index_scopes") or []) or None,
+            )
+        if previous_module_scopes != module_scopes:
             return None, False
         if list(previous.get("index_scopes") or []) != index_scopes:
             return None, False
@@ -728,7 +888,7 @@ class DataRefreshManager:
             )
             self._persist_locked()
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, include_datasets: bool = True) -> dict[str, Any]:
         self._mark_interrupted_if_stale()
         with self._lock:
             self._refresh_from_disk_locked()
@@ -748,17 +908,32 @@ class DataRefreshManager:
                 "modules": ["fund"],
                 "legacy_checkpoint": str(legacy_checkpoint),
             }
+        # A standalone CLI task normally persists the same job state, but the
+        # filesystem lock is the authoritative signal during its short startup
+        # and shutdown windows. Expose it so every browser tab locks its update
+        # controls even before the persisted heartbeat becomes visible.
+        refresh_locked = job.get("status") == "running" or is_file_lock_held(
+            self.process_lock_path
+        )
         return {
             "source": "tushare",
+            "execution_mode": "background",
+            "refresh_locked": refresh_locked,
             "enabled": data_refresh_enabled(),
             "full_refresh_enabled": full_refresh_enabled(),
             "available_modules": sorted(REFRESH_MODULES),
+            "available_module_scopes": {
+                module: list(scopes) for module, scopes in MODULE_SCOPES.items()
+            },
+            "default_module_scopes": {
+                module: list(scopes) for module, scopes in DEFAULT_MODULE_SCOPES.items()
+            },
             "available_index_scopes": list(INDEX_SCOPES),
             "default_index_scopes": list(DEFAULT_INDEX_SCOPES),
             **tushare_token_status(self.data_dir),
             "job": job,
             "data_dir": str(self._current_data_dir()),
-            "datasets": dataset_summaries(self._current_data_dir()),
+            "datasets": dataset_summaries(self._current_data_dir()) if include_datasets else {},
         }
 
     def start(
@@ -766,10 +941,21 @@ class DataRefreshManager:
         modules: list[str],
         mode: str,
         index_scopes: list[str] | None = None,
+        *,
+        module_scopes: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         modules, mode = normalise_refresh_request(modules, mode)
-        scopes = normalise_index_scopes(index_scopes) if "index" in modules else []
-        request_fingerprint = refresh_request_fingerprint(modules, mode, scopes)
+        scopes_by_module = normalise_module_scopes(
+            modules,
+            module_scopes,
+            legacy_index_scopes=index_scopes,
+        )
+        scopes = scopes_by_module.get("index", [])
+        request_fingerprint = refresh_request_fingerprint(
+            modules,
+            mode,
+            module_scopes=scopes_by_module,
+        )
         self._mark_interrupted_if_stale()
         legacy_checkpoint = self._legacy_external_checkpoint()
         if legacy_checkpoint is not None:
@@ -795,6 +981,7 @@ class DataRefreshManager:
                 raise RuntimeError("数据更新任务正在运行，请勿重复启动。")
             resume_dir, fetch_complete = self._resumable_candidate_locked(
                 modules=modules,
+                module_scopes=scopes_by_module,
                 index_scopes=scopes,
                 mode=mode,
                 request_fingerprint=request_fingerprint,
@@ -806,6 +993,7 @@ class DataRefreshManager:
                 "started_at": utc_now(),
                 "finished_at": None,
                 "modules": modules,
+                "module_scopes": scopes_by_module,
                 "index_scopes": scopes,
                 "mode": mode,
                 "message": (
@@ -835,7 +1023,7 @@ class DataRefreshManager:
                 raise
         thread = threading.Thread(
             target=self._run,
-            args=(job_id, modules, mode, scopes),
+            args=(job_id, modules, mode, scopes, scopes_by_module),
             name=f"tushare-refresh-{job_id[:8]}",
             daemon=True,
         )
@@ -853,13 +1041,22 @@ class DataRefreshManager:
             raise
         return self.snapshot()
 
-    def _append_log(self, job_id: str, text: str, *, force_persist: bool = False) -> None:
+    def _append_log(
+        self,
+        job_id: str,
+        text: str,
+        *,
+        force_persist: bool = False,
+        child_output: bool = False,
+    ) -> None:
         if not text:
             return
         now = time.monotonic()
         with self._lock:
             if self._job.get("job_id") != job_id:
                 return
+            if child_output:
+                self._child_output_at[job_id] = now
             combined = f"{self._job.get('log_tail') or ''}{text}"
             self._job["log_tail"] = self._sanitise(combined)
             self._job["heartbeat_at"] = utc_now()
@@ -885,7 +1082,11 @@ class DataRefreshManager:
             # fill. Split exceptionally long lines to retain bounded handling.
             for line in stream:
                 for offset in range(0, len(line), 1024):
-                    self._append_log(job_id, line[offset:offset + 1024])
+                    self._append_log(
+                        job_id,
+                        line[offset:offset + 1024],
+                        child_output=True,
+                    )
         finally:
             stream.close()
 
@@ -932,6 +1133,7 @@ class DataRefreshManager:
                     self._active_process_lock = None
                     self._active_job_id = None
                     clear_active_token = True
+                self._child_output_at.pop(job_id, None)
                 try:
                     self._persist_locked()
                 except Exception as exc:  # noqa: BLE001
@@ -966,7 +1168,7 @@ class DataRefreshManager:
                     raise RuntimeError("没有可重建的全量候选目录。")
                 if not fetch_complete:
                     raise RuntimeError("候选数据尚未抓取完成，请先续跑缺失项。")
-            result = rebuild_local_analytics_snapshot(target)
+            result = _rebuild_for_workspace(target, self.data_dir)
             response: dict[str, Any] = {
                 "status": "succeeded",
                 "rebuilt_at": utc_now(),
@@ -1015,20 +1217,42 @@ class DataRefreshManager:
         modules: list[str],
         mode: str,
         index_scopes: list[str],
+        module_scopes: dict[str, list[str]],
     ) -> None:
         process: subprocess.Popen[str] | None = None
         reader: threading.Thread | None = None
         postprocess_heartbeat_stop: threading.Event | None = None
         postprocess_heartbeat: threading.Thread | None = None
-        timeout = 0
+        idle_timeout = 0
+        max_runtime = 0
         target_data_dir: Path | None = None
         analytics_sources_before: tuple[tuple[str, int, int], ...] = ()
         try:
-            timeout_env = "DATA_FULL_REFRESH_TIMEOUT_SECONDS" if mode == "full" else "DATA_REFRESH_TIMEOUT_SECONDS"
-            timeout_default = "86400" if mode == "full" else "1800"
-            timeout = int(os.getenv(timeout_env, timeout_default))
-            if timeout < 1:
-                raise ValueError("DATA_REFRESH_TIMEOUT_SECONDS 必须大于 0。")
+            idle_timeout_env = (
+                "DATA_FULL_REFRESH_IDLE_TIMEOUT_SECONDS"
+                if mode == "full"
+                else "DATA_REFRESH_IDLE_TIMEOUT_SECONDS"
+            )
+            legacy_timeout_env = (
+                "DATA_FULL_REFRESH_TIMEOUT_SECONDS"
+                if mode == "full"
+                else "DATA_REFRESH_TIMEOUT_SECONDS"
+            )
+            idle_timeout_default = "7200" if mode == "full" else "1800"
+            idle_timeout = int(
+                os.getenv(
+                    idle_timeout_env,
+                    os.getenv(legacy_timeout_env, idle_timeout_default),
+                )
+            )
+            max_runtime_env = (
+                "DATA_FULL_REFRESH_MAX_RUNTIME_SECONDS"
+                if mode == "full"
+                else "DATA_REFRESH_MAX_RUNTIME_SECONDS"
+            )
+            max_runtime = int(os.getenv(max_runtime_env, "0"))
+            if idle_timeout < 0 or max_runtime < 0:
+                raise ValueError("数据更新超时配置不能小于 0。")
             child_env = os.environ.copy()
             child_env.pop("TUSHARE_TOKEN", None)
             child_env["PYTHONUNBUFFERED"] = "1"
@@ -1081,6 +1305,7 @@ class DataRefreshManager:
                         modules,
                         mode,
                         index_scopes=index_scopes,
+                        module_scopes=module_scopes,
                         data_dir=target_data_dir,
                         resume=resumed,
                     ),
@@ -1102,14 +1327,26 @@ class DataRefreshManager:
                     name=f"tushare-log-{job_id[:8]}",
                     daemon=True,
                 )
+                process_started_at = time.monotonic()
+                with self._lock:
+                    self._child_output_at[job_id] = process_started_at
                 reader.start()
-                deadline = time.monotonic() + timeout
                 while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(process.args, timeout)
+                    now = time.monotonic()
+                    with self._lock:
+                        last_output_at = self._child_output_at.get(
+                            job_id,
+                            process_started_at,
+                        )
+                    wait_seconds = _next_process_wait_seconds(
+                        now=now,
+                        started_at=process_started_at,
+                        last_output_at=last_output_at,
+                        idle_timeout=idle_timeout,
+                        max_runtime=max_runtime,
+                    )
                     try:
-                        returncode = process.wait(timeout=min(5.0, remaining))
+                        returncode = process.wait(timeout=wait_seconds)
                         break
                     except subprocess.TimeoutExpired:
                         self._touch_heartbeat(job_id)
@@ -1121,6 +1358,11 @@ class DataRefreshManager:
                         self._job["fetch_complete"] = True
                         self._job["worker_pid"] = None
                         self._persist_locked()
+                self._append_log(
+                    job_id,
+                    "[STAGE] 所有下载节点已完成，正在检查并更新分析快照。\n",
+                    force_persist=True,
+                )
             try:
                 from trading_calendar import _load_calendar
 
@@ -1149,14 +1391,22 @@ class DataRefreshManager:
                 )
                 if reusable_snapshot is not None:
                     analytics_snapshot = reusable_snapshot
-                    message = "Tushare 增量更新完成；业绩指标数据源无变化，沿用现有分析快照"
+                    message = "下载完成：增量数据已更新；业绩指标数据源无变化，沿用现有分析快照"
                     self._append_log(
                         job_id,
-                        "[INFO] 业绩指标数据源内容无变化，跳过本地分析快照重建。\n",
+                        "[DONE] 分析快照数据源无变化，已沿用现有快照。\n",
                         force_persist=True,
                     )
                 else:
-                    analytics_result = rebuild_local_analytics_snapshot(target_data_dir)
+                    self._append_log(
+                        job_id,
+                        "[STAGE] 正在重建业绩与风险指标分析快照。\n",
+                        force_persist=True,
+                    )
+                    analytics_result = _rebuild_for_workspace(
+                        target_data_dir,
+                        self.data_dir,
+                    )
                     analytics_snapshot = {
                         "status": "succeeded",
                         "rebuilt_at": utc_now(),
@@ -1172,8 +1422,13 @@ class DataRefreshManager:
                     ):
                         if key in analytics_result:
                             analytics_snapshot[key] = analytics_result[key]
-                    message = "Tushare 数据更新及分析快照重建完成"
+                    message = "下载完成：数据更新及分析快照重建完成"
                 if mode == "full":
+                    self._append_log(
+                        job_id,
+                        "[STAGE] 分析快照已重建，正在验收并切换全量数据版本。\n",
+                        force_persist=True,
+                    )
                     promotion = validate_and_activate_full_refresh(
                         target_data_dir,
                         data_root=self.data_dir,
@@ -1181,7 +1436,7 @@ class DataRefreshManager:
                     )
                     analytics_snapshot["validation_status"] = promotion["validation"]["status"]
                     analytics_snapshot["activated_snapshot_dir"] = promotion["manifest"]["snapshot_dir"]
-                    message = "Tushare 全量数据、分析快照验收完成并已原子切换"
+                    message = "下载完成：全量数据与分析快照已验收，并已原子切换为当前版本"
             except Exception as exc:  # noqa: BLE001
                 warning_message = self._sanitise(str(exc))[-1000:]
                 analytics_snapshot = {
@@ -1197,10 +1452,10 @@ class DataRefreshManager:
                     force_persist=True,
                 )
                 message = (
-                    "Tushare 全量抓取完成，但候选版本未通过分析快照验收/接入；"
+                    "数据下载完成，但候选版本未通过分析快照验收/接入；"
                     "旧版本继续服务，检查点与候选目录已保留，无需重新拉取数据"
                     if mode == "full"
-                    else "Tushare 数据更新完成；分析快照重建失败，可单独重建，无需重新拉取数据"
+                    else "数据下载完成，但分析快照重建失败；可单独重建，无需重新拉取数据"
                 )
             final = {
                 "status": "succeeded",
@@ -1208,19 +1463,39 @@ class DataRefreshManager:
                 "analytics_snapshot": analytics_snapshot,
                 "warnings": warnings,
             }
-        except subprocess.TimeoutExpired:
+        except _RefreshProcessTimeout as exc:
             if process is not None:
                 self._stop_process(process)
+            if exc.kind == "idle":
+                timeout_message = (
+                    f"下载进程连续 {exc.seconds} 秒没有进度输出，已终止；"
+                    "检查点仍保留，可重新启动后继续"
+                )
+            else:
+                timeout_message = (
+                    f"数据更新达到最大运行时限 {exc.seconds} 秒，已终止；"
+                    "检查点仍保留，可重新启动后继续"
+                )
+            self._append_log(
+                job_id,
+                f"\n[ERROR] {timeout_message}\n",
+                force_persist=True,
+            )
             final = {
                 "status": "failed",
-                "message": f"数据更新超过 {timeout} 秒，已终止",
+                "message": timeout_message,
+                "worker_pid": None,
             }
         except Exception as exc:  # noqa: BLE001
             if process is not None:
                 self._stop_process(process)
             error_text = self._sanitise(str(exc))
             self._append_log(job_id, f"\n[ERROR] {error_text}\n", force_persist=True)
-            final = {"status": "failed", "message": "Tushare 数据更新失败"}
+            final = {
+                "status": "failed",
+                "message": "Tushare 数据更新失败",
+                "worker_pid": None,
+            }
         finally:
             if postprocess_heartbeat_stop is not None:
                 postprocess_heartbeat_stop.set()

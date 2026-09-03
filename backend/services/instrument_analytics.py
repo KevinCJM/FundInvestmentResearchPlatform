@@ -9,8 +9,10 @@ group (and one instrument) at a time.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, Optional
@@ -40,6 +42,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 SNAPSHOT_FILENAME = "instrument_metrics_snapshot.parquet"
+SNAPSHOT_METADATA_FILENAME = "instrument_metrics_snapshot.meta.json"
 
 InstrumentKind = Literal["all", "etf", "fund"]
 SingleInstrumentKind = Literal["etf", "fund"]
@@ -66,6 +69,10 @@ SNAPSHOT_COLUMNS = (
     "quality_reason_3y",
     "adj_nav_anomaly_count",
     "latest_adj_nav",
+    "current_size",
+    "current_size_as_of",
+    "current_share",
+    "current_unit_nav",
     "return_1m",
     "return_3m",
     "return_1y",
@@ -84,9 +91,10 @@ SNAPSHOT_COLUMNS = (
     "amount_avg_20d",
     "volume_avg_20d",
     "candle_source_fingerprint",
+    "share_source_fingerprint",
 )
 
-METRIC_DEFINITIONS: dict[str, dict[str, str]] = {
+METRIC_DEFINITIONS: dict[str, dict[str, Any]] = {
     "return_1m": {"label": "近1月收益率", "unit": "ratio", "source": "完整区间 adj_nav"},
     "return_3m": {"label": "近3月收益率", "unit": "ratio", "source": "完整区间 adj_nav"},
     "return_1y": {"label": "近1年收益率", "unit": "ratio", "source": "完整区间 adj_nav"},
@@ -117,7 +125,34 @@ METRIC_DEFINITIONS: dict[str, dict[str, str]] = {
         "unit": "ratio",
         "source": "close / unit_nav - 1",
     },
+    "current_size": {
+        "label": "当前规模",
+        "unit": "project_normalized_wan",
+        "source": "ETF 总份额 × 同期单位净值",
+    },
 }
+
+LEGACY_SNAPSHOT_METRIC_TYPES: dict[str, tuple[str, str]] = {
+    "return_1m": ("return", "收益型指标"),
+    "return_3m": ("return", "收益型指标"),
+    "return_1y": ("return", "收益型指标"),
+    "return_3y": ("return", "收益型指标"),
+    "annual_volatility_1y": ("risk", "风险型指标"),
+    "max_drawdown_3y": ("path", "路径与回撤指标"),
+    "sharpe_1y": ("risk_adjusted", "收益风险性价比指标"),
+    "calmar_3y": ("risk_adjusted", "收益风险性价比指标"),
+    "amount_avg_20d": ("market_liquidity", "交易与流动性指标"),
+    "volume_avg_20d": ("market_liquidity", "交易与流动性指标"),
+    "premium_discount_latest": ("market_liquidity", "交易与流动性指标"),
+    "current_size": ("scale", "规模指标"),
+}
+LEGACY_DERIVED_SNAPSHOT_METRICS = {
+    "amount_avg_20d",
+    "volume_avg_20d",
+    "premium_discount_latest",
+    "current_size",
+}
+LEGACY_COMPATIBILITY_SNAPSHOT_METRICS = LEGACY_DERIVED_SNAPSHOT_METRICS
 
 SNAPSHOT_RANKING_METRICS = {
     "return_1m",
@@ -132,10 +167,21 @@ SNAPSHOT_RANKING_METRICS = {
     "volume_avg_20d",
     "premium_discount_latest",
 }
-PRODUCT_FILTER_METRICS = tuple(sorted(SNAPSHOT_RANKING_METRICS))
+PRODUCT_FILTER_METRICS = tuple(sorted(SNAPSHOT_RANKING_METRICS | {"current_size"}))
 INFO_RANKING_METRICS = {"issue_amount", "m_fee", "c_fee"}
 RANKING_METRICS = SNAPSHOT_RANKING_METRICS | INFO_RANKING_METRICS
-ETF_ONLY_METRICS = {"amount_avg_20d", "volume_avg_20d", "premium_discount_latest"}
+ETF_ONLY_METRICS = {
+    "amount_avg_20d",
+    "volume_avg_20d",
+    "premium_discount_latest",
+    "current_size",
+}
+PRODUCT_SNAPSHOT_CONTEXT_FIELDS = (
+    "as_of",
+    "current_size_as_of",
+    "current_share",
+    "current_unit_nav",
+)
 RANKING_CONTEXT_METRICS = (
     "return_3m",
     "return_1y",
@@ -155,6 +201,104 @@ METRIC_HORIZONS = {
     "max_drawdown_3y": "3y",
     "calmar_3y": "3y",
 }
+
+
+def _snapshot_indicator_metadata(data_dir: Path) -> dict[str, Any] | None:
+    path = Path(data_dir) / SNAPSHOT_METADATA_FILENAME
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _legacy_snapshot_metric_definition(
+    name: str,
+    definition: Mapping[str, Any],
+) -> dict[str, Any]:
+    metric_type, metric_type_label = LEGACY_SNAPSHOT_METRIC_TYPES.get(
+        name, ("other", "其他指标")
+    )
+    is_etf_only = name in ETF_ONLY_METRICS
+    return {
+        **dict(definition),
+        "metric_source": (
+            "system_derived"
+            if name in LEGACY_DERIVED_SNAPSHOT_METRICS
+            else "built_in"
+        ),
+        "metric_type": metric_type,
+        "metric_type_label": metric_type_label,
+        "applicable_product_kinds": ["etf"] if is_etf_only else ["etf", "fund"],
+    }
+
+
+def snapshot_metric_definitions(data_dir: Path) -> dict[str, dict[str, Any]]:
+    """Return the public snapshot metric catalog for the active generation."""
+
+    metadata = _snapshot_indicator_metadata(data_dir)
+    if not metadata or not isinstance(metadata.get("items"), list):
+        return {
+            name: _legacy_snapshot_metric_definition(name, definition)
+            for name, definition in METRIC_DEFINITIONS.items()
+            if name in PRODUCT_FILTER_METRICS
+        }
+    # Indicator Center entries own configurable metrics. A small set of
+    # compatibility metrics remains public because it is calculated directly
+    # during snapshot construction and has no separate Indicator Center entry.
+    definitions: dict[str, dict[str, Any]] = {
+        name: _legacy_snapshot_metric_definition(name, METRIC_DEFINITIONS[name])
+        for name in LEGACY_COMPATIBILITY_SNAPSHOT_METRICS
+    }
+    for item in metadata["items"]:
+        if not isinstance(item, dict) or not item.get("field"):
+            continue
+        presentation = item.get("presentation") or {}
+        period = str(item.get("period") or "")
+        indicator_source = str(
+            item.get("source") or presentation.get("source") or "custom"
+        )
+        indicator_type = str(
+            presentation.get("indicator_type")
+            or presentation.get("category")
+            or "other"
+        )
+        definitions[str(item["field"])] = {
+            "label": f"{item.get('name') or item.get('indicator_id')}（{period}）",
+            "unit": (
+                "ratio"
+                if presentation.get("display_format") == "percent"
+                else str(presentation.get("unit") or "number")
+            ),
+            "source": "指标中心预计算",
+            "metric_source": indicator_source,
+            "metric_type": indicator_type,
+            "metric_type_label": str(
+                presentation.get("category_label") or "其他指标"
+            ),
+            "indicator_id": item.get("indicator_id"),
+            "indicator_revision": item.get("indicator_revision"),
+            "period": period,
+            "presentation": presentation,
+            "applicable_product_kinds": list(
+                presentation.get("applicable_product_kinds") or ["etf", "fund"]
+            ),
+        }
+    return definitions
+
+
+def snapshot_ranking_metrics(data_dir: Path) -> set[str]:
+    return set(snapshot_metric_definitions(data_dir)) - {"current_size"}
+
+
+def snapshot_etf_only_metrics(data_dir: Path) -> set[str]:
+    return {
+        field
+        for field, definition in snapshot_metric_definitions(data_dir).items()
+        if "fund" not in definition.get("applicable_product_kinds", ["etf", "fund"])
+    }
 
 
 def _requested_kinds(kind: InstrumentKind) -> tuple[SingleInstrumentKind, ...]:
@@ -551,6 +695,7 @@ def _kind_snapshot_state(
             "latest_date",
             "nav_source_fingerprint",
             "candle_source_fingerprint",
+            "share_source_fingerprint",
         )
         if column in snapshot.columns
     ]
@@ -584,12 +729,28 @@ def _kind_snapshot_state(
             if observed_candle and observed_candle != {expected_candle}:
                 state = "stale"
                 reason = "candle_source_fingerprint_mismatch"
+    metric_availability: dict[str, str] = {}
+    if kind == "etf":
+        share_path = data_dir / "etf_share_size_df.parquet"
+        if not share_path.exists():
+            metric_availability["current_size"] = "missing"
+        else:
+            expected_share = _source_fingerprint(share_path)
+            observed_share = set(
+                rows.get("share_source_fingerprint", pd.Series(dtype=object))
+                .dropna()
+                .astype(str)
+            )
+            metric_availability["current_size"] = (
+                "ready" if observed_share == {expected_share} else "stale"
+            )
     return {
         "status": state,
         "reason": reason,
         "rows": int(len(rows)),
         "as_of": _safe_max_date(rows.get("as_of")) if not rows.empty else None,
         "latest_date": _safe_max_date(rows.get("latest_date")) if not rows.empty else None,
+        "metric_availability": metric_availability,
     }
 
 
@@ -603,15 +764,38 @@ def load_product_filter_snapshot(
     state = _kind_snapshot_state(data_dir, snapshot, kind)
     if state["status"] != "ready" or snapshot.empty:
         return snapshot.iloc[0:0], state
+    metric_fields = sorted(snapshot_ranking_metrics(data_dir))
+    metric_context_fields = [
+        f"{field}__{suffix}"
+        for field in metric_fields
+        for suffix in (
+            "status",
+            "observation_count",
+            "start_date",
+            "end_date",
+            "effective_as_of",
+            "warning_code",
+            "warning_message",
+        )
+    ]
     columns = [
         column
-        for column in ("instrument_type", "ts_code", *PRODUCT_FILTER_METRICS)
+        for column in dict.fromkeys((
+            "instrument_type",
+            "ts_code",
+            *metric_fields,
+            *metric_context_fields,
+            "current_size",
+            *PRODUCT_SNAPSHOT_CONTEXT_FIELDS,
+        ))
         if column in snapshot.columns
     ]
-    return (
-        snapshot.loc[snapshot["instrument_type"].eq(kind), columns].copy(),
-        state,
-    )
+    selected = snapshot.loc[snapshot["instrument_type"].eq(kind), columns].copy()
+    if state.get("metric_availability", {}).get("current_size") != "ready":
+        for column in ("current_size", "current_size_as_of", "current_share", "current_unit_nav"):
+            if column in selected.columns:
+                selected[column] = pd.NA
+    return selected, state
 
 
 def _snapshot_metadata(
@@ -786,8 +970,17 @@ def build_analytics_response(
             "segments": quality_segments,
             "warnings": warnings,
         },
-        "metric_definitions": METRIC_DEFINITIONS,
-        "units": {name: definition["unit"] for name, definition in METRIC_DEFINITIONS.items()},
+        "metric_definitions": {
+            **{name: value for name, value in METRIC_DEFINITIONS.items() if name in INFO_RANKING_METRICS},
+            **snapshot_metric_definitions(data_dir),
+        },
+        "units": {
+            name: definition["unit"]
+            for name, definition in {
+                **{name: value for name, value in METRIC_DEFINITIONS.items() if name in INFO_RANKING_METRICS},
+                **snapshot_metric_definitions(data_dir),
+            }.items()
+        },
     }
 
 
@@ -855,15 +1048,23 @@ def build_rankings_response(
     info_files: Optional[Mapping[str, Path]] = None,
     filters: Optional[Mapping[str, Iterable[str]]] = None,
 ) -> dict[str, Any]:
-    if metric not in RANKING_METRICS:
+    dynamic_snapshot_metrics = snapshot_ranking_metrics(data_dir)
+    metric_definitions = {
+        **{name: value for name, value in METRIC_DEFINITIONS.items() if name in INFO_RANKING_METRICS},
+        **snapshot_metric_definitions(data_dir),
+    }
+    if metric not in dynamic_snapshot_metrics | INFO_RANKING_METRICS:
         raise ValueError(f"不支持的排行指标: {metric}")
-    if kind == "fund" and metric in ETF_ONLY_METRICS:
+    if kind == "fund" and metric in snapshot_etf_only_metrics(data_dir):
         raise ValueError(f"{metric} 仅适用于 ETF")
     if not active_only:
         raise ValueError("排行仅允许纳入 status_code=L 的上市/存续份额。")
     metric_horizon = METRIC_HORIZONS.get(metric)
+    dynamic_observation_column = f"{metric}__observation_count"
     metric_observation_column = (
-        f"observation_count_{metric_horizon}" if metric_horizon else "observation_count"
+        dynamic_observation_column
+        if metric in dynamic_snapshot_metrics and dynamic_observation_column in _load_snapshot(data_dir).columns
+        else f"observation_count_{metric_horizon}" if metric_horizon else "observation_count"
     )
     info = _apply_filters(_load_info(kind, data_dir, info_files), filters)
     snapshot = _load_snapshot(data_dir)
@@ -917,7 +1118,7 @@ def build_rankings_response(
             for column in ("instrument_type", "ts_code", "latest_date", "observation_count", "_stale_days")
             if column in snapshot.columns
         ]
-        if metric in SNAPSHOT_RANKING_METRICS:
+        if metric in dynamic_snapshot_metrics:
             snapshot_columns = [
                 column
                 for column in dict.fromkeys((
@@ -980,7 +1181,7 @@ def build_rankings_response(
         "kind": kind,
         "status": status,
         "metric": metric,
-        "metric_definition": METRIC_DEFINITIONS[metric],
+        "metric_definition": metric_definitions[metric],
         "sort_dir": sort_dir,
         "page": page,
         "page_size": page_size,
@@ -1114,6 +1315,7 @@ def _compute_nav_record(
     frame: pd.DataFrame,
     fingerprint: str,
     open_dates: Optional[pd.DatetimeIndex] = None,
+    include_legacy_metrics: bool = True,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     working = frame.copy()
     working["adj_nav"] = pd.to_numeric(working.get("adj_nav"), errors="coerce")
@@ -1141,31 +1343,32 @@ def _compute_nav_record(
             anomaly_dates=anomaly_dates,
         )
 
-    one_year = windows["1y"] if qualities["1y"].complete else working.iloc[0:0]
-    three_year = windows["3y"] if qualities["3y"].complete else working.iloc[0:0]
-    returns = one_year["adj_nav"].pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan).dropna()
     annual_volatility: Optional[float] = None
     sharpe: Optional[float] = None
-    if len(returns) >= 60:
-        daily_std = float(returns.std(ddof=1))
-        if np.isfinite(daily_std):
-            annual_volatility = daily_std * np.sqrt(252.0)
-            if daily_std > 1e-12:
-                sharpe = float(returns.mean() / daily_std * np.sqrt(252.0))
-    navs = three_year["adj_nav"].to_numpy(dtype=float)
     max_drawdown: Optional[float] = None
-    if len(navs) - 1 >= 180:
-        peaks = np.maximum.accumulate(navs)
-        drawdowns = navs / peaks - 1.0
-        max_drawdown = float(drawdowns.min())
     calmar: Optional[float] = None
-    if len(three_year) >= 2 and max_drawdown is not None and abs(max_drawdown) > 1e-12:
-        elapsed_days = max((three_year.iloc[-1]["date"] - three_year.iloc[0]["date"]).days, 1)
-        annualized = (float(three_year.iloc[-1]["adj_nav"]) / float(three_year.iloc[0]["adj_nav"])) ** (
-            365.25 / elapsed_days
-        ) - 1.0
-        if np.isfinite(annualized):
-            calmar = float(annualized / abs(max_drawdown))
+    if include_legacy_metrics:
+        one_year = windows["1y"] if qualities["1y"].complete else working.iloc[0:0]
+        three_year = windows["3y"] if qualities["3y"].complete else working.iloc[0:0]
+        returns = one_year["adj_nav"].pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan).dropna()
+        if len(returns) >= 60:
+            daily_std = float(returns.std(ddof=1))
+            if np.isfinite(daily_std):
+                annual_volatility = daily_std * np.sqrt(252.0)
+                if daily_std > 1e-12:
+                    sharpe = float(returns.mean() / daily_std * np.sqrt(252.0))
+        navs = three_year["adj_nav"].to_numpy(dtype=float)
+        if len(navs) - 1 >= 180:
+            peaks = np.maximum.accumulate(navs)
+            drawdowns = navs / peaks - 1.0
+            max_drawdown = float(drawdowns.min())
+        if len(three_year) >= 2 and max_drawdown is not None and abs(max_drawdown) > 1e-12:
+            elapsed_days = max((three_year.iloc[-1]["date"] - three_year.iloc[0]["date"]).days, 1)
+            annualized = (float(three_year.iloc[-1]["adj_nav"]) / float(three_year.iloc[0]["adj_nav"])) ** (
+                365.25 / elapsed_days
+            ) - 1.0
+            if np.isfinite(annualized):
+                calmar = float(annualized / abs(max_drawdown))
     record: dict[str, Any] = {
         "instrument_type": kind,
         "ts_code": code,
@@ -1187,10 +1390,10 @@ def _compute_nav_record(
         },
         "adj_nav_anomaly_count": int(len(anomaly_dates)),
         "latest_adj_nav": latest_value,
-        "return_1m": _window_return(windows["1m"], qualities["1m"]),
-        "return_3m": _window_return(windows["3m"], qualities["3m"]),
-        "return_1y": _window_return(windows["1y"], qualities["1y"]),
-        "return_3y": _window_return(windows["3y"], qualities["3y"]),
+        "return_1m": _window_return(windows["1m"], qualities["1m"]) if include_legacy_metrics else None,
+        "return_3m": _window_return(windows["3m"], qualities["3m"]) if include_legacy_metrics else None,
+        "return_1y": _window_return(windows["1y"], qualities["1y"]) if include_legacy_metrics else None,
+        "return_3y": _window_return(windows["3y"], qualities["3y"]) if include_legacy_metrics else None,
         "annual_volatility_1y": annual_volatility,
         "max_drawdown_3y": max_drawdown,
         "sharpe_1y": sharpe,
@@ -1244,6 +1447,35 @@ def _compute_candle_record(frame: pd.DataFrame, unit_nav_tail: Mapping[str, floa
     }
 
 
+def _compute_share_record(frame: pd.DataFrame, fingerprint: str) -> dict[str, Any]:
+    """Calculate the latest ETF size in 万元 from 万份 × 元/份."""
+
+    working = frame.copy()
+    for column in ("total_share", "nav"):
+        working[column] = pd.to_numeric(working.get(column), errors="coerce")
+    working = working.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["date", "total_share", "nav"]
+    )
+    working = working[
+        working["total_share"].gt(0) & working["nav"].gt(0)
+    ].sort_values("date").drop_duplicates(subset=["date"], keep="last")
+    if working.empty:
+        return {}
+    latest = working.iloc[-1]
+    current_share = float(latest["total_share"])
+    current_unit_nav = float(latest["nav"])
+    current_size = current_share * current_unit_nav
+    if not np.isfinite(current_size):
+        return {}
+    return {
+        "current_size": float(current_size),
+        "current_size_as_of": pd.Timestamp(latest["date"]),
+        "current_share": current_share,
+        "current_unit_nav": current_unit_nav,
+        "share_source_fingerprint": fingerprint,
+    }
+
+
 def _finite_mean(series: Optional[pd.Series], *, required_count: int | None = None) -> Optional[float]:
     if series is None:
         return None
@@ -1267,7 +1499,159 @@ def _atomic_write_snapshot(frame: pd.DataFrame, output_path: Path) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def rebuild_analytics_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
+def _atomic_write_json(payload: dict[str, Any], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _configured_snapshot_values(
+    output: pd.DataFrame,
+    *,
+    market_data_dir: Path,
+    workspace_data_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Evaluate configured Indicator Center definitions into snapshot columns."""
+
+    try:
+        from backend.custom_indicators.service import CustomIndicatorService
+        from backend.custom_indicators.series_provider import market_data_generation
+    except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+        from custom_indicators.service import CustomIndicatorService
+        from custom_indicators.series_provider import market_data_generation
+
+    service = CustomIndicatorService(
+        workspace_data_dir=workspace_data_dir,
+        market_data_dir=market_data_dir,
+    )
+    config = service.get_snapshot_config()
+    configured = [item for item in config.get("items", []) if item.get("status") == "ready"]
+    service.warm_snapshot_numba_plans(configured)
+    result = output.copy()
+    for item in configured:
+        field = str(item["field"])
+        result[field] = np.nan
+        result[f"{field}__status"] = "unavailable"
+        result[f"{field}__observation_count"] = 0
+        for suffix in ("start_date", "end_date", "effective_as_of", "warning_code", "warning_message"):
+            result[f"{field}__{suffix}"] = None
+
+    targets = [
+        {"kind": str(row.instrument_type), "product_id": str(row.ts_code)}
+        for row in result[["instrument_type", "ts_code"]].itertuples(index=False)
+    ]
+    row_indexes = {
+        (str(row.instrument_type), str(row.ts_code)): row.Index
+        for row in result[["instrument_type", "ts_code"]].itertuples()
+    }
+    status_counts = {"ok": 0, "warning": 0, "unavailable": 0, "error": 0}
+    failures: list[dict[str, str]] = []
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in configured:
+        groups.setdefault(str(item["period"]), []).append(item)
+
+    for period, period_items in groups.items():
+        for metric_start in range(0, len(period_items), 10):
+            metric_batch = period_items[metric_start : metric_start + 10]
+            indicator_ids = [str(item["indicator_id"]) for item in metric_batch]
+            versions = {
+                str(item["indicator_id"]): int(item["indicator_revision"])
+                for item in metric_batch
+            }
+            fields = {str(item["indicator_id"]): str(item["field"]) for item in metric_batch}
+            for target_start in range(0, len(targets), 50):
+                target_batch = targets[target_start : target_start + 50]
+                response = service.evaluate(
+                    indicator_ids=indicator_ids,
+                    indicator_versions=versions,
+                    inline_definition=None,
+                    targets=target_batch,
+                    period=period,
+                    include_series=False,
+                    prefer_snapshot=False,
+                )
+                for item in response.get("results", []):
+                    status = str(item.get("status") or "error")
+                    status_counts[status if status in status_counts else "error"] += 1
+                    value = item.get("value")
+                    target = item.get("target") or {}
+                    field = fields.get(str(item.get("indicator_id")))
+                    if not field:
+                        continue
+                    row_index = row_indexes.get(
+                        (str(target.get("kind")), str(target.get("product_id")))
+                    )
+                    if row_index is None:
+                        continue
+                    result.at[row_index, f"{field}__status"] = status
+                    window = item.get("window") or {}
+                    result.at[row_index, f"{field}__observation_count"] = int(
+                        window.get("observation_count") or 0
+                    )
+                    for suffix in ("start_date", "end_date", "effective_as_of"):
+                        result.at[row_index, f"{field}__{suffix}"] = window.get(suffix)
+                    warnings = item.get("warnings") or []
+                    if warnings:
+                        result.at[row_index, f"{field}__warning_code"] = warnings[0].get("code")
+                        result.at[row_index, f"{field}__warning_message"] = warnings[0].get("message")
+                    if value is not None and np.isfinite(float(value)):
+                        result.at[row_index, field] = float(value)
+
+    metadata_items = [
+        {
+            "field": item["field"],
+            "indicator_id": item["indicator_id"],
+            "indicator_revision": item["indicator_revision"],
+            "period": item["period"],
+            "name": item.get("name"),
+            "source": item.get("source"),
+            "presentation": item.get("presentation"),
+        }
+        for item in configured
+    ]
+    missing_definitions = [
+        {
+            "indicator_id": str(item.get("indicator_id")),
+            "message": str(item.get("status_message") or "指标版本不存在。"),
+        }
+        for item in config.get("items", [])
+        if item.get("status") != "ready"
+    ]
+    failures.extend(missing_definitions)
+    return result, {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data_generation": market_data_generation(market_data_dir),
+        "config_revision": config.get("revision"),
+        "configured_count": len(configured),
+        "items": metadata_items,
+        "status_counts": status_counts,
+        "failures": failures,
+        "legacy_columns": [
+            "amount_avg_20d",
+            "volume_avg_20d",
+            "premium_discount_latest",
+            "current_size",
+        ],
+        "legacy_note": "这些列是兼容属性；新增快照指标只能从指标中心配置。",
+    }
+
+
+def rebuild_analytics_snapshot(
+    data_dir: Path | None = None,
+    *,
+    workspace_data_dir: Path | None = None,
+) -> dict[str, Any]:
     """Build the local dashboard snapshot without any network access.
 
     The function raises on malformed input and atomically preserves any prior
@@ -1298,7 +1682,12 @@ def rebuild_analytics_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
         requested = ("ts_code", "date", "adj_nav", "unit_nav", "accum_nav")
         for code, frame in _iter_instrument_frames(path, requested):
             record, unit_nav_tail = _compute_nav_record(
-                kind, code, frame, fingerprint, open_dates
+                kind,
+                code,
+                frame,
+                fingerprint,
+                open_dates,
+                include_legacy_metrics=workspace_data_dir is None,
             )
             if not record:
                 continue
@@ -1317,6 +1706,17 @@ def rebuild_analytics_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
                 continue
             records[key].update(_compute_candle_record(frame, etf_unit_nav_tails.get(code, {}), fingerprint))
 
+    share_path = target_dir / "etf_share_size_df.parquet"
+    if share_path.exists():
+        source_files.append(share_path.name)
+        fingerprint = _source_fingerprint(share_path)
+        requested = ("ts_code", "date", "total_share", "nav")
+        for code, frame in _iter_instrument_frames(share_path, requested):
+            key = ("etf", code)
+            if key not in records:
+                continue
+            records[key].update(_compute_share_record(frame, fingerprint))
+
     output = pd.DataFrame(list(records.values()))
     for column in SNAPSHOT_COLUMNS:
         if column not in output.columns:
@@ -1330,8 +1730,20 @@ def rebuild_analytics_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
             output.loc[mask, "stale_days"] = (
                 segment_latest - output.loc[mask, "latest_date"]
             ).dt.days.clip(lower=0)
+    configured_metadata: dict[str, Any] | None = None
+    if workspace_data_dir is not None:
+        output, configured_metadata = _configured_snapshot_values(
+            output,
+            market_data_dir=target_dir,
+            workspace_data_dir=Path(workspace_data_dir).expanduser().resolve(),
+        )
     output_path = target_dir / SNAPSHOT_FILENAME
     _atomic_write_snapshot(output, output_path)
+    if configured_metadata is not None:
+        _atomic_write_json(
+            configured_metadata,
+            target_dir / SNAPSHOT_METADATA_FILENAME,
+        )
     _read_small_parquet_cached.cache_clear()
     by_kind = {
         kind: int((output["instrument_type"] == kind).sum()) for kind in ("etf", "fund")
@@ -1342,4 +1754,13 @@ def rebuild_analytics_snapshot(data_dir: Path | None = None) -> dict[str, Any]:
         "by_kind": by_kind,
         "as_of": _safe_max_date(output.get("as_of")),
         "source_files": source_files,
+        "snapshot_indicators": (
+            {
+                "config_revision": configured_metadata.get("config_revision"),
+                "configured_count": configured_metadata.get("configured_count"),
+                "status_counts": configured_metadata.get("status_counts"),
+            }
+            if configured_metadata is not None
+            else {"mode": "legacy_compatibility"}
+        ),
     }

@@ -39,6 +39,7 @@ API_ROW_LIMITS = {
     "fund_basic": 15000,
     "etf_basic": 5000,
     "fund_daily": 5000,
+    "etf_share_size": 5000,
     "index_classify": 5000,
     "ths_index": 5000,
     "dc_index": 5000,
@@ -137,6 +138,17 @@ FUND_DAILY_FIELDS = [
     "amount",
 ]
 
+ETF_SHARE_SIZE_FIELDS = [
+    "trade_date",
+    "ts_code",
+    "etf_name",
+    "total_share",
+    "total_size",
+    "nav",
+    "close",
+    "exchange",
+]
+
 FUND_COMPANY_FIELDS = [
     "name",
     "shortname",
@@ -209,6 +221,29 @@ INDEX_SCOPE_ACTIONS = {
     "constituents": "index_constituents",
 }
 INDEX_ACTIONS = set(INDEX_SCOPE_ACTIONS.values()) | {"index_coverage"}
+ACTION_LABELS = {
+    "etf_info": "ETF 基础信息",
+    "fund_info": "场外公募基金基础信息",
+    "fund_company": "基金公司目录",
+    "calendar": "交易日历",
+    "nav": "ETF 净值",
+    "etf_share": "ETF 份额与单位净值",
+    "candle": "ETF 交易行情",
+    "fund_nav": "场外公募基金净值",
+    "stock_basic": "股票目录",
+    "index_info": "指数基础信息",
+    "etf_index": "ETF 指数目录",
+    "index_catalog": "指数目录",
+    "index_domestic": "境内指数行情",
+    "index_industry": "行业指数行情",
+    "index_concept": "概念板块行情",
+    "index_global": "国际指数行情",
+    "index_futures": "商品期货指数行情",
+    "index_valuation": "指数估值",
+    "index_constituents": "指数成分与权重",
+    "index_coverage": "指数覆盖快照",
+}
+ACTION_EXECUTION_ORDER = tuple(ACTION_LABELS)
 INDEX_HISTORY_FILES = {
     "index_daily": "index_daily_df.parquet",
     "sw_daily": "index_sw_daily_df.parquet",
@@ -1065,6 +1100,7 @@ def save_full_history_with_checkpoints(
         raise RuntimeError(f"{label} 未获得任何历史数据。")
 
     base_path = out_path if args.missing_only and out_path.exists() else None
+    print(f"[STAGE] {label} 已完成数据拉取，正在合并并校验本地历史数据。", flush=True)
     consolidate_parquet_parts(part_paths, out_path, base_path=base_path)
 
 
@@ -1583,6 +1619,7 @@ def fetch_latest_dates(
                     retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
                     context=context,
                     api_name=api_name,
+                    allow_capped_response=bool(page_size),
                     **params,
                 ),
                 args=args,
@@ -1658,16 +1695,23 @@ def append_latest_batches(
     subset: list[str],
     sort_cols: list[str],
     batch_days: int,
+    dataset_label: str,
 ) -> None:
     """Bound incremental memory by atomically merging a few dates at a time."""
 
-    for date_batch in iter_date_batches(dates, batch_days):
+    batches = list(iter_date_batches(dates, batch_days))
+    for batch_index, date_batch in enumerate(batches, start=1):
         frames = fetch_batch(date_batch, date_batch[-1] == dates[-1])
         if not frames:
             continue
         incoming = prepare_rows(pd.concat(frames, ignore_index=True))
         if incoming.empty:
             continue
+        print(
+            f"[STAGE] {dataset_label} 已完成本批数据拉取，"
+            f"正在合并本地数据（批次 {batch_index}/{len(batches)}）。",
+            flush=True,
+        )
         append_incremental_rows(
             incoming,
             out_path,
@@ -1726,6 +1770,220 @@ def save_latest_nav(
         subset=["ts_code", "date"],
         sort_cols=["ts_code", "date"],
         batch_days=getattr(args, "incremental_batch_days", DEFAULT_INCREMENTAL_BATCH_DAYS),
+        dataset_label="ETF 净值",
+    )
+
+
+def _normalise_etf_share_size(frame: pd.DataFrame, *, name: Optional[str] = None) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    result = frame.copy()
+    for column in ETF_SHARE_SIZE_FIELDS:
+        if column not in result:
+            result[column] = pd.NA
+    result["ts_code"] = result["ts_code"].astype("string").str.strip()
+    result["trade_date"] = result["trade_date"].astype("string")
+    for column in ("total_share", "total_size", "nav", "close"):
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    if name is not None:
+        result["name"] = pd.Series([name] * len(result), dtype="string")
+    else:
+        result["name"] = result["etf_name"].astype("string")
+    result["date"] = date_series(result["trade_date"])
+    return result.dropna(subset=["ts_code", "date"])[[*ETF_SHARE_SIZE_FIELDS, "name", "date"]]
+
+
+def fetch_etf_share_size_window(
+    *,
+    pro: Any,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    ts_code: str,
+    name: str,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """Fetch one complete ETF share window, bisecting capped responses."""
+
+    context = f"etf_share_size {ts_code} {start_date}-{end_date}"
+    frame = call_tushare_api(
+        pro.etf_share_size,
+        limiter,
+        max_retries=args.max_retries,
+        backoff_sec=args.backoff_sec,
+        wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+        retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+        context=context,
+        api_name="etf_share_size",
+        allow_capped_response=True,
+        ts_code=ts_code,
+        start_date=start_date,
+        end_date=end_date,
+        fields=fields_arg(ETF_SHARE_SIZE_FIELDS),
+    )
+    limit = API_ROW_LIMITS["etf_share_size"]
+    if len(frame) >= limit:
+        start = pd.to_datetime(start_date, format="%Y%m%d")
+        end = pd.to_datetime(end_date, format="%Y%m%d")
+        if start >= end:
+            raise ResponseTruncatedError(
+                f"{context} 单日返回 {len(frame)} 行，达到上限 {limit}。"
+            )
+        middle = start + (end - start) // 2
+        left = fetch_etf_share_size_window(
+            pro=pro,
+            limiter=limiter,
+            args=args,
+            ts_code=ts_code,
+            name=name,
+            start_date=start.strftime("%Y%m%d"),
+            end_date=middle.strftime("%Y%m%d"),
+        )
+        right = fetch_etf_share_size_window(
+            pro=pro,
+            limiter=limiter,
+            args=args,
+            ts_code=ts_code,
+            name=name,
+            start_date=(middle + pd.Timedelta(days=1)).strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+        )
+        return pd.concat([left, right], ignore_index=True)
+    return _normalise_etf_share_size(frame, name=name)
+
+
+def fetch_etf_share_size(
+    pro: Any,
+    ts_code: str,
+    name: str,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    *,
+    history_start_date: Optional[str] = None,
+    history_end_date: Optional[str] = None,
+) -> Optional[pd.DataFrame]:
+    chunks = clipped_history_chunks(
+        args,
+        history_start_date=history_start_date,
+        history_end_date=history_end_date,
+    )
+    frames = _fetch_history_chunks_with_empty_retry(
+        chunks,
+        lambda chunk_start, chunk_end: fetch_etf_share_size_window(
+            pro=pro,
+            limiter=limiter,
+            args=args,
+            ts_code=ts_code,
+            name=name,
+            start_date=chunk_start,
+            end_date=chunk_end,
+        ),
+        args=args,
+        context=f"etf_share_size {ts_code}",
+    )
+    if not frames:
+        return None
+    return (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates(subset=["ts_code", "date"], keep="last")
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+
+def save_etf_share_size(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    etf_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_etf_universe(pro, output_dir, limiter, args, etf_info)
+    lifecycle = history_bounds_by_code(
+        universe,
+        start_columns=("setup_date", "list_date", "found_date", "issue_date"),
+        end_columns=("delist_date", "due_date"),
+    )
+    out_path = output_dir / "etf_share_size_df.parquet"
+    if args.missing_only:
+        universe = filter_missing_universe(universe, out_path, label="ETF 份额规模")
+        if universe.empty:
+            print("[INFO] ETF 份额规模无缺失代码，无需补抓。")
+            return
+    save_full_history_with_checkpoints(
+        universe=universe,
+        out_path=out_path,
+        label="ETF etf_share_size",
+        fetcher=lambda code, name: fetch_etf_share_size(
+            pro,
+            code,
+            name,
+            limiter,
+            args,
+            history_start_date=lifecycle.get(code, (None, None))[0],
+            history_end_date=lifecycle.get(code, (None, None))[1],
+        ),
+        duplicate_subset=["ts_code", "date"],
+        sort_cols=["ts_code", "date"],
+        args=args,
+    )
+
+
+def save_latest_etf_share_size(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    etf_info: Optional[pd.DataFrame] = None,
+) -> None:
+    out_path = output_dir / "etf_share_size_df.parquet"
+    lookback_days = getattr(args, "incremental_lookback_days", 5)
+    if out_path.exists():
+        start_date = incremental_start_date(
+            output_dir,
+            latest_parquet_date(out_path, "date"),
+            lookback_days=lookback_days,
+        )
+    else:
+        # A newly introduced dataset must not make an otherwise valid
+        # incremental refresh fail. Bootstrap only a short recent window;
+        # a later full refresh can backfill its complete history.
+        end = pd.to_datetime(args.end_date, format="%Y%m%d")
+        start_date = (end - pd.Timedelta(days=31)).strftime("%Y%m%d")
+    dates = load_open_trade_dates(
+        output_dir,
+        start_date=start_date,
+        end_date=args.end_date,
+        max_days=args.max_latest_days + max(lookback_days - 1, 0),
+    )
+    if not out_path.exists():
+        dates = dates[-lookback_days:]
+    if not dates:
+        print("[INFO] etf_share_size 已是最新，无需更新。")
+        return
+    universe = load_or_create_etf_universe(pro, output_dir, limiter, args, etf_info)
+
+    append_latest_batches(
+        dates=dates,
+        out_path=out_path,
+        fetch_batch=lambda batch, allow_empty: fetch_latest_dates(
+            api_func=pro.etf_share_size,
+            api_name="etf_share_size",
+            date_param="trade_date",
+            dates=batch,
+            fields=ETF_SHARE_SIZE_FIELDS,
+            universe=universe,
+            limiter=limiter,
+            args=args,
+            universe_label="ETF",
+            page_size=API_ROW_LIMITS["etf_share_size"],
+            allow_terminal_empty=allow_empty,
+        ),
+        prepare_rows=lambda frame: _normalise_etf_share_size(frame),
+        subset=["ts_code", "date"],
+        sort_cols=["ts_code", "date"],
+        batch_days=getattr(args, "incremental_batch_days", DEFAULT_INCREMENTAL_BATCH_DAYS),
+        dataset_label="ETF 份额与单位净值",
     )
 
 
@@ -1775,6 +2033,7 @@ def save_latest_candles(
         subset=["ts_code", "trade_date"],
         sort_cols=["ts_code", "date"],
         batch_days=getattr(args, "incremental_batch_days", DEFAULT_INCREMENTAL_BATCH_DAYS),
+        dataset_label="ETF 交易行情",
     )
 
 
@@ -2075,6 +2334,7 @@ def save_latest_public_fund_nav(
         subset=["ts_code", "date"],
         sort_cols=["ts_code", "date"],
         batch_days=getattr(args, "incremental_batch_days", DEFAULT_INCREMENTAL_BATCH_DAYS),
+        dataset_label="场外公募基金净值",
     )
 
 
@@ -2747,6 +3007,10 @@ def save_index_full_history_with_segment_checkpoints(
     part_paths = [code_parts[code] for code in universe["ts_code"].astype(str) if code_parts[code].exists()]
     if not part_paths:
         raise RuntimeError(f"{api_name} 未获得任何历史数据。")
+    print(
+        f"[STAGE] {api_name} 已完成数据拉取，正在合并并校验本地历史数据。",
+        flush=True,
+    )
     consolidate_parquet_parts(part_paths, out_path)
 
 
@@ -2831,6 +3095,10 @@ def save_index_history_api(
         raise RuntimeError(f"{api_name} 增量有 {len(errors)} 个代码失败，拒绝写入不完整结果。")
     if frames:
         incoming = pd.concat(frames, ignore_index=True)
+        print(
+            f"[STAGE] {api_name} 已完成数据拉取，正在合并本地增量数据。",
+            flush=True,
+        )
         append_incremental_rows(
             incoming,
             out_path,
@@ -3237,6 +3505,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all", action="store_true", help="执行全部数据任务。")
     parser.add_argument("--etf-info", action="store_true", help="更新 data/etf_info_df.parquet。")
     parser.add_argument("--nav", action="store_true", help="更新 data/etf_daily_df.parquet。")
+    parser.add_argument(
+        "--etf-share",
+        action="store_true",
+        help="更新 data/etf_share_size_df.parquet（份额与单位净值）。",
+    )
     parser.add_argument("--candle", action="store_true", help="更新 data/etf_daily_candle_df.parquet。")
     parser.add_argument("--calendar", action="store_true", help="更新 data/trade_day_df.parquet。")
     parser.add_argument("--stock-basic", action="store_true", help="更新 data/stock_basic.parquet。")
@@ -3312,6 +3585,7 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
             "calendar",
             "stock_basic",
             "nav",
+            "etf_share",
             "candle",
             "fund_nav",
             *INDEX_SCOPE_ACTIONS.values(),
@@ -3322,6 +3596,8 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
         actions.append("etf_info")
     if args.all or args.nav:
         actions.append("nav")
+    if args.all or bool(getattr(args, "etf_share", False)):
+        actions.append("etf_share")
     if args.all or args.candle:
         actions.append("candle")
     if args.all or args.calendar:
@@ -3372,15 +3648,25 @@ def _run_action_once(
     args: argparse.Namespace,
     action: str,
     operation: Callable[[], Any],
+    *,
+    step_index: Optional[int] = None,
+    step_total: Optional[int] = None,
 ) -> Any:
     """Run one action and durably mark it complete for same-candidate resume."""
 
     marker = _action_marker_path(args.output_dir, action)
     resume_key = _action_resume_key(args)
+    label = ACTION_LABELS.get(action, action)
+    step_text = (
+        f"（节点 {step_index}/{step_total}）"
+        if step_index is not None and step_total is not None
+        else ""
+    )
+    print(f"[STAGE] 正在处理{label}{step_text}。", flush=True)
     if getattr(args, "resume", False):
         payload = read_json_object(marker)
         if payload is not None and payload.get("resume_key") == resume_key:
-            print(f"[INFO] {action} 已在当前候选目录完成，续跑跳过。")
+            print(f"[DONE] {label}{step_text}已完成，续跑直接复用。", flush=True)
             return None
     result = operation()
     atomic_write_json(
@@ -3392,6 +3678,7 @@ def _run_action_once(
             "completed_at": datetime.now(timezone.utc).isoformat(),
         },
     )
+    print(f"[DONE] {label}{step_text}已完成。", flush=True)
     return result
 
 
@@ -3406,6 +3693,7 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
             "index_info",
             "etf_index",
             "nav",
+            "etf_share",
             "candle",
             "fund_nav",
             *INDEX_ACTIONS,
@@ -3422,6 +3710,22 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
     mode = "按交易日增量" if args.latest else "指定范围"
     print(f"[INFO] 日期范围: {args.start_date} - {args.end_date}；模式: {mode}；任务: {', '.join(actions)}")
 
+    ordered_actions = [action for action in ACTION_EXECUTION_ORDER if action in actions]
+    step_positions = {
+        action: (index, len(ordered_actions))
+        for index, action in enumerate(ordered_actions, start=1)
+    }
+
+    def run_action(action: str, operation: Callable[[], Any]) -> Any:
+        step_index, step_total = step_positions[action]
+        return _run_action_once(
+            args,
+            action,
+            operation,
+            step_index=step_index,
+            step_total=step_total,
+        )
+
     calendar_start: Optional[str] = None
     if args.latest:
         starts: list[str] = []
@@ -3429,6 +3733,10 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
             starts.append(next_calendar_date(latest_parquet_date(args.output_dir / "trade_day_df.parquet", "cal_date")))
         if "nav" in actions:
             starts.append(next_calendar_date(latest_parquet_date(args.output_dir / "etf_daily_df.parquet", "date")))
+        if "etf_share" in actions:
+            share_path = args.output_dir / "etf_share_size_df.parquet"
+            if share_path.exists():
+                starts.append(next_calendar_date(latest_parquet_date(share_path, "date")))
         if "candle" in actions:
             starts.append(next_calendar_date(latest_parquet_date(args.output_dir / "etf_daily_candle_df.parquet", "date")))
         if "fund_nav" in actions:
@@ -3438,86 +3746,87 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
     etf_info: Optional[pd.DataFrame] = None
     fund_info: Optional[pd.DataFrame] = None
     if "etf_info" in actions:
-        etf_info = _run_action_once(
-            args, "etf_info", lambda: save_etf_info(pro, args.output_dir, limiter, args)
+        etf_info = run_action(
+            "etf_info", lambda: save_etf_info(pro, args.output_dir, limiter, args)
         )
     if "fund_info" in actions:
-        fund_info = _run_action_once(
-            args, "fund_info", lambda: save_public_fund_info(pro, args.output_dir, limiter, args)
+        fund_info = run_action(
+            "fund_info", lambda: save_public_fund_info(pro, args.output_dir, limiter, args)
         )
     if "fund_company" in actions:
-        _run_action_once(
-            args, "fund_company", lambda: save_fund_company(pro, args.output_dir, limiter, args)
+        run_action(
+            "fund_company", lambda: save_fund_company(pro, args.output_dir, limiter, args)
         )
     if "calendar" in actions:
-        _run_action_once(
-            args,
+        run_action(
             "calendar",
             lambda: save_trade_calendar(
                 pro, args.output_dir, limiter, args, incremental_start=calendar_start
             ),
         )
     if "nav" in actions:
-        _run_action_once(
-            args,
+        run_action(
             "nav",
             lambda: save_latest_nav(pro, args.output_dir, limiter, args, etf_info)
             if args.latest
             else save_nav(pro, args.output_dir, limiter, args, etf_info),
         )
+    if "etf_share" in actions:
+        run_action(
+            "etf_share",
+            lambda: save_latest_etf_share_size(pro, args.output_dir, limiter, args, etf_info)
+            if args.latest
+            else save_etf_share_size(pro, args.output_dir, limiter, args, etf_info),
+        )
     if "candle" in actions:
-        _run_action_once(
-            args,
+        run_action(
             "candle",
             lambda: save_latest_candles(pro, args.output_dir, limiter, args, etf_info)
             if args.latest
             else save_candles(pro, args.output_dir, limiter, args, etf_info),
         )
     if "fund_nav" in actions:
-        _run_action_once(
-            args,
+        run_action(
             "fund_nav",
             lambda: save_latest_public_fund_nav(pro, args.output_dir, limiter, args, fund_info)
             if args.latest
             else save_public_fund_nav(pro, args.output_dir, limiter, args, fund_info),
         )
     if "stock_basic" in actions:
-        _run_action_once(
-            args, "stock_basic", lambda: save_stock_basic(pro, args.output_dir, limiter, args)
+        run_action(
+            "stock_basic", lambda: save_stock_basic(pro, args.output_dir, limiter, args)
         )
     if "index_info" in actions:
-        _run_action_once(
-            args, "index_info", lambda: save_index_basic(pro, args.output_dir, limiter, args)
+        run_action(
+            "index_info", lambda: save_index_basic(pro, args.output_dir, limiter, args)
         )
     if "etf_index" in actions:
-        _run_action_once(
-            args, "etf_index", lambda: save_etf_index(pro, args.output_dir, limiter, args)
+        run_action(
+            "etf_index", lambda: save_etf_index(pro, args.output_dir, limiter, args)
         )
     if "index_catalog" in actions:
-        _run_action_once(
-            args, "index_catalog", lambda: save_index_catalog(pro, args.output_dir, limiter, args)
+        run_action(
+            "index_catalog", lambda: save_index_catalog(pro, args.output_dir, limiter, args)
         )
     for action in (
         "index_domestic", "index_industry", "index_concept", "index_global",
         "index_futures", "index_valuation",
     ):
         if action in actions:
-            _run_action_once(
-                args,
+            run_action(
                 action,
                 lambda selected=action: save_index_history_scope(
                     pro, args.output_dir, limiter, args, selected
                 ),
             )
     if "index_constituents" in actions:
-        _run_action_once(
-            args,
+        run_action(
             "index_constituents",
             lambda: save_index_constituents(pro, args.output_dir, limiter, args),
         )
     if "index_coverage" in actions:
-        _run_action_once(
-            args, "index_coverage", lambda: save_index_coverage(args.output_dir)
+        run_action(
+            "index_coverage", lambda: save_index_coverage(args.output_dir)
         )
 
 
@@ -3526,7 +3835,7 @@ def _modules_for_actions(actions: list[str]) -> list[str]:
     modules = []
     if selected & {"calendar", "stock_basic", "index_info", "fund_company"}:
         modules.append("base")
-    if selected & {"etf_info", "nav", "candle", "etf_index"}:
+    if selected & {"etf_info", "nav", "etf_share", "candle", "etf_index"}:
         modules.append("etf")
     if selected & {"fund_info", "fund_nav"}:
         modules.append("fund")
@@ -3538,6 +3847,45 @@ def _modules_for_actions(actions: list[str]) -> list[str]:
 def _index_scopes_for_actions(actions: list[str]) -> list[str]:
     selected = set(actions)
     return [scope for scope, action in INDEX_SCOPE_ACTIONS.items() if action in selected]
+
+
+def _module_scopes_for_actions(actions: list[str]) -> dict[str, list[str]]:
+    selected = set(actions)
+    scopes: dict[str, list[str]] = {}
+    base = [
+        scope
+        for scope, action in (
+            ("calendar", "calendar"),
+            ("stock_basic", "stock_basic"),
+            ("fund_company", "fund_company"),
+        )
+        if action in selected
+    ]
+    etf = [
+        scope
+        for scope, action in (
+            ("info", "etf_info"),
+            ("nav", "nav"),
+            ("share", "etf_share"),
+            ("candle", "candle"),
+        )
+        if action in selected
+    ]
+    fund = [
+        scope
+        for scope, action in (("info", "fund_info"), ("nav", "fund_nav"))
+        if action in selected
+    ]
+    index = _index_scopes_for_actions(actions)
+    for module, selected_scopes in (
+        ("base", base),
+        ("etf", etf),
+        ("fund", fund),
+        ("index", index),
+    ):
+        if selected_scopes:
+            scopes[module] = selected_scopes
+    return scopes
 
 
 def _write_cli_refresh_state(job: dict[str, Any]) -> None:
@@ -3573,7 +3921,7 @@ def _cli_heartbeat_loop(
 def _rebuild_cli_analytics(data_dir: Path) -> dict[str, Any]:
     from backend.services.instrument_analytics import rebuild_analytics_snapshot
 
-    return rebuild_analytics_snapshot(data_dir)
+    return rebuild_analytics_snapshot(data_dir, workspace_data_dir=data_dir)
 
 
 def _stop_cli_heartbeat(stop_event: threading.Event, thread: threading.Thread) -> None:
@@ -3686,6 +4034,7 @@ def main() -> None:
         "started_at": started_at,
         "finished_at": None,
         "modules": _modules_for_actions(actions),
+        "module_scopes": _module_scopes_for_actions(actions),
         "index_scopes": _index_scopes_for_actions(actions),
         "mode": "incremental" if args.latest else "full",
         "message": "正在从命令行执行 Tushare 数据更新",
@@ -3732,7 +4081,7 @@ def main() -> None:
         _write_cli_refresh_state(job)
         raise
     else:
-        job["message"] = "Tushare 数据抓取完成，正在本地重建分析快照"
+        job["message"] = "所有下载节点已完成，正在本地重建分析快照"
         _write_cli_refresh_state(job)
         try:
             snapshot_result = _rebuild_cli_analytics(args.output_dir)
@@ -3759,9 +4108,9 @@ def main() -> None:
                 job["analytics_snapshot"]["activated_snapshot_dir"] = promotion["manifest"][
                     "snapshot_dir"
                 ]
-                message = "Tushare 命令行全量数据验收完成并已原子切换"
+                message = "下载完成：命令行全量数据已验收并原子切换"
             else:
-                message = "Tushare 命令行数据更新及分析快照重建完成"
+                message = "下载完成：命令行数据更新及分析快照重建完成"
         except Exception as exc:  # noqa: BLE001
             warning_message = _sanitise_cli_error(exc)
             job["analytics_snapshot"] = {
@@ -3773,10 +4122,10 @@ def main() -> None:
                 {"code": "ANALYTICS_REBUILD_FAILED", "message": warning_message}
             ]
             message = (
-                "Tushare 命令行全量抓取完成，但候选未通过快照验收/接入；"
+                "数据下载完成，但命令行全量候选未通过快照验收/接入；"
                 "旧版本继续服务，重启同请求将复用候选，无需重新拉取数据"
                 if managed_full
-                else "Tushare 命令行数据抓取完成；分析快照重建失败，可单独重建，"
+                else "数据下载完成，但分析快照重建失败；可单独重建，"
                 "无需重新拉取数据"
             )
         _stop_cli_heartbeat(heartbeat_stop, heartbeat_thread)

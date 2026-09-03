@@ -465,6 +465,56 @@ def test_save_latest_candles_refetches_default_overlap_and_applies_revision(tmp_
     assert out.loc[out["trade_date"] == "20260828", "close"].item() == 2.5
 
 
+def test_latest_etf_share_bootstraps_five_days_when_dataset_is_new(tmp_path: Path) -> None:
+    module = _load_data_script()
+    pd.DataFrame([{"ts_code": "510050.SH", "name": "上证50ETF"}]).to_parquet(
+        tmp_path / "etf_info_df.parquet", index=False
+    )
+    dates = ["20260824", "20260825", "20260826", "20260827", "20260828", "20260831"]
+    pd.DataFrame(
+        [{"exchange": "SSE", "cal_date": date, "is_open": 1} for date in dates]
+    ).to_parquet(tmp_path / "trade_day_df.parquet", index=False)
+    calls: list[str] = []
+
+    class Pro:
+        @staticmethod
+        def etf_share_size(**kwargs):
+            calls.append(kwargs["trade_date"])
+            if kwargs.get("offset", 0) > 0:
+                return pd.DataFrame()
+            return pd.DataFrame([{
+                "ts_code": "510050.SH",
+                "trade_date": kwargs["trade_date"],
+                "total_share": 100.0,
+                "nav": 1.25,
+            }])
+
+    args = types.SimpleNamespace(
+        end_date="20260831",
+        max_latest_days=120,
+        max_retries=1,
+        backoff_sec=0.0,
+        wait_on_rate_limit_sec=0.0,
+        retry_jitter_sec=0.0,
+        empty_response_retries=0,
+        incremental_lookback_days=5,
+        incremental_batch_days=20,
+        max_workers=2,
+        limit=None,
+    )
+    module.save_latest_etf_share_size(Pro(), tmp_path, module.RateLimiter(10_000), args)
+
+    assert sorted(set(calls)) == dates[-5:]
+    saved = pd.read_parquet(tmp_path / "etf_share_size_df.parquet")
+    assert saved["date"].astype(str).tolist() == [
+        pd.to_datetime(value, format="%Y%m%d").date().isoformat() for value in dates[-5:]
+    ]
+    output = pd.read_parquet(tmp_path / "etf_share_size_df.parquet")
+    assert output["trade_date"].tolist() == dates[-5:]
+    assert output["total_share"].tolist() == [100.0] * 5
+    assert output["nav"].tolist() == [1.25] * 5
+
+
 def test_call_tushare_api_waits_and_retries_rate_limit(monkeypatch) -> None:
     module = _load_data_script()
     attempts = 0
@@ -897,7 +947,10 @@ def test_full_history_checkpoints_use_bounded_thread_pool(tmp_path: Path) -> Non
     assert pd.read_parquet(out_path)["ts_code"].tolist() == universe["ts_code"].tolist()
 
 
-def test_action_resume_marker_skips_only_completed_candidate_action(tmp_path: Path) -> None:
+def test_action_resume_marker_skips_only_completed_candidate_action(
+    tmp_path: Path,
+    capsys,
+) -> None:
     module = _load_data_script()
     args = types.SimpleNamespace(
         output_dir=tmp_path,
@@ -910,11 +963,27 @@ def test_action_resume_marker_skips_only_completed_candidate_action(tmp_path: Pa
     )
     calls: list[str] = []
 
-    module._run_action_once(args, "fund_info", lambda: calls.append("first"))
+    module._run_action_once(
+        args,
+        "fund_info",
+        lambda: calls.append("first"),
+        step_index=1,
+        step_total=2,
+    )
     args.resume = True
-    module._run_action_once(args, "fund_info", lambda: calls.append("duplicate"))
+    module._run_action_once(
+        args,
+        "fund_info",
+        lambda: calls.append("duplicate"),
+        step_index=1,
+        step_total=2,
+    )
 
     assert calls == ["first"]
+    output = capsys.readouterr().out
+    assert "[STAGE] 正在处理场外公募基金基础信息（节点 1/2）" in output
+    assert "[DONE] 场外公募基金基础信息（节点 1/2）已完成" in output
+    assert "续跑直接复用" in output
     marker = module.read_json_object(tmp_path / ".tushare_action_fund_info.json")
     assert marker is not None and marker["action"] == "fund_info"
 
@@ -1406,10 +1475,50 @@ def test_index_capped_range_is_bisected_before_results_are_accepted() -> None:
     assert result["trade_date"].dtype.kind == "M"
 
 
+def test_etf_share_size_capped_range_is_bisected_and_keeps_formula_inputs() -> None:
+    module = _load_data_script()
+    calls: list[tuple[str, str]] = []
+
+    class Pro:
+        @staticmethod
+        def etf_share_size(**kwargs):
+            calls.append((kwargs["start_date"], kwargs["end_date"]))
+            if kwargs["start_date"] != kwargs["end_date"]:
+                return pd.DataFrame(
+                    {
+                        "ts_code": [kwargs["ts_code"]] * module.API_ROW_LIMITS["etf_share_size"],
+                        "trade_date": [kwargs["start_date"]] * module.API_ROW_LIMITS["etf_share_size"],
+                    }
+                )
+            return pd.DataFrame(
+                [{
+                    "ts_code": kwargs["ts_code"],
+                    "trade_date": kwargs["start_date"],
+                    "total_share": 100.0,
+                    "nav": 1.25,
+                }]
+            )
+
+    args = types.SimpleNamespace(
+        max_retries=1, backoff_sec=0.0, wait_on_rate_limit_sec=0.0, retry_jitter_sec=0.0
+    )
+    result = module.fetch_etf_share_size_window(
+        pro=Pro(), limiter=module.RateLimiter(10_000), args=args,
+        ts_code="510300.SH", name="沪深300ETF",
+        start_date="20260830", end_date="20260831",
+    )
+
+    assert calls == [("20260830", "20260831"), ("20260830", "20260830"), ("20260831", "20260831")]
+    assert len(result) == 2
+    assert list(result["total_share"]) == [100.0, 100.0]
+    assert list(result["nav"]) == [1.25, 1.25]
+    assert result["date"].dtype.kind == "M"
+
+
 def test_index_scope_selection_auto_includes_catalog_and_coverage() -> None:
     module = _load_data_script()
     args = types.SimpleNamespace(
-        latest=False, all=False, etf_info=False, nav=False, candle=False, calendar=False,
+        latest=False, all=False, etf_info=False, nav=False, etf_share=False, candle=False, calendar=False,
         stock_basic=False, index_info=False, etf_index=False, fund_info=False, fund_nav=False,
         fund_company=False, index_catalog=False, index_domestic=False, index_industry=False,
         index_concept=False, index_global=True, index_futures=False, index_valuation=False,
@@ -1420,6 +1529,9 @@ def test_index_scope_selection_auto_includes_catalog_and_coverage() -> None:
 
     assert actions == ["index_global", "index_catalog", "index_coverage"]
     assert module._modules_for_actions(actions) == ["index"]
+    assert module._module_scopes_for_actions(actions) == {
+        "index": ["catalog", "global"]
+    }
 
 
 def test_index_incremental_start_uses_exactly_five_sse_trade_days(tmp_path: Path) -> None:

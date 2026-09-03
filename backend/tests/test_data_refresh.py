@@ -4,6 +4,7 @@ import io
 import json
 import stat
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -66,6 +67,7 @@ def test_refresh_command_uses_parallel_safe_defaults(monkeypatch) -> None:
     assert command[command.index("--max-calls-per-minute") + 1] == "450"
     assert command[command.index("--min-call-interval-sec") + 1] == "0.13"
     assert command[command.index("--max-workers") + 1] == "16"
+    assert "--etf-share" in command
 
 
 def test_dataset_summaries_read_parquet_metadata(monkeypatch, tmp_path: Path) -> None:
@@ -194,7 +196,10 @@ def test_cross_process_lock_rejects_duplicate_and_stale_state_recovers(tmp_path:
 
     with pytest.raises(RuntimeError, match="请勿重复启动"):
         manager.start(["fund"], "incremental")
-    assert manager.snapshot()["job"]["status"] == "running"
+    running_status = manager.snapshot()
+    assert running_status["job"]["status"] == "running"
+    assert running_status["execution_mode"] == "background"
+    assert running_status["refresh_locked"] is True
 
     external_lock.release()
     recovered = manager.snapshot()["job"]
@@ -202,6 +207,58 @@ def test_cross_process_lock_rejects_duplicate_and_stale_state_recovers(tmp_path:
     assert "已中断" in recovered["message"]
     persisted = json.loads(manager.state_path.read_text(encoding="utf-8"))
     assert persisted["job"]["status"] == "failed"
+
+
+def test_manager_start_returns_while_background_worker_keeps_lock(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _write_test_token(tmp_path)
+    manager = data_refresh.DataRefreshManager(data_dir=tmp_path)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def wait_in_background(job_id, _modules, _mode, _index_scopes, _module_scopes):
+        worker_started.set()
+        release_worker.wait(timeout=3)
+        manager._finish_job(
+            job_id,
+            {"status": "succeeded", "message": "后台测试任务完成"},
+        )
+
+    monkeypatch.setattr(manager, "_run", wait_in_background)
+    started = manager.start(["etf"], "incremental")
+
+    try:
+        assert worker_started.wait(timeout=1)
+        assert release_worker.is_set() is False
+        assert started["job"]["status"] == "running"
+        assert started["execution_mode"] == "background"
+        assert started["refresh_locked"] is True
+        with pytest.raises(RuntimeError, match="请勿重复启动"):
+            manager.start(["fund"], "incremental")
+    finally:
+        release_worker.set()
+
+    deadline = time.monotonic() + 1
+    while manager.snapshot()["job"]["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert manager.snapshot()["job"]["status"] == "succeeded"
+
+
+def test_status_exposes_external_refresh_lock_before_job_state_is_visible(
+    tmp_path: Path,
+) -> None:
+    manager = data_refresh.DataRefreshManager(data_dir=tmp_path)
+    external_lock = InterProcessFileLock(manager.process_lock_path)
+    assert external_lock.acquire(owner="cli-starting") is True
+    try:
+        status = manager.snapshot()
+        assert status["job"]["status"] == "idle"
+        assert status["refresh_locked"] is True
+    finally:
+        external_lock.release()
+
+    assert manager.snapshot()["refresh_locked"] is False
 
 
 def test_recent_legacy_validation_checkpoint_blocks_duplicate_web_refresh(tmp_path: Path) -> None:
@@ -558,6 +615,15 @@ def test_chunked_refresh_log_exposes_only_latest_complete_progress_line(tmp_path
     assert manager._job["message"] == "[INFO] index_daily 分段进度 150/9741，异常 0。"
     assert manager.snapshot()["job"]["message"] == manager._job["message"]
 
+    manager._append_log(
+        job_id,
+        "[STAGE] index_daily 已完成数据拉取，正在合并本地增量数据。\n",
+        force_persist=True,
+    )
+
+    assert manager._job["message"] == "[STAGE] index_daily 已完成数据拉取，正在合并本地增量数据。"
+    assert manager.snapshot()["job"]["message"] == manager._job["message"]
+
 
 def test_refresh_stream_forwards_short_progress_line_without_waiting_for_one_kibibyte(
     tmp_path: Path,
@@ -572,6 +638,37 @@ def test_refresh_stream_forwards_short_progress_line_without_waiting_for_one_kib
     manager._stream_process_output(job_id, Process())
 
     assert manager._job["message"] == "[INFO] 指数权重进度 100/9141，workers=16，异常 0。"
+    assert manager._child_output_at[job_id] <= time.monotonic()
+
+
+def test_refresh_timeout_tracks_inactivity_instead_of_total_elapsed_time() -> None:
+    assert data_refresh._next_process_wait_seconds(
+        now=2_000.0,
+        started_at=0.0,
+        last_output_at=1_990.0,
+        idle_timeout=1_800,
+        max_runtime=0,
+    ) == data_refresh.PROCESS_WAIT_POLL_SECONDS
+
+    with pytest.raises(data_refresh._RefreshProcessTimeout) as idle_error:
+        data_refresh._next_process_wait_seconds(
+            now=2_000.0,
+            started_at=0.0,
+            last_output_at=199.0,
+            idle_timeout=1_800,
+            max_runtime=0,
+        )
+    assert idle_error.value.kind == "idle"
+
+    with pytest.raises(data_refresh._RefreshProcessTimeout) as runtime_error:
+        data_refresh._next_process_wait_seconds(
+            now=7_201.0,
+            started_at=0.0,
+            last_output_at=7_200.0,
+            idle_timeout=1_800,
+            max_runtime=7_200,
+        )
+    assert runtime_error.value.kind == "max_runtime"
 
 
 def test_incremental_refresh_reuses_current_snapshot_when_market_data_is_unchanged(
@@ -650,14 +747,22 @@ def test_local_analytics_rebuild_route_needs_no_tushare_token(monkeypatch) -> No
 
 
 def test_refresh_status_disables_http_caching(monkeypatch) -> None:
+    calls: list[bool] = []
+
+    def snapshot(*, include_datasets=True):
+        calls.append(include_datasets)
+        return {"job": {"status": "idle"}}
+
     monkeypatch.setattr(
         data_routes,
         "refresh_manager",
-        type("Manager", (), {"snapshot": staticmethod(lambda: {"job": {"status": "idle"}})})(),
+        type("Manager", (), {"snapshot": staticmethod(snapshot)})(),
     )
     response = data_routes.Response()
 
     assert data_routes.refresh_status(response) == {"job": {"status": "idle"}}
+    assert data_routes.refresh_status(response, progress_only=True) == {"job": {"status": "idle"}}
+    assert calls == [True, False]
     assert response.headers["Cache-Control"] == "no-store"
 
 
@@ -682,13 +787,118 @@ def test_index_refresh_defaults_and_scope_fingerprint(monkeypatch) -> None:
     )
 
 
+def test_refresh_command_supports_scopes_for_every_module(monkeypatch) -> None:
+    monkeypatch.setenv("DATA_FULL_REFRESH_ENABLED", "true")
+    selected = {
+        "base": ["fund_company"],
+        "etf": ["candle"],
+        "fund": ["info"],
+        "index": ["valuation"],
+    }
+
+    command = data_refresh.build_refresh_command(
+        ["base", "etf", "fund", "index"],
+        "full",
+        module_scopes=selected,
+    )
+
+    assert "--fund-company" in command
+    assert "--calendar" not in command
+    assert "--stock-basic" not in command
+    assert "--etf-info" in command
+    assert "--candle" in command
+    assert "--nav" not in command
+    assert "--fund-info" in command
+    assert "--fund-nav" not in command
+    assert "--index-catalog" in command
+    assert "--index-valuation" in command
+    assert "--index-domestic" not in command
+
+    info_only = data_refresh.build_refresh_command(
+        ["etf"], "incremental", module_scopes={"etf": ["info"]}
+    )
+    assert "--etf-info" in info_only
+    assert "--calendar" not in info_only
+
+    normalised = data_refresh.normalise_module_scopes(
+        ["etf", "fund", "index"],
+        {"etf": ["nav"], "fund": ["nav"], "index": ["global"]},
+    )
+    assert normalised == {
+        "etf": ["info", "nav"],
+        "fund": ["info", "nav"],
+        "index": ["catalog", "global"],
+    }
+
+
+def test_refresh_module_scopes_reject_invalid_or_unselected_content() -> None:
+    with pytest.raises(ValueError, match="不支持下载内容"):
+        data_refresh.normalise_module_scopes(["etf"], {"etf": ["unknown"]})
+    with pytest.raises(ValueError, match="未选择的数据模块"):
+        data_refresh.normalise_module_scopes(["etf"], {"fund": ["info"]})
+    with pytest.raises(ValueError, match="至少选择一项"):
+        data_refresh.normalise_module_scopes(["etf"], {"etf": []})
+
+
+def test_refresh_route_forwards_generic_module_scopes(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class CaptureManager:
+        @staticmethod
+        def start(modules, mode, index_scopes=None, *, module_scopes=None):
+            captured.update(
+                modules=modules,
+                mode=mode,
+                index_scopes=index_scopes,
+                module_scopes=module_scopes,
+            )
+            return {"job": {"status": "running"}}
+
+    monkeypatch.setattr(data_routes, "data_refresh_enabled", lambda: True)
+    monkeypatch.setattr(data_routes, "tushare_token_configured", lambda: True)
+    monkeypatch.setattr(data_routes, "refresh_manager", CaptureManager())
+    request = data_routes.DataRefreshRequest(
+        modules=["etf", "fund"],
+        mode="incremental",
+        module_scopes={"etf": ["candle"], "fund": ["info"]},
+    )
+
+    assert data_routes.start_refresh(request) == {"job": {"status": "running"}}
+    assert captured == {
+        "modules": ["etf", "fund"],
+        "mode": "incremental",
+        "index_scopes": None,
+        "module_scopes": {"etf": ["candle"], "fund": ["info"]},
+    }
+
+
 def test_refresh_status_exposes_index_scopes_and_datasets(tmp_path: Path) -> None:
     manager = data_refresh.DataRefreshManager(data_dir=tmp_path)
     status = manager.snapshot()
 
     assert "index" in status["available_modules"]
     assert status["default_index_scopes"] == ["catalog", "domestic", "industry", "global"]
+    assert status["default_module_scopes"]["etf"] == ["info", "nav", "share", "candle"]
+    assert status["available_module_scopes"]["base"] == [
+        "calendar", "stock_basic", "fund_company"
+    ]
     assert set(status["available_index_scopes"]) == {
         "catalog", "domestic", "industry", "concept", "global", "futures", "valuation", "constituents"
     }
     assert status["datasets"]["index_catalog"]["status"] == "missing"
+
+
+def test_analytics_source_state_tracks_etf_share_changes(tmp_path: Path) -> None:
+    share_path = tmp_path / "etf_share_size_df.parquet"
+    pd.DataFrame(
+        [{"ts_code": "510050.SH", "date": pd.Timestamp("2026-08-31"), "total_share": 1.0, "nav": 1.0}]
+    ).to_parquet(share_path, index=False)
+
+    before = data_refresh._analytics_source_state(tmp_path)
+    pd.DataFrame(
+        [{"ts_code": "510050.SH", "date": pd.Timestamp("2026-09-01"), "total_share": 2.0, "nav": 1.0}]
+    ).to_parquet(share_path, index=False)
+    after = data_refresh._analytics_source_state(tmp_path)
+
+    assert before[0][0] == "etf_share_size_df.parquet"
+    assert before != after

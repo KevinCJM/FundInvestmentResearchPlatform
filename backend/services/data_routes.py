@@ -31,6 +31,8 @@ class DataRefreshRequest(BaseModel):
         default_factory=lambda: ["base", "etf", "fund", "index"]
     )
     mode: Literal["incremental", "full"] = "incremental"
+    module_scopes: dict[Literal["base", "etf", "fund", "index"], list[str]] | None = None
+    # Backward compatibility for clients created before all modules exposed scopes.
     index_scopes: list[IndexScope] | None = None
 
 
@@ -43,9 +45,9 @@ class TushareTokenRequest(BaseModel):
 
 
 @router.get("/refresh/status")
-def refresh_status(response: Response):
+def refresh_status(response: Response, progress_only: bool = False):
     response.headers["Cache-Control"] = "no-store"
-    return refresh_manager.snapshot()
+    return refresh_manager.snapshot(include_datasets=not progress_only)
 
 
 def _ensure_token_configuration_enabled() -> None:
@@ -114,6 +116,13 @@ def start_refresh(request: DataRefreshRequest | None = None):
         )
     try:
         modules = list(request.modules)
+        if request.module_scopes is not None:
+            return refresh_manager.start(
+                modules,
+                request.mode,
+                list(request.index_scopes or []) or None,
+                module_scopes={key: list(value) for key, value in request.module_scopes.items()},
+            )
         if "index" in modules:
             return refresh_manager.start(
                 modules, request.mode, list(request.index_scopes or []) or None

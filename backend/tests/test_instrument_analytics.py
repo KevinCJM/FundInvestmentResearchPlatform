@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -404,6 +405,22 @@ def test_rebuild_snapshot_streams_row_groups_and_computes_etf_specific_metrics(t
         ]
     )
     candle.to_parquet(tmp_path / "etf_daily_candle_df.parquet", index=False, row_group_size=7)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "510050.SH",
+                "date": dates[-2],
+                "total_share": 200_000.0,
+                "nav": 1.25,
+            },
+            {
+                "ts_code": "510050.SH",
+                "date": dates[-1],
+                "total_share": 250_000.0,
+                "nav": 1.28,
+            },
+        ]
+    ).to_parquet(tmp_path / "etf_share_size_df.parquet", index=False, row_group_size=1)
 
     def forbid_full_pandas_read(*_args, **_kwargs):
         raise AssertionError("snapshot builder must stream with pyarrow row groups")
@@ -422,6 +439,11 @@ def test_rebuild_snapshot_streams_row_groups_and_computes_etf_specific_metrics(t
     assert first["premium_discount_date"] == dates[-1]
     assert first["amount_avg_20d"] == pytest.approx(np.mean(np.arange(6, 26)))
     assert first["volume_avg_20d"] == pytest.approx(np.mean(np.arange(6, 26) * 10))
+    assert first["current_size"] == pytest.approx(320_000.0)
+    assert first["current_share"] == pytest.approx(250_000.0)
+    assert first["current_unit_nav"] == pytest.approx(1.28)
+    assert first["current_size_as_of"] == dates[-1]
+    assert "etf_share_size_df.parquet" in summary["source_files"]
 
 
 def test_snapshot_short_history_leaves_risk_metrics_null(tmp_path: Path) -> None:
@@ -583,3 +605,95 @@ def test_event_trend_ignores_non_finite_issue_amounts() -> None:
     trend = instrument_analytics._event_trend(frame, "fund")
 
     assert trend["points"] == [{"year": 2026, "count": 2, "total_issue_amount": 100.0}]
+
+
+def test_configured_snapshot_metric_is_computed_by_indicator_center(tmp_path: Path) -> None:
+    from backend.custom_indicators.service import CustomIndicatorService
+
+    dates = pd.bdate_range("2025-08-01", periods=270)
+    pd.DataFrame(
+        [{"ts_code": "000001.OF", "code": "000001", "name": "场外基金A"}]
+    ).to_parquet(tmp_path / "fund_info_df.parquet", index=False)
+    pd.DataFrame(
+        {
+            "ts_code": "000001.OF",
+            "date": dates,
+            "adj_nav": 1.0 + np.arange(len(dates)) * 0.001,
+        }
+    ).to_parquet(tmp_path / "fund_nav_df.parquet", index=False)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    service.update_snapshot_config(
+        1,
+        [
+            {
+                "indicator_id": "builtin-total-return-v2",
+                "indicator_revision": 1,
+                "period": "ALL",
+            }
+        ],
+    )
+
+    summary = instrument_analytics.rebuild_analytics_snapshot(
+        tmp_path,
+        workspace_data_dir=tmp_path,
+    )
+    snapshot = parquet_read(tmp_path / instrument_analytics.SNAPSHOT_FILENAME)
+    metadata = json.loads(
+        (tmp_path / instrument_analytics.SNAPSHOT_METADATA_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    field = metadata["items"][0]["field"]
+
+    assert summary["snapshot_indicators"]["configured_count"] == 1
+    assert snapshot.iloc[0][field] == pytest.approx(
+        snapshot.iloc[0]["latest_adj_nav"] / 1.0 - 1.0
+    )
+    assert metadata["items"][0]["indicator_id"] == "builtin-total-return-v2"
+    metric_definitions = instrument_analytics.snapshot_metric_definitions(tmp_path)
+    definition = metric_definitions[field]
+    assert definition["source"] == "指标中心预计算"
+    assert definition["metric_source"] == "built_in"
+    assert definition["metric_type"] == "return"
+    assert definition["metric_type_label"] == "收益型指标"
+    assert definition["label"] == "累计收益率（ALL）"
+    assert metric_definitions["current_size"]["metric_source"] == "system_derived"
+    assert "return_1y" not in metric_definitions
+    assert pd.isna(snapshot.iloc[0]["return_1y"])
+
+    snapshot_result = service.evaluate(
+        indicator_ids=["builtin-total-return-v2"],
+        indicator_versions={"builtin-total-return-v2": 1},
+        inline_definition=None,
+        targets=[{"kind": "fund", "product_id": "000001.OF"}],
+        period="ALL",
+    )
+    assert snapshot_result["execution"]["engine_version"] == "indicator-snapshot-v1"
+    assert snapshot_result["cache"] == {"hits": 1, "misses": 0}
+    assert snapshot_result["results"][0]["value"] == pytest.approx(
+        snapshot.iloc[0][field]
+    )
+    assert snapshot_result["results"][0]["window"]["observation_count"] == len(dates) - 1
+
+    plan = service.create_plan(
+        {
+            "name": "快照评价方案",
+            "product_kind": "fund",
+            "indicators": [
+                {
+                    "indicator_id": "builtin-total-return-v2",
+                    "indicator_revision": 1,
+                    "period": "ALL",
+                    "weight": 100,
+                }
+            ],
+            "targets": [{"kind": "fund", "product_id": "000001.OF"}],
+            "missing_policy": "strict",
+        }
+    )
+    plan_result = service.run_plan(plan["id"])
+    assert plan_result["execution"]["execution_lanes"]["snapshot"] == 1
+    assert plan_result["execution"]["cache"]["cell_hits"] == 1
+    assert plan_result["rows"][0]["values"][0]["value"] == pytest.approx(
+        snapshot.iloc[0][field]
+    )

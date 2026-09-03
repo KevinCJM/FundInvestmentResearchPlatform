@@ -77,6 +77,28 @@ def test_instrument_search_combines_etf_and_public_fund(monkeypatch, tmp_path: P
 
 def test_product_query_keeps_fund_universe_separate(monkeypatch, tmp_path: Path) -> None:
     _write_info_files(tmp_path)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.OF",
+                "nav_date": "20260630",
+                "net_asset": 300_000_000.0,
+                "total_netasset": np.nan,
+            },
+            {
+                "ts_code": "000001.OF",
+                "nav_date": "20260828",
+                "net_asset": 320_000_000.0,
+                "total_netasset": 350_000_000.0,
+            },
+            {
+                "ts_code": "999999.OF",
+                "nav_date": "20260828",
+                "net_asset": 990_000_000.0,
+                "total_netasset": np.nan,
+            },
+        ]
+    ).to_parquet(tmp_path / "fund_nav_df.parquet", index=False)
     monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
     monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
@@ -102,6 +124,8 @@ def test_product_query_keeps_fund_universe_separate(monkeypatch, tmp_path: Path)
     assert response["kind"] == "fund"
     assert response["total"] == 1
     assert response["items"][0]["ts_code"] == "000001.OF"
+    assert "current_size" not in response["items"][0]
+    assert response["items"][0]["snapshot_values"] == {}
     assert response["summary"]["universe_total"] == 1
 
 
@@ -249,6 +273,36 @@ def test_product_query_filters_etf_listing_date(monkeypatch, tmp_path: Path) -> 
     assert response.status_code == 200
     assert {item["ts_code"] for item in response.json()["items"]} == {"510002.SH", "510003.SH"}
     assert response.json()["condition_fields"][0]["label"] == "上市日期"
+
+
+def test_product_query_displays_only_requested_snapshot_metrics(monkeypatch, tmp_path: Path) -> None:
+    _write_product_filter_fixture(tmp_path)
+    client = _product_filter_client(monkeypatch, tmp_path)
+
+    default_response = client.get("/api/instruments/products", params={"kind": "etf"})
+    selected_response = client.get(
+        "/api/instruments/products",
+        params=[("kind", "etf"), ("snapshot_metric", "return_1y")],
+    )
+
+    assert default_response.status_code == 200
+    assert default_response.json()["items"][0]["snapshot_values"] == {}
+    assert selected_response.status_code == 200
+    payload = selected_response.json()
+    assert payload["selected_snapshot_metrics"] == ["return_1y"]
+    assert payload["items"][0]["snapshot_values"]["return_1y"] in {0.1, 0.2}
+    assert payload["items"][0]["snapshot_value_dates"]["return_1y"] == "2026-08-31"
+    assert any(
+        field["field"] == "return_1y" and field["label"] == "近1年收益率"
+        for field in payload["snapshot_metric_fields"]
+    )
+    fields = {field["field"]: field for field in payload["snapshot_metric_fields"]}
+    assert fields["return_1y"]["metric_source"] == "built_in"
+    assert fields["return_1y"]["metric_source_label"] == "内置指标"
+    assert fields["return_1y"]["metric_type"] == "return"
+    assert fields["return_1y"]["metric_type_label"] == "收益型指标"
+    assert fields["current_size"]["metric_source"] == "system_derived"
+    assert fields["current_size"]["metric_type_label"] == "规模指标"
 
 
 def test_product_selection_returns_all_matching_identities(monkeypatch, tmp_path: Path) -> None:
@@ -400,6 +454,25 @@ def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypa
             },
         ]
     ).to_parquet(tmp_path / "etf_daily_df.parquet", index=False)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "510050.SH",
+                "trade_date": "20260827",
+                "date": pd.Timestamp("2026-08-27"),
+                "total_share": 200_000.0,
+                "nav": 3.0,
+            },
+            {
+                "ts_code": "510050.SH",
+                "trade_date": "20260828",
+                "date": pd.Timestamp("2026-08-28"),
+                "total_share": 250_000.0,
+                "nav": 3.2,
+            },
+        ]
+    ).to_parquet(tmp_path / "etf_share_size_df.parquet", index=False)
+    instrument_analytics.rebuild_analytics_snapshot(tmp_path)
     monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
     monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
@@ -414,12 +487,14 @@ def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypa
     assert response["base_info"]["delist_date"] == "2026-12-31"
     assert [point["close"] for point in response["timeseries"]] == [3.0, 3.2]
     assert response["timeseries"][0]["volume"] == 0
-    assert response["metrics"]["current_size"] == 100_000.0
+    assert response["metrics"]["current_size"] == 800_000.0
     assert response["metrics"]["current_size_as_of"] == "2026-08-28"
-    assert response["metrics"]["current_size_source"] == "total_netasset"
+    assert response["metrics"]["current_size_source"] == "instrument_metrics_snapshot"
+    assert response["metrics"]["current_share"] == 250_000.0
+    assert response["metrics"]["current_unit_nav"] == 3.2
 
 
-def test_fund_detail_falls_back_to_latest_share_class_net_asset(monkeypatch, tmp_path: Path) -> None:
+def test_fund_detail_does_not_substitute_net_asset_for_share_times_unit_nav(monkeypatch, tmp_path: Path) -> None:
     _write_info_files(tmp_path)
     pd.DataFrame(
         [
@@ -441,9 +516,9 @@ def test_fund_detail_falls_back_to_latest_share_class_net_asset(monkeypatch, tmp
 
     response = instrument_routes.instrument_product_detail("000001.OF", kind="fund")
 
-    assert response["metrics"]["current_size"] == 32_000.0
-    assert response["metrics"]["current_size_as_of"] == "2026-06-30"
-    assert response["metrics"]["current_size_source"] == "net_asset"
+    assert response["metrics"]["current_size"] is None
+    assert response["metrics"]["current_size_as_of"] is None
+    assert response["metrics"]["current_size_source"] is None
 
 
 def test_product_detail_returns_empty_timeseries_when_real_nav_is_missing(monkeypatch, tmp_path: Path) -> None:

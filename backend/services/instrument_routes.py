@@ -9,7 +9,6 @@ from typing import Any, Literal, Optional
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as arrow_parquet
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
@@ -22,6 +21,8 @@ from services.instrument_analytics import (
     build_rankings_response,
     build_trend_response,
     load_product_filter_snapshot,
+    snapshot_etf_only_metrics,
+    snapshot_metric_definitions,
 )
 try:
     from backend.market_data import resolve_tushare_data_dir
@@ -54,6 +55,12 @@ PERCENT_INPUT_METRICS = {
 }
 MAX_PRODUCT_CONDITIONS = 12
 MAX_PRODUCT_SELECTION = 50_000
+MAX_DISPLAY_SNAPSHOT_METRICS = 8
+SNAPSHOT_METRIC_SOURCE_LABELS = {
+    "built_in": "内置指标",
+    "custom": "工作区指标",
+    "system_derived": "系统衍生指标",
+}
 
 router = APIRouter(prefix="/api/instruments", tags=["instruments"])
 
@@ -160,10 +167,13 @@ def _date_condition_field(kind: Literal["etf", "fund"]) -> str:
 
 
 def _allowed_metric_fields(kind: Literal["etf", "fund"]) -> tuple[str, ...]:
+    data_dir = _current_data_dir()
+    fields = snapshot_metric_definitions(data_dir)
+    etf_only = snapshot_etf_only_metrics(data_dir)
     return tuple(
         field
-        for field in PRODUCT_FILTER_METRICS
-        if kind == "etf" or field not in ETF_ONLY_METRICS
+        for field in fields
+        if kind == "etf" or field not in etf_only
     )
 
 
@@ -184,9 +194,16 @@ def _condition_fields(
         }
     ]
     snapshot_ready = snapshot_state.get("status") == "ready"
+    definitions = snapshot_metric_definitions(_current_data_dir())
     for field in _allowed_metric_fields(kind):
-        definition = METRIC_DEFINITIONS[field]
-        is_percent = field in PERCENT_INPUT_METRICS
+        definition = definitions[field]
+        is_percent = (
+            definition.get("unit") == "ratio"
+            or definition.get("presentation", {}).get("display_format") == "percent"
+        )
+        metric_ready = (
+            snapshot_state.get("metric_availability", {}).get(field, "ready") == "ready"
+        )
         result.append(
             {
                 "field": field,
@@ -195,10 +212,59 @@ def _condition_fields(
                 "unit_label": "%" if is_percent else None,
                 "input_scale": 100.0 if is_percent else 1.0,
                 "source": "instrument_metrics_snapshot",
-                "available": snapshot_ready,
+                "available": snapshot_ready and metric_ready,
             }
         )
     return result
+
+
+def _snapshot_metric_fields(
+    kind: Literal["etf", "fund"],
+    snapshot_state: dict[str, Any],
+) -> list[dict[str, Any]]:
+    definitions = snapshot_metric_definitions(_current_data_dir())
+    return [
+        {
+            **field,
+            "unit": definitions[field["field"]]["unit"],
+            "description": definitions[field["field"]]["source"],
+            "metric_source": definitions[field["field"]].get(
+                "metric_source", "system_derived"
+            ),
+            "metric_source_label": SNAPSHOT_METRIC_SOURCE_LABELS.get(
+                definitions[field["field"]].get("metric_source", "system_derived"),
+                "其他来源",
+            ),
+            "metric_type": definitions[field["field"]].get("metric_type", "other"),
+            "metric_type_label": definitions[field["field"]].get(
+                "metric_type_label", "其他指标"
+            ),
+            "indicator_id": definitions[field["field"]].get("indicator_id"),
+            "indicator_revision": definitions[field["field"]].get("indicator_revision"),
+            "period": definitions[field["field"]].get("period"),
+            "presentation": definitions[field["field"]].get("presentation"),
+        }
+        for field in _condition_fields(kind, snapshot_state)
+        if field["source"] == "instrument_metrics_snapshot"
+    ]
+
+
+def _parse_snapshot_metrics(
+    raw_metrics: Optional[list[str]],
+    kind: Literal["etf", "fund"],
+) -> list[str]:
+    entries = raw_metrics if isinstance(raw_metrics, list) else []
+    metrics = list(dict.fromkeys(_coerce_filter_list(entries)))
+    if len(metrics) > MAX_DISPLAY_SNAPSHOT_METRICS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"产品列表最多展示 {MAX_DISPLAY_SNAPSHOT_METRICS} 个快照指标。",
+        )
+    allowed = set(_allowed_metric_fields(kind))
+    invalid = [metric for metric in metrics if metric not in allowed]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"不支持的快照指标: {', '.join(invalid)}")
+    return metrics
 
 
 def _parse_product_conditions(
@@ -210,6 +276,7 @@ def _parse_product_conditions(
         raise HTTPException(status_code=400, detail=f"筛选条件最多允许 {MAX_PRODUCT_CONDITIONS} 条。")
     date_field = _date_condition_field(kind)
     allowed_metrics = set(_allowed_metric_fields(kind))
+    metric_definitions = snapshot_metric_definitions(_current_data_dir())
     parsed: list[ProductCondition] = []
     for entry in entries:
         parts = str(entry).split("|", 2)
@@ -240,7 +307,13 @@ def _parse_product_conditions(
                 raw_value,
                 numeric_value,
                 "number",
-                100.0 if field in PERCENT_INPUT_METRICS else 1.0,
+                100.0
+                if (
+                    field in PERCENT_INPUT_METRICS
+                    or metric_definitions.get(field, {}).get("unit") == "ratio"
+                    or metric_definitions.get(field, {}).get("presentation", {}).get("display_format") == "percent"
+                )
+                else 1.0,
             )
         )
     return parsed
@@ -284,6 +357,16 @@ def _apply_product_conditions(
     if metric_fields:
         if snapshot_state.get("status") != "ready":
             raise HTTPException(status_code=409, detail="分析快照未就绪，暂时不能按已计算指标筛选。")
+        unavailable = [
+            field
+            for field in metric_fields
+            if snapshot_state.get("metric_availability", {}).get(field, "ready") != "ready"
+        ]
+        if unavailable:
+            raise HTTPException(
+                status_code=409,
+                detail=f"分析快照中的指标尚未就绪: {', '.join(unavailable)}",
+            )
         available_fields = [field for field in metric_fields if field in snapshot.columns]
         if len(available_fields) != len(metric_fields):
             missing = sorted(set(metric_fields) - set(available_fields))
@@ -345,56 +428,37 @@ def _load_timeseries(kind: str, ts_code: str) -> list[dict[str, Any]]:
     return load_price_points(kind, ts_code, _current_data_dir())
 
 
-def _load_current_size(kind: str, ts_code: str) -> dict[str, Any]:
-    """Read the latest disclosed net asset without scanning unrelated products."""
-
-    if kind not in {"etf", "fund"}:
-        return {"current_size": None, "current_size_as_of": None, "current_size_source": None}
-    filename = "etf_daily_df.parquet" if kind == "etf" else "fund_nav_df.parquet"
-    path = _current_data_dir() / filename
-    if not path.exists():
-        return {"current_size": None, "current_size_as_of": None, "current_size_source": None}
-    try:
-        available = set(arrow_parquet.read_schema(path).names)
-        asset_columns = [column for column in ("total_netasset", "net_asset") if column in available]
-        if "ts_code" not in available or not asset_columns:
-            return {"current_size": None, "current_size_as_of": None, "current_size_source": None}
-        date_columns = [column for column in ("nav_date", "date", "ann_date") if column in available]
-        frame = pd.read_parquet(
-            path,
-            columns=["ts_code", *date_columns, *asset_columns],
-            filters=[("ts_code", "==", ts_code)],
-        )
-    except (OSError, ValueError, TypeError):
-        return {"current_size": None, "current_size_as_of": None, "current_size_source": None}
-    if frame.empty:
-        return {"current_size": None, "current_size_as_of": None, "current_size_source": None}
-
-    for column in asset_columns:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-        frame.loc[~np.isfinite(frame[column]) | frame[column].le(0), column] = np.nan
-    valid_assets = frame[asset_columns].notna().any(axis=1)
-    frame = frame.loc[valid_assets].copy()
-    if frame.empty:
-        return {"current_size": None, "current_size_as_of": None, "current_size_source": None}
-
-    date_column = next((column for column in ("nav_date", "date", "ann_date") if column in frame), None)
-    if date_column is not None:
-        compact_dates = frame[date_column].astype(str).str.strip()
-        parsed_dates = pd.to_datetime(compact_dates, format="%Y%m%d", errors="coerce")
-        parsed_dates = parsed_dates.fillna(pd.to_datetime(frame[date_column], errors="coerce"))
-        frame["_asset_date"] = parsed_dates
-        frame = frame.sort_values("_asset_date", ascending=False, na_position="last", kind="mergesort")
-
-    row = frame.iloc[0]
-    source = "total_netasset" if pd.notna(row.get("total_netasset")) else "net_asset"
-    amount_yuan = float(row[source])
-    as_of = _serialize(row.get("_asset_date")) if "_asset_date" in frame else None
+def _empty_current_size() -> dict[str, Any]:
     return {
-        # Product-facing amount fields use ten-thousand yuan as the base unit.
-        "current_size": amount_yuan / 10_000.0,
-        "current_size_as_of": as_of,
-        "current_size_source": source,
+        "current_size": None,
+        "current_size_as_of": None,
+        "current_size_source": None,
+        "current_share": None,
+        "current_unit_nav": None,
+    }
+
+
+def _load_current_size(kind: str, ts_code: str) -> dict[str, Any]:
+    """Read the derived current-size metric from the validated local snapshot."""
+
+    if kind != "etf":
+        return _empty_current_size()
+    snapshot, state = load_product_filter_snapshot("etf", _current_data_dir())
+    if state.get("status") != "ready" or snapshot.empty:
+        return _empty_current_size()
+    rows = snapshot[snapshot["ts_code"].astype(str).str.strip().eq(ts_code.strip())]
+    if rows.empty:
+        return _empty_current_size()
+    row = rows.iloc[0]
+    current_size = _serialize(row.get("current_size"))
+    if current_size is None:
+        return _empty_current_size()
+    return {
+        "current_size": current_size,
+        "current_size_as_of": _serialize(row.get("current_size_as_of")),
+        "current_size_source": "instrument_metrics_snapshot",
+        "current_share": _serialize(row.get("current_share")),
+        "current_unit_nav": _serialize(row.get("current_unit_nav")),
     }
 
 
@@ -606,6 +670,48 @@ def _product_filters(
     }
 
 
+def _attach_snapshot_metrics(
+    frame: pd.DataFrame,
+    *,
+    kind: Literal["etf", "fund"],
+    metrics: list[str],
+) -> pd.DataFrame:
+    if not metrics or frame.empty:
+        return frame
+    snapshot, state = load_product_filter_snapshot(kind, _current_data_dir())
+    if state.get("status") != "ready" or snapshot.empty:
+        return frame
+    context_fields = [
+        field
+        for field in ("as_of", "current_size_as_of")
+        if field in snapshot.columns
+    ]
+    value_fields = [field for field in metrics if field in snapshot.columns]
+    metric_context_fields = [
+        f"{field}__{suffix}"
+        for field in value_fields
+        for suffix in ("status", "effective_as_of", "warning_message")
+        if f"{field}__{suffix}" in snapshot.columns
+    ]
+    snapshot_columns = list(dict.fromkeys([
+        "instrument_type",
+        "ts_code",
+        *value_fields,
+        *metric_context_fields,
+        *context_fields,
+    ]))
+    overlapping = [
+        column
+        for column in (*value_fields, *context_fields)
+        if column in frame.columns
+    ]
+    return frame.drop(columns=overlapping).merge(
+        snapshot[snapshot_columns],
+        on=["instrument_type", "ts_code"],
+        how="left",
+    )
+
+
 @router.get("/products")
 def instrument_products(
     kind: Literal["etf", "fund"] = Query(default="etf"),
@@ -622,6 +728,7 @@ def instrument_products(
     sort_by: str = Query(default="issue_amount"),
     sort_dir: Literal["asc", "desc"] = Query(default="desc"),
     conditions: Optional[list[str]] = Query(default=None, alias="condition"),
+    snapshot_metrics: Optional[list[str]] = Query(default=None, alias="snapshot_metric"),
 ):
     filters = _product_filters(
         fund_type,
@@ -641,6 +748,7 @@ def instrument_products(
         sort_dir=sort_dir,
     )
 
+    selected_snapshot_metrics = _parse_snapshot_metrics(snapshot_metrics, kind)
     total = int(len(working))
     start = (page - 1) * page_size
     preferred = [
@@ -670,11 +778,35 @@ def instrument_products(
     ]
     present = [column for column in preferred if column in working.columns]
     condition_fields = list(dict.fromkeys(condition.field for condition in parsed_conditions))
+    page_frame = _attach_snapshot_metrics(
+        working.iloc[start : start + page_size].copy(),
+        kind=kind,
+        metrics=selected_snapshot_metrics,
+    )
     items = []
-    for _, row in working.iloc[start : start + page_size].iterrows():
+    for _, row in page_frame.iterrows():
         item = {column: _serialize(row[column]) for column in present}
         item["condition_values"] = {
             field: _serialize(row.get(field)) for field in condition_fields
+        }
+        item["snapshot_values"] = {
+            field: _serialize(row.get(field)) for field in selected_snapshot_metrics
+        }
+        item["snapshot_value_dates"] = {
+            field: _serialize(
+                row.get(f"{field}__effective_as_of")
+                if f"{field}__effective_as_of" in row.index
+                else row.get("current_size_as_of") if field == "current_size" else row.get("as_of")
+            )
+            for field in selected_snapshot_metrics
+        }
+        item["snapshot_statuses"] = {
+            field: _serialize(row.get(f"{field}__status"))
+            for field in selected_snapshot_metrics
+        }
+        item["snapshot_warnings"] = {
+            field: _serialize(row.get(f"{field}__warning_message"))
+            for field in selected_snapshot_metrics
         }
         items.append(item)
     recent_cutoff = pd.Timestamp.today().normalize() - pd.DateOffset(months=12)
@@ -701,6 +833,8 @@ def instrument_products(
         "summary": summary,
         "available_filters": {column: _filter_options(universe, column) for column in FILTER_COLUMNS},
         "condition_fields": _condition_fields(kind, snapshot_state),
+        "snapshot_metric_fields": _snapshot_metric_fields(kind, snapshot_state),
+        "selected_snapshot_metrics": selected_snapshot_metrics,
         "condition_operators": [
             {"value": key, **metadata} for key, metadata in COMPARISON_OPERATORS.items()
         ],
