@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import IndicatorStudio from './IndicatorStudio'
-import type { IndicatorDefinition, IndicatorMeta, IndicatorOperator, IndicatorVariable } from '../services/customIndicators'
+import type { IndicatorDefinition, IndicatorMeta, IndicatorOperator, IndicatorVariable, SnapshotIndicatorConfig } from '../services/customIndicators'
 
 type MockGraphOption = { series: Array<{ layout: string; edgeSymbol: string[]; data: Array<{ id: unknown; y: number; name: string }>; links: Array<{ source: unknown; target: unknown; parameter?: string }> }> }
 
@@ -28,6 +28,7 @@ const operators: IndicatorOperator[] = [
   { name: 'identity_series', label: '逐元素绝对值', signature: 'abs(values) → same(values)', latex_template: '\\operatorname{abs}', return_type: 'series<time>', output_shape: 'series', mathematical_essence: '逐元素计算绝对值。', semantic: '保持时间轴不变。', category_id: 'transform', category_label: '逐元素变换', parameters: [{ name: 'values', label: '输入值', allowed_shapes: ['series'] }] },
   { name: 'add', label: '逐元素加法', signature: 'A + B → same(A,B)', latex_template: 'A+B', return_type: 'same(first)', output_shape: 'unknown', mathematical_essence: '两个兼容数值输入逐元素相加。', semantic: '只允许标量广播。', category_id: 'arithmetic', category_label: '基础运算', parameters: [{ name: 'lhs', label: '输入 A', allowed_shapes: ['scalar', 'series', 'vector', 'matrix'] }, { name: 'rhs', label: '输入 B', allowed_shapes: ['scalar', 'series', 'vector', 'matrix'] }] },
   { name: 'subtract', label: '逐元素减法', signature: 'A - B → same(A,B)', latex_template: 'A-B', return_type: 'same(first)', output_shape: 'unknown', mathematical_essence: '两个兼容数值输入逐元素相减。', semantic: '只允许标量广播。', category_id: 'arithmetic', category_label: '基础运算', cost_estimate: 'elementwise', parameters: [{ name: 'lhs', label: '输入 A', description: '允许类型：scalar | series<T> | vector<N> | matrix<A,B>。', allowed_shapes: ['scalar', 'series', 'vector', 'matrix'] }, { name: 'rhs', label: '输入 B', description: '允许类型：scalar | series<T> | vector<N> | matrix<A,B>。', allowed_shapes: ['scalar', 'series', 'vector', 'matrix'] }] },
+  { name: 'product', label: '累乘', signature: 'product(values) → scalar', latex_template: '\\prod_i x_i', display_latex_template: '\\prod_i x_i', return_type: 'scalar', output_shape: 'scalar', mathematical_essence: '将输入序列的所有数值依次相乘。', semantic: '对全部元素执行乘法归约。', category_id: 'reduction', category_label: '统计归约', parameters: [{ name: 'values', label: '待处理数值', allowed_shapes: ['series', 'vector'] }] },
   { name: 'covariance', label: '协方差', signature: 'matrix<T,N> → matrix<N,N> / series<T>, series<T> → scalar', latex_template: '\\operatorname{Cov}', return_type: 'matrix<asset,asset> | scalar', output_shape: 'unknown', domains: ['single_product', 'portfolio'], mathematical_essence: '计算协方差矩阵或两条序列的协方差。', semantic: '按输入签名推导输出。', category_id: 'statistics', category_label: '统计计算', parameters: [{ name: 'asset_returns', label: '多资产收益矩阵', allowed_shapes: ['matrix'] }], parameter_sets: [{ arity: 1, parameters: [{ name: 'asset_returns', label: '多资产收益矩阵', allowed_shapes: ['matrix'] }], output: 'matrix<asset,asset>' }, { arity: 2, parameters: [{ name: 'lhs', label: '输入 A', allowed_shapes: ['series'] }, { name: 'rhs', label: '输入 B', allowed_shapes: ['series'] }], output: 'scalar' }] },
   { name: 'diag', label: '对角构造或提取', signature: 'vector<N> → matrix<N,N> / matrix<N,N> → vector<N>', latex_template: '\\operatorname{diag}', return_type: 'matrix<asset,asset> | vector<asset>', output_shape: 'unknown', domains: ['portfolio'], mathematical_essence: '从向量构造对角矩阵，或提取矩阵对角线。', semantic: '输入可以是资产向量或方阵。', category_id: 'linear_algebra', category_label: '线性代数', parameters: [{ name: 'values', label: '输入值', allowed_shapes: ['vector'] }], parameter_sets: [{ arity: 1, parameters: [{ name: 'values', label: '输入值', allowed_shapes: ['vector'] }], output: 'matrix<asset,asset>' }, { arity: 1, parameters: [{ name: 'values', label: '输入值', allowed_shapes: ['matrix'] }], output: 'vector<asset>' }] },
   { name: 'matvec', label: '矩阵向量乘', signature: 'matrix<time,asset> × vector<asset> → series<time>', latex_template: '\\operatorname{matvec}', return_type: 'series<time>', output_shape: 'series', domains: ['portfolio'], mathematical_essence: '矩阵与资产向量相乘。', semantic: '资产轴必须对齐。', category_id: 'linear_algebra', category_label: '线性代数', parameters: [{ name: 'matrix', label: '矩阵', allowed_shapes: ['matrix'] }, { name: 'vector', label: '向量', allowed_shapes: ['vector'] }] },
@@ -73,6 +74,34 @@ const reusableBuiltIn: IndicatorDefinition = {
   category_id: 'return',
   category_label: '收益型指标',
   output_measure: 'return_decimal',
+}
+
+const workspaceIndicator: IndicatorDefinition = {
+  ...builtIn,
+  id: 'workspace-volatility',
+  source: 'custom',
+  read_only: false,
+  name: '我的波动指标',
+  revision: 3,
+}
+
+const reusableDag = {
+  nodes: [
+    { id: 'returns', label: 'returns', kind: 'variable', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\mathbf{r}' },
+    { id: 'one-a', label: '1', kind: 'constant', value_type: 'scalar', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: '1', formula_fragment: '1' },
+    { id: 'add', label: 'add', operator_id: 'add', kind: 'binary', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\mathbf{r}+1' },
+    { id: 'product', label: 'product', operator: { id: 'product', version: '2.2.0' }, kind: 'call', inferred_type: { kind: 'scalar', display: 'scalar', shape: [] }, latex_fragment: '\\prod_i(1+r_i)' },
+    { id: 'one-b', label: '1', kind: 'constant', value_type: 'scalar', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: '1', formula_fragment: '1' },
+    { id: 'result', label: 'subtract', operator: { id: 'subtract', version: '2.2.0' }, kind: 'binary', inferred_type: { kind: 'scalar', display: 'scalar', shape: [] }, latex_fragment: '\\prod_i(1+r_i)-1' },
+  ],
+  edges: [
+    { source: 'returns', target: 'add', parameter: 'lhs', order: 0 },
+    { source: 'one-a', target: 'add', parameter: 'rhs', order: 1 },
+    { source: 'add', target: 'product', parameter: 'values', order: 0 },
+    { source: 'product', target: 'result', parameter: 'lhs', order: 0 },
+    { source: 'one-b', target: 'result', parameter: 'rhs', order: 1 },
+  ],
+  roots: { result: 'result' },
 }
 
 function json(body: unknown) {
@@ -124,20 +153,47 @@ describe('IndicatorStudio', () => {
   let activeMeta: IndicatorMeta
   let composeFailure = false
   let availabilityFailure = false
-  let inferAsSeries = false
   let validateAsSeries = false
+  let snapshotConfig: SnapshotIndicatorConfig
 
   beforeEach(() => {
     catalog = [builtIn, reusableBuiltIn, portfolioBuiltIn]
     activeMeta = meta
     composeFailure = false
     availabilityFailure = false
-    inferAsSeries = false
     validateAsSeries = false
+    snapshotConfig = {
+      schema_version: 1,
+      revision: 1,
+      max_items: 30,
+      updated_at: null,
+      snapshot: null,
+      items: [{ indicator_id: reusableBuiltIn.id, indicator_revision: 1, period: '1M', field: 'return_1m', name: reusableBuiltIn.name, status: 'ready' }],
+    }
     vi.stubGlobal('confirm', vi.fn(() => true))
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/custom-indicators/meta') return json(activeMeta)
+      if (url === '/api/custom-indicators?context_kind=single_product') {
+        const items = catalog.filter((item) => (item.context_kind ?? 'single_product') === 'single_product')
+        return json({ items, total: items.length })
+      }
+      if (url === '/api/custom-indicators/snapshot-config') {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body))
+          snapshotConfig = {
+            ...snapshotConfig,
+            revision: snapshotConfig.revision + 1,
+            items: body.items.map((item: { indicator_id: string; indicator_revision: number; period: string }) => ({
+              ...item,
+              field: `metric_${item.period.toLowerCase()}`,
+              name: catalog.find((indicator) => indicator.id === item.indicator_id)?.name,
+              status: 'ready',
+            })),
+          }
+        }
+        return json(snapshotConfig)
+      }
       if (url === '/api/custom-indicators') {
         if (init?.method === 'POST') {
           const body = JSON.parse(String(init.body))
@@ -169,14 +225,11 @@ describe('IndicatorStudio', () => {
       if (url === '/api/custom-indicators/compose') {
         if (composeFailure) return apiError('服务端拒绝展开，请检查参数。')
         const body = JSON.parse(String(init?.body))
-        if (body.indicator_id === reusableBuiltIn.id) return json({ expression: reusableBuiltIn.expression, latex: reusableBuiltIn.expression, display_latex: reusableBuiltIn.display_latex, inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [], dependencies: ['returns'], indicator_origin: { indicator_id: reusableBuiltIn.id, indicator_revision: reusableBuiltIn.revision, name: reusableBuiltIn.name, source: reusableBuiltIn.source } })
+        if (body.indicator_id === reusableBuiltIn.id) return json({ expression: reusableBuiltIn.expression, latex: reusableBuiltIn.expression, display_latex: reusableBuiltIn.display_latex, inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [], dependencies: ['returns'], dag: reusableDag, indicator_origin: { indicator_id: reusableBuiltIn.id, indicator_revision: reusableBuiltIn.revision, name: reusableBuiltIn.name, source: reusableBuiltIn.source } })
         if (body.operator_id === 'identity_series') return json({ expression: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', latex: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', display_latex: '\\left\\lvert\\mathbf{r}\\right\\rvert', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
         if (body.operator_id === 'sequence_std') return json({ expression: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', latex: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', display_latex: '\\operatorname{Std}_{\\mathrm{ddof}=1}\\left(\\mathbf{r}\\right)', inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [] })
         return json({ expression: '\\left(\\mathbf{r}+1\\right)', latex: '\\left(\\mathbf{r}+1\\right)', display_latex: '\\left(\\mathbf{r}\\right)+\\left(1\\right)', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
       }
-      if (url === '/api/custom-indicators/infer') return json(inferAsSeries
-        ? { expression: '\\mathbf{r}', latex: '\\mathbf{r}', display_latex: '\\mathbf{r}', inferred_type: 'series<time>[T]', shape: 'series', semantic_warnings: [] }
-        : { expression: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', latex: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', display_latex: '\\operatorname{Std}_{\\mathrm{ddof}=1}\\left(\\mathbf{r}\\right)', inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [{ code: 'SEMANTIC_NOTE', message: '请确认样本自由度约定。' }] })
       if (url === '/api/custom-indicators/variables/availability') {
         if (availabilityFailure) return apiError('真实变量可用性服务暂不可用')
         const body = JSON.parse(String(init?.body))
@@ -227,6 +280,39 @@ describe('IndicatorStudio', () => {
     vi.unstubAllGlobals()
   })
 
+  it('解析与校验合并为资源按钮下方的单一操作', async () => {
+    const user = setupUser()
+    await renderStudio()
+
+    const browseButton = screen.getByRole('button', { name: '浏览公式构建资源' })
+    const combinedButton = screen.getByRole('button', { name: '解析并校验公式' })
+    expect(browseButton.compareDocumentPosition(combinedButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '解析公式' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '校验公式' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /收益波动率/ }))
+    await user.click(combinedButton)
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/infer')).toBe(false)
+  })
+
+  it('为指标配置数据刷新后的快照预计算区间', async () => {
+    const user = setupUser()
+    await renderStudio()
+    await user.click(screen.getByRole('button', { name: /累计收益率/ }))
+    await user.click(screen.getByText('快照加速'))
+    const oneYear = screen.getByRole('checkbox', { name: /近 1 年（1Y）/ })
+    expect(oneYear).not.toBeChecked()
+    await user.click(oneYear)
+    await user.click(screen.getByRole('button', { name: '保存快照配置' }))
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      '/api/custom-indicators/snapshot-config',
+      expect.objectContaining({ method: 'PUT' }),
+    ))
+    expect(await screen.findByText(/下一次数据刷新后生成预计算结果/)).toBeInTheDocument()
+  })
+
   it('定义时不选择周期，保存不提交 periods，单产品预览仍显式选择运行周期', async () => {
     const user = setupUser()
     await renderStudio()
@@ -237,7 +323,7 @@ describe('IndicatorStudio', () => {
     expect(screen.getByLabelText('计算周期')).toHaveTextContent('近 1 年')
 
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
-    await user.click(screen.getByRole('button', { name: '保存到工作区' }))
+    await user.click(screen.getAllByRole('button', { name: '复制为新指标' })[0])
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/custom-indicators', expect.objectContaining({ method: 'POST' })))
     const createCall = vi.mocked(fetch).mock.calls.find(([url, init]) => url === '/api/custom-indicators' && init?.method === 'POST')
     const validateCall = vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/custom-indicators/validate')
@@ -304,6 +390,30 @@ describe('IndicatorStudio', () => {
     expect(screen.getAllByText('证券ETF').length).toBeGreaterThan(0)
   })
 
+  it('产品搜索下拉在焦点离开搜索控件后自动收起', async () => {
+    const user = setupUser()
+    await renderStudio()
+
+    await user.click(screen.getByRole('button', { name: '搜索' }))
+    expect(await screen.findByRole('listbox', { name: '搜索产品结果' })).toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('计算周期'))
+    expect(screen.queryByRole('listbox', { name: '搜索产品结果' })).not.toBeInTheDocument()
+  })
+
+  it('产品搜索下拉允许操作内部结果，并支持 Esc 收起后返回输入框', async () => {
+    const user = setupUser()
+    await renderStudio()
+
+    await user.click(screen.getByRole('button', { name: '搜索' }))
+    await user.click(await screen.findByRole('button', { name: '添加' }))
+    expect(screen.getByRole('listbox', { name: '搜索产品结果' })).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox', { name: '搜索产品结果' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '搜索产品' })).toHaveFocus()
+  })
+
   it('深链产品超过十个时只保留前十个', async () => {
     const ids = Array.from({ length: 12 }, (_, index) => `TEST${String(index + 1).padStart(2, '0')}.SH`)
     await renderStudio(`/indicator-studio?kind=etf&ids=${encodeURIComponent(ids.join(','))}`)
@@ -355,23 +465,25 @@ describe('IndicatorStudio', () => {
     expect(within(dialog).queryByText(/series<time>|\[T\]/)).not.toBeInTheDocument()
   })
 
-  it('类型推导与输出契约错误只展示中文数据类型', async () => {
-    inferAsSeries = true
+  it('输出结果与输出契约错误只展示中文数据类型', async () => {
     validateAsSeries = true
     const user = setupUser()
     await renderStudio()
 
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
-    await user.click(screen.getByRole('button', { name: '推导类型' }))
-    expect(await screen.findByText('时间序列')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '解析并校验公式' }))
+    expect((await screen.findAllByText('时间序列')).length).toBeGreaterThan(0)
+    expect(screen.getByText('能否作为指标')).toBeInTheDocument()
+    expect(screen.getByText(/还需要使用求和、平均值、标准差等归约计算/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('推导后的数学公式')).not.toBeInTheDocument()
     expect(screen.queryByText(/series<time>|\[T\]/)).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: '校验公式' }))
-    expect(await screen.findByText('校验未通过')).toBeInTheDocument()
-    expect(screen.getByText(/指标结果类型不符合要求/)).toBeInTheDocument()
-    expect(screen.getByText(/指标最终结果必须是单个有限数值/)).toBeInTheDocument()
-    expect(screen.getByText(/需要 有限标量/)).toBeInTheDocument()
-    expect(screen.getByText(/当前是 时间序列/)).toBeInTheDocument()
+    const editorPanel = within(document.getElementById('indicator-panel-editor')!)
+    expect(await editorPanel.findByText('校验未通过')).toBeInTheDocument()
+    expect(editorPanel.getByText(/指标结果类型不符合要求/)).toBeInTheDocument()
+    expect(editorPanel.getByText(/指标最终结果必须是单个有限数值/)).toBeInTheDocument()
+    expect(editorPanel.getByText(/需要 有限标量/)).toBeInTheDocument()
+    expect(editorPanel.getByText(/当前是 时间序列/)).toBeInTheDocument()
     expect(screen.queryByText(/OUTPUT_CONTRACT_MISMATCH|series<time>|\[T\]|输出契约要求 scalar/)).not.toBeInTheDocument()
   })
 
@@ -416,6 +528,13 @@ describe('IndicatorStudio', () => {
 
     expect(within(dialog).getByText('内置指标 · 锁定 v1')).toBeInTheDocument()
     expect(within(dialog).getByText(/原指标以后更新不会改变本草稿/)).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: '查看计算说明' }))
+    const explanation = await within(dialog).findByRole('region', { name: '公式计算说明' })
+    expect(within(explanation).getByText('输入变量与符号')).toBeInTheDocument()
+    expect(within(explanation).getByText('算子与数学符号')).toBeInTheDocument()
+    expect(within(explanation).getByText('累乘')).toBeInTheDocument()
+    expect(within(explanation).getByText('逐元素加法')).toBeInTheDocument()
+    expect(within(explanation).getByLabelText('累乘的数学符号').querySelector('.katex')).not.toBeNull()
     await user.click(within(dialog).getByRole('button', { name: '展开为当前公式' }))
 
     await waitFor(() => {
@@ -459,7 +578,7 @@ describe('IndicatorStudio', () => {
     expect(preview.innerHTML).not.toContain('greater_than')
 
     await user.type(screen.getByLabelText('受限公式源码（DSL / LaTeX）'), '+1')
-    expect(screen.getByTestId('formula-preview')).toHaveTextContent('请先推导或校验公式以生成数学排版')
+    expect(screen.getByTestId('formula-preview')).toHaveTextContent('请先解析并校验公式以生成数学排版')
     expect(screen.getByTestId('formula-preview').innerHTML).not.toContain('mean_where')
   })
 
@@ -504,7 +623,7 @@ describe('IndicatorStudio', () => {
     const composeCalls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/compose')
     const parentBody = JSON.parse(String((composeCalls[1][1] as RequestInit).body))
     expect(parentBody.arguments[0]).toMatchObject({ parameter: 'values', source: 'expression' })
-    expect(await screen.findByText('类型推导')).toBeInTheDocument()
+    expect(await screen.findByText('输出结果')).toBeInTheDocument()
   })
 
   it('引导构建允许分别切换输入，并在参数组合层校验类型与语义量纲', async () => {
@@ -593,7 +712,7 @@ describe('IndicatorStudio', () => {
     expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeEnabled()
   })
 
-  it('重载算子按计算域选择可用签名，并合并同名同元数签名', async () => {
+  it('单产品指标中心只提供产品可用的算子签名', async () => {
     const user = setupUser()
     await renderStudio()
     let catalogDialog = await openCatalog(user)
@@ -608,62 +727,58 @@ describe('IndicatorStudio', () => {
     expect(within(composer).queryByLabelText('多资产收益矩阵 变量')).not.toBeInTheDocument()
     await user.click(within(composer).getByRole('button', { name: '取消' }))
 
-    await user.click(screen.getByLabelText('组合运行域'))
     catalogDialog = await openCatalog(user)
     await user.selectOptions(within(catalogDialog).getByLabelText('资源类型'), 'operators')
-    await chooseCombobox(user, '资源分类', '统计计算')
-    await chooseCombobox(user, '选择计算算子', '协方差')
-    await user.click(within(catalogDialog).getByRole('button', { name: '配置算子参数' }))
-    composer = await screen.findByRole('dialog', { name: '配置 协方差' })
-    expect(within(composer).getByLabelText('多资产收益矩阵 变量')).toHaveValue('asset_returns')
-    await user.click(within(composer).getByRole('button', { name: '取消' }))
-
-    catalogDialog = await openCatalog(user)
-    await user.selectOptions(within(catalogDialog).getByLabelText('资源类型'), 'operators')
-    await chooseCombobox(user, '资源分类', '线性代数')
-    await chooseCombobox(user, '选择计算算子', '对角构造或提取')
-    await user.click(within(catalogDialog).getByRole('button', { name: '配置算子参数' }))
-    composer = await screen.findByRole('dialog', { name: '配置 对角构造或提取' })
-    const values = within(composer).getByLabelText('输入值 变量')
-    expect(within(values).getByRole('option', { name: /多资产普通收益矩阵/ })).not.toBeDisabled()
-    expect(within(values).getByRole('option', { name: /资产权重向量/ })).not.toBeDisabled()
+    await user.click(within(catalogDialog).getByRole('combobox', { name: '资源分类' }))
+    expect(within(catalogDialog).queryByRole('option', { name: /线性代数/ })).not.toBeInTheDocument()
   })
 
   it('公式编辑会清除旧推导、校验、DAG 与运行结果，并提示重新校验', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
-    await user.click(screen.getByRole('button', { name: '推导类型' }))
-    await user.click(screen.getByRole('button', { name: '校验公式' }))
+    await user.click(screen.getByRole('button', { name: '解析并校验公式' }))
     await user.click(screen.getByRole('button', { name: '搜索' }))
     await user.click(await screen.findByRole('button', { name: '添加' }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
     expect((await screen.findAllByText('12.34%')).length).toBeGreaterThan(0)
-    expect(screen.getByText('类型推导')).toBeInTheDocument()
+    expect(screen.getByText('输出结果')).toBeInTheDocument()
     expect(screen.getByText('校验通过')).toBeInTheDocument()
     expect(screen.getByTestId('dag-chart')).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
     await user.type(screen.getByLabelText('受限公式源码（DSL / LaTeX）'), '+1')
 
-    expect(screen.queryByText('类型推导')).not.toBeInTheDocument()
+    expect(screen.queryByText('输出结果')).not.toBeInTheDocument()
     expect(screen.queryByText('校验通过')).not.toBeInTheDocument()
     expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
     expect(screen.queryByText('12.34%')).not.toBeInTheDocument()
-    expect(screen.getByText('公式已更改，需要重新推导并校验。')).toBeInTheDocument()
+    expect(screen.getByText('公式已更改，需要重新解析并校验。')).toBeInTheDocument()
   })
 
   it('DAG 始终使用单一 result 根，运行周期只更新展示上下文', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
-    await user.click(screen.getByRole('button', { name: '校验公式' }))
+    await user.click(screen.getByRole('button', { name: '解析并校验公式' }))
 
     expect(await screen.findByText('校验通过')).toBeInTheDocument()
-    expect(screen.getByText('结构化表达式已同步')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '编辑解析后的结构' }))
-    const parsedComposer = await screen.findByRole('dialog', { name: '配置 全元素标准差' })
+    expect(screen.getByText('已识别公式的计算结构')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '公式解析摘要' })).toHaveTextContent('1 个输入变量 · 1 个计算步骤')
+    expect(screen.queryByRole('region', { name: '公式计算说明' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '查看完整计算说明' }))
+    const explanation = screen.getByRole('region', { name: '公式计算说明' })
+    expect(within(explanation).getByText('输入变量与符号')).toBeInTheDocument()
+    expect(within(explanation).getByText('算子与数学符号')).toBeInTheDocument()
+    expect(within(explanation).getByText('逐步计算')).toBeInTheDocument()
+    expect(within(explanation).getByLabelText('全元素标准差的数学符号').querySelector('.katex')).not.toBeNull()
+    expect(within(explanation).getByText('使用“全元素标准差”')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '编辑计算步骤' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '浏览公式构建资源' }))
+    const parsedComposer = await screen.findByRole('dialog', { name: '编辑“收益波动率”的计算逻辑' })
     expect(within(parsedComposer).getByLabelText('自由度修正 有限常量')).toHaveValue(1)
+    expect(within(parsedComposer).getByRole('button', { name: '应用逻辑修改' })).toBeInTheDocument()
+    expect(within(parsedComposer).getByRole('button', { name: '改用其他构建资源' })).toBeInTheDocument()
     await user.click(within(parsedComposer).getByRole('button', { name: '取消' }))
     const chart = screen.getByTestId('dag-chart')
     expect(chart).toHaveAttribute('data-layout', 'none')
@@ -688,23 +803,45 @@ describe('IndicatorStudio', () => {
     expect(screen.getByTestId('dag-chart')).toHaveAttribute('data-link-count', '1')
   })
 
-  it('组合预览只使用不可变快照窗口，不显示或发送运行周期', async () => {
+  it('已有工作区指标从统一入口载入当前逻辑，修改后可另存为新指标', async () => {
+    catalog = [builtIn, reusableBuiltIn, workspaceIndicator, portfolioBuiltIn]
     const user = setupUser()
     await renderStudio()
-    await user.click(screen.getByLabelText('组合运行域'))
-    await user.click(await screen.findByRole('button', { name: /组合波动率/ }))
-    expect(await screen.findByRole('option', { name: '稳健组合 · v7 · 截止 2026-08-28' })).toBeInTheDocument()
-    expect(screen.queryByLabelText('计算周期')).not.toBeInTheDocument()
-    expect(screen.getByText('快照窗口')).toBeInTheDocument()
-    expect(screen.getByText('2024-01-02 至 2026-08-28')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: '按快照窗口预览' }))
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/custom-indicators/evaluate-portfolio', expect.objectContaining({ method: 'POST' })))
-    const evaluationCall = vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/custom-indicators/evaluate-portfolio')
-    const body = JSON.parse(String((evaluationCall?.[1] as RequestInit).body))
-    expect(body).not.toHaveProperty('period')
-    expect(body.inline_definition).not.toHaveProperty('periods')
-    expect(screen.getByText('快照窗口 · 结构视图')).toBeInTheDocument()
+    await user.click(screen.getByText('我的波动指标'))
+    expect(screen.getAllByText('保存修改').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('另存为新指标').length).toBeGreaterThan(0)
+    await user.click(screen.getByText('浏览公式构建资源'))
+
+    const builder = await screen.findByRole('dialog', { name: '编辑“我的波动指标”的计算逻辑' })
+    const ddof = within(builder).getByLabelText('自由度修正 有限常量')
+    await user.clear(ddof)
+    await user.type(ddof, '0')
+    await user.click(within(builder).getByRole('button', { name: '应用逻辑修改' }))
+
+    await waitFor(() => {
+      const composeCalls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/compose')
+      const body = JSON.parse(String((composeCalls[composeCalls.length - 1]?.[1] as RequestInit).body))
+      expect(body.arguments).toContainEqual({ parameter: 'ddof', source: 'constant', value: 0 })
+    })
+    await user.click(screen.getAllByText('另存为新指标')[0])
+
+    await waitFor(() => {
+      const createCalls = vi.mocked(fetch).mock.calls.filter(([url, init]) => url === '/api/custom-indicators' && init?.method === 'POST')
+      const body = JSON.parse(String((createCalls[createCalls.length - 1]?.[1] as RequestInit).body))
+      expect(body.name).toBe('我的波动指标 副本')
+    })
+    expect(screen.getByText(/已另存为新指标/)).toBeInTheDocument()
+  })
+
+  it('指标中心固定为单产品上下文，不展示组合域和组合指标', async () => {
+    setupUser()
+    await renderStudio()
+    expect(screen.queryByText('计算域')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('组合运行域')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /组合波动率/ })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('计算周期')).toBeInTheDocument()
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/portfolio-runs')).toBe(false)
   })
 
   it('按产品、周期和历史截止日展示变量实际可用性，并在预览时传递 as-of', async () => {
@@ -722,7 +859,10 @@ describe('IndicatorStudio', () => {
       expect(body).toMatchObject({ targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1Y', as_of: '2026-08-28' })
     })
 
-    const dialog = await openCatalog(user)
+    await user.click(screen.getByRole('button', { name: '浏览公式构建资源' }))
+    const currentLogic = await screen.findByRole('dialog', { name: '编辑“收益波动率”的计算逻辑' })
+    await user.click(within(currentLogic).getByRole('button', { name: '改用其他构建资源' }))
+    const dialog = await screen.findByRole('dialog', { name: '变量、算子与已有指标' })
     await chooseCombobox(user, '资源分类', '收益与变化')
     await chooseCombobox(user, '选择变量', '普通收益率序列')
     expect(within(dialog).getByText('250 个时间点 · 98.0%')).toBeInTheDocument()
@@ -750,7 +890,7 @@ describe('IndicatorStudio', () => {
 
     const composer = await screen.findByRole('dialog', { name: '配置 全元素标准差' })
     expect(within(composer).getByLabelText('输入值 输入来源')).toHaveTextContent('兼容变量')
-    expect(within(composer).getByText(/当前计算域没有满足该参数类型与语义约束的变量/)).toBeInTheDocument()
+    expect(within(composer).getByText(/当前产品变量中没有满足该参数类型与语义约束的输入/)).toBeInTheDocument()
     expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeDisabled()
   })
 
@@ -800,6 +940,58 @@ describe('IndicatorStudio', () => {
     expect(libraryTab).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(libraryTab, { key: 'End' })
     expect(previewTab).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('桌面工作台一次只展示定义或预览，并支持键盘切换', async () => {
+    await renderStudio()
+    const tablist = screen.getByRole('tablist', { name: '指标工作台' })
+    const editorTab = within(tablist).getByRole('tab', { name: /定义与公式/ })
+    const previewTab = within(tablist).getByRole('tab', { name: /校验与预览/ })
+    const editorPanel = document.getElementById('indicator-panel-editor')
+    const previewPanel = document.getElementById('indicator-panel-preview')
+
+    expect(editorTab).toHaveAttribute('aria-selected', 'true')
+    expect(editorPanel).toHaveClass('md:block')
+    expect(previewPanel).toHaveClass('md:hidden')
+
+    fireEvent.keyDown(editorTab, { key: 'ArrowRight' })
+    expect(previewTab).toHaveAttribute('aria-selected', 'true')
+    expect(editorPanel).toHaveClass('md:hidden')
+    expect(previewPanel).toHaveClass('md:block')
+
+    fireEvent.keyDown(previewTab, { key: 'Home' })
+    expect(editorTab).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('在校验与预览中切换指标时保留当前页签并更新当前指标', async () => {
+    const user = setupUser()
+    await renderStudio()
+    const tablist = screen.getByRole('tablist', { name: '指标工作台' })
+    const editorTab = within(tablist).getByRole('tab', { name: /定义与公式/ })
+    const previewTab = within(tablist).getByRole('tab', { name: /校验与预览/ })
+
+    await user.click(previewTab)
+    await user.click(screen.getByRole('button', { name: /累计收益率/ }))
+
+    expect(previewTab).toHaveAttribute('aria-selected', 'true')
+    expect(editorTab).toHaveAttribute('aria-selected', 'false')
+    expect(document.getElementById('indicator-panel-preview')).toHaveClass('md:block')
+    expect(screen.getByLabelText('当前预览指标')).toHaveTextContent('累计收益率')
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
+    expect(await screen.findByRole('heading', { name: '层级计算 DAG' })).toBeInTheDocument()
+    expect(screen.getByText(/已保留预览条件.*公式解析和校验通过/)).toBeInTheDocument()
+  })
+
+  it('从定义页进入校验与预览时自动解析当前指标', async () => {
+    const user = setupUser()
+    await renderStudio()
+    await user.click(screen.getByRole('button', { name: /累计收益率/ }))
+
+    const previewTab = within(screen.getByRole('tablist', { name: '指标工作台' })).getByRole('tab', { name: /校验与预览/ })
+    await user.click(previewTab)
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
+    expect(await screen.findByRole('heading', { name: '层级计算 DAG' })).toBeInTheDocument()
   })
 
   it('算子展开失败会在抽屉内给出明确错误并允许重试', async () => {

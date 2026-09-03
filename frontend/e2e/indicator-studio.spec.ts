@@ -43,11 +43,23 @@ const indicator = {
   operator_registry_version: '2.1.0', variable_registry_version: '2.1.0', context_kind: 'single_product', output_contract: 'scalar',
 }
 
+const workspaceIndicator = {
+  ...indicator,
+  id: 'workspace-mean-return',
+  source: 'custom',
+  read_only: false,
+  name: '我的平均收益指标',
+}
+
 async function mockApi(page: Page) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
     if (url.pathname === '/api/custom-indicators/meta') return route.fulfill({ json: meta })
-    if (url.pathname === '/api/custom-indicators') return route.fulfill({ json: { items: [indicator], total: 1 } })
+    if (url.pathname === '/api/custom-indicators' && route.request().method() === 'POST') {
+      const body = route.request().postDataJSON()
+      return route.fulfill({ json: { ...workspaceIndicator, ...body, id: 'workspace-mean-return-copy', revision: 1 } })
+    }
+    if (url.pathname === '/api/custom-indicators') return route.fulfill({ json: { items: [indicator, workspaceIndicator], total: 2 } })
     if (url.pathname === '/api/custom-indicators/validate') return route.fulfill({ json: {
       valid: true,
       diagnostics: [],
@@ -58,6 +70,23 @@ async function mockApi(page: Page) {
         nodes: [
           { id: 'input', label: 'returns', kind: 'variable', value_type: 'series<time>', shape: 'series', symbolic_shape: ['T'] },
           { id: 'root', label: 'mean', operator_id: 'mean', kind: 'call', value_type: 'scalar', shape: 'scalar', symbolic_shape: [] },
+        ],
+        edges: [{ source: 'input', target: 'root', parameter: 'values' }],
+        roots: { result: 'root' },
+      },
+    } })
+    if (url.pathname === '/api/custom-indicators/compose') return route.fulfill({ json: {
+      expression: 'mean(returns)',
+      latex: 'mean(returns)',
+      display_latex: '\\overline{\\mathbf{r}}',
+      inferred_type: 'scalar',
+      shape: 'scalar',
+      semantic_warnings: [],
+      dependencies: ['returns'],
+      dag: {
+        nodes: [
+          { id: 'input', label: 'returns', kind: 'variable', value_type: 'series<time>', shape: 'series', symbolic_shape: ['T'], latex_fragment: '\\mathbf{r}' },
+          { id: 'root', label: 'mean', operator_id: 'mean', kind: 'call', value_type: 'scalar', shape: 'scalar', symbolic_shape: [], latex_fragment: '\\overline{\\mathbf{r}}' },
         ],
         edges: [{ source: 'input', target: 'root', parameter: 'values' }],
         roots: { result: 'root' },
@@ -94,17 +123,78 @@ test('指标定义无周期选择，资源目录可键盘搜索', async ({ page 
   await expect(dialog).toBeHidden()
 })
 
-test('三档布局无关键水平溢出', async ({ page }, testInfo) => {
+test('移动端三区切换、桌面双栏工作台无关键水平溢出', async ({ page }, testInfo) => {
   if (testInfo.project.name === 'mobile-320') {
     await expect(page.getByRole('tablist', { name: '指标中心区域' })).toBeVisible()
-    await expect(page.getByText('校验与预览')).toBeHidden()
+    await expect(page.getByRole('heading', { name: '校验与预览' })).toBeHidden()
     await page.getByRole('tab', { name: '预览' }).click()
-    await expect(page.getByText('校验与预览')).toBeVisible()
+    await expect(page.getByRole('heading', { name: '校验与预览' })).toBeVisible()
   } else {
-    await expect(page.getByText('校验与预览')).toBeVisible()
+    const workspace = page.getByRole('tablist', { name: '指标工作台' })
+    await expect(workspace).toBeVisible()
+    await expect(page.getByRole('heading', { name: '校验与预览' })).toBeHidden()
+    await workspace.getByRole('tab', { name: /校验与预览/ }).click()
+    await expect(page.getByRole('heading', { name: '校验与预览' })).toBeVisible()
   }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
+})
+
+test('在校验与预览中选择指标不会跳回定义页', async ({ page }, testInfo) => {
+  if (testInfo.project.name === 'mobile-320') {
+    await page.getByRole('tab', { name: '预览' }).click()
+    await page.getByRole('tab', { name: '指标库' }).click()
+  } else {
+    await page.getByRole('tablist', { name: '指标工作台' }).getByRole('tab', { name: /校验与预览/ }).click()
+  }
+
+  await page.getByRole('button', { name: /我的平均收益指标/ }).click()
+
+  await expect(page.getByRole('heading', { name: '校验与预览' })).toBeVisible()
+  await expect(page.getByLabel('当前预览指标')).toContainText('我的平均收益指标')
+  await expect(page.getByRole('heading', { name: '层级计算 DAG' })).toBeVisible()
+  if (testInfo.project.name === 'mobile-320') {
+    await expect(page.getByRole('tab', { name: '预览' })).toHaveAttribute('aria-selected', 'true')
+  } else {
+    await expect(page.getByRole('tablist', { name: '指标工作台' }).getByRole('tab', { name: /校验与预览/ })).toHaveAttribute('aria-selected', 'true')
+  }
+})
+
+test('内置指标可查看变量和算子的数学符号说明', async ({ page }, testInfo) => {
+  if (testInfo.project.name === 'mobile-320') {
+    await page.getByRole('tab', { name: '编辑' }).click()
+  }
+  await page.getByRole('button', { name: '浏览公式构建资源' }).click()
+  const dialog = page.getByRole('dialog', { name: '变量、算子与已有指标' })
+  await dialog.getByLabel('资源类型').selectOption('indicators')
+  await dialog.getByRole('button', { name: '查看计算说明' }).click()
+
+  const explanation = dialog.getByRole('region', { name: '公式计算说明' })
+  await expect(explanation).toBeVisible()
+  await expect(explanation.getByText('输入变量与符号')).toBeVisible()
+  await expect(explanation.getByText('算子与数学符号')).toBeVisible()
+  await expect(explanation.getByText('全元素算术平均值', { exact: true })).toBeVisible()
+  await expect(explanation.getByLabel('全元素算术平均值的数学符号').locator('.katex')).toBeVisible()
+})
+
+test('已有指标通过统一入口编辑当前逻辑并另存为新指标', async ({ page }, testInfo) => {
+  await page.getByRole('button', { name: /我的平均收益指标/ }).click()
+  if (testInfo.project.name === 'mobile-320') {
+    await page.getByRole('tab', { name: '编辑' }).click()
+  }
+
+  await expect(page.getByRole('button', { name: '编辑计算步骤' })).toHaveCount(0)
+  await page.getByRole('button', { name: '浏览公式构建资源' }).click()
+  const builder = page.getByRole('dialog', { name: '编辑“我的平均收益指标”的计算逻辑' })
+  await expect(builder).toBeVisible()
+  await expect(builder.getByText('最终计算步骤：全元素算术平均值')).toBeVisible()
+  await builder.getByRole('button', { name: '应用逻辑修改' }).click()
+
+  const createRequest = page.waitForRequest((request) => request.url().endsWith('/api/custom-indicators') && request.method() === 'POST')
+  await page.getByRole('button', { name: '另存为新指标' }).click()
+  const body = (await createRequest).postDataJSON()
+  expect(body.name).toBe('我的平均收益指标 副本')
+  await expect(page.getByText('已另存为新指标“我的平均收益指标 副本”。原指标保持不变。')).toBeVisible()
 })
 
 test('校验与预览保留多个深链产品且最多选择十个', async ({ page }, testInfo) => {
@@ -126,11 +216,17 @@ test('校验成功后可展示数组形式的数据规模且页面不白屏', as
   if (testInfo.project.name === 'mobile-320') {
     await page.getByRole('tab', { name: '编辑' }).click()
   }
-  await page.getByRole('button', { name: '校验公式' }).click()
+  await page.getByRole('button', { name: '解析并校验公式' }).click()
   await expect(page.getByText('校验通过', { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: '公式解析摘要' })).toContainText('1 个输入变量 · 1 个计算步骤')
+  await expect(page.getByRole('region', { name: '公式计算说明' })).toHaveCount(0)
+  await page.getByRole('button', { name: '查看完整计算说明' }).click()
+  await expect(page.getByRole('region', { name: '公式计算说明' })).toBeVisible()
 
   if (testInfo.project.name === 'mobile-320') {
     await page.getByRole('tab', { name: '预览' }).click()
+  } else {
+    await page.getByRole('tablist', { name: '指标工作台' }).getByRole('tab', { name: /校验与预览/ }).click()
   }
   await expect(page.getByRole('heading', { name: '层级计算 DAG' })).toBeVisible()
   await expect(page.getByRole('article', { name: 'DAG 节点详情' })).toContainText('理论规模：单个数值')

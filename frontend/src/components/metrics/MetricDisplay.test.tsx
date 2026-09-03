@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import type { IndicatorDefinition, MetricPresentation } from '../../services/customIndicators'
-import { formatMetricValue, MetricDefinitionDrawer, MetricMatrix, MetricSelector, MetricStatus, MetricUnavailableReason, MetricValue } from './MetricDisplay'
+import type { EvaluationResult, IndicatorDefinition, MetricPresentation } from '../../services/customIndicators'
+import { formatMetricValue, MetricDefinitionDrawer, MetricMatrix, MetricResultCard, MetricSelector, MetricStatus, MetricUnavailableReason, MetricValue } from './MetricDisplay'
 
 const presentation = (overrides: Partial<MetricPresentation> = {}): MetricPresentation => ({
   indicator_id: 'metric-1', revision: 1, name: '测试指标', source: 'built_in',
@@ -66,6 +66,31 @@ describe('统一指标展示协议', () => {
     render(<div><MetricValue value={null} presentation={presentation()} /><MetricStatus status="warning" warnings={[{ code: 'INSUFFICIENT_SAMPLE', message: '至少需要 20 个观察值' }]} showReason /></div>)
     expect(screen.getByText('不可计算')).toBeInTheDocument()
     expect(screen.getByText('样本不足')).toBeInTheDocument()
+    expect(screen.getByText('至少需要 20 个观察值')).toBeInTheDocument()
+  })
+
+  it('单产品结果卡不在移除按钮旁重复展示计算状态', () => {
+    const metric = {
+      id: 'metric-1', revision: 1, source: 'built_in', read_only: true, name: '测试指标',
+      description: '测试', expression: 'mean(returns)', unit: '', display_format: 'number', precision: 2,
+      direction: 'higher_better', annual_risk_free_rate_percent: 1.5, context_kind: 'single_product',
+      created_at: '', updated_at: '', presentation: presentation(),
+    } as IndicatorDefinition
+    const result = {
+      indicator_id: metric.id, indicator_revision: metric.revision, indicator_name: metric.name,
+      target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' },
+      period: '1Y', value: null, status: 'warning',
+      warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '至少需要 20 个观察值' }],
+      window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: null, observation_count: 0, data_latest_date: '2026-01-06' },
+      presentation: metric.presentation!,
+    } as EvaluationResult
+
+    render(<MetricResultCard result={result} indicator={metric} onRemove={() => undefined} />)
+
+    expect(screen.getByRole('button', { name: '移除指标 测试指标' })).toBeInTheDocument()
+    expect(screen.queryByText('正常')).not.toBeInTheDocument()
+    expect(screen.queryByText('样本不足')).not.toBeInTheDocument()
+    expect(screen.getByText('不可计算')).toBeInTheDocument()
     expect(screen.getByText('至少需要 20 个观察值')).toBeInTheDocument()
   })
 

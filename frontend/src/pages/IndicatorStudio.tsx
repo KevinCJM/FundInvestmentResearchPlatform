@@ -15,15 +15,14 @@ import {
   createCustomIndicator,
   deleteCustomIndicator,
   evaluateCustomIndicators,
-  evaluatePortfolioCustomIndicators,
   getCustomIndicatorMeta,
-  getPortfolioRuns,
+  getSnapshotIndicatorConfig,
   getVariableAvailability,
-  inferCustomIndicator,
   indicatorsForContext,
   listCustomIndicators,
   searchInstruments,
   updateCustomIndicator,
+  updateSnapshotIndicatorConfig,
   validateCustomIndicator,
   type EvaluationResult,
   type EvaluationTarget,
@@ -40,11 +39,12 @@ import {
   type InferenceResponse,
   type InstrumentSearchItem,
   type ProductKind,
-  type PortfolioRun,
+  type SnapshotIndicatorConfig,
   type ValidationResponse,
   type VariableAvailabilityItem,
 } from '../services/customIndicators'
 import { MetricUnavailableReason } from '../components/metrics/MetricDisplay'
+import { SearchDropdown } from '../components/FilterDropdown'
 
 const FALLBACK_PERIODS = [
   { value: '1W', label: '近 1 周', description: '最近 5 个收益观察值' },
@@ -91,6 +91,7 @@ const EMPTY_DRAFT: IndicatorDraft = {
 }
 
 type MobileTab = 'library' | 'editor' | 'preview'
+type WorkspaceTab = 'editor' | 'preview'
 type CatalogTab = 'variables' | 'operators' | 'indicators'
 type EditorMode = 'guided' | 'advanced'
 type ComposerSource = 'variable' | 'constant' | 'operator' | 'indicator' | 'omitted'
@@ -135,6 +136,7 @@ type ComposerState = {
   applyMode: ComposerApplyMode
   selectionStart: number
   selectionEnd: number
+  origin: 'catalog' | 'current_formula'
 } | null
 
 const MOBILE_TABS: [MobileTab, string][] = [
@@ -146,6 +148,7 @@ const MOBILE_TABS: [MobileTab, string][] = [
 type StudioTarget = EvaluationTarget & { name: string }
 
 const MAX_PREVIEW_TARGETS = 10
+const STUDIO_CONTEXT: IndicatorContextDomain = 'single_product'
 
 const INDICATOR_PROTOCOL_FIELDS = [
   'variable_registry_version',
@@ -543,6 +546,23 @@ function shapeLabel(shape: IndicatorShape, valueType = '') {
   return ({ scalar: '有限标量', series: '时间序列', vector: '资产向量', matrix: matrixLabel, mask: maskLabel, tuple: '多结果值（旧版）', unknown: '数据类型待推导' } as Record<IndicatorShape, string>)[shape]
 }
 
+function valueTypeText(value: unknown) {
+  if (typeof value !== 'object' || value === null) return String(value || '')
+  const record = value as Record<string, unknown>
+  return String(record.display || record.kind || '')
+}
+
+function shapeFromValueType(value: unknown): IndicatorShape {
+  const raw = valueTypeText(value)
+  if (/mask|bool/i.test(raw)) return 'mask'
+  if (/matrix/i.test(raw)) return 'matrix'
+  if (/series/i.test(raw)) return 'series'
+  if (/vector/i.test(raw)) return 'vector'
+  if (/tuple/i.test(raw)) return 'tuple'
+  if (/scalar/i.test(raw)) return 'scalar'
+  return 'unknown'
+}
+
 function humanizeTechnicalTypes(value: unknown, fallbackShape: IndicatorShape = 'unknown'): string {
   if (value === null || value === undefined || value === '') return shapeLabel(fallbackShape)
   if (Array.isArray(value)) return value.map((item) => humanizeTechnicalTypes(item)).join(' / ')
@@ -596,6 +616,36 @@ function diagnosticMessage(code: string, message: string) {
 
 function nodeKindLabel(kind: string) {
   return ({ variable: '输入变量', constant: '数值常量', call: '计算算子', binary: '基础运算', unary: '一元运算', comparison: '比较运算' } as Record<string, string>)[kind] || '计算节点'
+}
+
+function dagNodeOperatorId(node: IndicatorDagNode) {
+  return node.operator_id || node.operator?.id || node.label
+}
+
+function dagNodeInferredType(node: IndicatorDagNode) {
+  return typeof node.inferred_type === 'object' && node.inferred_type !== null
+    ? node.inferred_type
+    : null
+}
+
+function dagNodeShape(node: IndicatorDagNode): IndicatorShape {
+  if (node.shape) return node.shape
+  const kind = dagNodeInferredType(node)?.kind
+  if (kind && ['scalar', 'series', 'vector', 'matrix', 'mask', 'tuple'].includes(kind)) return kind as IndicatorShape
+  if (node.kind === 'variable') return 'series'
+  if (node.kind === 'constant') return 'scalar'
+  return 'unknown'
+}
+
+function dagNodeValueType(node: IndicatorDagNode) {
+  if (node.value_type) return node.value_type
+  if (typeof node.inferred_type === 'string') return node.inferred_type
+  const inferred = dagNodeInferredType(node)
+  return inferred?.display || inferred?.kind || ''
+}
+
+function dagNodeSymbolicShape(node: IndicatorDagNode) {
+  return node.symbolic_shape ?? dagNodeInferredType(node)?.shape
 }
 
 function availabilityStatusLabel(status: string) {
@@ -839,19 +889,6 @@ function targetFromItem(item: InstrumentSearchItem): StudioTarget | null {
   return { kind, product_id: productId, name: item.name || productId }
 }
 
-function portfolioSnapshotWindow(run: PortfolioRun | null): string {
-  if (!run) return '选择运行后显示锁定窗口'
-  const windowValue = run.window
-  const window = windowValue && typeof windowValue === 'object'
-    ? windowValue as Record<string, unknown>
-    : null
-  const start = String(window?.start_date || run.start_date || run.common_start_date || '').trim()
-  const end = String(window?.end_date || run.end_date || run.effective_as_of || '').trim()
-  if (start && end) return `${start} 至 ${end}`
-  if (end) return `截至 ${end}`
-  return '窗口已由运行快照锁定'
-}
-
 function ApiMessage({ error }: { error: unknown }) {
   if (!error) return null
   const message = userFacingErrorMessage(error)
@@ -874,23 +911,25 @@ export default function IndicatorStudio() {
   const [period, setPeriod] = useState(searchParams.get('period') || '1Y')
   const [asOf, setAsOf] = useState(searchParams.get('as_of') || '')
   const [mobileTab, setMobileTab] = useState<MobileTab>('library')
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(() => searchParams.get('ids') ? 'preview' : 'editor')
   const [catalogTab, setCatalogTab] = useState<CatalogTab>('variables')
   const [editorMode, setEditorMode] = useState<EditorMode>('guided')
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogError, setCatalogError] = useState<string | null>(null)
   const [insertingIndicatorId, setInsertingIndicatorId] = useState<string | null>(null)
-  const [contextDomain, setContextDomain] = useState<IndicatorContextDomain>('single_product')
-  const [portfolioRuns, setPortfolioRuns] = useState<PortfolioRun[]>([])
-  const [portfolioRunsLoading, setPortfolioRunsLoading] = useState(false)
-  const [portfolioRunId, setPortfolioRunId] = useState('')
   const [variableAvailability, setVariableAvailability] = useState<Record<string, VariableAvailabilityItem>>({})
   const [availabilityLoading, setAvailabilityLoading] = useState(false)
   const [availabilityError, setAvailabilityError] = useState<string | null>(null)
   const [composer, setComposer] = useState<ComposerState>(null)
   const [guidedTree, setGuidedTree] = useState<ComposerNode | null>(null)
   const [composerLoading, setComposerLoading] = useState(false)
+  const [formulaBuilderOpening, setFormulaBuilderOpening] = useState(false)
   const [composerError, setComposerError] = useState<string | null>(null)
   const [inference, setInference] = useState<InferenceResponse | null>(null)
+  const [snapshotConfig, setSnapshotConfig] = useState<SnapshotIndicatorConfig | null>(null)
+  const [snapshotPeriods, setSnapshotPeriods] = useState<string[]>([])
+  const [snapshotSaving, setSnapshotSaving] = useState(false)
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [validating, setValidating] = useState(false)
@@ -903,13 +942,13 @@ export default function IndicatorStudio() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<unknown>(null)
   const expressionRef = useRef<HTMLTextAreaElement>(null)
+  const validationRequestRef = useRef(0)
 
   const selectedIndicator = indicators.find((item) => item.id === selectedId) ?? null
   const periods = meta?.periods?.length ? meta.periods : FALLBACK_PERIODS
   const isDirty = baseline !== JSON.stringify(normalizeDraft(draft))
   const activePeriod = periods.some((item) => item.value === period) ? period : periods[0]?.value || ''
-  const selectedPortfolioRun = portfolioRuns.find((run) => run.id === portfolioRunId) ?? null
-  const contextIndicators = indicatorsForContext(indicators, contextDomain)
+  const contextIndicators = indicatorsForContext(indicators, STUDIO_CONTEXT)
   const normalizedIndicatorQuery = indicatorQuery.trim().toLowerCase()
   const visibleIndicators = contextIndicators.filter((item) => (
     (indicatorSourceFilter === 'all' || item.source === indicatorSourceFilter)
@@ -923,8 +962,12 @@ export default function IndicatorStudio() {
     : meta?.indicator_categories?.length
       ? meta.indicator_categories
     : [...new Map(contextIndicators.filter((item) => item.category_id).map((item) => [item.category_id as string, item.category_label || item.category_id as string])).entries()].map(([id, label]) => ({ id, label }))
-  const variables = meta?.variables?.length ? meta.variables : FALLBACK_VARIABLES
-  const runtimeAvailabilityRequired = contextDomain === 'single_product' && targets.length > 0
+  const variables = useMemo(
+    () => (meta?.variables?.length ? meta.variables : FALLBACK_VARIABLES)
+      .filter((variable) => supportsVariableDomain(variable, STUDIO_CONTEXT)),
+    [meta],
+  )
+  const runtimeAvailabilityRequired = targets.length > 0
   const composerVariables = variables.filter((variable) => variableIsUsable(
     variable,
     variableAvailability[variable.name],
@@ -932,15 +975,17 @@ export default function IndicatorStudio() {
     availabilityLoading,
     availabilityError,
   ))
-  const operatorItems = (meta?.operators ?? []).map((operator) => operatorToComposer(operator, composerVariables, contextDomain))
+  const operatorItems = (meta?.operators ?? [])
+    .map((operator) => operatorToComposer(operator, composerVariables, STUDIO_CONTEXT))
+    .filter((operator) => operator.domains.includes(STUDIO_CONTEXT))
   const composableIndicators = contextIndicators
-    .filter((indicator) => indicatorIsComposable(indicator, draft, contextDomain))
+    .filter((indicator) => indicatorIsComposable(indicator, draft, STUDIO_CONTEXT))
     .sort((left, right) => (
       composableProtocolPriority(right, draft) - composableProtocolPriority(left, draft)
       || left.name.localeCompare(right.name, 'zh-CN')
     ))
   const composerReady = composer
-    ? isComposerNodeValid(composer.node, composerVariables, composableIndicators, contextDomain)
+    ? isComposerNodeValid(composer.node, composerVariables, composableIndicators, STUDIO_CONTEXT)
     : false
   const resourceLabels = useMemo(() => new Map<string, string>([
     ...variables.map((variable) => [variable.name, variable.label] as const),
@@ -956,7 +1001,7 @@ export default function IndicatorStudio() {
     try {
       const formula = displayLatex
         || (draft.expression
-          ? '\\text{请先推导或校验公式以生成数学排版}'
+          ? '\\text{请先解析并校验公式以生成数学排版}'
           : '\\text{等待输入公式}')
       return { __html: katex.renderToString(formula, { throwOnError: true, displayMode: true }) }
     } catch {
@@ -1006,7 +1051,7 @@ export default function IndicatorStudio() {
       const index = incomingIndex.get(target) ?? 0
       incomingIndex.set(target, index + 1)
       const targetNode = nodesById.get(target)
-      const targetOperator = targetNode ? operatorsById.get(targetNode.operator_id || targetNode.label) : undefined
+      const targetOperator = targetNode ? operatorsById.get(dagNodeOperatorId(targetNode)) : undefined
       const rawParameter = edge.parameter || edge.parameter_name || edge.input_name || targetOperator?.parameters[index]?.name
       const parameter = parameterLabel(rawParameter, targetOperator?.parameters[index]?.label || `输入 ${index + 1}`)
       return { ...edge, parameter, order: edge.order ?? index }
@@ -1053,11 +1098,11 @@ export default function IndicatorStudio() {
       const isRoot = rootIds.has(String(node.id))
       return {
         id: String(node.id),
-        name: resourceLabels.get(node.operator_id || node.label) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind),
+        name: resourceLabels.get(dagNodeOperatorId(node)) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind),
         value: node.kind,
         period: node.period,
-        shape: node.shape || (node.kind === 'variable' ? 'series' : 'scalar'),
-        valueType: node.value_type || node.kind,
+        shape: dagNodeShape(node),
+        valueType: dagNodeValueType(node) || node.kind,
         x: (index - (nodes.length - 1) / 2) * 190,
         y: depth * 120,
         symbol: 'roundRect',
@@ -1100,7 +1145,7 @@ export default function IndicatorStudio() {
   }, [dagView, resourceLabels])
 
   const refreshCatalog = async () => {
-    const response = await listCustomIndicators()
+    const response = await listCustomIndicators({ contextKind: STUDIO_CONTEXT })
     setIndicators(response.items)
     return response.items
   }
@@ -1111,7 +1156,10 @@ export default function IndicatorStudio() {
       try {
         setLoading(true)
         setError(null)
-        const [metadata, catalog] = await Promise.all([getCustomIndicatorMeta(), listCustomIndicators()])
+        const [metadata, catalog] = await Promise.all([
+          getCustomIndicatorMeta(),
+          listCustomIndicators({ contextKind: STUDIO_CONTEXT }),
+        ])
         if (!active) return
         setMeta(metadata)
         setIndicators(catalog.items)
@@ -1129,6 +1177,35 @@ export default function IndicatorStudio() {
     void load()
     return () => { active = false }
   }, []) // load once; the selected formula is local state
+
+  useEffect(() => {
+    let active = true
+    void getSnapshotIndicatorConfig()
+      .then((response) => {
+        if (active) setSnapshotConfig({
+          schema_version: response.schema_version ?? 1,
+          revision: response.revision ?? 1,
+          max_items: response.max_items ?? 30,
+          items: Array.isArray(response.items) ? response.items : [],
+          updated_at: response.updated_at ?? null,
+          snapshot: response.snapshot ?? null,
+        })
+      })
+      .catch((failure) => {
+        if (active) setSnapshotError(userFacingErrorMessage(failure, '快照指标配置暂时无法读取。'))
+      })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    if (!selectedIndicator || !snapshotConfig) {
+      setSnapshotPeriods([])
+      return
+    }
+    setSnapshotPeriods(snapshotConfig.items
+      .filter((item) => item.indicator_id === selectedIndicator.id && item.indicator_revision === selectedIndicator.revision)
+      .map((item) => item.period))
+  }, [selectedIndicator, snapshotConfig])
 
   useEffect(() => {
     const ids = (searchParams.get('ids') || '').split(',').map((id) => id.trim()).filter(Boolean)
@@ -1149,7 +1226,7 @@ export default function IndicatorStudio() {
   }, [searchParams])
 
   useEffect(() => {
-    if (contextDomain !== 'single_product' || !targets.length || !activePeriod || !meta) {
+    if (!targets.length || !activePeriod || !meta) {
       setVariableAvailability({})
       setAvailabilityLoading(false)
       setAvailabilityError(null)
@@ -1181,55 +1258,34 @@ export default function IndicatorStudio() {
     }
     void loadAvailability()
     return () => { active = false }
-  }, [activePeriod, asOf, contextDomain, meta, targets, variables])
-
-  useEffect(() => {
-    setDraft((current) => current.context_kind === contextDomain ? current : { ...current, context_kind: contextDomain })
-    setValidation(null)
-    setInference(null)
-    setGuidedTree(null)
-    setResults([])
-  }, [contextDomain])
-
-  useEffect(() => {
-    if (contextDomain !== 'portfolio') return
-    let active = true
-    const loadPortfolioRuns = async () => {
-      try {
-        setPortfolioRunsLoading(true)
-        setError(null)
-        const response = await getPortfolioRuns()
-        if (!active) return
-        setPortfolioRuns(response.items)
-        setPortfolioRunId((current) => response.items.some((item) => item.id === current) ? current : response.items[0]?.id || '')
-      } catch (portfolioError) {
-        if (active) setError(portfolioError)
-      } finally {
-        if (active) setPortfolioRunsLoading(false)
-      }
-    }
-    void loadPortfolioRuns()
-    return () => { active = false }
-  }, [contextDomain])
+  }, [activePeriod, asOf, meta, targets, variables])
 
   const selectDraft = (indicator: IndicatorDefinition) => {
     if (isDirty && !window.confirm('当前未保存的修改将被替换，是否继续？')) return
+    validationRequestRef.current += 1
+    setValidating(false)
+    const keepPreviewContext = workspaceTab === 'preview'
     const next = normalizeDraft(asDraft(indicator))
     setSelectedId(indicator.id)
-    setDraft(next)
-    setContextDomain(next.context_kind || 'single_product')
-    setBaseline(JSON.stringify(next))
+    const productDraft = normalizeDraft({ ...next, context_kind: STUDIO_CONTEXT })
+    setDraft(productDraft)
+    setBaseline(JSON.stringify(productDraft))
     setValidation(null)
     setInference(null)
     setGuidedTree(null)
     setResults([])
-    setMessage(indicator.read_only ? '已载入内置指标。可编辑后另存为工作区自定义指标。' : `已载入版本 ${indicator.revision}。`)
-    setMobileTab('editor')
+    const loadedMessage = indicator.read_only ? '已载入内置指标。可编辑后另存为工作区自定义指标。' : `已载入版本 ${indicator.revision}。`
+    const previewMessage = `${loadedMessage} 已保留预览条件。`
+    setMessage(keepPreviewContext ? previewMessage : loadedMessage)
+    if (mobileTab === 'library') setMobileTab(workspaceTab)
+    if (keepPreviewContext && productDraft.expression.trim()) void validateDefinition(productDraft, previewMessage)
   }
 
   const createNew = () => {
     if (isDirty && !window.confirm('当前未保存的修改将被替换，是否继续？')) return
-    const next = draftForCurrentRegistries(meta, contextDomain)
+    validationRequestRef.current += 1
+    setValidating(false)
+    const next = draftForCurrentRegistries(meta, STUDIO_CONTEXT)
     setSelectedId(null)
     setDraft(next)
     setBaseline(JSON.stringify(next))
@@ -1240,15 +1296,48 @@ export default function IndicatorStudio() {
     setEditorMode('guided')
     setMessage('已创建新指标草稿。请从变量、数学算子或已有指标开始构建公式。')
     setMobileTab('editor')
+    setWorkspaceTab('editor')
+  }
+
+  const saveSnapshotPeriods = async () => {
+    if (!selectedIndicator || !snapshotConfig) return
+    try {
+      setSnapshotSaving(true)
+      setSnapshotError(null)
+      const untouched = snapshotConfig.items.filter((item) => item.indicator_id !== selectedIndicator.id)
+      const nextItems = [
+        ...untouched.map((item) => ({
+          indicator_id: item.indicator_id,
+          indicator_revision: item.indicator_revision,
+          period: item.period,
+        })),
+        ...snapshotPeriods.map((snapshotPeriod) => ({
+          indicator_id: selectedIndicator.id,
+          indicator_revision: selectedIndicator.revision,
+          period: snapshotPeriod,
+        })),
+      ]
+      const updated = await updateSnapshotIndicatorConfig(snapshotConfig.revision, nextItems)
+      setSnapshotConfig(updated)
+      setMessage(snapshotPeriods.length
+        ? '快照指标配置已保存；将在下一次数据刷新后生成预计算结果。'
+        : '该指标已从快照加速配置中移除。')
+    } catch (failure) {
+      setSnapshotError(userFacingErrorMessage(failure, '快照指标配置保存失败。'))
+    } finally {
+      setSnapshotSaving(false)
+    }
   }
 
   const patchDraft = (patch: Partial<IndicatorDraft>) => {
+    validationRequestRef.current += 1
+    setValidating(false)
     setDraft((current) => ({ ...current, ...patch }))
     setValidation(null)
     setInference(null)
     setGuidedTree(null)
     setResults([])
-    if (Object.prototype.hasOwnProperty.call(patch, 'expression')) setMessage('公式已更改，需要重新推导并校验。')
+    if (Object.prototype.hasOwnProperty.call(patch, 'expression')) setMessage('公式已更改，需要重新解析并校验。')
   }
 
   const insertExpression = (token: string) => {
@@ -1278,7 +1367,7 @@ export default function IndicatorStudio() {
         indicator_id: indicator.id,
         indicator_revision: indicator.revision,
         arguments: [],
-        context: contextDomain,
+        context: STUDIO_CONTEXT,
         dsl_version: draft.dsl_version,
         operator_registry_version: draft.operator_registry_version,
         variable_registry_version: draft.variable_registry_version,
@@ -1315,10 +1404,11 @@ export default function IndicatorStudio() {
     setComposerError(null)
     setCatalogOpen(false)
     setComposer({
-      node: initialComposerNode(item, composerVariables, contextDomain),
+      node: initialComposerNode(item, composerVariables, STUDIO_CONTEXT),
       applyMode: editorMode === 'advanced' && selectionEnd > selectionStart ? 'replace_selection' : 'replace_formula',
       selectionStart,
       selectionEnd,
+      origin: 'catalog',
     })
   }
 
@@ -1330,27 +1420,9 @@ export default function IndicatorStudio() {
     } : current)
   }
 
-  const inferFormula = async () => {
-    try {
-      setError(null)
-      const response = await inferCustomIndicator({
-        expression: draft.expression,
-        context: contextDomain,
-        dsl_version: draft.dsl_version,
-        operator_registry_version: draft.operator_registry_version,
-      })
-      setInference(response)
-      const parsed = composerNodeFromDag(response.dag, operatorItems)
-      setGuidedTree(parsed)
-      setMessage(`类型推导完成：${shapeLabel(response.shape)}${parsed ? '，并已同步为可编辑的结构化表达式树' : ''}。`)
-    } catch (inferenceError) {
-      setError(inferenceError)
-    }
-  }
-
   const applyComposer = async () => {
     if (!composer) return
-    const invalid = firstInvalidComposerArgument(composer.node, composerVariables, composableIndicators, contextDomain)
+    const invalid = firstInvalidComposerArgument(composer.node, composerVariables, composableIndicators, STUDIO_CONTEXT)
     if (invalid) {
       setComposerError(
         firstComposerSiblingIssue(composer.node, composerVariables)
@@ -1376,7 +1448,7 @@ export default function IndicatorStudio() {
               indicator_id: indicator.id,
               indicator_revision: indicator.revision,
               arguments: [],
-              context: contextDomain,
+              context: STUDIO_CONTEXT,
               dsl_version: draft.dsl_version,
               operator_registry_version: draft.operator_registry_version,
               variable_registry_version: draft.variable_registry_version,
@@ -1394,7 +1466,7 @@ export default function IndicatorStudio() {
         }
         return composeCustomIndicator({
           operator_id: node.item.id,
-          context: contextDomain,
+          context: STUDIO_CONTEXT,
           dsl_version: draft.dsl_version,
           operator_registry_version: draft.operator_registry_version,
           arguments: argumentsForRequest,
@@ -1417,7 +1489,9 @@ export default function IndicatorStudio() {
       setGuidedTree(composer.node)
       setComposer(null)
       setComposerError(null)
-      setMessage(`${composer.node.item.label} 已安全展开并${composer.applyMode === 'replace_formula' ? '替换完整公式' : composer.applyMode === 'replace_selection' ? '替换选中内容' : '插入光标位置'}。`)
+      setMessage(composer.origin === 'current_formula'
+        ? '当前指标的计算逻辑已更新，请重新校验后保存修改或另存为新指标。'
+        : `${composer.node.item.label} 已安全展开并${composer.applyMode === 'replace_formula' ? '替换完整公式' : composer.applyMode === 'replace_selection' ? '替换选中内容' : '插入光标位置'}。`)
     } catch (composeError) {
       setComposerError(userFacingErrorMessage(composeError, '公式展开失败，请检查参数后重试。'))
     } finally {
@@ -1425,40 +1499,106 @@ export default function IndicatorStudio() {
     }
   }
 
-  const validate = async (): Promise<ValidationResponse | null> => {
-    const normalized = normalizeDraft({ ...draft, context_kind: contextDomain })
+  async function validateDefinition(sourceDraft: IndicatorDraft = draft, messagePrefix = ''): Promise<ValidationResponse | null> {
+    const requestId = ++validationRequestRef.current
+    const normalized = normalizeDraft({ ...sourceDraft, context_kind: STUDIO_CONTEXT })
     try {
       setValidating(true)
       setError(null)
       const response = await validateCustomIndicator(normalized)
+      if (requestId !== validationRequestRef.current) return null
       setValidation(response)
-      if (response.valid) setGuidedTree(composerNodeFromDag(response.dag, operatorItems))
-      setMessage(response.valid ? '公式校验通过，已生成计算 DAG。' : '公式存在需要修复的问题。')
+      const rootId = response.dag?.roots.result ?? Object.values(response.dag?.roots ?? {})[0]
+      const rootNode = response.dag?.nodes.find((node) => String(node.id) === String(rootId))
+      const inferredType = rootNode
+        ? dagNodeValueType(rootNode)
+        : response.diagnostics.find((diagnostic) => diagnostic.actual !== undefined)?.actual
+      const inferredShape = rootNode ? dagNodeShape(rootNode) : shapeFromValueType(inferredType)
+      if (inferredShape !== 'unknown') {
+        setInference({
+          expression: normalized.expression,
+          latex: response.latex || normalized.expression,
+          display_latex: response.display_latex || undefined,
+          math_notation_version: response.math_notation_version || undefined,
+          inferred_type: valueTypeText(inferredType) || inferredShape,
+          shape: inferredShape,
+          semantic_warnings: [],
+          dependencies: response.dependencies,
+          dag: response.dag || undefined,
+        })
+      } else {
+        setInference(null)
+      }
+      const parsed = response.valid ? composerNodeFromDag(response.dag, operatorItems) : null
+      setGuidedTree(parsed)
+      const resultMessage = response.valid
+        ? `公式解析和校验通过${parsed ? '，已同步为可编辑的计算步骤' : ''}。`
+        : '公式已完成解析，但存在需要修复的校验问题。'
+      setMessage(messagePrefix ? `${messagePrefix} ${resultMessage}` : resultMessage)
       return response
     } catch (validateError) {
+      if (requestId !== validationRequestRef.current) return null
       setValidation(null)
+      setInference(null)
+      setGuidedTree(null)
       setError(validateError)
       return null
     } finally {
-      setValidating(false)
+      if (requestId === validationRequestRef.current) setValidating(false)
     }
   }
 
-  const save = async () => {
-    const normalized = normalizeDraft({ ...draft, context_kind: contextDomain })
+  const validate = (): Promise<ValidationResponse | null> => validateDefinition(draft)
+
+  const openFormulaBuilder = async () => {
+    if (formulaBuilderOpening) return
+    setCatalogError(null)
+    setComposerError(null)
+    if (!draft.expression.trim()) {
+      setCatalogOpen(true)
+      return
+    }
+
+    try {
+      setFormulaBuilderOpening(true)
+      const checked = validation?.valid ? validation : await validate()
+      const currentTree = guidedTree ?? (checked?.valid ? composerNodeFromDag(checked.dag, operatorItems) : null)
+      if (!checked?.valid || !currentTree) {
+        setCatalogError('当前公式暂时无法转换为结构化计算步骤。可以选择变量、算子或已有指标替换当前公式，也可以在高级公式模式中修复源码。')
+        setCatalogOpen(true)
+        return
+      }
+      setGuidedTree(currentTree)
+      setComposer({
+        node: currentTree,
+        applyMode: 'replace_formula',
+        selectionStart: 0,
+        selectionEnd: draft.expression.length,
+        origin: 'current_formula',
+      })
+      setMessage(`已载入“${draft.name || '当前指标'}”的计算逻辑，可以修改参数或嵌套步骤。`)
+    } finally {
+      setFormulaBuilderOpening(false)
+    }
+  }
+
+  const save = async (saveMode: 'auto' | 'new' = 'auto') => {
+    const normalized = normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT })
     const checked = validation?.valid ? validation : await validate()
     if (!checked?.valid) {
       setMobileTab('editor')
+      setWorkspaceTab('editor')
       return
     }
     try {
       setSaving(true)
       setError(null)
       let saved: IndicatorDefinition
-      if (selectedIndicator && !selectedIndicator.read_only) {
+      const createNewDefinition = saveMode === 'new' || !selectedIndicator || selectedIndicator.read_only
+      if (!createNewDefinition && selectedIndicator) {
         saved = await updateCustomIndicator(selectedIndicator.id, normalized, selectedIndicator.revision)
       } else {
-        const copyName = selectedIndicator?.read_only && normalized.name === selectedIndicator.name
+        const copyName = selectedIndicator && normalized.name === selectedIndicator.name
           ? `${normalized.name} 副本`
           : normalized.name
         saved = await createCustomIndicator({ ...normalized, name: copyName })
@@ -1468,7 +1608,11 @@ export default function IndicatorStudio() {
       const savedDraft = normalizeDraft(asDraft(catalog.find((item) => item.id === saved.id) || saved))
       setDraft(savedDraft)
       setBaseline(JSON.stringify(savedDraft))
-      setMessage(selectedIndicator?.read_only ? '内置指标已复制到工作区共享库。' : `已保存为版本 ${saved.revision}。`)
+      setMessage(
+        createNewDefinition && selectedIndicator
+          ? `已另存为新指标“${saved.name}”。原指标保持不变。`
+          : `已保存为版本 ${saved.revision}。`,
+      )
     } catch (saveError) {
       setError(saveError)
       if (saveError instanceof CustomIndicatorApiError && saveError.status === 409) {
@@ -1523,41 +1667,34 @@ export default function IndicatorStudio() {
     const checked = validation?.valid ? validation : await validate()
     if (!checked?.valid) {
       setMobileTab('editor')
+      setWorkspaceTab('editor')
       return
     }
-    if (contextDomain === 'single_product' && !targets.length) {
+    if (!targets.length) {
       setMessage('请至少选择一个真实 ETF 或公募基金。')
       setMobileTab('preview')
-      return
-    }
-    if (contextDomain === 'portfolio' && !portfolioRunId) {
-      setMessage('请先选择一个不可变组合运行。')
-      setMobileTab('preview')
+      setWorkspaceTab('preview')
       return
     }
     try {
       setPreviewing(true)
       setError(null)
       const calculationPeriod = activePeriod
-      if (contextDomain === 'single_product' && !calculationPeriod) {
+      if (!calculationPeriod) {
         setMessage('请选择本次预览的计算周期。')
         return
       }
-      const response = contextDomain === 'portfolio'
-        ? await evaluatePortfolioCustomIndicators({
-          run_id: portfolioRunId,
-          inline_definition: normalizeDraft({ ...draft, context_kind: contextDomain }),
-        })
-        : await evaluateCustomIndicators({
-          inline_definition: normalizeDraft({ ...draft, context_kind: contextDomain }),
-          targets: targets.map(({ name: _name, ...target }) => target),
-          period: calculationPeriod,
-          as_of: asOf || undefined,
-          include_series: includeRollingSeries,
-        })
+      const response = await evaluateCustomIndicators({
+        inline_definition: normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT }),
+        targets: targets.map(({ name: _name, ...target }) => target),
+        period: calculationPeriod,
+        as_of: asOf || undefined,
+        include_series: includeRollingSeries,
+      })
       setResults(response.results)
       setMessage(`预览完成：${response.summary.ok} 个成功，${response.summary.warning + response.summary.error} 个需关注。`)
       setMobileTab('preview')
+      setWorkspaceTab('preview')
     } catch (previewError) {
       setError(previewError)
     } finally {
@@ -1567,10 +1704,22 @@ export default function IndicatorStudio() {
 
   const statusText = loading ? '正在加载指标中心…' : message
 
+  const activateWorkspaceTab = (tab: WorkspaceTab) => {
+    setWorkspaceTab(tab)
+    if (tab === 'preview' && draft.expression.trim() && !validation && !validating) {
+      void validateDefinition(draft)
+    }
+  }
+
+  const activateMobileTab = (tab: MobileTab) => {
+    setMobileTab(tab)
+    if (tab === 'editor' || tab === 'preview') activateWorkspaceTab(tab)
+  }
+
   const handleMobileTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, tab: MobileTab) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
-      setMobileTab(tab)
+      activateMobileTab(tab)
       return
     }
 
@@ -1584,12 +1733,28 @@ export default function IndicatorStudio() {
 
     event.preventDefault()
     const nextTab = MOBILE_TABS[nextIndex][0]
-    setMobileTab(nextTab)
+    activateMobileTab(nextTab)
     requestAnimationFrame(() => document.getElementById(`indicator-tab-${nextTab}`)?.focus())
   }
 
+  const handleWorkspaceTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, tab: WorkspaceTab) => {
+    const tabs: WorkspaceTab[] = ['editor', 'preview']
+    const currentIndex = tabs.indexOf(tab)
+    let nextIndex = currentIndex
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length
+    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length
+    else if (event.key === 'Home') nextIndex = 0
+    else if (event.key === 'End') nextIndex = tabs.length - 1
+    else return
+
+    event.preventDefault()
+    const nextTab = tabs[nextIndex]
+    activateWorkspaceTab(nextTab)
+    requestAnimationFrame(() => document.getElementById(`workspace-tab-${nextTab}`)?.focus())
+  }
+
   return (
-    <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8">
       <div className="mb-6 flex flex-col gap-4 rounded-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-violet-950 px-5 py-5 text-white shadow-lg sm:px-7 sm:py-6 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="text-sm font-semibold text-violet-200">工作区共享 · 统一研究指标层</p>
@@ -1598,24 +1763,25 @@ export default function IndicatorStudio() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={createNew} className="rounded-lg border border-white/25 px-4 py-2 text-sm font-semibold transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white">新建指标</button>
-          <button type="button" onClick={() => void save()} disabled={saving || loading || !draft.expression.trim()} className="rounded-lg bg-violet-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">{saving ? '保存中…' : '保存到工作区'}</button>
+          {selectedIndicator && !selectedIndicator.read_only && <button type="button" onClick={() => void save('new')} disabled={saving || loading || !draft.expression.trim()} className="rounded-lg border border-violet-300/70 px-4 py-2 text-sm font-semibold text-violet-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">另存为新指标</button>}
+          <button type="button" onClick={() => void save()} disabled={saving || loading || !draft.expression.trim()} className="rounded-lg bg-violet-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">{saving ? '保存中…' : selectedIndicator?.read_only ? '复制为新指标' : selectedIndicator ? '保存修改' : '保存新指标'}</button>
         </div>
       </div>
 
       <div className="mb-4 grid min-w-0 grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-white p-1 md:hidden" role="tablist" aria-label="指标中心区域">
         {MOBILE_TABS.map(([id, label]) => (
-          <button key={id} id={`indicator-tab-${id}`} type="button" role="tab" aria-controls={`indicator-panel-${id}`} aria-selected={mobileTab === id} tabIndex={mobileTab === id ? 0 : -1} onClick={() => setMobileTab(id)} onKeyDown={(event) => handleMobileTabKeyDown(event, id)} className={`min-w-0 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${mobileTab === id ? 'bg-violet-600 text-white' : 'text-slate-600'}`}>{label}</button>
+          <button key={id} id={`indicator-tab-${id}`} type="button" role="tab" aria-controls={`indicator-panel-${id}`} aria-selected={mobileTab === id} tabIndex={mobileTab === id ? 0 : -1} onClick={() => activateMobileTab(id)} onKeyDown={(event) => handleMobileTabKeyDown(event, id)} className={`min-w-0 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${mobileTab === id ? 'bg-violet-600 text-white' : 'text-slate-600'}`}>{label}</button>
         ))}
       </div>
 
       <div aria-live="polite" className="mb-4 min-h-6 text-sm text-slate-600">{statusText}</div>
       <ApiMessage error={error} />
 
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 md:grid-cols-[minmax(220px,0.78fr)_minmax(340px,1.2fr)] xl:grid-cols-[minmax(245px,0.72fr)_minmax(410px,1.1fr)_minmax(350px,0.95fr)]">
-        <aside id="indicator-panel-library" role="tabpanel" aria-labelledby="indicator-tab-library" className={`${mobileTab === 'library' ? 'block' : 'hidden'} min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm md:block`}>
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 md:grid-cols-[minmax(240px,300px)_minmax(0,1fr)] md:items-start">
+        <aside id="indicator-panel-library" role="tabpanel" aria-labelledby="indicator-tab-library" className={`${mobileTab === 'library' ? 'block' : 'hidden'} min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm md:sticky md:top-5 md:block md:self-start`}>
           <div className="border-b border-slate-100 px-4 py-4">
             <div className="flex items-center justify-between"><h2 className="font-semibold text-slate-900">指标库</h2><span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{visibleIndicators.length}</span></div>
-            <p className="mt-1 text-xs text-slate-500">当前计算域的内置指标可直接使用；复制后可在工作区维护。</p>
+            <p className="mt-1 text-xs text-slate-500">这里统一管理单产品指标；内置指标可直接使用，复制后可在工作区维护。</p>
             <div className="mt-3 grid gap-2">
               <label className="text-xs font-semibold text-slate-600">搜索指标<input type="search" aria-label="搜索指标" value={indicatorQuery} onChange={(event) => setIndicatorQuery(event.target.value)} placeholder="名称、说明或公式" className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
               <div className="grid grid-cols-2 gap-2">
@@ -1625,14 +1791,23 @@ export default function IndicatorStudio() {
             </div>
           </div>
           <div className="max-h-[65vh] space-y-5 overflow-y-auto p-3">
-            {loading ? <p className="p-3 text-sm text-slate-500">正在读取指标库…</p> : visibleIndicators.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{contextIndicators.length > 0 ? '当前筛选条件下没有指标。' : '当前计算域暂无指标。可以新建指标或切换计算域。'}</div> : <>
+            {loading ? <p className="p-3 text-sm text-slate-500">正在读取指标库…</p> : visibleIndicators.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{contextIndicators.length > 0 ? '当前筛选条件下没有指标。' : '当前还没有单产品指标，可以新建一个。'}</div> : <>
               <IndicatorGroup title="内置指标" items={builtInIndicators} selectedId={selectedId} onSelect={selectDraft} />
               <IndicatorGroup title="我的工作区指标" items={customIndicators} selectedId={selectedId} onSelect={selectDraft} empty="尚未保存自定义指标" />
             </>}
           </div>
         </aside>
 
-        <section id="indicator-panel-editor" role="tabpanel" aria-labelledby="indicator-tab-editor indicator-editor-title" className={`${mobileTab === 'editor' ? 'block' : 'hidden'} min-w-0 space-y-5 md:block`}>
+        <div className={`${mobileTab === 'library' ? 'hidden' : 'block'} min-w-0 md:block`}>
+          <div className="mb-5 hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-sm md:block" role="tablist" aria-label="指标工作台">
+            <div className="grid grid-cols-2 gap-2">
+              <button id="workspace-tab-editor" type="button" role="tab" aria-controls="indicator-panel-editor" aria-selected={workspaceTab === 'editor'} tabIndex={workspaceTab === 'editor' ? 0 : -1} onClick={() => activateWorkspaceTab('editor')} onKeyDown={(event) => handleWorkspaceTabKeyDown(event, 'editor')} className={`rounded-xl px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-violet-300 ${workspaceTab === 'editor' ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}><span className="block text-sm font-semibold">定义与公式</span><span className={`mt-0.5 block text-xs ${workspaceTab === 'editor' ? 'text-violet-100' : 'text-slate-400'}`}>编辑指标信息、构建公式并完成校验</span></button>
+              <button id="workspace-tab-preview" type="button" role="tab" aria-controls="indicator-panel-preview" aria-selected={workspaceTab === 'preview'} tabIndex={workspaceTab === 'preview' ? 0 : -1} onClick={() => activateWorkspaceTab('preview')} onKeyDown={(event) => handleWorkspaceTabKeyDown(event, 'preview')} className={`rounded-xl px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-violet-300 ${workspaceTab === 'preview' ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}><span className="flex items-center justify-between gap-2 text-sm font-semibold">校验与预览{targets.length > 0 && <span aria-hidden="true" className={`rounded-full px-2 py-0.5 text-[11px] ${workspaceTab === 'preview' ? 'bg-white/20 text-white' : 'bg-violet-50 text-violet-700'}`}>{targets.length} 个产品</span>}</span><span className={`mt-0.5 block text-xs ${workspaceTab === 'preview' ? 'text-violet-100' : 'text-slate-400'}`}>选择运行条件，查看 DAG 与真实计算结果</span></button>
+            </div>
+          </div>
+
+          <section id="indicator-panel-editor" role="tabpanel" aria-labelledby="indicator-tab-editor workspace-tab-editor indicator-editor-title" className={`${mobileTab === 'editor' ? 'block' : 'hidden'} min-w-0 space-y-5 ${workspaceTab === 'editor' ? 'md:block' : 'md:hidden'}`}>
+          <div className="min-w-0">
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 id="indicator-editor-title" className="font-semibold text-slate-900">指标定义</h2><p className="mt-1 text-xs text-slate-500">{selectedIndicator?.read_only ? '内置指标：保存时将创建工作区副本。' : selectedIndicator ? `工作区指标 · 当前版本 ${selectedIndicator.revision}` : '未保存草稿'}</p></div>{selectedIndicator && !selectedIndicator.read_only && <button type="button" onClick={() => void removeSelected()} className="rounded-lg px-3 py-2 text-sm font-medium text-rose-600 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-300">删除</button>}</div>
             <div className="mt-5 grid gap-4 sm:grid-cols-3">
@@ -1651,23 +1826,30 @@ export default function IndicatorStudio() {
             </div>
           </div>
 
-          <fieldset className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-describedby="context-domain-help">
-            <legend className="px-1 font-semibold text-slate-900">计算域</legend>
-            <p id="context-domain-help" className="mt-1 text-xs text-slate-500">组合域基于一个已锁定、不可变的组合运行计算；它不是多产品批量计算，也不支持跨产品双序列公式。</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              {([['single_product', '单产品域', '定义按单个产品计算的指标，并可用最多 10 个产品批量验证。'], ['portfolio', '组合运行域', '选择一个锁定版本的组合运行，以其真实运行上下文计算。']] as [IndicatorContextDomain, string, string][]).map(([value, label, description]) => <label key={value} className={`cursor-pointer rounded-xl border p-3 ${contextDomain === value ? 'border-violet-400 bg-violet-50' : 'border-slate-200'}`}><input type="radio" name="context-domain" value={value} aria-label={label} checked={contextDomain === value} onChange={() => setContextDomain(value)} className="sr-only" /><span className="block text-sm font-semibold text-slate-800">{label}</span><span className="mt-1 block text-xs text-slate-500">{description}</span></label>)}
+          </div>
+
+          <details className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-violet-300">
+              <div><h2 className="font-semibold text-slate-900">快照加速</h2><p className="mt-1 text-xs text-slate-500">选择需要在数据刷新后预计算的区间，用于产品列表快速展示、筛选与排行。</p></div>
+              <span className="shrink-0 rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">{snapshotPeriods.length} 个区间</span>
+            </summary>
+            <div className="border-t border-slate-100 p-5 pt-4">
+              {!selectedIndicator ? <p className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">请先从指标库选择一个已保存指标。未保存草稿不能作为可复现快照。</p> : <>
+                <div className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+                  快照会锁定“{selectedIndicator.name}” v{selectedIndicator.revision}。修改配置不会立即计算；下一次数据刷新或手动重建分析快照后生效。
+                </div>
+                <fieldset className="mt-4"><legend className="text-sm font-semibold text-slate-700">预计算区间</legend><div className="mt-2 grid max-h-48 gap-2 overflow-y-auto rounded-xl border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-3">{periods.map((item) => { const checked = snapshotPeriods.includes(item.value); return <label key={item.value} className={`flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm ${checked ? 'border-violet-300 bg-violet-50 text-violet-900' : 'border-slate-100 bg-white text-slate-600'}`}><input type="checkbox" checked={checked} onChange={(event) => setSnapshotPeriods((current) => event.target.checked ? [...new Set([...current, item.value])] : current.filter((value) => value !== item.value))} className="mt-0.5" /><span><span className="block font-medium">{item.label}（{item.value}）</span><span className="mt-0.5 block text-xs text-slate-400">{item.description}</span></span></label> })}</div></fieldset>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-slate-500">工作区当前共配置 {snapshotConfig?.items.length ?? 0} / {snapshotConfig?.max_items ?? 30} 个“指标 + 区间”快照。{snapshotConfig?.snapshot_status === 'ready' ? '当前快照已使用此配置和最新数据。' : snapshotConfig?.snapshot_status === 'stale' ? '配置或数据已变化，需要重新生成快照。' : '尚未生成指标快照。'}</p><button type="button" onClick={() => void saveSnapshotPeriods()} disabled={!snapshotConfig || snapshotSaving} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{snapshotSaving ? '保存中…' : '保存快照配置'}</button></div>
+              </>}
+              {snapshotError && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{snapshotError}</p>}
             </div>
-          </fieldset>
+          </details>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="font-semibold text-slate-900">指标公式</h2>
                 <p className="mt-1 text-xs text-slate-500">先用类型化目录构建；熟悉语法后可切换到高级公式模式。计算源码与数学排版分开管理。</p>
-              </div>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => void inferFormula()} disabled={!draft.expression.trim()} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">推导类型</button>
-                <button type="button" onClick={() => void validate()} disabled={validating || !draft.expression.trim()} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{validating ? '校验中…' : '校验公式'}</button>
               </div>
             </div>
             <div className="mt-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1" role="tablist" aria-label="公式编辑方式">
@@ -1678,49 +1860,50 @@ export default function IndicatorStudio() {
               {draft.expression.trim() ? <>
                 <div className="flex items-center justify-between gap-3"><p className="text-xs font-semibold text-slate-600">当前计算逻辑</p><span className="text-xs text-slate-400">已生成</span></div>
                 <p className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-600">公式已由结构化构建器生成。下方使用数学符号展示计算逻辑；如需查看或编辑公式源码，可切换到高级公式模式。</p>
-                {guidedTree ? <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2"><div><p className="text-xs font-semibold text-emerald-800">结构化表达式已同步</p><p className="mt-0.5 text-xs text-emerald-700">根算子：{guidedTree.item.label} · {composerNodeCount(guidedTree)} 个算子节点</p></div><button type="button" onClick={() => setComposer({ node: guidedTree, applyMode: 'replace_formula', selectionStart: 0, selectionEnd: draft.expression.length })} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-300">编辑解析后的结构</button></div> : <p className="mt-2 text-xs text-slate-500">高级公式可先“推导类型”或“校验公式”，成功后会恢复为可编辑的结构化表达式树。</p>}
+                {guidedTree ? <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2"><p className="text-xs font-semibold text-emerald-800">已识别公式的计算结构</p><p className="mt-0.5 text-xs text-emerald-700">最后一步：{guidedTree.item.label} · 共 {composerNodeCount(guidedTree)} 个计算步骤。点击下方入口可查看并修改完整逻辑。</p></div> : <p className="mt-2 text-xs text-slate-500">点击下方入口时，系统会先解析当前公式，再展示可编辑的计算步骤；无法解析时可改用其他构建资源。</p>}
               </> : <div className="rounded-lg border border-dashed border-violet-200 bg-white p-4 text-center">
                 <p className="font-semibold text-slate-800">从变量、数学算子或已有指标开始</p>
                 <p className="mt-1 text-xs leading-5 text-slate-500">目录会解释数据与类型契约；已有指标按锁定版本展开，算子配置会屏蔽不兼容输入。</p>
               </div>}
-              <button type="button" onClick={() => { setCatalogError(null); setCatalogOpen(true) }} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-300">浏览公式构建资源</button>
+              <button type="button" onClick={() => void openFormulaBuilder()} disabled={formulaBuilderOpening} aria-busy={formulaBuilderOpening} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-wait disabled:bg-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-300">{formulaBuilderOpening ? '正在载入当前计算逻辑…' : '浏览公式构建资源'}</button>
             </div> : <div id="formula-advanced-panel" role="tabpanel" aria-labelledby="formula-mode-advanced" className="mt-4">
               <label className="block text-sm font-semibold text-slate-700" htmlFor="indicator-expression">受限公式源码（DSL / LaTeX）</label>
               <p className="mt-1 text-xs text-slate-500">源码中的函数 ID 用于保证计算语义；下方排版预览会统一转换为数学符号。</p>
               <textarea id="indicator-expression" ref={expressionRef} value={draft.expression} onChange={(event) => patchDraft({ expression: event.target.value, template_origin: null })} maxLength={1000} spellCheck={false} rows={6} className="mt-2 block w-full rounded-xl border border-slate-300 bg-slate-950 p-4 font-mono text-sm leading-6 text-emerald-200 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200" />
-              <div className="mt-2 flex items-center justify-between gap-3"><button type="button" onClick={() => { setCatalogError(null); setCatalogOpen(true) }} className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-300">浏览公式构建资源</button><span className="text-xs text-slate-400">{draft.expression.length} / 1000</span></div>
+              <div className="mt-2 flex items-center justify-between gap-3"><button type="button" onClick={() => void openFormulaBuilder()} disabled={formulaBuilderOpening} aria-busy={formulaBuilderOpening} className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-violet-300">{formulaBuilderOpening ? '正在载入当前计算逻辑…' : '浏览公式构建资源'}</button><span className="text-xs text-slate-400">{draft.expression.length} / 1000</span></div>
             </div>}
+            <button type="button" onClick={() => void validate()} disabled={validating || !draft.expression.trim()} className="mt-3 w-full rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{validating ? '解析与校验中…' : '解析并校验公式'}</button>
             <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">数学排版预览</p><div data-testid="formula-preview" className="mt-3 overflow-x-auto text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /></div>
-            {inference && <InferencePanel inference={inference} />}
+            {inference && <InferencePanel inference={inference} resourceLabels={resourceLabels} />}
+            {(validation?.dag || inference?.dag) && <FormulaExplanationDisclosure dag={(validation?.dag || inference?.dag)!} variables={variables} operators={operatorItems} />}
             {validation && <ValidationPanel validation={validation} resourceLabels={resourceLabels} />}
           </div>
         </section>
 
-        <section id="indicator-panel-preview" role="tabpanel" aria-labelledby="indicator-tab-preview indicator-preview-title" className={`${mobileTab === 'preview' ? 'block' : 'hidden'} min-w-0 space-y-5 md:col-span-2 md:block xl:col-span-1`}>
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 id="indicator-preview-title" className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs text-slate-500">{contextDomain === 'portfolio' ? '选择不可变组合运行后按当前草稿计算；不会回填或伪造运行上下文。' : `最多选择 ${MAX_PREVIEW_TARGETS} 个真实产品并分别计算同一指标；不会合并为组合，也不会使用模拟数据。`}</p>
-            {contextDomain === 'portfolio' ? <>
-              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3"><label className="text-sm font-medium text-slate-700">组合运行<select aria-label="组合运行" value={portfolioRunId} onChange={(event) => { setPortfolioRunId(event.target.value); setResults([]); setMessage('组合运行已更改，请按新快照重新预览。') }} disabled={portfolioRunsLoading || portfolioRuns.length === 0} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none"><option value="">{portfolioRunsLoading ? '正在加载组合运行…' : '选择不可变组合运行'}</option>{portfolioRuns.map((run) => <option key={run.id} value={run.id}>{run.target_name} · v{run.target_revision} · 截止 {run.effective_as_of || '—'}</option>)}</select></label><div className="mt-3 rounded-lg border border-violet-100 bg-white px-3 py-2"><p className="text-xs font-semibold text-violet-700">快照窗口</p><p className="mt-1 text-sm text-slate-700">{portfolioSnapshotWindow(selectedPortfolioRun)}</p></div><p className="mt-2 text-xs text-slate-500">窗口、成分、权重与截止日由不可变运行快照锁定；这里不发送可编辑周期。</p></div>
-              <button type="button" onClick={() => void preview()} disabled={previewing || !portfolioRunId || !draft.expression.trim()} className="mt-4 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '按快照窗口预览'}</button>
-            </> : <>
-              <div className="mt-4 flex gap-2"><select aria-label="产品类型" value={searchKind} onChange={(event) => setSearchKind(event.target.value as ProductKind | 'all')} className="rounded-lg border border-slate-200 bg-white px-2 text-sm focus:border-violet-500 focus:outline-none"><option value="all">全部</option><option value="etf">ETF</option><option value="fund">公募基金</option></select><input aria-label="搜索产品" value={searchText} onChange={(event) => setSearchText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void lookupProducts() }} placeholder="名称或代码" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /><button type="button" onClick={() => void lookupProducts()} disabled={searching} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">{searching ? '搜索中' : '搜索'}</button></div>
-              {searchResults.length > 0 && <ul className="mt-2 max-h-40 overflow-auto rounded-lg border border-slate-100" aria-label="搜索结果">{searchResults.map((item, index) => { const target = targetFromItem(item); const selected = Boolean(target && targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)); const atLimit = targets.length >= MAX_PREVIEW_TARGETS; return <li key={`${target?.product_id || index}-${item.instrument_type}`} className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0 text-sm text-slate-700"><span className="font-medium">{item.name || target?.product_id}</span><span className="ml-2 text-xs text-slate-400">{target?.product_id}</span></span><button type="button" onClick={() => addTarget(item)} disabled={!target || selected || atLimit} title={!selected && atLimit ? `最多选择 ${MAX_PREVIEW_TARGETS} 个产品` : undefined} className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:text-slate-300">{selected ? '已添加' : atLimit ? '已达上限' : '添加'}</button></li> })}</ul>}
+        <section id="indicator-panel-preview" role="tabpanel" aria-labelledby="indicator-tab-preview workspace-tab-preview indicator-preview-title" className={`${mobileTab === 'preview' ? 'block' : 'hidden'} min-w-0 space-y-5 ${workspaceTab === 'preview' ? 'md:block' : 'md:hidden'}`}>
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(320px,0.72fr)_minmax(0,1.28fr)] xl:items-start">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 id="indicator-preview-title" className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs text-slate-500">最多选择 {MAX_PREVIEW_TARGETS} 个真实产品并分别计算同一指标；不会合并为组合，也不会使用模拟数据。</p><div aria-label="当前预览指标" aria-live="polite" className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-sm"><span className="text-slate-500">当前指标</span><strong className="text-violet-800">{draft.name}</strong><span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">{selectedIndicator?.read_only ? '内置指标' : selectedIndicator ? `工作区 v${selectedIndicator.revision}` : '未保存草稿'}</span></div>
+              <div className="mt-4 flex gap-2"><select aria-label="产品类型" value={searchKind} onChange={(event) => { setSearchKind(event.target.value as ProductKind | 'all'); setSearchResults([]) }} className="rounded-lg border border-slate-200 bg-white px-2 text-sm focus:border-violet-500 focus:outline-none"><option value="all">全部</option><option value="etf">ETF</option><option value="fund">公募基金</option></select><SearchDropdown label="搜索产品" value={searchText} items={searchResults} onChange={setSearchText} onSearch={lookupProducts} loading={searching} placeholder="名称或代码" className="flex-1" getItemKey={(item, index) => `${item.code ?? item.ts_code ?? index}-${item.instrument_type ?? ''}`} renderItem={(item) => { const target = targetFromItem(item); const selected = Boolean(target && targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)); const atLimit = targets.length >= MAX_PREVIEW_TARGETS; return <div className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0 text-sm text-slate-700"><span className="font-medium">{item.name || target?.product_id}</span><span className="ml-2 text-xs text-slate-400">{target?.product_id}</span></span><button type="button" onClick={() => addTarget(item)} disabled={!target || selected || atLimit} title={!selected && atLimit ? `最多选择 ${MAX_PREVIEW_TARGETS} 个产品` : undefined} className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{selected ? '已添加' : atLimit ? '已达上限' : '添加'}</button></div> }} /></div>
               <div className="mt-4"><p className="text-sm font-medium text-slate-700">已选产品 <span aria-live="polite" className="text-slate-400">{targets.length} / {MAX_PREVIEW_TARGETS}</span></p><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((target) => <span key={`${target.kind}-${target.product_id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-3 pr-1 text-xs text-slate-700"><span>{target.name}</span><span className="text-slate-400">{target.product_id !== target.name ? target.product_id : ''}</span><button type="button" aria-label={`移除 ${target.name}`} onClick={() => { setTargets((current) => current.filter((item) => item.kind !== target.kind || item.product_id !== target.product_id)); setResults([]); setMessage('预览产品已移除，请重新计算。') }} className="rounded-full px-1.5 py-0.5 text-slate-400 hover:bg-white hover:text-rose-600">×</button></span>) : <p className="text-sm text-slate-400">尚未选择产品</p>}</div></div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label></div><label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700"><input type="checkbox" checked={includeRollingSeries} onChange={(event) => { setIncludeRollingSeries(event.target.checked); setResults([]); setMessage(event.target.checked ? '已启用滚动曲线，请重新计算。' : '已关闭滚动曲线，请重新计算。') }} /><span>同时计算滚动曲线</span><span className="ml-auto text-xs text-slate-400">最多 500 点，耗时较长</span></label><p className={`mt-2 text-xs ${availabilityError ? 'text-rose-700' : 'text-slate-500'}`} role={availabilityError ? 'alert' : undefined}>{availabilityLoading ? '正在核对所选产品的变量覆盖率…' : availabilityError ? `变量可用性核对失败：${availabilityError}。为避免误用，相关变量已暂时禁用。` : targets.length ? '变量目录已按所选产品、周期和截止日标注真实可用性。' : '选择产品后将核对变量可用性。'}</p><button type="button" onClick={() => void preview()} disabled={previewing || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '预览指标'}</button>
-            </>}
+              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label></div><label className="mt-3 flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><input type="checkbox" checked={includeRollingSeries} onChange={(event) => { setIncludeRollingSeries(event.target.checked); setResults([]); setMessage(event.target.checked ? '已启用滚动曲线，请重新计算。' : '已关闭滚动曲线，请重新计算。') }} /><span className="min-w-0">同时计算滚动曲线</span><span className="w-full pl-6 text-xs text-slate-400 sm:ml-auto sm:w-auto sm:pl-0">最多 500 点，耗时较长</span></label><p className={`mt-2 text-xs ${availabilityError ? 'text-rose-700' : 'text-slate-500'}`} role={availabilityError ? 'alert' : undefined}>{availabilityLoading ? '正在核对所选产品的变量覆盖率…' : availabilityError ? `变量可用性核对失败：${availabilityError}。为避免误用，相关变量已暂时禁用。` : targets.length ? '变量目录已按所选产品、周期和截止日标注真实可用性。' : '选择产品后将核对变量可用性。'}</p><button type="button" onClick={() => void preview()} disabled={previewing || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '预览指标'}</button>
           </div>
 
-          <DagPanel validation={validation} dag={dagView.dag} period={dagView.period} option={dagOption} contextDomain={contextDomain} resourceLabels={resourceLabels} operators={operatorItems} />
-          <ResultsPanel results={results} draft={draft} contextDomain={contextDomain} />
+          <div className="min-w-0 space-y-5">
+            <DagPanel validation={validation} dag={dagView.dag} period={dagView.period} option={dagOption} contextDomain={STUDIO_CONTEXT} resourceLabels={resourceLabels} operators={operatorItems} validating={validating} canValidate={Boolean(draft.expression.trim())} onValidate={() => void validateDefinition(draft)} onEdit={() => { setMobileTab('editor'); activateWorkspaceTab('editor') }} />
+            <ResultsPanel results={results} draft={draft} contextDomain={STUDIO_CONTEXT} />
+          </div>
+          </div>
           <p className="px-1 text-xs text-slate-500">指标定义和评价方案在当前工作区共享。数据缺失、样本不足或无效数值会明确标为不可计算。</p>
           <Link to="/research" className="inline-flex px-1 text-sm font-semibold text-violet-700 underline decoration-violet-300 underline-offset-4 hover:text-violet-900">返回产品研究</Link>
         </section>
+        </div>
       </div>
 
       <CatalogDrawer open={catalogOpen} onClose={() => setCatalogOpen(false)}>
-        <TypedCatalog tabsValue={catalogTab} onTabChange={setCatalogTab} variables={variables} operators={operatorItems} indicators={composableIndicators} contextDomain={contextDomain} availability={variableAvailability} availabilityLoading={availabilityLoading} availabilityError={availabilityError} runtimeAvailabilityRequired={runtimeAvailabilityRequired} onInsertVariable={insertExpression} onInsertIndicator={insertIndicator} onOpenComposer={openComposer} variableActionLabel={editorMode === 'guided' ? '设为当前公式' : '插入到光标'} indicatorActionLabel={editorMode === 'guided' ? '展开为当前公式' : '插入锁定版本公式'} insertingIndicatorId={insertingIndicatorId} actionError={catalogError} />
+        <TypedCatalog tabsValue={catalogTab} onTabChange={setCatalogTab} variables={variables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} availability={variableAvailability} availabilityLoading={availabilityLoading} availabilityError={availabilityError} runtimeAvailabilityRequired={runtimeAvailabilityRequired} onInsertVariable={insertExpression} onInsertIndicator={insertIndicator} onExplainIndicator={(indicator) => composeCustomIndicator({ indicator_id: indicator.id, indicator_revision: indicator.revision, arguments: [], context: STUDIO_CONTEXT, dsl_version: draft.dsl_version, operator_registry_version: draft.operator_registry_version, variable_registry_version: draft.variable_registry_version, data_contract_version: draft.data_contract_version, context_schema_version: draft.context_schema_version })} onOpenComposer={openComposer} variableActionLabel={editorMode === 'guided' ? '设为当前公式' : '插入到光标'} indicatorActionLabel={editorMode === 'guided' ? '展开为当前公式' : '插入锁定版本公式'} insertingIndicatorId={insertingIndicatorId} actionError={catalogError} />
       </CatalogDrawer>
-      <ComposerDrawer composer={composer} variables={composerVariables} operators={operatorItems} indicators={composableIndicators} contextDomain={contextDomain} loading={composerLoading} canApply={composerReady} error={composerError} onClose={() => { setComposer(null); setComposerError(null) }} onChange={updateComposerArgument} onApplyModeChange={(applyMode) => setComposer((current) => current ? { ...current, applyMode } : current)} onApply={() => void applyComposer()} />
-      <div className="sticky bottom-0 z-10 mt-5 flex gap-2 border-t border-slate-200 bg-white/95 p-3 backdrop-blur md:hidden"><button type="button" onClick={() => void validate()} disabled={validating || !draft.expression.trim()} className="flex-1 rounded-lg border border-violet-200 py-2 text-sm font-semibold text-violet-700 disabled:opacity-50">校验</button><button type="button" onClick={() => void save()} disabled={saving || !draft.expression.trim()} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300">保存</button><button type="button" onClick={() => void preview()} disabled={previewing || !draft.expression.trim() || (contextDomain === 'portfolio' ? !portfolioRunId : !targets.length || !activePeriod)} className="flex-1 rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white disabled:bg-slate-300">预览</button></div>
+      <ComposerDrawer composer={composer} indicatorName={draft.name} variables={composerVariables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} loading={composerLoading} canApply={composerReady} error={composerError} onClose={() => { setComposer(null); setComposerError(null) }} onBrowseResources={() => { setComposer(null); setComposerError(null); setCatalogError(null); setCatalogOpen(true) }} onChange={updateComposerArgument} onApplyModeChange={(applyMode) => setComposer((current) => current ? { ...current, applyMode } : current)} onApply={() => void applyComposer()} />
+      <div className="sticky bottom-0 z-10 mt-5 flex gap-2 border-t border-slate-200 bg-white/95 p-3 backdrop-blur md:hidden"><button type="button" onClick={() => void save()} disabled={saving || !draft.expression.trim()} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300">{selectedIndicator?.read_only ? '复制为新指标' : selectedIndicator ? '保存修改' : '保存新指标'}</button><button type="button" onClick={() => void preview()} disabled={previewing || !draft.expression.trim() || !targets.length || !activePeriod} className="flex-1 rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white disabled:bg-slate-300">预览</button></div>
     </div>
   )
 }
@@ -1855,9 +2038,13 @@ function CatalogDrawer({ open, onClose, children }: { open: boolean; onClose: ()
   </div>
 }
 
-function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators, contextDomain, availability, availabilityLoading, availabilityError, runtimeAvailabilityRequired, onInsertVariable, onInsertIndicator, onOpenComposer, variableActionLabel, indicatorActionLabel, insertingIndicatorId, actionError }: { tabsValue: CatalogTab; onTabChange: (tab: CatalogTab) => void; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; availability: Record<string, VariableAvailabilityItem>; availabilityLoading: boolean; availabilityError: string | null; runtimeAvailabilityRequired: boolean; onInsertVariable: (token: string) => void; onInsertIndicator: (indicator: IndicatorDefinition) => Promise<void> | void; onOpenComposer: (item: ComposerItem) => void; variableActionLabel: string; indicatorActionLabel: string; insertingIndicatorId: string | null; actionError: string | null }) {
+function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators, contextDomain, availability, availabilityLoading, availabilityError, runtimeAvailabilityRequired, onInsertVariable, onInsertIndicator, onExplainIndicator, onOpenComposer, variableActionLabel, indicatorActionLabel, insertingIndicatorId, actionError }: { tabsValue: CatalogTab; onTabChange: (tab: CatalogTab) => void; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; availability: Record<string, VariableAvailabilityItem>; availabilityLoading: boolean; availabilityError: string | null; runtimeAvailabilityRequired: boolean; onInsertVariable: (token: string) => void; onInsertIndicator: (indicator: IndicatorDefinition) => Promise<void> | void; onExplainIndicator: (indicator: IndicatorDefinition) => Promise<InferenceResponse>; onOpenComposer: (item: ComposerItem) => void; variableActionLabel: string; indicatorActionLabel: string; insertingIndicatorId: string | null; actionError: string | null }) {
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Record<CatalogTab, string>>({ variables: '', operators: '', indicators: '' })
   const [selectedItemIds, setSelectedItemIds] = useState<Record<CatalogTab, string>>({ variables: '', operators: '', indicators: '' })
+  const [indicatorExplanations, setIndicatorExplanations] = useState<Record<string, InferenceResponse>>({})
+  const [visibleExplanationId, setVisibleExplanationId] = useState('')
+  const [explainingIndicatorId, setExplainingIndicatorId] = useState('')
+  const [indicatorExplanationError, setIndicatorExplanationError] = useState<{ id: string; message: string } | null>(null)
   const catalogLabels: Record<CatalogTab, string> = { variables: '变量', operators: '计算算子', indicators: '已有指标' }
   const rawEntries = tabsValue === 'variables'
     ? variables.map((variable) => {
@@ -1896,6 +2083,8 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
   const selectedComposer = tabsValue === 'operators' ? operators.find((operator) => operator.id === selectedId) ?? null : null
   const selectedIndicator = tabsValue === 'indicators' ? indicators.find((indicator) => indicatorReferenceKey(indicator) === selectedId) ?? null : null
   const selectedAvailability = selectedVariable ? availability[selectedVariable.name] : undefined
+  const selectedIndicatorKey = selectedIndicator ? indicatorReferenceKey(selectedIndicator) : ''
+  const selectedIndicatorExplanation = selectedIndicatorKey ? indicatorExplanations[selectedIndicatorKey] : undefined
   const selectedSupported = selectedVariable
     ? supportsVariableDomain(selectedVariable, contextDomain) && variableIsUsable(selectedVariable, selectedAvailability, runtimeAvailabilityRequired, availabilityLoading, availabilityError)
     : selectedComposer
@@ -1931,7 +2120,7 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
       <p className="mt-3 text-sm leading-6 text-slate-600">{humanizeTechnicalTypes(selectedComposer.semantic)}</p><p className="mt-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600" aria-label="算子输入输出说明">{operatorContractDescription(selectedComposer)}</p>
       <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[440px] text-left text-xs"><caption className="sr-only">{selectedComposer.label} 参数要求</caption><thead><tr className="border-b border-slate-200 text-slate-500"><th className="pb-2 pr-3">参数</th><th className="pb-2 pr-3">支持的数据</th><th className="pb-2">参数含义</th></tr></thead><tbody>{selectedComposer.parameters.map((parameter) => <tr key={parameter.name} className="border-b border-slate-100 align-top last:border-0"><td className="py-2 pr-3 font-semibold text-slate-700">{parameterLabel(parameter.name, parameter.label || parameter.name)}{parameter.optional ? '（可选）' : ''}</td><td className="py-2 pr-3 text-slate-500">{acceptedShapes(parameter).map((shape) => shapeLabel(shape)).join(' / ')}</td><td className="py-2 text-slate-500">{parameterDescription(parameter)}</td></tr>)}</tbody></table></div>
       <dl className="mt-4 grid gap-2 text-xs text-slate-500 sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">返回结果</dt><dd className="mt-1">{shapeLabel(selectedComposer.outputShape, selectedComposer.outputType)}</dd></div><div><dt className="font-semibold text-slate-700">计算特点</dt><dd className="mt-1">{costEstimateLabel(selectedComposer.costEstimate)}</dd></div><div><dt className="font-semibold text-slate-700">所属分类</dt><dd className="mt-1">{selectedComposer.categoryLabel}</dd></div><div><dt className="font-semibold text-slate-700">执行方式</dt><dd className="mt-1">{executionBackendLabel(selectedComposer.executionBackend)}</dd></div>{selectedComposer.displayTemplate && <div className="sm:col-span-2"><dt className="font-semibold text-slate-700">数学符号示例</dt><dd className="mt-1 rounded-lg border border-violet-100 bg-violet-50/40 px-3 py-2"><MathNotation latex={selectedComposer.displayTemplate} label={`${selectedComposer.label}的数学符号示例`} /></dd></div>}</dl>
-      <button type="button" disabled={!selectedSupported} onClick={() => onOpenComposer(selectedComposer)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{selectedSupported ? '配置算子参数' : '当前计算域不可用'}</button>
+      <button type="button" disabled={!selectedSupported} onClick={() => onOpenComposer(selectedComposer)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{selectedSupported ? '配置算子参数' : '不适用于单产品指标'}</button>
     </article>}
     {selectedIndicator && <article className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3"><div><h4 className="text-base font-semibold text-slate-900">{selectedIndicator.name}</h4><p className="mt-1 text-xs text-slate-500">{selectedIndicator.source === 'built_in' ? '内置指标' : '工作区指标'} · 锁定 v{selectedIndicator.revision}</p></div><ShapeBadge shape="scalar" valueType="scalar" /></div>
@@ -1944,7 +2133,27 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
         <div><dt className="font-semibold text-slate-700">输出契约</dt><dd className="mt-1 text-slate-500">有限标量 · {measureLabel(selectedIndicator.output_measure)}</dd></div>
       </dl>
       <p className="mt-4 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">插入时由服务端按当前 revision 重新校验并展开为普通公式，不建立可变引用；原指标以后更新不会改变本草稿。</p>
-      <button type="button" disabled={insertingIndicatorId !== null} onClick={() => void onInsertIndicator(selectedIndicator)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{insertingIndicatorId === selectedIndicator.id ? '正在展开锁定版本…' : indicatorActionLabel}</button>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        <button type="button" aria-expanded={visibleExplanationId === selectedIndicatorKey} disabled={explainingIndicatorId !== ''} onClick={() => {
+          if (selectedIndicatorExplanation) {
+            setVisibleExplanationId((current) => current === selectedIndicatorKey ? '' : selectedIndicatorKey)
+            return
+          }
+          setExplainingIndicatorId(selectedIndicatorKey)
+          setIndicatorExplanationError(null)
+          void onExplainIndicator(selectedIndicator)
+            .then((response) => {
+              setIndicatorExplanations((current) => ({ ...current, [selectedIndicatorKey]: response }))
+              setVisibleExplanationId(selectedIndicatorKey)
+            })
+            .catch((explanationError) => setIndicatorExplanationError({ id: selectedIndicatorKey, message: userFacingErrorMessage(explanationError, '指标计算说明解析失败，请稍后重试。') }))
+            .finally(() => setExplainingIndicatorId(''))
+        }} className="rounded-lg border border-violet-200 bg-white px-3 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50">{explainingIndicatorId === selectedIndicatorKey ? '正在解析…' : visibleExplanationId === selectedIndicatorKey ? '收起计算说明' : '查看计算说明'}</button>
+        <button type="button" disabled={insertingIndicatorId !== null} onClick={() => void onInsertIndicator(selectedIndicator)} className="rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{insertingIndicatorId === selectedIndicator.id ? '正在展开锁定版本…' : indicatorActionLabel}</button>
+      </div>
+      {indicatorExplanationError?.id === selectedIndicatorKey && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{indicatorExplanationError.message}</p>}
+      {visibleExplanationId === selectedIndicatorKey && selectedIndicatorExplanation?.dag && <FormulaExplanation compact dag={selectedIndicatorExplanation.dag} variables={variables} operators={operators} />}
+      {visibleExplanationId === selectedIndicatorKey && selectedIndicatorExplanation && !selectedIndicatorExplanation.dag && <p role="status" className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">该兼容指标可以展开计算，但当前版本没有可展示的逐步解析信息。</p>}
     </article>}
     {actionError && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>}
   </section>
@@ -1955,8 +2164,116 @@ function ShapeBadge({ shape, valueType }: { shape: IndicatorShape; valueType?: s
   return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${tone[shape]}`}>{shapeLabel(shape, valueType)}</span>
 }
 
-function InferencePanel({ inference }: { inference: InferenceResponse }) {
-  return <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4" role="status"><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-sky-900">类型推导</p><ShapeBadge shape={inference.shape} valueType={inference.inferred_type} /></div><div className="mt-2 rounded-lg bg-white/70 px-3 py-2"><MathNotation latex={inference.display_latex || inference.latex} label="推导后的数学公式" /></div>{inference.semantic_warnings.length > 0 && <ul className="mt-2 space-y-1 text-xs text-amber-800">{inference.semantic_warnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{diagnosticMessage(warning.code, warning.message)}</li>)}</ul>}</div>
+function InferencePanel({ inference, resourceLabels }: { inference: InferenceResponse; resourceLabels: Map<string, string> }) {
+  const scalarOutput = inference.shape === 'scalar'
+  const dependencies = (inference.dependencies ?? []).map((dependency) => resourceLabels.get(dependency) || '公式所需数据')
+  return <section className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4" role="status" aria-labelledby="formula-output-title">
+    <div className="flex flex-wrap items-center gap-2"><h3 id="formula-output-title" className="font-semibold text-sky-900">输出结果</h3><ShapeBadge shape={inference.shape} valueType={inference.inferred_type} /></div>
+    <dl className="mt-3 grid gap-3 rounded-lg bg-white/70 px-3 py-3 text-xs sm:grid-cols-2">
+      <div><dt className="font-semibold text-slate-700">结果形式</dt><dd className="mt-1 text-slate-600">{shapeLabel(inference.shape, inference.inferred_type)}</dd></div>
+      <div><dt className="font-semibold text-slate-700">能否作为指标</dt><dd className="mt-1 text-slate-600">{scalarOutput ? '可以。最终得到一个数值。' : '暂时不可以。还需要使用求和、平均值、标准差等归约计算得到单个数值。'}</dd></div>
+      {dependencies.length > 0 && <div className="sm:col-span-2"><dt className="font-semibold text-slate-700">需要的数据</dt><dd className="mt-1 text-slate-600">{dependencies.join('、')}</dd></div>}
+    </dl>
+    {inference.semantic_warnings.length > 0 && <ul className="mt-2 space-y-1 text-xs text-amber-800">{inference.semantic_warnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{diagnosticMessage(warning.code, warning.message)}</li>)}</ul>}
+  </section>
+}
+
+function FormulaExplanationDisclosure({ dag, variables, operators }: { dag: IndicatorDag; variables: IndicatorVariable[]; operators: ComposerItem[] }) {
+  const [open, setOpen] = useState(false)
+  const disclosureId = useId()
+  const dagKey = `${Object.values(dag.roots).join(',')}:${dag.nodes.map((node) => node.id).join(',')}:${dag.edges.length}`
+  const variableCount = dag.nodes.filter((node) => node.kind === 'variable').length
+  const calculationCount = dag.nodes.filter((node) => node.kind !== 'variable' && node.kind !== 'constant').length
+
+  useEffect(() => setOpen(false), [dagKey])
+
+  return <section className="mt-4 rounded-xl border border-violet-200 bg-violet-50/40 p-4" aria-label="公式解析摘要">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-900">计算逻辑已解析</h3>
+        <p className="mt-1 text-xs leading-5 text-slate-600">{variableCount} 个输入变量 · {calculationCount} 个计算步骤。完整说明包含变量符号、算子符号和逐步计算。</p>
+      </div>
+      <button type="button" aria-expanded={open} aria-controls={disclosureId} onClick={() => setOpen((current) => !current)} className="rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs font-semibold text-violet-700 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{open ? '收起完整计算说明' : '查看完整计算说明'}</button>
+    </div>
+    {open && <div id={disclosureId}><FormulaExplanation compact dag={dag} variables={variables} operators={operators} /></div>}
+  </section>
+}
+
+function FormulaExplanation({ dag, variables, operators, compact = false }: { dag: IndicatorDag; variables: IndicatorVariable[]; operators: ComposerItem[]; compact?: boolean }) {
+  const nodeById = new Map(dag.nodes.map((node) => [String(node.id), node]))
+  const variableById = new Map(variables.map((variable) => [variable.name, variable]))
+  const operatorById = new Map(operators.flatMap((operator) => [
+    [operator.id, operator] as const,
+    [operator.label, operator] as const,
+    ...operator.aliases.map((alias) => [alias, operator] as const),
+  ]))
+  const incoming = new Map<string, typeof dag.edges>()
+  dag.edges.forEach((edge) => {
+    const target = String(edge.target)
+    incoming.set(target, [...(incoming.get(target) ?? []), edge].sort((left, right) => (left.order ?? 0) - (right.order ?? 0)))
+  })
+  const depthCache = new Map<string, number>()
+  const depthOf = (nodeId: string, visiting = new Set<string>()): number => {
+    const cached = depthCache.get(nodeId)
+    if (cached !== undefined) return cached
+    if (visiting.has(nodeId)) return 0
+    const next = new Set(visiting).add(nodeId)
+    const parents = incoming.get(nodeId) ?? []
+    const depth = parents.length ? Math.max(...parents.map((edge) => depthOf(String(edge.source), next))) + 1 : 0
+    depthCache.set(nodeId, depth)
+    return depth
+  }
+  dag.nodes.forEach((node) => depthOf(String(node.id)))
+  const nodeName = (node: IndicatorDagNode | undefined) => {
+    if (!node) return '上一计算结果'
+    if (node.kind === 'variable') return variableById.get(node.label)?.label || node.label
+    if (node.kind === 'constant') return `常量 ${node.formula_fragment || node.label}`
+    return operatorById.get(dagNodeOperatorId(node))?.label || node.label
+  }
+  const variableNodes = dag.nodes.filter((node) => node.kind === 'variable')
+  const calculationNodes = dag.nodes
+    .filter((node) => node.kind !== 'variable' && node.kind !== 'constant')
+    .sort((left, right) => (depthCache.get(String(left.id)) ?? 0) - (depthCache.get(String(right.id)) ?? 0))
+  const usedOperators = [...new Map(calculationNodes.map((node) => {
+    const operator = operatorById.get(dagNodeOperatorId(node))
+    return [operator?.id || dagNodeOperatorId(node), { node, operator }] as const
+  })).values()]
+  const rootId = dag.roots.result ?? Object.values(dag.roots)[0]
+  const rootNode = nodeById.get(String(rootId))
+  const wrapperClass = compact ? 'mt-4 rounded-xl border border-violet-100 bg-violet-50/30 p-3' : 'mt-4 rounded-xl border border-violet-200 bg-white p-4 shadow-sm'
+  return <section className={wrapperClass} aria-label="公式计算说明">
+    <div><h3 className="font-semibold text-slate-900">公式计算说明</h3><p className="mt-1 text-xs leading-5 text-slate-500">数学符号、中文名称和计算步骤一一对应；先认变量，再认算子，最后按顺序理解完整计算。</p></div>
+    <div className="mt-4">
+      <h4 className="text-xs font-semibold text-slate-700">输入变量与符号</h4>
+      {variableNodes.length ? <ul className="mt-2 grid gap-2 sm:grid-cols-2">{variableNodes.map((node) => {
+        const variable = variableById.get(node.label)
+        const symbol = variable?.latex || node.latex_fragment
+        const shape = variable ? inferShape(variable) : dagNodeShape(node)
+        return <li key={node.id} className="rounded-lg border border-sky-100 bg-sky-50/60 p-3"><div className="flex items-center gap-3"><div className="min-w-20 rounded-md bg-white px-2 py-1 text-center text-sky-900">{symbol ? <MathNotation latex={symbol} label={`${nodeName(node)}的数学符号`} /> : <span className="text-xs">输入</span>}</div><div className="min-w-0"><p className="text-sm font-semibold text-slate-800">{nodeName(node)}</p><p className="mt-0.5 text-xs text-slate-500">{shapeLabel(shape, dagNodeValueType(node))}</p></div></div><p className="mt-2 text-xs leading-5 text-slate-600">{variable?.description || variable?.semantic || '由当前运行上下文提供的真实输入数据。'}</p></li>
+      })}</ul> : <p className="mt-2 text-xs text-slate-500">该公式不依赖外部变量。</p>}
+    </div>
+    <div className="mt-4">
+      <h4 className="text-xs font-semibold text-slate-700">算子与数学符号</h4>
+      <ul className="mt-2 grid gap-2 sm:grid-cols-2">{usedOperators.map(({ node, operator }) => {
+        const symbol = mathFormulaForDisplay(operator?.displayTemplate, node.latex_fragment || node.formula_fragment)
+        return <li key={operator?.id || node.id} className="rounded-lg border border-violet-100 bg-violet-50/60 p-3"><div className="flex items-center gap-3"><div className="min-w-24 rounded-md bg-white px-2 py-1 text-center text-violet-900">{symbol ? <MathNotation latex={symbol} label={`${nodeName(node)}的数学符号`} /> : <span className="text-xs">数学运算</span>}</div><div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">对应算子</p><p className="text-sm font-semibold text-slate-800">{nodeName(node)}</p></div></div><p className="mt-2 text-xs leading-5 text-slate-600">{humanizeTechnicalTypes(operator?.essence || operator?.semantic || '对输入数据执行受控数学计算。')}</p></li>
+      })}</ul>
+    </div>
+    <div className="mt-4">
+      <h4 className="text-xs font-semibold text-slate-700">逐步计算</h4>
+      <ol className="mt-2 space-y-2">{calculationNodes.map((node, index) => {
+        const operator = operatorById.get(dagNodeOperatorId(node))
+        const inputs = incoming.get(String(node.id)) ?? []
+        const stepFormula = mathFormulaForDisplay(node.latex_fragment, node.formula_fragment) || operator?.displayTemplate
+        return <li key={node.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="flex items-start gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-600 text-xs font-bold text-white">{index + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-slate-800">使用“{nodeName(node)}”</p><span className="text-xs text-slate-400">得到{shapeLabel(dagNodeShape(node), dagNodeValueType(node))}</span></div>{stepFormula && <div className="mt-2 rounded-md bg-white px-2 py-1"><MathNotation latex={stepFormula} label={`第 ${index + 1} 步的数学公式`} /></div>}{inputs.length > 0 && <ul className="mt-2 space-y-1 text-xs text-slate-600">{inputs.map((edge, inputIndex) => {
+          const source = nodeById.get(String(edge.source))
+          const parameter = parameterLabel(edge.parameter || edge.parameter_name || edge.input_name || operator?.parameters[inputIndex]?.name, operator?.parameters[inputIndex]?.label || `输入 ${inputIndex + 1}`)
+          return <li key={`${edge.source}-${inputIndex}`}><span className="font-semibold text-violet-700">{parameter}</span>：{nodeName(source)}</li>
+        })}</ul>}</div></div></li>
+      })}</ol>
+    </div>
+    <p className="mt-4 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800"><span className="font-semibold">最终结果：</span>{rootNode ? `${nodeName(rootNode)}输出${shapeLabel(dagNodeShape(rootNode), dagNodeValueType(rootNode))}` : '按上述步骤得到指标结果'}。</p>
+  </section>
 }
 
 function ComposerNodeFields({ node, path, variables, operators, indicators, contextDomain, depth, onChange }: { node: ComposerNode; path: number[]; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; depth: number; onChange: (path: number[], argument: ComposerArgument) => void }) {
@@ -2005,9 +2322,9 @@ function ComposerNodeFields({ node, path, variables, operators, indicators, cont
         {argument.source === 'variable' && <>
           <label className="mt-3 block text-xs font-semibold text-slate-600">选择兼容变量<select aria-label={`${label} 变量`} value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value })} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">选择兼容变量</option>{variables.map((variable) => {
             const compatible = isCompatibleVariable(variable, argument.parameter, contextDomain)
-            return <option key={variable.name} value={variable.name} disabled={!compatible}>{variable.label} · {shapeLabel(inferShape(variable), variable.value_type)}{compatible ? '' : '（类型、语义或计算域不兼容）'}</option>
+            return <option key={variable.name} value={variable.name} disabled={!compatible}>{variable.label} · {shapeLabel(inferShape(variable), variable.value_type)}{compatible ? '' : '（类型或语义不兼容）'}</option>
           })}</select></label>
-          {compatibleVariables.length === 0 && <p className="mt-2 text-xs text-amber-700">当前计算域没有满足该参数类型与语义约束的变量，可改用嵌套算子构造。</p>}
+          {compatibleVariables.length === 0 && <p className="mt-2 text-xs text-amber-700">当前产品变量中没有满足该参数类型与语义约束的输入，可改用嵌套算子构造。</p>}
         </>}
         {argument.source === 'constant' && <label className="mt-3 block text-xs font-semibold text-slate-600">有限数值常量<input aria-label={`${label} 有限常量`} type="number" step="any" value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value })} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>}
         {argument.source === 'indicator' && <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/40 p-3">
@@ -2027,7 +2344,7 @@ function ComposerNodeFields({ node, path, variables, operators, indicators, cont
   </div>
 }
 
-function ComposerDrawer({ composer, variables, operators, indicators, contextDomain, loading, canApply, error, onClose, onChange, onApplyModeChange, onApply }: { composer: ComposerState; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; loading: boolean; canApply: boolean; error: string | null; onClose: () => void; onChange: (path: number[], argument: ComposerArgument) => void; onApplyModeChange: (mode: ComposerApplyMode) => void; onApply: () => void }) {
+function ComposerDrawer({ composer, indicatorName, variables, operators, indicators, contextDomain, loading, canApply, error, onClose, onBrowseResources, onChange, onApplyModeChange, onApply }: { composer: ComposerState; indicatorName: string; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; loading: boolean; canApply: boolean; error: string | null; onClose: () => void; onBrowseResources: () => void; onChange: (path: number[], argument: ComposerArgument) => void; onApplyModeChange: (mode: ComposerApplyMode) => void; onApply: () => void }) {
   const dialogRef = useRef<HTMLElement | null>(null)
   const closeRef = useRef<HTMLButtonElement | null>(null)
   const composerOpen = Boolean(composer)
@@ -2049,18 +2366,19 @@ function ComposerDrawer({ composer, variables, operators, indicators, contextDom
     return () => { document.removeEventListener('keydown', trapFocus); previous?.focus() }
   }, [composerOpen])
   if (!composer) return null
+  const editingCurrentFormula = composer.origin === 'current_formula'
 
   return <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="composer-title" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }} className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
-      <div className="flex items-start justify-between border-b border-slate-200 p-5"><div><p className="text-xs font-semibold text-violet-700">计算算子</p><h2 id="composer-title" className="mt-1 text-lg font-bold text-slate-900">配置 {composer.node.item.label}</h2><p className="mt-1 text-sm text-slate-600">{composer.node.item.essence}</p></div><button ref={closeRef} type="button" onClick={onClose} className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-300" aria-label="关闭参数配置">关闭</button></div>
+      <div className="flex items-start justify-between border-b border-slate-200 p-5"><div><p className="text-xs font-semibold text-violet-700">{editingCurrentFormula ? '当前指标计算逻辑' : '计算算子'}</p><h2 id="composer-title" className="mt-1 text-lg font-bold text-slate-900">{editingCurrentFormula ? `编辑“${indicatorName || '当前指标'}”的计算逻辑` : `配置 ${composer.node.item.label}`}</h2><p className="mt-1 text-sm text-slate-600">{editingCurrentFormula ? `最终计算步骤：${composer.node.item.label}。修改下方参数或嵌套步骤后应用到当前公式。` : composer.node.item.essence}</p></div><button ref={closeRef} type="button" onClick={onClose} className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-300" aria-label="关闭参数配置">关闭</button></div>
       <div className="flex-1 space-y-4 overflow-auto p-5">
         <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3"><p className="text-xs font-semibold text-violet-800">输入与返回结果</p><p className="mt-1 text-xs leading-5 text-violet-900">{operatorContractDescription(composer.node.item)}</p><p className="mt-2 text-xs text-violet-800">嵌套算子会先安全展开，再作为上级算子的输入；系统会在插入前检查数据类型和含义是否兼容。</p></div>
         <ComposerNodeFields node={composer.node} path={[]} variables={variables} operators={operators} indicators={indicators} contextDomain={contextDomain} depth={0} onChange={onChange} />
-        <label className="block rounded-xl border border-slate-200 p-3 text-sm font-semibold text-slate-700">应用方式<select aria-label="应用方式" value={composer.applyMode} onChange={(event) => onApplyModeChange(event.target.value as ComposerApplyMode)} className="mt-2 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="replace_formula">替换完整公式</option><option value="replace_selection" disabled={composer.selectionEnd <= composer.selectionStart}>替换高级模式选中内容</option><option value="insert_cursor">插入高级模式光标位置</option></select><span className="mt-2 block text-xs font-normal text-slate-500">选择后再执行展开，系统不会隐式猜测插入位置。</span></label>
+        {editingCurrentFormula ? <div className="rounded-xl border border-slate-200 bg-slate-50 p-3"><p className="text-sm font-semibold text-slate-700">需要重新选择根步骤？</p><p className="mt-1 text-xs leading-5 text-slate-500">可以返回资源目录，从变量、计算算子或已有指标重新构建当前公式。</p><button type="button" onClick={onBrowseResources} className="mt-3 min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-300">改用其他构建资源</button></div> : <label className="block rounded-xl border border-slate-200 p-3 text-sm font-semibold text-slate-700">应用方式<select aria-label="应用方式" value={composer.applyMode} onChange={(event) => onApplyModeChange(event.target.value as ComposerApplyMode)} className="mt-2 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="replace_formula">替换完整公式</option><option value="replace_selection" disabled={composer.selectionEnd <= composer.selectionStart}>替换高级模式选中内容</option><option value="insert_cursor">插入高级模式光标位置</option></select><span className="mt-2 block text-xs font-normal text-slate-500">选择后再执行展开，系统不会隐式猜测插入位置。</span></label>}
         {error && <p id="composer-error" role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
         {!canApply && !error && <p id="composer-help" role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{siblingIssue || '请完成所有必填参数后再展开；不兼容的参数组合不会被提交。'}</p>}
       </div>
-      <div className="flex gap-3 border-t border-slate-200 p-5"><button type="button" onClick={onClose} className="flex-1 rounded-lg border border-slate-200 py-2 text-sm font-semibold text-slate-700">取消</button><button type="button" onClick={onApply} disabled={loading || !canApply} aria-describedby={!canApply ? 'composer-help' : error ? 'composer-error' : undefined} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{loading ? '展开中…' : '展开到公式'}</button></div>
+      <div className="flex gap-3 border-t border-slate-200 p-5"><button type="button" onClick={onClose} className="flex-1 rounded-lg border border-slate-200 py-2 text-sm font-semibold text-slate-700">取消</button><button type="button" onClick={onApply} disabled={loading || !canApply} aria-describedby={!canApply ? 'composer-help' : error ? 'composer-error' : undefined} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{loading ? '应用中…' : editingCurrentFormula ? '应用逻辑修改' : '展开到公式'}</button></div>
     </section>
   </div>
 }
@@ -2078,7 +2396,7 @@ function ValidationPanel({ validation, resourceLabels }: { validation: Validatio
   return <div className={`mt-4 rounded-xl border p-4 ${validation.valid ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50'}`} role={validation.valid ? 'status' : 'alert'}><p className={`font-semibold ${validation.valid ? 'text-emerald-800' : 'text-rose-800'}`}>{validation.valid ? '校验通过' : '校验未通过'}</p>{validation.dependencies.length > 0 && <p className="mt-1 text-xs text-slate-600">所需数据：{validation.dependencies.map((dependency) => resourceLabels.get(dependency) || '公式所需变量').join('、')}</p>}<ul className="mt-2 space-y-2 text-sm text-slate-700">{validation.diagnostics.map((item, index) => <li key={`${item.code}-${index}`}><span>{diagnosticMessage(item.code, item.message)}</span>{(item.node_id !== undefined || item.expected !== undefined || item.actual !== undefined) && <span className="mt-0.5 block text-xs text-slate-500">{item.node_id !== undefined ? '问题位于公式中的一个计算步骤' : '数据要求'}{item.expected !== undefined ? ` · 需要 ${humanizeTechnicalTypes(item.expected)}` : ''}{item.actual !== undefined ? ` · 当前是 ${humanizeTechnicalTypes(item.actual)}` : ''}</span>}</li>)}</ul></div>
 }
 
-function DagPanel({ validation, dag, period, option, contextDomain, resourceLabels, operators }: { validation: ValidationResponse | null; dag: IndicatorDag | null; period: string; option: ({ chartHeight?: number } & Record<string, unknown>) | null; contextDomain: IndicatorContextDomain; resourceLabels: Map<string, string>; operators: ComposerItem[] }) {
+function DagPanel({ validation, dag, period, option, contextDomain, resourceLabels, operators, validating, canValidate, onValidate, onEdit }: { validation: ValidationResponse | null; dag: IndicatorDag | null; period: string; option: ({ chartHeight?: number } & Record<string, unknown>) | null; contextDomain: IndicatorContextDomain; resourceLabels: Map<string, string>; operators: ComposerItem[]; validating: boolean; canValidate: boolean; onValidate: () => void; onEdit: () => void }) {
   const [showTable, setShowTable] = useState(true)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [chartRevision, setChartRevision] = useState(0)
@@ -2086,8 +2404,9 @@ function DagPanel({ validation, dag, period, option, contextDomain, resourceLabe
     setSelectedNodeId(null)
     setChartRevision((current) => current + 1)
   }, [dag])
-  if (!validation) return <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-500">校验公式后会在这里展示计算 DAG 与可访问的拓扑步骤。</div>
-  if (!validation.valid || !dag) return null
+  if (validating) return <div role="status" aria-live="polite" className="rounded-2xl border border-violet-100 bg-white p-5 shadow-sm"><p className="font-semibold text-slate-800">正在解析当前指标的计算逻辑…</p><p className="mt-1 text-sm text-slate-500">完成后将自动展示计算 DAG 和可访问的拓扑步骤。</p></div>
+  if (!validation) return <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5"><p className="font-semibold text-slate-800">尚未生成计算逻辑</p><p className="mt-1 text-sm text-slate-500">进入本页后会自动解析当前指标；也可以在这里手动重试。</p><button type="button" onClick={onValidate} disabled={!canValidate} className="mt-4 rounded-lg border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">解析并展示计算逻辑</button></div>
+  if (!validation.valid || !dag) return <section role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-5"><h2 className="font-semibold text-rose-800">当前公式未通过校验</h2><p className="mt-1 text-sm text-rose-700">{validation.diagnostics[0] ? diagnosticMessage(validation.diagnostics[0].code, validation.diagnostics[0].message) : '请检查公式后重新解析。'}</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" onClick={onEdit} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-800 focus:outline-none focus:ring-2 focus:ring-rose-300">返回定义与公式修改</button><button type="button" onClick={onValidate} disabled={!canValidate} className="rounded-lg border border-rose-200 bg-white px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-rose-300">重新解析计算逻辑</button></div></section>
   const { chartHeight = 360, ...echartsOption } = option ?? {}
   const nodeById = new Map(dag.nodes.map((node) => [String(node.id), node]))
   const incoming = new Map<string, typeof dag.edges>()
@@ -2096,9 +2415,9 @@ function DagPanel({ validation, dag, period, option, contextDomain, resourceLabe
     incoming.set(target, [...(incoming.get(target) ?? []), edge].sort((left, right) => (left.order ?? 0) - (right.order ?? 0)))
   })
   const roots = new Set(Object.values(dag.roots).map(String))
-  const operatorById = new Map(operators.flatMap((operator) => [[operator.id, operator] as const, [operator.label, operator] as const]))
+  const operatorById = new Map(operators.flatMap((operator) => [[operator.id, operator] as const, [operator.label, operator] as const, ...operator.aliases.map((alias) => [alias, operator] as const)]))
   const inputLabel = (node: IndicatorDagNode, edge: IndicatorDag['edges'][number], index: number) => {
-    const operator = operatorById.get(node.operator_id || node.label)
+    const operator = operatorById.get(dagNodeOperatorId(node))
     return parameterLabel(
       edge.parameter || edge.parameter_name || edge.input_name || operator?.parameters[index]?.name,
       operator?.parameters[index]?.label || `输入 ${index + 1}`,
@@ -2106,7 +2425,7 @@ function DagPanel({ validation, dag, period, option, contextDomain, resourceLabe
   }
   const selectedNode = nodeById.get(selectedNodeId || '') ?? nodeById.get(String(dag.roots.result)) ?? dag.nodes[0]
   const selectedInputs = selectedNode ? incoming.get(String(selectedNode.id)) ?? [] : []
-  const selectedOperator = selectedNode ? operatorById.get(selectedNode.operator_id || selectedNode.label) : undefined
+  const selectedOperator = selectedNode ? operatorById.get(dagNodeOperatorId(selectedNode)) : undefined
   const selectedFormula = selectedNode
     ? mathFormulaForDisplay(selectedNode.latex_fragment || selectedOperator?.displayTemplate, selectedNode.formula_fragment)
     : null
@@ -2115,12 +2434,14 @@ function DagPanel({ validation, dag, period, option, contextDomain, resourceLabe
     <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500" aria-label="DAG 图例"><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-sky-600" />输入</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-slate-500" />常量</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-violet-500" />计算</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm border-2 border-violet-200 bg-violet-700" />最终结果</span></div>
     {option && <ReactECharts key={chartRevision} option={echartsOption} style={{ height: chartHeight }} notMerge lazyUpdate aria-label={contextDomain === 'portfolio' ? '组合快照指标计算 DAG 图' : `${period} 指标计算 DAG 图`} onEvents={{ click: (params: { dataType?: string; data?: { id?: string | number } }) => { if (params.dataType === 'node' && params.data?.id !== undefined) setSelectedNodeId(String(params.data.id)) } }} />}
     <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3"><button type="button" onClick={() => setChartRevision((current) => current + 1)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-300">适配并复位图谱</button><button type="button" aria-expanded={showTable} aria-controls="dag-data-table" onClick={() => setShowTable((current) => !current)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{showTable ? '隐藏计算数据表' : '显示计算数据表'}</button><span className="self-center text-[11px] text-slate-400">滚轮缩放，拖动平移；选择节点查看契约。</span></div>
-    {selectedNode && <article className="mt-3 rounded-xl border border-violet-100 bg-violet-50/50 p-3" aria-live="polite" aria-label="DAG 节点详情"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-violet-900">{resourceLabels.get(selectedNode.operator_id || selectedNode.label) ?? selectedNode.label}</p>{roots.has(String(selectedNode.id)) && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</div><dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">数学公式</dt><dd className="mt-0.5 rounded-lg bg-white/70 px-2 py-1">{selectedFormula ? <MathNotation latex={selectedFormula} label="当前计算步骤的数学公式" /> : <span className="text-slate-500">该步骤的数学符号由完整公式上下文决定</span>}</dd></div><div><dt className="font-semibold text-slate-700">输出数据</dt><dd className="mt-0.5 text-slate-600">{shapeLabel(selectedNode.shape || 'unknown', selectedNode.value_type)} · 理论规模：{symbolicDataSizeLabel(selectedNode.symbolic_shape, selectedNode.shape || 'unknown', selectedNode.value_type)}{selectedNode.actual_shape ? ` · 实际规模：${actualDataSizeLabel(selectedNode.actual_shape, selectedNode.shape || 'unknown', selectedNode.value_type)}` : ''}</dd></div><div><dt className="font-semibold text-slate-700">输入参数</dt><dd className="mt-0.5 text-slate-600">{selectedInputs.length ? selectedInputs.map((edge, index) => inputLabel(selectedNode, edge, index)).join('、') : '无'}</dd></div><div><dt className="font-semibold text-slate-700">计算特征</dt><dd className="mt-0.5 text-slate-600">{nodeKindLabel(selectedNode.kind)}{selectedNode.cost_estimate !== undefined ? ` · ${costEstimateLabel(selectedNode.cost_estimate)}` : ''}</dd></div></dl>{selectedNode.diagnostics && selectedNode.diagnostics.length > 0 && <ul className="mt-2 space-y-1 text-xs text-rose-700">{selectedNode.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${index}`}>{diagnosticMessage(diagnostic.code, diagnostic.message)}</li>)}</ul>}</article>}
+    {selectedNode && <article className="mt-3 rounded-xl border border-violet-100 bg-violet-50/50 p-3" aria-live="polite" aria-label="DAG 节点详情"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-violet-900">{resourceLabels.get(dagNodeOperatorId(selectedNode)) ?? selectedNode.label}</p>{roots.has(String(selectedNode.id)) && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</div><dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">数学公式</dt><dd className="mt-0.5 rounded-lg bg-white/70 px-2 py-1">{selectedFormula ? <MathNotation latex={selectedFormula} label="当前计算步骤的数学公式" /> : <span className="text-slate-500">该步骤的数学符号由完整公式上下文决定</span>}</dd></div><div><dt className="font-semibold text-slate-700">输出数据</dt><dd className="mt-0.5 text-slate-600">{shapeLabel(dagNodeShape(selectedNode), dagNodeValueType(selectedNode))} · 理论规模：{symbolicDataSizeLabel(dagNodeSymbolicShape(selectedNode), dagNodeShape(selectedNode), dagNodeValueType(selectedNode))}{selectedNode.actual_shape ? ` · 实际规模：${actualDataSizeLabel(selectedNode.actual_shape, dagNodeShape(selectedNode), dagNodeValueType(selectedNode))}` : ''}</dd></div><div><dt className="font-semibold text-slate-700">输入参数</dt><dd className="mt-0.5 text-slate-600">{selectedInputs.length ? selectedInputs.map((edge, index) => inputLabel(selectedNode, edge, index)).join('、') : '无'}</dd></div><div><dt className="font-semibold text-slate-700">计算特征</dt><dd className="mt-0.5 text-slate-600">{nodeKindLabel(selectedNode.kind)}{selectedNode.cost_estimate !== undefined ? ` · ${costEstimateLabel(selectedNode.cost_estimate)}` : ''}</dd></div></dl>{selectedNode.diagnostics && selectedNode.diagnostics.length > 0 && <ul className="mt-2 space-y-1 text-xs text-rose-700">{selectedNode.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${index}`}>{diagnosticMessage(diagnostic.code, diagnostic.message)}</li>)}</ul>}</article>}
     {showTable && <div id="dag-data-table" className="mt-3 max-h-72 overflow-auto rounded-xl border border-slate-200"><table className="w-full min-w-[620px] text-left text-xs"><caption className="sr-only">DAG 节点、输入参数和输出类型数据表</caption><thead className="sticky top-0 bg-slate-50 text-slate-600"><tr><th className="px-3 py-2">步骤</th><th className="px-3 py-2">节点</th><th className="px-3 py-2">类别</th><th className="px-3 py-2">命名输入</th><th className="px-3 py-2">输出数据</th></tr></thead><tbody>{dag.nodes.map((node, index) => {
       const inputs = incoming.get(String(node.id)) ?? []
-      const nodeResourceId = node.operator_id || node.label
-      const nodeShape = node.shape || (node.kind === 'variable' ? 'series' : 'scalar')
-      return <tr key={node.id} className="border-t border-slate-100 align-top"><td className="px-3 py-2 text-slate-400">{index + 1}</td><td className="px-3 py-2"><button type="button" onClick={() => setSelectedNodeId(String(node.id))} className="text-left font-semibold text-slate-800 underline decoration-slate-200 underline-offset-2 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-300">{resourceLabels.get(nodeResourceId) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind)}</button>{roots.has(String(node.id)) && <span className="ml-2 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</td><td className="px-3 py-2 text-slate-600">{nodeKindLabel(node.kind)}</td><td className="px-3 py-2 text-slate-600">{inputs.length ? <ul className="space-y-1">{inputs.map((edge, edgeIndex) => { const source = nodeById.get(String(edge.source)); const sourceResourceId = source?.operator_id || source?.label || ''; return <li key={`${edge.source}-${edgeIndex}`}><span className="font-semibold text-violet-700">{inputLabel(node, edge, edgeIndex)}</span> ← {source ? resourceLabels.get(sourceResourceId) ?? resourceLabels.get(source.label) ?? nodeKindLabel(source.kind) : '上一计算步骤'}</li> })}</ul> : '—'}</td><td className="px-3 py-2 text-slate-600"><span>{shapeLabel(nodeShape, node.value_type)}</span>{node.symbolic_shape && <span className="mt-0.5 block">理论规模：{symbolicDataSizeLabel(node.symbolic_shape, nodeShape, node.value_type)}</span>}{node.actual_shape && <span className="mt-0.5 block">实际规模：{actualDataSizeLabel(node.actual_shape, nodeShape, node.value_type)}</span>}</td></tr>
+      const nodeResourceId = dagNodeOperatorId(node)
+      const nodeShape = dagNodeShape(node)
+      const nodeValueType = dagNodeValueType(node)
+      const nodeSymbolicShape = dagNodeSymbolicShape(node)
+      return <tr key={node.id} className="border-t border-slate-100 align-top"><td className="px-3 py-2 text-slate-400">{index + 1}</td><td className="px-3 py-2"><button type="button" onClick={() => setSelectedNodeId(String(node.id))} className="text-left font-semibold text-slate-800 underline decoration-slate-200 underline-offset-2 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-300">{resourceLabels.get(nodeResourceId) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind)}</button>{roots.has(String(node.id)) && <span className="ml-2 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</td><td className="px-3 py-2 text-slate-600">{nodeKindLabel(node.kind)}</td><td className="px-3 py-2 text-slate-600">{inputs.length ? <ul className="space-y-1">{inputs.map((edge, edgeIndex) => { const source = nodeById.get(String(edge.source)); const sourceResourceId = source ? dagNodeOperatorId(source) : ''; return <li key={`${edge.source}-${edgeIndex}`}><span className="font-semibold text-violet-700">{inputLabel(node, edge, edgeIndex)}</span> ← {source ? resourceLabels.get(sourceResourceId) ?? resourceLabels.get(source.label) ?? nodeKindLabel(source.kind) : '上一计算步骤'}</li> })}</ul> : '—'}</td><td className="px-3 py-2 text-slate-600"><span>{shapeLabel(nodeShape, nodeValueType)}</span>{nodeSymbolicShape && <span className="mt-0.5 block">理论规模：{symbolicDataSizeLabel(nodeSymbolicShape, nodeShape, nodeValueType)}</span>}{node.actual_shape && <span className="mt-0.5 block">实际规模：{actualDataSizeLabel(node.actual_shape, nodeShape, nodeValueType)}</span>}</td></tr>
     })}</tbody></table></div>}
   </section>
 }
