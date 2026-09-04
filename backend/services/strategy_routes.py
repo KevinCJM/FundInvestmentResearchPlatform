@@ -9,11 +9,24 @@ import json
 
 import pandas as pd
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
-from strategy import compute_risk_budget_weights, compute_target_weights
+from strategy import (
+    compute_risk_budget_weights,
+    compute_target_weights,
+    equal_weights,
+    normalize_explicit_weights,
+    scale_weights_percent,
+    strategy_execution_audit,
+)
 from backtest_engine import backtest_portfolio, gen_rebalance_dates, slice_fit_data, ensure_valid_rebalance_window
+from custom_indicators.errors import IndicatorDomainError
+from portfolio_regime import (
+    PublishedRegimeBacktestReference,
+    PublishedRegimeBacktestResolver,
+    condition_nav_backtest,
+)
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -24,6 +37,7 @@ router = APIRouter(prefix="/api/strategy", tags=["strategy"])
 _SCHEDULE_CACHE_SIZE = 64
 _schedule_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _schedule_cache_lock = Lock()
+regime_backtest_resolver = PublishedRegimeBacktestResolver()
 
 
 def _normalize_for_cache(value: Any) -> Any:
@@ -163,6 +177,23 @@ class ComputeWeightsRequest(BaseModel):
     window_mode: Optional[str] = None  # 'all'|'rollingN'
 
 
+class EqualWeightsRequest(BaseModel):
+    asset_count: int
+    max_leverage: float = 0.0
+
+
+@router.post("/equal-weights")
+def api_equal_weights(req: EqualWeightsRequest):
+    try:
+        weights = scale_weights_percent(
+            equal_weights(int(req.asset_count)),
+            float(req.max_leverage),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    return {"weights": weights, "execution": strategy_execution_audit()}
+
+
 @router.post("/compute-weights")
 def api_compute_weights(req: ComputeWeightsRequest):
     nv_path = DATA_DIR / "asset_nv.parquet"
@@ -187,17 +218,15 @@ def api_compute_weights(req: ComputeWeightsRequest):
         return JSONResponse(status_code=400, content={"detail": "样本不足，无法根据当前窗口计算权重"})
 
     if req.strategy.type == 'fixed':
-        weights = []
-        for c in req.strategy.classes:
-            w = 0.0 if c.weight is None else float(c.weight)
-            weights.append(w)
-        s = sum(weights)
-        if s <= 0:
-            n = len(weights)
-            weights = [1.0 / n for _ in range(n)]
-        else:
-            weights = [w / s for w in weights]
-        return {"weights": weights}
+        if any(c.weight is None for c in req.strategy.classes):
+            return JSONResponse(status_code=400, content={"detail": "固定权重必须逐项提供，禁止以等权补缺"})
+        try:
+            weights = normalize_explicit_weights(
+                [float(c.weight) for c in req.strategy.classes]
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return {"weights": weights, "execution": strategy_execution_audit()}
 
     if req.strategy.type == 'risk_budget':
         budgets = [float(c.budget or 0.0) for c in req.strategy.classes]
@@ -209,7 +238,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
         if req.strategy.risk_metric in {"var", "es"} and req.strategy.confidence is not None:
             risk_cfg["confidence"] = float(req.strategy.confidence)
         weights = compute_risk_budget_weights(nav_fit, risk_cfg, budgets, window_len=None, window_mode=None)
-        return {"weights": weights}
+        return {"weights": weights, "execution": strategy_execution_audit()}
 
     if req.strategy.type == 'target':
         risk_cfg = {"metric": req.strategy.risk_metric or "vol"}
@@ -253,15 +282,21 @@ def api_compute_weights(req: ComputeWeightsRequest):
             target_return=req.strategy.target_return,
             target_risk=req.strategy.target_risk,
         )
-        return {"weights": weights}
+        return {"weights": weights, "execution": strategy_execution_audit()}
 
     return JSONResponse(status_code=400, content={"detail": "未知策略类型"})
 
 
 class BacktestRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     alloc_name: str
     start_date: Optional[str] = None
     strategies: List[StrategySpec]
+    historical_regime: Optional[PublishedRegimeBacktestReference] = Field(
+        default=None,
+        validation_alias=AliasChoices("historical_regime", "regime"),
+    )
 
 
 @router.post("/backtest")
@@ -307,6 +342,19 @@ def api_backtest(req: BacktestRequest):
         strat_list.append(sdict)
 
     res = backtest_portfolio(nav_wide, strat_list, start_date=req.start_date)
+    if req.historical_regime is not None:
+        try:
+            resolved_regime = regime_backtest_resolver.resolve(req.historical_regime)
+            res["regime_conditioning"] = condition_nav_backtest(
+                resolved_regime,
+                res["dates"],
+                res["series"],
+            )
+        except IndicatorDomainError as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail()},
+            )
     return res
 
 
@@ -494,4 +542,5 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         "dates": [r['date'] for r in results],
         "weights": [r['weights'] for r in results],
         "cache_key": cache_key,
+        "execution": strategy_execution_audit(),
     }

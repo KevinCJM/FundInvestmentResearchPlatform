@@ -11,6 +11,7 @@ import pandas as pd
 import pyarrow.parquet as parquet
 
 try:
+    from backend.instrument_analytics_numba import count_true_kernel, nav_metrics_kernel
     from backend.series_quality import (
         PeriodWindowQuality,
         adjusted_nav_anomaly_dates,
@@ -18,6 +19,7 @@ try:
         load_sse_open_dates,
     )
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from instrument_analytics_numba import count_true_kernel, nav_metrics_kernel
     from series_quality import (
         PeriodWindowQuality,
         adjusted_nav_anomaly_dates,
@@ -58,6 +60,11 @@ class SnapshotValidationError(RuntimeError):
     """Raised when a candidate snapshot fails a data-integrity gate."""
 
 
+def _count_mask(values: Any) -> int:
+    mask = np.ascontiguousarray(np.asarray(values, dtype=np.uint8).reshape(-1))
+    return int(count_true_kernel(mask))
+
+
 def _source_fingerprint(path: Path) -> str:
     stat = path.stat()
     raw = f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}"
@@ -79,7 +86,7 @@ def _validate_info(path: Path, kind: str, sample_size: int) -> tuple[dict[str, A
     frame = pd.read_parquet(path, columns=["ts_code", "name", "status_code"])
     codes = frame["ts_code"].fillna("").astype(str).str.strip()
     valid_codes = codes[codes.ne("")]
-    duplicate_count = int(valid_codes.duplicated().sum())
+    duplicate_count = _count_mask(valid_codes.duplicated())
     if len(valid_codes) != len(frame) or duplicate_count:
         raise SnapshotValidationError(
             f"{path.name} 标的键异常: empty={len(frame) - len(valid_codes)}, duplicate={duplicate_count}"
@@ -98,16 +105,16 @@ def _validate_info(path: Path, kind: str, sample_size: int) -> tuple[dict[str, A
 def _batch_quality(frame: pd.DataFrame, contract: str) -> tuple[int, int, int]:
     if contract == "nav":
         values = pd.to_numeric(frame["adj_nav"], errors="coerce")
-        missing_values = int(values.isna().sum())
-        invalid_values = int((values.notna() & (~np.isfinite(values) | values.le(0))).sum())
+        missing_values = _count_mask(values.isna())
+        invalid_values = _count_mask(values.notna() & (~np.isfinite(values) | values.le(0)))
         return invalid_values, 0, missing_values
     close = pd.to_numeric(frame["close"], errors="coerce")
     volume = pd.to_numeric(frame["vol"], errors="coerce")
     amount = pd.to_numeric(frame["amount"], errors="coerce")
-    missing_values = int(close.isna().sum())
-    invalid_values = int((close.notna() & (~np.isfinite(close) | close.le(0))).sum())
-    invalid_activity = int(
-        ((np.isfinite(volume) & volume.lt(0)) | (np.isfinite(amount) & amount.lt(0))).sum()
+    missing_values = _count_mask(close.isna())
+    invalid_values = _count_mask(close.notna() & (~np.isfinite(close) | close.le(0)))
+    invalid_activity = _count_mask(
+        (np.isfinite(volume) & volume.lt(0)) | (np.isfinite(amount) & amount.lt(0))
     )
     return invalid_values, invalid_activity, missing_values
 
@@ -138,7 +145,7 @@ def _validate_history(
         frame["ts_code"] = frame["ts_code"].fillna("").astype(str).str.strip()
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         invalid_keys = frame["ts_code"].eq("") | frame["date"].isna()
-        invalid_key_count += int(invalid_keys.sum())
+        invalid_key_count += _count_mask(invalid_keys)
         valid = frame.loc[~invalid_keys]
         row_count += int(len(frame))
         invalid_values, invalid_activity, missing_values = _batch_quality(frame, contract)
@@ -205,7 +212,9 @@ def _validate_metrics_snapshot(
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     _require_columns(path, "snapshot")
     frame = pd.read_parquet(path)
-    duplicate_count = int(frame.duplicated(subset=["instrument_type", "ts_code"]).sum())
+    duplicate_count = _count_mask(
+        frame.duplicated(subset=["instrument_type", "ts_code"])
+    )
     if duplicate_count:
         raise SnapshotValidationError(f"{path.name} 存在 {duplicate_count} 个重复产品键。")
     unsupported_types = set(frame["instrument_type"].dropna().astype(str)) - {"etf", "fund"}
@@ -223,13 +232,18 @@ def _validate_metrics_snapshot(
     if any(unexpected.values()):
         raise SnapshotValidationError(f"{path.name} 包含基础信息外的代码: {unexpected}")
     numeric = frame.select_dtypes(include=[np.number])
-    infinity_count = int(np.isinf(numeric.to_numpy(dtype=float, na_value=np.nan)).sum()) if not numeric.empty else 0
+    infinity_count = (
+        _count_mask(np.isinf(numeric.to_numpy(dtype=float, na_value=np.nan)))
+        if not numeric.empty
+        else 0
+    )
     if infinity_count:
         raise SnapshotValidationError(f"{path.name} 包含 {infinity_count} 个 Infinity。")
     report = {
         "rows": int(len(frame)),
         "by_kind": {
-            kind: int(frame["instrument_type"].eq(kind).sum()) for kind in ("etf", "fund")
+            kind: _count_mask(frame["instrument_type"].eq(kind))
+            for kind in ("etf", "fund")
         },
         "as_of": pd.to_datetime(frame.get("as_of"), errors="coerce").max().strftime("%Y-%m-%d")
         if "as_of" in frame and pd.to_datetime(frame["as_of"], errors="coerce").notna().any()
@@ -286,56 +300,44 @@ def _independent_nav_metrics(
         for label, months in {"1m": 1, "3m": 3, "1y": 12, "3y": 36}.items()
     }
 
-    def horizon(label: str) -> float | None:
+    def nav_values(label: str) -> np.ndarray:
         selected, quality = windows[label]
-        if not quality.complete or len(selected) < 2:
-            return None
-        value = (
-            float(selected.iloc[-1]["adj_nav"])
-            / float(selected.iloc[0]["adj_nav"])
-            - 1.0
+        if not quality.complete:
+            return np.empty(0, dtype=np.float64)
+        return np.ascontiguousarray(
+            selected["adj_nav"].to_numpy(dtype=np.float64), dtype=np.float64
         )
-        return float(value) if np.isfinite(value) else None
 
-    one_year = (
-        windows["1y"][0] if windows["1y"][1].complete else working.iloc[0:0]
+    three_year = windows["3y"][0] if windows["3y"][1].complete else working.iloc[0:0]
+    three_year_elapsed_days = (
+        max((three_year.iloc[-1]["date"] - three_year.iloc[0]["date"]).days, 1)
+        if len(three_year) >= 2
+        else 0
     )
-    three_year = (
-        windows["3y"][0] if windows["3y"][1].complete else working.iloc[0:0]
+    metrics = nav_metrics_kernel(
+        nav_values("1m"),
+        nav_values("3m"),
+        nav_values("1y"),
+        nav_values("3y"),
+        three_year_elapsed_days,
     )
-    daily_returns = (
-        one_year["adj_nav"]
-        .pct_change(fill_method=None)
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna()
-    )
-    volatility = sharpe = None
-    if len(daily_returns) >= 60:
-        standard_deviation = float(daily_returns.std(ddof=1))
-        if np.isfinite(standard_deviation):
-            volatility = standard_deviation * np.sqrt(252.0)
-            if standard_deviation > 1e-12:
-                sharpe = float(daily_returns.mean() / standard_deviation * np.sqrt(252.0))
-    drawdown = calmar = None
-    nav_values = three_year["adj_nav"].to_numpy(dtype=float)
-    if len(nav_values) - 1 >= 180:
-        drawdown = float((nav_values / np.maximum.accumulate(nav_values) - 1.0).min())
-        elapsed_days = max((three_year.iloc[-1]["date"] - three_year.iloc[0]["date"]).days, 1)
-        annualized = (float(nav_values[-1]) / float(nav_values[0])) ** (365.25 / elapsed_days) - 1.0
-        if abs(drawdown) > 1e-12 and np.isfinite(annualized):
-            calmar = float(annualized / abs(drawdown))
+
+    def optional_metric(index: int) -> float | None:
+        value = float(metrics[index])
+        return value if np.isfinite(value) else None
+
     return {
         "first_date": pd.Timestamp(working.iloc[0]["date"]),
         "latest_date": latest_date,
         "observation_count": int(len(working)),
-        "return_1m": horizon("1m"),
-        "return_3m": horizon("3m"),
-        "return_1y": horizon("1y"),
-        "return_3y": horizon("3y"),
-        "annual_volatility_1y": volatility,
-        "max_drawdown_3y": drawdown,
-        "sharpe_1y": sharpe,
-        "calmar_3y": calmar,
+        "return_1m": optional_metric(0),
+        "return_3m": optional_metric(1),
+        "return_1y": optional_metric(2),
+        "return_3y": optional_metric(3),
+        "annual_volatility_1y": optional_metric(4),
+        "max_drawdown_3y": optional_metric(5),
+        "sharpe_1y": optional_metric(6),
+        "calmar_3y": optional_metric(7),
     }
 
 

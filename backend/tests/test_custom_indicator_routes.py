@@ -338,6 +338,13 @@ def test_typed_compose_infer_and_portfolio_snapshot_evaluation(monkeypatch, tmp_
             "operator_registry_version": "2.0.0",
         },
     }
+    validation = client.post(
+        "/api/custom-indicators/validate",
+        json=payload["inline_definition"],
+    )
+    assert validation.status_code == 200
+    assert validation.json()["valid"] is True
+    payload["compile_token"] = validation.json()["compile_token"]
     first = client.post("/api/custom-indicators/evaluate-portfolio", json=payload)
     second = client.post("/api/custom-indicators/evaluate-portfolio", json=payload)
     assert first.status_code == 200
@@ -434,6 +441,7 @@ def test_evaluation_plan_create_list_run_and_delete(monkeypatch, tmp_path: Path)
                 "filters": {
                     "fund_type": ["股票型"],
                     "invest_type": ["被动指数型"],
+                    "qdii_type": ["非QDII"],
                     "market": ["上交所"],
                     "status": ["上市交易"],
                     "management": [],
@@ -457,6 +465,7 @@ def test_evaluation_plan_create_list_run_and_delete(monkeypatch, tmp_path: Path)
         "filters": {
             "fund_type": ["股票型"],
             "invest_type": ["被动指数型"],
+            "qdii_type": ["非QDII"],
             "market": ["上交所"],
             "status": ["上市交易"],
             "management": [],

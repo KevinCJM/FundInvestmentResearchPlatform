@@ -20,6 +20,139 @@ const indicator = {
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 }
 
+type AnalysisRequest = {
+  statistics_period: string
+  price_ma_periods: number[]
+  volume_ma_periods: number[]
+  simulation_horizon: number
+  simulation_path_count: number
+  bootstrap_block_length: number
+  simulation_target_return: number
+}
+
+const makeSimulation = (method: 'parametric' | 'block_bootstrap', request: AnalysisRequest) => ({
+  method,
+  methodLabel: method === 'parametric' ? '参数化蒙特卡洛（偏度/峰度校准）' : '历史区块 Bootstrap',
+  days: [0, request.simulation_horizon],
+  samplePaths: [[1, 1.03], [1, 0.98]],
+  percentiles: {
+    p05: [1, 0.94], p25: [1, 0.98], p50: [1, 1.03], p75: [1, 1.07], p95: [1, 1.12],
+  },
+  terminal: {
+    p05: 0.94, p25: 0.98, p50: 1.03, p75: 1.07, p95: 1.12,
+    lossProbability: 0.25, valueAtRisk95: 0.06, conditionalValueAtRisk95: 0.08,
+    targetHitProbability: 0.42, averageMaxDrawdown: 0.07, p05Return: -0.06, medianReturn: 0.03,
+  },
+  assumptions: {
+    sourceObservationCount: 24,
+    targetReturnPercent: request.simulation_target_return,
+    meanDailyLogReturn: method === 'parametric' ? 0.0002 : null,
+    dailyLogVolatility: method === 'parametric' ? 0.008 : null,
+    historicalLogSkewness: method === 'parametric' ? -0.2 : null,
+    historicalLogExcessKurtosis: method === 'parametric' ? 0.8 : null,
+    fittedLogSkewness: method === 'parametric' ? -0.18 : null,
+    fittedLogExcessKurtosis: method === 'parametric' ? 0.76 : null,
+    shapeCalibrationStatus: method === 'parametric' ? 'matched' : null,
+    shapeSkewParameter: method === 'parametric' ? 0.1 : null,
+    tailWeightParameter: method === 'parametric' ? 1.1 : null,
+    averageBlockLength: method === 'block_bootstrap' ? request.bootstrap_block_length : null,
+  },
+})
+
+const makeDensity = (pathCount: number) => ({
+  sampleSize: pathCount,
+  points: [
+    { nav: 0.9, density: 0.2, estimatedCount: 10, simulatedReturn: -0.1 },
+    { nav: 1, density: 0.5, estimatedCount: 25, simulatedReturn: 0 },
+    { nav: 1.1, density: 0.2, estimatedCount: 10, simulatedReturn: 0.1 },
+  ],
+  histogram: [{ lowerNav: 0.9, upperNav: 1.1, density: 1, count: pathCount, frequency: 1 }],
+  maxDensity: 1,
+  modeNav: 1,
+  minNav: 0.9,
+  maxNav: 1.1,
+  countAxisMax: pathCount,
+  navAxisMin: 0.88,
+  navAxisMax: 1.12,
+  densityCountFactor: pathCount * 0.2,
+  histogramBinWidth: 0.2,
+})
+
+const makeAnalysis = (request: AnalysisRequest) => {
+  const incomplete = request.statistics_period === '1M'
+  const returns = incomplete
+    ? []
+    : Array.from({ length: 24 }, (_, index) => ({ date: `2026-01-${String(index + 2).padStart(2, '0')}`, return: index % 2 ? 0.2 : -0.1 }))
+  const qqPoints = [
+    { percentile: 0.05, theoreticalQuantile: -1.64, observedReturn: -0.3, referenceReturn: -0.25, tail: 'lower' },
+    { percentile: 0.5, theoreticalQuantile: 0, observedReturn: 0.05, referenceReturn: 0.05, tail: 'center' },
+    { percentile: 0.95, theoreticalQuantile: 1.64, observedReturn: 0.4, referenceReturn: 0.35, tail: 'upper' },
+  ]
+  const parametric = makeSimulation('parametric', request)
+  const bootstrap = makeSimulation('block_bootstrap', request)
+  return {
+    schema_version: 1,
+    product_id: '510300.SH',
+    execution: {
+      execution_backend: 'numba_njit_fixed_signature',
+      engine: 'product-analysis-njit-1.0.0',
+      kernel_version: 'product-chart-statistics-simulation-2',
+      kernel_coverage: '21/21',
+      kernel_fingerprint: '1234567890abcdef',
+      kernel_signatures: { product_analysis_kernel: ['fixed'] },
+      nopython: true,
+      njit_required: true,
+      object_mode: 0,
+      python_fallback: 0,
+      request_time_compilation: 0,
+    },
+    window: {
+      complete: !incomplete,
+      requested_start_date: incomplete ? '2025-12-25' : null,
+      message: incomplete ? '近 1 月要求产品完整覆盖所选区间；当前历史数据不足，统计指标不计算。' : null,
+    },
+    technical: {
+      availability: { ohlc: true, volume: true, kdj: true },
+      priceMa: Object.fromEntries(request.price_ma_periods.map((period) => [String(period), Array(25).fill(3.02)])),
+      volumeMa: Object.fromEntries(request.volume_ma_periods.map((period) => [String(period), Array(25).fill(1100)])),
+      bollinger: { upper: Array(25).fill(3.1), middle: Array(25).fill(3.02), lower: Array(25).fill(2.94) },
+      kdj: { kValues: Array(25).fill(55), dValues: Array(25).fill(52), jValues: Array(25).fill(61) },
+    },
+    dailyReturns: returns,
+    returnStatistics: {
+      mean: incomplete ? null : 0.05, std: incomplete ? null : 0.15, median: incomplete ? null : 0.05,
+      positiveRatio: incomplete ? null : 0.5, best: incomplete ? null : 0.2, worst: incomplete ? null : -0.1,
+      sampleSize: returns.length, skewness: incomplete ? null : -0.2, kurtosis: incomplete ? null : 0.8,
+      jbStatistic: incomplete ? null : 1.2, normalityPValue: incomplete ? null : 0.55,
+    },
+    interpretation: {
+      skewness: { label: '轻度左偏（负偏）', meaning: '测试偏度解释' },
+      kurtosis: { label: '轻度尖峰厚尾', meaning: '测试峰度解释' },
+      normality: incomplete ? '样本不足，无法进行检验' : '无法拒绝正态假设（5% 显著性水平）',
+    },
+    histogram: incomplete ? [] : [{ start: -0.2, end: 0.2, count: 24, normalPdfCount: 23.5, frequency: 1, center: 0 }],
+    boxPlot: incomplete ? null : {
+      stats: [-0.1, -0.05, 0.05, 0.15, 0.2, 0.2], outliers: [],
+      quartiles: { q1: -0.05, median: 0.05, q3: 0.15, iqr: 0.2 }, whiskers: { lower: -0.1, upper: 0.2 },
+    },
+    normalQq: incomplete ? null : { sampleSize: returns.length, points: qqPoints, keyPoints: qqPoints },
+    simulation: incomplete ? null : {
+      initialNav: 1,
+      parametric,
+      blockBootstrap: bootstrap,
+      comparison: {
+        p05ReturnGap: 0.01, medianReturnGap: 0.01, lossProbabilityGap: 0.02,
+        conditionalValueAtRiskGap: 0.01, level: 'low', message: '两种模型结果接近。',
+      },
+      densities: {
+        parametric: makeDensity(request.simulation_path_count),
+        block_bootstrap: makeDensity(request.simulation_path_count),
+      },
+    },
+    regimeStatistics: [],
+  }
+}
+
 async function mockMetricDisplayApi(page: Page) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
@@ -56,7 +189,18 @@ async function mockMetricDisplayApi(page: Page) {
           window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: period === '1M' ? '2025-12-06' : '2025-01-06', end_date: '2026-01-06', observation_count: period === '1M' ? 21 : 250, data_latest_date: '2026-01-06' },
         }],
         summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 },
+        execution: {
+          execution_backend: 'numba_njit_fixed_signature',
+          nopython: true,
+          object_mode: 0,
+          python_fallback: 0,
+          request_time_compilation: 0,
+          kernel_signatures: { typed_indicator_plan: ['fixed'] },
+        },
       } })
+    }
+    if (url.pathname === '/api/instruments/products/510300.SH/analysis') {
+      return route.fulfill({ json: makeAnalysis(route.request().postDataJSON() as AnalysisRequest) })
     }
     return route.fulfill({ status: 404, json: {} })
   })

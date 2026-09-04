@@ -15,9 +15,9 @@ import {
   createCustomIndicator,
   deleteCustomIndicator,
   evaluateCustomIndicators,
+  exportCustomIndicatorExcel,
   getCustomIndicatorMeta,
   getSnapshotIndicatorConfig,
-  getVariableAvailability,
   indicatorsForContext,
   listCustomIndicators,
   searchInstruments,
@@ -41,7 +41,6 @@ import {
   type ProductKind,
   type SnapshotIndicatorConfig,
   type ValidationResponse,
-  type VariableAvailabilityItem,
 } from '../services/customIndicators'
 import { MetricUnavailableReason } from '../components/metrics/MetricDisplay'
 import { SearchDropdown } from '../components/FilterDropdown'
@@ -200,8 +199,13 @@ function parameterAcceptsIndicator(parameter: IndicatorOperatorParameter) {
 }
 
 const FALLBACK_VARIABLES: IndicatorVariable[] = [
-  { name: 'returns', label: '普通收益率序列', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{r}', shape: 'series', semantic: '当前产品在计算窗口内的普通收益率序列。', source: '真实复权净值', domains: ['single_product'], category_id: 'returns', category_label: '收益与变化' },
-  { name: 'log_returns', label: '对数收益率序列', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{\\ell}', shape: 'series', semantic: '当前产品在计算窗口内的对数收益率序列。', source: '真实复权净值', domains: ['single_product'], category_id: 'returns', category_label: '收益与变化' },
+  { name: 'returns', label: '复权净值普通收益率', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{r}', shape: 'series', semantic: '由相邻复权净值计算的普通收益率，即 adjusted_nav[t] / adjusted_nav[t-1] - 1。', semantic_role: 'ordinary_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值派生', data_basis: '复权净值', frequency: '交易日', unit: '小数', domains: ['single_product'], product_kinds: ['etf', 'fund'], category_id: 'returns', category_label: '收益与变化' },
+  { name: 'log_returns', label: '复权净值对数收益率', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{\\ell}', shape: 'series', semantic: '由相邻复权净值计算的对数收益率，即 log(adjusted_nav[t] / adjusted_nav[t-1])。', semantic_role: 'log_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值派生', data_basis: '复权净值', frequency: '交易日', unit: '小数', domains: ['single_product'], product_kinds: ['etf', 'fund'], category_id: 'returns', category_label: '收益与变化' },
+  { name: 'adjusted_nav', label: '复权净值', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{p}_{\\mathrm{adj}}', shape: 'series', semantic: '产品在计算窗口内的真实复权净值。', semantic_role: 'adjusted_nav_level', measure: 'adjusted_nav', price_basis: 'adjusted_nav', source: 'Tushare 本地 Parquet', data_basis: '复权净值', frequency: '交易日', unit: '净值', domains: ['single_product'], product_kinds: ['etf', 'fund'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_open', label: '开盘价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{o}', shape: 'series', semantic: 'ETF 未复权日 K 开盘价；场外基金没有日内开盘价。', semantic_role: 'raw_open_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_high', label: '最高价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{h}', shape: 'series', semantic: 'ETF 未复权日 K 最高价；场外基金没有日内最高价。', semantic_role: 'raw_high_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_low', label: '最低价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{l}', shape: 'series', semantic: 'ETF 未复权日 K 最低价；场外基金没有日内最低价。', semantic_role: 'raw_low_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_close', label: '收盘价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{c}', shape: 'series', semantic: 'ETF 未复权日 K 收盘价；场外基金没有交易所收盘价。', semantic_role: 'raw_close_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
   { name: 'risk_free_rate_per_observation', label: '单观察期无风险收益率', value_type: 'scalar', dtype: 'float64', latex: 'r_{f}', shape: 'scalar', semantic: '由年化无风险利率按当前观察频率换算。', source: '指标配置', domains: ['single_product', 'portfolio'], category_id: 'configuration', category_label: '基准与配置' },
 ]
 
@@ -229,25 +233,6 @@ function supportsVariableDomain(variable: IndicatorVariable, contextDomain: Indi
   return contextDomain === 'portfolio'
     ? ['asset_returns', 'asset_log_returns', 'asset_weights', 'weight_path', 'benchmark_returns'].includes(variable.name)
     : !['asset_returns', 'asset_log_returns', 'asset_weights', 'weight_path', 'benchmark_returns'].includes(variable.name)
-}
-
-function availabilitySupportsVariable(item: VariableAvailabilityItem | undefined) {
-  if (!item || item.status === 'declared') return true
-  if (item.status === 'available') return true
-  return item.status === 'partial' && item.actual_shape !== null && item.actual_shape !== undefined
-}
-
-function variableIsUsable(
-  variable: IndicatorVariable,
-  item: VariableAvailabilityItem | undefined,
-  runtimeAvailabilityRequired: boolean,
-  availabilityLoading: boolean,
-  availabilityError: string | null,
-) {
-  if (variable.availability === 'unavailable' || variable.availability === 'not_applicable') return false
-  if (!runtimeAvailabilityRequired) return true
-  if (availabilityLoading || availabilityError || !item) return false
-  return availabilitySupportsVariable(item)
 }
 
 function isCompatibleVariable(
@@ -648,10 +633,6 @@ function dagNodeSymbolicShape(node: IndicatorDagNode) {
   return node.symbolic_shape ?? dagNodeInferredType(node)?.shape
 }
 
-function availabilityStatusLabel(status: string) {
-  return ({ available: '可用', partial: '部分产品可用', conditional: '有条件可用', source_unavailable: '缺少对应数据源', field_missing: '缺少数据字段', no_observations: '没有有效观察值', unavailable: '不可用', not_applicable: '不适用', missing: '数据缺失', insufficient: '样本不足', insufficient_window: '当前区间样本不足', checking: '核对中', availability_check_failed: '可用性核对失败', error: '读取失败' } as Record<string, string>)[status] || '状态待确认'
-}
-
 function scopeLabel(scope: string) {
   return ({ single_product: '单产品', portfolio: '组合', etf: 'ETF', fund: '场外基金' } as Record<string, string>)[scope] || scope
 }
@@ -917,9 +898,6 @@ export default function IndicatorStudio() {
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogError, setCatalogError] = useState<string | null>(null)
   const [insertingIndicatorId, setInsertingIndicatorId] = useState<string | null>(null)
-  const [variableAvailability, setVariableAvailability] = useState<Record<string, VariableAvailabilityItem>>({})
-  const [availabilityLoading, setAvailabilityLoading] = useState(false)
-  const [availabilityError, setAvailabilityError] = useState<string | null>(null)
   const [composer, setComposer] = useState<ComposerState>(null)
   const [guidedTree, setGuidedTree] = useState<ComposerNode | null>(null)
   const [composerLoading, setComposerLoading] = useState(false)
@@ -934,7 +912,7 @@ export default function IndicatorStudio() {
   const [saving, setSaving] = useState(false)
   const [validating, setValidating] = useState(false)
   const [previewing, setPreviewing] = useState(false)
-  const [includeRollingSeries, setIncludeRollingSeries] = useState(false)
+  const [excelExporting, setExcelExporting] = useState(false)
   const [searching, setSearching] = useState(false)
   const [indicatorQuery, setIndicatorQuery] = useState('')
   const [indicatorSourceFilter, setIndicatorSourceFilter] = useState<'all' | 'built_in' | 'custom'>('all')
@@ -967,13 +945,8 @@ export default function IndicatorStudio() {
       .filter((variable) => supportsVariableDomain(variable, STUDIO_CONTEXT)),
     [meta],
   )
-  const runtimeAvailabilityRequired = targets.length > 0
-  const composerVariables = variables.filter((variable) => variableIsUsable(
-    variable,
-    variableAvailability[variable.name],
-    runtimeAvailabilityRequired,
-    availabilityLoading,
-    availabilityError,
+  const composerVariables = variables.filter((variable) => (
+    variable.availability !== 'unavailable' && variable.availability !== 'not_applicable'
   ))
   const operatorItems = (meta?.operators ?? [])
     .map((operator) => operatorToComposer(operator, composerVariables, STUDIO_CONTEXT))
@@ -1224,41 +1197,6 @@ export default function IndicatorStudio() {
       })
       .catch(() => undefined)
   }, [searchParams])
-
-  useEffect(() => {
-    if (!targets.length || !activePeriod || !meta) {
-      setVariableAvailability({})
-      setAvailabilityLoading(false)
-      setAvailabilityError(null)
-      return
-    }
-    let active = true
-    const loadAvailability = async () => {
-      try {
-        setAvailabilityLoading(true)
-        setAvailabilityError(null)
-        const response = await getVariableAvailability({
-          targets: targets.map(({ name: _name, ...target }) => target),
-          variable_ids: variables
-            .filter((variable) => supportsVariableDomain(variable, 'single_product'))
-            .map((variable) => variable.name),
-          period: activePeriod,
-          as_of: asOf || undefined,
-        })
-        if (!active) return
-        setVariableAvailability(Object.fromEntries((response.items || []).map((item) => [item.variable_id, item])))
-      } catch (availabilityFailure) {
-        if (active) {
-          setVariableAvailability({})
-          setAvailabilityError(userFacingErrorMessage(availabilityFailure, '变量可用性核对失败。'))
-        }
-      } finally {
-        if (active) setAvailabilityLoading(false)
-      }
-    }
-    void loadAvailability()
-    return () => { active = false }
-  }, [activePeriod, asOf, meta, targets, variables])
 
   const selectDraft = (indicator: IndicatorDefinition) => {
     if (isDirty && !window.confirm('当前未保存的修改将被替换，是否继续？')) return
@@ -1686,10 +1624,11 @@ export default function IndicatorStudio() {
       }
       const response = await evaluateCustomIndicators({
         inline_definition: normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT }),
+        compile_token: checked.compile_token ?? undefined,
         targets: targets.map(({ name: _name, ...target }) => target),
         period: calculationPeriod,
         as_of: asOf || undefined,
-        include_series: includeRollingSeries,
+        include_series: false,
       })
       setResults(response.results)
       setMessage(`预览完成：${response.summary.ok} 个成功，${response.summary.warning + response.summary.error} 个需关注。`)
@@ -1699,6 +1638,45 @@ export default function IndicatorStudio() {
       setError(previewError)
     } finally {
       setPreviewing(false)
+    }
+  }
+
+  const downloadExcel = async () => {
+    const checked = validation?.valid ? validation : await validate()
+    if (!checked?.valid) {
+      setMobileTab('editor')
+      setWorkspaceTab('editor')
+      return
+    }
+    if (!targets.length || !activePeriod) {
+      setMessage('请先选择产品和计算周期。')
+      setMobileTab('preview')
+      setWorkspaceTab('preview')
+      return
+    }
+    try {
+      setExcelExporting(true)
+      setError(null)
+      const downloaded = await exportCustomIndicatorExcel({
+        inline_definition: normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT }),
+        compile_token: checked.compile_token ?? undefined,
+        targets: targets.map(({ name: _name, ...target }) => target),
+        period: activePeriod,
+        as_of: asOf || undefined,
+      })
+      const objectUrl = URL.createObjectURL(downloaded.blob)
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = downloaded.filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(objectUrl)
+      setMessage(`Excel 已生成：包含 ${targets.length} 个产品的直接入参、Excel 公式和指标结果。`)
+    } catch (exportError) {
+      setError(exportError)
+    } finally {
+      setExcelExporting(false)
     }
   }
 
@@ -1885,7 +1863,7 @@ export default function IndicatorStudio() {
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 id="indicator-preview-title" className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs text-slate-500">最多选择 {MAX_PREVIEW_TARGETS} 个真实产品并分别计算同一指标；不会合并为组合，也不会使用模拟数据。</p><div aria-label="当前预览指标" aria-live="polite" className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-sm"><span className="text-slate-500">当前指标</span><strong className="text-violet-800">{draft.name}</strong><span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">{selectedIndicator?.read_only ? '内置指标' : selectedIndicator ? `工作区 v${selectedIndicator.revision}` : '未保存草稿'}</span></div>
               <div className="mt-4 flex gap-2"><select aria-label="产品类型" value={searchKind} onChange={(event) => { setSearchKind(event.target.value as ProductKind | 'all'); setSearchResults([]) }} className="rounded-lg border border-slate-200 bg-white px-2 text-sm focus:border-violet-500 focus:outline-none"><option value="all">全部</option><option value="etf">ETF</option><option value="fund">公募基金</option></select><SearchDropdown label="搜索产品" value={searchText} items={searchResults} onChange={setSearchText} onSearch={lookupProducts} loading={searching} placeholder="名称或代码" className="flex-1" getItemKey={(item, index) => `${item.code ?? item.ts_code ?? index}-${item.instrument_type ?? ''}`} renderItem={(item) => { const target = targetFromItem(item); const selected = Boolean(target && targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)); const atLimit = targets.length >= MAX_PREVIEW_TARGETS; return <div className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0 text-sm text-slate-700"><span className="font-medium">{item.name || target?.product_id}</span><span className="ml-2 text-xs text-slate-400">{target?.product_id}</span></span><button type="button" onClick={() => addTarget(item)} disabled={!target || selected || atLimit} title={!selected && atLimit ? `最多选择 ${MAX_PREVIEW_TARGETS} 个产品` : undefined} className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{selected ? '已添加' : atLimit ? '已达上限' : '添加'}</button></div> }} /></div>
               <div className="mt-4"><p className="text-sm font-medium text-slate-700">已选产品 <span aria-live="polite" className="text-slate-400">{targets.length} / {MAX_PREVIEW_TARGETS}</span></p><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((target) => <span key={`${target.kind}-${target.product_id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-3 pr-1 text-xs text-slate-700"><span>{target.name}</span><span className="text-slate-400">{target.product_id !== target.name ? target.product_id : ''}</span><button type="button" aria-label={`移除 ${target.name}`} onClick={() => { setTargets((current) => current.filter((item) => item.kind !== target.kind || item.product_id !== target.product_id)); setResults([]); setMessage('预览产品已移除，请重新计算。') }} className="rounded-full px-1.5 py-0.5 text-slate-400 hover:bg-white hover:text-rose-600">×</button></span>) : <p className="text-sm text-slate-400">尚未选择产品</p>}</div></div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label></div><label className="mt-3 flex min-h-11 cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"><input type="checkbox" checked={includeRollingSeries} onChange={(event) => { setIncludeRollingSeries(event.target.checked); setResults([]); setMessage(event.target.checked ? '已启用滚动曲线，请重新计算。' : '已关闭滚动曲线，请重新计算。') }} /><span className="min-w-0">同时计算滚动曲线</span><span className="w-full pl-6 text-xs text-slate-400 sm:ml-auto sm:w-auto sm:pl-0">最多 500 点，耗时较长</span></label><p className={`mt-2 text-xs ${availabilityError ? 'text-rose-700' : 'text-slate-500'}`} role={availabilityError ? 'alert' : undefined}>{availabilityLoading ? '正在核对所选产品的变量覆盖率…' : availabilityError ? `变量可用性核对失败：${availabilityError}。为避免误用，相关变量已暂时禁用。` : targets.length ? '变量目录已按所选产品、周期和截止日标注真实可用性。' : '选择产品后将核对变量可用性。'}</p><button type="button" onClick={() => void preview()} disabled={previewing || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '预览指标'}</button>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label></div><p className="mt-2 text-xs text-slate-500">选择产品并执行预览后，系统会根据实际数据判断是否可计算，并在结果中说明数据缺失、样本不足等原因。</p><button type="button" onClick={() => void preview()} disabled={previewing || excelExporting || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '预览指标'}</button><button type="button" onClick={() => void downloadExcel()} disabled={excelExporting || previewing || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-2 w-full rounded-lg border border-violet-200 bg-white px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{excelExporting ? '正在生成 Excel…' : '下载 Excel 计算逻辑'}</button>
           </div>
 
           <div className="min-w-0 space-y-5">
@@ -1894,13 +1872,13 @@ export default function IndicatorStudio() {
           </div>
           </div>
           <p className="px-1 text-xs text-slate-500">指标定义和评价方案在当前工作区共享。数据缺失、样本不足或无效数值会明确标为不可计算。</p>
-          <Link to="/research" className="inline-flex px-1 text-sm font-semibold text-violet-700 underline decoration-violet-300 underline-offset-4 hover:text-violet-900">返回产品研究</Link>
+          <Link to="/product-research/products" className="inline-flex px-1 text-sm font-semibold text-violet-700 underline decoration-violet-300 underline-offset-4 hover:text-violet-900">返回产品研究</Link>
         </section>
         </div>
       </div>
 
       <CatalogDrawer open={catalogOpen} onClose={() => setCatalogOpen(false)}>
-        <TypedCatalog tabsValue={catalogTab} onTabChange={setCatalogTab} variables={variables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} availability={variableAvailability} availabilityLoading={availabilityLoading} availabilityError={availabilityError} runtimeAvailabilityRequired={runtimeAvailabilityRequired} onInsertVariable={insertExpression} onInsertIndicator={insertIndicator} onExplainIndicator={(indicator) => composeCustomIndicator({ indicator_id: indicator.id, indicator_revision: indicator.revision, arguments: [], context: STUDIO_CONTEXT, dsl_version: draft.dsl_version, operator_registry_version: draft.operator_registry_version, variable_registry_version: draft.variable_registry_version, data_contract_version: draft.data_contract_version, context_schema_version: draft.context_schema_version })} onOpenComposer={openComposer} variableActionLabel={editorMode === 'guided' ? '设为当前公式' : '插入到光标'} indicatorActionLabel={editorMode === 'guided' ? '展开为当前公式' : '插入锁定版本公式'} insertingIndicatorId={insertingIndicatorId} actionError={catalogError} />
+        <TypedCatalog tabsValue={catalogTab} onTabChange={setCatalogTab} variables={variables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} onInsertVariable={insertExpression} onInsertIndicator={insertIndicator} onExplainIndicator={(indicator) => composeCustomIndicator({ indicator_id: indicator.id, indicator_revision: indicator.revision, arguments: [], context: STUDIO_CONTEXT, dsl_version: draft.dsl_version, operator_registry_version: draft.operator_registry_version, variable_registry_version: draft.variable_registry_version, data_contract_version: draft.data_contract_version, context_schema_version: draft.context_schema_version })} onOpenComposer={openComposer} variableActionLabel={editorMode === 'guided' ? '设为当前公式' : '插入到光标'} indicatorActionLabel={editorMode === 'guided' ? '展开为当前公式' : '插入锁定版本公式'} insertingIndicatorId={insertingIndicatorId} actionError={catalogError} />
       </CatalogDrawer>
       <ComposerDrawer composer={composer} indicatorName={draft.name} variables={composerVariables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} loading={composerLoading} canApply={composerReady} error={composerError} onClose={() => { setComposer(null); setComposerError(null) }} onBrowseResources={() => { setComposer(null); setComposerError(null); setCatalogError(null); setCatalogOpen(true) }} onChange={updateComposerArgument} onApplyModeChange={(applyMode) => setComposer((current) => current ? { ...current, applyMode } : current)} onApply={() => void applyComposer()} />
       <div className="sticky bottom-0 z-10 mt-5 flex gap-2 border-t border-slate-200 bg-white/95 p-3 backdrop-blur md:hidden"><button type="button" onClick={() => void save()} disabled={saving || !draft.expression.trim()} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300">{selectedIndicator?.read_only ? '复制为新指标' : selectedIndicator ? '保存修改' : '保存新指标'}</button><button type="button" onClick={() => void preview()} disabled={previewing || !draft.expression.trim() || !targets.length || !activePeriod} className="flex-1 rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white disabled:bg-slate-300">预览</button></div>
@@ -2038,7 +2016,7 @@ function CatalogDrawer({ open, onClose, children }: { open: boolean; onClose: ()
   </div>
 }
 
-function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators, contextDomain, availability, availabilityLoading, availabilityError, runtimeAvailabilityRequired, onInsertVariable, onInsertIndicator, onExplainIndicator, onOpenComposer, variableActionLabel, indicatorActionLabel, insertingIndicatorId, actionError }: { tabsValue: CatalogTab; onTabChange: (tab: CatalogTab) => void; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; availability: Record<string, VariableAvailabilityItem>; availabilityLoading: boolean; availabilityError: string | null; runtimeAvailabilityRequired: boolean; onInsertVariable: (token: string) => void; onInsertIndicator: (indicator: IndicatorDefinition) => Promise<void> | void; onExplainIndicator: (indicator: IndicatorDefinition) => Promise<InferenceResponse>; onOpenComposer: (item: ComposerItem) => void; variableActionLabel: string; indicatorActionLabel: string; insertingIndicatorId: string | null; actionError: string | null }) {
+function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators, contextDomain, onInsertVariable, onInsertIndicator, onExplainIndicator, onOpenComposer, variableActionLabel, indicatorActionLabel, insertingIndicatorId, actionError }: { tabsValue: CatalogTab; onTabChange: (tab: CatalogTab) => void; variables: IndicatorVariable[]; operators: ComposerItem[]; indicators: IndicatorDefinition[]; contextDomain: IndicatorContextDomain; onInsertVariable: (token: string) => void; onInsertIndicator: (indicator: IndicatorDefinition) => Promise<void> | void; onExplainIndicator: (indicator: IndicatorDefinition) => Promise<InferenceResponse>; onOpenComposer: (item: ComposerItem) => void; variableActionLabel: string; indicatorActionLabel: string; insertingIndicatorId: string | null; actionError: string | null }) {
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Record<CatalogTab, string>>({ variables: '', operators: '', indicators: '' })
   const [selectedItemIds, setSelectedItemIds] = useState<Record<CatalogTab, string>>({ variables: '', operators: '', indicators: '' })
   const [indicatorExplanations, setIndicatorExplanations] = useState<Record<string, InferenceResponse>>({})
@@ -2049,25 +2027,22 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
   const rawEntries = tabsValue === 'variables'
     ? variables.map((variable) => {
       const category = variableCategory(variable)
-      const runtimeAvailability = availability[variable.name]
-      const supported = supportsVariableDomain(variable, contextDomain) && variableIsUsable(variable, runtimeAvailability, runtimeAvailabilityRequired, availabilityLoading, availabilityError)
-      const availabilityDescription = runtimeAvailability
-        ? runtimeAvailability.reason?.message || `运行状态：${availabilityStatusLabel(runtimeAvailability.status)}`
-        : availabilityLoading
-          ? '正在核对真实数据可用性'
-          : ''
-      return { id: variable.name, categoryId: category.id, categoryLabel: category.label, supported, label: variable.label, description: [shapeLabel(inferShape(variable), variable.value_type), availabilityDescription].filter(Boolean).join(' · '), keywords: `${variable.name} ${variable.description || ''} ${variable.semantic || ''} ${(variable.aliases || []).join(' ')} ${(variable.tags || []).join(' ')}` }
+      const contextSupported = supportsVariableDomain(variable, contextDomain)
+        && variable.availability !== 'unavailable'
+        && variable.availability !== 'not_applicable'
+      const description = variable.description || variable.semantic || `${variable.label}在计算窗口内的数值。`
+      return { id: variable.name, categoryId: category.id, categoryLabel: category.label, contextSupported, supported: contextSupported, label: variable.label, description: [shapeLabel(inferShape(variable), variable.value_type), description].join(' · '), keywords: `${variable.name} ${variable.description || ''} ${variable.semantic || ''} ${(variable.aliases || []).join(' ')} ${(variable.tags || []).join(' ')}` }
     })
     : tabsValue === 'operators'
-      ? operators.map((operator) => ({ id: operator.id, categoryId: operator.categoryId, categoryLabel: operator.categoryLabel, supported: operator.domains.includes(contextDomain), label: operator.label, description: operatorOptionContract(operator), keywords: `${operator.id} ${operator.essence} ${operator.semantic} ${operator.signature} ${operator.aliases.join(' ')} ${operator.tags.join(' ')}` }))
+      ? operators.map((operator) => ({ id: operator.id, categoryId: operator.categoryId, categoryLabel: operator.categoryLabel, contextSupported: operator.domains.includes(contextDomain), supported: operator.domains.includes(contextDomain), label: operator.label, description: operatorOptionContract(operator), keywords: `${operator.id} ${operator.essence} ${operator.semantic} ${operator.signature} ${operator.aliases.join(' ')} ${operator.tags.join(' ')}` }))
       : indicators.map((indicator) => {
         const category = indicatorCategory(indicator)
         const source = indicator.source === 'built_in' ? '内置' : '工作区'
-        return { id: indicatorReferenceKey(indicator), categoryId: category.id, categoryLabel: category.label, supported: true, label: indicator.name, description: `${source} · 版本 ${indicator.revision} · 有限标量`, keywords: `${indicator.id} ${indicator.name} ${indicator.description} ${indicator.expression} ${source} ${category.label}` }
+        return { id: indicatorReferenceKey(indicator), categoryId: category.id, categoryLabel: category.label, contextSupported: true, supported: true, label: indicator.name, description: `${source} · 版本 ${indicator.revision} · 有限标量`, keywords: `${indicator.id} ${indicator.name} ${indicator.description} ${indicator.expression} ${source} ${category.label}` }
       })
-  const availableEntries = rawEntries.filter((entry) => entry.supported)
+  const catalogEntries = rawEntries.filter((entry) => tabsValue === 'variables' ? entry.contextSupported : entry.supported)
   const categoryMap = new Map<string, { label: string; count: number }>()
-  availableEntries.forEach((entry) => {
+  catalogEntries.forEach((entry) => {
     // Different registry families may share one product-facing label. Group by
     // that label so the catalog does not expose duplicate UI categories.
     const current = categoryMap.get(entry.categoryLabel) ?? { label: entry.categoryLabel, count: 0 }
@@ -2076,30 +2051,29 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
   const categories = [...categoryMap.entries()].map(([value, item]) => ({ value, label: `${item.label}（${item.count}）`, keywords: item.label }))
   const requestedCategory = selectedCategoryIds[tabsValue]
   const selectedCategory = categories.some((item) => item.value === requestedCategory) ? requestedCategory : categories[0]?.value || ''
-  const entries = availableEntries.filter((entry) => entry.categoryLabel === selectedCategory)
+  const entries = catalogEntries.filter((entry) => entry.categoryLabel === selectedCategory)
   const requestedItem = selectedItemIds[tabsValue]
-  const selectedId = entries.some((entry) => entry.id === requestedItem && entry.supported) ? requestedItem : entries.find((entry) => entry.supported)?.id || entries[0]?.id || ''
+  const selectedId = entries.some((entry) => entry.id === requestedItem) ? requestedItem : entries.find((entry) => entry.supported)?.id || entries[0]?.id || ''
   const selectedVariable = tabsValue === 'variables' ? variables.find((variable) => variable.name === selectedId) ?? null : null
   const selectedComposer = tabsValue === 'operators' ? operators.find((operator) => operator.id === selectedId) ?? null : null
   const selectedIndicator = tabsValue === 'indicators' ? indicators.find((indicator) => indicatorReferenceKey(indicator) === selectedId) ?? null : null
-  const selectedAvailability = selectedVariable ? availability[selectedVariable.name] : undefined
   const selectedIndicatorKey = selectedIndicator ? indicatorReferenceKey(selectedIndicator) : ''
   const selectedIndicatorExplanation = selectedIndicatorKey ? indicatorExplanations[selectedIndicatorKey] : undefined
   const selectedSupported = selectedVariable
-    ? supportsVariableDomain(selectedVariable, contextDomain) && variableIsUsable(selectedVariable, selectedAvailability, runtimeAvailabilityRequired, availabilityLoading, availabilityError)
+    ? supportsVariableDomain(selectedVariable, contextDomain) && selectedVariable.availability !== 'unavailable' && selectedVariable.availability !== 'not_applicable'
     : selectedComposer
       ? selectedComposer.domains.includes(contextDomain)
       : Boolean(selectedIndicator)
 
   return <section aria-label="类型化计算目录">
-    <div className="flex items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-slate-800">三级资源目录</h3><p className="mt-1 text-xs text-slate-500">目录规模增长后仍可按分类和关键词定位，不需要滚动浏览卡片墙。</p></div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">{rawEntries.filter((entry) => entry.supported).length} 项可用</span></div>
+    <div className="flex items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-slate-800">三级资源目录</h3><p className="mt-1 text-xs text-slate-500">目录规模增长后仍可按分类和关键词定位，不需要滚动浏览卡片墙。</p></div><span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-500">{rawEntries.filter((entry) => entry.supported).length} 项资源</span></div>
     <div className="mt-4 grid gap-3">
       <label className="text-xs font-semibold text-slate-600">资源类型<select aria-label="资源类型" value={tabsValue} onChange={(event) => onTabChange(event.target.value as CatalogTab)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="variables">变量</option><option value="operators">计算算子</option><option value="indicators">已有指标</option></select></label>
       <SearchableCombobox label="资源分类" value={selectedCategory} options={categories} placeholder="搜索分类" onChange={(value) => setSelectedCategoryIds((current) => ({ ...current, [tabsValue]: value }))} />
-      <SearchableCombobox label={`选择${catalogLabels[tabsValue]}`} value={selectedId} options={entries.map((entry) => ({ value: entry.id, label: entry.label, description: entry.description, keywords: entry.keywords, disabled: !entry.supported }))} placeholder={`搜索${catalogLabels[tabsValue]}名称、别名或含义`} onChange={(value) => setSelectedItemIds((current) => ({ ...current, [tabsValue]: value }))} />
+      <SearchableCombobox label={`选择${catalogLabels[tabsValue]}`} value={selectedId} options={entries.map((entry) => ({ value: entry.id, label: entry.label, description: entry.description, keywords: entry.keywords, disabled: tabsValue !== 'variables' && !entry.supported }))} placeholder={`搜索${catalogLabels[tabsValue]}名称、别名或含义`} onChange={(value) => setSelectedItemIds((current) => ({ ...current, [tabsValue]: value }))} />
     </div>
     {!entries.length && <p className="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-slate-500" role="status">此分类暂无{catalogLabels[tabsValue]}。</p>}
-    {selectedVariable && <article className={`mt-4 rounded-xl border p-4 ${selectedSupported ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'}`}>
+    {selectedVariable && <article className={`mt-4 rounded-xl border p-4 ${selectedSupported ? 'border-slate-200 bg-white' : 'border-amber-200 bg-amber-50/40'}`}>
       <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h4 className="text-base font-semibold text-slate-900">{selectedVariable.label}</h4><div className="mt-1 max-w-40 text-violet-700">{selectedVariable.latex ? <MathNotation latex={selectedVariable.latex} label={`${selectedVariable.label}的数学符号`} /> : <span className="text-xs text-slate-400">暂未配置数学符号</span>}</div></div><ShapeBadge shape={inferShape(selectedVariable)} valueType={selectedVariable.value_type} /></div>
       <p className="mt-3 text-sm leading-6 text-slate-600">{selectedVariable.description || selectedVariable.semantic || `${shapeLabel(inferShape(selectedVariable), selectedVariable.value_type)}输入。`}</p>
       <dl className="mt-4 grid gap-x-4 gap-y-3 text-xs sm:grid-cols-2">
@@ -2108,12 +2082,9 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
         <div><dt className="font-semibold text-slate-700">数据来源</dt><dd className="mt-1 text-slate-500">{selectedVariable.source || '由指标运行上下文提供'}</dd></div>
         <div><dt className="font-semibold text-slate-700">口径 / 频率 / 单位</dt><dd className="mt-1 text-slate-500">{[selectedVariable.data_basis, selectedVariable.frequency, selectedVariable.unit].filter(Boolean).join(' · ') || '由运行上下文决定'}</dd></div>
         <div><dt className="font-semibold text-slate-700">适用范围</dt><dd className="mt-1 text-slate-500">{(selectedVariable.product_kinds || selectedVariable.domains || [contextDomain]).map(scopeLabel).join(' / ')}</dd></div>
-        <div><dt className="font-semibold text-slate-700">可用状态</dt><dd className="mt-1 text-slate-500">{availabilityStatusLabel(availabilityError && runtimeAvailabilityRequired ? 'availability_check_failed' : selectedAvailability?.status || selectedVariable.availability || (availabilityLoading ? 'checking' : selectedSupported ? 'available' : 'unavailable'))}{availabilityError && runtimeAvailabilityRequired ? ` · ${humanizeTechnicalTypes(availabilityError)}` : selectedAvailability?.reason ? ` · ${diagnosticMessage(selectedAvailability.reason.code || 'VARIABLE_UNAVAILABLE', selectedAvailability.reason.message || '')}` : ''}</dd></div>
-        <div><dt className="font-semibold text-slate-700">实际数据规模 / 覆盖率</dt><dd className="mt-1 text-slate-500">{actualDataSizeLabel(selectedAvailability?.actual_shape, inferShape(selectedVariable), selectedVariable.value_type)}{typeof selectedAvailability?.coverage_ratio === 'number' ? ` · ${(selectedAvailability.coverage_ratio * 100).toFixed(1)}%` : typeof selectedAvailability?.coverage?.coverage_ratio === 'number' ? ` · ${(selectedAvailability.coverage.coverage_ratio * 100).toFixed(1)}%` : ''}</dd></div>
-        <div><dt className="font-semibold text-slate-700">实际窗口 / 数据最新</dt><dd className="mt-1 text-slate-500">{selectedAvailability?.window ? `${selectedAvailability.window.start_date || '—'} 至 ${selectedAvailability.window.end_date || '—'} · ${selectedAvailability.window.observation_count} 个收益观察` : '选择真实产品后显示'}{selectedAvailability?.window?.data_latest_date ? ` · 最新 ${selectedAvailability.window.data_latest_date}` : ''}</dd></div>
       </dl>
-      {selectedAvailability?.target_statuses && selectedAvailability.target_statuses.length > 0 && <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs"><p className="font-semibold text-slate-700">所选产品可用性</p><ul className="mt-2 space-y-1 text-slate-600">{selectedAvailability.target_statuses.map((item) => <li key={`${item.target.kind}:${item.target.product_id}`}><span className="font-medium">{item.target.name}</span>：{availabilityStatusLabel(item.status)}{item.reason?.message ? ` · ${humanizeTechnicalTypes(item.reason.message)}` : ''}</li>)}</ul></div>}
-      <button type="button" disabled={!selectedSupported} onClick={() => onInsertVariable(selectedVariable.latex || selectedVariable.name)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{selectedSupported ? variableActionLabel : selectedAvailability?.reason ? diagnosticMessage(selectedAvailability.reason.code || 'VARIABLE_UNAVAILABLE', selectedAvailability.reason.message || '') : '当前目标不可用'}</button>
+      <p className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-500">变量可直接用于公式构建；实际可计算性将在选择产品并执行预览后，根据该产品的数据覆盖情况判断。</p>
+      <button type="button" disabled={!selectedSupported} onClick={() => onInsertVariable(selectedVariable.latex || selectedVariable.name)} className="mt-4 w-full rounded-lg bg-violet-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300">{selectedSupported ? variableActionLabel : '当前计算域不可用'}</button>
     </article>}
     {selectedComposer && <article className={`mt-4 rounded-xl border p-4 ${selectedSupported ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'}`}>
       <div className="flex items-start justify-between gap-3"><div><h4 className="text-base font-semibold text-slate-900">{selectedComposer.label}</h4><p className="mt-1 text-xs text-slate-500">{humanizeTechnicalTypes(selectedComposer.essence)}</p></div><ShapeBadge shape={selectedComposer.outputShape} valueType={selectedComposer.outputType} /></div>

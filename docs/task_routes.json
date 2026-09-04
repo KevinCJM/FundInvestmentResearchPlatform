@@ -457,6 +457,7 @@
         "frontend_app_shell"
       ],
       "expand_to_modules": [
+        "frontend_investment_process_framework",
         "frontend_etf_research_pages",
         "frontend_allocation_workflows",
         "backend_api_shell",
@@ -533,6 +534,74 @@
       "scope_flags": [
         "subtree_only",
         "frontend_allocation"
+      ]
+    },
+    {
+      "id": "R76",
+      "task_type": "historical_regime_graph_data_lab_or_scenario_stress",
+      "match_keywords": [
+        "historical regime",
+        "historical-regimes",
+        "Regime Graph",
+        "scenario stress",
+        "scenario-algorithms",
+        "research-series",
+        "market regime",
+        "state probability",
+        "walk-forward",
+        "PIT as-of",
+        "历史情景",
+        "市场状态",
+        "情景算法",
+        "情景模拟",
+        "牛熊",
+        "美林时钟",
+        "数据实验室"
+      ],
+      "negative_keywords": [
+        "static copy only",
+        "visual mock only"
+      ],
+      "route_priority": 98,
+      "first_read_modules": [
+        "backend_regime_research",
+        "frontend_regime_research"
+      ],
+      "expand_to_modules": [
+        "backend_typed_indicator_v2",
+        "backend_portfolio_research",
+        "frontend_portfolio_research",
+        "frontend_allocation_workflows",
+        "data_ingestion_config",
+        "project_docs"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P07",
+        "P09",
+        "P14"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract",
+        "inspect_window_and_cache_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_frontend_build_when_deps_available",
+        "run_minimum_regression",
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_parquet_schema_or_tmp_fixture",
+        "verify_typed_context_and_portfolio_snapshot"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "historical_regime",
+        "scenario_stress",
+        "fixed_signature_njit",
+        "immutable_snapshot"
       ]
     },
     {

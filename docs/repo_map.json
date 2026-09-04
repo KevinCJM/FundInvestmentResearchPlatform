@@ -25,6 +25,8 @@
       ],
     "entry_files": [
       "README.md",
+      "./LICENSE",
+      "公募基金量化投资流程大纲.md",
       "README_SEPARATED.md",
       "design-qa.md",
       "docs/requirements.md",
@@ -103,7 +105,8 @@
       ],
       "entry_files": [
         "backend/app.py",
-        "backend/run.py"
+        "backend/run.py",
+        "backend/services/business_numeric_routes.py"
       ],
       "key_symbols": [
         "app",
@@ -151,6 +154,8 @@
         "external deployment process"
       ],
       "related_tests": [
+        "backend/tests/conftest.py",
+        "backend/tests/test_business_numeric_numba.py",
         "backend/tests/test_strategy_api.py",
         "backend/tests/test_analytics_routes.py"
       ],
@@ -211,9 +216,17 @@
       ],
       "entry_files": [
         "backend/fit.py",
+        "backend/fit_numba.py",
         "backend/optimizer.py",
         "backend/strategy.py",
         "backend/backtest_engine.py",
+        "backend/backtest_numba.py",
+        "backend/auto_asset_class.py",
+        "backend/auto_class_numba.py",
+        "backend/services/auto_class_routes.py",
+        "backend/business_numeric_numba.py",
+        "backend/compute_policy.py",
+        "backend/synthetic_series_numba.py",
         "backend/trading_calendar.py"
       ],
       "key_symbols": [
@@ -259,6 +272,14 @@
         "exchange calendar updates outside the repository"
       ],
       "related_tests": [
+        "backend/tests/test_app_risk_parity_njit.py",
+        "backend/tests/test_auto_asset_class.py",
+        "backend/tests/test_business_numeric_numba.py",
+        "backend/tests/test_compute_policy.py",
+        "backend/tests/test_fit_numba.py",
+        "backend/tests/test_legacy_etf_njit.py",
+        "backend/tests/test_optimizer_strategy_numba.py",
+        "backend/tests/test_synthetic_series_numba.py",
         "backend/tests/test_window_slice.py",
         "backend/tests/test_rebalance_window.py",
         "backend/tests/test_backtest_output.py",
@@ -502,7 +523,10 @@
       ],
       "entry_files": [
         "backend/app.py",
-        "backend/services/instrument_routes.py"
+        "backend/services/instrument_routes.py",
+        "backend/product_pools",
+        "backend/services/product_pool_review.py",
+        "backend/services/product_pool_routes.py"
       ],
       "key_symbols": [
         "_load_etf_info_df",
@@ -544,6 +568,10 @@
         "live ETF information provider quality"
       ],
       "related_tests": [
+        "backend/tests/test_product_pool_review.py",
+        "backend/tests/test_product_pool_routes.py",
+        "backend/tests/test_product_pool_service.py",
+        "backend/tests/test_product_pools.py",
         "backend/tests/test_instrument_routes.py"
       ],
       "related_configs": [
@@ -605,6 +633,11 @@
       "entry_files": [
         "backend/services/instrument_analytics.py",
         "backend/services/instrument_routes.py",
+        "backend/services/data_quality.py",
+        "backend/services/product_analysis.py",
+        "backend/services/product_compare.py",
+        "backend/instrument_analytics_numba.py",
+        "backend/product_analysis_numba.py",
         "backend/series_quality.py"
       ],
       "key_symbols": [
@@ -645,6 +678,12 @@
         "parent-fund share-class consolidation"
       ],
       "related_tests": [
+        "backend/tests/test_data_quality.py",
+        "backend/tests/test_instrument_analytics_numba.py",
+        "backend/tests/test_product_analysis_numba.py",
+        "backend/tests/test_product_analysis_routes.py",
+        "backend/tests/test_product_compare_numba.py",
+        "backend/tests/test_product_compare_routes.py",
         "backend/tests/test_instrument_analytics.py",
         "backend/tests/test_series_quality.py",
         "backend/tests/test_instrument_routes.py"
@@ -915,6 +954,7 @@
         "result-pagination"
       ],
       "entry_files": [
+        "backend/custom_indicators",
         "backend/custom_indicators/__init__.py",
         "backend/custom_indicators/service.py",
         "backend/custom_indicators/presentation.py",
@@ -928,7 +968,8 @@
         "backend/custom_indicators/errors.py",
         "backend/cal_indicators/builtin_batch_kernel.py",
         "backend/services/custom_indicator_routes.py",
-        "backend/benchmark_indicator_engine.py"
+        "backend/benchmark_indicator_engine.py",
+        "docs/custom_indicator_excel_export_design.md"
       ],
       "key_symbols": [
         "CustomIndicatorService",
@@ -1000,6 +1041,8 @@
         "live market feeds"
       ],
       "related_tests": [
+        "backend/tests/test_custom_indicator_excel_export.py",
+        "backend/tests/test_portfolio_numba.py",
         "backend/tests/test_custom_indicator_service.py",
         "backend/tests/test_custom_indicator_routes.py",
         "backend/tests/test_custom_indicator_variables.py",
@@ -1263,7 +1306,8 @@
       "entry_files": [
         "backend/custom_indicators/portfolio_service.py",
         "backend/custom_indicators/portfolio_repository.py",
-        "backend/services/portfolio_routes.py"
+        "backend/services/portfolio_routes.py",
+        "backend/portfolio_regime.py"
       ],
       "key_symbols": [
         "PortfolioResearchService",
@@ -1283,6 +1327,7 @@
       "then_check_files": [
         "backend/custom_indicators/series_provider.py",
         "backend/tests/test_portfolio_research.py",
+        "backend/tests/test_portfolio_regime_backtest.py",
         "frontend/src/services/portfolioResearch.ts",
         "docs/custom_indicator_design.md"
       ],
@@ -1301,7 +1346,8 @@
         "legacy allocation endpoint migration"
       ],
       "related_tests": [
-        "backend/tests/test_portfolio_research.py"
+        "backend/tests/test_portfolio_research.py",
+        "backend/tests/test_portfolio_regime_backtest.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
@@ -1327,8 +1373,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_portfolio_research.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py"
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_portfolio_research.py tests/test_portfolio_regime_backtest.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py backend/portfolio_regime.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1342,7 +1388,292 @@
           "backend/custom_indicators/portfolio_service.py",
           "backend/custom_indicators/portfolio_repository.py",
           "backend/services/portfolio_routes.py",
-          "backend/tests/test_portfolio_research.py"
+          "backend/portfolio_regime.py",
+          "backend/tests/test_portfolio_research.py",
+          "backend/tests/test_portfolio_regime_backtest.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "backend_regime_research",
+      "name": "Historical regime graph, research-series, and scenario-stress services",
+      "path": "backend/historical_regimes/v2_service.py",
+      "kind": "backend_api_feature",
+      "purpose": "Provides the versioned Regime Graph v2 registry, typed graph inference, explicit fixed-signature NJIT preparation and execution, non-authorizing persistent plan manifests, immutable artifacts, research-series catalog/profile, historical-state experiments, and published-state scenario-stress integration.",
+      "module_tags": [
+        "backend",
+        "historical-regime",
+        "scenario-stress",
+        "research-series",
+        "typed-graph",
+        "numba",
+        "immutable-artifacts"
+      ],
+      "entry_files": [
+        "backend/historical_regimes",
+        "backend/research_series",
+        "backend/scenario_stress",
+        "backend/portfolio_regime.py",
+        "backend/historical_regimes/v2_service.py",
+        "backend/historical_regimes/v2_contracts.py",
+        "backend/historical_regimes/v2_registry.py",
+        "backend/historical_regimes/v2_numba.py",
+        "backend/historical_regimes/numba_kernels.py",
+        "backend/historical_regimes/repository.py",
+        "backend/historical_regimes/v2_templates.py",
+        "backend/research_series/service.py",
+        "backend/scenario_stress/service.py",
+        "backend/services/historical_regime_routes.py",
+        "backend/services/research_series_routes.py",
+        "backend/services/scenario_stress_routes.py"
+      ],
+      "key_symbols": [
+        "RegimeGraphV2Service",
+        "RegimePlanManifestRepository",
+        "RegimeDefinitionV2",
+        "NODE_REGISTRY",
+        "ResearchSeriesService",
+        "ScenarioStressService",
+        "infer",
+        "prepare",
+        "preview",
+        "run",
+        "publish"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "backend/services/historical_regime_routes.py",
+        "backend/historical_regimes/v2_contracts.py",
+        "backend/historical_regimes/v2_registry.py",
+        "backend/historical_regimes/v2_service.py"
+      ],
+      "then_check_files": [
+        "backend/historical_regimes/v2_numba.py",
+        "backend/historical_regimes/numba_kernels.py",
+        "backend/historical_regimes/repository.py",
+        "backend/historical_regimes/v2_templates.py",
+        "backend/research_series/service.py",
+        "backend/scenario_stress/service.py",
+        "backend/tests/test_historical_regime_v2.py",
+        "backend/tests/test_historical_regime_v2_p1.py",
+        "backend/tests/test_research_series_routes.py",
+        "backend/tests/test_scenario_stress.py"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell",
+        "backend_typed_indicator_v2",
+        "data_ingestion_config"
+      ],
+      "downstream_dependencies": [
+        "frontend_regime_research",
+        "backend_portfolio_research"
+      ],
+      "out_of_scope_dependencies": [
+        "arbitrary Python user code",
+        "unregistered third-party model callbacks",
+        "database migrations"
+      ],
+      "related_tests": [
+        "backend/tests/test_historical_regime_formula_routes.py",
+        "backend/tests/test_historical_regime_indicator_source.py",
+        "backend/tests/test_historical_regime_routes.py",
+        "backend/tests/test_historical_regime_taa.py",
+        "backend/tests/test_historical_regimes.py",
+        "backend/tests/test_portfolio_regime_backtest.py",
+        "backend/tests/test_historical_regime_v2.py",
+        "backend/tests/test_historical_regime_v2_p1.py",
+        "backend/tests/test_historical_regime_numba.py",
+        "backend/tests/test_research_series_numba.py",
+        "backend/tests/test_research_series_routes.py",
+        "backend/tests/test_scenario_stress.py",
+        "backend/tests/test_scenario_stress_routes.py"
+      ],
+      "related_configs": [
+        "backend/requirements.txt",
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "no_request_time_compilation",
+        "pit_asof_required_for_formal_use",
+        "missing_values_never_zero_filled",
+        "published_version_lineage_lock",
+        "third_party_model_isolation",
+        "persisted_plan_manifest_never_authorizes_execution",
+        "large_arrays_externalized"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "historical state labels and probabilities",
+        "TAA and formal-backtest timing",
+        "product state overlays",
+        "scenario transition and return distributions",
+        "published run reproducibility"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P09",
+        "P14"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "versioned_research_runtime",
+        "fixed_signature_njit",
+        "immutable_snapshot"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/historical_regimes/v2_contracts.py",
+          "backend/historical_regimes/v2_registry.py",
+          "backend/historical_regimes/v2_service.py",
+          "backend/historical_regimes/numba_kernels.py",
+          "backend/historical_regimes/repository.py",
+          "backend/research_series/service.py",
+          "backend/scenario_stress/service.py",
+          "backend/services/historical_regime_routes.py",
+          "backend/tests/test_historical_regime_v2.py",
+          "backend/tests/test_historical_regime_v2_p1.py",
+          "backend/tests/test_research_series_routes.py",
+          "backend/tests/test_scenario_stress.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "frontend_regime_research",
+      "name": "Historical regime graph workbench, data lab, and scenario UI",
+      "path": "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+      "kind": "frontend_feature_pages",
+      "purpose": "Lets researchers build typed historical-regime graphs from blank canvases or templates, inspect versioned data and node series, run and compare experiments, publish immutable versions, and reuse them in scenario simulation and portfolio workflows.",
+      "module_tags": [
+        "frontend",
+        "historical-regime",
+        "scenario-stress",
+        "data-lab",
+        "xyflow",
+        "accessible-tables"
+      ],
+      "entry_files": [
+        "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+        "frontend/src/pages/HistoricalRegimeCenter.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.tsx",
+        "frontend/src/pages/ResearchDataLab.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.tsx",
+        "frontend/src/pages/ScenarioCenters.tsx",
+        "frontend/src/pages/TacticalAllocationWorkspace.tsx",
+        "frontend/src/pages/regime-workbench",
+        "frontend/src/components/HistoricalRegimeBacktest.tsx",
+        "frontend/src/pages/regime-workbench/RegimeValidationPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeExperimentPanel.tsx",
+        "frontend/src/services/historicalRegimes.ts",
+        "frontend/src/services/portfolioRegime.ts",
+        "frontend/src/services/taaBacktest.ts",
+        "frontend/src/services/regimeGraph.ts",
+        "frontend/src/services/researchSeries.ts",
+        "frontend/src/services/scenarioStress.ts"
+      ],
+      "key_symbols": [
+        "HistoricalRegimeWorkbench",
+        "HistoricalRegimeDirectory",
+        "ResearchDataLab",
+        "ScenarioAlgorithmCenter",
+        "RegimeGraphCanvas",
+        "RegimeNodeInspector",
+        "RegimeResultDock",
+        "RegimeValidationPanel",
+        "RegimeExperimentPanel"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+        "frontend/src/services/regimeGraph.ts",
+        "frontend/src/pages/regime-workbench/RegimeGraphCanvas.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNodeInspector.tsx"
+      ],
+      "then_check_files": [
+        "frontend/src/pages/ResearchDataLab.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.tsx",
+        "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeValidationPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
+        "frontend/src/pages/ResearchDataLab.test.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx"
+      ],
+      "upstream_dependencies": [
+        "frontend_app_shell",
+        "backend_regime_research"
+      ],
+      "downstream_dependencies": [
+        "frontend_portfolio_research",
+        "frontend_allocation_workflows"
+      ],
+      "out_of_scope_dependencies": [
+        "browser-authored Python code",
+        "client-side authoritative financial calculations"
+      ],
+      "related_tests": [
+        "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
+        "frontend/src/pages/HistoricalRegimeCenter.test.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.test.tsx",
+        "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
+        "frontend/src/pages/ResearchDataLab.test.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx",
+        "frontend/src/pages/ScenarioCenters.test.tsx",
+        "frontend/src/pages/TacticalAllocationWorkspace.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeResultDock.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx"
+      ],
+      "related_configs": [
+        "frontend/package.json",
+        "frontend/vite.config.ts"
+      ],
+      "risk_flags": [
+        "stale_preview_response",
+        "dynamic_schema_contract",
+        "graph_keyboard_accessibility",
+        "chart_requires_table_alternative",
+        "publication_lineage_lock"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "historical regime research workflow",
+        "research-series selection",
+        "scenario stress definitions",
+        "published-state application selectors"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P07",
+        "P14"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/HistoricalRegimeDirectory.test.tsx src/pages/HistoricalRegimeWorkbench.test.tsx src/pages/ResearchDataLab.test.tsx src/pages/ScenarioAlgorithmCenter.test.tsx src/pages/regime-workbench/RegimeP1Panels.test.tsx src/pages/regime-workbench/RegimeResultDock.test.tsx src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx'",
+        "npm run build --prefix frontend"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "frontend_runtime_tested",
+        "versioned_graph_workbench"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+          "frontend/src/pages/ResearchDataLab.tsx",
+          "frontend/src/pages/ScenarioAlgorithmCenter.tsx",
+          "frontend/src/pages/regime-workbench/RegimeValidationPanel.tsx",
+          "frontend/src/services/regimeGraph.ts",
+          "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
+          "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx"
         ],
         "unsampled_paths": []
       }
@@ -1371,7 +1702,8 @@
         "frontend/tsconfig.json",
         "frontend/tailwind.config.js",
         "frontend/postcss.config.js",
-        "frontend/src/test/setup.ts"
+        "frontend/src/test/setup.ts",
+        "frontend/src/utils/fixedNjitExecution.ts"
       ],
       "key_symbols": [
         "App",
@@ -1379,6 +1711,7 @@
         "defineConfig"
       ],
       "child_modules": [
+        "frontend_investment_process_framework",
         "frontend_indicator_studio",
         "frontend_etf_research_pages",
         "frontend_allocation_workflows",
@@ -1406,6 +1739,7 @@
       ],
       "related_tests": [
         "frontend/src/App.test.tsx",
+        "frontend/src/utils/fixedNjitExecution.test.ts",
         "frontend/src/utils/returnNavigation.test.ts"
       ],
       "related_configs": [
@@ -1448,6 +1782,150 @@
           "frontend/src/utils/returnNavigation.test.ts",
           "frontend/vite.config.ts",
           "frontend/package.json"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "frontend_investment_process_framework",
+      "name": "Investment lifecycle, actual portfolio, allocation, and accounting prototype",
+      "path": "frontend/src/app/processRegistry.ts",
+      "kind": "frontend_workflow_framework",
+      "purpose": "Defines the product research through feedback lifecycle, actual-portfolio registry, effective-dated external-account and portfolio-manager relationships, cross-portfolio fair allocation, source-account reconciliation, fund-accounting Booking, double-entry controls, dual-entity statements, static-demo boundaries, and legacy route redirects.",
+      "module_tags": [
+        "frontend",
+        "investment-lifecycle",
+        "actual-portfolio",
+        "external-account",
+        "trade-allocation",
+        "fund-accounting",
+        "static-prototype"
+      ],
+      "entry_files": [
+        "CONTEXT.md",
+        "docs/frontend-investment-research-blueprint.md",
+        "docs/account-portfolio-allocation-accounting-design.md",
+        "frontend/src/app",
+        "frontend/src/layouts",
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/app/actualPortfolioDemoData.ts",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/components/ActualPortfolioSelector.tsx",
+        "frontend/src/components/LegacyRedirect.tsx",
+        "frontend/src/components/StaticDemoBanner.tsx",
+        "frontend/src/pages/ProcessHome.tsx",
+        "frontend/src/pages/StageOverview.tsx",
+        "frontend/src/pages/PortfolioCenterWorkspace.tsx",
+        "frontend/src/pages/PortfolioOnboardingWorkspace.tsx",
+        "frontend/src/pages/TradeAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountingBookingWorkspace.tsx",
+        "frontend/src/pages/FinancialStatementsWorkspace.tsx",
+        "frontend/src/pages/PortfolioSolutionCatalog.tsx",
+        "frontend/src/pages/PortfolioSolutionShowcase.tsx",
+        "frontend/src/pages/PrototypeWorkspace.tsx",
+        "frontend/src/pages/ToolHubPage.tsx",
+        "frontend/src/services/businessNumeric.ts"
+      ],
+      "key_symbols": [
+        "businessStages",
+        "actualPortfolioDemoData",
+        "portfolioAccountRelationships",
+        "portfolioManagerAssignments",
+        "PortfolioCenterWorkspace",
+        "TradeAllocationWorkspace",
+        "AccountStatementAllocationWorkspace",
+        "AccountingBookingWorkspace"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "CONTEXT.md",
+        "docs/account-portfolio-allocation-accounting-design.md",
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/app/actualPortfolioDemoData.ts",
+        "frontend/src/App.tsx"
+      ],
+      "then_check_files": [
+        "docs/frontend-investment-research-blueprint.md",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/pages/PortfolioCenterWorkspace.tsx",
+        "frontend/src/pages/PortfolioOnboardingWorkspace.tsx",
+        "frontend/src/pages/TradeAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountingBookingWorkspace.tsx",
+        "frontend/src/pages/FinancialStatementsWorkspace.tsx",
+        "frontend/src/ProcessFramework.test.tsx",
+        "frontend/e2e/process-framework.spec.ts"
+      ],
+      "upstream_dependencies": [
+        "frontend_app_shell"
+      ],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [
+        "live order routing",
+        "bank and custodian file ingestion",
+        "legal fund establishment",
+        "statutory accounting posting"
+      ],
+      "related_tests": [
+        "frontend/src/pages/PortfolioSolutionShowcase.test.tsx",
+        "frontend/src/pages/PrototypeWorkspace.test.tsx",
+        "frontend/src/services/businessNumeric.test.ts",
+        "frontend/src/ProcessFramework.test.tsx",
+        "frontend/src/app/actualPortfolioDemoData.test.ts",
+        "frontend/src/pages/PortfolioCenterWorkspace.test.tsx",
+        "frontend/src/pages/PortfolioOnboardingWorkspace.test.tsx",
+        "frontend/src/pages/TradeAllocationWorkspace.test.tsx",
+        "frontend/src/pages/AccountStatementAllocationWorkspace.test.tsx",
+        "frontend/src/pages/AccountingBookingWorkspace.test.tsx",
+        "frontend/src/pages/FinancialStatementsWorkspace.test.tsx",
+        "frontend/e2e/process-framework.spec.ts"
+      ],
+      "related_configs": [
+        "frontend/package.json",
+        "frontend/playwright.config.ts"
+      ],
+      "risk_flags": [
+        "research_and_actual_portfolio_context_must_not_mix",
+        "shared_execution_channel_must_not_create_shared_fund_ledger",
+        "allocation_must_balance_before_booking",
+        "booking_is_not_a_posted_journal",
+        "static_pages_must_not_call_backend_or_submit_orders"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "all investment-process navigation",
+        "actual-portfolio context",
+        "account and manager responsibility lineage",
+        "trade-to-accounting audit trail",
+        "portfolio performance source data"
+      ],
+      "pitfall_ids": [
+        "P07"
+      ],
+      "minimum_regression": [
+        "npm run test --prefix frontend -- --run",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "frontend_static_prototype",
+        "no_backend_contract_change"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "CONTEXT.md",
+        "docs/account-portfolio-allocation-accounting-design.md",
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/app/actualPortfolioDemoData.ts",
+        "frontend/src/pages/TradeAllocationWorkspace.tsx",
+          "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountingBookingWorkspace.tsx",
+        "frontend/src/app/actualPortfolioDemoData.test.ts",
+        "frontend/e2e/process-framework.spec.ts"
         ],
         "unsampled_paths": []
       }
@@ -1508,6 +1986,7 @@
         "browser screenshot and physical-device QA"
       ],
       "related_tests": [
+        "frontend/src/services/customIndicatorsExecution.test.ts",
         "frontend/src/pages/IndicatorStudio.test.tsx",
         "frontend/e2e/indicator-studio.spec.ts",
         "frontend/src/App.test.tsx"
@@ -1717,6 +2196,13 @@
         "frontend/src/pages/ProductResearch.tsx",
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
+        "frontend/src/pages/ProductPools.tsx",
+        "frontend/src/pages/ProductPoolLifecycle.tsx",
+        "frontend/src/pages/ProductPoolSelection.tsx",
+        "frontend/src/components/product-pools",
+        "frontend/src/services/productAnalysis.ts",
+        "frontend/src/services/productCompare.ts",
+        "frontend/src/services/productPools.ts",
         "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/components/HorizontalMetricComparison.tsx",
         "frontend/src/components/dashboard/DashboardOverviewCards.tsx",
@@ -1729,8 +2215,7 @@
         "frontend/src/components/dashboard/types.ts",
         "frontend/src/components/dashboard/useDataRefresh.ts",
         "frontend/src/components/dashboard/useInstrumentDashboard.ts",
-        "frontend/src/utils/performance.ts",
-        "frontend/src/utils/statisticalAnalysis.ts"
+        "frontend/src/utils/performance.ts"
       ],
       "key_symbols": [
         "Dashboard",
@@ -1779,7 +2264,6 @@
         "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/components/HorizontalMetricComparison.tsx",
         "frontend/src/utils/performance.ts",
-        "frontend/src/utils/statisticalAnalysis.ts",
         "backend/services/instrument_analytics.py",
         "backend/services/instrument_routes.py",
         "backend/services/data_routes.py"
@@ -1797,14 +2281,17 @@
         "real browser screenshot QA"
       ],
       "related_tests": [
+        "frontend/src/pages/ProductPools.test.tsx",
+        "frontend/src/pages/ProductPoolSelection.test.tsx",
+        "frontend/src/services/productAnalysis.test.ts",
+        "frontend/src/services/productPools.test.ts",
         "frontend/src/App.test.tsx",
         "frontend/src/pages/Dashboard.test.tsx",
         "frontend/e2e/dashboard.spec.ts",
         "frontend/src/components/dashboard/useDataRefresh.test.tsx",
         "frontend/src/pages/ProductResearch.test.tsx",
         "frontend/src/pages/ProductDetail.test.tsx",
-        "frontend/src/pages/ProductCompare.test.tsx",
-        "frontend/src/utils/statisticalAnalysis.test.ts"
+        "frontend/src/pages/ProductCompare.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -1884,7 +2371,9 @@
       "entry_files": [
         "frontend/src/pages/PortfolioConstruction.tsx",
         "frontend/src/pages/HoldingDiagnosis.tsx",
-        "frontend/src/services/portfolioResearch.ts"
+        "frontend/src/services/portfolioResearch.ts",
+        "frontend/src/components/HistoricalRegimeBacktest.tsx",
+        "frontend/src/services/portfolioRegime.ts"
       ],
       "key_symbols": [
         "PortfolioConstruction",
@@ -1903,6 +2392,7 @@
       "then_check_files": [
         "frontend/src/pages/PortfolioConstruction.test.tsx",
         "frontend/src/pages/HoldingDiagnosis.test.tsx",
+        "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
         "frontend/src/services/portfolioResearch.test.ts",
         "backend/services/portfolio_routes.py",
         "docs/custom_indicator_design.md"
@@ -1921,6 +2411,7 @@
       "related_tests": [
         "frontend/src/pages/PortfolioConstruction.test.tsx",
         "frontend/src/pages/HoldingDiagnosis.test.tsx",
+        "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
         "frontend/src/services/portfolioResearch.test.ts",
         "frontend/src/App.test.tsx"
       ],
@@ -1947,7 +2438,7 @@
         "P17"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/PortfolioConstruction.test.tsx src/pages/HoldingDiagnosis.test.tsx src/services/portfolioResearch.test.ts'",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/PortfolioConstruction.test.tsx src/pages/HoldingDiagnosis.test.tsx src/components/HistoricalRegimeBacktest.test.tsx src/services/portfolioResearch.test.ts'",
         "npm run build --prefix frontend"
       ],
       "routing_confidence": "high",
@@ -1962,8 +2453,11 @@
           "frontend/src/pages/PortfolioConstruction.tsx",
           "frontend/src/pages/HoldingDiagnosis.tsx",
           "frontend/src/services/portfolioResearch.ts",
+          "frontend/src/components/HistoricalRegimeBacktest.tsx",
+          "frontend/src/services/portfolioRegime.ts",
           "frontend/src/pages/PortfolioConstruction.test.tsx",
           "frontend/src/pages/HoldingDiagnosis.test.tsx",
+          "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
           "frontend/src/services/portfolioResearch.test.ts"
         ],
         "unsampled_paths": []
@@ -1987,6 +2481,10 @@
       "entry_files": [
         "frontend/src/pages/ManualConstruction.tsx",
         "frontend/src/pages/ClassAllocation.tsx",
+        "frontend/src/pages/AutoAssetClassification.tsx",
+        "frontend/src/components/ClassFitPanel.tsx",
+        "frontend/src/services/strategyWeights.ts",
+        "docs/auto_asset_class_design.md",
         "frontend/src/pages/EvaluationPlan.tsx",
         "frontend/src/components/evaluation/EvaluationProductSelector.tsx",
         "frontend/src/pages/Placeholder.tsx",
@@ -2031,6 +2529,8 @@
       ],
       "related_tests": [
         "frontend/src/App.test.tsx",
+        "frontend/src/pages/AutoAssetClassification.test.tsx",
+        "frontend/src/pages/ClassAllocation.test.tsx",
         "frontend/src/pages/EvaluationPlan.test.tsx",
         "frontend/src/pages/ManualConstruction.test.tsx"
       ],
@@ -2090,7 +2590,7 @@
       "name": "Data ingestion scripts, frontend-managed credential, and parquet contracts",
       "path": "config.py",
       "kind": "data_and_config",
-      "purpose": "Frontend-managed local Tushare credential access, rate-limited and checkpointed ETF/public-fund/index parquet acquisition, overlap-safe incremental merges, cross-process CLI/Web refresh state, isolated full-version staging, local analytics post-processing, and the index data center.",
+      "purpose": "Frontend-managed local Tushare credential access, rate-limited and checkpointed ETF/public-fund/index/macro parquet acquisition, point-in-time lineage, overlap-safe incremental merges, cross-process CLI/Web refresh state, isolated full-version staging, local analytics post-processing, and the index data center.",
       "module_tags": [
         "data",
         "config",
@@ -2105,6 +2605,7 @@
         "docker-compose.yml",
         "deploy/README.md",
         "config.py",
+        "TushareDownload.md",
         "T01_get_data.py",
         "backend/services/refresh_runtime.py",
         "backend/services/data_refresh.py",
@@ -2114,6 +2615,7 @@
         "frontend/src/pages/Dashboard.tsx",
         "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
         "frontend/src/pages/IndexData.tsx",
+        "frontend/src/pages/DataManagement.tsx",
         "docs/tushare_data_refresh_design.md",
         "docs/requirements.md"
       ],
@@ -2128,6 +2630,17 @@
         "save_public_fund_info",
         "save_public_fund_nav",
         "save_latest_public_fund_nav",
+        "save_fund_manager",
+        "save_fund_scale",
+        "save_fund_portfolio",
+        "save_fund_dividend",
+        "save_fund_adjustment",
+        "save_fund_benchmark",
+        "save_macro_cycle",
+        "save_macro_money_credit",
+        "save_macro_rates",
+        "save_macro_release_calendar",
+        "merge_vintage_rows",
         "save_fund_company",
         "save_nav",
         "save_candles",
@@ -2157,6 +2670,7 @@
         "market_data_snapshot_lifecycle"
       ],
       "first_read_files": [
+        "TushareDownload.md",
         "config.py",
         "T01_get_data.py",
         "backend/services/refresh_runtime.py",
@@ -2204,6 +2718,7 @@
         "backend/tests/test_instrument_routes.py",
         "frontend/src/components/dashboard/DataHealthRefreshPanel.test.tsx",
         "frontend/src/pages/IndexData.test.tsx",
+        "frontend/src/pages/DataManagement.test.tsx",
         "frontend/e2e/index-data.spec.ts",
         "frontend/src/App.test.tsx",
         "backend/tests/test_strategy_api.py",
@@ -2224,6 +2739,8 @@
         "external_network_calls_not_allowed_in_tests",
         "refresh_lock_requires_shared_local_filesystem",
         "incremental_overlap_incoming_rows_win",
+        "macro_release_date_unknown_must_not_be_treated_as_point_in_time",
+        "fund_portfolio_is_disclosed_stock_holdings_not_complete_asset_allocation",
         "full_refresh_must_not_expose_staging_data",
         "snapshot_failure_must_not_repeat_fetch",
         "index_request_paths_must_not_scan_complete_history",
@@ -2233,7 +2750,8 @@
       "edit_risk": "high",
       "blast_radius": [
         "all data-backed APIs",
-        "ETF/public-fund universe analytics and search",
+      "ETF/public-fund universe analytics and search",
+      "macro regime features and point-in-time backtests",
         "index catalog, coverage health, and index data center",
         "class fitting",
         "strategy backtests",
@@ -2263,9 +2781,11 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
+        "TushareDownload.md",
         "config.py",
         "T01_get_data.py",
         "docs/requirements.md",
+        "docs/tushare_data_refresh_design.md",
         "backend/services/refresh_runtime.py",
         "backend/services/data_refresh.py",
         "backend/services/data_routes.py",

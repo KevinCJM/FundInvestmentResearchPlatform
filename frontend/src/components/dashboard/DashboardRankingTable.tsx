@@ -62,7 +62,7 @@ export default function DashboardRankingTable({ kind, state }: DashboardRankingT
           <h3 id={headingId} className="text-base font-semibold text-slate-900">{label} · 指标快照{definition ? ` · ${definition.label}` : ''}</h3>
           <p className="mt-1 text-xs leading-5 text-slate-500">来源：{definition?.source ?? '产品分析快照'} · 截至：{response?.as_of ?? '—'}。仅纳入存续、数据新鲜、完整覆盖所选区间且无异常跳点的产品；空值不按 0 处理。</p>
         </div>
-        <Link to={`/research?kind=${kind}`} className="shrink-0 text-sm font-semibold text-indigo-700 hover:text-indigo-600">查看全部产品 →</Link>
+        <Link to={`/product-research/products?kind=${kind}`} className="shrink-0 text-sm font-semibold text-indigo-700 hover:text-indigo-600">查看全部产品 →</Link>
       </div>
 
       {state.loading ? (
@@ -96,7 +96,7 @@ export default function DashboardRankingTable({ kind, state }: DashboardRankingT
                 <tr key={`${item.instrument_type}-${item.ts_code}`} className="hover:bg-indigo-50/50">
                   <td className="px-3 py-3 font-semibold tabular-nums text-slate-400">{index + 1}</td>
                   <td className="px-3 py-3">
-                    <Link to={`/product/${encodeURIComponent(item.ts_code)}?kind=${item.instrument_type}`} className="font-semibold text-indigo-700 hover:text-indigo-600">
+                    <Link to={`/product-research/products/${encodeURIComponent(item.ts_code)}?kind=${item.instrument_type}`} className="font-semibold text-indigo-700 hover:text-indigo-600">
                       {item.name ?? item.ts_code}
                     </Link>
                     <div className="mt-0.5 text-xs text-slate-400">{item.ts_code}</div>

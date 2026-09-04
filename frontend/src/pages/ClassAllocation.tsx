@@ -4,8 +4,18 @@ import HorizontalMetricComparison, {
   DEFAULT_METRIC_TABLE_HEIGHT,
   PerformanceQuadrantChart,
 } from '../components/HorizontalMetricComparison';
-import { buildAnnualMetricRows, computeAnnualMetrics } from '../utils/performance';
+import { buildAnnualMetricRows } from '../utils/performance';
 import { useNavigate } from 'react-router-dom';
+import {
+  requestEqualWeights,
+  type StrategyExecutionAudit,
+} from '../services/strategyWeights';
+import { assertFixedNjitExecution } from '../utils/fixedNjitExecution';
+import {
+  HistoricalRegimeBacktestSelector,
+  RegimeConditioningPanel,
+} from '../components/HistoricalRegimeBacktest';
+import type { HistoricalRegimeBacktestReference } from '../services/portfolioRegime';
 
 // Helper component for section titles
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -62,6 +72,8 @@ export default function ClassAllocation() {
   const [assetNames, setAssetNames] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [equalWeightLoading, setEqualWeightLoading] = useState(false);
+  const [equalWeightExecution, setEqualWeightExecution] = useState<StrategyExecutionAudit | null>(null);
 
   // Form states for dynamic inputs
   const [annualDaysRet, setAnnualDaysRet] = useState(252);
@@ -105,6 +117,7 @@ export default function ClassAllocation() {
   const [btStart, setBtStart] = useState<string>('');
   const [navCount, setNavCount] = useState<number>(0);
   const [btSeries, setBtSeries] = useState<any>(null);
+  const [historicalRegime, setHistoricalRegime] = useState<HistoricalRegimeBacktestReference | null>(null);
   const [scheduleMarkers, setScheduleMarkers] = useState<Record<string, ScheduleEntry>>({});
   const [busyStrategy, setBusyStrategy] = useState<string | null>(null);
   const [showAddPicker, setShowAddPicker] = useState(false);
@@ -126,7 +139,7 @@ export default function ClassAllocation() {
       method: 'equal_weight',
       constituents,
     }));
-    navigate('/portfolio-construction');
+    navigate('/pre-investment/product-allocation-timing/construction');
   }, [configDetails, navigate, selectedAlloc]);
 
   const formatWeightPercent = useCallback((value: number) => {
@@ -263,6 +276,7 @@ export default function ClassAllocation() {
         const fallback = strategy.type === 'risk_budget' ? '风险预算权重计算失败' : '指定目标权重计算失败';
         throw new Error(data?.detail || fallback);
       }
+      assertFixedNjitExecution(data?.execution, '大类权重求解');
       return (data.weights || []) as number[];
     },
     [buildComputeWeightsPayload]
@@ -299,6 +313,7 @@ export default function ClassAllocation() {
       if (!response.ok) {
         throw new Error(data?.detail || '批量调仓权重计算失败');
       }
+      assertFixedNjitExecution(data?.execution, '批量调仓权重计算');
       const markers = (data.dates || []).map((d: string, idx: number) => ({
         date: d,
         weights: (data.weights && data.weights[idx]) || [],
@@ -496,23 +511,9 @@ export default function ClassAllocation() {
       };
     }
     const columns = metrics.map((m: any) => m?.name ?? '');
-    const seriesMap = btSeries?.series || {};
-    const toNavNumber = (value: any) => {
-      if (value === null || value === undefined) return NaN;
-      const num = Number(value);
-      return Number.isFinite(num) ? num : NaN;
-    };
-    const computeCumulative = (name: string): number => {
-      const values = seriesMap?.[name];
-      if (!Array.isArray(values)) return NaN;
-      const cleaned = values.map(toNavNumber).filter(v => Number.isFinite(v));
-      if (cleaned.length === 0) return NaN;
-      const first = cleaned.find(v => v !== 0) ?? cleaned[0];
-      const last = cleaned[cleaned.length - 1];
-      if (!Number.isFinite(first) || !Number.isFinite(last) || first === 0) return NaN;
-      return last / first - 1;
-    };
-    const cumulativeValues = columns.map(name => computeCumulative(name));
+    const cumulativeValues = metrics.map((metric: any) =>
+      parseMetricValue(metric.cumulative_return)
+    );
     const cumulativePercentValues = cumulativeValues.map(v => (Number.isFinite(v) ? v * 100 : NaN));
     const rows = [
       { label: '累计收益率', values: cumulativeValues },
@@ -525,28 +526,28 @@ export default function ClassAllocation() {
       { label: '最大回撤(%)', values: metrics.map((m: any) => parseMetricValue(m.max_drawdown) * 100) },
       { label: '卡玛比率', values: metrics.map((m: any) => parseMetricValue(m.calmar)) },
     ];
-    const annualSeriesMap: Record<string, Array<number | null | undefined>> = {};
-    columns.forEach((name) => {
-      annualSeriesMap[name] = Array.isArray(seriesMap?.[name]) ? seriesMap?.[name] : [];
+    const annualRows = buildAnnualMetricRows(columns, btSeries?.annual_metrics ?? {
+      years: [],
+      series: {},
     });
-    const annualMetrics = computeAnnualMetrics(btSeries?.dates, annualSeriesMap);
-    const annualRows = buildAnnualMetricRows(columns, annualMetrics);
     const mergedRows = annualRows.length > 0 ? [...rows, ...annualRows] : rows;
     return { columns, rows: mergedRows };
-  }, [btSeries?.metrics, btSeries?.series, parseMetricValue]);
+  }, [btSeries?.annual_metrics, btSeries?.metrics, parseMetricValue]);
 
   const backtestMetricColumns = backtestMetricsSummary.columns;
   const backtestMetricRows = backtestMetricsSummary.rows;
 
-  function computeEqualPercents(names: string[]): number[] {
-    const n = Math.max(1, names.length);
-    const base = Math.floor((100 / n) * 100) / 100; // 向下取两位
-    const arr = Array(n).fill(base);
-    const others = base * (n - 1);
-    const first = parseFloat((100 - others).toFixed(2));
-    arr[0] = first;
-    return arr;
-  }
+  const loadEqualPercents = useCallback(async (names: string[]): Promise<number[]> => {
+    if (names.length === 0) throw new Error('请先加载至少一个资产大类');
+    setEqualWeightLoading(true);
+    try {
+      const result = await requestEqualWeights(names.length);
+      setEqualWeightExecution(result.execution);
+      return result.weights;
+    } finally {
+      setEqualWeightLoading(false);
+    }
+  }, []);
 
   function uniqueStrategyName(base: string, list: StrategyRow[]): string {
     const exists = new Set(list.map(s => s.name));
@@ -697,6 +698,7 @@ export default function ClassAllocation() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || '计算失败');
+      assertFixedNjitExecution(data?.execution, '大类配置有效前沿');
       setFrontierData(data);
     } catch (e: any) {
       alert(e.message);
@@ -1156,13 +1158,25 @@ export default function ClassAllocation() {
               {s.type === 'fixed' && (
                 <div className="mt-3 space-y-3">
                   <div className="flex items-center gap-3 text-sm">
-                    <label className="flex items-center gap-2"><input type="radio" checked={(s.cfg?.mode||'equal')==='equal'} onChange={() => setStrategies(prev => prev.map(x=>{
-                      if (x.id!==s.id) return x;
-                      const eqArr = computeEqualPercents(assetNames);
-                      return { ...x, cfg:{...x.cfg, mode:'equal'}, rows: assetNames.map((n,i)=> ({ className:n, weight:eqArr[i] })) } as StrategyRow;
-                    }))}/> 等权重</label>
+                    <label className="flex items-center gap-2"><input type="radio" checked={(s.cfg?.mode||'equal')==='equal'} disabled={equalWeightLoading} onChange={async () => {
+                      setError('');
+                      try {
+                        const eqArr = await loadEqualPercents(assetNames);
+                        setStrategies(prev => prev.map(x=>{
+                          if (x.id!==s.id) return x;
+                          return { ...x, cfg:{...x.cfg, mode:'equal'}, rows: assetNames.map((n,i)=> ({ className:n, weight:eqArr[i] })) } as StrategyRow;
+                        }));
+                      } catch (reason) {
+                        setError(reason instanceof Error ? reason.message : '等权计算失败');
+                      }
+                    }}/> 等权重</label>
                     <label className="flex items-center gap-2"><input type="radio" checked={(s.cfg?.mode||'equal')==='custom'} onChange={() => setStrategies(prev => prev.map(x=>x.id===s.id?{...x, cfg:{...x.cfg, mode:'custom'}, rows: x.rows.map((rr,i)=> ({...rr, weight: i===0?100:0})) }:x))}/> 自定义权重</label>
                   </div>
+                  {equalWeightExecution && (
+                    <p className="text-xs text-emerald-700">
+                      等权来源：Numba NJIT 固定签名 · {equalWeightExecution.kernel_coverage}
+                    </p>
+                  )}
                   <div className="rounded border">
                     <table className="min-w-full">
                       <thead className="bg-gray-50 text-xs text-gray-600"><tr><th className="px-3 py-2 text-left">大类名称</th><th className="px-3 py-2 text-left">资金权重(%)</th></tr></thead>
@@ -1611,15 +1625,21 @@ export default function ClassAllocation() {
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span className="text-sm text-gray-700">选择策略类型：</span>
                   {(['fixed','risk_budget','target'] as StrategyType[]).map(t => (
-                    <button key={t} className="rounded bg-gray-100 px-3 py-1 text-sm" onClick={() => {
+                    <button key={t} disabled={equalWeightLoading} className="rounded bg-gray-100 px-3 py-1 text-sm disabled:cursor-wait disabled:opacity-60" onClick={async () => {
                       const id = `s${Date.now()}`;
                       if (t === 'fixed') {
-                        setStrategies(prev => {
-                          const eqArr = computeEqualPercents(assetNames);
+                        setError('');
+                        try {
+                          const eqArr = await loadEqualPercents(assetNames);
+                          setStrategies(prev => {
                           const rows = assetNames.map((n,i)=> ({ className:n, weight: eqArr[i], budget: 100 }));
                           const name = uniqueStrategyName('固定比例策略', prev);
                           return [...prev, { id, type: t, name, rows, cfg: { mode: 'equal' } }];
-                        });
+                          });
+                        } catch (reason) {
+                          setError(reason instanceof Error ? reason.message : '等权计算失败');
+                          return;
+                        }
                       } else if (t==='risk_budget') {
                         setStrategies(prev => {
                           const rows = assetNames.map(n=> ({ className:n, budget:100, weight: null }));
@@ -1643,6 +1663,16 @@ export default function ClassAllocation() {
           {/* 策略回测 */}
           <div className="rounded-lg border p-4">
             <h3 className="font-medium text-gray-700">策略回测</h3>
+            <div className="mt-3">
+              <HistoricalRegimeBacktestSelector
+                value={historicalRegime}
+                disabled={btBusy}
+                onChange={(value) => {
+                  setHistoricalRegime(value);
+                  setBtSeries(null);
+                }}
+              />
+            </div>
             <div className="mt-2 flex items-center gap-3">
               <label className="text-sm text-gray-600">选择开始日期</label>
               <input type="date" value={btStart} onChange={e=> setBtStart(e.target.value)} className="rounded border-gray-300 px-2 py-1"/>
@@ -1687,6 +1717,7 @@ export default function ClassAllocation() {
                   const payload = {
                     alloc_name: selectedAlloc,
                     start_date: btStart || undefined,
+                    historical_regime: historicalRegime ?? undefined,
                     strategies: prepared.map((s) => {
                       const specKey = getScheduleSpecKey(s);
                       const entry = specKey ? markersDraft[s.name] : undefined;
@@ -1704,6 +1735,10 @@ export default function ClassAllocation() {
                   const res = await fetch('/api/strategy/backtest',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                   const dat = await res.json();
                   if(!res.ok) throw new Error(dat.detail||'回测失败');
+                  assertFixedNjitExecution(dat?.execution, '大类配置策略回测');
+                  if (dat?.regime_conditioning) {
+                    assertFixedNjitExecution(dat.regime_conditioning.execution, '组合历史情景条件统计');
+                  }
                   setBtSeries(dat);
                 }catch(e:any){ alert(e?.message||'回测失败'); }
                 finally { setBtBusy(false); }
@@ -1786,6 +1821,7 @@ export default function ClassAllocation() {
                     </div>
                   </div>
                 )}
+                <RegimeConditioningPanel result={btSeries.regime_conditioning} />
               </div>
             )}
 

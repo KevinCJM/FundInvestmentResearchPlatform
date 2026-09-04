@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import sys
 from contextlib import asynccontextmanager
 import numpy as np
@@ -24,13 +23,29 @@ if str(BACKEND_DIR) not in sys.path:
 
 from optimizer import (
     calculate_efficient_frontier_exploration,
+    returns_from_nav_matrix,
     warm_optimizer_numba_kernels,
 )
 from backtest_engine import backtest_portfolio, gen_rebalance_dates
 from fit import compute_rolling_corr_classes, compute_class_consistency
-from strategy import compute_risk_budget_weights, compute_target_weights
-from fit import ClassSpec, ETFSpec, _load_adj_nav, compute_classes_nav, compute_rolling_corr
-from market_data import resolve_market_data_file
+from strategy import (
+    compute_risk_budget_weights,
+    compute_target_weights,
+    normalize_explicit_weights,
+    scale_weights_percent,
+    strategy_execution_audit,
+)
+from fit import (
+    ClassSpec,
+    ETFSpec,
+    _load_adj_nav,
+    _pick_series,
+    compute_classes_nav,
+    compute_nav_performance_payload,
+    compute_rolling_corr,
+    serialize_rolling_correlation_payload,
+)
+from market_data import resolve_market_data_file, resolve_tushare_data_dir
 from cal_indicators.typed_numeric_backend import warm_typed_numeric_backend
 
 
@@ -68,6 +83,7 @@ class SolveRequest(BaseModel):
 
 class SolveResponse(BaseModel):
     weights: List[float]
+    execution: dict
 
 
 class FitETFIn(BaseModel):
@@ -90,10 +106,12 @@ class FitRequest(BaseModel):
 class FitResponse(BaseModel):
     dates: List[str]
     navs: dict
-    corr: List[List[float]]
+    corr: List[List[Optional[float]]]
     corr_labels: List[str]
     metrics: List[dict]
     consistency: List[dict]
+    annual_metrics: dict
+    execution: dict
 
 
 class RollingRequest(BaseModel):
@@ -108,6 +126,7 @@ class RollingResponse(BaseModel):
     dates: List[str]
     series: dict
     metrics: List[dict]
+    execution: dict
 
 
 @asynccontextmanager
@@ -116,13 +135,62 @@ async def lifespan(_app: FastAPI):
 
     optimizer_status = warm_optimizer_numba_kernels()
     typed_status = warm_typed_numeric_backend()
+    from backtest_numba import warm_backtest_numba_kernels
+    from fit_numba import warm_fit_numba_kernels
+    from auto_class_numba import warm_auto_class_numba_kernels
+    from historical_regimes.numba_kernels import (
+        warm_historical_regime_numba_kernels,
+    )
+    from historical_regimes.v2_numba import warm_regime_graph_numba_kernels
+    from historical_regimes.taa import warm_taa_numba_kernels
+    from custom_indicators.portfolio_numba import warm_portfolio_numba_kernels
+    from scenario_stress.numba_kernels import warm_scenario_numba_kernels
+    from synthetic_series_numba import warm_synthetic_series_numba_kernel
+    from instrument_analytics_numba import warm_instrument_analytics_numba_kernels
+    from product_analysis_numba import warm_product_analysis_numba_kernels
+    from business_numeric_numba import warm_business_numeric_kernels
+    from research_series.numba_kernels import warm_research_series_numba_kernels
+    from strategy import warm_strategy_numba_kernels
     from services.custom_indicator_routes import indicator_service
+    from services.historical_regime_routes import regime_graph_v2_service
 
+    backtest_status = warm_backtest_numba_kernels()
+    fit_status = warm_fit_numba_kernels()
+    auto_class_status = warm_auto_class_numba_kernels()
+    historical_regime_status = warm_historical_regime_numba_kernels()
+    regime_graph_status = warm_regime_graph_numba_kernels()
+    taa_status = warm_taa_numba_kernels()
+    portfolio_status = warm_portfolio_numba_kernels()
+    scenario_stress_status = warm_scenario_numba_kernels()
+    synthetic_series_status = warm_synthetic_series_numba_kernel()
+    instrument_analytics_status = warm_instrument_analytics_numba_kernels()
+    product_analysis_status = warm_product_analysis_numba_kernels()
+    business_numeric_status = warm_business_numeric_kernels()
+    research_series_status = warm_research_series_numba_kernels()
+    strategy_status = warm_strategy_numba_kernels()
+    regime_graph_plan_status = regime_graph_v2_service.prewarm_saved_definitions()
+    if regime_graph_plan_status.get("complete") is not True:
+        raise RuntimeError("历史情景 V2 已保存定义未能全部完成启动预热")
     indicator_service.start_compute_engine()
     _app.state.numba_warmup = {
         "complete": True,
         "optimizer": optimizer_status,
         "indicators": typed_status,
+        "backtest": backtest_status,
+        "fit_analytics": fit_status,
+        "auto_asset_class": auto_class_status,
+        "historical_regimes": historical_regime_status,
+        "regime_graph_v2": regime_graph_status,
+        "regime_graph_v2_saved_plans": regime_graph_plan_status,
+        "taa": taa_status,
+        "portfolio_research": portfolio_status,
+        "scenario_stress": scenario_stress_status,
+        "synthetic_product_series": synthetic_series_status,
+        "instrument_analytics": instrument_analytics_status,
+        "product_analysis": product_analysis_status,
+        "business_numeric": business_numeric_status,
+        "research_series": research_series_status,
+        "portfolio_strategy": strategy_status,
         "workers": indicator_service.compute_engine.status(),
     }
     try:
@@ -179,15 +247,36 @@ except Exception:
     pass
 from services.data_routes import router as data_router
 from services.custom_indicator_routes import router as custom_indicator_router
-from services.instrument_routes import router as instrument_router
+from services.instrument_analytics import (
+    build_legacy_etf_analytics_response,
+    build_legacy_etf_trend_response,
+    instrument_analytics_execution_audit,
+)
+from services.instrument_routes import (
+    instrument_product_detail as unified_instrument_product_detail,
+    instrument_products as unified_instrument_products,
+    router as instrument_router,
+)
 from services.index_routes import router as index_router
 from services.portfolio_routes import router as portfolio_router
+from services.historical_regime_routes import router as historical_regime_router
+from services.scenario_stress_routes import router as scenario_stress_router
+from services.business_numeric_routes import router as business_numeric_router
+from services.research_series_routes import router as research_series_router
+from services.auto_class_routes import router as auto_class_router
+from services.product_pool_routes import router as product_pool_router
 
 app.include_router(data_router)
 app.include_router(custom_indicator_router)
 app.include_router(instrument_router)
 app.include_router(index_router)
 app.include_router(portfolio_router)
+app.include_router(historical_regime_router)
+app.include_router(scenario_stress_router)
+app.include_router(business_numeric_router)
+app.include_router(research_series_router)
+app.include_router(auto_class_router)
+app.include_router(product_pool_router)
 
 
 @app.get("/api/health")
@@ -198,144 +287,59 @@ def health():
     }
 
 
-def _round2(n: float) -> float:
-    return round(n + 1e-8, 2)
-
-
 @app.post("/api/risk-parity/solve", response_model=SolveResponse)
 def solve(req: SolveRequest):
-    """
-    风险平价求解（使用 ETF 与场外公募基金的 adj_nav 复权净值计算日收益 → 协方差矩阵）：
-    - 支持目标风险预算（来自前端 riskContribution，占比合计 100）；若未提供则等预算。
-    - 非负权重，权重和=1；若 maxLeverage>0，则线性放大到 1+maxLeverage。
-    - 目前仅实现基于波动率的风险度量（riskMetric 参数暂不影响计算）。
-    """
+    """Solve covariance risk budgets only through precompiled NJIT kernels."""
 
-    # 读取并准备收益序列
-    if not any(resolve_market_data_file(name, DATA_DIR).exists() for name in ("etf_daily_df.parquet", "fund_nav_df.parquet")):
-        # 回退为占比分配
-        rc = [max(0.0, float(x.riskContribution)) for x in req.etfs]
-        s = sum(rc)
-        if s <= 0:
-            return SolveResponse(weights=[0.0 for _ in rc])
-        base = np.array(rc, dtype=float) / s
-        scale = 1.0 + max(0.0, float(req.maxLeverage))
-        return SolveResponse(weights=[_round2(float(w * 100 * scale)) for w in base])
-
-    df = _load_adj_nav(DATA_DIR, [item.code for item in req.etfs], [item.name for item in req.etfs])
-
-    # 根据前端给的 code/name 匹配 ts_code/name
-    series_list: List[pd.Series] = []
-    labels: List[str] = []
-
-    def _code_nosfx(x: str) -> str:
-        xs = (x or "").strip()
-        if "." in xs:
-            return xs.split(".")[0]
-        return xs
-
-    for item in req.etfs:
-        code = (item.code or "").strip()
-        code_ns = _code_nosfx(code)
-        name = (item.name or "").strip()
-        ts = df["ts_code"].astype(str)
-        nm = df["name"].astype(str)
-        sub = df[(ts == code) | (ts.str.split(".").str[0] == code_ns) | (nm == name)]
-        if sub.empty and code_ns:
-            # 松匹配：code 片段
-            sub = df[ts.str.contains(code_ns, na=False)]
-        if sub.empty:
-            continue
-        # 以日期为索引，计算日收益率（使用复权净值）
-        s = (
-            sub.sort_values("date")["adj_nav"].reset_index(drop=True).pct_change().dropna()
+    if not req.etfs:
+        return JSONResponse(status_code=400, content={"detail": "风险预算至少需要一个产品"})
+    if req.riskMetric != "vol":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "当前风险预算求解仅支持波动率；VaR/ES 不会被静默当作波动率处理"},
         )
-        if s.empty:
-            continue
-        # 用原始 ts_code 作为列标签，便于对齐
-        label = str(sub.iloc[0]["ts_code"])  # 使用 ts_code 作为内部标签
-        s.index = range(len(s))  # 统一索引，后续用等长拼接
-        series_list.append(s)
-        labels.append(label)
-
-    n = len(series_list)
-    if n == 0:
-        # 回退：预算分配
-        rc = [max(0.0, float(x.riskContribution)) for x in req.etfs]
-        s = sum(rc)
-        if s <= 0:
-            return SolveResponse(weights=[0.0 for _ in rc])
-        base = np.array(rc, dtype=float) / s
-        scale = 1.0 + max(0.0, float(req.maxLeverage))
-        return SolveResponse(weights=[_round2(float(w * 100 * scale)) for w in base])
-
-    # 对齐为相同长度：取最短序列长度
-    min_len = min(len(s) for s in series_list)
-    X = np.column_stack([s.iloc[-min_len:].to_numpy() for s in series_list])
-    # 协方差矩阵
-    S = np.cov(X, rowvar=False, ddof=1)
-
-    # 目标预算 b, 构建预算向量（与 labels 同序），同时兼容 code 无后缀/带后缀；name 作为兜底
-    budget_map = {}
-    for it in req.etfs:
-        c = (it.code or "").strip()
-        budget_map[c] = float(it.riskContribution)
-        budget_map[_code_nosfx(c)] = float(it.riskContribution)
-        budget_map[(it.name or "").strip()] = float(it.riskContribution)
-    b = []
-    for lab in labels:
-        b.append(float(budget_map.get(lab, 0.0) or 0.0))
-    b = np.array(b, dtype=float)
-    if b.sum() <= 0:
-        b = np.ones(n, dtype=float)
-    b = b / b.sum()
-
-    # 数值稳定：若协方差半正定，做轻微对角线缩减
     try:
-        # 尝试 Cholesky 以检测正定性
-        np.linalg.cholesky(S + 1e-12 * np.eye(n))
-    except np.linalg.LinAlgError:
-        S = S + 1e-6 * np.eye(n)
+        data = _load_adj_nav(
+            DATA_DIR,
+            [item.code for item in req.etfs],
+            [item.name for item in req.etfs],
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-    # 固定点迭代：w_new ∝ b / (S w)
-    eps = 1e-12
-    w = b.copy()
-    w = np.maximum(w, eps)
-    w = w / w.sum()
-    for _ in range(5000):
-        Sw = S @ w
-        denom = np.maximum(Sw, eps)
-        w_new = b / denom
-        w_new = np.maximum(w_new, eps)
-        w_new = w_new / w_new.sum()
-        if np.linalg.norm(w_new - w, ord=1) < 1e-8:
-            w = w_new
-            break
-        w = 0.7 * w_new + 0.3 * w  # 适度松弛以增强稳定性
-    # 计算风险贡献以检验贴合度（非必须）
-    Sw = S @ w
-    port_var = float(w @ Sw)
-    if port_var > 0:
-        rc = (w * Sw) / port_var
-        # 若偏差很大，做最后一次牛顿修正（可选，略）
+    series: list[pd.Series] = []
+    missing: list[str] = []
+    for index, item in enumerate(req.etfs):
+        selected = _pick_series(data, item.code, item.name)
+        if selected is None or selected.empty:
+            missing.append(item.name or item.code)
+            continue
+        series.append(selected.rename(f"asset_{index}"))
+    if missing:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"以下产品缺少真实净值，禁止用预算权重降级替代：{', '.join(missing)}"},
+        )
 
-    # Map weights back to original input order; unknown assets get 0
-    weight_map = {lab: float(wi) for lab, wi in zip(labels, w)}
-    out = []
-    for it in req.etfs:
-        code = (it.code or "").strip()
-        key = code if code in weight_map else _code_nosfx(code)
-        if key not in weight_map:
-            key = (it.name or "").strip()
-        out.append(weight_map.get(key, 0.0))
-
-    # 杠杆缩放
-    scale = 1.0 + max(0.0, float(req.maxLeverage))
-    out = [float(x * 100 * scale) for x in out]
-    return SolveResponse(weights=[_round2(x) for x in out])
+    nav_wide = pd.concat(series, axis=1, join="inner").dropna(axis=0, how="any")
+    if len(nav_wide.index) < 3:
+        return JSONResponse(status_code=400, content={"detail": "完整交集净值样本不足，无法求解风险预算"})
+    budgets = [float(item.riskContribution) for item in req.etfs]
+    try:
+        normalized = compute_risk_budget_weights(
+            nav_wide,
+            {"metric": "vol"},
+            budgets,
+        )
+        weights = scale_weights_percent(normalized, float(req.maxLeverage))
+        execution = strategy_execution_audit()
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    return SolveResponse(weights=weights, execution=execution)
 
 
-@app.post("/api/fit-classes", response_model=FitResponse)
+# Registered by services.analytics_routes; this remains an unregistered
+# compatibility callable so there is only one HTTP numerical path.
 def fit_classes(req: FitRequest):
     try:
         start = pd.to_datetime(req.startDate)
@@ -353,6 +357,7 @@ def fit_classes(req: FitRequest):
     ]
     NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
     consistency_rows = compute_class_consistency(DATA_DIR, classes, start)
+    performance = compute_nav_performance_payload(NAV)
 
     def finite_or_none(x: float):
         try:
@@ -374,11 +379,12 @@ def fit_classes(req: FitRequest):
     dates = [d.strftime("%Y-%m-%d") for d in NAV.index]
     navs = {col: [finite_or_none(float(x)) for x in NAV[col].tolist()] for col in NAV.columns}
     corr_labels = list(corr.columns)
-    corr_vals = [[finite_or_none(float(v)) or 0.0 for v in row] for row in corr.values.tolist()]
+    corr_vals = [[finite_or_none(float(v)) for v in row] for row in corr.values.tolist()]
     metrics_out = []
     for name, row in metrics.iterrows():
         metrics_out.append({
             "name": str(name),
+            "cumulative_return": performance["cumulative_returns"].get(str(name)),
             "annual_return": finite_or_none(row.get("年化收益率", None)),
             "annual_vol": finite_or_none(row.get("年化波动率", None)),
             "sharpe": finite_or_none(row.get("夏普比率", None)),
@@ -399,11 +405,19 @@ def fit_classes(req: FitRequest):
             "max_te": None if not isinstance(row.get("max_te"), (int, float)) or not (
                     row.get("max_te") == row.get("max_te")) else float(row.get("max_te")),
         })
-    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out,
-                       consistency=cons_out)
+    return FitResponse(
+        dates=dates,
+        navs=navs,
+        corr=corr_vals,
+        corr_labels=corr_labels,
+        metrics=metrics_out,
+        consistency=cons_out,
+        annual_metrics=performance["annual_metrics"],
+        execution=performance["execution"],
+    )
 
 
-@app.post("/api/rolling-corr", response_model=RollingResponse)
+# Registered by services.analytics_routes.
 def rolling_corr(req: RollingRequest):
     try:
         start = pd.to_datetime(req.startDate)
@@ -413,22 +427,9 @@ def rolling_corr(req: RollingRequest):
     idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window),
                                                     req.targetCode,
                                                     req.targetName)
-    dates = [d.strftime("%Y-%m-%d") for d in idx]
-    # 清理 NaN/Inf
-    safe_series = {
-        k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for
-        k, v in series_map.items()}
-    for m in metrics:
-        for k in list(m.keys()):
-            if k == 'name':
-                continue
-            v = m[k]
-            try:
-                if not (isinstance(v, (int, float)) and v == v and abs(v) != float('inf')):
-                    m[k] = 0.0
-            except Exception:
-                m[k] = 0.0
-    return RollingResponse(dates=dates, series=safe_series, metrics=metrics)
+    return RollingResponse(
+        **serialize_rolling_correlation_payload(idx, series_map, metrics)
+    )
 
 
 class RollingClassesRequest(BaseModel):
@@ -455,21 +456,9 @@ def rolling_corr_classes(req: RollingClassesRequest):
     idx, series_map, metrics = compute_rolling_corr_classes(DATA_DIR, classes, start,
                                                             int(req.window),
                                                             req.targetClassName)
-    dates = [d.strftime("%Y-%m-%d") for d in idx]
-    safe_series = {
-        k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for
-        k, v in series_map.items()}
-    for m in metrics:
-        for k in list(m.keys()):
-            if k == 'name':
-                continue
-            v = m[k]
-            try:
-                if not (isinstance(v, (int, float)) and v == v and abs(v) != float('inf')):
-                    m[k] = 0.0
-            except Exception:
-                m[k] = 0.0
-    return RollingResponse(dates=dates, series=safe_series, metrics=metrics)
+    return RollingResponse(
+        **serialize_rolling_correlation_payload(idx, series_map, metrics)
+    )
 
 
 @app.post("/api/save-allocation")
@@ -586,7 +575,7 @@ def load_allocation(name: str):
     return list(classes_map.values())
 
 
-@app.post("/api/efficient-frontier")
+# Registered by services.analytics_routes.
 def post_efficient_frontier(req: FrontierRequest):
     nv_path = DATA_DIR / "asset_nv.parquet"
     if not nv_path.exists():
@@ -607,13 +596,23 @@ def post_efficient_frontier(req: FrontierRequest):
         return JSONResponse(status_code=400, content={"detail": "在选定日期区间内没有数据"})
 
     # 2. 准备收益率宽表
-    nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index().dropna(axis=0, how='any')
+    if len(nav_wide.index) < 2:
+        return JSONResponse(status_code=400, content={"detail": "完整交集净值样本不足，无法计算有效前沿"})
 
     return_type = req.return_metric.get('type', 'simple')
-    if return_type == 'log':
-        returns_df = np.log(nav_wide / nav_wide.shift(1)).dropna()
-    else:
-        returns_df = nav_wide.pct_change().dropna()
+    try:
+        return_values = returns_from_nav_matrix(
+            nav_wide.to_numpy(dtype=np.float64),
+            return_type=return_type,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    returns_df = pd.DataFrame(
+        return_values,
+        index=nav_wide.index[1:],
+        columns=nav_wide.columns,
+    )
 
     # 3. 调用核心计算函数
     # Map constraints by asset order
@@ -702,6 +701,7 @@ def post_efficient_frontier(req: FrontierRequest):
         "max_sharpe": results.get("max_sharpe") if is_finite_point(results.get("max_sharpe")) else None,
         "min_variance": results.get("min_variance") if is_finite_point(results.get("min_variance")) else None,
         "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
+        "execution": results.get("execution"),
     }
 
     return clean_results
@@ -746,7 +746,7 @@ class ComputeWeightsRequest(BaseModel):
     window_mode: Optional[str] = None  # 'all'|'firstN'|'rollingN'
 
 
-@app.post("/api/strategy/compute-weights")
+# Registered by services.strategy_routes.
 def api_compute_weights(req: ComputeWeightsRequest):
     nv_path = DATA_DIR / "asset_nv.parquet"
     if not nv_path.exists():
@@ -762,17 +762,15 @@ def api_compute_weights(req: ComputeWeightsRequest):
     # 窗口裁剪逻辑由下游 compute_* 函数处理，避免重复裁剪导致结果一致
 
     if req.strategy.type == 'fixed':
-        weights = []
-        for c in req.strategy.classes:
-            w = 0.0 if c.weight is None else float(c.weight)
-            weights.append(w)
-        s = sum(weights)
-        if s <= 0:
-            n = len(weights)
-            weights = [1.0 / n for _ in range(n)]
-        else:
-            weights = [w / s for w in weights]
-        return {"weights": weights}
+        if any(c.weight is None for c in req.strategy.classes):
+            return JSONResponse(status_code=400, content={"detail": "固定权重必须逐项提供，禁止以等权补缺"})
+        try:
+            weights = normalize_explicit_weights(
+                [float(c.weight) for c in req.strategy.classes]
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return {"weights": weights, "execution": strategy_execution_audit()}
 
     if req.strategy.type == 'risk_budget':
         budgets = [float(c.budget or 0.0) for c in req.strategy.classes]
@@ -791,7 +789,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
                 risk_cfg["confidence"] = float(req.strategy.confidence)
         weights = compute_risk_budget_weights(nav_wide, risk_cfg, budgets, window_len=req.data_len,
                                               window_mode=(req.window_mode or 'firstN'))
-        return {"weights": weights}
+        return {"weights": weights, "execution": strategy_execution_audit()}
 
     if req.strategy.type == 'target':
         risk_cfg = {"metric": req.strategy.risk_metric or "vol"}
@@ -836,7 +834,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
             target_return=req.strategy.target_return,
             target_risk=req.strategy.target_risk,
         )
-        return {"weights": weights}
+        return {"weights": weights, "execution": strategy_execution_audit()}
 
     return JSONResponse(status_code=400, content={"detail": "未知策略类型"})
 
@@ -847,7 +845,7 @@ class BacktestRequest(BaseModel):
     strategies: List[StrategySpec]
 
 
-@app.post("/api/strategy/backtest")
+# Registered by services.strategy_routes.
 def api_backtest(req: BacktestRequest):
     nv_path = DATA_DIR / "asset_nv.parquet"
     if not nv_path.exists():
@@ -953,7 +951,7 @@ def _compute_weight_for_date(args: Dict[str, Any]) -> Dict[str, Any]:
         return {'date': args['date'], 'weights': [float(x) for x in w]}
 
 
-@app.post("/api/strategy/compute-schedule-weights")
+# Registered by services.strategy_routes.
 def api_compute_schedule_weights(req: ComputeScheduleRequest):
     nv_path = DATA_DIR / "asset_nv.parquet"
     if not nv_path.exists():
@@ -1050,7 +1048,7 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
             "weights": [r['weights'] for r in results]}
 
 
-@app.get("/api/strategy/default-start")
+# Registered by services.strategy_routes.
 def api_default_start(alloc_name: str):
     """Return the default backtest start date for an allocation: 
     take the maximum of each asset's first available NAV date (ensures all series have data).
@@ -1078,401 +1076,6 @@ def api_default_start(alloc_name: str):
 
 # -------------------- ETF Universe from data/ --------------------
 DATA_DIR = (Path(__file__).resolve().parents[1] / "data").resolve()
-ETF_INFO_FILENAMES = ("etf_info_df.parquet",)
-
-
-DEMO_ETF_INFO_ROWS = [
-    {
-        "ts_code": "510050.SH",
-        "code": "510050",
-        "name": "上证50ETF",
-        "management": "华夏基金",
-        "custodian": "中国银行",
-        "trustee": "中国银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "宽基指数",
-        "market": "上交所",
-        "status": "上市交易",
-        "issue_amount": 450000,
-        "m_fee": 0.5,
-        "c_fee": 0.1,
-        "exp_return": 12.3,
-        "duration_year": 18.0,
-        "list_date": "2004-02-23",
-        "found_date": "2004-02-05",
-        "issue_date": "2004-02-10",
-        "due_date": None,
-        "purc_startdate": "2004-02-12",
-        "redm_startdate": "2004-02-12",
-    },
-    {
-        "ts_code": "512000.SH",
-        "code": "512000",
-        "name": "券商ETF",
-        "management": "国泰基金",
-        "custodian": "招商银行",
-        "trustee": "招商银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "行业指数",
-        "market": "上交所",
-        "status": "上市交易",
-        "issue_amount": 160000,
-        "m_fee": 0.6,
-        "c_fee": 0.2,
-        "exp_return": 11.5,
-        "duration_year": 9.0,
-        "list_date": "2015-04-23",
-        "found_date": "2015-04-15",
-        "issue_date": "2015-04-20",
-        "due_date": None,
-        "purc_startdate": "2015-04-21",
-        "redm_startdate": "2015-04-21",
-    },
-    {
-        "ts_code": "159915.SZ",
-        "code": "159915",
-        "name": "创业板ETF",
-        "management": "易方达基金",
-        "custodian": "中国建设银行",
-        "trustee": "中国建设银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "宽基指数",
-        "market": "深交所",
-        "status": "上市交易",
-        "issue_amount": 320000,
-        "m_fee": 0.5,
-        "c_fee": 0.1,
-        "exp_return": 15.2,
-        "duration_year": 12.0,
-        "list_date": "2011-06-13",
-        "found_date": "2011-05-20",
-        "issue_date": "2011-05-25",
-        "due_date": None,
-        "purc_startdate": "2011-05-26",
-        "redm_startdate": "2011-05-26",
-    },
-    {
-        "ts_code": "560800.BJ",
-        "code": "560800",
-        "name": "科创精选ETF",
-        "management": "工银瑞信",
-        "custodian": "交通银行",
-        "trustee": "交通银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "科技创新",
-        "market": "北交所",
-        "status": "上市交易",
-        "issue_amount": 38000,
-        "m_fee": 0.8,
-        "c_fee": 0.15,
-        "exp_return": 18.4,
-        "duration_year": 3.0,
-        "list_date": "2022-08-30",
-        "found_date": "2022-08-10",
-        "issue_date": "2022-08-18",
-        "due_date": None,
-        "purc_startdate": "2022-08-19",
-        "redm_startdate": "2022-08-19",
-    },
-    {
-        "ts_code": "513050.SH",
-        "code": "513050",
-        "name": "中概互联网ETF",
-        "management": "华夏基金",
-        "custodian": "中国银行",
-        "trustee": "中国银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "主题策略",
-        "market": "上交所",
-        "status": "上市交易",
-        "issue_amount": 240000,
-        "m_fee": 0.6,
-        "c_fee": 0.15,
-        "exp_return": 16.8,
-        "duration_year": 6.0,
-        "list_date": "2017-09-11",
-        "found_date": "2017-08-25",
-        "issue_date": "2017-09-05",
-        "due_date": None,
-        "purc_startdate": "2017-09-06",
-        "redm_startdate": "2017-09-06",
-    },
-    {
-        "ts_code": "588000.SH",
-        "code": "588000",
-        "name": "科创50ETF",
-        "management": "华夏基金",
-        "custodian": "中国银行",
-        "trustee": "中国银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "科技创新",
-        "market": "上交所",
-        "status": "上市交易",
-        "issue_amount": 280000,
-        "m_fee": 0.6,
-        "c_fee": 0.15,
-        "exp_return": 17.5,
-        "duration_year": 4.0,
-        "list_date": "2019-11-05",
-        "found_date": "2019-10-15",
-        "issue_date": "2019-10-25",
-        "due_date": None,
-        "purc_startdate": "2019-10-28",
-        "redm_startdate": "2019-10-28",
-    },
-    {
-        "ts_code": "159949.SZ",
-        "code": "159949",
-        "name": "创业板50ETF",
-        "management": "嘉实基金",
-        "custodian": "中国工商银行",
-        "trustee": "中国工商银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "宽基指数",
-        "market": "深交所",
-        "status": "上市交易",
-        "issue_amount": 210000,
-        "m_fee": 0.55,
-        "c_fee": 0.1,
-        "exp_return": 14.8,
-        "duration_year": 8.0,
-        "list_date": "2013-09-30",
-        "found_date": "2013-09-02",
-        "issue_date": "2013-09-12",
-        "due_date": None,
-        "purc_startdate": "2013-09-13",
-        "redm_startdate": "2013-09-13",
-    },
-    {
-        "ts_code": "513500.SH",
-        "code": "513500",
-        "name": "标普500ETF",
-        "management": "南方基金",
-        "custodian": "中国银行",
-        "trustee": "中国银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "海外指数",
-        "market": "上交所",
-        "status": "上市交易",
-        "issue_amount": 180000,
-        "m_fee": 0.7,
-        "c_fee": 0.12,
-        "exp_return": 9.6,
-        "duration_year": 7.0,
-        "list_date": "2013-06-28",
-        "found_date": "2013-06-06",
-        "issue_date": "2013-06-18",
-        "due_date": None,
-        "purc_startdate": "2013-06-19",
-        "redm_startdate": "2013-06-19",
-    },
-    {
-        "ts_code": "560010.BJ",
-        "code": "560010",
-        "name": "绿色发展ETF",
-        "management": "中金基金",
-        "custodian": "中国农业银行",
-        "trustee": "中国农业银行",
-        "fund_type": "场内ETF",
-        "type": "公募基金",
-        "invest_type": "ESG主题",
-        "market": "北交所",
-        "status": "存续",
-        "issue_amount": 42000,
-        "m_fee": 0.75,
-        "c_fee": 0.18,
-        "exp_return": 13.2,
-        "duration_year": 2.0,
-        "list_date": "2021-12-15",
-        "found_date": "2021-12-01",
-        "issue_date": "2021-12-08",
-        "due_date": None,
-        "purc_startdate": "2021-12-09",
-        "redm_startdate": "2021-12-09",
-    },
-]
-
-
-_COMMON_NULLS = {"", "nan", "none", "null", "-", "--", "暂无", "缺失"}
-
-
-def _normalize_numeric_value(
-    value: Any,
-    *,
-    percent: bool = False,
-    amount_to_wan: bool = False,
-    strip_suffixes: Optional[Tuple[str, ...]] = None,
-) -> Optional[float]:
-    """Coerce messy numeric strings to float.
-
-    - percent=True will drop trailing '%' but keep the numeric in percentage points (0.5 -> 0.5).
-    - amount_to_wan=True will normalise Chinese units to "万" (e.g. 3亿 -> 30000).
-    - strip_suffixes removes textual units such as '年'.
-    """
-
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        try:
-            if math.isnan(value):
-                return None
-        except Exception:
-            pass
-        return float(value)
-
-    text = str(value).strip()
-    if not text:
-        return None
-    lowered = text.lower()
-    if lowered in _COMMON_NULLS:
-        return None
-
-    if percent and text.endswith("%"):
-        text = text[:-1]
-
-    if strip_suffixes:
-        for suffix in strip_suffixes:
-            if text.endswith(suffix):
-                text = text[: -len(suffix)]
-                break
-
-    multiplier = 1.0
-    if amount_to_wan:
-        unit_map = {
-            "亿元": 10000.0,
-            "亿": 10000.0,
-            "万元": 1.0,
-            "万": 1.0,
-            "元": 0.0001,
-        }
-        for suffix, factor in unit_map.items():
-            if text.endswith(suffix):
-                text = text[: -len(suffix)]
-                multiplier = factor
-                break
-
-    text = text.replace(",", "").replace("，", "").replace(" ", "")
-    match = re.search(r"[-+]?\d*\.?\d+", text)
-    if not match:
-        return None
-    try:
-        number = float(match.group())
-    except ValueError:
-        return None
-    return number * multiplier
-
-
-@lru_cache(maxsize=4)
-def _cached_etf_info_df(path_text: str, _mtime_ns: int, _size: int) -> pd.DataFrame:  # noqa: ARG001
-    """Load the ETF info DataFrame from parquet with caching."""
-    path = Path(path_text)
-    try:
-        df = pd.read_parquet(path)
-        if not isinstance(df, pd.DataFrame):
-            return pd.DataFrame()
-        df = df.copy()
-        df.columns = [str(c) for c in df.columns]
-        date_cols = [
-            "found_date",
-            "due_date",
-            "list_date",
-            "issue_date",
-            "delist_date",
-            "purc_startdate",
-            "redm_startdate",
-        ]
-        for col in date_cols:
-            if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
-        numeric_cols = [
-            "issue_amount",
-            "m_fee",
-            "c_fee",
-            "duration_year",
-            "p_value",
-            "min_amount",
-            "exp_return",
-        ]
-        for col in numeric_cols:
-            if col in df.columns:
-                if col in {"issue_amount", "min_amount"}:
-                    df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, amount_to_wan=True))
-                elif col in {"m_fee", "c_fee", "exp_return"}:
-                    df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, percent=True))
-                elif col == "duration_year":
-                    df[col] = df[col].apply(lambda x: _normalize_numeric_value(x, strip_suffixes=("年", "yrs", "year", "years")))
-                else:
-                    df[col] = df[col].apply(_normalize_numeric_value)
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-
-def _build_demo_etf_info_df() -> pd.DataFrame:
-    if not DEMO_ETF_INFO_ROWS:
-        return pd.DataFrame()
-    df = pd.DataFrame(DEMO_ETF_INFO_ROWS)
-    df = df.copy()
-    df.columns = [str(c) for c in df.columns]
-    date_cols = [
-        "found_date",
-        "due_date",
-        "list_date",
-        "issue_date",
-        "delist_date",
-        "purc_startdate",
-        "redm_startdate",
-    ]
-    for col in date_cols:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-    numeric_cols = [
-        "issue_amount",
-        "m_fee",
-        "c_fee",
-        "duration_year",
-        "p_value",
-        "min_amount",
-        "exp_return",
-    ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
-
-
-def _ensure_demo_etf_info_df() -> pd.DataFrame:
-    df = _build_demo_etf_info_df()
-    if df.empty:
-        return df
-    path = DATA_DIR / "etf_info_df.parquet"
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            try:
-                df.to_parquet(path, index=False)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return df
-
-
-def _load_etf_info_df() -> pd.DataFrame:
-    for fname in ETF_INFO_FILENAMES:
-        path = resolve_market_data_file(fname, DATA_DIR)
-        if path.exists():
-            stat = path.stat()
-            return _cached_etf_info_df(str(path), stat.st_mtime_ns, stat.st_size)
-    return _ensure_demo_etf_info_df()
 
 
 def _load_universe() -> List[dict]:
@@ -1602,211 +1205,25 @@ def etf_search(
     start = (page - 1) * page_size
     end = start + page_size
     items = filtered[start:end]
-    return JSONResponse({"items": items, "total": total, "page": page, "page_size": page_size})
-
-
-def _safe_float(value: Optional[float]) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        return None
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def _value_distribution(series: Optional[pd.Series], top_n: Optional[int] = None) -> List[Dict[str, Any]]:
-    if series is None:
-        return []
-    clean = series.fillna("未知").astype(str)
-    clean = clean.replace({"": "未知", "nan": "未知"})
-    counts = clean.value_counts()
-    if top_n is not None:
-        counts = counts.head(top_n)
-    return [{"name": str(idx), "value": int(val)} for idx, val in counts.items()]
-
-
-def _build_list_trend_series(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    list_trend: List[Dict[str, Any]] = []
-    if "list_date" not in df.columns or df.empty:
-        return list_trend
-
-    working = df.dropna(subset=["list_date"]).copy()
-    if working.empty:
-        return list_trend
-
-    working["year"] = working["list_date"].dt.year
-    year_counts = working.groupby("year").size().sort_index()
-    if "issue_amount" in working.columns:
-        year_issue = working.groupby("year")["issue_amount"].sum()
-    else:
-        year_issue = pd.Series(dtype=float)
-
-    for year, count in year_counts.items():
-        list_trend.append(
-            {
-                "year": int(year),
-                "count": int(count),
-                "total_issue_amount": _safe_float(year_issue.get(year)) if not year_issue.empty else None,
-            }
-        )
-
-    return list_trend
-
-
-def _build_list_trend_filters(df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
-    return {
-        "type": _value_distribution(df.get("type"), None),
-        "invest_type": _value_distribution(df.get("invest_type"), None),
-        "fund_type": _value_distribution(df.get("fund_type"), None),
-        "management": _value_distribution(df.get("management"), None),
-    }
+    return JSONResponse(
+        {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "execution": instrument_analytics_execution_audit(),
+        }
+    )
 
 
 @app.get("/api/etf/analytics")
 def etf_analytics():
-    df = _load_etf_info_df()
-    if df.empty:
+    payload = build_legacy_etf_analytics_response(
+        data_dir=resolve_tushare_data_dir(DATA_DIR),
+    )
+    if payload is None:
         return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
-
-    working = df.copy()
-
-    issue_amount_total = _safe_float(working.get("issue_amount").sum()) if "issue_amount" in working.columns else None
-    avg_m_fee = _safe_float(working.get("m_fee").mean()) if "m_fee" in working.columns else None
-    avg_c_fee = _safe_float(working.get("c_fee").mean()) if "c_fee" in working.columns else None
-    avg_exp_return = _safe_float(working.get("exp_return").mean()) if "exp_return" in working.columns else None
-    avg_duration_year = _safe_float(working.get("duration_year").mean()) if "duration_year" in working.columns else None
-
-    status_series = working.get("status")
-    active_count: Optional[int] = None
-    if status_series is not None:
-        clean_status = status_series.fillna("未知").astype(str)
-        inactive_keywords = ("终止", "退市", "清盘", "暂停", "到期")
-        active_mask = ~clean_status.str.contains("|".join(inactive_keywords), case=False, na=False)
-        active_count = int(active_mask.sum())
-
-    management_summary: List[Dict[str, Any]] = []
-    if "management" in working.columns:
-        mgmt_df = working.copy()
-        mgmt_df["management"] = mgmt_df["management"].fillna("未知")
-        mgmt_counts = mgmt_df.groupby("management").size().sort_values(ascending=False).head(10)
-        mgmt_issue = (
-            mgmt_df.groupby("management")["issue_amount"].sum()
-            if "issue_amount" in working.columns
-            else pd.Series(dtype=float)
-        )
-        for name, count in mgmt_counts.items():
-            management_summary.append(
-                {
-                    "name": str(name),
-                    "count": int(count),
-                    "total_issue_amount": _safe_float(mgmt_issue.get(name)) if not mgmt_issue.empty else None,
-                }
-            )
-
-    organization_type_distribution = _value_distribution(working.get("type"), None)
-    fund_type_distribution = _value_distribution(working.get("fund_type"), None)
-    invest_type_distribution = _value_distribution(working.get("invest_type"), None)
-    market_distribution = _value_distribution(working.get("market"), None)
-    status_distribution = _value_distribution(status_series, None)
-
-    market_issue_summary: List[Dict[str, Any]] = []
-    if "market" in working.columns:
-        market_df = working.copy()
-        market_df["market"] = market_df["market"].fillna("未知")
-        grouped = market_df.groupby("market")
-        issue_series = grouped["issue_amount"].sum() if "issue_amount" in market_df.columns else pd.Series(dtype=float)
-        for market, sub_df in grouped:
-            market_issue_summary.append(
-                {
-                    "market": str(market),
-                    "count": int(len(sub_df)),
-                    "total_issue_amount": _safe_float(issue_series.get(market)) if not issue_series.empty else None,
-                }
-            )
-        market_issue_summary.sort(
-            key=lambda item: (item.get("total_issue_amount") or 0.0, item.get("count") or 0), reverse=True
-        )
-
-    list_trend = _build_list_trend_series(working)
-    list_trend_filters = _build_list_trend_filters(df)
-
-    fee_by_fund_type: List[Dict[str, Any]] = []
-    if "fund_type" in working.columns and ("m_fee" in working.columns or "c_fee" in working.columns):
-        fee_df = working.copy()
-        fee_df["fund_type"] = fee_df["fund_type"].fillna("未知")
-        fee_groups = fee_df.groupby("fund_type")
-        m_fee_series = fee_groups["m_fee"].mean() if "m_fee" in fee_df.columns else pd.Series(dtype=float)
-        c_fee_series = fee_groups["c_fee"].mean() if "c_fee" in fee_df.columns else pd.Series(dtype=float)
-        order_series = m_fee_series if not m_fee_series.empty else c_fee_series
-        for fund_type in order_series.sort_values(ascending=False).index:
-            fee_by_fund_type.append(
-                {
-                    "fund_type": str(fund_type),
-                    "avg_m_fee": _safe_float(m_fee_series.get(fund_type)) if not m_fee_series.empty else None,
-                    "avg_c_fee": _safe_float(c_fee_series.get(fund_type)) if not c_fee_series.empty else None,
-                }
-            )
-
-    top_issue_amount: List[Dict[str, Any]] = []
-    if "issue_amount" in working.columns:
-        cols = [c for c in ["ts_code", "name", "issue_amount", "list_date", "market"] if c in working.columns]
-        top_issue_df = working.dropna(subset=["issue_amount"]).sort_values("issue_amount", ascending=False).head(10)
-        for _, row in top_issue_df.iterrows():
-            item = {c: row.get(c) for c in cols}
-            item["issue_amount"] = _safe_float(item.get("issue_amount"))
-            if "list_date" in item:
-                if pd.notna(item["list_date"]):
-                    item["list_date"] = str(pd.to_datetime(item["list_date"]).date())
-                else:
-                    item["list_date"] = None
-            top_issue_amount.append(item)
-
-    recent_listings: List[Dict[str, Any]] = []
-    if "list_date" in working.columns:
-        recent_cols = [c for c in ["ts_code", "name", "list_date", "market", "issue_amount"] if c in working.columns]
-        recent_df = working.dropna(subset=["list_date"]).sort_values("list_date", ascending=False).head(10)
-        for _, row in recent_df.iterrows():
-            item = {c: row.get(c) for c in recent_cols}
-            if "list_date" in item:
-                if pd.notna(item["list_date"]):
-                    item["list_date"] = str(pd.to_datetime(item["list_date"]).date())
-                else:
-                    item["list_date"] = None
-            if "issue_amount" in item:
-                item["issue_amount"] = _safe_float(item.get("issue_amount"))
-            recent_listings.append(item)
-
-    response = {
-        "summary": {
-            "total_count": int(len(working)),
-            "active_count": active_count,
-            "unique_managements": int(working["management"].nunique(dropna=True)) if "management" in working.columns else None,
-            "total_issue_amount": issue_amount_total,
-            "avg_m_fee": avg_m_fee,
-            "avg_c_fee": avg_c_fee,
-            "avg_exp_return": avg_exp_return,
-            "avg_duration_year": avg_duration_year,
-        },
-        "top_management": management_summary,
-        "organization_type_distribution": organization_type_distribution,
-        "fund_type_distribution": fund_type_distribution,
-        "invest_type_distribution": invest_type_distribution,
-        "market_distribution": market_distribution,
-        "market_issue_summary": market_issue_summary,
-        "status_breakdown": status_distribution,
-        "list_trend": list_trend,
-        "list_trend_filters": list_trend_filters,
-        "fee_by_fund_type": fee_by_fund_type,
-        "top_issue_amount": top_issue_amount,
-        "recent_listings": recent_listings,
-    }
-
-    return JSONResponse(response)
+    return JSONResponse(payload)
 
 
 @app.get("/api/etf/analytics/list_trend")
@@ -1814,105 +1231,14 @@ def etf_list_trend(
     dimension: str = Query("all", description="筛选维度，可选 all/type/invest_type/fund_type/management"),
     values: Optional[List[str]] = Query(None, description="筛选值，可传多个"),
 ):
-    df = _load_etf_info_df()
-    if df.empty:
-        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
-
-    dimension = (dimension or "all").lower()
-    dimension_map = {
-        "all": None,
-        "type": "type",
-        "invest_type": "invest_type",
-        "fund_type": "fund_type",
-        "management": "management",
-    }
-
-    column = dimension_map.get(dimension)
-    working = df.copy()
-
-    applied_values = _coerce_filter_list(values)
-    if column and applied_values:
-        normalized = (
-            working[column]
-            .fillna("未知")
-            .astype(str)
-            .replace({"": "未知", "nan": "未知"})
-        )
-        working = working[normalized.isin(applied_values)]
-    elif column:
-        # 没有提供具体值时直接返回空序列，避免误导
-        working = working.iloc[0:0]
-
-    series = _build_list_trend_series(working)
-
-    return JSONResponse(
-        {
-            "dimension": dimension,
-            "values": applied_values,
-            "list_trend": series,
-            "filters": _build_list_trend_filters(df),
-        }
+    payload = build_legacy_etf_trend_response(
+        dimension=dimension,
+        values=values,
+        data_dir=resolve_tushare_data_dir(DATA_DIR),
     )
-
-
-def _coerce_filter_list(raw: Optional[List[str]]) -> List[str]:
-    values: List[str] = []
-    if not raw:
-        return values
-    for entry in raw:
-        if entry is None:
-            continue
-        text = str(entry)
-        parts = [text] if "," not in text else text.split(",")
-        for part in parts:
-            norm = part.strip()
-            if norm:
-                values.append(norm)
-    return values
-
-
-def _build_filter_options(df: pd.DataFrame, column: str, *, top_n: Optional[int] = None) -> List[Dict[str, Any]]:
-    if column not in df.columns:
-        return []
-    series = df[column].fillna("未知").astype(str)
-    series = series.replace({"": "未知", "nan": "未知"})
-    counts = series.value_counts()
-    if top_n is not None:
-        counts = counts.head(top_n)
-    return [
-        {"value": str(idx), "label": str(idx), "count": int(count)}
-        for idx, count in counts.items()
-    ]
-
-
-def _serialize_value(value: Any) -> Any:
-    try:
-        if isinstance(value, (pd.Timestamp, datetime)):
-            if pd.isna(value):
-                return None
-            return value.strftime("%Y-%m-%d")
-        if isinstance(value, np.datetime64):
-            ts = pd.to_datetime(value, errors="coerce")
-            if pd.isna(ts):
-                return None
-            return ts.strftime("%Y-%m-%d")
-        if isinstance(value, (np.floating, float)):
-            if pd.isna(value):
-                return None
-            return float(value)
-        if isinstance(value, (np.integer, int)):
-            return int(value)
-    except Exception:
-        return None
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-    text = str(value).strip()
-    return text or None
+    if payload is None:
+        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
+    return JSONResponse(payload)
 
 
 @app.get("/api/etf/products")
@@ -1930,373 +1256,30 @@ def etf_products(
     sort_by: str = Query(default="issue_amount"),
     sort_dir: str = Query(default="desc"),
 ):
-    df = _load_etf_info_df()
-    if df.empty:
-        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
-
-    working = df.copy()
-
-    # Apply text search across 核心信息
-    keyword = (q or "").strip()
-    if keyword:
-        lowered = keyword.lower()
-        search_cols = [col for col in ["ts_code", "code", "name", "management"] if col in working.columns]
-        if search_cols:
-            mask = pd.Series(False, index=working.index)
-            for col in search_cols:
-                series = working[col].astype(str).str.lower()
-                mask = mask | series.str.contains(lowered, na=False)
-            working = working[mask]
-
-    filters = {
-        "fund_type": _coerce_filter_list(fund_type),
-        "type": _coerce_filter_list(organization_type),
-        "invest_type": _coerce_filter_list(invest_type),
-        "market": _coerce_filter_list(market),
-        "status": _coerce_filter_list(status),
-        "management": _coerce_filter_list(management),
-        "custodian": _coerce_filter_list(custodian),
-    }
-
-    for column, values in filters.items():
-        if not values or column not in working.columns:
-            continue
-        candidates = {v.lower() for v in values}
-        series = working[column].fillna("未知").astype(str)
-        series = series.replace({"": "未知", "nan": "未知"})
-        mask = series.str.lower().isin(candidates)
-        working = working[mask]
-
-    sortable_map = {
-        "issue_amount": "issue_amount",
-        "m_fee": "m_fee",
-        "c_fee": "c_fee",
-        "exp_return": "exp_return",
-        "duration_year": "duration_year",
-        "list_date": "list_date",
-        "found_date": "found_date",
-        "issue_date": "issue_date",
-        "name": "name",
-    }
-    sort_col = sortable_map.get(sort_by, "issue_amount")
-    ascending = sort_dir.lower() == "asc"
-    if sort_col in working.columns:
-        working = working.sort_values(by=sort_col, ascending=ascending, na_position="last", kind="mergesort")
-
-    total_filtered = int(len(working))
-    start = (page - 1) * page_size
-    end = start + page_size
-    paged = working.iloc[start:end].copy()
-
-    preferred_cols = [
-        "ts_code",
-        "code",
-        "name",
-        "management",
-        "custodian",
-        "fund_type",
-        "type",
-        "invest_type",
-        "market",
-        "status",
-        "benchmark",
-        "issue_amount",
-        "m_fee",
-        "c_fee",
-        "exp_return",
-        "duration_year",
-        "list_date",
-        "found_date",
-        "issue_date",
-        "due_date",
-        "purc_startdate",
-        "redm_startdate",
-    ]
-    present_cols = [col for col in preferred_cols if col in paged.columns]
-    items: List[Dict[str, Any]] = []
-    for _, row in paged.iterrows():
-        record: Dict[str, Any] = {}
-        for col in present_cols:
-            record[col] = _serialize_value(row[col])
-        items.append(record)
-
-    def _safe_series_mean(column: str) -> Optional[float]:
-        if column not in working.columns:
-            return None
-        return _safe_float(working[column].mean())
-
-    def _safe_series_sum(column: str) -> Optional[float]:
-        if column not in working.columns:
-            return None
-        return _safe_float(working[column].sum())
-
-    def _safe_series_median(column: str) -> Optional[float]:
-        if column not in working.columns:
-            return None
-        try:
-            val = working[column].median()
-            if pd.isna(val):
-                return None
-            return float(val)
-        except Exception:
-            return None
-
-    active_count: Optional[int] = None
-    if "status" in working.columns:
-        status_series = working["status"].fillna("未知").astype(str)
-        inactive_keywords = ("终止", "退市", "清盘", "暂停", "到期")
-        active_mask = ~status_series.str.contains("|".join(inactive_keywords), case=False, na=False)
-        active_count = int(active_mask.sum())
-
-    recent_listings: Optional[int] = None
-    if "list_date" in working.columns:
-        today = pd.Timestamp.today().normalize()
-        twelve_months_ago = today - pd.DateOffset(months=12)
-        list_dates = pd.to_datetime(working["list_date"], errors="coerce")
-        recent_mask = (list_dates.notna()) & (list_dates >= twelve_months_ago)
-        recent_listings = int(recent_mask.sum())
-
-    summary = {
-        "universe_total": int(len(df)),
-        "filtered_total": total_filtered,
-        "active_count": active_count,
-        "recent_listings_12m": recent_listings,
-        "avg_m_fee": _safe_series_mean("m_fee"),
-        "avg_c_fee": _safe_series_mean("c_fee"),
-        "avg_exp_return": _safe_series_mean("exp_return"),
-        "avg_duration_year": _safe_series_mean("duration_year"),
-        "total_issue_amount": _safe_series_sum("issue_amount"),
-        "median_issue_amount": _safe_series_median("issue_amount"),
-        "unique_managements": int(working["management"].nunique()) if "management" in working.columns else None,
-    }
-
-    available_filters = {
-        "fund_type": _build_filter_options(df, "fund_type"),
-        "type": _build_filter_options(df, "type"),
-        "invest_type": _build_filter_options(df, "invest_type"),
-        "market": _build_filter_options(df, "market"),
-        "status": _build_filter_options(df, "status"),
-        "management": _build_filter_options(df, "management", top_n=30),
-        "custodian": _build_filter_options(df, "custodian", top_n=30),
-    }
-
-    response = {
-        "items": items,
-        "page": page,
-        "page_size": page_size,
-        "total": total_filtered,
-        "summary": summary,
-        "available_filters": available_filters,
-        "sort_by": sort_col,
-        "sort_dir": "asc" if ascending else "desc",
-    }
-    return JSONResponse(response)
-
-
-def _match_product_by_identifier(df: pd.DataFrame, identifier: str) -> Optional[pd.Series]:
-    if df.empty:
-        return None
-    token = (identifier or "").strip()
-    if not token:
-        return None
-    lowered = token.lower()
-    lowered_nosfx = lowered.split(".")[0]
-
-    def _match_series(column: str) -> Optional[pd.Series]:
-        if column not in df.columns:
-            return None
-        series = df[column].astype(str).str.lower()
-        exact = df[series == lowered]
-        if not exact.empty:
-            return exact.iloc[0]
-        if lowered_nosfx and lowered_nosfx != lowered:
-            nosfx_match = series.str.split(".").str[0] == lowered_nosfx
-            subset = df[nosfx_match]
-            if not subset.empty:
-                return subset.iloc[0]
-        contains = df[series.str.contains(lowered, na=False)]
-        if not contains.empty:
-            return contains.iloc[0]
-        return None
-
-    for col in ["ts_code", "code"]:
-        record = _match_series(col)
-        if record is not None:
-            return record
-
-    if "name" in df.columns:
-        names = df["name"].astype(str).str.lower()
-        name_match = df[names == lowered]
-        if not name_match.empty:
-            return name_match.iloc[0]
-        contains = df[names.str.contains(lowered, na=False)]
-        if not contains.empty:
-            return contains.iloc[0]
-
-    return None
-
-
-def _generate_synthetic_price_series(
-    identifier: str,
-    issue_amount: Optional[float] = None,
-    start_date: Optional[str] = None,
-    periods: Optional[int] = 120,
-) -> List[Dict[str, Any]]:
-    seed = abs(hash(identifier)) % (2 ** 32)
-    rng = np.random.default_rng(seed)
-
-    base_price = 1.0
-    if issue_amount is not None:
-        try:
-            base_price = float(issue_amount) / 5000.0
-            base_price = float(np.clip(base_price, 0.8, 8.0))
-        except Exception:
-            base_price = 1.0
-
-    today = pd.Timestamp.today().normalize()
-    start_dt: Optional[pd.Timestamp] = None
-    if start_date:
-        try:
-            parsed = pd.to_datetime(start_date, errors="coerce")
-        except Exception:
-            parsed = None
-        if parsed is not None:
-            if getattr(parsed, "tzinfo", None) is not None:
-                parsed = parsed.tz_convert(None)
-            start_dt = parsed
-            if start_dt > today:
-                start_dt = today
-
-    if start_dt is not None:
-        dates = pd.bdate_range(start=start_dt, end=today)
-    else:
-        if not periods or periods <= 0:
-            periods = 120
-        dates = pd.bdate_range(end=today, periods=periods)
-    if len(dates) == 0:
-        return []
-
-    closes = np.empty(len(dates))
-    closes[0] = max(base_price, 0.5)
-    for i in range(1, len(dates)):
-        drift = rng.normal(0.0006, 0.018)
-        closes[i] = max(0.2, closes[i - 1] * (1 + drift))
-
-    opens = np.empty_like(closes)
-    opens[0] = closes[0] * (1 + rng.normal(0.0, 0.004))
-    for i in range(1, len(dates)):
-        opens[i] = closes[i - 1] * (1 + rng.normal(0.0, 0.006))
-
-    highs = np.maximum(opens, closes) * (1 + rng.uniform(0.002, 0.02, size=len(dates)))
-    lows = np.minimum(opens, closes) * (1 - rng.uniform(0.002, 0.02, size=len(dates)))
-
-    volume_base = 80000.0
-    if issue_amount is not None:
-        try:
-            volume_base = float(issue_amount) * 120.0
-            volume_base = float(np.clip(volume_base, 20000.0, 5_000_000.0))
-        except Exception:
-            volume_base = 80000.0
-    volumes = volume_base * rng.uniform(0.5, 1.6, size=len(dates))
-
-    series: List[Dict[str, Any]] = []
-    for idx, dt in enumerate(dates):
-        high = float(max(highs[idx], opens[idx], closes[idx]))
-        low = float(min(lows[idx], opens[idx], closes[idx]))
-        if high < low:
-            high = low
-        low = max(low, 0.1)
-        series.append(
-            {
-                "date": dt.strftime("%Y-%m-%d"),
-                "open": round(float(opens[idx]), 4),
-                "close": round(float(closes[idx]), 4),
-                "high": round(high, 4),
-                "low": round(low, 4),
-                "volume": float(np.round(volumes[idx], 0)),
-            }
-        )
-    return series
+    payload = unified_instrument_products(
+        kind="etf",
+        q=q or "",
+        fund_type=fund_type,
+        fund_category=organization_type,
+        invest_type=invest_type,
+        market=market,
+        status=status,
+        management=management,
+        custodian=custodian,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        sort_dir="asc" if sort_dir.lower() == "asc" else "desc",
+        conditions=None,
+        snapshot_metrics=None,
+    )
+    return JSONResponse(payload)
 
 
 @app.get("/api/etf/products/{product_id}")
 def etf_product_detail(product_id: str):
-    df = _load_etf_info_df()
-    if df.empty:
-        return JSONResponse(status_code=404, content={"detail": "未找到 etf_info_df 数据文件"})
-
-    record = _match_product_by_identifier(df, product_id)
-    if record is None:
-        return JSONResponse(status_code=404, content={"detail": f"未找到编号为 {product_id} 的产品"})
-
-    preferred_info_cols = [
-        "ts_code",
-        "code",
-        "name",
-        "management",
-        "custodian",
-        "trustee",
-        "fund_type",
-        "type",
-        "invest_type",
-        "market",
-        "status",
-        "benchmark",
-        "found_date",
-        "issue_date",
-        "list_date",
-        "due_date",
-        "purc_startdate",
-        "redm_startdate",
-    ]
-    metric_cols = [
-        "issue_amount",
-        "m_fee",
-        "c_fee",
-        "exp_return",
-        "duration_year",
-        "p_value",
-        "min_amount",
-    ]
-
-    base_info: Dict[str, Any] = {}
-    for col in preferred_info_cols + metric_cols:
-        if col in record.index:
-            base_info[col] = _serialize_value(record[col])
-
-    metrics = {
-        "issue_amount": _safe_float(record.get("issue_amount")),
-        "m_fee": _safe_float(record.get("m_fee")),
-        "c_fee": _safe_float(record.get("c_fee")),
-        "exp_return": _safe_float(record.get("exp_return")),
-        "duration_year": _safe_float(record.get("duration_year")),
-    }
-
-    identifier = base_info.get("ts_code") or base_info.get("code") or product_id
-    start_date = (
-        base_info.get("list_date")
-        or base_info.get("found_date")
-        or base_info.get("issue_date")
-        or base_info.get("purc_startdate")
-        or None
-    )
-    time_series = _generate_synthetic_price_series(
-        str(identifier),
-        issue_amount=metrics.get("issue_amount"),
-        start_date=str(start_date) if start_date else None,
-    )
-
-    response = {
-        "product_id": identifier,
-        "name": base_info.get("name") or identifier,
-        "management": base_info.get("management"),
-        "custodian": base_info.get("custodian"),
-        "status": base_info.get("status"),
-        "base_info": base_info,
-        "metrics": metrics,
-        "timeseries": time_series,
-    }
-    return JSONResponse(response)
+    payload = unified_instrument_product_detail(product_id, kind="etf")
+    return payload if isinstance(payload, JSONResponse) else JSONResponse(payload)
 
 
 # ---- 静态页面托管（可选：将前端构建产物放到 frontend/dist 下） ----

@@ -27,6 +27,7 @@ interface EvaluationProductSelectorProps {
 const INITIAL_FILTERS: InstrumentProductFilterState = {
   fund_type: [],
   invest_type: [],
+  qdii_type: [],
   market: [],
   status: [],
   management: [],
@@ -36,6 +37,7 @@ const INITIAL_FILTERS: InstrumentProductFilterState = {
 const FILTER_LABELS: Record<InstrumentProductFilterKey, string> = {
   fund_type: '投资类型',
   invest_type: '投资风格',
+  qdii_type: 'QDII 属性',
   market: '交易市场',
   status: '产品状态',
   management: '管理人',
@@ -135,8 +137,8 @@ export default function EvaluationProductSelector({
     && pageItems.every((item) => Boolean(selectedItems[instrumentCode(item)]))
   const totalPages = Math.max(1, Math.ceil((response?.total ?? 0) / pageSize))
   const filterKeys: InstrumentProductFilterKey[] = productKind === 'etf'
-    ? ['fund_type', 'invest_type', 'market', 'status', 'management', 'custodian']
-    : ['fund_type', 'invest_type', 'status', 'management', 'custodian']
+    ? ['fund_type', 'invest_type', 'qdii_type', 'market', 'status', 'management', 'custodian']
+    : ['fund_type', 'invest_type', 'qdii_type', 'status', 'management', 'custodian']
   const activeFilterCount = filterKeys.reduce((total, key) => total + filters[key].length, 0) + conditions.length
   const conditionFields = response?.condition_fields ?? fallbackConditionFields(productKind)
   const conditionOperators = response?.condition_operators ?? DEFAULT_OPERATORS
@@ -329,7 +331,11 @@ export default function EvaluationProductSelector({
               return <tr key={code} className="border-t border-slate-100">
                 <td className="px-4 py-3"><input aria-label={`选择 ${item.name ?? code}`} type="checkbox" checked={checked} onChange={() => toggleItem(item)} /></td>
                 <td className="px-4 py-3 font-medium text-slate-800">{item.name ?? '未命名'}<span className="ml-2 text-xs font-normal text-slate-400">{code}</span></td>
-                <td className="px-4 py-3 text-slate-600">{item.fund_type ?? '—'}<span className="ml-2 text-xs text-slate-400">{item.invest_type ?? ''}</span></td>
+                <td className="px-4 py-3 text-slate-600">
+                  {item.fund_type ?? '—'}
+                  <span className="ml-2 text-xs text-slate-400">{item.invest_type ?? ''}</span>
+                  {item.qdii_type && <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${item.qdii_type === 'QDII' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}>{item.qdii_type}</span>}
+                </td>
                 <td className="px-4 py-3 text-slate-600">{item.management ?? '—'}</td>
                 <td className="px-4 py-3 text-slate-600">{item.status ?? '—'}</td>
               </tr>

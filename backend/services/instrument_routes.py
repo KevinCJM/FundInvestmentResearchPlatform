@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
+import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
+from custom_indicators.errors import NotFoundError
 from custom_indicators.series_provider import load_price_points
+from historical_regimes.repository import RegimeRunRepository
 from services.instrument_analytics import (
     ETF_ONLY_METRICS,
     METRIC_DEFINITIONS,
@@ -24,9 +31,33 @@ from services.instrument_analytics import (
     snapshot_etf_only_metrics,
     snapshot_metric_definitions,
 )
+from services.product_analysis import build_product_analysis_response
+from services.product_compare import build_product_compare_response
 try:
+    from backend.compute_policy import validate_execution_audit
+    from backend.instrument_analytics_numba import (
+        count_true_kernel,
+        coverage_ratio_kernel,
+        encoded_category_counts_kernel,
+        encoded_unique_count_kernel,
+        instrument_analytics_numba_execution_audit,
+        numeric_comparison_mask_kernel,
+        numeric_sort_order_kernel,
+        numeric_stat_kernel,
+    )
     from backend.market_data import resolve_tushare_data_dir
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from compute_policy import validate_execution_audit
+    from instrument_analytics_numba import (
+        count_true_kernel,
+        coverage_ratio_kernel,
+        encoded_category_counts_kernel,
+        encoded_unique_count_kernel,
+        instrument_analytics_numba_execution_audit,
+        numeric_comparison_mask_kernel,
+        numeric_sort_order_kernel,
+        numeric_stat_kernel,
+    )
     from market_data import resolve_tushare_data_dir
 
 
@@ -36,7 +67,16 @@ INSTRUMENT_FILES = {
     "etf": DATA_DIR / "etf_info_df.parquet",
     "fund": DATA_DIR / "fund_info_df.parquet",
 }
-FILTER_COLUMNS = ("fund_type", "type", "invest_type", "market", "status", "management", "custodian")
+FILTER_COLUMNS = (
+    "fund_type",
+    "type",
+    "invest_type",
+    "qdii_type",
+    "market",
+    "status",
+    "management",
+    "custodian",
+)
 COMPARISON_OPERATORS = {
     "gte": {"label": "大于等于", "symbol": "≥"},
     "lte": {"label": "小于等于", "symbol": "≤"},
@@ -53,6 +93,101 @@ PERCENT_INPUT_METRICS = {
     "max_drawdown_3y",
     "premium_discount_latest",
 }
+
+
+def _historical_regime_workspace_dir() -> Path:
+    configured = os.getenv("HISTORICAL_REGIME_DATA_DIR") or os.getenv(
+        "CUSTOM_INDICATOR_DATA_DIR"
+    )
+    return Path(configured).expanduser() if configured else DATA_DIR
+
+
+def _historical_regime_snapshot_hash(run: dict[str, Any]) -> str:
+    """Recreate the immutable analytical hash before repository metadata."""
+
+    analytical = copy.deepcopy(run)
+    for key in ("id", "created_at", "immutable", "publications", "content_hash"):
+        analytical.pop(key, None)
+    analytical["application_bindings"] = []
+    encoded = json.dumps(
+        analytical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _resolve_product_regime_reference(
+    reference: ProductAnalysisRegime,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    repository = RegimeRunRepository(
+        _historical_regime_workspace_dir() / "historical_regime_runs.json"
+    )
+    try:
+        run = repository.get(reference.run_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="未找到指定的历史情景运行版本。") from exc
+    if run.get("immutable") is not True:
+        raise HTTPException(status_code=409, detail="产品研究只能引用不可变的历史情景运行。")
+    if _historical_regime_snapshot_hash(run) != run.get("content_hash"):
+        raise HTTPException(status_code=409, detail="历史情景运行快照校验失败，已阻断产品研究引用。")
+    publication = next(
+        (
+            item
+            for item in run.get("publications") or []
+            if item.get("id") == reference.publication_id
+        ),
+        None,
+    )
+    if not isinstance(publication, dict):
+        raise HTTPException(status_code=422, detail="历史情景运行没有匹配的发布记录。")
+    if publication.get("usage") != "product_research":
+        raise HTTPException(status_code=422, detail="该历史情景版本未发布到产品研究。")
+    if (
+        publication.get("run_id") != run.get("id")
+        or publication.get("run_content_hash") != run.get("content_hash")
+        or publication.get("definition_revision") != run.get("definition_revision")
+    ):
+        raise HTTPException(status_code=409, detail="历史情景发布记录与运行版本不一致。")
+    states = run.get("states")
+    segments = run.get("segments")
+    if not isinstance(states, list) or not states or not isinstance(segments, list):
+        raise HTTPException(status_code=422, detail="历史情景运行缺少产品研究所需的状态或区间。")
+    analytical_input = {
+        "states": [
+            {
+                "id": str(item.get("id") or ""),
+                "label": str(item.get("label") or item.get("id") or ""),
+                "color": str(item.get("color") or "#64748b"),
+            }
+            for item in states
+            if isinstance(item, dict) and item.get("id")
+        ],
+        "segments": [
+            {
+                "state_id": str(item.get("state_id") or ""),
+                "start_date": str(item.get("start_date") or ""),
+                "end_date": str(item.get("end_date") or ""),
+            }
+            for item in segments
+            if isinstance(item, dict)
+            and item.get("state_id")
+            and item.get("start_date")
+            and item.get("end_date")
+        ],
+    }
+    lineage = {
+        "run_id": run["id"],
+        "publication_id": publication["id"],
+        "definition_id": run.get("definition_id"),
+        "definition_revision": run.get("definition_revision"),
+        "run_content_hash": run["content_hash"],
+        "usage": publication["usage"],
+    }
+    return analytical_input, lineage
+
+
 MAX_PRODUCT_CONDITIONS = 12
 MAX_PRODUCT_SELECTION = 50_000
 MAX_DISPLAY_SNAPSHOT_METRICS = 8
@@ -61,6 +196,15 @@ SNAPSHOT_METRIC_SOURCE_LABELS = {
     "custom": "工作区指标",
     "system_derived": "系统衍生指标",
 }
+NUMERIC_PRODUCT_SORT_FIELDS = {
+    "issue_amount",
+    "m_fee",
+    "c_fee",
+    "exp_return",
+    "duration_year",
+}
+_COMPARISON_OPCODE = {"gte": 0, "lte": 1, "gt": 2, "lt": 3, "eq": 4}
+_STAT_OPCODE = {"mean": 0, "sum": 1, "median": 2}
 
 router = APIRouter(prefix="/api/instruments", tags=["instruments"])
 
@@ -73,6 +217,77 @@ class ProductCondition:
     value: date | float
     data_type: Literal["date", "number"]
     input_scale: float = 1.0
+
+
+class ProductAnalysisRegimeState(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=120)
+    color: str = Field(default="#64748b", max_length=32)
+
+
+class ProductAnalysisRegimeSegment(BaseModel):
+    state_id: str = Field(min_length=1, max_length=80)
+    start_date: str = Field(min_length=8, max_length=32)
+    end_date: str = Field(min_length=8, max_length=32)
+
+
+class ProductAnalysisRegime(BaseModel):
+    """Immutable published historical-regime reference for product research."""
+
+    run_id: str = Field(min_length=1, max_length=128)
+    publication_id: str = Field(min_length=1, max_length=128)
+
+
+ProductAnalysisMaPeriod = Annotated[int, Field(ge=2, le=500)]
+
+
+class ProductAnalysisRequest(BaseModel):
+    statistics_period: Literal["ALL", "1M", "3M", "6M", "1Y", "3Y", "5Y"] = "ALL"
+    price_ma_periods: list[ProductAnalysisMaPeriod] = Field(default_factory=lambda: [5, 10, 20], max_length=8)
+    volume_ma_periods: list[ProductAnalysisMaPeriod] = Field(default_factory=lambda: [5, 10], max_length=8)
+    boll_period: int = Field(default=20, ge=2, le=500)
+    boll_multiplier: float = Field(default=2.0, ge=0.5, le=10.0, allow_inf_nan=False)
+    kdj_period: int = Field(default=9, ge=2, le=500)
+    kdj_k_smoothing: int = Field(default=3, ge=1, le=100)
+    kdj_d_smoothing: int = Field(default=3, ge=1, le=100)
+    histogram_bin_width: float = Field(default=0.2, ge=0.01, le=100.0, allow_inf_nan=False)
+    simulation_horizon: int = Field(default=252, ge=1, le=504)
+    simulation_path_count: int = Field(default=500, ge=1, le=1_000)
+    bootstrap_block_length: int = Field(default=20, ge=1, le=504)
+    simulation_target_return: float = Field(default=5.0, ge=-99.0, le=1_000.0, allow_inf_nan=False)
+    simulation_run: int = Field(default=0, ge=0, le=2_147_483_647)
+    regime: ProductAnalysisRegime | None = None
+
+
+class ProductCompareRange(BaseModel):
+    start_date: str | None = Field(default=None, max_length=32)
+    end_date: str | None = Field(default=None, max_length=32)
+
+
+class ProductCompareRanges(BaseModel):
+    performance: ProductCompareRange
+    risk: ProductCompareRange
+    efficiency: ProductCompareRange
+
+
+class ProductCompareAnalysisRequest(BaseModel):
+    ranges: ProductCompareRanges
+    rolling_window_days: int = Field(default=30, ge=2, le=252)
+    management_fee: float | None = Field(default=None, allow_inf_nan=False)
+    custody_fee: float | None = Field(default=None, allow_inf_nan=False)
+
+
+def _instrument_execution_audit() -> dict[str, object]:
+    return validate_execution_audit(instrument_analytics_numba_execution_audit())
+
+
+def _numeric_array(series: pd.Series) -> np.ndarray:
+    return np.array(
+        pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64),
+        dtype=np.float64,
+        copy=True,
+        order="C",
+    )
 
 
 def _current_data_dir() -> Path:
@@ -110,6 +325,18 @@ def _load_instruments(kind: Literal["all", "etf", "fund"]) -> pd.DataFrame:
             continue
         frame = frame.copy()
         frame["instrument_type"] = item_kind
+        names = frame.get("name", pd.Series([None] * len(frame), index=frame.index))
+        name_qdii = names.astype("string").str.contains("QDII", case=False, na=False)
+        negative_label = "非QDII" if item_kind == "fund" else "待确认"
+        derived_qdii = name_qdii.map({True: "QDII", False: negative_label})
+        if "qdii_type" not in frame.columns:
+            frame["qdii_type"] = derived_qdii
+        else:
+            clean_qdii = frame["qdii_type"].astype("string").str.strip()
+            frame["qdii_type"] = clean_qdii.where(clean_qdii.ne("") & clean_qdii.notna(), derived_qdii)
+        if "qdii_source" not in frame.columns:
+            frame["qdii_source"] = "legacy_info.unavailable" if item_kind == "etf" else "legacy_info.name_marker"
+            frame.loc[name_qdii, "qdii_source"] = "legacy_info.name_marker"
         frames.append(frame)
     if not frames:
         return pd.DataFrame()
@@ -119,6 +346,8 @@ def _load_instruments(kind: Literal["all", "etf", "fund"]) -> pd.DataFrame:
 
 
 def _coerce_filter_list(raw: Optional[list[str]]) -> list[str]:
+    if not isinstance(raw, (list, tuple)):
+        return []
     values: list[str] = []
     for entry in raw or []:
         values.extend(part.strip() for part in str(entry).split(",") if part.strip())
@@ -147,19 +376,57 @@ def _serialize(value: Any) -> Any:
 def _safe_stat(series: Optional[pd.Series], operation: str) -> Optional[float]:
     if series is None or series.empty:
         return None
-    numeric = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    if numeric.empty:
-        return None
-    value = getattr(numeric, operation)()
-    return None if pd.isna(value) else float(value)
+    if operation not in _STAT_OPCODE:
+        raise ValueError(f"不支持的统计方法: {operation}")
+    value = numeric_stat_kernel(_numeric_array(series), _STAT_OPCODE[operation])
+    return float(value) if np.isfinite(value) else None
+
+
+def _category_codes(series: pd.Series) -> tuple[list[str], np.ndarray]:
+    """Map text fields to stable integer codes; counting remains in NJIT."""
+
+    labels: list[str] = []
+    code_by_label: dict[str, int] = {}
+    codes = np.full(len(series), -1, dtype=np.int64)
+    for position, raw_value in enumerate(series.tolist()):
+        if pd.isna(raw_value):
+            continue
+        label = str(raw_value)
+        code = code_by_label.get(label)
+        if code is None:
+            code = len(labels)
+            code_by_label[label] = code
+            labels.append(label)
+        codes[position] = code
+    return labels, np.ascontiguousarray(codes)
+
+
+def _category_count_rows(series: pd.Series) -> list[tuple[str, int]]:
+    labels, codes = _category_codes(series)
+    if not labels:
+        return []
+    counts = encoded_category_counts_kernel(codes, len(labels))
+    order = numeric_sort_order_kernel(
+        np.ascontiguousarray(counts.astype(np.float64)),
+        np.arange(len(labels), dtype=np.int64),
+        np.uint8(0),
+    )
+    return [(labels[index], int(counts[index])) for index in order]
+
+
+def _category_unique_count(series: pd.Series) -> int:
+    _, codes = _category_codes(series)
+    return int(encoded_unique_count_kernel(codes))
 
 
 def _filter_options(df: pd.DataFrame, column: str) -> list[dict[str, Any]]:
     if column not in df.columns:
         return []
     clean = df[column].fillna("未知").astype(str).replace({"": "未知", "nan": "未知"})
-    counts = clean.value_counts()
-    return [{"value": str(value), "label": str(value), "count": int(count)} for value, count in counts.items()]
+    return [
+        {"value": value, "label": value, "count": count}
+        for value, count in _category_count_rows(clean)
+    ]
 
 
 def _date_condition_field(kind: Literal["etf", "fund"]) -> str:
@@ -324,9 +591,13 @@ def _comparison_mask(series: pd.Series, condition: ProductCondition) -> pd.Serie
         values = pd.to_datetime(series, errors="coerce").dt.date
         target = condition.value
     else:
-        values = pd.to_numeric(series, errors="coerce") * condition.input_scale
-        values = values.replace([np.inf, -np.inf], np.nan)
-        target = float(condition.value)
+        mask = numeric_comparison_mask_kernel(
+            _numeric_array(series),
+            float(condition.value),
+            float(condition.input_scale),
+            _COMPARISON_OPCODE[condition.operator],
+        )
+        return pd.Series(mask.astype(bool), index=series.index)
     if condition.operator == "gte":
         return values.ge(target).fillna(False)
     if condition.operator == "lte":
@@ -335,12 +606,6 @@ def _comparison_mask(series: pd.Series, condition: ProductCondition) -> pd.Serie
         return values.gt(target).fillna(False)
     if condition.operator == "lt":
         return values.lt(target).fillna(False)
-    if condition.data_type == "number":
-        numeric = pd.to_numeric(values, errors="coerce")
-        return pd.Series(
-            np.isclose(numeric, target, rtol=1e-9, atol=1e-9, equal_nan=False),
-            index=series.index,
-        )
     return values.eq(target).fillna(False)
 
 
@@ -402,7 +667,14 @@ def _active_count(df: pd.DataFrame) -> Optional[int]:
         return None
     status = df["status"].fillna("未知").astype(str)
     inactive = ("终止", "退市", "清盘", "暂停", "到期", "摘牌")
-    return int((~status.str.contains("|".join(inactive), case=False, na=False)).sum())
+    mask = (~status.str.contains("|".join(inactive), case=False, na=False)).to_numpy(
+        dtype=np.uint8
+    )
+    return int(
+        count_true_kernel(
+            np.array(mask, dtype=np.uint8, copy=True, order="C")
+        )
+    )
 
 
 def _match_instrument(df: pd.DataFrame, identifier: str) -> Optional[pd.Series]:
@@ -425,7 +697,7 @@ def _match_instrument(df: pd.DataFrame, identifier: str) -> Optional[pd.Series]:
 def _load_timeseries(kind: str, ts_code: str) -> list[dict[str, Any]]:
     if kind not in {"etf", "fund"}:
         return []
-    return load_price_points(kind, ts_code, _current_data_dir())
+    return load_price_points(kind, ts_code, _current_data_dir(), preserve_missing=True)
 
 
 def _empty_current_size() -> dict[str, Any]:
@@ -640,7 +912,16 @@ def _filter_product_frame(
         "name",
     }
     sort_column = sort_by if sort_by in sortable else "issue_amount"
-    if sort_column in working.columns:
+    if sort_column in working.columns and sort_column in NUMERIC_PRODUCT_SORT_FIELDS:
+        sort_values = _numeric_array(working[sort_column])
+        stable_rank = np.arange(len(working), dtype=np.int64)
+        sort_order = numeric_sort_order_kernel(
+            sort_values,
+            stable_rank,
+            np.uint8(1 if sort_dir == "asc" else 0),
+        )
+        working = working.iloc[sort_order]
+    elif sort_column in working.columns:
         working = working.sort_values(
             sort_column,
             ascending=sort_dir == "asc",
@@ -658,6 +939,7 @@ def _product_filters(
     status: Optional[list[str]],
     management: Optional[list[str]],
     custodian: Optional[list[str]],
+    qdii_type: Optional[list[str]] = None,
 ) -> dict[str, list[str]]:
     return {
         "fund_type": _coerce_filter_list(fund_type),
@@ -667,6 +949,7 @@ def _product_filters(
         "status": _coerce_filter_list(status),
         "management": _coerce_filter_list(management),
         "custodian": _coerce_filter_list(custodian),
+        "qdii_type": _coerce_filter_list(qdii_type),
     }
 
 
@@ -729,6 +1012,7 @@ def instrument_products(
     sort_dir: Literal["asc", "desc"] = Query(default="desc"),
     conditions: Optional[list[str]] = Query(default=None, alias="condition"),
     snapshot_metrics: Optional[list[str]] = Query(default=None, alias="snapshot_metric"),
+    qdii_type: Optional[list[str]] = Query(default=None),
 ):
     filters = _product_filters(
         fund_type,
@@ -738,6 +1022,7 @@ def instrument_products(
         status,
         management,
         custodian,
+        qdii_type,
     )
     universe, working, parsed_conditions, snapshot_state, sort_column = _filter_product_frame(
         kind=kind,
@@ -761,6 +1046,8 @@ def instrument_products(
         "fund_type",
         "type",
         "invest_type",
+        "qdii_type",
+        "qdii_source",
         "market",
         "status",
         "benchmark",
@@ -813,17 +1100,35 @@ def instrument_products(
     recent_count = None
     if "list_date" in working.columns:
         dates = pd.to_datetime(working["list_date"], errors="coerce")
-        recent_count = int((dates >= recent_cutoff).sum())
+        recent_mask = (dates >= recent_cutoff).to_numpy(dtype=np.uint8)
+        recent_count = int(
+            count_true_kernel(
+                np.array(recent_mask, dtype=np.uint8, copy=True, order="C")
+            )
+        )
+    active_count = _active_count(working)
+    active_rate = (
+        None
+        if active_count is None
+        else _serialize(coverage_ratio_kernel(active_count, total))
+    )
     summary = {
         "universe_total": int(len(universe)),
         "filtered_total": total,
-        "active_count": _active_count(working),
+        "active_count": active_count,
+        "active_rate": active_rate,
         "recent_listings_12m": recent_count,
         "avg_m_fee": _safe_stat(working.get("m_fee"), "mean"),
         "avg_c_fee": _safe_stat(working.get("c_fee"), "mean"),
+        "avg_exp_return": _safe_stat(working.get("exp_return"), "mean"),
+        "avg_duration_year": _safe_stat(working.get("duration_year"), "mean"),
         "total_issue_amount": _safe_stat(working.get("issue_amount"), "sum"),
         "median_issue_amount": _safe_stat(working.get("issue_amount"), "median"),
-        "unique_managements": int(working["management"].nunique(dropna=True)) if "management" in working.columns else None,
+        "unique_managements": (
+            _category_unique_count(working["management"])
+            if "management" in working.columns
+            else None
+        ),
     }
     return {
         "items": items,
@@ -843,6 +1148,7 @@ def instrument_products(
         "sort_by": sort_column,
         "sort_dir": sort_dir,
         "kind": kind,
+        "execution": _instrument_execution_audit(),
     }
 
 
@@ -860,6 +1166,7 @@ def instrument_product_selection(
     sort_by: str = Query(default="name"),
     sort_dir: Literal["asc", "desc"] = Query(default="asc"),
     conditions: Optional[list[str]] = Query(default=None, alias="condition"),
+    qdii_type: Optional[list[str]] = Query(default=None),
 ):
     """Return only identities for all matching products without paging metadata."""
     filters = _product_filters(
@@ -870,6 +1177,7 @@ def instrument_product_selection(
         status,
         management,
         custodian,
+        qdii_type,
     )
     _, working, _, _, _ = _filter_product_frame(
         kind=kind,
@@ -902,6 +1210,71 @@ def instrument_product_selection(
     return {"items": items, "total": len(items), "kind": kind}
 
 
+@router.post("/products/{product_id}/analysis")
+def instrument_product_analysis(
+    product_id: str,
+    request: ProductAnalysisRequest,
+    kind: Literal["etf", "fund"] = Query(default="etf"),
+):
+    """Run every ProductDetail numerical panel through prewarmed NJIT kernels."""
+
+    instruments = _load_instruments(kind)
+    if instruments.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未找到 {_current_info_files()[kind].name} 数据文件",
+        )
+    record = _match_instrument(instruments, product_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"未找到编号为 {product_id} 的产品")
+    ts_code = str(record.get("ts_code") or product_id)
+    points = _load_timeseries(kind, ts_code)
+    if not points:
+        raise HTTPException(status_code=422, detail="产品真实行情数据不足，无法执行分析。")
+    try:
+        parameters = request.model_dump()
+        regime_lineage = None
+        if request.regime is not None:
+            regime_input, regime_lineage = _resolve_product_regime_reference(
+                request.regime
+            )
+            parameters["regime"] = regime_input
+        response = build_product_analysis_response(
+            product_id=ts_code,
+            points=points,
+            parameters=parameters,
+        )
+        if regime_lineage is not None:
+            response["regimeReference"] = regime_lineage
+        return response
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/products/{product_id}/compare-analysis")
+def instrument_product_compare_analysis(
+    product_id: str,
+    request: ProductCompareAnalysisRequest,
+    kind: Literal["etf", "fund"] = Query(default="etf"),
+):
+    """Load one real product series and delegate every comparison metric to NJIT."""
+
+    points = _load_timeseries(kind, product_id)
+    if not points:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未找到编号为 {product_id} 的产品真实行情数据",
+        )
+    try:
+        return build_product_compare_response(
+            product_id=product_id,
+            points=points,
+            parameters=request.model_dump(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"产品比较计算失败：{exc}") from exc
+
+
 @router.get("/products/{product_id}")
 def instrument_product_detail(
     product_id: str,
@@ -924,6 +1297,8 @@ def instrument_product_detail(
         "fund_type",
         "type",
         "invest_type",
+        "qdii_type",
+        "qdii_source",
         "market",
         "status",
         "benchmark",
@@ -950,4 +1325,5 @@ def instrument_product_detail(
         "metrics": metrics,
         "timeseries": _load_timeseries(kind, ts_code),
         "kind": kind,
+        "execution": _instrument_execution_audit(),
     }

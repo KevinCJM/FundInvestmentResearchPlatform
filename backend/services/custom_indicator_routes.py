@@ -6,9 +6,10 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from custom_indicators.errors import IndicatorDomainError
 from custom_indicators.service import CustomIndicatorService, MAX_PLAN_TARGETS, SUPPORTED_PERIODS
@@ -161,10 +162,20 @@ class AvailabilityRequest(BaseModel):
 class EvaluateRequest(BaseModel):
     indicator_ids: list[str] = Field(default_factory=list, max_length=10)
     inline_definition: Optional[IndicatorDraft] = None
+    compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
     targets: list[EvaluationTarget] = Field(min_length=1, max_length=50)
     period: str
     as_of: Optional[str] = None
     include_series: bool = False
+
+
+class ExportExcelRequest(BaseModel):
+    indicator_ids: list[str] = Field(default_factory=list, max_length=1)
+    inline_definition: Optional[IndicatorDraft] = None
+    compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
+    targets: list[EvaluationTarget] = Field(min_length=1, max_length=10)
+    period: str
+    as_of: Optional[str] = None
 
 
 class SnapshotIndicatorItem(BaseModel):
@@ -182,6 +193,7 @@ class EvaluatePortfolioRequest(BaseModel):
     run_id: str = Field(min_length=1, max_length=100)
     indicator_ids: list[str] = Field(default_factory=list, max_length=10)
     inline_definition: Optional[IndicatorDraft] = None
+    compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
 
 
 class PlanIndicatorInput(BaseModel):
@@ -195,6 +207,7 @@ class PlanIndicatorInput(BaseModel):
 class PlanProductSelectionFilters(BaseModel):
     fund_type: list[str] = Field(default_factory=list, max_length=100)
     invest_type: list[str] = Field(default_factory=list, max_length=100)
+    qdii_type: list[str] = Field(default_factory=list, max_length=100)
     market: list[str] = Field(default_factory=list, max_length=100)
     status: list[str] = Field(default_factory=list, max_length=100)
     management: list[str] = Field(default_factory=list, max_length=100)
@@ -289,6 +302,28 @@ def evaluate_custom_indicators(request: EvaluateRequest):
         period=request.period,
         as_of=request.as_of,
         include_series=request.include_series,
+        compile_token=request.compile_token,
+    )
+
+
+@router.post("/api/custom-indicators/export-excel")
+def export_custom_indicator_excel(request: ExportExcelRequest):
+    inline = request.inline_definition.model_dump() if request.inline_definition else None
+    artifact = _call(
+        indicator_service.export_excel,
+        indicator_ids=request.indicator_ids,
+        inline_definition=inline,
+        targets=[target.model_dump() for target in request.targets],
+        period=request.period,
+        as_of=request.as_of,
+        compile_token=request.compile_token,
+    )
+    return FileResponse(
+        path=artifact.path,
+        media_type=artifact.media_type,
+        filename=artifact.filename,
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(artifact.cleanup),
     )
 
 
@@ -300,6 +335,7 @@ def evaluate_portfolio_custom_indicators(request: EvaluatePortfolioRequest):
         run_id=request.run_id,
         indicator_ids=request.indicator_ids,
         inline_definition=inline,
+        compile_token=request.compile_token,
     )
 
 

@@ -13,6 +13,15 @@ vi.mock('../services/customIndicators', () => ({
   listCustomIndicators: vi.fn().mockResolvedValue({ items: [], total: 0 }),
 }))
 
+const fixedExecution = {
+  execution_backend: 'numba_njit_fixed_signature',
+  nopython: true,
+  object_mode: 0,
+  python_fallback: 0,
+  request_time_compilation: 0,
+  kernel_signatures: { product_summary_kernel: ['fixed'] },
+}
+
 function CurrentLocation() {
   const location = useLocation()
   return <output data-testid="location">{location.pathname}{location.search}</output>
@@ -26,15 +35,16 @@ describe('ProductResearch', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
-        items: [{ ts_code: '510300.SH', name: '沪深300ETF', type: 'ETF', fund_type: '股票型', invest_type: '宽基', market: '上交所', status: '上市', management: '华泰柏瑞', custodian: '中国银行', issue_amount: 100, snapshot_values: { current_size: 12345.67, return_1y: 0.0821 }, snapshot_value_dates: { current_size: '2026-08-28', return_1y: '2026-08-31' }, m_fee: 0.5, c_fee: 0.1, list_date: '2012-05-28' }],
+        items: [{ ts_code: '510300.SH', name: '沪深300ETF', type: 'ETF', fund_type: '股票型', invest_type: '宽基', qdii_type: '非QDII', market: '上交所', status: '上市', management: '华泰柏瑞', custodian: '中国银行', issue_amount: 100, snapshot_values: { current_size: 12345.67, return_1y: 0.0821 }, snapshot_value_dates: { current_size: '2026-08-28', return_1y: '2026-08-31' }, m_fee: 0.5, c_fee: 0.1, list_date: '2012-05-28' }],
         page: 1, page_size: 10, total: 1,
-        summary: { universe_total: 1, filtered_total: 1, active_count: 1, recent_listings_12m: 0, avg_m_fee: 0.5, avg_c_fee: 0.1, total_issue_amount: 100, median_issue_amount: 100, unique_managements: 1 },
+        summary: { universe_total: 1, filtered_total: 1, active_count: 1, active_rate: 1, recent_listings_12m: 0, avg_m_fee: 0.5, avg_c_fee: 0.1, total_issue_amount: 100, median_issue_amount: 100, unique_managements: 1 },
         snapshot_metric_fields: [
           { field: 'current_size', label: '当前规模', data_type: 'number', source: 'instrument_metrics_snapshot', metric_source: 'system_derived', metric_source_label: '系统衍生指标', metric_type: 'scale', metric_type_label: '规模指标', unit: 'project_normalized_wan', description: 'ETF 总份额 × 同期单位净值', available: true },
           { field: 'return_1y', label: '累计收益率（1Y）', data_type: 'number', source: 'instrument_metrics_snapshot', metric_source: 'built_in', metric_source_label: '内置指标', metric_type: 'return', metric_type_label: '收益型指标', unit: 'ratio', description: '指标中心预计算', available: true },
         ],
         snapshot: { status: 'ready', as_of: '2026-08-31' },
-        available_filters: { fund_type: [], type: [], invest_type: [], market: [], status: [], management: [], custodian: [] }, sort_by: 'issue_amount', sort_dir: 'desc',
+        available_filters: { fund_type: [], type: [], invest_type: [], qdii_type: [{ value: '非QDII', label: '非QDII', count: 1 }], market: [], status: [], management: [], custodian: [] }, sort_by: 'issue_amount', sort_dir: 'desc',
+        execution: fixedExecution,
       }),
     }))
   })
@@ -56,11 +66,13 @@ describe('ProductResearch', () => {
         window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' },
       }],
       summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 },
+      execution: fixedExecution,
     } as any)
     const user = userEvent.setup()
     render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
 
     await screen.findByText('沪深300ETF')
+    expect(screen.getByText('占比 100%')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '切换到研究指标视图' }))
     expect(await screen.findByText('1.83%')).toBeInTheDocument()
     expect(evaluateCustomIndicators).toHaveBeenCalledWith({
@@ -83,6 +95,8 @@ describe('ProductResearch', () => {
     await screen.findByText('沪深300ETF')
     expect(screen.getByRole('button', { name: '投资类型 全部' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '基金类型 全部' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'QDII 属性 全部' })).toBeInTheDocument()
+    expect(screen.getByText('非QDII')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /机构类型/ })).not.toBeInTheDocument()
   })
 
@@ -104,7 +118,7 @@ describe('ProductResearch', () => {
     expect(screen.getByText('提示：点击产品名称可进入单产品研究页面')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '进入沪深300ETF的单产品研究页面' })).toHaveAttribute(
       'href',
-      '/product/510300.SH?kind=etf',
+      '/product-research/products/510300.SH?kind=etf',
     )
   })
 
@@ -134,8 +148,9 @@ describe('ProductResearch', () => {
       json: async () => ({
         items: [{ ts_code: '000001.OF', name: '示例场外基金', type: '混合型', fund_type: '混合型', invest_type: '主动型', market: '场外', status: '存续', management: '示例基金公司', custodian: '示例托管行', issue_amount: 100, m_fee: 0.5, c_fee: 0.1, found_date: '2001-01-01' }],
         page: 1, page_size: 10, total: 1,
-        summary: { universe_total: 1, filtered_total: 1, active_count: 1, recent_listings_12m: 0, avg_m_fee: 0.5, avg_c_fee: 0.1, total_issue_amount: 100, median_issue_amount: 100, unique_managements: 1 },
+        summary: { universe_total: 1, filtered_total: 1, active_count: 1, active_rate: 1, recent_listings_12m: 0, avg_m_fee: 0.5, avg_c_fee: 0.1, total_issue_amount: 100, median_issue_amount: 100, unique_managements: 1 },
         available_filters: { fund_type: [{ value: '混合型', label: '混合型', count: 1 }], type: [], invest_type: [], market: [], status: [], management: [], custodian: [] }, sort_by: 'found_date', sort_dir: 'desc',
+        execution: fixedExecution,
       }),
     }))
 
@@ -161,7 +176,7 @@ describe('ProductResearch', () => {
     const responsePayload = {
       items: [{ ts_code: '510300.SH', name: '沪深300ETF', list_date: '2012-05-28' }],
       page: 1, page_size: 10, total: 1,
-      summary: { universe_total: 1, filtered_total: 1, active_count: 1 },
+      summary: { universe_total: 1, filtered_total: 1, active_count: 1, active_rate: 1 },
       available_filters: { fund_type: [], type: [], invest_type: [], market: [], status: [], management: [], custodian: [] },
       condition_fields: [
         { field: 'list_date', label: '上市日期', data_type: 'date', unit_label: null, input_scale: 1, source: 'fund_basic', available: true },
@@ -173,6 +188,7 @@ describe('ProductResearch', () => {
       ],
       snapshot: { status: 'ready', as_of: '2026-08-31' },
       sort_by: 'issue_amount', sort_dir: 'desc',
+      execution: fixedExecution,
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => responsePayload }))
     const user = userEvent.setup()
@@ -201,10 +217,11 @@ describe('ProductResearch', () => {
           { ts_code: '510002.SH', name: '产品二', list_date: '2021-01-01' },
         ],
         page: 1, page_size: 10, total: 12,
-        summary: { universe_total: 12, filtered_total: 12, active_count: 12 },
+        summary: { universe_total: 12, filtered_total: 12, active_count: 12, active_rate: 1 },
         available_filters: { fund_type: [], type: [], invest_type: [], market: [], status: [], management: [], custodian: [] },
         condition_fields: [{ field: 'list_date', label: '上市日期', data_type: 'date', source: 'fund_basic', available: true }],
         condition_operators: [], snapshot: { status: 'ready' }, sort_by: 'issue_amount', sort_dir: 'desc',
+        execution: fixedExecution,
       }),
     }))
     const user = userEvent.setup()

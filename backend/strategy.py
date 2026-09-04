@@ -1,14 +1,352 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import inspect
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
-import math
+import numba
 import numpy as np
 import pandas as pd
+from numba import njit, types
+from numba.core.registry import CPUDispatcher
 
-from optimizer import calculate_risk, calculate_return, calculate_efficient_frontier_exploration
-from trading_calendar import get_trading_days
+try:
+    from backend.compute_policy import validate_execution_audit, validate_execution_graph
+    from backend.optimizer import (
+        optimizer_numba_status,
+        select_target_weights,
+        warm_optimizer_numba_kernels,
+    )
+    from backend.trading_calendar import get_trading_days
+except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from compute_policy import validate_execution_audit, validate_execution_graph
+    from optimizer import (
+        optimizer_numba_status,
+        select_target_weights,
+        warm_optimizer_numba_kernels,
+    )
+    from trading_calendar import get_trading_days
+
+
+STRATEGY_NUMBA_KERNEL_VERSION = "2.0.0"
+_FLOAT64_1D = types.float64[::1]
+_FLOAT64_2D = types.float64[:, ::1]
+
+
+@njit((types.int64,), cache=False, nogil=True)
+def equal_weights_kernel(asset_count: int) -> tuple[np.ndarray, int]:
+    if asset_count <= 0:
+        return np.empty(0, dtype=np.float64), 1
+    return np.full(asset_count, 1.0 / asset_count, dtype=np.float64), 0
+
+
+@njit((_FLOAT64_1D,), cache=False, nogil=True)
+def normalize_explicit_weights_kernel(
+    raw_weights: np.ndarray,
+) -> tuple[np.ndarray, int]:
+    output = raw_weights.copy()
+    if output.size == 0:
+        return output, 1
+    total = 0.0
+    for index in range(output.size):
+        value = output[index]
+        if not np.isfinite(value) or value < 0.0:
+            return output, 2
+        total += value
+    if total <= 0.0 or not np.isfinite(total):
+        return output, 3
+    output /= total
+    return output, 0
+
+
+@njit((_FLOAT64_1D, types.float64), cache=False, nogil=True)
+def scale_weights_percent_kernel(
+    normalized_weights: np.ndarray,
+    max_leverage: float,
+) -> tuple[np.ndarray, int]:
+    output = normalized_weights.copy()
+    if output.size == 0:
+        return output, 1
+    if not np.isfinite(max_leverage) or max_leverage < 0.0:
+        return output, 2
+    total = 0.0
+    for value in output:
+        if not np.isfinite(value) or value < 0.0:
+            return output, 3
+        total += value
+    if abs(total - 1.0) > 1e-7:
+        return output, 4
+    multiplier = 100.0 * (1.0 + max_leverage)
+    if not np.isfinite(multiplier) or multiplier > 9.0e13:
+        return output, 2
+    target_cents = int(np.round(multiplier * 100.0))
+    allocated_cents = np.empty(output.size, dtype=np.int64)
+    remainders = np.empty(output.size, dtype=np.float64)
+    allocated_total = 0
+    for index in range(output.size):
+        ideal_cents = output[index] / total * target_cents
+        cents = int(np.floor(ideal_cents))
+        allocated_cents[index] = cents
+        remainders[index] = ideal_cents - cents
+        allocated_total += cents
+    remaining = target_cents - allocated_total
+    for _ in range(remaining):
+        largest_index = 0
+        largest_remainder = remainders[0]
+        for index in range(1, output.size):
+            if remainders[index] > largest_remainder:
+                largest_index = index
+                largest_remainder = remainders[index]
+        allocated_cents[largest_index] += 1
+        remainders[largest_index] = -1.0
+    for index in range(output.size):
+        output[index] = allocated_cents[index] / 100.0
+    return output, 0
+
+
+@njit((_FLOAT64_2D,), cache=False, nogil=True)
+def nav_to_returns_kernel(nav_values: np.ndarray) -> tuple[np.ndarray, int]:
+    row_count, asset_count = nav_values.shape
+    output = np.empty((max(row_count - 1, 0), asset_count), dtype=np.float64)
+    if row_count < 2 or asset_count == 0:
+        return output, 1
+    for row_index in range(row_count - 1):
+        for asset_index in range(asset_count):
+            previous = nav_values[row_index, asset_index]
+            current = nav_values[row_index + 1, asset_index]
+            if not np.isfinite(previous) or not np.isfinite(current) or previous <= 0.0 or current <= 0.0:
+                return output, 2
+            output[row_index, asset_index] = current / previous - 1.0
+    return output, 0
+
+
+@njit((_FLOAT64_2D, _FLOAT64_1D, types.int64, types.float64), cache=False, nogil=True)
+def risk_budget_weights_kernel(
+    asset_returns: np.ndarray,
+    raw_budgets: np.ndarray,
+    maximum_iterations: int,
+    tolerance: float,
+) -> tuple[np.ndarray, int, int, float]:
+    """Solve covariance risk budgets with cyclic coordinate descent."""
+
+    row_count, asset_count = asset_returns.shape
+    weights = np.zeros(asset_count, dtype=np.float64)
+    if row_count < 2 or asset_count == 0:
+        return weights, 1, 0, np.inf
+    if raw_budgets.size != asset_count:
+        return weights, 2, 0, np.inf
+    budget_total = 0.0
+    budgets = np.empty(asset_count, dtype=np.float64)
+    for asset_index in range(asset_count):
+        value = raw_budgets[asset_index]
+        if not np.isfinite(value) or value < 0.0:
+            return weights, 2, 0, np.inf
+        budgets[asset_index] = value
+        budget_total += value
+    if budget_total <= 0.0:
+        return weights, 2, 0, np.inf
+    budgets /= budget_total
+
+    means = np.zeros(asset_count, dtype=np.float64)
+    for row_index in range(row_count):
+        for asset_index in range(asset_count):
+            value = asset_returns[row_index, asset_index]
+            if not np.isfinite(value):
+                return weights, 3, 0, np.inf
+            means[asset_index] += value
+    means /= row_count
+    covariance = np.zeros((asset_count, asset_count), dtype=np.float64)
+    for row_index in range(row_count):
+        for left in range(asset_count):
+            left_delta = asset_returns[row_index, left] - means[left]
+            for right in range(asset_count):
+                covariance[left, right] += left_delta * (asset_returns[row_index, right] - means[right])
+    covariance /= row_count - 1
+    trace = 0.0
+    for asset_index in range(asset_count):
+        trace += max(covariance[asset_index, asset_index], 0.0)
+    ridge = max(trace / max(asset_count, 1) * 1e-10, 1e-14)
+    for asset_index in range(asset_count):
+        covariance[asset_index, asset_index] += ridge
+        weights[asset_index] = np.sqrt(budgets[asset_index] / covariance[asset_index, asset_index]) if budgets[asset_index] > 0.0 else 0.0
+
+    completed_iterations = 0
+    converged = False
+    for iteration in range(max(maximum_iterations, 1)):
+        largest_change = 0.0
+        for asset_index in range(asset_count):
+            diagonal = covariance[asset_index, asset_index]
+            cross = 0.0
+            for other_index in range(asset_count):
+                if other_index != asset_index:
+                    cross += covariance[asset_index, other_index] * weights[other_index]
+            discriminant = cross * cross + 4.0 * diagonal * budgets[asset_index]
+            if diagonal <= 0.0 or discriminant < 0.0 or not np.isfinite(discriminant):
+                return weights, 3, iteration, np.inf
+            updated = (-cross + np.sqrt(discriminant)) / (2.0 * diagonal)
+            if updated < 0.0:
+                updated = 0.0
+            change = abs(updated - weights[asset_index])
+            if change > largest_change:
+                largest_change = change
+            weights[asset_index] = updated
+        completed_iterations = iteration + 1
+        if largest_change <= tolerance:
+            converged = True
+            break
+    if not converged:
+        return weights, 4, completed_iterations, np.inf
+
+    weight_total = np.sum(weights)
+    if not np.isfinite(weight_total) or weight_total <= 0.0:
+        return weights, 3, completed_iterations, np.inf
+    weights /= weight_total
+    marginal = covariance @ weights
+    portfolio_variance = np.dot(weights, marginal)
+    if not np.isfinite(portfolio_variance) or portfolio_variance <= 0.0:
+        return weights, 3, completed_iterations, np.inf
+    maximum_error = 0.0
+    for asset_index in range(asset_count):
+        contribution_share = weights[asset_index] * marginal[asset_index] / portfolio_variance
+        error = abs(contribution_share - budgets[asset_index])
+        if error > maximum_error:
+            maximum_error = error
+    if maximum_error > 1e-5:
+        return weights, 5, completed_iterations, maximum_error
+    return weights, 0, completed_iterations, maximum_error
+
+
+STRATEGY_NUMBA_KERNELS: tuple[CPUDispatcher, ...] = (
+    equal_weights_kernel,
+    normalize_explicit_weights_kernel,
+    scale_weights_percent_kernel,
+    nav_to_returns_kernel,
+    risk_budget_weights_kernel,
+)
+for _dispatcher in STRATEGY_NUMBA_KERNELS:
+    _dispatcher.disable_compile()
+_STRATEGY_WARMED = False
+
+
+def _strategy_kernel_fingerprint(dispatcher: CPUDispatcher) -> str:
+    return hashlib.sha256(inspect.getsource(dispatcher.py_func).encode("utf-8")).hexdigest()
+
+
+def strategy_numba_status(*, warmed: Optional[bool] = None) -> dict[str, Any]:
+    signatures = {
+        dispatcher.py_func.__name__: [str(signature) for signature in dispatcher.nopython_signatures]
+        for dispatcher in STRATEGY_NUMBA_KERNELS
+    }
+    is_warmed = _STRATEGY_WARMED if warmed is None else bool(warmed)
+    fingerprints = {
+        dispatcher.py_func.__name__: _strategy_kernel_fingerprint(dispatcher)
+        for dispatcher in STRATEGY_NUMBA_KERNELS
+    }
+    aggregate_fingerprint = hashlib.sha256(
+        "|".join(f"{name}:{fingerprints[name]}" for name in sorted(fingerprints)).encode("utf-8")
+    ).hexdigest()
+    return {
+        "version": STRATEGY_NUMBA_KERNEL_VERSION,
+        "kernel_version": STRATEGY_NUMBA_KERNEL_VERSION,
+        "numba_version": numba.__version__,
+        "warmed": is_warmed,
+        "fully_warmed": is_warmed and all(signatures.values()),
+        "kernel_coverage": f"{sum(bool(value) for value in signatures.values())}/{len(signatures)}",
+        "kernel_signatures": signatures,
+        "compiled_signatures": signatures,
+        "kernel_fingerprints": fingerprints,
+        "fingerprint": aggregate_fingerprint,
+        "backend": "numba_njit_fixed_signature",
+        "execution_backend": "numba_njit_fixed_signature",
+        "nopython": all(bool(dispatcher.nopython_signatures) for dispatcher in STRATEGY_NUMBA_KERNELS),
+        "object_mode": 0,
+        "python_fallback": 0,
+    }
+
+
+@lru_cache(maxsize=1)
+def warm_strategy_numba_kernels() -> dict[str, Any]:
+    global _STRATEGY_WARMED
+    nav = np.ascontiguousarray(
+        [[1.0, 1.0], [1.01, 0.995], [1.02, 1.005], [1.015, 1.012]],
+        dtype=np.float64,
+    )
+    _, equal_status = equal_weights_kernel(np.int64(2))
+    if equal_status != 0:
+        raise RuntimeError("strategy equal-weight NJIT warmup failed")
+    normalized, normalize_status = normalize_explicit_weights_kernel(
+        np.ascontiguousarray([2.0, 1.0], dtype=np.float64)
+    )
+    if normalize_status != 0:
+        raise RuntimeError("strategy explicit-weight NJIT warmup failed")
+    _, scale_status = scale_weights_percent_kernel(normalized, np.float64(0.2))
+    if scale_status != 0:
+        raise RuntimeError("strategy weight-scaling NJIT warmup failed")
+    returns, status = nav_to_returns_kernel(nav)
+    if status != 0:
+        raise RuntimeError("strategy NAV-to-return NJIT warmup failed")
+    budgets = np.ascontiguousarray([0.5, 0.5], dtype=np.float64)
+    _, risk_status, _, _ = risk_budget_weights_kernel(returns, budgets, np.int64(10000), np.float64(1e-11))
+    if risk_status != 0:
+        raise RuntimeError(f"strategy risk-budget NJIT warmup failed: {risk_status}")
+    if any(len(dispatcher.nopython_signatures) != 1 for dispatcher in STRATEGY_NUMBA_KERNELS):
+        raise RuntimeError("strategy NJIT kernels must each expose exactly one fixed signature")
+    _STRATEGY_WARMED = True
+    optimizer_audit = warm_optimizer_numba_kernels()
+    strategy_audit = validate_execution_audit(strategy_numba_status())
+    validate_execution_graph(strategy_audit, optimizer_audit)
+    strategy_audit["dependencies"] = [optimizer_audit]
+    return strategy_audit
+
+
+def strategy_execution_audit() -> dict[str, Any]:
+    audit = validate_execution_audit(strategy_numba_status())
+    audit["dependencies"] = [validate_execution_audit(optimizer_numba_status())]
+    return audit
+
+
+def equal_weights(asset_count: int) -> List[float]:
+    weights, status = equal_weights_kernel(np.int64(asset_count))
+    if status != 0:
+        raise ValueError("等权策略至少需要一个资产")
+    strategy_execution_audit()
+    return [float(value) for value in weights]
+
+
+def normalize_explicit_weights(raw_weights: List[float] | np.ndarray) -> List[float]:
+    values = np.ascontiguousarray(raw_weights, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError("固定权重必须是一维数组")
+    normalized, status = normalize_explicit_weights_kernel(values)
+    if status == 1:
+        raise ValueError("固定权重至少需要一个资产")
+    if status == 2:
+        raise ValueError("固定权重必须是有限的非负数")
+    if status == 3:
+        raise ValueError("固定权重总和必须大于 0，禁止以等权代替")
+    strategy_execution_audit()
+    return [float(value) for value in normalized]
+
+
+def scale_weights_percent(
+    normalized_weights: List[float] | np.ndarray,
+    max_leverage: float,
+) -> List[float]:
+    values = np.ascontiguousarray(normalized_weights, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError("权重必须是一维数组")
+    scaled, status = scale_weights_percent_kernel(values, np.float64(max_leverage))
+    if status == 1:
+        raise ValueError("权重至少需要一个资产")
+    if status == 2:
+        raise ValueError("最大杠杆必须是有限的非负数")
+    if status == 3:
+        raise ValueError("权重必须是有限的非负数")
+    if status == 4:
+        raise ValueError("杠杆缩放前的权重和必须为 1")
+    strategy_execution_audit()
+    return [float(value) for value in scaled]
 
 
 def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -22,44 +360,37 @@ def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
 
 def _to_returns(nav_wide: pd.DataFrame) -> pd.DataFrame:
     nav_wide = _ensure_datetime_index(nav_wide)
-    rets = nav_wide.pct_change().dropna()
-    return rets
+    values = np.ascontiguousarray(nav_wide.to_numpy(dtype=np.float64))
+    returns, status = nav_to_returns_kernel(values)
+    if status == 1:
+        raise ValueError("净值数据至少需要两个观察值和一个资产")
+    if status == 2:
+        raise ValueError("净值数据包含缺失、非有限或非正值")
+    return pd.DataFrame(returns, index=nav_wide.index[1:], columns=nav_wide.columns)
 
 
 def _risk_parity_weights(returns: pd.DataFrame, budgets: Optional[List[float]] = None) -> np.ndarray:
-    """Risk parity via covariance fixed-point iteration, supporting target budgets."""
-    X = returns.to_numpy()
-    n = X.shape[1]
-    if X.shape[0] < 3 or n == 0:
-        return np.full(max(n, 1), 1.0 / max(n, 1))
-    S = np.cov(X, rowvar=False, ddof=1)
-    eps = 1e-12
-    if budgets is None or sum(budgets) <= 0:
-        b = np.ones(n, dtype=float) / n
-    else:
-        b = np.array([max(0.0, float(x)) for x in budgets], dtype=float)
-        if b.sum() <= 0:
-            b = np.ones(n, dtype=float) / n
-        else:
-            b = b / b.sum()
-    # numerical regularization if needed
-    try:
-        np.linalg.cholesky(S + 1e-12 * np.eye(n))
-    except np.linalg.LinAlgError:
-        S = S + 1e-6 * np.eye(n)
-    w = np.maximum(b.copy(), eps)
-    w /= w.sum()
-    for _ in range(5000):
-        Sw = S @ w
-        denom = np.maximum(Sw, eps)
-        w_new = b / denom
-        w_new = np.maximum(w_new, eps)
-        w_new /= w_new.sum()
-        if np.linalg.norm(w_new - w, ord=1) < 1e-8:
-            w = w_new
-            break
-        w = 0.7 * w_new + 0.3 * w
-    return w / max(1e-12, w.sum())
+    if budgets is None:
+        raise ValueError("必须逐项提供风险预算，禁止以等权静默代替")
+    values = np.ascontiguousarray(returns.to_numpy(dtype=np.float64))
+    budget_values = np.ascontiguousarray(budgets, dtype=np.float64)
+    if budget_values.ndim != 1:
+        raise ValueError("风险预算必须是一维数组")
+    weights, status, _, error = risk_budget_weights_kernel(
+        values, budget_values, np.int64(10000), np.float64(1e-11)
+    )
+    if status == 1:
+        raise ValueError("风险预算至少需要两个收益观察值和一个资产")
+    if status == 2:
+        raise ValueError("风险预算必须非负、总和大于 0，且数量与资产一致")
+    if status == 3:
+        raise ValueError("风险预算协方差矩阵无效，无法求解")
+    if status == 4:
+        raise ValueError("风险预算求解未在最大迭代次数内收敛")
+    if status == 5:
+        raise ValueError(f"风险预算贡献误差超限：{float(error):.6g}")
+    strategy_execution_audit()
+    return np.ascontiguousarray(weights, dtype=np.float64)
 
 
 def compute_risk_budget_weights(nav_wide: pd.DataFrame, risk_cfg: Dict[str, Any], budgets: List[float], *, window_len: Optional[int] = None, window_mode: Optional[str] = None) -> List[float]:
@@ -68,7 +399,6 @@ def compute_risk_budget_weights(nav_wide: pd.DataFrame, risk_cfg: Dict[str, Any]
         # 取消 firstN 固定窗口：仅支持 all 与 rollingN
         nav_wide = nav_wide.tail(max(2, window_len))
     returns = _to_returns(nav_wide)
-    # 目前采用基于协方差的风险平价，支持目标预算
     w = _risk_parity_weights(returns, budgets)
     return [float(x) for x in w]
 
@@ -88,197 +418,27 @@ def compute_target_weights(
     target_risk: Optional[float] = None,
     use_exploration: bool = True,
 ) -> List[float]:
-    # Simple targets: min_risk, max_return. Extendable.
     nav_wide = _ensure_datetime_index(nav_wide)
     if window_len and window_len > 0:
         nav_wide = nav_wide.tail(max(2, window_len))
     returns = _to_returns(nav_wide)
-    X = returns.to_numpy()
-    n = X.shape[1]
-    if n == 0:
-        return []
-    # bounds and constraints
-    n = X.shape[1]
-    if single_limits is None:
-        single_limits = [(0.0, 1.0) for _ in range(n)]
-    bounds = tuple((float(a), float(b)) for a, b in single_limits)
-    cons: Tuple[dict, ...] = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0},)
-    for idx_tuple, (lo, hi) in (group_limits or {}).items():
-        idx = list(idx_tuple)
-        cons += (
-            {'type': 'ineq', 'fun': lambda w, i=idx, l=lo: np.sum(w[i]) - l},
-            {'type': 'ineq', 'fun': lambda w, i=idx, h=hi: h - np.sum(w[i])},
-        )
-
-    mean_vec = returns.mean(axis=0).to_numpy(dtype=float)
-    sum_vec = returns.sum(axis=0).to_numpy(dtype=float)
-    cov_mat = np.cov(X, rowvar=False, ddof=1) if X.shape[0] > 1 else np.eye(n, dtype=float)
-    days_ret = int(return_cfg.get('days', 252) or 252)
-    days_risk = int(risk_cfg.get('days', 252) or 252)
-    ret_metric = str(return_cfg.get('metric', 'mean'))
-    ret_type = str(return_cfg.get('type', 'simple'))
-    risk_metric = str(risk_cfg.get('metric', 'vol'))
-    risk_type = str(risk_cfg.get('type', 'simple'))
-
-    fast_return = (
-        ret_type == 'simple'
-        and ret_metric in {'mean', 'annual', 'annual_mean', 'cumulative'}
+    if returns.shape[1] == 0:
+        raise ValueError("收益矩阵没有可优化资产")
+    weights = select_target_weights(
+        np.ascontiguousarray(returns.to_numpy(dtype=np.float64)),
+        return_cfg,
+        risk_cfg,
+        target,
+        single_limits=single_limits,
+        group_limits=group_limits,
+        risk_free_rate=risk_free_rate,
+        target_return=target_return,
+        target_risk=target_risk,
+        candidate_count=5000,
+        seed=42,
     )
-
-    fast_risk = (
-        risk_type == 'simple'
-        and risk_metric in {'vol', 'annual_vol'}
-    )
-
-    def fast_ret(w: np.ndarray) -> float:
-        if ret_metric == 'mean':
-            return float(mean_vec @ w)
-        if ret_metric in {'annual', 'annual_mean'}:
-            return float((mean_vec @ w) * days_ret)
-        if ret_metric == 'cumulative':
-            return float(sum_vec @ w)
-        return float(mean_vec @ w)
-
-    def fast_rsk(w: np.ndarray) -> float:
-        var = float(w @ cov_mat @ w)
-        var = max(var, 0.0)
-        vol = math.sqrt(var)
-        if risk_metric == 'annual_vol':
-            return vol * math.sqrt(days_risk)
-        return vol
-
-    def cached_portfolio_returns(w: np.ndarray) -> np.ndarray:
-        return X @ w
-
-    def portfolio_return_value(w: np.ndarray) -> float:
-        if fast_return:
-            return fast_ret(w)
-        return float(calculate_return(cached_portfolio_returns(w), return_cfg))
-
-    def portfolio_risk_value(w: np.ndarray) -> float:
-        if fast_risk:
-            return fast_rsk(w)
-        return float(calculate_risk(cached_portfolio_returns(w), risk_cfg))
-
-    results = None
-    if use_exploration:
-        results = calculate_efficient_frontier_exploration(
-            asset_returns=returns,
-            return_config=return_cfg,
-            risk_config=risk_cfg,
-            single_limits=single_limits,
-            group_limits=group_limits or {},
-            rounds=[{"samples": 1500, "step": 0.5, "buckets": 30}, {"samples": 2500, "step": 0.25, "buckets": 40}],
-            quantize_step=None,
-            use_slsqp_refine=True,
-            refine_count=20,
-            risk_free_rate=risk_free_rate,
-        )
-
-    if target == 'min_risk':
-        if use_exploration and results:
-            if results.get('min_variance') and results['min_variance'].get('weights'):
-                return [float(x) for x in results['min_variance']['weights']]
-            pts = results.get('scatter', []) + results.get('frontier', [])
-            if pts:
-                idx = int(np.argmin([p['value'][0] for p in pts]))
-                return [float(x) for x in pts[idx].get('weights', [1.0/n]*n)]
-        # fast path: SLSQP directly minimize risk under constraints
-        from scipy.optimize import minimize
-        def risk_of(w: np.ndarray) -> float:
-            return portfolio_risk_value(w)
-        res = minimize(risk_of, np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter':400,'ftol':1e-9})
-        w = res.x if res.success else np.full(n, 1.0/n)
-        return [float(x) for x in w / max(1e-12, w.sum())]
-    elif target == 'max_return':
-        if use_exploration and results:
-            pts = results.get('scatter', []) + results.get('frontier', [])
-            if pts:
-                idx = int(np.argmax([p['value'][1] for p in pts]))
-                return [float(x) for x in pts[idx].get('weights', [1.0/n]*n)]
-        # fast path: SLSQP directly maximize return
-        from scipy.optimize import minimize
-        def ret_of(w: np.ndarray) -> float:
-            return portfolio_return_value(w)
-        res = minimize(lambda w: -ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter':400,'ftol':1e-9})
-        w = res.x if res.success else np.full(n, 1.0/n)
-        return [float(x) for x in w / max(1e-12, w.sum())]
-    elif target == 'max_sharpe_traditional':
-        from scipy.optimize import minimize
-        # This target uses a fixed traditional Sharpe Ratio definition.
-        days = int(return_cfg.get('days', 252)) # Still need days for annualization
-        
-        def neg_traditional_sharpe(w: np.ndarray) -> float:
-            if fast_return and fast_risk:
-                r = float((mean_vec @ w) * days)
-                v = float(math.sqrt(max(w @ cov_mat @ w, 0.0)) * math.sqrt(days))
-            else:
-                p = cached_portfolio_returns(w)
-                r = calculate_return(p, {'metric': 'annual', 'days': days})
-                v = calculate_risk(p, {'metric': 'annual_vol', 'days': days})
-            if v <= 1e-12:
-                return 1e6
-            # Traditional formula with risk-free rate
-            return - (r - float(risk_free_rate)) / v
-            
-        w0 = np.full(n, 1.0/n)
-        res = minimize(neg_traditional_sharpe, w0, method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter': 500, 'ftol': 1e-9})
-        w = res.x if res.success else w0
-        return [float(x) for x in w / max(1e-12, w.sum())]
-    elif target == 'max_sharpe':
-        from scipy.optimize import minimize
-        def neg_sharpe(w: np.ndarray) -> float:
-            r = portfolio_return_value(w)
-            v = portfolio_risk_value(w)
-            if v <= 1e-12:
-                return 1e6
-            return - r / v
-        w0 = np.full(n, 1.0/n)
-        res = minimize(neg_sharpe, w0, method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter': 500, 'ftol': 1e-9})
-        w = res.x if res.success else w0
-        return [float(x) for x in w / max(1e-12, w.sum())]
-    elif target == 'risk_min_given_return':
-        # minimize risk subject to return == target_return
-        from scipy.optimize import minimize
-        if target_return is None:
-            raise ValueError('需要提供目标收益率')
-        def risk_of(w: np.ndarray) -> float:
-            return portfolio_risk_value(w)
-        def ret_of(w: np.ndarray) -> float:
-            return portfolio_return_value(w)
-        # find feasible range for return using SLSQP on bounds/constraints
-        res_max = minimize(lambda w: -ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons)
-        res_min = minimize(lambda w: ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons)
-        rmax = ret_of(res_max.x) if res_max.success else None
-        rmin = ret_of(res_min.x) if res_min.success else None
-        if (rmax is None) or (rmin is None) or not (rmin - 1e-9 <= target_return <= rmax + 1e-9):
-            raise ValueError(f'目标收益不在可行范围内 [{rmin:.6f}, {rmax:.6f}]')
-        cons_rt = cons + ({'type': 'eq', 'fun': lambda w: ret_of(w) - float(target_return)},)
-        res = minimize(lambda w: risk_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons_rt, options={'maxiter': 800, 'ftol': 1e-9})
-        w = res.x if res.success else np.full(n, 1.0/n)
-        return [float(x) for x in w / max(1e-12, w.sum())]
-    elif target == 'return_max_given_risk':
-        # maximize return subject to risk <= target_risk
-        from scipy.optimize import minimize
-        if target_risk is None:
-            raise ValueError('需要提供目标风险值')
-        def risk_of(w: np.ndarray) -> float:
-            return calculate_risk(X @ w, risk_cfg)
-        def ret_of(w: np.ndarray) -> float:
-            return calculate_return(X @ w, return_cfg)
-        # find feasible range for risk
-        res_minr = minimize(lambda w: risk_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons)
-        res_maxr = minimize(lambda w: -risk_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons)
-        rmin = risk_of(res_minr.x) if res_minr.success else None
-        rmax = risk_of(res_maxr.x) if res_maxr.success else None
-        if (rmax is None) or (rmin is None) or not (rmin - 1e-9 <= target_risk <= rmax + 1e-9):
-            raise ValueError(f'目标风险不在可行范围内 [{rmin:.6f}, {rmax:.6f}]')
-        cons_rk = cons + ({'type': 'ineq', 'fun': lambda w: float(target_risk) - risk_of(w)},)
-        res = minimize(lambda w: -ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons_rk, options={'maxiter': 800, 'ftol': 1e-9})
-        w = res.x if res.success else np.full(n, 1.0/n)
-        return [float(x) for x in w / max(1e-12, w.sum())]
-    else:
-        return [float(x) for x in np.full(n, 1.0 / n)]
+    strategy_execution_audit()
+    return [float(value) for value in weights]
 
 
 def _gen_rebalance_dates(index: pd.DatetimeIndex, mode: str, N: Optional[int] = None, which: Optional[str] = None, unit: Optional[str] = None, fixed_interval: Optional[int] = None) -> List[pd.Timestamp]:
@@ -339,53 +499,11 @@ def _gen_rebalance_dates(index: pd.DatetimeIndex, mode: str, N: Optional[int] = 
 
 
 def backtest_portfolio(nav_wide: pd.DataFrame, strategies: List[Dict[str, Any]], start_date: Optional[str] = None) -> Dict[str, Any]:
-    """Backtest portfolio NAV series.
-    - No rebal: invest initial proportions into each class, portfolio NAV = sum_i w_i * (NAV_i / NAV_i(start)).
-    - With rebal: at each rebalance date, reset base to that date and invest current total NAV by weights.
-    """
-    nav_wide = _ensure_datetime_index(nav_wide)
-    if start_date:
-        nav_wide = nav_wide[nav_wide.index >= pd.to_datetime(start_date)]
-    idx = nav_wide.index
+    """Compatibility entrypoint backed by the fixed-signature NJIT engine."""
 
-    def portfolio_nav_static(nav: pd.DataFrame, weights: np.ndarray, rebal_dates: Optional[List[pd.Timestamp]] = None) -> pd.Series:
-        weights = weights / max(1e-12, weights.sum())
-        if not rebal_dates:
-            base = nav.iloc[0]
-            rel = nav.divide(base, axis=1)
-            return (rel * weights).sum(axis=1)
-        # ensure rebal dates on index and sorted
-        rset = sorted([pd.Timestamp(d) for d in rebal_dates if d in nav.index])
-        if not rset or rset[0] != nav.index[0]:
-            rset = [nav.index[0]] + rset
-        out = pd.Series(index=nav.index, dtype=float)
-        cur_val = 1.0
-        for i, d0 in enumerate(rset):
-            d1 = rset[i + 1] if i + 1 < len(rset) else nav.index[-1]
-            seg = nav.loc[d0:d1]
-            base = seg.iloc[0]
-            rel = seg.divide(base, axis=1)
-            part = (rel * weights).sum(axis=1)
-            out.loc[seg.index] = cur_val * part.values
-            cur_val = float(out.loc[seg.index[-1]])
-        return out
+    try:
+        from backend.backtest_engine import backtest_portfolio as njit_backtest_portfolio
+    except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+        from backtest_engine import backtest_portfolio as njit_backtest_portfolio
 
-    series_out: Dict[str, List[float]] = {}
-    for s in strategies:
-        name = s.get('name') or s.get('type') or 'strategy'
-        w = np.asarray(s.get('weights') or [], dtype=float)
-        if w.size == 0:
-            w = np.full(nav_wide.shape[1], 1.0 / max(1, nav_wide.shape[1]))
-        rebal = s.get('rebalance') or {}
-        rebal_enabled = bool(rebal.get('enabled', False))
-        rebal_dates: Optional[List[pd.Timestamp]] = None
-        if rebal_enabled:
-            mode = str(rebal.get('mode', 'monthly'))
-            which = str(rebal.get('which', 'nth'))
-            N = int(rebal.get('N', 1))
-            unit = str(rebal.get('unit', 'trading'))
-            fixed_interval = int(rebal.get('fixedInterval', 20)) if mode == 'fixed' else None
-            rebal_dates = _gen_rebalance_dates(nav_wide.index, mode, N=N, which=which, unit=unit, fixed_interval=fixed_interval)
-        nav = portfolio_nav_static(nav_wide, w, rebal_dates=rebal_dates)
-        series_out[name] = [float(x) for x in nav.values]
-    return {"dates": [d.strftime('%Y-%m-%d') for d in idx], "series": series_out}
+    return njit_backtest_portfolio(nav_wide, strategies, start_date=start_date)

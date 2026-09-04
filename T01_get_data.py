@@ -37,6 +37,11 @@ DEFAULT_START_DATE = "20100101"
 TODAY = pd.Timestamp.today().strftime("%Y%m%d")
 API_ROW_LIMITS = {
     "fund_basic": 15000,
+    "fund_manager": 5000,
+    "fund_portfolio": 2000,
+    "fund_div": 5000,
+    "fund_adj": 2000,
+    "mkt_idx_bmk": 500,
     "etf_basic": 5000,
     "fund_daily": 5000,
     "etf_share_size": 5000,
@@ -54,6 +59,16 @@ API_ROW_LIMITS = {
     "fut_index_daily": 2000,
     "index_dailybasic": 3000,
     "index_weight": 1000,
+    "cn_gdp": 10000,
+    "cn_cpi": 5000,
+    "cn_ppi": 5000,
+    "cn_pmi": 2000,
+    "cn_m": 5000,
+    "sf_month": 2000,
+    "cn_schedule": 3000,
+    "shibor": 2000,
+    "shibor_lpr": 4000,
+    "repo_daily": 2000,
 }
 DEFAULT_FUND_NAV_PAGE_SIZE = 10000
 DEFAULT_INCREMENTAL_BATCH_DAYS = 20
@@ -170,6 +185,74 @@ FUND_COMPANY_FIELDS = [
     "credit_code",
 ]
 
+FUND_MANAGER_FIELDS = [
+    "ts_code",
+    "ann_date",
+    "name",
+    "gender",
+    "birth_year",
+    "edu",
+    "nationality",
+    "begin_date",
+    "end_date",
+    "resume",
+]
+
+FUND_PORTFOLIO_FIELDS = [
+    "ts_code",
+    "ann_date",
+    "end_date",
+    "symbol",
+    "mkv",
+    "amount",
+    "stk_mkv_ratio",
+    "stk_float_ratio",
+]
+
+FUND_DIVIDEND_FIELDS = [
+    "ts_code",
+    "ann_date",
+    "imp_anndate",
+    "base_date",
+    "div_proc",
+    "record_date",
+    "ex_date",
+    "pay_date",
+    "earpay_date",
+    "net_ex_date",
+    "div_cash",
+    "base_unit",
+    "ear_distr",
+    "ear_amount",
+    "account_date",
+    "base_year",
+]
+
+FUND_ADJUSTMENT_FIELDS = ["ts_code", "trade_date", "adj_factor"]
+FUND_BENCHMARK_FIELDS = [
+    "ts_code",
+    "symbol",
+    "name",
+    "fullname",
+    "bmk_level",
+    "bmk_type",
+    "bmk_src",
+    "idx_type",
+]
+
+MACRO_TABLE_SPECS = {
+    "cn_gdp": ("macro_cn_gdp_df.parquet", "quarter"),
+    "cn_cpi": ("macro_cn_cpi_df.parquet", "month"),
+    "cn_ppi": ("macro_cn_ppi_df.parquet", "month"),
+    "cn_pmi": ("macro_cn_pmi_df.parquet", "month"),
+    "cn_m": ("macro_cn_money_df.parquet", "month"),
+    "sf_month": ("macro_cn_social_financing_df.parquet", "month"),
+    "shibor": ("macro_shibor_df.parquet", "date"),
+    "shibor_lpr": ("macro_lpr_df.parquet", "date"),
+    "repo_daily": ("macro_repo_daily_df.parquet", "trade_date"),
+    "cn_schedule": ("macro_cn_schedule_df.parquet", "publish_date"),
+}
+
 STOCK_BASIC_FIELDS = [
     "ts_code",
     "symbol",
@@ -230,6 +313,12 @@ ACTION_LABELS = {
     "etf_share": "ETF 份额与单位净值",
     "candle": "ETF 交易行情",
     "fund_nav": "场外公募基金净值",
+    "fund_manager": "公募基金经理履历",
+    "fund_scale": "公募基金资产规模",
+    "fund_portfolio": "公募基金季度股票持仓披露",
+    "fund_dividend": "公募基金分红",
+    "fund_adjustment": "公募基金复权因子",
+    "fund_benchmark": "公募基金业绩基准库",
     "stock_basic": "股票目录",
     "index_info": "指数基础信息",
     "etf_index": "ETF 指数目录",
@@ -242,6 +331,10 @@ ACTION_LABELS = {
     "index_valuation": "指数估值",
     "index_constituents": "指数成分与权重",
     "index_coverage": "指数覆盖快照",
+    "macro_cycle": "宏观增长、通胀与景气",
+    "macro_money_credit": "宏观货币与社会融资",
+    "macro_rates": "宏观利率与回购行情",
+    "macro_release_calendar": "宏观数据发布日历",
 }
 ACTION_EXECUTION_ORDER = tuple(ACTION_LABELS)
 INDEX_HISTORY_FILES = {
@@ -350,6 +443,8 @@ ETF_INFO_COLUMNS = [
     "fund_type",
     "type",
     "invest_type",
+    "qdii_type",
+    "qdii_source",
     "market",
     "market_code",
     "status",
@@ -706,6 +801,24 @@ def build_etf_info_df(fund_df: pd.DataFrame, etf_df: Optional[pd.DataFrame] = No
     out["type"] = working.get("type")
     out["invest_type"] = working.get("invest_type")
 
+    names = working.get("name")
+    if names is None:
+        names = pd.Series([None] * len(working), index=working.index)
+    name_qdii = names.astype("string").str.contains("QDII", case=False, na=False)
+    etf_type = working.get("etf_type")
+    if etf_type is None:
+        etf_type = pd.Series([None] * len(working), index=working.index, dtype="string")
+    else:
+        etf_type = etf_type.astype("string")
+    etf_type_present = etf_type.str.strip().ne("").fillna(False)
+    etf_type_qdii = etf_type.str.contains("QDII", case=False, na=False)
+    out["qdii_type"] = "待确认"
+    out.loc[etf_type_present & ~etf_type_qdii, "qdii_type"] = "非QDII"
+    out.loc[etf_type_qdii | name_qdii, "qdii_type"] = "QDII"
+    out["qdii_source"] = "unavailable"
+    out.loc[name_qdii, "qdii_source"] = "fund_basic.name_marker"
+    out.loc[etf_type_present, "qdii_source"] = "etf_basic.etf_type"
+
     code_suffix = working["ts_code"].astype(str).str.split(".", regex=False).str[-1]
     market_code = working.get("exchange")
     if market_code is None:
@@ -791,6 +904,9 @@ def build_public_fund_info_df(fund_df: pd.DataFrame) -> pd.DataFrame:
     out["instrument_type"] = "fund"
     out["market_code"] = "O"
     out["market"] = "场外"
+    name_qdii = out["name"].astype("string").str.contains("QDII", case=False, na=False)
+    out["qdii_type"] = name_qdii.map({True: "QDII", False: "非QDII"})
+    out["qdii_source"] = "fund_basic.name_marker"
     status_labels = {"L": "存续", "I": "发行中", "D": "到期/终止"}
     out["status"] = out["status_code"].map(status_labels).fillna(out["status"])
     return out
@@ -3423,6 +3539,819 @@ def save_fund_company(pro: Any, output_dir: Path, limiter: RateLimiter, args: ar
     save_dataframe(df, output_dir / "fund_company_df.parquet")
 
 
+def _ingestion_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _period_end(value: Any) -> pd.Timestamp | None:
+    """Normalise Tushare day/month/quarter labels to an observation-period end."""
+
+    text = safe_text(value)
+    if text is None:
+        return None
+    compact = text.upper().replace("-", "").replace(" ", "")
+    quarter = re.fullmatch(r"(\d{4})Q([1-4])", compact)
+    if quarter:
+        month = int(quarter.group(2)) * 3
+        return pd.Timestamp(int(quarter.group(1)), month, 1) + pd.offsets.MonthEnd(0)
+    if re.fullmatch(r"\d{6}", compact):
+        parsed = pd.to_datetime(compact, format="%Y%m", errors="coerce")
+        return None if pd.isna(parsed) else pd.Timestamp(parsed) + pd.offsets.MonthEnd(0)
+    parsed = _parse_date_scalar(compact)
+    return parsed
+
+
+def _period_end_series(values: pd.Series) -> pd.Series:
+    return pd.to_datetime(values.map(_period_end), errors="coerce")
+
+
+def _with_source_lineage(
+    frame: pd.DataFrame,
+    *,
+    source_api: str,
+    observation_column: str,
+    available_column: str | None,
+    availability_status: str,
+) -> pd.DataFrame:
+    out = frame.copy()
+    if observation_column not in out.columns:
+        raise ValueError(f"{source_api} 缺少观测期字段 {observation_column}。")
+    out["observation_date"] = _period_end_series(out[observation_column])
+    if available_column and available_column in out.columns:
+        out["available_at"] = _period_end_series(out[available_column])
+    else:
+        out["available_at"] = pd.NaT
+    out["availability_status"] = availability_status
+    out["source_api"] = source_api
+    out["ingested_at"] = _ingestion_timestamp()
+    return out
+
+
+def _comparable_value(value: Any) -> Any:
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return pd.Timestamp(value).isoformat()
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def merge_vintage_rows(
+    incoming: pd.DataFrame,
+    out_path: Path,
+    *,
+    natural_key: list[str],
+) -> int:
+    """Append only new or revised source observations and retain prior vintages."""
+
+    if incoming.empty:
+        print(f"[INFO] {out_path.name} 本次未返回记录，保留现有版本。")
+        return 0
+    missing = sorted(set(natural_key) - set(incoming.columns))
+    if missing:
+        raise ValueError(f"{out_path.name} 缺少版本键: {', '.join(missing)}。")
+    current_fetch = incoming.drop_duplicates(subset=natural_key, keep="last").copy()
+    existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
+    if not existing.empty:
+        for column in natural_key:
+            if column not in existing.columns:
+                raise ValueError(f"{out_path.name} 旧版本缺少版本键 {column}。")
+        if "revision" not in existing.columns:
+            existing["revision"] = 1
+        if "vintage" not in existing.columns:
+            existing["vintage"] = existing.get("ingested_at", "legacy")
+        latest = (
+            existing.sort_values([*natural_key, "revision"], kind="mergesort")
+            .drop_duplicates(subset=natural_key, keep="last")
+            .set_index(natural_key, drop=False)
+        )
+    else:
+        latest = pd.DataFrame()
+
+    metadata_columns = {"revision", "vintage", "ingested_at"}
+    compare_columns = [column for column in current_fetch.columns if column not in metadata_columns]
+    additions: list[dict[str, Any]] = []
+    vintage = _ingestion_timestamp()
+    for record in current_fetch.to_dict(orient="records"):
+        key = tuple(record[column] for column in natural_key)
+        lookup_key: Any = key[0] if len(key) == 1 else key
+        previous: pd.Series | None = None
+        if not latest.empty and lookup_key in latest.index:
+            selected = latest.loc[lookup_key]
+            previous = selected.iloc[-1] if isinstance(selected, pd.DataFrame) else selected
+        unchanged = previous is not None and all(
+            _comparable_value(record.get(column)) == _comparable_value(previous.get(column))
+            for column in compare_columns
+        )
+        if unchanged:
+            continue
+        record["revision"] = 1 if previous is None else int(previous.get("revision", 1)) + 1
+        record["vintage"] = vintage
+        record["ingested_at"] = vintage
+        additions.append(record)
+    if not additions:
+        print(f"[OK] {out_path.name} 源数据无变化，保留现有版本。")
+        return len(existing)
+    merged = pd.concat([existing, pd.DataFrame(additions)], ignore_index=True, sort=False)
+    merged = merged.sort_values([*natural_key, "revision"], kind="mergesort").reset_index(drop=True)
+    save_dataframe(merged, out_path)
+    return len(merged)
+
+
+def save_fund_manager(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    fund_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    page_size = API_ROW_LIMITS["fund_manager"]
+    frames: list[pd.DataFrame] = []
+    seen: set[tuple[str, str, str]] = set()
+    offset = 0
+    max_pages = getattr(args, "max_fund_manager_pages", 20)
+    for page in range(max_pages):
+        frame = call_tushare_api(
+            pro.fund_manager,
+            limiter,
+            max_retries=args.max_retries,
+            backoff_sec=args.backoff_sec,
+            wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+            retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+            context=f"fund_manager offset={offset}",
+            api_name="fund_manager",
+            allow_capped_response=True,
+            offset=offset,
+            limit=page_size,
+            fields=fields_arg(FUND_MANAGER_FIELDS),
+        )
+        if frame.empty:
+            break
+        keys = {
+            (str(row.get("ts_code")), str(row.get("name")), str(row.get("begin_date")))
+            for row in frame.to_dict(orient="records")
+        }
+        if page and keys and keys.issubset(seen):
+            raise RuntimeError("fund_manager 分页未向前推进，停止以避免无限循环。")
+        seen.update(keys)
+        frames.append(frame)
+        offset += len(frame)
+        if args.smoke or len(frame) < page_size:
+            break
+    else:
+        raise RuntimeError(f"fund_manager 达到最大分页数 {max_pages}，拒绝保存不完整结果。")
+    if not frames:
+        raise RuntimeError("未获取到公募基金经理数据。")
+    frame = pd.concat(frames, ignore_index=True)
+    allowed = set(universe["ts_code"].dropna().astype(str))
+    frame = frame[frame["ts_code"].astype(str).isin(allowed)].copy()
+    for column in ("ann_date", "begin_date", "end_date"):
+        if column in frame.columns:
+            frame[column] = date_series(frame[column])
+    frame = _with_source_lineage(
+        frame,
+        source_api="fund_manager",
+        observation_column="begin_date",
+        available_column="ann_date",
+        availability_status="announced_date",
+    )
+    frame = frame.drop_duplicates(
+        subset=["ts_code", "name", "begin_date"], keep="last"
+    ).sort_values(["ts_code", "begin_date", "name"], kind="mergesort")
+    save_dataframe(frame.reset_index(drop=True), output_dir / "fund_manager_df.parquet")
+
+
+def save_fund_scale(output_dir: Path) -> None:
+    """Materialise fund asset-size observations already carried by fund_nav."""
+
+    source = output_dir / "fund_nav_df.parquet"
+    if not source.exists():
+        raise FileNotFoundError("缺少 fund_nav_df.parquet，无法生成公募基金资产规模。")
+    available = set(parquet.ParquetFile(source).schema.names)
+    columns = [
+        column
+        for column in ("ts_code", "name", "date", "ann_date", "unit_nav", "net_asset", "total_netasset")
+        if column in available
+    ]
+    required = {"ts_code", "date", "net_asset", "total_netasset"}
+    if not required.issubset(columns):
+        raise ValueError(f"fund_nav_df.parquet 缺少规模字段: {sorted(required - set(columns))}")
+    frame = pd.read_parquet(source, columns=columns)
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["ann_date"] = pd.to_datetime(frame.get("ann_date"), errors="coerce")
+    frame = frame[
+        pd.to_numeric(frame["net_asset"], errors="coerce").notna()
+        | pd.to_numeric(frame["total_netasset"], errors="coerce").notna()
+    ].copy()
+    frame["observation_date"] = frame["date"]
+    frame["available_at"] = frame["ann_date"]
+    frame["availability_status"] = "announced_date"
+    frame["source_api"] = "fund_nav"
+    frame["ingested_at"] = _ingestion_timestamp()
+    frame = frame.sort_values(["ts_code", "date"], kind="mergesort").reset_index(drop=True)
+    save_dataframe(frame, output_dir / "fund_scale_df.parquet")
+
+
+def _event_dates(args: argparse.Namespace, out_path: Path) -> list[str]:
+    if args.smoke:
+        return [args.end_date]
+    if args.latest:
+        if out_path.exists() and parquet.ParquetFile(out_path).metadata.num_rows:
+            latest = latest_parquet_date(out_path, "available_at")
+            start = max(
+                pd.to_datetime(args.start_date, format="%Y%m%d"),
+                latest - pd.Timedelta(days=max(getattr(args, "incremental_lookback_days", 5) - 1, 0)),
+            )
+        else:
+            start = pd.to_datetime(args.end_date, format="%Y%m%d") - pd.Timedelta(
+                days=args.max_latest_days - 1
+            )
+    else:
+        start = pd.to_datetime(args.start_date, format="%Y%m%d")
+    end = pd.to_datetime(args.end_date, format="%Y%m%d")
+    if start > end:
+        return []
+    dates = pd.date_range(start, end, freq="D").strftime("%Y%m%d").tolist()
+    if args.latest and len(dates) > args.max_latest_days + args.incremental_lookback_days:
+        raise ValueError(f"{out_path.name} 待更新 {len(dates)} 个自然日，超过增量安全上限。")
+    return dates
+
+
+def _consolidate_ordered_parts(part_paths: list[Path], out_path: Path) -> int:
+    if not part_paths:
+        return 0
+    output_schema: pa.Schema | None = None
+    for path in part_paths:
+        schema = parquet.ParquetFile(path).schema_arrow.remove_metadata()
+        output_schema = schema if output_schema is None else _union_arrow_schema(output_schema, schema)
+    assert output_schema is not None
+    ensure_output_dir(out_path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{out_path.name}.", suffix=".tmp", dir=out_path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    writer: parquet.ParquetWriter | None = None
+    rows = 0
+    try:
+        writer = parquet.ParquetWriter(temporary_path, output_schema, compression="snappy")
+        for path in part_paths:
+            for batch in parquet.ParquetFile(path).iter_batches(batch_size=16_384, use_threads=False):
+                table = _align_arrow_table(pa.Table.from_batches([batch]), output_schema)
+                writer.write_table(table)
+                rows += table.num_rows
+        writer.close()
+        writer = None
+        if parquet.ParquetFile(temporary_path).metadata.num_rows != rows:
+            raise RuntimeError(f"{out_path.name} 合并行数校验失败。")
+        os.replace(temporary_path, out_path)
+    finally:
+        if writer is not None:
+            writer.close()
+        temporary_path.unlink(missing_ok=True)
+    print(f"[OK] 合并 {out_path}，{rows} 行，来源日期分片 {len(part_paths)} 个。")
+    return rows
+
+
+def _prepare_fund_event_rows(
+    frame: pd.DataFrame,
+    *,
+    fields: list[str],
+    source_api: str,
+    observation_column: str,
+) -> pd.DataFrame:
+    out = frame.copy()
+    for column in fields:
+        if column not in out.columns:
+            out[column] = pd.NA
+    date_columns = [
+        column for column in fields
+        if column.endswith("date") or column in {"imp_anndate", "earpay_date", "net_ex_date"}
+    ]
+    numeric_columns = {
+        "mkv", "amount", "stk_mkv_ratio", "stk_float_ratio",
+        "div_cash", "base_unit", "ear_distr", "ear_amount",
+    }
+    for column in date_columns:
+        out[column] = date_series(out[column].astype("string"))
+    for column in fields:
+        if column in date_columns:
+            continue
+        if column in numeric_columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce").astype("float64")
+        else:
+            out[column] = out[column].astype("string")
+    out = _with_source_lineage(
+        out,
+        source_api=source_api,
+        observation_column=observation_column,
+        available_column="ann_date",
+        availability_status="announced_date",
+    )
+    return out
+
+
+def _save_fund_event_dataset(
+    *,
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    universe: pd.DataFrame,
+    api_name: str,
+    fields: list[str],
+    filename: str,
+    observation_column: str,
+    duplicate_subset: list[str],
+    sort_columns: list[str],
+) -> None:
+    out_path = output_dir / filename
+    dates = _event_dates(args, out_path)
+    if not dates:
+        print(f"[INFO] {api_name} 已是最新，无需更新。")
+        return
+    allowed_codes = set(universe["ts_code"].dropna().astype(str))
+    checkpoint_dir = history_checkpoint_dir(out_path, args)
+    ensure_output_dir(checkpoint_dir)
+    part_by_date: dict[str, Path] = {}
+    empty_by_date: dict[str, Path] = {}
+    pending: list[str] = []
+    for date_value in dates:
+        part_path, empty_path = history_checkpoint_paths(checkpoint_dir, date_value)
+        part_by_date[date_value] = part_path
+        empty_by_date[date_value] = empty_path
+        if not part_path.exists() and not empty_path.exists():
+            pending.append(date_value)
+
+    api_func = getattr(pro, api_name)
+
+    def fetch_one(date_value: str) -> pd.DataFrame:
+        params = {"ann_date": date_value, "fields": fields_arg(fields)}
+        try:
+            frame = call_tushare_api(
+                api_func,
+                limiter,
+                max_retries=args.max_retries,
+                backoff_sec=args.backoff_sec,
+                wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+                retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+                context=f"{api_name} ann_date={date_value}",
+                api_name=api_name,
+                **params,
+            )
+        except ResponseTruncatedError:
+            print(f"[WARN] {api_name} {date_value} 达到单次上限，改为逐只基金补抓。")
+            pieces: list[pd.DataFrame] = []
+            for code in sorted(allowed_codes):
+                piece = call_tushare_api(
+                    api_func,
+                    limiter,
+                    max_retries=args.max_retries,
+                    backoff_sec=args.backoff_sec,
+                    wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+                    retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+                    context=f"{api_name} {code} ann_date={date_value}",
+                    api_name=api_name,
+                    ts_code=code,
+                    **params,
+                )
+                if not piece.empty:
+                    pieces.append(piece)
+            frame = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame(columns=fields)
+        if frame.empty:
+            return frame
+        frame = frame[frame["ts_code"].astype(str).isin(allowed_codes)].copy()
+        if frame.empty:
+            return frame
+        prepared = _prepare_fund_event_rows(
+            frame,
+            fields=fields,
+            source_api=api_name,
+            observation_column=observation_column,
+        )
+        return (
+            prepared.drop_duplicates(subset=duplicate_subset, keep="last")
+            .sort_values(sort_columns, kind="mergesort")
+            .reset_index(drop=True)
+        )
+
+    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(args.max_workers, max(len(pending), 1))) as executor:
+        pending_iter = iter(pending)
+        futures: dict[Any, str] = {}
+
+        def submit_next() -> None:
+            try:
+                date_value = next(pending_iter)
+            except StopIteration:
+                return
+            futures[executor.submit(fetch_one, date_value)] = date_value
+
+        for _ in range(min(len(pending), args.max_workers * 2)):
+            submit_next()
+        completed = 0
+        while futures:
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                date_value = futures.pop(future)
+                try:
+                    frame = future.result()
+                    if frame.empty:
+                        mark_empty_checkpoint(empty_by_date[date_value])
+                    else:
+                        save_dataframe(frame, part_by_date[date_value], quiet=True)
+                        empty_by_date[date_value].unlink(missing_ok=True)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(date_value)
+                    print(f"[WARN] {api_name} {date_value} 失败: {exc}")
+                completed += 1
+                if completed % 100 == 0 or completed == len(pending):
+                    print(f"[INFO] {api_name} 日期进度 {completed}/{len(pending)}，异常 {len(errors)}。")
+                submit_next()
+    if errors:
+        raise RuntimeError(
+            f"{api_name} 有 {len(errors)} 个公告日请求异常；检查点已保留: {', '.join(errors[:10])}"
+        )
+    parts = [part_by_date[date_value] for date_value in dates if part_by_date[date_value].exists()]
+    if not parts:
+        if args.latest and out_path.exists():
+            print(f"[INFO] {api_name} 本次没有新增记录，保留现有文件。")
+            return
+        empty = _prepare_fund_event_rows(
+            pd.DataFrame(columns=fields),
+            fields=fields,
+            source_api=api_name,
+            observation_column=observation_column,
+        )
+        save_dataframe(empty, out_path)
+        return
+    if args.latest:
+        incoming = pd.concat((pd.read_parquet(path) for path in parts), ignore_index=True)
+        append_incremental_rows(
+            incoming,
+            out_path,
+            subset=duplicate_subset,
+            sort_cols=sort_columns,
+            date_column="available_at",
+        )
+    else:
+        _consolidate_ordered_parts(parts, out_path)
+
+
+def save_fund_portfolio(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    fund_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    _save_fund_event_dataset(
+        pro=pro,
+        output_dir=output_dir,
+        limiter=limiter,
+        args=args,
+        universe=universe,
+        api_name="fund_portfolio",
+        fields=FUND_PORTFOLIO_FIELDS,
+        filename="fund_portfolio_df.parquet",
+        observation_column="end_date",
+        duplicate_subset=["available_at", "ts_code", "end_date", "symbol"],
+        sort_columns=["available_at", "ts_code", "end_date", "symbol"],
+    )
+
+
+def save_fund_dividend(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    fund_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    _save_fund_event_dataset(
+        pro=pro,
+        output_dir=output_dir,
+        limiter=limiter,
+        args=args,
+        universe=universe,
+        api_name="fund_div",
+        fields=FUND_DIVIDEND_FIELDS,
+        filename="fund_dividend_df.parquet",
+        observation_column="ex_date",
+        duplicate_subset=["available_at", "ts_code", "ex_date", "pay_date"],
+        sort_columns=["available_at", "ts_code", "ex_date", "pay_date"],
+    )
+
+
+def fetch_fund_adjustment(
+    pro: Any,
+    code: str,
+    name: str,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+) -> Optional[pd.DataFrame]:
+    chunks = (
+        [(args.end_date, args.end_date)]
+        if args.smoke
+        else list(
+            iter_date_chunks(
+                args.start_date,
+                args.end_date,
+                min(getattr(args, "history_chunk_days", 1200), 1200),
+            )
+        )
+    )
+    frames = _fetch_history_chunks_with_empty_retry(
+        chunks,
+        lambda start, end: call_tushare_api(
+            pro.fund_adj,
+            limiter,
+            max_retries=args.max_retries,
+            backoff_sec=args.backoff_sec,
+            wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+            retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+            context=f"fund_adj {code} {start}-{end}",
+            api_name="fund_adj",
+            ts_code=code,
+            start_date=start,
+            end_date=end,
+            fields=fields_arg(FUND_ADJUSTMENT_FIELDS),
+        ),
+        args=args,
+        context=f"fund_adj {code}",
+    )
+    if not frames:
+        return None
+    frame = pd.concat(frames, ignore_index=True)
+    frame["date"] = date_series(frame["trade_date"])
+    frame["name"] = name
+    frame["observation_date"] = frame["date"]
+    frame["available_at"] = frame["date"]
+    frame["availability_status"] = "date_only"
+    frame["source_api"] = "fund_adj"
+    frame["ingested_at"] = _ingestion_timestamp()
+    return frame.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+
+def save_fund_adjustment(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    fund_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    out_path = output_dir / "fund_adj_factor_df.parquet"
+    if args.latest:
+        has_baseline = bool(
+            out_path.exists() and parquet.ParquetFile(out_path).metadata.num_rows
+        )
+        if has_baseline:
+            start = incremental_start_date(
+                output_dir,
+                latest_parquet_date(out_path, "date"),
+                lookback_days=args.incremental_lookback_days,
+            )
+        else:
+            start = (
+                pd.to_datetime(args.end_date, format="%Y%m%d")
+                - pd.Timedelta(days=args.max_latest_days * 2)
+            ).strftime("%Y%m%d")
+        dates = load_open_trade_dates(
+            output_dir,
+            start_date=start,
+            end_date=args.end_date,
+            max_days=(
+                args.max_latest_days + args.incremental_lookback_days
+                if has_baseline
+                else args.max_latest_days * 2
+            ),
+        )
+        frames = fetch_latest_dates(
+            api_func=pro.fund_adj,
+            api_name="fund_adj",
+            date_param="trade_date",
+            dates=dates,
+            fields=FUND_ADJUSTMENT_FIELDS,
+            universe=universe,
+            limiter=limiter,
+            args=args,
+            universe_label="场外公募基金",
+        )
+        if frames:
+            incoming = pd.concat(frames, ignore_index=True)
+            incoming["date"] = date_series(incoming["trade_date"])
+            incoming["observation_date"] = incoming["date"]
+            incoming["available_at"] = incoming["date"]
+            incoming["availability_status"] = "date_only"
+            incoming["source_api"] = "fund_adj"
+            incoming["ingested_at"] = _ingestion_timestamp()
+            append_incremental_rows(
+                incoming,
+                out_path,
+                subset=["ts_code", "date"],
+                sort_cols=["ts_code", "date"],
+                date_column="date",
+            )
+        return
+    save_full_history_with_checkpoints(
+        universe=universe,
+        out_path=out_path,
+        label="场外公募基金复权因子",
+        fetcher=lambda code, name: fetch_fund_adjustment(pro, code, name, limiter, args),
+        duplicate_subset=["ts_code", "date"],
+        sort_cols=["ts_code", "date"],
+        args=args,
+    )
+
+
+def save_fund_benchmark(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    frame = call_tushare_api(
+        pro.mkt_idx_bmk,
+        limiter,
+        max_retries=args.max_retries,
+        backoff_sec=args.backoff_sec,
+        wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+        retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+        context="mkt_idx_bmk",
+        api_name="mkt_idx_bmk",
+        fields=fields_arg(FUND_BENCHMARK_FIELDS),
+    )
+    if frame.empty:
+        raise RuntimeError("未获取到公募基金业绩基准库。")
+    frame["source_api"] = "mkt_idx_bmk"
+    frame["ingested_at"] = _ingestion_timestamp()
+    save_dataframe(
+        frame.drop_duplicates(subset=["ts_code"]).sort_values("ts_code").reset_index(drop=True),
+        output_dir / "fund_benchmark_df.parquet",
+    )
+
+
+def _prepare_macro_rows(
+    frame: pd.DataFrame,
+    *,
+    api_name: str,
+    observation_column: str,
+    contemporaneous: bool = False,
+) -> pd.DataFrame:
+    return _with_source_lineage(
+        frame,
+        source_api=api_name,
+        observation_column=observation_column,
+        available_column=observation_column if contemporaneous else None,
+        availability_status="date_only" if contemporaneous else "release_date_unknown",
+    ).dropna(subset=["observation_date"])
+
+
+def _save_macro_snapshot_table(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    api_name: str,
+) -> None:
+    filename, observation_column = MACRO_TABLE_SPECS[api_name]
+    frame = call_tushare_api(
+        getattr(pro, api_name),
+        limiter,
+        max_retries=args.max_retries,
+        backoff_sec=args.backoff_sec,
+        wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+        retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+        context=api_name,
+        api_name=api_name,
+    )
+    if frame.empty:
+        raise RuntimeError(f"{api_name} 未返回宏观数据。")
+    prepared = _prepare_macro_rows(
+        frame,
+        api_name=api_name,
+        observation_column=observation_column,
+    )
+    merge_vintage_rows(prepared, output_dir / filename, natural_key=["observation_date"])
+
+
+def save_macro_cycle(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    for api_name in ("cn_gdp", "cn_cpi", "cn_ppi", "cn_pmi"):
+        _save_macro_snapshot_table(pro, output_dir, limiter, args, api_name)
+
+
+def save_macro_money_credit(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    for api_name in ("cn_m", "sf_month"):
+        _save_macro_snapshot_table(pro, output_dir, limiter, args, api_name)
+
+
+def _macro_range_start(args: argparse.Namespace, out_path: Path) -> str:
+    if args.smoke:
+        return args.end_date
+    if not args.latest or not out_path.exists():
+        return args.start_date
+    latest = latest_parquet_date(out_path, "observation_date")
+    return (latest - pd.Timedelta(days=args.incremental_lookback_days - 1)).strftime("%Y%m%d")
+
+
+def _fetch_macro_range(
+    pro: Any,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    *,
+    api_name: str,
+    start_date: str,
+    end_date: str,
+    chunk_days: int,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for start, end in iter_date_chunks(start_date, end_date, chunk_days):
+        frame = call_tushare_api(
+            getattr(pro, api_name),
+            limiter,
+            max_retries=args.max_retries,
+            backoff_sec=args.backoff_sec,
+            wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+            retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+            context=f"{api_name} {start}-{end}",
+            api_name=api_name,
+            start_date=start,
+            end_date=end,
+        )
+        if not frame.empty:
+            frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def save_macro_rates(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    for api_name, chunk_days, natural_key in (
+        ("shibor", 1800, ["observation_date"]),
+        ("shibor_lpr", 3500, ["observation_date"]),
+        ("repo_daily", 90, ["ts_code", "observation_date"]),
+    ):
+        filename, observation_column = MACRO_TABLE_SPECS[api_name]
+        out_path = output_dir / filename
+        frame = _fetch_macro_range(
+            pro,
+            limiter,
+            args,
+            api_name=api_name,
+            start_date=_macro_range_start(args, out_path),
+            end_date=args.end_date,
+            chunk_days=chunk_days,
+        )
+        if frame.empty:
+            if args.latest and out_path.exists():
+                print(f"[INFO] {api_name} 本次没有新增记录，保留现有文件。")
+                continue
+            raise RuntimeError(f"{api_name} 未返回利率数据。")
+        prepared = _prepare_macro_rows(
+            frame,
+            api_name=api_name,
+            observation_column=observation_column,
+            contemporaneous=True,
+        )
+        merge_vintage_rows(prepared, out_path, natural_key=natural_key)
+
+
+def save_macro_release_calendar(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    frame = call_tushare_api(
+        pro.cn_schedule,
+        limiter,
+        max_retries=args.max_retries,
+        backoff_sec=args.backoff_sec,
+        wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+        retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+        context="cn_schedule",
+        api_name="cn_schedule",
+    )
+    if frame.empty:
+        raise RuntimeError("cn_schedule 未返回宏观发布日历。")
+    prepared = _prepare_macro_rows(
+        frame,
+        api_name="cn_schedule",
+        observation_column="publish_date",
+        contemporaneous=True,
+    )
+    merge_vintage_rows(
+        prepared,
+        output_dir / MACRO_TABLE_SPECS["cn_schedule"][0],
+        natural_key=["observation_date", "title", "data_api"],
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch platform data from Tushare only.")
     parser.add_argument("--output-dir", type=Path, default=None, help="输出目录；默认 data，smoke 默认临时目录。")
@@ -3469,6 +4398,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_FUND_NAV_PAGE_SIZE,
         help="场外 fund_nav 按日期增量的分页大小，默认 10000。",
+    )
+    parser.add_argument(
+        "--max-fund-manager-pages",
+        type=int,
+        default=20,
+        help="fund_manager 最大分页数，默认 20。",
     )
     parser.add_argument("--limit", type=int, default=None, help="限制处理标的数量，便于验证。")
     parser.add_argument("--smoke", action="store_true", help="小样本验证，默认写临时目录且限制 2 个标的。")
@@ -3517,6 +4452,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--etf-index", action="store_true", help="更新 data/etf_index.parquet。")
     parser.add_argument("--fund-info", action="store_true", help="更新场外公募基金 data/fund_info_df.parquet。")
     parser.add_argument("--fund-nav", action="store_true", help="更新场外公募基金 data/fund_nav_df.parquet。")
+    parser.add_argument("--fund-manager", action="store_true", help="更新公募基金经理履历。")
+    parser.add_argument("--fund-scale", action="store_true", help="从 fund_nav 生成公募基金资产规模。")
+    parser.add_argument("--fund-portfolio", action="store_true", help="更新公募基金季报股票持仓披露。")
+    parser.add_argument("--fund-dividend", action="store_true", help="更新公募基金分红记录。")
+    parser.add_argument("--fund-adjustment", action="store_true", help="更新公募基金复权因子。")
+    parser.add_argument("--fund-benchmark", action="store_true", help="更新公募基金业绩基准库。")
     parser.add_argument("--fund-company", action="store_true", help="更新 data/fund_company_df.parquet。")
     parser.add_argument("--index-catalog", action="store_true", help="更新指数原始目录与统一目录。")
     parser.add_argument("--index-domestic", action="store_true", help="更新境内指数日线。")
@@ -3526,6 +4467,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index-futures", action="store_true", help="更新商品期货指数日线。")
     parser.add_argument("--index-valuation", action="store_true", help="更新指数估值数据。")
     parser.add_argument("--index-constituents", action="store_true", help="更新指数成分与最新权重。")
+    parser.add_argument("--macro-cycle", action="store_true", help="更新 GDP、CPI、PPI 与 PMI。")
+    parser.add_argument("--macro-money-credit", action="store_true", help="更新货币供应量与社会融资。")
+    parser.add_argument("--macro-rates", action="store_true", help="更新 Shibor、LPR 与回购行情。")
+    parser.add_argument("--macro-release-calendar", action="store_true", help="更新中国宏观数据发布日历。")
 
     args = parser.parse_args()
     args.output_dir_explicit = args.output_dir is not None
@@ -3563,6 +4508,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-fund-nav-pages 必须大于 0。")
     if args.fund_nav_page_size < 1:
         parser.error("--fund-nav-page-size 必须大于 0。")
+    if args.max_fund_manager_pages < 1:
+        parser.error("--max-fund-manager-pages 必须大于 0。")
     if args.smoke:
         args.limit = args.limit or 2
         args.max_workers = min(args.max_workers, 2)
@@ -3588,8 +4535,18 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
             "etf_share",
             "candle",
             "fund_nav",
+            "fund_manager",
+            "fund_scale",
+            "fund_portfolio",
+            "fund_dividend",
+            "fund_adjustment",
+            "fund_benchmark",
             *INDEX_SCOPE_ACTIONS.values(),
             "index_coverage",
+            "macro_cycle",
+            "macro_money_credit",
+            "macro_rates",
+            "macro_release_calendar",
         ]
     actions = []
     if args.all or args.etf_info:
@@ -3612,6 +4569,20 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
         actions.append("fund_info")
     if args.all or args.fund_nav:
         actions.append("fund_nav")
+    for option, action in (
+        ("fund_manager", "fund_manager"),
+        ("fund_scale", "fund_scale"),
+        ("fund_portfolio", "fund_portfolio"),
+        ("fund_dividend", "fund_dividend"),
+        ("fund_adjustment", "fund_adjustment"),
+        ("fund_benchmark", "fund_benchmark"),
+        ("macro_cycle", "macro_cycle"),
+        ("macro_money_credit", "macro_money_credit"),
+        ("macro_rates", "macro_rates"),
+        ("macro_release_calendar", "macro_release_calendar"),
+    ):
+        if args.all or bool(getattr(args, option, False)):
+            actions.append(action)
     if args.all or args.fund_company:
         actions.append("fund_company")
     for scope, action in INDEX_SCOPE_ACTIONS.items():
@@ -3696,6 +4667,16 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
             "etf_share",
             "candle",
             "fund_nav",
+            "fund_manager",
+            "fund_scale",
+            "fund_portfolio",
+            "fund_dividend",
+            "fund_adjustment",
+            "fund_benchmark",
+            "macro_cycle",
+            "macro_money_credit",
+            "macro_rates",
+            "macro_release_calendar",
             *INDEX_ACTIONS,
         }
         if unsupported:
@@ -3792,6 +4773,33 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
             if args.latest
             else save_public_fund_nav(pro, args.output_dir, limiter, args, fund_info),
         )
+    if "fund_manager" in actions:
+        run_action(
+            "fund_manager",
+            lambda: save_fund_manager(pro, args.output_dir, limiter, args, fund_info),
+        )
+    if "fund_scale" in actions:
+        run_action("fund_scale", lambda: save_fund_scale(args.output_dir))
+    if "fund_portfolio" in actions:
+        run_action(
+            "fund_portfolio",
+            lambda: save_fund_portfolio(pro, args.output_dir, limiter, args, fund_info),
+        )
+    if "fund_dividend" in actions:
+        run_action(
+            "fund_dividend",
+            lambda: save_fund_dividend(pro, args.output_dir, limiter, args, fund_info),
+        )
+    if "fund_adjustment" in actions:
+        run_action(
+            "fund_adjustment",
+            lambda: save_fund_adjustment(pro, args.output_dir, limiter, args, fund_info),
+        )
+    if "fund_benchmark" in actions:
+        run_action(
+            "fund_benchmark",
+            lambda: save_fund_benchmark(pro, args.output_dir, limiter, args),
+        )
     if "stock_basic" in actions:
         run_action(
             "stock_basic", lambda: save_stock_basic(pro, args.output_dir, limiter, args)
@@ -3828,6 +4836,24 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
         run_action(
             "index_coverage", lambda: save_index_coverage(args.output_dir)
         )
+    if "macro_cycle" in actions:
+        run_action(
+            "macro_cycle", lambda: save_macro_cycle(pro, args.output_dir, limiter, args)
+        )
+    if "macro_money_credit" in actions:
+        run_action(
+            "macro_money_credit",
+            lambda: save_macro_money_credit(pro, args.output_dir, limiter, args),
+        )
+    if "macro_rates" in actions:
+        run_action(
+            "macro_rates", lambda: save_macro_rates(pro, args.output_dir, limiter, args)
+        )
+    if "macro_release_calendar" in actions:
+        run_action(
+            "macro_release_calendar",
+            lambda: save_macro_release_calendar(pro, args.output_dir, limiter, args),
+        )
 
 
 def _modules_for_actions(actions: list[str]) -> list[str]:
@@ -3837,10 +4863,15 @@ def _modules_for_actions(actions: list[str]) -> list[str]:
         modules.append("base")
     if selected & {"etf_info", "nav", "etf_share", "candle", "etf_index"}:
         modules.append("etf")
-    if selected & {"fund_info", "fund_nav"}:
+    if selected & {
+        "fund_info", "fund_nav", "fund_manager", "fund_scale", "fund_portfolio",
+        "fund_dividend", "fund_adjustment", "fund_benchmark",
+    }:
         modules.append("fund")
     if selected & INDEX_ACTIONS:
         modules.append("index")
+    if selected & {"macro_cycle", "macro_money_credit", "macro_rates", "macro_release_calendar"}:
+        modules.append("macro")
     return modules
 
 
@@ -3873,15 +4904,35 @@ def _module_scopes_for_actions(actions: list[str]) -> dict[str, list[str]]:
     ]
     fund = [
         scope
-        for scope, action in (("info", "fund_info"), ("nav", "fund_nav"))
+        for scope, action in (
+            ("info", "fund_info"),
+            ("nav", "fund_nav"),
+            ("manager", "fund_manager"),
+            ("scale", "fund_scale"),
+            ("portfolio", "fund_portfolio"),
+            ("dividend", "fund_dividend"),
+            ("adjustment", "fund_adjustment"),
+            ("benchmark", "fund_benchmark"),
+        )
         if action in selected
     ]
     index = _index_scopes_for_actions(actions)
+    macro = [
+        scope
+        for scope, action in (
+            ("cycle", "macro_cycle"),
+            ("money_credit", "macro_money_credit"),
+            ("rates", "macro_rates"),
+            ("release_calendar", "macro_release_calendar"),
+        )
+        if action in selected
+    ]
     for module, selected_scopes in (
         ("base", base),
         ("etf", etf),
         ("fund", fund),
         ("index", index),
+        ("macro", macro),
     ):
         if selected_scopes:
             scopes[module] = selected_scopes

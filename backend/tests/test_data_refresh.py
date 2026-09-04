@@ -831,6 +831,35 @@ def test_refresh_command_supports_scopes_for_every_module(monkeypatch) -> None:
     }
 
 
+def test_fund_and_macro_scope_dependencies_build_explicit_cli_flags() -> None:
+    command = data_refresh.build_refresh_command(
+        ["fund", "macro"],
+        "incremental",
+        module_scopes={
+            "fund": ["scale", "portfolio"],
+            "macro": ["cycle", "rates", "release_calendar"],
+        },
+    )
+
+    assert "--fund-info" in command
+    assert "--fund-nav" in command
+    assert "--fund-scale" in command
+    assert "--fund-portfolio" in command
+    assert "--macro-cycle" in command
+    assert "--macro-rates" in command
+    assert "--macro-release-calendar" in command
+    assert "--macro-money-credit" not in command
+
+    normalised = data_refresh.normalise_module_scopes(
+        ["fund", "macro"],
+        {"fund": ["scale"], "macro": ["money_credit"]},
+    )
+    assert normalised == {
+        "fund": ["info", "nav", "scale"],
+        "macro": ["money_credit"],
+    }
+
+
 def test_refresh_module_scopes_reject_invalid_or_unselected_content() -> None:
     with pytest.raises(ValueError, match="不支持下载内容"):
         data_refresh.normalise_module_scopes(["etf"], {"etf": ["unknown"]})
@@ -877,6 +906,13 @@ def test_refresh_status_exposes_index_scopes_and_datasets(tmp_path: Path) -> Non
     status = manager.snapshot()
 
     assert "index" in status["available_modules"]
+    assert "macro" in status["available_modules"]
+    assert status["default_module_scopes"]["fund"] == [
+        "info", "nav", "manager", "scale", "benchmark"
+    ]
+    assert status["default_module_scopes"]["macro"] == [
+        "cycle", "money_credit", "rates", "release_calendar"
+    ]
     assert status["default_index_scopes"] == ["catalog", "domestic", "industry", "global"]
     assert status["default_module_scopes"]["etf"] == ["info", "nav", "share", "candle"]
     assert status["available_module_scopes"]["base"] == [

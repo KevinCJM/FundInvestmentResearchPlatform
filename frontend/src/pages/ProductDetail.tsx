@@ -10,6 +10,12 @@ import {
   type IndicatorDefinition,
 } from '../services/customIndicators';
 import {
+  getHistoricalRegimeRun,
+  listHistoricalRegimeRuns,
+  type HistoricalRegimeRun,
+  type RegimePublication,
+} from '../services/historicalRegimes';
+import {
   MetricDefinitionDrawer,
   MetricResultCard,
   MetricSelector,
@@ -27,32 +33,22 @@ import {
   MONTE_CARLO_HORIZON_OPTIONS,
   MONTE_CARLO_PATH_OPTIONS,
   STATISTICS_PERIOD_OPTIONS,
-  buildNormalQqData,
-  buildTerminalNavDensity,
-  compareSimulations,
-  interpretExcessKurtosis,
-  interpretSkewness,
-  selectStatisticsWindow,
-  simulateParametricMonteCarlo,
-  simulateStationaryBlockBootstrap,
+  analyzeProduct,
   type DistributionInterpretation,
+  type ProductAnalysisResponse,
+  type ProductRegimeStatistic,
   type SimulationMethod,
   type StatisticsPeriod,
-} from '../utils/statisticalAnalysis';
+} from '../services/productAnalysis';
 import { readReturnNavigationState, returnToOrigin } from '../utils/returnNavigation';
 
 interface TimeSeriesPoint {
   date: string;
-  open: number;
+  open: number | null;
   close: number;
-  high: number;
-  low: number;
-  volume: number;
-}
-
-interface DailyReturnPoint {
-  date: string;
-  return: number;
+  high: number | null;
+  low: number | null;
+  volume: number | null;
 }
 
 const CORE_RESEARCH_INDICATOR_IDS = [
@@ -83,39 +79,23 @@ interface ProductDetailResponse {
   timeseries: TimeSeriesPoint[];
 }
 
+interface RegimeMarkAreaBoundary {
+  name?: string;
+  xAxis: string;
+  itemStyle?: {
+    color: string;
+    opacity: number;
+  };
+}
+
+type RegimeMarkArea = [RegimeMarkAreaBoundary, RegimeMarkAreaBoundary];
+
 type OverlayId = 'PRICE_MA' | 'VOLUME_MA' | 'BOLL' | 'KDJ';
 
 interface OverlayOption {
   id: OverlayId;
   label: string;
   description: string;
-}
-
-interface ReturnStatistics {
-  mean: number | null;
-  std: number | null;
-  median: number | null;
-  positiveRatio: number | null;
-  best: number | null;
-  worst: number | null;
-  sampleSize: number;
-  skewness: number | null;
-  kurtosis: number | null;
-  jbStatistic: number | null;
-  normalityPValue: number | null;
-}
-
-interface ReturnHistogramBin {
-  start: number;
-  end: number;
-  count: number;
-}
-
-interface BoxPlotResult {
-  stats: [number, number, number, number, number];
-  outliers: number[];
-  quartiles: { q1: number; q3: number; median: number };
-  whiskers: { lower: number; upper: number };
 }
 
 const overlayOptions: OverlayOption[] = [
@@ -252,14 +232,52 @@ const formatDate = (value?: string | number | null) => {
   return text.slice(0, 10);
 };
 
-const calculateMovingAverage = (values: number[], period: number) => {
-  return values.map((_, index) => {
-    if (index + 1 < period) {
-      return null;
+const normalizeDateKey = (value: string) => {
+  const text = value.trim();
+  if (/^\d{8}$/.test(text)) {
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  }
+  const date = text.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+};
+
+const latestProductResearchPublication = (run: HistoricalRegimeRun): RegimePublication | undefined => (
+  (run.publications ?? [])
+    .filter((publication) => publication.usage === 'product_research' && publication.run_id === run.id)
+    .sort((left, right) => right.published_at.localeCompare(left.published_at))[0]
+);
+
+const buildRegimeMarkAreas = (run: HistoricalRegimeRun | undefined, dates: string[]): RegimeMarkArea[] => {
+  if (!run || dates.length === 0) {
+    return [];
+  }
+
+  const datedCategories = dates
+    .map((date) => ({ date, key: normalizeDateKey(date) }))
+    .filter((item): item is { date: string; key: string } => item.key !== null);
+  const statesById = new Map(run.states.map((state) => [state.id, state]));
+
+  return run.segments.flatMap((segment): RegimeMarkArea[] => {
+    const state = statesById.get(segment.state_id);
+    const startDate = normalizeDateKey(segment.start_date);
+    const endDate = normalizeDateKey(segment.end_date);
+    if (!state?.label || !state.color || !startDate || !endDate || startDate > endDate) {
+      return [];
     }
-    const window = values.slice(index - period + 1, index + 1);
-    const sum = window.reduce((acc, cur) => acc + cur, 0);
-    return Number((sum / period).toFixed(2));
+
+    const intersectingDates = datedCategories.filter(({ key }) => key >= startDate && key <= endDate);
+    if (intersectingDates.length === 0) {
+      return [];
+    }
+
+    return [[
+      {
+        name: state.label,
+        xAxis: intersectingDates[0].date,
+        itemStyle: { color: state.color, opacity: 0.12 },
+      },
+      { xAxis: intersectingDates[intersectingDates.length - 1].date },
+    ]];
   });
 };
 
@@ -269,248 +287,6 @@ const parsePeriods = (input: string) => {
     .map((item) => Number(item.trim()))
     .filter((num) => Number.isFinite(num) && num > 0)
     .map((num) => Math.round(num));
-};
-
-const calculateBollinger = (values: number[], period: number, multiplier: number) => {
-  return values.map((_, index) => {
-    if (index + 1 < period) {
-      return { upper: null, middle: null, lower: null };
-    }
-    const window = values.slice(index - period + 1, index + 1);
-    const mean = window.reduce((acc, cur) => acc + cur, 0) / period;
-    const variance = window.reduce((acc, cur) => acc + (cur - mean) ** 2, 0) / period;
-    const std = Math.sqrt(variance);
-    return {
-      upper: Number((mean + multiplier * std).toFixed(2)),
-      middle: Number(mean.toFixed(2)),
-      lower: Number((mean - multiplier * std).toFixed(2)),
-    };
-  });
-};
-
-const calculateKDJ = (series: TimeSeriesPoint[], period: number, kSmoothing: number, dSmoothing: number) => {
-  const kValues: (number | null)[] = [];
-  const dValues: (number | null)[] = [];
-  const jValues: (number | null)[] = [];
-  let prevK = 50;
-  let prevD = 50;
-
-  series.forEach((item, index) => {
-    const start = Math.max(0, index - period + 1);
-    const window = series.slice(start, index + 1);
-    const high = Math.max(...window.map((point) => point.high));
-    const low = Math.min(...window.map((point) => point.low));
-    let rsv = 50;
-    if (high !== low) {
-      rsv = ((item.close - low) / (high - low)) * 100;
-    }
-    const k = ((kSmoothing - 1) * prevK + rsv) / kSmoothing;
-    const d = ((dSmoothing - 1) * prevD + k) / dSmoothing;
-    const j = 3 * k - 2 * d;
-    const fixedK = Number(k.toFixed(2));
-    const fixedD = Number(d.toFixed(2));
-    const fixedJ = Number(j.toFixed(2));
-    kValues.push(fixedK);
-    dValues.push(fixedD);
-    jValues.push(fixedJ);
-    prevK = fixedK;
-    prevD = fixedD;
-  });
-
-  return { kValues, dValues, jValues };
-};
-
-const calculateDailyReturns = (series: TimeSeriesPoint[]): DailyReturnPoint[] => {
-  if (!Array.isArray(series) || series.length < 2) {
-    return [];
-  }
-  const sorted = [...series].sort((a, b) => a.date.localeCompare(b.date));
-  const points: DailyReturnPoint[] = [];
-  for (let index = 1; index < sorted.length; index += 1) {
-    const current = sorted[index];
-    const previous = sorted[index - 1];
-    if (!Number.isFinite(previous.close) || !Number.isFinite(current.close) || previous.close === 0) {
-      continue;
-    }
-    const dailyReturn = ((current.close - previous.close) / previous.close) * 100;
-    if (!Number.isFinite(dailyReturn)) {
-      continue;
-    }
-    points.push({ date: current.date, return: Number(dailyReturn.toFixed(4)) });
-  }
-  return points;
-};
-
-const calculateReturnStatistics = (values: number[]): ReturnStatistics => {
-  if (!Array.isArray(values) || values.length === 0) {
-    return {
-      mean: null,
-      std: null,
-      median: null,
-      positiveRatio: null,
-      best: null,
-      worst: null,
-      sampleSize: 0,
-      skewness: null,
-      kurtosis: null,
-      jbStatistic: null,
-      normalityPValue: null,
-    };
-  }
-  const filtered = values.filter((item) => Number.isFinite(item));
-  if (filtered.length === 0) {
-    return {
-      mean: null,
-      std: null,
-      median: null,
-      positiveRatio: null,
-      best: null,
-      worst: null,
-      sampleSize: 0,
-      skewness: null,
-      kurtosis: null,
-      jbStatistic: null,
-      normalityPValue: null,
-    };
-  }
-  const sum = filtered.reduce((acc, cur) => acc + cur, 0);
-  const mean = sum / filtered.length;
-  const variance = filtered.reduce((acc, cur) => acc + (cur - mean) ** 2, 0) / filtered.length;
-  const std = Math.sqrt(variance);
-  const sorted = [...filtered].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-  const positiveRatio = filtered.filter((item) => item > 0).length / filtered.length;
-  const best = Math.max(...filtered);
-  const worst = Math.min(...filtered);
-  let skewness: number | null = null;
-  let kurtosis: number | null = null;
-  let jbStatistic: number | null = null;
-  let normalityPValue: number | null = null;
-  if (std > 0) {
-    const n = filtered.length;
-    const standardized = filtered.map((item) => (item - mean) / std);
-    if (n > 2) {
-      const skewNumerator = standardized.reduce((acc, cur) => acc + cur ** 3, 0);
-      skewness = (Math.sqrt(n * (n - 1)) / (n - 2)) * (skewNumerator / n);
-    }
-    if (n > 3) {
-      const kurtNumerator = standardized.reduce((acc, cur) => acc + cur ** 4, 0);
-      const populationExcessKurtosis = kurtNumerator / n - 3;
-      kurtosis = ((n - 1) / ((n - 2) * (n - 3)))
-        * ((n + 1) * populationExcessKurtosis + 6);
-    }
-    if (skewness !== null && kurtosis !== null) {
-      const jb = (n / 6) * ((skewness ** 2) + (kurtosis ** 2) / 4);
-      jbStatistic = jb;
-      normalityPValue = Math.exp(-jb / 2);
-    }
-  }
-  return {
-    mean,
-    std,
-    median,
-    positiveRatio,
-    best,
-    worst,
-    sampleSize: filtered.length,
-    skewness,
-    kurtosis,
-    jbStatistic,
-    normalityPValue,
-  };
-};
-
-const calculateHistogram = (values: number[], binWidth: number): ReturnHistogramBin[] => {
-  if (!Array.isArray(values) || values.length === 0) {
-    return [];
-  }
-  const filtered = values.filter((item) => Number.isFinite(item));
-  if (filtered.length === 0) {
-    return [];
-  }
-  const safeWidth = Math.max(binWidth, 0.01);
-  const min = Math.min(...filtered);
-  const max = Math.max(...filtered);
-  if (min === max) {
-    return [{ start: min, end: min + safeWidth, count: filtered.length }];
-  }
-  const normalizedMin = Math.floor(min / safeWidth) * safeWidth;
-  const normalizedMax = Math.ceil(max / safeWidth) * safeWidth;
-  const binCount = Math.max(1, Math.round((normalizedMax - normalizedMin) / safeWidth));
-  const bins: ReturnHistogramBin[] = Array.from({ length: binCount }, (_, index) => {
-    const start = normalizedMin + index * safeWidth;
-    const end = index === binCount - 1 ? normalizedMax : start + safeWidth;
-    return { start, end, count: 0 };
-  });
-  filtered.forEach((value) => {
-    let idx = Math.floor((value - normalizedMin) / safeWidth);
-    if (idx < 0) {
-      idx = 0;
-    }
-    if (idx >= binCount) {
-      idx = binCount - 1;
-    }
-    bins[idx].count += 1;
-  });
-  return bins;
-};
-
-const calculateNormalPdfCounts = (
-  mean: number | null,
-  std: number | null,
-  sampleSize: number,
-  bins: ReturnHistogramBin[],
-  binWidth: number
-) => {
-  if (mean === null || std === null || !Number.isFinite(mean) || !Number.isFinite(std) || std <= 0) {
-    return [];
-  }
-  if (!Number.isFinite(sampleSize) || sampleSize <= 0) {
-    return [];
-  }
-  const safeWidth = Math.max(binWidth, 0.01);
-  const variance = std ** 2;
-  return bins.map((bin) => {
-    const center = (bin.start + bin.end) / 2;
-    const exponent = -((center - mean) ** 2) / (2 * variance);
-    const pdf = (1 / (Math.sqrt(2 * Math.PI * variance))) * Math.exp(exponent);
-    return pdf * sampleSize * safeWidth;
-  });
-};
-
-const calculateBoxPlot = (values: number[]): BoxPlotResult | null => {
-  if (!Array.isArray(values) || values.length < 5) {
-    return null;
-  }
-  const filtered = values.filter((item) => Number.isFinite(item));
-  if (filtered.length < 5) {
-    return null;
-  }
-  const sorted = [...filtered].sort((a, b) => a - b);
-  const quantile = (q: number) => {
-    const pos = (sorted.length - 1) * q;
-    const base = Math.floor(pos);
-    const rest = pos - base;
-    const lower = sorted[base];
-    const upper = sorted[Math.min(sorted.length - 1, base + 1)];
-    return lower + (upper - lower) * rest;
-  };
-  const q1 = quantile(0.25);
-  const q3 = quantile(0.75);
-  const median = quantile(0.5);
-  const iqr = q3 - q1;
-  const lowerFence = q1 - 1.5 * iqr;
-  const upperFence = q3 + 1.5 * iqr;
-  const lowerWhisker = sorted.find((value) => value >= lowerFence) ?? sorted[0];
-  const upperWhisker = [...sorted].reverse().find((value) => value <= upperFence) ?? sorted[sorted.length - 1];
-  const outliers = sorted.filter((value) => value < lowerWhisker || value > upperWhisker);
-  return {
-    stats: [lowerWhisker, q1, median, q3, upperWhisker],
-    outliers,
-    quartiles: { q1, q3, median },
-    whiskers: { lower: lowerWhisker, upper: upperWhisker },
-  };
 };
 
 function MetricCard({ title, value, description }: { title: string; value: string; description?: string }) {
@@ -589,6 +365,9 @@ export default function ProductDetail() {
   const [detail, setDetail] = useState<ProductDetailResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<ProductAnalysisResponse | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [selectedOverlays, setSelectedOverlays] = useState<OverlayId[]>(['PRICE_MA', 'VOLUME_MA']);
   const [overlaySettings, setOverlaySettings] = useState<OverlaySettings>(() => cloneOverlaySettings());
   const [histogramBinWidth, setHistogramBinWidth] = useState<number>(0.2);
@@ -606,6 +385,13 @@ export default function ProductDetail() {
   const [bootstrapBlockLength, setBootstrapBlockLength] = useState(20);
   const [simulationTargetReturn, setSimulationTargetReturn] = useState(5);
   const [simulationRun, setSimulationRun] = useState(0);
+  const [historicalRegimeRuns, setHistoricalRegimeRuns] = useState<HistoricalRegimeRun[]>([]);
+  const [historicalRegimeLoading, setHistoricalRegimeLoading] = useState(true);
+  const [historicalRegimeError, setHistoricalRegimeError] = useState<string | null>(null);
+  const [selectedHistoricalRegimeRunId, setSelectedHistoricalRegimeRunId] = useState('');
+  const [selectedHistoricalRegimeRunDetail, setSelectedHistoricalRegimeRunDetail] = useState<HistoricalRegimeRun | null>(null);
+  const [historicalRegimeDetailLoading, setHistoricalRegimeDetailLoading] = useState(false);
+  const [historicalRegimeDetailError, setHistoricalRegimeDetailError] = useState<string | null>(null);
   const [researchPreference, setResearchPreference] = useMetricDisplayPreference(
     'product-detail',
     'single_product',
@@ -674,7 +460,7 @@ export default function ProductDetail() {
               placeholder="例如：5,10,20"
               className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
             />
-            <span className="mt-1 block text-[11px] text-slate-400">支持一次性输入多个周期，系统将自动排序并生成多条均线。</span>
+            <span className="mt-1 block text-[11px] text-slate-400">支持一次性输入多个周期，系统按输入顺序生成多条均线。</span>
           </label>
         );
       case 'VOLUME_MA':
@@ -815,6 +601,51 @@ export default function ProductDetail() {
 
   useEffect(() => {
     let active = true;
+    setHistoricalRegimeLoading(true);
+    setHistoricalRegimeError(null);
+    listHistoricalRegimeRuns()
+      .then((runs) => {
+        if (active) {
+          setHistoricalRegimeRuns(runs);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setHistoricalRegimeRuns([]);
+          setHistoricalRegimeError('历史情景版本加载失败，暂时无法叠加背景。');
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setHistoricalRegimeLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const summary = historicalRegimeRuns.find((run) => run.id === selectedHistoricalRegimeRunId);
+    if (!summary) {
+      setSelectedHistoricalRegimeRunDetail(null);
+      setHistoricalRegimeDetailLoading(false);
+      setHistoricalRegimeDetailError(null);
+      return undefined;
+    }
+    let active = true;
+    setSelectedHistoricalRegimeRunDetail(null);
+    setHistoricalRegimeDetailLoading(true);
+    setHistoricalRegimeDetailError(null);
+    getHistoricalRegimeRun(summary.id)
+      .then((detailRun) => { if (active) setSelectedHistoricalRegimeRunDetail(detailRun); })
+      .catch(() => {
+        if (active) setHistoricalRegimeDetailError('所选历史情景完整结果加载失败，未向产品分析提交缺失区间。');
+      })
+      .finally(() => { if (active) setHistoricalRegimeDetailLoading(false); });
+    return () => { active = false; };
+  }, [historicalRegimeRuns, selectedHistoricalRegimeRunId]);
+
+  useEffect(() => {
+    let active = true;
     Promise.all([listCustomIndicators({ contextKind: 'single_product', productKind }), getCustomIndicatorMeta()])
       .then(([{ items }, metadata]) => {
         if (!active) return;
@@ -882,6 +713,124 @@ export default function ProductDetail() {
       ? 'Tushare 暂无场外基金份额数据'
       : '暂无可匹配的份额与单位净值';
 
+  const productResearchRegimeRuns = useMemo(
+    () => historicalRegimeRuns
+      .filter((run) => run.immutable && Boolean(latestProductResearchPublication(run)))
+      .sort((left, right) => {
+        const leftPublishedAt = latestProductResearchPublication(left)?.published_at ?? '';
+        const rightPublishedAt = latestProductResearchPublication(right)?.published_at ?? '';
+        return rightPublishedAt.localeCompare(leftPublishedAt);
+      }),
+    [historicalRegimeRuns],
+  );
+  const selectedHistoricalRegimeRunSummary = useMemo(
+    () => productResearchRegimeRuns.find((run) => run.id === selectedHistoricalRegimeRunId),
+    [productResearchRegimeRuns, selectedHistoricalRegimeRunId],
+  );
+  const selectedHistoricalRegimeRun = selectedHistoricalRegimeRunDetail?.id === selectedHistoricalRegimeRunId
+    ? selectedHistoricalRegimeRunDetail
+    : undefined;
+  const selectedHistoricalRegimePublication = useMemo(
+    () => selectedHistoricalRegimeRunSummary
+      ? latestProductResearchPublication(selectedHistoricalRegimeRunSummary)
+      : undefined,
+    [selectedHistoricalRegimeRunSummary],
+  );
+  const historicalRegimeMarkAreas = useMemo(
+    () => buildRegimeMarkAreas(
+      selectedHistoricalRegimeRun,
+      detail?.timeseries.map((item) => item.date) ?? [],
+    ),
+    [detail?.timeseries, selectedHistoricalRegimeRun],
+  );
+  const priceMaPeriods = useMemo(
+    () => Array.from(new Set(parsePeriods(overlaySettings.PRICE_MA.periods)))
+      .filter((period) => period >= 2 && period <= 500)
+      .slice(0, 8),
+    [overlaySettings.PRICE_MA.periods],
+  );
+  const volumeMaPeriods = useMemo(
+    () => Array.from(new Set(parsePeriods(overlaySettings.VOLUME_MA.periods)))
+      .filter((period) => period >= 2 && period <= 500)
+      .slice(0, 8),
+    [overlaySettings.VOLUME_MA.periods],
+  );
+  const bollPeriod = Math.min(500, Math.max(2, Math.round(overlaySettings.BOLL.period)));
+  const bollMultiplier = Math.min(10, Math.max(0.5, overlaySettings.BOLL.multiplier));
+  const kdjPeriod = Math.min(500, Math.max(2, Math.round(overlaySettings.KDJ.period)));
+  const kdjKSmoothing = Math.min(100, Math.max(1, Math.round(overlaySettings.KDJ.kSmoothing)));
+  const kdjDSmoothing = Math.min(100, Math.max(1, Math.round(overlaySettings.KDJ.dSmoothing)));
+
+  useEffect(() => {
+    if (!detail || !productId) {
+      setAnalysis(null);
+      setAnalysisLoading(false);
+      return;
+    }
+    let active = true;
+    const controller = new AbortController();
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    setAnalysis(null);
+    analyzeProduct(productId, productKind, {
+      statistics_period: statisticsPeriod,
+      price_ma_periods: priceMaPeriods,
+      volume_ma_periods: volumeMaPeriods,
+      boll_period: bollPeriod,
+      boll_multiplier: bollMultiplier,
+      kdj_period: kdjPeriod,
+      kdj_k_smoothing: kdjKSmoothing,
+      kdj_d_smoothing: kdjDSmoothing,
+      histogram_bin_width: histogramBinWidth,
+      simulation_horizon: simulationHorizon,
+      simulation_path_count: simulationPathCount,
+      bootstrap_block_length: bootstrapBlockLength,
+      simulation_target_return: simulationTargetReturn,
+      simulation_run: simulationRun,
+      regime: selectedHistoricalRegimeRunSummary && selectedHistoricalRegimePublication
+        ? {
+            run_id: selectedHistoricalRegimeRunSummary.id,
+            publication_id: selectedHistoricalRegimePublication.id,
+          }
+        : null,
+    }, controller.signal)
+      .then((payload) => {
+        if (active) setAnalysis(payload);
+      })
+      .catch((requestError) => {
+        if (!active || (requestError as DOMException).name === 'AbortError') return;
+        setAnalysisError(requestError instanceof Error ? requestError.message : '产品分析失败，请稍后重试。');
+      })
+      .finally(() => {
+        if (active) setAnalysisLoading(false);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [
+    bootstrapBlockLength,
+    bollMultiplier,
+    bollPeriod,
+    detail,
+    histogramBinWidth,
+    kdjDSmoothing,
+    kdjKSmoothing,
+    kdjPeriod,
+    priceMaPeriods,
+    productId,
+    productKind,
+    selectedHistoricalRegimePublication,
+    selectedHistoricalRegimeRunSummary,
+    simulationHorizon,
+    simulationPathCount,
+    simulationRun,
+    simulationTargetReturn,
+    statisticsPeriod,
+    volumeMaPeriods,
+  ]);
+  const productRegimeStatistics: ProductRegimeStatistic[] = analysis?.regimeStatistics ?? [];
+
   const chartOption = useMemo(() => {
     if (!detail?.timeseries || detail.timeseries.length === 0) {
       return undefined;
@@ -897,58 +846,41 @@ export default function ProductDetail() {
     const volumes = detail.timeseries.map((item) => ({
       value: item.volume,
       itemStyle: {
-        color: item.close >= item.open ? '#34d399' : '#f87171',
+        color: item.open !== null && item.close >= item.open ? '#34d399' : '#94a3b8',
       },
     }));
-    const closeValues = detail.timeseries.map((item) => item.close);
-    const volumeValues = detail.timeseries.map((item) => item.volume);
-
     const priceMASeries = selectedOverlays.includes('PRICE_MA')
-      ? (() => {
-          const periods = Array.from(new Set(parsePeriods(overlaySettings.PRICE_MA.periods))).filter((num) => num > 1);
-          return periods
-            .sort((a, b) => a - b)
-            .map((period) => ({
+      ? priceMaPeriods.map((period) => ({
               name: `收盘价${period}日均线`,
               type: 'line',
-              data: calculateMovingAverage(closeValues, period),
+              data: analysis?.technical.priceMa[String(period)] ?? [],
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1.5 },
               emphasis: { focus: 'series' },
-            }));
-        })()
+            }))
       : [];
 
-    const volumeMASeries = selectedOverlays.includes('VOLUME_MA')
-      ? (() => {
-          const periods = Array.from(new Set(parsePeriods(overlaySettings.VOLUME_MA.periods))).filter((num) => num > 1);
-          return periods
-            .sort((a, b) => a - b)
-            .map((period) => ({
+    const volumeMASeries = selectedOverlays.includes('VOLUME_MA') && analysis?.technical.availability.volume
+      ? volumeMaPeriods.map((period) => ({
               name: `成交量${period}日均线`,
               type: 'line',
               xAxisIndex: 1,
               yAxisIndex: 1,
-              data: calculateMovingAverage(volumeValues, period),
+              data: analysis?.technical.volumeMa[String(period)] ?? [],
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1 },
               emphasis: { focus: 'series' },
-            }));
-        })()
+            }))
       : [];
 
     const bollingerSeries = selectedOverlays.includes('BOLL')
-      ? (() => {
-          const period = Math.max(2, Math.round(overlaySettings.BOLL.period));
-          const multiplier = Math.max(0.5, overlaySettings.BOLL.multiplier);
-          const bands = calculateBollinger(closeValues, period, multiplier);
-          return [
+      ? [
             {
-              name: `布林上轨(${period}, ${multiplier.toFixed(1)}σ)`,
+              name: `布林上轨(${bollPeriod}, ${bollMultiplier.toFixed(1)}σ)`,
               type: 'line',
-              data: bands.map((band) => band.upper),
+              data: analysis?.technical.bollinger.upper ?? [],
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1, color: '#f97316' },
@@ -956,7 +888,7 @@ export default function ProductDetail() {
             {
               name: '布林中轨',
               type: 'line',
-              data: bands.map((band) => band.middle),
+              data: analysis?.technical.bollinger.middle ?? [],
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1, color: '#0ea5e9', type: 'dashed' },
@@ -964,22 +896,17 @@ export default function ProductDetail() {
             {
               name: '布林下轨',
               type: 'line',
-              data: bands.map((band) => band.lower),
+              data: analysis?.technical.bollinger.lower ?? [],
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1, color: '#10b981' },
             },
-          ];
-        })()
+          ]
       : [];
 
-    const hasKDJ = selectedOverlays.includes('KDJ');
-    const kdjSettings = overlaySettings.KDJ;
-    const kdjPeriod = Math.max(2, Math.round(kdjSettings.period));
-    const kSmoothing = Math.max(1, Math.round(kdjSettings.kSmoothing));
-    const dSmoothing = Math.max(1, Math.round(kdjSettings.dSmoothing));
+    const hasKDJ = selectedOverlays.includes('KDJ') && Boolean(analysis?.technical.availability.kdj);
     const { kValues, dValues, jValues } = hasKDJ
-      ? calculateKDJ(detail.timeseries, kdjPeriod, kSmoothing, dSmoothing)
+      ? (analysis?.technical.kdj ?? { kValues: [], dValues: [], jValues: [] })
       : { kValues: [], dValues: [], jValues: [] };
 
     const primaryTop = 50;
@@ -1063,24 +990,47 @@ export default function ProductDetail() {
       },
     ];
 
+    const historicalBackground = historicalRegimeMarkAreas.length > 0 ? {
+          markArea: {
+            silent: true,
+            label: {
+              show: true,
+              position: 'insideTop',
+              color: '#334155',
+              fontSize: 10,
+            },
+            data: historicalRegimeMarkAreas,
+          },
+        } : {};
+    const priceSeries = analysis?.technical.availability.ohlc
+      ? {
+          name: '价格',
+          type: 'candlestick',
+          data: klineValues,
+          itemStyle: {
+            color: '#0ea5e9',
+            color0: '#f87171',
+            borderColor: '#0284c7',
+            borderColor0: '#dc2626',
+          },
+          ...historicalBackground,
+        }
+      : {
+          name: '价格',
+          type: 'line',
+          data: detail.timeseries.map((item) => item.close),
+          showSymbol: false,
+          lineStyle: { width: 1.6, color: '#0ea5e9' },
+          ...historicalBackground,
+        };
     const series: any[] = [
-      {
-        name: '价格',
-        type: 'candlestick',
-        data: klineValues,
-        itemStyle: {
-          color: '#0ea5e9',
-          color0: '#f87171',
-          borderColor: '#0284c7',
-          borderColor0: '#dc2626',
-        },
-      },
+      priceSeries,
       {
         name: '成交量',
         type: 'bar',
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: volumes,
+        data: analysis?.technical.availability.volume ? volumes : [],
         barWidth: '60%',
       },
       ...priceMASeries,
@@ -1148,68 +1098,55 @@ export default function ProductDetail() {
       dataZoom,
       series,
     };
-  }, [detail?.timeseries, selectedOverlays, overlaySettings]);
+  }, [
+    analysis,
+    bollMultiplier,
+    bollPeriod,
+    detail?.timeseries,
+    historicalRegimeMarkAreas,
+    priceMaPeriods,
+    selectedOverlays,
+    volumeMaPeriods,
+  ]);
 
   const chartHeight = useMemo(() => {
-    return selectedOverlays.includes('KDJ') ? 700 : 540;
-  }, [selectedOverlays]);
+    return selectedOverlays.includes('KDJ') && analysis?.technical.availability.kdj ? 700 : 540;
+  }, [analysis?.technical.availability.kdj, selectedOverlays]);
 
-  const statisticsWindow = useMemo(
-    () => selectStatisticsWindow(detail?.timeseries ?? [], statisticsPeriod),
-    [detail?.timeseries, statisticsPeriod],
-  );
-
-  const dailyReturns = useMemo(
-    () => calculateDailyReturns(statisticsWindow.series),
-    [statisticsWindow.series],
-  );
-
-  const dailyReturnValues = useMemo(() => dailyReturns.map((item) => item.return), [dailyReturns]);
-
-  const returnStats = useMemo(() => calculateReturnStatistics(dailyReturnValues), [dailyReturnValues]);
-
-  const histogramBins = useMemo(
-    () => calculateHistogram(dailyReturnValues, histogramBinWidth),
-    [dailyReturnValues, histogramBinWidth]
-  );
-  const histogramPdfValues = useMemo(
-    () =>
-      calculateNormalPdfCounts(
-        returnStats.mean,
-        returnStats.std,
-        returnStats.sampleSize,
-        histogramBins,
-        histogramBinWidth
-      ),
-    [returnStats.mean, returnStats.std, returnStats.sampleSize, histogramBins, histogramBinWidth]
-  );
-  const boxPlotData = useMemo(() => calculateBoxPlot(dailyReturnValues), [dailyReturnValues]);
-  const normalQqData = useMemo(() => buildNormalQqData(dailyReturnValues), [dailyReturnValues]);
-  const normalQqTableRows = useMemo(() => {
-    if (!normalQqData) {
-      return [];
-    }
-    const targetPercentiles = [0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99];
-    return targetPercentiles
-      .map((target) => normalQqData.points.reduce((closest, point) => (
-        Math.abs(point.percentile - target) < Math.abs(closest.percentile - target) ? point : closest
-      )))
-      .filter((point, index, points) => points.findIndex((candidate) => candidate.percentile === point.percentile) === index);
-  }, [normalQqData]);
-  const skewnessInterpretation = useMemo(
-    () => interpretSkewness(returnStats.skewness),
-    [returnStats.skewness],
-  );
-  const kurtosisInterpretation = useMemo(
-    () => interpretExcessKurtosis(returnStats.kurtosis),
-    [returnStats.kurtosis],
-  );
-  const normalityConclusion = useMemo(() => {
-    if (returnStats.normalityPValue === null || !Number.isFinite(returnStats.normalityPValue)) {
-      return '样本不足，无法进行检验';
-    }
-    return returnStats.normalityPValue < 0.05 ? '拒绝正态假设（5% 显著性水平）' : '无法拒绝正态假设（5% 显著性水平）';
-  }, [returnStats.normalityPValue]);
+  const statisticsWindow = analysis?.window ?? {
+    complete: false,
+    requested_start_date: null,
+    message: analysisLoading ? '正在使用 NJIT 计算产品分析结果…' : analysisError,
+  };
+  const dailyReturns = analysis?.dailyReturns ?? [];
+  const returnStats = analysis?.returnStatistics ?? {
+    mean: null,
+    std: null,
+    median: null,
+    positiveRatio: null,
+    best: null,
+    worst: null,
+    sampleSize: 0,
+    skewness: null,
+    kurtosis: null,
+    jbStatistic: null,
+    normalityPValue: null,
+  };
+  const histogramBins = analysis?.histogram ?? [];
+  const hasNormalPdf = histogramBins.length > 0
+    && histogramBins.every((bin) => bin.normalPdfCount !== null);
+  const boxPlotData = analysis?.boxPlot ?? null;
+  const normalQqData = analysis?.normalQq ?? null;
+  const normalQqTableRows = normalQqData?.keyPoints ?? [];
+  const skewnessInterpretation = analysis?.interpretation.skewness ?? {
+    label: '样本不足',
+    meaning: '正在等待后端 NJIT 分析结果。',
+  };
+  const kurtosisInterpretation = analysis?.interpretation.kurtosis ?? {
+    label: '样本不足',
+    meaning: '正在等待后端 NJIT 分析结果。',
+  };
+  const normalityConclusion = analysis?.interpretation.normality ?? '样本不足，无法进行检验';
 
   const returnLineOption = useMemo(() => {
     if (dailyReturns.length === 0) {
@@ -1295,13 +1232,8 @@ export default function ProductDetail() {
           const endLabel = formatSignedPercent(bin.end, 2);
           const lines = [`${startLabel} ~ ${endLabel}`];
           lines.push(`出现天数：${bin.count}`);
-          if (histogramPdfValues.length === histogramBins.length) {
-            lines.push(`正态拟合：${formatDecimal(histogramPdfValues[index], 2)} 天`);
-          }
-          if (returnStats.sampleSize > 0) {
-            const frequency = bin.count / returnStats.sampleSize;
-            lines.push(`频率：${formatDecimal(frequency, 3)}`);
-          }
+          if (hasNormalPdf) lines.push(`正态拟合：${formatDecimal(bin.normalPdfCount, 2)} 天`);
+          lines.push(`频率：${formatDecimal(bin.frequency, 3)}`);
           return lines.join('<br/>');
         },
       },
@@ -1329,12 +1261,12 @@ export default function ProductDetail() {
             borderRadius: [6, 6, 0, 0],
           },
         },
-        ...(histogramPdfValues.length === histogramBins.length
+        ...(hasNormalPdf
           ? [
               {
                 type: 'line',
                 name: '正态拟合',
-                data: histogramPdfValues.map((value) => Number(value.toFixed(2))),
+                data: histogramBins.map((bin) => bin.normalPdfCount),
                 smooth: true,
                 symbol: 'none',
                 lineStyle: { width: 2, color: '#f97316' },
@@ -1344,7 +1276,7 @@ export default function ProductDetail() {
           : []),
       ],
     };
-  }, [histogramBins, histogramPdfValues, returnStats.sampleSize]);
+  }, [hasNormalPdf, histogramBins]);
 
   const boxPlotOption = useMemo(() => {
     if (!boxPlotData) {
@@ -1521,50 +1453,12 @@ export default function ProductDetail() {
     };
   }, [normalQqData]);
 
-  const simulationInitialNav = FUTURE_SIMULATION_INITIAL_NAV;
-  const simulationSeed = `${productId}-${statisticsPeriod}-${simulationHorizon}-${simulationPathCount}-${simulationRun}`;
-  const parametricSimulation = useMemo(() => simulateParametricMonteCarlo({
-    returnsPercent: dailyReturnValues,
-    initialNav: simulationInitialNav,
-    horizonDays: simulationHorizon,
-    pathCount: simulationPathCount,
-    targetReturnPercent: simulationTargetReturn,
-    seed: `${simulationSeed}-parametric`,
-  }), [
-    dailyReturnValues,
-    simulationHorizon,
-    simulationInitialNav,
-    simulationPathCount,
-    simulationSeed,
-    simulationTargetReturn,
-  ]);
-  const bootstrapSimulation = useMemo(() => simulateStationaryBlockBootstrap({
-    returnsPercent: dailyReturnValues,
-    initialNav: simulationInitialNav,
-    horizonDays: simulationHorizon,
-    pathCount: simulationPathCount,
-    targetReturnPercent: simulationTargetReturn,
-    averageBlockLength: bootstrapBlockLength,
-    seed: `${simulationSeed}-bootstrap`,
-  }), [
-    bootstrapBlockLength,
-    dailyReturnValues,
-    simulationHorizon,
-    simulationInitialNav,
-    simulationPathCount,
-    simulationSeed,
-    simulationTargetReturn,
-  ]);
+  const simulationInitialNav = analysis?.simulation?.initialNav ?? FUTURE_SIMULATION_INITIAL_NAV;
+  const parametricSimulation = analysis?.simulation?.parametric ?? null;
+  const bootstrapSimulation = analysis?.simulation?.blockBootstrap ?? null;
   const activeSimulation = simulationMethod === 'parametric' ? parametricSimulation : bootstrapSimulation;
-  const simulationComparison = useMemo(() => (
-    parametricSimulation && bootstrapSimulation
-      ? compareSimulations(parametricSimulation, bootstrapSimulation)
-      : null
-  ), [bootstrapSimulation, parametricSimulation]);
-  const terminalNavDensity = useMemo(
-    () => buildTerminalNavDensity(activeSimulation?.terminalValues ?? []),
-    [activeSimulation],
-  );
+  const simulationComparison = analysis?.simulation?.comparison ?? null;
+  const terminalNavDensity = analysis?.simulation?.densities[simulationMethod] ?? null;
 
   const simulationOption = useMemo(() => {
     if (!activeSimulation || !terminalNavDensity || simulationInitialNav === null) {
@@ -1577,35 +1471,14 @@ export default function ProductDetail() {
       { name: '75% 分位', data: activeSimulation.percentiles.p75, color: '#0ea5e9', type: 'dashed', width: 1 },
       { name: '95% 分位', data: activeSimulation.percentiles.p95, color: '#10b981', type: 'dashed', width: 1.5 },
     ];
-    const navValues = [
-      ...activeSimulation.percentiles.p05,
-      ...activeSimulation.percentiles.p95,
-      terminalNavDensity.minNav,
-      terminalNavDensity.maxNav,
-    ];
-    const observedMin = Math.min(...navValues);
-    const observedMax = Math.max(...navValues);
-    const navPadding = Math.max((observedMax - observedMin) * 0.04, Math.abs(observedMax) * 0.001, 0.0001);
-    const navAxisMin = Math.max(0, observedMin - navPadding);
-    const navAxisMax = observedMax + navPadding;
-    const histogramBinWidth = Math.max(
-      terminalNavDensity.histogram[0]?.upperNav - terminalNavDensity.histogram[0]?.lowerNav,
-      Number.EPSILON,
-    );
-    const densityCountFactor = terminalNavDensity.sampleSize * histogramBinWidth;
     const densityCountPoints = terminalNavDensity.points.map((point) => ({
       nav: point.nav,
-      count: point.density * densityCountFactor,
+      count: point.estimatedCount,
+      simulatedReturn: point.simulatedReturn,
     }));
-    const countAxisMax = Math.max(
-      1,
-      Math.ceil(
-        Math.max(
-          ...terminalNavDensity.histogram.map((bin) => bin.count),
-          ...densityCountPoints.map((point) => point.count),
-        ) * 1.08,
-      ),
-    );
+    const countAxisMax = terminalNavDensity.countAxisMax;
+    const navAxisMin = terminalNavDensity.navAxisMin;
+    const navAxisMax = terminalNavDensity.navAxisMax;
     return {
       animation: false,
       aria: {
@@ -1765,7 +1638,7 @@ export default function ProductDetail() {
           type: 'line',
           xAxisIndex: 1,
           yAxisIndex: 1,
-          data: densityCountPoints.map((point) => [point.count, point.nav]),
+          data: densityCountPoints.map((point) => [point.count, point.nav, point.simulatedReturn]),
           showSymbol: false,
           lineStyle: { width: 2, color: '#7c3aed' },
           emphasis: { disabled: true },
@@ -1775,7 +1648,7 @@ export default function ProductDetail() {
             formatter: (params: any) => {
               const nav = Number(Array.isArray(params?.data) ? params.data[1] : Number.NaN);
               const estimatedCount = Number(Array.isArray(params?.data) ? params.data[0] : Number.NaN);
-              const simulatedReturn = Number.isFinite(nav) ? nav / simulationInitialNav - 1 : Number.NaN;
+              const simulatedReturn = Number(Array.isArray(params?.data) ? params.data[2] : Number.NaN);
               return [
                 '期末净值概率密度',
                 `期末净值：${formatDecimal(nav, 4)}`,
@@ -1798,7 +1671,7 @@ export default function ProductDetail() {
         },
       ],
     };
-  }, [activeSimulation, simulationHorizon, simulationInitialNav, terminalNavDensity]);
+  }, [activeSimulation, simulationHorizon, terminalNavDensity]);
 
   const statisticsRange = useMemo(() => {
     if (dailyReturns.length === 0) {
@@ -1816,7 +1689,7 @@ export default function ProductDetail() {
       <div className="flex items-center gap-3">
         <button
           type="button"
-          onClick={() => returnToOrigin(navigate, location, `/research?kind=${productKind}`)}
+          onClick={() => returnToOrigin(navigate, location, `/product-research/products?kind=${productKind}`)}
           className="inline-flex items-center rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:border-emerald-400 hover:text-emerald-600"
         >
           ← {returnNavigation?.returnLabel ?? '返回上一页'}
@@ -1852,6 +1725,11 @@ export default function ProductDetail() {
                 <h1 className="mt-2 text-3xl font-bold text-slate-900">{detail.name ?? '--'}</h1>
                 <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-500">
                   {tsCode && <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-emerald-600">{tsCode}</span>}
+                  {baseInfo['qdii_type'] && (
+                    <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${baseInfo['qdii_type'] === 'QDII' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-600'}`}>
+                      {String(baseInfo['qdii_type'])}
+                    </span>
+                  )}
                   {detail.management && <span>管理人：{formatText(detail.management)}</span>}
                   {detail.custodian && <span>托管人：{formatText(detail.custodian)}</span>}
                   <span aria-label={`${inceptionDateLabel}：${inceptionDateText}`}>
@@ -1889,6 +1767,33 @@ export default function ProductDetail() {
             </div>
           </section>
 
+          <section
+            data-testid="product-analysis-execution"
+            className="rounded-2xl border border-emerald-100 bg-emerald-50/50 px-5 py-4"
+            aria-live="polite"
+          >
+            {analysisLoading ? (
+              <p className="text-sm font-medium text-emerald-800">正在由后端固定签名 NJIT 内核计算技术指标、统计分布与双模型模拟…</p>
+            ) : analysisError ? (
+              <div>
+                <p className="text-sm font-semibold text-rose-700">产品数值分析未完成</p>
+                <p className="mt-1 text-xs text-rose-600">{analysisError}；页面不会退回浏览器本地计算。</p>
+              </div>
+            ) : analysis ? (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-emerald-800">
+                <span className="font-semibold">高性能计算已验证</span>
+                <span>固定签名 NJIT</span>
+                <span>内核覆盖 {analysis.execution.kernel_coverage}</span>
+                <span>{analysis.execution.nopython ? 'nopython' : '执行模式异常'}</span>
+                <span>Object mode {analysis.execution.object_mode}</span>
+                <span>Python 回退 {analysis.execution.python_fallback}</span>
+                <span title={analysis.execution.kernel_fingerprint}>指纹 {analysis.execution.kernel_fingerprint.slice(0, 12)}</span>
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500">等待产品分析任务。</p>
+            )}
+          </section>
+
           <section className="rounded-3xl border border-violet-100 bg-violet-50/40 p-6 shadow-sm" aria-labelledby="custom-research-indicators-title">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -1898,7 +1803,7 @@ export default function ProductDetail() {
                 </p>
               </div>
               <Link
-                to={`/indicator-studio?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
+                to={`/settings/indicators-models?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
                 className="inline-flex shrink-0 items-center justify-center rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2"
               >
                 在指标中心分析
@@ -1959,17 +1864,133 @@ export default function ProductDetail() {
               </div>
               <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
-                  <span className="h-2 w-2 rounded-full bg-sky-500" />K 线
+                  <span className="h-2 w-2 rounded-full bg-sky-500" />
+                  {analysis?.technical.availability.ohlc ? 'K 线' : '真实收盘价 / 净值'}
                 </span>
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
-                  <span className="h-2 w-2 rounded-full bg-emerald-400" />成交量
+                  <span className={`h-2 w-2 rounded-full ${analysis?.technical.availability.volume ? 'bg-emerald-400' : 'bg-slate-300'}`} />
+                  {analysis?.technical.availability.volume ? '成交量' : '成交量未披露'}
                 </span>
+              </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4" aria-labelledby="historical-regime-background-title">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="max-w-2xl">
+                  <h3 id="historical-regime-background-title" className="text-sm font-semibold text-slate-900">历史情景背景</h3>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    仅可叠加已发布到“产品研究”的不可变识别结果；色块按情景区间与本产品价格日期的真实交集绘制。
+                  </p>
+                </div>
+                <label className="w-full text-xs font-medium text-slate-600 lg:w-[420px]">
+                  选择历史情景版本
+                  <select
+                    aria-label="历史情景背景"
+                    value={selectedHistoricalRegimeRunId}
+                    onChange={(event) => setSelectedHistoricalRegimeRunId(event.target.value)}
+                    disabled={historicalRegimeLoading || Boolean(historicalRegimeError) || productResearchRegimeRuns.length === 0}
+                    className="mt-1 min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 shadow-sm disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                  >
+                    <option value="">关闭历史情景背景</option>
+                    {productResearchRegimeRuns.map((run) => {
+                      const publication = latestProductResearchPublication(run);
+                      const revision = run.definition_revision ?? publication?.definition_revision;
+                      const modeLabel = run.mode === 'realtime' ? '实时识别' : '事后识别';
+                      return (
+                        <option key={run.id} value={run.id}>
+                          {run.name} · {revision === undefined || revision === null ? '版本未标明' : `v${revision}`} · {modeLabel}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+              </div>
+              <div className="mt-3" aria-live="polite">
+                {historicalRegimeLoading ? (
+                  <p className="text-xs text-slate-500">正在读取已发布的历史情景版本…</p>
+                ) : historicalRegimeError ? (
+                  <p className="text-xs text-rose-600" role="status">{historicalRegimeError}</p>
+                ) : productResearchRegimeRuns.length === 0 ? (
+                  <p className="text-xs text-slate-500" role="status">
+                    暂无已发布到“产品研究”的不可变历史情景版本，请先在历史情景识别中心完成发布。
+                  </p>
+                ) : selectedHistoricalRegimeRunId && historicalRegimeDetailLoading ? (
+                  <p className="text-xs text-indigo-700" role="status">正在按需读取所选情景的完整区间与状态…</p>
+                ) : selectedHistoricalRegimeRunId && historicalRegimeDetailError ? (
+                  <p className="text-xs text-rose-600" role="status">{historicalRegimeDetailError}</p>
+                ) : selectedHistoricalRegimeRun && selectedHistoricalRegimePublication ? (
+                  <div className="space-y-2" data-testid="historical-regime-selection-meta">
+                    <p className="text-xs leading-5 text-slate-600">
+                      不可变运行 · 定义版本 v{selectedHistoricalRegimeRun.definition_revision ?? selectedHistoricalRegimePublication.definition_revision}
+                      {' · '}
+                      {selectedHistoricalRegimeRun.mode === 'realtime'
+                        ? '实时识别：按当时可得信息生成，可按当时视角解释。'
+                        : '事后识别：基于完整历史样本划分，仅用于研究解释，不代表当时可获知。'}
+                      {' · '}发布于 {formatDate(selectedHistoricalRegimePublication.published_at)}
+                    </p>
+                    <div className="flex flex-wrap gap-2" aria-label="历史情景图例">
+                      {selectedHistoricalRegimeRun.states.map((state) => (
+                        <span key={state.id} className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs text-slate-600 ring-1 ring-slate-200">
+                          <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: state.color }} />
+                          {state.label}
+                        </span>
+                      ))}
+                    </div>
+                    {historicalRegimeMarkAreas.length === 0 && (
+                      <p className="text-xs text-amber-700" role="status">所选情景与当前产品价格日期没有交集，图表未绘制背景。</p>
+                    )}
+                    {productRegimeStatistics.length > 0 && (
+                      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                        <table className="w-full min-w-[720px] text-xs" aria-label="产品历史情景表现">
+                          <caption className="px-3 py-2 text-left font-semibold text-slate-700">本产品在各历史情景区间的真实表现</caption>
+                          <thead className="bg-slate-50 text-slate-500">
+                            <tr>
+                              <th className="px-3 py-2 text-left">情景</th>
+                              <th className="px-3 py-2 text-right">价格点</th>
+                              <th className="px-3 py-2 text-right">区间内收益</th>
+                              <th className="px-3 py-2 text-right">年化波动</th>
+                              <th className="px-3 py-2 text-right">最深回撤</th>
+                              <th className="px-3 py-2 text-right">上涨日占比</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {productRegimeStatistics.map((item) => (
+                              <tr key={item.stateId}>
+                                <th scope="row" className="px-3 py-2 text-left font-semibold text-slate-800">
+                                  <span className="mr-2 inline-block h-2.5 w-2.5 rounded-sm align-middle" style={{ backgroundColor: item.color }} />
+                                  {item.stateLabel}
+                                </th>
+                                <td className="px-3 py-2 text-right tabular-nums text-slate-600">{item.observations}</td>
+                                <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-800">{formatRatioPercent(item.cumulativeReturn)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums text-slate-600">{formatRatioPercent(item.annualizedVolatility)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums text-rose-700">{formatRatioPercent(item.maxDrawdown)}</td>
+                                <td className="px-3 py-2 text-right tabular-nums text-slate-600">{formatRatioPercent(item.winRate)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <p className="border-t border-slate-100 px-3 py-2 text-[11px] leading-4 text-slate-500">
+                          仅复合每个连续情景段内部的相邻日收益；跨情景边界收益不会归入任一状态，避免边界跳变污染统计。
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">当前未叠加历史情景背景。</p>
+                )}
               </div>
             </div>
             {chartOption ? (
               <ReactECharts option={chartOption} style={{ height: chartHeight }} notMerge lazyUpdate />
             ) : (
               <div className="h-[320px] rounded-2xl bg-slate-50 text-center text-slate-400">暂无可视化数据</div>
+            )}
+            {analysis && (!analysis.technical.availability.ohlc || !analysis.technical.availability.volume) && (
+              <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800" role="status">
+                原始数据未完整披露
+                {!analysis.technical.availability.ohlc ? ' OHLC' : ''}
+                {!analysis.technical.availability.volume ? ' 成交量' : ''}
+                ；页面保留真实收盘价 / 净值，不使用 close 或 0 伪造缺失字段。相关 KDJ、成交量均线会保持不可用。
+              </p>
             )}
             <div className="rounded-2xl bg-slate-50 p-6">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2115,7 +2136,7 @@ export default function ProductDetail() {
                         <ReactECharts option={histogramOption} style={{ height: 260 }} notMerge lazyUpdate />
                       )}
                       <div className="mt-3 text-xs text-slate-500">
-                        当前共 {histogramBins.reduce((acc, bin) => acc + bin.count, 0)} 个样本，划分 {histogramBins.length} 个区间。
+                        当前共 {returnStats.sampleSize} 个样本，划分 {histogramBins.length} 个区间。
                       </div>
                     </div>
                   </div>
@@ -2151,7 +2172,7 @@ export default function ProductDetail() {
                         <div>
                           <dt className="font-medium text-slate-500">四分位距 (IQR)</dt>
                           <dd className="mt-1 text-sm font-semibold text-slate-900">
-                            {formatSignedPercent(boxPlotData.quartiles.q3 - boxPlotData.quartiles.q1, 2)}
+                            {formatSignedPercent(boxPlotData.quartiles.iqr, 2)}
                           </dd>
                         </div>
                         <div>
@@ -2203,7 +2224,7 @@ export default function ProductDetail() {
                             <tbody className="divide-y divide-slate-100">
                               {normalQqTableRows.map((point) => (
                                 <tr key={point.percentile}>
-                                  <td className="px-2 py-2 text-slate-600">{(point.percentile * 100).toFixed(1)}%</td>
+                                  <td className="px-2 py-2 text-slate-600">{formatRatioPercent(point.percentile)}</td>
                                   <td className="px-2 py-2 text-right tabular-nums text-slate-600">{point.theoreticalQuantile.toFixed(2)}</td>
                                   <td className="px-2 py-2 text-right tabular-nums text-slate-900">{formatSignedPercent(point.observedReturn, 2)}</td>
                                 </tr>
@@ -2372,8 +2393,8 @@ export default function ProductDetail() {
                                 {[parametricSimulation, bootstrapSimulation].map((simulation) => (
                                   <tr key={simulation.method}>
                                     <th scope="row" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">{simulation.methodLabel}</th>
-                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.p05 / simulationInitialNav - 1)}</td>
-                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.p50 / simulationInitialNav - 1)}</td>
+                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.p05Return)}</td>
+                                    <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.medianReturn)}</td>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.lossProbability)}</td>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.conditionalValueAtRisk95)}</td>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.averageMaxDrawdown)}</td>

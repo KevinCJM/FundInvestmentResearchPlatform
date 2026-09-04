@@ -149,6 +149,13 @@ class OperatorSignature:
 
 @dataclass(frozen=True)
 class TypedOperatorSpec:
+    """Schema/type metadata plus a test-only NumPy reference oracle.
+
+    Production evaluation never calls ``evaluate``; typed_numba_plan lowers
+    operator ids directly to fixed-signature NJIT dispatchers.  Keeping this
+    reference callable supports controlled numerical-parity tests only.
+    """
+
     operator_id: str
     version: str
     category: str

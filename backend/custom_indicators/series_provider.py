@@ -15,18 +15,24 @@ import pyarrow.dataset as arrow_dataset
 import pyarrow.parquet as arrow_parquet
 
 try:  # Package imports in tests; top-level imports when uvicorn starts in backend/.
+    from backend.instrument_analytics_numba import simple_log_returns_kernel
     from backend.market_data import resolve_tushare_data_dir
     from backend.series_quality import (
         adjusted_nav_anomaly_dates,
         assess_period_window,
+        finite_coverage,
         load_sse_open_dates,
+        period_window_quality_kernel,
     )
 except ModuleNotFoundError:  # pragma: no cover - exercised by integrated app startup
+    from instrument_analytics_numba import simple_log_returns_kernel
     from market_data import resolve_tushare_data_dir
     from series_quality import (
         adjusted_nav_anomaly_dates,
         assess_period_window,
+        finite_coverage,
         load_sse_open_dates,
+        period_window_quality_kernel,
     )
 
 from .errors import ValidationError
@@ -110,6 +116,20 @@ class VariableWindowIndex:
     date_days: np.ndarray
     anomaly_days: np.ndarray
     open_days: np.ndarray
+
+
+def _return_arrays(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    simple_returns, log_returns, status = simple_log_returns_kernel(
+        np.ascontiguousarray(values, dtype=np.float64)
+    )
+    if status == 1:
+        raise ValidationError("INSUFFICIENT_SAMPLE", "至少需要两个有效净值点。")
+    if status == 2:
+        raise ValidationError(
+            "INVALID_NAV_SERIES",
+            "净值序列必须全部为有限正数，不能计算收益率。",
+        )
+    return simple_returns, log_returns
 
 
 def _effective_data_dir(data_dir: Path) -> Path:
@@ -332,6 +352,8 @@ def load_price_points(
     kind: Literal["etf", "fund"],
     product_id: str,
     data_dir: Path = DEFAULT_DATA_DIR,
+    *,
+    preserve_missing: bool = False,
 ) -> list[dict[str, object]]:
     product_series = load_product_series(kind, product_id, data_dir)
     if product_series is None:
@@ -339,14 +361,28 @@ def load_price_points(
     points: list[dict[str, object]] = []
     for _, row in product_series.frame.iterrows():
         value = float(row["value"])
+        if preserve_missing:
+            raw_open = row.get("open", np.nan)
+            raw_high = row.get("high", np.nan)
+            raw_low = row.get("low", np.nan)
+            raw_volume = row.get("volume", np.nan)
+            open_value = float(raw_open) if pd.notna(raw_open) else None
+            high_value = float(raw_high) if pd.notna(raw_high) else None
+            low_value = float(raw_low) if pd.notna(raw_low) else None
+            volume_value = float(raw_volume) if pd.notna(raw_volume) else None
+        else:
+            open_value = float(row.get("open", value)) if pd.notna(row.get("open", value)) else value
+            high_value = float(row.get("high", value)) if pd.notna(row.get("high", value)) else value
+            low_value = float(row.get("low", value)) if pd.notna(row.get("low", value)) else value
+            volume_value = float(row.get("volume", 0)) if pd.notna(row.get("volume", 0)) else 0.0
         points.append(
             {
                 "date": row["date"].strftime("%Y-%m-%d"),
-                "open": float(row.get("open", value)) if pd.notna(row.get("open", value)) else value,
-                "high": float(row.get("high", value)) if pd.notna(row.get("high", value)) else value,
-                "low": float(row.get("low", value)) if pd.notna(row.get("low", value)) else value,
+                "open": open_value,
+                "high": high_value,
+                "low": low_value,
                 "close": value,
-                "volume": float(row.get("volume", 0)) if pd.notna(row.get("volume", 0)) else 0,
+                "volume": volume_value,
             }
         )
     return points
@@ -443,10 +479,7 @@ def select_period_window(
             }
         )
     values = np.ascontiguousarray(selected["value"].to_numpy(dtype=np.float64))
-    returns = np.ascontiguousarray(values[1:] / values[:-1] - 1.0)
-    log_returns = np.ascontiguousarray(np.log(values[1:] / values[:-1]))
-    if returns.size == 0:
-        raise ValidationError("INSUFFICIENT_SAMPLE", "至少需要两个有效净值点。")
+    returns, log_returns = _return_arrays(values)
     return PeriodWindow(
         frame=selected,
         returns=returns,
@@ -700,11 +733,12 @@ def _read_source_frame(
         if definition.transform == "pct_chg / 100":
             values = values / 100.0
         valid = values.notna()
+        non_null_rows, coverage_ratio = finite_coverage(values)
         dates = raw.loc[valid, "date"]
         coverage[variable_id] = {
             "source_rows": int(len(raw)),
-            "non_null_rows": int(valid.sum()),
-            "coverage_ratio": round(float(valid.mean()), 8) if len(valid) else 0.0,
+            "non_null_rows": non_null_rows,
+            "coverage_ratio": round(coverage_ratio, 8),
             "first_date": dates.min().strftime("%Y-%m-%d") if not dates.empty else None,
             "latest_date": dates.max().strftime("%Y-%m-%d") if not dates.empty else None,
             "conditional": bool(definition.conditional),
@@ -913,11 +947,12 @@ def _scan_source_batch(
             if definition.transform == "pct_chg / 100":
                 values = values / 100.0
             valid = values.notna()
+            non_null_rows, coverage_ratio = finite_coverage(values)
             dates = product_raw.loc[valid, "date"]
             coverage[product_id][variable_id] = {
                 "source_rows": int(len(product_raw)),
-                "non_null_rows": int(valid.sum()),
-                "coverage_ratio": round(float(valid.mean()), 8) if len(valid) else 0.0,
+                "non_null_rows": non_null_rows,
+                "coverage_ratio": round(coverage_ratio, 8),
                 "first_date": dates.min().strftime("%Y-%m-%d") if not dates.empty else None,
                 "latest_date": dates.max().strftime("%Y-%m-%d") if not dates.empty else None,
                 "conditional": bool(definition.conditional),
@@ -1280,7 +1315,9 @@ def select_variable_window(
     for variable_id in product_series.requested_variables:
         details = copy_coverage.setdefault(variable_id, {})
         details["window_rows"] = (
-            int(selected[variable_id].notna().sum()) if variable_id in selected.columns else base.observation_count
+            finite_coverage(selected[variable_id])[0]
+            if variable_id in selected.columns
+            else base.observation_count
         )
         details["window_start_date"] = base.start_date
         details["window_end_date"] = base.end_date
@@ -1325,16 +1362,6 @@ def prepare_variable_window_index(
         product_series.open_dates.asi8 // 86_400_000_000_000, dtype=np.int64
     )
     return VariableWindowIndex(date_days, anomaly_days, open_days)
-
-
-def _longest_false_run(values: np.ndarray) -> int:
-    missing = np.flatnonzero(~values)
-    if missing.size == 0:
-        return 0
-    boundaries = np.flatnonzero(np.diff(missing) > 1)
-    starts = np.concatenate((np.asarray([0]), boundaries + 1))
-    ends = np.concatenate((boundaries, np.asarray([missing.size - 1])))
-    return int(np.max(ends - starts + 1))
 
 
 def select_variable_window_fast(
@@ -1434,37 +1461,49 @@ def select_variable_window_fast(
         )
         required_coverage = 0.80
         max_missing_allowed = 10
-    present = np.isin(expected, selected_days, assume_unique=True)
+    (
+        quality_complete,
+        quality_reason,
+        _quality_anchor,
+        _quality_observations,
+        _quality_expected,
+        coverage_value,
+        _quality_max_missing,
+        _quality_anomalies,
+    ) = period_window_quality_kernel(
+        np.ascontiguousarray(date_days[: effective_position + 1]),
+        boundary_day,
+        int(date_days[effective_position]),
+        np.ascontiguousarray(expected),
+        np.ascontiguousarray(prepared.anomaly_days),
+        10,
+        required_coverage,
+        max_missing_allowed,
+    )
     coverage_ratio = (
-        min(float(np.count_nonzero(present)) / expected.size, 1.0)
-        if expected.size
-        else None
+        None if not np.isfinite(coverage_value) else float(coverage_value)
     )
-    max_missing = _longest_false_run(present) if expected.size else 0
-    anomaly_start = int(
-        np.searchsorted(prepared.anomaly_days, anchor_day, side="right")
-    )
-    anomaly_end = int(
-        np.searchsorted(
-            prepared.anomaly_days, date_days[effective_position], side="right"
-        )
-    )
-    if anomaly_end > anomaly_start:
+    if int(quality_reason) == 3:
         raise ValidationError(
             "ADJUSTED_NAV_ANOMALY",
             f"{period} 区间内复权净值存在异常跳变，指标不予计算。",
         )
-    if selected_days.size < 2:
-        raise ValidationError("INCOMPLETE_PERIOD_COVERAGE", f"{period} 区间内净值覆盖不完整，指标不予计算。")
-    if coverage_ratio is not None and coverage_ratio < required_coverage:
+    if not bool(quality_complete):
+        if int(quality_reason) in {1, 2}:
+            raise ValidationError(
+                "INSUFFICIENT_SAMPLE",
+                f"现有历史未完整覆盖 {period} 自然周期。",
+            )
+        if coverage_ratio is None:
+            message = f"{period} 区间内净值覆盖不完整，指标不予计算。"
+        else:
+            message = (
+                f"{period} 区间内净值覆盖不完整"
+                f"（覆盖率 {coverage_ratio * 100:.1f}%），指标不予计算。"
+            )
         raise ValidationError(
             "INCOMPLETE_PERIOD_COVERAGE",
-            f"{period} 区间内净值覆盖不完整（覆盖率 {coverage_ratio * 100:.1f}%），指标不予计算。",
-        )
-    if max_missing > max_missing_allowed:
-        raise ValidationError(
-            "INCOMPLETE_PERIOD_COVERAGE",
-            f"{period} 区间内净值覆盖不完整（覆盖率 {coverage_ratio * 100:.1f}%），指标不予计算。",
+            message,
         )
 
     warnings: list[dict[str, str]] = []
@@ -1480,8 +1519,7 @@ def select_variable_window_fast(
         )
     selected = product_series.frame.iloc[start_position : effective_position + 1]
     adjusted_nav = selected["adjusted_nav"].to_numpy(dtype=np.float64, copy=False)
-    returns = np.ascontiguousarray(adjusted_nav[1:] / adjusted_nav[:-1] - 1.0)
-    log_returns = np.ascontiguousarray(np.log(adjusted_nav[1:] / adjusted_nav[:-1]))
+    returns, log_returns = _return_arrays(adjusted_nav)
     elapsed_days = int((selected.iloc[-1]["date"] - selected.iloc[0]["date"]).days)
     context: dict[str, Any] = {
         "returns": returns,
@@ -1504,7 +1542,7 @@ def select_variable_window_fast(
     for variable_id in product_series.requested_variables:
         details = copy_coverage.setdefault(variable_id, {})
         details["window_rows"] = (
-            int(selected[variable_id].notna().sum())
+            int(finite_coverage(selected[variable_id])[0])
             if variable_id in selected.columns
             else int(returns.size)
         )

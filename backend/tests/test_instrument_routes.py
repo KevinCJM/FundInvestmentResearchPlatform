@@ -127,6 +127,10 @@ def test_product_query_keeps_fund_universe_separate(monkeypatch, tmp_path: Path)
     assert "current_size" not in response["items"][0]
     assert response["items"][0]["snapshot_values"] == {}
     assert response["summary"]["universe_total"] == 1
+    assert response["summary"]["active_count"] == 1
+    assert response["summary"]["active_rate"] == pytest.approx(1.0)
+    assert response["execution"]["backend"] == "numba_njit_fixed_signature"
+    assert response["execution"]["request_time_compilation"] == 0
 
 
 def _write_product_filter_fixture(data_dir: Path) -> None:
@@ -349,6 +353,32 @@ def test_product_query_defaults_to_ten_items(monkeypatch, tmp_path: Path) -> Non
     assert response.json()["page_size"] == 10
 
 
+@pytest.mark.parametrize("kind", ["etf", "fund"])
+def test_product_query_exposes_and_filters_legacy_qdii_classification(
+    monkeypatch, tmp_path: Path, kind: str
+) -> None:
+    _write_info_files(tmp_path)
+    path = tmp_path / ("etf_info_df.parquet" if kind == "etf" else "fund_info_df.parquet")
+    frame = pd.read_parquet(path)
+    frame.loc[:, "name"] = frame["name"].astype(str) + "(QDII)"
+    frame.to_parquet(path, index=False)
+    client = _product_filter_client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/api/instruments/products",
+        params=[("kind", kind), ("qdii_type", "QDII")],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["qdii_type"] == "QDII"
+    assert payload["items"][0]["qdii_source"] == "legacy_info.name_marker"
+    assert payload["available_filters"]["qdii_type"] == [
+        {"value": "QDII", "label": "QDII", "count": 1}
+    ]
+
+
 def test_product_query_uses_founding_date_for_public_funds(monkeypatch, tmp_path: Path) -> None:
     _write_product_filter_fixture(tmp_path)
     client = _product_filter_client(monkeypatch, tmp_path)
@@ -427,7 +457,11 @@ def test_public_fund_detail_uses_real_nav_timeseries(monkeypatch, tmp_path: Path
     assert response["base_info"]["found_date"] == "2020-01-01"
     assert response["base_info"]["due_date"] == "2030-12-31"
     assert [point["close"] for point in response["timeseries"]] == [2.0, 2.1]
-    assert response["timeseries"][0]["volume"] == 0
+    assert {
+        field: response["timeseries"][0][field]
+        for field in ("open", "high", "low", "volume")
+    } == {"open": None, "high": None, "low": None, "volume": None}
+    assert response["execution"]["python_fallback"] == 0
 
 
 def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypatch, tmp_path: Path) -> None:
@@ -486,7 +520,11 @@ def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypa
     assert response["base_info"]["list_date"] == "2020-01-02"
     assert response["base_info"]["delist_date"] == "2026-12-31"
     assert [point["close"] for point in response["timeseries"]] == [3.0, 3.2]
-    assert response["timeseries"][0]["volume"] == 0
+    assert {
+        field: response["timeseries"][0][field]
+        for field in ("open", "high", "low", "volume")
+    } == {"open": None, "high": None, "low": None, "volume": None}
+    assert response["execution"]["python_fallback"] == 0
     assert response["metrics"]["current_size"] == 800_000.0
     assert response["metrics"]["current_size_as_of"] == "2026-08-28"
     assert response["metrics"]["current_size_source"] == "instrument_metrics_snapshot"

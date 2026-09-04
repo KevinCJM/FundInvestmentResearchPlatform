@@ -1,4 +1,4 @@
-"""Typed indicator DSL v2 compiler, inference graph and NumPy runtime.
+"""Typed indicator DSL v2 compiler, inference graph and fixed-signature NJIT runtime.
 
 This module is intentionally parallel to ``indicator_runtime.py``.  Existing
 saved indicators continue to use the legacy scalar-only v1 runtime, while new
@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from numba import float64, njit, uint8
 
 from cal_indicators.typed_operators import (
     COMPAT_OPERATOR_REGISTRY_VERSION,
@@ -32,7 +33,13 @@ from cal_indicators.typed_operators import (
     get_typed_operator_catalog,
     get_typed_operator_registry,
 )
-from cal_indicators.typed_numba_plan import NumbaPlanCompileError, compile_numba_plan
+from cal_indicators.typed_numba_plan import (
+    CompiledNumbaPlan,
+    NumbaPlanCompileError,
+    compile_numba_plan,
+    get_cached_numba_plan,
+    numba_plan_id,
+)
 from cal_indicators.typed_types import (
     ASSET_VECTOR,
     SCALAR,
@@ -43,6 +50,7 @@ from cal_indicators.typed_types import (
     TypedDslError,
     user_type_label,
 )
+from compute_policy import NJIT_BACKEND, validate_execution_audit
 
 
 DEFAULT_MAX_NODES = 128
@@ -51,6 +59,111 @@ DEFAULT_MAX_TIME = 5_000
 DEFAULT_MAX_ASSETS = 50
 DEFAULT_MAX_RUNTIME_COST = 200_000_000
 DEFAULT_MAX_LIVE_ELEMENTS = 8_000_000
+
+
+_F1 = float64[::1]
+_F2 = float64[:, ::1]
+_U1 = uint8[::1]
+_U2 = uint8[:, ::1]
+
+
+@njit(uint8(float64), cache=False, nogil=True)
+def _finite_scalar_kernel(value: float) -> int:
+    return 1 if math.isfinite(value) else 0
+
+
+@njit(uint8(_F1), cache=False, nogil=True)
+def _finite_1d_kernel(values: np.ndarray) -> int:
+    for value in values:
+        if not math.isfinite(value):
+            return 0
+    return 1
+
+
+@njit(uint8(_F2), cache=False, nogil=True)
+def _finite_2d_kernel(values: np.ndarray) -> int:
+    for row in range(values.shape[0]):
+        for column in range(values.shape[1]):
+            if not math.isfinite(values[row, column]):
+                return 0
+    return 1
+
+
+@njit(uint8(_U1), cache=False, nogil=True)
+def _binary_mask_1d_kernel(values: np.ndarray) -> int:
+    for value in values:
+        if value > 1:
+            return 0
+    return 1
+
+
+@njit(uint8(_U2), cache=False, nogil=True)
+def _binary_mask_2d_kernel(values: np.ndarray) -> int:
+    for row in range(values.shape[0]):
+        for column in range(values.shape[1]):
+            if values[row, column] > 1:
+                return 0
+    return 1
+
+
+@njit(uint8(_F1, float64), cache=False, nogil=True)
+def _weight_vector_sum_kernel(values: np.ndarray, tolerance: float) -> int:
+    total = 0.0
+    for value in values:
+        total += value
+    return 1 if abs(total - 1.0) <= tolerance else 0
+
+
+@njit(uint8(_F2, float64), cache=False, nogil=True)
+def _weight_path_sum_kernel(values: np.ndarray, tolerance: float) -> int:
+    for row in range(values.shape[0]):
+        total = 0.0
+        for column in range(values.shape[1]):
+            total += values[row, column]
+        if abs(total - 1.0) > tolerance:
+            return 0
+    return 1
+
+
+def runtime_validation_kernel_signatures() -> dict[str, list[str]]:
+    """Fixed signatures used by the Python input-contract boundary."""
+
+    dispatchers = (
+        _finite_scalar_kernel,
+        _finite_1d_kernel,
+        _finite_2d_kernel,
+        _binary_mask_1d_kernel,
+        _binary_mask_2d_kernel,
+        _weight_vector_sum_kernel,
+        _weight_path_sum_kernel,
+    )
+    return {
+        dispatcher.py_func.__name__: [
+            str(signature) for signature in dispatcher.signatures
+        ]
+        for dispatcher in dispatchers
+    }
+
+
+def runtime_validation_execution_audit() -> dict[str, Any]:
+    dispatchers = (
+        _finite_scalar_kernel,
+        _finite_1d_kernel,
+        _finite_2d_kernel,
+        _binary_mask_1d_kernel,
+        _binary_mask_2d_kernel,
+        _weight_vector_sum_kernel,
+        _weight_path_sum_kernel,
+    )
+    return validate_execution_audit(
+        {
+            "execution_backend": NJIT_BACKEND,
+            "nopython": all(bool(dispatcher.nopython_signatures) for dispatcher in dispatchers),
+            "kernel_signatures": runtime_validation_kernel_signatures(),
+            "python_fallback": 0,
+            "python_operator_calls": 0,
+        }
+    )
 
 
 def _literal_number(node: ast.AST) -> float | None:
@@ -689,7 +802,10 @@ class _TypedDagBuilder:
         if isinstance(node, ast.Constant):
             if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
                 raise TypedDslError("INVALID_LITERAL", "仅允许有限数值常量。")
-            value = float(node.value)
+            try:
+                value = float(node.value)
+            except (OverflowError, TypeError, ValueError) as exc:
+                raise TypedDslError("INVALID_LITERAL", "仅允许有限数值常量。") from exc
             if not math.isfinite(value):
                 raise TypedDslError("INVALID_LITERAL", "仅允许有限数值常量。")
             return self._append(
@@ -1082,6 +1198,7 @@ class TypedIndicatorRuntime:
         max_assets: int = DEFAULT_MAX_ASSETS,
         max_runtime_cost: int = DEFAULT_MAX_RUNTIME_COST,
         max_live_elements: int = DEFAULT_MAX_LIVE_ELEMENTS,
+        _compiled_plan: CompiledNumbaPlan | None = None,
     ) -> None:
         self.plan = plan
         self.registry = get_typed_operator_registry(plan.operator_registry_version)
@@ -1090,17 +1207,30 @@ class TypedIndicatorRuntime:
         self.max_runtime_cost = max_runtime_cost
         self.max_live_elements = max_live_elements
         self.last_trace: tuple[dict[str, Any], ...] = ()
-        try:
-            self.compiled_plan = compile_numba_plan(plan)
-        except NumbaPlanCompileError as exc:
-            raise TypedDslError(
-                "NJIT_PLAN_COMPILE_FAILED",
-                "公式无法编译为 NJIT 计算计划。",
-                details={
-                    "compiled_plan_id": exc.plan_id,
-                    "operator": exc.operator_id,
-                },
-            ) from exc
+        if _compiled_plan is not None:
+            expected_plan_id = numba_plan_id(plan)
+            if _compiled_plan.plan_id != expected_plan_id:
+                raise TypedDslError(
+                    "NJIT_PLAN_ID_MISMATCH",
+                    "已预热 NJIT 计划与当前 typed DAG 不一致。",
+                    details={
+                        "expected_compiled_plan_id": expected_plan_id,
+                        "actual_compiled_plan_id": _compiled_plan.plan_id,
+                    },
+                )
+            self.compiled_plan = _compiled_plan
+        else:
+            try:
+                self.compiled_plan = compile_numba_plan(plan)
+            except NumbaPlanCompileError as exc:
+                raise TypedDslError(
+                    "NJIT_PLAN_COMPILE_FAILED",
+                    "公式无法编译为 NJIT 计算计划。",
+                    details={
+                        "compiled_plan_id": exc.plan_id,
+                        "operator": exc.operator_id,
+                    },
+                ) from exc
 
     @classmethod
     def from_expression(
@@ -1134,6 +1264,21 @@ class TypedIndicatorRuntime:
     ) -> "TypedIndicatorRuntime":
         return cls(plan, **kwargs)
 
+    @classmethod
+    def from_warmed_plan(
+        cls, plan: TypedExpressionPlan, **kwargs: Any
+    ) -> "TypedIndicatorRuntime":
+        """Bind an immutable plan cache entry without compiling a signature."""
+
+        compiled = get_cached_numba_plan(plan)
+        if compiled is None:
+            raise TypedDslError(
+                "NJIT_PLAN_NOT_WARMED",
+                "当前公式没有已预热的固定签名 NJIT 计划。",
+                details={"compiled_plan_id": numba_plan_id(plan)},
+            )
+        return cls(plan, _compiled_plan=compiled, **kwargs)
+
     def compute(self, context: Mapping[str, Any]) -> Any:
         bindings: dict[str, int] = {}
         self.last_trace = ()
@@ -1160,15 +1305,15 @@ class TypedIndicatorRuntime:
                 allow_bind=True,
                 internal_mask=True,
             )
-            if name == "asset_weights" and not np.isclose(
-                float(np.sum(value)), 1.0, rtol=0.0, atol=1e-8
-            ):
+            if name == "asset_weights" and _weight_vector_sum_kernel(
+                value, 1e-8
+            ) != 1:
                 raise TypedDslError(
                     "WEIGHT_SUM_INVALID", "asset_weights 必须合计为 1。", node_id=node.node_id
                 )
-            if name == "weight_path" and not np.allclose(
-                np.sum(value, axis=1), 1.0, rtol=0.0, atol=1e-8
-            ):
+            if name == "weight_path" and _weight_path_sum_kernel(
+                value, 1e-8
+            ) != 1:
                 raise TypedDslError(
                     "WEIGHT_SUM_INVALID",
                     "weight_path 每个时间点的资产权重必须合计为 1。",
@@ -1195,7 +1340,7 @@ class TypedIndicatorRuntime:
             )
         try:
             result = self.compiled_plan.compute(tuple(arguments))
-        except (ValueError, ZeroDivisionError, FloatingPointError) as exc:
+        except (TypeError, ValueError, ZeroDivisionError, FloatingPointError) as exc:
             code = str(exc).strip()
             stable_codes = {
                 "DIVIDE_BY_ZERO",
@@ -1205,8 +1350,14 @@ class TypedIndicatorRuntime:
                 "NON_FINITE_RESULT",
                 "SINGULAR_MATRIX",
             }
+            if isinstance(exc, TypeError):
+                code = "NJIT_SIGNATURE_MISMATCH"
             if code not in stable_codes:
-                code = "OPERATOR_EXECUTION_FAILED"
+                code = (
+                    "NJIT_SIGNATURE_MISMATCH"
+                    if code == "NJIT_SIGNATURE_MISMATCH"
+                    else "OPERATOR_EXECUTION_FAILED"
+                )
             raise TypedDslError(
                 code,
                 "NJIT 计算计划执行失败。",
@@ -1229,11 +1380,19 @@ class TypedIndicatorRuntime:
         return float(result)
 
     def trace_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "nodes": [dict(item) for item in self.last_trace],
             "total_runtime_cost": sum(item["runtime_cost"] for item in self.last_trace),
             **self.compiled_plan.metadata(),
         }
+        payload["runtime_validation_kernel_signatures"] = (
+            runtime_validation_kernel_signatures()
+        )
+        payload["kernel_signatures"] = {
+            **payload.get("kernel_signatures", {}),
+            **payload["runtime_validation_kernel_signatures"],
+        }
+        return validate_execution_audit(payload)
 
     def _build_compiled_trace(self, bindings: Mapping[str, int]) -> list[dict[str, Any]]:
         trace: list[dict[str, Any]] = []
@@ -1289,7 +1448,19 @@ class TypedIndicatorRuntime:
         raw_array = np.asarray(value)
         if expected.is_mask:
             is_boolean = np.issubdtype(raw_array.dtype, np.bool_)
-            is_uint8_mask = raw_array.dtype == np.uint8 and np.all((raw_array == 0) | (raw_array == 1))
+            if raw_array.dtype == np.uint8:
+                mask_candidate = np.ascontiguousarray(raw_array, dtype=np.uint8)
+                if not mask_candidate.flags.writeable:
+                    mask_candidate = mask_candidate.copy()
+                is_uint8_mask = (
+                    _binary_mask_1d_kernel(mask_candidate) == 1
+                    if mask_candidate.ndim == 1
+                    else _binary_mask_2d_kernel(mask_candidate) == 1
+                    if mask_candidate.ndim == 2
+                    else bool(mask_candidate.ndim == 0 and int(mask_candidate) <= 1)
+                )
+            else:
+                is_uint8_mask = False
             if not is_boolean and not is_uint8_mask:
                 raise TypedDslError(
                     "RUNTIME_TYPE_MISMATCH",
@@ -1315,9 +1486,22 @@ class TypedIndicatorRuntime:
                     "actual_shape": list(array.shape),
                 },
             )
-        if expected.is_numeric and not np.all(np.isfinite(array)):
-            code = "NON_FINITE_INPUT" if allow_bind else "NON_FINITE_RESULT"
-            raise TypedDslError(code, f"{label} 包含 NaN 或 Inf。", node_id=node_id)
+        if expected.is_numeric:
+            if array.ndim == 0:
+                finite = _finite_scalar_kernel(float(array)) == 1
+            else:
+                numeric_array = np.ascontiguousarray(array, dtype=np.float64)
+                if not numeric_array.flags.writeable:
+                    numeric_array = numeric_array.copy()
+                finite = (
+                    _finite_1d_kernel(numeric_array) == 1
+                    if numeric_array.ndim == 1
+                    else _finite_2d_kernel(numeric_array) == 1
+                )
+                array = numeric_array
+            if not finite:
+                code = "NON_FINITE_INPUT" if allow_bind else "NON_FINITE_RESULT"
+                raise TypedDslError(code, f"{label} 包含 NaN 或 Inf。", node_id=node_id)
         for axis, expected_dimension, actual_dimension in zip(
             expected.axes,
             expected.shape,
@@ -1409,7 +1593,10 @@ class TypedIndicatorRuntime:
         dtype = np.uint8 if expected.is_mask and internal_mask else (
             np.bool_ if expected.is_mask else np.float64
         )
-        return np.ascontiguousarray(array, dtype=dtype)
+        contiguous = np.ascontiguousarray(array, dtype=dtype)
+        if not contiguous.flags.writeable:
+            contiguous = contiguous.copy()
+        return contiguous
 
 
 def evaluate_typed_expression(
@@ -1455,4 +1642,6 @@ __all__ = [
     "get_typed_variable_catalog",
     "infer",
     "infer_typed_expression",
+    "runtime_validation_execution_audit",
+    "runtime_validation_kernel_signatures",
 ]

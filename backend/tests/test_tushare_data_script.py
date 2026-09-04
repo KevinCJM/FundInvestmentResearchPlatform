@@ -112,7 +112,7 @@ def test_build_etf_info_df_uses_tushare_schema_and_project_units() -> None:
                 "list_status": "L",
                 "mgr_name": "华夏基金管理有限公司",
                 "custod_name": "中国工商银行",
-                "etf_type": "宽基ETF",
+                "etf_type": "境内",
             }
         ]
     )
@@ -134,6 +134,23 @@ def test_build_etf_info_df_uses_tushare_schema_and_project_units() -> None:
     assert str(row["list_date"].date()) == "2004-02-23"
     assert row["management"] == "华夏基金"
     assert row["custodian"] == "中国银行"
+    assert row["qdii_type"] == "非QDII"
+    assert row["qdii_source"] == "etf_basic.etf_type"
+
+
+def test_build_etf_info_df_preserves_tushare_qdii_channel() -> None:
+    module = _load_data_script()
+    fund_df = pd.DataFrame(
+        [{"ts_code": "513100.SH", "name": "国泰纳斯达克100ETF(QDII)", "fund_type": "股票型"}]
+    )
+    etf_df = pd.DataFrame(
+        [{"ts_code": "513100.SH", "exchange": "SH", "list_status": "L", "etf_type": "QDII"}]
+    )
+
+    row = module.build_etf_info_df(fund_df, etf_df).iloc[0]
+
+    assert row["qdii_type"] == "QDII"
+    assert row["qdii_source"] == "etf_basic.etf_type"
 
 
 def test_build_etf_info_df_falls_back_to_code_suffix_without_etf_basic() -> None:
@@ -162,6 +179,8 @@ def test_build_etf_info_df_falls_back_to_code_suffix_without_etf_basic() -> None
     assert row["market"] == "深交所"
     assert row["status"] == "上市交易"
     assert row["issue_amount"] == 320000.0
+    assert row["qdii_type"] == "待确认"
+    assert row["qdii_source"] == "unavailable"
 
 
 def test_build_public_fund_info_keeps_off_exchange_domain_separate() -> None:
@@ -187,6 +206,35 @@ def test_build_public_fund_info_keeps_off_exchange_domain_separate() -> None:
     assert row["market_code"] == "O"
     assert row["market"] == "场外"
     assert row["status"] == "存续"
+    assert row["qdii_type"] == "非QDII"
+    assert row["qdii_source"] == "fund_basic.name_marker"
+
+
+def test_build_public_fund_info_derives_qdii_only_from_explicit_name_marker() -> None:
+    module = _load_data_script()
+    fund_df = pd.DataFrame(
+        [
+            {
+                "ts_code": "000834.OF",
+                "name": "大成纳斯达克100ETF联接(QDII)-A",
+                "fund_type": "股票型",
+                "status": "L",
+                "market": "O",
+            },
+            {
+                "ts_code": "000835.OF",
+                "name": "港股通精选基金",
+                "fund_type": "股票型",
+                "status": "L",
+                "market": "O",
+            },
+        ]
+    )
+
+    out = module.build_public_fund_info_df(fund_df).set_index("ts_code")
+
+    assert out.loc["000834.OF", "qdii_type"] == "QDII"
+    assert out.loc["000835.OF", "qdii_type"] == "非QDII"
 
 
 def test_adjusted_nav_normalization_preserves_rows_and_nulls_unusable_values() -> None:
@@ -1909,3 +1957,147 @@ def test_index_history_writes_typed_empty_file_when_catalog_has_no_source(
     result = pd.read_parquet(tmp_path / "index_ci_daily_df.parquet")
     assert result.empty
     assert result.columns.tolist() == ["source_api", "ts_code", "trade_date"]
+
+
+def test_macro_vintage_history_only_appends_real_revisions(tmp_path: Path) -> None:
+    module = _load_data_script()
+    path = tmp_path / "macro_cn_cpi_df.parquet"
+
+    first = module._prepare_macro_rows(
+        pd.DataFrame([{"month": "202608", "nt_yoy": 1.2}]),
+        api_name="cn_cpi",
+        observation_column="month",
+    )
+    module.merge_vintage_rows(first, path, natural_key=["observation_date"])
+    module.merge_vintage_rows(first, path, natural_key=["observation_date"])
+
+    revised = module._prepare_macro_rows(
+        pd.DataFrame([{"month": "202608", "nt_yoy": 1.3}]),
+        api_name="cn_cpi",
+        observation_column="month",
+    )
+    module.merge_vintage_rows(revised, path, natural_key=["observation_date"])
+
+    result = pd.read_parquet(path).sort_values("revision")
+    assert result["revision"].tolist() == [1, 2]
+    assert result["nt_yoy"].tolist() == [1.2, 1.3]
+    assert result["availability_status"].tolist() == [
+        "release_date_unknown",
+        "release_date_unknown",
+    ]
+    assert result["available_at"].isna().all()
+
+
+def test_fund_scale_is_derived_from_nav_assets_without_network(tmp_path: Path) -> None:
+    module = _load_data_script()
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.OF",
+                "name": "示例基金",
+                "date": pd.Timestamp("2026-08-31"),
+                "ann_date": "20260901",
+                "unit_nav": 1.25,
+                "net_asset": 125_000_000.0,
+                "total_netasset": 500_000_000.0,
+            }
+        ]
+    ).to_parquet(tmp_path / "fund_nav_df.parquet", index=False)
+
+    module.save_fund_scale(tmp_path)
+
+    result = pd.read_parquet(tmp_path / "fund_scale_df.parquet")
+    assert result.loc[0, "net_asset"] == 125_000_000.0
+    assert result.loc[0, "total_netasset"] == 500_000_000.0
+    assert result.loc[0, "source_api"] == "fund_nav"
+    assert result.loc[0, "available_at"] == pd.Timestamp("2026-09-01")
+
+
+def test_fund_event_smoke_uses_one_announcement_request_and_keeps_lineage(
+    tmp_path: Path,
+) -> None:
+    module = _load_data_script()
+    calls: list[dict[str, object]] = []
+
+    class Pro:
+        @staticmethod
+        def fund_div(**kwargs):
+            calls.append(kwargs)
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.OF",
+                        "ann_date": "20260903",
+                        "ex_date": "20260905",
+                        "pay_date": "20260907",
+                        "div_cash": 0.1,
+                    }
+                ]
+            )
+
+    args = types.SimpleNamespace(
+        smoke=True,
+        latest=False,
+        start_date="20100101",
+        end_date="20260903",
+        history_chunk_days=3650,
+        max_workers=2,
+        max_retries=1,
+        backoff_sec=0,
+        wait_on_rate_limit_sec=0,
+        retry_jitter_sec=0,
+        incremental_lookback_days=5,
+        max_latest_days=120,
+    )
+    universe = pd.DataFrame([{"ts_code": "000001.OF", "name": "示例基金"}])
+
+    module._save_fund_event_dataset(
+        pro=Pro(),
+        output_dir=tmp_path,
+        limiter=module.RateLimiter(10_000),
+        args=args,
+        universe=universe,
+        api_name="fund_div",
+        fields=module.FUND_DIVIDEND_FIELDS,
+        filename="fund_dividend_df.parquet",
+        observation_column="ex_date",
+        duplicate_subset=["available_at", "ts_code", "ex_date", "pay_date"],
+        sort_columns=["available_at", "ts_code", "ex_date", "pay_date"],
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["ann_date"] == "20260903"
+    result = pd.read_parquet(tmp_path / "fund_dividend_df.parquet")
+    assert result.loc[0, "observation_date"] == pd.Timestamp("2026-09-05")
+    assert result.loc[0, "available_at"] == pd.Timestamp("2026-09-03")
+
+
+def test_tushare_download_document_tracks_executable_contract() -> None:
+    module = _load_data_script()
+    from backend.services.data_refresh import DATASET_SPECS, MODULE_SCOPE_FLAGS
+
+    document_path = ROOT / "TushareDownload.md"
+    document = document_path.read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    missing_actions = [
+        action for action in module.ACTION_LABELS if f"`{action}`" not in document
+    ]
+    missing_files = [
+        filename
+        for filename, _date_column in DATASET_SPECS.values()
+        if f"`{filename}`" not in document
+    ]
+    missing_flags = [
+        flag
+        for scopes in MODULE_SCOPE_FLAGS.values()
+        for flag in scopes.values()
+        if f"`{flag}`" not in document
+    ]
+
+    assert not missing_actions, f"TushareDownload.md 缺少动作: {missing_actions}"
+    assert not missing_files, f"TushareDownload.md 缺少输出文件: {missing_files}"
+    assert not missing_flags, f"TushareDownload.md 缺少 CLI 参数: {missing_flags}"
+    assert "代码已支持但未下载" in document
+    assert "本地派生" in document
+    assert "TushareDownload.md" in agents

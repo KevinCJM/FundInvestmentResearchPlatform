@@ -16,6 +16,7 @@ from services.data_refresh import (
     tushare_token_configuration_enabled,
     tushare_token_configured,
 )
+from services.data_quality import build_data_quality_report
 
 
 router = APIRouter(prefix="/api/data", tags=["data-refresh"])
@@ -27,11 +28,11 @@ IndexScope = Literal[
 
 
 class DataRefreshRequest(BaseModel):
-    modules: list[Literal["base", "etf", "fund", "index"]] = Field(
-        default_factory=lambda: ["base", "etf", "fund", "index"]
+    modules: list[Literal["base", "etf", "fund", "index", "macro"]] = Field(
+        default_factory=lambda: ["base", "etf", "fund", "index", "macro"]
     )
     mode: Literal["incremental", "full"] = "incremental"
-    module_scopes: dict[Literal["base", "etf", "fund", "index"], list[str]] | None = None
+    module_scopes: dict[Literal["base", "etf", "fund", "index", "macro"], list[str]] | None = None
     # Backward compatibility for clients created before all modules exposed scopes.
     index_scopes: list[IndexScope] | None = None
 
@@ -48,6 +49,14 @@ class TushareTokenRequest(BaseModel):
 def refresh_status(response: Response, progress_only: bool = False):
     response.headers["Cache-Control"] = "no-store"
     return refresh_manager.snapshot(include_datasets=not progress_only)
+
+
+@router.get("/quality")
+def data_quality(response: Response):
+    """Return a read-only report derived from the active validated snapshot."""
+
+    response.headers["Cache-Control"] = "no-store"
+    return build_data_quality_report(refresh_manager.data_dir)
 
 
 def _ensure_token_configuration_enabled() -> None:

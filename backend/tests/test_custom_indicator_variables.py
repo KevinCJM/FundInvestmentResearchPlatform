@@ -190,6 +190,18 @@ def test_fast_window_uses_same_calendar_and_lifetime_boundaries() -> None:
 def test_variable_catalog_exposes_product_contract_fields() -> None:
     catalog = {item["id"]: item for item in variable_catalog("single_product")}
 
+    assert catalog["returns"]["label"] == "复权净值普通收益率"
+    assert catalog["log_returns"]["label"] == "复权净值对数收益率"
+    assert "相邻复权净值" in catalog["returns"]["description"]
+    assert "相邻复权净值" in catalog["log_returns"]["description"]
+    assert {
+        catalog[variable_id]["label"]
+        for variable_id in ("market_open", "market_high", "market_low", "market_close")
+    } == {"开盘价", "最高价", "最低价", "收盘价"}
+    assert all(
+        catalog[variable_id]["category_label"] == "净值与价格"
+        for variable_id in ("market_open", "market_high", "market_low", "market_close")
+    )
     assert catalog["price_change"]["type"]["semantic_dimension"] == "raw_market_price"
     assert catalog["market_close"]["type"]["semantic_dimension"] == "raw_market_price"
     assert catalog["previous_close"]["type"]["semantic_dimension"] == "raw_market_price"
@@ -304,6 +316,7 @@ def test_variable_availability_route_reports_partial_fields(
 def test_typed_evaluation_uses_requested_market_variable(tmp_path: Path) -> None:
     _write_variable_data(tmp_path)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
 
     response = service.evaluate(
         indicator_ids=["builtin-average-volume-v2"],
@@ -332,6 +345,7 @@ def test_historical_as_of_requires_nav_announcement_date(tmp_path: Path) -> None
     nav = pd.read_parquet(nav_path).drop(columns=["ann_date"])
     nav.to_parquet(nav_path, index=False)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
 
     response = service.evaluate(
         indicator_ids=["builtin-total-return-v2"],

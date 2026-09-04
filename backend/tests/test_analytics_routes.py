@@ -65,6 +65,8 @@ def test_fit_classes_returns_sanitised_payload(monkeypatch, tmp_path: Path) -> N
     assert resp.dates == ["2024-01-01", "2024-01-02", "2024-01-03"]
     assert resp.navs["ClassA"][-1] == pytest.approx(1.2)
     assert resp.metrics[0]["annual_return"] == pytest.approx(0.12)
+    assert resp.metrics[0]["cumulative_return"] == pytest.approx(0.2)
+    assert resp.execution["fit_analytics"]["python_fallback"] == 0
     assert resp.consistency[0]["mean_corr"] == pytest.approx(0.9)
 
 
@@ -92,9 +94,14 @@ def test_rolling_corr_rejects_non_finite(monkeypatch, tmp_path: Path) -> None:
     )
 
     resp = routes.rolling_corr(payload)
-    assert resp.series["target"] == [0.0, 0.0, 0.5]
-    assert resp.metrics[0]["annual_vol"] == 0.0
-    assert resp.metrics[0]["sharpe"] == 0.0
+    assert resp.series["target"] == [None, None, 0.5]
+    assert resp.metrics[0]["annual_vol"] is None
+    assert resp.metrics[0]["sharpe"] is None
+    assert resp.execution["execution_backend"] == "numba_njit_fixed_signature"
+    assert resp.execution["nopython"] is True
+    assert resp.execution["object_mode"] == 0
+    assert resp.execution["python_fallback"] == 0
+    assert resp.execution["request_time_compilation"] == 0
 
 
 def test_efficient_frontier_handles_missing_file(tmp_path: Path) -> None:

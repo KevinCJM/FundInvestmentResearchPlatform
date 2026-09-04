@@ -90,6 +90,12 @@ def test_coverage_snapshot_streams_history_and_query_uses_only_small_tables(
     assert response["items"][0]["latest_date"] == "2026-08-31"
     assert summary["catalog_count"] == 2
     assert summary["covered_count"] == 1
+    assert summary["coverage_rate"] == pytest.approx(0.5)
+    assert summary["execution"]["backend"] == "numba_njit_fixed_signature"
+    assert summary["execution"]["nopython"] is True
+    assert summary["execution"]["object_mode"] == 0
+    assert summary["execution"]["python_fallback"] == 0
+    assert summary["execution"]["request_time_compilation"] == 0
     domestic = next(item for item in summary["datasets"] if item["key"] == "index_domestic")
     assert domestic["earliest_date"] == "2026-08-27"
     assert domestic["latest_date"] == "2026-08-31"

@@ -22,6 +22,7 @@ from numba import types
 from numba.core.registry import CPUDispatcher
 
 from cal_indicators import typed_numba_kernels as kernels
+from compute_policy import NJIT_BACKEND, validate_execution_audit
 
 if TYPE_CHECKING:
     from cal_indicators.typed_dsl import TypedDagNode, TypedExpressionPlan
@@ -57,17 +58,23 @@ class CompiledNumbaPlan:
         return self.dispatcher(*arguments)
 
     def metadata(self) -> dict[str, Any]:
-        return {
+        signatures = list(self.compiled_signatures)
+        audit = {
             "compiled_plan_id": self.plan_id,
             "compile_status": self.compile_status,
             "compile_ms": self.compile_ms,
             "kernel_version": self.kernel_version,
             "engine_version": self.engine_version,
             "required_workspace_bytes": self.required_workspace_bytes,
-            "compiled_signatures": list(self.compiled_signatures),
+            "compiled_signatures": signatures,
+            "kernel_signatures": {"generated_plan": signatures},
+            "execution_backend": NJIT_BACKEND,
+            "nopython": bool(self.dispatcher.nopython_signatures)
+            and len(self.dispatcher.nopython_signatures) == len(signatures),
             "python_fallback": 0,
             "python_operator_calls": 0,
         }
+        return validate_execution_audit(audit)
 
 
 _PLAN_CACHE: dict[str, CompiledNumbaPlan] = {}
@@ -255,6 +262,22 @@ def _plan_id(plan: "TypedExpressionPlan") -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def numba_plan_id(plan: "TypedExpressionPlan") -> str:
+    """Return the stable compiler-owned id without compiling the plan."""
+
+    return _plan_id(plan)
+
+
+def get_cached_numba_plan(
+    plan: "TypedExpressionPlan",
+) -> CompiledNumbaPlan | None:
+    """Return an already-warmed plan and never compile on a request path."""
+
+    plan_id = _plan_id(plan)
+    with _PLAN_CACHE_LOCK:
+        return _PLAN_CACHE.get(plan_id)
+
+
 def compile_numba_plan(plan: "TypedExpressionPlan") -> CompiledNumbaPlan:
     plan_id = _plan_id(plan)
     with _PLAN_CACHE_LOCK:
@@ -290,6 +313,10 @@ def compile_numba_plan(plan: "TypedExpressionPlan") -> CompiledNumbaPlan:
         if any(plan.context_requirements[name].rank > 0 for name in context_names):
             readonly_signature = tuple(_numba_type(plan.context_requirements[name], readonly=True) for name in context_names)
             dispatcher.compile(readonly_signature)
+        # A production dispatcher must never specialize itself on first use.
+        # Unsupported dtype/layout combinations now fail closed instead of
+        # compiling a new signature in the request that happened to hit them.
+        dispatcher.disable_compile()
     except Exception as exc:
         raise NumbaPlanCompileError(
             "typed 公式无法编译为固定签名 NJIT 计划。",
@@ -345,6 +372,42 @@ class CompiledNumbaBatchPlan:
     source_parallel: str
     compile_ms: float
 
+    @property
+    def compiled_signatures(self) -> dict[str, list[str]]:
+        return {
+            "generated_batch_serial": [
+                str(signature) for signature in self.serial_dispatcher.signatures
+            ],
+            "generated_batch_parallel": [
+                str(signature) for signature in self.parallel_dispatcher.signatures
+            ],
+        }
+
+    def metadata(self) -> dict[str, Any]:
+        signatures = {
+            **self.compiled_signatures,
+            "risk_free_scalars": [
+                str(signature)
+                for signature in _risk_free_scalars_kernel.nopython_signatures
+            ],
+        }
+        audit = {
+            "compiled_plan_id": self.plan_id,
+            "compile_status": "compiled",
+            "compile_ms": self.compile_ms,
+            "kernel_version": kernels.NUMERIC_KERNEL_VERSION,
+            "engine_version": kernels.ENGINE_VERSION,
+            "metric_count": self.metric_count,
+            "compiled_signatures": signatures,
+            "kernel_signatures": signatures,
+            "execution_backend": NJIT_BACKEND,
+            "nopython": bool(self.serial_dispatcher.nopython_signatures)
+            and bool(self.parallel_dispatcher.nopython_signatures),
+            "python_fallback": 0,
+            "python_operator_calls": 0,
+        }
+        return validate_execution_audit(audit)
+
     def compute(
         self,
         values: np.ndarray,
@@ -360,10 +423,25 @@ class CompiledNumbaBatchPlan:
         dispatcher(values, starts, ends, elapsed_days, output, statuses)
 
 
-def _risk_free_scalars(definition: dict[str, Any]) -> tuple[float, float]:
-    annual = float(definition.get("annual_risk_free_rate_percent", 0.0)) / 100.0
+@numba.njit(
+    types.UniTuple(types.float64, 2)(types.float64),
+    cache=False,
+    nogil=True,
+)
+def _risk_free_scalars_kernel(annual_percent: float) -> tuple[float, float]:
+    annual = annual_percent / 100.0
     per_observation = max(0.0, 1.0 + annual) ** (1.0 / 252.0) - 1.0
     return annual, per_observation
+
+
+_risk_free_scalars_kernel.disable_compile()
+
+
+def _risk_free_scalars(definition: dict[str, Any]) -> tuple[float, float]:
+    """Map config to the eagerly compiled risk-free conversion kernel."""
+
+    annual_percent = float(definition.get("annual_risk_free_rate_percent", 0.0))
+    return _risk_free_scalars_kernel(annual_percent)
 
 
 def _batch_variable_expression(
@@ -557,6 +635,7 @@ def compile_numba_batch_plan(
             types.int16[:, ::1],
         )
         dispatcher.compile(signature)
+        dispatcher.disable_compile()
         dispatchers.append(dispatcher)
         sources.append(source)
     compiled = CompiledNumbaBatchPlan(
@@ -573,13 +652,33 @@ def compile_numba_batch_plan(
     return compiled
 
 
+def persist_numba_batch_plan(
+    compiled: CompiledNumbaBatchPlan,
+    runtime_root: Path,
+) -> Path:
+    """Persist both fixed-signature batch lanes for restart/audit evidence."""
+
+    target = runtime_root / "generated_batches" / compiled.plan_id
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "serial.py").write_text(compiled.source_serial, encoding="utf-8")
+    (target / "parallel.py").write_text(compiled.source_parallel, encoding="utf-8")
+    (target / "plan.json").write_text(
+        json.dumps(compiled.metadata(), ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return target
+
+
 __all__ = [
     "CompiledNumbaPlan",
     "NumbaPlanCompileError",
     "compile_numba_plan",
     "compile_numba_batch_plan",
+    "get_cached_numba_plan",
     "get_cached_numba_batch_plan",
     "CompiledNumbaBatchPlan",
+    "numba_plan_id",
+    "persist_numba_batch_plan",
     "persist_numba_plan",
     "plan_cache_status",
 ]

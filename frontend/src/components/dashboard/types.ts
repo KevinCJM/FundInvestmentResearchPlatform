@@ -1,3 +1,5 @@
+import type { FixedNjitExecutionAudit } from '../../utils/fixedNjitExecution';
+
 export type DashboardKind = 'all' | 'etf' | 'fund';
 export type SegmentKind = Exclude<DashboardKind, 'all'>;
 export type DashboardStatus = 'complete' | 'partial' | 'unavailable';
@@ -129,6 +131,7 @@ export interface InstrumentAnalyticsResponse {
   data_quality: DashboardDataQuality;
   metric_definitions: Record<string, MetricDefinition>;
   units?: Record<string, string>;
+  execution: FixedNjitExecutionAudit;
 }
 
 export interface InstrumentTrendResponse {
@@ -138,6 +141,7 @@ export interface InstrumentTrendResponse {
   series: Partial<Record<SegmentKind, DashboardTrendSeries>>;
   available_values: DashboardFilterOption[];
   data_quality: Pick<DashboardDataQuality, 'warnings'>;
+  execution: FixedNjitExecutionAudit;
 }
 
 export interface RankingItem {
@@ -170,19 +174,21 @@ export interface InstrumentRankingsResponse {
   as_of?: string | null;
   items: RankingItem[];
   data_quality: Pick<DashboardDataQuality, 'warnings'>;
+  execution: FixedNjitExecutionAudit;
 }
 
 export type DashboardFilterKey = 'fund_type' | 'invest_type' | 'status' | 'management' | 'market';
 export type DashboardFilters = Record<DashboardFilterKey, string[]>;
 
 export type RefreshJobStatus = 'idle' | 'running' | 'succeeded' | 'failed';
-export type RefreshModule = 'base' | 'etf' | 'fund' | 'index';
+export type RefreshModule = 'base' | 'etf' | 'fund' | 'index' | 'macro';
 export type RefreshMode = 'incremental' | 'full';
 export type BaseRefreshScope = 'calendar' | 'stock_basic' | 'fund_company';
 export type EtfRefreshScope = 'info' | 'nav' | 'share' | 'candle';
-export type FundRefreshScope = 'info' | 'nav';
+export type FundRefreshScope = 'info' | 'nav' | 'manager' | 'scale' | 'portfolio' | 'dividend' | 'adjustment' | 'benchmark';
 export type IndexScope = 'catalog' | 'domestic' | 'industry' | 'concept' | 'global' | 'futures' | 'valuation' | 'constituents';
-export type RefreshScope = BaseRefreshScope | EtfRefreshScope | FundRefreshScope | IndexScope;
+export type MacroRefreshScope = 'cycle' | 'money_credit' | 'rates' | 'release_calendar';
+export type RefreshScope = BaseRefreshScope | EtfRefreshScope | FundRefreshScope | IndexScope | MacroRefreshScope;
 export type RefreshModuleScopes = Partial<Record<RefreshModule, RefreshScope[]>>;
 
 export interface DataRefreshStatus {

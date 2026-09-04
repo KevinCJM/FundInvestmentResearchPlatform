@@ -21,6 +21,25 @@ from pathlib import Path
 
 from trading_calendar import get_trading_days
 
+try:
+    from backend.backtest_numba import (
+        backtest_numba_execution_audit,
+        annual_metrics_kernel,
+        cumulative_returns_kernel,
+        portfolio_metrics_kernel,
+        portfolio_segment_path_kernel,
+        uniform_weights_kernel,
+    )
+except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from backtest_numba import (
+        backtest_numba_execution_audit,
+        annual_metrics_kernel,
+        cumulative_returns_kernel,
+        portfolio_metrics_kernel,
+        portfolio_segment_path_kernel,
+        uniform_weights_kernel,
+    )
+
 
 def slice_fit_data(nav: pd.DataFrame, up_to: pd.Timestamp, window_mode: Optional[str], data_len: Optional[int]) -> pd.DataFrame:
     """Return fitting window ending at ``up_to`` according to window_mode/data_len."""
@@ -85,11 +104,6 @@ def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError('Expect DatetimeIndex for NAV/returns frame')
     return df.sort_index()
-
-
-def _to_returns(nav_wide: pd.DataFrame) -> pd.DataFrame:
-    nav_wide = _ensure_datetime_index(nav_wide)
-    return nav_wide.pct_change().dropna()
 
 
 def gen_rebalance_dates(
@@ -233,7 +247,6 @@ def backtest_portfolio(
 
     def _static_or_rebalanced(nav: pd.DataFrame, s: Dict[str, Any]):
         base_weights = np.asarray(s.get('weights') or [], dtype=float)
-        base_weights = base_weights / max(1e-12, base_weights.sum())
         rb = s.get('rebalance') or {}
         rebal_dates: List[pd.Timestamp] = []
         if rb.get('enabled'):
@@ -245,34 +258,25 @@ def backtest_portfolio(
             rebal_dates = gen_rebalance_dates(nav.index, mode, N=N, which=which, unit=unit, fixed_interval=fixed_interval)
         recalc = bool(rb.get('recalc', False))
         markers: List[Dict[str, Any]] = []
-        nav_values = nav.to_numpy(dtype=np.float64)
+        nav_values = np.ascontiguousarray(nav.to_numpy(dtype=np.float64))
         raw_precomputed = s.get('precomputed_weights') or {}
         precomputed_lookup: Dict[pd.Timestamp, np.ndarray] = {}
         for key, value in raw_precomputed.items():
             ts = key if isinstance(key, pd.Timestamp) else pd.to_datetime(key)
             precomputed_lookup[ts] = np.asarray(value, dtype=float)
         if not rebal_dates:
-            # no rebalance: static weights (vectorised)
-            start_row = nav_values[0]
-            valid_mask = np.isfinite(start_row) & (start_row != 0.0)
-            if not np.any(valid_mask):
-                series = pd.Series(np.zeros(len(nav_values), dtype=float), index=nav.index, dtype=float)
-                return series, []
-            weights_full = base_weights.copy()
-            weights_full[~valid_mask] = 0.0
-            total = weights_full.sum()
-            if total <= 0:
-                series = pd.Series(np.zeros(len(nav_values), dtype=float), index=nav.index, dtype=float)
-                return series, []
-            weights_full /= total
-            ratios = np.divide(
-                nav_values[:, valid_mask],
-                start_row[valid_mask],
-                out=np.zeros((nav_values.shape[0], valid_mask.sum()), dtype=np.float64),
-                where=start_row[valid_mask] != 0.0
+            if nav_values.shape[0] == 0:
+                return pd.Series(dtype=float, index=nav.index), []
+            if base_weights.size != nav_values.shape[1]:
+                raise ValueError('策略权重数量必须与资产数量一致。')
+            series_np, _ = portfolio_segment_path_kernel(
+                nav_values,
+                np.ascontiguousarray(base_weights, dtype=np.float64),
+                0,
+                nav_values.shape[0] - 1,
+                1.0,
+                0.0,
             )
-            ratios = np.nan_to_num(ratios, nan=0.0, posinf=0.0, neginf=0.0)
-            series_np = ratios @ weights_full[valid_mask]
             series = pd.Series(series_np, index=nav.index, dtype=float)
             return series, []
         # ensure the first valid date has enough samples
@@ -282,21 +286,8 @@ def backtest_portfolio(
         rset, first_idx = ensure_valid_rebalance_window(nav, rset, s.get('model'))
         full_nav = nav.sort_index()
         nav = full_nav.loc[first_idx:]
-        base_weights = base_weights / max(1e-12, base_weights.sum())
-        nav_values_trim = nav.to_numpy(dtype=np.float64)
+        nav_values_trim = np.ascontiguousarray(nav.to_numpy(dtype=np.float64))
         index_lookup = {ts: idx for idx, ts in enumerate(nav.index)}
-
-        def prepare_weights(weight_vec: np.ndarray, base_row: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
-            mask = np.isfinite(base_row) & (base_row != 0.0)
-            if not np.any(mask):
-                return mask, None, None
-            weights_full = weight_vec.astype(np.float64).copy()
-            weights_full[~mask] = 0.0
-            total = weights_full.sum()
-            if total <= 0:
-                return mask, None, None
-            weights_full /= total
-            return mask, weights_full, weights_full[mask]
 
         series_np = np.full(nav_values_trim.shape[0], np.nan, dtype=np.float64)
         current_val = 1.0
@@ -310,26 +301,18 @@ def backtest_portfolio(
                 if w_calc is None:
                     history = full_nav.loc[:d0]
                     w_calc = _compute_model_weights(history, s, d0)
-                if w_calc is not None and np.isfinite(w_calc).all() and w_calc.sum() > 0:
-                    w_seg = (w_calc / w_calc.sum())
-            mask, weights_full, weights_compact = prepare_weights(w_seg, nav_values_trim[start_idx])
+                if w_calc is not None:
+                    w_seg = w_calc
             seg_index = slice(start_idx, end_idx + 1)
-            if weights_full is None or weights_compact is None:
-                segment_path = np.full(end_idx - start_idx + 1, current_val, dtype=np.float64)
-                marker_weights = [0.0 for _ in range(len(base_weights))]
-            else:
-                segment_nav = nav_values_trim[seg_index][:, mask]
-                base_row = nav_values_trim[start_idx, mask]
-                ratios = np.divide(
-                    segment_nav,
-                    base_row,
-                    out=np.zeros_like(segment_nav),
-                    where=base_row != 0.0
-                )
-                ratios = np.nan_to_num(ratios, nan=0.0, posinf=0.0, neginf=0.0)
-                rel_path = ratios @ weights_compact
-                segment_path = rel_path * current_val
-                marker_weights = [float(x) for x in weights_full]
+            segment_path, weights_full = portfolio_segment_path_kernel(
+                nav_values_trim,
+                np.ascontiguousarray(w_seg, dtype=np.float64),
+                start_idx,
+                end_idx,
+                current_val,
+                current_val,
+            )
+            marker_weights = [float(x) for x in weights_full]
             series_np[seg_index] = segment_path
             markers.append({
                 'date': d0.date().isoformat(),
@@ -351,7 +334,7 @@ def backtest_portfolio(
             w_arr = [float(name_to_weight.get(col, 0.0) or 0.0) for col in nav_wide.columns]
             s['weights'] = w_arr
         if not s.get('weights'):
-            s['weights'] = [1.0 / max(1, nav_wide.shape[1]) for _ in nav_wide.columns]
+            s['weights'] = uniform_weights_kernel(nav_wide.shape[1]).tolist()
         series, markers = _static_or_rebalanced(nav_wide, s)
         series_full = series.reindex(idx)
         series_out[name] = [None if pd.isna(x) else float(x) for x in series_full]
@@ -362,46 +345,60 @@ def backtest_portfolio(
 
     metrics_rows: List[Dict[str, Optional[float]]] = []
     ann_factor = 252.0
-    for name, values in series_out.items():
-        nav_series = pd.Series(values, index=idx, dtype=float).dropna()
-        if nav_series.empty or len(nav_series) < 2:
-            metrics_rows.append({
-                "name": name,
-                "annual_return": None,
-                "annual_vol": None,
-                "sharpe": None,
-                "var99": None,
-                "es99": None,
-                "max_drawdown": None,
-                "calmar": None,
-            })
-            continue
-        returns = nav_series.pct_change().dropna()
-        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
-        mean_ann = returns.mean() * ann_factor if not returns.empty else float("nan")
-        vol_ann = returns.std(ddof=1) * np.sqrt(ann_factor) if len(returns) > 1 else float("nan")
-        sharpe = mean_ann / vol_ann if np.isfinite(mean_ann) and np.isfinite(vol_ann) and vol_ann != 0 else float("nan")
-        if not returns.empty:
-            q01 = returns.quantile(0.01)
-            var99 = -float(q01)
-            tail = returns[returns <= q01]
-            es99 = -float(tail.mean()) if len(tail) > 0 else float("nan")
-        else:
-            var99 = float("nan")
-            es99 = float("nan")
-        roll_max = nav_series.cummax()
-        drawdown = nav_series.divide(roll_max, axis=0) - 1.0
-        max_dd = float(drawdown.min()) if not drawdown.empty else float("nan")
-        calmar = mean_ann / abs(max_dd) if np.isfinite(mean_ann) and np.isfinite(max_dd) and max_dd != 0 else float("nan")
+    strategy_names = list(series_out)
+    nav_columns = [
+        np.asarray(
+            [np.nan if value is None else value for value in series_out[name]],
+            dtype=np.float64,
+        )
+        for name in strategy_names
+    ]
+    nav_matrix = np.ascontiguousarray(
+        np.column_stack(nav_columns)
+        if nav_columns
+        else np.empty((len(idx), 0), dtype=np.float64)
+    )
+    cumulative_values = cumulative_returns_kernel(nav_matrix)
+    annual_years, annual_values = annual_metrics_kernel(
+        nav_matrix,
+        np.ascontiguousarray(idx.year.to_numpy(dtype=np.int64)),
+        ann_factor,
+    )
+    annual_metric_names = (
+        "cumulative",
+        "volatility",
+        "annualReturn",
+        "annualVolatility",
+        "sharpe",
+        "maxDrawdown",
+        "calmar",
+    )
+    annual_payload: Dict[str, Any] = {
+        "years": [int(year) for year in annual_years],
+        "series": {},
+    }
+    for strategy_index, name in enumerate(strategy_names):
+        annual_payload["series"][name] = {}
+        for year_index, year in enumerate(annual_years):
+            base = strategy_index * len(annual_metric_names)
+            annual_payload["series"][name][str(int(year))] = {
+                metric_name: _safe_float(annual_values[year_index, base + metric_index])
+                for metric_index, metric_name in enumerate(annual_metric_names)
+            }
+
+    for strategy_index, name in enumerate(strategy_names):
+        nav_array = nav_matrix[:, strategy_index]
+        metric_values = portfolio_metrics_kernel(nav_array, ann_factor)
         metrics_rows.append({
             "name": name,
-            "annual_return": _safe_float(mean_ann),
-            "annual_vol": _safe_float(vol_ann),
-            "sharpe": _safe_float(sharpe),
-            "var99": _safe_float(var99),
-            "es99": _safe_float(es99),
-            "max_drawdown": _safe_float(max_dd),
-            "calmar": _safe_float(calmar),
+            "cumulative_return": _safe_float(cumulative_values[strategy_index]),
+            "annual_return": _safe_float(metric_values[0]),
+            "annual_vol": _safe_float(metric_values[1]),
+            "sharpe": _safe_float(metric_values[2]),
+            "var99": _safe_float(metric_values[3]),
+            "es99": _safe_float(metric_values[4]),
+            "max_drawdown": _safe_float(metric_values[5]),
+            "calmar": _safe_float(metric_values[6]),
         })
 
     return {
@@ -410,6 +407,8 @@ def backtest_portfolio(
         "markers": marker_out,
         "asset_names": list(nav_wide.columns),
         "metrics": metrics_rows,
+        "annual_metrics": annual_payload,
+        "execution": backtest_numba_execution_audit(),
     }
 
 
@@ -479,7 +478,7 @@ if __name__ == '__main__':
         print('[ERROR] 该配置无资产列。')
         sys.exit(2)
     # 等权权重
-    w = np.full(n, 1.0 / n).tolist()
+    w = uniform_weights_kernel(n).tolist()
 
     test_payloads = [
         {

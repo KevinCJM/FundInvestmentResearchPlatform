@@ -1,3 +1,8 @@
+import {
+  assertFixedNjitExecution,
+  type FixedNjitExecutionAudit,
+} from '../utils/fixedNjitExecution'
+
 export type ProductKind = 'etf' | 'fund'
 
 export type IndicatorSource = 'built_in' | 'custom'
@@ -351,6 +356,8 @@ export interface ValidationResponse {
   latex?: string | null
   display_latex?: string | null
   math_notation_version?: string | null
+  compile_token?: string | null
+  compile_token_scope?: 'current_process_warm_cache' | string
 }
 
 export interface ComposeArgument {
@@ -525,22 +532,39 @@ export interface EvaluationResult {
 export interface EvaluateIndicatorsRequest {
   indicator_ids?: string[]
   inline_definition?: IndicatorDraft
+  compile_token?: string
   targets: EvaluationTarget[]
   period: string
   as_of?: string
   include_series?: boolean
 }
 
+export interface ExportIndicatorExcelRequest {
+  indicator_ids?: string[]
+  inline_definition?: IndicatorDraft
+  compile_token?: string
+  targets: EvaluationTarget[]
+  period: string
+  as_of?: string
+}
+
+export interface DownloadedFile {
+  blob: Blob
+  filename: string
+}
+
 export interface EvaluatePortfolioIndicatorsRequest {
   run_id: string
   indicator_ids?: string[]
   inline_definition?: IndicatorDraft
+  compile_token?: string
 }
 
 export interface EvaluateIndicatorsResponse {
   results: EvaluationResult[]
   summary: { total: number; ok: number; warning: number; error: number; unavailable?: number }
   cache: { hits: number; misses: number }
+  execution: FixedNjitExecutionAudit
 }
 
 export interface EvaluationPlanIndicator {
@@ -551,7 +575,7 @@ export interface EvaluationPlanIndicator {
   direction: IndicatorDirection
 }
 
-export type InstrumentProductFilterKey = 'fund_type' | 'invest_type' | 'market' | 'status' | 'management' | 'custodian'
+export type InstrumentProductFilterKey = 'fund_type' | 'invest_type' | 'qdii_type' | 'market' | 'status' | 'management' | 'custodian'
 
 export type InstrumentProductFilterState = Record<InstrumentProductFilterKey, string[]>
 
@@ -633,16 +657,16 @@ export interface EvaluationPlanRunResponse {
     has_next: boolean
     expires_at: string
   }
-  execution?: {
-    engine_version: string
-    data_generation: string
-    execution_lanes: Record<string, number>
-    worker_processes: number
-    numba_threads: number
-    shared_memory_bytes: number
-    combinations: number
-    cache: Record<string, number>
-    timings_ms: Record<string, number>
+  execution: FixedNjitExecutionAudit & {
+    engine_version?: string
+    data_generation?: string
+    execution_lanes?: Record<string, number>
+    worker_processes?: number
+    numba_threads?: number
+    shared_memory_bytes?: number
+    combinations?: number
+    cache?: Record<string, number>
+    timings_ms?: Record<string, number>
     parallel_scoring?: boolean
   }
 }
@@ -699,6 +723,8 @@ export interface InstrumentProductItem extends InstrumentSearchItem {
   fund_type?: string | null
   type?: string | null
   invest_type?: string | null
+  qdii_type?: 'QDII' | '非QDII' | string | null
+  qdii_source?: string | null
   market?: string | null
   status?: string | null
   list_date?: string | null
@@ -749,7 +775,7 @@ export interface InstrumentProductQueryOptions {
   pageSize?: number
   sortBy?: string
   sortDir?: 'asc' | 'desc'
-  filters?: Partial<Record<'fund_type' | 'type' | 'invest_type' | 'market' | 'status' | 'management' | 'custodian', string[]>>
+  filters?: Partial<Record<'fund_type' | 'type' | 'invest_type' | 'qdii_type' | 'market' | 'status' | 'management' | 'custodian', string[]>>
   conditions?: ProductCondition[]
   snapshotMetrics?: string[]
   signal?: AbortSignal
@@ -811,6 +837,53 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     return undefined as T
   }
   return response.json() as Promise<T>
+}
+
+async function calculationRequest<T extends { execution: unknown }>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const result = await apiRequest<T>(path, init)
+  assertFixedNjitExecution(result.execution, '指标与评价计算')
+  return result
+}
+
+const downloadFilename = (disposition: string | null) => {
+  if (!disposition) return 'indicator-calculation.xlsx'
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      return encoded
+    }
+  }
+  return disposition.match(/filename="?([^";]+)"?/i)?.[1] ?? 'indicator-calculation.xlsx'
+}
+
+async function fileRequest(path: string, init?: RequestInit): Promise<DownloadedFile> {
+  const headers = new Headers(init?.headers)
+  if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  const response = await fetch(path, { ...init, headers })
+  if (!response.ok) {
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+    const maybeDetail = (payload as { detail?: unknown } | null)?.detail
+    const detail = typeof maybeDetail === 'object' && maybeDetail !== null
+      ? maybeDetail as ApiErrorDetail
+      : typeof maybeDetail === 'string'
+        ? { code: `HTTP_${response.status}`, message: maybeDetail }
+        : { ...DEFAULT_ERROR, code: `HTTP_${response.status}` }
+    throw new CustomIndicatorApiError(response.status, { ...DEFAULT_ERROR, ...detail })
+  }
+  return {
+    blob: await response.blob(),
+    filename: downloadFilename(response.headers.get('Content-Disposition')),
+  }
 }
 
 export const getCustomIndicatorMeta = () =>
@@ -909,7 +982,13 @@ export const getVariableAvailability = (input: {
 })
 
 export const evaluateCustomIndicators = (input: EvaluateIndicatorsRequest) =>
-  apiRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', {
+  calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+
+export const exportCustomIndicatorExcel = (input: ExportIndicatorExcelRequest) =>
+  fileRequest('/api/custom-indicators/export-excel', {
     method: 'POST',
     body: JSON.stringify(input),
   })
@@ -918,7 +997,7 @@ export const getPortfolioRuns = () =>
   apiRequest<{ items: PortfolioRun[] }>('/api/portfolio-runs')
 
 export const evaluatePortfolioCustomIndicators = (input: EvaluatePortfolioIndicatorsRequest) =>
-  apiRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate-portfolio', {
+  calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate-portfolio', {
     method: 'POST',
     body: JSON.stringify(input),
   })
@@ -1006,12 +1085,12 @@ export const deleteEvaluationPlan = (id: string, revision: number) =>
   })
 
 export const runEvaluationPlan = (id: string, asOf?: string) =>
-  apiRequest<EvaluationPlanRunResponse>(`/api/evaluation-plans/${encodeURIComponent(id)}/run`, {
+  calculationRequest<EvaluationPlanRunResponse>(`/api/evaluation-plans/${encodeURIComponent(id)}/run`, {
     method: 'POST',
     body: JSON.stringify(asOf ? { as_of: asOf } : {}),
   })
 
 export const getEvaluationPlanRunPage = (resultId: string, page = 1, pageSize = 100) =>
-  apiRequest<EvaluationPlanRunResponse>(
+  calculationRequest<EvaluationPlanRunResponse>(
     `/api/evaluation-plan-runs/${encodeURIComponent(resultId)}?page=${page}&page_size=${pageSize}`,
   )

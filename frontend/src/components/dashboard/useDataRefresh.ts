@@ -124,16 +124,23 @@ export function useDataRefresh(onCompleted: () => void) {
       return false;
     }
     const modeText = mode === 'full'
-      ? '全量重建可能运行数小时，并会逐只基金循环抓取历史净值'
+      ? '全量重建可能运行数小时；基金净值与复权因子按基金抓取，持仓和分红按公告日抓取'
       : '增量更新会从本地最新日期开始补抓';
-    const moduleLabels: Record<RefreshModule, string> = { base: '基础信息', etf: 'ETF', fund: '场外公募基金', index: '指数' };
+    const moduleLabels: Record<RefreshModule, string> = { base: '基础信息', etf: 'ETF', fund: '场外公募基金', index: '指数', macro: '宏观数据' };
     const scopeLabels: Record<RefreshModule, Record<string, string>> = {
       base: { calendar: '交易日历', stock_basic: '股票目录', fund_company: '基金公司' },
       etf: { info: '产品基础信息', nav: '净值', share: '份额与规模', candle: '交易行情' },
-      fund: { info: '产品基础信息', nav: '复权净值' },
+      fund: {
+        info: '产品基础信息', nav: '复权净值', manager: '基金经理', scale: '资产规模',
+        portfolio: '股票持仓披露', dividend: '分红记录', adjustment: '复权因子', benchmark: '业绩基准库',
+      },
       index: {
         catalog: '指数目录', domestic: '境内指数', industry: '行业指数', concept: '概念板块',
         global: '国际指数', futures: '商品期货指数', valuation: '指数估值', constituents: '成分与权重',
+      },
+      macro: {
+        cycle: '增长、通胀与景气', money_credit: '货币与社会融资',
+        rates: '利率与回购', release_calendar: '发布日历',
       },
     };
     const moduleText = modules.map((item) => moduleLabels[item]).join('、');

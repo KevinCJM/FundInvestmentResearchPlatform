@@ -25,8 +25,10 @@ import numpy as np
 import pandas as pd
 
 try:
+    from backend.instrument_analytics_numba import int_less_than_count_kernel
     from backend.market_data import resolve_market_data_file
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from instrument_analytics_numba import int_less_than_count_kernel
     from market_data import resolve_market_data_file
 
 from backtest_engine import gen_rebalance_dates
@@ -35,7 +37,26 @@ from strategy import compute_risk_budget_weights, compute_target_weights
 from .errors import ConflictError, IndicatorDomainError, ValidationError
 from .presentation import metric_presentation
 from .portfolio_repository import PortfolioRunRepository, ResearchTargetRepository
+from .portfolio_numba import (
+    equal_weights_kernel,
+    normalize_long_only_weights_kernel,
+    portfolio_diagnosis_kernel,
+    portfolio_drift_backtest_kernel,
+    portfolio_numba_execution_audit,
+    portfolio_summary_kernel,
+    strict_returns_kernel,
+    turnover_path_kernel,
+    validate_unit_weights_kernel,
+)
 from .series_provider import DEFAULT_DATA_DIR, load_adjusted_product_series
+from product_pools.errors import ProductPoolDomainError
+from product_pools.membership import InvestableUniverseMembership
+from product_pools.repository import InvestableUniverseRepository
+from portfolio_regime import (
+    PublishedRegimeBacktestReference,
+    PublishedRegimeBacktestResolver,
+    condition_return_backtest,
+)
 
 
 PORTFOLIO_SCHEMA_VERSION = "2.0.0"
@@ -178,13 +199,25 @@ class PortfolioResearchService:
         workspace_data_dir: Optional[Path] = None,
         market_data_dir: Optional[Path] = None,
         cache: Optional[PortfolioSnapshotCache] = None,
+        regime_backtest_resolver: Optional[PublishedRegimeBacktestResolver] = None,
     ) -> None:
         configured = os.getenv("CUSTOM_INDICATOR_DATA_DIR")
         self.workspace_data_dir = workspace_data_dir or (Path(configured) if configured else DEFAULT_DATA_DIR)
         self.market_data_dir = market_data_dir or DEFAULT_DATA_DIR
         self.targets = ResearchTargetRepository(self.workspace_data_dir / "research_targets.json")
         self.runs = PortfolioRunRepository(self.workspace_data_dir / "portfolio_runs.json")
+        self.investable_universes = InvestableUniverseRepository(
+            self.workspace_data_dir / "investable_universes.json"
+        )
+        self.universe_membership = InvestableUniverseMembership(
+            self.investable_universes
+        )
         self.cache = cache or PortfolioSnapshotCache()
+        self.regime_backtest_resolver = regime_backtest_resolver or (
+            PublishedRegimeBacktestResolver(self.workspace_data_dir)
+            if workspace_data_dir is not None
+            else PublishedRegimeBacktestResolver()
+        )
 
     # ------------------------------------------------------------------
     # Research target lifecycle
@@ -219,9 +252,78 @@ class PortfolioResearchService:
             return {**nested}
         return {
             key: fields.get(key)
-            for key in ("components", "strategy", "constraints", "rebalance", "benchmark", "alignment")
+            for key in ("components", "strategy", "constraints", "rebalance", "benchmark", "alignment", "universe_snapshot_id")
             if key in fields
         }
+
+    def _resolve_investable_universe(
+        self,
+        snapshot_id: str,
+        components: list[dict[str, str]],
+    ) -> tuple[dict[str, Any], dict[str, dict[str, float]]]:
+        try:
+            result = self.universe_membership.validate(snapshot_id, components)
+        except ProductPoolDomainError as exc:
+            code = (
+                "INVESTABLE_UNIVERSE_NOT_FOUND"
+                if exc.code == "INVESTABLE_UNIVERSE_NOT_FOUND"
+                else "COMPONENT_OUTSIDE_INVESTABLE_UNIVERSE"
+            )
+            field = (
+                "definition.universe_snapshot_id"
+                if code == "INVESTABLE_UNIVERSE_NOT_FOUND"
+                else "definition.components"
+            )
+            raise ValidationError(
+                code,
+                "所选可投资域快照不存在。"
+                if code == "INVESTABLE_UNIVERSE_NOT_FOUND"
+                else "组合包含不在可投资域内或当前不可用的产品。",
+                field,
+                diagnostics=exc.diagnostics,
+            ) from exc
+        limits = {
+            component["product_id"]: {"lo": 0.0, "hi": float(member["max_weight"])}
+            for component, member in zip(components, result.members)
+            if member.get("max_weight") is not None
+        }
+        return result.reference, limits
+
+    @staticmethod
+    def _merge_universe_limits(
+        constraints: dict[str, Any],
+        universe_limits: dict[str, dict[str, float]],
+    ) -> dict[str, Any]:
+        if not universe_limits:
+            return constraints
+        merged = _deep_copy(constraints)
+        raw_limits = merged.get("single_limits") or {}
+        if not isinstance(raw_limits, dict):
+            raise ValidationError(
+                "INVALID_WEIGHT_CONSTRAINT",
+                "单产品权重约束格式无效。",
+                "definition.constraints.single_limits",
+            )
+        single_limits = _deep_copy(raw_limits)
+        for product_id, pool_limit in universe_limits.items():
+            current = single_limits.get(product_id) or {}
+            if not isinstance(current, dict):
+                raise ValidationError(
+                    "INVALID_WEIGHT_CONSTRAINT",
+                    "单产品权重约束格式无效。",
+                    "definition.constraints.single_limits",
+                )
+            lo = float(current.get("lo", 0.0) or 0.0)
+            hi = min(float(current.get("hi", 1.0)), float(pool_limit["hi"]))
+            if lo > hi + WEIGHT_TOLERANCE:
+                raise ValidationError(
+                    "INFEASIBLE_PRODUCT_POOL_LIMIT",
+                    f"产品 {product_id} 的组合下限高于产品池允许上限。",
+                    "definition.constraints.single_limits",
+                )
+            single_limits[product_id] = {"lo": lo, "hi": hi}
+        merged["single_limits"] = single_limits
+        return merged
 
     def _normalize_target(self, fields: dict[str, Any]) -> dict[str, Any]:
         name = str(fields.get("name") or "").strip()
@@ -252,13 +354,18 @@ class PortfolioResearchService:
             if key in seen:
                 raise ValidationError("DUPLICATE_COMPONENT", "同一产品不能重复加入组合。", f"definition.components.{index}")
             seen.add(key)
-            normalized_components.append(
-                {
-                    "kind": kind,
-                    "product_id": product_id,
-                    "name": str(component.get("name") or product_id),
-                }
-            )
+            normalized_component = {
+                "kind": kind,
+                "product_id": product_id,
+                "name": str(component.get("name") or product_id),
+            }
+            asset_class_id = str(component.get("asset_class_id") or "").strip()
+            asset_class_name = str(component.get("asset_class_name") or "").strip()
+            if asset_class_id:
+                normalized_component["asset_class_id"] = asset_class_id[:120]
+            if asset_class_name:
+                normalized_component["asset_class_name"] = asset_class_name[:120]
+            normalized_components.append(normalized_component)
 
         alignment = str(definition.get("alignment") or "strict_intersection")
         if alignment != "strict_intersection":
@@ -286,6 +393,15 @@ class PortfolioResearchService:
                     "当前最小/最大权重约束不存在合计为 1 的可行解。",
                     "definition.constraints",
                 )
+        universe_snapshot_id = str(definition.get("universe_snapshot_id") or "").strip()
+        universe_reference: dict[str, Any] | None = None
+        if universe_snapshot_id:
+            universe_reference, universe_limits = self._resolve_investable_universe(
+                universe_snapshot_id,
+                normalized_components,
+            )
+            constraints = self._merge_universe_limits(constraints, universe_limits)
+
         benchmark = definition.get("benchmark")
         if benchmark is not None:
             if not isinstance(benchmark, dict) or benchmark.get("kind") not in {"etf", "fund"}:
@@ -304,6 +420,8 @@ class PortfolioResearchService:
             "rebalance": rebalance,
             "benchmark": benchmark,
             "alignment": "strict_intersection",
+            "universe_snapshot_id": universe_snapshot_id or None,
+            "universe_snapshot": universe_reference,
         }
         return {
             "name": name,
@@ -345,10 +463,13 @@ class PortfolioResearchService:
                     "手工权重必须与有序产品一一对应。",
                     "definition.strategy.weights",
                 )
-            weights = np.asarray(raw_weights, dtype=float)
-            if not np.isfinite(weights).all() or (weights < 0).any():
+            weights, weight_status = validate_unit_weights_kernel(
+                np.ascontiguousarray(np.asarray(raw_weights, dtype=np.float64)),
+                WEIGHT_TOLERANCE,
+            )
+            if weight_status in {1, 2}:
                 raise ValidationError("INVALID_WEIGHTS", "手工权重必须为非负有限数值。", "definition.strategy.weights")
-            if abs(float(weights.sum()) - 1.0) > WEIGHT_TOLERANCE:
+            if weight_status == 3:
                 raise ValidationError(
                     "WEIGHTS_NOT_NORMALIZED",
                     "手工权重合计必须为 1（容差 1e-8），系统不会自动归一化。",
@@ -356,13 +477,15 @@ class PortfolioResearchService:
                 )
             normalized["weights"] = [float(value) for value in weights]
         elif strategy_type == "risk_budget":
-            raw_budgets = strategy.get("budgets") or [1.0 / asset_count] * asset_count
+            raw_budgets = strategy.get("budgets") or equal_weights_kernel(asset_count).tolist()
             if not isinstance(raw_budgets, list) or len(raw_budgets) != asset_count:
                 raise ValidationError("BUDGET_COUNT_MISMATCH", "风险预算必须与产品一一对应。", "definition.strategy.budgets")
-            budgets = np.asarray(raw_budgets, dtype=float)
-            if not np.isfinite(budgets).all() or (budgets < 0).any() or float(budgets.sum()) <= 0:
+            budgets, budget_status = normalize_long_only_weights_kernel(
+                np.ascontiguousarray(np.asarray(raw_budgets, dtype=np.float64))
+            )
+            if budget_status != 0:
                 raise ValidationError("INVALID_RISK_BUDGET", "风险预算必须为非负有限数值且至少一项大于零。", "definition.strategy.budgets")
-            normalized["budgets"] = [float(value / budgets.sum()) for value in budgets]
+            normalized["budgets"] = [float(value) for value in budgets]
         lookback = int(strategy.get("lookback_observations") or (60 if strategy_type in {"risk_budget", "target_optimization"} else 2))
         if lookback < 2 or lookback > MAX_OBSERVATIONS:
             raise ValidationError("INVALID_LOOKBACK", "回看窗口必须在 2 至 5000 个观察值之间。", "definition.strategy.lookback_observations")
@@ -414,7 +537,23 @@ class PortfolioResearchService:
             "drawdown",
             "dates",
         }
-        return [{key: value for key, value in item.items() if key not in heavy} for item in items]
+        summaries: list[dict[str, Any]] = []
+        for item in items:
+            summary = {key: value for key, value in item.items() if key not in heavy}
+            conditioning = summary.get("regime_conditioning")
+            if isinstance(conditioning, dict):
+                period_states = conditioning.get("period_states")
+                summary["regime_conditioning"] = {
+                    key: value
+                    for key, value in conditioning.items()
+                    if key != "period_states"
+                }
+                summary["regime_conditioning"]["period_states_included"] = False
+                summary["regime_conditioning"]["period_states_count"] = (
+                    len(period_states) if isinstance(period_states, list) else 0
+                )
+            summaries.append(summary)
+        return summaries
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self.runs.get(run_id)
@@ -425,12 +564,29 @@ class PortfolioResearchService:
         *,
         as_of: Optional[str] = None,
         start_date: Optional[str] = None,
+        historical_regime: PublishedRegimeBacktestReference | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         target = self.targets.get(target_id)
-        cache_key = self._snapshot_cache_key(target, as_of=as_of, start_date=start_date, end_date=None)
+        locked_regime_reference = (
+            PublishedRegimeBacktestReference.model_validate(historical_regime).model_dump()
+            if historical_regime is not None
+            else None
+        )
+        cache_key = self._snapshot_cache_key(
+            target,
+            as_of=as_of,
+            start_date=start_date,
+            end_date=None,
+            historical_regime=locked_regime_reference,
+        )
         payload = self.cache.get(cache_key)
         if payload is None:
-            payload = self._build_snapshot(target, as_of=as_of, start_date=start_date)
+            payload = self._build_snapshot(
+                target,
+                as_of=as_of,
+                start_date=start_date,
+                historical_regime=locked_regime_reference,
+            )
             self.cache.put(cache_key, payload)
             payload["cache"] = {"hit": False, "ttl_seconds": self.cache.ttl_seconds}
         else:
@@ -444,6 +600,7 @@ class PortfolioResearchService:
         as_of: Optional[str],
         start_date: Optional[str],
         end_date: Optional[str],
+        historical_regime: Optional[dict[str, Any]] = None,
     ) -> str:
         kinds = {item["kind"] for item in target["definition"]["components"]}
         benchmark = target["definition"].get("benchmark")
@@ -466,6 +623,7 @@ class PortfolioResearchService:
             "as_of": as_of,
             "start_date": start_date,
             "end_date": end_date,
+            "historical_regime": historical_regime,
             "files": file_fingerprints,
         }
         return hashlib.sha256(
@@ -566,7 +724,12 @@ class PortfolioResearchService:
             assert start_ts is not None
             strategy = definition["strategy"]
             lookback = int(strategy.get("lookback_observations") or 2)
-            prior_count = int((nav.index < start_ts).sum())
+            prior_count = int(
+                int_less_than_count_kernel(
+                    np.ascontiguousarray(nav.index.asi8, dtype=np.int64),
+                    int(start_ts.value),
+                )
+            )
             keep_prior = min(prior_count, max(lookback, 2))
             nav = nav.iloc[max(0, prior_count - keep_prior) :]
         if len(nav) < 3:
@@ -601,13 +764,43 @@ class PortfolioResearchService:
         bounds: list[tuple[float, float]] = []
         for key in asset_keys:
             plain_id = key.split(":", 1)[-1]
-            value = raw_limits.get(key, raw_limits.get(plain_id, {})) if isinstance(raw_limits, dict) else {}
+            base_id = plain_id.split(".", 1)[0]
+            value = {}
+            if isinstance(raw_limits, dict):
+                value = raw_limits.get(key) or raw_limits.get(plain_id) or raw_limits.get(base_id) or {}
             lo = float(value.get("lo", global_lo)) if isinstance(value, dict) else global_lo
             hi = float(value.get("hi", global_hi)) if isinstance(value, dict) else global_hi
             if not (0 <= lo <= hi <= 1):
                 raise ValidationError("INVALID_WEIGHT_CONSTRAINT", "单资产权重约束必须满足 0 ≤ lo ≤ hi ≤ 1。")
             bounds.append((lo, hi))
         return bounds
+
+    @classmethod
+    def _validate_weight_limits(
+        cls,
+        weights: np.ndarray,
+        definition: dict[str, Any],
+        asset_keys: list[str],
+    ) -> None:
+        bounds = cls._constraint_bounds(definition["strategy"], definition, asset_keys)
+        violations = [
+            {
+                "product_id": asset_keys[index].split(":", 1)[-1],
+                "weight": float(value),
+                "minimum": float(bounds[index][0]),
+                "maximum": float(bounds[index][1]),
+            }
+            for index, value in enumerate(weights)
+            if value < bounds[index][0] - WEIGHT_TOLERANCE
+            or value > bounds[index][1] + WEIGHT_TOLERANCE
+        ]
+        if violations:
+            raise ValidationError(
+                "PRODUCT_WEIGHT_LIMIT_EXCEEDED",
+                "策略生成的产品权重超出可投资域或组合约束。",
+                "definition.constraints.single_limits",
+                diagnostics=violations,
+            )
 
     def _strategy_weights(
         self,
@@ -618,9 +811,14 @@ class PortfolioResearchService:
         strategy_type = strategy["type"]
         asset_count = nav_history.shape[1]
         if strategy_type == "equal_weight":
-            return np.full(asset_count, 1.0 / asset_count, dtype=float)
+            return equal_weights_kernel(asset_count)
         if strategy_type == "manual":
-            return np.asarray(strategy["weights"], dtype=float)
+            normalized, status = normalize_long_only_weights_kernel(
+                np.ascontiguousarray(np.asarray(strategy["weights"], dtype=np.float64))
+            )
+            if status != 0:
+                raise ValidationError("INVALID_STRATEGY_WEIGHTS", "手工策略权重无效。")
+            return normalized
         lookback = int(strategy.get("lookback_observations") or 60)
         fit_nav = nav_history.tail(lookback + 1)
         if len(fit_nav) < min(lookback + 1, 3):
@@ -660,11 +858,12 @@ class PortfolioResearchService:
         parsed = np.asarray(weights, dtype=float)
         if parsed.shape != (asset_count,) or not np.isfinite(parsed).all() or (parsed < -WEIGHT_TOLERANCE).any():
             raise ValidationError("INVALID_STRATEGY_WEIGHTS", "策略返回了无效权重。")
-        parsed = np.maximum(parsed, 0.0)
-        total = float(parsed.sum())
-        if total <= 0:
+        normalized, status = normalize_long_only_weights_kernel(
+            np.ascontiguousarray(parsed, dtype=np.float64)
+        )
+        if status != 0:
             raise ValidationError("INVALID_STRATEGY_WEIGHTS", "策略权重合计必须大于零。")
-        return parsed / total
+        return normalized
 
     def _decision_dates(self, nav: pd.DataFrame, definition: dict[str, Any], start_date: Optional[str]) -> list[pd.Timestamp]:
         strategy = definition["strategy"]
@@ -702,7 +901,10 @@ class PortfolioResearchService:
         definition: dict[str, Any],
         start_date: Optional[str],
     ) -> dict[str, Any]:
-        returns = nav.pct_change(fill_method=None).iloc[1:].replace([np.inf, -np.inf], np.nan).dropna(how="any")
+        return_values = strict_returns_kernel(
+            np.ascontiguousarray(nav.to_numpy(dtype=np.float64))
+        )
+        returns = pd.DataFrame(return_values, index=nav.index[1:], columns=nav.columns)
         if len(returns) < 2:
             raise ValidationError("INSUFFICIENT_COMMON_SAMPLE", "共同收益观察值不足。")
         decisions = self._decision_dates(nav, definition, start_date)
@@ -716,6 +918,7 @@ class PortfolioResearchService:
             if effective_date not in returns.index:
                 continue
             weights = self._strategy_weights(nav.loc[:decision_date], definition)
+            self._validate_weight_limits(weights, definition, list(nav.columns))
             schedules[effective_date] = (decision_date, weights)
             weight_path.append(
                 {
@@ -729,56 +932,51 @@ class PortfolioResearchService:
 
         first_effective = min(schedules)
         returns = returns.loc[first_effective:]
-        current: Optional[np.ndarray] = None
-        portfolio_returns: list[float] = []
-        daily_weights: list[list[float]] = []
-        contribution_rows: list[list[float]] = []
-        for date, row in returns.iterrows():
-            if date in schedules:
-                current = schedules[date][1].copy()
-            if current is None:
+        scheduled_weights = np.zeros(returns.shape, dtype=np.float64)
+        schedule_mask = np.zeros(len(returns), dtype=np.uint8)
+        for effective_date, (_, weights) in schedules.items():
+            if effective_date not in returns.index:
                 continue
-            values = row.to_numpy(dtype=float)
-            daily_weights.append([float(value) for value in current])
-            contributions = current * values
-            portfolio_return = float(contributions.sum())
-            if not math.isfinite(portfolio_return) or portfolio_return <= -1.0:
-                raise ValidationError("NON_FINITE_RESULT", "组合收益出现非有限值或小于等于 -100%。")
-            portfolio_returns.append(portfolio_return)
-            contribution_rows.append([float(value) for value in contributions])
-            denominator = 1.0 + portfolio_return
-            current = current * (1.0 + values) / denominator
-        result_dates = returns.index[: len(portfolio_returns)]
+            position = int(returns.index.get_loc(effective_date))
+            scheduled_weights[position] = weights
+            schedule_mask[position] = 1
+        portfolio_returns, daily_weights, contribution_rows, status = portfolio_drift_backtest_kernel(
+            np.ascontiguousarray(returns.to_numpy(dtype=np.float64)),
+            np.ascontiguousarray(scheduled_weights),
+            np.ascontiguousarray(schedule_mask),
+        )
+        if status != 0:
+            messages = {
+                3: "首个共同收益日没有生效权重。",
+                4: "组合资产收益出现非有限值。",
+                5: "组合收益出现非有限值或小于等于 -100%。",
+                11: "组合权重包含非有限值或负值。",
+                12: "组合权重合计必须大于零。",
+            }
+            raise ValidationError("PORTFOLIO_NJIT_COMPUTE_FAILED", messages.get(status, "组合 NJIT 计算失败。"))
+        result_dates = returns.index[: portfolio_returns.size]
+        period_start_dates = [
+            nav.index[int(nav.index.get_loc(date)) - 1]
+            for date in result_dates
+        ]
         return {
             "dates": result_dates,
-            "asset_returns": returns.iloc[: len(portfolio_returns)].to_numpy(dtype=float),
-            "portfolio_returns": np.asarray(portfolio_returns, dtype=float),
-            "daily_weights": np.asarray(daily_weights, dtype=float),
-            "contributions": np.asarray(contribution_rows, dtype=float),
+            "period_start_dates": pd.DatetimeIndex(period_start_dates),
+            "asset_returns": np.ascontiguousarray(returns.iloc[: portfolio_returns.size].to_numpy(dtype=np.float64)),
+            "portfolio_returns": portfolio_returns,
+            "daily_weights": daily_weights,
+            "contributions": contribution_rows,
             "weight_path": weight_path,
         }
 
     @staticmethod
     def _summary(portfolio_returns: np.ndarray, annual_risk_free_rate: float = 0.0) -> dict[str, Optional[float]]:
-        count = int(portfolio_returns.size)
-        nav = np.cumprod(1.0 + portfolio_returns)
-        cumulative_return = float(nav[-1] - 1.0)
-        annual_return = float((nav[-1] ** (252.0 / count)) - 1.0) if count else float("nan")
-        annual_vol = float(np.std(portfolio_returns, ddof=1) * math.sqrt(252.0)) if count > 1 else float("nan")
-        sharpe = (annual_return - annual_risk_free_rate) / annual_vol if annual_vol > 0 else float("nan")
-        peaks = np.maximum.accumulate(nav)
-        drawdown = nav / peaks - 1.0
-        q01 = float(np.quantile(portfolio_returns, 0.01))
-        tail = portfolio_returns[portfolio_returns <= q01]
-        values = {
-            "cumulative_return": cumulative_return,
-            "annual_return": annual_return,
-            "annual_volatility": annual_vol,
-            "sharpe_ratio": sharpe,
-            "max_drawdown": abs(float(drawdown.min())),
-            "var_99": -q01,
-            "es_99": -float(tail.mean()) if tail.size else float("nan"),
-        }
+        _, _, metrics = portfolio_summary_kernel(
+            np.ascontiguousarray(portfolio_returns, dtype=np.float64),
+            252.0,
+            float(annual_risk_free_rate),
+        )
+        values = dict(zip(PORTFOLIO_SUMMARY_SPECS, metrics))
         return {key: _finite_float(value) for key, value in values.items()}
 
     def _build_snapshot(
@@ -788,6 +986,7 @@ class PortfolioResearchService:
         as_of: Optional[str],
         start_date: Optional[str],
         end_date: Optional[str] = None,
+        historical_regime: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         nav, assets, fingerprints, warnings, benchmark = self._load_common_nav(
             target,
@@ -797,18 +996,29 @@ class PortfolioResearchService:
         )
         backtest = self._backtest(nav, target["definition"], start_date)
         portfolio_returns = backtest["portfolio_returns"]
-        portfolio_nav = np.cumprod(1.0 + portfolio_returns)
-        drawdown = portfolio_nav / np.maximum.accumulate(portfolio_nav) - 1.0
         dates = pd.DatetimeIndex(backtest["dates"])
+        annual_rf = float(target["definition"]["strategy"].get("risk_free_rate") or 0.0)
+        portfolio_nav, drawdown, summary_values = portfolio_summary_kernel(
+            np.ascontiguousarray(portfolio_returns, dtype=np.float64),
+            252.0,
+            annual_rf,
+        )
         benchmark_returns: Optional[list[float]] = None
         benchmark_info: Optional[dict[str, Any]] = None
         if benchmark is not None:
             benchmark_series = benchmark.pop("values")
-            computed = benchmark_series.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan)
+            benchmark_values = strict_returns_kernel(
+                np.ascontiguousarray(
+                    benchmark_series.to_numpy(dtype=np.float64).reshape((-1, 1))
+                )
+            )[:, 0]
+            computed = pd.Series(benchmark_values, index=benchmark_series.index[1:])
             benchmark_returns = [float(value) for value in computed.loc[dates].to_numpy(dtype=float)]
             benchmark_info = benchmark
-        annual_rf = float(target["definition"]["strategy"].get("risk_free_rate") or 0.0)
-        summary = self._summary(portfolio_returns, annual_rf)
+        summary = {
+            key: _finite_float(value)
+            for key, value in zip(PORTFOLIO_SUMMARY_SPECS, summary_values)
+        }
         asset_order = [asset["key"] for asset in assets]
         weight_path = [
             {
@@ -821,7 +1031,7 @@ class PortfolioResearchService:
             }
             for entry in backtest["weight_path"]
         ]
-        return {
+        payload = {
             "schema_version": PORTFOLIO_SCHEMA_VERSION,
             "context_schema": "portfolio-v2",
             "target_id": target["id"],
@@ -851,8 +1061,20 @@ class PortfolioResearchService:
             "contribution_series": backtest["contributions"].tolist(),
             "summary": summary,
             "summary_metrics": _summary_metric_rows(summary),
+            "execution": portfolio_numba_execution_audit(),
             "warnings": warnings,
         }
+        if historical_regime is not None:
+            resolved_regime = self.regime_backtest_resolver.resolve(
+                historical_regime
+            )
+            payload["regime_conditioning"] = condition_return_backtest(
+                resolved_regime,
+                dates,
+                backtest["period_start_dates"],
+                {target["name"]: portfolio_returns},
+            )
+        return payload
 
     # ------------------------------------------------------------------
     # Diagnostics and historical scenarios
@@ -864,28 +1086,23 @@ class PortfolioResearchService:
         contributions = np.asarray(run["contribution_series"], dtype=float)
         if returns.ndim != 2 or weights.shape != returns.shape:
             raise ValidationError("SNAPSHOT_DATA_INVALID", "运行快照中的收益或权重矩阵无效。")
-        covariance = np.cov(returns, rowvar=False, ddof=1)
-        if covariance.ndim == 0:
-            covariance = covariance.reshape(1, 1)
-        correlation = np.corrcoef(returns, rowvar=False)
-        if correlation.ndim == 0:
-            correlation = correlation.reshape(1, 1)
+        (
+            covariance,
+            correlation,
+            risk_shares,
+            marginal,
+            component_risk,
+            period_returns,
+            interval_contribution,
+            concentration_values,
+        ) = portfolio_diagnosis_kernel(
+            np.ascontiguousarray(returns, dtype=np.float64),
+            np.ascontiguousarray(weights, dtype=np.float64),
+            np.ascontiguousarray(contributions, dtype=np.float64),
+            252.0,
+        )
         current_weights = weights[-1]
-        portfolio_variance = float(current_weights @ covariance @ current_weights)
-        portfolio_volatility = math.sqrt(max(portfolio_variance, 0.0))
-        if portfolio_volatility > 0:
-            marginal = covariance @ current_weights / portfolio_volatility
-            component_risk = current_weights * marginal
-            component_total = float(component_risk.sum())
-            risk_shares = component_risk / component_total if abs(component_total) > 1e-15 else np.full_like(component_risk, np.nan)
-        else:
-            marginal = np.full_like(current_weights, np.nan)
-            component_risk = np.full_like(current_weights, np.nan)
-            risk_shares = np.full_like(current_weights, np.nan)
-        hhi = float(np.square(current_weights).sum())
-        ordered = np.sort(current_weights)[::-1]
         asset_keys = list(run["asset_order"])
-        interval_contribution = contributions.sum(axis=0)
         component_rows = []
         risk_rows = []
         contribution_rows = []
@@ -895,7 +1112,7 @@ class PortfolioResearchService:
                     **asset,
                     "weight": float(current_weights[index]),
                     "current_weight": float(current_weights[index]),
-                    "period_return": float(np.prod(1.0 + returns[:, index]) - 1.0),
+                    "period_return": float(period_returns[index]),
                     "simple_return_contribution": float(interval_contribution[index]),
                 }
             )
@@ -921,10 +1138,10 @@ class PortfolioResearchService:
             )
         custom_indicators = self._evaluate_custom_indicators(run, indicator_ids or [])
         concentration_summary = {
-            "max_weight": float(ordered[0]),
-            "top3_weight": float(ordered[:3].sum()),
-            "hhi": hhi,
-            "effective_holdings": (1.0 / hhi) if hhi > 0 else None,
+            "max_weight": _finite_float(concentration_values[0]),
+            "top3_weight": _finite_float(concentration_values[1]),
+            "hhi": _finite_float(concentration_values[2]),
+            "effective_holdings": _finite_float(concentration_values[3]),
         }
         concentration = [
             {
@@ -970,10 +1187,15 @@ class PortfolioResearchService:
             for date, row in zip(run["dates"], run["contribution_series"])
         ]
         rebalances: list[dict[str, Any]] = []
-        previous: Optional[np.ndarray] = None
-        for item in run["weight_path"]:
-            current = np.asarray([item["weights"][key] for key in asset_keys], dtype=float)
-            turnover = None if previous is None else float(np.abs(current - previous).sum() / 2.0)
+        weight_path_matrix = np.ascontiguousarray(
+            np.asarray(
+                [[item["weights"][key] for key in asset_keys] for item in run["weight_path"]],
+                dtype=np.float64,
+            )
+        )
+        turnover_values = turnover_path_kernel(weight_path_matrix)
+        for item_index, item in enumerate(run["weight_path"]):
+            turnover = _finite_float(turnover_values[item_index])
             rebalances.append(
                 {
                     "date": item["effective_date"],
@@ -982,7 +1204,6 @@ class PortfolioResearchService:
                     "message": "使用决策日数据计算，并在下一共同数据日生效。",
                 }
             )
-            previous = current
         return {
             "run_id": run_id,
             "target_id": run["target_id"],
@@ -1001,6 +1222,7 @@ class PortfolioResearchService:
             "weight_path": run["weight_path"],
             "daily_weights": run["daily_weights"],
             "rebalances": rebalances,
+            "execution": portfolio_numba_execution_audit(),
             "warnings": run.get("warnings", []),
         }
 

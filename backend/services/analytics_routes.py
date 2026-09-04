@@ -9,8 +9,17 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
-from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr, compute_rolling_corr_classes, compute_class_consistency
-from optimizer import calculate_efficient_frontier_exploration
+from fit import (
+    ClassSpec,
+    ETFSpec,
+    compute_class_consistency,
+    compute_classes_nav,
+    compute_nav_performance_payload,
+    compute_rolling_corr,
+    compute_rolling_corr_classes,
+    serialize_rolling_correlation_payload,
+)
+from optimizer import calculate_efficient_frontier_exploration, returns_from_nav_matrix
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -38,10 +47,12 @@ class FitRequest(BaseModel):
 class FitResponse(BaseModel):
     dates: List[str]
     navs: dict
-    corr: List[List[float]]
+    corr: List[List[Optional[float]]]
     corr_labels: List[str]
     metrics: List[dict]
     consistency: List[dict]
+    annual_metrics: dict
+    execution: dict
 
 
 @router.post("/fit-classes", response_model=FitResponse)
@@ -62,6 +73,7 @@ def fit_classes(req: FitRequest):
     ]
     NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
     consistency_rows = compute_class_consistency(DATA_DIR, classes, start)
+    performance = compute_nav_performance_payload(NAV)
 
     def finite_or_none(x: float):
         try:
@@ -82,11 +94,12 @@ def fit_classes(req: FitRequest):
     dates = [d.strftime("%Y-%m-%d") for d in NAV.index]
     navs = {col: [finite_or_none(float(x)) for x in NAV[col].tolist()] for col in NAV.columns}
     corr_labels = list(corr.columns)
-    corr_vals = [[finite_or_none(float(v)) or 0.0 for v in row] for row in corr.values.tolist()]
+    corr_vals = [[finite_or_none(float(v)) for v in row] for row in corr.values.tolist()]
     metrics_out = []
     for name, row in metrics.iterrows():
         metrics_out.append({
             "name": str(name),
+            "cumulative_return": performance["cumulative_returns"].get(str(name)),
             "annual_return": finite_or_none(row.get("年化收益率", None)),
             "annual_vol": finite_or_none(row.get("年化波动率", None)),
             "sharpe": finite_or_none(row.get("夏普比率", None)),
@@ -103,7 +116,16 @@ def fit_classes(req: FitRequest):
             "pca_evr1": None if not isinstance(row.get("pca_evr1"), (int,float)) or not (row.get("pca_evr1") == row.get("pca_evr1")) else float(row.get("pca_evr1")),
             "max_te": None if not isinstance(row.get("max_te"), (int,float)) or not (row.get("max_te") == row.get("max_te")) else float(row.get("max_te")),
         })
-    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out, consistency=cons_out)
+    return FitResponse(
+        dates=dates,
+        navs=navs,
+        corr=corr_vals,
+        corr_labels=corr_labels,
+        metrics=metrics_out,
+        consistency=cons_out,
+        annual_metrics=performance["annual_metrics"],
+        execution=performance["execution"],
+    )
 
 
 class RollingRequest(BaseModel):
@@ -118,6 +140,7 @@ class RollingResponse(BaseModel):
     dates: List[str]
     series: dict
     metrics: List[dict]
+    execution: dict
 
 
 @router.post("/rolling-corr", response_model=RollingResponse)
@@ -128,19 +151,9 @@ def rolling_corr(req: RollingRequest):
         raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
     etfs = [ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in req.etfs]
     idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName)
-    dates = [d.strftime("%Y-%m-%d") for d in idx]
-    safe_series = {k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for k, v in series_map.items()}
-    for m in metrics:
-        for k in list(m.keys()):
-            if k == 'name':
-                continue
-            v = m[k]
-            try:
-                if not (isinstance(v, (int, float)) and v == v and abs(v) != float('inf')):
-                    m[k] = 0.0
-            except Exception:
-                m[k] = 0.0
-    return RollingResponse(dates=dates, series=safe_series, metrics=metrics)
+    return RollingResponse(
+        **serialize_rolling_correlation_payload(idx, series_map, metrics)
+    )
 
 
 class FrontierRequest(BaseModel):
@@ -170,12 +183,22 @@ def post_efficient_frontier(req: FrontierRequest):
     alloc_df = alloc_df.loc[mask]
     if alloc_df.empty:
         return JSONResponse(status_code=400, content={"detail": "在选定日期区间内没有数据"})
-    nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index().dropna(axis=0, how='any')
+    if len(nav_wide.index) < 2:
+        return JSONResponse(status_code=400, content={"detail": "完整交集净值样本不足，无法计算有效前沿"})
     return_type = req.return_metric.get('type', 'simple')
-    if return_type == 'log':
-        returns_df = np.log(nav_wide / nav_wide.shift(1)).dropna()
-    else:
-        returns_df = nav_wide.pct_change().dropna()
+    try:
+        return_values = returns_from_nav_matrix(
+            nav_wide.to_numpy(dtype=np.float64),
+            return_type=return_type,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    returns_df = pd.DataFrame(
+        return_values,
+        index=nav_wide.index[1:],
+        columns=nav_wide.columns,
+    )
 
     # constraints mapping
     asset_names = list(nav_wide.columns)
@@ -247,5 +270,7 @@ def post_efficient_frontier(req: FrontierRequest):
         "frontier": sorted([p for p in results.get("frontier", []) if is_finite_point(p)], key=lambda o: extract_value(o)[0]),
         "max_sharpe": results.get("max_sharpe") if is_finite_point(results.get("max_sharpe")) else None,
         "min_variance": results.get("min_variance") if is_finite_point(results.get("min_variance")) else None,
+        "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
+        "execution": results.get("execution"),
     }
     return clean_results

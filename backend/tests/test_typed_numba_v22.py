@@ -29,7 +29,10 @@ from cal_indicators.typed_numba_kernels import (
     warm_numba_kernel_registry,
 )
 from cal_indicators.typed_numba_plan import (
+    _risk_free_scalars,
+    _risk_free_scalars_kernel,
     compile_numba_batch_plan,
+    compile_numba_plan,
     get_cached_numba_batch_plan,
 )
 from cal_indicators.typed_operators import (
@@ -171,6 +174,32 @@ def test_fused_batch_plan_matches_single_formula_njit_runtime(parallel: bool) ->
             )
     assert batch.serial_dispatcher.signatures
     assert batch.parallel_dispatcher.signatures
+    assert batch.metadata()["execution_backend"] == "numba_njit_fixed_signature"
+    assert batch.metadata()["nopython"] is True
+    assert batch.metadata()["python_fallback"] == 0
+
+
+def test_warmed_runtime_never_adds_a_request_signature() -> None:
+    plan = compose_typed_expression("mean(returns)")
+    compiled = compile_numba_plan(plan)
+    runtime = TypedIndicatorRuntime.from_warmed_plan(plan)
+    before = tuple(compiled.dispatcher.signatures)
+
+    first = runtime.compute(
+        {"returns": np.ascontiguousarray([0.01, -0.02, 0.03], dtype=np.float64)}
+    )
+    second = runtime.compute(
+        {"returns": np.asarray([0.02, 0.01, -0.01], dtype=np.float64)}
+    )
+
+    assert first == pytest.approx(0.02 / 3.0)
+    assert second == pytest.approx(0.02 / 3.0)
+    assert tuple(compiled.dispatcher.signatures) == before
+    audit = runtime.trace_payload()
+    assert audit["execution_backend"] == "numba_njit_fixed_signature"
+    assert audit["nopython"] is True
+    assert audit["python_fallback"] == 0
+    assert all(audit["kernel_signatures"].values())
 
 
 def test_runtime_does_not_call_python_operator_registry() -> None:
@@ -197,6 +226,42 @@ def test_batch_plan_cache_lookup_never_compiles_on_miss() -> None:
     assert get_cached_numba_batch_plan((plan,), definitions, columns) is None
     compiled = compile_numba_batch_plan((plan,), definitions, columns)
     assert get_cached_numba_batch_plan((plan,), definitions, columns) is compiled
+
+
+@pytest.mark.parametrize(
+    "annual_percent",
+    (-100.0, -2.5, 0.0, 1.5, 12.3456789, 100.0),
+)
+def test_risk_free_scalars_use_one_fixed_nopython_signature_without_growth(
+    annual_percent: float,
+) -> None:
+    before = tuple(_risk_free_scalars_kernel.nopython_signatures)
+
+    annual, per_observation = _risk_free_scalars(
+        {"annual_risk_free_rate_percent": annual_percent}
+    )
+
+    expected_annual = annual_percent / 100.0
+    expected_per_observation = max(0.0, 1.0 + expected_annual) ** (1.0 / 252.0) - 1.0
+    assert annual == pytest.approx(expected_annual)
+    assert per_observation == pytest.approx(expected_per_observation)
+    assert len(before) == 1
+    assert tuple(_risk_free_scalars_kernel.nopython_signatures) == before
+
+
+def test_batch_plan_audit_includes_risk_free_conversion_kernel() -> None:
+    plan = compose_typed_expression("annual_risk_free_rate_decimal")
+    compiled = compile_numba_batch_plan(
+        (plan,),
+        ({"annual_risk_free_rate_percent": 1.5},),
+        ("adjusted_nav",),
+    )
+
+    signatures = compiled.metadata()["kernel_signatures"]
+    assert len(signatures["risk_free_scalars"]) == 1
+    assert signatures["risk_free_scalars"] == [
+        str(signature) for signature in _risk_free_scalars_kernel.nopython_signatures
+    ]
 
 
 def test_numba_v3_migration_archives_plans_once_and_clears_run_cache(

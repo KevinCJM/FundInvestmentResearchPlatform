@@ -16,6 +16,7 @@ import {
   type EvaluationPlanDraft,
   type ProductKind,
 } from '../services/customIndicators'
+import { evaluateNumericControls } from '../services/businessNumeric'
 
 vi.mock('../services/customIndicators', () => ({
   indicatorPeriodLabel: (period: string) => period,
@@ -30,6 +31,7 @@ vi.mock('../services/customIndicators', () => ({
   deleteEvaluationPlan: vi.fn(),
   runEvaluationPlan: vi.fn(),
 }))
+vi.mock('../services/businessNumeric', () => ({ evaluateNumericControls: vi.fn() }))
 
 const indicator = {
   id: 'annual-return', revision: 3, source: 'custom', read_only: false,
@@ -74,6 +76,17 @@ const productResponse = (kind: ProductKind) => ({
 
 describe('EvaluationPlan', () => {
   beforeEach(() => {
+    vi.mocked(evaluateNumericControls).mockResolvedValue({
+      items: [{ key: 'evaluation-indicator-weights', total: 100, difference: 0, within_tolerance: true, positive: true, normalized_shares: [1] }],
+      execution: {
+        execution_backend: 'numba_njit_fixed_signature',
+        nopython: true,
+        object_mode: 0,
+        python_fallback: 0,
+        request_time_compilation: 0,
+        kernel_signatures: { numeric_control_kernel: ['fixed'] },
+      },
+    })
     vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'entry-id') })
     vi.mocked(listCustomIndicators).mockResolvedValue({ items: [indicator], total: 1 })
     vi.mocked(getCustomIndicatorMeta).mockResolvedValue({ periods: [{ value: '1Y', label: '近 1 年', description: '运行周期' }] } as any)
@@ -220,6 +233,7 @@ describe('EvaluationPlan', () => {
         filters: {
           fund_type: ['股票型'],
           invest_type: [],
+          qdii_type: [],
           market: [],
           status: [],
           management: [],

@@ -14,9 +14,23 @@ vi.mock('echarts-for-react', () => ({
   },
 }))
 
+const fixedExecution = {
+  execution_backend: 'numba_njit_fixed_signature',
+  nopython: true,
+  object_mode: 0,
+  python_fallback: 0,
+  request_time_compilation: 0,
+  kernel_signatures: { typed_indicator_plan: ['fixed'] },
+}
+
 const variables: IndicatorVariable[] = [
-  { name: 'returns', label: '普通收益率序列', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{r}', shape: 'series', semantic: '复权净值计算得到的普通收益率。', semantic_role: 'ordinary_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '后复权', frequency: '交易日', unit: '小数', domains: ['single_product'], category_id: 'returns', category_label: '收益与变化', availability: 'available' },
+  { name: 'returns', label: '复权净值普通收益率', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{r}', shape: 'series', semantic: '由相邻复权净值计算的普通收益率。', semantic_role: 'ordinary_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值派生', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '复权净值', frequency: '交易日', unit: '小数', domains: ['single_product'], product_kinds: ['etf', 'fund'], category_id: 'returns', category_label: '收益与变化', availability: 'available' },
+  { name: 'log_returns', label: '复权净值对数收益率', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{\\ell}', shape: 'series', semantic: '由相邻复权净值计算的对数收益率。', semantic_role: 'log_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值派生', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '复权净值', frequency: '交易日', unit: '小数', domains: ['single_product'], product_kinds: ['etf', 'fund'], category_id: 'returns', category_label: '收益与变化', availability: 'available' },
   { name: 'adjusted_nav', label: '复权净值', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{p}_{\\mathrm{adj}}', shape: 'series', semantic: '产品在计算窗口内的复权净值。', semantic_role: 'adjusted_nav_level', measure: 'adjusted_nav', price_basis: 'adjusted_nav', source: 'Tushare 本地 Parquet', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '后复权', frequency: '交易日', unit: '净值', domains: ['single_product'], category_id: 'price', category_label: '净值与价格', availability: 'available' },
+  { name: 'market_open', label: '开盘价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{o}', shape: 'series', semantic: 'ETF 未复权日 K 开盘价。', semantic_role: 'raw_open_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'open', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_high', label: '最高价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{h}', shape: 'series', semantic: 'ETF 未复权日 K 最高价。', semantic_role: 'raw_high_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'high', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_low', label: '最低价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{l}', shape: 'series', semantic: 'ETF 未复权日 K 最低价。', semantic_role: 'raw_low_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'low', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_close', label: '收盘价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{c}', shape: 'series', semantic: 'ETF 未复权日 K 收盘价。', semantic_role: 'raw_close_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'close', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
   { name: 'volume', label: '成交量', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{v}', shape: 'series', semantic_role: 'trading_volume', measure: 'volume', source: 'Tushare ETF 日线', source_dataset: 'candle', source_field: 'vol', unit: '原始单位', domains: ['single_product'], product_kinds: ['etf'], category_id: 'trading', category_label: '成交与流动性' },
   { name: 'risk_free_rate_per_observation', label: '单观察期无风险收益率', value_type: 'scalar', dtype: 'float64', latex: 'r_f', shape: 'scalar', semantic: '按当前观察频率换算的无风险收益率。', source: '指标配置', domains: ['single_product', 'portfolio'], category_id: 'configuration', category_label: '基准与配置' },
   { name: 'asset_returns', label: '多资产普通收益矩阵', value_type: 'matrix<time,asset>', dtype: 'float64', latex: '\\mathbf{R}', shape: 'matrix', domains: ['portfolio'], semantic_role: 'ordinary_return_matrix', category_id: 'portfolio', category_label: '组合上下文' },
@@ -152,7 +166,6 @@ describe('IndicatorStudio', () => {
   let catalog: IndicatorDefinition[]
   let activeMeta: IndicatorMeta
   let composeFailure = false
-  let availabilityFailure = false
   let validateAsSeries = false
   let snapshotConfig: SnapshotIndicatorConfig
 
@@ -160,7 +173,6 @@ describe('IndicatorStudio', () => {
     catalog = [builtIn, reusableBuiltIn, portfolioBuiltIn]
     activeMeta = meta
     composeFailure = false
-    availabilityFailure = false
     validateAsSeries = false
     snapshotConfig = {
       schema_version: 1,
@@ -231,7 +243,6 @@ describe('IndicatorStudio', () => {
         return json({ expression: '\\left(\\mathbf{r}+1\\right)', latex: '\\left(\\mathbf{r}+1\\right)', display_latex: '\\left(\\mathbf{r}\\right)+\\left(1\\right)', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
       }
       if (url === '/api/custom-indicators/variables/availability') {
-        if (availabilityFailure) return apiError('真实变量可用性服务暂不可用')
         const body = JSON.parse(String(init?.body))
         const requestedTargets = body.targets || [{ kind: body.kind, product_id: body.product_id }]
         return json({
@@ -240,19 +251,29 @@ describe('IndicatorStudio', () => {
           })),
           period: body.period,
           as_of: body.as_of || null,
-          items: body.variable_ids.map((variableId: string) => ({
-            variable_id: variableId,
-            status: 'available',
-            coverage: { coverage_ratio: 0.98 },
-            actual_shape: variableId === 'risk_free_rate_per_observation' ? [] : [250],
-            reason: null,
-            target_statuses: requestedTargets.map((target: { kind: string; product_id: string }) => ({
-              target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id },
-              status: 'available',
-              reason: null,
-            })),
-            window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 249, data_latest_date: '2026-08-28' },
-          })),
+          items: body.variable_ids.map((variableId: string) => {
+            const definition = activeMeta.variables.find((variable) => variable.name === variableId)
+            const targetStatuses = requestedTargets.map((target: { kind: 'etf' | 'fund'; product_id: string }) => {
+              const applicable = !definition?.product_kinds || definition.product_kinds.includes(target.kind)
+              const kindLabel = target.kind === 'etf' ? 'ETF' : '场外公募基金'
+              return {
+                target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id },
+                status: applicable ? 'available' : 'source_unavailable',
+                reason: applicable ? null : { code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', message: `${kindLabel}没有可供计算“${definition?.label || variableId}”的真实数据源。` },
+              }
+            })
+            const availableCount = targetStatuses.filter((item) => item.status === 'available').length
+            const status = availableCount === targetStatuses.length ? 'available' : availableCount ? 'partial' : 'source_unavailable'
+            return {
+              variable_id: variableId,
+              status,
+              coverage: { coverage_ratio: 0.98 },
+              actual_shape: availableCount ? (variableId === 'risk_free_rate_per_observation' ? [] : [250]) : null,
+              reason: status === 'available' ? null : { code: 'VARIABLE_AVAILABILITY_SUMMARY', message: `所选产品中 ${availableCount}/${targetStatuses.length} 个可使用该变量。` },
+              target_statuses: targetStatuses,
+              window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 249, data_latest_date: '2026-08-28' },
+            }
+          }),
         })
       }
       if (url === '/api/portfolio-runs') return json({ items: [{ id: 'run-001', target_name: '稳健组合', target_revision: 7, effective_as_of: '2026-08-28', window: { start_date: '2024-01-02', end_date: '2026-08-28' } }] })
@@ -262,6 +283,18 @@ describe('IndicatorStudio', () => {
         const code = second ? '512960.SH' : '510300.SH'
         return json({ items: [{ code, ts_code: code, name: second ? '证券ETF' : '沪深300ETF', management: '测试', found_date: '2026-01-01', instrument_type: 'etf' }], total: 1, page: 1, page_size: 30, kind: 'etf' })
       }
+      if (url === '/api/custom-indicators/export-excel') {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            'Content-Disposition': "attachment; filename*=UTF-8''indicator-calculation.xlsx",
+          }),
+          blob: async () => new Blob(['xlsx-content'], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          }),
+        }
+      }
       if (url === '/api/custom-indicators/evaluate') {
         const body = JSON.parse(String(init?.body))
         const targets = body.targets as Array<{ kind: 'etf' | 'fund'; product_id: string }>
@@ -269,9 +302,10 @@ describe('IndicatorStudio', () => {
           results: targets.map((target) => ({ indicator_id: null, indicator_revision: null, indicator_name: '收益波动率', target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id }, period: body.period, value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 250, data_latest_date: '2026-08-28' } })),
           summary: { total: targets.length, ok: targets.length, warning: 0, error: 0 },
           cache: { hits: 0, misses: targets.length },
+          execution: fixedExecution,
         })
       }
-      if (url === '/api/custom-indicators/evaluate-portfolio') return json({ results: [{ indicator_id: null, indicator_revision: null, indicator_name: '组合波动率', target: { kind: 'portfolio', product_id: 'run-001', name: '稳健组合' }, period: 'snapshot', value: 0.087, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-08-28', start_date: '2024-01-02', end_date: '2026-08-28', observation_count: 640, data_latest_date: '2026-08-28' } }], summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 } })
+      if (url === '/api/custom-indicators/evaluate-portfolio') return json({ results: [{ indicator_id: null, indicator_revision: null, indicator_name: '组合波动率', target: { kind: 'portfolio', product_id: 'run-001', name: '稳健组合' }, period: 'snapshot', value: 0.087, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-08-28', start_date: '2024-01-02', end_date: '2026-08-28', observation_count: 640, data_latest_date: '2026-08-28' } }], summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 }, execution: fixedExecution })
       return json({})
     }))
   })
@@ -337,14 +371,7 @@ describe('IndicatorStudio', () => {
 
     expect(await screen.findByText('2 / 10')).toBeInTheDocument()
     expect(screen.queryByText(/仅保留第一个已选产品/)).not.toBeInTheDocument()
-    await waitFor(() => {
-      const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/variables/availability')
-      const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
-      expect(body.targets).toEqual([
-        { kind: 'etf', product_id: '510300.SH' },
-        { kind: 'etf', product_id: '512960.SH' },
-      ])
-    })
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
 
@@ -361,17 +388,50 @@ describe('IndicatorStudio', () => {
     expect(screen.getAllByText('512960.SH').length).toBeGreaterThan(0)
   })
 
-  it('滚动曲线必须显式启用，避免默认执行 500 次窗口计算', async () => {
+  it('在预览按钮下方下载包含直接入参与 Excel 公式的工作簿', async () => {
+    const nativeUrl = URL
+    const createObjectURL = vi.fn(() => 'blob:indicator-excel')
+    const revokeObjectURL = vi.fn()
+    class DownloadURL extends nativeUrl {
+      static createObjectURL = createObjectURL
+      static revokeObjectURL = revokeObjectURL
+    }
+    vi.stubGlobal('URL', DownloadURL)
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
     const user = setupUser()
     await renderStudio('/indicator-studio?kind=etf&ids=510300.SH')
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
-    await user.click(screen.getByRole('checkbox', { name: /同时计算滚动曲线/ }))
+
+    const previewButton = screen.getByRole('button', { name: '预览指标' })
+    const downloadButton = screen.getByRole('button', { name: '下载 Excel 计算逻辑' })
+    expect(previewButton.compareDocumentPosition(downloadButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await user.click(downloadButton)
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/custom-indicators/export-excel')
+      expect(call).toBeDefined()
+      expect(JSON.parse(String((call?.[1] as RequestInit).body))).toMatchObject({
+        targets: [{ kind: 'etf', product_id: '510300.SH' }],
+        period: '1Y',
+      })
+    })
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    expect(anchorClick).toHaveBeenCalled()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:indicator-excel')
+    expect(await screen.findByText(/Excel 已生成：包含 1 个产品/)).toBeInTheDocument()
+  })
+
+  it('指标中心不提供滚动曲线入口，预览只请求单窗口结果', async () => {
+    const user = setupUser()
+    await renderStudio('/indicator-studio?kind=etf&ids=510300.SH')
+    expect(screen.queryByRole('checkbox', { name: /同时计算滚动曲线/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /收益波动率/ }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
 
     await waitFor(() => {
       const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/evaluate')
       const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
-      expect(body.include_series).toBe(true)
+      expect(body.include_series).toBe(false)
     })
   })
 
@@ -463,6 +523,47 @@ describe('IndicatorStudio', () => {
     expect(within(dialog).getByText(/Tushare 日线数据/)).toBeInTheDocument()
     expect(within(dialog).getAllByText('时间序列').length).toBeGreaterThan(0)
     expect(within(dialog).queryByText(/series<time>|\[T\]/)).not.toBeInTheDocument()
+  })
+
+  it('构建目录不按深链产品禁用变量，收益率名称明确复权净值口径', async () => {
+    const user = setupUser()
+    await renderStudio('/indicator-studio?kind=fund&ids=005300.OF')
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
+    await user.click(screen.getByText('浏览公式构建资源'))
+    const dialog = (await screen.findByText('变量、算子与已有指标')).closest<HTMLElement>('[role="dialog"]') as HTMLElement
+    const chooseCatalogOption = async (label: string, query: string) => {
+      const combobox = within(dialog).getAllByLabelText(label).find((element) => element.getAttribute('role') === 'combobox') as HTMLElement
+      if (combobox.getAttribute('aria-expanded') !== 'true') await user.click(combobox)
+      const search = within(dialog).getByLabelText(`搜索${label}`)
+      await user.click(search)
+      await user.type(search, query)
+      await user.keyboard('{Enter}')
+    }
+
+    await chooseCatalogOption('资源分类', '净值与价格')
+    expect(within(dialog).getByLabelText('资源分类')).toHaveTextContent('净值与价格（5）')
+    const variableCombobox = within(dialog).getAllByLabelText('选择变量').find((element) => element.getAttribute('role') === 'combobox') as HTMLElement
+    await user.click(variableCombobox)
+    const priceOptions = variableCombobox.parentElement?.querySelector<HTMLElement>('[role="listbox"]')
+    expect(priceOptions).not.toBeNull()
+    expect(within(priceOptions).getByText('开盘价')).toBeInTheDocument()
+    expect(within(priceOptions).getByText('最高价')).toBeInTheDocument()
+    expect(within(priceOptions).getByText('最低价')).toBeInTheDocument()
+    expect(within(priceOptions).getByText('收盘价')).toBeInTheDocument()
+    await user.click(within(priceOptions).getByText('开盘价'))
+    expect(within(dialog).getByText('开盘价', { selector: 'h4' })).toBeInTheDocument()
+    expect(within(dialog).getByText('ETF')).toBeInTheDocument()
+    expect(within(dialog).queryByText(/场外公募基金没有可供计算“开盘价”的真实数据源/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('所选产品可用性')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '设为当前公式' })).toBeEnabled()
+
+    await chooseCatalogOption('资源分类', '收益与变化')
+    const returnCombobox = within(dialog).getAllByLabelText('选择变量').find((element) => element.getAttribute('role') === 'combobox') as HTMLElement
+    await user.click(returnCombobox)
+    const returnOptions = returnCombobox.parentElement?.querySelector<HTMLElement>('[role="listbox"]')
+    expect(returnOptions).not.toBeNull()
+    expect(within(returnOptions).getByText('复权净值普通收益率')).toBeInTheDocument()
+    expect(within(returnOptions).getByText('复权净值对数收益率')).toBeInTheDocument()
   })
 
   it('输出结果与输出契约错误只展示中文数据类型', async () => {
@@ -638,7 +739,7 @@ describe('IndicatorStudio', () => {
     const composer = await screen.findByRole('dialog', { name: '配置 逐元素加法' })
     const firstInput = within(composer).getByLabelText('输入 A 变量')
     const secondInput = within(composer).getByLabelText('输入 B 变量')
-    expect(within(secondInput).getByRole('option', { name: /普通收益率序列/ })).not.toBeDisabled()
+    expect(within(secondInput).getByRole('option', { name: /复权净值普通收益率/ })).not.toBeDisabled()
     expect(within(secondInput).getByRole('option', { name: /成交量/ })).not.toBeDisabled()
 
     await user.selectOptions(firstInput, 'volume')
@@ -701,8 +802,8 @@ describe('IndicatorStudio', () => {
     const composer = await screen.findByRole('dialog', { name: '配置 逐元素减法' })
     const firstInput = within(composer).getByLabelText('输入 A 变量')
     const secondInput = within(composer).getByLabelText('输入 B 变量')
-    expect(within(firstInput).getByRole('option', { name: /复权净值/ })).not.toBeDisabled()
-    expect(within(secondInput).getByRole('option', { name: /复权净值/ })).not.toBeDisabled()
+    expect(within(firstInput).getByRole('option', { name: /^复权净值 ·/ })).not.toBeDisabled()
+    expect(within(secondInput).getByRole('option', { name: /^复权净值 ·/ })).not.toBeDisabled()
 
     await user.selectOptions(firstInput, 'adjusted_nav')
     expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeDisabled()
@@ -788,15 +889,15 @@ describe('IndicatorStudio', () => {
     expect(chart).toHaveAttribute('data-edge-parameter', '输入值')
     expect(screen.getByText('预览周期：1Y')).toBeInTheDocument()
     const table = screen.getByRole('table', { name: 'DAG 节点、输入参数和输出类型数据表' })
-    expect(table).toHaveTextContent('输入值 ← 普通收益率序列')
+    expect(table).toHaveTextContent('输入值 ← 复权净值普通收益率')
     expect(table).toHaveTextContent('全元素标准差')
     expect(screen.getByRole('button', { name: '适配并复位图谱' })).toBeInTheDocument()
     const nodeDetails = screen.getByRole('article', { name: 'DAG 节点详情' })
     expect(nodeDetails).toHaveTextContent('全元素标准差')
     expect(nodeDetails).toHaveTextContent('理论规模：单个数值')
     expect(table).toHaveTextContent('理论规模：随计算窗口变化的时间点数量')
-    await user.click(within(table).getByRole('button', { name: '普通收益率序列' }))
-    expect(nodeDetails).toHaveTextContent('普通收益率序列')
+    await user.click(within(table).getByRole('button', { name: '复权净值普通收益率' }))
+    expect(nodeDetails).toHaveTextContent('复权净值普通收益率')
 
     await user.selectOptions(screen.getByLabelText('计算周期'), '1M')
     expect(screen.getByText('预览周期：1M')).toBeInTheDocument()
@@ -844,7 +945,7 @@ describe('IndicatorStudio', () => {
     expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/portfolio-runs')).toBe(false)
   })
 
-  it('按产品、周期和历史截止日展示变量实际可用性，并在预览时传递 as-of', async () => {
+  it('构建目录只展示变量定义，产品可计算性留到预览，并传递 as-of', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
@@ -852,20 +953,19 @@ describe('IndicatorStudio', () => {
     await user.click(await screen.findByRole('button', { name: '添加' }))
     await user.type(screen.getByLabelText('历史截止日'), '2026-08-28')
 
-    await waitFor(() => {
-      const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/variables/availability')
-      expect(calls.length).toBeGreaterThan(0)
-      const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
-      expect(body).toMatchObject({ targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1Y', as_of: '2026-08-28' })
-    })
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
 
     await user.click(screen.getByRole('button', { name: '浏览公式构建资源' }))
     const currentLogic = await screen.findByRole('dialog', { name: '编辑“收益波动率”的计算逻辑' })
     await user.click(within(currentLogic).getByRole('button', { name: '改用其他构建资源' }))
     const dialog = await screen.findByRole('dialog', { name: '变量、算子与已有指标' })
     await chooseCombobox(user, '资源分类', '收益与变化')
-    await chooseCombobox(user, '选择变量', '普通收益率序列')
-    expect(within(dialog).getByText('250 个时间点 · 98.0%')).toBeInTheDocument()
+    await chooseCombobox(user, '选择变量', '复权净值普通收益率')
+    expect(within(dialog).getAllByText('由相邻复权净值计算的普通收益率。').length).toBeGreaterThan(0)
+    expect(within(dialog).queryByText(/所选产品中/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('所选产品可用性')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('实际数据规模 / 覆盖率')).not.toBeInTheDocument()
+    expect(within(dialog).getByText(/实际可计算性将在选择产品并执行预览后/)).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: '设为当前公式' }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
     await waitFor(() => {
@@ -874,14 +974,13 @@ describe('IndicatorStudio', () => {
     })
   })
 
-  it('变量可用性核对失败时关闭入口，算子参数也不会继续提供未知变量', async () => {
-    availabilityFailure = true
+  it('构建阶段不请求产品可用性，算子继续提供定义上兼容的变量', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: '搜索' }))
     await user.click(await screen.findByRole('button', { name: '添加' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('变量可用性核对失败')
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
     const catalogDialog = await openCatalog(user)
     await user.selectOptions(within(catalogDialog).getByLabelText('资源类型'), 'operators')
     await chooseCombobox(user, '资源分类', '统计归约')
@@ -890,11 +989,12 @@ describe('IndicatorStudio', () => {
 
     const composer = await screen.findByRole('dialog', { name: '配置 全元素标准差' })
     expect(within(composer).getByLabelText('输入值 输入来源')).toHaveTextContent('兼容变量')
-    expect(within(composer).getByText(/当前产品变量中没有满足该参数类型与语义约束的输入/)).toBeInTheDocument()
-    expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeDisabled()
+    expect(within(composer).getByRole('option', { name: /复权净值普通收益率/ })).not.toBeDisabled()
+    expect(within(composer).queryByText(/当前产品变量中没有满足该参数类型与语义约束的输入/)).not.toBeInTheDocument()
+    expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeEnabled()
   })
 
-  it('资源分类只展示可用数量，并隐藏当前域不可用的分类', async () => {
+  it('资源分类只展示定义数量，并隐藏当前域不可用的分类', async () => {
     const user = setupUser()
     await renderStudio()
     const dialog = await openCatalog(user)

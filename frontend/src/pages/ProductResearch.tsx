@@ -23,6 +23,10 @@ import {
   useMetricDisplayPreference,
   withSelectedIndicators,
 } from '../components/metrics/useMetricDisplayPreference';
+import {
+  assertFixedNjitExecution,
+  type FixedNjitExecutionAudit,
+} from '../utils/fixedNjitExecution';
 
 interface ProductItem {
   ts_code?: string | null;
@@ -33,6 +37,7 @@ interface ProductItem {
   fund_type?: string | null;
   type?: string | null;
   invest_type?: string | null;
+  qdii_type?: 'QDII' | '非QDII' | string | null;
   market?: string | null;
   status?: string | null;
   benchmark?: string | null;
@@ -83,6 +88,7 @@ interface ProductsSummary {
   universe_total: number;
   filtered_total: number;
   active_count?: number | null;
+  active_rate?: number | null;
   recent_listings_12m?: number | null;
   avg_m_fee?: number | null;
   avg_c_fee?: number | null;
@@ -105,6 +111,7 @@ interface ProductsResponse {
   snapshot?: { status?: string | null; as_of?: string | null };
   sort_by: string;
   sort_dir: 'asc' | 'desc' | string;
+  execution: FixedNjitExecutionAudit;
 }
 
 const integerFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
@@ -173,6 +180,7 @@ const filterLabels: Record<string, string> = {
   fund_type: '投资类型',
   type: '基金类型',
   invest_type: '投资风格',
+  qdii_type: 'QDII 属性',
   market: '交易市场',
   status: '产品状态',
   management: '管理人',
@@ -183,6 +191,7 @@ type FilterState = {
   fund_type: string[];
   type: string[];
   invest_type: string[];
+  qdii_type: string[];
   market: string[];
   status: string[];
   management: string[];
@@ -193,6 +202,7 @@ const initialFilterState: FilterState = {
   fund_type: [],
   type: [],
   invest_type: [],
+  qdii_type: [],
   market: [],
   status: [],
   management: [],
@@ -299,7 +309,7 @@ export default function ProductResearch() {
   }, [searchInput, searchKeyword]);
 
   useEffect(() => {
-    if (location.pathname !== '/research') {
+    if (!['/research', '/product-research/products'].includes(location.pathname)) {
       return;
     }
     const next = new URLSearchParams();
@@ -362,6 +372,7 @@ export default function ProductResearch() {
           throw new Error(payload?.detail || '加载产品列表失败');
         }
         const data = (await resp.json()) as ProductsResponse;
+        assertFixedNjitExecution(data.execution, '产品研究统计');
         setResponse(data);
       } catch (err) {
         if ((err as DOMException).name === 'AbortError') {
@@ -627,7 +638,7 @@ export default function ProductResearch() {
       return;
     }
     const ids = selectedList.map((item) => encodeURIComponent(item.id)).join(',');
-    navigate(`/product-compare?ids=${ids}&kind=${productKind}`);
+    navigate(`/product-research/compare?ids=${ids}&kind=${productKind}`);
   };
 
   const canCompareSelection = !allMatchingSelected && selectedCount > 0 && selectedCount <= 10;
@@ -675,7 +686,9 @@ export default function ProductResearch() {
           <MetricCard
             title="有效存续产品"
             value={summary?.active_count !== undefined && summary?.active_count !== null ? integerFormatter.format(summary.active_count) : '--'}
-            description={summary?.filtered_total ? `占比 ${decimalFormatter.format((summary.active_count ?? 0) / summary.filtered_total * 100)}%` : '存续状态估算'}
+            description={summary?.active_rate !== undefined && summary?.active_rate !== null
+              ? `占比 ${formatSnapshotValue(summary.active_rate, 'ratio')}`
+              : '存续状态不可用'}
           />
           <MetricCard
             title="筛选合计发行规模（非AUM）"
@@ -737,6 +750,12 @@ export default function ProductResearch() {
             options={response?.available_filters?.invest_type ?? []}
             selected={filters.invest_type}
             onChange={handleFilterChange('invest_type')}
+          />
+          <FilterDropdown
+            label="QDII 属性"
+            options={response?.available_filters?.qdii_type ?? []}
+            selected={filters.qdii_type}
+            onChange={handleFilterChange('qdii_type')}
           />
           <FilterDropdown
             label="交易市场"
@@ -923,7 +942,7 @@ export default function ProductResearch() {
                     产品
                   </th>
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
-                    基金类型 / 投资类型
+                    基金类型 / 投资类型 / QDII
                   </th>
                   <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
                     风格 / 市场
@@ -960,7 +979,7 @@ export default function ProductResearch() {
                 {response?.items.map((item) => {
                   const code = item.ts_code ?? item.code ?? '--';
                   const detailPath = code && code !== '--'
-                    ? `/product/${encodeURIComponent(code)}?kind=${productKind}`
+                    ? `/product-research/products/${encodeURIComponent(code)}?kind=${productKind}`
                     : undefined;
                   const selectionId = item.ts_code ?? item.code ?? null;
                   const isSelected = selectionId ? isProductSelected(selectionId) : false;
@@ -1005,7 +1024,14 @@ export default function ProductResearch() {
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">{formatText(item.type)}</div>
-                        <div className="text-xs text-slate-400">{formatText(item.fund_type)}</div>
+                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                          <span>{formatText(item.fund_type)}</span>
+                          {item.qdii_type && (
+                            <span className={`rounded-full px-2 py-0.5 font-semibold ${item.qdii_type === 'QDII' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}>
+                              {item.qdii_type}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">{formatText(item.invest_type)}</div>

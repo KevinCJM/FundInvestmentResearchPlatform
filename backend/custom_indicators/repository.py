@@ -104,6 +104,17 @@ class IndicatorRepository:
         custom = [dict(entry["current"]) for entry in payload["items"]]
         return [dict(item) for item in self.built_ins.values()] + custom
 
+    def list_all_versions(self) -> list[dict[str, Any]]:
+        """Return every immutable definition revision for startup warmup."""
+
+        with self.store.locked():
+            payload = self.store.read_unlocked()
+        versions = [dict(item) for item in self.built_ins.values()]
+        for entry in payload["items"]:
+            versions.extend(dict(item) for item in entry.get("history", []))
+            versions.append(dict(entry["current"]))
+        return versions
+
     def get(self, indicator_id: str, revision: Optional[int] = None) -> dict[str, Any]:
         built_in = self.built_ins.get(indicator_id)
         if built_in is not None:
