@@ -103,7 +103,7 @@ describe('DataQuality', () => {
     }));
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); });
 
   it('展示真实深度检查、净值突变证据与检查口径，不再用待接入项冒充质量结论', async () => {
     render(<MemoryRouter><DataQuality /></MemoryRouter>);

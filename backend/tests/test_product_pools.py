@@ -295,6 +295,66 @@ def test_invalid_member_batch_does_not_partially_persist(service: ProductPoolSer
     assert all(member["research_status"] == "pending" for member in current["members"])
 
 
+def test_universe_snapshot_supports_downstream_summary_and_product_search(
+    service: ProductPoolService,
+):
+    pool = service.create_pool(
+        {"name": "投前产品池", "description": "", "purpose": "", "owner": ""}
+    )
+    pool = service.attach_evaluation_plan(
+        pool["id"],
+        pool["revision"],
+        {"plan_id": "plan-equity", "selection_mode": "all_ranked"},
+    )
+    pool = _approve_all(service, pool)
+    published = service.publish_pool(
+        pool["id"],
+        pool["revision"],
+        {"effective_from": "2026-09-01"},
+    )
+
+    snapshot = service.create_universe_snapshot(
+        {
+            "name": "投前研究可投资域",
+            "research_date": "2026-09-04",
+            "version_ids": [published["version"]["id"]],
+        }
+    )
+
+    assert snapshot["product_count"] == 2
+    assert snapshot["summary"] == {
+        "pool_count": 1,
+        "member_count": 2,
+        "eligible_count": 2,
+        "restricted_count": 0,
+        "watch_count": 0,
+    }
+    member = next(
+        item for item in snapshot["members"] if item["product_id"] == "510300.SH"
+    )
+    assert member["eligible"] is True
+    assert member["evaluation_sources"][0]["pool_name"] == "投前产品池"
+    assert member["evaluation_sources"][0]["source_rank"] == 1
+    assert member["evaluation_sources"][0]["source_score"] == 91.2
+
+    loaded = service.get_universe_snapshot(snapshot["id"])
+    assert loaded["summary"]["eligible_count"] == 2
+
+    search = service.search_universe_products(
+        snapshot["id"],
+        query="沪深300",
+        eligible_only=True,
+        page=1,
+        page_size=10,
+    )
+    assert search["total"] == 1
+    assert search["items"][0]["product_id"] == "510300.SH"
+    assert (
+        search["items"][0]["evaluation_sources"][0]["evaluation_plan_name"]
+        == "权益 ETF 评价"
+    )
+
+
 def test_repository_uses_optimistic_revision(service: ProductPoolService):
     pool = service.create_pool({"name": "并发测试", "description": "", "purpose": "", "owner": ""})
     updated = service.update_pool(pool["id"], pool["revision"], {"name": "新名称", "description": "", "purpose": "", "owner": ""})

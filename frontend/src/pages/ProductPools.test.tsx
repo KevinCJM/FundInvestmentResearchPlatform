@@ -317,6 +317,53 @@ describe('ProductPools', () => {
     ]))
   })
 
+  it('批量设置会跳过已经满足目标值的产品，只保存真正发生变化的成员', async () => {
+    const user = userEvent.setup()
+    const mixedPool = {
+      ...reviewPool,
+      members: reviewPool.members.map((member, index) => index === 0
+        ? { ...member, research_status: 'approved' }
+        : member),
+    }
+    const updatedPool = {
+      ...mixedPool,
+      revision: 5,
+      members: mixedPool.members.map((member) => ({ ...member, research_status: 'approved' })),
+    }
+    mocks.listProductPools.mockResolvedValue({ items: [mixedPool], total: 1 })
+    mocks.batchUpdateProductPoolMembers.mockResolvedValue(updatedPool)
+
+    render(<ProductPools />)
+
+    await screen.findByTestId('candidate-review-scroll')
+    await user.click(screen.getByLabelText('选择全部当前候选'))
+    await user.selectOptions(screen.getByLabelText('批量研究结论'), 'approved')
+    await user.click(screen.getByRole('button', { name: '应用并保存' }))
+
+    await waitFor(() => expect(mocks.batchUpdateProductPoolMembers).toHaveBeenCalledTimes(1))
+    const [, request] = mocks.batchUpdateProductPoolMembers.mock.calls[0]
+    expect(request.items).toHaveLength(1)
+    expect(request.items[0]).toEqual(expect.objectContaining({
+      product_id: '510500.SH',
+      research_status: 'approved',
+    }))
+  })
+
+  it('批量字段全部为已有值时视为幂等操作，不发无意义保存请求', async () => {
+    const user = userEvent.setup()
+    mocks.listProductPools.mockResolvedValue({ items: [reviewPool], total: 1 })
+
+    render(<ProductPools />)
+
+    await screen.findByTestId('candidate-review-scroll')
+    await user.click(screen.getByLabelText('选择全部当前候选'))
+    await user.selectOptions(screen.getByLabelText('批量使用状态'), 'normal')
+    await user.click(screen.getByRole('button', { name: '应用并保存' }))
+
+    expect(mocks.batchUpdateProductPoolMembers).not.toHaveBeenCalled()
+    expect(await screen.findByRole('status')).toHaveTextContent('已选 2 个产品均已满足当前批量设置，无需保存。')
+  })
+
   it('renders each attached plan and removes one association independently', async () => {
     const user = userEvent.setup()
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)

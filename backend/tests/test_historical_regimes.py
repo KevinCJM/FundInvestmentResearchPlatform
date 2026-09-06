@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from cal_indicators.typed_operators import TYPED_COMPILER_VERSION
 from custom_indicators.errors import ConflictError, ValidationError
 from historical_regimes.service import HistoricalRegimeService
 
@@ -385,7 +386,7 @@ def test_causal_formula_is_executed_and_audited(service: HistoricalRegimeService
     run = _run_prepared_formula(service, definition)
     audit = run["formula_diagnostics"]
     assert audit["allowlist_version"] == "typed-njit-causal-1"
-    assert audit["evaluator_version"] == "typed-numba-3"
+    assert audit["evaluator_version"] == TYPED_COMPILER_VERSION
     assert audit["referenced_columns"] == ["value"]
     assert audit["functions"] == ["difference", "log"]
     assert audit["execution_backend"] == "numba_njit_fixed_signature"

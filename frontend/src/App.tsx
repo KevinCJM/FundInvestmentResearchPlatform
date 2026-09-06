@@ -10,6 +10,8 @@ import AccountStatementAllocationWorkspace from './pages/AccountStatementAllocat
 import FinancialStatementsWorkspace from './pages/FinancialStatementsWorkspace'
 import Dashboard from './pages/Dashboard'
 import DataManagement from './pages/DataManagement'
+import DataModelCatalog from './pages/DataModelCatalog'
+import DataSourceCenter from './pages/DataSourceCenter'
 import EvaluationPlan from './pages/EvaluationPlan'
 import HoldingDiagnosis from './pages/HoldingDiagnosis'
 import HistoricalRegimeWorkbench from './pages/HistoricalRegimeWorkbench'
@@ -166,6 +168,8 @@ export default function App() {
 
             <Route path="/settings" element={<StageLayout stageId="settings" />}>
               <Route index element={<StageOverview stageId="settings" />} />
+              <Route path="data-model" element={<DataModelCatalog />} />
+              <Route path="source-center" element={<DataSourceCenter />} />
               <Route path="data-sources" element={<DataManagement />} />
               <Route path="data-refresh" element={<LegacyRedirect to="/settings/data-sources" />} />
               <Route path="data-quality" element={<DataQuality />} />

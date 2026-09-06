@@ -23,13 +23,13 @@
         "requirements",
         "orientation"
       ],
-    "entry_files": [
-      "README.md",
-      "./LICENSE",
-      "公募基金量化投资流程大纲.md",
-      "README_SEPARATED.md",
-      "design-qa.md",
-      "docs/requirements.md",
+      "entry_files": [
+        "README.md",
+        "./LICENSE",
+        "公募基金量化投资流程大纲.md",
+        "README_SEPARATED.md",
+        "design-qa.md",
+        "docs/requirements.md",
         "docs/custom_indicator_design.md",
         "docs/weight_reuse_task_plan.md",
         "docs/test_report.md"
@@ -40,9 +40,9 @@
         "README.md",
         "docs/requirements.md"
       ],
-    "then_check_files": [
-      "design-qa.md",
-      "docs/custom_indicator_design.md",
+      "then_check_files": [
+        "design-qa.md",
+        "docs/custom_indicator_design.md",
         "docs/weight_reuse_task_plan.md",
         "docs/test_report.md",
         "README_SEPARATED.md"
@@ -80,10 +80,10 @@
       ],
       "grounding": {
         "fact_status": "grounded",
-      "evidence": [
-        "README.md",
-        "design-qa.md",
-        "docs/requirements.md",
+        "evidence": [
+          "README.md",
+          "design-qa.md",
+          "docs/requirements.md",
           "docs/custom_indicator_design.md",
           "docs/weight_reuse_task_plan.md"
         ],
@@ -221,6 +221,7 @@
         "backend/strategy.py",
         "backend/backtest_engine.py",
         "backend/backtest_numba.py",
+        "backend/fund_taxonomy.py",
         "backend/auto_asset_class.py",
         "backend/auto_class_numba.py",
         "backend/services/auto_class_routes.py",
@@ -245,7 +246,11 @@
         "ensure_valid_rebalance_window",
         "gen_rebalance_dates",
         "backtest_portfolio",
-        "get_trading_days"
+        "get_trading_days",
+        "run_auto_classification",
+        "classify",
+        "taxonomy_tree",
+        "allocate_block_clusters_kernel"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -325,7 +330,8 @@
           "backend/fit.py",
           "backend/optimizer.py",
           "backend/trading_calendar.py",
-          "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+          "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+          "backend/fund_taxonomy.py"
         ],
         "unsampled_paths": []
       }
@@ -608,10 +614,10 @@
       ],
       "grounding": {
         "fact_status": "mixed",
-      "evidence": [
-        "backend/app.py",
-        "backend/services/instrument_routes.py",
-        "backend/tests/test_instrument_routes.py"
+        "evidence": [
+          "backend/app.py",
+          "backend/services/instrument_routes.py",
+          "backend/tests/test_instrument_routes.py"
         ],
         "unsampled_paths": []
       }
@@ -828,11 +834,11 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-        "backend/market_data.py",
-        "backend/market_data_validation.py",
-        "backend/tests/test_market_data.py",
-        "backend/tests/test_market_data_readers.py",
-        "backend/tests/test_market_data_validation.py",
+          "backend/market_data.py",
+          "backend/market_data_validation.py",
+          "backend/tests/test_market_data.py",
+          "backend/tests/test_market_data_readers.py",
+          "backend/tests/test_market_data_validation.py",
           "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_instrument_routes.py backend/tests/test_market_data.py backend/tests/test_market_data_validation.py backend/tests/test_data_refresh.py backend/tests/test_tushare_data_script.py -q"
         ],
         "unsampled_paths": []
@@ -969,7 +975,9 @@
         "backend/cal_indicators/builtin_batch_kernel.py",
         "backend/services/custom_indicator_routes.py",
         "backend/benchmark_indicator_engine.py",
-        "docs/custom_indicator_excel_export_design.md"
+        "docs/custom_indicator_excel_export_design.md",
+        "docs/rolling_scalar_indicator_design.md",
+        "docs/scalar_to_rolling_series_design.md"
       ],
       "key_symbols": [
         "CustomIndicatorService",
@@ -1046,6 +1054,8 @@
         "backend/tests/test_custom_indicator_service.py",
         "backend/tests/test_custom_indicator_routes.py",
         "backend/tests/test_custom_indicator_variables.py",
+        "backend/tests/test_custom_indicator_time_series.py",
+        "backend/tests/test_custom_indicator_time_series_excel.py",
         "backend/tests/test_numba_finance_indicators.py",
         "backend/tests/test_indicator_parallel_engine.py",
         "backend/tests/test_evaluation_run_results.py"
@@ -1271,18 +1281,18 @@
         "evidence": [
           "backend/cal_indicators/typed_types.py",
           "backend/cal_indicators/typed_operators.py",
-        "backend/cal_indicators/typed_latex.py",
-        "backend/cal_indicators/typed_numba_kernels.py",
-        "backend/cal_indicators/typed_numba_plan.py",
-        "backend/cal_indicators/typed_dsl.py",
+          "backend/cal_indicators/typed_latex.py",
+          "backend/cal_indicators/typed_numba_kernels.py",
+          "backend/cal_indicators/typed_numba_plan.py",
+          "backend/cal_indicators/typed_dsl.py",
           "backend/custom_indicators/variable_registry.py",
           "backend/custom_indicators/typed_service.py",
           "backend/custom_indicators/service.py",
           "backend/services/custom_indicator_routes.py",
           "backend/tests/test_typed_indicator_compiler.py",
-        "backend/tests/test_typed_indicator_runtime.py",
-        "backend/tests/test_typed_numba_v22.py",
-        "backend/tests/test_typed_indicator_product_service.py",
+          "backend/tests/test_typed_indicator_runtime.py",
+          "backend/tests/test_typed_numba_v22.py",
+          "backend/tests/test_typed_indicator_product_service.py",
           "backend/tests/test_custom_indicator_variables.py",
           "backend/tests/test_custom_indicator_routes.py"
         ],
@@ -1918,14 +1928,14 @@
         "fact_status": "grounded",
         "evidence": [
           "CONTEXT.md",
-        "docs/account-portfolio-allocation-accounting-design.md",
-        "frontend/src/app/processRegistry.ts",
-        "frontend/src/app/actualPortfolioDemoData.ts",
-        "frontend/src/pages/TradeAllocationWorkspace.tsx",
+          "docs/account-portfolio-allocation-accounting-design.md",
+          "frontend/src/app/processRegistry.ts",
+          "frontend/src/app/actualPortfolioDemoData.ts",
+          "frontend/src/pages/TradeAllocationWorkspace.tsx",
           "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
-        "frontend/src/pages/AccountingBookingWorkspace.tsx",
-        "frontend/src/app/actualPortfolioDemoData.test.ts",
-        "frontend/e2e/process-framework.spec.ts"
+          "frontend/src/pages/AccountingBookingWorkspace.tsx",
+          "frontend/src/app/actualPortfolioDemoData.test.ts",
+          "frontend/e2e/process-framework.spec.ts"
         ],
         "unsampled_paths": []
       }
@@ -1951,6 +1961,7 @@
         "frontend/src/pages/IndicatorStudio.tsx",
         "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/services/customIndicators.ts",
+        "frontend/src/services/customIndicatorsRolling.test.ts",
         "frontend/src/pages/IndicatorStudio.test.tsx"
       ],
       "key_symbols": [
@@ -1987,6 +1998,7 @@
       ],
       "related_tests": [
         "frontend/src/services/customIndicatorsExecution.test.ts",
+        "frontend/src/services/customIndicatorsRolling.test.ts",
         "frontend/src/pages/IndicatorStudio.test.tsx",
         "frontend/e2e/indicator-studio.spec.ts",
         "frontend/src/App.test.tsx"
@@ -2058,10 +2070,10 @@
         "accessibility"
       ],
       "entry_files": [
-      "frontend/src/components/metrics/MetricDisplay.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.ts",
-      "frontend/src/utils/indicatorDiagnostics.ts",
-      "frontend/src/utils/indicatorPeriods.ts",
+        "frontend/src/components/metrics/MetricDisplay.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.ts",
+        "frontend/src/utils/indicatorDiagnostics.ts",
+        "frontend/src/utils/indicatorPeriods.ts",
         "frontend/src/services/customIndicators.ts"
       ],
       "key_symbols": [
@@ -2081,17 +2093,17 @@
       ],
       "child_modules": [],
       "first_read_files": [
-      "frontend/src/components/metrics/MetricDisplay.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.ts",
-      "frontend/src/utils/indicatorDiagnostics.ts",
-      "frontend/src/utils/indicatorPeriods.ts",
+        "frontend/src/components/metrics/MetricDisplay.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.ts",
+        "frontend/src/utils/indicatorDiagnostics.ts",
+        "frontend/src/utils/indicatorPeriods.ts",
         "frontend/src/services/customIndicators.ts"
       ],
       "then_check_files": [
-      "frontend/src/components/metrics/MetricDisplay.test.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
-      "frontend/src/utils/indicatorDiagnostics.test.ts",
-      "frontend/src/utils/indicatorPeriods.test.ts",
+        "frontend/src/components/metrics/MetricDisplay.test.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
+        "frontend/src/utils/indicatorDiagnostics.test.ts",
+        "frontend/src/utils/indicatorPeriods.test.ts",
         "frontend/e2e/metric-display.spec.ts",
         "frontend/src/pages/ProductResearch.tsx",
         "frontend/src/pages/ProductDetail.tsx",
@@ -2111,10 +2123,10 @@
         "workspace-shared display presets"
       ],
       "related_tests": [
-      "frontend/src/components/metrics/MetricDisplay.test.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
-      "frontend/src/utils/indicatorDiagnostics.test.ts",
-      "frontend/src/utils/indicatorPeriods.test.ts",
+        "frontend/src/components/metrics/MetricDisplay.test.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
+        "frontend/src/utils/indicatorDiagnostics.test.ts",
+        "frontend/src/utils/indicatorPeriods.test.ts",
         "frontend/e2e/metric-display.spec.ts",
         "frontend/src/pages/ProductResearch.test.tsx",
         "frontend/src/pages/ProductDetail.test.tsx",
@@ -2159,15 +2171,15 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-      "frontend/src/components/metrics/MetricDisplay.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.ts",
-      "frontend/src/utils/indicatorDiagnostics.ts",
-      "frontend/src/utils/indicatorPeriods.ts",
+          "frontend/src/components/metrics/MetricDisplay.tsx",
+          "frontend/src/components/metrics/useMetricDisplayPreference.ts",
+          "frontend/src/utils/indicatorDiagnostics.ts",
+          "frontend/src/utils/indicatorPeriods.ts",
           "frontend/src/services/customIndicators.ts",
-      "frontend/src/components/metrics/MetricDisplay.test.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
-      "frontend/src/utils/indicatorDiagnostics.test.ts",
-      "frontend/src/utils/indicatorPeriods.test.ts",
+          "frontend/src/components/metrics/MetricDisplay.test.tsx",
+          "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
+          "frontend/src/utils/indicatorDiagnostics.test.ts",
+          "frontend/src/utils/indicatorPeriods.test.ts",
           "frontend/e2e/metric-display.spec.ts",
           "npm run test --prefix frontend -- --run",
           "npm run test:e2e --prefix frontend",
@@ -2335,12 +2347,12 @@
         "fact_status": "mixed",
         "evidence": [
           "frontend/src/pages/Dashboard.tsx",
-        "frontend/src/components/dashboard/useInstrumentDashboard.ts",
-        "frontend/src/components/dashboard/useDataRefresh.ts",
-        "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
-        "frontend/src/components/dashboard/DashboardResearchSearch.tsx",
-        "frontend/src/pages/Dashboard.test.tsx",
-        "frontend/e2e/dashboard.spec.ts",
+          "frontend/src/components/dashboard/useInstrumentDashboard.ts",
+          "frontend/src/components/dashboard/useDataRefresh.ts",
+          "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+          "frontend/src/components/dashboard/DashboardResearchSearch.tsx",
+          "frontend/src/pages/Dashboard.test.tsx",
+          "frontend/e2e/dashboard.spec.ts",
           "frontend/src/components/dashboard/useDataRefresh.test.tsx",
           "frontend/src/pages/ProductResearch.tsx",
           "frontend/src/pages/ProductDetail.tsx",
@@ -2530,6 +2542,7 @@
       "related_tests": [
         "frontend/src/App.test.tsx",
         "frontend/src/pages/AutoAssetClassification.test.tsx",
+        "frontend/src/pages/AutoAssetClassification.universe.test.tsx",
         "frontend/src/pages/ClassAllocation.test.tsx",
         "frontend/src/pages/EvaluationPlan.test.tsx",
         "frontend/src/pages/ManualConstruction.test.tsx"
@@ -2750,8 +2763,8 @@
       "edit_risk": "high",
       "blast_radius": [
         "all data-backed APIs",
-      "ETF/public-fund universe analytics and search",
-      "macro regime features and point-in-time backtests",
+        "ETF/public-fund universe analytics and search",
+        "macro regime features and point-in-time backtests",
         "index catalog, coverage health, and index data center",
         "class fitting",
         "strategy backtests",
@@ -2781,27 +2794,364 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-        "TushareDownload.md",
-        "config.py",
-        "T01_get_data.py",
-        "docs/requirements.md",
-        "docs/tushare_data_refresh_design.md",
-        "backend/services/refresh_runtime.py",
-        "backend/services/data_refresh.py",
-        "backend/services/data_routes.py",
-        "backend/services/index_data.py",
-        "backend/services/index_routes.py",
-        "frontend/src/pages/Dashboard.tsx",
-        "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
-        "frontend/src/pages/IndexData.tsx",
-        "backend/tests/test_tushare_data_script.py",
-        "backend/tests/test_data_refresh.py",
-        "backend/tests/test_index_data.py",
-        "backend/tests/test_instrument_routes.py",
-        "frontend/src/App.test.tsx",
-        "frontend/src/components/dashboard/DataHealthRefreshPanel.test.tsx",
-        "frontend/src/pages/IndexData.test.tsx",
-        "frontend/e2e/index-data.spec.ts"
+          "TushareDownload.md",
+          "config.py",
+          "T01_get_data.py",
+          "docs/requirements.md",
+          "docs/tushare_data_refresh_design.md",
+          "backend/services/refresh_runtime.py",
+          "backend/services/data_refresh.py",
+          "backend/services/data_routes.py",
+          "backend/services/index_data.py",
+          "backend/services/index_routes.py",
+          "frontend/src/pages/Dashboard.tsx",
+          "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+          "frontend/src/pages/IndexData.tsx",
+          "backend/tests/test_tushare_data_script.py",
+          "backend/tests/test_data_refresh.py",
+          "backend/tests/test_index_data.py",
+          "backend/tests/test_instrument_routes.py",
+          "frontend/src/App.test.tsx",
+          "frontend/src/components/dashboard/DataHealthRefreshPanel.test.tsx",
+          "frontend/src/pages/IndexData.test.tsx",
+          "frontend/e2e/index-data.spec.ts"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "backend_data_model_catalog",
+      "name": "Canonical financial data-model catalog and field contracts",
+      "path": "backend/data_model/catalog.py",
+      "kind": "backend_domain_catalog",
+      "purpose": "Defines versioned financial domain tables, fields, semantic types, governance metadata, and the API catalog consumed by data-source mapping and research workflows.",
+      "module_tags": [
+        "backend",
+        "data-model",
+        "schema-catalog",
+        "financial-domain",
+        "governance"
+      ],
+      "entry_files": [
+        "backend/data_model",
+        "backend/services/data_model_routes.py"
+      ],
+      "key_symbols": [
+        "DataModelCatalog",
+        "TableDefinition",
+        "FieldDefinition"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "backend/data_model/catalog.py",
+        "backend/data_model/types.py",
+        "backend/services/data_model_routes.py"
+      ],
+      "then_check_files": [
+        "backend/data_model/definitions",
+        "backend/tests/test_data_model_catalog.py",
+        "docs/data_source_center_design.md"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell"
+      ],
+      "downstream_dependencies": [
+        "backend_data_source_etl",
+        "frontend_data_source_center"
+      ],
+      "out_of_scope_dependencies": [
+        "external database migrations",
+        "unobserved vendor schemas"
+      ],
+      "related_tests": [
+        "backend/tests/test_data_model_catalog.py"
+      ],
+      "related_configs": [
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "field_identity_must_be_stable",
+        "semantic_type_changes_affect_mappings",
+        "catalog_versions_are_contracts"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "data-source mappings",
+        "ETL output validation",
+        "research-series discovery"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P07"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_data_model_catalog.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_model/catalog.py backend/data_model/types.py backend/services/data_model_routes.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "versioned_schema_contract"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/data_model/catalog.py",
+          "backend/data_model/types.py",
+          "backend/services/data_model_routes.py",
+          "backend/tests/test_data_model_catalog.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "backend_data_source_etl",
+      "name": "Multi-source acquisition, resolution, mapping, and ETL runtime",
+      "path": "backend/data_sources/service.py",
+      "kind": "backend_api_feature",
+      "purpose": "Registers Tushare, AkShare, and extensible data sources; manages credentials, quotas, synchronization jobs, source identity resolution, canonical mappings, versioned ETL workflows, and atomic snapshot outputs.",
+      "module_tags": [
+        "backend",
+        "data-source",
+        "etl",
+        "mapping",
+        "resolution",
+        "snapshot",
+        "akshare"
+      ],
+      "entry_files": [
+        "backend/data_sources",
+        "backend/services/data_source_routes.py",
+        "backend/services/etl_routes.py",
+        "backend/requirements-akshare.txt",
+        "scripts/audit_tushare_contracts.py",
+        "scripts/smoke_data_source_center.py",
+        "scripts/smoke_etl_workflow.py",
+        "scripts/smoke_multi_source.py",
+        "docs/data_source_center_design.md",
+        "docs/data_sync_user_flow.md",
+        "docs/etl_workflow_design.md",
+        "docs/multi_source_resolution_design.md"
+      ],
+      "key_symbols": [
+        "DataSourceService",
+        "EtlService",
+        "ResolutionStore",
+        "SyncJobService"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "backend/data_sources/models.py",
+        "backend/data_sources/service.py",
+        "backend/data_sources/etl_service.py",
+        "backend/services/data_source_routes.py",
+        "backend/services/etl_routes.py"
+      ],
+      "then_check_files": [
+        "backend/data_sources/resolution.py",
+        "backend/data_sources/mapping.py",
+        "backend/data_sources/sync_jobs.py",
+        "backend/data_sources/credentials.py",
+        "backend/data_sources/transport.py",
+        "backend/tests/test_data_source_center.py",
+        "backend/tests/test_etl_workflows.py",
+        "backend/tests/test_multi_source_resolution.py"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell",
+        "backend_data_model_catalog",
+        "data_ingestion_config",
+        "market_data_snapshot_lifecycle"
+      ],
+      "downstream_dependencies": [
+        "frontend_data_source_center",
+        "backend_custom_indicator_service",
+        "backend_regime_research"
+      ],
+      "out_of_scope_dependencies": [
+        "unregistered arbitrary Python connectors",
+        "unverified external source availability"
+      ],
+      "related_tests": [
+        "backend/tests/test_akshare_adapter.py",
+        "backend/tests/test_data_source_center.py",
+        "backend/tests/test_etl_snapshot.py",
+        "backend/tests/test_etl_run_options.py",
+        "backend/tests/test_etl_workflows.py",
+        "backend/tests/test_multi_source_resolution.py",
+        "backend/tests/test_resolution_routes.py",
+        "backend/tests/test_source_sync_jobs.py"
+      ],
+      "related_configs": [
+        "backend/requirements.txt",
+        "backend/requirements-akshare.txt",
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "credentials_must_remain_local_and_redacted",
+        "external_calls_forbidden_in_unit_tests",
+        "source_identity_must_be_deterministic",
+        "etl_snapshots_require_atomic_promotion",
+        "njit_resolution_kernels_cannot_fallback"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "source synchronization",
+        "canonical financial datasets",
+        "indicator and regime inputs",
+        "data lineage and reproducibility"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P05",
+        "P09",
+        "P11",
+        "P15"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_akshare_adapter.py tests/test_data_source_center.py tests/test_etl_snapshot.py tests/test_etl_workflows.py tests/test_multi_source_resolution.py tests/test_resolution_routes.py tests/test_source_sync_jobs.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_sources/service.py backend/data_sources/etl_service.py backend/services/data_source_routes.py backend/services/etl_routes.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "external_source_boundary",
+        "immutable_snapshot"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/data_sources/service.py",
+          "backend/data_sources/etl_service.py",
+          "backend/data_sources/resolution.py",
+          "backend/services/data_source_routes.py",
+          "backend/services/etl_routes.py",
+          "backend/tests/test_data_source_center.py",
+          "backend/tests/test_etl_workflows.py",
+          "backend/tests/test_multi_source_resolution.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "frontend_data_source_center",
+      "name": "Data-source center, data-model catalog, and ETL workspace UI",
+      "path": "frontend/src/pages/DataSourceCenter.tsx",
+      "kind": "frontend_feature_pages",
+      "purpose": "Provides catalog browsing, source configuration, download and synchronization controls, canonical mapping, conflict resolution, ETL workflow editing, run history, and data-model navigation with backend-owned execution.",
+      "module_tags": [
+        "frontend",
+        "data-source",
+        "data-model",
+        "etl",
+        "mapping",
+        "sync-workflow"
+      ],
+      "entry_files": [
+        "frontend/src/components/data-sources",
+        "frontend/src/pages/DataModelCatalog.tsx",
+        "frontend/src/pages/DataModelCatalog.test.tsx",
+        "frontend/src/pages/DataSourceCenter.tsx",
+        "frontend/src/pages/DataSourceCenter.test.tsx",
+        "frontend/src/services/dataModel.ts",
+        "frontend/src/services/dataSources.ts",
+        "frontend/src/services/etl.ts",
+        "frontend/src/components/dashboard/DataSyncFlow.test.tsx",
+        "frontend/src/components/dashboard/RefreshRecoveryActions.tsx",
+        "frontend/e2e/data-model-catalog.spec.ts",
+        "frontend/e2e/data-source-center.spec.ts",
+        "frontend/e2e/data-sync-flow.spec.ts",
+        "frontend/e2e/etl-workflow.spec.ts",
+        "frontend/e2e/multi-source.spec.ts"
+      ],
+      "key_symbols": [
+        "DataSourceCenter",
+        "DataModelCatalog",
+        "DataDownloadWorkspace",
+        "EtlWorkflowEditor",
+        "ResolutionPanel",
+        "SourceSyncPanel"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "frontend/src/pages/DataSourceCenter.tsx",
+        "frontend/src/pages/DataModelCatalog.tsx",
+        "frontend/src/services/dataSources.ts",
+        "frontend/src/services/etl.ts"
+      ],
+      "then_check_files": [
+        "frontend/src/components/data-sources",
+        "frontend/src/pages/DataSourceCenter.test.tsx",
+        "frontend/src/pages/DataModelCatalog.test.tsx",
+        "frontend/e2e/data-source-center.spec.ts",
+        "frontend/e2e/etl-workflow.spec.ts"
+      ],
+      "upstream_dependencies": [
+        "frontend_app_shell",
+        "backend_data_model_catalog",
+        "backend_data_source_etl"
+      ],
+      "downstream_dependencies": [
+        "frontend_indicator_studio",
+        "frontend_regime_research"
+      ],
+      "out_of_scope_dependencies": [
+        "client-side authoritative ETL execution",
+        "browser-persisted source credentials"
+      ],
+      "related_tests": [
+        "frontend/src/components/data-sources/DataDownloadWorkspace.test.tsx",
+        "frontend/src/components/data-sources/ResolutionPanel.test.tsx",
+        "frontend/src/components/data-sources/SourceSyncPanel.test.tsx",
+        "frontend/src/components/dashboard/DataSyncFlow.test.tsx",
+        "frontend/src/pages/DataModelCatalog.test.tsx",
+        "frontend/src/pages/DataSourceCenter.test.tsx",
+        "frontend/e2e/data-model-catalog.spec.ts",
+        "frontend/e2e/data-source-center.spec.ts",
+        "frontend/e2e/data-sync-flow.spec.ts",
+        "frontend/e2e/etl-workflow.spec.ts",
+        "frontend/e2e/multi-source.spec.ts"
+      ],
+      "related_configs": [
+        "frontend/package.json",
+        "frontend/vite.config.ts"
+      ],
+      "risk_flags": [
+        "credential_values_must_never_round_trip",
+        "long_running_jobs_need_recovery_actions",
+        "frontend_is_not_authoritative_for_lineage"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "data operations navigation",
+        "source and ETL configuration",
+        "download and synchronization UX"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P07",
+        "P09",
+        "P11"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/DataModelCatalog.test.tsx src/pages/DataSourceCenter.test.tsx src/components/data-sources/DataDownloadWorkspace.test.tsx src/components/data-sources/ResolutionPanel.test.tsx src/components/data-sources/SourceSyncPanel.test.tsx'",
+        "npm run build --prefix frontend"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "frontend_runtime_tested",
+        "backend_authoritative_execution"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "frontend/src/pages/DataSourceCenter.tsx",
+          "frontend/src/pages/DataModelCatalog.tsx",
+          "frontend/src/services/dataSources.ts",
+          "frontend/src/services/etl.ts",
+          "frontend/src/pages/DataSourceCenter.test.tsx",
+          "frontend/src/pages/DataModelCatalog.test.tsx"
         ],
         "unsampled_paths": []
       }

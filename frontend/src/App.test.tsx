@@ -1,9 +1,18 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }));
+// The source/ETL workspace has dedicated integration tests; retain the legacy
+// download route regressions by opening its now-explicit compatibility entry.
+vi.mock('./components/data-sources/DataDownloadWorkspace', () => ({ default: () => <section aria-label="多源下载与ETL">多源下载与 ETL</section> }));
+const renderLegacyDownloads = () => {
+  render(<App />);
+  const details = screen.getByText('原 Tushare 全市场任务与旧快照维护').closest('details')!;
+  details.open = true;
+  fireEvent(details, new Event('toggle'));
+};
 
 const fixedExecution = {
   execution_backend: 'numba_njit_fixed_signature',
@@ -154,7 +163,7 @@ describe('App', () => {
 
   it('从设置的数据管理页启动 Tushare 增量更新', async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderLegacyDownloads();
     await screen.findByText(/尚未启动更新/);
     expect(screen.getByRole('region', { name: '数据下载与更新' })).toBeVisible();
     expect(screen.queryByRole('button', { name: /数据管理：查看明细并拉取最新数据/ })).not.toBeInTheDocument();
@@ -185,7 +194,7 @@ describe('App', () => {
   it('可在设置的数据管理页保存 Token 后启用数据下载', async () => {
     tokenConfigured = false;
     const user = userEvent.setup();
-    render(<App />);
+    renderLegacyDownloads();
     await screen.findByText(/尚未启动更新/);
     const refreshButton = await screen.findByRole('button', { name: '开始数据更新' });
     expect(refreshButton).toBeDisabled();
@@ -206,7 +215,7 @@ describe('App', () => {
 
   it('清除 Token 后保留本地数据但禁用新的下载任务', async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderLegacyDownloads();
     await screen.findByText(/尚未启动更新/);
     await user.click(screen.getByRole('button', { name: '清除 Token' }));
 
@@ -217,7 +226,7 @@ describe('App', () => {
   });
 
   it('下载页不承载数据质量明细并提供独立入口', async () => {
-    render(<App />);
+    renderLegacyDownloads();
     await screen.findByText(/尚未启动更新/);
     expect(screen.getByRole('link', { name: '查看数据质量 →' })).toHaveAttribute('href', '/settings/data-quality');
     expect(screen.queryByRole('heading', { name: '数据健康' })).not.toBeInTheDocument();
@@ -230,8 +239,8 @@ describe('App', () => {
   it('候选数据可重建并接入候选快照且不会再次请求 Tushare', async () => {
     candidateAvailable = true;
     const user = userEvent.setup();
-    render(<App />);
-    await screen.findByText(/数据抓取完成，分析快照构建失败/);
+    renderLegacyDownloads();
+    await screen.findByRole('region', { name: '恢复数据处理' });
     await user.click(await screen.findByRole('button', { name: '重建并接入候选快照' }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
@@ -246,10 +255,13 @@ describe('App', () => {
     expect(refreshCalls).toHaveLength(0);
   });
 
-  it('数据管理区域默认常驻展示且没有展开收起入口', async () => {
-    render(<App />);
+  it('兼容同步入口展开后，已配置凭据仍默认收起', async () => {
+    const user = userEvent.setup();
+    renderLegacyDownloads();
     await screen.findByText(/尚未启动更新/);
     expect(screen.getByRole('region', { name: '数据下载与更新' })).toBeVisible();
+    expect(screen.getByLabelText('输入 Token')).not.toBeVisible();
+    await act(async () => { await user.click(screen.getByText('管理连接凭据')); });
     expect(screen.getByLabelText('输入 Token')).toBeVisible();
     expect(screen.getByRole('button', { name: '开始数据更新' })).toBeVisible();
     expect(screen.queryByRole('button', { name: /数据管理：查看明细并拉取最新数据/ })).not.toBeInTheDocument();
@@ -258,7 +270,7 @@ describe('App', () => {
 
   it('全量更新必须二次确认', async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderLegacyDownloads();
     await screen.findByText(/尚未启动更新/);
     await user.click(screen.getByRole('radio', { name: /^全量更新/ }));
     await user.click(screen.getByRole('button', { name: '开始数据更新' }));

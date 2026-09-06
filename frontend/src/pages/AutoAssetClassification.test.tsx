@@ -9,13 +9,14 @@ vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" />
 vi.mock('../services/productPools', () => ({
   getInvestableUniverse: vi.fn(),
   searchInvestableUniverseProducts: vi.fn(),
+  investableUniverseEligibleCount: (snapshot: any) => snapshot?.summary?.eligible_count ?? 0,
 }))
 
 const META = {
   algorithms: [
     { id: 'hierarchical', label: '相关性层次聚类' },
     { id: 'kmedoids', label: 'K-medoids（代表产品）' },
-    { id: 'rule', label: '合同标签规则映射' },
+    { id: 'rule', label: '合同分类规则映射' },
   ],
   features: [
     { id: 'correlation', label: '收益相关性距离' },
@@ -23,6 +24,16 @@ const META = {
   ],
   linkages: [{ id: 'average', label: 'average' }, { id: 'ward', label: 'ward' }],
   weight_modes: [{ id: 'inv_vol', label: '逆波动率' }, { id: 'equal', label: '等权' }],
+  taxonomy_levels: [
+    { id: 'asset_class', label: '一级·资产大类' },
+    { id: 'category', label: '二级·细分类型' },
+    { id: 'detail', label: '三级·风格/行业/主题' },
+  ],
+  block_modes: [
+    { id: 'none', label: '不分层（纯统计聚类）' },
+    { id: 'asset_class', label: '一级·资产大类' },
+    { id: 'category', label: '二级·细分类型' },
+  ],
   limits: { min_observations: 60, max_auto_k: 8, min_products: 2 },
   defaults: {},
 }
@@ -35,6 +46,8 @@ const SEARCH_ITEMS = [
 const PREVIEW = {
   algorithm: 'hierarchical',
   features: 'correlation',
+  taxonomy_level: 'asset_class',
+  block_by: 'none',
   k: 2,
   weight_mode: 'inv_vol',
   observations: 1200,
@@ -53,6 +66,7 @@ const PREVIEW = {
         code: '510300.SH', name: '华泰柏瑞沪深300ETF', weight: 100, instrument_type: 'etf',
         fund_type: '股票型', invest_type: '被动指数型', management: '华泰柏瑞',
         contract_label: '权益类', affinity: -0.2, is_medoid: true, max_weight: null, capped: false,
+        taxonomy: { asset_class: '权益类', category: '宽基规模', detail: '大盘', path: '权益类 / 宽基规模 / 大盘', matched: '沪深300' },
       }],
     },
     {
@@ -67,6 +81,7 @@ const PREVIEW = {
         code: '511010.SH', name: '国泰上证5年期国债ETF', weight: 100, instrument_type: 'etf',
         fund_type: '债券型', invest_type: '被动指数型', management: '国泰',
         contract_label: '固收类', affinity: -0.3, is_medoid: true, max_weight: 0.1, capped: true,
+        taxonomy: { asset_class: '固收类', category: '利率债', detail: '国债', path: '固收类 / 利率债 / 国债', matched: '国债' },
       }],
     },
   ],
@@ -79,6 +94,7 @@ const PREVIEW = {
     cross_class_labels: ['权益类', '固收类'],
     significant_eigenvalues: 2,
     k_suggestions: [{ k: 2, silhouette: 0.665 }, { k: 3, silhouette: 0.4 }],
+    blocks: [],
     contract_deviations: [{ code: '512000.SH', name: '证券ETF', assigned_class: '固收类', contract_label: '权益类' }],
     winsorized: [{ code: '511010.SH', name: '国泰上证5年期国债ETF', clipped: 1, max_raw_return: -0.99 }],
   },
@@ -103,7 +119,19 @@ const FIT = {
   ],
   consistency: [{ name: '权益类', mean_corr: 0.88, pca_evr1: 0.91, max_te: 0.02 }],
   annual_metrics: { years: [], series: {} },
-  execution: PREVIEW.execution,
+  // /api/fit-classes proves two lanes; the old flat mock never matched the
+  // endpoint, which is why the page failed only in the browser.
+  execution: {
+    fit_analytics: PREVIEW.execution,
+    performance_metrics: {
+      execution_backend: 'numba_njit_fixed_signature',
+      nopython: true,
+      object_mode: 0,
+      python_fallback: 0,
+      request_time_compilation: 0,
+      kernel_signatures: { annual_metrics_kernel: ['(array(float64, 2d, C), array(int64, 1d, C), float64)'] },
+    },
+  },
 }
 
 function LocationProbe() {
@@ -191,12 +219,59 @@ afterEach(() => {
 })
 
 async function addTwoProducts(user: ReturnType<typeof userEvent.setup>) {
-  await waitFor(() => expect(screen.getAllByRole('button', { name: '加入' }).length).toBe(2))
-  await user.click(screen.getByRole('button', { name: '添加本页' }))
+  const selectAll = await screen.findByLabelText('全选当前结果')
+  await waitFor(() => expect(selectAll).not.toBeDisabled())
+  await user.click(selectAll)
   await waitFor(() => expect(screen.getByText('已选产品（2）')).toBeInTheDocument())
 }
 
 describe('AutoAssetClassification', () => {
+  it('sends the contract taxonomy options and renders the block summary', async () => {
+    previewResponse = {
+      ok: true,
+      status: 200,
+      payload: {
+        ...PREVIEW,
+        block_by: 'asset_class',
+        diagnostics: {
+          ...PREVIEW.diagnostics,
+          blocks: [
+            { block: '权益类', size: 12, k: 2, silhouette: 0.41 },
+            { block: '固收类', size: 3, k: 1, silhouette: null },
+          ],
+        },
+      },
+    }
+    const user = userEvent.setup()
+    renderPage()
+    await addTwoProducts(user)
+    await user.selectOptions(screen.getByLabelText('按合同分层（硬约束）'), 'asset_class')
+    await user.selectOptions(screen.getByLabelText('合同分类层级'), 'category')
+    await user.click(screen.getByRole('button', { name: '运行自动分类' }))
+
+    await waitFor(() => expect(previewBody).not.toBeNull())
+    expect(previewBody.blockBy).toBe('asset_class')
+    expect(previewBody.taxonomyLevel).toBe('category')
+
+    const summary = await screen.findByText(/^合同分层（/)
+    const table = summary.closest('div') as HTMLElement
+    expect(within(table).getByText('权益类')).toBeInTheDocument()
+    expect(within(table).getByText('0.410')).toBeInTheDocument()
+    // A block that was not split reports no silhouette rather than a fake 0.
+    expect(within(table).getByText('—')).toBeInTheDocument()
+  })
+
+  it('keeps the block summary hidden when the run was not layered', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await addTwoProducts(user)
+    await user.click(screen.getByRole('button', { name: '运行自动分类' }))
+    await waitFor(() => expect(previewBody).not.toBeNull())
+    expect(previewBody.blockBy).toBe('none')
+    await screen.findByText('④ 大类映射草案')
+    expect(screen.queryByText(/^合同分层（/)).not.toBeInTheDocument()
+  })
+
   it('refuses to run before enough products are selected', async () => {
     const user = userEvent.setup()
     renderPage()
@@ -260,7 +335,7 @@ describe('AutoAssetClassification', () => {
     const user = userEvent.setup()
     renderPage()
     await addTwoProducts(user)
-    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByLabelText('自动建议大类个数'))
     await user.click(screen.getByRole('button', { name: '运行自动分类' }))
     await waitFor(() => expect(previewBody).not.toBeNull())
     expect(previewBody.k).toBeNull()

@@ -12,10 +12,14 @@ vi.mock('../services/portfolioResearch', () => ({
   runPortfolio: vi.fn(),
 }))
 vi.mock('../services/businessNumeric', () => ({ evaluateNumericControls: vi.fn() }))
-vi.mock('../services/productPools', () => ({
-  getInvestableUniverse: vi.fn(),
-  searchInvestableUniverseProducts: vi.fn(),
-}))
+vi.mock('../services/productPools', async () => {
+  const actual = await vi.importActual<typeof import('../services/productPools')>('../services/productPools')
+  return {
+    ...actual,
+    getInvestableUniverse: vi.fn(),
+    searchInvestableUniverseProducts: vi.fn(),
+  }
+})
 vi.mock('../services/historicalRegimes', () => ({ listHistoricalRegimeRuns: vi.fn() }))
 
 describe('PortfolioConstruction', () => {

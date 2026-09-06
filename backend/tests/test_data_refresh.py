@@ -205,6 +205,8 @@ def test_cross_process_lock_rejects_duplicate_and_stale_state_recovers(tmp_path:
     recovered = manager.snapshot()["job"]
     assert recovered["status"] == "failed"
     assert "已中断" in recovered["message"]
+    assert recovered["resume_available"] is True
+    assert recovered["interruption_reason"] == "owner_process_lost"
     persisted = json.loads(manager.state_path.read_text(encoding="utf-8"))
     assert persisted["job"]["status"] == "failed"
 

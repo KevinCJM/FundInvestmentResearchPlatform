@@ -26,6 +26,7 @@ try:
         WEIGHT_INV_VOL,
         affinity_from_distance_kernel,
         agglomerative_linkage_kernel,
+        allocate_block_clusters_kernel,
         apply_weight_caps_kernel,
         auto_class_execution_audit,
         capacity_assign_kernel,
@@ -46,6 +47,13 @@ try:
         winsorize_returns_kernel,
     )
     from backend.fit import _load_adj_nav, _map_to_ts, _returns_wide
+    from backend.fund_taxonomy import (
+        TAXONOMY_LEVEL_LABELS,
+        TAXONOMY_LEVELS,
+        TaxonomyLabel,
+        classify,
+        taxonomy_tree,
+    )
     from backend.market_data import resolve_market_data_file
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from auto_class_numba import (
@@ -58,6 +66,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         WEIGHT_INV_VOL,
         affinity_from_distance_kernel,
         agglomerative_linkage_kernel,
+        allocate_block_clusters_kernel,
         apply_weight_caps_kernel,
         auto_class_execution_audit,
         capacity_assign_kernel,
@@ -78,6 +87,13 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         winsorize_returns_kernel,
     )
     from fit import _load_adj_nav, _map_to_ts, _returns_wide
+    from fund_taxonomy import (
+        TAXONOMY_LEVEL_LABELS,
+        TAXONOMY_LEVELS,
+        TaxonomyLabel,
+        classify,
+        taxonomy_tree,
+    )
     from market_data import resolve_market_data_file
 
 
@@ -86,11 +102,15 @@ MIN_OBSERVATIONS = 60
 # unadjusted split/dividend print lands in the hundreds.
 WINSOR_SIGMA = 25.0
 MAX_AUTO_K = 8
+# Kaufman/Rousseeuw read silhouette below 0.25 as "no substantial structure".
+# Inside a contract block that is the difference between finding two real
+# sub-styles and cutting five 沪深300 trackers into look-alike halves.
+BLOCK_SPLIT_SILHOUETTE = 0.25
 PCA_COMPONENTS = 5
 DEFAULT_SEED = 20260101
 
 ALGORITHMS = {
-    "rule": "合同标签规则映射",
+    "rule": "合同分类规则映射",
     "hierarchical": "相关性层次聚类",
     "kmedoids": "K-medoids（代表产品）",
     "kmeans": "K-means（特征质心）",
@@ -119,17 +139,12 @@ METRIC_FEATURE_COLUMNS = (
     "amount_avg_20d",
 )
 
-# Ordered rule table: the first matching row wins, so overseas and commodity
-# wrappers are recognised before their onshore equity/bond wording.
-_RULE_TABLE: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("货币类", ("货币",)),
-    ("商品类", ("商品", "黄金", "白银", "原油", "豆粕", "能源化工", "有色")),
-    ("海外类", ("QDII", "恒生", "港股", "纳斯达克", "标普", "道琼斯", "日经", "德国", "法国", "中概", "海外", "亚太", "全球", "美国")),
-    ("固收类", ("债", "利率", "信用", "同业存单")),
-    ("权益类", ("股票", "指数", "沪深", "中证", "上证", "深证", "创业板", "科创")),
-    ("混合类", ("混合", "平衡", "灵活配置")),
-)
-_RULE_FALLBACK = "其他类"
+# Which taxonomy level names the classes and, for ``block_by``, which level is a
+# hard partition the statistics may not cross.  Tables live in `fund_taxonomy`.
+BLOCK_MODES = {
+    "none": "不分层（纯统计聚类）",
+    **{level: TAXONOMY_LEVEL_LABELS[level] for level in TAXONOMY_LEVELS},
+}
 
 
 class AutoClassError(ValueError):
@@ -150,6 +165,10 @@ class AutoClassRequestSpec:
     unassigned_policy: str = "park"
     weight_mode: str = "inv_vol"
     seed: int = DEFAULT_SEED
+    # Which contract-taxonomy level names the classes.
+    taxonomy_level: str = "asset_class"
+    # Taxonomy level the statistics may not cross; "none" keeps pure clustering.
+    block_by: str = "none"
     # product code -> product-pool max weight as a fraction in (0, 1]
     max_weights: dict[str, float] = field(default_factory=dict)
 
@@ -166,6 +185,7 @@ class _Product:
     index_name: str = ""
     management: str = ""
     max_weight: Optional[float] = None
+    taxonomy: Optional[TaxonomyLabel] = None
 
 
 def _finite(value: Any) -> Optional[float]:
@@ -185,23 +205,26 @@ def _text(value: Any) -> str:
     return "" if text.lower() in {"nan", "none", "nat"} else text
 
 
-def rule_label(product: _Product) -> str:
-    """Map contract metadata to a coarse asset class; the deterministic baseline."""
+def product_taxonomy(product: _Product) -> TaxonomyLabel:
+    """Contract taxonomy for one product, cached on the product itself."""
 
-    haystack = " ".join(
-        (
-            product.fund_type,
-            product.invest_type,
-            product.benchmark,
-            product.index_name,
-            product.name,
+    if product.taxonomy is None:
+        product.taxonomy = classify(
+            (
+                product.fund_type,
+                product.invest_type,
+                product.benchmark,
+                product.index_name,
+                product.name,
+            )
         )
-    ).upper()
-    for label, keywords in _RULE_TABLE:
-        for keyword in keywords:
-            if keyword.upper() in haystack:
-                return label
-    return _RULE_FALLBACK
+    return product.taxonomy
+
+
+def rule_label(product: _Product, level: str = "asset_class") -> str:
+    """Map contract metadata to a taxonomy label; the deterministic baseline."""
+
+    return product_taxonomy(product).at(level)
 
 
 def _lookup_max_weight(limits: dict[str, float], code: str) -> Optional[float]:
@@ -387,15 +410,112 @@ def _cluster(
     return cut_linkage_kernel(np.ascontiguousarray(tree), distance.shape[0], int(clusters))
 
 
-def _rule_labels(products: list[_Product]) -> tuple[np.ndarray, list[str]]:
+def _taxonomy_groups(products: list[_Product], level: str) -> tuple[np.ndarray, list[str]]:
+    """Group products by their contract taxonomy label at `level`.
+
+    Order follows first appearance so the same pool always produces the same
+    class ordering, which the manual workspace relies on.
+    """
+
     order: list[str] = []
     labels = np.full(len(products), -1, dtype=np.int64)
     for index, product in enumerate(products):
-        label = rule_label(product)
+        label = rule_label(product, level)
         if label not in order:
             order.append(label)
         labels[index] = order.index(label)
     return np.ascontiguousarray(labels), order
+
+
+def _block_best_k(
+    spec: AutoClassRequestSpec,
+    distance: np.ndarray,
+    features: np.ndarray,
+    capacity: int,
+) -> tuple[int, Optional[float]]:
+    """Silhouette-chosen K inside one taxonomy block.
+
+    A block only splits when some K actually scores positive: a homogeneous
+    block (five 沪深300 trackers) must stay one class instead of being cut into
+    look-alike halves.
+    """
+
+    best_k, best_score = 1, BLOCK_SPLIT_SILHOUETTE
+    for candidate in range(2, min(capacity, MAX_AUTO_K) + 1):
+        labels = _cluster(spec, distance, features, candidate, None)
+        score, _ = silhouette_kernel(
+            np.ascontiguousarray(distance), np.ascontiguousarray(labels), int(candidate)
+        )
+        value = _finite(score)
+        if value is not None and value > best_score:
+            best_k, best_score = candidate, value
+    return best_k, (best_score if best_k > 1 else None)
+
+
+def _blocked_cluster(
+    spec: AutoClassRequestSpec,
+    distance: np.ndarray,
+    features: np.ndarray,
+    block_ids: np.ndarray,
+    block_names: list[str],
+    requested_k: Optional[int],
+) -> tuple[np.ndarray, np.ndarray, int, list[dict[str, Any]]]:
+    """Cluster *inside* each contract block; blocks never merge or trade members.
+
+    This is the 「先分层、再聚类」 practice: a correlation window can make a gold
+    ETF look like an equity ETF, but the contract cannot, so the taxonomy is a
+    hard constraint and the statistics only refine what is inside it.
+    """
+
+    blocks = len(block_names)
+    sizes = np.ascontiguousarray(
+        np.array([int(np.sum(block_ids == block)) for block in range(blocks)], dtype=np.int64)
+    )
+    # A target beyond total capacity is clamped to it, so this reads back the
+    # per-block ceiling without duplicating the kernel's capacity rule.
+    capacity = allocate_block_clusters_kernel(sizes, np.int64(1 << 40), np.int64(max(1, spec.size_min)))
+    if requested_k is None:
+        per_block = np.zeros(blocks, dtype=np.int64)
+    else:
+        per_block = allocate_block_clusters_kernel(
+            sizes, np.int64(requested_k), np.int64(max(1, spec.size_min))
+        )
+
+    labels = np.full(block_ids.shape[0], -1, dtype=np.int64)
+    cluster_block: list[int] = []
+    report: list[dict[str, Any]] = []
+    offset = 0
+    for block in range(blocks):
+        rows = np.flatnonzero(block_ids == block)
+        if rows.size == 0:
+            continue
+        sub_distance = np.ascontiguousarray(distance[np.ix_(rows, rows)])
+        sub_features = np.ascontiguousarray(features[rows, :])
+        if requested_k is None:
+            count, score = _block_best_k(spec, sub_distance, sub_features, int(capacity[block]))
+        else:
+            count, score = int(per_block[block]), None
+        if count <= 1 or rows.size < 2:
+            labels[rows] = offset
+            cluster_block.append(block)
+            report.append({"block": block_names[block], "size": int(rows.size), "k": 1, "silhouette": None})
+            offset += 1
+            continue
+        sub_labels = _cluster(spec, sub_distance, sub_features, count, None)
+        if score is None:
+            raw, _ = silhouette_kernel(sub_distance, np.ascontiguousarray(sub_labels), int(count))
+            score = _finite(raw)
+        for position, row in enumerate(rows):
+            labels[int(row)] = offset + int(sub_labels[position])
+        cluster_block.extend([block] * count)
+        report.append({"block": block_names[block], "size": int(rows.size), "k": count, "silhouette": score})
+        offset += count
+    return (
+        np.ascontiguousarray(labels),
+        np.ascontiguousarray(np.array(cluster_block, dtype=np.int64)),
+        offset,
+        report,
+    )
 
 
 def _suggest_k(
@@ -431,6 +551,7 @@ def _class_names(
     clusters: int,
     medoids: dict[int, int],
     preset: Optional[list[str]],
+    level: str = "asset_class",
 ) -> list[str]:
     """Name each class after its dominant contract label, disambiguated by medoid."""
 
@@ -445,7 +566,7 @@ def _class_names(
         else:
             counts: dict[str, int] = {}
             for member in members:
-                label = rule_label(member)
+                label = rule_label(member, level)
                 counts[label] = counts.get(label, 0) + 1
             base = max(counts.items(), key=lambda item: (item[1], item[0]))[0]
         seen = used.get(base, 0)
@@ -478,6 +599,10 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
         raise AutoClassError(f"不支持的类内权重方式：{spec.weight_mode}")
     if spec.unassigned_policy not in {"park", "force"}:
         raise AutoClassError(f"不支持的未归类策略：{spec.unassigned_policy}")
+    if spec.taxonomy_level not in TAXONOMY_LEVELS:
+        raise AutoClassError(f"不支持的合同分类层级：{spec.taxonomy_level}")
+    if spec.block_by not in BLOCK_MODES:
+        raise AutoClassError(f"不支持的分层方式：{spec.block_by}")
     if spec.size_min < 1:
         raise AutoClassError("每类最少产品数不能小于 1")
     if spec.size_max < spec.size_min:
@@ -535,9 +660,19 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
 
     preset_names: Optional[list[str]] = None
     k_suggestions: list[dict[str, Any]] = []
+    block_report: list[dict[str, Any]] = []
+    cluster_block: Optional[np.ndarray] = None
+    block_ids: Optional[np.ndarray] = None
     if spec.algorithm == "rule":
-        raw_labels, preset_names = _rule_labels(products)
+        raw_labels, preset_names = _taxonomy_groups(products, spec.taxonomy_level)
         clusters = len(preset_names)
+    elif spec.block_by != "none":
+        block_ids, block_names = _taxonomy_groups(products, spec.block_by)
+        raw_labels, cluster_block, clusters, block_report = _blocked_cluster(
+            spec, distance, features, block_ids, block_names, spec.k
+        )
+        if clusters < 1:
+            raise AutoClassError("分层后没有可用的大类，请放宽分层层级")
     else:
         upper_bound = max(2, min(MAX_AUTO_K, total // max(1, spec.size_min)))
         linkage = _linkage(spec, distance) if spec.algorithm == "hierarchical" else None
@@ -564,6 +699,13 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
     affinity = affinity_from_distance_kernel(
         np.ascontiguousarray(distance), np.ascontiguousarray(raw_labels), int(clusters)
     )
+    if block_ids is not None and cluster_block is not None and cluster_block.size:
+        # capacity_assign_kernel skips non-finite affinities, so masking the
+        # cross-block pairs is what stops the size_min backfill and the "force"
+        # policy from quietly moving a bond ETF into an equity class.
+        affinity = np.ascontiguousarray(
+            np.where(block_ids[:, None] == cluster_block[None, :], affinity, -np.inf)
+        )
     # A parked product may only backfill a short class when it is closer than an
     # average pool pair; otherwise the class stays short and says so.
     similarity_floor = -float(mean_offdiagonal_kernel(np.ascontiguousarray(distance)))
@@ -615,7 +757,9 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
             members, key=lambda index: sum(distance[index, other] for other in members)
         )
     medoids = {cluster: products[index].code for cluster, index in medoid_index.items()}
-    class_names = _class_names(products, labels, clusters, medoid_index, preset_names)
+    class_names = _class_names(
+        products, labels, clusters, medoid_index, preset_names, spec.taxonomy_level
+    )
 
     classes: list[dict[str, Any]] = []
     deviations: list[dict[str, str]] = []
@@ -627,7 +771,8 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
         entries = []
         for index in members:
             product = products[index]
-            contract = rule_label(product)
+            taxonomy = product_taxonomy(product)
+            contract = taxonomy.at(spec.taxonomy_level)
             entries.append({
                 "code": product.code,
                 "name": product.name,
@@ -637,6 +782,13 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
                 "invest_type": product.invest_type,
                 "management": product.management,
                 "contract_label": contract,
+                "taxonomy": {
+                    "asset_class": taxonomy.asset_class,
+                    "category": taxonomy.category,
+                    "detail": taxonomy.detail,
+                    "path": taxonomy.path,
+                    "matched": taxonomy.matched,
+                },
                 "affinity": _finite(affinity[index, cluster]),
                 "is_medoid": product.code == medoids.get(cluster),
                 "max_weight": product.max_weight,
@@ -680,7 +832,18 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
 
     warnings: list[str] = []
     if spec.algorithm == "rule" and spec.k is not None and spec.k != clusters:
-        warnings.append(f"规则映射按合同标签自然产生 {clusters} 个大类，已忽略指定的 {spec.k} 类")
+        warnings.append(f"规则映射按合同分类自然产生 {clusters} 个大类，已忽略指定的 {spec.k} 类")
+    if spec.algorithm == "rule" and spec.block_by != "none":
+        warnings.append("规则映射本身就是合同分层，已忽略额外的分层设置")
+    if block_report:
+        warnings.append(
+            f"已按「{BLOCK_MODES[spec.block_by]}」分层：{len(block_report)} 个合同块，"
+            f"块内统计聚类共产生 {clusters} 个大类；不同合同块的产品不会被合并进同一大类"
+        )
+        if spec.k is not None and clusters != spec.k:
+            warnings.append(
+                f"每个合同块至少保留 1 个大类，分层后实际 {clusters} 类，与指定的 {spec.k} 类不一致"
+            )
     if unassigned:
         warnings.append(f"{len(unassigned)} 个产品未归类，已进入待观察池")
     if skipped:
@@ -743,6 +906,8 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
     return {
         "algorithm": spec.algorithm,
         "features": spec.features,
+        "taxonomy_level": spec.taxonomy_level,
+        "block_by": spec.block_by,
         "k": clusters,
         "weight_mode": spec.weight_mode,
         "observations": observations,
@@ -758,6 +923,7 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
             "cross_class_labels": label_list,
             "significant_eigenvalues": _significant_eigenvalues(correlation, observations),
             "k_suggestions": k_suggestions,
+            "blocks": block_report,
             "contract_deviations": deviations,
             "sample_binding": sample_binding,
             "winsorized": [
@@ -780,6 +946,11 @@ def auto_classification_meta() -> dict[str, Any]:
         "algorithms": [{"id": key, "label": value} for key, value in ALGORITHMS.items()],
         "features": [{"id": key, "label": value} for key, value in FEATURE_SETS.items()],
         "linkages": [{"id": key, "label": key} for key in LINKAGE_METHODS],
+        "taxonomy_levels": [
+            {"id": level, "label": TAXONOMY_LEVEL_LABELS[level]} for level in TAXONOMY_LEVELS
+        ],
+        "block_modes": [{"id": key, "label": value} for key, value in BLOCK_MODES.items()],
+        "taxonomy": taxonomy_tree(),
         "weight_modes": [
             {"id": "equal", "label": "等权"},
             {"id": "inv_vol", "label": "逆波动率"},
@@ -800,16 +971,20 @@ def auto_classification_meta() -> dict[str, Any]:
             "size_max": 8,
             "unassigned_policy": "park",
             "start_date": "2020-01-01",
+            "taxonomy_level": "asset_class",
+            "block_by": "none",
         },
     }
 
 
 __all__ = [
     "ALGORITHMS",
+    "BLOCK_MODES",
     "AutoClassError",
     "AutoClassRequestSpec",
     "FEATURE_SETS",
     "auto_classification_meta",
+    "product_taxonomy",
     "rule_label",
     "run_auto_classification",
 ]

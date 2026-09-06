@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from custom_indicators.errors import ValidationError as IndicatorValidationError
 from product_pools.repository import ProductPoolRepository
 from product_pools.service import ProductPoolService
 from services import product_pool_routes
@@ -160,6 +161,105 @@ def test_batch_review_route_updates_multiple_members_once(monkeypatch, tmp_path:
     assert len(updated["members"]) == 2
     assert all(member["research_status"] == "approved" for member in updated["members"])
     assert all(member["owner"] == "Kevin" for member in updated["members"])
+
+
+def test_investable_universe_route_exposes_summary_and_search(monkeypatch, tmp_path: Path) -> None:
+    client = _client(monkeypatch, tmp_path)
+    pool = client.post("/api/product-pools", json={"name": "投前产品池"}).json()
+    pool = client.post(
+        f"/api/product-pools/{pool['id']}/evaluation-plans",
+        json={
+            "revision": pool["revision"],
+            "plan_id": "plan-equity",
+            "selection_mode": "all_ranked",
+        },
+    ).json()
+    member = pool["members"][0]
+    pool = client.put(
+        f"/api/product-pools/{pool['id']}/members/batch",
+        json={
+            "revision": pool["revision"],
+            "items": [
+                {
+                    "kind": member["kind"],
+                    "product_id": member["product_id"],
+                    "research_status": "approved",
+                    "usage_status": "normal",
+                    "primary_plan_id": member["primary_plan_id"],
+                    "max_weight": 0.5,
+                    "reasons": ["复核通过"],
+                    "owner": "Kevin",
+                    "review_due_date": None,
+                    "valid_until": None,
+                    "substitute_group": "",
+                }
+            ],
+        },
+    ).json()
+    published = client.post(
+        f"/api/product-pools/{pool['id']}/publish",
+        json={
+            "revision": pool["revision"],
+            "effective_from": "2026-09-01",
+            "effective_to": None,
+            "publication_note": "首版",
+        },
+    ).json()
+
+    created = client.post(
+        "/api/investable-universe-snapshots",
+        json={
+            "name": "投前研究可投资域",
+            "research_date": "2026-09-04",
+            "version_ids": [published["version"]["id"]],
+        },
+    )
+
+    assert created.status_code == 201
+    snapshot = created.json()
+    assert snapshot["summary"]["eligible_count"] == 1
+    assert snapshot["members"][0]["evaluation_sources"][0]["source_rank"] == 1
+
+    search = client.get(
+        f"/api/investable-universes/{snapshot['id']}/products",
+        params={"q": "沪深300", "eligible_only": True, "page": 1, "page_size": 10},
+    )
+    assert search.status_code == 200
+    assert search.json()["total"] == 1
+    assert search.json()["items"][0]["product_id"] == "510300.SH"
+
+
+def test_attach_preserves_indicator_domain_error_instead_of_returning_500(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _client(monkeypatch, tmp_path)
+    pool = client.post("/api/product-pools", json={"name": "评价错误透传"}).json()
+    service = product_pool_routes.product_pool_service
+
+    def fail_run(*_args, **_kwargs):
+        raise IndicatorValidationError(
+            "NJIT_BATCH_PLAN_NOT_WARMED",
+            "评价方案保存的融合 NJIT 计划未命中预热缓存。",
+            field="plan_revision",
+        )
+
+    monkeypatch.setattr(service.evaluation_gateway, "run_plan", fail_run)
+    response = client.post(
+        f"/api/product-pools/{pool['id']}/evaluation-plans",
+        json={
+            "revision": pool["revision"],
+            "plan_id": "plan-equity",
+            "selection_mode": "all_ranked",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "NJIT_BATCH_PLAN_NOT_WARMED",
+        "message": "评价方案保存的融合 NJIT 计划未命中预热缓存。",
+        "field": "plan_revision",
+    }
 
 
 def test_attach_rejects_a_stale_pool_revision(monkeypatch, tmp_path: Path) -> None:

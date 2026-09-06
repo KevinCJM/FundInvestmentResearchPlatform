@@ -232,6 +232,7 @@ export interface ProductAnalysisResponse {
 
 export interface ProductAnalysisRequest {
   statistics_period: StatisticsPeriod
+  include_technical?: boolean
   price_ma_periods: number[]
   volume_ma_periods: number[]
   boll_period: number

@@ -103,6 +103,16 @@ function makeFetch(options?: { keepRunning?: boolean }) {
 describe('HistoricalRegimeWorkbench', () => {
   afterEach(() => { window.history.replaceState({}, '', '/'); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
+  it('命令栏随页面滚动，不固定占用视口', () => {
+    vi.stubGlobal('fetch', makeFetch())
+    render(<HistoricalRegimeWorkbench />)
+
+    const commandBar = screen.getByLabelText('历史情景工作台命令栏')
+    expect(commandBar).not.toHaveClass('sticky')
+    expect(commandBar).not.toHaveClass('fixed')
+    expect(commandBar).not.toHaveClass('top-0')
+  })
+
   it('从 URL 查询参数载入已保存的精确 revision', async () => {
     const fetchMock = makeFetch()
     vi.stubGlobal('fetch', fetchMock)

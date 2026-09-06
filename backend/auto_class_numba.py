@@ -21,7 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 
 
 AUTO_CLASS_ENGINE_VERSION = "auto-asset-class-njit-1.0.0"
-AUTO_CLASS_KERNEL_VERSION = "auto-asset-class-kernels-1"
+AUTO_CLASS_KERNEL_VERSION = "auto-asset-class-kernels-2"
 
 _F1 = float64[::1]
 _F2 = float64[:, ::1]
@@ -1011,6 +1011,68 @@ def apply_weight_caps_kernel(
     return output, capacity
 
 
+@njit(_I1(_I1, int64, int64), cache=False, nogil=True)
+def allocate_block_clusters_kernel(
+    block_sizes: np.ndarray, total_clusters: int64, size_min: int64
+) -> np.ndarray:
+    """Split a requested class count across contract-taxonomy blocks.
+
+    Every non-empty block keeps at least one class -- the taxonomy is a hard
+    partition, so a block can never be merged away to hit K.  The remaining
+    classes go to whichever block currently has the largest products-per-class
+    load (highest averages), which is deterministic and needs no tie-break.
+    """
+
+    blocks = block_sizes.shape[0]
+    output = np.zeros(blocks, dtype=np.int64)
+    if blocks == 0:
+        return output
+    lower = size_min if size_min > 0 else 1
+    capacity = np.zeros(blocks, dtype=np.int64)
+    total_capacity = 0
+    for block in range(blocks):
+        size = block_sizes[block]
+        if size <= 0:
+            continue
+        room = size // lower
+        if room < 1:
+            # Too small to satisfy size_min on its own: it still forms one
+            # (short) class rather than being dissolved into another block.
+            room = 1
+        if room > size:
+            room = size
+        capacity[block] = room
+        total_capacity += room
+
+    target = total_clusters
+    if target < 1:
+        target = blocks
+    if target > total_capacity:
+        target = total_capacity
+
+    assigned = 0
+    for block in range(blocks):
+        if capacity[block] > 0:
+            output[block] = 1
+            assigned += 1
+    remaining = target - assigned
+    while remaining > 0:
+        best = -1
+        best_score = -1.0
+        for block in range(blocks):
+            if output[block] >= capacity[block]:
+                continue
+            score = block_sizes[block] / (output[block] + 1)
+            if score > best_score:
+                best_score = score
+                best = block
+        if best < 0:
+            break
+        output[best] += 1
+        remaining -= 1
+    return output
+
+
 @njit(_U1(_F2), cache=False, nogil=True)
 def finite_rows_kernel(values: np.ndarray) -> np.ndarray:
     """Row mask used before any covariance work; keeps serialization honest."""
@@ -1029,6 +1091,7 @@ def finite_rows_kernel(values: np.ndarray) -> np.ndarray:
 
 _PUBLIC_KERNELS = (
     robust_standardize_kernel,
+    allocate_block_clusters_kernel,
     winsorize_returns_kernel,
     correlation_matrix_kernel,
     corr_to_distance_kernel,
@@ -1098,6 +1161,7 @@ def warm_auto_class_numba_kernels() -> dict[str, object]:
         )
     )
     finite_rows_kernel(returns)
+    allocate_block_clusters_kernel(np.ascontiguousarray(np.array([3, 1], dtype=np.int64)), 3, 1)
     clean, _clipped, _worst = winsorize_returns_kernel(returns, 25.0)
     correlation = correlation_matrix_kernel(np.ascontiguousarray(clean))
     distance = corr_to_distance_kernel(correlation)
@@ -1142,6 +1206,7 @@ __all__ = [
     "WEIGHT_INV_VAR",
     "WEIGHT_INV_VOL",
     "affinity_from_distance_kernel",
+    "allocate_block_clusters_kernel",
     "agglomerative_linkage_kernel",
     "apply_weight_caps_kernel",
     "auto_class_execution_audit",

@@ -1,42 +1,20 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import DataManagement from './DataManagement';
+import { fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { describe, expect, it, vi } from 'vitest'
+import DataManagement from './DataManagement'
+
+vi.mock('../components/data-sources/DataDownloadWorkspace', () => ({ default: () => <section aria-label="多源下载与ETL">选择数据源与下载内容</section> }))
+vi.mock('../components/dashboard/DataHealthRefreshPanel', () => ({ default: () => <section aria-label="原Tushare下载">原模块级全市场任务</section> }))
 
 describe('DataManagement', () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it('聚焦数据下载流程，并把质量检查交给独立页面', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        source: 'tushare',
-        enabled: true,
-        full_refresh_enabled: true,
-        available_modules: ['base', 'etf', 'fund', 'index'],
-        token_configured: true,
-        token_configuration_enabled: true,
-        token_editable: true,
-        job: { status: 'idle', message: '尚未启动更新' },
-        datasets: {},
-      }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(<MemoryRouter><DataManagement /></MemoryRouter>);
-    await screen.findByText(/尚未启动更新/);
-
-    expect(screen.getByRole('heading', { name: '数据下载与更新' })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: '数据下载与更新' })).toBeVisible();
-    expect(screen.getByRole('link', { name: '查看数据质量 →' })).toHaveAttribute('href', '/settings/data-quality');
-    expect(screen.getByRole('heading', { name: '连接数据源' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '选择更新方式' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '选择下载范围' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '启动更新' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: '数据健康' })).not.toBeInTheDocument();
-    expect(screen.queryByText('净值覆盖')).not.toBeInTheDocument();
-    expect(screen.queryByRole('table')).not.toBeInTheDocument();
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/data/refresh/status', { cache: 'no-store' }));
-    expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith('/api/instruments/analytics?'))).toBe(false);
-  });
-});
+  it('默认入口为多源下载及ETL，旧下载面板按需展开', () => {
+    render(<MemoryRouter><DataManagement /></MemoryRouter>)
+    expect(screen.getByRole('heading', { name: '数据下载与更新' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '多源下载与ETL' })).toBeVisible()
+    expect(screen.getByRole('link', { name: '查看数据质量 →' })).toHaveAttribute('href', '/settings/data-quality')
+    expect(screen.queryByRole('region', { name: '原Tushare下载' })).not.toBeInTheDocument()
+    const details = screen.getByText('原 Tushare 全市场任务与旧快照维护').closest('details')!
+    details.open = true; fireEvent(details, new Event('toggle'))
+    expect(screen.getByRole('region', { name: '原Tushare下载' })).toBeVisible()
+  })
+})

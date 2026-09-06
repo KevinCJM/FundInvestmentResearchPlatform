@@ -442,6 +442,8 @@ def refresh_request_fingerprint(
         or datetime.now(timezone.utc).strftime("%Y%m%d"),
         "history_chunk_days": os.getenv("TUSHARE_HISTORY_CHUNK_DAYS", "3650"),
     }
+    from backend.data_sources.legacy_bridge import configuration_fingerprint
+    payload["source_configuration_hash"] = configuration_fingerprint(DATA_DIR)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
 
@@ -465,6 +467,8 @@ def build_refresh_command(
     max_calls = os.getenv("TUSHARE_MAX_CALLS_PER_MINUTE", "450")
     min_interval = os.getenv("TUSHARE_MIN_CALL_INTERVAL_SECONDS", "0.13")
     max_days = os.getenv("TUSHARE_MAX_LATEST_DAYS", "120")
+    from backend.data_sources.legacy_bridge import pagination_defaults
+    configured_paging = pagination_defaults(DATA_DIR)
     command = [
         sys.executable,
         str(REFRESH_SCRIPT),
@@ -485,13 +489,13 @@ def build_refresh_command(
         "--max-workers",
         os.getenv("TUSHARE_MAX_WORKERS", "16"),
         "--max-fund-basic-pages",
-        os.getenv("TUSHARE_MAX_FUND_BASIC_PAGES", "20"),
+        os.getenv("TUSHARE_MAX_FUND_BASIC_PAGES", configured_paging["basic_pages"]),
         "--max-fund-nav-pages",
-        os.getenv("TUSHARE_MAX_FUND_NAV_PAGES", "20"),
+        os.getenv("TUSHARE_MAX_FUND_NAV_PAGES", configured_paging["nav_pages"]),
         "--fund-nav-page-size",
-        os.getenv("TUSHARE_FUND_NAV_PAGE_SIZE", "10000"),
+        os.getenv("TUSHARE_FUND_NAV_PAGE_SIZE", configured_paging["nav_page_size"]),
         "--max-fund-manager-pages",
-        os.getenv("TUSHARE_MAX_FUND_MANAGER_PAGES", "20"),
+        os.getenv("TUSHARE_MAX_FUND_MANAGER_PAGES", configured_paging["manager_pages"]),
         "--incremental-batch-days",
         os.getenv("TUSHARE_INCREMENTAL_BATCH_DAYS", "20"),
     ]
@@ -769,6 +773,8 @@ def _empty_job() -> dict[str, Any]:
         "staging_data_dir": None,
         "fetch_complete": False,
         "resumed": False,
+        "resume_available": False,
+        "interruption_reason": None,
     }
 
 
@@ -925,7 +931,14 @@ class DataRefreshManager:
                 {
                     "status": "failed",
                     "finished_at": utc_now(),
-                    "message": "数据更新进程已中断；检查点仍保留，可稍后重新启动继续。",
+                    "message": (
+                        "数据更新后台服务已退出或重启，任务已中断；"
+                        "已落盘数据和检查点仍保留，可按原配置继续。"
+                    ),
+                    "resume_available": bool(
+                        self._job.get("modules") and self._job.get("mode") in REFRESH_MODES
+                    ),
+                    "interruption_reason": "owner_process_lost",
                 }
             )
             self._persist_locked()
@@ -939,6 +952,11 @@ class DataRefreshManager:
             latest_status = _latest_complete_status_line(str(job.get("log_tail") or ""))
             if latest_status:
                 job["message"] = latest_status
+        elif job.get("status") == "failed" and job.get("modules") and job.get("mode") in REFRESH_MODES:
+            # Old persisted failures did not carry an explicit recovery flag.
+            # Retrying the same request is safe: incremental writes are idempotent
+            # upserts and full refreshes reuse their staging checkpoints.
+            job["resume_available"] = True
         legacy_checkpoint = self._legacy_external_checkpoint()
         if job.get("status") != "running" and legacy_checkpoint is not None:
             job = {

@@ -14,12 +14,13 @@ from typing import Any, Mapping, Sequence
 import xlsxwriter
 from xlsxwriter.utility import xl_rowcol_to_cell
 
-from cal_indicators.typed_dsl import TypedExpressionPlan
+from cal_indicators.typed_dsl import TypedExpressionPlan, TypedSeriesBundlePlan
 
 from .errors import ValidationError
 from .excel_formula import (
     EXCEL_FORMULA_REGISTRY_VERSION,
     FormulaFormats,
+    SeriesBundleExcelFormulaCompiler,
     SingleProductExcelFormulaCompiler,
 )
 
@@ -37,6 +38,21 @@ class ExcelTargetEvidence:
     result: dict[str, Any]
     context: Mapping[str, Any]
     dates_by_variable: Mapping[str, Sequence[Any]]
+
+
+@dataclass(frozen=True)
+class SeriesExcelTargetEvidence:
+    """Exact time-series inputs, outputs and display slice for one product."""
+
+    target: dict[str, str]
+    name: str
+    result: dict[str, Any]
+    context: Mapping[str, Any]
+    dates_by_variable: Mapping[str, Sequence[Any]]
+    backend_outputs: Mapping[str, Sequence[Any]]
+    display_start: int
+    display_end: int
+    display_dates: Sequence[Any]
 
 
 @dataclass(frozen=True)
@@ -601,9 +617,454 @@ def build_indicator_excel_workbook(
     return ExcelExportArtifact(path=path, filename=filename)
 
 
+def _series_sheet_names(index: int, product_id: str) -> tuple[str, str]:
+    base = _safe_sheet_name(index, product_id)
+    return f"{base[:26]}_计算", f"{base[:26]}_结果"
+
+
+def _excel_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        resolved = value
+    elif hasattr(value, "to_pydatetime"):
+        resolved = value.to_pydatetime()
+    else:
+        resolved = datetime.fromisoformat(str(value)[:10])
+    return resolved.replace(tzinfo=None) if resolved.tzinfo is not None else resolved
+
+
+def _finite_or_blank(value: Any) -> Any:
+    """Return a cached Excel value without turning missing observations into zero."""
+
+    if value is None:
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return number if math.isfinite(number) else ""
+
+
+def build_series_indicator_excel_workbook(
+    *,
+    output_dir: Path,
+    definition: Mapping[str, Any],
+    plan: TypedSeriesBundlePlan,
+    targets: Sequence[SeriesExcelTargetEvidence],
+    period: str,
+    as_of: str | None,
+    data_generation: str,
+    parameters: Mapping[str, float],
+) -> ExcelExportArtifact:
+    """Generate a formula-driven workbook for a multi-channel series indicator."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, path_text = tempfile.mkstemp(
+        prefix="indicator-series-excel-",
+        suffix=".xlsx",
+        dir=str(output_dir),
+    )
+    os.close(descriptor)
+    path = Path(path_text)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    filename = (
+        f"时序指标计算_{_safe_filename_component(str(definition.get('name') or ''), '未命名指标')}"
+        f"_{period}_{timestamp}.xlsx"
+    )
+
+    compilers: list[SeriesBundleExcelFormulaCompiler | None] = []
+    sheet_names: list[tuple[str, str]] = []
+    for index, evidence in enumerate(targets, start=1):
+        calculation_sheet, result_sheet = _series_sheet_names(
+            index, evidence.target["product_id"]
+        )
+        sheet_names.append((calculation_sheet, result_sheet))
+        if not evidence.context:
+            compilers.append(None)
+            continue
+        compilers.append(
+            SeriesBundleExcelFormulaCompiler(
+                plan=plan,
+                context=evidence.context,
+                dates_by_variable=evidence.dates_by_variable,
+                sheet_name=calculation_sheet,
+                prefix=f"S{index:02d}",
+                first_block_row=12,
+            )
+        )
+
+    formula_cells = sum(
+        compiler.estimated_formula_cells
+        for compiler in compilers
+        if compiler is not None
+    ) + sum(
+        max(0, evidence.display_end - evidence.display_start)
+        * max(1, len(definition.get("series_outputs") or []))
+        * 2
+        for evidence in targets
+    )
+    max_formula_cells = max(
+        1,
+        int(
+            os.getenv(
+                "INDICATOR_EXCEL_MAX_FORMULA_CELLS",
+                str(DEFAULT_MAX_FORMULA_CELLS),
+            )
+        ),
+    )
+    if formula_cells > max_formula_cells:
+        path.unlink(missing_ok=True)
+        raise ValidationError(
+            "EXCEL_EXPORT_TOO_LARGE",
+            f"工作簿预计生成 {formula_cells} 个公式单元格，超过上限 {max_formula_cells}；请减少产品、缩短周期或简化指标。",
+        )
+
+    workbook: Any | None = None
+    try:
+        workbook = xlsxwriter.Workbook(
+            path,
+            {
+                "constant_memory": True,
+                "strings_to_formulas": False,
+                "strings_to_urls": False,
+                "nan_inf_to_errors": True,
+            },
+        )
+        workbook.set_calc_mode("auto")
+        workbook.set_properties(
+            {
+                "title": f"{definition.get('name')} 时序指标 Excel 计算复现",
+                "subject": "原始数据、原生 Excel 公式与固定签名 NJIT 时序结果核对",
+                "author": "基金量化投研平台",
+                "comments": "每个通道只使用原生 Excel 函数、普通四则运算和直接单元格引用；不包含宏、自定义函数或隐藏命名公式。",
+            }
+        )
+        formula_formats, common_formats = _formats(workbook)
+
+        summary = workbook.add_worksheet("01_结果汇总")
+        summary.hide_gridlines(2)
+        summary.freeze_panes(11, 0)
+        summary.set_column(0, 0, 8)
+        summary.set_column(1, 3, 20)
+        summary.set_column(4, 5, 16)
+        summary.set_column(6, 8, 26)
+        summary.merge_range(
+            0,
+            0,
+            0,
+            8,
+            "时序指标 Excel 计算复现",
+            common_formats["title"],
+        )
+        metadata = [
+            ("指标名称", definition.get("name")),
+            ("结果类型", "具名多通道时间序列"),
+            ("计算周期", period),
+            ("历史截止日", as_of or "最新可用数据"),
+            (
+                "算法参数",
+                "已固化在指标公式中，无运行时覆盖"
+                if not parameters
+                else "；".join(f"{key}={value:g}" for key, value in parameters.items()),
+            ),
+            (
+                "计算协议版本",
+                f"{plan.dsl_version} / {plan.operator_registry_version}",
+            ),
+            ("Excel 公式生成版本", EXCEL_FORMULA_REGISTRY_VERSION),
+            ("数据版本", data_generation),
+            (
+                "说明",
+                "每个产品的“计算”Sheet 保存真实输入和可复制的原生 Excel 公式；不使用宏、UDF、DSL 函数或命名公式。“结果”Sheet 按日期核对 Excel 与 NJIT 通道值。",
+            ),
+        ]
+        for row, (label, value) in enumerate(metadata, start=1):
+            summary.write(row, 0, label, common_formats["label"])
+            summary.merge_range(row, 1, row, 8, value, common_formats["value"])
+        header_row = 10
+        headers = [
+            "编号",
+            "产品类型",
+            "产品代码",
+            "产品名称",
+            "状态",
+            "通道数",
+            "实际窗口",
+            "逐步计算 Sheet",
+            "结果核对 Sheet",
+        ]
+        for column, header in enumerate(headers):
+            summary.write(header_row, column, header, common_formats["header"])
+        for index, (evidence, names) in enumerate(
+            zip(targets, sheet_names, strict=True), start=1
+        ):
+            row = header_row + index
+            window = evidence.result.get("window") or {}
+            summary.write_number(row, 0, index, common_formats["integer"])
+            summary.write(row, 1, evidence.target["kind"].upper(), common_formats["value"])
+            summary.write(row, 2, evidence.target["product_id"], common_formats["value"])
+            summary.write(row, 3, evidence.name, common_formats["value"])
+            summary.write(row, 4, evidence.result.get("status"), common_formats["value"])
+            summary.write_number(
+                row,
+                5,
+                len(evidence.backend_outputs),
+                common_formats["integer"],
+            )
+            summary.write(
+                row,
+                6,
+                f"{window.get('start_date') or '—'} 至 {window.get('end_date') or '—'}",
+                common_formats["value"],
+            )
+            summary.write_url(
+                row,
+                7,
+                f"internal:'{names[0]}'!A1",
+                common_formats["value"],
+                names[0],
+            )
+            summary.write_url(
+                row,
+                8,
+                f"internal:'{names[1]}'!A1",
+                common_formats["value"],
+                names[1],
+            )
+
+        output_metadata = {
+            str(item["id"]): item
+            for item in definition.get("series_outputs") or []
+        }
+        for evidence, (calculation_sheet, result_sheet), compiler in zip(
+            targets,
+            sheet_names,
+            compilers,
+            strict=True,
+        ):
+            calculation = workbook.add_worksheet(calculation_sheet)
+            calculation.hide_gridlines(2)
+            calculation.freeze_panes(12, 0)
+            calculation.set_column(0, 0, 24)
+            calculation.set_column(1, 2, 25)
+            calculation.set_column(3, 3, 52)
+            calculation.merge_range(
+                0,
+                0,
+                0,
+                3,
+                f"{evidence.name} · {definition.get('name')} · 逐步计算",
+                common_formats["title"],
+            )
+            calculation_rows = [
+                ("产品", f"{evidence.name}（{evidence.target['product_id']}）"),
+                ("产品类型", evidence.target["kind"].upper()),
+                ("指标", definition.get("name")),
+                ("计算周期", period),
+                ("历史截止日", as_of or "最新可用数据"),
+                (
+                    "算法参数",
+                    "已固化在指标公式中，无运行时覆盖"
+                    if not parameters
+                    else "；".join(
+                        f"{key}={value:g}" for key, value in parameters.items()
+                    ),
+                ),
+                ("日期轴变量", definition.get("axis_anchor")),
+                ("历史计算策略", definition.get("history_policy")),
+                (
+                    "说明",
+                    "下方依次列出真实输入、固定常量、公共中间步骤和各通道结果。每行都提供可复制的原生 Excel 公式；修改输入后 Excel 自动重算。",
+                ),
+            ]
+            for row, (label, value) in enumerate(calculation_rows, start=1):
+                calculation.write(row, 0, label, common_formats["label"])
+                calculation.merge_range(
+                    row, 1, row, 3, value, common_formats["value"]
+                )
+            if compiler is not None:
+                cached_values = {
+                    compiler.root_ids[channel_id]: values
+                    for channel_id, values in evidence.backend_outputs.items()
+                    if channel_id in compiler.root_ids
+                }
+                compiler.write_nodes(
+                    calculation,
+                    formats=formula_formats,
+                    backend_value=None,
+                    cached_values_by_node=cached_values,
+                )
+            else:
+                calculation.merge_range(
+                    12,
+                    0,
+                    14,
+                    3,
+                    _warning_text(evidence.result)
+                    or "本次没有可供导出的直接入参数据。",
+                    common_formats["warning"],
+                )
+
+            result = workbook.add_worksheet(result_sheet)
+            result.hide_gridlines(2)
+            result.freeze_panes(8, 1)
+            result.merge_range(
+                0,
+                0,
+                0,
+                max(4, len(output_metadata) * 4),
+                f"{evidence.name} · {definition.get('name')} · 结果核对",
+                common_formats["title"],
+            )
+            result.write(2, 0, "产品", common_formats["label"])
+            result.write(2, 1, evidence.name, common_formats["value"])
+            result.write(3, 0, "实际窗口", common_formats["label"])
+            window = evidence.result.get("window") or {}
+            result.write(
+                3,
+                1,
+                f"{window.get('start_date') or '—'} 至 {window.get('end_date') or '—'}",
+                common_formats["value"],
+            )
+            result.write(4, 0, "状态 / 说明", common_formats["label"])
+            result.merge_range(
+                4,
+                1,
+                4,
+                max(4, len(output_metadata) * 4),
+                f"{evidence.result.get('status')} · {_warning_text(evidence.result)}",
+                common_formats["value"],
+            )
+            headers_row = 7
+            result.write(headers_row, 0, "日期", common_formats["header"])
+            ordered_channels = [
+                str(item["id"])
+                for item in definition.get("series_outputs") or []
+            ]
+            for channel_index, channel_id in enumerate(ordered_channels):
+                metadata_item = output_metadata[channel_id]
+                start_column = 1 + channel_index * 4
+                label = str(metadata_item.get("label") or channel_id)
+                for offset, suffix in enumerate(
+                    ("Excel 公式结果", "平台 NJIT 结果", "绝对差异", "一致性")
+                ):
+                    result.write(
+                        headers_row,
+                        start_column + offset,
+                        f"{label} · {suffix}",
+                        common_formats["header"],
+                    )
+                result.set_column(start_column, start_column + 2, 18)
+                result.set_column(start_column + 3, start_column + 3, 12)
+            result.set_column(0, 0, 13)
+
+            visible_rows = max(0, evidence.display_end - evidence.display_start)
+            for local_index in range(visible_rows):
+                row = headers_row + 1 + local_index
+                result.write_datetime(
+                    row,
+                    0,
+                    _excel_datetime(evidence.display_dates[local_index]),
+                    formula_formats.date,
+                )
+                compute_index = evidence.display_start + local_index
+                for channel_index, channel_id in enumerate(ordered_channels):
+                    start_column = 1 + channel_index * 4
+                    values = evidence.backend_outputs.get(channel_id)
+                    if values is None:
+                        values = ()
+                    backend_value = (
+                        values[compute_index]
+                        if compute_index < len(values)
+                        else None
+                    )
+                    if compiler is not None and channel_id in compiler.root_ids:
+                        placement = compiler.channel_placement(channel_id)
+                        root_cell = placement.cell(compute_index, absolute=True)
+                        formula = f"='{calculation_sheet.replace(chr(39), chr(39) * 2)}'!{root_cell}"
+                        result.write_formula(
+                            row,
+                            start_column,
+                            formula,
+                            formula_formats.number,
+                            _finite_or_blank(backend_value),
+                        )
+                    else:
+                        result.write_blank(
+                            row,
+                            start_column,
+                            None,
+                            common_formats["warning"],
+                        )
+                    if _finite_or_blank(backend_value) == "":
+                        result.write_blank(
+                            row,
+                            start_column + 1,
+                            None,
+                            common_formats["warning"],
+                        )
+                        result.write_blank(
+                            row,
+                            start_column + 2,
+                            None,
+                            common_formats["warning"],
+                        )
+                        result.write(
+                            row,
+                            start_column + 3,
+                            "缺失",
+                            common_formats["warning"],
+                        )
+                        continue
+                    result.write_number(
+                        row,
+                        start_column + 1,
+                        float(backend_value),
+                        formula_formats.number,
+                    )
+                    excel_cell = xl_rowcol_to_cell(row, start_column)
+                    backend_cell = xl_rowcol_to_cell(row, start_column + 1)
+                    difference_cell = xl_rowcol_to_cell(row, start_column + 2)
+                    result.write_formula(
+                        row,
+                        start_column + 2,
+                        f"=ABS({excel_cell}-{backend_cell})",
+                        formula_formats.number,
+                        0,
+                    )
+                    result.write_formula(
+                        row,
+                        start_column + 3,
+                        f'=IF({difference_cell}<=MAX(1E-12,ABS({backend_cell})*1E-10),"一致","不一致")',
+                        common_formats["success"],
+                        "打开 Excel 后自动重算",
+                    )
+            if visible_rows:
+                result.autofilter(
+                    headers_row,
+                    0,
+                    headers_row + visible_rows,
+                    len(ordered_channels) * 4,
+                )
+
+        workbook.close()
+        workbook = None
+    except Exception:
+        if workbook is not None:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+        path.unlink(missing_ok=True)
+        raise
+
+    return ExcelExportArtifact(path=path, filename=filename)
+
+
 __all__ = [
     "EXCEL_MEDIA_TYPE",
     "ExcelExportArtifact",
     "ExcelTargetEvidence",
+    "SeriesExcelTargetEvidence",
     "build_indicator_excel_workbook",
+    "build_series_indicator_excel_workbook",
 ]

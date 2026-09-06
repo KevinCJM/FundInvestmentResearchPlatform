@@ -8,6 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from custom_indicators.errors import IndicatorDomainError
 from product_pools.errors import ProductPoolError
 from product_pools.repository import ProductPoolRepository
 from product_pools.service import ProductPoolService
@@ -61,6 +62,10 @@ def _call(function, *args, **kwargs):
         if exc.field:
             detail["field"] = exc.field
         raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+    except IndicatorDomainError as exc:
+        # Evaluation is an upstream domain dependency of product-pool attach.
+        # Preserve its stable business error instead of leaking an ASGI 500.
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
 
 
 class ProductPoolCreate(BaseModel):
@@ -278,6 +283,26 @@ def diff_product_pool_versions(
 )
 def create_investable_universe_snapshot(request: InvestableUniverseCreate):
     return _call(product_pool_service.create_universe_snapshot, request.model_dump())
+
+
+@router.get("/api/investable-universes/{snapshot_id}/products")
+def search_investable_universe_products(
+    snapshot_id: str,
+    q: str = Query(default="", max_length=200),
+    kind: Literal["etf", "fund"] | None = None,
+    eligible_only: bool = True,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    return _call(
+        product_pool_service.search_universe_products,
+        snapshot_id,
+        query=q,
+        kind=kind,
+        eligible_only=eligible_only,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/api/investable-universe-snapshots/{snapshot_id}")

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import DataWorkspaceNav from '../components/data-sources/DataWorkspaceNav';
 import { useDataRefresh } from '../components/dashboard/useDataRefresh';
 import type { DataQualityWarning, DataRefreshStatus, InstrumentAnalyticsResponse } from '../components/dashboard/types';
 import {
@@ -318,8 +319,8 @@ export default function DataQuality() {
     });
     if (refreshStatus?.job.status === 'failed') next.push({
       id: 'refresh-failed', code: 'LAST_REFRESH_FAILED', severity: 'high', dimension: 'timeliness', scope: '数据更新任务',
-      title: '最近一次数据更新失败', description: '当前质量结果仍基于上一个已生效数据版本。', evidence: refreshStatus.job.message,
-      impact: '新增或修订数据尚未进入当前研究版本。', affected_count: 0, affected_rate: null, record_count: 0, samples: [], action: 'refresh', ...issueAction('refresh'),
+      title: '最近一次数据更新失败', description: '任务未完整结束；增量任务已完成的部分可能已经写入，请检查日期覆盖和数据一致性。', evidence: refreshStatus.job.message,
+      impact: '不能把部分更新当作整批完成；请先恢复任务，再复核质量。', affected_count: 0, affected_rate: null, record_count: 0, samples: [], action: 'refresh', ...issueAction('refresh'),
     });
     datasets.filter((dataset) => dataset.tone !== 'good').forEach((dataset) => next.push({
       id: `dataset-${dataset.key}`, code: dataset.tone === 'danger' ? 'DATASET_UNREADABLE' : 'DATASET_EMPTY_OR_MISSING',
@@ -355,6 +356,7 @@ export default function DataQuality() {
 
   return (
     <div className="mx-auto min-w-0 max-w-7xl space-y-6">
+      <DataWorkspaceNav />
       <header className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-6 p-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
           <div className="max-w-3xl"><p className="text-xs font-semibold uppercase tracking-[0.22em] text-indigo-600">Data governance</p><h1 className="mt-2 text-2xl font-bold text-slate-950 sm:text-3xl">数据质量监控与治理</h1><p className="mt-3 text-sm leading-6 text-slate-600">从“文件能否读取”深入到产品级时间序列：检查净值突变、连续缺口、窗口覆盖、存续产品陈旧、主键、值域和源快照一致性，并明确对研究结果的影响。</p></div>
@@ -363,7 +365,7 @@ export default function DataQuality() {
         <div className="grid gap-px border-t border-slate-200 bg-slate-200 sm:grid-cols-3"><div className="bg-slate-50 px-5 py-3 text-xs leading-5 text-slate-600"><span className="font-semibold text-slate-800">当前研究时点：</span>{deepQuality?.as_of ?? analytics?.as_of ?? '--'}</div><div className="bg-indigo-50 px-5 py-3 text-xs leading-5 text-indigo-800"><span className="font-semibold">质量快照生成：</span>{formatUpdatedAt(deepQuality?.generated_at)}</div><div className="bg-slate-50 px-5 py-3 text-xs leading-5 text-slate-600"><span className="font-semibold text-slate-800">数据版本激活：</span>{formatUpdatedAt(deepQuality?.activated_at)}</div></div>
       </header>
 
-      {refreshRunning && <div role="status" className="flex flex-col gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900 sm:flex-row sm:items-center sm:justify-between"><span><span className="font-semibold">数据更新正在后台运行。</span> 本页继续展示当前已生效版本，任务完成后会自动重新检查。</span><Link to="/settings/data-sources" className="shrink-0 font-semibold text-indigo-700 hover:text-indigo-900">查看更新进度 →</Link></div>}
+      {refreshRunning && <div role="status" className="flex flex-col gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900 sm:flex-row sm:items-center sm:justify-between"><span><span className="font-semibold">数据更新正在后台运行。</span> 本页展示当前本地数据，更新期间结果可能变化；任务完成后会自动重新检查。</span><Link to="/settings/data-sources" className="shrink-0 font-semibold text-indigo-700 hover:text-indigo-900">查看更新进度 →</Link></div>}
 
       <section aria-label="数据质量概览" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <QualityMetric label="深度检查规则" value={summary ? `${summary.checks_passed} / ${summary.checks_total}` : '--'} detail={summary ? `${summary.checks_warning} 项关注 · ${summary.checks_failed} 项未通过 · ${summary.checks_unavailable} 项未检查` : '正在读取质量快照'} tone={loading ? 'planned' : summary && summary.checks_passed === summary.checks_total ? 'good' : summary?.checks_failed ? 'danger' : 'warning'} statusLabel={loading ? '检查中' : undefined} />

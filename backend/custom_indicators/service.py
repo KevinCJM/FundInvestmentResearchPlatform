@@ -15,7 +15,7 @@ from contextlib import ExitStack
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -69,6 +69,8 @@ from cal_indicators.typed_numba_plan import (
 from cal_indicators.typed_operators import (
     COMPAT_OPERATOR_REGISTRY_VERSION,
     COMPAT_TYPED_DSL_VERSION,
+    PREVIOUS_OPERATOR_REGISTRY_VERSION,
+    PREVIOUS_TYPED_DSL_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
 )
@@ -108,6 +110,33 @@ from .repository import (
 )
 from .snapshot_config import MAX_SNAPSHOT_INDICATORS, normalized_snapshot_item
 from .run_result_repository import EvaluationRunResultRepository
+from .rolling_series import (
+    derive_rolling_series_definition,
+    normalize_rolling_source,
+    transform_scalar_expression,
+    verify_rolling_series_definition,
+)
+from .runtime_context import risk_free_context_kernel as _risk_free_context_kernel
+from .rolling_scalar import (
+    MAX_ROLLING_WINDOW_OBSERVATIONS,
+    MIN_ROLLING_WINDOW_OBSERVATIONS,
+    ROLLING_SCALAR_TRANSFORM_VERSION,
+    lift_scalar_expression,
+    scalar_definition_hash,
+    validate_scalar_rolling_source,
+)
+from .series_definitions import (
+    TIME_SERIES_OUTPUT_CONTRACT,
+    TIME_SERIES_RESULT_KIND,
+    normalize_time_series_definition,
+    series_output_measure_catalog,
+    rolling_scalar_time_series_definition,
+    time_series_builtin_indicators,
+)
+from .series_service import (
+    TimeSeriesIndicatorService,
+    apply_series_compiled_contract,
+)
 from .series_provider import (
     DEFAULT_DATA_DIR,
     PeriodWindow,
@@ -123,7 +152,12 @@ from .series_provider import (
     select_variable_window,
     select_variable_window_fast,
 )
-from .typed_service import compose_expression, infer_expression, typed_product_meta
+from .typed_service import (
+    compose_expression,
+    infer_expression,
+    parameter_composition_context,
+    typed_product_meta,
+)
 from .variable_registry import (
     CONTEXT_SCHEMA_VERSION,
     DATA_CONTRACT_VERSION,
@@ -143,6 +177,7 @@ LEGACY_OPERATOR_REGISTRY_VERSION = "legacy-v1"
 LEGACY_TYPED_DSL_VERSION = "2.0.0"
 LEGACY_TYPED_OPERATOR_REGISTRY_VERSION = "2.0.0"
 COMPAT_TYPED_OPERATOR_REGISTRY_VERSION = COMPAT_OPERATOR_REGISTRY_VERSION
+PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION = PREVIOUS_OPERATOR_REGISTRY_VERSION
 NUMBA_V3_MIGRATION_MARKER = "typed-numba-3"
 MAX_FORMULA_LENGTH = 1000
 MAX_DAG_NODES = 128
@@ -170,23 +205,6 @@ _TYPED_PLAN_LOCK = threading.RLock()
 _WARMED_TYPED_PLANS: dict[
     tuple[str, str, str, str], TypedExpressionPlan
 ] = {}
-
-
-@numba.njit(
-    numba.types.UniTuple(numba.float64, 5)(numba.float64, numba.float64),
-    cache=True,
-    nogil=True,
-)
-def _risk_free_context_kernel(
-    annual_percent: float,
-    elapsed_days: float,
-) -> tuple[float, float, float, float, float]:
-    annual = annual_percent / 100.0
-    base = max(0.0, 1.0 + annual)
-    per_observation = base ** (1.0 / 252.0) - 1.0
-    elapsed = max(0.0, elapsed_days)
-    window_return = base ** (elapsed / 365.0) - 1.0
-    return annual, per_observation, per_observation, window_return, 252.0
 
 
 @numba.njit(numba.int8(numba.float64), cache=True, nogil=True)
@@ -335,8 +353,8 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         "annual_risk_free_rate_percent": 1.5,
         "created_at": timestamp,
         "updated_at": timestamp,
-        "dsl_version": TYPED_DSL_VERSION,
-        "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        "dsl_version": PREVIOUS_TYPED_DSL_VERSION,
+        "operator_registry_version": PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION,
         "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
         "variable_registry_version": VARIABLE_REGISTRY_VERSION,
         "data_contract_version": DATA_CONTRACT_VERSION,
@@ -347,7 +365,7 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         "required_variables": ["portfolio_returns"],
         "applicable_product_kinds": ["portfolio"],
         "availability_status": "ready",
-        "formula_version": TYPED_DSL_VERSION,
+        "formula_version": PREVIOUS_TYPED_DSL_VERSION,
         "data_basis": "运行快照中的真实底层产品收益、每日生效权重与严格共同日期",
         "semantic_differences": [
             "组合历史收益使用每日生效权重，不将期末权重回填至历史",
@@ -501,7 +519,12 @@ def _built_in_indicators() -> list[dict[str, Any]]:
             "template_origin": None,
         },
     ]
-    return items + _typed_builtin_indicators(timestamp)
+    typed_indicators = _typed_builtin_indicators(timestamp)
+    return (
+        items
+        + typed_indicators
+        + time_series_builtin_indicators(timestamp, typed_indicators)
+    )
 
 
 def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
@@ -521,8 +544,8 @@ def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
         "annual_risk_free_rate_percent": 1.5,
         "created_at": timestamp,
         "updated_at": timestamp,
-        "dsl_version": TYPED_DSL_VERSION,
-        "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        "dsl_version": PREVIOUS_TYPED_DSL_VERSION,
+        "operator_registry_version": PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION,
         "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
         "variable_registry_version": VARIABLE_REGISTRY_VERSION,
         "data_contract_version": DATA_CONTRACT_VERSION,
@@ -647,7 +670,7 @@ def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
             "expression": item[2],
             "required_variables": item[3],
             "methodology": item[4],
-            "formula_version": TYPED_DSL_VERSION,
+            "formula_version": PREVIOUS_TYPED_DSL_VERSION,
             "minimum_observations": minimum_observations.get(item[0], 1),
             "data_basis": "真实数据、严格窗口、缺失不填充",
             "metrics_factory_reference": "MetricsFactory 区间标量指标审计；公式已独立复核",
@@ -756,6 +779,12 @@ class BoundedObjectTTLCache:
             return {"entries": len(self._items), "bytes": self._bytes}
 
 
+def _resolved_built_in_indicators() -> list[dict[str, Any]]:
+    """Return one canonical definition for every built-in indicator ID."""
+
+    return _built_in_indicators()
+
+
 class CustomIndicatorService:
     def __init__(
         self,
@@ -768,7 +797,7 @@ class CustomIndicatorService:
         self.market_data_dir = market_data_dir or DEFAULT_DATA_DIR
         self.indicators = IndicatorRepository(
             self.workspace_data_dir / "custom_indicators.json",
-            _built_in_indicators(),
+            _resolved_built_in_indicators(),
         )
         self.plans = PlanRepository(self.workspace_data_dir / "evaluation_plans.json")
         self.snapshot_config = SnapshotIndicatorConfigRepository(
@@ -792,11 +821,18 @@ class CustomIndicatorService:
         self.compute_engine = AdaptiveComputeEngine(
             self.workspace_data_dir / ".indicator_runtime"
         )
+        self.series_service = TimeSeriesIndicatorService(
+            repository=self.indicators,
+            runtime_root=self.workspace_data_dir / ".indicator_runtime",
+            market_data_dir=self.market_data_dir,
+            cache=self.cache,
+        )
         self._startup_warmup: dict[str, Any] = {
             "complete": False,
             "indicator_plans": 0,
             "single_metric_batch_plans": 0,
             "evaluation_batch_plans": 0,
+            "time_series_plans": 0,
         }
         self.run_results = EvaluationRunResultRepository(
             self.workspace_data_dir / ".evaluation_run_cache",
@@ -830,10 +866,15 @@ class CustomIndicatorService:
         indicator_plan_count = 0
         single_batch_count = 0
         evaluation_batch_count = 0
+        time_series_count = 0
         for definition in self.indicators.list_all_versions():
             dsl_version = str(definition.get("dsl_version") or LEGACY_DSL_VERSION)
             context_kind = str(definition.get("context_kind") or "single_product")
             try:
+                if definition.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+                    self.series_service.warm(definition)
+                    time_series_count += 1
+                    continue
                 adapted_dsl_version = (
                     dsl_version
                     if dsl_version.startswith("2.")
@@ -949,6 +990,7 @@ class CustomIndicatorService:
             "indicator_plans": indicator_plan_count,
             "single_metric_batch_plans": single_batch_count,
             "evaluation_batch_plans": evaluation_batch_count,
+            "time_series_plans": time_series_count,
         }
 
     def warm_indicator_revision(
@@ -1024,6 +1066,8 @@ class CustomIndicatorService:
             return LEGACY_TYPED_OPERATOR_REGISTRY_VERSION
         if dsl_version == COMPAT_TYPED_DSL_VERSION:
             return COMPAT_TYPED_OPERATOR_REGISTRY_VERSION
+        if dsl_version == PREVIOUS_TYPED_DSL_VERSION:
+            return PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION
         return TYPED_OPERATOR_REGISTRY_VERSION
 
     @staticmethod
@@ -1217,10 +1261,24 @@ class CustomIndicatorService:
                 "max_size": 512,
                 "entries": _compile_typed_plan.cache_info().currsize,
             },
+            "indicator_result_kinds": [
+                {"id": "scalar", "label": "标量指标"},
+                {"id": TIME_SERIES_RESULT_KIND, "label": "时序指标"},
+            ],
             "indicator_types": [
                 {"id": type_id, "label": label}
                 for type_id, label in INDICATOR_TYPE_LABELS.items()
             ],
+            "series_output_measures": series_output_measure_catalog(),
+            "rolling_scalar": {
+                "supported": True,
+                "window_kind": "observations",
+                "minimum_window_observations": MIN_ROLLING_WINDOW_OBSERVATIONS,
+                "maximum_window_observations": MAX_ROLLING_WINDOW_OBSERVATIONS,
+                "transform_version": ROLLING_SCALAR_TRANSFORM_VERSION,
+                "draft_endpoint": "/api/custom-indicators/rolling-scalar-draft",
+                "source_lock": "indicator_id+revision+definition_hash",
+            },
             # Compatibility alias for existing clients. These are business
             # indicator types, not mathematical operator categories.
             "indicator_categories": [
@@ -1248,6 +1306,9 @@ class CustomIndicatorService:
                 "rolling_combinations": MAX_ROLLING_COMBINATIONS,
                 "series_observations": MAX_SERIES_OBSERVATIONS,
                 "rolling_points": MAX_ROLLING_POINTS,
+                "time_series_instances": 10,
+                "time_series_channels": 8,
+                "time_series_parameters": 16,
                 **typed["limits"],
             },
         }
@@ -1273,6 +1334,25 @@ class CustomIndicatorService:
     def _decorate_definition(definition: dict[str, Any]) -> dict[str, Any]:
         """Expose legacy protocol defaults without mutating persisted history."""
         decorated = copy.deepcopy(definition)
+        # Chart placement is owned by each consuming view, not by calculation definitions.
+        decorated.pop("chart_panel", None)
+        if decorated.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            identity = {
+                key: copy.deepcopy(decorated.get(key))
+                for key in (
+                    "id", "revision", "source", "read_only", "created_at", "updated_at"
+                )
+                if key in decorated
+            }
+            try:
+                decorated = {
+                    **decorated,
+                    **normalize_time_series_definition(decorated, decorated),
+                    **identity,
+                }
+            except ValidationError:
+                # Historical invalid definitions remain inspectable; execution still fails closed.
+                pass
         # Period is a runtime evaluation parameter, not a definition capability.
         # Historical records may contain a subset; expose the effective all-period
         # contract without rewriting the persisted version history.
@@ -1281,12 +1361,24 @@ class CustomIndicatorService:
         decorated.setdefault("dsl_version", LEGACY_DSL_VERSION)
         decorated.setdefault("operator_registry_version", LEGACY_OPERATOR_REGISTRY_VERSION)
         decorated.setdefault("context_kind", "single_product")
-        decorated.setdefault("output_contract", "scalar")
-        decorated.setdefault("output_measure", "dimensionless")
+        decorated.setdefault("result_kind", "scalar")
+        decorated.setdefault(
+            "output_contract",
+            TIME_SERIES_OUTPUT_CONTRACT
+            if decorated["result_kind"] == TIME_SERIES_RESULT_KIND
+            else "scalar",
+        )
+        decorated.setdefault(
+            "output_measure",
+            "series_bundle"
+            if decorated["result_kind"] == TIME_SERIES_RESULT_KIND
+            else "dimensionless",
+        )
         decorated.setdefault("template_origin", None)
         if str(decorated["dsl_version"]).startswith("2."):
             is_modern = str(decorated["dsl_version"]) in {
                 COMPAT_TYPED_DSL_VERSION,
+                PREVIOUS_TYPED_DSL_VERSION,
                 TYPED_DSL_VERSION,
             }
             decorated.setdefault(
@@ -1323,6 +1415,37 @@ class CustomIndicatorService:
         decorated["catalog_status"] = catalog_status(decorated)
         decorated["ui_exposed"] = ui_exposed(decorated)
         decorated["presentation"] = metric_presentation(decorated)
+        if (
+            decorated.get("result_kind", "scalar") == "scalar"
+            and decorated.get("context_kind", "single_product") == "single_product"
+            and str(decorated.get("dsl_version") or "").startswith("2.")
+        ):
+            try:
+                transformed = transform_scalar_expression(
+                    str(decorated.get("expression") or ""),
+                    2,
+                )
+                decorated["rolling_series_compatibility"] = {
+                    "supported": True,
+                    "protocol_version": "1.0.0",
+                    "rewritten_reductions": list(
+                        dict.fromkeys(transformed.rewritten_reductions)
+                    ),
+                }
+            except ValidationError as exc:
+                decorated["rolling_series_compatibility"] = {
+                    "supported": False,
+                    "protocol_version": "1.0.0",
+                    "code": exc.code,
+                    "message": exc.message,
+                }
+        else:
+            decorated["rolling_series_compatibility"] = {
+                "supported": False,
+                "protocol_version": "1.0.0",
+                "code": "ROLLING_SOURCE_CONTEXT_UNSUPPORTED",
+                "message": "仅支持单产品 typed DSL 标量指标。",
+            }
         return decorated
 
     @staticmethod
@@ -1335,6 +1458,19 @@ class CustomIndicatorService:
         protocol_defaults: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         protocol_defaults = protocol_defaults or {}
+        result_kind = str(
+            fields.get("result_kind")
+            or protocol_defaults.get("result_kind")
+            or "scalar"
+        )
+        if result_kind == TIME_SERIES_RESULT_KIND:
+            return normalize_time_series_definition(fields, protocol_defaults)
+        if result_kind != "scalar":
+            raise ValidationError(
+                "INVALID_RESULT_KIND",
+                "指标结果类型必须为 scalar 或 time_series。",
+                field="result_kind",
+            )
         name = str(fields.get("name", "")).strip()
         if not name or len(name) > 80:
             raise ValidationError("INVALID_NAME", "指标名称长度应为 1 至 80 个字符。", field="name")
@@ -1389,6 +1525,7 @@ class CustomIndicatorService:
             LEGACY_DSL_VERSION,
             LEGACY_TYPED_DSL_VERSION,
             COMPAT_TYPED_DSL_VERSION,
+            PREVIOUS_TYPED_DSL_VERSION,
             TYPED_DSL_VERSION,
         }:
             raise ValidationError(
@@ -1448,7 +1585,11 @@ class CustomIndicatorService:
             "data_contract_version": None,
             "context_schema_version": None,
         }
-        if dsl_version in {COMPAT_TYPED_DSL_VERSION, TYPED_DSL_VERSION}:
+        if dsl_version in {
+            COMPAT_TYPED_DSL_VERSION,
+            PREVIOUS_TYPED_DSL_VERSION,
+            TYPED_DSL_VERSION,
+        }:
             supported_versions = {
                 "variable_registry_version": VARIABLE_REGISTRY_VERSION,
                 "data_contract_version": DATA_CONTRACT_VERSION,
@@ -1526,6 +1667,7 @@ class CustomIndicatorService:
                 NUMERIC_KERNEL_VERSION if dsl_version.startswith("2.") else None
             ),
             "context_kind": context_kind,
+            "result_kind": "scalar",
             "output_contract": output_contract,
             # The compiler is the authority. This placeholder is replaced by
             # ``_apply_compiled_contract`` before a definition is persisted.
@@ -1643,13 +1785,23 @@ class CustomIndicatorService:
                 f"公式表达式不能超过 {MAX_FORMULA_LENGTH} 个字符。",
                 field="expression",
             )
-        return infer_expression(
+        (
+            parameter_schema,
+            parameter_types,
+            parameter_latex_symbols,
+            _parameter_semantics,
+        ) = parameter_composition_context(fields.get("parameter_schema") or [])
+        result = infer_expression(
             expression,
             context_kind,  # type: ignore[arg-type]
             scalar_required=False,
             dsl_version=dsl_version,
             operator_registry_version=registry_version,
+            additional_variable_types=parameter_types,
+            additional_latex_symbols=parameter_latex_symbols,
         )
+        result["parameter_schema"] = parameter_schema
+        return result
 
     def _validate_typed(self, fields: dict[str, Any]) -> dict[str, Any]:
         expression = str(fields.get("expression", "")).strip()
@@ -1804,7 +1956,77 @@ class CustomIndicatorService:
             "python_operator_calls": 0,
         }
 
+    def _verify_rolling_source_fields(
+        self,
+        fields: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        source = normalize_rolling_source(fields.get("rolling_source"))
+        if source is None or source.get("detached"):
+            return source
+        try:
+            source_definition = self._decorate_definition(
+                self.indicators.get(
+                    str(source["indicator_id"]),
+                    int(source["indicator_revision"]),
+                )
+            )
+        except IndicatorDomainError as exc:
+            raise ValidationError(
+                "ROLLING_SOURCE_NOT_FOUND",
+                "未找到滚动时序指标锁定的标量来源版本。",
+                field="rolling_source",
+            ) from exc
+        return verify_rolling_series_definition(fields, source_definition)
+
+    def derive_rolling_series(
+        self,
+        *,
+        indicator_id: str,
+        indicator_revision: int,
+        window_observations: int,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Materialize one locked scalar revision as a validated series draft."""
+
+        source = self._decorate_definition(
+            self.indicators.get(indicator_id, int(indicator_revision))
+        )
+        draft = derive_rolling_series_definition(
+            source,
+            window_observations,
+            name=name,
+            description=description,
+        )
+        normalized = self._normalize_definition(draft)
+        self._verify_rolling_source_fields(normalized)
+        validation = self._compile_or_raise(normalized)
+        self._apply_compiled_contract(normalized, validation)
+        return {
+            "definition": normalized,
+            "validation": validation,
+            "source": {
+                "indicator_id": source["id"],
+                "indicator_revision": int(source["revision"]),
+                "indicator_name": source["name"],
+                "window_observations": int(window_observations),
+            },
+        }
+
     def validate(self, fields: dict[str, Any]) -> dict[str, Any]:
+        if str(fields.get("result_kind") or "scalar") == TIME_SERIES_RESULT_KIND:
+            try:
+                self._verify_rolling_source_fields(fields)
+            except ValidationError as exc:
+                return self._invalid_validation(
+                    {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "field": exc.field or "rolling_source",
+                    }
+                )
+            _definition, validation = self.series_service.validate(fields)
+            return validation
         if str(fields.get("dsl_version") or LEGACY_DSL_VERSION).startswith("2."):
             return self._validate_typed(fields)
         expression = str(fields.get("expression", "")).strip()
@@ -1873,6 +2095,46 @@ class CustomIndicatorService:
             "dag": None,
         }
 
+    def _verify_rolling_source_contract(
+        self,
+        definition: dict[str, Any],
+    ) -> None:
+        metadata = definition.get("rolling_source")
+        if (
+            not isinstance(metadata, dict)
+            or bool(metadata.get("detached"))
+            or bool(definition.get("read_only"))
+        ):
+            return
+        indicator_id = str(metadata.get("indicator_id") or "")
+        revision = int(metadata.get("indicator_revision") or 0)
+        source = self._decorate_definition(
+            self.indicators.get(indicator_id, revision)
+        )
+        validate_scalar_rolling_source(source)
+        expected_hash = str(metadata.get("definition_hash") or "")
+        actual_hash = scalar_definition_hash(source)
+        if not expected_hash or expected_hash != actual_hash:
+            raise ValidationError(
+                "ROLLING_SOURCE_REVISION_MISMATCH",
+                "滚动指标绑定的源标量版本已不匹配，请重新生成滚动指标草稿。",
+                field="rolling_source",
+            )
+        lifted = lift_scalar_expression(
+            str(source.get("expression") or ""),
+            window_observations=metadata.get("window_observations"),
+            min_periods=metadata.get("min_periods"),
+        )
+        outputs = list(definition.get("series_outputs") or [])
+        if len(outputs) != 1 or str(outputs[0].get("expression") or "") != str(
+            lifted["expression"]
+        ):
+            raise ValidationError(
+                "ROLLING_SOURCE_FORMULA_MISMATCH",
+                "滚动公式已偏离锁定的源标量指标；请重新生成，或明确解除来源绑定后再编辑。",
+                field="series_outputs",
+            )
+
     def _compile_or_raise(self, fields: dict[str, Any]) -> dict[str, Any]:
         result = self.validate(fields)
         if not result["valid"]:
@@ -1889,6 +2151,9 @@ class CustomIndicatorService:
     def _apply_compiled_contract(
         definition: dict[str, Any], validation: dict[str, Any]
     ) -> None:
+        if definition.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            apply_series_compiled_contract(definition, validation)
+            return
         dependencies = list(canonicalize_variables(validation.get("dependencies") or []))
         definition["required_variables"] = dependencies
         applicable = {"etf", "fund"}
@@ -1959,11 +2224,40 @@ class CustomIndicatorService:
             self.indicators.get(indicator_id, revision)
         )
 
+    def build_rolling_scalar_draft(
+        self,
+        indicator_id: str,
+        revision: int | None,
+        window_observations: int,
+        min_periods: int | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Compatibility wrapper around the canonical rolling-series builder."""
+
+        window = int(window_observations)
+        if min_periods is not None and int(min_periods) != window:
+            raise ValidationError(
+                "ROLLING_PARTIAL_WINDOW_UNSUPPORTED",
+                "标量滚动派生当前要求完整窗口；最少有效观察数必须等于窗口观察数。",
+                field="min_periods",
+            )
+        derived = self.derive_rolling_series(
+            indicator_id=indicator_id,
+            indicator_revision=int(revision) if revision is not None else 1,
+            window_observations=window,
+            name=name,
+        )
+        source = dict(derived.get("source") or {})
+        source["name"] = str(source.get("indicator_name") or "")
+        return {**derived, "source": source}
+
     def create_indicator(self, fields: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize_definition(fields)
         validation = self._compile_or_raise(normalized)
         self._apply_compiled_contract(normalized, validation)
-        if normalized.get("context_kind") == "single_product":
+        if normalized.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            self.series_service.warm(normalized)
+        elif normalized.get("context_kind") == "single_product":
             self._warm_single_product_definition(normalized)
         created = self.indicators.create(normalized)
         self.cache.clear()
@@ -1975,7 +2269,9 @@ class CustomIndicatorService:
         normalized = self._normalize_definition(fields, current)
         validation = self._compile_or_raise(normalized)
         self._apply_compiled_contract(normalized, validation)
-        if normalized.get("context_kind") == "single_product":
+        if normalized.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            self.series_service.warm(normalized)
+        elif normalized.get("context_kind") == "single_product":
             self._warm_single_product_definition(normalized)
         updated = self.indicators.update(indicator_id, revision, normalized)
         self.cache.clear()
@@ -1999,6 +2295,30 @@ class CustomIndicatorService:
             raise ConflictError(
                 "INDICATOR_IN_SNAPSHOT_CONFIG",
                 "该指标已配置为快照指标，请先从快照加速配置中移除。",
+            )
+        rolling_dependents: list[str] = []
+        seen_rolling_dependents: set[str] = set()
+        for candidate in self.indicators.list_all_versions():
+            if candidate.get("id") == indicator_id:
+                continue
+            rolling_source = normalize_rolling_source(candidate.get("rolling_source"))
+            if (
+                rolling_source is not None
+                and not rolling_source.get("detached")
+                and rolling_source.get("indicator_id") == indicator_id
+            ):
+                label = (
+                    f"{candidate.get('name') or candidate.get('id')}"
+                    f" v{candidate.get('revision')}"
+                )
+                if label not in seen_rolling_dependents:
+                    seen_rolling_dependents.add(label)
+                    rolling_dependents.append(label)
+        if rolling_dependents:
+            raise ConflictError(
+                "INDICATOR_IN_ROLLING_SERIES",
+                "该标量指标正在被滚动时序指标引用，请先删除或解除来源关联："
+                + "、".join(rolling_dependents[:5]),
             )
         self.indicators.delete(indicator_id, revision)
         self.cache.clear()
@@ -2080,10 +2400,12 @@ class CustomIndicatorService:
                 str(item.get("indicator_id")),
                 int(item.get("indicator_revision") or 0),
                 str(item.get("period") or "").upper(),
+                str(item.get("channel_id") or ""),
+                str(item.get("reducer") or ""),
             ): str(item.get("field") or "")
             for item in self.snapshot_config.get().get("items", [])
         }
-        seen_keys: set[tuple[str, int, str]] = set()
+        seen_keys: set[tuple[str, int, str, str, str]] = set()
         seen_fields: set[str] = set()
         revisions_by_indicator: dict[str, int] = {}
         for index, raw in enumerate(items):
@@ -2091,6 +2413,8 @@ class CustomIndicatorService:
                 str(raw.get("indicator_id") or "").strip(),
                 int(raw.get("indicator_revision") or 0),
                 str(raw.get("period") or "").strip().upper(),
+                str(raw.get("channel_id") or "").strip(),
+                str(raw.get("reducer") or "").strip(),
             )
             item = normalized_snapshot_item(
                 {**raw, "field": raw.get("field") or current_fields.get(raw_key)}
@@ -2111,11 +2435,13 @@ class CustomIndicatorService:
                 item["indicator_id"],
                 int(item["indicator_revision"]),
                 item["period"],
+                str(item.get("channel_id") or ""),
+                str(item.get("reducer") or ""),
             )
             if key in seen_keys:
                 raise ValidationError(
                     "DUPLICATE_SNAPSHOT_INDICATOR",
-                    "同一指标版本和周期不能重复配置。",
+                    "同一指标版本、周期、通道和归约方式不能重复配置。",
                     field=f"items.{index}",
                 )
             previous_revision = revisions_by_indicator.get(item["indicator_id"])
@@ -2137,16 +2463,43 @@ class CustomIndicatorService:
             if definition.get("context_kind", "single_product") != "single_product":
                 raise ValidationError(
                     "SNAPSHOT_CONTEXT_MISMATCH",
-                    "只有单产品标量指标可以配置为产品快照。",
+                    "只有单产品指标可以配置为产品快照。",
                     field=f"items.{index}.indicator_id",
                 )
-            if definition.get("output_contract", "scalar") != "scalar":
-                raise ValidationError(
-                    "SNAPSHOT_OUTPUT_MISMATCH",
-                    "快照指标的最终结果必须是单个数值。",
-                    field=f"items.{index}.indicator_id",
-                )
-            self._warm_runtime(definition, item["period"])
+            result_kind = str(definition.get("result_kind") or "scalar")
+            if result_kind == TIME_SERIES_RESULT_KIND:
+                channel_id = str(item.get("channel_id") or "")
+                channel_ids = {
+                    str(output.get("id") or "")
+                    for output in definition.get("series_outputs") or []
+                }
+                if not channel_id or channel_id not in channel_ids:
+                    raise ValidationError(
+                        "SNAPSHOT_SERIES_CHANNEL_REQUIRED",
+                        "时序指标快照必须选择一个有效输出通道。",
+                        field=f"items.{index}.channel_id",
+                    )
+                if item.get("reducer") != "last_finite":
+                    raise ValidationError(
+                        "SNAPSHOT_SERIES_REDUCER_REQUIRED",
+                        "时序指标快照当前只支持末个有限值归约。",
+                        field=f"items.{index}.reducer",
+                    )
+                self.series_service.warm(definition)
+            else:
+                if definition.get("output_contract", "scalar") != "scalar":
+                    raise ValidationError(
+                        "SNAPSHOT_OUTPUT_MISMATCH",
+                        "标量快照指标的最终结果必须是单个数值。",
+                        field=f"items.{index}.indicator_id",
+                    )
+                if item.get("channel_id") or item.get("reducer"):
+                    raise ValidationError(
+                        "SNAPSHOT_SCALAR_CHANNEL_NOT_ALLOWED",
+                        "标量指标快照不能指定时序通道或归约方式。",
+                        field=f"items.{index}.channel_id",
+                    )
+                self._warm_runtime(definition, item["period"])
             normalized.append(item)
             seen_keys.add(key)
             seen_fields.add(item["field"])
@@ -2167,10 +2520,15 @@ class CustomIndicatorService:
             list[tuple[dict[str, Any], TypedIndicatorRuntime]],
         ] = {}
         singleton_count = 0
+        time_series_count = 0
         for item in selected:
             definition = self.indicators.get(
                 str(item["indicator_id"]), int(item["indicator_revision"])
             )
+            if definition.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+                self.series_service.warm(definition)
+                time_series_count += 1
+                continue
             runtime = self._warm_runtime(definition, str(item["period"]))
             if not isinstance(runtime, TypedIndicatorRuntime):
                 raise ValidationError(
@@ -2269,6 +2627,12 @@ class CustomIndicatorService:
             )
         if inline_definition is not None:
             normalized = self._normalize_definition(inline_definition)
+            if normalized.get("result_kind", "scalar") != "scalar":
+                raise ValidationError(
+                    "INDICATOR_RESULT_KIND_MISMATCH",
+                    "时序指标必须使用 evaluate-series 接口。",
+                    field="inline_definition.result_kind",
+                )
             if not self._is_typed_definition(normalized):
                 raise ValidationError(
                     "INLINE_DEFINITION_NJIT_REQUIRED",
@@ -2372,10 +2736,24 @@ class CustomIndicatorService:
                 field="indicator_ids",
             )
         versions = indicator_versions or {}
-        return [
-            self._decorate_definition(self.indicators.get(indicator_id, versions.get(indicator_id)))
+        definitions = [
+            self._decorate_definition(
+                self.indicators.get(indicator_id, versions.get(indicator_id))
+            )
             for indicator_id in unique_ids
         ]
+        series_names = [
+            str(item.get("name") or item.get("id"))
+            for item in definitions
+            if item.get("result_kind", "scalar") != "scalar"
+        ]
+        if series_names:
+            raise ValidationError(
+                "INDICATOR_RESULT_KIND_MISMATCH",
+                f"以下时序指标不能进入标量计算或排名：{'、'.join(series_names)}。",
+                field="indicator_ids",
+            )
+        return definitions
 
     @staticmethod
     def _definition_cache_key(definition: dict[str, Any]) -> str:
@@ -3923,6 +4301,25 @@ class CustomIndicatorService:
             },
         }
 
+    def evaluate_series(
+        self,
+        *,
+        indicator_instances: list[dict[str, Any]],
+        target: dict[str, Any],
+        period: str,
+        as_of: Optional[str] = None,
+        max_points: int = MAX_ROLLING_POINTS,
+    ) -> dict[str, Any]:
+        """Run named multi-channel time-series indicators outside ranking flows."""
+
+        return self.series_service.evaluate(
+            indicator_instances=indicator_instances,
+            target=target,
+            period=period,
+            as_of=as_of,
+            max_points=max_points,
+        )
+
     @staticmethod
     def _excel_dates_by_variable(
         window: VariablePeriodWindow,
@@ -3950,8 +4347,9 @@ class CustomIndicatorService:
         period: str,
         as_of: Optional[str] = None,
         compile_token: Optional[str] = None,
+        parameters: Optional[Mapping[str, Any]] = None,
     ) -> ExcelExportArtifact:
-        """Export exact direct inputs and a formula-driven Excel calculation."""
+        """Export exact direct inputs and formula-driven scalar or series calculations."""
 
         period = str(period or "").upper()
         if period not in SUPPORTED_PERIODS:
@@ -3959,6 +4357,41 @@ class CustomIndicatorService:
                 "INVALID_PERIOD",
                 "不支持的评价周期。",
                 field="period",
+            )
+        if bool(indicator_ids) == bool(inline_definition):
+            raise ValidationError(
+                "INDICATOR_SOURCE_CONFLICT",
+                "indicator_ids 与 inline_definition 必须且只能提供一种。",
+            )
+        series_definition: dict[str, Any] | None = None
+        if inline_definition is not None and str(
+            inline_definition.get("result_kind") or "scalar"
+        ) == TIME_SERIES_RESULT_KIND:
+            series_definition = inline_definition
+        elif len(indicator_ids) == 1:
+            candidate = self.indicators.get(indicator_ids[0])
+            if str(candidate.get("result_kind") or "scalar") == TIME_SERIES_RESULT_KIND:
+                series_definition = candidate
+        if series_definition is not None:
+            instance: dict[str, Any]
+            if inline_definition is not None:
+                instance = {
+                    "inline_definition": inline_definition,
+                    "compile_token": compile_token,
+                    "parameters": dict(parameters or {}),
+                }
+            else:
+                instance = {
+                    "indicator_id": series_definition.get("id"),
+                    "indicator_revision": series_definition.get("revision"),
+                    "parameters": dict(parameters or {}),
+                }
+            return self.series_service.export_excel(
+                indicator_instance=instance,
+                targets=self._validate_targets(targets, max_targets=10),
+                period=period,
+                as_of=as_of,
+                output_dir=self.workspace_data_dir / ".indicator_exports",
             )
         definitions = self._resolve_evaluation_definitions(
             indicator_ids,
@@ -5741,18 +6174,37 @@ class CustomIndicatorService:
                 )
                 for item in self.snapshot_config.get().get("items", [])
             }
-            snapshot_groups: dict[str, list[dict[str, Any]]] = {}
+            # A saved evaluation plan owns immutable fused NJIT batches.  Never
+            # remove only part of one batch after snapshot lookup: doing so
+            # creates a new batch shape that was neither saved nor startup-warmed.
+            # Snapshot reuse is therefore all-or-nothing per fused group.
+            candidate_snapshot_groups: dict[
+                tuple[tuple[str, ...], str], list[dict[str, Any]]
+            ] = {}
             for entry in prepared:
-                item = entry["item"]
-                key = (
-                    str(item["indicator_id"]),
-                    int(item["indicator_revision"]),
-                    str(item["period"]).upper(),
-                )
-                if key in configured_keys:
-                    snapshot_groups.setdefault(key[2], []).append(entry)
+                candidate_snapshot_groups.setdefault(
+                    (
+                        entry["data_dependencies"],
+                        str(entry["item"]["period"]).upper(),
+                    ),
+                    [],
+                ).append(entry)
             snapshot_indexes: set[int] = set()
-            for snapshot_period, snapshot_entries in snapshot_groups.items():
+            expected_targets = {
+                (str(target["kind"]), str(target["product_id"]))
+                for target in plan["targets"]
+            }
+            for (_dependencies, snapshot_period), snapshot_entries in candidate_snapshot_groups.items():
+                entry_keys = {
+                    (
+                        str(entry["item"]["indicator_id"]),
+                        int(entry["item"]["indicator_revision"]),
+                        str(entry["item"]["period"]).upper(),
+                    )
+                    for entry in snapshot_entries
+                }
+                if not entry_keys.issubset(configured_keys):
+                    continue
                 snapshot_response = self._evaluate_from_snapshot(
                     [entry["definition"] for entry in snapshot_entries],
                     plan["targets"],
@@ -5767,24 +6219,41 @@ class CustomIndicatorService:
                     ): entry
                     for entry in snapshot_entries
                 }
-                for snapshot_result in snapshot_response["results"]:
-                    entry = entries_by_definition[
-                        (
-                            str(snapshot_result["indicator_id"]),
-                            int(snapshot_result["indicator_revision"]),
-                        )
-                    ]
-                    target = snapshot_result["target"]
-                    row_index = target_index[
-                        (str(target["kind"]), str(target["product_id"]))
-                    ]
+                expected_cells = {
+                    (definition_key, target_key)
+                    for definition_key in entries_by_definition
+                    for target_key in expected_targets
+                }
+                results_by_cell: dict[
+                    tuple[tuple[str, int], tuple[str, str]], dict[str, Any]
+                ] = {}
+                for snapshot_result in snapshot_response.get("results", []):
+                    definition_key = (
+                        str(snapshot_result.get("indicator_id")),
+                        int(snapshot_result.get("indicator_revision") or 0),
+                    )
+                    target = snapshot_result.get("target") or {}
+                    target_key = (
+                        str(target.get("kind")),
+                        str(target.get("product_id")),
+                    )
+                    if definition_key in entries_by_definition and target_key in expected_targets:
+                        results_by_cell[(definition_key, target_key)] = snapshot_result
+                if set(results_by_cell) != expected_cells:
+                    # Partial snapshot coverage must not split the immutable NJIT
+                    # group. Compute the complete group through its warmed plan.
+                    continue
+                for (definition_key, target_key), snapshot_result in results_by_cell.items():
+                    entry = entries_by_definition[definition_key]
+                    row_index = target_index[target_key]
                     output_index = int(entry["index"])
                     values_by_target[row_index][output_index] = self._plan_value_payload(
                         entry["item"], entry["definition"], snapshot_result
                     )
+                    target = snapshot_result["target"]
                     target_names[row_index] = str(target.get("name") or target["product_id"])
                     snapshot_cell_hits += 1
-                    snapshot_indexes.add(output_index)
+                snapshot_indexes.update(int(entry["index"]) for entry in snapshot_entries)
                 snapshot_item_count += len(snapshot_entries)
             prepared = [
                 entry for entry in prepared if int(entry["index"]) not in snapshot_indexes

@@ -25,7 +25,11 @@ from cal_indicators import typed_numba_kernels as kernels
 from compute_policy import NJIT_BACKEND, validate_execution_audit
 
 if TYPE_CHECKING:
-    from cal_indicators.typed_dsl import TypedDagNode, TypedExpressionPlan
+    from cal_indicators.typed_dsl import (
+        TypedDagNode,
+        TypedExpressionPlan,
+        TypedSeriesBundlePlan,
+    )
 
 
 class NumbaPlanCompileError(RuntimeError):
@@ -77,9 +81,52 @@ class CompiledNumbaPlan:
         return validate_execution_audit(audit)
 
 
+@dataclass(frozen=True)
+class CompiledNumbaSeriesPlan:
+    plan_id: str
+    dispatcher: CPUDispatcher
+    context_names: tuple[str, ...]
+    channel_names: tuple[str, ...]
+    source: str
+    compile_ms: float
+    required_workspace_bytes: int
+    kernel_version: str = kernels.NUMERIC_KERNEL_VERSION
+    engine_version: str = kernels.ENGINE_VERSION
+
+    @property
+    def compiled_signatures(self) -> tuple[str, ...]:
+        return tuple(str(signature) for signature in self.dispatcher.signatures)
+
+    def compute(self, arguments: tuple[Any, ...]) -> tuple[np.ndarray, ...]:
+        result = self.dispatcher(*arguments)
+        return tuple(result)
+
+    def metadata(self) -> dict[str, Any]:
+        signatures = list(self.compiled_signatures)
+        return validate_execution_audit(
+            {
+                "compiled_plan_id": self.plan_id,
+                "compile_status": "compiled",
+                "compile_ms": self.compile_ms,
+                "kernel_version": self.kernel_version,
+                "engine_version": self.engine_version,
+                "required_workspace_bytes": self.required_workspace_bytes,
+                "channel_names": list(self.channel_names),
+                "compiled_signatures": signatures,
+                "kernel_signatures": {"generated_series_plan": signatures},
+                "execution_backend": NJIT_BACKEND,
+                "nopython": bool(self.dispatcher.nopython_signatures)
+                and len(self.dispatcher.nopython_signatures) == len(signatures),
+                "python_fallback": 0,
+                "python_operator_calls": 0,
+            }
+        )
+
+
 _PLAN_CACHE: dict[str, CompiledNumbaPlan] = {}
 _PLAN_CACHE_LOCK = threading.RLock()
 _BATCH_PLAN_CACHE: dict[str, "CompiledNumbaBatchPlan"] = {}
+_SERIES_PLAN_CACHE: dict[str, CompiledNumbaSeriesPlan] = {}
 
 
 def _rank(node: "TypedDagNode") -> int:
@@ -105,6 +152,25 @@ def _binary_dispatcher(lhs_rank: int, rhs_rank: int, *, comparison: bool = False
     raise ValueError("unsupported binary rank combination")
 
 
+def _series_safe_divide_dispatcher(
+    lhs_rank: int,
+    rhs_rank: int,
+) -> CPUDispatcher:
+    if lhs_rank == 1 and rhs_rank == 1:
+        return kernels.series_safe_divide_1d
+    if lhs_rank == 1 and rhs_rank == 0:
+        return kernels.series_safe_divide_1d_right_scalar
+    if lhs_rank == 0 and rhs_rank == 1:
+        return kernels.series_safe_divide_1d_left_scalar
+    if lhs_rank == 2 and rhs_rank == 2:
+        return kernels.series_safe_divide_2d
+    if lhs_rank == 2 and rhs_rank == 0:
+        return kernels.series_safe_divide_2d_right_scalar
+    if lhs_rank == 0 and rhs_rank == 2:
+        return kernels.series_safe_divide_2d_left_scalar
+    raise ValueError("unsupported series safe-divide rank combination")
+
+
 def _call(dispatcher: CPUDispatcher, args: list[str], globals_map: dict[str, Any]) -> str:
     name = f"k{len(globals_map)}"
     globals_map[name] = dispatcher
@@ -117,12 +183,20 @@ def _operator_call(
     globals_map: dict[str, Any],
     *,
     node_prefix: str = "n",
+    series_mode: bool = False,
 ) -> str:
     operator_id = str(node.operator_id)
     args = [f"{node_prefix}{input_node.node_id}" for input_node in input_nodes]
     ranks = tuple(_rank(input_node) for input_node in input_nodes)
     output_rank = _rank(node)
 
+    if (
+        series_mode
+        and operator_id == "divide"
+        and output_rank > 0
+    ):
+        dispatcher = _series_safe_divide_dispatcher(ranks[0], ranks[1])
+        return _call(dispatcher, args, globals_map)
     if operator_id in kernels.BASIC_OPCODES:
         dispatcher = _binary_dispatcher(ranks[0], ranks[1])
         return _call(dispatcher, [str(kernels.BASIC_OPCODES[operator_id]), *args], globals_map)
@@ -177,6 +251,27 @@ def _operator_call(
         dispatcher = kernels.lag_1d_parameter if operator_id == "lag" else kernels.difference_1d_parameter
         period = args[1] if len(args) == 2 else "1.0"
         return _call(dispatcher, [args[0], period], globals_map)
+    if operator_id == "rolling_mean":
+        minimum = args[2] if len(args) == 3 else args[1]
+        return _call(kernels.rolling_mean_1d, [args[0], args[1], minimum], globals_map)
+    if operator_id == "rolling_std":
+        degrees = args[2] if len(args) >= 3 else "0.0"
+        minimum = args[3] if len(args) == 4 else args[1]
+        return _call(
+            kernels.rolling_std_1d,
+            [args[0], args[1], degrees, minimum],
+            globals_map,
+        )
+    if operator_id == "rolling_min":
+        minimum = args[2] if len(args) == 3 else args[1]
+        return _call(kernels.rolling_min_1d, [args[0], args[1], minimum], globals_map)
+    if operator_id == "rolling_max":
+        minimum = args[2] if len(args) == 3 else args[1]
+        return _call(kernels.rolling_max_1d, [args[0], args[1], minimum], globals_map)
+    if operator_id == "recursive_smooth":
+        return _call(kernels.recursive_smooth_1d, args, globals_map)
+    if operator_id == "divide_or_default":
+        return _call(kernels.divide_or_default_1d, args, globals_map)
     if operator_id == "total_return":
         return _call(kernels.total_return_1d, args, globals_map)
     if operator_id == "annualized_return":
@@ -337,6 +432,128 @@ def compile_numba_plan(plan: "TypedExpressionPlan") -> CompiledNumbaPlan:
     return compiled
 
 
+def _series_plan_id(plan: "TypedSeriesBundlePlan") -> str:
+    payload = "|".join(
+        (
+            plan.expression_hash,
+            plan.dsl_version,
+            plan.operator_registry_version,
+            kernels.NUMERIC_KERNEL_VERSION,
+            ",".join(plan.roots),
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def numba_series_plan_id(plan: "TypedSeriesBundlePlan") -> str:
+    return _series_plan_id(plan)
+
+
+def get_cached_numba_series_plan(
+    plan: "TypedSeriesBundlePlan",
+) -> CompiledNumbaSeriesPlan | None:
+    plan_id = _series_plan_id(plan)
+    with _PLAN_CACHE_LOCK:
+        return _SERIES_PLAN_CACHE.get(plan_id)
+
+
+def compile_numba_series_plan(
+    plan: "TypedSeriesBundlePlan",
+) -> CompiledNumbaSeriesPlan:
+    """Compile one shared multi-root time-series DAG and freeze its signatures."""
+
+    plan_id = _series_plan_id(plan)
+    with _PLAN_CACHE_LOCK:
+        cached = _SERIES_PLAN_CACHE.get(plan_id)
+        if cached is not None:
+            return cached
+
+    started = time.perf_counter()
+    context_names = tuple(plan.context_requirements)
+    context_positions = {name: index for index, name in enumerate(context_names)}
+    channel_names = tuple(plan.roots)
+    globals_map: dict[str, Any] = {}
+    lines = [
+        f"def generated_series_plan({', '.join(f'v{index}' for index in range(len(context_names)))}):"
+    ]
+    nodes_by_id = {node.node_id: node for node in plan.nodes}
+    failed_operator: str | None = None
+    try:
+        for node in plan.nodes:
+            if node.kind == "constant":
+                expression = repr(float(node.label))
+            elif node.kind == "variable":
+                expression = f"v{context_positions[node.label]}"
+            else:
+                failed_operator = node.operator_id
+                input_nodes = tuple(nodes_by_id[input_id] for input_id in node.inputs)
+                expression = _operator_call(
+                    node,
+                    input_nodes,
+                    globals_map,
+                    series_mode=True,
+                )
+            lines.append(f"    n{node.node_id} = {expression}")
+        root_values = ", ".join(f"n{plan.roots[name]}" for name in channel_names)
+        if len(channel_names) == 1:
+            root_values += ","
+        lines.append(f"    return ({root_values})")
+        source = "\n".join(lines) + "\n"
+        namespace: dict[str, Any] = dict(globals_map)
+        exec(
+            compile(source, f"<typed-numba-series-plan:{plan_id}>", "exec"),
+            namespace,
+        )
+        dispatcher = numba.njit(cache=False, nogil=True)(
+            namespace["generated_series_plan"]
+        )
+        mutable_signature = tuple(
+            _numba_type(plan.context_requirements[name], readonly=False)
+            for name in context_names
+        )
+        dispatcher.compile(mutable_signature)
+        if any(plan.context_requirements[name].rank > 0 for name in context_names):
+            readonly_signature = tuple(
+                _numba_type(plan.context_requirements[name], readonly=True)
+                for name in context_names
+            )
+            dispatcher.compile(readonly_signature)
+        dispatcher.disable_compile()
+    except Exception as exc:
+        raise NumbaPlanCompileError(
+            "typed 时序公式无法编译为固定签名 NJIT 计划。",
+            plan_id=plan_id,
+            operator_id=failed_operator,
+        ) from exc
+
+    compiled = CompiledNumbaSeriesPlan(
+        plan_id=plan_id,
+        dispatcher=dispatcher,
+        context_names=context_names,
+        channel_names=channel_names,
+        source=source,
+        compile_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        required_workspace_bytes=_workspace_bytes(plan),
+    )
+    with _PLAN_CACHE_LOCK:
+        _SERIES_PLAN_CACHE[plan_id] = compiled
+    return compiled
+
+
+def persist_numba_series_plan(
+    compiled: CompiledNumbaSeriesPlan,
+    runtime_root: Path,
+) -> Path:
+    target = runtime_root / "generated_series" / compiled.plan_id
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "plan.py").write_text(compiled.source, encoding="utf-8")
+    (target / "plan.json").write_text(
+        json.dumps(compiled.metadata(), ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return target
+
+
 def persist_numba_plan(compiled: CompiledNumbaPlan, runtime_root: Path) -> Path:
     """Persist compiler-owned source and metadata for audit/restart warmup."""
 
@@ -357,6 +574,7 @@ def plan_cache_status() -> dict[str, Any]:
         return {
             "entries": len(_PLAN_CACHE),
             "batch_entries": len(_BATCH_PLAN_CACHE),
+            "series_entries": len(_SERIES_PLAN_CACHE),
             "engine_version": kernels.ENGINE_VERSION,
             "kernel_version": kernels.NUMERIC_KERNEL_VERSION,
         }
@@ -671,14 +889,19 @@ def persist_numba_batch_plan(
 
 __all__ = [
     "CompiledNumbaPlan",
+    "CompiledNumbaSeriesPlan",
     "NumbaPlanCompileError",
     "compile_numba_plan",
+    "compile_numba_series_plan",
     "compile_numba_batch_plan",
     "get_cached_numba_plan",
+    "get_cached_numba_series_plan",
     "get_cached_numba_batch_plan",
     "CompiledNumbaBatchPlan",
     "numba_plan_id",
+    "numba_series_plan_id",
     "persist_numba_batch_plan",
+    "persist_numba_series_plan",
     "persist_numba_plan",
     "plan_cache_status",
 ]

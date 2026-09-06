@@ -55,6 +55,58 @@ data/tushare_snapshot_20260902T042251Z_e8c207e4
 
 在用于正式研究或发布数据质量结论前，应先完成失败任务，或仅在本地执行分析/覆盖快照重建并重新验收。
 
+### 1.2 2026-09-05 下载任务恢复补充
+
+网页下载由后端服务进程监督子下载进程，并通过 `data/.tushare_refresh_status.json` 和全局文件锁记录状态。若监督该任务的后端进程退出或重启，且下载锁随后释放，任务会被标记为“已中断”；已经原子落盘的数据不会回滚。失败任务保留原模块、下载范围与模式，下载中心可按原配置重新进入恢复流程：增量模式按最新本地日期重算小窗口并幂等 upsert，全量模式继续复用隔离候选目录和检查点。
+
+大文件增量归并属于正常计算阶段，不应被“无日志输出”误判为卡死。`append_incremental_rows` 在流式复制/归并历史 Parquet 时现在至少每处理 1,000,000 行或每 15 秒输出一次进度并立即 flush。以当前约 2,528 万行、约 1.21 GiB 的 `index_daily_df.parquet` 为例，长时间归并会持续刷新父进程心跳，不再因为 30 分钟 idle timeout 仅由缺少 stdout 而被误终止。
+
+### 1.3 2026-09-05 数据源与接口映射中心
+
+入口：`设置 → 数据源与接口映射`（`/settings/source-center`）。原下载页保留于 `/settings/data-sources`。本节是代码能力补充，**不更新上文 2026-09-03 的实际下载盘点，不代表新增数据已进入活跃快照**。
+
+- 标准表合同为 `backend/data_model/catalog.py` 的 `1.2.0`，补齐 `fund.adjustment_factor`；外部映射不能选择系统内部表或直接覆盖系统维护字段。机构、人员、标的和账户的外部代码对照属于内部结构，不是独立导入目标；用户在导入配置中关联代码，净值、行情等仍进入各自业务表的候选数据。此分类调整不改变字段合同或现有 Tushare 预置业务映射。
+- 新增 `backend/data_sources/`：Pydantic 配置、SQLite 乐观版本控制、凭据、接口级共享配额、HTTPS 传输、映射、候选批次以及旧下载器桥接。配置存于忽略目录 `data/data_sources.sqlite3`；自定义凭据独立存于 `data/.source_credentials/`，Tushare 继续使用 `data/.tushare_token`，不调用 `ts.set_token`，不把 Token 写入接口参数、日志或返回结果。
+- 预置当前下载器使用的 **40 个 API 配置**，包含来源字段、响应路径、标准表映射、下载限制及分页。预置不代表所有接口已实测、已下载或拥有独立权限；新增自定义 Tushare API 启用前必须确认权限。`fund_manager` 缺少可靠人员/基金产品身份码时保留人工对照要求，不按姓名自动合并实体。
+- `T01_get_data._run_actions` 使用 `ConfiguredTushareClient` 代替 SDK 直接 I/O；保留既有日期/代码分片、全量/增量、检查点及旧 Parquet 输出。接口参数是默认值，下载器的当前分片参数优先。API 名称、方法、路径、响应结构、参数名、分页、映射与限制均读取已保存配置，不因初始化来源而锁定。原下载动作通过稳定接口 ID 寻址，实际 API 名称可以修改；不兼容的配置明确失败，不静默还原默认值。原生 Token 认证禁止 GET 携带凭据；采用请求头认证的接口可使用 GET。
+- 来源及接口配额共同生效并使用 SQLite 原子预留，所有线程/进程共享请求次数、预留行数和并发额度。每分钟行数按单次允许上限保守预留；实际生效上限取来源/接口较严格值，CLI/环境限制还可进一步收紧。`fund_basic/fund_nav/fund_manager` 默认页大小分别为 15000/10000/5000，最大页数可配置；其他接口的市场范围仍由原下载器分片；独立接口下载执行器可按保存的 offset/page/none 协议运行。页码与旧分片不对齐时明确报错，避免重复或漏页。
+- 请求有连接、读取、响应字节和运行时间边界；只对已分类的临时连接/限流错误重试，权限/字段/契约错误立即失败。禁止重定向、环境代理、私网和混合 DNS 地址。限频数字为本地安全约束，不替代供应商权限判断。
+- CLI/Web 请求指纹和历史分片目录包含配置指纹；修改映射或限制后不把旧配置下的检查点当作同一次任务继续使用。
+- 每次实际响应同时保存可重放原始批次和显式 Arrow Schema 的标准化候选至 `data/mapped_candidates/<source>/<batch>/`。幂等批次记录包含配置哈希、原始哈希、接受/拒绝行数和未发布标记。映射失败保留原始数据及原因，不把错误候选发布为正式数据；原下载链路仍单独按既有规则处理其旧表。
+- Tushare 与 AKShare 的初始配置只写入一次；保存后的修改不会被初始化覆盖，删除也不复活。凭据可在统一来源编辑器维护；地址或认证协议变更后须重新确认凭据。
+- 独立接口下载支持 HTTP、Tushare 与 AKShare，以所选接口、产品/请求参数和日期为范围，支持全量重取或增量断点加 3 天重叠。配置与参数指纹隔离检查点；空响应标记 EMPTY，截断或分页耗尽失败关闭，不提交不完整候选。任务共用原市场下载锁，不会并行污染数据。
+- 多源规则支持全局和表级顺序、缺失/异常替代开关、容差、必需字段、值域及跳变检查。按整条同口径记录选源，冲突默认隔离；输出带来源批次、规则版本和审计的不可变 Parquet。标准候选文件携带 SHA256，缺失或校验失败不得进入多源取值。
+- 页面区分下载结果、映射结果、取值冲突和未发布状态。**正式研究消费者仍读取旧结构**；本阶段没有完成统一主数据外键验收、正式消费者迁移或定时调度。AKShare 单接口任务不是全市场自动下载。
+- 净值公告仅有日期时按来源时区日终转换，历史公告未知不伪造可得性。指数 `pct_change` / `pct_chg` 按接口区分；手、万股、千元、万元分别映射标准单位；`fund_portfolio.stk_mkv_ratio` 不冒充基金净资产占比。Tushare 未映射字段保留原始批次；宏观预置当前映射主序列，其余列可添加独立映射，不宣称自动覆盖全部宏观子序列。
+
+本阶段新增验证命令：
+
+```text
+python -m pytest backend/tests/test_data_source_center.py backend/tests/test_data_model_catalog.py backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py -q
+npm run test --prefix frontend -- --run src/pages/DataSourceCenter.test.tsx src/pages/DataModelCatalog.test.tsx src/pages/DataManagement.test.tsx src/App.test.tsx
+npm run test:e2e --prefix frontend -- e2e/data-source-center.spec.ts
+python scripts/smoke_data_source_center.py --smoke --allow-config-token
+```
+
+最后一条为明确选择的真实请求，最多一次、写入临时目录、不发布数据，其余测试离线。2026-09-05 已完成 `fund_daily` 的单次真实请求和标准 Parquet 映射验证；不能据此声明其他接口均已在线验证。
+
+多源阶段另用 `scripts/smoke_multi_source.py --interface <ID> --confirm-network` 验证 `tushare.trade_cal`、`akshare.etf_daily`、`akshare.fund_nav`：每项最多 1 次真实 HTTP 请求，2024-01-02 至 2024-01-05 各取得 4 行，映射通过，均使用临时目录。AKShare 使用独立依赖文件 `backend/requirements-akshare.txt` 固定版本 1.18.94；ETF 不复权行情与单位净值分别入各自候选表，不伪造复权净值或历史公告时间。详细边界与测试见 `docs/multi_source_resolution_design.md`。
+
+### 1.4 多源下载入口与 ETL 编排（2026-09-06）
+
+`/settings/data-sources` 现在默认提供“按数据源下载 / ETL 任务编排 / 运行记录与恢复”。先选已保存来源，再按业务分类选择接口、参数、产品、日期范围及全量/增量。原 Tushare 模块级全市场任务保留在折叠兼容入口，未删除原功能。
+
+- ETL 将 `download → map → resolve → snapshot` 拆成独立有序步骤，支持跨来源、自定输入依赖、流程保存修订及调整快照位置。执行前检查接口修订、映射、坏依赖、口径和快照必需输入。
+- `backend/data_sources/acquisition.py` 为 ETL 与原单接口下载共同的有界采集函数；继续使用既有共享配额、凭据目的地址绑定、超时与受控重试。ETL 没有新增 Tushare API 或放宽任何账户配额。
+- 下载只提交完整 Raw；映射完成才推进增量断点，回查最近 3 天。全量是重新请求指定范围，不等于清空仓库或自动拉全市场；空响应默认阻断，不冒充成功。
+- 运行冻结来源/接口修订、多源规则、历史批次及指标配置。取值仅使用显式输入与冻结历史清单；失败或取消保留成功步骤，继续前核验制品哈希、配置和执行代码指纹。
+- 快照复用真实 NJIT 分析构建器，输入必须包含已取值的产品信息和基金净值。只在私有目录投影本次标准数据，不引用旧活跃价格；单位净值不代填复权净值。指标配置先冻结，再复制到单步运行目录，防止运行器修改冻结配置。
+- 新控制表 `etl_workflow`、`etl_workflow_revision`、`etl_run` 属系统内部；制品位于 `data/etl_runs/`。ETL 与现有刷新/采样共用全局锁。`/api/data-sources/etl/*` 提供校验、保存、执行、状态、取消和恢复。
+- **标准 ETL 输出仍为未发布候选；不改变上文正式活跃目录盘点或旧研究读取路径。** 原兼容下载仍按原发布规则执行。定时调度、动态全市场参数循环和正式 Repository 迁移不在本轮实现。
+
+详细流程、接口与边界见 `docs/etl_workflow_design.md`。新增离线回归 `backend/tests/test_etl_workflows.py`、`backend/tests/test_etl_snapshot.py`；`scripts/smoke_etl_workflow.py --confirm-network` 为显式一次真实请求，其他测试不联网。
+2026-09-06 单次 `trade_cal(exchange=SSE,start_date=20240102,end_date=20240105)` 验证通过：下载、映射、取值各 4 行，真实请求 1 次，使用本机全局锁和共享配额，仅写临时目录；执行指纹 `e3429438cf713eabce25b91ccb47a9d77a61c10707d3f624402d0a97099db300`。不是其他接口或全市场下载的在线验收。
+
 ## 2. 运行时如何选择数据目录
 
 ```mermaid

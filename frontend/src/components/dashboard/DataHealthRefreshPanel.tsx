@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type {
   DataRefreshStatus,
   RefreshModuleScopes,
@@ -7,6 +8,7 @@ import type {
   RefreshScope,
 } from './types';
 import { useDataRefresh } from './useDataRefresh';
+import RefreshRecoveryActions from './RefreshRecoveryActions';
 
 const integerFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
 const RECENT_REFRESH_COMPLETION_MS = 10 * 60 * 1000;
@@ -179,7 +181,7 @@ export function refreshStatusSummary(message?: string | null, logTail?: string |
     )
     && !/^\[(?:INFO|STAGE|DONE|OK|WARN|ERROR)\]$/.test(line)
   ));
-  const selected = latest ?? messageCandidates.at(-1) ?? '';
+  const selected = latest ?? messageCandidates[messageCandidates.length - 1] ?? '';
   const cleaned = selected.replace(/^\[(?:INFO|STAGE|DONE|OK)\]\s*/, '');
   const progress = cleaned.match(/^(.*?)\s+(?:分段|增量)?进度\s+(\d+)\/(\d+)(.*)$/);
   if (!progress) {
@@ -202,6 +204,10 @@ export default function DataHealthRefreshPanel({
   const {
     status,
     error,
+    statusError,
+    checking,
+    lastCheckedAt,
+    fetchStatus,
     submitting,
     rebuilding,
     savingToken,
@@ -210,7 +216,11 @@ export default function DataHealthRefreshPanel({
     saveToken,
     removeToken,
   } = useDataRefresh(onRefreshCompleted);
-  const [modules, setModules] = useState<RefreshModule[]>(['base', 'etf', 'fund', 'index', 'macro']);
+  const [modules, setModules] = useState<RefreshModule[]>(['base', 'etf', 'fund']);
+  const [preset, setPreset] = useState<'daily' | 'research' | 'custom'>('daily');
+  const [showScopes, setShowScopes] = useState(false);
+  const [showToken, setShowToken] = useState(false);
+  const taskHeading = useRef<HTMLHeadingElement>(null);
   const [moduleScopes, setModuleScopes] = useState<Record<RefreshModule, RefreshScope[]>>(() => ({
     base: [...defaultModuleScopes.base],
     etf: [...defaultModuleScopes.etf],
@@ -223,11 +233,19 @@ export default function DataHealthRefreshPanel({
   const [statusClock, setStatusClock] = useState(() => Date.now());
   const serverDefaultsApplied = useRef(false);
   const running = status?.job.status === 'running' || status?.refresh_locked === true;
-  const refreshControlsLocked = submitting || running;
+  const refreshControlsLocked = submitting || running || rebuilding || savingToken || Boolean(statusError);
   const recoverableCandidate = Boolean(
     status?.job.fetch_complete
     && status.job.staging_data_dir
     && status.job.analytics_snapshot?.status === 'failed',
+  );
+  const resumePreviousAvailable = Boolean(
+    status?.job.status === 'failed'
+    && !status.job.fetch_complete
+    && status.job.analytics_snapshot?.status !== 'failed'
+    && status.job.resume_available
+    && status.job.mode
+    && status.job.modules?.length,
   );
 
   useEffect(() => {
@@ -263,7 +281,6 @@ export default function DataHealthRefreshPanel({
     || !status?.enabled
     || !status?.token_configured
     || (mode === 'full' && !status?.full_refresh_enabled);
-  const rebuildDisabled = rebuilding || refreshControlsLocked || !status?.enabled;
   const tokenControlsDisabled = savingToken
     || refreshControlsLocked
     || !status?.token_configuration_enabled
@@ -281,27 +298,30 @@ export default function DataHealthRefreshPanel({
       ? `后台更新中（下载入口已锁定）· ${refreshStatusSummary(status.job.message, status.job.log_tail)}`
       : status?.refresh_locked
         ? '检测到后台数据任务正在运行，新的下载入口已锁定。'
+        : status?.job.analytics_snapshot?.status === 'failed'
+          ? '数据已拉取，分析处理尚未完成。请使用下方恢复操作，无需重新下载。'
         : status?.job.status === 'succeeded'
           ? completedRefreshSummary(status.job, statusClock)
           : status?.job.status === 'failed'
             ? `下载失败 · ${status.job.message}`
             : status?.job.message
   ) ?? '正在检查数据源状态...';
-  const jobTone = status?.job.status === 'running' || status?.refresh_locked
+  const needsAttention = Boolean(error || status?.job.analytics_snapshot?.status === 'failed' || status?.job.status === 'failed');
+  const jobTone = needsAttention ? 'bg-amber-100 text-amber-900' : status?.job.status === 'running' || status?.refresh_locked
     ? 'bg-indigo-100 text-indigo-800'
     : status?.job.status === 'succeeded'
       ? 'bg-emerald-100 text-emerald-800'
       : status?.job.status === 'failed' || error
         ? 'bg-rose-100 text-rose-800'
         : 'bg-slate-100 text-slate-700';
-  const jobLabel = status?.job.status === 'running' || status?.refresh_locked
+  const jobLabel = statusError ? '状态待确认' : needsAttention ? '需要处理' : status?.job.status === 'running' || status?.refresh_locked
     ? '更新中'
     : status?.job.status === 'succeeded'
       ? '最近成功'
       : status?.job.status === 'failed' || error
         ? '需要处理'
         : '待执行';
-  const refreshDisabledReason = !status
+  const refreshDisabledReason = statusError ? '状态失联，请先点击“重新检查状态”。' : !status
     ? '正在读取更新配置…'
     : refreshControlsLocked
       ? '当前任务结束后可再次启动。'
@@ -319,6 +339,7 @@ export default function DataHealthRefreshPanel({
     event.preventDefault();
     if (await saveToken(tokenInput)) {
       setTokenInput('');
+      setShowToken(false);
     }
   };
 
@@ -331,7 +352,42 @@ export default function DataHealthRefreshPanel({
     }
   };
 
+  const resumePreviousRefresh = async () => {
+    const previousModules = status?.job.modules ?? [];
+    const previousMode = status?.job.mode;
+    if (!previousMode || previousModules.length === 0) return;
+    const previousScopes = previousModules.reduce<RefreshModuleScopes>((result, module) => {
+      const saved = status?.job.module_scopes?.[module];
+      result[module] = saved?.length ? [...saved] : [...defaultModuleScopes[module]];
+      return result;
+    }, {});
+    setModules(previousModules);
+    setPreset('custom');
+    setMode(previousMode);
+    setModuleScopes((current) => ({ ...current, ...previousScopes }));
+    await startRefresh(previousModules, previousMode, previousScopes);
+  };
+
+  const applyPreset = (choice: 'daily' | 'research') => {
+    const requested: RefreshModule[] = choice === 'daily' ? ['base', 'etf', 'fund'] : ['base', 'index', 'macro'];
+    const supported = requested.filter(module => !status?.available_modules || status.available_modules.includes(module));
+    setModules(supported);
+    setModuleScopes(current => {
+      const next = { ...current };
+      moduleOptions.forEach(({ value }) => {
+        const defaults = status?.default_module_scopes?.[value] ?? defaultModuleScopes[value];
+        const available = status?.available_module_scopes?.[value];
+        next[value] = supported.includes(value)
+          ? normaliseScopeSelection(value, defaults.filter(scope => !available || available.includes(scope)))
+          : [];
+      });
+      return next;
+    });
+    setPreset(choice);
+  };
+
   const toggleModule = (module: RefreshModule, checked: boolean) => {
+    setPreset('custom');
     if (checked) {
       setModules((current) => current.includes(module) ? current : [...current, module]);
       setModuleScopes((current) => ({
@@ -345,11 +401,13 @@ export default function DataHealthRefreshPanel({
   };
 
   const toggleScope = (module: RefreshModule, scope: RefreshScope, checked: boolean) => {
+    setPreset('custom');
+    const previous = modules.includes(module) ? moduleScopes[module] : [];
     const next = normaliseScopeSelection(
       module,
       checked
-        ? [...moduleScopes[module], scope]
-        : moduleScopes[module].filter((item) => item !== scope),
+        ? [...previous, scope]
+        : previous.filter((item) => item !== scope),
     );
     setModuleScopes((current) => ({ ...current, [module]: next }));
     setModules((current) => {
@@ -369,7 +427,7 @@ export default function DataHealthRefreshPanel({
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 id="data-refresh-heading" className="text-lg font-semibold text-slate-950">当前任务</h2>
+              <h2 ref={taskHeading} tabIndex={-1} id="data-refresh-heading" className="text-lg font-semibold text-slate-950">当前任务</h2>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${jobTone}`}>{jobLabel}</span>
             </div>
             <p className="mt-1 text-sm text-slate-500">任务在后台运行，离开页面不会中断下载。</p>
@@ -384,15 +442,30 @@ export default function DataHealthRefreshPanel({
           <span className="font-semibold">{error ? '操作失败：' : running ? '正在执行：' : '任务状态：'}</span>
           <span className="break-words">{refreshMessage}</span>
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+          <button type="button" onClick={() => void fetchStatus()} disabled={checking || submitting || rebuilding} className="min-h-10 rounded-lg border border-slate-300 px-3 font-semibold text-slate-700 disabled:opacity-50">{checking ? '正在检查…' : '重新检查状态'}</button>
+          <span className="text-slate-500">{lastCheckedAt ? `状态检查于 ${localDateTime(Date.parse(lastCheckedAt))}` : '尚未取得任务状态'}</span>
+        </div>
+        {status?.job.status === 'succeeded' && !needsAttention ? <div className="mt-4 space-y-2 border-t border-slate-100 pt-4 text-sm">
+          <p className="font-semibold text-slate-800">下载任务已结束，接下来检查数据质量。</p>
+          <p className="text-xs leading-5 text-slate-500">现有研究数据与新标准表候选是两条独立链路。下载成功不代表新标准表已经发布。</p>
+          <div className="flex flex-wrap gap-4 font-semibold text-indigo-700"><Link to="/settings/data-quality">检查数据质量 →</Link><Link to="/settings/source-center?view=results">查看标准表映射结果 →</Link></div>
+        </div> : null}
       </div>
 
+      <RefreshRecoveryActions status={status} locked={refreshControlsLocked} rebuilding={rebuilding} recoverableCandidate={recoverableCandidate} canResume={resumePreviousAvailable} onResume={() => void resumePreviousRefresh()} onRebuild={() => void rebuildAnalytics(recoverableCandidate)} />
+
       <form onSubmit={submitToken} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <h2 className="text-base font-semibold text-slate-950">连接数据源</h2>
+        <p className="mt-1 text-sm text-slate-600">Tushare · {status?.token_configured ? '凭据已保存，日常更新无需重复填写。' : '首次使用，请填写访问凭据。'} 保存凭据不代表接口权限已验证。</p>
+        <details open={!status?.token_configured || showToken} onToggle={event => { if (status?.token_configured) setShowToken(event.currentTarget.open); }} className="mt-3">
+          <summary className="cursor-pointer py-2 text-sm font-semibold text-indigo-700">{status?.token_configured ? '管理连接凭据' : '填写连接凭据'}</summary>
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">1</span>
               <div>
-                <h2 className="text-base font-semibold text-slate-950">连接数据源</h2>
+                <h3 className="text-base font-semibold text-slate-950">Tushare 访问凭据</h3>
                 <p className="mt-0.5 text-xs text-slate-500">用于本机直接下载 Tushare 数据。</p>
               </div>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status?.token_configured ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
@@ -440,6 +513,7 @@ export default function DataHealthRefreshPanel({
         {status && !status.token_configuration_enabled && (
           <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">当前环境未开启前端 Token 配置。</p>
         )}
+        </details>
       </form>
 
       <fieldset className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -481,16 +555,24 @@ export default function DataHealthRefreshPanel({
             <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">3</span>
             <div>
               <h2 className="text-base font-semibold text-slate-950">选择下载范围</h2>
-              <p className="mt-0.5 text-xs leading-5 text-slate-500">模块与具体内容直接展示；系统会自动锁定必要的依赖项。</p>
+              <p className="mt-0.5 text-xs leading-5 text-slate-500">先选常用方案，需要时再展开具体内容；必要依赖会自动加入。</p>
             </div>
           </div>
           <p className="text-xs font-semibold tabular-nums text-indigo-700">已选 {modules.length} 个模块 · {selectedScopeCount} 项内容</p>
         </div>
+        <div className="mt-4 flex flex-wrap gap-2" aria-label="同步方案">
+          <button type="button" aria-pressed={preset === 'daily'} disabled={refreshControlsLocked} onClick={() => applyPreset('daily')} className={`min-h-11 rounded-xl border px-4 text-sm font-semibold disabled:opacity-50 ${preset === 'daily' ? 'border-indigo-300 bg-indigo-50 text-indigo-900' : 'border-slate-200'}`}>日常基金更新</button>
+          <button type="button" aria-pressed={preset === 'research'} disabled={refreshControlsLocked} onClick={() => applyPreset('research')} className={`min-h-11 rounded-xl border px-4 text-sm font-semibold disabled:opacity-50 ${preset === 'research' ? 'border-indigo-300 bg-indigo-50 text-indigo-900' : 'border-slate-200'}`}>指数与宏观研究</button>
+          <button type="button" aria-pressed={preset === 'custom'} disabled={refreshControlsLocked} onClick={() => { setPreset('custom'); setShowScopes(true); }} className="min-h-11 rounded-xl border border-slate-200 px-4 text-sm font-semibold disabled:opacity-50">自定义范围</button>
+        </div>
+        <p className="mt-2 text-xs leading-5 text-slate-500">方案只调整下载内容，不会自动启动，也不会切换为全量更新。</p>
+        <details open={showScopes} onToggle={event => setShowScopes(event.currentTarget.open)} className="mt-4">
+          <summary className="cursor-pointer py-2 text-sm font-semibold text-indigo-700">调整具体下载内容 · {selectedScopeCount} 项已选</summary>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           {moduleOptions.map((option) => {
             const checked = modules.includes(option.value);
             const unavailable = Boolean(status?.available_modules && !status.available_modules.includes(option.value));
-            const selectedScopes = moduleScopes[option.value];
+            const selectedScopes = checked ? moduleScopes[option.value] : [];
             const availableScopes = status?.available_module_scopes?.[option.value]
               ?? (option.value === 'index' ? status?.available_index_scopes : undefined);
             return (
@@ -540,20 +622,21 @@ export default function DataHealthRefreshPanel({
             );
           })}
         </div>
+        </details>
         <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">增量更新历史数据时会自动同步交易日历，避免日期断层。</p>
       </fieldset>
 
       {status && (!status.enabled || !status.token_configured) && (
         <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">{!status.enabled ? '当前环境未开启网页数据更新。' : '请先保存 Tushare Token，再启动数据更新。'}</div>
       )}
-      {refreshControlsLocked && (
+      {(submitting || running || rebuilding) && (
         <div
           id="refresh-background-notice"
           aria-live="polite"
           className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900"
         >
           <div className="font-semibold">
-            {submitting ? '正在启动后台数据更新…' : '数据更新正在后台运行，下载入口已锁定。'}
+            {submitting ? '正在启动后台数据更新…' : rebuilding ? '正在整理分析数据，暂时不能启动新的下载。' : '数据更新正在后台运行，下载入口已锁定。'}
           </div>
           <p className="mt-1 text-xs leading-5 text-indigo-700">
             您可以继续使用系统其他功能；当前任务结束前，不能启动新的增量更新、全量更新或分析快照重建。
@@ -561,21 +644,18 @@ export default function DataHealthRefreshPanel({
         </div>
       )}
 
-      {status?.job.analytics_snapshot?.status === 'failed' && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900 shadow-sm">
-          <div className="font-semibold">下载已完成，但分析快照接入失败</div>
-          <p className="mt-1 text-xs leading-5 text-amber-800">{recoverableCandidate ? '可以直接重建、验收并接入已保留候选，' : '可以单独重建当前快照，'}不会再次请求 Tushare。</p>
-          {status.job.analytics_snapshot.message ? <div className="mt-1 text-xs text-amber-800">{status.job.analytics_snapshot.message}</div> : null}
-          <button type="button" onClick={() => rebuildAnalytics(recoverableCandidate)} disabled={rebuildDisabled} className="mt-4 inline-flex items-center justify-center rounded-xl border border-amber-300 bg-white px-4 py-2.5 text-sm font-semibold text-amber-900 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
-            {rebuilding ? '正在重建...' : recoverableCandidate ? '重建并接入候选快照' : '重建分析快照'}
-          </button>
-        </div>
-      )}
-
       {status?.job.log_tail && (
         <details className="rounded-xl border border-slate-200 bg-slate-950 p-4 text-xs text-slate-200"><summary className="cursor-pointer font-semibold">查看任务日志</summary><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap">{status.job.log_tail}</pre></details>
       )}
 
+      <section aria-label="本次同步清单" className="rounded-2xl border border-slate-200 bg-white p-5">
+        <h2 className="text-base font-semibold text-slate-900">确认本次同步内容</h2>
+        <dl className="mt-3 space-y-2 text-sm">{moduleOptions.filter(option => modules.includes(option.value)).map(option => <div key={option.value} className="grid gap-1 sm:grid-cols-[130px_minmax(0,1fr)]">
+          <dt className="font-semibold text-slate-700">{option.label}</dt><dd className="text-slate-600">{option.scopes.filter(scope => moduleScopes[option.value].includes(scope.value)).map(scope => scope.label).join('、') || '未选择内容'}</dd>
+        </div>)}</dl>
+        {!modules.length ? <p className="mt-2 text-sm text-amber-800">尚未选择数据，请选择方案或勾选具体内容。</p> : null}
+        <p className="mt-3 text-xs leading-5 text-slate-500">{mode === 'full' ? '全量会按系统配置的历史范围重建，启动前还需确认。' : '增量用于补充最近数据；首次使用需要完整历史时，请选择全量。'} 标准表映射结果单独生成候选，不自动替换正式研究数据。</p>
+      </section>
       <div className="rounded-2xl bg-slate-950 p-5 text-white shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
@@ -590,7 +670,7 @@ export default function DataHealthRefreshPanel({
             </div>
             <p className={`mt-2 text-xs ${refreshDisabled ? 'text-amber-300' : 'text-slate-400'}`}>{refreshDisabledReason}</p>
           </div>
-          <button type="button" aria-describedby={refreshControlsLocked ? 'refresh-background-notice' : undefined} onClick={() => startRefresh(modules, mode, moduleScopes)} disabled={refreshDisabled} className="inline-flex min-h-12 w-full shrink-0 items-center justify-center rounded-xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 lg:w-auto lg:min-w-52">
+          <button type="button" aria-describedby={refreshControlsLocked ? 'refresh-background-notice' : undefined} onClick={async () => { await startRefresh(modules, mode, moduleScopes); taskHeading.current?.focus(); taskHeading.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }); }} disabled={refreshDisabled} className="inline-flex min-h-12 w-full shrink-0 items-center justify-center rounded-xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 lg:w-auto lg:min-w-52">
             {submitting ? '正在启动后台任务...' : running ? '后台更新中（已锁定）' : '开始数据更新'}
           </button>
         </div>

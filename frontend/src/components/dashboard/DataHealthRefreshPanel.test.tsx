@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import DataHealthRefreshPanel from './DataHealthRefreshPanel';
 
 describe('DataHealthRefreshPanel module scopes', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('默认选择情景核心范围并提交扩展范围', async () => {
+  it('默认只选基金范围，用户可明确加入指数宏观并提交扩展范围', async () => {
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/api/data/refresh/status') {
@@ -47,6 +47,10 @@ describe('DataHealthRefreshPanel module scopes', () => {
     render(<MemoryRouter><DataHealthRefreshPanel onRefreshCompleted={vi.fn()} /></MemoryRouter>);
     await screen.findByText(/尚未启动更新/);
 
+    expect(within(screen.getByRole('region', { name: '本次同步清单' })).queryByText('指数')).not.toBeInTheDocument();
+    await act(async () => { await user.click(screen.getByRole('button', { name: '自定义范围' })); });
+    await act(async () => { await user.click(within(screen.getByRole('region', { name: '指数模块' })).getAllByRole('checkbox')[0]); });
+    await act(async () => { await user.click(within(screen.getByRole('region', { name: '宏观数据模块' })).getAllByRole('checkbox')[0]); });
     const etfModule = within(screen.getByRole('region', { name: 'ETF模块' }));
     const etfScopes = within(screen.getByRole('group', { name: 'ETF下载内容' }));
     expect(etfScopes.getByRole('checkbox', { name: /产品基础信息/ })).toBeDisabled();
@@ -171,6 +175,57 @@ describe('DataHealthRefreshPanel module scopes', () => {
     const indexModule = within(screen.getByRole('region', { name: '指数模块' }));
     expect(within(screen.getByRole('group', { name: '指数下载内容' })).getByRole('checkbox', { name: /境内指数/ })).toBeDisabled();
     expect(screen.getByLabelText('输入 Token')).toBeDisabled();
+  });
+
+  it('中断任务可以按原模块和范围一键继续', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/data/refresh/status') {
+        return { ok: true, json: async () => ({
+          source: 'tushare', enabled: true, full_refresh_enabled: true,
+          available_modules: ['base', 'etf', 'fund', 'index', 'macro'],
+          token_configured: true, token_configuration_enabled: true, token_editable: true,
+          job: {
+            job_id: 'interrupted-1', status: 'failed', mode: 'incremental', resume_available: true,
+            message: '数据更新后台服务已退出或重启，任务已中断；已落盘数据和检查点仍保留，可按原配置继续。',
+            modules: ['fund', 'index'],
+            module_scopes: {
+              fund: ['info', 'nav', 'scale'],
+              index: ['catalog', 'domestic'],
+            },
+          },
+          datasets: {},
+        }) };
+      }
+      if (url === '/api/data/refresh') {
+        expect(init?.method).toBe('POST');
+        return { ok: true, json: async () => ({
+          source: 'tushare', execution_mode: 'background', refresh_locked: true,
+          enabled: true, full_refresh_enabled: true, available_modules: ['fund', 'index'],
+          token_configured: true, token_configuration_enabled: true, token_editable: true,
+          job: { job_id: 'resumed-1', status: 'running', message: '运行中' }, datasets: {},
+        }) };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const user = userEvent.setup();
+    render(<MemoryRouter><DataHealthRefreshPanel onRefreshCompleted={vi.fn()} /></MemoryRouter>);
+
+    const resume = await screen.findByRole('button', { name: '按原配置继续上次更新' });
+    await act(async () => { await user.click(resume); });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/data/refresh', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({
+        modules: ['fund', 'index'],
+        mode: 'incremental',
+        module_scopes: {
+          fund: ['info', 'nav', 'scale'],
+          index: ['catalog', 'domestic'],
+        },
+      }),
+    })));
   });
 
   it('下载页不再展示数据质量摘要和分群质量卡', async () => {

@@ -243,6 +243,7 @@ ProductAnalysisMaPeriod = Annotated[int, Field(ge=2, le=500)]
 
 class ProductAnalysisRequest(BaseModel):
     statistics_period: Literal["ALL", "1M", "3M", "6M", "1Y", "3Y", "5Y"] = "ALL"
+    include_technical: bool = True
     price_ma_periods: list[ProductAnalysisMaPeriod] = Field(default_factory=lambda: [5, 10, 20], max_length=8)
     volume_ma_periods: list[ProductAnalysisMaPeriod] = Field(default_factory=lambda: [5, 10], max_length=8)
     boll_period: int = Field(default=20, ge=2, le=500)

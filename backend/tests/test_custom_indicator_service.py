@@ -75,12 +75,15 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
         "risk_adjusted",
         "path",
         "market_liquidity",
+        "technical",
         "other",
     }
     assert meta["numeric_backend"]["policy"][
         "one_dimensional_reductions_and_scans"
     ] == "numba_njit_fixed_signature"
-    assert meta["math_notation_version"] == "1.2.0"
+    assert meta["math_notation_version"] == "1.4.0"
+    measure_ids = {item["id"] for item in meta["series_output_measures"]}
+    assert {"auto", "raw_market_price", "virtual_nav", "bounded_0_1", "oscillator_0_100"}.issubset(measure_ids)
 
     operator_names = {item["name"] for item in meta["operators"]}
     assert {"add", "multiply", "product", "dot", "matmul"}.issubset(operator_names)
@@ -91,6 +94,8 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     assert "formula_fragments" not in meta
     assert "indicator_templates" not in meta
     operators = {item["name"]: item for item in meta["operators"]}
+    assert all(item["label"] != item["name"] for item in meta["operators"])
+    assert all("_" not in item["label"] for item in meta["operators"])
     assert operators["mean"]["label"] == "全元素算术平均值"
     assert operators["mean"]["execution_backend"] == "numba_njit_fixed_signature"
     assert operators["matmul"]["execution_backend"] == "numba_njit_fixed_signature"
@@ -110,6 +115,20 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     ]
     assert operators["mean_time"]["label"] == "时间轴算术平均值"
     assert operators["mean_asset"]["label"] == "资产轴算术平均值"
+    assert operators["rolling_mean"]["label"] == "滚动平均值"
+    assert operators["rolling_std"]["label"] == "滚动标准差"
+    assert operators["rolling_min"]["label"] == "滚动最小值"
+    assert operators["rolling_max"]["label"] == "滚动最大值"
+    assert operators["recursive_smooth"]["label"] == "递归平滑"
+    assert operators["divide_or_default"]["label"] == "安全除法"
+    assert operators["rolling_mean"]["category_label"] == "滚动与时序"
+    assert operators["rolling_std"]["category_label"] == "滚动与时序"
+    assert operators["rolling_std"]["parameter_sets"][-1]["parameters"][2]["label"] == (
+        "自由度修正（ddof）"
+    )
+    assert operators["rolling_std"]["parameter_sets"][-1]["parameters"][3]["label"] == (
+        "最少有效观察数"
+    )
     assert operators["mean"]["parameters"][0]["label"] == "输入值"
     assert operators["mean"]["parameters"][0]["allowed_shapes"] == [
         "series",
@@ -118,6 +137,12 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     ]
     assert operators["absolute"]["output_shape"] == "unknown"
     assert operators["absolute"]["return_type"].startswith("same(")
+    rolling_window = next(
+        item for item in operators["rolling_mean"]["parameters"]
+        if item["name"] == "window"
+    )
+    assert rolling_window["source_policy"] == "fixed_constant"
+    assert rolling_window["constant_kind"] == "integer"
     assert operators["covariance"]["output_shape"] == "unknown"
     assert operators["diag"]["output_shape"] == "unknown"
     assert operators["dot"]["parameters"][1]["allowed_shapes"] == [
@@ -634,6 +659,71 @@ def test_run_plan_requires_its_saved_warmed_batch_without_compiling(
     with pytest.raises(ValidationError) as failure:
         service.run_plan(plan["id"])
     assert failure.value.code == "NJIT_BATCH_PLAN_NOT_WARMED"
+
+
+def test_partial_snapshot_coverage_does_not_split_saved_fused_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    first = service.create_indicator(
+        _draft(name="快照部分命中A", expression=r"\operatorname{mean}(\mathbf{r})", periods=["1W"])
+    )
+    second = service.create_indicator(
+        _draft(name="快照部分命中B", expression=r"\operatorname{std}(\mathbf{r},1)", periods=["1W"])
+    )
+    plan = service.create_plan(
+        {
+            "name": "部分快照不能拆融合计划",
+            "description": "",
+            "product_kind": "etf",
+            "indicators": [
+                {
+                    "indicator_id": first["id"],
+                    "indicator_revision": first["revision"],
+                    "period": "1W",
+                    "weight": 50.0,
+                },
+                {
+                    "indicator_id": second["id"],
+                    "indicator_revision": second["revision"],
+                    "period": "1W",
+                    "weight": 50.0,
+                },
+            ],
+            "targets": [{"kind": "etf", "product_id": "510050.SH"}],
+            "missing_policy": "strict",
+        }
+    )
+    monkeypatch.setattr(
+        service.snapshot_config,
+        "get",
+        lambda: {
+            "items": [
+                {
+                    "indicator_id": first["id"],
+                    "indicator_revision": first["revision"],
+                    "period": "1W",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_evaluate_from_snapshot",
+        lambda *_args, **_kwargs: pytest.fail(
+            "partial snapshot coverage must not execute a partial fused group"
+        ),
+    )
+
+    run = service.run_plan(plan["id"])
+
+    assert run["ranked_count"] == 1
+    assert run["execution"]["compiled_plan_ids"] == [
+        plan["compiled_batches"][0]["compiled_plan_id"]
+    ]
+    assert run["execution"]["python_fallback"] == 0
 
 
 def test_insufficient_sample_and_missing_data_return_null_with_warning(tmp_path: Path) -> None:

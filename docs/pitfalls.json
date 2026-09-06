@@ -546,7 +546,9 @@
       "incremental_overlap_regression",
       "incremental_date_schema_drift",
       "parallel_refresh_rate_limit_or_concurrent_write",
-      "unchanged_incremental_rewrites_full_history"
+      "unchanged_incremental_rewrites_full_history",
+      "backend_restart_interrupts_supervised_web_refresh",
+      "silent_large_parquet_merge_triggers_idle_timeout"
       ],
       "symptoms": [
         "CLI and Web jobs run simultaneously because they do not use the same lock file on the same local filesystem.",
@@ -556,7 +558,9 @@
       "Late or revised observations are skipped because incremental overlap rows do not replace matching stored keys.",
       "Incremental merge mixes string or integer stored dates with Timestamp values and Arrow conversion fails before schema alignment.",
       "Independent worker limiters or worker-side Parquet writes exceed the account quota or expose partially merged data.",
-      "An empty or identical incremental window rewrites a multi-gigabyte Parquet file and rebuilds the complete analytics snapshot even though no observable data changed."
+      "An empty or identical incremental window rewrites a multi-gigabyte Parquet file and rebuilds the complete analytics snapshot even though no observable data changed.",
+      "A Web-started refresh loses its supervising process during an API restart and is later surfaced only as a generic interrupted job, even though already-landed files remain reusable.",
+      "A multi-gigabyte streaming merge performs real work but emits no stdout for longer than the idle timeout, so the supervisor can mistake it for a stalled child."
       ],
       "trigger_actions": [
         "enable DATA_REFRESH_ENABLED in production",
@@ -596,7 +600,8 @@
       "check_before_edit": [
         "Keep production refresh disabled unless the deployment protects the endpoint.",
         "Keep CLI, Web, and local snapshot rebuild on the same non-blocking filesystem lock; preserve inherited child ownership and persisted heartbeat/state.",
-        "Stream a bounded, redacted log tail instead of capture_output, and retain checkpoints after interruption.",
+        "Stream a bounded, redacted log tail instead of capture_output, retain checkpoints after interruption, and expose persisted modules/scopes as a safe one-click retry contract when the supervising API process is lost.",
+        "Long local Parquet merges must emit flushed progress often enough to refresh the supervisor's activity timer; do not treat a silent CPU-bound merge as idle.",
         "Write full refreshes to an isolated version, build the local metrics snapshot, validate it, and atomically switch the manifest; keep the old manifest on any failure.",
       "Treat analytics rebuild or promotion failure as a warning after successful fetching so operators can rebuild locally without another Tushare call.",
       "Refetch the configured trading-day overlap and let incoming rows replace matching keys while preserving atomic sorted output.",
@@ -886,6 +891,7 @@
       "variable_availability_fail_open",
       "static_product_kind_blocks_real_fields",
       "existing_indicator_composition_revision_drift",
+      "display_latex_implementation_leak",
         "as_of_announcement_lookahead",
         "optimistic_lock_bypass",
         "ranking_missing_as_zero",
@@ -897,6 +903,7 @@
       "A conditional Tushare variable is offered without checking the selected product, period, and historical as-of date, or an availability-service failure is treated as available.",
       "An indicator is rejected only because its catalog product-kind hint differs, without checking the formula's actual required fields for that product.",
       "An existing indicator is inserted by mutable ID or copied from stale client state instead of being resolved and checked by locked revision and matching protocol versions.",
+      "The headline LaTeX expands rolling-window loops, missing-value branches, or recursive implementation details instead of using compact mathematical operator symbols.",
         "A fund NAV field is exposed for a historical as-of date before its announcement date, or partial field coverage is silently treated as complete.",
         "An update or delete omits revision, or a saved plan runs the latest indicator instead of its locked historical version.",
         "A product with any missing selected metric is normalized as zero and included in ranking."
@@ -907,13 +914,16 @@
         "edit JSON persistence, cache keys, or invalidation",
       "edit IndicatorStudio variable catalog or guided operator parameters",
       "add existing-indicator composition or formula reuse",
+      "edit typed mathematical LaTeX or time-series formula previews",
         "edit detail, comparison, or evaluation-plan indicator integration"
       ],
       "related_paths": [
         "backend/custom_indicators/service.py",
         "backend/custom_indicators/repository.py",
         "backend/custom_indicators/series_provider.py",
+        "backend/custom_indicators/rolling_scalar.py",
         "backend/custom_indicators/variable_registry.py",
+        "backend/cal_indicators/typed_latex.py",
         "backend/services/custom_indicator_routes.py",
         "backend/services/instrument_routes.py",
         "frontend/src/services/customIndicators.ts",
@@ -945,6 +955,8 @@
       "Resolve variable availability for every selected product, period, and as-of date; fail closed in both the catalog and operator parameter drawer when all relevant targets fail.",
       "Treat applicable_product_kinds as a catalog hint only; compile required_variables and report source, field, observation, coverage, or common-window blockers per product before calculation.",
       "Resolve inserted indicators by indicator_id plus revision on the server, require matching context and DSL/registry/data/schema versions, and expand to an independent scalar expression rather than a mutable runtime reference.",
+      "When lifting a scalar indicator into a rolling series, lock the source revision and definition hash, expand supported reductions at definition time, keep the window as a formula constant, and fail closed for unsupported window-level context or reductions.",
+      "Keep the headline formula semantic and compact: use symbols such as mu, sigma, s, windowed min/max, smoothing S, or drawdown D; keep min_periods, NaN branches and implementation recurrences in the detailed DAG explanation.",
         "Respect ann_date <= as_of for reported NAV fields and surface partial coverage instead of silently filling or claiming full availability.",
         "Require revision for every mutable update/delete and run plans against locked indicator revisions.",
         "Exclude products missing any selected metric from ranking instead of treating missing values as zero."
@@ -1034,6 +1046,7 @@
         "process_thread_oversubscription",
         "shared_array_leak",
         "worker_cold_compile",
+        "fused_batch_shape_drift",
         "paged_result_expiration_drift"
       ],
       "symptoms": [
@@ -1043,6 +1056,7 @@
         "Multiple Uvicorn workers each create a process pool, or BLAS and Numba threads multiply process-level concurrency.",
         "Timeout, cancellation, worker failure, or service restart leaves shared arrays or mmap files behind.",
         "A request performs first-use Numba compilation instead of using lifespan-prewarmed fixed signatures.",
+        "A snapshot shortcut removes only part of a saved evaluation-plan fused batch, creating an unsaved subset shape that misses the startup-warmed immutable batch plan.",
         "Large paged results outlive their bounded TTL or return an unstable missing/expired contract."
       ],
       "trigger_actions": [
@@ -1084,6 +1098,7 @@
         "Resolve locked formulas and physical dependencies once, scan each required Parquet source once, and key data/window/result caches by active data generation.",
         "Pass only shared-memory or mmap descriptors and numeric plans to workers; keep strings and presentation assembly in the API process.",
         "Use one Uvicorn worker per container, prewarm fixed Numba signatures in lifespan workers, and cap BLAS, process, and Numba concurrency with CPU tokens.",
+        "Preserve saved fused-batch membership at runtime: snapshot reuse may skip a fused group only when the whole group and all targets are covered; partial snapshot hits must execute the original warmed batch instead of constructing a new subset shape.",
         "Keep parent ownership of unlink, terminate failed workers before shared cleanup, and remove only protected orphan resources whose owner PID is gone.",
         "Keep result-cache TTL, 410 RESULT_EXPIRED, page bounds, and Retry-After busy responses stable."
       ],

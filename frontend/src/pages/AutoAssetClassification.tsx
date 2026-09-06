@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import ClassFitPanel, { ClassConsistencyTable, type ClassFitResult } from '../components/ClassFitPanel'
-import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertFixedNjitExecution, assertFixedNjitExecutionLanes, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
 import {
   getInvestableUniverse,
+  investableUniverseEligibleCount,
   searchInvestableUniverseProducts,
   type InvestableUniverseSnapshot,
 } from '../services/productPools'
@@ -26,6 +27,8 @@ interface AutoClassMember {
   invest_type: string
   management: string
   contract_label: string
+  // Absent on drafts produced before the contract taxonomy shipped.
+  taxonomy?: { asset_class: string; category: string; detail: string; path: string; matched: string }
   affinity: number | null
   is_medoid: boolean
   max_weight: number | null
@@ -46,6 +49,8 @@ interface AutoClassGroup {
 interface AutoClassResult {
   algorithm: string
   features: string
+  taxonomy_level: string
+  block_by: string
   k: number
   weight_mode: string
   observations: number
@@ -61,6 +66,7 @@ interface AutoClassResult {
     cross_class_labels: string[]
     significant_eigenvalues: number
     k_suggestions: { k: number; silhouette: number | null }[]
+    blocks: { block: string; size: number; k: number; silhouette: number | null }[]
     contract_deviations: { code: string; name: string; assigned_class: string; contract_label: string }[]
     winsorized: { code: string; name: string; clipped: number; max_raw_return: number | null }[]
   }
@@ -81,11 +87,13 @@ interface AutoClassMeta {
   features: MetaOption[]
   linkages: MetaOption[]
   weight_modes: MetaOption[]
+  taxonomy_levels: MetaOption[]
+  block_modes: MetaOption[]
   limits: { min_observations: number; max_auto_k: number; min_products: number }
 }
 
 const ALGORITHM_HINTS: Record<string, string> = {
-  rule: '按基金合同类型、投资类型与业绩基准做确定性映射。大类个数由标签自然决定，是其它算法的对照基线。',
+  rule: '按基金合同类型、投资类型、业绩基准与跟踪指数做确定性映射，直接输出所选层级的合同分类。大类个数由标签自然决定，是其它算法的对照基线。',
   hierarchical: '在收益相关性距离上做凝聚层次聚类。默认选项：无需初值、结果确定，且“为什么这两个产品在一起”可以回溯到合并树。',
   kmedoids: '以真实产品作为类中心，每个大类天然得到一只代表产品，适合直接拿来做大类代理。',
   kmeans: '在标准化特征空间上做质心聚类。速度快，但类中心是虚拟点，对特征量纲更敏感。',
@@ -97,11 +105,20 @@ const FEATURE_HINTS: Record<string, string> = {
   blend: '风险收益画像与主成分载荷拼接后聚类。',
 }
 
+const BLOCK_HINTS: Record<string, string> = {
+  none: '只按净值行为聚类。相关性窗口可能把黄金 ETF 和权益 ETF 放进同一类。',
+  asset_class: '权益/固收/商品/货币/海外/混合 之间不可混合，统计聚类只在同一资产大类内部细分。做 SAA 时的推荐口径。',
+  category: '在资产大类之下再锁定二级类型（宽基规模/风格因子/行业/主题、利率债/信用债/可转债/同业存单…），聚类只区分同一类型内的差异。',
+  detail: '锁定到三级明细（大小盘、红利/低波/价值、八大行业、六大主题、国债/城投债…）。层级越细，块越多、每块可拆的类越少。',
+}
+
 const emptyMeta: AutoClassMeta = {
   algorithms: [],
   features: [],
   linkages: [],
   weight_modes: [],
+  taxonomy_levels: [],
+  block_modes: [],
   limits: { min_observations: 60, max_auto_k: 8, min_products: 2 },
 }
 
@@ -128,6 +145,7 @@ export default function AutoAssetClassification() {
   const [universe, setUniverse] = useState<InvestableUniverseSnapshot | null>(null)
   const [universeLoading, setUniverseLoading] = useState(false)
   const [universeError, setUniverseError] = useState('')
+  const [productsError, setProductsError] = useState('')
   const [meta, setMeta] = useState<AutoClassMeta>(emptyMeta)
   const [pool, setPool] = useState<PoolItem[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -143,6 +161,8 @@ export default function AutoAssetClassification() {
   const [sizeMax, setSizeMax] = useState(4)
   const [unassignedPolicy, setUnassignedPolicy] = useState<'park' | 'force'>('park')
   const [weightMode, setWeightMode] = useState('inv_vol')
+  const [taxonomyLevel, setTaxonomyLevel] = useState('asset_class')
+  const [blockBy, setBlockBy] = useState('none')
   const [startDate, setStartDate] = useState('2020-01-01')
 
   const [running, setRunning] = useState(false)
@@ -157,7 +177,9 @@ export default function AutoAssetClassification() {
     const controller = new AbortController()
     fetch('/api/asset-classes/auto/meta', { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-      .then((payload: AutoClassMeta) => setMeta(payload))
+      // Merge instead of replace: a meta payload from an older backend that has
+      // no taxonomy options must not leave the option lists undefined.
+      .then((payload: Partial<AutoClassMeta>) => setMeta({ ...emptyMeta, ...payload }))
       .catch(() => undefined)
     return () => controller.abort()
   }, [])
@@ -189,6 +211,7 @@ export default function AutoAssetClassification() {
       setSearchTotal(0)
       return () => controller.abort()
     }
+    setProductsError('')
     searchInvestableUniverseProducts(universeId, {
       query: searchQuery,
       eligibleOnly: true,
@@ -211,7 +234,9 @@ export default function AutoAssetClassification() {
         if ((caught as DOMException)?.name !== 'AbortError') {
           setSearchResults([])
           setSearchTotal(0)
-          setUniverseError(caught instanceof Error ? caught.message : '无法读取可投资域产品。')
+          // `universeError` only renders while the universe is missing, so a
+          // failed product fetch used to leave an empty picker and no reason.
+          setProductsError(caught instanceof Error ? caught.message : '无法读取可投资域产品。')
         }
       })
     return () => controller.abort()
@@ -233,15 +258,28 @@ export default function AutoAssetClassification() {
       .filter((item) => item.products.length > 0)
   }, [result])
 
-  function addProduct(item: PoolItem) {
-    setPool((current) => (current.some((entry) => entry.code === item.code) ? current : [...current, item]))
-  }
-
   function addAllSearchResults() {
     setPool((current) => {
       const known = new Set(current.map((entry) => entry.code))
       return [...current, ...searchResults.filter((item) => !known.has(item.code))]
     })
+  }
+
+  function toggleProduct(item: PoolItem, checked: boolean) {
+    setPool((current) => checked
+      ? (current.some((entry) => entry.code === item.code) ? current : [...current, item])
+      : current.filter((entry) => entry.code !== item.code))
+  }
+
+  const allVisibleSelected = searchResults.length > 0 && searchResults.every((item) => poolCodes.has(item.code))
+
+  function toggleAllVisible(checked: boolean) {
+    if (checked) {
+      addAllSearchResults()
+      return
+    }
+    const visible = new Set(searchResults.map((item) => item.code))
+    setPool((current) => current.filter((entry) => !visible.has(entry.code)))
   }
 
   async function runFit(classes: AutoClassGroup[]) {
@@ -263,7 +301,7 @@ export default function AutoAssetClassification() {
       })
       if (!response.ok) throw new Error(`后端错误 ${response.status}`)
       const data = await response.json() as ClassFitResult
-      assertFixedNjitExecution(data.execution, '自动大类净值拟合')
+      assertFixedNjitExecutionLanes(data.execution, '自动大类净值拟合')
       setFitResult(data)
     } catch (reason: any) {
       setFitError(`大类净值与指标计算失败：${reason?.message || reason}`)
@@ -304,6 +342,8 @@ export default function AutoAssetClassification() {
           sizeMax,
           unassignedPolicy,
           weightMode,
+          taxonomyLevel,
+          blockBy,
         }),
       })
       const data = await response.json()
@@ -380,7 +420,7 @@ export default function AutoAssetClassification() {
 
       {universe ? (
         <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          已锁定可投资域：<b>{universe.name}</b> · {universe.summary?.eligible_count ?? universe.product_count ?? universe.members?.length ?? 0} 只可用产品 · 研究日期 {universe.research_date}
+          已锁定可投资域：<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} 只可用产品 · 研究日期 {universe.research_date}
         </div>
       ) : (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -402,27 +442,54 @@ export default function AutoAssetClassification() {
                 onChange={(event) => setSearchQuery(event.target.value)}
                 aria-label="可投资域产品搜索"
               />
-              <button disabled={!universe} className="whitespace-nowrap rounded bg-violet-700 px-3 py-1 text-xs text-white hover:bg-violet-600 disabled:bg-slate-400" onClick={addAllSearchResults}>
-                添加本页
-              </button>
             </div>
-            <p className="mt-1 text-xs text-gray-500">匹配 {searchTotal} 个产品，显示前 {searchResults.length} 个</p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <label className="flex items-center gap-2 text-xs font-medium text-gray-700">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5"
+                  disabled={searchResults.length === 0}
+                  checked={allVisibleSelected}
+                  onChange={(event) => toggleAllVisible(event.target.checked)}
+                  aria-label="全选当前结果"
+                />
+                全选当前结果
+              </label>
+              <span className="text-xs text-gray-500">匹配 {searchTotal} 个产品，显示前 {searchResults.length} 个</span>
+            </div>
+            {productsError && (
+              <p className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-700">
+                读取可投资域产品失败：{productsError}
+              </p>
+            )}
             <ul className="mt-2 max-h-64 divide-y overflow-auto rounded border">
               {searchResults.map((item) => (
-                <li key={item.code} className="flex items-center justify-between gap-2 px-2 py-1 text-xs">
-                  <span className="truncate">
-                    <span className="font-mono text-gray-500">{item.code}</span> {item.name}
-                  </span>
-                  <button
-                    className="rounded border px-2 py-0.5 text-xs disabled:opacity-40"
-                    disabled={poolCodes.has(item.code)}
-                    onClick={() => addProduct(item)}
-                  >
-                    {poolCodes.has(item.code) ? '已加入' : '加入'}
-                  </button>
+                <li key={item.code}>
+                  <label className="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs hover:bg-violet-50">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 shrink-0"
+                      checked={poolCodes.has(item.code)}
+                      onChange={(event) => toggleProduct(item, event.target.checked)}
+                      aria-label={`选择 ${item.name}`}
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="font-mono text-gray-500">{item.code}</span> {item.name}
+                      {typeof item.max_weight === 'number' && (
+                        <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-800">
+                          限额 {(item.max_weight * 100).toFixed(1)}%
+                        </span>
+                      )}
+                      {item.pool_names && item.pool_names.length > 0 && (
+                        <span className="ml-1 text-[10px] text-gray-400">{item.pool_names.join('/')}</span>
+                      )}
+                    </span>
+                  </label>
                 </li>
               ))}
-              {searchResults.length === 0 && <li className="px-2 py-3 text-xs text-gray-400">没有匹配的产品</li>}
+              {searchResults.length === 0 && !productsError && (
+                <li className="px-2 py-3 text-xs text-gray-400">没有匹配的产品</li>
+              )}
             </ul>
             <p className="mt-3 rounded bg-slate-50 px-3 py-2 text-xs text-slate-600">不允许粘贴任意代码，避免绕过产品池准入与使用限制。</p>
           </div>
@@ -477,6 +544,18 @@ export default function AutoAssetClassification() {
             </select>
           </label>
           <label className="text-sm">
+            <span className="mb-1 block font-medium text-gray-700">合同分类层级</span>
+            <select className="w-full rounded border px-2 py-1 text-sm" value={taxonomyLevel} onChange={(event) => setTaxonomyLevel(event.target.value)}>
+              {meta.taxonomy_levels.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
+            <span className="mb-1 block font-medium text-gray-700">按合同分层（硬约束）</span>
+            <select className="w-full rounded border px-2 py-1 text-sm" value={blockBy} disabled={algorithm === 'rule'} onChange={(event) => setBlockBy(event.target.value)}>
+              {meta.block_modes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">类内权重</span>
             <select className="w-full rounded border px-2 py-1 text-sm" value={weightMode} onChange={(event) => setWeightMode(event.target.value)}>
               {meta.weight_modes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
@@ -495,7 +574,13 @@ export default function AutoAssetClassification() {
                 aria-label="大类个数"
               />
               <label className="flex items-center gap-1 text-xs text-gray-600">
-                <input type="checkbox" checked={autoK} disabled={algorithm === 'rule'} onChange={(event) => setAutoK(event.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={autoK}
+                  disabled={algorithm === 'rule'}
+                  onChange={(event) => setAutoK(event.target.checked)}
+                  aria-label="自动建议大类个数"
+                />
                 自动建议
               </label>
             </div>
@@ -524,6 +609,7 @@ export default function AutoAssetClassification() {
         <div className="mt-3 rounded-lg bg-violet-50 p-3 text-xs text-violet-900">
           <p><strong>{meta.algorithms.find((item) => item.id === algorithm)?.label ?? algorithm}</strong>：{ALGORITHM_HINTS[algorithm]}</p>
           <p className="mt-1"><strong>{meta.features.find((item) => item.id === features)?.label ?? features}</strong>：{FEATURE_HINTS[features]}</p>
+          <p className="mt-1"><strong>分层</strong>：{BLOCK_HINTS[blockBy]}</p>
         </div>
         <div className="mt-3 flex items-center gap-3">
           <button
@@ -603,7 +689,7 @@ export default function AutoAssetClassification() {
                             {member.is_medoid && <span className="mr-1 text-amber-500" title="代表产品">★</span>}
                             <span className="font-mono text-gray-500">{member.code}</span> {member.name}
                           </td>
-                          <td className="py-1 text-gray-600">{member.contract_label}</td>
+                          <td className="py-1 text-gray-600" title={member.taxonomy?.path ?? member.contract_label}>{member.contract_label}</td>
                           <td className="py-1 text-right text-gray-500">
                             {member.max_weight === null ? '—' : `${(member.max_weight * 100).toFixed(1)}%`}
                           </td>
@@ -623,6 +709,37 @@ export default function AutoAssetClassification() {
                 </div>
               ))}
             </div>
+
+            {result.diagnostics.blocks.length > 0 && (
+              <div className="mt-4 rounded-lg border border-violet-200 bg-violet-50 p-3">
+                <h4 className="text-xs font-semibold text-violet-900">
+                  合同分层（{meta.block_modes.find((item) => item.id === result.block_by)?.label ?? result.block_by}）
+                </h4>
+                <p className="mt-1 text-xs text-violet-800">
+                  每个合同块内部单独聚类，块之间不会合并，也不会互相拉产品。
+                </p>
+                <table className="mt-2 w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-violet-700">
+                      <th className="py-1">合同块</th>
+                      <th className="py-1 text-right">产品数</th>
+                      <th className="py-1 text-right">块内大类数</th>
+                      <th className="py-1 text-right">块内轮廓系数</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.diagnostics.blocks.map((item) => (
+                      <tr key={item.block} className="border-t border-violet-200">
+                        <td className="py-1">{item.block}</td>
+                        <td className="py-1 text-right">{item.size}</td>
+                        <td className="py-1 text-right">{item.k}</td>
+                        <td className="py-1 text-right">{item.silhouette === null ? '—' : item.silhouette.toFixed(3)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <div>

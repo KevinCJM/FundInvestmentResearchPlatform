@@ -3,8 +3,16 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProductDetail from './ProductDetail'
-import { evaluateCustomIndicators, getCustomIndicatorMeta, listCustomIndicators } from '../services/customIndicators'
-import type { IndicatorDefinition } from '../services/customIndicators'
+import {
+  evaluateCustomIndicators,
+  evaluateTimeSeriesIndicators,
+  getCustomIndicatorMeta,
+  listCustomIndicators,
+} from '../services/customIndicators'
+import type {
+  EvaluateTimeSeriesIndicatorsRequest,
+  IndicatorDefinition,
+} from '../services/customIndicators'
 import { getHistoricalRegimeRun, listHistoricalRegimeRuns } from '../services/historicalRegimes'
 import type { HistoricalRegimeRun } from '../services/historicalRegimes'
 import { analyzeProduct } from '../services/productAnalysis'
@@ -52,6 +60,7 @@ vi.mock('echarts-for-react', () => ({
 }))
 vi.mock('../services/customIndicators', () => ({
   evaluateCustomIndicators: vi.fn(),
+  evaluateTimeSeriesIndicators: vi.fn(),
   getCustomIndicatorMeta: vi.fn(),
   indicatorPeriodLabel: (period: string) => period,
   indicatorsForContext: (items: IndicatorDefinition[], context: string) => items.filter((item) => (item.context_kind ?? 'single_product') === context),
@@ -73,6 +82,100 @@ const fixedIndicatorExecution = {
   python_fallback: 0,
   request_time_compilation: 0,
   kernel_signatures: { typed_indicator_plan: ['fixed'] },
+}
+
+const makeTimeSeriesResponse = (request: EvaluateTimeSeriesIndicatorsRequest) => {
+  const dates = Array.from({ length: 25 }, (_, index) => (
+    new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10)
+  ))
+  const outputById: Record<string, Array<{ id: string; label: string }>> = {
+    'builtin-close-moving-average-series': [{ id: 'ma', label: '收盘价均线' }],
+    'builtin-volume-moving-average-series': [{ id: 'volume_ma', label: '成交量均线' }],
+    'builtin-bollinger-bands-series': [
+      { id: 'upper', label: '布林上轨' },
+      { id: 'middle', label: '布林中轨' },
+      { id: 'lower', label: '布林下轨' },
+    ],
+    'builtin-kdj-series': [
+      { id: 'k', label: 'K 值' },
+      { id: 'd', label: 'D 值' },
+      { id: 'j', label: 'J 值' },
+    ],
+  }
+  const results = request.indicator_instances.map((instance, instanceIndex) => {
+    const indicatorId = instance.indicator_id ?? 'inline-series'
+    const channels = (outputById[indicatorId] ?? [{ id: 'value', label: '数值' }]).map(
+      (channel, channelIndex) => ({
+        ...channel,
+        unit: '',
+        display_format: 'number' as const,
+        precision: 2,
+        output_measure: 'dimensionless',
+        values: dates.map((_date, index) => (
+          index < 2 ? null : instanceIndex * 10 + channelIndex + index / 10
+        )),
+      }),
+    )
+    return {
+      indicator_id: indicatorId,
+      indicator_revision: 1,
+      indicator_name: indicatorId,
+      result_kind: 'time_series' as const,
+      target: { ...request.target, name: '沪深300ETF' },
+      period: request.period,
+      parameters: instance.parameters,
+      axis_anchor: 'market_close',
+      history_policy: indicatorId === 'builtin-kdj-series' ? 'full_history' as const : 'lookback' as const,
+      status: 'ok' as const,
+      warnings: [],
+      window: {
+        requested_as_of: request.as_of ?? null,
+        effective_as_of: dates.at(-1) ?? null,
+        start_date: dates[0],
+        end_date: dates.at(-1) ?? null,
+        observation_count: dates.length,
+        data_latest_date: dates.at(-1) ?? null,
+      },
+      dates,
+      channels,
+      presentation: {
+        indicator_id: indicatorId,
+        revision: 1,
+        name: indicatorId,
+        source: 'built_in',
+        category: 'technical',
+        category_label: '技术与时序指标',
+        context_kind: 'single_product',
+        result_kind: 'time_series',
+        catalog_status: 'current',
+        display_format: 'number',
+        precision: 2,
+        unit: '',
+        notation: 'standard',
+        value_scale: 1,
+        output_measure: 'series_bundle',
+        direction: 'higher_better',
+        description: '',
+        methodology: '',
+        data_basis: '真实行情',
+        minimum_observations: 1,
+        applicable_product_kinds: ['etf'],
+      },
+      execution: fixedIndicatorExecution,
+    }
+  })
+  return {
+    results,
+    summary: {
+      total: results.length,
+      ok: results.length,
+      warning: 0,
+      unavailable: 0,
+      error: 0,
+    },
+    cache: { hits: 0, misses: results.length },
+    execution: { ...fixedIndicatorExecution, compiled_plan_ids: ['series-plan'] },
+  }
 }
 
 const makeSimulation = (
@@ -292,6 +395,9 @@ describe('ProductDetail custom indicators', () => {
     }))
     vi.mocked(listCustomIndicators).mockResolvedValue({ items: [percentIndicator, portfolioIndicator], total: 2 })
     vi.mocked(getCustomIndicatorMeta).mockResolvedValue({ periods: [{ value: '1M', label: '近 1 月', description: '运行周期' }, { value: '1Y', label: '近 1 年', description: '运行周期' }] } as any)
+    vi.mocked(evaluateTimeSeriesIndicators).mockImplementation(async (request) => (
+      makeTimeSeriesResponse(request)
+    ))
     vi.mocked(evaluateCustomIndicators).mockResolvedValue({
       results: [{
         indicator_id: percentIndicator.id, indicator_revision: percentIndicator.revision, indicator_name: percentIndicator.name,
@@ -448,13 +554,22 @@ describe('ProductDetail custom indicators', () => {
   })
 
   it('原始 OHLC 与成交量缺失时只展示真实净值且不伪造字段', async () => {
-    vi.mocked(analyzeProduct).mockImplementation(async (_productId, _kind, request) => {
-      const response = makeAnalysisResponse(request)
-      response.technical.availability = { ohlc: false, volume: false, kdj: false }
-      response.technical.volumeMa = {}
-      response.technical.kdj = { kValues: [], dValues: [], jValues: [] }
-      return response
-    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        product_id: '510300.SH', name: '沪深300ETF', management: '测试管理人', status: '上市',
+        base_info: { ts_code: '510300.SH', fund_type: 'ETF', list_date: '2012-05-28' },
+        metrics: {},
+        timeseries: Array.from({ length: 25 }, (_, index) => ({
+          date: new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10),
+          open: null,
+          high: null,
+          low: null,
+          close: 3 + index * 0.002,
+          volume: null,
+        })),
+      }),
+    }))
 
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 

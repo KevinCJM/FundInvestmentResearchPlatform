@@ -84,7 +84,7 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     assert meta.status_code == 200
     assert meta.json()["workspace_scope"] == "shared"
     assert listing.status_code == 200
-    assert listing.json()["total"] == 37
+    assert listing.json()["total"] == 42
     assert sum(item["name"] == "累计收益率" for item in listing.json()["items"]) == 1
     assert all(item["catalog_status"] == "current" for item in listing.json()["items"])
     risk_listing = client.get("/api/custom-indicators?indicator_type=risk")
@@ -96,7 +96,7 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     )
     compatibility = client.get("/api/custom-indicators?include_compatibility=true")
     assert compatibility.status_code == 200
-    assert compatibility.json()["total"] == 42
+    assert compatibility.json()["total"] == 47
     hidden_legacy = next(
         item
         for item in compatibility.json()["items"]
@@ -112,6 +112,62 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     assert invalid.status_code == 200
     assert invalid.json()["valid"] is False
     assert invalid.json()["diagnostics"][0]["code"] == "UNKNOWN_FUNCTION"
+
+
+def test_time_series_builder_requires_fixed_constants_and_runtime_cannot_override(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _client(monkeypatch, tmp_path)
+
+    invalid_compose = client.post(
+        "/api/custom-indicators/compose",
+        json={
+            "operator_id": "rolling_mean",
+            "context": "single_product",
+            "arguments": [
+                {"parameter": "values", "source": "variable", "value": "market_close"},
+                {"parameter": "window", "source": "variable", "value": "observation_count"},
+            ],
+        },
+    )
+    valid_compose = client.post(
+        "/api/custom-indicators/compose",
+        json={
+            "operator_id": "rolling_mean",
+            "context": "single_product",
+            "arguments": [
+                {"parameter": "values", "source": "variable", "value": "market_close"},
+                {"parameter": "window", "source": "constant", "value": 20},
+            ],
+        },
+    )
+    runtime_override = client.post(
+        "/api/custom-indicators/evaluate-series",
+        json={
+            "indicator_instances": [
+                {
+                    "indicator_id": "builtin-close-moving-average-series",
+                    "parameters": {"window": 5},
+                }
+            ],
+            "target": {"kind": "etf", "product_id": "510050.SH"},
+            "period": "ALL",
+        },
+    )
+
+    assert invalid_compose.status_code == 422
+    assert invalid_compose.json()["detail"]["code"] == (
+        "SERIES_CONFIGURATION_MUST_BE_CONSTANT"
+    )
+    assert valid_compose.status_code == 200
+    assert "rolling_mean" in valid_compose.json()["normalized_expression"]
+    assert "20.0" in valid_compose.json()["normalized_expression"]
+    assert "rolling_mean" not in valid_compose.json()["display_latex"]
+    assert runtime_override.status_code == 422
+    assert runtime_override.json()["detail"]["code"] == (
+        "SERIES_PARAMETERS_FIXED_IN_DEFINITION"
+    )
 
 
 def test_legacy_typed_requests_infer_the_matching_registry_version(
@@ -358,7 +414,7 @@ def test_crud_revision_conflict_and_delete_contract(monkeypatch, tmp_path: Path)
     created_response = client.post("/api/custom-indicators", json=_draft())
     assert created_response.status_code == 201
     created = created_response.json()
-    assert created["dsl_version"] == "2.2.0"
+    assert created["dsl_version"] == "2.3.0"
     assert created["numeric_kernel_version"] == "2.2.0"
     assert created["period_policy"] == "all_supported"
     assert created["periods"] == list(custom_indicator_routes.SUPPORTED_PERIODS)

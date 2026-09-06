@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
+from product_pools.constants import UNIVERSE_SNAPSHOT_STORE
 from product_pools.errors import ProductPoolDomainError
 from product_pools.membership import InvestableUniverseMembership
 from product_pools.repository import InvestableUniverseRepository
@@ -43,6 +44,10 @@ class AutoClassPreviewRequest(BaseModel):
     sizeMax: int = 8
     unassignedPolicy: Literal["park", "force"] = "park"
     weightMode: Literal["equal", "inv_vol", "inv_var", "affinity"] = "inv_vol"
+    # Contract-taxonomy level used to name the classes.
+    taxonomyLevel: Literal["asset_class", "category", "detail"] = "asset_class"
+    # Taxonomy level the statistical clustering may not cross.
+    blockBy: Literal["none", "asset_class", "category", "detail"] = "none"
     seed: int = 20260101
 
 
@@ -55,7 +60,7 @@ def _validate_universe_products(
     req: AutoClassPreviewRequest,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     validator = InvestableUniverseMembership(
-        InvestableUniverseRepository(DATA_DIR / "investable_universes.json")
+        InvestableUniverseRepository(DATA_DIR / UNIVERSE_SNAPSHOT_STORE)
     )
     result = validator.validate(
         req.universe_snapshot_id,
@@ -115,6 +120,8 @@ def auto_class_preview(req: AutoClassPreviewRequest):
         size_max=req.sizeMax,
         unassigned_policy=req.unassignedPolicy,
         weight_mode=req.weightMode,
+        taxonomy_level=req.taxonomyLevel,
+        block_by=req.blockBy,
         seed=req.seed,
         max_weights=max_weights,
     )

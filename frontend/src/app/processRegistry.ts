@@ -266,7 +266,9 @@ const settings: StageDefinition = {
     text: 'text-slate-700',
   },
   nodes: [
-    { id: 'data-sources', label: '数据源与下载', description: '管理数据源访问凭证、数据下载、更新任务和运行状态。', path: '/settings/data-sources', status: 'available' },
+    { id: 'data-sources', label: '数据同步与任务', description: '日常更新入口：选择需要的数据，确认增量或全量，查看进度并恢复中断任务。', path: '/settings/data-sources', status: 'available' },
+    { id: 'source-center', label: '数据源与接口映射', description: '首次接入或修改配置时使用；Tushare 已预置，支持字段映射、限制设置和样本验证。', path: '/settings/source-center', status: 'available' },
+    { id: 'data-model', label: '系统数据模型', description: '查看外部数据需要映射的标准表与字段；系统内部结构在高级入口中查看。', path: '/settings/data-model', status: 'available' },
     { id: 'data-quality', label: '数据质量', description: '监控完整性、及时性、唯一性、产品映射、账户对账和异常处理状态。', path: '/settings/data-quality', status: 'partial' },
     { id: 'research-data-lab', label: '研究数据实验室', description: '搜索并检查指数、宏观、指标版本与上传序列，研究覆盖、缺失、PIT 和时序表现后加入计算图。', path: '/settings/research-data-lab', status: 'available' },
     { id: 'pit-snapshots', label: 'PIT 时点快照', description: '管理历史时点数据切片、可用版本和数据血缘。', path: '/settings/pit-snapshots', status: 'prototype' },

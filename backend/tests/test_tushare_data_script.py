@@ -61,9 +61,12 @@ def test_run_actions_passes_frontend_token_directly_without_writing_tushare_home
         "ts",
         types.SimpleNamespace(
             set_token=reject_persistent_token,
-            pro_api=lambda token: calls.append(token) or object(),
+            pro_api=reject_persistent_token,
         ),
     )
+    # The configured adapter replaces SDK I/O; keep the credential contract
+    # explicit without creating a real workspace SQLite database in tests.
+    monkeypatch.setattr(module, "create_client", lambda token, args: calls.append(token) or object())
     args = types.SimpleNamespace(
         latest=False,
         output_dir=tmp_path,
@@ -1113,6 +1116,37 @@ def test_incremental_rows_stream_merge_preserves_code_contiguity(monkeypatch, tm
     ]
     assert out.equals(out.sort_values(["ts_code", "date"]).reset_index(drop=True))
     assert out.duplicated(["ts_code", "date"]).sum() == 0
+
+
+def test_incremental_stream_merge_emits_progress_while_copying_large_baseline(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    module = _load_data_script()
+    path = tmp_path / "index_daily_df.parquet"
+    pd.DataFrame(
+        [
+            {"source_api": "index_daily", "ts_code": "000001.SH", "trade_date": pd.Timestamp("2026-08-27"), "close": 1.0},
+            {"source_api": "index_daily", "ts_code": "000001.SH", "trade_date": pd.Timestamp("2026-08-28"), "close": 1.1},
+            {"source_api": "index_daily", "ts_code": "000002.SH", "trade_date": pd.Timestamp("2026-08-28"), "close": 2.0},
+        ]
+    ).to_parquet(path, index=False, row_group_size=1)
+    monkeypatch.setattr(module, "INCREMENTAL_MERGE_PROGRESS_ROWS", 1)
+    monkeypatch.setattr(module, "INCREMENTAL_MERGE_PROGRESS_SECONDS", 3600.0)
+
+    merged_rows = module.append_incremental_rows(
+        pd.DataFrame(
+            [{"source_api": "index_daily", "ts_code": "000003.SH", "trade_date": pd.Timestamp("2026-08-29"), "close": 3.0}]
+        ),
+        path,
+        subset=["source_api", "ts_code", "trade_date"],
+        sort_cols=["ts_code", "trade_date"],
+        date_column="trade_date",
+    )
+
+    assert merged_rows == 4
+    output = capsys.readouterr().out
+    assert "index_daily_df.parquet 流式归并进度" in output
+    assert "3/3（100.0%）" in output
 
 
 def test_incremental_rows_copy_untouched_instruments_without_pandas_merge(

@@ -21,7 +21,9 @@ if str(BACKEND_DIR) not in sys.path:
 
 from backend import auto_class_numba as kernels
 from backend import auto_asset_class as service
+from backend import fund_taxonomy as taxonomy
 from backend.services import auto_class_routes as routes
+from product_pools.constants import UNIVERSE_SNAPSHOT_STORE
 from product_pools.repository import InvestableUniverseRepository
 
 
@@ -48,7 +50,7 @@ def _write_universe(
     codes: list[str],
     limits: Dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    return InvestableUniverseRepository(data_dir / "investable_universes.json").create(
+    return InvestableUniverseRepository(data_dir / UNIVERSE_SNAPSHOT_STORE).create(
         {
             "name": "自动分类测试域",
             "research_date": "2026-09-04",
@@ -906,3 +908,410 @@ def test_preview_route_rejects_product_outside_universe(tmp_path: Path, monkeypa
     assert "存在不在可投资域内或当前不可用的产品" in detail
     assert "EQ1.SH: not_in_universe" in detail
     assert "EQ0.SH" not in detail, "只应报告违规产品"
+
+
+def _write_live_shaped_universe(data_dir: Path, codes: list[str]) -> dict[str, Any]:
+    """A snapshot exactly as ``ProductPoolService.create_universe_snapshot`` stores it.
+
+    Every other fixture here writes the decorated ``members`` shape, which is why
+    the whole suite stayed green while the running app answered
+    「未找到指定可投资域快照。」 for its own snapshots.
+    """
+
+    return InvestableUniverseRepository(data_dir / UNIVERSE_SNAPSHOT_STORE).create(
+        {
+            "name": "投前研究可投资域",
+            "research_date": "2026-09-04",
+            "version_ids": ["pool-version-1"],
+            "pool_ids": ["pool-1"],
+            "excluded_product_keys": [],
+            "groups": [],
+            "products": [
+                {
+                    "key": f"etf:{code}",
+                    "kind": "etf",
+                    "product_id": code,
+                    "code": code,
+                    "name": code,
+                    "usage_status": "normal",
+                    "max_weight": None,
+                    "valid_until": None,
+                    "substitute_group": "",
+                    "reasons": [],
+                    "source_version_ids": ["pool-version-1"],
+                    "source_pool_ids": ["pool-1"],
+                }
+                for code in codes
+            ],
+            "product_count": len(codes),
+        }
+    )
+
+
+def test_preview_route_accepts_a_snapshot_stored_by_the_product_pool_service(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    codes = _write_fixture(tmp_path)
+    universe = _write_live_shaped_universe(tmp_path, codes)
+    monkeypatch.setattr(routes, "DATA_DIR", tmp_path)
+
+    result = routes.auto_class_preview(
+        routes.AutoClassPreviewRequest(
+            universe_snapshot_id=universe["id"],
+            products=[routes.PoolProduct(code=code, kind="etf") for code in codes],
+            startDate="2021-01-01",
+            k=3,
+            sizeMin=2,
+            sizeMax=3,
+        )
+    )
+
+    assert not isinstance(result, JSONResponse)
+    assert len(result["classes"]) == 3
+    # The lineage is stored as parallel id lists in this shape, not version_refs.
+    assert result["universe_snapshot"]["version_refs"] == [
+        {"version_id": "pool-version-1", "pool_id": "pool-1"}
+    ]
+
+
+def test_products_shaped_snapshot_still_blocks_unavailable_products(tmp_path: Path) -> None:
+    from product_pools.errors import ProductPoolValidationError
+    from product_pools.membership import InvestableUniverseMembership
+
+    snapshot = _write_live_shaped_universe(tmp_path, ["EQ0.SH", "EQ1.SH"])
+    store = InvestableUniverseRepository(tmp_path / UNIVERSE_SNAPSHOT_STORE)
+    with store.store.locked():
+        raw = store.store.read_unlocked()
+        raw["universe_snapshots"][0]["products"][1]["usage_status"] = "unavailable"
+        store.store.write_unlocked(raw)
+    validator = InvestableUniverseMembership(store)
+
+    ok = validator.validate(snapshot["id"], [{"kind": "etf", "product_id": "EQ0.SH"}])
+    assert [item["product_id"] for item in ok.members] == ["EQ0.SH"]
+
+    with pytest.raises(ProductPoolValidationError) as error:
+        validator.validate(snapshot["id"], [{"kind": "etf", "product_id": "EQ1.SH"}])
+    assert error.value.diagnostics[0]["reason"] == "not_eligible"
+
+
+def test_auto_class_route_and_product_pool_service_share_one_snapshot_store() -> None:
+    """The original defect: the route read a file the writer never created."""
+
+    from services import product_pool_routes
+
+    assert (
+        Path(product_pool_routes.product_pool_service.repository.store.path).name
+        == UNIVERSE_SNAPSHOT_STORE
+    )
+
+
+# --------------------------------------------------------------------------
+# Contract taxonomy (fund_taxonomy)
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # 宽基规模: the size buckets share prefixes, so the longest name must win.
+        ("华泰柏瑞沪深300ETF", ("权益类", "宽基规模", "大盘")),
+        ("南方中证500ETF", ("权益类", "宽基规模", "中盘")),
+        ("华夏中证1000ETF", ("权益类", "宽基规模", "小盘")),
+        ("易方达中证100ETF", ("权益类", "宽基规模", "大盘")),
+        ("华夏上证科创板50ETF", ("权益类", "宽基规模", "科创板")),
+        ("易方达创业板ETF", ("权益类", "宽基规模", "创业板")),
+        # 风格因子 (Smart Beta) beats the index name it is built on.
+        ("华泰柏瑞中证红利低波动ETF", ("权益类", "风格因子", "红利")),
+        ("景顺长城中证500低波动ETF", ("权益类", "风格因子", "低波")),
+        ("华宝中证800自由现金流ETF", ("权益类", "风格因子", "自由现金流")),
+        # 主题 crosses industries and is resolved before the industry table.
+        ("华夏中证人工智能主题ETF", ("权益类", "主题", "数字化与人工智能")),
+        ("华泰柏瑞中证光伏产业ETF", ("权益类", "主题", "低碳转型")),
+        ("汇添富中证国新央企科技引领ETF", ("权益类", "主题", "国企改革")),
+        # 行业: the eight buckets.
+        ("华宝中证全指证券公司ETF", ("权益类", "行业", "金融")),
+        ("国联安中证全指半导体ETF", ("权益类", "行业", "科技")),
+        ("汇添富中证主要消费ETF", ("权益类", "行业", "消费")),
+        ("永赢中证沪深港黄金产业股票ETF", ("权益类", "行业", "周期")),
+        # 固收
+        ("鹏扬中债30年期国债ETF", ("固收类", "利率债", "国债")),
+        ("平安中证公司债ETF", ("固收类", "信用债", "公司债")),
+        ("海富通上证城投债ETF", ("固收类", "信用债", "城投债")),
+        ("博时可转债ETF", ("固收类", "可转债", "可转债")),
+        ("华富中证同业存单AAA指数基金", ("固收类", "同业存单", "同业存单")),
+        # 商品 / 海外 / 货币
+        ("华安易富黄金ETF", ("商品类", "贵金属", "黄金")),
+        ("华夏饲料豆粕期货ETF", ("商品类", "农产品", "豆粕")),
+        ("华夏恒生科技ETF(QDII)", ("海外类", "港股", "港股科技")),
+        ("广发纳斯达克100ETF(QDII)", ("海外类", "美股", "纳斯达克")),
+        ("华宝现金添益货币", ("货币类", "货币", "货币")),
+        ("某未知产品", ("其他类", "其他类", "其他类")),
+    ],
+)
+def test_taxonomy_resolves_the_researched_buckets(name: str, expected: tuple[str, str, str]) -> None:
+    label = taxonomy.classify((name,))
+    assert (label.asset_class, label.category, label.detail) == expected
+
+
+def test_gold_sector_equity_is_not_filed_as_a_commodity() -> None:
+    """The trap the old flat table fell into: 黄金股/有色金属 are equity sectors."""
+
+    assert taxonomy.classify(("永赢中证沪深港黄金股票ETF",)).asset_class == "权益类"
+    assert taxonomy.classify(("有色金属ETF",)).asset_class == "权益类"
+    assert taxonomy.classify(("华安黄金ETF",)).asset_class == "商品类"
+
+
+def test_science_innovation_bond_is_not_a_science_board_equity() -> None:
+    assert taxonomy.classify(("科创债ETF",)).category == "信用债"
+    assert taxonomy.classify(("科创50ETF",)).detail == "科创板"
+
+
+def test_taxonomy_path_collapses_repeated_levels() -> None:
+    assert taxonomy.classify(("博时可转债ETF",)).path == "固收类 / 可转债"
+    assert taxonomy.classify(("沪深300ETF",)).path == "权益类 / 宽基规模 / 大盘"
+
+
+def test_taxonomy_tree_is_serialisable_and_lists_every_asset_class() -> None:
+    tree = taxonomy.taxonomy_tree()
+    json.dumps(tree, ensure_ascii=False)
+    assert {item["asset_class"] for item in tree} >= {"权益类", "固收类", "商品类", "海外类", "货币类", "混合类"}
+
+
+# --------------------------------------------------------------------------
+# Block allocation kernel
+# --------------------------------------------------------------------------
+
+def test_block_allocation_gives_every_block_at_least_one_class() -> None:
+    sizes = np.ascontiguousarray(np.array([10, 3, 1], dtype=np.int64))
+    counts = kernels.allocate_block_clusters_kernel(sizes, np.int64(6), np.int64(2))
+    assert counts.tolist() == [4, 1, 1]
+    assert counts.sum() == 6
+
+
+def test_block_allocation_never_exceeds_a_block_capacity() -> None:
+    sizes = np.ascontiguousarray(np.array([4, 2], dtype=np.int64))
+    # size_min=2 caps the blocks at 2 and 1 classes, so K=9 is clamped to 3.
+    counts = kernels.allocate_block_clusters_kernel(sizes, np.int64(9), np.int64(2))
+    assert counts.tolist() == [2, 1]
+
+
+def test_block_allocation_keeps_blocks_when_k_is_below_the_block_count() -> None:
+    """The taxonomy is a hard partition: K may be raised, never a block merged."""
+
+    sizes = np.ascontiguousarray(np.array([5, 5, 5], dtype=np.int64))
+    counts = kernels.allocate_block_clusters_kernel(sizes, np.int64(2), np.int64(2))
+    assert counts.tolist() == [1, 1, 1]
+
+
+def test_block_allocation_handles_empty_and_degenerate_input() -> None:
+    empty = kernels.allocate_block_clusters_kernel(
+        np.ascontiguousarray(np.array([], dtype=np.int64)), np.int64(3), np.int64(2)
+    )
+    assert empty.shape == (0,)
+    zeros = kernels.allocate_block_clusters_kernel(
+        np.ascontiguousarray(np.array([0, 2], dtype=np.int64)), np.int64(4), np.int64(1)
+    )
+    assert zeros.tolist() == [0, 2]
+
+
+# --------------------------------------------------------------------------
+# Taxonomy-blocked classification
+# --------------------------------------------------------------------------
+
+def _asset_classes(result: Dict[str, Any]) -> list[set[str]]:
+    return [
+        {member["taxonomy"]["asset_class"] for member in group["etfs"]}
+        for group in result["classes"]
+    ]
+
+
+def test_blocking_never_mixes_asset_classes_even_under_the_force_policy(tmp_path: Path) -> None:
+    """A correlation window can make gold look like equity; the contract cannot."""
+
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes,
+            start_date="2021-01-01",
+            block_by="asset_class",
+            size_min=1,
+            size_max=8,
+            unassigned_policy="force",
+        ),
+    )
+    assert all(len(classes) == 1 for classes in _asset_classes(result))
+    assert not result["unassigned"]
+    assert {item["block"] for item in result["diagnostics"]["blocks"]} == {"权益类", "固收类", "商品类"}
+    assert result["block_by"] == "asset_class"
+
+
+def test_blocking_raises_k_rather_than_merging_two_contract_blocks(tmp_path: Path) -> None:
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", k=2, block_by="asset_class", size_min=1, size_max=8
+        ),
+    )
+    assert result["k"] == 3
+    assert any("与指定的 2 类不一致" in warning for warning in result["warnings"])
+    assert all(len(classes) == 1 for classes in _asset_classes(result))
+
+
+def test_blocking_without_k_splits_only_blocks_that_have_structure(tmp_path: Path) -> None:
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", block_by="asset_class", size_min=1, size_max=8
+        ),
+    )
+    # Each fixture block is one factor, so no block earns a split.
+    assert [item["k"] for item in result["diagnostics"]["blocks"]] == [1, 1, 1]
+    assert result["k"] == 3
+
+
+def test_unblocked_classification_is_unchanged_by_the_taxonomy_work(tmp_path: Path) -> None:
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(codes=codes, start_date="2021-01-01", k=3, size_min=2, size_max=3),
+    )
+    assert result["k"] == 3
+    assert result["block_by"] == "none"
+    assert result["diagnostics"]["blocks"] == []
+
+
+def test_taxonomy_level_drives_the_rule_algorithm_granularity(tmp_path: Path) -> None:
+    codes = _write_fixture(tmp_path)
+    coarse = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", algorithm="rule", size_min=1, size_max=5
+        ),
+    )
+    fine = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes,
+            start_date="2021-01-01",
+            algorithm="rule",
+            taxonomy_level="detail",
+            size_min=1,
+            size_max=5,
+        ),
+    )
+    assert {group["name"] for group in coarse["classes"]} == {"权益类", "固收类", "商品类"}
+    assert {group["name"] for group in fine["classes"]} == {"宽基规模", "综合债", "黄金"}
+
+
+def test_members_carry_the_full_taxonomy_path(tmp_path: Path) -> None:
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(codes=codes, start_date="2021-01-01", k=3, size_min=2, size_max=3),
+    )
+    json.dumps(result, ensure_ascii=False)
+    members = [member for group in result["classes"] for member in group["etfs"]]
+    assert all(set(member["taxonomy"]) == {"asset_class", "category", "detail", "path", "matched"}
+               for member in members)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"taxonomy_level": "sector"}, "不支持的合同分类层级"),
+        ({"block_by": "industry"}, "不支持的分层方式"),
+    ],
+)
+def test_invalid_taxonomy_options_fail_closed(tmp_path: Path, kwargs: Dict[str, Any], message: str) -> None:
+    codes = _write_fixture(tmp_path)
+    with pytest.raises(service.AutoClassError, match=message):
+        service.run_auto_classification(
+            tmp_path, service.AutoClassRequestSpec(codes=codes, start_date="2021-01-01", **kwargs)
+        )
+
+
+def test_meta_route_exposes_the_taxonomy_options() -> None:
+    meta = routes.auto_class_meta()
+    assert {item["id"] for item in meta["taxonomy_levels"]} == set(taxonomy.TAXONOMY_LEVELS)
+    assert {item["id"] for item in meta["block_modes"]} == set(service.BLOCK_MODES)
+    assert meta["defaults"]["block_by"] == "none"
+    json.dumps(meta, ensure_ascii=False)
+
+
+def test_preview_route_passes_the_taxonomy_options_through(tmp_path: Path, monkeypatch) -> None:
+    codes = _write_fixture(tmp_path)
+    universe = _write_universe(tmp_path, codes)
+    monkeypatch.setattr(routes, "DATA_DIR", tmp_path)
+    result = routes.auto_class_preview(routes.AutoClassPreviewRequest(
+        universe_snapshot_id=universe["id"],
+        products=[routes.PoolProduct(code=code, kind="etf") for code in codes],
+        startDate="2021-01-01",
+        blockBy="asset_class",
+        taxonomyLevel="category",
+        sizeMin=1,
+        sizeMax=8,
+    ))
+    assert not isinstance(result, JSONResponse)
+    assert result["block_by"] == "asset_class"
+    assert result["taxonomy_level"] == "category"
+    assert all(len(classes) == 1 for classes in _asset_classes(result))
+
+
+def _write_two_style_equity_fixture(tmp_path: Path) -> list[str]:
+    """Equity block holding two independent styles, plus a bond block."""
+
+    rng = np.random.default_rng(11)
+    dates = pd.bdate_range("2021-01-01", periods=400)
+    blocks = {"EA": (3, 0.012), "EB": (3, 0.010), "BD": (2, 0.001)}
+    rows: list[dict[str, Any]] = []
+    codes: list[str] = []
+    for prefix, (count, scale) in blocks.items():
+        factor = rng.normal(0.0, scale, len(dates))
+        for index in range(count):
+            code = f"{prefix}{index}.SH"
+            codes.append(code)
+            returns = factor + rng.normal(0.0, scale / 10.0, len(dates))
+            nav = np.cumprod(1.0 + returns)
+            rows.extend(
+                {"ts_code": code, "name": f"{prefix} Fund {index}", "date": date, "adj_nav": value}
+                for date, value in zip(dates, nav)
+            )
+    pd.DataFrame(rows).to_parquet(tmp_path / "etf_daily_df.parquet", index=False)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": code,
+                "code": code.split(".")[0],
+                "name": f"{code[:2]} Fund",
+                "instrument_type": "etf",
+                "fund_type": "债券型" if code.startswith("BD") else "股票型",
+                "invest_type": "被动指数型",
+                "benchmark": "",
+                "index_name": "",
+                "management": "Test AMC",
+            }
+            for code in codes
+        ]
+    ).to_parquet(tmp_path / "etf_info_df.parquet", index=False)
+    return codes
+
+
+def test_a_block_with_two_real_styles_still_splits(tmp_path: Path) -> None:
+    """The 0.25 silhouette floor must not turn auto-K inside a block off."""
+
+    codes = _write_two_style_equity_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", block_by="asset_class", size_min=1, size_max=8
+        ),
+    )
+    blocks = {item["block"]: item for item in result["diagnostics"]["blocks"]}
+    assert blocks["权益类"]["k"] == 2
+    assert blocks["权益类"]["silhouette"] > service.BLOCK_SPLIT_SILHOUETTE
+    assert blocks["固收类"]["k"] == 1
+    assert result["k"] == 3
+    assert all(len(classes) == 1 for classes in _asset_classes(result))

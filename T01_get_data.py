@@ -31,6 +31,11 @@ import tushare as ts
 
 from backend.services.refresh_runtime import InterProcessFileLock, atomic_write_json, read_json_object
 from config import read_tushare_token, require_tushare_token
+from backend.data_sources.legacy_bridge import (
+    configuration_fingerprint, create_client, page_size as configured_page_size,
+)
+from backend.data_sources.models import CenterError, DownloadPolicy
+from backend.data_sources.transport import TransientSourceError
 
 
 DEFAULT_START_DATE = "20100101"
@@ -591,6 +596,11 @@ def call_tushare_api(
     allow_capped_response: bool = False,
     **kwargs: Any,
 ) -> pd.DataFrame:
+    policy = getattr(func, "download_policy", None)
+    if isinstance(policy, DownloadPolicy):
+        max_retries = min(max_retries, policy.max_attempts)
+        backoff_sec = max(backoff_sec, policy.backoff_seconds)
+        wait_on_rate_limit_sec = max(wait_on_rate_limit_sec, policy.rate_limit_wait_seconds)
     last_err: Optional[Exception] = None
     delay = backoff_sec
     for attempt in range(1, max_retries + 1):
@@ -600,15 +610,22 @@ def call_tushare_api(
             if df is None:
                 return pd.DataFrame()
             if not allow_capped_response:
+                if isinstance(policy, DownloadPolicy) and len(df) >= policy.max_rows_per_request:
+                    raise ResponseTruncatedError(f"{context} 达到配置行数上限，需要继续分片。")
                 ensure_response_not_truncated(df, api_name or context.split(" ", 1)[0], context)
             return df
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, CenterError) and exc.code == "SOURCE_ROW_CAP":
+                raise ResponseTruncatedError(f"{context} 超过配置行数上限，需要继续分片。") from exc
             if isinstance(exc, ResponseTruncatedError):
+                raise
+            if isinstance(exc, CenterError) and not isinstance(exc, TransientSourceError):
                 raise
             last_err = exc
             msg = str(exc).lower()
             is_rate_limit = (
-                "rate limit" in msg
+                isinstance(exc, TransientSourceError) and exc.code in {"SOURCE_RATE_LIMIT", "SOURCE_RETRYABLE"}
+                or "rate limit" in msg
                 or "每分钟最多" in str(exc)
                 or "doc_id=108" in msg
                 or "访问频次" in str(exc)
@@ -622,6 +639,7 @@ def call_tushare_api(
             if attempt >= max_retries:
                 break
             base_wait = max(wait_on_rate_limit_sec, delay) if is_rate_limit else delay
+            base_wait = max(base_wait, getattr(exc, "retry_after_seconds", 0.0))
             jitter = random.uniform(0.0, max(retry_jitter_sec, 0.0))
             wait = base_wait + jitter
             reason = "触发限流" if is_rate_limit else "请求异常"
@@ -677,7 +695,7 @@ def fetch_fund_basic(
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for status in ("L", "I", "D"):
-        page_size = API_ROW_LIMITS["fund_basic"]
+        page_size = configured_page_size(pro, "fund_basic", API_ROW_LIMITS["fund_basic"])
         max_pages = getattr(args, "max_fund_basic_pages", 20)
         seen_codes: set[str] = set()
         offset = 0
@@ -952,7 +970,9 @@ def save_dataframe(
 def history_checkpoint_dir(out_path: Path, args: argparse.Namespace) -> Path:
     """Keep restartable shards isolated by dataset and requested date range."""
 
-    return out_path.parent / f".{out_path.stem}_parts_{args.start_date}_{args.end_date}"
+    configuration_hash = str(getattr(args, "source_configuration_hash", "") or "")
+    suffix = "_" + hashlib.sha256(configuration_hash.encode()).hexdigest()[:16] if configuration_hash else ""
+    return out_path.parent / f".{out_path.stem}_parts_{args.start_date}_{args.end_date}{suffix}"
 
 
 def history_checkpoint_paths(checkpoint_dir: Path, ts_code: str) -> tuple[Path, Path]:
@@ -1341,6 +1361,10 @@ def _align_arrow_table(table: pa.Table, schema: pa.Schema) -> pa.Table:
     return pa.Table.from_arrays(arrays, schema=schema)
 
 
+INCREMENTAL_MERGE_PROGRESS_ROWS = 1_000_000
+INCREMENTAL_MERGE_PROGRESS_SECONDS = 15.0
+
+
 def append_incremental_rows(
     new_df: pd.DataFrame,
     existing_path: Path,
@@ -1490,6 +1514,10 @@ def append_incremental_rows(
     incoming_group_index = 0
     active_existing_key: Optional[str] = None
     active_existing_parts: list[pa.Table] = []
+    processed_existing_rows = 0
+    next_progress_row = INCREMENTAL_MERGE_PROGRESS_ROWS
+    last_progress_at = time.monotonic()
+    total_existing_rows = int(source.metadata.num_rows)
     try:
         writer = parquet.ParquetWriter(temporary_path, output_schema, compression="snappy")
 
@@ -1564,6 +1592,24 @@ def append_incremental_rows(
 
         for batch in source.iter_batches(batch_size=16_384, use_threads=False):
             table = pa.Table.from_batches([batch])
+            processed_existing_rows += table.num_rows
+            now = time.monotonic()
+            if (
+                processed_existing_rows >= next_progress_row
+                or now - last_progress_at >= INCREMENTAL_MERGE_PROGRESS_SECONDS
+            ):
+                progress = (
+                    processed_existing_rows / total_existing_rows * 100.0
+                    if total_existing_rows > 0
+                    else 100.0
+                )
+                print(
+                    f"[INFO] {existing_path.name} 流式归并进度 "
+                    f"{processed_existing_rows}/{total_existing_rows}（{progress:.1f}%）。",
+                    flush=True,
+                )
+                next_progress_row = processed_existing_rows + INCREMENTAL_MERGE_PROGRESS_ROWS
+                last_progress_at = now
             keys = [normalise_key(value) for value in table.column(primary_column).to_pylist()]
             run_start = 0
             for index in range(1, len(keys) + 1):
@@ -3670,7 +3716,7 @@ def save_fund_manager(
     fund_info: Optional[pd.DataFrame] = None,
 ) -> None:
     universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
-    page_size = API_ROW_LIMITS["fund_manager"]
+    page_size = configured_page_size(pro, "fund_manager", API_ROW_LIMITS["fund_manager"])
     frames: list[pd.DataFrame] = []
     seen: set[tuple[str, str, str]] = set()
     offset = 0
@@ -4604,6 +4650,7 @@ def _action_resume_key(args: argparse.Namespace) -> str:
         "history_chunk_days": getattr(args, "history_chunk_days", None),
         "missing_only": bool(getattr(args, "missing_only", False)),
         "latest": bool(getattr(args, "latest", False)),
+        "source_configuration_hash": getattr(args, "source_configuration_hash", None),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:20]
@@ -4684,7 +4731,7 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
 
     ensure_output_dir(args.output_dir)
     token = require_tushare_token()
-    pro = ts.pro_api(token)
+    pro = create_client(token, args)
     limiter = RateLimiter(args.max_calls_per_minute, min_interval_sec=args.min_call_interval_sec)
 
     print(f"[INFO] 输出目录: {args.output_dir.resolve()}")
@@ -4984,6 +5031,7 @@ def _stop_cli_heartbeat(stop_event: threading.Event, thread: threading.Thread) -
 def _cli_request_fingerprint(args: argparse.Namespace, actions: list[str]) -> str:
     payload = {
         "actions": actions,
+        "source_configuration_hash": configuration_fingerprint(),
         "start_date": getattr(args, "start_date", None),
         "end_date": getattr(args, "end_date", None),
         "history_chunk_days": getattr(args, "history_chunk_days", None),

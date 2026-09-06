@@ -43,19 +43,31 @@ from custom_indicators.variable_registry import variable_catalog
 from custom_indicators.service import CustomIndicatorService
 
 
-def test_v22_registry_has_complete_fixed_signature_njit_coverage() -> None:
+def test_current_registry_has_complete_fixed_signature_njit_coverage() -> None:
     status = warm_numba_kernel_registry()
     registry = get_numba_kernel_registry()
     canonical = {
+        spec.operator_id for spec in get_typed_operator_registry().values()
+    }
+    frozen_v22 = {
         spec.operator_id for spec in get_typed_operator_registry("2.2.0").values()
     }
-    public = get_typed_operator_catalog("2.2.0")["operators"]
+    public = get_typed_operator_catalog()["operators"]
 
-    assert len(CANONICAL_OPERATOR_IDS) == 97
-    assert len(set(CANONICAL_OPERATOR_IDS)) == 97
+    assert len(CANONICAL_OPERATOR_IDS) == 103
+    assert len(set(CANONICAL_OPERATOR_IDS)) == 103
     assert canonical == set(CANONICAL_OPERATOR_IDS) == set(registry)
-    assert len(public) == 92
-    assert status["operator_coverage"] == "97/97"
+    assert len(frozen_v22) == 97
+    assert {
+        "rolling_mean",
+        "rolling_std",
+        "rolling_min",
+        "rolling_max",
+        "recursive_smooth",
+        "divide_or_default",
+    }.isdisjoint(frozen_v22)
+    assert len(public) == 98
+    assert status["operator_coverage"] == "103/103"
     assert status["warmed"] is True
     assert status["python_fallback"] == 0
     assert status["python_operator_calls"] == 0
@@ -215,7 +227,7 @@ def test_runtime_does_not_call_python_operator_registry() -> None:
     assert value == pytest.approx((0.01 - 0.02 + 0.03) / 3.0)
     assert runtime.trace_payload()["python_operator_calls"] == 0
     assert runtime.trace_payload()["python_fallback"] == 0
-    assert kernel_registry_status()["operator_coverage"] == "97/97"
+    assert kernel_registry_status()["operator_coverage"] == "103/103"
 
 
 def test_batch_plan_cache_lookup_never_compiles_on_miss() -> None:

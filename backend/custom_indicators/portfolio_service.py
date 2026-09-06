@@ -50,6 +50,7 @@ from .portfolio_numba import (
 )
 from .series_provider import DEFAULT_DATA_DIR, load_adjusted_product_series
 from product_pools.errors import ProductPoolDomainError
+from product_pools.constants import UNIVERSE_SNAPSHOT_STORE
 from product_pools.membership import InvestableUniverseMembership
 from product_pools.repository import InvestableUniverseRepository
 from portfolio_regime import (
@@ -207,7 +208,7 @@ class PortfolioResearchService:
         self.targets = ResearchTargetRepository(self.workspace_data_dir / "research_targets.json")
         self.runs = PortfolioRunRepository(self.workspace_data_dir / "portfolio_runs.json")
         self.investable_universes = InvestableUniverseRepository(
-            self.workspace_data_dir / "investable_universes.json"
+            self.workspace_data_dir / UNIVERSE_SNAPSHOT_STORE
         )
         self.universe_membership = InvestableUniverseMembership(
             self.investable_universes

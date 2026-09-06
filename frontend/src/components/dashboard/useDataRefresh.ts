@@ -4,6 +4,14 @@ import type { DataRefreshStatus, RefreshMode, RefreshModule, RefreshModuleScopes
 const RUNNING_POLL_INTERVAL_MS = 2_000;
 const REFRESH_STATUS_URL = '/api/data/refresh/status';
 
+const responseMessage = (payload: unknown, fallback: string): string => {
+  const value = payload as { detail?: unknown; message?: unknown } | null;
+  if (typeof value?.detail === 'string') return value.detail;
+  const detail = value?.detail as { message?: unknown } | undefined;
+  if (typeof detail?.message === 'string') return detail.message;
+  return typeof value?.message === 'string' ? value.message : fallback;
+};
+
 const isRunning = (status: DataRefreshStatus) => (
   status.job.status === 'running' || status.refresh_locked === true
 );
@@ -19,10 +27,17 @@ export function useDataRefresh(onCompleted: () => void) {
   const [submitting, setSubmitting] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [savingToken, setSavingToken] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
+  const requestSequence = useRef(0);
+  const mounted = useRef(true);
   const handledCompletion = useRef<string | null>(null);
   const refreshSubmissionInFlight = useRef(false);
 
   const fetchStatus = useCallback(async (progressOnly = false) => {
+    const sequence = ++requestSequence.current;
+    setChecking(true);
     try {
       const statusUrl = progressOnly ? `${REFRESH_STATUS_URL}?progress_only=true` : REFRESH_STATUS_URL;
       let response = await fetch(statusUrl, { cache: 'no-store' });
@@ -38,21 +53,29 @@ export function useDataRefresh(onCompleted: () => void) {
         payload = (await response.json()) as DataRefreshStatus;
         progressOnly = false;
       }
+      if (!mounted.current || sequence !== requestSequence.current) return null;
       setStatus((current) => (
         progressOnly && current
           ? { ...current, ...payload, datasets: current.datasets }
           : payload
       ));
-      setError(null);
+      setStatusError(null);
+      setLastCheckedAt(new Date().toISOString());
       return payload;
-    } catch (requestError) {
-      setError('无法获取 Tushare 数据更新状态。');
+    } catch {
+      if (mounted.current && sequence === requestSequence.current) {
+        setStatusError('无法获取 Tushare 数据更新状态。请重新检查，暂勿重复启动任务。');
+      }
       return null;
+    } finally {
+      if (mounted.current && sequence === requestSequence.current) setChecking(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchStatus();
+    mounted.current = true;
+    void fetchStatus();
+    return () => { mounted.current = false; requestSequence.current += 1; };
   }, [fetchStatus]);
 
   useEffect(() => {
@@ -119,6 +142,10 @@ export function useDataRefresh(onCompleted: () => void) {
       setError('已有数据更新任务正在后台运行，请等待其完成后再启动新的下载。');
       return false;
     }
+    if (statusError) {
+      setError(null);
+      return false;
+    }
     if (modules.length === 0) {
       setError('请至少选择一个数据模块。');
       return false;
@@ -172,8 +199,12 @@ export function useDataRefresh(onCompleted: () => void) {
         if (response.status === 409) {
           await fetchStatus();
         }
-        throw new Error(payload.detail || '无法启动数据更新');
+        throw new Error(responseMessage(payload, '无法启动数据更新'));
       }
+      requestSequence.current += 1;
+      setChecking(false);
+      setStatusError(null);
+      setLastCheckedAt(new Date().toISOString());
       setStatus(payload as DataRefreshStatus);
       return true;
     } catch (requestError) {
@@ -183,7 +214,7 @@ export function useDataRefresh(onCompleted: () => void) {
       refreshSubmissionInFlight.current = false;
       setSubmitting(false);
     }
-  }, [fetchStatus, status?.job.status, status?.refresh_locked]);
+  }, [fetchStatus, status?.job.status, status?.refresh_locked, statusError]);
 
   const saveToken = useCallback(async (token: string) => {
     if (!token.trim()) {
@@ -200,7 +231,7 @@ export function useDataRefresh(onCompleted: () => void) {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail || '无法保存 Tushare Token');
+        throw new Error(responseMessage(payload, '无法保存 Tushare Token'));
       }
       await fetchStatus();
       return true;
@@ -219,7 +250,7 @@ export function useDataRefresh(onCompleted: () => void) {
       const response = await fetch('/api/data/token', { method: 'DELETE' });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail || '无法清除 Tushare Token');
+        throw new Error(responseMessage(payload, '无法清除 Tushare Token'));
       }
       await fetchStatus();
       return true;
@@ -242,7 +273,7 @@ export function useDataRefresh(onCompleted: () => void) {
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail || '无法重建分析快照');
+        throw new Error(responseMessage(payload, '无法重建分析快照'));
       }
       await fetchStatus();
       onCompleted();
@@ -257,7 +288,10 @@ export function useDataRefresh(onCompleted: () => void) {
 
   return {
     status,
-    error,
+    error: statusError ?? error,
+    statusError,
+    checking,
+    lastCheckedAt,
     submitting,
     rebuilding,
     savingToken,

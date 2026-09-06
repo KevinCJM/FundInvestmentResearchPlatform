@@ -390,8 +390,11 @@ export default function CandidateReviewTable({
       return
     }
     const next = { ...drafts }
+    const changedKeys: string[] = []
     for (const key of keys) {
-      const current = { ...next[key] }
+      const before = next[key]
+      if (!before) continue
+      const current = { ...before }
       if (bulkResearchStatus) current.research_status = bulkResearchStatus
       if (bulkUsageStatus) current.usage_status = bulkUsageStatus
       if (bulkMaxWeight.trim()) current.max_weight = bulkMaxWeight.trim()
@@ -402,12 +405,17 @@ export default function CandidateReviewTable({
         current.reasons = Array.from(new Set([...parseReasons(current.reasons), bulkReason.trim()])).join('\n')
       }
       next[key] = current
+      if (draftSignature(current) !== draftSignature(before)) changedKeys.push(key)
     }
     setDrafts(next)
+    if (changedKeys.length === 0) {
+      onMessage(`已选 ${keys.length} 个产品均已满足当前批量设置，无需保存。`)
+      return
+    }
     if (saveImmediately) {
-      void saveKeys(keys, next)
+      void saveKeys(changedKeys, next)
     } else {
-      onMessage(`已将批量设置应用到 ${keys.length} 个产品，尚未保存。`)
+      onMessage(`已对 ${changedKeys.length}/${keys.length} 个产品应用批量设置，尚未保存。`)
     }
   }
 

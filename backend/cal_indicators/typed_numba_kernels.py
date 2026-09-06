@@ -119,7 +119,8 @@ CANONICAL_OPERATOR_IDS = (
     "quantile_where", "count_true", "max_consecutive_true", "sum", "product", "mean",
     "min_value", "max_value", "variance", "std", "cumulative_sum",
     "cumulative_product", "cumulative_return", "cumulative_max", "cumulative_min",
-    "drawdown_series", "new_high_mask",
+    "drawdown_series", "new_high_mask", "rolling_mean", "rolling_std", "rolling_min",
+    "rolling_max", "recursive_smooth", "divide_or_default",
     "first", "length", "lag", "difference", "median", "skewness", "excess_kurtosis",
     "mean_absolute_deviation", "root_mean_square", "argmin", "argmax", "quantile",
     "linear_slope", "linear_intercept", "linear_r_squared", "regression_standard_error",
@@ -192,7 +193,11 @@ def binary_2d(opcode: int, lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
     result = np.empty(lhs.shape, dtype=np.float64)
     for row in range(lhs.shape[0]):
         for column in range(lhs.shape[1]):
-            result[row, column] = _binary_value(opcode, lhs[row, column], rhs[row, column])
+            result[row, column] = _binary_value(
+                opcode,
+                lhs[row, column],
+                rhs[row, column],
+            )
     return result
 
 
@@ -211,6 +216,91 @@ def binary_2d_left_scalar(opcode: int, lhs: float, rhs: np.ndarray) -> np.ndarra
     for row in range(rhs.shape[0]):
         for column in range(rhs.shape[1]):
             result[row, column] = _binary_value(opcode, lhs, rhs[row, column])
+    return result
+
+
+@njit(cache=True, nogil=True, inline="always")
+def _series_safe_divide_value(lhs: float, rhs: float) -> float:
+    """Return NaN for one undefined series ratio without aborting the plan."""
+
+    if not math.isfinite(lhs) or not math.isfinite(rhs) or abs(rhs) < 1e-12:
+        return np.nan
+    return lhs / rhs
+
+
+@njit(cache=True, nogil=True)
+def series_safe_divide_1d(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    if lhs.size != rhs.size:
+        raise ValueError("SHAPE_MISMATCH")
+    result = np.empty(lhs.size, dtype=np.float64)
+    for index in range(lhs.size):
+        result[index] = _series_safe_divide_value(lhs[index], rhs[index])
+    return result
+
+
+@njit(cache=True, nogil=True)
+def series_safe_divide_1d_right_scalar(
+    lhs: np.ndarray,
+    rhs: float,
+) -> np.ndarray:
+    result = np.empty(lhs.size, dtype=np.float64)
+    for index in range(lhs.size):
+        result[index] = _series_safe_divide_value(lhs[index], rhs)
+    return result
+
+
+@njit(cache=True, nogil=True)
+def series_safe_divide_1d_left_scalar(
+    lhs: float,
+    rhs: np.ndarray,
+) -> np.ndarray:
+    result = np.empty(rhs.size, dtype=np.float64)
+    for index in range(rhs.size):
+        result[index] = _series_safe_divide_value(lhs, rhs[index])
+    return result
+
+
+@njit(cache=True, nogil=True)
+def series_safe_divide_2d(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    if lhs.shape != rhs.shape:
+        raise ValueError("SHAPE_MISMATCH")
+    result = np.empty(lhs.shape, dtype=np.float64)
+    for row in range(lhs.shape[0]):
+        for column in range(lhs.shape[1]):
+            result[row, column] = _series_safe_divide_value(
+                lhs[row, column],
+                rhs[row, column],
+            )
+    return result
+
+
+@njit(cache=True, nogil=True)
+def series_safe_divide_2d_right_scalar(
+    lhs: np.ndarray,
+    rhs: float,
+) -> np.ndarray:
+    result = np.empty(lhs.shape, dtype=np.float64)
+    for row in range(lhs.shape[0]):
+        for column in range(lhs.shape[1]):
+            result[row, column] = _series_safe_divide_value(
+                lhs[row, column],
+                rhs,
+            )
+    return result
+
+
+@njit(cache=True, nogil=True)
+def series_safe_divide_2d_left_scalar(
+    lhs: float,
+    rhs: np.ndarray,
+) -> np.ndarray:
+    result = np.empty(rhs.shape, dtype=np.float64)
+    for row in range(rhs.shape[0]):
+        for column in range(rhs.shape[1]):
+            result[row, column] = _series_safe_divide_value(
+                lhs,
+                rhs[row, column],
+            )
     return result
 
 
@@ -729,6 +819,175 @@ def difference_1d_parameter(values: np.ndarray, periods: float) -> np.ndarray:
     return difference_1d(values, integer)
 
 
+@njit(cache=True, nogil=True, inline="always")
+def _integer_parameter(value: float, allow_zero: bool = False) -> int:
+    integer = int(value)
+    minimum = 0 if allow_zero else 1
+    if not math.isfinite(value) or float(integer) != value or integer < minimum:
+        raise ValueError("INVALID_PARAMETER")
+    return integer
+
+
+@njit(cache=True, nogil=True)
+def rolling_mean_1d(
+    values: np.ndarray,
+    window: float,
+    min_periods: float,
+) -> np.ndarray:
+    width = _integer_parameter(window, False)
+    minimum = _integer_parameter(min_periods, False)
+    if minimum > width:
+        raise ValueError("INVALID_PARAMETER")
+    result = np.full(values.size, np.nan, dtype=np.float64)
+    running_sum = 0.0
+    finite_count = 0
+    for index in range(values.size):
+        current = values[index]
+        if math.isfinite(current):
+            running_sum += current
+            finite_count += 1
+        if index >= width:
+            expired = values[index - width]
+            if math.isfinite(expired):
+                running_sum -= expired
+                finite_count -= 1
+        if finite_count >= minimum:
+            result[index] = running_sum / finite_count
+    return result
+
+
+@njit(cache=True, nogil=True)
+def rolling_std_1d(
+    values: np.ndarray,
+    window: float,
+    ddof: float,
+    min_periods: float,
+) -> np.ndarray:
+    width = _integer_parameter(window, False)
+    degrees = _integer_parameter(ddof, True)
+    minimum = _integer_parameter(min_periods, False)
+    if minimum > width:
+        raise ValueError("INVALID_PARAMETER")
+    result = np.full(values.size, np.nan, dtype=np.float64)
+    running_sum = 0.0
+    running_square_sum = 0.0
+    finite_count = 0
+    for index in range(values.size):
+        current = values[index]
+        if math.isfinite(current):
+            running_sum += current
+            running_square_sum += current * current
+            finite_count += 1
+        if index >= width:
+            expired = values[index - width]
+            if math.isfinite(expired):
+                running_sum -= expired
+                running_square_sum -= expired * expired
+                finite_count -= 1
+        if finite_count < minimum or finite_count <= degrees:
+            continue
+        centered_sum = running_square_sum - running_sum * running_sum / finite_count
+        if centered_sum < 0.0 and centered_sum > -1e-12:
+            centered_sum = 0.0
+        if centered_sum >= 0.0:
+            result[index] = math.sqrt(centered_sum / (finite_count - degrees))
+    return result
+
+
+@njit(cache=True, nogil=True)
+def rolling_extreme_1d(
+    values: np.ndarray,
+    window: float,
+    min_periods: float,
+    maximum: int,
+) -> np.ndarray:
+    width = _integer_parameter(window, False)
+    minimum = _integer_parameter(min_periods, False)
+    if minimum > width:
+        raise ValueError("INVALID_PARAMETER")
+    result = np.full(values.size, np.nan, dtype=np.float64)
+    queue = np.empty(values.size, dtype=np.int64)
+    head = 0
+    tail = 0
+    finite_count = 0
+    for index in range(values.size):
+        expired_index = index - width
+        if expired_index >= 0 and math.isfinite(values[expired_index]):
+            finite_count -= 1
+        while head < tail and queue[head] <= expired_index:
+            head += 1
+        current = values[index]
+        if math.isfinite(current):
+            finite_count += 1
+            if maximum != 0:
+                while head < tail and values[queue[tail - 1]] <= current:
+                    tail -= 1
+            else:
+                while head < tail and values[queue[tail - 1]] >= current:
+                    tail -= 1
+            queue[tail] = index
+            tail += 1
+        if finite_count >= minimum and head < tail:
+            result[index] = values[queue[head]]
+    return result
+
+
+@njit(cache=True, nogil=True)
+def rolling_min_1d(
+    values: np.ndarray,
+    window: float,
+    min_periods: float,
+) -> np.ndarray:
+    return rolling_extreme_1d(values, window, min_periods, 0)
+
+
+@njit(cache=True, nogil=True)
+def rolling_max_1d(
+    values: np.ndarray,
+    window: float,
+    min_periods: float,
+) -> np.ndarray:
+    return rolling_extreme_1d(values, window, min_periods, 1)
+
+
+@njit(cache=True, nogil=True)
+def recursive_smooth_1d(
+    values: np.ndarray,
+    periods: float,
+    initial: float,
+) -> np.ndarray:
+    width = _integer_parameter(periods, False)
+    if not math.isfinite(initial):
+        raise ValueError("INVALID_PARAMETER")
+    result = np.full(values.size, np.nan, dtype=np.float64)
+    previous = initial
+    for index in range(values.size):
+        current = values[index]
+        if not math.isfinite(current):
+            continue
+        previous = ((width - 1.0) * previous + current) / width
+        result[index] = previous
+    return result
+
+
+@njit(cache=True, nogil=True)
+def divide_or_default_1d(
+    numerator: np.ndarray,
+    denominator: np.ndarray,
+    default: float,
+) -> np.ndarray:
+    if numerator.size != denominator.size or not math.isfinite(default):
+        raise ValueError("INVALID_PARAMETER")
+    result = np.full(numerator.size, np.nan, dtype=np.float64)
+    for index in range(numerator.size):
+        lhs = numerator[index]
+        rhs = denominator[index]
+        if not math.isfinite(lhs) or not math.isfinite(rhs):
+            continue
+        result[index] = default if abs(rhs) < 1e-12 else lhs / rhs
+    return result
+
+
 @njit(cache=True, nogil=True)
 def total_return_1d(values: np.ndarray) -> float:
     _validate_nonempty(values.size)
@@ -1189,6 +1448,18 @@ def _operator_dispatchers(operator_id: str) -> tuple[CPUDispatcher, ...]:
         return (lag_1d_parameter,)
     if operator_id == "difference":
         return (difference_1d_parameter,)
+    if operator_id == "rolling_mean":
+        return (rolling_mean_1d,)
+    if operator_id == "rolling_std":
+        return (rolling_std_1d,)
+    if operator_id == "rolling_min":
+        return (rolling_min_1d,)
+    if operator_id == "rolling_max":
+        return (rolling_max_1d,)
+    if operator_id == "recursive_smooth":
+        return (recursive_smooth_1d,)
+    if operator_id == "divide_or_default":
+        return (divide_or_default_1d,)
     if operator_id == "total_return":
         return (total_return_1d,)
     if operator_id == "annualized_return":
@@ -1224,7 +1495,19 @@ def get_numba_kernel_registry() -> dict[str, KernelSpec]:
         lane = "numba_blas" if operator_id in {"dot", "outer", "matmul", "matvec", "solve", "portfolio_returns", "quadratic_form"} else "numba"
         registry[operator_id] = KernelSpec(
             operator_id=operator_id,
-            operator_version="2.2.0",
+            operator_version=(
+                "2.3.0"
+                if operator_id
+                in {
+                    "rolling_mean",
+                    "rolling_std",
+                    "rolling_min",
+                    "rolling_max",
+                    "recursive_smooth",
+                    "divide_or_default",
+                }
+                else "2.2.0"
+            ),
             opcode=opcode,
             kernel_version=NUMERIC_KERNEL_VERSION,
             execution_lane=lane,
@@ -1273,6 +1556,12 @@ def warm_numba_kernel_registry() -> dict[str, Any]:
     _compile(binary_2d, ((i8, f2, f2),))
     _compile(binary_2d_right_scalar, ((i8, f2, f8),))
     _compile(binary_2d_left_scalar, ((i8, f8, f2),))
+    _compile(series_safe_divide_1d, ((f1, f1),))
+    _compile(series_safe_divide_1d_right_scalar, ((f1, f8),))
+    _compile(series_safe_divide_1d_left_scalar, ((f8, f1),))
+    _compile(series_safe_divide_2d, ((f2, f2),))
+    _compile(series_safe_divide_2d_right_scalar, ((f2, f8),))
+    _compile(series_safe_divide_2d_left_scalar, ((f8, f2),))
     _compile(unary_scalar, ((i8, f8),))
     _compile(unary_1d, ((i8, f1),))
     _compile(unary_2d, ((i8, f2),))
@@ -1312,6 +1601,12 @@ def warm_numba_kernel_registry() -> dict[str, Any]:
         _compile(dispatcher, ((f1,),))
     _compile(lag_1d_parameter, ((f1, f8),))
     _compile(difference_1d_parameter, ((f1, f8),))
+    _compile(rolling_mean_1d, ((f1, f8, f8),))
+    _compile(rolling_std_1d, ((f1, f8, f8, f8),))
+    _compile(rolling_min_1d, ((f1, f8, f8),))
+    _compile(rolling_max_1d, ((f1, f8, f8),))
+    _compile(recursive_smooth_1d, ((f1, f8, f8),))
+    _compile(divide_or_default_1d, ((f1, f1, f8),))
     _compile(annualized_return_1d, ((f1, f8),))
     _compile(axis_reduce_time_fixed, ((i8, f2),))
     _compile(axis_reduce_asset, ((i8, f2),))
@@ -1369,7 +1664,11 @@ def kernel_catalog_entry(operator_id: str) -> dict[str, Any]:
 
 __all__ = [
     "CANONICAL_OPERATOR_IDS", "ENGINE_VERSION", "KernelSpec", "NUMERIC_KERNEL_VERSION",
-    "drawdown_series_1d", "new_high_mask_1d",
+    "drawdown_series_1d", "new_high_mask_1d", "rolling_mean_1d", "rolling_std_1d",
+    "rolling_min_1d", "rolling_max_1d", "recursive_smooth_1d", "divide_or_default_1d",
+    "series_safe_divide_1d", "series_safe_divide_1d_right_scalar",
+    "series_safe_divide_1d_left_scalar", "series_safe_divide_2d",
+    "series_safe_divide_2d_right_scalar", "series_safe_divide_2d_left_scalar",
     "get_numba_kernel_registry", "kernel_catalog_entry", "kernel_registry_status",
     "warm_numba_kernel_registry",
 ]

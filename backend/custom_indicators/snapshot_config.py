@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -35,7 +36,7 @@ def snapshot_field_name(indicator_id: str, indicator_revision: int, period: str)
     return f"metric_{readable}_{period.lower()}_{digest}"
 
 
-def normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
+def _legacy_normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
     indicator_id = str(item.get("indicator_id") or "").strip()
     revision = int(item.get("indicator_revision") or 0)
     period = str(item.get("period") or "").strip().upper()
@@ -48,3 +49,51 @@ def normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
         "period": period,
         "field": field,
     }
+
+
+def normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize scalar or explicit time-series-channel snapshot configuration."""
+
+    indicator_id = str(item.get("indicator_id") or "").strip()
+    revision = int(item.get("indicator_revision") or 0)
+    period = str(item.get("period") or "").strip().upper()
+    channel_id = str(item.get("channel_id") or "").strip() or None
+    reducer = str(item.get("reducer") or "").strip() or None
+    if channel_id and reducer is None:
+        reducer = "last_finite"
+    if reducer not in {None, "last_finite"}:
+        reducer = str(reducer)
+    payload = {
+        "indicator_id": indicator_id,
+        "indicator_revision": revision,
+        "period": period,
+        "channel_id": channel_id,
+        "reducer": reducer,
+    }
+    field = str(item.get("field") or "").strip()
+    if not field:
+        if channel_id is None:
+            # Preserve the established scalar snapshot field contract.
+            field = snapshot_field_name(indicator_id, revision, period)
+        else:
+            readable = re.sub(
+                r"[^a-z0-9]+",
+                "_",
+                indicator_id.lower(),
+            ).strip("_")[-24:]
+            channel = re.sub(
+                r"[^a-z0-9]+",
+                "_",
+                channel_id.lower(),
+            ).strip("_")[:20]
+            digest = hashlib.sha256(
+                json.dumps(
+                    payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:10]
+            field = (
+                f"metric_{readable}_{channel}_{period.lower()}_{digest}"
+            )
+    return {**payload, "field": field}

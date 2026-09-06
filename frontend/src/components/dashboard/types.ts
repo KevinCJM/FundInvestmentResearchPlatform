@@ -221,6 +221,8 @@ export interface DataRefreshStatus {
     staging_data_dir?: string | null;
     fetch_complete?: boolean;
     resumed?: boolean;
+    resume_available?: boolean;
+    interruption_reason?: 'owner_process_lost' | string | null;
     analytics_snapshot?: {
       status: 'succeeded' | 'failed';
       rebuilt_at?: string;

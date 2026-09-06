@@ -77,6 +77,31 @@ export function assertFixedNjitExecution(
   }
 }
 
+/**
+ * Some endpoints prove several independent numeric lanes in one response --
+ * ``/api/fit-classes`` returns ``{ fit_analytics, performance_metrics }``.
+ * Every lane has to carry its own fixed-signature NJIT proof.
+ */
+export type FixedNjitExecutionAuditLanes = Record<string, FixedNjitExecutionAudit>
+
+export function assertFixedNjitExecutionLanes(
+  value: unknown,
+  calculationLabel = '数值计算',
+): asserts value is FixedNjitExecutionAudit | FixedNjitExecutionAuditLanes {
+  const audit = value as FixedNjitExecutionAudit | null | undefined
+  if (nonEmptyText(audit?.execution_backend) || nonEmptyText(audit?.backend)) {
+    assertFixedNjitExecution(value, calculationLabel)
+    return
+  }
+  const lanes = audit && typeof audit === 'object' && !Array.isArray(audit)
+    ? Object.entries(audit as Record<string, unknown>)
+    : []
+  if (lanes.length === 0) {
+    throw new Error(`${calculationLabel}未提供有效的固定签名 NJIT 执行证明`)
+  }
+  lanes.forEach(([lane, item]) => assertFixedNjitExecution(item, `${calculationLabel}（${lane}）`))
+}
+
 export function assertOptimizedThirdPartyExecution(
   value: unknown,
   calculationLabel = '模型计算',

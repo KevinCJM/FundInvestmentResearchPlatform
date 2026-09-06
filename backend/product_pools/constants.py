@@ -5,6 +5,10 @@ from pathlib import Path
 
 DEFAULT_DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
 
+# Universe snapshots are appended to the product-pool store by
+# ``ProductPoolRepository``; a dedicated file would just be an empty store.
+UNIVERSE_SNAPSHOT_STORE = "product_pools.json"
+
 POOL_STATUSES = {"draft", "active", "archived"}
 RESEARCH_STATUSES = {"candidate", "under_review", "approved", "watch", "excluded"}
 USAGE_STATUSES = {"normal", "limited", "no_new", "hold_only", "unavailable"}
@@ -29,4 +33,5 @@ __all__ = [
     "RESEARCH_STATUSES",
     "USAGE_SEVERITY",
     "USAGE_STATUSES",
+    "UNIVERSE_SNAPSHOT_STORE",
 ]

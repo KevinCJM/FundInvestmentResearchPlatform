@@ -854,6 +854,155 @@ class ProductPoolService:
             "changed": changed,
         }
 
+    @staticmethod
+    def _member_is_eligible(member: dict[str, Any], research_date: str) -> tuple[bool, list[str]]:
+        reasons: list[str] = []
+        if member.get("research_status") not in {None, "approved"}:
+            reasons.append("产品未处于已准入状态")
+        if member.get("usage_status") not in INVESTABLE_USAGE_STATUSES:
+            reasons.append("产品当前不可用于新增配置")
+        valid_until = _trimmed(member.get("valid_until"), maximum=10)
+        if valid_until and valid_until < research_date:
+            reasons.append("产品有效期已结束")
+        return not reasons, reasons
+
+    def _decorate_universe_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Expose one stable downstream contract for old and new snapshot records."""
+
+        decorated = copy.deepcopy(snapshot)
+        research_date = str(decorated.get("research_date") or "")
+        version_ids = [
+            str(item).strip()
+            for item in decorated.get("version_ids", [])
+            if str(item).strip()
+        ]
+        if not version_ids:
+            version_ids = [
+                str(item.get("version_id") or "").strip()
+                for item in decorated.get("version_refs", [])
+                if isinstance(item, dict) and str(item.get("version_id") or "").strip()
+            ]
+        decorated["version_ids"] = version_ids
+        referenced = set(version_ids)
+        version_by_id = {
+            str(version.get("id")): version
+            for version in self.repository.list_versions()
+            if str(version.get("id")) in referenced
+        }
+        evidence_by_source: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for version_id, version in version_by_id.items():
+            for member in version.get("members", []) or []:
+                product_key = str(member.get("key") or "")
+                if not product_key:
+                    continue
+                for evidence in member.get("evidences", []) or []:
+                    plan_id = str(evidence.get("plan_id") or "")
+                    if plan_id:
+                        evidence_by_source[(version_id, product_key, plan_id)] = evidence
+
+        raw_members = decorated.get("members")
+        members: list[dict[str, Any]] = []
+        if isinstance(raw_members, list) and raw_members:
+            for raw_member in raw_members:
+                if not isinstance(raw_member, dict):
+                    continue
+                member = copy.deepcopy(raw_member)
+                member.setdefault("code", member.get("product_id"))
+                member.setdefault("name", member.get("product_id"))
+                member.setdefault("decision_reasons", [])
+                member.setdefault("substitute_groups", [])
+                member.setdefault("evaluation_sources", [])
+                eligible, eligibility_reasons = self._member_is_eligible(
+                    member,
+                    research_date,
+                )
+                member.setdefault("eligible", eligible)
+                member.setdefault("eligibility_reasons", eligibility_reasons)
+                member.setdefault("warnings", [])
+                members.append(member)
+        else:
+            for product in decorated.get("products", []) or []:
+                if not isinstance(product, dict):
+                    continue
+                source_version_ids = [
+                    str(item).strip()
+                    for item in product.get("source_version_ids", [])
+                    if str(item).strip()
+                ]
+                source_pool_ids = [
+                    str(item).strip()
+                    for item in product.get("source_pool_ids", [])
+                    if str(item).strip()
+                ]
+                sources: list[dict[str, Any]] = []
+                product_key = str(product.get("key") or _member_key(
+                    str(product.get("kind") or ""),
+                    str(product.get("product_id") or ""),
+                ))
+                plan_id = str(product.get("evaluation_plan_id") or "")
+                for index, version_id in enumerate(source_version_ids):
+                    version = version_by_id.get(version_id, {})
+                    pool_id = str(
+                        version.get("pool_id")
+                        or (source_pool_ids[index] if index < len(source_pool_ids) else "")
+                    )
+                    evidence = evidence_by_source.get(
+                        (version_id, product_key, plan_id),
+                        {},
+                    )
+                    sources.append(
+                        {
+                            "pool_id": pool_id,
+                            "pool_name": str(version.get("pool_name") or pool_id),
+                            "pool_version_id": version_id,
+                            "pool_version_number": int(version.get("version") or 0),
+                            "evaluation_plan_id": product.get("evaluation_plan_id"),
+                            "evaluation_plan_revision": product.get("evaluation_plan_revision"),
+                            "evaluation_plan_name": product.get("evaluation_plan_name"),
+                            "source_rank": evidence.get("rank"),
+                            "source_score": _finite_number(evidence.get("score")),
+                        }
+                    )
+                member = {
+                    "kind": product.get("kind"),
+                    "product_id": product.get("product_id"),
+                    "code": product.get("code") or product.get("product_id"),
+                    "name": product.get("name") or product.get("code") or product.get("product_id"),
+                    "research_status": "approved",
+                    "usage_status": product.get("usage_status"),
+                    "decision_reasons": list(product.get("reasons") or []),
+                    "max_weight": product.get("max_weight"),
+                    "valid_until": product.get("valid_until"),
+                    "substitute_groups": [product.get("substitute_group")]
+                    if product.get("substitute_group")
+                    else [],
+                    "evaluation_sources": sources,
+                }
+                eligible, eligibility_reasons = self._member_is_eligible(
+                    member,
+                    research_date,
+                )
+                member["eligible"] = eligible
+                member["eligibility_reasons"] = eligibility_reasons
+                member["warnings"] = (
+                    ["产品存在使用限额"]
+                    if member.get("usage_status") == "limited"
+                    else []
+                )
+                members.append(member)
+
+        decorated["members"] = members
+        existing_summary = decorated.get("summary")
+        summary = copy.deepcopy(existing_summary) if isinstance(existing_summary, dict) else {}
+        summary.setdefault("pool_count", len(decorated.get("pool_ids") or version_ids))
+        summary.setdefault("member_count", len(members))
+        summary.setdefault("eligible_count", sum(bool(item.get("eligible")) for item in members))
+        summary.setdefault("restricted_count", sum(not bool(item.get("eligible")) for item in members))
+        summary.setdefault("watch_count", sum(item.get("research_status") == "watch" for item in members))
+        decorated["summary"] = summary
+        decorated.setdefault("product_count", len(decorated.get("products") or members))
+        return decorated
+
     def create_universe_snapshot(self, fields: dict[str, Any]) -> dict[str, Any]:
         name = _required_text(fields.get("name"), "可投资域名称", maximum=100)
         research_date = _iso_date(fields.get("research_date"), "研究日期")
@@ -982,7 +1131,7 @@ class ProductPoolService:
             products.values(),
             key=lambda item: (item["evaluation_plan_name"], str(item.get("code") or "")),
         )
-        return self.repository.create_universe_snapshot(
+        created = self.repository.create_universe_snapshot(
             {
                 "name": name,
                 "research_date": research_date,
@@ -994,6 +1143,74 @@ class ProductPoolService:
                 "product_count": len(product_items),
             }
         )
+        return self._decorate_universe_snapshot(created)
 
     def get_universe_snapshot(self, snapshot_id: str) -> dict[str, Any]:
-        return self.repository.get_universe_snapshot(snapshot_id)
+        return self._decorate_universe_snapshot(
+            self.repository.get_universe_snapshot(snapshot_id)
+        )
+
+    def search_universe_products(
+        self,
+        snapshot_id: str,
+        *,
+        query: str = "",
+        kind: str | None = None,
+        eligible_only: bool = True,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        if kind is not None and kind not in {"etf", "fund"}:
+            raise ProductPoolValidationError(
+                "INVALID_PRODUCT_KIND",
+                "产品类型无效。",
+                field="kind",
+            )
+        snapshot = self.get_universe_snapshot(snapshot_id)
+        members = list(snapshot.get("members") or [])
+        if eligible_only:
+            members = [item for item in members if item.get("eligible") is True]
+        if kind:
+            members = [item for item in members if item.get("kind") == kind]
+        normalized_query = _trimmed(query, maximum=200).lower()
+        if normalized_query:
+            members = [
+                item
+                for item in members
+                if normalized_query
+                in " ".join(
+                    [
+                        str(item.get("product_id") or ""),
+                        str(item.get("code") or ""),
+                        str(item.get("name") or ""),
+                        *[
+                            str(source.get("evaluation_plan_name") or "")
+                            for source in item.get("evaluation_sources") or []
+                        ],
+                        *[
+                            str(source.get("pool_name") or "")
+                            for source in item.get("evaluation_sources") or []
+                        ],
+                    ]
+                ).lower()
+            ]
+        normalized_page = max(1, int(page))
+        normalized_page_size = max(1, min(int(page_size), 100))
+        members.sort(
+            key=lambda item: (
+                str(item.get("kind") or ""),
+                str(item.get("name") or ""),
+                str(item.get("product_id") or ""),
+            )
+        )
+        total = len(members)
+        start = (normalized_page - 1) * normalized_page_size
+        return {
+            "snapshot_id": snapshot_id,
+            "snapshot_name": snapshot.get("name"),
+            "research_date": snapshot.get("research_date"),
+            "items": copy.deepcopy(members[start : start + normalized_page_size]),
+            "total": total,
+            "page": normalized_page,
+            "page_size": normalized_page_size,
+        }

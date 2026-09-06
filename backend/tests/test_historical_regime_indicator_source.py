@@ -178,7 +178,10 @@ def test_all_indicator_revisions_are_in_startup_warmup(tmp_path: Path) -> None:
     status = indicators.warm_numba_plans()
 
     assert {item["revision"] for item in revisions} == {1, 2}
-    assert status["indicator_plans"] >= len(indicators.indicators.list()) + 1
+    assert (
+        status["indicator_plans"] + status["time_series_plans"]
+        >= len(indicators.indicators.list()) + 1
+    )
 
 
 def test_unwarmed_and_legacy_indicator_versions_fail_closed(

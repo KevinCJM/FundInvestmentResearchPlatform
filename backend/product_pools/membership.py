@@ -6,7 +6,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from .domain import product_key
+from .domain import member_eligibility, parse_date, product_key, today
 from .errors import ProductPoolValidationError
 from .repository import InvestableUniverseRepository
 
@@ -24,16 +24,74 @@ class InvestableUniverseMembership:
         self.repository = repository
 
     @staticmethod
-    def _reference(snapshot: dict[str, Any]) -> dict[str, Any]:
+    def _version_refs(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        refs = snapshot.get("version_refs")
+        if isinstance(refs, list) and refs:
+            return copy.deepcopy(refs)
+        # Snapshots written by ProductPoolService keep the lineage as parallel
+        # ``version_ids``/``pool_ids`` lists; without this the audit trail on a
+        # real snapshot would come back empty.
+        pool_ids = list(snapshot.get("pool_ids") or [])
+        return [
+            {
+                "version_id": str(version_id),
+                "pool_id": str(pool_ids[index]) if index < len(pool_ids) else "",
+            }
+            for index, version_id in enumerate(snapshot.get("version_ids") or [])
+        ]
+
+    @classmethod
+    def _reference(cls, snapshot: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": snapshot["id"],
             "name": snapshot.get("name"),
             "research_date": snapshot.get("research_date"),
             "content_hash": snapshot.get("content_hash"),
-            "version_refs": copy.deepcopy(snapshot.get("version_refs") or []),
+            "version_refs": cls._version_refs(snapshot),
             "created_at": snapshot.get("created_at"),
             "immutable": bool(snapshot.get("immutable")),
         }
+
+    @staticmethod
+    def _members(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        """Read both stored snapshot shapes.
+
+        ``ProductPoolService`` persists a snapshot as ``products`` and maps it to
+        ``members`` only in its read API, so validating against the stored record
+        has to do the same mapping -- otherwise every product in a real snapshot
+        looks absent from its own universe.
+        """
+
+        raw = snapshot.get("members")
+        if isinstance(raw, list) and raw:
+            return [item for item in raw if isinstance(item, dict)]
+        on_date = parse_date(
+            snapshot.get("research_date"),
+            field="research_date",
+            required=False,
+        ) or today()
+        members: list[dict[str, Any]] = []
+        for product in snapshot.get("products") or []:
+            if not isinstance(product, dict):
+                continue
+            member = {
+                "kind": product.get("kind"),
+                "product_id": product.get("product_id"),
+                "code": product.get("code") or product.get("product_id"),
+                "name": product.get("name") or product.get("code") or product.get("product_id"),
+                # A product only reaches a universe snapshot once its pool
+                # approved it; the snapshot no longer carries the pool status.
+                "research_status": "approved",
+                "usage_status": product.get("usage_status") or "normal",
+                "max_weight": product.get("max_weight"),
+                "valid_until": product.get("valid_until"),
+                "decision_reasons": list(product.get("reasons") or []),
+            }
+            eligible, reasons = member_eligibility(member, on_date)
+            member["eligible"] = eligible
+            member["eligibility_reasons"] = reasons
+            members.append(member)
+        return members
 
     @staticmethod
     def _base_product_id(product_id: str) -> str:
@@ -97,7 +155,7 @@ class InvestableUniverseMembership:
                 "可投资域必须是不可变快照。",
                 field="universe_snapshot_id",
             )
-        universe_members = list(snapshot.get("members") or [])
+        universe_members = self._members(snapshot)
         exact, by_kind_base, by_base = self._aliases(universe_members)
         resolved: list[dict[str, Any]] = []
         diagnostics: list[dict[str, Any]] = []

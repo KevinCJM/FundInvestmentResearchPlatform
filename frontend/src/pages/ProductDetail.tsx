@@ -3,11 +3,13 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'reac
 import ReactECharts from 'echarts-for-react';
 import {
   evaluateCustomIndicators,
+  evaluateTimeSeriesIndicators,
   getCustomIndicatorMeta,
   indicatorsForContext,
   listCustomIndicators,
   type EvaluationResult,
   type IndicatorDefinition,
+  type TimeSeriesIndicatorResult,
 } from '../services/customIndicators';
 import {
   getHistoricalRegimeRun,
@@ -50,6 +52,13 @@ interface TimeSeriesPoint {
   low: number | null;
   volume: number | null;
 }
+
+const SERIES_INDICATOR_IDS = {
+  PRICE_MA: 'builtin-close-moving-average-series',
+  VOLUME_MA: 'builtin-volume-moving-average-series',
+  BOLL: 'builtin-bollinger-bands-series',
+  KDJ: 'builtin-kdj-series',
+} as const;
 
 const CORE_RESEARCH_INDICATOR_IDS = [
   'builtin-total-return-v2',
@@ -99,10 +108,10 @@ interface OverlayOption {
 }
 
 const overlayOptions: OverlayOption[] = [
-  { id: 'PRICE_MA', label: '收盘价均线', description: '自定义多个周期观察趋势' },
-  { id: 'VOLUME_MA', label: '成交量均线', description: '识别量能变化节奏' },
-  { id: 'BOLL', label: '布林带', description: '判断波动区间与突破' },
-  { id: 'KDJ', label: 'KDJ 指标', description: '研判超买超卖信号' },
+  { id: 'PRICE_MA', label: '20 日收盘价均线', description: '固定 20 个交易日窗口观察价格趋势' },
+  { id: 'VOLUME_MA', label: '10 日成交量均线', description: '固定 10 个交易日窗口观察量能节奏' },
+  { id: 'BOLL', label: '20 日布林带', description: '20 日均值加减 2 倍总体标准差' },
+  { id: 'KDJ', label: 'KDJ（9, 3, 3）', description: '固定 9 日 RSV、3 日 K 与 D 平滑' },
 ];
 
 const histogramBinWidthOptions = [
@@ -114,13 +123,6 @@ const histogramBinWidthOptions = [
 ];
 
 const FUTURE_SIMULATION_INITIAL_NAV = 1;
-
-type OverlaySettings = {
-  PRICE_MA: { periods: string };
-  VOLUME_MA: { periods: string };
-  BOLL: { period: number; multiplier: number };
-  KDJ: { period: number; kSmoothing: number; dSmoothing: number };
-};
 
 const decimalFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 const signedPercentFormatters: Record<number, Intl.NumberFormat> = {};
@@ -281,12 +283,18 @@ const buildRegimeMarkAreas = (run: HistoricalRegimeRun | undefined, dates: strin
   });
 };
 
-const parsePeriods = (input: string) => {
-  return input
-    .split(/[,，\s]+/)
-    .map((item) => Number(item.trim()))
-    .filter((num) => Number.isFinite(num) && num > 0)
-    .map((num) => Math.round(num));
+const alignedChannelValues = (
+  result: TimeSeriesIndicatorResult | undefined,
+  channelId: string,
+  dates: string[],
+): Array<number | null> => {
+  if (!result) return dates.map(() => null);
+  const channel = result.channels.find((item) => item.id === channelId);
+  if (!channel) return dates.map(() => null);
+  const valuesByDate = new Map(
+    result.dates.map((date, index) => [normalizeDateKey(date) ?? date, channel.values[index] ?? null]),
+  );
+  return dates.map((date) => valuesByDate.get(normalizeDateKey(date) ?? date) ?? null);
 };
 
 function MetricCard({ title, value, description }: { title: string; value: string; description?: string }) {
@@ -341,20 +349,6 @@ function ExtremesCard({ best, worst }: { best: string; worst: string }) {
   );
 }
 
-const defaultOverlaySettings: OverlaySettings = {
-  PRICE_MA: { periods: '5,10,20' },
-  VOLUME_MA: { periods: '5,10' },
-  BOLL: { period: 20, multiplier: 2 },
-  KDJ: { period: 9, kSmoothing: 3, dSmoothing: 3 },
-};
-
-const cloneOverlaySettings = (): OverlaySettings => ({
-  PRICE_MA: { ...defaultOverlaySettings.PRICE_MA },
-  VOLUME_MA: { ...defaultOverlaySettings.VOLUME_MA },
-  BOLL: { ...defaultOverlaySettings.BOLL },
-  KDJ: { ...defaultOverlaySettings.KDJ },
-});
-
 export default function ProductDetail() {
   const params = useParams<{ productId?: string }>();
   const [searchParams] = useSearchParams();
@@ -368,8 +362,10 @@ export default function ProductDetail() {
   const [analysis, setAnalysis] = useState<ProductAnalysisResponse | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [overlayResults, setOverlayResults] = useState<TimeSeriesIndicatorResult[]>([]);
+  const [overlayLoading, setOverlayLoading] = useState(false);
+  const [overlayError, setOverlayError] = useState<string | null>(null);
   const [selectedOverlays, setSelectedOverlays] = useState<OverlayId[]>(['PRICE_MA', 'VOLUME_MA']);
-  const [overlaySettings, setOverlaySettings] = useState<OverlaySettings>(() => cloneOverlaySettings());
   const [histogramBinWidth, setHistogramBinWidth] = useState<number>(0.2);
   const [researchIndicators, setResearchIndicators] = useState<IndicatorDefinition[]>([]);
   const [researchPeriods, setResearchPeriods] = useState<string[]>(['1Y']);
@@ -428,129 +424,19 @@ export default function ProductDetail() {
     });
   };
 
-  const handleOverlaySettingChange = <K extends OverlayId, Key extends keyof OverlaySettings[K]>(
-    id: K,
-    key: Key,
-    value: OverlaySettings[K][Key]
-  ) => {
-    setOverlaySettings((prev) => ({
-      ...prev,
-      [id]: {
-        ...prev[id],
-        [key]: value,
-      },
-    }));
-  };
-
   const restoreDefaultOverlays = () => {
     setSelectedOverlays(['PRICE_MA', 'VOLUME_MA']);
-    setOverlaySettings(cloneOverlaySettings());
   };
 
   const renderOverlayControls = (optionId: OverlayId) => {
-    switch (optionId) {
-      case 'PRICE_MA':
-        return (
-          <label className="block text-xs text-slate-500">
-            均线周期（逗号分隔）
-            <input
-              type="text"
-              value={overlaySettings.PRICE_MA.periods}
-              onChange={(event) => handleOverlaySettingChange('PRICE_MA', 'periods', event.target.value)}
-              placeholder="例如：5,10,20"
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            />
-            <span className="mt-1 block text-[11px] text-slate-400">支持一次性输入多个周期，系统按输入顺序生成多条均线。</span>
-          </label>
-        );
-      case 'VOLUME_MA':
-        return (
-          <label className="block text-xs text-slate-500">
-            均线周期（逗号分隔）
-            <input
-              type="text"
-              value={overlaySettings.VOLUME_MA.periods}
-              onChange={(event) => handleOverlaySettingChange('VOLUME_MA', 'periods', event.target.value)}
-              placeholder="例如：5,10"
-              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-            />
-            <span className="mt-1 block text-[11px] text-slate-400">可组合不同窗口，以更精细地观察放量或缩量趋势。</span>
-          </label>
-        );
-      case 'BOLL':
-        return (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-xs text-slate-500">
-              计算周期
-              <input
-                type="number"
-                min={2}
-                value={overlaySettings.BOLL.period}
-                onChange={(event) =>
-                  handleOverlaySettingChange('BOLL', 'period', Number(event.target.value) || overlaySettings.BOLL.period)
-                }
-                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-            <label className="block text-xs text-slate-500">
-              标准差倍数
-              <input
-                type="number"
-                step={0.1}
-                min={0.5}
-                value={overlaySettings.BOLL.multiplier}
-                onChange={(event) =>
-                  handleOverlaySettingChange('BOLL', 'multiplier', Number(event.target.value) || overlaySettings.BOLL.multiplier)
-                }
-                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-          </div>
-        );
-      case 'KDJ':
-        return (
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label className="block text-xs text-slate-500">
-              计算周期
-              <input
-                type="number"
-                min={2}
-                value={overlaySettings.KDJ.period}
-                onChange={(event) =>
-                  handleOverlaySettingChange('KDJ', 'period', Number(event.target.value) || overlaySettings.KDJ.period)
-                }
-                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-            <label className="block text-xs text-slate-500">
-              K 平滑系数
-              <input
-                type="number"
-                min={1}
-                value={overlaySettings.KDJ.kSmoothing}
-                onChange={(event) =>
-                  handleOverlaySettingChange('KDJ', 'kSmoothing', Number(event.target.value) || overlaySettings.KDJ.kSmoothing)
-                }
-                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-            <label className="block text-xs text-slate-500">
-              D 平滑系数
-              <input
-                type="number"
-                min={1}
-                value={overlaySettings.KDJ.dSmoothing}
-                onChange={(event) =>
-                  handleOverlaySettingChange('KDJ', 'dSmoothing', Number(event.target.value) || overlaySettings.KDJ.dSmoothing)
-                }
-                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-          </div>
-        );
-      default:
-        return null;
-    }
+    const definition = overlayOptions.find((item) => item.id === optionId);
+    return (
+      <div className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+        <p><span className="font-semibold">固定指标版本：</span>{definition?.description}</p>
+        <p className="mt-1">窗口、倍数和平滑周期不能在展示页面临时覆盖。需要其他参数时，请在指标中心复制并保存为另一个时序指标。</p>
+        <Link to="/settings/indicators-models" className="mt-2 inline-flex font-semibold text-violet-700 underline decoration-violet-300 underline-offset-4">前往指标中心</Link>
+      </div>
+    );
   };
 
   useEffect(() => {
@@ -743,23 +629,44 @@ export default function ProductDetail() {
     ),
     [detail?.timeseries, selectedHistoricalRegimeRun],
   );
-  const priceMaPeriods = useMemo(
-    () => Array.from(new Set(parsePeriods(overlaySettings.PRICE_MA.periods)))
-      .filter((period) => period >= 2 && period <= 500)
-      .slice(0, 8),
-    [overlaySettings.PRICE_MA.periods],
-  );
-  const volumeMaPeriods = useMemo(
-    () => Array.from(new Set(parsePeriods(overlaySettings.VOLUME_MA.periods)))
-      .filter((period) => period >= 2 && period <= 500)
-      .slice(0, 8),
-    [overlaySettings.VOLUME_MA.periods],
-  );
-  const bollPeriod = Math.min(500, Math.max(2, Math.round(overlaySettings.BOLL.period)));
-  const bollMultiplier = Math.min(10, Math.max(0.5, overlaySettings.BOLL.multiplier));
-  const kdjPeriod = Math.min(500, Math.max(2, Math.round(overlaySettings.KDJ.period)));
-  const kdjKSmoothing = Math.min(100, Math.max(1, Math.round(overlaySettings.KDJ.kSmoothing)));
-  const kdjDSmoothing = Math.min(100, Math.max(1, Math.round(overlaySettings.KDJ.dSmoothing)));
+  useEffect(() => {
+    if (!productId || productKind !== 'etf' || selectedOverlays.length === 0) {
+      setOverlayResults([]);
+      setOverlayLoading(false);
+      setOverlayError(productKind === 'fund' ? '场外公募基金没有交易所 OHLCV，技术时序指标不可用。' : null);
+      return undefined;
+    }
+    let active = true;
+    const indicatorInstances = selectedOverlays.map((overlayId) => ({
+      indicator_id: SERIES_INDICATOR_IDS[overlayId],
+    }));
+    setOverlayLoading(true);
+    setOverlayError(null);
+    setOverlayResults([]);
+    evaluateTimeSeriesIndicators({
+      indicator_instances: indicatorInstances,
+      target: { kind: 'etf', product_id: productId },
+      period: 'ALL',
+      max_points: 5000,
+    })
+      .then((response) => {
+        if (!active) return;
+        setOverlayResults(response.results);
+        const failed = response.results.filter((item) => item.status === 'unavailable' || item.status === 'error');
+        if (failed.length > 0) {
+          setOverlayError(failed.flatMap((item) => item.warnings.map((warning) => warning.message)).join('；'));
+        }
+      })
+      .catch((requestError) => {
+        if (!active) return;
+        setOverlayResults([]);
+        setOverlayError(requestError instanceof Error ? requestError.message : '技术时序指标计算失败。');
+      })
+      .finally(() => {
+        if (active) setOverlayLoading(false);
+      });
+    return () => { active = false; };
+  }, [productId, productKind, selectedOverlays]);
 
   useEffect(() => {
     if (!detail || !productId) {
@@ -774,13 +681,14 @@ export default function ProductDetail() {
     setAnalysis(null);
     analyzeProduct(productId, productKind, {
       statistics_period: statisticsPeriod,
-      price_ma_periods: priceMaPeriods,
-      volume_ma_periods: volumeMaPeriods,
-      boll_period: bollPeriod,
-      boll_multiplier: bollMultiplier,
-      kdj_period: kdjPeriod,
-      kdj_k_smoothing: kdjKSmoothing,
-      kdj_d_smoothing: kdjDSmoothing,
+      include_technical: false,
+      price_ma_periods: [],
+      volume_ma_periods: [],
+      boll_period: 20,
+      boll_multiplier: 2,
+      kdj_period: 9,
+      kdj_k_smoothing: 3,
+      kdj_d_smoothing: 3,
       histogram_bin_width: histogramBinWidth,
       simulation_horizon: simulationHorizon,
       simulation_path_count: simulationPathCount,
@@ -810,14 +718,8 @@ export default function ProductDetail() {
     };
   }, [
     bootstrapBlockLength,
-    bollMultiplier,
-    bollPeriod,
     detail,
     histogramBinWidth,
-    kdjDSmoothing,
-    kdjKSmoothing,
-    kdjPeriod,
-    priceMaPeriods,
     productId,
     productKind,
     selectedHistoricalRegimePublication,
@@ -827,9 +729,23 @@ export default function ProductDetail() {
     simulationRun,
     simulationTargetReturn,
     statisticsPeriod,
-    volumeMaPeriods,
   ]);
   const productRegimeStatistics: ProductRegimeStatistic[] = analysis?.regimeStatistics ?? [];
+  const rawTechnicalAvailability = useMemo(() => {
+    const points = detail?.timeseries ?? [];
+    return {
+      ohlc: points.length > 0 && points.every((item) => (
+        item.open !== null
+        && item.high !== null
+        && item.low !== null
+        && Number.isFinite(item.open)
+        && Number.isFinite(item.high)
+        && Number.isFinite(item.low)
+        && Number.isFinite(item.close)
+      )),
+      volume: points.some((item) => item.volume !== null && Number.isFinite(item.volume)),
+    };
+  }, [detail?.timeseries]);
 
   const chartOption = useMemo(() => {
     if (!detail?.timeseries || detail.timeseries.length === 0) {
@@ -837,6 +753,10 @@ export default function ProductDetail() {
     }
 
     const dates = detail.timeseries.map((item) => item.date);
+    const findOverlayResult = (indicatorId: string) => overlayResults.find((item) => (
+      item.indicator_id === indicatorId
+    ));
+    const { ohlc: hasOhlc, volume: hasVolume } = rawTechnicalAvailability;
     const totalPoints = dates.length;
     const defaultWindow = 252;
     const startIndex = Math.max(0, totalPoints - defaultWindow);
@@ -850,37 +770,46 @@ export default function ProductDetail() {
       },
     }));
     const priceMASeries = selectedOverlays.includes('PRICE_MA')
-      ? priceMaPeriods.map((period) => ({
-              name: `收盘价${period}日均线`,
-              type: 'line',
-              data: analysis?.technical.priceMa[String(period)] ?? [],
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1.5 },
-              emphasis: { focus: 'series' },
-            }))
+      ? [{
+          name: '20 日收盘价均线',
+          type: 'line',
+          data: alignedChannelValues(
+            findOverlayResult(SERIES_INDICATOR_IDS.PRICE_MA),
+            'ma',
+            dates,
+          ),
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 1.5 },
+          emphasis: { focus: 'series' },
+        }]
       : [];
 
-    const volumeMASeries = selectedOverlays.includes('VOLUME_MA') && analysis?.technical.availability.volume
-      ? volumeMaPeriods.map((period) => ({
-              name: `成交量${period}日均线`,
-              type: 'line',
-              xAxisIndex: 1,
-              yAxisIndex: 1,
-              data: analysis?.technical.volumeMa[String(period)] ?? [],
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1 },
-              emphasis: { focus: 'series' },
-            }))
+    const volumeMASeries = selectedOverlays.includes('VOLUME_MA') && hasVolume
+      ? [{
+          name: '10 日成交量均线',
+          type: 'line',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: alignedChannelValues(
+            findOverlayResult(SERIES_INDICATOR_IDS.VOLUME_MA),
+            'volume_ma',
+            dates,
+          ),
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 1 },
+          emphasis: { focus: 'series' },
+        }]
       : [];
 
+    const bollingerResult = findOverlayResult(SERIES_INDICATOR_IDS.BOLL);
     const bollingerSeries = selectedOverlays.includes('BOLL')
       ? [
             {
-              name: `布林上轨(${bollPeriod}, ${bollMultiplier.toFixed(1)}σ)`,
+              name: '布林上轨（20 日，2σ）',
               type: 'line',
-              data: analysis?.technical.bollinger.upper ?? [],
+              data: alignedChannelValues(bollingerResult, 'upper', dates),
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1, color: '#f97316' },
@@ -888,7 +817,7 @@ export default function ProductDetail() {
             {
               name: '布林中轨',
               type: 'line',
-              data: analysis?.technical.bollinger.middle ?? [],
+              data: alignedChannelValues(bollingerResult, 'middle', dates),
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1, color: '#0ea5e9', type: 'dashed' },
@@ -896,7 +825,7 @@ export default function ProductDetail() {
             {
               name: '布林下轨',
               type: 'line',
-              data: analysis?.technical.bollinger.lower ?? [],
+              data: alignedChannelValues(bollingerResult, 'lower', dates),
               smooth: true,
               showSymbol: false,
               lineStyle: { width: 1, color: '#10b981' },
@@ -904,10 +833,14 @@ export default function ProductDetail() {
           ]
       : [];
 
-    const hasKDJ = selectedOverlays.includes('KDJ') && Boolean(analysis?.technical.availability.kdj);
-    const { kValues, dValues, jValues } = hasKDJ
-      ? (analysis?.technical.kdj ?? { kValues: [], dValues: [], jValues: [] })
-      : { kValues: [], dValues: [], jValues: [] };
+    const kdjResult = findOverlayResult(SERIES_INDICATOR_IDS.KDJ);
+    const hasKDJ = selectedOverlays.includes('KDJ')
+      && Boolean(kdjResult)
+      && kdjResult?.status !== 'unavailable'
+      && kdjResult?.status !== 'error';
+    const kValues = hasKDJ ? alignedChannelValues(kdjResult, 'k', dates) : [];
+    const dValues = hasKDJ ? alignedChannelValues(kdjResult, 'd', dates) : [];
+    const jValues = hasKDJ ? alignedChannelValues(kdjResult, 'j', dates) : [];
 
     const primaryTop = 50;
     const klineHeight = 260;
@@ -1002,7 +935,7 @@ export default function ProductDetail() {
             data: historicalRegimeMarkAreas,
           },
         } : {};
-    const priceSeries = analysis?.technical.availability.ohlc
+    const priceSeries = hasOhlc
       ? {
           name: '价格',
           type: 'candlestick',
@@ -1030,7 +963,7 @@ export default function ProductDetail() {
         type: 'bar',
         xAxisIndex: 1,
         yAxisIndex: 1,
-        data: analysis?.technical.availability.volume ? volumes : [],
+        data: hasVolume ? volumes : [],
         barWidth: '60%',
       },
       ...priceMASeries,
@@ -1099,19 +1032,22 @@ export default function ProductDetail() {
       series,
     };
   }, [
-    analysis,
-    bollMultiplier,
-    bollPeriod,
     detail?.timeseries,
     historicalRegimeMarkAreas,
-    priceMaPeriods,
+    overlayResults,
+    rawTechnicalAvailability,
     selectedOverlays,
-    volumeMaPeriods,
   ]);
 
-  const chartHeight = useMemo(() => {
-    return selectedOverlays.includes('KDJ') && analysis?.technical.availability.kdj ? 700 : 540;
-  }, [analysis?.technical.availability.kdj, selectedOverlays]);
+  const kdjOverlayAvailable = useMemo(() => overlayResults.some((item) => (
+    item.indicator_id === SERIES_INDICATOR_IDS.KDJ
+    && item.status !== 'unavailable'
+    && item.status !== 'error'
+  )), [overlayResults]);
+
+  const chartHeight = useMemo(() => (
+    selectedOverlays.includes('KDJ') && kdjOverlayAvailable ? 700 : 540
+  ), [kdjOverlayAvailable, selectedOverlays]);
 
   const statisticsWindow = analysis?.window ?? {
     complete: false,
@@ -1865,11 +1801,11 @@ export default function ProductDetail() {
               <div className="flex flex-wrap gap-2 text-xs text-slate-500">
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
                   <span className="h-2 w-2 rounded-full bg-sky-500" />
-                  {analysis?.technical.availability.ohlc ? 'K 线' : '真实收盘价 / 净值'}
+                  {rawTechnicalAvailability.ohlc ? 'K 线' : '真实收盘价 / 净值'}
                 </span>
                 <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
-                  <span className={`h-2 w-2 rounded-full ${analysis?.technical.availability.volume ? 'bg-emerald-400' : 'bg-slate-300'}`} />
-                  {analysis?.technical.availability.volume ? '成交量' : '成交量未披露'}
+                  <span className={`h-2 w-2 rounded-full ${rawTechnicalAvailability.volume ? 'bg-emerald-400' : 'bg-slate-300'}`} />
+                  {rawTechnicalAvailability.volume ? '成交量' : '成交量未披露'}
                 </span>
               </div>
             </div>
@@ -1984,24 +1920,35 @@ export default function ProductDetail() {
             ) : (
               <div className="h-[320px] rounded-2xl bg-slate-50 text-center text-slate-400">暂无可视化数据</div>
             )}
-            {analysis && (!analysis.technical.availability.ohlc || !analysis.technical.availability.volume) && (
+            {detail && (!rawTechnicalAvailability.ohlc || !rawTechnicalAvailability.volume) && (
               <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800" role="status">
                 原始数据未完整披露
-                {!analysis.technical.availability.ohlc ? ' OHLC' : ''}
-                {!analysis.technical.availability.volume ? ' 成交量' : ''}
+                {!rawTechnicalAvailability.ohlc ? ' OHLC' : ''}
+                {!rawTechnicalAvailability.volume ? ' 成交量' : ''}
                 ；页面保留真实收盘价 / 净值，不使用 close 或 0 伪造缺失字段。相关 KDJ、成交量均线会保持不可用。
+              </p>
+            )}
+            {overlayLoading && (
+              <p className="rounded-xl bg-sky-50 px-4 py-3 text-xs text-sky-700" role="status">
+                正在通过指标中心的固定签名 NJIT 计划计算技术时序指标…
+              </p>
+            )}
+            {overlayError && (
+              <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800" role="alert">
+                {overlayError}
               </p>
             )}
             <div className="rounded-2xl bg-slate-50 p-6">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-base font-semibold text-slate-900">自定义辅助线</h3>
-                  <p className="text-sm text-slate-500">勾选需要叠加的技术指标，快速评估行情结构与量价关系。</p>
+                  <h3 className="text-base font-semibold text-slate-900">技术时序指标</h3>
+                  <p className="text-sm text-slate-500">来自指标中心的内置时序指标；参数变化只重算辅助线，不重跑统计与模拟。</p>
                 </div>
                 <button
                   type="button"
                   onClick={restoreDefaultOverlays}
-                  className="inline-flex items-center justify-center rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500 transition hover:border-emerald-400 hover:text-emerald-600"
+                  disabled={productKind !== 'etf'}
+                  className="inline-flex items-center justify-center rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500 transition hover:border-emerald-400 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   恢复默认
                 </button>
@@ -2016,7 +1963,12 @@ export default function ProductDetail() {
                         active ? 'border-emerald-400 bg-white shadow-sm' : 'border-transparent bg-white/70 hover:border-emerald-200'
                       }`}
                     >
-                      <button type="button" onClick={() => toggleOverlay(option.id)} className="flex items-center justify-between text-left">
+                      <button
+                        type="button"
+                        disabled={productKind !== 'etf'}
+                        onClick={() => toggleOverlay(option.id)}
+                        className="flex items-center justify-between text-left disabled:cursor-not-allowed disabled:opacity-50"
+                      >
                         <div>
                           <span className={`text-sm font-semibold ${active ? 'text-emerald-600' : 'text-slate-700'}`}>{option.label}</span>
                           <p className="mt-1 text-xs text-slate-500">{option.description}</p>

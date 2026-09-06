@@ -15,6 +15,7 @@ import { humanizeIndicatorMessage } from '../utils/indicatorDiagnostics'
 import { evaluateNumericControls, type NumericControlResult } from '../services/businessNumeric'
 import {
   getInvestableUniverse,
+  investableUniverseEligibleCount,
   searchInvestableUniverseProducts,
   type InvestableUniverseSnapshot,
 } from '../services/productPools'
@@ -234,7 +235,7 @@ export default function PortfolioConstruction() {
       <p className="text-sm text-emerald-300">工作区共享 · 真实历史数据</p><h1 className="mt-1 text-2xl font-semibold">产品组合构建</h1>
       <p className="mt-2 max-w-3xl text-sm text-slate-300">在已锁定可投资域和大类映射内配置具体产品；运行结果会冻结产品池版本、产品成员和大类归属。</p>
     </header>
-    {universe ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">可投资域：<b>{universe.name}</b> · {universe.summary.eligible_count} 只可用产品 · 研究日期 {universe.research_date}</div> : <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"><span>{universeLoading ? '正在读取可投资域…' : '尚未从产品池和大类构建进入，不能直接从全市场配置产品。'}</span><Link to="/pre-investment/product-pool" className="rounded bg-amber-800 px-3 py-2 font-medium text-white">选择产品池版本</Link></div>}
+    {universe ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">可投资域：<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} 只可用产品 · 研究日期 {universe.research_date}</div> : <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"><span>{universeLoading ? '正在读取可投资域…' : '尚未从产品池和大类构建进入，不能直接从全市场配置产品。'}</span><Link to="/pre-investment/product-pool" className="rounded bg-amber-800 px-3 py-2 font-medium text-white">选择产品池版本</Link></div>}
     <ol className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4" aria-label="组合构建步骤">
       {['选择产品', '权重方法', '约束与回测', '运行与保存'].map((label, index) => <li key={label} className={`rounded-lg border px-3 py-2 ${step === index + 1 ? 'border-emerald-500 bg-emerald-50 font-semibold text-emerald-800' : 'border-slate-200 bg-white text-slate-600'}`}>{index + 1}. {label}</li>)}
     </ol>

@@ -25,6 +25,9 @@ from cal_indicators.typed_operators import (
     LEGACY_OPERATOR_REGISTRY_VERSION,
     LEGACY_TYPED_COMPILER_VERSION,
     LEGACY_TYPED_DSL_VERSION,
+    PREVIOUS_OPERATOR_REGISTRY_VERSION,
+    PREVIOUS_TYPED_COMPILER_VERSION,
+    PREVIOUS_TYPED_DSL_VERSION,
     SUPPORTED_TYPED_DSL_VERSIONS,
     TYPED_COMPILER_VERSION,
     TYPED_DSL_VERSION,
@@ -738,6 +741,57 @@ def _normalize_variable_types(
     return normalized
 
 
+@dataclass(frozen=True)
+class TypedSeriesBundlePlan:
+    """One shared typed DAG with multiple named time-series roots."""
+
+    expressions: tuple[tuple[str, str], ...]
+    python_expressions: tuple[tuple[str, str], ...]
+    expression_hash: str
+    dsl_version: str
+    compiler_version: str
+    operator_registry_version: str
+    nodes: tuple[TypedDagNode, ...]
+    roots: Mapping[str, int]
+    output_types: Mapping[str, ValueType]
+    context_requirements: Mapping[str, ValueType]
+    estimated_cost: Mapping[str, Any]
+
+    def graph_payload(self) -> dict[str, Any]:
+        return {
+            "nodes": [node.to_dict() for node in self.nodes],
+            "edges": [
+                {"source": input_id, "target": node.node_id}
+                for node in self.nodes
+                for input_id in node.inputs
+            ],
+            "roots": dict(self.roots),
+            "output_types": {
+                name: value_type.to_dict()
+                for name, value_type in self.output_types.items()
+            },
+            "context_requirements": {
+                name: value_type.to_dict()
+                for name, value_type in self.context_requirements.items()
+            },
+            "estimated_cost": dict(self.estimated_cost),
+            "compiler_version": self.compiler_version,
+            "operator_registry_version": self.operator_registry_version,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "expressions": dict(self.expressions),
+            "python_expressions": dict(self.python_expressions),
+            "expression_hash": self.expression_hash,
+            "dsl_version": self.dsl_version,
+            "compiler_version": self.compiler_version,
+            "operator_registry_version": self.operator_registry_version,
+            "output_contract": "series_bundle",
+            **self.graph_payload(),
+        }
+
+
 class _TypedDagBuilder:
     _binary_operators: Mapping[type[ast.operator], str] = {
         ast.Add: "add",
@@ -894,7 +948,10 @@ class _TypedDagBuilder:
                 self.nodes[input_id].inferred_type for input_id in input_ids
             )
             output_type = self._infer_operator(spec, input_types)
-            if spec.version == TYPED_OPERATOR_REGISTRY_VERSION:
+            if spec.version in {
+                PREVIOUS_OPERATOR_REGISTRY_VERSION,
+                TYPED_OPERATOR_REGISTRY_VERSION,
+            }:
                 probability_index = {
                     "quantile": 1,
                     "quantile_where": 2,
@@ -913,20 +970,55 @@ class _TypedDagBuilder:
                                 "actual": ast.unparse(node.args[probability_index]),
                             },
                         )
-                if spec.operator_id in {"lag", "difference"} and len(node.args) == 2:
-                    periods = _literal_number(node.args[1])
-                    minimum = 0 if spec.operator_id == "lag" else 1
-                    if periods is None or not periods.is_integer() or periods < minimum:
+                integer_parameters: dict[str, tuple[tuple[int, int], ...]] = {
+                    "lag": ((1, 0),),
+                    "difference": ((1, 1),),
+                    "rolling_mean": ((1, 1), (2, 1)),
+                    "rolling_min": ((1, 1), (2, 1)),
+                    "rolling_max": ((1, 1), (2, 1)),
+                    "rolling_std": ((1, 1), (2, 0), (3, 1)),
+                    "recursive_smooth": ((1, 1),),
+                }
+                for parameter_index, minimum in integer_parameters.get(
+                    spec.operator_id, ()
+                ):
+                    if len(node.args) <= parameter_index:
+                        continue
+                    argument_node = node.args[parameter_index]
+                    parameter = _literal_number(argument_node)
+                    runtime_scalar = False
+                    if (
+                        spec.version == TYPED_OPERATOR_REGISTRY_VERSION
+                        and isinstance(argument_node, ast.Name)
+                    ):
+                        parameter_type = self.variable_types.get(argument_node.id)
+                        runtime_scalar = bool(
+                            parameter_type is not None
+                            and parameter_type.is_scalar
+                            and parameter_type.is_numeric
+                            and parameter_type.semantic_dimension
+                            in {"count", "dimensionless"}
+                        )
+                    if not runtime_scalar and (
+                        parameter is None
+                        or not parameter.is_integer()
+                        or parameter < minimum
+                    ):
                         comparator = "非负" if minimum == 0 else "正"
+                        parameter_name = spec.argument_names(len(node.args))[
+                            parameter_index
+                        ]
                         raise TypedDslError(
                             "INVALID_PARAMETER",
-                            f"{spec.operator_id} 的 periods 必须是{comparator}整数常数。",
+                            f"{spec.operator_id} 的 {parameter_name} 必须是{comparator}整数常数或已声明标量参数。",
                             node_id=len(self.nodes),
                             details={
                                 "operator": spec.operator_id,
-                                "parameter": "periods",
-                                "expected": f"{comparator} integer constant",
-                                "actual": ast.unparse(node.args[1]),
+                                "parameter": parameter_name,
+                                "expected": (
+                                    f"{comparator} integer constant or declared scalar parameter"
+                                ),
+                                "actual": ast.unparse(argument_node),
                             },
                         )
                 if spec.operator_id in {"variance", "std"} and len(node.args) == 2:
@@ -1083,6 +1175,7 @@ def compose_typed_expression(
     expected_registry_version = {
         LEGACY_TYPED_DSL_VERSION: LEGACY_OPERATOR_REGISTRY_VERSION,
         COMPAT_TYPED_DSL_VERSION: COMPAT_OPERATOR_REGISTRY_VERSION,
+        PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_OPERATOR_REGISTRY_VERSION,
         TYPED_DSL_VERSION: TYPED_OPERATOR_REGISTRY_VERSION,
     }[dsl_version]
     if operator_registry_version is None:
@@ -1136,6 +1229,7 @@ def compose_typed_expression(
         compiler_version={
             LEGACY_TYPED_DSL_VERSION: LEGACY_TYPED_COMPILER_VERSION,
             COMPAT_TYPED_DSL_VERSION: COMPAT_TYPED_COMPILER_VERSION,
+            PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
             TYPED_DSL_VERSION: TYPED_COMPILER_VERSION,
         }[dsl_version],
         operator_registry_version=operator_registry_version,
@@ -1145,6 +1239,119 @@ def compose_typed_expression(
         output_contract=output_contract,
         context_requirements=used_variables,
         estimated_cost=estimated_cost,
+    )
+
+
+def compose_typed_series_bundle(
+    expressions: Mapping[str, str],
+    *,
+    variable_types: Mapping[str, ValueType | Mapping[str, Any]] | None = None,
+    dsl_version: str = TYPED_DSL_VERSION,
+    operator_registry_version: str | None = None,
+    max_nodes: int = DEFAULT_MAX_NODES,
+    max_depth: int = DEFAULT_MAX_DEPTH,
+) -> TypedSeriesBundlePlan:
+    """Compile named series outputs into one DAG with shared subexpressions."""
+
+    normalized_items = tuple(
+        (str(name).strip(), str(expression).strip())
+        for name, expression in expressions.items()
+    )
+    if not normalized_items:
+        raise TypedDslError("EMPTY_EXPRESSION", "时序指标至少需要一个输出通道。")
+    names = [name for name, _ in normalized_items]
+    if any(not name or not name.isidentifier() for name in names):
+        raise TypedDslError(
+            "INVALID_OUTPUT_NAME",
+            "时序输出通道 ID 必须是合法标识符。",
+        )
+    if len(set(names)) != len(names):
+        raise TypedDslError("DUPLICATE_OUTPUT_NAME", "时序输出通道 ID 不能重复。")
+    if any(not expression for _, expression in normalized_items):
+        raise TypedDslError("EMPTY_EXPRESSION", "时序输出公式不能为空。")
+    if dsl_version not in SUPPORTED_TYPED_DSL_VERSIONS:
+        raise TypedDslError(
+            "UNSUPPORTED_DSL_VERSION",
+            f"不支持 typed DSL 版本 {dsl_version}。",
+            details={"available_versions": sorted(SUPPORTED_TYPED_DSL_VERSIONS)},
+        )
+    expected_registry_version = {
+        LEGACY_TYPED_DSL_VERSION: LEGACY_OPERATOR_REGISTRY_VERSION,
+        COMPAT_TYPED_DSL_VERSION: COMPAT_OPERATOR_REGISTRY_VERSION,
+        PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_OPERATOR_REGISTRY_VERSION,
+        TYPED_DSL_VERSION: TYPED_OPERATOR_REGISTRY_VERSION,
+    }[dsl_version]
+    if operator_registry_version is None:
+        operator_registry_version = expected_registry_version
+    elif operator_registry_version != expected_registry_version:
+        raise TypedDslError(
+            "OPERATOR_VERSION_MISMATCH",
+            f"DSL {dsl_version} 必须使用算子注册表 {expected_registry_version}。",
+            details={
+                "expected": expected_registry_version,
+                "actual": operator_registry_version,
+            },
+        )
+
+    variables = _normalize_variable_types(variable_types)
+    registry = get_typed_operator_registry(operator_registry_version)
+    parser = TypedExpressionParser(tuple(variables))
+    builder = _TypedDagBuilder(
+        variables,
+        registry,
+        max_nodes=max_nodes,
+        max_depth=max_depth,
+    )
+    roots: dict[str, int] = {}
+    python_expressions: list[tuple[str, str]] = []
+    canonical_roots: list[tuple[str, str]] = []
+    for name, expression in normalized_items:
+        python_expression, ast_root = parser.parse(expression)
+        root_id = builder.build(ast_root)
+        output_type = builder.nodes[root_id].inferred_type
+        _check_output_contract(output_type, "series")
+        roots[name] = root_id
+        python_expressions.append((name, python_expression))
+        canonical_roots.append(
+            (name, ast.dump(ast_root, include_attributes=False))
+        )
+
+    output_types = {
+        name: builder.nodes[root_id].inferred_type
+        for name, root_id in roots.items()
+    }
+    used_variables = {
+        node.label: node.inferred_type
+        for node in builder.nodes
+        if node.kind == "variable"
+    }
+    costs = [
+        node.cost_expression for node in builder.nodes if node.cost_expression != "0"
+    ]
+    compiler_version = {
+        LEGACY_TYPED_DSL_VERSION: LEGACY_TYPED_COMPILER_VERSION,
+        COMPAT_TYPED_DSL_VERSION: COMPAT_TYPED_COMPILER_VERSION,
+        PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
+        TYPED_DSL_VERSION: TYPED_COMPILER_VERSION,
+    }[dsl_version]
+    canonical = repr(canonical_roots)
+    return TypedSeriesBundlePlan(
+        expressions=normalized_items,
+        python_expressions=tuple(python_expressions),
+        expression_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        dsl_version=dsl_version,
+        compiler_version=compiler_version,
+        operator_registry_version=operator_registry_version,
+        nodes=tuple(builder.nodes),
+        roots=MappingProxyType(roots),
+        output_types=MappingProxyType(output_types),
+        context_requirements=MappingProxyType(used_variables),
+        estimated_cost={
+            "unit": "primitive_ops",
+            "symbolic": "+".join(costs) if costs else "0",
+            "node_count": len(builder.nodes),
+            "root_count": len(roots),
+        },
     )
 
 
@@ -1631,11 +1838,13 @@ __all__ = [
     "TypedDslError",
     "TypedExpressionParser",
     "TypedExpressionPlan",
+    "TypedSeriesBundlePlan",
     "TypedIndicatorRuntime",
     "ValueType",
     "catalog",
     "compose",
     "compose_typed_expression",
+    "compose_typed_series_bundle",
     "evaluate_typed_expression",
     "get_typed_dsl_catalog",
     "get_typed_operator_catalog",

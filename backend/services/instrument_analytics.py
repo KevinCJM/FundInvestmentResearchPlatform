@@ -996,16 +996,11 @@ def _kind_snapshot_state(
     }
 
 
-def load_product_filter_snapshot(
+def _product_metric_snapshot_projection(
+    snapshot: pd.DataFrame,
     kind: SingleInstrumentKind,
     data_dir: Path,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Return the validated small metric snapshot used by product filters."""
-
-    snapshot = _load_snapshot(data_dir)
-    state = _kind_snapshot_state(data_dir, snapshot, kind)
-    if state["status"] != "ready" or snapshot.empty:
-        return snapshot.iloc[0:0], state
+) -> pd.DataFrame:
     metric_fields = sorted(snapshot_ranking_metrics(data_dir))
     metric_context_fields = [
         f"{field}__{suffix}"
@@ -1032,12 +1027,45 @@ def load_product_filter_snapshot(
         ))
         if column in snapshot.columns
     ]
-    selected = snapshot.loc[snapshot["instrument_type"].eq(kind), columns].copy()
+    return snapshot.loc[snapshot["instrument_type"].eq(kind), columns].copy()
+
+
+def load_product_filter_snapshot(
+    kind: SingleInstrumentKind,
+    data_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Return the validated small metric snapshot used by product filters."""
+
+    snapshot = _load_snapshot(data_dir)
+    state = _kind_snapshot_state(data_dir, snapshot, kind)
+    if state["status"] != "ready" or snapshot.empty:
+        return snapshot.iloc[0:0], state
+    selected = _product_metric_snapshot_projection(snapshot, kind, data_dir)
     if state.get("metric_availability", {}).get("current_size") != "ready":
         for column in ("current_size", "current_size_as_of", "current_share", "current_unit_nav"):
             if column in selected.columns:
                 selected[column] = pd.NA
     return selected, state
+
+
+def load_product_review_snapshot(
+    kind: SingleInstrumentKind,
+    data_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Return review evidence even when the derived snapshot is stale.
+
+    Product filters remain fail-closed and refuse stale derivatives. Candidate
+    review is different: the snapshot value is useful historical evidence as
+    long as its stale state and effective date are shown explicitly. Returning
+    the stored value prevents a source-fingerprint mismatch from erasing every
+    metric in the review table while preserving freshness diagnostics.
+    """
+
+    snapshot = _load_snapshot(data_dir)
+    state = _kind_snapshot_state(data_dir, snapshot, kind)
+    if snapshot.empty:
+        return snapshot, state
+    return _product_metric_snapshot_projection(snapshot, kind, data_dir), state
 
 
 def _snapshot_metadata(

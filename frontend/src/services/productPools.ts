@@ -227,6 +227,21 @@ export interface InvestableUniverseSearchResponse {
   page_size: number
 }
 
+export function investableUniverseEligibleCount(
+  snapshot: InvestableUniverseSnapshot | null | undefined,
+): number {
+  if (!snapshot) return 0
+  const summaryCount = Number(snapshot.summary?.eligible_count)
+  if (Number.isFinite(summaryCount)) return summaryCount
+  const productCount = Number(snapshot.product_count)
+  if (Number.isFinite(productCount)) return productCount
+  if (Array.isArray(snapshot.members)) {
+    return snapshot.members.filter((item) => item.eligible !== false).length
+  }
+  if (Array.isArray(snapshot.products)) return snapshot.products.length
+  return 0
+}
+
 export interface ProductPoolVersionDiff {
   version_id: string
   against_id: string

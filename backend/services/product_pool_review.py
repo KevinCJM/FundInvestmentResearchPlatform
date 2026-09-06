@@ -18,7 +18,7 @@ import pandas as pd
 from product_pools.errors import ProductPoolValidationError
 from product_pools.repository import ProductPoolRepository
 from services.instrument_analytics import (
-    load_product_filter_snapshot,
+    load_product_review_snapshot,
     snapshot_metric_definitions,
 )
 
@@ -133,7 +133,7 @@ class ProductPoolReviewDataService:
         repository: ProductPoolRepository,
         market_data_root: Path,
         *,
-        snapshot_loader: SnapshotLoader = load_product_filter_snapshot,
+        snapshot_loader: SnapshotLoader = load_product_review_snapshot,
         definition_loader: MetricDefinitionLoader = snapshot_metric_definitions,
     ) -> None:
         self.repository = repository

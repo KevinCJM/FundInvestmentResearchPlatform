@@ -37,6 +37,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by integrated app st
 
 from .errors import ValidationError
 from .periods import get_period_spec, resolve_period_bounds
+from .runtime_context import aligned_return_series_kernel
 from .variable_registry import (
     DATA_CONTRACT_VERSION,
     canonicalize_variables,
@@ -97,6 +98,45 @@ class ProductVariableSeries:
     coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
     warnings: list[dict[str, str]] = field(default_factory=list)
     unavailable_variables: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass
+class ProductChartSeries:
+    """Axis-preserving product inputs for time-series indicator charts.
+
+    The anchor variable owns the dates. Other variables are left-joined and
+    keep missing values as NaN so chart positions are never compressed.
+    """
+
+    identity: InstrumentIdentity
+    frame: pd.DataFrame
+    axis_anchor: str
+    requested_variables: tuple[str, ...]
+    fingerprints: dict[str, str]
+    fingerprint: str
+    data_latest_date: str | None
+    lineage: list[dict[str, Any]] = field(default_factory=list)
+    coverage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    warnings: list[dict[str, str]] = field(default_factory=list)
+    unavailable_variables: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass
+class ChartPeriodWindow:
+    compute_frame: pd.DataFrame
+    display_start: int
+    display_end: int
+    requested_as_of: str | None
+    effective_as_of: str
+    start_date: str
+    end_date: str
+    observation_count: int
+    data_latest_date: str | None
+    warnings: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def display_frame(self) -> pd.DataFrame:
+        return self.compute_frame.iloc[self.display_start : self.display_end]
 
 
 @dataclass
@@ -1573,23 +1613,389 @@ def select_variable_window_fast(
     )
 
 
+def load_product_chart_series(
+    kind: Literal["etf", "fund"],
+    product_id: str,
+    dependencies: Iterable[str],
+    axis_anchor: str,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    as_of: Optional[str] = None,
+) -> ProductChartSeries:
+    """Load an axis-preserving frame, including derived return series.
+
+    ``returns`` and ``log_returns`` are public time-series variables but are not
+    physical Parquet columns.  They are derived from the same-date adjusted NAV
+    path after the backing dataset is loaded.  The first row remains NaN so the
+    derived arrays stay aligned with the chart date axis.
+    """
+
+    resolved_dir = _effective_data_dir(data_dir)
+    identity = resolve_identity(kind, product_id, resolved_dir)
+    requested = tuple(
+        dict.fromkeys((*canonicalize_variables(dependencies), str(axis_anchor)))
+    )
+    derived_backing = {
+        "returns": "adjusted_nav",
+        "log_returns": "adjusted_nav",
+    }
+    physical_requested: list[str] = []
+    unavailable: dict[str, dict[str, str]] = {}
+    for variable_id in requested:
+        definition = get_variable(variable_id)
+        if definition is None:
+            unavailable[variable_id] = {
+                "code": "UNKNOWN_VARIABLE",
+                "message": f"未知变量 {variable_id}。",
+            }
+            continue
+        if definition.kind != "series" or "single_product" not in definition.domains:
+            unavailable[variable_id] = {
+                "code": "VARIABLE_CONTEXT_MISMATCH",
+                "message": f"变量 {variable_id} 不是单产品时间序列。",
+            }
+            continue
+        backing = derived_backing.get(variable_id, variable_id)
+        if backing not in physical_requested:
+            physical_requested.append(backing)
+
+    by_dataset: dict[str, list[str]] = {}
+    for variable_id in physical_requested:
+        definition = get_variable(variable_id)
+        if definition is None:
+            unavailable[variable_id] = {
+                "code": "UNKNOWN_VARIABLE",
+                "message": f"未知变量 {variable_id}。",
+            }
+            continue
+        if kind not in definition.product_kinds or not definition.source_dataset:
+            unavailable[variable_id] = _source_unavailable_detail(variable_id, kind)
+            continue
+        by_dataset.setdefault(definition.source_dataset, []).append(variable_id)
+
+    source_frames: dict[str, pd.DataFrame] = {}
+    fingerprints: dict[str, str] = {}
+    coverage: dict[str, dict[str, Any]] = {}
+    warnings: list[dict[str, str]] = []
+    lineage: list[dict[str, Any]] = []
+    latest_dates: dict[str, str | None] = {}
+    for dataset, variable_ids in by_dataset.items():
+        (
+            frame,
+            fingerprint,
+            source_coverage,
+            source_unavailable,
+            source_warnings,
+            source_lineage,
+            dataset_latest,
+        ) = _read_source_frame(
+            identity=identity,
+            product_id=product_id,
+            dataset=dataset,
+            variable_ids=tuple(variable_ids),
+            data_dir=resolved_dir,
+            as_of=as_of,
+        )
+        source_frames[dataset] = frame
+        if fingerprint:
+            fingerprints[dataset] = fingerprint
+        coverage.update(source_coverage)
+        unavailable.update(source_unavailable)
+        warnings.extend(source_warnings)
+        if source_lineage:
+            lineage.append(source_lineage)
+        latest_dates[dataset] = dataset_latest
+
+    anchor_physical = derived_backing.get(str(axis_anchor), str(axis_anchor))
+    anchor_definition = get_variable(anchor_physical)
+    anchor_dataset = (
+        anchor_definition.source_dataset if anchor_definition is not None else None
+    )
+    anchor_frame = source_frames.get(str(anchor_dataset), pd.DataFrame())
+    if (
+        anchor_physical in unavailable
+        or anchor_frame.empty
+        or anchor_physical not in anchor_frame.columns
+    ):
+        merged = pd.DataFrame()
+    else:
+        anchor_columns = [
+            name
+            for name in anchor_frame.columns
+            if name == "date"
+            or name.startswith("_available_date_")
+            or name in physical_requested
+        ]
+        merged = anchor_frame[anchor_columns].copy()
+        anchor_values = pd.to_numeric(
+            merged[anchor_physical], errors="coerce"
+        ).replace([np.inf, -np.inf], np.nan)
+        merged[anchor_physical] = anchor_values
+        merged = merged.dropna(subset=["date", anchor_physical])
+        for dataset, frame in source_frames.items():
+            if dataset == anchor_dataset or frame.empty:
+                continue
+            join_columns = [
+                name
+                for name in frame.columns
+                if name == "date"
+                or name.startswith("_available_date_")
+                or name in physical_requested
+            ]
+            if len(join_columns) <= 1:
+                continue
+            merged = merged.merge(
+                frame[join_columns],
+                on="date",
+                how="left",
+                validate="one_to_one",
+            )
+        merged = (
+            merged.sort_values("date")
+            .drop_duplicates(subset=["date"], keep="last")
+            .reset_index(drop=True)
+        )
+        for variable_id in physical_requested:
+            if variable_id not in merged.columns:
+                merged[variable_id] = np.nan
+            else:
+                merged[variable_id] = pd.to_numeric(
+                    merged[variable_id], errors="coerce"
+                ).replace([np.inf, -np.inf], np.nan)
+
+        if any(name in requested for name in derived_backing):
+            levels = np.ascontiguousarray(
+                merged["adjusted_nav"].to_numpy(dtype=np.float64, copy=False)
+            )
+            simple_returns, log_returns = aligned_return_series_kernel(levels)
+            if "returns" in requested:
+                merged["returns"] = simple_returns
+            if "log_returns" in requested:
+                merged["log_returns"] = log_returns
+            for variable_id, values in (
+                ("returns", simple_returns),
+                ("log_returns", log_returns),
+            ):
+                if variable_id not in requested:
+                    continue
+                finite = np.isfinite(values)
+                dates = merged.loc[finite, "date"]
+                coverage[variable_id] = {
+                    "source_rows": int(values.size),
+                    "non_null_rows": int(np.count_nonzero(finite)),
+                    "coverage_ratio": round(
+                        float(np.count_nonzero(finite) / values.size)
+                        if values.size
+                        else 0.0,
+                        8,
+                    ),
+                    "first_date": (
+                        dates.min().strftime("%Y-%m-%d")
+                        if not dates.empty
+                        else None
+                    ),
+                    "latest_date": (
+                        dates.max().strftime("%Y-%m-%d")
+                        if not dates.empty
+                        else None
+                    ),
+                    "derived_from": "adjusted_nav",
+                }
+            lineage.append(
+                {
+                    "dataset": "derived_context",
+                    "source_fields": ["adjusted_nav"],
+                    "derived_fields": [
+                        name for name in ("returns", "log_returns") if name in requested
+                    ],
+                    "transform": "adj_nav[t] / adj_nav[t-1] - 1; log(adj_nav[t] / adj_nav[t-1])",
+                    "alignment": "same date axis; first observation is missing",
+                }
+            )
+
+        if str(axis_anchor) in derived_backing:
+            merged = merged.dropna(subset=[str(axis_anchor)]).reset_index(drop=True)
+
+    for derived_name, backing_name in derived_backing.items():
+        if derived_name in requested and backing_name in unavailable:
+            backing_detail = unavailable[backing_name]
+            unavailable[derived_name] = {
+                "code": backing_detail.get("code", "VARIABLE_UNAVAILABLE"),
+                "message": (
+                    f"“{_variable_label(derived_name)}”需要可用的"
+                    f"“{_variable_label(backing_name)}”：{backing_detail.get('message', '')}"
+                ),
+            }
+
+    fingerprint_payload = {
+        "contract": DATA_CONTRACT_VERSION,
+        "axis_anchor": axis_anchor,
+        "variables": requested,
+        "derived_backing": {
+            name: backing
+            for name, backing in derived_backing.items()
+            if name in requested
+        },
+        "files": fingerprints,
+    }
+    combined = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    if merged.empty:
+        combined = "missing"
+    anchor_latest = latest_dates.get(str(anchor_dataset))
+    return ProductChartSeries(
+        identity=identity,
+        frame=merged,
+        axis_anchor=str(axis_anchor),
+        requested_variables=requested,
+        fingerprints=fingerprints,
+        fingerprint=combined,
+        data_latest_date=anchor_latest,
+        lineage=lineage,
+        coverage=coverage,
+        warnings=warnings,
+        unavailable_variables=unavailable,
+    )
+
+
+def select_chart_window(
+    product_series: ProductChartSeries,
+    period: str,
+    as_of: Optional[str] = None,
+    *,
+    history_policy: Literal["lookback", "full_history"] = "lookback",
+    lookback_observations: int = 1,
+    max_display_points: int = 5_000,
+    max_compute_points: int = 20_000,
+) -> ChartPeriodWindow:
+    """Separate the visible period from the causal computation history."""
+
+    spec = get_period_spec(period)
+    if spec is None:
+        raise ValidationError("INVALID_PERIOD", "不支持的评价周期。", field="period")
+    if history_policy not in {"lookback", "full_history"}:
+        raise ValidationError(
+            "INVALID_HISTORY_POLICY",
+            "时序历史策略无效。",
+            field="history_policy",
+        )
+    if lookback_observations < 1:
+        raise ValidationError(
+            "INVALID_LOOKBACK",
+            "时序回看观察数必须为正整数。",
+            field="lookback_observations",
+        )
+    frame = product_series.frame
+    requested_date = _parse_as_of(as_of)
+    eligible = (
+        frame[frame["date"] <= requested_date].copy()
+        if requested_date is not None
+        else frame.copy()
+    )
+    if eligible.empty:
+        raise ValidationError(
+            "NO_DATA_AS_OF",
+            "截止日期之前没有可用的时序指标日期轴。",
+            field="as_of",
+        )
+    effective = pd.Timestamp(eligible.iloc[-1]["date"]).normalize()
+    reference = requested_date or pd.Timestamp.today().normalize()
+    bounds = resolve_period_bounds(
+        spec,
+        effective_data_date=effective,
+        reference_date=reference,
+        first_data_date=pd.Timestamp(eligible.iloc[0]["date"]),
+    )
+    bounded = eligible[eligible["date"] <= bounds.calendar_end].copy()
+    if bounded.empty:
+        raise ValidationError(
+            "NO_DATA_FOR_PERIOD",
+            f"{spec.label}没有可用时序数据。",
+            field="period",
+        )
+    display_floor = bounds.anchor_target
+    if spec.kind == "calendar":
+        display_floor = display_floor + pd.Timedelta(days=1)
+    display_positions = np.flatnonzero(
+        (bounded["date"] >= display_floor).to_numpy(dtype=np.bool_)
+    )
+    if display_positions.size == 0:
+        raise ValidationError(
+            "NO_DATA_FOR_PERIOD",
+            f"{spec.label}没有可展示的时序数据。",
+            field="period",
+        )
+    first_display = int(display_positions[0])
+    last_display = int(display_positions[-1]) + 1
+    warnings = list(product_series.warnings)
+    visible_count = last_display - first_display
+    if visible_count > max_display_points:
+        first_display = last_display - max_display_points
+        warnings.append(
+            {
+                "code": "SERIES_DISPLAY_TRUNCATED",
+                "message": f"时序展示已保留最近 {max_display_points} 个观察值。",
+            }
+        )
+    compute_start = (
+        0
+        if history_policy == "full_history"
+        else max(0, first_display - max(0, lookback_observations - 1))
+    )
+    compute_end = last_display
+    if compute_end - compute_start > max_compute_points:
+        if history_policy == "full_history":
+            raise ValidationError(
+                "SERIES_HISTORY_LIMIT_EXCEEDED",
+                f"递归时序指标历史超过 {max_compute_points} 个观察值，不能截断后重置状态。",
+                field="period",
+            )
+        compute_start = compute_end - max_compute_points
+        warnings.append(
+            {
+                "code": "SERIES_COMPUTE_TRUNCATED",
+                "message": f"时序计算已保留最近 {max_compute_points} 个观察值。",
+            }
+        )
+    compute_frame = bounded.iloc[compute_start:compute_end].reset_index(drop=True)
+    display_start = first_display - compute_start
+    display_end = last_display - compute_start
+    display = compute_frame.iloc[display_start:display_end]
+    return ChartPeriodWindow(
+        compute_frame=compute_frame,
+        display_start=display_start,
+        display_end=display_end,
+        requested_as_of=as_of,
+        effective_as_of=effective.strftime("%Y-%m-%d"),
+        start_date=display.iloc[0]["date"].strftime("%Y-%m-%d"),
+        end_date=display.iloc[-1]["date"].strftime("%Y-%m-%d"),
+        observation_count=int(len(display)),
+        data_latest_date=product_series.data_latest_date,
+        warnings=warnings,
+    )
+
+
 __all__ = [
     "DEFAULT_DATA_DIR",
     "InstrumentIdentity",
     "PeriodWindow",
     "ProductSeries",
     "ProductVariableSeries",
+    "ProductChartSeries",
+    "ChartPeriodWindow",
     "VariableWindowIndex",
     "VariablePeriodWindow",
     "load_adjusted_product_series",
     "load_price_points",
     "load_product_series",
+    "load_product_chart_series",
     "load_product_variable_series",
     "load_product_variable_series_batch",
     "market_data_generation",
     "resolve_identity",
     "resolve_identities",
     "select_period_window",
+    "select_chart_window",
     "select_variable_window",
     "prepare_variable_window_index",
     "select_variable_window_fast",

@@ -395,30 +395,40 @@ def build_product_analysis_response(
     high = _float_array(frame, "high")
     low = _float_array(frame, "low")
     volume = _float_array(frame, "volume")
-    availability = technical_input_availability_kernel(
-        open_values,
-        high,
-        low,
-        close,
-        volume,
-    )
-    price_periods = _int_array(parameters.get("price_ma_periods") or [])
-    volume_periods = _int_array(parameters.get("volume_ma_periods") or [])
-    price_ma = moving_average_kernel(close, price_periods)
-    volume_ma = moving_average_kernel(volume, volume_periods)
-    bollinger = bollinger_kernel(
-        close,
-        int(parameters["boll_period"]),
-        float(parameters["boll_multiplier"]),
-    )
-    kdj = kdj_kernel(
-        high,
-        low,
-        close,
-        int(parameters["kdj_period"]),
-        int(parameters["kdj_k_smoothing"]),
-        int(parameters["kdj_d_smoothing"]),
-    )
+    include_technical = bool(parameters.get("include_technical", True))
+    if include_technical:
+        availability = technical_input_availability_kernel(
+            open_values,
+            high,
+            low,
+            close,
+            volume,
+        )
+        price_periods = _int_array(parameters.get("price_ma_periods") or [])
+        volume_periods = _int_array(parameters.get("volume_ma_periods") or [])
+        price_ma = moving_average_kernel(close, price_periods)
+        volume_ma = moving_average_kernel(volume, volume_periods)
+        bollinger = bollinger_kernel(
+            close,
+            int(parameters["boll_period"]),
+            float(parameters["boll_multiplier"]),
+        )
+        kdj = kdj_kernel(
+            high,
+            low,
+            close,
+            int(parameters["kdj_period"]),
+            int(parameters["kdj_k_smoothing"]),
+            int(parameters["kdj_d_smoothing"]),
+        )
+    else:
+        availability = np.zeros(3, dtype=np.int64)
+        price_periods = np.empty(0, dtype=np.int64)
+        volume_periods = np.empty(0, dtype=np.int64)
+        price_ma = np.empty((0, close.size), dtype=np.float64)
+        volume_ma = np.empty((0, close.size), dtype=np.float64)
+        bollinger = np.empty((3, 0), dtype=np.float64)
+        kdj = np.empty((3, 0), dtype=np.float64)
 
     statistics_frame, window = _statistics_window(
         frame,

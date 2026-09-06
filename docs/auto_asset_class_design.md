@@ -110,11 +110,27 @@ s.t.   w_i >= 0,  Σ w_i = 1
                                                           类内权重 ──> asset_alloc_info 草案 ──> 诊断 ──> 人工确认 ──> 版本
 ```
 
-### A 类：规则映射（基线）
+### A 类：规则映射（基线，已实现三级分类）
 
-按 `fund_type` / `invest_type` / 解析后的 `benchmark` 做确定性映射到「权益 / 固收 / 货币 / 商品 / 海外 / 另类」。
-`A[i,k] = 1` 或 `0`。
-**作用**：零配置基线、其它算法的对照组、D 类树模型的初始标签来源。必须做，很便宜。
+按 `fund_type` / `invest_type` / `benchmark` / `index_name` / 产品名做确定性映射，`A[i,k] = 1` 或 `0`。
+分类表在 `backend/fund_taxonomy.py`，**三级**，对齐国内已经收敛的行业口径：
+
+| 层级 | 内容 | 依据 |
+|---|---|---|
+| 一级·资产大类 | 权益 / 固收 / 商品 / 货币 / 海外 / 混合 / 其他 | 银河证券公募基金分类体系的顶层，也是 SAA 真正配置的那一层 |
+| 二级·细分类型 | 权益：规模(宽基) / 风格因子 / 行业 / 主题；固收：利率债 / 信用债 / 可转债 / 同业存单；海外：港股 / 美股 / 其他海外；商品：贵金属 / 能源 / 农产品 / 有色 | 易方达 2025 年发布的股票指数 ETF 四分法 + 交易所债券 ETF 口径 |
+| 三级·风格/行业/主题 | 宽基：大盘 / 中盘 / 小盘 / 全市场 / 科创板 / 创业板 / 北证；风格因子：红利 / 低波 / 价值 / 成长 / 质量 / 动量 / 等权 / 基本面 / 自由现金流；行业八大：金融 / 医药 / 科技 / 消费 / 制造 / 周期 / 公用事业 / 房地产；主题六大：数字化与人工智能 / 高端制造 / 低碳转型 / 国企改革 / 人口趋势 / ESG；债券：国债 / 政金债 / 地方债 / 城投债 / 公司债 / 短融 / 科创债 | 中证/申万行业分类 + Smart Beta 常见因子 + 易方达八大行业六大主题 |
+
+匹配是**有序关键词包含，首行命中即止**，不是模型：合同标签必须可复现、可解释、可上会。
+关键的顺序设计（都有回归测试）：
+
+- 风格因子排在行业和宽基之前 —— 「中证500低波动」是因子产品，不是中盘宽基。
+- 主题排在行业之前 —— 主题天然跨行业（人工智能、光伏），行业是单一行业。
+- 借用商品词汇的权益行业基金排在商品之前 —— **「黄金股 / 有色金属」是权益周期行业，不是商品**（旧的扁平表在这里是错的）。
+- 债券词排在权益之前 —— 「科创债」是信用债，不是科创板。
+- 长指数名排在短的之前 —— 「中证1000」也包含「中证100」。
+
+**作用**：零配置基线、其它算法的对照组、下面 4.4 分层聚类的硬约束来源、D 类树模型的初始标签来源。
 
 ### B 类：无监督聚类
 
@@ -192,6 +208,29 @@ s.t. Σ_k x[i,k] <= 1                    每个产品最多进一类
 
 ---
 
+### 4.4 合同分层 + 类内统计聚类（`block_by`，已实现）
+
+纯统计聚类有一个结构性问题：**相关性窗口会骗人，合同不会**。2020 年以来黄金 ETF 和权益 ETF 有过长达半年的高相关期，一个只看收益的算法会把它们放进同一个大类；而在 SAA 语境下，这个大类是不能拿去做资产配置的。
+
+因此加入国内 FOF 实务里的「先分层、再聚类」：
+
+```
+产品池 ──> 合同分类（一级/二级/三级，用户选）──> 硬分块
+                                                 │
+              ┌──────────────────────────────────┴──────────────────────────────┐
+              ▼                                                                  ▼
+      块内距离矩阵 D_b ──> 块内统计聚类（层次/K-medoids/K-means）──> 块内类标签 ──> 全局偏移
+```
+
+实现要点：
+
+1. **K 在块之间的分配**：`allocate_block_clusters_kernel`（NJIT，定长签名）。每个非空块**至少保留 1 类**——分类层级是硬分区，宁可把 K 抬上去，也不允许为了凑 K 把两个合同块合并；剩余的 K 按「产品数 / 当前类数」最大者依次分配（highest averages），确定性、无需 tie-break。块容量为 `size // size_min`，K 超过总容量时被裁到总容量。
+2. **自动 K 时按块单独判断**：块内轮廓系数超过 **0.25**（Kaufman/Rousseeuw 的「有实质结构」下限）才拆分，否则该块整体保持 1 类。没有这条阈值，5 只沪深300 ETF 会被切成两半互相像的类。
+3. **容量指派不得跨块**：`capacity_assign_kernel` 会跳过非有限亲和度，所以跨块的 `A[i,k]` 直接置 `-inf`。这一条同时挡住了 `size_min` 回填和 `force` 策略——否则「强制归入最相近大类」会悄悄把债券 ETF 塞进权益类。
+4. **诊断**：`diagnostics.blocks` 逐块返回 `block / size / k / silhouette`，前端单独一张表。分层后 `contract_deviations` 按构造为空，这是符合预期的。
+
+`block_by = none` 时全部行为与分层上线前完全一致（有回归测试）。
+
 ## 5. 输出与诊断
 
 ### 5.1 分类结果
@@ -248,16 +287,19 @@ s.t. Σ_k x[i,k] <= 1                    每个产品最多进一类
 
 | 文件 | 内容 |
 |---|---|
-| `backend/auto_class_numba.py` | 20 个 fixed-signature NJIT 内核：稳健标准化、winsorize、相关/距离矩阵、PCA 载荷与特征值、Lance-Williams 层次聚类与切树、K-means、K-medoids、亲和度、容量选择、轮廓系数、类内/类间相关、类内权重、产品池限额注水 |
-| `backend/auto_asset_class.py` | 编排层：产品解析、特征装配、K 建议、分类、命名、诊断与序列化 |
+| `backend/auto_class_numba.py` | 21 个 fixed-signature NJIT 内核：稳健标准化、winsorize、相关/距离矩阵、PCA 载荷与特征值、Lance-Williams 层次聚类与切树、K-means、K-medoids、亲和度、容量选择、轮廓系数、类内/类间相关、类内权重、产品池限额注水、**分层 K 分配** |
+| `backend/fund_taxonomy.py` | A 股公募/ETF 三级合同分类表与匹配器（见 4.A），纯查表、可复现、可解释 |
+| `backend/auto_asset_class.py` | 编排层：产品解析、特征装配、K 建议、分类、**合同分层**、命名、诊断与序列化 |
 | `backend/services/auto_class_routes.py` | `GET /api/asset-classes/auto/meta`、`POST /api/asset-classes/auto/preview` |
 | `backend/app.py` | 启动预热接入 `warm_auto_class_numba_kernels()`，readiness 覆盖新链路 |
-| `backend/tests/test_auto_asset_class.py` | 81 条测试：内核对照参考实现、边界、确定性、编排、路由 |
+| `backend/tests/test_auto_asset_class.py` | 130 条测试：内核对照参考实现、边界、确定性、编排、路由、**三级分类表与合同分层** |
 | `backend/tests/conftest.py` | 统一 `sys.path`；并把测试的 `NUMBA_CACHE_DIR` 隔离到 `.numba_cache/tests` |
 
 算法：`rule` / `hierarchical`（average、complete、ward）/ `kmedoids` / `kmeans`。
 特征：`correlation` / `metrics` / `pca` / `blend`。
 类内权重：`equal` / `inv_vol` / `inv_var` / `affinity`。
+合同分类层级 `taxonomy_level`：`asset_class` / `category` / `detail`（决定大类命名与 `rule` 算法粒度）。
+合同分层 `block_by`：`none` / `asset_class` / `category` / `detail`（统计聚类不可跨越的硬约束）。
 
 ### 与第 4 节设计的三处修正（实现中发现并改掉）
 
@@ -294,6 +336,29 @@ s.t. Σ_k x[i,k] <= 1                    每个产品最多进一类
 Numba 的 `cache=True` 会把导入时的模块名写进缓存环境，于是先跑测试、再起服务，会在 numba 缓存加载器深处抛出误导性的
 `ModuleNotFoundError: No module named 'backend'`（堆栈指向 `portfolio_regime.py`，与真实原因无关）。
 已通过给测试单独的 `NUMBA_CACHE_DIR` 隔离；根治需要统一全仓库的导入命名，属于打包约定层面的改动，不在本次范围。
+
+### 大类净值拟合的执行证明校验（已修复）
+
+「大类净值与指标计算失败：自动大类净值拟合未提供有效的固定签名 NJIT 执行证明」。
+
+`/api/fit-classes` 的 `execution` 不是单个审计对象，而是两条并列通道：`{ fit_analytics, performance_metrics }`（见 `backend/fit.py::compute_nav_performance_payload`）。前端却用 `assertFixedNjitExecution()` 当成扁平对象校验，取 `execution_backend` 得到 `undefined`，必然失败关闭。两条通道各自都是合规的固定签名 NJIT 审计，缺的只是校验方式。
+
+修复：`frontend/src/utils/fixedNjitExecution.ts` 增加 `assertFixedNjitExecutionLanes()`——扁平审计照旧单条校验，通道映射则逐条校验并在报错里带上通道名；空对象和数组一律拒绝，不放松任何一条原有判据。自动构建大类与手动构建大类两个调用点都改用它。
+
+**手动构建大类的同一条链路也是坏的**（`ManualConstruction.tsx` 的「资产大类拟合」），一并修掉。它之所以没被发现，是因为 `ManualConstruction.test.tsx` 根本没有覆盖 `/api/fit-classes`；而 `AutoAssetClassification.test.tsx` 里这个接口的 mock 用的是并不存在的扁平形状。两处都已按真实响应形状改正，并在 `fixedNjitExecution.test.ts` 补了双通道用例。
+
+### 可投资域快照读写不一致（已修复）
+
+「运行自动分类」返回 `未找到指定可投资域快照。`，但同一个快照的 `GET /api/investable-universes/{id}/products` 正常返回 20 个产品。两个缺陷叠在一起：
+
+1. **读错文件。** 快照由 `ProductPoolService` 追加写进 `data/product_pools.json` 的 `universe_snapshots`，而 `InvestableUniverseMembership` 的两个调用方（`services/auto_class_routes.py`、`custom_indicators/portfolio_service.py`）都去读 `data/investable_universes.json` —— 一个从来没有人写过的空库，目录里只留下了它的 `.lock`。
+2. **读错形状。** 即便路径对了，落盘记录用的是 `products` 键；`members` 是 `ProductPoolService._decorate_universe_snapshot` 在读接口里现算的。`validate()` 直接读原始记录的 `members`，得到空列表，于是每个产品都会被判成 `not_in_universe`；就算命中了也因为缺 `eligible` 字段而被判 `not_eligible`。
+
+修复：`product_pools/constants.py` 里用 `UNIVERSE_SNAPSHOT_STORE` 统一存储文件名，两个调用方都改用它；`InvestableUniverseMembership._members()` 兼容两种落盘形状，用领域层已有的 `member_eligibility()` 计算准入（快照里的产品必然已通过产品池准入，`research_status` 取 `approved`）；`_reference()` 在没有 `version_refs` 时用并列的 `version_ids`/`pool_ids` 还原血缘，否则真实快照的审计链会是空的。
+
+**为什么测试没拦住：** `test_auto_asset_class.py` 和 `test_portfolio_research.py` 的夹具都直接写装饰后的 `members` 形状，没有任何一条用例走过「产品池服务真实落盘 → 下游校验」这条链路。已补 `_write_live_shaped_universe()` 夹具与三条用例（真实形状可运行、真实形状仍能拦住不可用产品、路由与产品池服务指向同一个存储文件）。
+
+**遗留：** 真实快照没有 `content_hash`（`create_universe_snapshot` 不写），所以血缘引用里该字段为 `None`。属于写入侧的审计缺口，未改。
 
 ### 前端
 

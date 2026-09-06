@@ -757,6 +757,72 @@
       ]
     },
     {
+      "id": "R82",
+      "task_type": "data_source_center_data_model_catalog_or_etl_workflow",
+      "match_keywords": [
+        "DataSourceCenter",
+        "DataModelCatalog",
+        "data_sources",
+        "data_model",
+        "ETL",
+        "AkShare",
+        "source sync",
+        "source mapping",
+        "multi-source resolution",
+        "数据源中心",
+        "数据模型",
+        "数据映射",
+        "数据同步",
+        "下载工作台"
+      ],
+      "negative_keywords": [
+        "single Tushare refresh only"
+      ],
+      "route_priority": 92,
+      "first_read_modules": [
+        "backend_data_model_catalog",
+        "backend_data_source_etl",
+        "frontend_data_source_center"
+      ],
+      "expand_to_modules": [
+        "data_ingestion_config",
+        "market_data_snapshot_lifecycle",
+        "backend_custom_indicator_service",
+        "backend_regime_research",
+        "frontend_app_shell",
+        "project_docs"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P05",
+        "P07",
+        "P09",
+        "P11",
+        "P15"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract",
+        "inspect_security_surface"
+      ],
+      "stop_and_verify_codes": [
+        "run_frontend_build_when_deps_available",
+        "run_minimum_regression",
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_no_secret_values",
+        "verify_parquet_schema_or_tmp_fixture"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "data_source_center",
+        "versioned_etl",
+        "external_source_boundary"
+      ]
+    },
+    {
       "id": "R80",
       "task_type": "data_ingestion_refresh_versioned_snapshot_or_parquet_schema",
       "match_keywords": [

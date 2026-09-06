@@ -42,16 +42,25 @@ LEGACY_TYPED_COMPILER_VERSION = "typed-ast-1"
 COMPAT_TYPED_DSL_VERSION = "2.1.0"
 COMPAT_OPERATOR_REGISTRY_VERSION = "2.1.0"
 COMPAT_TYPED_COMPILER_VERSION = "typed-ast-2"
-TYPED_DSL_VERSION = "2.2.0"
-TYPED_COMPILER_VERSION = "typed-numba-3"
-TYPED_OPERATOR_REGISTRY_VERSION = "2.2.0"
+PREVIOUS_TYPED_DSL_VERSION = "2.2.0"
+PREVIOUS_OPERATOR_REGISTRY_VERSION = "2.2.0"
+PREVIOUS_TYPED_COMPILER_VERSION = "typed-numba-3"
+TYPED_DSL_VERSION = "2.3.0"
+TYPED_COMPILER_VERSION = "typed-numba-4"
+TYPED_OPERATOR_REGISTRY_VERSION = "2.3.0"
 SUPPORTED_TYPED_DSL_VERSIONS = frozenset(
-    {LEGACY_TYPED_DSL_VERSION, COMPAT_TYPED_DSL_VERSION, TYPED_DSL_VERSION}
+    {
+        LEGACY_TYPED_DSL_VERSION,
+        COMPAT_TYPED_DSL_VERSION,
+        PREVIOUS_TYPED_DSL_VERSION,
+        TYPED_DSL_VERSION,
+    }
 )
 SUPPORTED_OPERATOR_REGISTRY_VERSIONS = frozenset(
     {
         LEGACY_OPERATOR_REGISTRY_VERSION,
         COMPAT_OPERATOR_REGISTRY_VERSION,
+        PREVIOUS_OPERATOR_REGISTRY_VERSION,
         TYPED_OPERATOR_REGISTRY_VERSION,
     }
 )
@@ -70,7 +79,17 @@ PRICE_SEMANTIC_DIMENSIONS = frozenset(
 PATH_LEVEL_SEMANTIC_DIMENSIONS = PRICE_SEMANTIC_DIMENSIONS | frozenset(
     {"dimensionless"}
 )
-CURRENT_ONLY_OPERATOR_IDS = frozenset({"drawdown_series", "new_high_mask"})
+V22_OPERATOR_IDS = frozenset({"drawdown_series", "new_high_mask"})
+V23_OPERATOR_IDS = frozenset(
+    {
+        "rolling_mean",
+        "rolling_std",
+        "rolling_min",
+        "rolling_max",
+        "recursive_smooth",
+        "divide_or_default",
+    }
+)
 ADDITIVE_RATE_DIMENSIONS = frozenset({"return_decimal", "rate_decimal"})
 LEGACY_OPERATOR_IDS = frozenset(
     {
@@ -369,6 +388,17 @@ _OPERATOR_ARGUMENT_NAMES: Mapping[tuple[str, int], tuple[str, ...]] = {
     ("regression_standard_error", 2): ("x", "y"),
     ("lag", 2): ("values", "periods"),
     ("difference", 2): ("values", "periods"),
+    ("rolling_mean", 2): ("values", "window"),
+    ("rolling_mean", 3): ("values", "window", "min_periods"),
+    ("rolling_std", 2): ("values", "window"),
+    ("rolling_std", 3): ("values", "window", "ddof"),
+    ("rolling_std", 4): ("values", "window", "ddof", "min_periods"),
+    ("rolling_min", 2): ("values", "window"),
+    ("rolling_min", 3): ("values", "window", "min_periods"),
+    ("rolling_max", 2): ("values", "window"),
+    ("rolling_max", 3): ("values", "window", "min_periods"),
+    ("recursive_smooth", 3): ("values", "periods", "initial"),
+    ("divide_or_default", 3): ("numerator", "denominator", "default"),
     ("drawdown_series", 1): ("levels",),
     ("new_high_mask", 1): ("levels",),
 }
@@ -721,6 +751,181 @@ def _lag_difference_type(inputs: tuple[ValueType, ...]) -> ValueType:
         semantic_dimension=value.semantic_dimension,
         price_basis=value.price_basis,
     )
+
+
+def _series_parameter(
+    value: ValueType,
+    *,
+    operator: str,
+    parameter: str,
+    allow_dimensionless: bool = True,
+) -> None:
+    allowed_dimensions = {"count"}
+    if allow_dimensionless:
+        allowed_dimensions.add("dimensionless")
+    if (
+        not value.is_scalar
+        or not value.is_numeric
+        or value.semantic_dimension not in allowed_dimensions
+    ):
+        raise _type_error(
+            operator,
+            f"时间序列及标量参数 {parameter}",
+            (value,),
+        )
+
+
+def _rolling_type(inputs: tuple[ValueType, ...]) -> ValueType:
+    values = inputs[0]
+    if values.kind != "series" or not values.is_numeric:
+        raise _type_error("rolling", "numeric series<time>", inputs)
+    _series_parameter(inputs[1], operator="rolling", parameter="window")
+    if len(inputs) >= 3:
+        _series_parameter(inputs[-1], operator="rolling", parameter="min_periods")
+    return values
+
+
+def _rolling_std_type(inputs: tuple[ValueType, ...]) -> ValueType:
+    values = _rolling_type(inputs)
+    if len(inputs) >= 3:
+        ddof_index = 2
+        _series_parameter(inputs[ddof_index], operator="rolling_std", parameter="ddof")
+    return values
+
+
+def _recursive_smooth_type(inputs: tuple[ValueType, ...]) -> ValueType:
+    values, periods, initial = inputs
+    if values.kind != "series" or not values.is_numeric:
+        raise _type_error("recursive_smooth", "numeric series<time>", inputs)
+    _series_parameter(periods, operator="recursive_smooth", parameter="periods")
+    if not initial.is_scalar or not initial.is_numeric:
+        raise _type_error(
+            "recursive_smooth",
+            "numeric series<time>, scalar periods, scalar initial",
+            inputs,
+        )
+    _compatible_semantics("recursive_smooth", values, initial)
+    return values
+
+
+def _divide_or_default_type(inputs: tuple[ValueType, ...]) -> ValueType:
+    numerator, denominator, default = inputs
+    if (
+        numerator.kind != "series"
+        or denominator.kind != "series"
+        or not numerator.is_numeric
+        or not denominator.is_numeric
+    ):
+        raise _type_error(
+            "divide_or_default",
+            "two numeric series<time> and one scalar default",
+            inputs,
+        )
+    output = _divide_type((numerator, denominator))
+    if not default.is_scalar or not default.is_numeric:
+        raise _type_error(
+            "divide_or_default",
+            "two numeric series<time> and one scalar default",
+            inputs,
+        )
+    _compatible_semantics("divide_or_default", output, default)
+    return output
+
+
+def _validated_positive_integer(value: Any, name: str, *, allow_zero: bool = False) -> int:
+    number = float(value)
+    minimum = 0 if allow_zero else 1
+    if not math.isfinite(number) or not number.is_integer() or number < minimum:
+        raise TypedDslError(
+            "INVALID_PARAMETER",
+            f"{name} 必须是{'非负' if allow_zero else '正'}整数。",
+            details={"parameter": name, "value": number},
+        )
+    return int(number)
+
+
+def _rolling_reference(
+    values: Any,
+    window: Any,
+    min_periods: Any,
+    *,
+    mode: str,
+    ddof: Any = 0.0,
+) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float64)
+    width = _validated_positive_integer(window, "window")
+    minimum = _validated_positive_integer(min_periods, "min_periods")
+    if minimum > width:
+        raise TypedDslError(
+            "INVALID_PARAMETER",
+            "min_periods 不能大于 window。",
+        )
+    degrees = _validated_positive_integer(ddof, "ddof", allow_zero=True)
+    output = np.full(array.size, np.nan, dtype=np.float64)
+    for index in range(array.size):
+        start = max(0, index - width + 1)
+        selected = array[start : index + 1]
+        selected = selected[np.isfinite(selected)]
+        if selected.size < minimum:
+            continue
+        if mode == "mean":
+            output[index] = float(np.mean(selected))
+        elif mode == "std":
+            if selected.size <= degrees:
+                continue
+            output[index] = float(np.std(selected, ddof=degrees))
+        elif mode == "min":
+            output[index] = float(np.min(selected))
+        else:
+            output[index] = float(np.max(selected))
+    return output
+
+
+def _rolling_mean(values: Any, window: Any, min_periods: Any | None = None) -> np.ndarray:
+    effective = window if min_periods is None else min_periods
+    return _rolling_reference(values, window, effective, mode="mean")
+
+
+def _rolling_std(
+    values: Any,
+    window: Any,
+    ddof: Any = 0.0,
+    min_periods: Any | None = None,
+) -> np.ndarray:
+    effective = window if min_periods is None else min_periods
+    return _rolling_reference(values, window, effective, mode="std", ddof=ddof)
+
+
+def _rolling_min(values: Any, window: Any, min_periods: Any | None = None) -> np.ndarray:
+    effective = window if min_periods is None else min_periods
+    return _rolling_reference(values, window, effective, mode="min")
+
+
+def _rolling_max(values: Any, window: Any, min_periods: Any | None = None) -> np.ndarray:
+    effective = window if min_periods is None else min_periods
+    return _rolling_reference(values, window, effective, mode="max")
+
+
+def _recursive_smooth(values: Any, periods: Any, initial: Any) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float64)
+    width = _validated_positive_integer(periods, "periods")
+    previous = float(initial)
+    if not math.isfinite(previous):
+        raise TypedDslError("INVALID_PARAMETER", "initial 必须是有限数值。")
+    output = np.full(array.size, np.nan, dtype=np.float64)
+    for index, value in enumerate(array):
+        if not np.isfinite(value):
+            continue
+        previous = ((width - 1.0) * previous + value) / width
+        output[index] = previous
+    return output
+
+
+def _divide_or_default(numerator: Any, denominator: Any, default: Any) -> Any:
+    lhs = np.asarray(numerator, dtype=np.float64)
+    rhs = np.asarray(denominator, dtype=np.float64)
+    fallback = float(default)
+    return np.where(np.abs(rhs) < 1e-12, fallback, lhs / rhs)
 
 
 def _arg_type(inputs: tuple[ValueType, ...]) -> ValueType:
@@ -1599,6 +1804,23 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
             latex_template=r"\operatorname{clip}(x,lower,upper)",
         )
     )
+    specs.append(
+        _spec(
+            "divide_or_default",
+            "basic",
+            (
+                _signature(
+                    (series_t, series_t, "scalar"),
+                    series_t,
+                    "matching time axes; denominator zero uses default",
+                ),
+            ),
+            "逐元素安全除法；分母接近零时使用指定有限标量。",
+            _divide_or_default_type,
+            _divide_or_default,
+            latex_template=r"\operatorname{divide\_or\_default}(x,y,d)",
+        )
+    )
 
     for operator_id, function, infer, aliases, latex in (
         ("log", _log, _log_exp_type, (), r"\log(x)"),
@@ -1820,6 +2042,82 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
                 cost=_cost_input,
             )
         )
+    rolling_signatures = (
+        _signature((series_t, "scalar<count>"), series_t, "preserve time axis"),
+        _signature(
+            (series_t, "scalar<count>", "scalar<count>"),
+            series_t,
+            "preserve time axis with explicit minimum observations",
+        ),
+    )
+    for operator_id, function in (
+        ("rolling_mean", _rolling_mean),
+        ("rolling_min", _rolling_min),
+        ("rolling_max", _rolling_max),
+    ):
+        specs.append(
+            _spec(
+                operator_id,
+                "rolling",
+                rolling_signatures,
+                "沿时间轴执行因果滚动计算，前置样本不足时返回缺失值。",
+                _rolling_type,
+                function,
+                latex_template=rf"\operatorname{{{operator_id}}}(x,w,m)",
+                cost_model="rolling_scan",
+                cost=_cost_input,
+            )
+        )
+    specs.append(
+        _spec(
+            "rolling_std",
+            "rolling",
+            (
+                _signature((series_t, "scalar<count>"), series_t, "preserve time axis"),
+                _signature(
+                    (series_t, "scalar<count>", "scalar<count>"),
+                    series_t,
+                    "preserve time axis with explicit ddof",
+                ),
+                _signature(
+                    (
+                        series_t,
+                        "scalar<count>",
+                        "scalar<count>",
+                        "scalar<count>",
+                    ),
+                    series_t,
+                    "preserve time axis with explicit ddof and minimum observations",
+                ),
+            ),
+            "沿时间轴计算因果滚动标准差，支持显式 ddof 与最小观察数。",
+            _rolling_std_type,
+            _rolling_std,
+            latex_template=r"\operatorname{rolling\_std}(x,w,ddof,m)",
+            cost_model="rolling_scan",
+            cost=_cost_input,
+        )
+    )
+    specs.append(
+        _spec(
+            "recursive_smooth",
+            "rolling",
+            (
+                _signature(
+                    (series_t, "scalar<count>", "scalar"),
+                    series_t,
+                    "causal recurrence preserving time axis",
+                ),
+            ),
+            "按 ((n-1)×前值+当前值)/n 进行因果递归平滑。",
+            _recursive_smooth_type,
+            _recursive_smooth,
+            latex_template=r"\operatorname{recursive\_smooth}(x,n,x_0)",
+            cost_model="scan",
+            cost=_cost_input,
+        )
+    )
+
     for operator_id, function, infer, output, shape_rule in (
         ("first", _first, _last_type, "scalar", "select first element"),
         ("length", _length, _length_type, "scalar<count>", "count elements"),
@@ -2358,7 +2656,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
     return tuple(specs)
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=4)
 def get_typed_operator_registry(
     version: str = TYPED_OPERATOR_REGISTRY_VERSION,
 ) -> Mapping[str, TypedOperatorSpec]:
@@ -2384,10 +2682,12 @@ def get_typed_operator_registry(
         "cumulative_return": _cumulative_return,
     }
     for spec in _canonical_specs():
-        if (
-            version != TYPED_OPERATOR_REGISTRY_VERSION
-            and spec.operator_id in CURRENT_ONLY_OPERATOR_IDS
-        ):
+        if version in {
+            LEGACY_OPERATOR_REGISTRY_VERSION,
+            COMPAT_OPERATOR_REGISTRY_VERSION,
+        } and spec.operator_id in V22_OPERATOR_IDS:
+            continue
+        if version != TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in V23_OPERATOR_IDS:
             continue
         if version == LEGACY_OPERATOR_REGISTRY_VERSION:
             if spec.operator_id not in LEGACY_OPERATOR_IDS:
@@ -2401,6 +2701,8 @@ def get_typed_operator_registry(
             )
         elif version == COMPAT_OPERATOR_REGISTRY_VERSION:
             spec = replace(spec, version=COMPAT_OPERATOR_REGISTRY_VERSION)
+        elif version == PREVIOUS_OPERATOR_REGISTRY_VERSION:
+            spec = replace(spec, version=PREVIOUS_OPERATOR_REGISTRY_VERSION)
         registry[spec.operator_id] = spec
         for alias in spec.aliases:
             if alias in registry:
@@ -2425,11 +2727,13 @@ def get_typed_operator_catalog(
         "dsl_version": {
             LEGACY_OPERATOR_REGISTRY_VERSION: LEGACY_TYPED_DSL_VERSION,
             COMPAT_OPERATOR_REGISTRY_VERSION: COMPAT_TYPED_DSL_VERSION,
+            PREVIOUS_OPERATOR_REGISTRY_VERSION: PREVIOUS_TYPED_DSL_VERSION,
             TYPED_OPERATOR_REGISTRY_VERSION: TYPED_DSL_VERSION,
         }[version],
         "compiler_version": {
             LEGACY_OPERATOR_REGISTRY_VERSION: LEGACY_TYPED_COMPILER_VERSION,
             COMPAT_OPERATOR_REGISTRY_VERSION: COMPAT_TYPED_COMPILER_VERSION,
+            PREVIOUS_OPERATOR_REGISTRY_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
             TYPED_OPERATOR_REGISTRY_VERSION: TYPED_COMPILER_VERSION,
         }[version],
         "operator_registry_version": version,

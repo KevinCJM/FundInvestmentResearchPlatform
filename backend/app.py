@@ -20,6 +20,10 @@ from starlette.responses import HTMLResponse, JSONResponse, FileResponse
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.append(str(BACKEND_DIR))
+# Canonical package names embedded in NJIT caches must resolve from both the
+# repository root and `cd backend; uvicorn app:app` startup modes.
+if str(BACKEND_DIR.parent) not in sys.path:
+    sys.path.append(str(BACKEND_DIR.parent))
 
 from optimizer import (
     calculate_efficient_frontier_exploration,
@@ -171,6 +175,10 @@ async def lifespan(_app: FastAPI):
     regime_graph_plan_status = regime_graph_v2_service.prewarm_saved_definitions()
     if regime_graph_plan_status.get("complete") is not True:
         raise RuntimeError("历史情景 V2 已保存定义未能全部完成启动预热")
+    from backend.data_sources.resolution_kernels import warm_resolution_kernels
+    resolution_status = warm_resolution_kernels()
+    if not resolution_status["complete"]:
+        raise RuntimeError("Multi-source resolution NJIT warmup incomplete")
     indicator_service.start_compute_engine()
     _app.state.numba_warmup = {
         "complete": True,
@@ -192,6 +200,7 @@ async def lifespan(_app: FastAPI):
         "research_series": research_series_status,
         "portfolio_strategy": strategy_status,
         "workers": indicator_service.compute_engine.status(),
+        "source_resolution": resolution_status,
     }
     try:
         yield
@@ -246,6 +255,9 @@ try:
 except Exception:
     pass
 from services.data_routes import router as data_router
+from services.data_model_routes import router as data_model_router
+from services.data_source_routes import router as data_source_router
+from services.etl_routes import router as etl_router
 from services.custom_indicator_routes import router as custom_indicator_router
 from services.instrument_analytics import (
     build_legacy_etf_analytics_response,
@@ -267,6 +279,9 @@ from services.auto_class_routes import router as auto_class_router
 from services.product_pool_routes import router as product_pool_router
 
 app.include_router(data_router)
+app.include_router(data_model_router)
+app.include_router(data_source_router)
+app.include_router(etl_router)
 app.include_router(custom_indicator_router)
 app.include_router(instrument_router)
 app.include_router(index_router)

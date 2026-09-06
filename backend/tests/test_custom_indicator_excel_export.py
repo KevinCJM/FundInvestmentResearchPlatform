@@ -202,6 +202,12 @@ _OPERATOR_EXPRESSIONS = {
     "regression_standard_error": "regression_standard_error(returns)",
     "root_mean_square": "root_mean_square(returns)",
     "skewness": "skewness(returns)",
+    "rolling_mean": "mean(rolling_mean(returns, 3.0, 2.0))",
+    "rolling_std": "mean(rolling_std(returns, 3.0, 0.0, 2.0))",
+    "rolling_min": "mean(rolling_min(returns, 3.0, 2.0))",
+    "rolling_max": "mean(rolling_max(returns, 3.0, 2.0))",
+    "recursive_smooth": "mean(recursive_smooth(returns, 3.0, 0.0))",
+    "divide_or_default": "mean(divide_or_default(returns, returns, 0.0))",
 }
 
 _COMPAT_OPERATOR_EXPRESSIONS = {

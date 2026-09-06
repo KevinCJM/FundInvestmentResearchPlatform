@@ -8,10 +8,14 @@ import { getInvestableUniverse, searchInvestableUniverseProducts } from '../serv
 
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }))
 vi.mock('../services/businessNumeric', () => ({ evaluateNumericControls: vi.fn() }))
-vi.mock('../services/productPools', () => ({
-  getInvestableUniverse: vi.fn(),
-  searchInvestableUniverseProducts: vi.fn(),
-}))
+vi.mock('../services/productPools', async () => {
+  const actual = await vi.importActual<typeof import('../services/productPools')>('../services/productPools')
+  return {
+    ...actual,
+    getInvestableUniverse: vi.fn(),
+    searchInvestableUniverseProducts: vi.fn(),
+  }
+})
 
 function LocationProbe() {
   const location = useLocation()
@@ -84,6 +88,70 @@ describe('ManualConstruction product navigation', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('兼容已生成但缺少 summary 的产品池快照，不再白屏', async () => {
+    vi.mocked(getInvestableUniverse).mockResolvedValue({
+      id: 'universe-legacy',
+      name: '旧结构可投资域',
+      research_date: '2026-09-04',
+      version_ids: ['version-1'],
+      pool_ids: ['pool-1'],
+      groups: [],
+      products: [
+        {
+          key: 'etf:159393.SZ',
+          kind: 'etf',
+          product_id: '159393.SZ',
+          code: '159393.SZ',
+          name: '万家沪深300ETF',
+          evaluation_plan_id: 'plan-etf',
+          evaluation_plan_revision: 1,
+          evaluation_plan_name: 'ETF评价',
+          usage_status: 'normal',
+          max_weight: 0.6,
+          valid_until: null,
+          substitute_group: '',
+          reasons: ['通过'],
+          source_version_ids: ['version-1'],
+          source_pool_ids: ['pool-1'],
+        },
+        {
+          key: 'fund:024011.OF',
+          kind: 'fund',
+          product_id: '024011.OF',
+          code: '024011.OF',
+          name: '万家沪深300ETF联接-A',
+          evaluation_plan_id: 'plan-fund',
+          evaluation_plan_revision: 1,
+          evaluation_plan_name: '联接基金评价',
+          usage_status: 'normal',
+          max_weight: 0.5,
+          valid_until: null,
+          substitute_group: '',
+          reasons: ['通过'],
+          source_version_ids: ['version-1'],
+          source_pool_ids: ['pool-1'],
+        },
+      ],
+      product_count: 2,
+      created_at: '2026-09-04T00:00:00Z',
+      immutable: true,
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/manual-construction?universe=universe-legacy']}>
+        <ManualConstruction />
+      </MemoryRouter>,
+    )
+
+    const universeName = await screen.findByText('旧结构可投资域')
+    expect(universeName.closest('div')).toHaveTextContent('2 只可用产品')
+    expect(screen.getByRole('heading', { name: '资产大类构建模块' })).toBeInTheDocument()
+    await waitFor(() => expect(searchInvestableUniverseProducts).toHaveBeenCalledWith(
+      'universe-legacy',
+      expect.objectContaining({ eligibleOnly: true }),
+    ))
   })
 
   it('产品名称进入对应类别的产品研究，并可对比同一大类的全部产品', async () => {

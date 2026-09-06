@@ -12,7 +12,7 @@ import math
 from collections.abc import Mapping, Sequence
 
 
-MATH_NOTATION_VERSION = "1.2.0"
+MATH_NOTATION_VERSION = "1.4.0"
 
 
 _CANONICAL_OPERATOR_ALIASES = {
@@ -103,11 +103,12 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
     first = _argument(arguments, 0, "x")
     second = _argument(arguments, 1, "y")
     third = _argument(arguments, 2, "z")
+    fourth = _argument(arguments, 3, "m")
 
     binary = {
         "add": rf"{_group(first)}+{_group(second)}",
         "subtract": rf"{_group(first)}-{_group(second)}",
-        "multiply": rf"{_group(first)}\odot{_group(second)}",
+        "multiply": rf"{_group(first)}\cdot{_group(second)}",
         "divide": rf"\frac{{{first}}}{{{second}}}",
         "power": rf"{_group(first)}^{{{second}}}",
         "minimum": rf"\min\left({first},{second}\right)",
@@ -195,6 +196,28 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         return rf"\left({first}_{{t-{second}}}\right)_t"
     if operator_id == "difference":
         return rf"\left(\Delta_{{{second}}}{first}_t\right)_t"
+    if operator_id == "rolling_mean":
+        # Window availability rules belong in the calculation explanation. The
+        # headline formula uses one compact symbol for the complete operator.
+        return rf"\mu_{{t,{second}}}{_group(first)}"
+    if operator_id == "rolling_std":
+        window = second
+        ddof = arguments[2] if len(arguments) > 2 else "0"
+        if ddof in {"1", "1.0"}:
+            return rf"s_{{t,{window}}}{_group(first)}"
+        if ddof in {"0", "0.0"}:
+            return rf"\sigma_{{t,{window}}}{_group(first)}"
+        return rf"\sigma_{{t,{window}}}^{{({ddof})}}{_group(first)}"
+    if operator_id == "rolling_min":
+        window_set = rf"\mathcal{{W}}_{{t,{second}}}"
+        return rf"\min_{{i\in {window_set}}} {_indexed(first, 'i')}"
+    if operator_id == "rolling_max":
+        window_set = rf"\mathcal{{W}}_{{t,{second}}}"
+        return rf"\max_{{i\in {window_set}}} {_indexed(first, 'i')}"
+    if operator_id == "recursive_smooth":
+        return rf"\mathcal{{S}}_{{{second},{third}}}{_group(first)}_{{t}}"
+    if operator_id == "divide_or_default":
+        return rf"{_group(first)}\mathbin{{\oslash}}_{{{third}}}{_group(second)}"
     if operator_id == "quantile":
         return rf"Q_{{{second}}}{_group(first)}"
     if operator_id == "count_true":
@@ -243,11 +266,42 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
 
 
 class _MathematicalLatexRenderer(ast.NodeVisitor):
+    _PRECEDENCE = {
+        ast.Add: 10,
+        ast.Sub: 10,
+        ast.Mult: 20,
+        ast.Div: 20,
+        ast.Pow: 30,
+    }
+
     def __init__(self, variable_latex: Mapping[str, str]) -> None:
         self.variable_latex = variable_latex
 
     def render(self, node: ast.AST) -> str:
         return self.visit(node)
+
+    @classmethod
+    def _node_precedence(cls, node: ast.AST) -> int:
+        if isinstance(node, ast.BinOp):
+            return cls._PRECEDENCE.get(type(node.op), 0)
+        if isinstance(node, ast.UnaryOp):
+            return 40
+        return 50
+
+    def _render_operand(
+        self,
+        node: ast.AST,
+        parent_precedence: int,
+        *,
+        group_on_equal: bool = False,
+    ) -> str:
+        rendered = self.render(node)
+        precedence = self._node_precedence(node)
+        if precedence < parent_precedence or (
+            group_on_equal and precedence == parent_precedence
+        ):
+            return _group(rendered)
+        return rendered
 
     def visit_Constant(self, node: ast.Constant) -> str:  # noqa: N802
         if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
@@ -265,22 +319,36 @@ class _MathematicalLatexRenderer(ast.NodeVisitor):
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> str:  # noqa: N802
         if isinstance(node.op, ast.USub):
-            return render_operator_latex("negate", (self.render(node.operand),))
+            operand = self._render_operand(node.operand, 40)
+            return rf"-{operand}"
+        if isinstance(node.op, ast.UAdd):
+            return self._render_operand(node.operand, 40)
         return self.generic_visit(node)  # type: ignore[return-value]
 
     def visit_BinOp(self, node: ast.BinOp) -> str:  # noqa: N802
-        operator_id = {
-            ast.Add: "add",
-            ast.Sub: "subtract",
-            ast.Mult: "multiply",
-            ast.Div: "divide",
-            ast.Pow: "power",
-        }.get(type(node.op))
-        if operator_id is None:
+        precedence = self._PRECEDENCE.get(type(node.op))
+        if precedence is None:
             return rf"\mathrm{{{escape_latex_text(ast.unparse(node))}}}"
-        return render_operator_latex(
-            operator_id,
-            (self.render(node.left), self.render(node.right)),
+        if isinstance(node.op, ast.Add):
+            return (
+                f"{self._render_operand(node.left, precedence)}+"
+                f"{self._render_operand(node.right, precedence)}"
+            )
+        if isinstance(node.op, ast.Sub):
+            return (
+                f"{self._render_operand(node.left, precedence)}-"
+                f"{self._render_operand(node.right, precedence, group_on_equal=True)}"
+            )
+        if isinstance(node.op, ast.Mult):
+            return (
+                f"{self._render_operand(node.left, precedence)}"
+                rf"\cdot{self._render_operand(node.right, precedence)}"
+            )
+        if isinstance(node.op, ast.Div):
+            return rf"\frac{{{self.render(node.left)}}}{{{self.render(node.right)}}}"
+        return (
+            rf"{self._render_operand(node.left, precedence, group_on_equal=True)}"
+            rf"^{{{self.render(node.right)}}}"
         )
 
     def visit_Call(self, node: ast.Call) -> str:  # noqa: N802

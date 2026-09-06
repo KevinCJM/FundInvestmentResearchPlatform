@@ -117,7 +117,7 @@ def test_period_policy_and_exact_scalar_builtin_catalog(tmp_path: Path) -> None:
     for definition in (omitted, empty):
         assert definition["period_policy"] == "all_supported"
         assert definition["periods"] == list(SUPPORTED_PERIODS)
-        assert definition["dsl_version"] == "2.2.0"
+        assert definition["dsl_version"] == "2.3.0"
         assert definition["numeric_kernel_version"] == "2.2.0"
         assert definition["required_variables"] == ["returns"]
 

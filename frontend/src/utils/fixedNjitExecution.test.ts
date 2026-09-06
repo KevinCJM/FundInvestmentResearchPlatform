@@ -3,6 +3,7 @@ import {
   assertCompliantExecutionGraph,
   assertCompliantNumericalExecution,
   assertFixedNjitExecution,
+  assertFixedNjitExecutionLanes,
   assertOptimizedThirdPartyExecution,
 } from './fixedNjitExecution'
 
@@ -86,5 +87,38 @@ describe('mixed numerical execution policy', () => {
       .toThrow('历史情景未提供完整的数值执行证明链')
     expect(() => assertCompliantExecutionGraph([validAudit, { backend: 'numpy' }], '历史情景'))
       .toThrow('历史情景第 2 段未提供合规的数值执行证明')
+  })
+})
+
+describe('assertFixedNjitExecutionLanes', () => {
+  const lane = {
+    execution_backend: 'numba_njit_fixed_signature',
+    nopython: true,
+    object_mode: 0,
+    python_fallback: 0,
+    request_time_compilation: 0,
+    kernel_signatures: { k: ['(array(float64, 2d, C),)'] },
+  }
+
+  it('接受 /api/fit-classes 的双通道执行证明', () => {
+    expect(() => assertFixedNjitExecutionLanes(
+      { fit_analytics: lane, performance_metrics: lane },
+      '大类拟合',
+    )).not.toThrow()
+  })
+
+  it('仍接受单个扁平执行证明', () => {
+    expect(() => assertFixedNjitExecutionLanes(lane, '大类拟合')).not.toThrow()
+  })
+
+  it.each([
+    [{}, '大类拟合未提供有效的固定签名 NJIT 执行证明'],
+    [[lane], '大类拟合未提供有效的固定签名 NJIT 执行证明'],
+    [{ fit_analytics: lane, performance_metrics: { ...lane, python_fallback: 1 } },
+      '大类拟合（performance_metrics）未提供有效的固定签名 NJIT 执行证明'],
+    [{ fit_analytics: lane, performance_metrics: {} },
+      '大类拟合（performance_metrics）未提供有效的固定签名 NJIT 执行证明'],
+  ])('任一通道不合规即失败关闭', (audit, message) => {
+    expect(() => assertFixedNjitExecutionLanes(audit, '大类拟合')).toThrow(message as string)
   })
 })

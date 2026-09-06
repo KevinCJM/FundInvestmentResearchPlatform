@@ -14,7 +14,9 @@ import {
   composeCustomIndicator,
   createCustomIndicator,
   deleteCustomIndicator,
+  deriveRollingSeriesIndicator,
   evaluateCustomIndicators,
+  evaluateTimeSeriesIndicators,
   exportCustomIndicatorExcel,
   getCustomIndicatorMeta,
   getSnapshotIndicatorConfig,
@@ -26,6 +28,7 @@ import {
   validateCustomIndicator,
   type EvaluationResult,
   type EvaluationTarget,
+  type IndicatorResultKind,
   type IndicatorDefinition,
   type IndicatorDag,
   type IndicatorDagNode,
@@ -39,7 +42,12 @@ import {
   type InferenceResponse,
   type InstrumentSearchItem,
   type ProductKind,
+  type SeriesOutputDefinition,
+  type SeriesOutputInference,
+  type SeriesOutputMeasureId,
+  type SeriesOutputMeasureOption,
   type SnapshotIndicatorConfig,
+  type TimeSeriesIndicatorResult,
   type ValidationResponse,
 } from '../services/customIndicators'
 import { MetricUnavailableReason } from '../components/metrics/MetricDisplay'
@@ -66,6 +74,26 @@ const FALLBACK_PERIODS = [
   { value: 'ALL', label: '成立以来', description: '首个真实净值点至有效截止日' },
 ]
 
+const FALLBACK_SERIES_OUTPUT_MEASURES: SeriesOutputMeasureOption[] = [
+  { id: 'auto', label: '自动推断', description: '根据公式量纲与可证明范围自动选择。', semantic_dimensions: ['*'], range: null, default_unit: '', default_display_format: 'number' },
+  { id: 'raw_market_price', label: '原始市价', description: '开盘价、最高价、最低价、收盘价及同量纲结果。', semantic_dimensions: ['raw_market_price'], range: null, default_unit: '元', default_display_format: 'number' },
+  { id: 'adjusted_nav', label: '复权净值', description: '复权后的单位净值或财富水平。', semantic_dimensions: ['adjusted_nav'], range: null, default_unit: '净值', default_display_format: 'number' },
+  { id: 'reported_nav', label: '披露净值', description: '基金披露的单位净值。', semantic_dimensions: ['reported_nav'], range: null, default_unit: '净值', default_display_format: 'number' },
+  { id: 'virtual_nav', label: '虚拟净值（起点 1）', description: '由收益累计得到的无量纲财富指数。', semantic_dimensions: ['dimensionless'], range: null, default_unit: '', default_display_format: 'number' },
+  { id: 'normalized', label: '归一化值', description: '无物理单位且不承诺固定边界的相对水平。', semantic_dimensions: ['dimensionless'], range: null, default_unit: '', default_display_format: 'number' },
+  { id: 'bounded_0_1', label: '0～1 区间', description: '明确限制在 [0, 1] 的无量纲值。', semantic_dimensions: ['dimensionless'], range: [0, 1], default_unit: '', default_display_format: 'number' },
+  { id: 'bounded_minus1_1', label: '-1～1 区间', description: '明确限制在 [-1, 1] 的无量纲值。', semantic_dimensions: ['dimensionless'], range: [-1, 1], default_unit: '', default_display_format: 'number' },
+  { id: 'oscillator_0_100', label: '0～100 摆动值', description: 'K、D、RSI 等技术指标常用刻度。', semantic_dimensions: ['dimensionless'], range: [0, 100], default_unit: '', default_display_format: 'number' },
+  { id: 'return_decimal', label: '收益率', description: '内部为小数，展示时通常使用百分比。', semantic_dimensions: ['return_decimal'], range: null, default_unit: '%', default_display_format: 'percent' },
+  { id: 'rate_decimal', label: '利率', description: '内部为小数的利率或费率。', semantic_dimensions: ['rate_decimal'], range: null, default_unit: '%', default_display_format: 'percent' },
+  { id: 'volume', label: '成交量', description: '份额、手数或成交数量。', semantic_dimensions: ['volume'], range: [0, null], default_unit: '份', default_display_format: 'number' },
+  { id: 'currency_amount', label: '金额', description: '成交额、资产规模等货币金额。', semantic_dimensions: ['currency_amount'], range: null, default_unit: '元', default_display_format: 'number' },
+  { id: 'count', label: '计数', description: '观察数、次数等离散计数。', semantic_dimensions: ['count'], range: [0, null], default_unit: '', default_display_format: 'number' },
+  { id: 'calendar_days', label: '日历天数', description: '以自然日为单位的期限或间隔。', semantic_dimensions: ['calendar_days'], range: [0, null], default_unit: '天', default_display_format: 'number' },
+  { id: 'dimensionless', label: '其他无量纲值', description: '没有物理单位且不声明固定范围。', semantic_dimensions: ['dimensionless'], range: null, default_unit: '', default_display_format: 'number' },
+  { id: 'derived', label: '复合量纲', description: '乘方、乘除产生的派生量纲。', semantic_dimensions: ['derived:*'], range: null, default_unit: '', default_display_format: 'number' },
+]
+
 const EMPTY_DRAFT: IndicatorDraft = {
   name: '未命名指标',
   description: '',
@@ -76,14 +104,15 @@ const EMPTY_DRAFT: IndicatorDraft = {
   direction: 'higher_better',
   indicator_type: 'return',
   annual_risk_free_rate_percent: 1.5,
-  dsl_version: '2.2.0',
-  operator_registry_version: '2.2.0',
+  dsl_version: '2.3.0',
+  operator_registry_version: '2.3.0',
   numeric_kernel_version: '2.2.0',
   variable_registry_version: '2.1.0',
   context_schema_version: 'typed-context-v2',
   data_contract_version: 'tushare-eod-v2',
   period_policy: 'all_supported',
   context_kind: 'single_product',
+  result_kind: 'scalar',
   output_contract: 'scalar',
   output_measure: 'dimensionless',
   template_origin: null,
@@ -136,6 +165,7 @@ type ComposerState = {
   selectionStart: number
   selectionEnd: number
   origin: 'catalog' | 'current_formula'
+  seriesOutputId?: string
 } | null
 
 const MOBILE_TABS: [MobileTab, string][] = [
@@ -306,11 +336,25 @@ function isCompatibleWithComposerSiblings(
   return true
 }
 
+function parameterRequiresFixedConstant(
+  parameter: IndicatorOperatorParameter,
+) {
+  return parameter.source_policy === 'fixed_constant'
+}
+
 function initialComposerArgument(
   parameter: IndicatorOperatorParameter,
   variables: IndicatorVariable[],
   contextDomain: IndicatorContextDomain,
 ): ComposerArgument {
+  if (parameterRequiresFixedConstant(parameter)) {
+    const fallback = parameter.constant_kind === 'integer' ? 1 : 0
+    return {
+      parameter,
+      source: 'constant',
+      value: String(typeof parameter.default === 'number' ? parameter.default : fallback),
+    }
+  }
   if (parameter.optional && parameter.default == null) {
     return { parameter, source: 'omitted', value: '' }
   }
@@ -338,6 +382,7 @@ function initialComposerNode(
 function composerNodeFromDag(
   dag: IndicatorDag | null | undefined,
   operators: ComposerItem[],
+  rootKey?: string,
 ): ComposerNode | null {
   if (!dag) return null
   const nodeById = new Map(dag.nodes.map((node) => [String(node.id), node]))
@@ -383,8 +428,56 @@ function composerNodeFromDag(
     return { item, arguments: argumentsForNode }
   }
 
-  const rootId = dag.roots.result ?? Object.values(dag.roots)[0]
+  const rootId = (rootKey ? dag.roots[rootKey] : undefined)
+    ?? dag.roots.result
+    ?? Object.values(dag.roots)[0]
   return rootId === undefined ? null : build(rootId, new Set())
+}
+
+function dagForRoot(
+  dag: IndicatorDag | null | undefined,
+  rootKey: string,
+): IndicatorDag | null {
+  if (!dag) return null
+  const rootId = dag.roots[rootKey]
+  if (rootId === undefined) return null
+  const incoming = new Map<string, Array<string | number>>()
+  dag.edges.forEach((edge) => {
+    const target = String(edge.target)
+    incoming.set(target, [...(incoming.get(target) ?? []), edge.source])
+  })
+  const reachable = new Set<string>()
+  const pending: Array<string | number> = [rootId]
+  while (pending.length) {
+    const nodeId = pending.pop()
+    if (nodeId === undefined || reachable.has(String(nodeId))) continue
+    reachable.add(String(nodeId))
+    pending.push(...(incoming.get(String(nodeId)) ?? []))
+  }
+  return {
+    nodes: dag.nodes.filter((node) => reachable.has(String(node.id))),
+    edges: dag.edges.filter((edge) => reachable.has(String(edge.source)) && reachable.has(String(edge.target))),
+    roots: { result: rootId },
+  }
+}
+
+function inferenceForSeriesOutput(
+  validation: ValidationResponse | null,
+  outputId: string,
+): InferenceResponse | null {
+  const output = validation?.output_inferences?.[outputId]
+  if (!output) return null
+  return {
+    expression: output.expression,
+    latex: output.latex || output.expression,
+    display_latex: output.display_latex || undefined,
+    math_notation_version: output.math_notation_version || undefined,
+    inferred_type: output.inferred_type,
+    shape: output.shape,
+    semantic_warnings: [],
+    dependencies: output.dependencies,
+    dag: dagForRoot(validation?.dag, outputId) || undefined,
+  }
 }
 
 function composerNodeCount(node: ComposerNode): number {
@@ -482,6 +575,15 @@ function isComposerArgumentValid(
   node?: ComposerNode,
   argumentIndex?: number,
 ) {
+  if (parameterRequiresFixedConstant(argument.parameter)) {
+    if (argument.source !== 'constant' || !argument.value.trim()) return false
+    const value = Number(argument.value)
+    if (!Number.isFinite(value)) return false
+    if (argument.parameter.constant_kind === 'integer' && !Number.isInteger(value)) return false
+    if (argument.parameter.minimum !== undefined && value < argument.parameter.minimum) return false
+    if (argument.parameter.maximum !== undefined && value > argument.parameter.maximum) return false
+    return true
+  }
   if (argument.source === 'omitted') return Boolean(argument.parameter.optional)
   if (!argument.value.trim()) return false
   if (argument.source === 'constant') return Number.isFinite(Number(argument.value))
@@ -641,16 +743,53 @@ function measureLabel(measure: string | undefined) {
   return ({ return_decimal: '收益率', rate_decimal: '利率', adjusted_nav: '复权净值', reported_nav: '披露净值', raw_market_price: '市场价格', volume: '成交量', currency_amount: '金额', count: '数量', calendar_days: '日历天数', dimensionless: '无量纲数值' } as Record<string, string>)[measure || 'dimensionless'] || '数值'
 }
 
+const OPERATOR_DISPLAY_LABELS: Record<string, string> = {
+  rolling_mean: '滚动平均值',
+  rolling_std: '滚动标准差',
+  rolling_min: '滚动最小值',
+  rolling_max: '滚动最大值',
+  recursive_smooth: '递归平滑',
+  divide_or_default: '安全除法',
+}
+
+function operatorDisplayLabel(operatorId: string | undefined, fallback?: string) {
+  if (operatorId && OPERATOR_DISPLAY_LABELS[operatorId]) return OPERATOR_DISPLAY_LABELS[operatorId]
+  if (fallback && /[^\u0000-\u007f]/.test(fallback)) return fallback
+  if (fallback && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(fallback)) return fallback
+  return '计算算子'
+}
+
+const OPERATOR_PARAMETER_LABELS: Record<string, string[]> = {
+  rolling_mean: ['待处理数值', '窗口期数', '最少有效观察数'],
+  rolling_std: ['待处理数值', '窗口期数', '自由度修正', '最少有效观察数'],
+  rolling_min: ['待处理数值', '窗口期数', '最少有效观察数'],
+  rolling_max: ['待处理数值', '窗口期数', '最少有效观察数'],
+  recursive_smooth: ['待处理数值', '平滑期数', '递归初始值'],
+  divide_or_default: ['分子', '分母', '分母为零时的默认值'],
+}
+
 function parameterLabel(parameter: string | undefined, fallback: string) {
   if (!parameter) return fallback
   if (fallback && fallback !== parameter && /[^\u0000-\u007f]/.test(fallback)) return fallback
   return ({
     lhs: '输入 A', rhs: '输入 B', left: '输入 A', right: '输入 B',
     values: '待处理数值', value: '待处理数值', x: '输入数值', y: '参考数值',
+    numerator: '分子', denominator: '分母', default: '分母为零时的默认值',
     lower: '允许的最小值', upper: '允许的最大值', threshold: '比较阈值',
     q: '分位点', ddof: '自由度修正', axis: '计算维度', periods: '间隔期数',
+    window: '窗口期数', min_periods: '最少有效观察数', initial: '递归初始值',
     matrix: '输入矩阵', vector: '输入向量', mask: '判断条件', condition: '判断条件',
   } as Record<string, string>)[parameter] || fallback
+}
+
+function operatorParameterLabel(
+  operatorId: string | undefined,
+  index: number,
+  parameter: string | undefined,
+  fallback: string,
+) {
+  const contextual = operatorId ? OPERATOR_PARAMETER_LABELS[operatorId]?.[index] : undefined
+  return parameterLabel(parameter, contextual || fallback)
 }
 
 function parameterDescription(parameter: IndicatorOperatorParameter) {
@@ -797,7 +936,7 @@ function operatorToComposer(operator: IndicatorOperator, variables: IndicatorVar
   const parameters = operatorParametersForContext(operator, fallbackParameters, variables, contextDomain)
   const category = operatorCategory(operator)
   return {
-    id: operator.name, label: operator.label || operator.name, kind: 'operator', signature: operator.signature,
+    id: operator.name, label: operatorDisplayLabel(operator.name, operator.label), kind: 'operator', signature: operator.signature,
     essence: operator.mathematical_essence || operator.signature || '受控数学算子。',
     semantic: operator.semantic || operator.mathematical_essence || '使用白名单函数对输入值进行计算。', outputShape: operator.output_shape || (/returns|vector|array/i.test(operator.return_type) ? 'vector' : 'scalar'),
     outputType: operator.return_type,
@@ -819,8 +958,65 @@ function asDraft(indicator: IndicatorDefinition): IndicatorDraft {
   return draft
 }
 
+const newSeriesOutput = (): SeriesOutputDefinition => ({
+  id: 'value',
+  label: '20 日指标序列',
+  expression: 'rolling_mean(market_close, 20)',
+  unit: '',
+  display_format: 'number',
+  precision: 4,
+  output_measure: 'auto',
+})
+
 function normalizeDraft(draft: IndicatorDraft): IndicatorDraft {
   const { periods: _legacyPeriods, ...definition } = draft
+  const resultKind: IndicatorResultKind = draft.result_kind ?? 'scalar'
+  if (resultKind === 'time_series') {
+    const seriesOutputs = (draft.series_outputs ?? []).map((item) => ({
+      ...item,
+      id: item.id.trim(),
+      label: item.label.trim() || item.id.trim(),
+      expression: item.expression.trim(),
+      unit: item.unit.trim(),
+      precision: Math.min(8, Math.max(0, Number.isFinite(item.precision) ? item.precision : 4)),
+      output_measure: item.output_measure || 'auto',
+    }))
+    const firstOutput = seriesOutputs[0]
+    return {
+      ...definition,
+      name: draft.name.trim() || '未命名时序指标',
+      description: draft.description.trim(),
+      expression: firstOutput?.expression ?? draft.expression.trim(),
+      unit: firstOutput?.unit ?? draft.unit.trim(),
+      display_format: firstOutput?.display_format ?? draft.display_format,
+      precision: firstOutput?.precision ?? draft.precision,
+      direction: draft.direction || 'higher_better',
+      indicator_type: draft.indicator_type || 'technical',
+      annual_risk_free_rate_percent: Number.isFinite(draft.annual_risk_free_rate_percent)
+        ? draft.annual_risk_free_rate_percent
+        : 0,
+      dsl_version: draft.dsl_version || '2.3.0',
+      operator_registry_version: draft.operator_registry_version || '2.3.0',
+      context_kind: 'single_product',
+      result_kind: 'time_series',
+      output_contract: 'series_bundle',
+      output_measure: 'series_bundle',
+      parameter_schema: [],
+      fixed_parameters: draft.fixed_parameters ?? [],
+      series_outputs: seriesOutputs,
+      axis_anchor: draft.axis_anchor || 'market_close',
+      history_policy: draft.history_policy || 'lookback',
+      history_inference_source: draft.history_inference_source || 'typed_dag',
+      lookback_parameter: null,
+      lookback_observations: Math.max(1, Math.round(draft.lookback_observations ?? 1)),
+      minimum_observations: Math.max(1, Math.round(draft.minimum_observations ?? 1)),
+      methodology: draft.methodology?.trim() || draft.description.trim(),
+      data_basis: draft.data_basis?.trim() || '真实数据、日期轴对齐、缺失不填充',
+      template_origin: draft.template_origin ?? null,
+      rolling_source: draft.rolling_source ?? null,
+      rolling_transform: draft.rolling_transform ?? null,
+    }
+  }
   return {
     ...definition,
     name: draft.name.trim() || '未命名指标',
@@ -830,12 +1026,57 @@ function normalizeDraft(draft: IndicatorDraft): IndicatorDraft {
     annual_risk_free_rate_percent: Number.isFinite(draft.annual_risk_free_rate_percent)
       ? draft.annual_risk_free_rate_percent
       : 0,
-    dsl_version: draft.dsl_version || '2.0.0',
-    operator_registry_version: draft.operator_registry_version || '2.0.0',
+    dsl_version: draft.dsl_version || '2.3.0',
+    operator_registry_version: draft.operator_registry_version || '2.3.0',
     context_kind: draft.context_kind || 'single_product',
+    result_kind: 'scalar',
     output_contract: 'scalar',
+    output_measure: draft.output_measure || 'dimensionless',
+    parameter_schema: [],
+    fixed_parameters: [],
+    series_outputs: [],
+    axis_anchor: null,
+    history_policy: null,
+    history_inference_source: null,
+    lookback_parameter: null,
+    lookback_observations: undefined,
     template_origin: draft.template_origin ?? null,
+    rolling_source: null,
+    rolling_transform: null,
   }
+}
+
+function convertDraftResultKind(
+  draft: IndicatorDraft,
+  resultKind: IndicatorResultKind,
+  metadata: IndicatorMeta | null,
+): IndicatorDraft {
+  if (resultKind === 'scalar') {
+    return normalizeDraft({
+      ...draftForCurrentRegistries(metadata, STUDIO_CONTEXT),
+      name: draft.name,
+      description: draft.description,
+      result_kind: 'scalar',
+    })
+  }
+  const output = newSeriesOutput()
+  return normalizeDraft({
+    ...draftForCurrentRegistries(metadata, STUDIO_CONTEXT),
+    name: draft.name === '未命名指标' ? '未命名时序指标' : draft.name,
+    description: draft.description,
+    result_kind: 'time_series',
+    output_contract: 'series_bundle',
+    indicator_type: 'technical',
+    expression: output.expression,
+    parameter_schema: [],
+    series_outputs: [output],
+    axis_anchor: 'market_close',
+    history_policy: 'lookback',
+    history_inference_source: 'typed_dag',
+    lookback_parameter: null,
+    lookback_observations: 20,
+    minimum_observations: 20,
+  })
 }
 
 function draftForCurrentRegistries(
@@ -885,6 +1126,8 @@ export default function IndicatorStudio() {
   const [baseline, setBaseline] = useState(JSON.stringify(EMPTY_DRAFT))
   const [validation, setValidation] = useState<ValidationResponse | null>(null)
   const [results, setResults] = useState<EvaluationResult[]>([])
+  const [seriesResults, setSeriesResults] = useState<TimeSeriesIndicatorResult[]>([])
+  const [activeSeriesOutputId, setActiveSeriesOutputId] = useState('')
   const [targets, setTargets] = useState<StudioTarget[]>([])
   const [searchKind, setSearchKind] = useState<ProductKind | 'all'>((searchParams.get('kind') as ProductKind) || 'all')
   const [searchText, setSearchText] = useState('')
@@ -906,8 +1149,13 @@ export default function IndicatorStudio() {
   const [inference, setInference] = useState<InferenceResponse | null>(null)
   const [snapshotConfig, setSnapshotConfig] = useState<SnapshotIndicatorConfig | null>(null)
   const [snapshotPeriods, setSnapshotPeriods] = useState<string[]>([])
+  const [snapshotSeriesChannel, setSnapshotSeriesChannel] = useState('')
   const [snapshotSaving, setSnapshotSaving] = useState(false)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const [rollingSourceIndicatorId, setRollingSourceIndicatorId] = useState('builtin-annualized-sharpe-v2')
+  const [rollingWindowObservations, setRollingWindowObservations] = useState(5)
+  const [rollingDeriving, setRollingDeriving] = useState(false)
+  const [rollingDerivationError, setRollingDerivationError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [validating, setValidating] = useState(false)
@@ -916,6 +1164,7 @@ export default function IndicatorStudio() {
   const [searching, setSearching] = useState(false)
   const [indicatorQuery, setIndicatorQuery] = useState('')
   const [indicatorSourceFilter, setIndicatorSourceFilter] = useState<'all' | 'built_in' | 'custom'>('all')
+  const [indicatorResultKindFilter, setIndicatorResultKindFilter] = useState<'all' | IndicatorResultKind>('all')
   const [indicatorCategoryFilter, setIndicatorCategoryFilter] = useState('all')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<unknown>(null)
@@ -923,13 +1172,47 @@ export default function IndicatorStudio() {
   const validationRequestRef = useRef(0)
 
   const selectedIndicator = indicators.find((item) => item.id === selectedId) ?? null
+  const isTimeSeries = (draft.result_kind ?? 'scalar') === 'time_series'
+  const seriesOutputs = draft.series_outputs ?? []
+  const activeSeriesOutputIndex = Math.max(
+    0,
+    seriesOutputs.findIndex((item) => item.id === activeSeriesOutputId),
+  )
+  const activeSeriesOutput = seriesOutputs[activeSeriesOutputIndex] ?? null
+  const currentExpression = isTimeSeries
+    ? activeSeriesOutput?.expression ?? ''
+    : draft.expression
+  const hasDefinitionFormula = isTimeSeries
+    ? seriesOutputs.length > 0 && seriesOutputs.every((item) => item.expression.trim())
+    : Boolean(draft.expression.trim())
   const periods = meta?.periods?.length ? meta.periods : FALLBACK_PERIODS
+  const seriesOutputMeasures = meta?.series_output_measures?.length
+    ? meta.series_output_measures
+    : FALLBACK_SERIES_OUTPUT_MEASURES
   const isDirty = baseline !== JSON.stringify(normalizeDraft(draft))
   const activePeriod = periods.some((item) => item.value === period) ? period : periods[0]?.value || ''
   const contextIndicators = indicatorsForContext(indicators, STUDIO_CONTEXT)
+  const rollingScalarIndicators = contextIndicators
+    .filter((item) => (
+      (item.result_kind ?? 'scalar') === 'scalar'
+      && (item.dsl_version ?? '').startsWith('2.')
+      && (item.output_contract ?? 'scalar') === 'scalar'
+      && item.rolling_series_compatibility?.supported !== false
+    ))
+    .sort((left, right) => (
+      left.id === 'builtin-annualized-sharpe-v2' ? -1
+        : right.id === 'builtin-annualized-sharpe-v2' ? 1
+          : left.name.localeCompare(right.name, 'zh-CN')
+    ))
+  const effectiveRollingSourceIndicatorId = rollingScalarIndicators.some(
+    (item) => item.id === rollingSourceIndicatorId,
+  )
+    ? rollingSourceIndicatorId
+    : rollingScalarIndicators[0]?.id ?? ''
   const normalizedIndicatorQuery = indicatorQuery.trim().toLowerCase()
   const visibleIndicators = contextIndicators.filter((item) => (
     (indicatorSourceFilter === 'all' || item.source === indicatorSourceFilter)
+    && (indicatorResultKindFilter === 'all' || (item.result_kind ?? 'scalar') === indicatorResultKindFilter)
     && (indicatorCategoryFilter === 'all' || item.category_id === indicatorCategoryFilter)
     && (!normalizedIndicatorQuery || `${item.name} ${item.description} ${item.expression}`.toLowerCase().includes(normalizedIndicatorQuery))
   ))
@@ -945,12 +1228,19 @@ export default function IndicatorStudio() {
       .filter((variable) => supportsVariableDomain(variable, STUDIO_CONTEXT)),
     [meta],
   )
-  const composerVariables = variables.filter((variable) => (
-    variable.availability !== 'unavailable' && variable.availability !== 'not_applicable'
-  ))
-  const operatorItems = (meta?.operators ?? [])
-    .map((operator) => operatorToComposer(operator, composerVariables, STUDIO_CONTEXT))
-    .filter((operator) => operator.domains.includes(STUDIO_CONTEXT))
+  const formulaVariables = variables
+  const composerVariables = useMemo(
+    () => formulaVariables.filter((variable) => (
+      variable.availability !== 'unavailable' && variable.availability !== 'not_applicable'
+    )),
+    [formulaVariables],
+  )
+  const operatorItems = useMemo(
+    () => (meta?.operators ?? [])
+      .map((operator) => operatorToComposer(operator, composerVariables, STUDIO_CONTEXT))
+      .filter((operator) => operator.domains.includes(STUDIO_CONTEXT)),
+    [composerVariables, meta?.operators],
+  )
   const composableIndicators = contextIndicators
     .filter((indicator) => indicatorIsComposable(indicator, draft, STUDIO_CONTEXT))
     .sort((left, right) => (
@@ -961,30 +1251,77 @@ export default function IndicatorStudio() {
     ? isComposerNodeValid(composer.node, composerVariables, composableIndicators, STUDIO_CONTEXT)
     : false
   const resourceLabels = useMemo(() => new Map<string, string>([
-    ...variables.map((variable) => [variable.name, variable.label] as const),
+    ...formulaVariables.map((variable) => [variable.name, variable.label] as const),
     ...operatorItems.map((operator) => [operator.id, operator.label] as const),
-  ]), [operatorItems, variables])
+  ]), [formulaVariables, operatorItems])
 
-  const displayLatex = inference?.display_latex
-    || validation?.display_latex
-    || (selectedIndicator && selectedIndicator.expression === draft.expression
+  const validatedSeriesInference = useMemo(
+    () => isTimeSeries && activeSeriesOutput
+      ? inferenceForSeriesOutput(validation, activeSeriesOutput.id)
+      : null,
+    [activeSeriesOutput, isTimeSeries, validation],
+  )
+  const displayedInference = isTimeSeries
+    ? validatedSeriesInference ?? inference
+    : inference
+  const validatedSeriesTree = useMemo(
+    () => isTimeSeries && activeSeriesOutput && validation?.valid
+      ? composerNodeFromDag(validation.dag, operatorItems, activeSeriesOutput.id)
+      : null,
+    [activeSeriesOutput, isTimeSeries, operatorItems, validation],
+  )
+  const displayedGuidedTree = isTimeSeries
+    ? guidedTree ?? validatedSeriesTree
+    : guidedTree
+  const activeFormulaDag = isTimeSeries
+    ? displayedInference?.dag ?? dagForRoot(validation?.dag, activeSeriesOutput?.id ?? '')
+    : validation?.dag ?? displayedInference?.dag ?? null
+  const displayLatex = displayedInference?.display_latex
+    || (!isTimeSeries ? validation?.display_latex : null)
+    || (!isTimeSeries && selectedIndicator && selectedIndicator.expression === draft.expression
       ? selectedIndicator.display_latex
       : null)
   const formulaMarkup = useMemo(() => {
     try {
       const formula = displayLatex
-        || (draft.expression
+        || (currentExpression
           ? '\\text{请先解析并校验公式以生成数学排版}'
           : '\\text{等待输入公式}')
       return { __html: katex.renderToString(formula, { throwOnError: true, displayMode: true }) }
     } catch {
       return { __html: '<span>公式排版不可用</span>' }
     }
-  }, [displayLatex, draft.expression])
+  }, [currentExpression, displayLatex])
 
   const dagView = useMemo(() => {
     const dag = validation?.dag
     if (!dag) return { period: '', dag: null as IndicatorDag | null }
+    if ((draft.result_kind ?? 'scalar') === 'time_series') {
+      const nodesById = new Map(dag.nodes.map((node) => [String(node.id), node]))
+      const incomingIndex = new Map<string, number>()
+      const operatorsById = new Map(
+        operatorItems.flatMap((operator) => [
+          [operator.id, operator] as const,
+          [operator.label, operator] as const,
+        ]),
+      )
+      const namedEdges = dag.edges.map((edge) => {
+        const target = String(edge.target)
+        const index = incomingIndex.get(target) ?? 0
+        incomingIndex.set(target, index + 1)
+        const targetNode = nodesById.get(target)
+        const targetOperator = targetNode ? operatorsById.get(dagNodeOperatorId(targetNode)) : undefined
+        const rawParameter = edge.parameter || edge.parameter_name || edge.input_name || targetOperator?.parameters[index]?.name
+        const parameter = operatorParameterLabel(
+          targetOperator?.id || (targetNode ? dagNodeOperatorId(targetNode) : undefined),
+          index,
+          rawParameter,
+          targetOperator?.parameters[index]?.label || `输入 ${index + 1}`,
+        )
+        return { ...edge, parameter, order: edge.order ?? index }
+      })
+      return { period: activePeriod, dag: { ...dag, edges: namedEdges } }
+    }
     const availableRootKeys = Object.keys(dag.roots)
     const rootKey = Object.prototype.hasOwnProperty.call(dag.roots, 'result')
       ? 'result'
@@ -1026,7 +1363,12 @@ export default function IndicatorStudio() {
       const targetNode = nodesById.get(target)
       const targetOperator = targetNode ? operatorsById.get(dagNodeOperatorId(targetNode)) : undefined
       const rawParameter = edge.parameter || edge.parameter_name || edge.input_name || targetOperator?.parameters[index]?.name
-      const parameter = parameterLabel(rawParameter, targetOperator?.parameters[index]?.label || `输入 ${index + 1}`)
+      const parameter = operatorParameterLabel(
+        targetOperator?.id || (targetNode ? dagNodeOperatorId(targetNode) : undefined),
+        index,
+        rawParameter,
+        targetOperator?.parameters[index]?.label || `输入 ${index + 1}`,
+      )
       return { ...edge, parameter, order: edge.order ?? index }
     })
 
@@ -1038,7 +1380,7 @@ export default function IndicatorStudio() {
         roots: { result: rootId },
       },
     }
-  }, [activePeriod, operatorItems, validation])
+  }, [activePeriod, draft.result_kind, operatorItems, validation])
 
   const dagOption = useMemo(() => {
     if (!dagView.dag) return null
@@ -1071,7 +1413,9 @@ export default function IndicatorStudio() {
       const isRoot = rootIds.has(String(node.id))
       return {
         id: String(node.id),
-        name: resourceLabels.get(dagNodeOperatorId(node)) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind),
+        name: node.kind === 'variable' || node.kind === 'constant'
+          ? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind)
+          : resourceLabels.get(dagNodeOperatorId(node)) ?? operatorDisplayLabel(dagNodeOperatorId(node), node.label),
         value: node.kind,
         period: node.period,
         shape: dagNodeShape(node),
@@ -1152,6 +1496,17 @@ export default function IndicatorStudio() {
   }, []) // load once; the selected formula is local state
 
   useEffect(() => {
+    if (!isTimeSeries) {
+      if (activeSeriesOutputId) setActiveSeriesOutputId('')
+      return
+    }
+    const firstOutputId = draft.series_outputs?.[0]?.id ?? ''
+    if (!(draft.series_outputs ?? []).some((item) => item.id === activeSeriesOutputId)) {
+      setActiveSeriesOutputId(firstOutputId)
+    }
+  }, [activeSeriesOutputId, draft.series_outputs, isTimeSeries])
+
+  useEffect(() => {
     let active = true
     void getSnapshotIndicatorConfig()
       .then((response) => {
@@ -1175,9 +1530,18 @@ export default function IndicatorStudio() {
       setSnapshotPeriods([])
       return
     }
-    setSnapshotPeriods(snapshotConfig.items
+    const matchingItems = snapshotConfig.items
       .filter((item) => item.indicator_id === selectedIndicator.id && item.indicator_revision === selectedIndicator.revision)
-      .map((item) => item.period))
+    setSnapshotPeriods(matchingItems.map((item) => item.period))
+    if ((selectedIndicator.result_kind ?? 'scalar') === 'time_series') {
+      setSnapshotSeriesChannel(
+        matchingItems.find((item) => item.channel_id)?.channel_id
+        || selectedIndicator.series_outputs?.[0]?.id
+        || '',
+      )
+    } else {
+      setSnapshotSeriesChannel('')
+    }
   }, [selectedIndicator, snapshotConfig])
 
   useEffect(() => {
@@ -1187,6 +1551,7 @@ export default function IndicatorStudio() {
     const previewIds = [...new Set(ids)].slice(0, MAX_PREVIEW_TARGETS)
     setTargets(previewIds.map((product_id) => ({ kind, product_id, name: product_id })))
     setResults([])
+    setSeriesResults([])
     if (ids.length > MAX_PREVIEW_TARGETS) {
       setMessage(`校验与预览最多选择 ${MAX_PREVIEW_TARGETS} 个产品，已保留前 ${MAX_PREVIEW_TARGETS} 个。`)
     }
@@ -1212,6 +1577,7 @@ export default function IndicatorStudio() {
     setInference(null)
     setGuidedTree(null)
     setResults([])
+    setSeriesResults([])
     const loadedMessage = indicator.read_only ? '已载入内置指标。可编辑后另存为工作区自定义指标。' : `已载入版本 ${indicator.revision}。`
     const previewMessage = `${loadedMessage} 已保留预览条件。`
     setMessage(keepPreviewContext ? previewMessage : loadedMessage)
@@ -1231,14 +1597,67 @@ export default function IndicatorStudio() {
     setInference(null)
     setGuidedTree(null)
     setResults([])
+    setSeriesResults([])
     setEditorMode('guided')
     setMessage('已创建新指标草稿。请从变量、数学算子或已有指标开始构建公式。')
     setMobileTab('editor')
     setWorkspaceTab('editor')
   }
 
+  const deriveFromScalarIndicator = async () => {
+    const source = rollingScalarIndicators.find((item) => item.id === effectiveRollingSourceIndicatorId)
+    if (!source) {
+      setRollingDerivationError('请选择一个可滚动转换的单产品标量指标。')
+      return
+    }
+    const windowObservations = Math.round(rollingWindowObservations)
+    if (!Number.isFinite(windowObservations) || windowObservations < 2 || windowObservations > 20_000) {
+      setRollingDerivationError('滚动观察数必须是 2 至 20000 的整数。')
+      return
+    }
+    if (isDirty && !window.confirm('滚动派生会替换当前未保存公式，是否继续？')) return
+    try {
+      setRollingDeriving(true)
+      setRollingDerivationError(null)
+      setError(null)
+      const response = await deriveRollingSeriesIndicator({
+        indicator_id: source.id,
+        indicator_revision: source.revision,
+        window_observations: windowObservations,
+      })
+      const next = normalizeDraft(response.definition)
+      const emptySeries = convertDraftResultKind(
+        draftForCurrentRegistries(meta, STUDIO_CONTEXT),
+        'time_series',
+        meta,
+      )
+      validationRequestRef.current += 1
+      setSelectedId(null)
+      setDraft(next)
+      setBaseline(JSON.stringify(emptySeries))
+      setValidation(response.validation)
+      setInference(null)
+      setGuidedTree(null)
+      setResults([])
+      setSeriesResults([])
+      setActiveSeriesOutputId(next.series_outputs?.[0]?.id ?? '')
+      setEditorMode('guided')
+      setWorkspaceTab('editor')
+      setMobileTab('editor')
+      setMessage(`已从“${source.name}”v${source.revision} 生成 ${windowObservations} 日滚动时序草稿；保存后形成独立锁定版本。`)
+    } catch (failure) {
+      setRollingDerivationError(userFacingErrorMessage(failure, '标量指标无法转换为滚动时序指标。'))
+    } finally {
+      setRollingDeriving(false)
+    }
+  }
+
   const saveSnapshotPeriods = async () => {
     if (!selectedIndicator || !snapshotConfig) return
+    if ((selectedIndicator.result_kind ?? 'scalar') === 'time_series' && snapshotPeriods.length && !snapshotSeriesChannel) {
+      setSnapshotError('请选择要归约为快照值的输出通道。')
+      return
+    }
     try {
       setSnapshotSaving(true)
       setSnapshotError(null)
@@ -1248,11 +1667,15 @@ export default function IndicatorStudio() {
           indicator_id: item.indicator_id,
           indicator_revision: item.indicator_revision,
           period: item.period,
+          channel_id: item.channel_id ?? null,
+          reducer: item.reducer ?? null,
         })),
         ...snapshotPeriods.map((snapshotPeriod) => ({
           indicator_id: selectedIndicator.id,
           indicator_revision: selectedIndicator.revision,
           period: snapshotPeriod,
+          channel_id: (selectedIndicator.result_kind ?? 'scalar') === 'time_series' ? snapshotSeriesChannel : null,
+          reducer: (selectedIndicator.result_kind ?? 'scalar') === 'time_series' ? 'last_finite' as const : null,
         })),
       ]
       const updated = await updateSnapshotIndicatorConfig(snapshotConfig.revision, nextItems)
@@ -1270,26 +1693,158 @@ export default function IndicatorStudio() {
   const patchDraft = (patch: Partial<IndicatorDraft>) => {
     validationRequestRef.current += 1
     setValidating(false)
-    setDraft((current) => ({ ...current, ...patch }))
+    setDraft((current) => {
+      const next = { ...current, ...patch }
+      const previousOutputs = (current.series_outputs ?? []).map((item) => ({ id: item.id, expression: item.expression }))
+      const nextOutputs = (next.series_outputs ?? []).map((item) => ({ id: item.id, expression: item.expression }))
+      const rollingContractChanged = (
+        Object.prototype.hasOwnProperty.call(patch, 'expression')
+        || Object.prototype.hasOwnProperty.call(patch, 'axis_anchor')
+        || Object.prototype.hasOwnProperty.call(patch, 'annual_risk_free_rate_percent')
+        || (Object.prototype.hasOwnProperty.call(patch, 'series_outputs')
+          && JSON.stringify(previousOutputs) !== JSON.stringify(nextOutputs))
+      )
+      if (
+        rollingContractChanged
+        && current.rolling_source
+        && !current.rolling_source.detached
+        && !Object.prototype.hasOwnProperty.call(patch, 'rolling_source')
+      ) {
+        next.rolling_source = { ...current.rolling_source, detached: true }
+      }
+      return next
+    })
     setValidation(null)
     setInference(null)
     setGuidedTree(null)
     setResults([])
-    if (Object.prototype.hasOwnProperty.call(patch, 'expression')) setMessage('公式已更改，需要重新解析并校验。')
+    setSeriesResults([])
+    if (
+      Object.prototype.hasOwnProperty.call(patch, 'expression')
+      || Object.prototype.hasOwnProperty.call(patch, 'series_outputs')
+      || Object.prototype.hasOwnProperty.call(patch, 'parameter_schema')
+    ) setMessage('公式已更改，需要重新解析并校验。')
+  }
+
+  const changeResultKind = (resultKind: IndicatorResultKind) => {
+    if ((draft.result_kind ?? 'scalar') === resultKind) return
+    const next = convertDraftResultKind(draft, resultKind, meta)
+    validationRequestRef.current += 1
+    setValidating(false)
+    setDraft(next)
+    setValidation(null)
+    setInference(null)
+    setGuidedTree(null)
+    setResults([])
+    setSeriesResults([])
+    setEditorMode('guided')
+    setMessage(resultKind === 'time_series'
+      ? '已切换为时序指标。窗口、倍数和平滑周期应作为固定常量写入公式；不同参数请保存为不同指标。'
+      : '已切换为标量指标。请重新构建最终标量公式。')
+  }
+
+  const patchSeriesOutput = (index: number, patch: Partial<SeriesOutputDefinition>) => {
+    const current = draft.series_outputs ?? []
+    const previous = current[index]
+    if (!previous) return
+    const next = current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)
+    const first = next[0]
+    if (patch.id && activeSeriesOutputId === previous.id) setActiveSeriesOutputId(patch.id)
+    patchDraft({
+      series_outputs: next,
+      expression: first?.expression ?? '',
+      unit: first?.unit ?? '',
+      display_format: first?.display_format ?? 'number',
+      precision: first?.precision ?? 4,
+    })
+  }
+
+  const addSeriesOutput = () => {
+    const existing = new Set((draft.series_outputs ?? []).map((item) => item.id))
+    let index = 1
+    while (existing.has(`channel_${index}`)) index += 1
+    const item: SeriesOutputDefinition = {
+      id: `channel_${index}`,
+      label: `输出通道 ${index}`,
+      expression: 'market_close',
+      unit: '',
+      display_format: 'number',
+      precision: 4,
+      output_measure: 'auto',
+    }
+    const next = [...(draft.series_outputs ?? []), item]
+    const first = next[0]
+    setActiveSeriesOutputId(item.id)
+    patchDraft({
+      series_outputs: next,
+      expression: first.expression,
+      unit: first.unit,
+      display_format: first.display_format,
+      precision: first.precision,
+    })
+  }
+
+  const removeSeriesOutput = (index: number) => {
+    const current = draft.series_outputs ?? []
+    if (current.length <= 1) {
+      setMessage('时序指标至少需要一个输出通道。')
+      return
+    }
+    const removed = current[index]
+    const next = current.filter((_item, itemIndex) => itemIndex !== index)
+    const first = next[0]
+    if (removed?.id === activeSeriesOutputId) setActiveSeriesOutputId(first.id)
+    patchDraft({
+      series_outputs: next,
+      expression: first.expression,
+      unit: first.unit,
+      display_format: first.display_format,
+      precision: first.precision,
+    })
+  }
+
+  const selectSeriesOutput = (outputId: string) => {
+    setActiveSeriesOutputId(outputId)
+    const nextInference = inferenceForSeriesOutput(validation, outputId)
+    setInference(nextInference)
+    setGuidedTree(
+      validation?.valid
+        ? composerNodeFromDag(validation.dag, operatorItems, outputId)
+        : null,
+    )
+    setComposer(null)
+    setComposerError(null)
+  }
+
+  const patchCurrentExpression = (
+    expression: string,
+    seriesOutputId = activeSeriesOutput?.id,
+  ) => {
+    if (isTimeSeries) {
+      const outputIndex = Math.max(
+        0,
+        (draft.series_outputs ?? []).findIndex((item) => item.id === seriesOutputId),
+      )
+      patchSeriesOutput(outputIndex, { expression })
+      return
+    }
+    patchDraft({ expression, template_origin: null })
   }
 
   const insertExpression = (token: string) => {
     if (editorMode === 'guided') {
-      patchDraft({ expression: token, template_origin: null })
+      patchCurrentExpression(token)
       setCatalogOpen(false)
-      setMessage('变量已设为当前公式；可以继续用数学算子构建标量结果。')
+      setMessage(isTimeSeries
+        ? `变量已设为“${activeSeriesOutput?.label ?? '当前输出'}”的计算公式；可以继续嵌套数学算子。`
+        : '变量已设为当前公式；可以继续用数学算子构建标量结果。')
       return
     }
     const textarea = expressionRef.current
-    const start = textarea?.selectionStart ?? draft.expression.length
-    const end = textarea?.selectionEnd ?? draft.expression.length
-    const expression = `${draft.expression.slice(0, start)}${token}${draft.expression.slice(end)}`
-    patchDraft({ expression })
+    const start = textarea?.selectionStart ?? currentExpression.length
+    const end = textarea?.selectionEnd ?? currentExpression.length
+    const expression = `${currentExpression.slice(0, start)}${token}${currentExpression.slice(end)}`
+    patchCurrentExpression(expression)
     window.requestAnimationFrame(() => {
       textarea?.focus()
       textarea?.setSelectionRange(start + token.length, start + token.length)
@@ -1314,12 +1869,12 @@ export default function IndicatorStudio() {
       })
       const expanded = response.expression || response.latex
       const textarea = expressionRef.current
-      const replaceFullFormula = editorMode === 'guided' || !draft.expression.trim()
-      const start = replaceFullFormula ? 0 : textarea?.selectionStart ?? draft.expression.length
-      const end = replaceFullFormula ? draft.expression.length : textarea?.selectionEnd ?? start
+      const replaceFullFormula = editorMode === 'guided' || !currentExpression.trim()
+      const start = replaceFullFormula ? 0 : textarea?.selectionStart ?? currentExpression.length
+      const end = replaceFullFormula ? currentExpression.length : textarea?.selectionEnd ?? start
       const token = replaceFullFormula ? expanded : `(${expanded})`
-      const expression = `${draft.expression.slice(0, start)}${token}${draft.expression.slice(end)}`
-      patchDraft({ expression, template_origin: null })
+      const expression = `${currentExpression.slice(0, start)}${token}${currentExpression.slice(end)}`
+      patchCurrentExpression(expression)
       if (replaceFullFormula) {
         setInference(response)
         setGuidedTree(composerNodeFromDag(response.dag, operatorItems))
@@ -1337,7 +1892,7 @@ export default function IndicatorStudio() {
 
   const openComposer = (item: ComposerItem) => {
     const textarea = expressionRef.current
-    const selectionStart = textarea?.selectionStart ?? draft.expression.length
+    const selectionStart = textarea?.selectionStart ?? currentExpression.length
     const selectionEnd = textarea?.selectionEnd ?? selectionStart
     setComposerError(null)
     setCatalogOpen(false)
@@ -1347,6 +1902,7 @@ export default function IndicatorStudio() {
       selectionStart,
       selectionEnd,
       origin: 'catalog',
+      seriesOutputId: isTimeSeries ? activeSeriesOutput?.id : undefined,
     })
   }
 
@@ -1407,28 +1963,31 @@ export default function IndicatorStudio() {
           context: STUDIO_CONTEXT,
           dsl_version: draft.dsl_version,
           operator_registry_version: draft.operator_registry_version,
+          variable_registry_version: draft.variable_registry_version,
+          data_contract_version: draft.data_contract_version,
+          context_schema_version: draft.context_schema_version,
           arguments: argumentsForRequest,
         })
       }
       const response = await composeNode(composer.node)
+      const targetExpression = isTimeSeries && composer.seriesOutputId
+        ? (draft.series_outputs ?? []).find((item) => item.id === composer.seriesOutputId)?.expression ?? currentExpression
+        : currentExpression
       const start = composer.applyMode === 'replace_formula' ? 0 : composer.selectionStart
       const end = composer.applyMode === 'replace_formula'
-        ? draft.expression.length
+        ? targetExpression.length
         : composer.applyMode === 'replace_selection'
           ? composer.selectionEnd
           : composer.selectionStart
       const executableExpression = response.expression || response.latex
-      const expression = `${draft.expression.slice(0, start)}${executableExpression}${draft.expression.slice(end)}`
-      patchDraft({
-        expression,
-        template_origin: null,
-      })
+      const expression = `${targetExpression.slice(0, start)}${executableExpression}${targetExpression.slice(end)}`
+      patchCurrentExpression(expression, composer.seriesOutputId)
       setInference(response)
       setGuidedTree(composer.node)
       setComposer(null)
       setComposerError(null)
       setMessage(composer.origin === 'current_formula'
-        ? '当前指标的计算逻辑已更新，请重新校验后保存修改或另存为新指标。'
+        ? `${isTimeSeries ? `输出通道“${activeSeriesOutput?.label ?? composer.seriesOutputId}”` : '当前指标'}的计算逻辑已更新，请重新校验后保存修改或另存为新指标。`
         : `${composer.node.item.label} 已安全展开并${composer.applyMode === 'replace_formula' ? '替换完整公式' : composer.applyMode === 'replace_selection' ? '替换选中内容' : '插入光标位置'}。`)
     } catch (composeError) {
       setComposerError(userFacingErrorMessage(composeError, '公式展开失败，请检查参数后重试。'))
@@ -1446,31 +2005,49 @@ export default function IndicatorStudio() {
       const response = await validateCustomIndicator(normalized)
       if (requestId !== validationRequestRef.current) return null
       setValidation(response)
-      const rootId = response.dag?.roots.result ?? Object.values(response.dag?.roots ?? {})[0]
+      const seriesDefinition = normalized.result_kind === 'time_series'
+      const selectedOutputId = seriesDefinition
+        ? normalized.series_outputs?.some((item) => item.id === activeSeriesOutputId)
+          ? activeSeriesOutputId
+          : normalized.series_outputs?.[0]?.id ?? ''
+        : ''
+      if (seriesDefinition && selectedOutputId) setActiveSeriesOutputId(selectedOutputId)
+      const rootId = seriesDefinition
+        ? response.dag?.roots[selectedOutputId]
+        : response.dag?.roots.result ?? Object.values(response.dag?.roots ?? {})[0]
       const rootNode = response.dag?.nodes.find((node) => String(node.id) === String(rootId))
       const inferredType = rootNode
         ? dagNodeValueType(rootNode)
         : response.diagnostics.find((diagnostic) => diagnostic.actual !== undefined)?.actual
       const inferredShape = rootNode ? dagNodeShape(rootNode) : shapeFromValueType(inferredType)
-      if (inferredShape !== 'unknown') {
-        setInference({
-          expression: normalized.expression,
-          latex: response.latex || normalized.expression,
-          display_latex: response.display_latex || undefined,
-          math_notation_version: response.math_notation_version || undefined,
-          inferred_type: valueTypeText(inferredType) || inferredShape,
-          shape: inferredShape,
-          semantic_warnings: [],
-          dependencies: response.dependencies,
-          dag: response.dag || undefined,
-        })
-      } else {
-        setInference(null)
-      }
-      const parsed = response.valid ? composerNodeFromDag(response.dag, operatorItems) : null
+      const nextInference = seriesDefinition
+        ? inferenceForSeriesOutput(response, selectedOutputId)
+        : inferredShape !== 'unknown'
+          ? {
+              expression: normalized.expression,
+              latex: response.latex || normalized.expression,
+              display_latex: response.display_latex || undefined,
+              math_notation_version: response.math_notation_version || undefined,
+              inferred_type: valueTypeText(inferredType) || inferredShape,
+              shape: inferredShape,
+              semantic_warnings: [],
+              dependencies: response.dependencies,
+              dag: response.dag || undefined,
+            }
+          : null
+      setInference(nextInference)
+      const parsed = response.valid
+        ? composerNodeFromDag(
+            response.dag,
+            operatorItems,
+            seriesDefinition ? selectedOutputId : undefined,
+          )
+        : null
       setGuidedTree(parsed)
       const resultMessage = response.valid
-        ? `公式解析和校验通过${parsed ? '，已同步为可编辑的计算步骤' : ''}。`
+        ? seriesDefinition
+          ? `时序定义校验通过，共 ${response.output_channels?.length ?? Object.keys(response.dag?.roots ?? {}).length} 个输出通道${parsed ? '；当前通道已解析为可编辑的嵌套计算步骤' : ''}。`
+          : `公式解析和校验通过${parsed ? '，已同步为可编辑的计算步骤' : ''}。`
         : '公式已完成解析，但存在需要修复的校验问题。'
       setMessage(messagePrefix ? `${messagePrefix} ${resultMessage}` : resultMessage)
       return response
@@ -1492,7 +2069,7 @@ export default function IndicatorStudio() {
     if (formulaBuilderOpening) return
     setCatalogError(null)
     setComposerError(null)
-    if (!draft.expression.trim()) {
+    if (!currentExpression.trim()) {
       setCatalogOpen(true)
       return
     }
@@ -1500,7 +2077,13 @@ export default function IndicatorStudio() {
     try {
       setFormulaBuilderOpening(true)
       const checked = validation?.valid ? validation : await validate()
-      const currentTree = guidedTree ?? (checked?.valid ? composerNodeFromDag(checked.dag, operatorItems) : null)
+      const currentTree = displayedGuidedTree ?? (checked?.valid
+        ? composerNodeFromDag(
+            checked.dag,
+            operatorItems,
+            isTimeSeries ? activeSeriesOutput?.id : undefined,
+          )
+        : null)
       if (!checked?.valid || !currentTree) {
         setCatalogError('当前公式暂时无法转换为结构化计算步骤。可以选择变量、算子或已有指标替换当前公式，也可以在高级公式模式中修复源码。')
         setCatalogOpen(true)
@@ -1511,10 +2094,11 @@ export default function IndicatorStudio() {
         node: currentTree,
         applyMode: 'replace_formula',
         selectionStart: 0,
-        selectionEnd: draft.expression.length,
+        selectionEnd: currentExpression.length,
         origin: 'current_formula',
+        seriesOutputId: isTimeSeries ? activeSeriesOutput?.id : undefined,
       })
-      setMessage(`已载入“${draft.name || '当前指标'}”的计算逻辑，可以修改参数或嵌套步骤。`)
+      setMessage(`已载入“${isTimeSeries ? activeSeriesOutput?.label ?? draft.name : draft.name || '当前指标'}”的计算逻辑，可以修改参数或嵌套步骤。`)
     } finally {
       setFormulaBuilderOpening(false)
     }
@@ -1598,6 +2182,7 @@ export default function IndicatorStudio() {
     }
     setTargets((current) => [...current, target])
     setResults([])
+    setSeriesResults([])
     setMessage(`已添加预览产品（${targets.length + 1}/${MAX_PREVIEW_TARGETS}），请运行计算。`)
   }
 
@@ -1622,16 +2207,39 @@ export default function IndicatorStudio() {
         setMessage('请选择本次预览的计算周期。')
         return
       }
-      const response = await evaluateCustomIndicators({
-        inline_definition: normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT }),
-        compile_token: checked.compile_token ?? undefined,
-        targets: targets.map(({ name: _name, ...target }) => target),
-        period: calculationPeriod,
-        as_of: asOf || undefined,
-        include_series: false,
-      })
-      setResults(response.results)
-      setMessage(`预览完成：${response.summary.ok} 个成功，${response.summary.warning + response.summary.error} 个需关注。`)
+      const normalized = normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT })
+      if (normalized.result_kind === 'time_series') {
+        const responses = await Promise.all(targets.map(({ name: _name, ...target }) => (
+          evaluateTimeSeriesIndicators({
+            indicator_instances: [{
+              inline_definition: normalized,
+              compile_token: checked.compile_token ?? undefined,
+            }],
+            target,
+            period: calculationPeriod,
+            as_of: asOf || undefined,
+            max_points: 5000,
+          })
+        )))
+        const timeSeriesResults = responses.flatMap((response) => response.results)
+        setResults([])
+        setSeriesResults(timeSeriesResults)
+        const successful = timeSeriesResults.filter((result) => result.status === 'ok').length
+        const attention = timeSeriesResults.length - successful
+        setMessage(`时序预览完成：${successful} 个成功，${attention} 个需关注。`)
+      } else {
+        const response = await evaluateCustomIndicators({
+          inline_definition: normalized,
+          compile_token: checked.compile_token ?? undefined,
+          targets: targets.map(({ name: _name, ...target }) => target),
+          period: calculationPeriod,
+          as_of: asOf || undefined,
+          include_series: false,
+        })
+        setSeriesResults([])
+        setResults(response.results)
+        setMessage(`预览完成：${response.summary.ok} 个成功，${response.summary.warning + response.summary.error} 个需关注。`)
+      }
       setMobileTab('preview')
       setWorkspaceTab('preview')
     } catch (previewError) {
@@ -1672,7 +2280,7 @@ export default function IndicatorStudio() {
       anchor.click()
       anchor.remove()
       URL.revokeObjectURL(objectUrl)
-      setMessage(`Excel 已生成：包含 ${targets.length} 个产品的直接入参、Excel 公式和指标结果。`)
+      setMessage(`Excel 已生成：包含 ${targets.length} 个产品的真实原始数据、逐步 Excel 公式和${isTimeSeries ? '各时序通道' : '指标'}结果。`)
     } catch (exportError) {
       setError(exportError)
     } finally {
@@ -1684,7 +2292,7 @@ export default function IndicatorStudio() {
 
   const activateWorkspaceTab = (tab: WorkspaceTab) => {
     setWorkspaceTab(tab)
-    if (tab === 'preview' && draft.expression.trim() && !validation && !validating) {
+    if (tab === 'preview' && hasDefinitionFormula && !validation && !validating) {
       void validateDefinition(draft)
     }
   }
@@ -1741,8 +2349,8 @@ export default function IndicatorStudio() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button type="button" onClick={createNew} className="rounded-lg border border-white/25 px-4 py-2 text-sm font-semibold transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white">新建指标</button>
-          {selectedIndicator && !selectedIndicator.read_only && <button type="button" onClick={() => void save('new')} disabled={saving || loading || !draft.expression.trim()} className="rounded-lg border border-violet-300/70 px-4 py-2 text-sm font-semibold text-violet-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">另存为新指标</button>}
-          <button type="button" onClick={() => void save()} disabled={saving || loading || !draft.expression.trim()} className="rounded-lg bg-violet-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">{saving ? '保存中…' : selectedIndicator?.read_only ? '复制为新指标' : selectedIndicator ? '保存修改' : '保存新指标'}</button>
+          {selectedIndicator && !selectedIndicator.read_only && <button type="button" onClick={() => void save('new')} disabled={saving || loading || !hasDefinitionFormula} className="rounded-lg border border-violet-300/70 px-4 py-2 text-sm font-semibold text-violet-100 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">另存为新指标</button>}
+          <button type="button" onClick={() => void save()} disabled={saving || loading || !hasDefinitionFormula} className="rounded-lg bg-violet-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-violet-300 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-white">{saving ? '保存中…' : selectedIndicator?.read_only ? '复制为新指标' : selectedIndicator ? '保存修改' : '保存新指标'}</button>
         </div>
       </div>
 
@@ -1764,7 +2372,8 @@ export default function IndicatorStudio() {
               <label className="text-xs font-semibold text-slate-600">搜索指标<input type="search" aria-label="搜索指标" value={indicatorQuery} onChange={(event) => setIndicatorQuery(event.target.value)} placeholder="名称、说明或公式" className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
               <div className="grid grid-cols-2 gap-2">
                 <label className="text-xs font-semibold text-slate-600">来源<select aria-label="指标来源" value={indicatorSourceFilter} onChange={(event) => setIndicatorSourceFilter(event.target.value as 'all' | 'built_in' | 'custom')} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"><option value="all">全部来源</option><option value="built_in">内置指标</option><option value="custom">工作区指标</option></select></label>
-                <label className="text-xs font-semibold text-slate-600">分类<select aria-label="指标分类" value={indicatorCategoryFilter} onChange={(event) => setIndicatorCategoryFilter(event.target.value)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"><option value="all">全部分类</option>{indicatorCategories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>
+                <label className="text-xs font-semibold text-slate-600">结果类型<select aria-label="指标结果类型" value={indicatorResultKindFilter} onChange={(event) => setIndicatorResultKindFilter(event.target.value as 'all' | IndicatorResultKind)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"><option value="all">全部结果</option><option value="scalar">标量指标</option><option value="time_series">时序指标</option></select></label>
+                <label className="col-span-2 text-xs font-semibold text-slate-600">分类<select aria-label="指标分类" value={indicatorCategoryFilter} onChange={(event) => setIndicatorCategoryFilter(event.target.value)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm"><option value="all">全部分类</option>{indicatorCategories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>
               </div>
             </div>
           </div>
@@ -1790,25 +2399,48 @@ export default function IndicatorStudio() {
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 id="indicator-editor-title" className="font-semibold text-slate-900">指标定义</h2><p className="mt-1 text-xs text-slate-500">{selectedIndicator?.read_only ? '内置指标：保存时将创建工作区副本。' : selectedIndicator ? `工作区指标 · 当前版本 ${selectedIndicator.revision}` : '未保存草稿'}</p></div>{selectedIndicator && !selectedIndicator.read_only && <button type="button" onClick={() => void removeSelected()} className="rounded-lg px-3 py-2 text-sm font-medium text-rose-600 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-300">删除</button>}</div>
             <div className="mt-5 grid gap-4 sm:grid-cols-3">
               <label className="text-sm font-medium text-slate-700">名称<input value={draft.name} onChange={(event) => patchDraft({ name: event.target.value })} maxLength={80} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
-              <label className="text-sm font-medium text-slate-700">指标类型<select aria-label="指标类型" value={draft.indicator_type ?? 'other'} onChange={(event) => patchDraft({ indicator_type: event.target.value as IndicatorDraft['indicator_type'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{indicatorCategories.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-              <label className="text-sm font-medium text-slate-700">优劣方向<select value={draft.direction} onChange={(event) => patchDraft({ direction: event.target.value as IndicatorDraft['direction'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="higher_better">越高越好</option><option value="lower_better">越低越好</option></select></label>
-              <label className="sm:col-span-3 text-sm font-medium text-slate-700">说明<textarea value={draft.description} onChange={(event) => patchDraft({ description: event.target.value })} rows={2} maxLength={300} className="mt-1 block w-full resize-y rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+              <label className="text-sm font-medium text-slate-700">结果类型<select aria-label="结果类型" value={draft.result_kind ?? 'scalar'} onChange={(event) => changeResultKind(event.target.value as IndicatorResultKind)} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="scalar">标量指标</option><option value="time_series">时序指标</option></select></label>
+              <label className="text-sm font-medium text-slate-700">指标类型<select aria-label="指标类型" disabled={isTimeSeries} value={draft.indicator_type ?? 'other'} onChange={(event) => patchDraft({ indicator_type: event.target.value as IndicatorDraft['indicator_type'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100 disabled:bg-slate-100">{indicatorCategories.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <label className="sm:col-span-3 text-sm font-medium text-slate-700">说明<textarea value={draft.description} onChange={(event) => patchDraft({ description: event.target.value })} rows={2} maxLength={500} className="mt-1 block w-full resize-y rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
             </div>
             <div className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
-              指标类型用于指标库分组、跨页面筛选与评价解释；优劣方向仍按指标本身独立定义。指标定义默认支持全部计算周期，周期只在预览或评价运行时选择。
+              {isTimeSeries
+                ? '时序指标返回一个或多个具名通道，可在不同研究页面展示并导出 Excel。算法参数锁定在指标版本中，不直接参与标量评价排名。'
+                : '标量指标用于跨产品展示、评价和排名；指标定义默认支持全部计算周期，周期只在预览或评价运行时选择。'}
             </div>
-            <div className="mt-4 grid gap-4 sm:grid-cols-3">
-              <label className="text-sm font-medium text-slate-700">单位<input value={draft.unit} onChange={(event) => patchDraft({ unit: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
-              <label className="text-sm font-medium text-slate-700">展示格式<select value={draft.display_format} onChange={(event) => patchDraft({ display_format: event.target.value as IndicatorDraft['display_format'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="percent">百分比</option><option value="number">数值</option></select></label>
-              <label className="text-sm font-medium text-slate-700">小数位<input aria-label="小数位" type="number" min="0" max="8" value={draft.precision} onChange={(event) => patchDraft({ precision: Number(event.target.value) })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
-            </div>
+            {!isTimeSeries && selectedIndicator?.rolling_series_compatibility?.supported && <div className="mt-3 flex justify-end"><button type="button" onClick={() => { setRollingSourceIndicatorId(selectedIndicator.id); setRollingWindowObservations(5); setRollingDerivationError(null); changeResultKind('time_series') }} className="min-h-10 rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-300">生成滚动时序指标</button></div>}
+            {isTimeSeries && <section aria-label="标量指标滚动派生" className="mt-4 rounded-xl border border-violet-200 bg-violet-50/50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-violet-950">从标量指标生成滚动时序指标</h3>
+                  <p className="mt-1 text-xs leading-5 text-violet-800">系统锁定标量指标版本，把其中的均值、样本标准差、方差、最小值或最大值改写为固定观察数的因果滚动公式。生成后仍使用普通 typed DSL、固定签名 NJIT 和原生 Excel 函数。</p>
+                </div>
+                {draft.rolling_source && <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${draft.rolling_source.detached ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>{draft.rolling_source.detached ? '已脱离来源' : '来源已锁定'}</span>}
+              </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_auto] sm:items-end">
+                <label className="text-xs font-semibold text-slate-700">来源标量指标<select aria-label="滚动来源标量指标" value={effectiveRollingSourceIndicatorId} onChange={(event) => { setRollingSourceIndicatorId(event.target.value); setRollingDerivationError(null) }} className="mt-1 block min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">请选择标量指标</option>{rollingScalarIndicators.map((item) => <option key={`${item.id}@${item.revision}`} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label>
+                <label className="text-xs font-semibold text-slate-700">固定观察数<input aria-label="滚动观察数" type="number" min="2" max="20000" step="1" value={rollingWindowObservations} onChange={(event) => { setRollingWindowObservations(Number(event.target.value)); setRollingDerivationError(null) }} className="mt-1 block min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+                <button type="button" onClick={() => void deriveFromScalarIndicator()} disabled={rollingDeriving || !effectiveRollingSourceIndicatorId} className="min-h-11 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{rollingDeriving ? '生成中…' : '生成滚动公式'}</button>
+              </div>
+              {draft.rolling_source && <div className="mt-3 rounded-lg border border-white bg-white/80 px-3 py-2 text-xs leading-5 text-slate-600">当前来源：{draft.rolling_source.indicator_name} v{draft.rolling_source.indicator_revision} · 固定 {draft.rolling_source.window_observations} 个观察值。{draft.rolling_source.detached ? '当前公式已被手工修改，保存后作为独立时序指标，不再保证与来源标量公式一致。' : '来源定义哈希、版本和生成公式已锁定。'}</div>}
+              {rollingDerivationError && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{rollingDerivationError}</p>}
+            </section>}
+            {isTimeSeries
+              ? <TimeSeriesDefinitionFields draft={draft} variables={variables} validation={validation} onPatch={patchDraft} />
+              : <div className="mt-4 grid gap-4 sm:grid-cols-4">
+                  <label className="text-sm font-medium text-slate-700">单位<input value={draft.unit} onChange={(event) => patchDraft({ unit: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+                  <label className="text-sm font-medium text-slate-700">展示格式<select value={draft.display_format} onChange={(event) => patchDraft({ display_format: event.target.value as IndicatorDraft['display_format'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="percent">百分比</option><option value="number">数值</option></select></label>
+                  <label className="text-sm font-medium text-slate-700">小数位<input aria-label="小数位" type="number" min="0" max="8" value={draft.precision} onChange={(event) => patchDraft({ precision: Number(event.target.value) })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+                  <label className="text-sm font-medium text-slate-700">优劣方向<select value={draft.direction} onChange={(event) => patchDraft({ direction: event.target.value as IndicatorDraft['direction'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="higher_better">越高越好</option><option value="lower_better">越低越好</option></select></label>
+                </div>}
+
           </div>
 
           </div>
 
           <details className="rounded-2xl border border-slate-200 bg-white shadow-sm">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-5 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-violet-300">
-              <div><h2 className="font-semibold text-slate-900">快照加速</h2><p className="mt-1 text-xs text-slate-500">选择需要在数据刷新后预计算的区间，用于产品列表快速展示、筛选与排行。</p></div>
+              <div><h2 className="font-semibold text-slate-900">快照加速</h2><p className="mt-1 text-xs text-slate-500">选择需要在数据刷新后预计算的区间；时序指标还需明确输出通道，并取该通道末个有限值。</p></div>
               <span className="shrink-0 rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">{snapshotPeriods.length} 个区间</span>
             </summary>
             <div className="border-t border-slate-100 p-5 pt-4">
@@ -1816,6 +2448,7 @@ export default function IndicatorStudio() {
                 <div className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
                   快照会锁定“{selectedIndicator.name}” v{selectedIndicator.revision}。修改配置不会立即计算；下一次数据刷新或手动重建分析快照后生效。
                 </div>
+                {isTimeSeries && <label className="mt-4 block text-sm font-semibold text-slate-700">快照输出通道<select aria-label="快照输出通道" value={snapshotSeriesChannel} onChange={(event) => setSnapshotSeriesChannel(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">请选择输出通道</option>{(selectedIndicator.series_outputs ?? []).map((output) => <option key={output.id} value={output.id}>{output.label} · 末个有限值</option>)}</select><span className="mt-1 block text-xs font-normal text-slate-500">预计算会锁定指标版本、输出通道、区间和“末个有限值”归约规则。</span></label>}
                 <fieldset className="mt-4"><legend className="text-sm font-semibold text-slate-700">预计算区间</legend><div className="mt-2 grid max-h-48 gap-2 overflow-y-auto rounded-xl border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-3">{periods.map((item) => { const checked = snapshotPeriods.includes(item.value); return <label key={item.value} className={`flex min-h-11 cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 text-sm ${checked ? 'border-violet-300 bg-violet-50 text-violet-900' : 'border-slate-100 bg-white text-slate-600'}`}><input type="checkbox" checked={checked} onChange={(event) => setSnapshotPeriods((current) => event.target.checked ? [...new Set([...current, item.value])] : current.filter((value) => value !== item.value))} className="mt-0.5" /><span><span className="block font-medium">{item.label}（{item.value}）</span><span className="mt-0.5 block text-xs text-slate-400">{item.description}</span></span></label> })}</div></fieldset>
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-slate-500">工作区当前共配置 {snapshotConfig?.items.length ?? 0} / {snapshotConfig?.max_items ?? 30} 个“指标 + 区间”快照。{snapshotConfig?.snapshot_status === 'ready' ? '当前快照已使用此配置和最新数据。' : snapshotConfig?.snapshot_status === 'stale' ? '配置或数据已变化，需要重新生成快照。' : '尚未生成指标快照。'}</p><button type="button" onClick={() => void saveSnapshotPeriods()} disabled={!snapshotConfig || snapshotSaving} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{snapshotSaving ? '保存中…' : '保存快照配置'}</button></div>
               </>}
@@ -1830,30 +2463,40 @@ export default function IndicatorStudio() {
                 <p className="mt-1 text-xs text-slate-500">先用类型化目录构建；熟悉语法后可切换到高级公式模式。计算源码与数学排版分开管理。</p>
               </div>
             </div>
+            {isTimeSeries && <TimeSeriesFormulaEditor
+              draft={draft}
+              activeOutputId={activeSeriesOutput?.id ?? ''}
+              measureOptions={seriesOutputMeasures}
+              inference={activeSeriesOutput ? validation?.output_inferences?.[activeSeriesOutput.id] ?? null : null}
+              onSelectOutput={selectSeriesOutput}
+              onPatchOutput={patchSeriesOutput}
+              onAddOutput={addSeriesOutput}
+              onRemoveOutput={removeSeriesOutput}
+            />}
             <div className="mt-4 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1" role="tablist" aria-label="公式编辑方式">
               <button id="formula-mode-guided" type="button" role="tab" aria-controls="formula-guided-panel" aria-selected={editorMode === 'guided'} onClick={() => setEditorMode('guided')} className={`rounded-md px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${editorMode === 'guided' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-600'}`}>构建向导</button>
               <button id="formula-mode-advanced" type="button" role="tab" aria-controls="formula-advanced-panel" aria-selected={editorMode === 'advanced'} onClick={() => setEditorMode('advanced')} className={`rounded-md px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${editorMode === 'advanced' ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-600'}`}>高级公式模式</button>
             </div>
             {editorMode === 'guided' ? <div id="formula-guided-panel" role="tabpanel" aria-labelledby="formula-mode-guided" className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-              {draft.expression.trim() ? <>
-                <div className="flex items-center justify-between gap-3"><p className="text-xs font-semibold text-slate-600">当前计算逻辑</p><span className="text-xs text-slate-400">已生成</span></div>
-                <p className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-600">公式已由结构化构建器生成。下方使用数学符号展示计算逻辑；如需查看或编辑公式源码，可切换到高级公式模式。</p>
-                {guidedTree ? <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2"><p className="text-xs font-semibold text-emerald-800">已识别公式的计算结构</p><p className="mt-0.5 text-xs text-emerald-700">最后一步：{guidedTree.item.label} · 共 {composerNodeCount(guidedTree)} 个计算步骤。点击下方入口可查看并修改完整逻辑。</p></div> : <p className="mt-2 text-xs text-slate-500">点击下方入口时，系统会先解析当前公式，再展示可编辑的计算步骤；无法解析时可改用其他构建资源。</p>}
+              {currentExpression.trim() ? <>
+                <div className="flex items-center justify-between gap-3"><p className="text-xs font-semibold text-slate-600">{isTimeSeries ? `当前输出通道：${activeSeriesOutput?.label || activeSeriesOutput?.id || '未命名通道'}` : '当前计算逻辑'}</p><span className="text-xs text-slate-400">已生成</span></div>
+                <p className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-600">公式已由结构化构建器生成。下方使用数学符号展示计算逻辑；如需直接查看或编辑 DSL / LaTeX 源码，可切换到高级公式模式。</p>
+                {displayedGuidedTree ? <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2"><p className="text-xs font-semibold text-emerald-800">已识别公式的计算结构</p><p className="mt-0.5 text-xs text-emerald-700">最后一步：{displayedGuidedTree.item.label} · 共 {composerNodeCount(displayedGuidedTree)} 个计算步骤。点击下方入口可查看并修改完整嵌套逻辑。</p></div> : <p className="mt-2 text-xs text-slate-500">点击下方入口时，系统会先解析当前公式，再展示可编辑的变量、参数和嵌套计算步骤；无法解析时可在高级公式模式中修复源码。</p>}
               </> : <div className="rounded-lg border border-dashed border-violet-200 bg-white p-4 text-center">
                 <p className="font-semibold text-slate-800">从变量、数学算子或已有指标开始</p>
-                <p className="mt-1 text-xs leading-5 text-slate-500">目录会解释数据与类型契约；已有指标按锁定版本展开，算子配置会屏蔽不兼容输入。</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">目录会解释数据与类型契约；时序运行参数也可作为标量输入，算子配置会屏蔽不兼容组合。</p>
               </div>}
-              <button type="button" onClick={() => void openFormulaBuilder()} disabled={formulaBuilderOpening} aria-busy={formulaBuilderOpening} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-wait disabled:bg-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-300">{formulaBuilderOpening ? '正在载入当前计算逻辑…' : '浏览公式构建资源'}</button>
+              <button type="button" onClick={() => void openFormulaBuilder()} disabled={formulaBuilderOpening || (isTimeSeries && !activeSeriesOutput)} aria-busy={formulaBuilderOpening} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-wait disabled:bg-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-300">{formulaBuilderOpening ? '正在载入当前计算逻辑…' : '浏览公式构建资源'}</button>
             </div> : <div id="formula-advanced-panel" role="tabpanel" aria-labelledby="formula-mode-advanced" className="mt-4">
-              <label className="block text-sm font-semibold text-slate-700" htmlFor="indicator-expression">受限公式源码（DSL / LaTeX）</label>
+              <label className="block text-sm font-semibold text-slate-700" htmlFor="indicator-expression">{isTimeSeries ? `“${activeSeriesOutput?.label || activeSeriesOutput?.id || '当前通道'}”公式源码（DSL / LaTeX）` : '受限公式源码（DSL / LaTeX）'}</label>
               <p className="mt-1 text-xs text-slate-500">源码中的函数 ID 用于保证计算语义；下方排版预览会统一转换为数学符号。</p>
-              <textarea id="indicator-expression" ref={expressionRef} value={draft.expression} onChange={(event) => patchDraft({ expression: event.target.value, template_origin: null })} maxLength={1000} spellCheck={false} rows={6} className="mt-2 block w-full rounded-xl border border-slate-300 bg-slate-950 p-4 font-mono text-sm leading-6 text-emerald-200 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200" />
-              <div className="mt-2 flex items-center justify-between gap-3"><button type="button" onClick={() => void openFormulaBuilder()} disabled={formulaBuilderOpening} aria-busy={formulaBuilderOpening} className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-violet-300">{formulaBuilderOpening ? '正在载入当前计算逻辑…' : '浏览公式构建资源'}</button><span className="text-xs text-slate-400">{draft.expression.length} / 1000</span></div>
+              <textarea id="indicator-expression" ref={expressionRef} value={currentExpression} onChange={(event) => patchCurrentExpression(event.target.value)} maxLength={isTimeSeries ? 4000 : 1000} spellCheck={false} rows={6} className="mt-2 block w-full rounded-xl border border-slate-300 bg-slate-950 p-4 font-mono text-sm leading-6 text-emerald-200 focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200" />
+              <div className="mt-2 flex items-center justify-between gap-3"><button type="button" onClick={() => void openFormulaBuilder()} disabled={formulaBuilderOpening || (isTimeSeries && !activeSeriesOutput)} aria-busy={formulaBuilderOpening} className="rounded-lg border border-violet-200 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-violet-300">{formulaBuilderOpening ? '正在载入当前计算逻辑…' : '浏览公式构建资源'}</button><span className="text-xs text-slate-400">{currentExpression.length} / {isTimeSeries ? 4000 : 1000}</span></div>
             </div>}
-            <button type="button" onClick={() => void validate()} disabled={validating || !draft.expression.trim()} className="mt-3 w-full rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{validating ? '解析与校验中…' : '解析并校验公式'}</button>
-            <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">数学排版预览</p><div data-testid="formula-preview" className="mt-3 overflow-x-auto text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /></div>
-            {inference && <InferencePanel inference={inference} resourceLabels={resourceLabels} />}
-            {(validation?.dag || inference?.dag) && <FormulaExplanationDisclosure dag={(validation?.dag || inference?.dag)!} variables={variables} operators={operatorItems} />}
+            <button type="button" onClick={() => void validate()} disabled={validating || !hasDefinitionFormula} className="mt-3 w-full rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{validating ? '解析与校验中…' : isTimeSeries ? '解析并校验全部通道' : '解析并校验公式'}</button>
+            <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">数学排版预览{isTimeSeries && activeSeriesOutput ? ` · ${activeSeriesOutput.label}` : ''}</p><div data-testid="formula-preview" className="mt-3 overflow-x-auto text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /></div>
+            {displayedInference && <InferencePanel inference={displayedInference} resourceLabels={resourceLabels} />}
+            {activeFormulaDag && <FormulaExplanationDisclosure dag={activeFormulaDag} variables={formulaVariables} operators={operatorItems} />}
             {validation && <ValidationPanel validation={validation} resourceLabels={resourceLabels} />}
           </div>
         </section>
@@ -1863,12 +2506,16 @@ export default function IndicatorStudio() {
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h2 id="indicator-preview-title" className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs text-slate-500">最多选择 {MAX_PREVIEW_TARGETS} 个真实产品并分别计算同一指标；不会合并为组合，也不会使用模拟数据。</p><div aria-label="当前预览指标" aria-live="polite" className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-sm"><span className="text-slate-500">当前指标</span><strong className="text-violet-800">{draft.name}</strong><span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-500">{selectedIndicator?.read_only ? '内置指标' : selectedIndicator ? `工作区 v${selectedIndicator.revision}` : '未保存草稿'}</span></div>
               <div className="mt-4 flex gap-2"><select aria-label="产品类型" value={searchKind} onChange={(event) => { setSearchKind(event.target.value as ProductKind | 'all'); setSearchResults([]) }} className="rounded-lg border border-slate-200 bg-white px-2 text-sm focus:border-violet-500 focus:outline-none"><option value="all">全部</option><option value="etf">ETF</option><option value="fund">公募基金</option></select><SearchDropdown label="搜索产品" value={searchText} items={searchResults} onChange={setSearchText} onSearch={lookupProducts} loading={searching} placeholder="名称或代码" className="flex-1" getItemKey={(item, index) => `${item.code ?? item.ts_code ?? index}-${item.instrument_type ?? ''}`} renderItem={(item) => { const target = targetFromItem(item); const selected = Boolean(target && targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)); const atLimit = targets.length >= MAX_PREVIEW_TARGETS; return <div className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0 text-sm text-slate-700"><span className="font-medium">{item.name || target?.product_id}</span><span className="ml-2 text-xs text-slate-400">{target?.product_id}</span></span><button type="button" onClick={() => addTarget(item)} disabled={!target || selected || atLimit} title={!selected && atLimit ? `最多选择 ${MAX_PREVIEW_TARGETS} 个产品` : undefined} className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{selected ? '已添加' : atLimit ? '已达上限' : '添加'}</button></div> }} /></div>
               <div className="mt-4"><p className="text-sm font-medium text-slate-700">已选产品 <span aria-live="polite" className="text-slate-400">{targets.length} / {MAX_PREVIEW_TARGETS}</span></p><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((target) => <span key={`${target.kind}-${target.product_id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-3 pr-1 text-xs text-slate-700"><span>{target.name}</span><span className="text-slate-400">{target.product_id !== target.name ? target.product_id : ''}</span><button type="button" aria-label={`移除 ${target.name}`} onClick={() => { setTargets((current) => current.filter((item) => item.kind !== target.kind || item.product_id !== target.product_id)); setResults([]); setMessage('预览产品已移除，请重新计算。') }} className="rounded-full px-1.5 py-0.5 text-slate-400 hover:bg-white hover:text-rose-600">×</button></span>) : <p className="text-sm text-slate-400">尚未选择产品</p>}</div></div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label></div><p className="mt-2 text-xs text-slate-500">选择产品并执行预览后，系统会根据实际数据判断是否可计算，并在结果中说明数据缺失、样本不足等原因。</p><button type="button" onClick={() => void preview()} disabled={previewing || excelExporting || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '预览指标'}</button><button type="button" onClick={() => void downloadExcel()} disabled={excelExporting || previewing || periods.length === 0 || !targets.length || !draft.expression.trim()} className="mt-2 w-full rounded-lg border border-violet-200 bg-white px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{excelExporting ? '正在生成 Excel…' : '下载 Excel 计算逻辑'}</button>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setSeriesResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setSeriesResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label></div>
+              {isTimeSeries && <p className="mt-3 rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-800">该指标的窗口、倍数和平滑周期已锁定在公式与指标版本中。本次运行只选择产品、区间和截止日。</p>}
+              <p className="mt-2 text-xs text-slate-500">选择产品并执行预览后，系统会根据实际数据判断是否可计算，并在结果中说明数据缺失、样本不足等原因。</p><button type="button" onClick={() => void preview()} disabled={previewing || excelExporting || periods.length === 0 || !targets.length || !hasDefinitionFormula} className="mt-3 w-full rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{previewing ? '计算中…' : '预览指标'}</button><button type="button" onClick={() => void downloadExcel()} disabled={excelExporting || previewing || periods.length === 0 || !targets.length || !hasDefinitionFormula} className="mt-2 w-full rounded-lg border border-violet-200 bg-white px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{excelExporting ? '正在生成 Excel…' : '下载 Excel 计算逻辑'}</button>
           </div>
 
           <div className="min-w-0 space-y-5">
-            <DagPanel validation={validation} dag={dagView.dag} period={dagView.period} option={dagOption} contextDomain={STUDIO_CONTEXT} resourceLabels={resourceLabels} operators={operatorItems} validating={validating} canValidate={Boolean(draft.expression.trim())} onValidate={() => void validateDefinition(draft)} onEdit={() => { setMobileTab('editor'); activateWorkspaceTab('editor') }} />
-            <ResultsPanel results={results} draft={draft} contextDomain={STUDIO_CONTEXT} />
+            <DagPanel validation={validation} dag={dagView.dag} period={dagView.period} option={dagOption} contextDomain={STUDIO_CONTEXT} resourceLabels={resourceLabels} operators={operatorItems} validating={validating} canValidate={hasDefinitionFormula} onValidate={() => void validateDefinition(draft)} onEdit={() => { setMobileTab('editor'); activateWorkspaceTab('editor') }} />
+            {isTimeSeries
+              ? <TimeSeriesResultsPanel results={seriesResults} />
+              : <ResultsPanel results={results} draft={draft} contextDomain={STUDIO_CONTEXT} />}
           </div>
           </div>
           <p className="px-1 text-xs text-slate-500">指标定义和评价方案在当前工作区共享。数据缺失、样本不足或无效数值会明确标为不可计算。</p>
@@ -1878,10 +2525,10 @@ export default function IndicatorStudio() {
       </div>
 
       <CatalogDrawer open={catalogOpen} onClose={() => setCatalogOpen(false)}>
-        <TypedCatalog tabsValue={catalogTab} onTabChange={setCatalogTab} variables={variables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} onInsertVariable={insertExpression} onInsertIndicator={insertIndicator} onExplainIndicator={(indicator) => composeCustomIndicator({ indicator_id: indicator.id, indicator_revision: indicator.revision, arguments: [], context: STUDIO_CONTEXT, dsl_version: draft.dsl_version, operator_registry_version: draft.operator_registry_version, variable_registry_version: draft.variable_registry_version, data_contract_version: draft.data_contract_version, context_schema_version: draft.context_schema_version })} onOpenComposer={openComposer} variableActionLabel={editorMode === 'guided' ? '设为当前公式' : '插入到光标'} indicatorActionLabel={editorMode === 'guided' ? '展开为当前公式' : '插入锁定版本公式'} insertingIndicatorId={insertingIndicatorId} actionError={catalogError} />
+        <TypedCatalog tabsValue={catalogTab} onTabChange={setCatalogTab} variables={formulaVariables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} onInsertVariable={insertExpression} onInsertIndicator={insertIndicator} onExplainIndicator={(indicator) => composeCustomIndicator({ indicator_id: indicator.id, indicator_revision: indicator.revision, arguments: [], context: STUDIO_CONTEXT, dsl_version: draft.dsl_version, operator_registry_version: draft.operator_registry_version, variable_registry_version: draft.variable_registry_version, data_contract_version: draft.data_contract_version, context_schema_version: draft.context_schema_version })} onOpenComposer={openComposer} variableActionLabel={editorMode === 'guided' ? '设为当前公式' : '插入到光标'} indicatorActionLabel={editorMode === 'guided' ? '展开为当前公式' : '插入锁定版本公式'} insertingIndicatorId={insertingIndicatorId} actionError={catalogError} />
       </CatalogDrawer>
-      <ComposerDrawer composer={composer} indicatorName={draft.name} variables={composerVariables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} loading={composerLoading} canApply={composerReady} error={composerError} onClose={() => { setComposer(null); setComposerError(null) }} onBrowseResources={() => { setComposer(null); setComposerError(null); setCatalogError(null); setCatalogOpen(true) }} onChange={updateComposerArgument} onApplyModeChange={(applyMode) => setComposer((current) => current ? { ...current, applyMode } : current)} onApply={() => void applyComposer()} />
-      <div className="sticky bottom-0 z-10 mt-5 flex gap-2 border-t border-slate-200 bg-white/95 p-3 backdrop-blur md:hidden"><button type="button" onClick={() => void save()} disabled={saving || !draft.expression.trim()} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300">{selectedIndicator?.read_only ? '复制为新指标' : selectedIndicator ? '保存修改' : '保存新指标'}</button><button type="button" onClick={() => void preview()} disabled={previewing || !draft.expression.trim() || !targets.length || !activePeriod} className="flex-1 rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white disabled:bg-slate-300">预览</button></div>
+      <ComposerDrawer composer={composer} indicatorName={isTimeSeries ? activeSeriesOutput?.label ?? draft.name : draft.name} variables={composerVariables} operators={operatorItems} indicators={composableIndicators} contextDomain={STUDIO_CONTEXT} loading={composerLoading} canApply={composerReady} error={composerError} onClose={() => { setComposer(null); setComposerError(null) }} onBrowseResources={() => { setComposer(null); setComposerError(null); setCatalogError(null); setCatalogOpen(true) }} onChange={updateComposerArgument} onApplyModeChange={(applyMode) => setComposer((current) => current ? { ...current, applyMode } : current)} onApply={() => void applyComposer()} />
+      <div className="sticky bottom-0 z-10 mt-5 flex gap-2 border-t border-slate-200 bg-white/95 p-3 backdrop-blur md:hidden"><button type="button" onClick={() => void save()} disabled={saving || !hasDefinitionFormula} className="flex-1 rounded-lg bg-violet-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300">{selectedIndicator?.read_only ? '复制为新指标' : selectedIndicator ? '保存修改' : '保存新指标'}</button><button type="button" onClick={() => void preview()} disabled={previewing || !hasDefinitionFormula || !targets.length || !activePeriod} className="flex-1 rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white disabled:bg-slate-300">预览</button></div>
     </div>
   )
 }
@@ -2199,7 +2846,10 @@ function FormulaExplanation({ dag, variables, operators, compact = false }: { da
     if (!node) return '上一计算结果'
     if (node.kind === 'variable') return variableById.get(node.label)?.label || node.label
     if (node.kind === 'constant') return `常量 ${node.formula_fragment || node.label}`
-    return operatorById.get(dagNodeOperatorId(node))?.label || node.label
+    return operatorDisplayLabel(
+      dagNodeOperatorId(node),
+      operatorById.get(dagNodeOperatorId(node))?.label || node.label,
+    )
   }
   const variableNodes = dag.nodes.filter((node) => node.kind === 'variable')
   const calculationNodes = dag.nodes
@@ -2238,7 +2888,12 @@ function FormulaExplanation({ dag, variables, operators, compact = false }: { da
         const stepFormula = mathFormulaForDisplay(node.latex_fragment, node.formula_fragment) || operator?.displayTemplate
         return <li key={node.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="flex items-start gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-600 text-xs font-bold text-white">{index + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-slate-800">使用“{nodeName(node)}”</p><span className="text-xs text-slate-400">得到{shapeLabel(dagNodeShape(node), dagNodeValueType(node))}</span></div>{stepFormula && <div className="mt-2 rounded-md bg-white px-2 py-1"><MathNotation latex={stepFormula} label={`第 ${index + 1} 步的数学公式`} /></div>}{inputs.length > 0 && <ul className="mt-2 space-y-1 text-xs text-slate-600">{inputs.map((edge, inputIndex) => {
           const source = nodeById.get(String(edge.source))
-          const parameter = parameterLabel(edge.parameter || edge.parameter_name || edge.input_name || operator?.parameters[inputIndex]?.name, operator?.parameters[inputIndex]?.label || `输入 ${inputIndex + 1}`)
+          const parameter = operatorParameterLabel(
+            operator?.id || dagNodeOperatorId(node),
+            inputIndex,
+            edge.parameter || edge.parameter_name || edge.input_name || operator?.parameters[inputIndex]?.name,
+            operator?.parameters[inputIndex]?.label || `输入 ${inputIndex + 1}`,
+          )
           return <li key={`${edge.source}-${inputIndex}`}><span className="font-semibold text-violet-700">{parameter}</span>：{nodeName(source)}</li>
         })}</ul>}</div></div></li>
       })}</ol>
@@ -2252,64 +2907,64 @@ function ComposerNodeFields({ node, path, variables, operators, indicators, cont
     {node.arguments.map((argument, index) => {
       const argumentPath = [...path, index]
       const needs = acceptedShapes(argument.parameter)
-      // Keep per-parameter eligibility separate from cross-parameter compatibility.
-      // Otherwise the default value of B can prevent the user from changing A to a
-      // different, otherwise valid measure/shape and then pairing B with it.
-      const compatibleVariables = variables.filter((variable) => (
+      const fixedConstant = parameterRequiresFixedConstant(argument.parameter)
+      const compatibleVariables = fixedConstant ? [] : variables.filter((variable) => (
         isCompatibleVariable(variable, argument.parameter, contextDomain)
       ))
-      const compatibleOperators = operators.filter((operator) => isCompatibleNestedOperator(operator, argument.parameter, contextDomain))
-      const compatibleIndicators = parameterAcceptsIndicator(argument.parameter) ? indicators : []
-      const constantAllowed = needs.includes('scalar') || needs.includes('unknown')
-      const nestedAllowed = depth < 3 && compatibleOperators.length > 0
+      const compatibleOperators = fixedConstant ? [] : operators.filter((operator) => isCompatibleNestedOperator(operator, argument.parameter, contextDomain))
+      const compatibleIndicators = fixedConstant ? [] : parameterAcceptsIndicator(argument.parameter) ? indicators : []
+      const constantAllowed = fixedConstant || needs.includes('scalar') || needs.includes('unknown')
+      const nestedAllowed = !fixedConstant && depth < 3 && compatibleOperators.length > 0
       const label = parameterLabel(argument.parameter.name, argument.parameter.label || argument.parameter.name)
+      const source = fixedConstant ? 'constant' : argument.source
       return <fieldset key={`${argument.parameter.name}-${argumentPath.join('-')}`} className={`rounded-xl border p-3 ${depth > 0 ? 'border-violet-100 bg-violet-50/30' : 'border-slate-200'}`}>
         <legend className="px-1 text-sm font-semibold text-slate-800">{label} <span className="font-normal text-slate-400">· {needs.map((shape) => shapeLabel(shape)).join(' / ')}</span></legend>
         <p className="mt-1 text-xs leading-5 text-slate-500">{parameterDescription(argument.parameter)}</p>
-        <label className="mt-3 block text-xs font-semibold text-slate-600">输入来源<select aria-label={`${label} 输入来源`} value={argument.source} onChange={(event) => {
-          const source = event.target.value as ComposerSource
-          if (source === 'variable') {
+        {fixedConstant && <p className="mt-2 rounded-lg border border-sky-100 bg-sky-50 px-2 py-1.5 text-xs text-sky-800">该配置决定指标公式及所需历史，必须随指标版本固定。需要其他数值时，请保存为另一个指标或新版本。</p>}
+        <label className="mt-3 block text-xs font-semibold text-slate-600">输入来源<select aria-label={`${label} 输入来源`} disabled={fixedConstant} value={source} onChange={(event) => {
+          const nextSource = event.target.value as ComposerSource
+          if (nextSource === 'variable') {
             const variable = compatibleVariables[0]
-            onChange(argumentPath, { ...argument, source, value: variable?.name || '', nested: undefined })
-          } else if (source === 'constant') {
-            const value = typeof argument.parameter.default === 'number' ? String(argument.parameter.default) : ''
-            onChange(argumentPath, { ...argument, source, value, nested: undefined })
-          } else if (source === 'operator') {
+            onChange(argumentPath, { ...argument, source: nextSource, value: variable?.name || '', nested: undefined })
+          } else if (nextSource === 'constant') {
+            const value = typeof argument.parameter.default === 'number' ? String(argument.parameter.default) : argument.value || ''
+            onChange(argumentPath, { ...argument, source: nextSource, value, nested: undefined })
+          } else if (nextSource === 'operator') {
             const nestedItem = compatibleOperators[0]
-            onChange(argumentPath, { ...argument, source, value: nestedItem?.id || '', nested: nestedItem ? initialComposerNode(nestedItem, variables, contextDomain) : undefined })
-          } else if (source === 'indicator') {
+            onChange(argumentPath, { ...argument, source: nextSource, value: nestedItem?.id || '', nested: nestedItem ? initialComposerNode(nestedItem, variables, contextDomain) : undefined })
+          } else if (nextSource === 'indicator') {
             const indicator = compatibleIndicators[0]
-            onChange(argumentPath, { ...argument, source, value: indicator ? indicatorReferenceKey(indicator) : '', nested: undefined })
+            onChange(argumentPath, { ...argument, source: nextSource, value: indicator ? indicatorReferenceKey(indicator) : '', nested: undefined })
           } else {
-            onChange(argumentPath, { ...argument, source, value: '', nested: undefined })
+            onChange(argumentPath, { ...argument, source: nextSource, value: '', nested: undefined })
           }
-        }} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">
-          <option value="variable" disabled={compatibleVariables.length === 0}>兼容变量</option>
-          <option value="constant" disabled={!constantAllowed}>有限数值常量</option>
+        }} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100 disabled:bg-slate-100">
+          <option value="variable" disabled={fixedConstant || compatibleVariables.length === 0}>兼容变量</option>
+          <option value="constant" disabled={!constantAllowed}>{fixedConstant ? '定义级固定常量' : '有限数值常量'}</option>
           <option value="operator" disabled={!nestedAllowed}>嵌套算子{depth >= 3 ? '（已达层级上限）' : ''}</option>
-          <option value="indicator" disabled={compatibleIndicators.length === 0}>已有标量指标</option>
-          {argument.parameter.optional && <option value="omitted">省略可选参数</option>}
+          <option value="indicator" disabled={fixedConstant || compatibleIndicators.length === 0}>已有标量指标</option>
+          {argument.parameter.optional && !fixedConstant && <option value="omitted">省略可选参数</option>}
         </select></label>
-        {argument.source === 'variable' && <>
+        {source === 'variable' && <>
           <label className="mt-3 block text-xs font-semibold text-slate-600">选择兼容变量<select aria-label={`${label} 变量`} value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value })} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">选择兼容变量</option>{variables.map((variable) => {
             const compatible = isCompatibleVariable(variable, argument.parameter, contextDomain)
             return <option key={variable.name} value={variable.name} disabled={!compatible}>{variable.label} · {shapeLabel(inferShape(variable), variable.value_type)}{compatible ? '' : '（类型或语义不兼容）'}</option>
           })}</select></label>
-          {compatibleVariables.length === 0 && <p className="mt-2 text-xs text-amber-700">当前产品变量中没有满足该参数类型与语义约束的输入，可改用嵌套算子构造。</p>}
+          {compatibleVariables.length === 0 && <p className="mt-2 text-xs text-amber-700">当前变量中没有满足该参数类型与语义约束的输入，可改用嵌套算子构造。</p>}
         </>}
-        {argument.source === 'constant' && <label className="mt-3 block text-xs font-semibold text-slate-600">有限数值常量<input aria-label={`${label} 有限常量`} type="number" step="any" value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value })} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>}
-        {argument.source === 'indicator' && <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/40 p-3">
+        {source === 'constant' && <label className="mt-3 block text-xs font-semibold text-slate-600">{fixedConstant ? '定义级固定常量' : '有限数值常量'}<input aria-label={`${label} 有限常量`} type="number" step="any" value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, source: 'constant', value: event.target.value, nested: undefined })} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>}
+        {source === 'indicator' && <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/40 p-3">
           <label className="block text-xs font-semibold text-sky-800">选择已有标量指标<select aria-label={`${label} 已有指标`} value={argument.value} onChange={(event) => onChange(argumentPath, { ...argument, value: event.target.value, nested: undefined })} className="mt-1 block min-h-11 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">选择同协议指标</option>{compatibleIndicators.map((indicator) => <option key={indicatorReferenceKey(indicator)} value={indicatorReferenceKey(indicator)}>{indicator.name} · {indicator.source === 'built_in' ? '内置' : '工作区'} v{indicator.revision}</option>)}</select></label>
           <p className="mt-2 text-xs leading-5 text-sky-700">提交时按锁定版本安全展开为表达式，不建立运行时指标依赖。</p>
         </div>}
-        {argument.source === 'operator' && <div className="mt-3 rounded-xl border border-violet-200 bg-white p-3">
+        {source === 'operator' && <div className="mt-3 rounded-xl border border-violet-200 bg-white p-3">
           <label className="block text-xs font-semibold text-violet-800">嵌套数学算子<select aria-label={`${label} 嵌套算子`} value={argument.nested?.item.id || argument.value} onChange={(event) => {
             const nestedItem = compatibleOperators.find((operator) => operator.id === event.target.value)
             onChange(argumentPath, { ...argument, value: nestedItem?.id || '', nested: nestedItem ? initialComposerNode(nestedItem, variables, contextDomain) : undefined })
           }} className="mt-1 block min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">选择输出类型兼容的算子</option>{compatibleOperators.map((operator) => <option key={operator.id} value={operator.id}>{operator.label} · {operatorOptionContract(operator)}</option>)}</select></label>
           {argument.nested && <div className="mt-3 border-l-2 border-violet-200 pl-3"><div className="mb-3 flex items-center justify-between gap-2"><p className="text-xs font-semibold text-violet-800">第 {depth + 1} 层 · {argument.nested.item.label}</p><ShapeBadge shape={argument.nested.item.outputShape} valueType={argument.nested.item.outputType} /></div><ComposerNodeFields node={argument.nested} path={argumentPath} variables={variables} operators={operators} indicators={indicators} contextDomain={contextDomain} depth={depth + 1} onChange={onChange} /></div>}
         </div>}
-        {argument.source === 'omitted' && <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">不会提交该参数，服务端使用注册表声明的默认行为。</p>}
+        {source === 'omitted' && <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">不会提交该参数，服务端使用注册表声明的默认行为。</p>}
       </fieldset>
     })}
   </div>
@@ -2355,7 +3010,76 @@ function ComposerDrawer({ composer, indicatorName, variables, operators, indicat
 }
 
 function IndicatorGroup({ title, items, selectedId, onSelect, empty }: { title: string; items: IndicatorDefinition[]; selectedId: string | null; onSelect: (item: IndicatorDefinition) => void; empty?: string }) {
-  return <section><h3 className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3><div className="mt-2 space-y-1">{items.map((item) => <button key={item.id} type="button" onClick={() => onSelect(item)} className={`w-full rounded-xl px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-violet-300 ${item.id === selectedId ? 'bg-violet-100 text-violet-900' : 'hover:bg-slate-50 text-slate-700'}`}><span className="flex items-center justify-between gap-2"><span className="truncate text-sm font-semibold">{item.name}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${item.read_only ? 'bg-slate-200 text-slate-600' : 'bg-violet-50 text-violet-700'}`}>{item.read_only ? '内置' : `v${item.revision}`}</span></span><span className="mt-1 block line-clamp-2 text-xs text-slate-500">{item.description || item.expression}</span></button>)}{!items.length && empty && <p className="px-2 py-3 text-sm text-slate-400">{empty}</p>}</div></section>
+  return <section><h3 className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3><div className="mt-2 space-y-1">{items.map((item) => <button key={item.id} type="button" onClick={() => onSelect(item)} className={`w-full rounded-xl px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-violet-300 ${item.id === selectedId ? 'bg-violet-100 text-violet-900' : 'hover:bg-slate-50 text-slate-700'}`}><span className="flex items-center justify-between gap-2"><span className="truncate text-sm font-semibold">{item.name}</span><span className="flex shrink-0 items-center gap-1"><span className={`rounded-full px-2 py-0.5 text-[11px] ${(item.result_kind ?? 'scalar') === 'time_series' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'}`}>{(item.result_kind ?? 'scalar') === 'time_series' ? '时序' : '标量'}</span><span className={`rounded-full px-2 py-0.5 text-[11px] ${item.read_only ? 'bg-slate-200 text-slate-600' : 'bg-violet-50 text-violet-700'}`}>{item.read_only ? '内置' : `v${item.revision}`}</span></span></span><span className="mt-1 block line-clamp-2 text-xs text-slate-500">{item.description || item.expression}</span></button>)}{!items.length && empty && <p className="px-2 py-3 text-sm text-slate-400">{empty}</p>}</div></section>
+}
+
+function TimeSeriesDefinitionFields({
+  draft,
+  variables,
+  validation,
+  onPatch,
+}: {
+  draft: IndicatorDraft
+  variables: IndicatorVariable[]
+  validation: ValidationResponse | null
+  onPatch: (patch: Partial<IndicatorDraft>) => void
+}) {
+  const axisVariables = variables.filter((variable) => inferShape(variable) === 'series')
+  const historyPolicy = validation?.history_policy ?? draft.history_policy
+  const lookbackObservations = validation?.lookback_observations ?? draft.lookback_observations
+  const minimumObservations = validation?.minimum_observations ?? draft.minimum_observations
+  const fixedParameters = validation?.fixed_parameters ?? draft.fixed_parameters ?? []
+  return <div className="mt-4 space-y-4">
+    <div className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">这里只定义计算逻辑和时间轴。窗口、倍数、平滑周期等算法参数必须写成公式中的固定常量；图表位置由具体使用页面决定。</div>
+    <label className="block max-w-md text-sm font-medium text-slate-700">日期轴变量<select aria-label="日期轴变量" value={draft.axis_anchor ?? ''} onChange={(event) => onPatch({ axis_anchor: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{axisVariables.map((variable) => <option key={variable.name} value={variable.name}>{variable.label}</option>)}</select></label>
+    <section className="rounded-xl border border-slate-200 bg-slate-50 p-4" aria-label="自动推断的历史计算契约">
+      <div><h3 className="text-sm font-semibold text-slate-800">历史计算契约</h3><p className="mt-1 text-xs text-slate-500">系统从完整计算图自动推算，避免手工设置与公式实际需求不一致。</p></div>
+      <dl className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div className="rounded-lg bg-white p-3"><dt className="text-xs font-semibold text-slate-500">历史策略</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{historyPolicy ? historyPolicy === 'full_history' ? '完整历史递归' : '有限回看' : '校验后自动推断'}</dd></div>
+        <div className="rounded-lg bg-white p-3"><dt className="text-xs font-semibold text-slate-500">计算前置观察数</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{lookbackObservations ? `${lookbackObservations} 个` : '校验后自动推断'}</dd></div>
+        <div className="rounded-lg bg-white p-3"><dt className="text-xs font-semibold text-slate-500">最少观察数</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{minimumObservations ? `${minimumObservations} 个` : '校验后自动推断'}</dd></div>
+      </dl>
+      {fixedParameters.length > 0 && <div className="mt-3 rounded-lg border border-amber-100 bg-amber-50 p-3"><p className="text-xs font-semibold text-amber-800">已从旧定义固化的参数</p><p className="mt-1 text-xs text-amber-700">{fixedParameters.map((item) => `${item.label}=${item.value}`).join('，')}。这些数值已经写入公式，不再接受运行时覆盖。</p></div>}
+    </section>
+  </div>
+}
+
+function TimeSeriesFormulaEditor({
+  draft,
+  activeOutputId,
+  measureOptions,
+  inference,
+  onSelectOutput,
+  onPatchOutput,
+  onAddOutput,
+  onRemoveOutput,
+}: {
+  draft: IndicatorDraft
+  activeOutputId: string
+  measureOptions: SeriesOutputMeasureOption[]
+  inference: SeriesOutputInference | null
+  onSelectOutput: (outputId: string) => void
+  onPatchOutput: (index: number, patch: Partial<SeriesOutputDefinition>) => void
+  onAddOutput: () => void
+  onRemoveOutput: (index: number) => void
+}) {
+  const outputs = draft.series_outputs ?? []
+  const activeIndex = Math.max(0, outputs.findIndex((item) => item.id === activeOutputId))
+  const output = outputs[activeIndex]
+  const selectedMeasure = measureOptions.find((item) => item.id === output?.output_measure)
+  const inferredMeasure = measureOptions.find((item) => item.id === inference?.inferred_output_measure)
+  const resolvedMeasure = measureOptions.find((item) => item.id === inference?.resolved_output_measure)
+  const rangeLabel = inference?.value_range
+    ? `${inference.value_range[0] ?? '-∞'} ～ ${inference.value_range[1] ?? '+∞'}`
+    : '未证明固定边界'
+  return <div className="mt-4 space-y-3">
+    <div className="rounded-xl border border-violet-100 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-900">每个输出通道只定义计算逻辑和结果口径，必须返回 <code>series&lt;time&gt;</code>。图表放在主价格图、成交量区还是独立副图，由使用该指标的页面决定，不写入指标定义。</div>
+    <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="时序输出通道">
+      {outputs.map((item, index) => <button key={`${item.id}-${index}`} type="button" role="tab" aria-selected={index === activeIndex} onClick={() => onSelectOutput(item.id)} className={`rounded-lg border px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${index === activeIndex ? 'border-violet-500 bg-violet-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300'}`}>{item.label || item.id || `输出通道 ${index + 1}`}</button>)}
+      <button type="button" onClick={onAddOutput} disabled={outputs.length >= 8} className="rounded-lg border border-dashed border-violet-300 bg-white px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 disabled:opacity-50">添加输出通道</button>
+    </div>
+    {output ? <fieldset className="rounded-xl border border-slate-200 bg-slate-50 p-4"><legend className="px-1 text-sm font-semibold text-slate-800">当前输出通道</legend><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"><label className="text-xs font-semibold text-slate-600">通道 ID<input aria-label={`输出通道 ${activeIndex + 1} ID`} value={output.id} onChange={(event) => onPatchOutput(activeIndex, { id: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 font-mono text-sm" /></label><label className="text-xs font-semibold text-slate-600">通道名称<input aria-label={`输出通道 ${activeIndex + 1} 名称`} value={output.label} onChange={(event) => onPatchOutput(activeIndex, { label: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm" /></label><label className="text-xs font-semibold text-slate-600">单位<input aria-label={`输出通道 ${activeIndex + 1} 单位`} value={output.unit} onChange={(event) => onPatchOutput(activeIndex, { unit: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm" /></label><label className="text-xs font-semibold text-slate-600">展示格式<select aria-label={`输出通道 ${activeIndex + 1} 展示格式`} value={output.display_format} onChange={(event) => onPatchOutput(activeIndex, { display_format: event.target.value as SeriesOutputDefinition['display_format'] })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm"><option value="number">数值</option><option value="percent">百分比</option></select></label><label className="text-xs font-semibold text-slate-600">小数位<input aria-label={`输出通道 ${activeIndex + 1} 小数位`} type="number" min="0" max="8" value={output.precision} onChange={(event) => onPatchOutput(activeIndex, { precision: Number(event.target.value) })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm" /></label><label className="text-xs font-semibold text-slate-600">输出量纲<select aria-label={`输出通道 ${activeIndex + 1} 输出量纲`} value={output.output_measure} onChange={(event) => onPatchOutput(activeIndex, { output_measure: event.target.value as SeriesOutputMeasureId })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm">{measureOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select><span className="mt-1 block font-normal text-slate-400">{selectedMeasure?.description || '由系统根据公式推断。'}</span></label></div><div className="mt-3 rounded-lg border border-violet-100 bg-white p-3"><p className="text-xs font-semibold text-violet-800">系统推断</p>{inference ? <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4"><div><dt className="text-slate-500">推断口径</dt><dd className="mt-0.5 font-semibold text-slate-800">{inferredMeasure?.label || inference.inferred_output_measure || '其他无量纲值'}</dd></div><div><dt className="text-slate-500">最终口径</dt><dd className="mt-0.5 font-semibold text-slate-800">{resolvedMeasure?.label || inference.resolved_output_measure || selectedMeasure?.label || '待定'}</dd></div><div><dt className="text-slate-500">底层语义 / 价格基准</dt><dd className="mt-0.5 font-semibold text-slate-800">{inference.semantic_dimension || 'dimensionless'} / {inference.price_basis || '无'}</dd></div><div><dt className="text-slate-500">可证明范围</dt><dd className="mt-0.5 font-semibold text-slate-800">{rangeLabel}</dd></div></dl> : <p className="mt-1 text-xs text-slate-500">解析并校验全部通道后显示量纲、价格基准和可证明范围。</p>}</div><div className="mt-3 flex justify-end"><button type="button" onClick={() => onRemoveOutput(activeIndex)} disabled={outputs.length <= 1} className="rounded-lg border border-rose-100 bg-white px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40">移除当前通道</button></div></fieldset> : <p className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">请先添加一个输出通道。</p>}
+  </div>
 }
 
 function InsertionPalette({ title, items, fallback, onInsert }: { title: string; items: { key: string; label: string; token: string }[]; fallback: { key: string; label: string; token: string }[]; onInsert: (token: string) => void }) {
@@ -2389,32 +3113,78 @@ function DagPanel({ validation, dag, period, option, contextDomain, resourceLabe
   const operatorById = new Map(operators.flatMap((operator) => [[operator.id, operator] as const, [operator.label, operator] as const, ...operator.aliases.map((alias) => [alias, operator] as const)]))
   const inputLabel = (node: IndicatorDagNode, edge: IndicatorDag['edges'][number], index: number) => {
     const operator = operatorById.get(dagNodeOperatorId(node))
-    return parameterLabel(
+    return operatorParameterLabel(
+      operator?.id || dagNodeOperatorId(node),
+      index,
       edge.parameter || edge.parameter_name || edge.input_name || operator?.parameters[index]?.name,
       operator?.parameters[index]?.label || `输入 ${index + 1}`,
     )
   }
-  const selectedNode = nodeById.get(selectedNodeId || '') ?? nodeById.get(String(dag.roots.result)) ?? dag.nodes[0]
+  const firstRootId = Object.values(dag.roots)[0]
+  const selectedNode = nodeById.get(selectedNodeId || '') ?? nodeById.get(String(dag.roots.result ?? firstRootId)) ?? dag.nodes[0]
   const selectedInputs = selectedNode ? incoming.get(String(selectedNode.id)) ?? [] : []
   const selectedOperator = selectedNode ? operatorById.get(dagNodeOperatorId(selectedNode)) : undefined
   const selectedFormula = selectedNode
     ? mathFormulaForDisplay(selectedNode.latex_fragment || selectedOperator?.displayTemplate, selectedNode.formula_fragment)
     : null
   return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="dag-title">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="dag-title" className="font-semibold text-slate-900">层级计算 DAG</h2><p className="mt-1 text-xs text-slate-500">单根、自上而下：输入位于顶部，带参数名的箭头指向计算节点，最终标量位于底部。</p></div><span className="shrink-0 rounded-full bg-violet-100 px-2.5 py-1 text-xs font-semibold text-violet-700">{contextDomain === 'portfolio' ? '快照窗口 · 结构视图' : `预览周期：${period}`}</span></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="dag-title" className="font-semibold text-slate-900">层级计算 DAG</h2><p className="mt-1 text-xs text-slate-500">{roots.size > 1 ? `多根、自上而下：输入位于顶部，共享计算节点复用，${roots.size} 个时序通道位于底部。` : '单根、自上而下：输入位于顶部，带参数名的箭头指向计算节点，最终结果位于底部。'}</p></div><span className="shrink-0 rounded-full bg-violet-100 px-2.5 py-1 text-xs font-semibold text-violet-700">{contextDomain === 'portfolio' ? '快照窗口 · 结构视图' : `预览周期：${period}`}</span></div>
     <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500" aria-label="DAG 图例"><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-sky-600" />输入</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-slate-500" />常量</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm bg-violet-500" />计算</span><span><i className="mr-1 inline-block h-2.5 w-3 rounded-sm border-2 border-violet-200 bg-violet-700" />最终结果</span></div>
     {option && <ReactECharts key={chartRevision} option={echartsOption} style={{ height: chartHeight }} notMerge lazyUpdate aria-label={contextDomain === 'portfolio' ? '组合快照指标计算 DAG 图' : `${period} 指标计算 DAG 图`} onEvents={{ click: (params: { dataType?: string; data?: { id?: string | number } }) => { if (params.dataType === 'node' && params.data?.id !== undefined) setSelectedNodeId(String(params.data.id)) } }} />}
     <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3"><button type="button" onClick={() => setChartRevision((current) => current + 1)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-300">适配并复位图谱</button><button type="button" aria-expanded={showTable} aria-controls="dag-data-table" onClick={() => setShowTable((current) => !current)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{showTable ? '隐藏计算数据表' : '显示计算数据表'}</button><span className="self-center text-[11px] text-slate-400">滚轮缩放，拖动平移；选择节点查看契约。</span></div>
-    {selectedNode && <article className="mt-3 rounded-xl border border-violet-100 bg-violet-50/50 p-3" aria-live="polite" aria-label="DAG 节点详情"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-violet-900">{resourceLabels.get(dagNodeOperatorId(selectedNode)) ?? selectedNode.label}</p>{roots.has(String(selectedNode.id)) && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</div><dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">数学公式</dt><dd className="mt-0.5 rounded-lg bg-white/70 px-2 py-1">{selectedFormula ? <MathNotation latex={selectedFormula} label="当前计算步骤的数学公式" /> : <span className="text-slate-500">该步骤的数学符号由完整公式上下文决定</span>}</dd></div><div><dt className="font-semibold text-slate-700">输出数据</dt><dd className="mt-0.5 text-slate-600">{shapeLabel(dagNodeShape(selectedNode), dagNodeValueType(selectedNode))} · 理论规模：{symbolicDataSizeLabel(dagNodeSymbolicShape(selectedNode), dagNodeShape(selectedNode), dagNodeValueType(selectedNode))}{selectedNode.actual_shape ? ` · 实际规模：${actualDataSizeLabel(selectedNode.actual_shape, dagNodeShape(selectedNode), dagNodeValueType(selectedNode))}` : ''}</dd></div><div><dt className="font-semibold text-slate-700">输入参数</dt><dd className="mt-0.5 text-slate-600">{selectedInputs.length ? selectedInputs.map((edge, index) => inputLabel(selectedNode, edge, index)).join('、') : '无'}</dd></div><div><dt className="font-semibold text-slate-700">计算特征</dt><dd className="mt-0.5 text-slate-600">{nodeKindLabel(selectedNode.kind)}{selectedNode.cost_estimate !== undefined ? ` · ${costEstimateLabel(selectedNode.cost_estimate)}` : ''}</dd></div></dl>{selectedNode.diagnostics && selectedNode.diagnostics.length > 0 && <ul className="mt-2 space-y-1 text-xs text-rose-700">{selectedNode.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${index}`}>{diagnosticMessage(diagnostic.code, diagnostic.message)}</li>)}</ul>}</article>}
+    {selectedNode && <article className="mt-3 rounded-xl border border-violet-100 bg-violet-50/50 p-3" aria-live="polite" aria-label="DAG 节点详情"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-violet-900">{selectedNode.kind === 'variable' || selectedNode.kind === 'constant' ? resourceLabels.get(selectedNode.label) ?? nodeKindLabel(selectedNode.kind) : resourceLabels.get(dagNodeOperatorId(selectedNode)) ?? operatorDisplayLabel(dagNodeOperatorId(selectedNode), selectedNode.label)}</p>{roots.has(String(selectedNode.id)) && <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</div><dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">数学公式</dt><dd className="mt-0.5 rounded-lg bg-white/70 px-2 py-1">{selectedFormula ? <MathNotation latex={selectedFormula} label="当前计算步骤的数学公式" /> : <span className="text-slate-500">该步骤的数学符号由完整公式上下文决定</span>}</dd></div><div><dt className="font-semibold text-slate-700">输出数据</dt><dd className="mt-0.5 text-slate-600">{shapeLabel(dagNodeShape(selectedNode), dagNodeValueType(selectedNode))} · 理论规模：{symbolicDataSizeLabel(dagNodeSymbolicShape(selectedNode), dagNodeShape(selectedNode), dagNodeValueType(selectedNode))}{selectedNode.actual_shape ? ` · 实际规模：${actualDataSizeLabel(selectedNode.actual_shape, dagNodeShape(selectedNode), dagNodeValueType(selectedNode))}` : ''}</dd></div><div><dt className="font-semibold text-slate-700">输入参数</dt><dd className="mt-0.5 text-slate-600">{selectedInputs.length ? selectedInputs.map((edge, index) => inputLabel(selectedNode, edge, index)).join('、') : '无'}</dd></div><div><dt className="font-semibold text-slate-700">计算特征</dt><dd className="mt-0.5 text-slate-600">{nodeKindLabel(selectedNode.kind)}{selectedNode.cost_estimate !== undefined ? ` · ${costEstimateLabel(selectedNode.cost_estimate)}` : ''}</dd></div></dl>{selectedNode.diagnostics && selectedNode.diagnostics.length > 0 && <ul className="mt-2 space-y-1 text-xs text-rose-700">{selectedNode.diagnostics.map((diagnostic, index) => <li key={`${diagnostic.code}-${index}`}>{diagnosticMessage(diagnostic.code, diagnostic.message)}</li>)}</ul>}</article>}
     {showTable && <div id="dag-data-table" className="mt-3 max-h-72 overflow-auto rounded-xl border border-slate-200"><table className="w-full min-w-[620px] text-left text-xs"><caption className="sr-only">DAG 节点、输入参数和输出类型数据表</caption><thead className="sticky top-0 bg-slate-50 text-slate-600"><tr><th className="px-3 py-2">步骤</th><th className="px-3 py-2">节点</th><th className="px-3 py-2">类别</th><th className="px-3 py-2">命名输入</th><th className="px-3 py-2">输出数据</th></tr></thead><tbody>{dag.nodes.map((node, index) => {
       const inputs = incoming.get(String(node.id)) ?? []
       const nodeResourceId = dagNodeOperatorId(node)
       const nodeShape = dagNodeShape(node)
       const nodeValueType = dagNodeValueType(node)
       const nodeSymbolicShape = dagNodeSymbolicShape(node)
-      return <tr key={node.id} className="border-t border-slate-100 align-top"><td className="px-3 py-2 text-slate-400">{index + 1}</td><td className="px-3 py-2"><button type="button" onClick={() => setSelectedNodeId(String(node.id))} className="text-left font-semibold text-slate-800 underline decoration-slate-200 underline-offset-2 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-300">{resourceLabels.get(nodeResourceId) ?? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind)}</button>{roots.has(String(node.id)) && <span className="ml-2 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</td><td className="px-3 py-2 text-slate-600">{nodeKindLabel(node.kind)}</td><td className="px-3 py-2 text-slate-600">{inputs.length ? <ul className="space-y-1">{inputs.map((edge, edgeIndex) => { const source = nodeById.get(String(edge.source)); const sourceResourceId = source ? dagNodeOperatorId(source) : ''; return <li key={`${edge.source}-${edgeIndex}`}><span className="font-semibold text-violet-700">{inputLabel(node, edge, edgeIndex)}</span> ← {source ? resourceLabels.get(sourceResourceId) ?? resourceLabels.get(source.label) ?? nodeKindLabel(source.kind) : '上一计算步骤'}</li> })}</ul> : '—'}</td><td className="px-3 py-2 text-slate-600"><span>{shapeLabel(nodeShape, nodeValueType)}</span>{nodeSymbolicShape && <span className="mt-0.5 block">理论规模：{symbolicDataSizeLabel(nodeSymbolicShape, nodeShape, nodeValueType)}</span>}{node.actual_shape && <span className="mt-0.5 block">实际规模：{actualDataSizeLabel(node.actual_shape, nodeShape, nodeValueType)}</span>}</td></tr>
+      return <tr key={node.id} className="border-t border-slate-100 align-top"><td className="px-3 py-2 text-slate-400">{index + 1}</td><td className="px-3 py-2"><button type="button" onClick={() => setSelectedNodeId(String(node.id))} className="text-left font-semibold text-slate-800 underline decoration-slate-200 underline-offset-2 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-300">{node.kind === 'variable' || node.kind === 'constant' ? resourceLabels.get(node.label) ?? nodeKindLabel(node.kind) : resourceLabels.get(nodeResourceId) ?? operatorDisplayLabel(nodeResourceId, node.label)}</button>{roots.has(String(node.id)) && <span className="ml-2 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">根节点</span>}</td><td className="px-3 py-2 text-slate-600">{nodeKindLabel(node.kind)}</td><td className="px-3 py-2 text-slate-600">{inputs.length ? <ul className="space-y-1">{inputs.map((edge, edgeIndex) => { const source = nodeById.get(String(edge.source)); const sourceResourceId = source ? dagNodeOperatorId(source) : ''; return <li key={`${edge.source}-${edgeIndex}`}><span className="font-semibold text-violet-700">{inputLabel(node, edge, edgeIndex)}</span> ← {source ? source.kind === 'variable' || source.kind === 'constant' ? resourceLabels.get(source.label) ?? nodeKindLabel(source.kind) : resourceLabels.get(sourceResourceId) ?? operatorDisplayLabel(sourceResourceId, source.label) : '上一计算步骤'}</li> })}</ul> : '—'}</td><td className="px-3 py-2 text-slate-600"><span>{shapeLabel(nodeShape, nodeValueType)}</span>{nodeSymbolicShape && <span className="mt-0.5 block">理论规模：{symbolicDataSizeLabel(nodeSymbolicShape, nodeShape, nodeValueType)}</span>}{node.actual_shape && <span className="mt-0.5 block">实际规模：{actualDataSizeLabel(node.actual_shape, nodeShape, nodeValueType)}</span>}</td></tr>
     })}</tbody></table></div>}
   </section>
+}
+
+function formatTimeSeriesChannelValue(
+  value: number | null | undefined,
+  channel: TimeSeriesIndicatorResult['channels'][number],
+) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
+  const scaled = channel.display_format === 'percent' ? value * 100 : value
+  const formatted = scaled.toFixed(channel.precision)
+  const suffix = channel.display_format === 'percent'
+    ? '%'
+    : channel.unit
+      ? ` ${channel.unit}`
+      : ''
+  return `${formatted}${suffix}`
+}
+
+function TimeSeriesResultsPanel({ results }: { results: TimeSeriesIndicatorResult[] }) {
+  if (!results.length) return <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-500">选择产品并预览后显示具名时序通道。</div>
+  const computedCount = results.filter((result) => result.status === 'ok' || result.status === 'warning').length
+  return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="series-preview-results-title"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 id="series-preview-results-title" className="font-semibold text-slate-900">时序结果预览</h2><p className="mt-1 text-xs text-slate-500">日期轴与通道值按日期显式对齐；缺失点保留为空，不补零。</p></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">可计算 {computedCount}/{results.length} 个产品</span></div><div className="mt-4 space-y-5">{results.map((result, resultIndex) => {
+    const option = result.dates.length && result.channels.length ? {
+      animation: false,
+      tooltip: { trigger: 'axis' },
+      legend: { top: 0, data: result.channels.map((channel) => channel.label) },
+      grid: { left: 48, right: 24, top: 44, bottom: 54 },
+      xAxis: { type: 'category', boundaryGap: false, data: result.dates },
+      yAxis: { type: 'value', scale: true },
+      dataZoom: [
+        { type: 'inside', start: Math.max(0, 100 - 252 / Math.max(result.dates.length, 1) * 100), end: 100 },
+        { type: 'slider', height: 18, bottom: 10, start: Math.max(0, 100 - 252 / Math.max(result.dates.length, 1) * 100), end: 100 },
+      ],
+      series: result.channels.map((channel) => ({
+        name: channel.label,
+        type: 'line',
+        showSymbol: false,
+        connectNulls: false,
+        data: channel.values,
+      })),
+    } : null
+    const parameterText = Object.entries(result.parameters).map(([key, value]) => `${key}=${value}`).join('，')
+    return <article key={`${result.target.kind}-${result.target.product_id}-${result.indicator_id ?? resultIndex}`} className="rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold text-slate-800">{result.target.name}</h3><p className="mt-1 text-xs text-slate-500">{result.target.product_id} · {result.period} · {result.channels.length} 个通道</p></div><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${result.status === 'ok' ? 'bg-emerald-100 text-emerald-800' : result.status === 'warning' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'}`}>{evaluationStatusLabel(result.status)}</span></div><p className="mt-2 text-xs text-slate-500">实际窗口 {result.window.start_date || '—'} 至 {result.window.end_date || '—'} · {result.window.observation_count} 个观察值{parameterText ? ` · ${parameterText}` : ''}</p>{option ? <ReactECharts option={option} style={{ height: 360 }} notMerge lazyUpdate aria-label={`${result.target.name}时序指标图`} /> : <p className="mt-3 rounded-lg border border-dashed border-slate-200 bg-white p-4 text-sm text-slate-500">没有可绘制的时序数据。</p>}{result.warnings.length > 0 && <ul className="mt-2 space-y-1 text-xs text-amber-800">{result.warnings.map((warning, index) => <li key={`${warning.code}-${index}`}>{diagnosticMessage(warning.code, warning.message)}</li>)}</ul>}<div className="mt-3 max-h-56 overflow-auto rounded-lg border border-slate-200 bg-white"><table className="w-full min-w-[520px] text-left text-xs"><caption className="sr-only">{result.target.name}时序指标数据表</caption><thead className="sticky top-0 bg-slate-50"><tr><th className="px-3 py-2">日期</th>{result.channels.map((channel) => <th key={channel.id} className="px-3 py-2">{channel.label}</th>)}</tr></thead><tbody>{result.dates.map((date, dateIndex) => <tr key={date} className="border-t border-slate-100"><td className="px-3 py-2 text-slate-500">{date}</td>{result.channels.map((channel) => <td key={channel.id} className="px-3 py-2 text-slate-700">{formatTimeSeriesChannelValue(channel.values[dateIndex], channel)}</td>)}</tr>)}</tbody></table></div></article>
+  })}</div></section>
 }
 
 function ResultsPanel({ results, draft, contextDomain }: { results: EvaluationResult[]; draft: IndicatorDraft; contextDomain: IndicatorContextDomain }) {

@@ -11,11 +11,13 @@ import { evaluateNumericControls, type NumericControlResult } from '../services/
 import { requestEqualWeights as requestEqualWeightsResult } from '../services/strategyWeights'
 import {
   getInvestableUniverse,
+  investableUniverseEligibleCount,
   searchInvestableUniverseProducts,
   type InvestableUniverseSnapshot,
 } from '../services/productPools'
 import {
   assertFixedNjitExecution,
+  assertFixedNjitExecutionLanes,
   type FixedNjitExecutionAudit,
 } from '../utils/fixedNjitExecution'
 
@@ -349,7 +351,7 @@ export default function AssetClassConstructionPage() {
       })
       if (!resp.ok) throw new Error(`后端错误 ${resp.status}`)
       const data = await resp.json() as NonNullable<typeof fitResult>
-      assertFixedNjitExecution(data.execution, '资产大类拟合')
+      assertFixedNjitExecutionLanes(data.execution, '资产大类拟合')
       setFitResult(data)
     } catch (e: any) {
       alert('拟合失败：' + (e?.message || e))
@@ -455,14 +457,19 @@ export default function AssetClassConstructionPage() {
       signal: controller.signal,
     })
       .then((response) => {
-        const mapped = response.items.map((item) => ({
-          code: item.product_id,
-          name: item.name,
-          instrument_type: item.kind,
-          evaluation_plan_names: [...new Set(item.evaluation_sources.map((source) => source.evaluation_plan_name))],
-          pool_names: [...new Set(item.evaluation_sources.map((source) => source.pool_name))],
-          max_weight: item.max_weight,
-        }))
+        const mapped = response.items.map((item) => {
+          const sources = Array.isArray(item.evaluation_sources)
+            ? item.evaluation_sources
+            : []
+          return {
+            code: item.product_id,
+            name: item.name || item.code || item.product_id,
+            instrument_type: item.kind,
+            evaluation_plan_names: [...new Set(sources.map((source) => source.evaluation_plan_name).filter(Boolean))],
+            pool_names: [...new Set(sources.map((source) => source.pool_name).filter(Boolean))],
+            max_weight: item.max_weight,
+          }
+        })
         mapped.sort((left, right) => {
           const leftValue = sortBy === 'code' ? left.code : left.name
           const rightValue = sortBy === 'code' ? right.code : right.name
@@ -569,7 +576,7 @@ export default function AssetClassConstructionPage() {
       <p className="text-sm text-gray-500 mt-1">基于已锁定产品池快照配置大类、类内代理产品与拟合权重。</p>
       {universe ? (
         <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          已锁定可投资域：<b>{universe.name}</b> · {universe.summary.eligible_count} 只可用产品 · 研究日期 {universe.research_date}
+          已锁定可投资域：<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} 只可用产品 · 研究日期 {universe.research_date}
         </div>
       ) : (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">

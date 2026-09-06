@@ -6,6 +6,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  applyNodeChanges,
   useUpdateNodeInternals,
   type Connection,
   type Edge,
@@ -144,7 +145,7 @@ export default function RegimeGraphCanvas({ nodes, edges, schemas, selectedNodeI
   useEffect(() => { onSelectionChange?.(selectedIds) }, [onSelectionChange, selectedIds])
   const sortedNodes = useMemo(() => [...nodes].sort((left, right) => (left.position?.x ?? nodes.indexOf(left) * 240) - (right.position?.x ?? nodes.indexOf(right) * 240)), [nodes])
   const schemaMap = useMemo(() => new Map(schemas.flatMap((schema) => [[schema.id, schema] as const, ...(schema.type ? [[schema.type, schema] as const] : [])])), [schemas])
-  const flowNodes = useMemo<RegimeFlowNodeType[]>(() => sortedNodes.map((node, index) => {
+  const graphFlowNodes = useMemo<RegimeFlowNodeType[]>(() => nodes.map((node, index) => {
     const schema = schemaMap.get(node.type)
     const ready = !schema?.inputs?.length || Object.keys(node.inputs || {}).length > 0
     return {
@@ -153,16 +154,34 @@ export default function RegimeGraphCanvas({ nodes, edges, schemas, selectedNodeI
       position: node.position ?? { x: (index % 3) * 260, y: Math.floor(index / 3) * 150 },
       initialWidth: 210,
       initialHeight: Math.max(82, 72 + Math.max(schema?.inputs?.length ?? 0, schema?.outputs?.length ?? 0) * 18),
-      selected: selectedIds.includes(node.id),
       data: { label: node.label || schema?.label || '计算节点', schema, ready },
     }
-  }), [schemaMap, selectedIds, sortedNodes])
+  }), [nodes, schemaMap])
+  const [flowNodes, setFlowNodes] = useState<RegimeFlowNodeType[]>(graphFlowNodes)
+  useEffect(() => {
+    setFlowNodes((current) => {
+      const currentById = new Map(current.map((node) => [node.id, node]))
+      return graphFlowNodes.map((node) => {
+        const previous = currentById.get(node.id)
+        return {
+          ...node,
+          measured: previous?.measured,
+          selected: previous?.selected ?? false,
+        }
+      })
+    })
+  }, [graphFlowNodes])
+  useEffect(() => {
+    const selected = new Set(selectedIds)
+    setFlowNodes((current) => current.map((node) => node.selected === selected.has(node.id) ? node : { ...node, selected: selected.has(node.id) }))
+  }, [selectedIds])
   const flowEdges = useMemo<Edge[]>(() => edges.map((edge) => {
     const target = nodes.find((node) => node.id === edge.target)
     const targetPort = target ? schemaMap.get(target.type)?.inputs.find((port) => port.id === edge.targetPort) : undefined
     return { id: edge.id, source: edge.source, sourceHandle: edge.sourcePort, target: edge.target, targetHandle: edge.targetPort, label: targetPort ? regimePortLabel(targetPort) : '输入连接', animated: false, style: { stroke: '#6366f1', strokeWidth: 1.8 }, labelStyle: { fill: '#475569', fontSize: 10 } }
   }), [edges, nodes, schemaMap])
   const handleFlowChanges = (changes: NodeChange<RegimeFlowNodeType>[]) => {
+    setFlowNodes((current) => applyNodeChanges(changes, current))
     const selectionChanges = changes.filter((change): change is Extract<NodeChange<RegimeFlowNodeType>, { type: 'select' }> => change.type === 'select')
     if (selectionChanges.length) setSelectedIds((current) => {
       const next = new Set(current)
@@ -172,10 +191,13 @@ export default function RegimeGraphCanvas({ nodes, edges, schemas, selectedNodeI
     const next = changes.flatMap<RegimeCanvasNodeChange>((change) => {
       if (change.type === 'remove') return [{ type: 'remove', id: change.id }]
       if (change.type === 'select' && change.selected) return [{ type: 'select', id: change.id }]
-      if (change.type === 'position' && change.position) return [{ type: 'position', id: change.id, position: change.position }]
       return []
     })
     if (next.length) onNodesChange(next)
+  }
+  const commitPositions = (movedNodes: RegimeFlowNodeType[]) => {
+    const changes = movedNodes.map<RegimeCanvasNodeChange>((node) => ({ type: 'position', id: node.id, position: node.position }))
+    if (changes.length) onNodesChange(changes)
   }
   const handleConnect = (connection: Connection) => {
     if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) return
@@ -215,7 +237,7 @@ export default function RegimeGraphCanvas({ nodes, edges, schemas, selectedNodeI
       </div>
       {!nodes.length ? <div className="grid min-h-[300px] place-items-center rounded-xl border border-dashed border-slate-300 bg-white/80 p-8 text-center"><div><p className="text-sm font-bold text-slate-800">空白计算图</p><p className="mt-2 max-w-sm text-xs leading-5 text-slate-500">从左侧资源库添加数据源、算子或模型，或从顶部载入一个可完全修改的模板。</p></div></div> : null}
       <div className="space-y-3 md:hidden" data-testid="regime-graph-mobile-list">{sortedNodes.map((node, index) => <NodeCard key={node.id} node={node} index={index} count={sortedNodes.length} selected={node.id === selectedNodeId} incoming={edges.filter((edge) => edge.target === node.id)} schema={schemaMap.get(node.type)} onNodesChange={onNodesChange} />)}</div>
-      {nodes.length ? <div className="hidden h-[520px] min-w-[680px] overflow-hidden rounded-xl border border-slate-200 bg-white md:block" data-testid="regime-graph-desktop-flow"><ReactFlow nodeTypes={nodeTypes} nodes={flowNodes} edges={flowEdges} onNodesChange={handleFlowChanges} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(_event, node) => onNodesChange([{ type: 'select', id: node.id }])} selectionOnDrag selectionKeyCode="Shift" multiSelectionKeyCode={['Meta', 'Control']} fitView fitViewOptions={{ padding: 0.22 }} minZoom={0.25} maxZoom={1.8} deleteKeyCode={['Backspace', 'Delete']}><Background gap={18} size={1} color="#cbd5e1" /><MiniMap data-testid="regime-canvas-minimap" ariaLabel="计算图缩略导航：深色方块代表节点，可拖动快速定位大型计算图" pannable zoomable nodeBorderRadius={6} nodeColor={(node) => node.selected ? '#4338ca' : '#64748b'} nodeStrokeColor="#ffffff" nodeStrokeWidth={2} maskColor="rgba(99,102,241,.10)" maskStrokeColor="#a5b4fc" maskStrokeWidth={1} className="!rounded-xl !border !border-indigo-200 !bg-indigo-50 shadow-md" style={{ width: 172, height: 118 }} /><Controls showInteractive={false} /></ReactFlow></div> : null}
+      {nodes.length ? <div className="hidden h-[520px] min-w-[680px] overflow-hidden rounded-xl border border-slate-200 bg-white md:block" data-testid="regime-graph-desktop-flow"><ReactFlow nodeTypes={nodeTypes} nodes={flowNodes} edges={flowEdges} onNodesChange={handleFlowChanges} onNodeDragStop={(_event, _node, movedNodes) => commitPositions(movedNodes)} onSelectionDragStop={(_event, movedNodes) => commitPositions(movedNodes)} onConnect={handleConnect} isValidConnection={isValidConnection} onNodeClick={(_event, node) => onNodesChange([{ type: 'select', id: node.id }])} selectionOnDrag selectionKeyCode="Shift" multiSelectionKeyCode={['Meta', 'Control']} fitView fitViewOptions={{ padding: 0.22 }} minZoom={0.25} maxZoom={1.8} deleteKeyCode={['Backspace', 'Delete']}><Background gap={18} size={1} color="#cbd5e1" /><MiniMap data-testid="regime-canvas-minimap" ariaLabel="计算图缩略导航：深色方块代表节点，可拖动快速定位大型计算图" pannable zoomable nodeBorderRadius={6} nodeColor={(node) => node.selected ? '#4338ca' : '#64748b'} nodeStrokeColor="#ffffff" nodeStrokeWidth={2} maskColor="rgba(99,102,241,.10)" maskStrokeColor="#a5b4fc" maskStrokeWidth={1} className="!rounded-xl !border !border-indigo-200 !bg-indigo-50 shadow-md" style={{ width: 172, height: 118 }} /><Controls showInteractive={false} /></ReactFlow></div> : null}
     </section>
   )
 }
