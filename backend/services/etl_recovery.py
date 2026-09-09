@@ -117,7 +117,7 @@ def _check_unhandled_partial(journal, old):
     state = next(s for s in old['steps'] if s['status'] != 'SUCCEEDED')
     definition = next(s for s in old['definition']['steps'] if s['id'] == state['id'])
     if definition['task_id'] == 'tushare.index_concept':
-        return  # The THS importer already validates the whole work directory.
+        return  # The concept importer validates the whole work directory.
     directory = journal.root / 'etl_runs' / old['run_id'] / state['id']
     marker, work = directory / 'work_input.json', directory / 'work'
     if not marker.exists() and not work.exists():

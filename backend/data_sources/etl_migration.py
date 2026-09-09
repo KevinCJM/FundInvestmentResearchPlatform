@@ -338,8 +338,8 @@ def stage_recovery(store, identifier: str, request_id: str, *, confirm=False, pr
         materialize(journal, predecessor, work)
         importer = _dividend_parts if first.task_id == 'tushare.fund_dividend' else _portfolio_parts
         if first.task_id == 'tushare.index_concept':
-            from .index_history_recovery import import_ths_segments
-            importer = import_ths_segments
+            from .index_history_recovery import import_concept_segments
+            importer = import_concept_segments
         if adjustment_scope:
             importer = _adjustment_scope_parts
         shards = importer(journal, old, first, predecessor, work, producer, progress, frozen)

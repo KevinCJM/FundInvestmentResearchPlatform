@@ -3156,15 +3156,22 @@ def save_index_full_history_with_segment_checkpoints(
                         quiet=True,
                     )
             if error is not None:
-                errors.append(code)
-                print(f"[WARN] {api_name} {code} 分段失败，已保留成功日期段: {error}")
+                safe_codes = {'SOURCE_CONNECTION', 'SOURCE_TIMEOUT', 'SOURCE_DNS', 'SOURCE_RETRYABLE',
+                              'SOURCE_TRANSIENT', 'SOURCE_REJECTED', 'SOURCE_ROW_CAP',
+                              'SOURCE_DB_BUSY', 'SOURCE_DB_READONLY', 'SOURCE_DB_FULL', 'SOURCE_DB_IO',
+                              'SOURCE_DB_OPEN', 'SOURCE_DB_OPERATIONAL', 'SOURCE_RESPONSE_INVALID',
+                              'SOURCE_CERTIFICATE_INVALID', 'SOURCE_RESPONSE_TOO_LARGE'}
+                reason = error.code if isinstance(error, CenterError) and error.code in safe_codes else 'INDEX_SHARD_ERROR'
+                errors.append(f'{code}({reason})')
+                print(f"[WARN] {api_name} {code} 分段失败（{reason}），已保留成功日期段。", flush=True)
             processed += 1
             if processed % 50 == 0 or processed == len(pending):
                 print(f"[INFO] {api_name} 分段进度 {processed}/{len(pending)}，异常 {len(errors)}。")
     if errors:
-        raise RuntimeError(
-            f"{api_name} 有 {len(errors)} 个代码的日期段失败；重启仅重试缺失日期段: "
-            f"{', '.join(errors[:10])}"
+        raise CenterError(
+            'INDEX_HISTORY_INCOMPLETE',
+            f"{api_name} 有 {len(errors)} 个代码的日期段失败；成功分片保留，恢复后只补缺失区间："
+            f"{', '.join(errors[:10])}", 503,
         )
 
     for code in universe["ts_code"].astype(str):

@@ -1955,7 +1955,8 @@ def test_index_full_history_resumes_only_missing_date_segments(tmp_path: Path) -
                 [{"ts_code": "000300.SH", "trade_date": kwargs["start_date"], "close": 1.0}]
             )
 
-    with pytest.raises(RuntimeError, match="日期段失败"):
+    from backend.data_sources.models import CenterError
+    with pytest.raises(CenterError, match="日期段失败") as failed:
         module.save_index_full_history_with_segment_checkpoints(
             universe=universe,
             out_path=out_path,
@@ -1966,6 +1967,9 @@ def test_index_full_history_resumes_only_missing_date_segments(tmp_path: Path) -
             args=args,
         )
     assert first_calls == ["20260830", "20260831"]
+    assert failed.value.code == 'INDEX_HISTORY_INCOMPLETE'
+    assert 'INDEX_SHARD_ERROR' in failed.value.message
+    assert 'temporary' not in failed.value.message
 
     resumed_calls: list[str] = []
 
