@@ -15,12 +15,15 @@ from pit.audit import audit_all, clear_cache
 from pit.catalog import GRADE_DESCRIPTIONS, GRADE_LABELS, RUN_MODES, STRICT_COVERAGE_FLOOR
 from pit.context import (
     PitContextError,
+    ResearchContext,
     build_context,
     parse_view_override,
     reset_view_override,
     resolve,
+    resolve_request_context,
     set_view_override,
 )
+from pit.universe import KIND_LABELS, KINDS, universe_as_of
 from pit.release import RELEASE_STORE, DataReleaseError, DataReleaseRepository
 from pit.settings import PitSettingsRepository
 
@@ -85,6 +88,9 @@ class ReleaseCreateRequest(BaseModel):
 
 class SettingsRequest(BaseModel):
     activeReleaseId: Optional[str] = None
+    # The research day is stated, not inferred from the release: "which day do I
+    # stand on" and "which copy of the files answers" are different questions.
+    asOf: Optional[str] = None
     runMode: str = "RESEARCH"
     note: str = ""
 
@@ -130,6 +136,45 @@ def pit_audit(refresh: bool = False) -> dict[str, Any]:
     return payload
 
 
+@router.get("/universe")
+def pit_universe(kind: str = "fund", as_of: Optional[str] = None, sample: int = 12):
+    """Which products a screen run on the research day was allowed to choose from.
+
+    The number that matters is the contrast: today's table against the day's.
+    A universe that shrinks from 1,760 to 224 is not a rounding difference — it
+    is every fund launched since, which no 2019 screen could have picked.
+    """
+
+    if kind not in KINDS:
+        return JSONResponse(status_code=400, content={"detail": f"不支持的产品域：{kind}"})
+    try:
+        context = resolve_request_context(DATA_DIR, as_of)
+        view = universe_as_of(DATA_DIR, context, kind=kind)
+        today = universe_as_of(DATA_DIR, ResearchContext(), kind=kind)
+    except PitContextError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    code_field = KINDS[kind][1]
+    name_field = "name" if "name" in view.detail.columns else code_field
+    members = [
+        {"code": str(row[code_field]), "name": str(row.get(name_field, ""))}
+        for _, row in view.detail.head(max(0, int(sample))).iterrows()
+    ] if not view.detail.empty else []
+    return {
+        "kind": kind,
+        "kind_label": KIND_LABELS[kind],
+        "as_of": view.as_of,
+        "run_mode": context.run_mode,
+        "coverage": view.coverage,
+        "replayable": view.replayable,
+        "history_begins_at": view.history_begins_at,
+        "member_count": len(view.codes),
+        "latest_member_count": len(today.codes),
+        "excluded_by_replay": max(0, len(today.codes) - len(view.codes)),
+        "sample": members,
+        "warnings": list(view.warnings),
+    }
+
+
 @router.get("/releases")
 def list_releases() -> dict[str, Any]:
     return {"releases": _repository().list_releases()}
@@ -163,10 +208,10 @@ def get_settings():
 
 @router.put("/settings")
 def put_settings(req: SettingsRequest):
-    """Apply one data release as the platform口径, or clear it back to no PIT."""
+    """Set the platform口径: which day to stand on, which vintage, how strict."""
 
     try:
-        return _settings().update(req.activeReleaseId, req.runMode, req.note)
+        return _settings().update(req.activeReleaseId, req.runMode, req.note, req.asOf)
     except (PitContextError, DataReleaseError) as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 

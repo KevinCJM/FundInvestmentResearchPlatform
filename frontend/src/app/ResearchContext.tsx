@@ -82,6 +82,8 @@ export function ResearchContextProvider({ children }: { children: ReactNode }) {
     // header would make every data request fail, including the one that would
     // let the user recover, so drop it back to the system default.
     if (!settings || !override || override.off) return
+    // A day-only override pins no release, so there is nothing to go missing.
+    if (!override.releaseId) return
     if (settings.available_releases.some((item) => item.id === override.releaseId)) return
     setOverride(setPitOverride(null))
   }, [override, settings])
@@ -98,12 +100,15 @@ export function ResearchContextProvider({ children }: { children: ReactNode }) {
       label = `临时口径 · ${NO_PIT_LABEL}`
       asOf = null
       runMode = 'RESEARCH'
-    } else if (override && overrideRelease) {
+    } else if (override && (overrideRelease || override.asOf)) {
       noPit = false
       runMode = override.runMode
-      asOf = overrideRelease.available_through
+      // A stated day wins over the one a release implies: the reader asked to
+      // stand somewhere, and the release only says how far it *could* answer.
+      asOf = override.asOf ?? overrideRelease?.available_through ?? null
       const mode = runMode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'
-      label = `临时口径 · ${overrideRelease.name} · 研究日 ${asOf} · ${mode}`
+      const vintage = overrideRelease?.name ?? '最新数据（未封版）'
+      label = `临时口径 · 站在 ${asOf} · ${vintage} · ${mode}`
     }
 
     return {

@@ -138,6 +138,23 @@ export interface ProductPoolVersion {
   created_at: string
 }
 
+/**
+ * The latest day any input behind a published version was cut.
+ *
+ * Not `effective_from` — a desk can set that to anything. This is what a
+ * research day has to be compared against to know whether the pool knew more
+ * than the day it is being used on.
+ */
+export function poolVersionDataAsOf(version: ProductPoolVersion): string | null {
+  // Older stored versions predate the binding list; a missing field must not
+  // blank the page it is printed on.
+  const stamps = (version.evaluation_plans ?? [])
+    .map((binding) => binding?.as_of)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+  return stamps.length > 0 ? stamps[stamps.length - 1] : null
+}
+
 export interface InvestableUniverseProduct {
   key: string
   kind: ProductKind

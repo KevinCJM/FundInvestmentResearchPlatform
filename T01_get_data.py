@@ -38,6 +38,8 @@ from backend.data_sources.legacy_bridge import (
 from backend.data_sources.models import CenterError, DownloadPolicy
 from backend.data_sources.transport import TransientSourceError
 from backend.data_sources.fund_events import FundEventDownload
+from backend.data_sources.index_checkpoints import read_empty_evidence, write_empty_evidence
+from backend.pit.catalog import SNAPSHOT_FIELD as PIT_SNAPSHOT_FIELD
 
 
 DEFAULT_START_DATE = "20100101"
@@ -651,11 +653,17 @@ def call_tushare_api(
             if attempt >= max_retries:
                 break
             base_wait = max(wait_on_rate_limit_sec, delay) if is_rate_limit else delay
+            if isinstance(policy, DownloadPolicy) and isinstance(exc, TransientSourceError) and exc.code in {
+                'SOURCE_CONNECTION', 'SOURCE_DNS', 'SOURCE_TIMEOUT',
+            }:
+                # Give a temporary outage a full configured read window to
+                # recover; still use the same bounded attempts/shared quota.
+                base_wait = max(base_wait, policy.read_timeout_seconds * 2 ** (attempt - 1))
             base_wait = max(base_wait, getattr(exc, "retry_after_seconds", 0.0))
             jitter = random.uniform(0.0, max(retry_jitter_sec, 0.0))
             wait = base_wait + jitter
             reason = ("触发限流" if is_rate_limit else "请求异常") + f"（{getattr(exc, 'code', type(exc).__name__)}）"
-            print(f"[INFO] {context} {reason}，等待 {wait:.2f}s 后进行第 {attempt + 1}/{max_retries} 次尝试。")
+            print(f"[INFO] {context} {reason}，等待 {wait:.2f}s 后进行第 {attempt + 1}/{max_retries} 次尝试。", flush=True)
             (interrupt_wait or time.sleep)(wait)
             delay *= 2
     code = last_err.code if isinstance(last_err, TransientSourceError) else "SOURCE_RATE_LIMIT" if is_rate_limit else "SOURCE_CONNECTION"
@@ -957,12 +965,69 @@ def filter_fund_basic_to_etfs(fund_df: pd.DataFrame, etf_df: pd.DataFrame) -> pd
     return fund_df[fund_df["ts_code"].astype(str).isin(etf_codes)].copy()
 
 
+def append_dimension_snapshot(
+    df: pd.DataFrame,
+    path: Path,
+    *,
+    snapshot_date: Optional[pd.Timestamp] = None,
+) -> Optional[Path]:
+    """Append the whole table under a dated stamp so its past state stays replayable.
+
+    An overwrite-only dimension table loses yesterday's state on every refresh,
+    and that is exactly what makes a historical product universe unrecoverable:
+    a fund delisted in 2020 is simply not in today's file, so a 2018 backtest
+    silently picks only survivors.
+
+    Whole-table append is the lazy version of SCD-2 — larger on disk, but it
+    needs no diffing or interval maintenance, and it is the raw material a
+    proper valid_from/valid_to table can be rebuilt from later. Identical
+    consecutive states are skipped, so the log grows on change days only.
+    """
+
+    stamp = pd.Timestamp(snapshot_date or pd.Timestamp.today()).normalize()
+    target = path.parent / "pit_dim" / f"{path.stem}_history.parquet"
+    incoming = df.copy()
+    incoming[PIT_SNAPSHOT_FIELD] = stamp
+
+    previous = pd.DataFrame()
+    if target.exists():
+        try:
+            previous = pd.read_parquet(target)
+        except Exception as exc:  # noqa: BLE001 - a broken log must not fail the refresh
+            print(f"[WARN] 读取维表历史失败 {target}: {exc}；本次重建。")
+            previous = pd.DataFrame()
+
+    if not previous.empty and PIT_SNAPSHOT_FIELD in previous.columns:
+        stamps = pd.to_datetime(previous[PIT_SNAPSHOT_FIELD], errors="coerce")
+        latest = stamps.max()
+        if pd.notna(latest):
+            newest = previous[stamps.eq(latest)].drop(columns=[PIT_SNAPSHOT_FIELD])
+            candidate = df.reset_index(drop=True)
+            if latest != stamp and len(newest) == len(candidate):
+                aligned = newest.reset_index(drop=True)[list(candidate.columns)] if set(
+                    candidate.columns
+                ) <= set(newest.columns) else None
+                if aligned is not None and aligned.equals(candidate):
+                    print(f"[OK] 维表历史 {target.name} 与 {latest.date()} 快照一致，跳过。")
+                    return target
+        # Re-running the same day replaces that day rather than doubling it.
+        previous = previous[stamps.ne(stamp)]
+
+    combined = pd.concat([previous, incoming], ignore_index=True) if not previous.empty else incoming
+    save_dataframe(combined, target, quiet=True)
+    print(
+        f"[OK] 维表历史 {target}，新增 {stamp.date()} 快照 {len(df)} 行（累计 {len(combined)} 行）。"
+    )
+    return target
+
+
 def save_dataframe(
     df: pd.DataFrame,
     path: Path,
     *,
     excel_path: Optional[Path] = None,
     quiet: bool = False,
+    history: bool = False,
 ) -> None:
     ensure_output_dir(path.parent)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -981,6 +1046,11 @@ def save_dataframe(
             print(f"[OK] 保存 {excel_path}，{len(df)} 行。")
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] Excel 写入失败 {excel_path}: {exc}")
+    if history:
+        try:
+            append_dimension_snapshot(df, path)
+        except Exception as exc:  # noqa: BLE001 - never fail a refresh over the audit log
+            print(f"[WARN] 维表历史快照失败 {path.name}: {exc}")
 
 
 def history_checkpoint_dir(out_path: Path, args: argparse.Namespace) -> Path:
@@ -2232,7 +2302,7 @@ def save_etf_info(pro: Any, output_dir: Path, limiter: RateLimiter, args: argpar
     df = build_etf_info_df(fund_df, etf_df)
     if df.empty:
         raise RuntimeError("未获取到 ETF 产品信息。")
-    save_dataframe(df, output_dir / "etf_info_df.parquet", excel_path=output_dir / "etf_info_df.xlsx")
+    save_dataframe(df, output_dir / "etf_info_df.parquet", excel_path=output_dir / "etf_info_df.xlsx", history=True)
     return df
 
 
@@ -2697,7 +2767,7 @@ def save_stock_basic(pro: Any, output_dir: Path, limiter: RateLimiter, args: arg
     )
     if args.limit:
         df = df.head(args.limit)
-    save_dataframe(df, output_dir / "stock_basic.parquet", excel_path=output_dir / "stock_basic.xlsx")
+    save_dataframe(df, output_dir / "stock_basic.parquet", excel_path=output_dir / "stock_basic.xlsx", history=True)
 
 
 def _looks_like_permission_error(exc: Exception) -> bool:
@@ -2964,6 +3034,7 @@ def fetch_index_date_window(
     kwargs: dict[str, Any] = {"start_date": start_date, "end_date": end_date}
     if code:
         kwargs["ts_code"] = code
+    started = datetime.now(timezone.utc).isoformat()
     frame = _call_index_api(
         pro, api_name, limiter, args,
         allow_capped_response=True,
@@ -2971,11 +3042,19 @@ def fetch_index_date_window(
         **kwargs,
     )
     if frame.empty:
+        first = {'id': uuid.uuid4().hex, 'started_at': started,
+                 'finished_at': datetime.now(timezone.utc).isoformat(), 'rows': 0}
+        started = datetime.now(timezone.utc).isoformat()
         frame = _call_index_api(
             pro, api_name, limiter, args, allow_capped_response=True,
             context=f"{api_name} {code or 'all'} {start_date}-{end_date} 空响应独立复核",
             **kwargs,
         )
+        if frame.empty:
+            frame.attrs['empty_confirmations'] = [first, {
+                'id': uuid.uuid4().hex, 'started_at': started,
+                'finished_at': datetime.now(timezone.utc).isoformat(), 'rows': 0,
+            }]
     limit = API_ROW_LIMITS.get(api_name)
     if limit is not None and len(frame) >= limit:
         start = pd.to_datetime(start_date, format="%Y%m%d")
@@ -3115,11 +3194,17 @@ def save_index_full_history_with_segment_checkpoints(
         code_empty[code] = empty_path
         if part_path.exists() or empty_path.exists():
             continue
-        missing_chunks = [
-            chunk
-            for chunk in chunks
-            if not any(path.exists() for path in segment_paths(code, *chunk))
-        ]
+        missing_chunks = []
+        for chunk in chunks:
+            part, empty = segment_paths(code, *chunk)
+            if part.exists() and empty.exists():
+                raise CenterError('INDEX_CHECKPOINT_CONFLICT', '指数分片同时存在数据与空标记。')
+            if part.exists():
+                continue
+            if empty.exists():
+                read_empty_evidence(empty, api_name, code, *chunk, checkpoint_dir.name)
+                continue  # Plain old markers remain same-version compatible.
+            missing_chunks.append(chunk)
         pending.append((code, str(name_value), missing_chunks))
 
     def fetch_code(code: str, missing_chunks: list[tuple[str, str]]):
@@ -3147,7 +3232,8 @@ def save_index_full_history_with_segment_checkpoints(
             for chunk_start, chunk_end, frame in completed:
                 part_path, empty_path = segment_paths(code, chunk_start, chunk_end)
                 if frame.empty:
-                    mark_empty_checkpoint(empty_path)
+                    write_empty_evidence(empty_path, api_name, code, chunk_start, chunk_end,
+                                         checkpoint_dir.name, frame.attrs.get('empty_confirmations'))
                 else:
                     save_dataframe(
                         frame.drop_duplicates(["source_api", "ts_code", "trade_date"])
@@ -3578,7 +3664,7 @@ def save_index_basic(pro: Any, output_dir: Path, limiter: RateLimiter, args: arg
         .drop_duplicates(subset=["ts_code"])
         .sort_values("ts_code")
     )
-    save_dataframe(out, output_dir / "index_info.parquet")
+    save_dataframe(out, output_dir / "index_info.parquet", history=True)
 
 
 def save_etf_index(pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace) -> None:
@@ -3593,7 +3679,7 @@ def save_etf_index(pro: Any, output_dir: Path, limiter: RateLimiter, args: argpa
     )
     if args.limit:
         df = df.head(args.limit)
-    save_dataframe(df, output_dir / "etf_index.parquet")
+    save_dataframe(df, output_dir / "etf_index.parquet", history=True)
 
 
 def save_fund_company(pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace) -> None:

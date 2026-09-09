@@ -20,7 +20,16 @@ from strategy import (
     scale_weights_percent,
     strategy_execution_audit,
 )
-from backtest_engine import backtest_portfolio, gen_rebalance_dates, slice_fit_data, ensure_valid_rebalance_window
+from backtest_engine import (
+    backtest_portfolio,
+    ensure_valid_rebalance_window,
+    gen_rebalance_dates,
+    load_allocation_nav,
+    slice_fit_data,
+)
+from pit.clock import DecisionClock
+from pit.context import PitContextError, resolve_request_context
+from pit.guard import assert_no_universe_lookahead, universe_lineage
 from custom_indicators.errors import IndicatorDomainError
 from portfolio_regime import (
     PublishedRegimeBacktestReference,
@@ -38,6 +47,45 @@ _SCHEDULE_CACHE_SIZE = 64
 _schedule_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _schedule_cache_lock = Lock()
 regime_backtest_resolver = PublishedRegimeBacktestResolver()
+
+
+def _load_alloc_nav(alloc_name: str):
+    """The one allocation read in this router, so every endpoint gets the same口径.
+
+    Returns ``(loaded, context, error_response)``; the error is None on success.
+    Four endpoints used to open ``asset_nv.parquet`` themselves with four copies
+    of the same pivot, which is how three of them would have kept reading the
+    full-hindsight series after the fourth was fixed.
+    """
+
+    nv_path = DATA_DIR / "asset_nv.parquet"
+    if not nv_path.exists():
+        return None, None, JSONResponse(
+            status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"}
+        )
+    try:
+        context = resolve_request_context(DATA_DIR)
+    except PitContextError as exc:
+        return None, None, JSONResponse(status_code=400, content={"detail": str(exc)})
+    loaded = load_allocation_nav(DATA_DIR, alloc_name, context)
+    if loaded.nav_wide.empty:
+        if loaded.lineage.get("found"):
+            # The allocation exists; the research day is simply earlier than anything
+            # it could have known. Saying "not found" here would send the user
+            # hunting for a typo that is not there.
+            return None, None, JSONResponse(
+                status_code=400,
+                content={
+                    "detail": (
+                        f"配置 '{alloc_name}' 在研究日 {context.as_of} 没有任何已可得的净值；"
+                        "请前移研究日或关闭 PIT 口径查看。"
+                    )
+                },
+            )
+        return None, None, JSONResponse(
+            status_code=404, content={"detail": f"未找到名为 '{alloc_name}' 的配置的净值数据"}
+        )
+    return loaded, context, None
 
 
 def _normalize_for_cache(value: Any) -> Any:
@@ -151,6 +199,7 @@ def _build_schedule_spec(
     start_date: Optional[str],
     strategy: StrategySpec,
     model: Dict[str, Any],
+    pit: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if strategy.type == 'risk_budget':
         classes = [
@@ -167,6 +216,12 @@ def _build_schedule_spec(
         'rebalance': rebalance,
         'model': model,
         'classes': classes,
+        # Weights fitted under one研究日 are not interchangeable with weights
+        # fitted under another, so the口径 has to be part of the cache identity.
+        'pit': {
+            key: (pit or {}).get(key)
+            for key in ('as_of', 'run_mode', 'series_as_of', 'availability_available')
+        },
     }
 
 
@@ -196,14 +251,10 @@ def api_equal_weights(req: EqualWeightsRequest):
 
 @router.post("/compute-weights")
 def api_compute_weights(req: ComputeWeightsRequest):
-    nv_path = DATA_DIR / "asset_nv.parquet"
-    if not nv_path.exists():
-        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
-    df = pd.read_parquet(nv_path)
-    df = df[df["asset_alloc_name"] == req.alloc_name]
-    if df.empty:
-        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
-    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    loaded, context, error = _load_alloc_nav(req.alloc_name)
+    if error is not None:
+        return error
+    nav_wide = loaded.nav_wide
     # Filter to requested classes order
     class_names = [c.name for c in req.strategy.classes]
     nav_wide = nav_wide[class_names].dropna(how='all').dropna(axis=0)
@@ -213,7 +264,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
 
     window_mode = req.window_mode or (req.strategy.model or {}).get('window_mode') or 'all'
     data_len = req.data_len if req.data_len is not None else (req.strategy.model or {}).get('data_len')
-    nav_fit = slice_fit_data(nav_wide, nav_wide.index[-1], window_mode, data_len)
+    nav_fit = slice_fit_data(nav_wide, nav_wide.index[-1], window_mode, data_len, loaded.available_at)
     if len(nav_fit) < 2 or (window_mode.lower() == 'rollingn' and data_len and len(nav_fit) < int(data_len)):
         return JSONResponse(status_code=400, content={"detail": "样本不足，无法根据当前窗口计算权重"})
 
@@ -301,14 +352,10 @@ class BacktestRequest(BaseModel):
 
 @router.post("/backtest")
 def api_backtest(req: BacktestRequest):
-    nv_path = DATA_DIR / "asset_nv.parquet"
-    if not nv_path.exists():
-        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
-    df = pd.read_parquet(nv_path)
-    df = df[df["asset_alloc_name"] == req.alloc_name]
-    if df.empty:
-        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
-    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    loaded, context, error = _load_alloc_nav(req.alloc_name)
+    if error is not None:
+        return error
+    nav_wide = loaded.nav_wide
 
     # Build strategies weights in class order
     class_names = list(nav_wide.columns)
@@ -318,7 +365,7 @@ def api_backtest(req: BacktestRequest):
         weights = [float(cls_map.get(n).weight) if (n in cls_map and cls_map[n].weight is not None) else 0.0 for n in class_names]
         rb = s.rebalance if isinstance(s.rebalance, dict) else None
         model_cfg = _effective_model_config(s)
-        cache_spec = _build_schedule_spec(req.alloc_name, req.start_date, s, model_cfg)
+        cache_spec = _build_schedule_spec(req.alloc_name, req.start_date, s, model_cfg, loaded.lineage)
         computed_key = _schedule_cache_key(cache_spec)
         sdict = {
             "name": s.name or s.type,
@@ -341,7 +388,37 @@ def api_backtest(req: BacktestRequest):
             sdict["precomputed_weights"] = precomputed_weights
         strat_list.append(sdict)
 
-    res = backtest_portfolio(nav_wide, strat_list, start_date=req.start_date)
+    res = backtest_portfolio(
+        nav_wide, strat_list, start_date=req.start_date, available_at=loaded.available_at
+    )
+    # Every rebalance date is its own research day; the sweep is what the run
+    # actually stood on, and the universe behind it is judged against the
+    # earliest of them, not against the run's end date.
+    decision_dates = sorted(
+        {marker["date"] for markers in (res.get("markers") or {}).values() for marker in markers}
+    )
+    clock = DecisionClock.from_dates(decision_dates or nav_wide.index[:1], context)
+    coverage = None if loaded.lineage.get("series_as_of") else "LATEST_ONLY"
+    try:
+        findings = assert_no_universe_lookahead(
+            context,
+            established_at=loaded.lineage.get("series_as_of"),
+            coverage=coverage,
+            decision_dates=clock.dates,
+            label=f"配置「{req.alloc_name}」的大类净值",
+        )
+    except PitContextError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    res["pit"] = {
+        **loaded.lineage,
+        "decision_clock": clock.lineage(),
+        "universe": universe_lineage(
+            findings,
+            coverage=coverage,
+            established_at=loaded.lineage.get("series_as_of"),
+            source="asset_nv",
+        ),
+    }
     if req.historical_regime is not None:
         try:
             resolved_regime = regime_backtest_resolver.resolve(req.historical_regime)
@@ -360,24 +437,18 @@ def api_backtest(req: BacktestRequest):
 
 @router.get("/default-start")
 def api_default_start(alloc_name: str):
-    nv_path = DATA_DIR / "asset_nv.parquet"
-    if not nv_path.exists():
-        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
-    df = pd.read_parquet(nv_path)
-    df = df[df["asset_alloc_name"] == alloc_name]
-    if df.empty:
-        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{alloc_name}' 的配置的净值数据"})
-    df = df.dropna(subset=["date"]).copy()
-    df["date"] = pd.to_datetime(df["date"])  # ensure datetime
-    first_dates = df.groupby("asset_name")["date"].min()
+    loaded, context, error = _load_alloc_nav(alloc_name)
+    if error is not None:
+        return error
+    nav_wide = loaded.nav_wide
+    first_dates = nav_wide.apply(lambda column: column.first_valid_index())
+    first_dates = first_dates.dropna()
     if first_dates.empty:
         return {"default_start": None, "count": 0}
-    default_start_ts = first_dates.max()
+    default_start_ts = pd.Timestamp(max(first_dates))
     default_start = default_start_ts.date().isoformat()
-    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
-    nav_wide = nav_wide[nav_wide.index >= default_start_ts]
-    count = int(len(nav_wide.index))
-    return {"default_start": default_start, "count": count}
+    count = int(len(nav_wide.index[nav_wide.index >= default_start_ts]))
+    return {"default_start": default_start, "count": count, "pit": loaded.lineage}
 
 
 class ComputeScheduleRequest(BaseModel):
@@ -396,7 +467,12 @@ def _compute_weight_for_date(args: Dict[str, Any]) -> Dict[str, Any]:
     nav_split = args['nav_split']
     nav = pd.DataFrame(nav_split['data'], index=pd.to_datetime(nav_split['index']), columns=nav_split['columns'])
     up_to = pd.to_datetime(args['date'])
-    nav = nav.loc[nav.index <= up_to]
+    stamps = nav_split.get('available_at')
+    if stamps:
+        available = pd.to_datetime(pd.Series(stamps, index=nav.index))
+        nav = nav[(available.notna() & (available <= up_to)) | (available.isna() & (nav.index <= up_to))]
+    else:
+        nav = nav.loc[nav.index <= up_to]
     stype = args['stype']
     model = args['model'] or {}
     window_mode = model.get('window_mode') or 'all'
@@ -457,14 +533,10 @@ def _compute_weight_for_date(args: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.post("/compute-schedule-weights")
 def api_compute_schedule_weights(req: ComputeScheduleRequest):
-    nv_path = DATA_DIR / "asset_nv.parquet"
-    if not nv_path.exists():
-        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
-    df = pd.read_parquet(nv_path)
-    df = df[df["asset_alloc_name"] == req.alloc_name]
-    if df.empty:
-        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
-    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    loaded, context, error = _load_alloc_nav(req.alloc_name)
+    if error is not None:
+        return error
+    nav_wide = loaded.nav_wide
     if req.start_date:
         nav_wide = nav_wide[nav_wide.index >= pd.to_datetime(req.start_date)]
     class_names = [c.name for c in req.strategy.classes]
@@ -474,14 +546,18 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
 
     asset_names = list(nav_wide.columns)
     model_cfg = _effective_model_config(req.strategy)
-    cache_spec = _build_schedule_spec(req.alloc_name, req.start_date, req.strategy, model_cfg)
+    cache_spec = _build_schedule_spec(
+        req.alloc_name, req.start_date, req.strategy, model_cfg, loaded.lineage
+    )
     cache_key = _schedule_cache_key(cache_spec)
 
     rb = req.strategy.rebalance or {}
     try:
         if not rb.get('enabled') or not rb.get('recalc'):
             rset = [nav_wide.index[0]]
-            rset, first_idx = ensure_valid_rebalance_window(nav_wide, rset, model_cfg)
+            rset, first_idx = ensure_valid_rebalance_window(
+                nav_wide, rset, model_cfg, loaded.available_at
+            )
         else:
             mode = str(rb.get('mode', 'monthly'))
             which = str(rb.get('which', 'nth'))
@@ -492,11 +568,25 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
             rset = sorted([d for d in rset if d in nav_wide.index])
             if not rset:
                 return JSONResponse(status_code=400, content={"detail": "未找到可用调仓日期"})
-            rset, first_idx = ensure_valid_rebalance_window(nav_wide, rset, model_cfg)
+            rset, first_idx = ensure_valid_rebalance_window(
+                nav_wide, rset, model_cfg, loaded.available_at
+            )
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-    nav_split = {'index': [d.isoformat() for d in nav_wide.index], 'columns': asset_names, 'data': nav_wide.values.tolist()}
+    # The worker refits at each rebalance date, so it needs the decision clock
+    # too — an event-time slice there would re-open the leak the engine closed.
+    aligned_availability = loaded.available_at.reindex(nav_wide.index) if len(loaded.available_at) else None
+    nav_split = {
+        'index': [d.isoformat() for d in nav_wide.index],
+        'columns': asset_names,
+        'data': nav_wide.values.tolist(),
+        'available_at': (
+            [None if pd.isna(v) else pd.Timestamp(v).isoformat() for v in aligned_availability]
+            if aligned_availability is not None
+            else None
+        ),
+    }
     tasks: List[Dict[str, Any]] = []
     if req.strategy.type == 'risk_budget':
         budgets = [float(c.budget or 0.0) for c in req.strategy.classes]

@@ -169,6 +169,8 @@ export interface PitReleaseSummary {
 
 export interface PitEffectiveContext {
   as_of: string | null
+  /** 'explicit' = the user stated it; 'release' = inherited from the vintage. */
+  as_of_source: 'explicit' | 'release' | null
   run_mode: RunMode
   run_mode_label: string
   data_release_id: string | null
@@ -178,7 +180,13 @@ export interface PitEffectiveContext {
 }
 
 export interface PitSettingsPayload {
-  settings: { active_release_id: string | null; run_mode: RunMode; updated_at: string | null; note: string }
+  settings: {
+    active_release_id: string | null
+    as_of: string | null
+    run_mode: RunMode
+    updated_at: string | null
+    note: string
+  }
   effective: PitEffectiveContext
   release: PitReleaseSummary | null
   release_error: string | null
@@ -191,7 +199,7 @@ export function fetchPitSettings(signal?: AbortSignal): Promise<PitSettingsPaylo
 }
 
 export function applyPitSettings(
-  input: { activeReleaseId: string | null; runMode: RunMode; note?: string },
+  input: { activeReleaseId: string | null; asOf: string | null; runMode: RunMode; note?: string },
   signal?: AbortSignal,
 ): Promise<PitSettingsPayload> {
   return request<PitSettingsPayload>(
@@ -218,4 +226,114 @@ export interface PitRunLineage {
   rows_without_announcement: number
   announcement_fallback: boolean
   warnings: string[]
+}
+
+/**
+ * What a saved allocation's NAV could prove about the day it stands on.
+ *
+ * `asset_nv` is computed, not observed: `series_as_of` is the research day the
+ * whole series was built under, and a null one means full hindsight.
+ */
+export interface PitAllocationLineage {
+  alloc_name: string
+  as_of: string | null
+  run_mode: RunMode | null
+  series_as_of: string | null
+  series_variants: string[]
+  hindsight_series: boolean
+  rows_dropped_by_as_of: number
+  availability_available: boolean
+  warnings: string[]
+}
+
+/** How firmly the candidate set behind a result could be established. */
+export type PitUniverseCoverage = 'REPLAYED' | 'INTERVAL' | 'LATEST_ONLY' | 'NOT_APPLICABLE'
+
+export interface PitUniverseView {
+  kind: string
+  kind_label: string
+  as_of: string | null
+  run_mode: RunMode
+  coverage: PitUniverseCoverage
+  replayable: boolean
+  history_begins_at: string | null
+  member_count: number
+  latest_member_count: number
+  excluded_by_replay: number
+  sample: { code: string; name: string }[]
+  warnings: string[]
+}
+
+export const UNIVERSE_COVERAGE_LABELS: Record<PitUniverseCoverage, string> = {
+  REPLAYED: '域可回放 · 有当日维表快照',
+  INTERVAL: '域按上市/退市日还原',
+  LATEST_ONLY: '域仅最新态 · 有幸存者偏差',
+  NOT_APPLICABLE: '该数据集不涉及产品域',
+}
+
+export const UNIVERSE_COVERAGE_TONE: Record<PitUniverseCoverage, string> = {
+  REPLAYED: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+  INTERVAL: 'bg-sky-100 text-sky-800 border-sky-200',
+  LATEST_ONLY: 'bg-rose-100 text-rose-800 border-rose-200',
+  NOT_APPLICABLE: 'bg-slate-100 text-slate-600 border-slate-200',
+}
+
+export function fetchPitUniverse(
+  options: { kind?: string; asOf?: string | null; signal?: AbortSignal } = {},
+): Promise<PitUniverseView> {
+  const params = new URLSearchParams({ kind: options.kind ?? 'fund' })
+  if (options.asOf) params.set('as_of', options.asOf)
+  return request<PitUniverseView>(
+    `/api/pit/universe?${params.toString()}`,
+    { signal: options.signal },
+    '读取可选产品域失败',
+  )
+}
+
+/** Replay of a published pool: who it would have held on another research day. */
+export interface PoolReplayMember {
+  key: string
+  kind: string
+  product_id: string
+  code: string
+  name: string
+}
+
+export interface PoolReplayResult {
+  version_id: string
+  pool_id: string
+  as_of: string
+  published_as_of: string | null
+  lookahead: boolean
+  plans: {
+    plan_id: string
+    plan_name: string
+    published_as_of: string | null
+    replayed_as_of: string
+    ranked_count: number
+    selected_count: number
+  }[]
+  summary: {
+    published_count: number
+    replayed_count: number
+    kept: number
+    added: number
+    removed: number
+    manual_only: number
+  }
+  added: PoolReplayMember[]
+  removed: PoolReplayMember[]
+  manual_only: PoolReplayMember[]
+}
+
+export function replayPoolVersion(
+  versionId: string,
+  asOf: string,
+  signal?: AbortSignal,
+): Promise<PoolReplayResult> {
+  return request<PoolReplayResult>(
+    `/api/product-pool-versions/${encodeURIComponent(versionId)}/replay?as_of=${encodeURIComponent(asOf)}`,
+    { signal },
+    '回放产品池失败',
+  )
 }

@@ -13,6 +13,7 @@ python backend/backtest_engine.py payload.json
 """
 
 import json
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -20,6 +21,13 @@ import pandas as pd
 from pathlib import Path
 
 from trading_calendar import get_trading_days
+
+try:
+    from pit.clock import visible_at
+    from pit.context import ResearchContext
+except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
+    from backend.pit.clock import visible_at
+    from backend.pit.context import ResearchContext
 
 try:
     from backend.backtest_numba import (
@@ -41,10 +49,23 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     )
 
 
-def slice_fit_data(nav: pd.DataFrame, up_to: pd.Timestamp, window_mode: Optional[str], data_len: Optional[int]) -> pd.DataFrame:
-    """Return fitting window ending at ``up_to`` according to window_mode/data_len."""
+def slice_fit_data(
+    nav: pd.DataFrame,
+    up_to: pd.Timestamp,
+    window_mode: Optional[str],
+    data_len: Optional[int],
+    available_at: Optional[pd.Series] = None,
+) -> pd.DataFrame:
+    """Return fitting window ending at ``up_to`` according to window_mode/data_len.
 
-    win = nav.loc[:up_to]
+    ``available_at`` moves the cut from event time to decision time. Without it
+    the window ends at the last NAV *dated* on or before ``up_to`` — including
+    prints not published until days later, which no live process could have
+    fitted on. With it the window is what a desk standing on ``up_to`` actually
+    had. Omitted, behaviour is unchanged.
+    """
+
+    win = visible_at(nav, up_to, available_at)
     mode = (window_mode or 'all').lower()
     if mode != 'rollingn':
         return win
@@ -56,6 +77,7 @@ def ensure_valid_rebalance_window(
     nav: pd.DataFrame,
     candidate_dates: List[pd.Timestamp],
     model: Optional[Dict[str, Any]] = None,
+    available_at: Optional[pd.Series] = None,
 ) -> Tuple[List[pd.Timestamp], pd.Timestamp]:
     """Return valid rebalance dates and the first viable rebalance timestamp."""
 
@@ -70,7 +92,7 @@ def ensure_valid_rebalance_window(
     for d in candidate_dates:
         if d not in nav_sorted.index:
             continue
-        sub = nav_sorted.loc[:d]
+        sub = visible_at(nav_sorted, d, available_at)
         if window_mode == 'rollingn':
             if len(sub) < required:
                 continue
@@ -176,9 +198,15 @@ def backtest_portfolio(
     nav_wide: pd.DataFrame,
     strategies: List[Dict[str, Any]],
     start_date: Optional[str] = None,
+    available_at: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     """Backtest portfolios.
     Strategy item: { name, weights: [..], rebalance?: {enabled, mode, which, N, unit, fixedInterval}}
+
+    ``available_at`` is the decision clock: one publication date per observation
+    day. Supplied, every refit at a rebalance date sees only what had been
+    published by then, so results differ from the event-time run — that
+    difference is the look-ahead the old path was earning.
     """
     nav_wide = _ensure_datetime_index(nav_wide)
     if start_date:
@@ -189,7 +217,7 @@ def backtest_portfolio(
         model = s.get('model') or {}
         data_len = model.get('data_len', None)
         window_mode = model.get('window_mode') or 'all'
-        nav_fit = slice_fit_data(nav, up_to, window_mode, data_len)
+        nav_fit = slice_fit_data(nav, up_to, window_mode, data_len, available_at)
         stype = s.get('type')
         if stype == 'risk_budget':
             # collect budgets from classes
@@ -283,7 +311,7 @@ def backtest_portfolio(
         rset = sorted([d for d in rebal_dates if d in nav.index])
         if not rset:
             raise ValueError('未找到可用的调仓日期。')
-        rset, first_idx = ensure_valid_rebalance_window(nav, rset, s.get('model'))
+        rset, first_idx = ensure_valid_rebalance_window(nav, rset, s.get('model'), available_at)
         full_nav = nav.sort_index()
         nav = full_nav.loc[first_idx:]
         nav_values_trim = np.ascontiguousarray(nav.to_numpy(dtype=np.float64))
@@ -299,7 +327,7 @@ def backtest_portfolio(
             if recalc:
                 w_calc = precomputed_lookup.get(d0)
                 if w_calc is None:
-                    history = full_nav.loc[:d0]
+                    history = visible_at(full_nav, d0, available_at)
                     w_calc = _compute_model_weights(history, s, d0)
                 if w_calc is not None:
                     w_seg = w_calc
@@ -412,20 +440,132 @@ def backtest_portfolio(
     }
 
 
-def load_nav_wide_from_parquet(data_dir: Path, alloc_name: str) -> pd.DataFrame:
-    p = data_dir / 'asset_nv.parquet'
-    df = pd.read_parquet(p)
-    df = df[df['asset_alloc_name'] == alloc_name]
+ASSET_NV_AS_OF_FIELD = 'as_of'
+ASSET_NV_AVAILABLE_FIELD = 'available_at'
+
+
+@dataclass(frozen=True)
+class AllocationNav:
+    """A saved allocation's class NAV, read under one research口径."""
+
+    nav_wide: pd.DataFrame
+    available_at: pd.Series
+    lineage: Dict[str, Any] = field(default_factory=dict)
+
+
+def load_allocation_nav(
+    data_dir: Path,
+    alloc_name: str,
+    context: Optional[ResearchContext] = None,
+) -> AllocationNav:
+    """Read a saved allocation's class NAV as it stood on the research day.
+
+    ``asset_nv`` is not a market print: the row dated 2018 was *computed*
+    whenever someone pressed save, out of whatever data was on disk then. Two
+    clocks therefore matter and both are stored on the row —
+
+    * ``as_of``: the research day the whole series was built under. Picking the
+      newest series at or before the research day is what stops a NAV assembled
+      in 2026, from a 2026 fund universe, from answering a 2018 question. A row
+      with no ``as_of`` was built with full hindsight, and is labelled as such.
+    * ``available_at``: when each observation day became publicly knowable, which
+      the caller feeds back in as the backtest's decision clock.
+
+    Legacy files carry neither column. They still load — that is the whole
+    installed base — and the lineage says the result has no time-point proof.
+    """
+
+    path = data_dir / 'asset_nv.parquet'
+    df = pd.read_parquet(path)
+    df = df[df['asset_alloc_name'] == alloc_name].copy()
+    lineage: Dict[str, Any] = {
+        'alloc_name': alloc_name,
+        'found': False,
+        'as_of': getattr(context, 'as_of', None),
+        'run_mode': getattr(context, 'run_mode', None),
+        'series_as_of': None,
+        'series_variants': [],
+        'hindsight_series': False,
+        'rows_dropped_by_as_of': 0,
+        'availability_available': False,
+        'warnings': [],
+    }
+    if df.empty:
+        return AllocationNav(pd.DataFrame(), pd.Series(dtype='datetime64[ns]'), lineage)
+
+    lineage['found'] = True
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    cutoff = pd.Timestamp(context.as_of) if getattr(context, 'as_of', None) else None
+
+    if ASSET_NV_AS_OF_FIELD in df.columns:
+        stamps = df[ASSET_NV_AS_OF_FIELD].astype('string').fillna('')
+        lineage['series_variants'] = sorted({value for value in stamps.unique() if value})
+        eligible = stamps if cutoff is None else stamps[(stamps == '') | (stamps <= context.as_of)]
+        dated = sorted({value for value in eligible.unique() if value})
+        chosen = dated[-1] if dated else ''
+        df = df[stamps.reindex(df.index) == chosen]
+        lineage['series_as_of'] = chosen or None
+        lineage['hindsight_series'] = not chosen and cutoff is not None
+    else:
+        lineage['hindsight_series'] = cutoff is not None
+
+    if lineage['hindsight_series']:
+        lineage['warnings'].append(
+            f"该配置的大类净值没有按 {context.as_of} 重算过，用的是全历史口径序列；"
+            "其中的产品与权重带有当时不可知的信息。"
+        )
+
+    availability = pd.Series(dtype='datetime64[ns]')
+    if ASSET_NV_AVAILABLE_FIELD in df.columns:
+        stamps = pd.to_datetime(df[ASSET_NV_AVAILABLE_FIELD], errors='coerce')
+        if stamps.notna().any():
+            lineage['availability_available'] = True
+            if cutoff is not None:
+                before = int(len(df))
+                df = df[stamps.isna() | (stamps <= cutoff)]
+                lineage['rows_dropped_by_as_of'] = before - int(len(df))
+                stamps = stamps.reindex(df.index)
+            availability = (
+                pd.DataFrame({'date': df['date'], 'a': stamps})
+                .dropna(subset=['date'])
+                .groupby('date')['a']
+                .max()
+                .sort_index()
+            )
+    elif cutoff is not None:
+        lineage['warnings'].append(
+            '大类净值缺少可得时间列，回测按净值日期而非公告日期切窗；请重新保存该配置以补齐。'
+        )
+
     nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
     nav_wide.index = pd.to_datetime(nav_wide.index)
-    return nav_wide
+    if cutoff is not None and not lineage['availability_available']:
+        nav_wide = nav_wide[nav_wide.index <= cutoff]
+    return AllocationNav(nav_wide, availability, lineage)
 
 
-def run_from_payload(payload: Dict[str, Any], data_dir: Optional[Path] = None) -> Dict[str, Any]:
+def load_nav_wide_from_parquet(data_dir: Path, alloc_name: str) -> pd.DataFrame:
+    """Frame-only view of :func:`load_allocation_nav` for callers that ignore lineage."""
+
+    return load_allocation_nav(data_dir, alloc_name).nav_wide
+
+
+def run_from_payload(
+    payload: Dict[str, Any],
+    data_dir: Optional[Path] = None,
+    context: Optional[ResearchContext] = None,
+) -> Dict[str, Any]:
     data_dir = data_dir or Path(__file__).resolve().parents[1] / 'data'
     alloc = payload['alloc_name']
-    nav_wide = load_nav_wide_from_parquet(Path(data_dir), alloc)
-    return backtest_portfolio(nav_wide, payload['strategies'], start_date=payload.get('start_date'))
+    loaded = load_allocation_nav(Path(data_dir), alloc, context)
+    result = backtest_portfolio(
+        loaded.nav_wide,
+        payload['strategies'],
+        start_date=payload.get('start_date'),
+        available_at=loaded.available_at,
+    )
+    result['pit'] = loaded.lineage
+    return result
 
 from strategy import compute_risk_budget_weights, compute_target_weights
 

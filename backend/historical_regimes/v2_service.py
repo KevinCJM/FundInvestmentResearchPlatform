@@ -4503,6 +4503,11 @@ class RegimeGraphV2Service:
                 "id": f"publication-{uuid.uuid4().hex}",
                 "usage": item,
                 "published_at": _iso(_utc_now()),
+                # When the desk started using it, versus what the model itself
+                # was allowed to know. Only both dates together say whether a
+                # historical portfolio could have acted on this signal.
+                "fit_as_of": run.get("as_of"),
+                "fit_mode": run.get("mode"),
                 "note": note,
                 "run_id": run_id,
                 "definition_revision": int(run["definition_revision"]),

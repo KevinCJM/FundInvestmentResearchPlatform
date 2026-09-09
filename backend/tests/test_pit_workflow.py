@@ -485,19 +485,53 @@ def test_applying_a_release_fixes_the_research_day_from_the_release(tmp_path: Pa
     payload = repository.update(release["id"], catalog.RUN_MODE_STRICT)
     effective = payload["effective"]
     assert effective["no_pit"] is False
-    # One knob: pinning the vintage pins the research day it can answer for.
+    # A release still implies a research day when none is stated, so existing
+    # installs keep the口径 they had — but the source is now reported, because a
+    # day the user chose and a day the vintage happened to end on are different
+    # claims and used to be indistinguishable.
     assert effective["as_of"] == expected_as_of
+    assert effective["as_of_source"] == "release"
     assert effective["run_mode"] == catalog.RUN_MODE_STRICT
     assert effective["data_release_id"] == release["id"]
-    assert effective["label"] == f"基线 · 研究日 {expected_as_of} · 严格 PIT"
+    assert effective["label"] == f"站在 {expected_as_of} · 基线 · 严格 PIT"
 
     # The setting is on disk, not in a browser: a fresh repository sees it.
     assert PitSettingsRepository(tmp_path).effective_context().as_of == expected_as_of
 
 
-def test_strict_pit_cannot_be_enabled_without_a_release(tmp_path: Path) -> None:
+def test_research_day_stands_alone_without_any_release(tmp_path: Path) -> None:
     repository = PitSettingsRepository(tmp_path)
-    with pytest.raises(context.PitContextError, match="未应用数据版本时无法启用严格 PIT"):
+
+    effective = repository.update(None, catalog.RUN_MODE_RESEARCH, "2010 年前研究", "2009-12-31")["effective"]
+
+    assert effective["as_of"] == "2009-12-31"
+    assert effective["as_of_source"] == "explicit"
+    assert effective["no_pit"] is False
+    assert effective["label"] == "站在 2009-12-31 · 最新数据（未封版） · 研究模式"
+    assert PitSettingsRepository(tmp_path).effective_context().as_of == "2009-12-31"
+
+
+def test_research_day_may_not_run_past_the_pinned_vintage(tmp_path: Path) -> None:
+    _nav_fixture(tmp_path)
+    releases = DataReleaseRepository(tmp_path / "data_releases.json")
+    release = releases.create(tmp_path, "基线")
+    repository = PitSettingsRepository(tmp_path)
+
+    # The one constraint between the two knobs, and it only runs one way.
+    with pytest.raises(context.PitContextError, match="晚于数据版本"):
+        repository.update(release["id"], catalog.RUN_MODE_RESEARCH, "", "2030-01-01")
+
+    effective = repository.update(release["id"], catalog.RUN_MODE_RESEARCH, "", "2024-01-10")["effective"]
+    assert effective["as_of"] == "2024-01-10"
+    assert effective["as_of_source"] == "explicit"
+
+
+def test_strict_pit_cannot_be_enabled_without_a_research_day(tmp_path: Path) -> None:
+    repository = PitSettingsRepository(tmp_path)
+    # Strict needs a day to enforce, not a release: requiring a sealed vintage
+    # here was what left "stand on 2009-12-31" unreachable for anyone who had
+    # never封版.
+    with pytest.raises(context.PitContextError, match="严格 PIT 需要一个研究日"):
         repository.update(None, catalog.RUN_MODE_STRICT)
     with pytest.raises(context.PitContextError, match="不支持的运行模式"):
         repository.update(None, "YOLO")

@@ -36,6 +36,9 @@ GRADE_DESCRIPTIONS = {
 # rows the column cannot carry a strict claim, so the dataset drops to B.
 STRICT_COVERAGE_FLOOR = 0.995
 
+# Column carrying the vintage clock in an append-only dimension snapshot log.
+SNAPSHOT_FIELD = "pit_snapshot_date"
+
 RUN_MODE_RESEARCH = "RESEARCH"
 RUN_MODE_STRICT = "STRICT_PIT"
 RUN_MODES = {
@@ -62,6 +65,11 @@ class DatasetPitDeclaration:
     # vintage column, because yesterday's value is simply gone.
     revisable: bool
     note: str
+    # Append-only snapshot log for a revisable table: every refresh writes the
+    # whole table again under a `snapshot_date`, so the state as known on any
+    # past day can be replayed. None means the table is overwrite-only and its
+    # history is simply gone.
+    history_file: Optional[str] = None
 
 
 DATASETS: tuple[DatasetPitDeclaration, ...] = (
@@ -109,11 +117,14 @@ DATASETS: tuple[DatasetPitDeclaration, ...] = (
         dataset_id="etf_info",
         label="ETF 合同与分类信息",
         file="etf_info_df.parquet",
-        event_field="",
+        # `list_date` is when the fund became investable, which is also the
+        # earliest day this row could have been observed at all.
+        event_field="list_date",
         availability_field=None,
         declared_lag_days=0,
         revisable=True,
         note="维表按最新状态整体覆盖写入，没有生效时间也没有历史版本；用它做历史分类会带入今天的信息。",
+        history_file="pit_dim/etf_info_df_history.parquet",
     ),
     DatasetPitDeclaration(
         dataset_id="index_info",
@@ -124,6 +135,7 @@ DATASETS: tuple[DatasetPitDeclaration, ...] = (
         declared_lag_days=0,
         revisable=True,
         note="同为最新态维表；指数更名与口径调整会就地覆盖。",
+        history_file="pit_dim/index_info_history.parquet",
     ),
     DatasetPitDeclaration(
         dataset_id="etf_index",
@@ -134,6 +146,7 @@ DATASETS: tuple[DatasetPitDeclaration, ...] = (
         declared_lag_days=0,
         revisable=True,
         note="映射关系就地更新，换标的后查不到历史对应关系。",
+        history_file="pit_dim/etf_index_history.parquet",
     ),
     DatasetPitDeclaration(
         dataset_id="stock_basic",
@@ -144,6 +157,7 @@ DATASETS: tuple[DatasetPitDeclaration, ...] = (
         declared_lag_days=0,
         revisable=True,
         note="含退市状态的最新态维表；缺历史版本时无法还原当时的可选股票域。",
+        history_file="pit_dim/stock_basic_history.parquet",
     ),
     DatasetPitDeclaration(
         dataset_id="asset_nv",
@@ -160,12 +174,22 @@ DATASETS: tuple[DatasetPitDeclaration, ...] = (
 DATASETS_BY_ID = {declaration.dataset_id: declaration for declaration in DATASETS}
 
 
-def grade(declaration: DatasetPitDeclaration, availability_coverage: Optional[float]) -> str:
+def grade(
+    declaration: DatasetPitDeclaration,
+    availability_coverage: Optional[float],
+    *,
+    history_snapshots: int = 0,
+) -> str:
     """Combine what the dataset claims with what the file actually contains.
 
     `availability_coverage` is the measured share of rows carrying a usable
     availability timestamp, or None when the dataset declares no such column.
     A declaration alone never earns an A: the column has to be there.
+
+    `history_snapshots` is how many dated versions of a revisable table are on
+    disk. Two or more means the table's past state can be replayed instead of
+    guessed, which is what lifts an overwrite-only dimension out of grade C —
+    but only from the first snapshot onwards, so it never earns an A either.
     """
 
     if declaration.availability_field:
@@ -177,7 +201,7 @@ def grade(declaration: DatasetPitDeclaration, availability_coverage: Optional[fl
             return GRADE_STRICT
         return GRADE_NONE if declaration.revisable else GRADE_APPROXIMATE
     if declaration.revisable:
-        return GRADE_NONE
+        return GRADE_APPROXIMATE if history_snapshots > 0 else GRADE_NONE
     return GRADE_APPROXIMATE
 
 
@@ -200,6 +224,7 @@ __all__ = [
     "RUN_MODES",
     "RUN_MODE_RESEARCH",
     "RUN_MODE_STRICT",
+    "SNAPSHOT_FIELD",
     "STRICT_COVERAGE_FLOOR",
     "DatasetPitDeclaration",
     "grade",

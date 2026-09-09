@@ -15,6 +15,8 @@ export interface PitViewOverride {
   off: boolean
   /** Release to view instead of the applied one; ignored when `off`. */
   releaseId: string | null
+  /** Day to stand on for this tab only. Valid on its own, with no release. */
+  asOf?: string | null
   runMode: RunMode
 }
 
@@ -34,9 +36,16 @@ function read(): PitViewOverride | null {
 
 function normalize(value: PitViewOverride | null): PitViewOverride | null {
   if (!value) return null
-  if (value.off) return { off: true, releaseId: null, runMode: 'RESEARCH' }
-  if (!value.releaseId) return null
-  return { off: false, releaseId: value.releaseId, runMode: value.runMode === 'STRICT_PIT' ? 'STRICT_PIT' : 'RESEARCH' }
+  if (value.off) return { off: true, releaseId: null, asOf: null, runMode: 'RESEARCH' }
+  // A research day alone is a complete override: standing on another day is the
+  // commonest thing a reader wants, and it needs no sealed vintage to be valid.
+  if (!value.releaseId && !value.asOf) return null
+  return {
+    off: false,
+    releaseId: value.releaseId ?? null,
+    asOf: value.asOf ?? null,
+    runMode: value.runMode === 'STRICT_PIT' ? 'STRICT_PIT' : 'RESEARCH',
+  }
 }
 
 let current: PitViewOverride | null = read()
@@ -67,7 +76,10 @@ export const pageReload = { run: () => window.location.reload() }
 export function pitOverrideHeaders(): Record<string, string> {
   if (!current) return {}
   if (current.off) return { 'X-Pit-Off': '1' }
-  return { 'X-Pit-Release': current.releaseId as string, 'X-Pit-Run-Mode': current.runMode }
+  const headers: Record<string, string> = { 'X-Pit-Run-Mode': current.runMode }
+  if (current.releaseId) headers['X-Pit-Release'] = current.releaseId
+  if (current.asOf) headers['X-Pit-As-Of'] = current.asOf
+  return headers
 }
 
 function isOverridableApi(url: string): boolean {

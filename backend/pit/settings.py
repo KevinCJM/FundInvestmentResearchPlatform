@@ -7,14 +7,21 @@ everywhere. Two consequences follow, and both are the point of this module.
 **It lives on the server.** Keeping it in each browser's `localStorage` means
 two analysts open the same page, see different numbers, and neither can tell.
 
-**The data release implies the research day.** A sealed release already knows
-the last date it can honestly answer for (`available_through`), so pinning a
-release fixes `as_of` too. That keeps one knob where users expect one knob,
-while leaving `as_of` free to be overridden per request — a backtest sweeps it
-by nature, and a system-wide single value would make that impossible.
+**The research day is its own knob.** It used to be derived from the applied
+release's `available_through`, which quietly made "which vintage" and "which day
+do I stand on" the same control — so a user who wanted to research as of
+2009-12-31 had nowhere to say it, and reached for the release name instead.
+They are orthogonal questions and now have orthogonal settings:
 
-No release applied means no PIT: every row on disk is fair game, exactly the
-pre-PIT behaviour, and results say so rather than pretending otherwise.
+* `as_of` — the day the platform pretends to stand on. Settable on its own.
+* `active_release_id` — which frozen copy of the files answers. Optional.
+
+A release still *implies* a research day when none is stated, so existing
+installs keep the口径 they had. The one constraint between them is one-way: the
+research day may not run past the last day the pinned vintage can answer for.
+
+Neither set means no PIT: every row on disk is fair game, exactly the pre-PIT
+behaviour, and results say so rather than pretending otherwise.
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
 
 from .catalog import RUN_MODE_RESEARCH, RUN_MODE_STRICT, RUN_MODES
-from .context import PitContextError, ResearchContext
+from .context import PitContextError, ResearchContext, parse_as_of
 from .release import DataReleaseError, DataReleaseRepository
 
 PIT_SETTINGS_STORE = "pit_settings.json"
@@ -70,6 +77,7 @@ class PitSettingsStore:
         default = {
             "schema_version": SCHEMA_VERSION,
             "active_release_id": None,
+            "as_of": None,
             "run_mode": RUN_MODE_RESEARCH,
             "updated_at": None,
             "note": "",
@@ -128,21 +136,28 @@ class PitSettingsRepository:
                 release_error = str(exc)
 
         available = self.releases.list_releases()
-        no_pit = release is None
+        stated_as_of = str(stored.get("as_of") or "").strip() or None
+        derived_as_of = _release_as_of(release) if release else None
+        as_of = stated_as_of or derived_as_of
+        as_of_source = "explicit" if stated_as_of else ("release" if derived_as_of else None)
+        no_pit = as_of is None and release is None
         run_mode = str(stored.get("run_mode") or RUN_MODE_RESEARCH).upper()
-        if run_mode not in RUN_MODES or no_pit:
+        # Strict needs a day to enforce. Without one it is research mode wearing
+        # a different label, which is worse than not offering it.
+        if run_mode not in RUN_MODES or as_of is None:
             run_mode = RUN_MODE_RESEARCH
-        as_of = _release_as_of(release) if release else None
 
         return {
             "settings": {
                 "active_release_id": release_id,
+                "as_of": stated_as_of,
                 "run_mode": str(stored.get("run_mode") or RUN_MODE_RESEARCH).upper(),
                 "updated_at": stored.get("updated_at"),
                 "note": stored.get("note") or "",
             },
             "effective": {
                 "as_of": as_of,
+                "as_of_source": as_of_source,
                 "run_mode": run_mode,
                 "run_mode_label": RUN_MODES[run_mode],
                 "data_release_id": release["id"] if release else None,
@@ -170,21 +185,34 @@ class PitSettingsRepository:
         active_release_id: Optional[str],
         run_mode: Optional[str],
         note: str = "",
+        as_of: Any = None,
     ) -> dict[str, Any]:
         wanted_release = str(active_release_id or "").strip() or None
         wanted_mode = str(run_mode or RUN_MODE_RESEARCH).strip().upper() or RUN_MODE_RESEARCH
         if wanted_mode not in RUN_MODES:
             raise PitContextError(f"不支持的运行模式：{run_mode}")
-        if wanted_release is None and wanted_mode == RUN_MODE_STRICT:
-            # Strict mode needs a cut-off to enforce; without a release there is
-            # none, so it would quietly behave exactly like research mode.
-            raise PitContextError("未应用数据版本时无法启用严格 PIT，请先封版并选择一个版本。")
+        parsed_as_of = parse_as_of(as_of)
+        wanted_as_of = parsed_as_of.strftime("%Y-%m-%d") if parsed_as_of is not None else None
+
+        effective_as_of = wanted_as_of
         if wanted_release is not None:
             release = self.releases.get(wanted_release)  # raises if unknown
-            if _release_as_of(release) is None:
+            release_end = _release_as_of(release)
+            if release_end is None:
                 raise PitContextError(
                     f"数据版本 {release['name']} 没有可得截止日，无法作为 PIT 口径应用。"
                 )
+            if wanted_as_of is not None and wanted_as_of > release_end:
+                # The one constraint between the two knobs, and it is one-way: a
+                # vintage cannot answer for days it does not contain.
+                raise PitContextError(
+                    f"研究日 {wanted_as_of} 晚于数据版本「{release['name']}」的可得截止日 {release_end}；"
+                    "请前移研究日，或改用更新的数据版本。"
+                )
+            effective_as_of = wanted_as_of or release_end
+
+        if wanted_mode == RUN_MODE_STRICT and effective_as_of is None:
+            raise PitContextError("严格 PIT 需要一个研究日：请先填写「站在哪一天」。")
 
         with self.store.locked():
             payload = self.store.read_unlocked()
@@ -192,6 +220,7 @@ class PitSettingsRepository:
                 {
                     "schema_version": SCHEMA_VERSION,
                     "active_release_id": wanted_release,
+                    "as_of": wanted_as_of,
                     "run_mode": wanted_mode,
                     "updated_at": _utc_now(),
                     "note": str(note or "").strip()[:500],
@@ -244,12 +273,21 @@ def _release_summary(release: Optional[dict[str, Any]]) -> Optional[dict[str, An
 def _effective_label(
     release: Optional[dict[str, Any]], run_mode: str, as_of: Optional[str]
 ) -> str:
-    """One short string every result footnote can print verbatim."""
+    """One short string every result footnote can print verbatim.
 
-    if release is None:
+    Both knobs are named, always, and in the order a reader needs them: which
+    day, then which copy of the data. A label that mentions only the release is
+    how "研究日" stayed invisible long enough for people to type it into a note
+    field instead.
+    """
+
+    if as_of is None and release is None:
         return "无 PIT 口径 · 使用全部磁盘数据"
     mode = "严格 PIT" if run_mode == RUN_MODE_STRICT else "研究模式"
-    return f"{release.get('name')} · 研究日 {as_of} · {mode}"
+    vintage = release.get("name") if release else "最新数据（未封版）"
+    if as_of is None:
+        return f"{vintage} · {mode}"
+    return f"站在 {as_of} · {vintage} · {mode}"
 
 
 __all__ = ["PIT_SETTINGS_STORE", "PitSettingsRepository", "PitSettingsStore", "release_as_of"]

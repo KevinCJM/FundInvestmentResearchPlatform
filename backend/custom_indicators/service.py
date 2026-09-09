@@ -5884,6 +5884,28 @@ class CustomIndicatorService:
             "python_operator_calls": 0,
         }
 
+    @staticmethod
+    def _plan_universe_lineage(plan: dict[str, Any], as_of: Optional[str]) -> dict[str, Any]:
+        """Where this run's candidate list came from, and whether it knew the future."""
+
+        picked_at = str(plan.get("updated_at") or plan.get("created_at") or "")[:10]
+        lookahead = bool(as_of and picked_at and picked_at > str(as_of))
+        warnings: list[str] = []
+        if lookahead:
+            warnings.append(
+                f"候选产品名单是 {picked_at} 选定的，却用于 {as_of} 的评价——"
+                "名单本身带入了研究日之后的信息。"
+            )
+        return {
+            "source": "manual_target_list",
+            "replayable": False,
+            "target_count": len(plan.get("targets") or []),
+            "picked_at": picked_at or None,
+            "as_of": as_of,
+            "lookahead": lookahead,
+            "warnings": warnings,
+        }
+
     def _run_plan_batch(
         self,
         plan_id: str,
@@ -6290,6 +6312,12 @@ class CustomIndicatorService:
             "plan_revision": int(plan["revision"]),
             "run_at": datetime.now(timezone.utc).isoformat(),
             "as_of": as_of,
+            # A plan's target list is a human choice, and a human choosing today
+            # which products to evaluate "as of 2018" has already used 2018's
+            # future. Running the same plan at a different `as_of` re-scores the
+            # same candidates; it does not re-pick them, so the candidate list is
+            # labelled rather than silently treated as point-in-time.
+            "universe": self._plan_universe_lineage(plan, as_of),
             "rows": rows,
             "ranked_count": ranked_count,
             "excluded_count": product_count - ranked_count,

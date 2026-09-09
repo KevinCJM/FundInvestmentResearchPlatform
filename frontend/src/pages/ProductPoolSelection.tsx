@@ -3,9 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import {
   createInvestableUniverseSnapshot,
   listProductPoolVersions,
+  poolVersionDataAsOf,
   type InvestableUniverseSnapshot,
   type ProductPoolVersion,
 } from '../services/productPools'
+import { replayPoolVersion, type PoolReplayResult } from '../services/pit'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -23,10 +25,24 @@ export default function ProductPoolSelection() {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [snapshot, setSnapshot] = useState<InvestableUniverseSnapshot | null>(null)
+  const [replays, setReplays] = useState<Record<string, PoolReplayResult | string>>({})
+
+  // A version whose data cut is later than the research day was screened with
+  // information that day did not have. Reproducible is not the same as causal,
+  // and this is the one place the difference is still fixable.
+  const replay = async (versionId: string) => {
+    setReplays((current) => ({ ...current, [versionId]: '回放中…' }))
+    try {
+      const result = await replayPoolVersion(versionId, researchDate)
+      setReplays((current) => ({ ...current, [versionId]: result }))
+    } catch (reason) {
+      setReplays((current) => ({ ...current, [versionId]: messageOf(reason, '回放失败。') }))
+    }
+  }
 
   useEffect(() => {
     let active = true
-    setLoading(true); setError(''); setSnapshot(null)
+    setLoading(true); setError(''); setSnapshot(null); setReplays({})
     listProductPoolVersions({ activeOn: researchDate })
       .then((response) => {
         if (!active) return
@@ -87,9 +103,26 @@ export default function ProductPoolSelection() {
       <div className="flex items-end justify-between gap-3"><div><h2 className="text-lg font-semibold text-slate-900">有效产品池版本</h2><p className="mt-1 text-sm text-slate-500">已选择 {selectedIds.length} 个版本</p></div><span className="text-xs text-slate-500">研究日：{researchDate}</span></div>
       <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{versions.map((version) => {
         const selected = selectedIds.includes(version.id)
-        return <label key={version.id} className={`cursor-pointer rounded-xl border p-4 ${selected ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-          <div className="flex items-start gap-3"><input type="checkbox" checked={selected} onChange={() => toggle(version.id)} className="mt-1 h-4 w-4" /><div className="min-w-0"><h3 className="font-semibold text-slate-900">{version.pool_name} · V{version.version}</h3><p className="mt-1 text-xs text-slate-500">{version.effective_from} ～ {version.effective_to || '持续有效'}</p><p className="mt-2 text-sm text-slate-700">{version.evaluation_plans.length} 套评价方案 · {version.investable_count} 个可投资产品</p><p className="mt-2 truncate font-mono text-[11px] text-slate-400" title={version.id}>{version.id}</p></div></div>
-        </label>
+        const dataAsOf = poolVersionDataAsOf(version)
+        const lookahead = Boolean(dataAsOf && dataAsOf > researchDate)
+        const replayed = replays[version.id]
+        return <div key={version.id} className={`rounded-xl border p-4 ${selected ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200'}`}>
+          <label className="flex cursor-pointer items-start gap-3"><input type="checkbox" checked={selected} onChange={() => toggle(version.id)} className="mt-1 h-4 w-4" /><div className="min-w-0"><h3 className="font-semibold text-slate-900">{version.pool_name} · V{version.version}</h3><p className="mt-1 text-xs text-slate-500">{version.effective_from} ～ {version.effective_to || '持续有效'}</p><p className="mt-2 text-sm text-slate-700">{version.evaluation_plans.length} 套评价方案 · {version.investable_count} 个可投资产品</p><p className="mt-2 truncate font-mono text-[11px] text-slate-400" title={version.id}>{version.id}</p></div></label>
+          <div className="mt-3 border-t border-slate-100 pt-2 text-[11px] leading-5">
+            <span className={`rounded border px-1.5 py-0.5 font-semibold ${lookahead ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+              评价数据截至 {dataAsOf ?? '未记录'}
+            </span>
+            {lookahead && <span className="ml-2 text-rose-700">晚于研究日 {researchDate}，名单含未来信息</span>}
+            <button type="button" onClick={() => void replay(version.id)} className="ml-2 underline hover:no-underline">按研究日回放</button>
+            {typeof replayed === 'string' && <p className="mt-1 text-slate-500">{replayed}</p>}
+            {replayed && typeof replayed !== 'string' && (
+              <p className="mt-1 text-slate-700">
+                回放到 {replayed.as_of}：保留 {replayed.summary.kept} · 新增 {replayed.summary.added} · 移出 {replayed.summary.removed}
+                {replayed.summary.manual_only > 0 && ` · 人工准入 ${replayed.summary.manual_only}（不可回放）`}
+              </p>
+            )}
+          </div>
+        </div>
       })}</div>
       {!loading && versions.length === 0 && <p className="mt-4 rounded-lg bg-slate-50 p-6 text-center text-sm text-slate-500">该日期没有已生效产品池版本。</p>}
     </section>

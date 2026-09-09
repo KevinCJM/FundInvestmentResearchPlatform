@@ -12,11 +12,51 @@ from custom_indicators.errors import IndicatorDomainError
 from backend.custom_indicators.errors import IndicatorDomainError as FactorDomainError
 from product_pools.errors import ProductPoolError
 from product_pools.repository import ProductPoolRepository
-from product_pools.service import ProductPoolService
+from product_pools.service import ProductPoolService, version_data_as_of
 from services.custom_indicator_routes import indicator_service
 from services.product_pool_review import ProductPoolReviewDataService
+from pit.context import PitContextError, resolve_request_context
+from pit.guard import check_universe, universe_lineage
 
 router = APIRouter(tags=["product-pools"])
+
+DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
+
+
+def _with_pit(version: dict[str, Any]) -> dict[str, Any]:
+    """Label a pool version with the research day its member list actually knew.
+
+    A frozen member list is reproducible, not causal: read under a research day
+    earlier than the data it was screened on, it is future knowledge wearing a
+    historical date. The version is still returned — refusing it would break
+    every existing screen — but never without saying so.
+    """
+
+    if not isinstance(version, dict):
+        return version
+    snapshot = version.get("snapshot") or {}
+    established = version_data_as_of(version)
+    try:
+        context = resolve_request_context(DATA_DIR)
+    except PitContextError:
+        return version
+    label = (
+        f"产品池「{version.get('pool_name') or snapshot.get('name') or version.get('pool_id')}」"
+    )
+    findings = check_universe(context, established_at=established, label=label)
+    lineage = universe_lineage(
+        findings, established_at=established, source="product_pool_version"
+    )
+    plans = [
+        str(item.get("plan_id"))
+        for item in (version.get("evaluation_plans") or snapshot.get("evaluation_plans") or [])
+        if item.get("plan_id")
+    ]
+    # Replay is possible exactly when the selection has reproducible inputs.
+    lineage["replayable"] = bool(plans)
+    lineage["replay_plan_ids"] = plans
+    version["pit"] = lineage
+    return version
 
 
 class IndicatorEvaluationGateway:
@@ -276,7 +316,14 @@ def list_product_pool_versions(
 
 @router.get("/api/product-pool-versions/{version_id}")
 def get_product_pool_version(version_id: str):
-    return _call(product_pool_service.get_version, version_id)
+    return _with_pit(_call(product_pool_service.get_version, version_id))
+
+
+@router.get("/api/product-pool-versions/{version_id}/replay")
+def replay_product_pool_version(version_id: str, as_of: str = Query(min_length=1)):
+    """Who this pool would have contained standing on `as_of`."""
+
+    return _call(product_pool_service.replay_version, version_id, as_of)
 
 
 @router.get("/api/product-pool-versions/{version_id}/diff")

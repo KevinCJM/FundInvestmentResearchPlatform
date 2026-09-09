@@ -8,10 +8,18 @@ import {
   listProductPoolVersions,
 } from '../services/productPools'
 
-vi.mock('../services/productPools', () => ({
-  createInvestableUniverseSnapshot: vi.fn(),
-  listProductPoolVersions: vi.fn(),
-}))
+vi.mock('../services/productPools', async () => {
+  // Keep the pure helpers real: the page prints a version's data cut-off next
+  // to the research day, and a stubbed-out helper would hide that regression.
+  const actual = await vi.importActual<typeof import('../services/productPools')>(
+    '../services/productPools',
+  )
+  return {
+    ...actual,
+    createInvestableUniverseSnapshot: vi.fn(),
+    listProductPoolVersions: vi.fn(),
+  }
+})
 
 const version = {
   id: 'version-1', pool_id: 'pool-1', pool_name: '核心产品池', version: 3, pool_revision: 4,
@@ -80,5 +88,29 @@ describe('ProductPoolSelection', () => {
     fireEvent.click(screen.getByRole('button', { name: label }))
 
     expect(await screen.findByTestId('location-probe')).toHaveTextContent(`${path}?universe=universe-1`)
+  })
+  it('把评价数据截止日晚于研究日的版本标成含未来信息', async () => {
+    vi.mocked(listProductPoolVersions).mockResolvedValue({
+      items: [
+        {
+          ...version,
+          evaluation_plans: [
+            { plan_id: 'plan-1', plan_name: '权益评价', plan_revision: 1, product_kind: 'etf', as_of: '2026-08-31' },
+          ],
+        } as never,
+      ],
+      total: 1,
+    } as never)
+
+    render(<MemoryRouter><ProductPoolSelection /></MemoryRouter>)
+
+    // The research day defaults to today; a 2026-08-31 data cut is later than
+    // any date this test can run on only if today is earlier, so drive the date
+    // explicitly rather than depending on the clock.
+    const dateInput = await screen.findByLabelText(/研究日期/)
+    fireEvent.change(dateInput, { target: { value: '2020-01-01' } })
+
+    expect(await screen.findByText(/评价数据截至 2026-08-31/)).toBeInTheDocument()
+    expect(await screen.findByText(/晚于研究日 2020-01-01/)).toBeInTheDocument()
   })
 })

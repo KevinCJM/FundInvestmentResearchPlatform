@@ -16,10 +16,15 @@ export default function PitBadge() {
   const { settings, override, overrideRelease, noPit, label, asOf, runMode, loading, applyOverride } =
     useResearchContext()
   const [open, setOpen] = useState(false)
+  const [draftDay, setDraftDay] = useState(override?.asOf ?? '')
   if (loading && !settings) return null
 
   const temporary = Boolean(override)
-  const name = temporary ? (override?.off ? '无口径' : overrideRelease?.name) : settings?.release?.name
+  const name = temporary
+    ? override?.off
+      ? '无口径'
+      : (overrideRelease?.name ?? '最新数据')
+    : (settings?.release?.name ?? '最新数据')
   const strict = runMode === 'STRICT_PIT'
   const tone = temporary
     ? 'border-sky-400/60 bg-sky-400/10 text-sky-200'
@@ -30,7 +35,8 @@ export default function PitBadge() {
         : 'border-emerald-400/60 bg-emerald-400/10 text-emerald-200'
 
   const releases = settings?.available_releases ?? []
-  const view = (releaseId: string, mode: RunMode) => applyOverride({ off: false, releaseId, runMode: mode })
+  const view = (releaseId: string, mode: RunMode) =>
+    applyOverride({ off: false, releaseId, asOf: null, runMode: mode })
 
   return (
     <div className="relative shrink-0">
@@ -76,6 +82,33 @@ export default function PitBadge() {
                 跟随系统默认
               </button>
 
+              {/* The commonest thing a reader wants is another day, not another
+                  vintage — and until now the popover only offered vintages. */}
+              <div className="rounded border border-slate-200 px-2 py-1.5">
+                <label className="font-medium text-slate-900" htmlFor="pit-badge-as-of">
+                  只看某一天为止
+                </label>
+                <div className="mt-1 flex items-center gap-2">
+                  <input
+                    id="pit-badge-as-of"
+                    type="date"
+                    className="w-36 rounded border border-slate-300 px-1.5 py-0.5 tabular-nums"
+                    value={draftDay}
+                    onChange={(event) => setDraftDay(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="rounded border border-slate-200 px-2 py-0.5 hover:bg-slate-50 disabled:opacity-40"
+                    disabled={!draftDay}
+                    onClick={() =>
+                      applyOverride({ off: false, releaseId: null, asOf: draftDay, runMode: 'RESEARCH' })
+                    }
+                  >
+                    应用到本页
+                  </button>
+                </div>
+              </div>
+
               {releases.map((release) => (
                 <div key={release.id} className="rounded border border-slate-200 px-2 py-1.5">
                   <div className="flex items-baseline justify-between gap-2">
@@ -116,7 +149,7 @@ export default function PitBadge() {
                 className={`w-full rounded border px-2 py-1.5 text-left ${
                   override?.off ? 'border-sky-300 bg-sky-50 font-medium text-sky-900' : 'border-slate-200 hover:bg-slate-50'
                 }`}
-                onClick={() => applyOverride({ off: true, releaseId: null, runMode: 'RESEARCH' })}
+                onClick={() => applyOverride({ off: true, releaseId: null, asOf: null, runMode: 'RESEARCH' })}
                 data-testid="pit-turn-off"
               >
                 关闭 PIT · 查看全部磁盘数据

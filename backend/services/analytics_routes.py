@@ -20,7 +20,8 @@ from fit import (
     serialize_rolling_correlation_payload,
 )
 from optimizer import calculate_efficient_frontier_exploration, returns_from_nav_matrix
-from pit.context import resolve_request_context
+from backtest_engine import load_allocation_nav
+from pit.context import PitContextError, resolve_request_context
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -179,16 +180,19 @@ def post_efficient_frontier(req: FrontierRequest):
     nv_path = DATA_DIR / "asset_nv.parquet"
     if not nv_path.exists():
         return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
-    df = pd.read_parquet(nv_path)
-    alloc_df = df[df["asset_alloc_name"] == req.alloc_name].copy()
-    if alloc_df.empty:
+    try:
+        _pit = resolve_request_context(DATA_DIR)
+    except PitContextError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    loaded = load_allocation_nav(DATA_DIR, req.alloc_name, _pit)
+    if loaded.nav_wide.empty:
         return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
-    alloc_df['date'] = pd.to_datetime(alloc_df['date'])
-    mask = (alloc_df['date'] >= pd.to_datetime(req.start_date)) & (alloc_df['date'] <= pd.to_datetime(req.end_date))
-    alloc_df = alloc_df.loc[mask]
-    if alloc_df.empty:
+    window = (loaded.nav_wide.index >= pd.to_datetime(req.start_date)) & (
+        loaded.nav_wide.index <= pd.to_datetime(req.end_date)
+    )
+    nav_wide = loaded.nav_wide.loc[window].dropna(axis=0, how='any')
+    if nav_wide.empty:
         return JSONResponse(status_code=400, content={"detail": "在选定日期区间内没有数据"})
-    nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index().dropna(axis=0, how='any')
     if len(nav_wide.index) < 2:
         return JSONResponse(status_code=400, content={"detail": "完整交集净值样本不足，无法计算有效前沿"})
     return_type = req.return_metric.get('type', 'simple')
@@ -277,5 +281,6 @@ def post_efficient_frontier(req: FrontierRequest):
         "min_variance": results.get("min_variance") if is_finite_point(results.get("min_variance")) else None,
         "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
         "execution": results.get("execution"),
+        "pit": loaded.lineage,
     }
     return clean_results

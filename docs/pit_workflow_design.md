@@ -781,3 +781,116 @@ P0 两项互不依赖，可并行。
 - L3：同一回测在 `swept=False` 与 `swept=True` 下结果**不同**（相同说明扫描没生效）
 - SAA：回测读到的 `asset_nv` 行数随 as_of 单调变化
 - 产品池：`replayable=True` 的版本 `replay(as_of=T)` 与当初 T 日发布的名单一致
+
+---
+
+## 12. 第四轮实现记录：设计与落点的差异
+
+第 11 节是设计，本节是**实际落地的代码**，以及实现过程中和设计不一致的地方——设计文档如果和代码对不上，下一个人会两边都不信。
+
+### 12.1 代码落点
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| L0 | `T01_get_data.py:961 append_dimension_snapshot` | 维表整表追加快照，写 `data/pit_dim/<stem>_history.parquet`；`save_dataframe(..., history=True)` 挂在 4 个维表落盘点上（etf_info / stock_basic / index_info / etf_index） |
+| L0 | `backend/pit/catalog.py` | 声明新增 `history_file`、`key_fields`；`SNAPSHOT_FIELD = "pit_snapshot_date"`；`grade()` 新增 `history_snapshots` 参数——有快照的可修订维表从 C 升到 B |
+| L0 | `backend/pit/audit.py:history_path/_history_profile` | 体检表新增 `history` 块：快照数、历史起点、最新快照 |
+| L1 | `backend/pit/frame.py:read_pit` | 目录驱动的通用 PIT 取数：维表快照回放 → 可得时间解析（公告列 → 事件日+声明滞后 → 无）→ 按研究日截断 → 血缘 |
+| L2 | `backend/pit/universe.py:universe_as_of` | 产品域出口，返回 `UniverseView`；覆盖度三档 `REPLAYED / INTERVAL / LATEST_ONLY` |
+| L3 | `backend/pit/clock.py` | `DecisionClock`（研究日序列，不越过自身上下文）、`visible_at`（决策时点切窗）、`availability_from_rows` |
+| L3 | `backend/backtest_engine.py` | `slice_fit_data` / `ensure_valid_rebalance_window` / `backtest_portfolio` 新增 `available_at`；新增 `load_allocation_nav` 作为 `asset_nv` 的唯一读入口 |
+| L3 | `backend/fit.py:last_nav_availability` | 每个观测日的可得时间（取成分中最晚公告者） |
+| L4 | `backend/pit/guard.py` | `check_universe` / `assert_no_universe_lookahead` / `universe_lineage`；研究模式记录，严格模式抛错 |
+
+### 12.2 接入点
+
+- **SAA**：`app.py:save_allocation` 给 `asset_nv` 每行盖 `as_of`、`run_mode`、`available_at` 三列；`services/strategy_routes.py` 的四个端点收敛到一个 `_load_alloc_nav`，回测/权重/调仓表/默认起点全部走同一口径；`services/analytics_routes.py` 有效前沿同样接入。调仓表缓存键加入 PIT 口径，否则换研究日会命中旧权重。
+- **产品池**：`product_pools/service.py:replay_version` + `GET /api/product-pool-versions/{id}/replay?as_of=`，用版本自带的评价方案绑定重跑到目标研究日，输出 kept / added / removed / manual_only；`GET /api/product-pool-versions/{id}` 响应新增 `pit` 块。
+- **产品研究**：评价方案运行结果新增 `universe` 块，标注候选名单是人工选定的、选定日期、以及是否晚于研究日。
+- **TAA**：`historical_regimes/service.py` 与 `v2_service.py` 的发布记录新增 `fit_as_of` / `fit_mode`，与 `published_at` 并列。
+- **前端**：`GET /api/pit/universe` + PIT 设置页「站在某日的可选产品域」面板；`PitDecisionNotice` 组件挂在大类配置回测结果上。
+
+### 12.3 与设计不同的三处
+
+1. **发现了一条不需要历史快照的回放路径。** 设计假设维表没有历史就只能是 `LATEST_ONLY`。实际上 `etf_info_df.parquet` 带 `list_date` / `delist_date`，`index_info.parquet` 带 `list_date` / `exp_date`——用区间就能还原当时的成分，而且对全部历史立即生效，不用等快照积累。这是新增的 `INTERVAL` 档：成分对、但属性值（名称、分类、管理人）仍是今天的。实测 2019-06-28 的基金域是 224 只，今天的表是 1792 只，1568 只是幸存者偏差。`stock_basic.parquet` 没有退市日期列，仍然只能 `LATEST_ONLY`。
+2. **产品池做了真回放，不只是标注。** 设计把「池子按规则回放」放在 P2。实际上 `run_plan(plan_id, as_of)` 和版本快照里的 `evaluation_plans` 绑定已经齐了，组合起来就是回放，所以直接做了。
+3. **`asset_nv` 的 `as_of` 维度按设计做了，但决策时钟的主战场是 `available_at`。** 逐个调仓日重算大类净值代价太大；实际做法是给每行存可得时间，回测在每个调仓日按可得时间而不是净值日期切拟合窗。差异是可测的——`test_publication_lag_changes_the_backtest_result` 断言两种口径结果**必须不同**。
+
+### 12.4 仍然做不到的
+
+- 历史维表版本从今天起才开始积累，`history_begins_at` 之前的研究日只能靠 `INTERVAL` 或退回 `LATEST_ONLY`。
+- 人工判断（approved / excluded）没有可重放输入，回放结果里单列 `manual_only`，不假装能还原。
+- 封版仍然只是元数据指纹，不能物理还原 vintage。
+
+---
+
+## 13. 前端重构：把「站在哪一天」变成一个可见的控件
+
+### 13.1 观察到的失败
+
+一位用户想研究「截止 2009-12-31 的数据」，实际操作是：在**封版**表单里填了版本名「2010研究」、备注「基于2010年1月1日之前的数据研究」，然后点封版。
+
+备注是自由文本，不会产生任何效果。用户不是操作错了——他在屏幕上找不到别的地方可填。
+
+### 13.2 根因：两个问题共用一个旋钮
+
+| | 回答的问题 | 答案形式 | 改版前 |
+|---|---|---|---|
+| 研究日 `as_of` | 我**站在哪一天**看 | 一个日期 | **无 UI**，由封版的 `available_through` 推导 |
+| 数据版本 `release` | 我读的是**哪一次**的历史 | 不可变文件指纹 | 唯一可见控件 |
+
+`settings.py` 原注释把这写成一句设计取舍：「A sealed release already knows the last date it can honestly answer for, so pinning a release fixes `as_of` too. That keeps one knob where users expect one knob.」
+
+一个旋钮的假设错了。它成立的前提是「用户只想看最新数据的最新一天」，而 PIT 的**全部意义**就是站到过去某一天。这条取舍恰好挡住了唯一的核心用例。
+
+三处具体缺陷：
+
+1. **主控件缺失。** 研究日不可输入，且不封版就永远不能启用严格 PIT——一个新用户被两道门同时锁在外面。
+2. **术语不落地。** 「封版」「口径」「研究日」是实现词汇；用户想的是「我要看某年某月」。
+3. **顺序倒置。** 页面先要求封版（一个还不知道为什么要做的动作），才谈应用。用户的决策顺序是：先站到哪天 → 再用哪批数据 → 再定严不严格。
+
+### 13.3 新布局：三问，按人的决策顺序
+
+```
+研究口径（系统级 · 全平台生效）
+当前：站在 2009-12-31 · 最新数据（未封版）· 研究模式
+
+① 站在哪一天看？        [2009-12-31] [数据最新一天] [不设研究日]
+   只使用该日当时已经公开的数据。之后才公布的净值、之后才上市的产品，一律不可见。
+
+② 用哪一批数据？        [最新数据（未封版） ▾]
+   和研究日无关：研究日决定看到哪一天为止，数据版本决定读的是哪一次的历史。
+
+③ 严不严格？            (研究模式) (严格 PIT)
+
+将要生效：站在 2009-12-31 · 最新数据（未封版）· 研究模式
+         届时可选基金 224 只，比今天的表少 1,568 只     [应用到全平台]
+```
+
+三个设计判断：
+
+- **①②③ 编号并各自带一句「它管什么」。** 分不清两个旋钮是这次失败的根源，标题里就要把区别说完。
+- **预览是数字不是文案。** 「站在 2009-12-31」很抽象；「届时可选基金 224 只，比今天少 1,568 只」不抽象。复用 §12 的 `/api/pit/universe`，在**点应用之前**就把代价摆出来。
+- **封版区改口。** 第一句改成「封版不是用来选日期的——要"只看某天为止"，请用上面的 ① 研究日」，把用户从错误的控件上引开。
+
+### 13.4 约束
+
+两个旋钮独立，只有一条单向约束：**研究日不能晚于所选数据版本的可得截止日**——版本回答不了它不包含的日子。日期框的 `max` 跟着版本走，后端也拦一道。
+
+严格 PIT 的前置条件从「必须有封版」改成「必须有研究日」。封版仍然强烈建议（否则下次刷数据结论会变），但不再是硬门槛——它挡住的正是本节这位用户。
+
+### 13.5 代码
+
+| 文件 | 改动 |
+|---|---|
+| `backend/pit/settings.py` | `as_of` 成为独立存储的设置；`describe()` 增 `as_of_source`（explicit / release）；`no_pit` 改为两者皆空；`update()` 增 `as_of` 参数与跨版本校验；标签统一为「站在 X · 版本 · 模式」 |
+| `backend/services/pit_routes.py` | `SettingsRequest.asOf` |
+| `frontend/src/services/pit.ts` | `effective.as_of_source`、`settings.as_of`、`applyPitSettings({asOf})` |
+| `frontend/src/services/pitOverride.ts` | 每标签页 override 增 `asOf`，可单独成立（不需要版本）；发 `X-Pit-As-Of` 头 |
+| `frontend/src/pages/PitSnapshots.tsx` | 三问卡片 + 域预览；封版区改口 |
+| `frontend/src/components/PitBadge.tsx` | 顶栏弹层增「只看某一天为止」日期框——之前只能换版本，不能换日子 |
+| `frontend/src/app/ResearchContext.tsx` | 处理只有研究日的临时口径 |
+
+### 13.6 兼容
+
+已应用版本但没设研究日的老配置，`as_of` 仍从版本推导，口径不变，只是 `as_of_source` 现在会说明这个日期是用户选的还是版本带出来的。

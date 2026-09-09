@@ -26,6 +26,7 @@ from .catalog import (
     DATASETS,
     DATASETS_BY_ID,
     GRADE_LABELS,
+    SNAPSHOT_FIELD,
     DatasetPitDeclaration,
     grade,
 )
@@ -101,6 +102,44 @@ def _lag_profile(lags: pd.Series) -> dict[str, Any]:
     }
 
 
+def history_path(data_dir: Path, declaration: DatasetPitDeclaration) -> Optional[Path]:
+    """Where the append-only snapshot log for a revisable table lives, if declared."""
+
+    if not declaration.history_file:
+        return None
+    try:
+        return resolve_market_data_file(declaration.history_file, data_dir)
+    except Exception:  # noqa: BLE001 - a broken manifest falls back to the plain layout
+        return data_dir / declaration.history_file
+
+
+def _history_profile(path: Optional[Path]) -> dict[str, Any]:
+    """How far back this table's own state can be replayed.
+
+    An empty profile is not a failure — it is the honest answer for a dimension
+    table that has only ever been overwritten. `begins_at` is the earliest day a
+    universe question about this table can be answered without hindsight.
+    """
+
+    empty = {"available": False, "snapshots": 0, "begins_at": None, "latest": None, "file": None}
+    if path is None or not path.exists():
+        return empty
+    try:
+        dates = pd.read_parquet(path, columns=[SNAPSHOT_FIELD])[SNAPSHOT_FIELD]
+    except Exception:  # noqa: BLE001 - a malformed log must not blank the page
+        return empty
+    stamps = pd.to_datetime(dates, errors="coerce").dropna()
+    if stamps.empty:
+        return empty
+    return {
+        "available": True,
+        "snapshots": int(stamps.nunique()),
+        "begins_at": stamps.min().strftime("%Y-%m-%d"),
+        "latest": stamps.max().strftime("%Y-%m-%d"),
+        "file": path.name,
+    }
+
+
 def _finish(
     base: dict[str, Any],
     declaration: DatasetPitDeclaration,
@@ -110,10 +149,13 @@ def _finish(
     fingerprint: str,
     coverage: Optional[float] = None,
     lag: Optional[dict[str, Any]] = None,
+    history: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    dataset_grade = grade(declaration, coverage)
+    history = history or _history_profile(None)
+    dataset_grade = grade(declaration, coverage, history_snapshots=int(history["snapshots"]))
     result = {
         **base,
+        "history": history,
         "present": True,
         "rows": rows,
         "availability_coverage": coverage,
@@ -146,10 +188,12 @@ def audit_dataset(data_dir: Path, declaration: DatasetPitDeclaration) -> dict[st
         path = resolve_market_data_file(declaration.file, data_dir)
     except Exception:  # noqa: BLE001 - a broken manifest must not blank the page
         path = data_dir / declaration.file
+    history = _history_profile(history_path(data_dir, declaration))
     if not path.exists():
-        dataset_grade = grade(declaration, None)
+        dataset_grade = grade(declaration, None, history_snapshots=int(history["snapshots"]))
         return {
             **base,
+            "history": history,
             "present": False,
             "rows": 0,
             "availability_coverage": None,
@@ -163,14 +207,22 @@ def audit_dataset(data_dir: Path, declaration: DatasetPitDeclaration) -> dict[st
 
     fingerprint = _fingerprint(path)
     cached = _CACHE.get(declaration.dataset_id)
-    if cached is not None and cached.get("fingerprint") == fingerprint:
+    if cached is not None and cached.get("fingerprint") == fingerprint and cached.get("history") == history:
         return dict(cached)
 
     wanted = [column for column in (declaration.event_field, declaration.availability_field) if column]
     if not wanted:
         # A dataset with no declared clocks needs only its row count, and the
         # parquet footer already carries that. Reading the rows would be waste.
-        return _finish(base, declaration, int(pq.read_metadata(path).num_rows), None, None, fingerprint)
+        return _finish(
+            base,
+            declaration,
+            int(pq.read_metadata(path).num_rows),
+            None,
+            None,
+            fingerprint,
+            history=history,
+        )
     try:
         frame = pd.read_parquet(path, columns=wanted, engine="pyarrow")
     except Exception:  # noqa: BLE001 - a missing declared column is itself a finding
@@ -189,7 +241,9 @@ def audit_dataset(data_dir: Path, declaration: DatasetPitDeclaration) -> dict[st
         if event_values is not None:
             lag = _lag_profile((availability_values - event_values).dt.days)
 
-    return _finish(base, declaration, rows, event_values, availability_values, fingerprint, coverage, lag)
+    return _finish(
+        base, declaration, rows, event_values, availability_values, fingerprint, coverage, lag, history
+    )
 
 
 def _effective_available_end(item: dict[str, Any]) -> Optional[str]:

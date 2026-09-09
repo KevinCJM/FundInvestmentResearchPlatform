@@ -17,9 +17,10 @@ so the first spelling in wins and the second resolves to the same objects.
 
 import sys
 
-from . import audit, catalog, context, release, settings  # noqa: F401  (imported to alias)
+from . import audit, catalog, clock, context, frame, guard, release, settings, universe  # noqa: F401  (imported to alias)
 from .catalog import (
     DATASETS,
+    SNAPSHOT_FIELD,
     DATASETS_BY_ID,
     GRADE_APPROXIMATE,
     GRADE_NONE,
@@ -43,10 +44,24 @@ from .context import (
     set_view_override,
     view_override,
 )
+from .clock import DecisionClock, availability_from_rows, visible_at
+from .frame import LATEST_ONLY, REPLAYED, PitFrame, read_pit
+from .guard import assert_no_universe_lookahead, check_universe, universe_lineage
 from .settings import PitSettingsRepository, release_as_of
+from .universe import INTERVAL, UniverseView, universe_as_of
 
 _PACKAGE_ALIASES = ("pit", "backend.pit")
-_SUBMODULES = ("audit", "catalog", "context", "release", "settings")
+_SUBMODULES = (
+    "audit",
+    "catalog",
+    "clock",
+    "context",
+    "frame",
+    "guard",
+    "release",
+    "settings",
+    "universe",
+)
 
 for _alias in _PACKAGE_ALIASES:
     sys.modules.setdefault(_alias, sys.modules[__name__])
@@ -55,6 +70,24 @@ for _alias in _PACKAGE_ALIASES:
 
 __all__ = [
     "DATASETS",
+    "DecisionClock",
+    "INTERVAL",
+    "LATEST_ONLY",
+    "PitFrame",
+    "REPLAYED",
+    "SNAPSHOT_FIELD",
+    "UniverseView",
+    "assert_no_universe_lookahead",
+    "availability_from_rows",
+    "check_universe",
+    "clock",
+    "frame",
+    "guard",
+    "read_pit",
+    "universe",
+    "universe_as_of",
+    "universe_lineage",
+    "visible_at",
     "DATASETS_BY_ID",
     "GRADE_APPROXIMATE",
     "GRADE_NONE",

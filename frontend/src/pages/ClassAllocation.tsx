@@ -17,6 +17,7 @@ import {
 } from '../components/HistoricalRegimeBacktest';
 import type { HistoricalRegimeBacktestReference } from '../services/portfolioRegime';
 import { apiErrorMessage } from '../utils/apiError'
+import PitDecisionNotice from '../components/PitDecisionNotice'
 
 // Helper component for section titles
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -1747,6 +1748,7 @@ export default function ClassAllocation() {
             </div>
             {btSeries && (
               <div className="mt-4 space-y-6">
+                <PitDecisionNotice lineage={btSeries.pit} />
                 <ReactECharts
                   style={{height: 360}}
                   onEvents={{ datazoom: handleBacktestZoom }}

@@ -52,9 +52,11 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 # first strict-mode run into a full 37M-row rescan.
 try:
     from pit.catalog import RUN_MODE_RESEARCH, RUN_MODE_STRICT, RUN_MODES
+    from pit.clock import availability_from_rows
     from pit.context import PitContextError, parse_as_of
 except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
     from backend.pit.catalog import RUN_MODE_RESEARCH, RUN_MODE_STRICT, RUN_MODES
+    from backend.pit.clock import availability_from_rows
     from backend.pit.context import PitContextError, parse_as_of
 
 
@@ -253,11 +255,32 @@ def _load_adj_nav(
 
 
 _LAST_NAV_LINEAGE: Dict[str, object] = {}
+_LAST_NAV_AVAILABILITY: Dict[str, pd.Series] = {}
 
 
 def _remember_nav_lineage(lineage: Dict[str, object]) -> None:
     _LAST_NAV_LINEAGE.clear()
     _LAST_NAV_LINEAGE.update(lineage)
+
+
+def _remember_nav_availability(rows: pd.DataFrame) -> None:
+    _LAST_NAV_AVAILABILITY["series"] = availability_from_rows(
+        rows, event_field=NAV_EVENT_FIELD, available_field="available_date"
+    )
+
+
+def last_nav_availability() -> pd.Series:
+    """When each observation day of the most recent load became knowable.
+
+    One date per day, taking the latest constituent: a class NAV for day d is
+    only computable once *every* fund in it has published day d. This is what
+    lets a rebalance on d use the window that existed on d rather than the one
+    that exists now.
+
+    ponytail: process-local, same contract as :func:`last_nav_lineage`.
+    """
+
+    return _LAST_NAV_AVAILABILITY.get("series", pd.Series(dtype="datetime64[ns]")).copy()
 
 
 def last_nav_lineage() -> Dict[str, object]:
@@ -376,6 +399,7 @@ def compute_classes_nav(
     loaded = load_adj_nav_pit(data_dir, requested_codes, requested_names, as_of=as_of, run_mode=run_mode)
     data = loaded.frame
     _remember_nav_lineage(loaded.lineage)
+    _remember_nav_availability(data)
     class_returns = _class_returns(data, classes, start_date)
     if class_returns.empty:
         raise ValueError("没有可用的大类收益率：请检查权重或数据匹配。")

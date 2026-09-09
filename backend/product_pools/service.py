@@ -82,6 +82,29 @@ def _integer(value: Any) -> int | None:
     return int(number)
 
 
+def version_data_as_of(version: dict[str, Any]) -> str | None:
+    """The latest day any input behind a published pool version was cut.
+
+    This is the version's knowledge date, and it is what a research day has to
+    be compared against — not the effective date, which a desk can set to
+    whatever it likes. Two publication shapes are read: bindings on the version
+    itself, and the nested `snapshot` written by `versions.py`.
+    """
+
+    snapshot = version.get("snapshot") or {}
+    bindings = list(version.get("evaluation_plans") or snapshot.get("evaluation_plans") or [])
+    stamps = sorted(
+        {str(item.get("as_of")) for item in bindings if isinstance(item, dict) and item.get("as_of")}
+    )
+    if stamps:
+        return stamps[-1]
+    return (
+        snapshot.get("data_as_of")
+        or version.get("effective_date")
+        or version.get("effective_from")
+    )
+
+
 def _member_key(kind: str, product_id: str) -> str:
     return f"{kind}:{product_id}"
 
@@ -819,6 +842,118 @@ class ProductPoolService:
 
     def get_version(self, version_id: str) -> dict[str, Any]:
         return self.repository.get_version(version_id)
+
+    def replay_version(self, version_id: str, as_of: str) -> dict[str, Any]:  # noqa: D401
+        """Who this pool would have contained standing on ``as_of``.
+
+        A published version freezes *who we picked*. It cannot answer *who we
+        would have picked then*, and a backtest starting before the version's
+        own data cut-off is silently asking the second question while reading
+        the answer to the first — that is the look-ahead no per-formula check
+        can see, because every formula in it is perfectly causal.
+
+        Everything needed is already on the version: the bound plans and their
+        selection rules, and a plan run takes an ``as_of`` of its own. What
+        cannot be replayed is human judgment — a member somebody approved or
+        excluded by hand has no reproducible input — so those are reported
+        separately rather than quietly dropped.
+        """
+
+        version = self.repository.get_version(version_id)
+        target = _iso_date(as_of, "研究日", required=True)
+        # Two publication shapes exist: this service stores the bindings and
+        # members on the version itself, `versions.py` nests them under a
+        # `snapshot`. Read both rather than silently replaying an empty pool.
+        snapshot = version.get("snapshot") or {}
+        bindings = list(version.get("evaluation_plans") or snapshot.get("evaluation_plans") or [])
+        if not bindings:
+            raise ProductPoolValidationError(
+                "PRODUCT_POOL_VERSION_NOT_REPLAYABLE",
+                "该版本没有绑定评价方案，无法按研究日回放。",
+                field="version_id",
+            )
+        published = {
+            str(item.get("key")): item
+            for item in (version.get("members") or snapshot.get("members") or [])
+            if isinstance(item, dict) and item.get("key")
+        }
+
+        replayed: dict[str, dict[str, Any]] = {}
+        plan_reports: list[dict[str, Any]] = []
+        for binding in bindings:
+            plan_id = _trimmed(binding.get("plan_id"), maximum=120)
+            if not plan_id:
+                continue
+            run = self.evaluation_gateway.run_plan(plan_id, target)
+            rows = self._collect_run_rows(run)
+            selected = self._select_ranked_rows(
+                rows,
+                _trimmed(binding.get("selection_mode") or "all_ranked", maximum=30),
+                _finite_number(binding.get("selection_value")),
+            )
+            kind_hint = _trimmed(binding.get("product_kind") or "etf", maximum=20).lower()
+            for row in selected:
+                hit = self._run_row_target(row, kind_hint)
+                if hit is None:
+                    continue
+                kind, product_id, code, name = hit
+                replayed.setdefault(
+                    _member_key(kind, product_id),
+                    {
+                        "key": _member_key(kind, product_id),
+                        "kind": kind,
+                        "product_id": product_id,
+                        "code": code,
+                        "name": name,
+                        "plan_id": plan_id,
+                        "rank": self._row_rank(row),
+                        "score": self._row_score(row),
+                    },
+                )
+            plan_reports.append(
+                {
+                    "plan_id": plan_id,
+                    "plan_name": _trimmed(binding.get("plan_name"), maximum=120),
+                    "published_as_of": binding.get("as_of"),
+                    "replayed_as_of": run.get("as_of") or target,
+                    "ranked_count": len(rows),
+                    "selected_count": len(selected),
+                }
+            )
+
+        kept = sorted(replayed.keys() & published.keys())
+        added = sorted(replayed.keys() - published.keys())
+        removed = sorted(published.keys() - replayed.keys())
+        # A member with no plan evidence got in by hand; its absence from the
+        # replay says nothing about the data, only that judgment is not a
+        # reproducible input.
+        manual_only = [
+            key
+            for key in removed
+            if published[key].get("manual_exception") or not published[key].get("evidences")
+        ]
+        published_as_of = version_data_as_of(version)
+        return {
+            "version_id": version_id,
+            "pool_id": version.get("pool_id") or snapshot.get("pool_id"),
+            "as_of": target,
+            "published_as_of": published_as_of,
+            # The whole point of the replay: a version published later than the
+            # research day was chosen with information the research day lacked.
+            "lookahead": bool(published_as_of and str(published_as_of) > str(target)),
+            "plans": plan_reports,
+            "summary": {
+                "published_count": len(published),
+                "replayed_count": len(replayed),
+                "kept": len(kept),
+                "added": len(added),
+                "removed": len(removed),
+                "manual_only": len(manual_only),
+            },
+            "added": [replayed[key] for key in added],
+            "removed": [published[key] for key in removed],
+            "manual_only": [published[key] for key in manual_only],
+        }
 
     def diff_versions(self, version_id: str, against_id: str) -> dict[str, Any]:
         current = self.repository.get_version(version_id)

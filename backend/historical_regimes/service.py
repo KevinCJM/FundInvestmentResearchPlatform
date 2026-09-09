@@ -825,6 +825,13 @@ class HistoricalRegimeService:
                 "id": f"publication-{uuid.uuid4().hex}",
                 "usage": item,
                 "published_at": utc_now(),
+                # `published_at` is when the desk started using this model;
+                # `fit_as_of` is what the model itself was allowed to know. A
+                # regime published today but fitted on the full history is not
+                # a signal a 2018 portfolio could have acted on, and only these
+                # two dates side by side make that visible.
+                "fit_as_of": run.get("as_of"),
+                "fit_mode": run.get("mode"),
                 "note": note,
                 "run_id": run_id,
                 "definition_revision": int(run.get("definition_revision") or 0),

@@ -45,6 +45,7 @@ from fit import (
     _load_adj_nav,
     _pick_series,
     compute_classes_nav,
+    last_nav_availability,
     last_nav_lineage,
     compute_nav_performance_payload,
     compute_rolling_corr,
@@ -607,13 +608,34 @@ def save_allocation(req: SaveRequest):
             DATA_DIR, classes_spec, start_date, as_of=context.as_of, run_mode=context.run_mode
         )
         nav_lineage = last_nav_lineage()
+        nav_availability = last_nav_availability()
 
         # 将宽表 NAV 转换为长表
         nav_long = NAV.reset_index().melt(id_vars=["date"], var_name="asset_name", value_name="nv")
         nav_long["asset_alloc_name"] = alloc_name
         nav_long["creat_time"] = now
+        # 这条序列是"哪一天算出来的"和"每一天什么时候才可知"——缺了这两列，
+        # 2026 年用全历史算出的净值会被当成 2018 年就存在的行情来回测。
+        nav_long["as_of"] = context.as_of
+        nav_long["run_mode"] = context.run_mode
+        nav_dates = pd.to_datetime(nav_long["date"])
+        nav_long["available_at"] = (
+            nav_dates.map(nav_availability) if len(nav_availability) else pd.Series(pd.NaT, index=nav_long.index)
+        )
+        nav_long["available_at"] = pd.to_datetime(nav_long["available_at"]).fillna(nav_dates)
         # 重新排序字段
-        nav_long = nav_long[["asset_alloc_name", "asset_name", "date", "nv", "creat_time"]]
+        nav_long = nav_long[
+            [
+                "asset_alloc_name",
+                "asset_name",
+                "date",
+                "nv",
+                "creat_time",
+                "as_of",
+                "run_mode",
+                "available_at",
+            ]
+        ]
 
         if nv_path.exists():
             nv_df = pd.read_parquet(nv_path)
