@@ -4,7 +4,7 @@
 
 当前独立指标正常调用链、原语构建、共享计算、日期与时长、快照和 Excel 联动已完成本轮专项验证。公开标量契约不再提供父指标/子结果或指标组；正常时序多通道与参数契约继续保留。
 
-不能标记为全项目最终验收通过：35 个退役文件尚待物理删除；全项目 TypeScript 的剩余诊断全部来自这些待删除文件，路由治理检查仍受其他工作流未跟踪文件影响。以下专项通过不替代这些待办。
+2026-09-09 提交整理已完成35个退役文件及两份一次性清理工具的物理删除，历史保留于Git提交 `3ef7d07`。以下为此前专项记录，提交整理后的全项目检查见文末。
 
 ## 本轮完成
 
@@ -40,7 +40,6 @@
   backend/tests/test_typed_numba_v22.py \
   backend/tests/test_indicator_graph.py \
   backend/tests/test_indicator_formula_roundtrip.py \
-  backend/tests/test_indicator_cleanup_guard.py \
   backend/tests/test_builtin_market_attribution.py -q --tb=short
 ```
 
@@ -117,30 +116,10 @@ INDICATOR_TEST_PYTHON=/Users/chenjunming/Desktop/myenv_312/bin/python3.12 \
 - 对当前保留的后端、前端、E2E、脚本做导入扫描，退役模块的当前导入引用为0。
 - R70路由解析成功；原语、共享DAG、独立版本锁定及快照通道的过期路由文字已更新。
 
-## 未关闭项目检查与物理清理
+## 2026-09-09 提交整理
 
-### 物理文件清理
+先将全部源码改动保存为Git提交 `3ef7d07`，随后执行既有清理清单。35个退役文件均通过内容哈希、路径和真实存量契约检查；活动Python源码对这些退役模块的导入为0。删除成功后，一次性清理脚本和清单同时删除，共移除37个文件。没有修改业务数据，没有增加测试排除规则。旧实现、清单和清理保护测试均通过Git历史追溯。
 
-`docs/indicator_retirement_manifest.json` 列出35个已核查、退出当前调用链的旧实现、旧测试/夹具、一次性清理保护测试和被替代设计记录。当前仍在磁盘，未清空内容冒充删除。
+项目运行文件和本地导出报告加入忽略规则；源码、测试、配置、文档以及文档引用的配图纳入提交。补齐路由R70引用但未声明的算子因果基线检查规则。
 
-当前会话实际返回的 DevSpace shell 契约仍限制 shell 修改/删除项目文件，且未暴露独立 delete_file 动作，因此本会话尚不能执行物理删除。以下脚本已开发并通过临时目录测试；当前默认只读检查为：
-
-```text
-{"mode":"read_only","files":35,"data_modified":false}
-```
-
-在项目根目录通过终端显式完成：
-
-```bash
-/Users/chenjunming/Desktop/myenv_312/bin/python3.12 scripts/finalize_indicator_cleanup.py --apply
-```
-
-脚本仅删除清单中内容哈希一致的普通文件，拒绝路径越界/符号链接/并发变化/真实旧存量引用（包括空 `scalar_outputs` 或 null `output_id` 字段），不修改数据、Git索引或提交，不递归删除目录。35个清单文件删除成功后，它还会删除自身及一次性 manifest，因此一次成功 apply 共移除37个一次性/退役文件。此前对实际配置目录data中的指标/评价方案扫描未发现标量子结果；快照配置文件不存在。另一个工作区若存在真实旧引用，清理必须被阻止，不能自动改写历史模型。删除结束后需要重跑完整类型检查及测试，不能以本专项通过替代。
-
-### 全项目检查
-
-全项目 TypeScript 当前仍因待物理删除的旧多标量模块/夹具产生80条诊断；其余活动代码诊断已清零。此前9条非指标中心静态错误已用不改变业务行为的最小修复关闭（测试生命周期回调返回值、RegimeTrend测试夹具类型、ResearchDataLab空vintage收窄、productPools断言类型）。最新分类结果：TOTAL_ERRORS=80、RETIRED_ERRORS=80、ACTIVE_ERRORS=0。未修改全局排除规则来制造通过；完成35个退役文件物理删除后应重新执行原始 `tsc --noEmit`，以真实零错误作为最终结论。
-
-AI路由治理未通过：大量其他工作区新文件尚未纳入Git；显式本轮覆盖检查另提示新增 `backend/tests/test_independent_snapshot_execution.py` 需要在提交时登记为可复现测试路径。未擅自暂存/提交工作区，也未通过删除正常路由事实来掩盖问题。
-
-本轮没有执行后端全量和前端全量通过验收；35个退役文件物理删除和上述全项目检查关闭之前，不应标记全仓库清理/发布完成。
+提交整理后检查：Python3.12语法、完整TypeScript检查、Vite生产构建、i18n引用检查和路由结构检查通过；后端专项392项与因果检查56项通过，全后端2195项测试可收集（不等于全量执行通过）。前端全量662项通过、2项失败，仍为整理前已有的ClassAllocation历史情景选项和FactorResearchCenter模板复制按钮测试；未跳过失败项，也未为提交改变这两个业务流程。

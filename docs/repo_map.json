@@ -1217,6 +1217,7 @@
         "backend/cal_indicators/builtin_batch_kernel.py"
       ],
       "then_check_files": [
+        "docs/market_attribution_builtin.md",
         "backend/tests/test_custom_indicator_service.py",
         "backend/tests/test_custom_indicator_routes.py",
         "backend/tests/test_custom_indicator_variables.py",
@@ -1410,6 +1411,9 @@
         "backend/services/custom_indicator_routes.py"
       ],
       "then_check_files": [
+        "docs/independent_indicators_shared_execution_design.md",
+        "docs/indicator_operator_primitives_design.md",
+        "docs/indicator_operator_primitives_acceptance.md",
         "backend/causality/audit.py",
         "backend/causality/baseline.json",
         "backend/tests/test_causality.py",

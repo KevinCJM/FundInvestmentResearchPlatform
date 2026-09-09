@@ -6,6 +6,6 @@
 
 当前契约由 `backend/tests/test_builtin_market_attribution.py` 的移除回归检查，以及 `backend/tests/test_independent_indicator_workflow.py` 验证。正常的组合 `benchmark_returns` 入参和因子研究数据源不受影响。
 
-旧市场归因源码内容已经清空。DevSpace 本次没有文件删除动作，`backend/custom_indicators/market_attribution.py` 的空文件仍待物理删除；这不计为已完成的文件删除。
+旧市场归因源码已于2026-09-09按校验清单物理删除，原内容通过Git历史追溯。
 
-当前实施与测试结果见 `indicator_operator_primitives_acceptance.md`，物理待清理清单见 `indicator_retirement_manifest.json`。历史源码追溯使用 Git，不在文档中保存旧实现。
+当前实施与测试结果见 `indicator_operator_primitives_acceptance.md`，退役文件清单保留于Git提交 `3ef7d07`。历史源码追溯使用 Git，不在文档中保存旧实现。
