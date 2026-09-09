@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -16,12 +17,14 @@ try:
         bollinger_kernel,
         box_plot_kernel,
         distribution_interpretation_codes_kernel,
+        filtered_historical_simulation_kernel,
         histogram_normal_pdf_kernel,
         kdj_kernel,
         moving_average_kernel,
         normal_qq_kernel,
         parametric_monte_carlo_kernel,
         product_analysis_execution_audit,
+        realized_path_comparison_kernel,
         regime_analysis_kernel,
         return_statistics_kernel,
         simulation_comparison_kernel,
@@ -35,12 +38,14 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         bollinger_kernel,
         box_plot_kernel,
         distribution_interpretation_codes_kernel,
+        filtered_historical_simulation_kernel,
         histogram_normal_pdf_kernel,
         kdj_kernel,
         moving_average_kernel,
         normal_qq_kernel,
         parametric_monte_carlo_kernel,
         product_analysis_execution_audit,
+        realized_path_comparison_kernel,
         regime_analysis_kernel,
         return_statistics_kernel,
         simulation_comparison_kernel,
@@ -70,6 +75,35 @@ PERIOD_LABELS = {
 }
 MAX_BOUNDARY_GAP_DAYS = 10
 MIN_SIMULATION_OBSERVATIONS = 20
+# Display order, and the order the comparison spread is computed over. The
+# normal lane comes first on purpose: it is the textbook baseline every richer
+# model has to earn its extra assumptions against.
+SIMULATION_METHODS: tuple[str, ...] = (
+    "gaussian",
+    "parametric",
+    "block_bootstrap",
+    "fhs_ewma",
+    "fhs_garch",
+)
+# Where the realised terminal value landed inside the simulated distribution.
+# The band, not the exact rank, is what a reader can act on, and it is the one
+# score that survives a horizon the data only partly covers.
+REALIZED_BAND_LABELS = (
+    "低于 5% 分位",
+    "5% — 25% 分位",
+    "25% — 50% 分位",
+    "50% — 75% 分位",
+    "75% — 95% 分位",
+    "高于 95% 分位",
+)
+REALIZED_BAND_VERDICTS = (
+    "实际走势跌破模拟分布最悲观的 5%：该模型低估了下行，按它做的风险预算偏松。",
+    "实际走势落在偏悲观区间（5%—25% 分位）：该模型的中枢偏乐观。",
+    "实际走势略低于模拟中位数：与该模型的中枢基本一致。",
+    "实际走势略高于模拟中位数：与该模型的中枢基本一致。",
+    "实际走势落在偏乐观区间（75%—95% 分位）：该模型的中枢偏保守。",
+    "实际走势冲出模拟分布最乐观的 5%：该模型同样低估了上行幅度，不能因此认为它更安全。",
+)
 
 
 def _float_array(frame: pd.DataFrame, column: str) -> np.ndarray:
@@ -249,6 +283,18 @@ def _simulation_payload(
         "shapeSkewParameter": _optional_float(assumption_values[9]),
         "tailWeightParameter": _optional_float(assumption_values[10]),
         "averageBlockLength": _optional_float(assumption_values[11]),
+        # Filtered lanes only. `conditionalVolatilityStart` against
+        # `dailyLogVolatility` is the whole difference between a conditional
+        # model and an unconditional one, and `volatilityPersistence` says how
+        # long that starting state keeps mattering.
+        "conditionalVolatilityStart": _optional_float(assumption_values[12]),
+        "volatilityPersistence": _optional_float(assumption_values[13]),
+        "garchOmega": _optional_float(assumption_values[14]),
+        "garchAlpha": _optional_float(assumption_values[15]),
+        "garchBeta": _optional_float(assumption_values[16]),
+        "ewmaLambda": _optional_float(assumption_values[17]),
+        "residualSkewness": _optional_float(assumption_values[18]),
+        "residualExcessKurtosis": _optional_float(assumption_values[19]),
     }
     terminal = {
         "p05": float(summary[0]),
@@ -322,6 +368,91 @@ def _density_payload(
         "navAxisMax": float(summary[6]),
         "densityCountFactor": float(summary[7]),
         "histogramBinWidth": float(summary[8]),
+    }
+
+
+def _last_valid_close(frame: pd.DataFrame) -> tuple[str, float] | None:
+    """The observation the simulation is anchored on — its nav is 1.0 by definition."""
+
+    closes = pd.to_numeric(frame.get("close"), errors="coerce")
+    valid = frame.index[closes.notna() & (closes > 0)]
+    if not len(valid):
+        return None
+    row = frame.loc[valid[-1]]
+    return pd.Timestamp(row["date"]).strftime("%Y-%m-%d"), float(row["close"])
+
+
+def _realized_payload(
+    *,
+    future_frame: pd.DataFrame,
+    base_date: str,
+    base_close: float,
+    initial_nav: float,
+    as_of: str | None,
+    lanes: Mapping[str, tuple[str, np.ndarray, np.ndarray]],
+) -> dict[str, object] | None:
+    """Replay what actually happened after the research day, and score it.
+
+    Loaded from a separate lane that never reaches the simulation inputs: the
+    models are fitted on rows at or before the research day, so nothing here
+    can leak backwards into them. Returns None when the future rows exist but
+    hold no usable price, which is not the same thing as having no future.
+    """
+
+    future_closes = _float_array(future_frame, "close")
+    dates = future_frame["date"].dt.strftime("%Y-%m-%d").tolist()
+    shared: dict[str, object] = {}
+    by_method: dict[str, object] = {}
+    nav_values: list[float | None] = []
+    for method, (label, percentiles, terminal_values) in lanes.items():
+        path, summary = realized_path_comparison_kernel(
+            future_closes,
+            base_close,
+            np.ascontiguousarray(percentiles),
+            np.ascontiguousarray(terminal_values),
+            initial_nav,
+        )
+        covered = int(summary[1])
+        band = int(summary[6])
+        by_method[method] = {
+            "methodLabel": label,
+            "percentileRank": _optional_float(summary[5]),
+            "band": band if band >= 0 else None,
+            "bandLabel": REALIZED_BAND_LABELS[band] if band >= 0 else None,
+            "verdict": REALIZED_BAND_VERDICTS[band] if band >= 0 else None,
+            "containmentRatio": _optional_float(summary[7]),
+            "breachDays": int(summary[8]),
+            "worstBreachGap": _optional_float(summary[9]),
+            "worstBreachDay": int(summary[10]) if summary[10] >= 0 else None,
+            "aboveMedianRatio": _optional_float(summary[12]),
+            "simulatedP05": _optional_float(percentiles[0, covered]) if covered else None,
+            "simulatedP50": _optional_float(percentiles[2, covered]) if covered else None,
+            "simulatedP95": _optional_float(percentiles[4, covered]) if covered else None,
+        }
+        if shared:
+            continue
+        if covered <= 0:
+            return None
+        shared = {
+            "requestedDays": int(summary[0]),
+            "coveredDays": covered,
+            "observationDays": int(summary[13]),
+            "complete": bool(summary[2]),
+            "terminalNav": _optional_float(summary[3]),
+            "terminalReturn": _optional_float(summary[4]),
+            "maxDrawdown": _optional_float(summary[11]),
+        }
+        nav_values = _optional_series(path)
+    return {
+        "asOf": as_of,
+        "baseDate": base_date,
+        "baseNav": initial_nav,
+        "startDate": dates[0] if dates else None,
+        "endDate": dates[int(shared["coveredDays"]) - 1],
+        "dates": [base_date, *dates[: max(0, len(nav_values) - 1)]],
+        "nav": nav_values,
+        "byMethod": by_method,
+        **shared,
     }
 
 
@@ -414,6 +545,8 @@ def build_product_analysis_response(
     points: Sequence[Mapping[str, object]],
     parameters: Mapping[str, object],
     research_points: Sequence[Mapping[str, object]] | None = None,
+    future_points: Sequence[Mapping[str, object]] | None = None,
+    as_of: str | None = None,
 ) -> dict[str, object]:
     if points:
         frame = _prepare_frame(points)
@@ -499,55 +632,120 @@ def build_product_analysis_response(
         horizon = int(parameters["simulation_horizon"])
         path_count = int(parameters["simulation_path_count"])
         target_return = float(parameters["simulation_target_return"])
-        parametric_result = parametric_monte_carlo_kernel(
-            returns,
-            1.0,
-            horizon,
-            path_count,
-            _simulation_seed(product_id, parameters, "parametric"),
-            target_return,
+        ewma_lambda = float(parameters.get("fhs_ewma_lambda", 0.94))
+        # Every lane runs on the same horizon, path budget, target and random
+        # round: those belong to the experiment, not to a model. A lane allowed
+        # its own horizon would make the comparison table and the realised
+        # overlay meaningless at the same time.
+        #
+        # `returns` and `return_segments` are handed to all five lanes as the
+        # same arrays — no per-lane copy, no `ascontiguousarray` round trip.
+        # That is safe *and* the reason the lanes can run at once: every kernel
+        # treats its inputs as read-only, which
+        # `test_simulation_lanes_share_one_read_only_input` locks down.
+        tasks = (
+            ("gaussian", parametric_monte_carlo_kernel, (
+                returns, 1.0, horizon, path_count,
+                _simulation_seed(product_id, parameters, "gaussian"), target_return, 0,
+            )),
+            ("parametric", parametric_monte_carlo_kernel, (
+                returns, 1.0, horizon, path_count,
+                _simulation_seed(product_id, parameters, "parametric"), target_return, 1,
+            )),
+            ("block_bootstrap", stationary_block_bootstrap_kernel, (
+                returns, return_segments, 1.0, horizon, path_count,
+                _simulation_seed(product_id, parameters, "bootstrap"), target_return,
+                int(parameters["bootstrap_block_length"]),
+            )),
+            ("fhs_ewma", filtered_historical_simulation_kernel, (
+                returns, 1.0, horizon, path_count,
+                _simulation_seed(product_id, parameters, "fhs_ewma"), target_return,
+                0, ewma_lambda,
+            )),
+            ("fhs_garch", filtered_historical_simulation_kernel, (
+                returns, 1.0, horizon, path_count,
+                _simulation_seed(product_id, parameters, "fhs_garch"), target_return,
+                1, ewma_lambda,
+            )),
         )
-        bootstrap_result = stationary_block_bootstrap_kernel(
-            returns,
-            return_segments,
-            1.0,
-            horizon,
-            path_count,
-            _simulation_seed(product_id, parameters, "bootstrap"),
-            target_return,
-            int(parameters["bootstrap_block_length"]),
-        )
-        parametric_label = (
-            "参数化蒙特卡洛（正态安全降级）"
-            if int(parametric_result[4][horizon + 1 + 8]) == 2
-            else "参数化蒙特卡洛（偏度/峰度校准）"
-        )
-        parametric, parametric_arrays = _simulation_payload(
-            parametric_result,
-            method="parametric",
-            method_label=parametric_label,
-            horizon_days=horizon,
-        )
-        bootstrap, bootstrap_arrays = _simulation_payload(
-            bootstrap_result,
-            method="block_bootstrap",
-            method_label="历史区块 Bootstrap",
-            horizon_days=horizon,
-        )
+        # Every kernel is compiled `nogil=True`, so these threads leave the GIL
+        # and the five lanes really do overlap — five sequential lanes at the
+        # 504-day / 1000-path ceiling cost about 190 ms, and the wall clock now
+        # tracks the slowest lane instead of their sum. Results are collected by
+        # name so the response order stays the declared one, not the finish
+        # order, and any kernel ValueError surfaces from `.result()` exactly as
+        # it would have from a direct call.
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            pending = {
+                method: pool.submit(kernel, *arguments)
+                for method, kernel, arguments in tasks
+            }
+            raw_results = {method: future.result() for method, future in pending.items()}
+        labels = {
+            "gaussian": "标准正态蒙特卡洛",
+            "parametric": (
+                "参数化蒙特卡洛（正态安全降级）"
+                if int(raw_results["parametric"][4][horizon + 1 + 8]) == 2
+                else "参数化蒙特卡洛（偏度/峰度校准）"
+            ),
+            "block_bootstrap": "历史区块 Bootstrap",
+            "fhs_ewma": "滤波历史模拟 · EWMA",
+            "fhs_garch": "滤波历史模拟 · GARCH(1,1)",
+        }
+        payloads: dict[str, dict[str, object]] = {}
+        arrays: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        for method in SIMULATION_METHODS:
+            payloads[method], arrays[method] = _simulation_payload(
+                raw_results[method],
+                method=method,
+                method_label=labels[method],
+                horizon_days=horizon,
+            )
         comparison_values = simulation_comparison_kernel(
-            parametric_arrays[2], bootstrap_arrays[2], 1.0
+            np.ascontiguousarray(
+                np.vstack([arrays[method][2] for method in SIMULATION_METHODS])
+            ),
+            1.0,
         )
         level = {0: "low", 1: "medium", 2: "high"}[int(comparison_values[4])]
         message = {
-            "high": "两种模型差异明显，结果对模型假设较敏感，决策时应采用更保守的尾部结果。",
-            "medium": "两种模型存在一定差异，建议同时查看参数化假设与历史区块情景。",
-            "low": "两种模型结果接近，但仍不代表对未来走势形成预测。",
+            "high": f"{len(SIMULATION_METHODS)} 个模型之间差异明显，结果高度依赖模型假设；决策时应采用更保守的尾部结果。",
+            "medium": "模型之间存在一定差异，建议对照条件模型（滤波历史模拟）与无条件模型的结论。",
+            "low": "各模型结果接近，但一致并不等于正确，也不代表对未来走势形成预测。",
         }[level]
+        # What actually happened after the research day, measured against both
+        # models. Only reachable under a PIT研究日 with rows beyond it, which is
+        # also the only situation in which the question can be asked honestly.
+        realized: dict[str, object] | None = None
+        realized_status = "off" if not as_of else "no_future_data"
+        anchor = _last_valid_close(statistics_frame)
+        if as_of and future_points and anchor is not None:
+            future_frame = _prepare_frame(future_points)
+            if not future_frame.empty:
+                realized = _realized_payload(
+                    future_frame=future_frame,
+                    base_date=anchor[0],
+                    base_close=anchor[1],
+                    initial_nav=1.0,
+                    as_of=as_of,
+                    lanes={
+                        method: (
+                            payloads[method]["methodLabel"],
+                            arrays[method][1],
+                            arrays[method][0],
+                        )
+                        for method in SIMULATION_METHODS
+                    },
+                )
+            if realized is not None:
+                realized_status = "complete" if realized["complete"] else "partial"
         simulation_status = "complete"
         simulation = {
             "initialNav": 1.0,
-            "parametric": parametric,
-            "blockBootstrap": bootstrap,
+            "realized": realized,
+            "realizedStatus": realized_status,
+            "methods": list(SIMULATION_METHODS),
+            "byMethod": payloads,
             "comparison": {
                 "p05ReturnGap": float(comparison_values[0]),
                 "medianReturnGap": float(comparison_values[1]),
@@ -557,8 +755,8 @@ def build_product_analysis_response(
                 "message": message,
             },
             "densities": {
-                "parametric": _density_payload(parametric_arrays[0], parametric_arrays[1]),
-                "block_bootstrap": _density_payload(bootstrap_arrays[0], bootstrap_arrays[1]),
+                method: _density_payload(arrays[method][0], arrays[method][1])
+                for method in SIMULATION_METHODS
             },
         }
 

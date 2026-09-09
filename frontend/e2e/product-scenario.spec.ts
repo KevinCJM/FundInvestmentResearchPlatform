@@ -8,6 +8,7 @@ type AnalysisRequest = {
   simulation_horizon: number
   simulation_path_count: number
   bootstrap_block_length: number
+  fhs_ewma_lambda: number
   simulation_target_return: number
   regime?: { run_id: string; publication_id: string; state_id?: string; segment_id?: string }
 }
@@ -72,7 +73,8 @@ const run = {
 }
 
 function simulation(request: AnalysisRequest, sampleCount: number) {
-  const make = (method: 'parametric' | 'block_bootstrap') => ({
+  const methods = ['gaussian', 'parametric', 'block_bootstrap', 'fhs_ewma', 'fhs_garch'] as const
+  const make = (method: (typeof methods)[number]) => ({
     method, methodLabel: method === 'parametric' ? '参数化蒙特卡洛（偏度/峰度校准）' : '历史区块 Bootstrap',
     days: [0, request.simulation_horizon], samplePaths: [[1, 0.96], [1, 1.08]],
     percentiles: { p05: [1, 0.88], p25: [1, 0.97], p50: [1, 1.04], p75: [1, 1.1], p95: [1, 1.2] },
@@ -83,7 +85,15 @@ function simulation(request: AnalysisRequest, sampleCount: number) {
       meanDailyLogReturn: 0.0005, dailyLogVolatility: 0.008, historicalLogSkewness: -0.4,
       historicalLogExcessKurtosis: 1.2, fittedLogSkewness: -0.38, fittedLogExcessKurtosis: 1.1,
       shapeCalibrationStatus: 'matched', shapeSkewParameter: 0.1, tailWeightParameter: 0.9,
-      averageBlockLength: method === 'block_bootstrap' ? request.bootstrap_block_length : null },
+      averageBlockLength: method === 'block_bootstrap' ? request.bootstrap_block_length : null,
+      conditionalVolatilityStart: method.startsWith('fhs') ? 0.011 : null,
+      volatilityPersistence: method.startsWith('fhs') ? 0.97 : null,
+      garchOmega: method === 'fhs_garch' ? 2e-6 : method === 'fhs_ewma' ? 0 : null,
+      garchAlpha: method.startsWith('fhs') ? 0.08 : null,
+      garchBeta: method.startsWith('fhs') ? 0.89 : null,
+      ewmaLambda: method === 'fhs_ewma' ? request.fhs_ewma_lambda : null,
+      residualSkewness: method.startsWith('fhs') ? -0.2 : null,
+      residualExcessKurtosis: method.startsWith('fhs') ? 1.1 : null },
   })
   const density = {
     sampleSize: request.simulation_path_count,
@@ -92,9 +102,11 @@ function simulation(request: AnalysisRequest, sampleCount: number) {
     maxDensity: 5, modeNav: 1, minNav: 0.9, maxNav: 1.1, countAxisMax: request.simulation_path_count,
     navAxisMin: 0.85, navAxisMax: 1.2, densityCountFactor: request.simulation_path_count * 0.2, histogramBinWidth: 0.2,
   }
-  return { initialNav: 1, parametric: make('parametric'), blockBootstrap: make('block_bootstrap'),
-    comparison: { p05ReturnGap: 0, medianReturnGap: 0, lossProbabilityGap: 0, conditionalValueAtRiskGap: 0, level: 'low', message: '固定验收样本：两种模型差异较小。' },
-    densities: { parametric: density, block_bootstrap: density } }
+  return { initialNav: 1, methods: [...methods],
+    byMethod: Object.fromEntries(methods.map((method) => [method, make(method)])),
+    realized: null, realizedStatus: 'off',
+    comparison: { p05ReturnGap: 0, medianReturnGap: 0, lossProbabilityGap: 0, conditionalValueAtRiskGap: 0, level: 'low', message: '固定验收样本：各模型差异较小。' },
+    densities: Object.fromEntries(methods.map((method) => [method, density])) }
 }
 
 function analysis(request: AnalysisRequest) {

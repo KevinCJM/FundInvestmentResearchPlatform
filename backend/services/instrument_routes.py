@@ -33,6 +33,7 @@ from services.instrument_analytics import (
     snapshot_metric_definitions,
 )
 from services.product_analysis import build_product_analysis_response
+from pit.context import resolve_request_context
 from services.product_compare import build_product_compare_response
 try:
     from backend.compute_policy import validate_execution_audit
@@ -260,6 +261,9 @@ class ProductAnalysisRequest(BaseModel):
     simulation_horizon: int = Field(default=252, ge=1, le=504)
     simulation_path_count: int = Field(default=500, ge=1, le=1_000)
     bootstrap_block_length: int = Field(default=20, ge=1, le=504)
+    # RiskMetrics' 0.94 for daily data. The floor is where the filter stops
+    # being a volatility estimate and starts tracking single days.
+    fhs_ewma_lambda: float = Field(default=0.94, ge=0.80, le=0.995, allow_inf_nan=False)
     simulation_target_return: float = Field(default=5.0, ge=-99.0, le=1_000.0, allow_inf_nan=False)
     simulation_run: int = Field(default=0, ge=0, le=2_147_483_647)
     regime: ProductAnalysisRegime | None = None
@@ -700,10 +704,58 @@ def _match_instrument(df: pd.DataFrame, identifier: str) -> Optional[pd.Series]:
     return None
 
 
+def _pit_as_of() -> str | None:
+    """The platform研究日 in force for this request, or None when PIT is off."""
+
+    return resolve_request_context(DATA_DIR).as_of
+
+
+def _pit_cut(points: list[dict[str, Any]], as_of: str | None) -> list[dict[str, Any]]:
+    """Trim a date-ordered point list at the研究日.
+
+    Applied in the loaders, not in each panel: a chart that stops at the
+    research day while the statistics beside it read to the last row on disk is
+    worse than no PIT at all. Dates are ISO strings here, so a string compare
+    is the whole cut.
+    """
+
+    if not as_of:
+        return points
+    return [point for point in points if str(point.get("date") or "") <= as_of]
+
+
+def _snapshot_pit_note(metrics: list[str], conditions: list[ProductCondition]) -> dict[str, Any]:
+    """Say out loud when 概览 is showing hindsight numbers under a research day.
+
+    The snapshot table is computed over every downloaded row and carries no
+    `as_of` of its own, so it cannot answer for a historical day. It stays here
+    because 概览 is a screening surface, not a research result — but a page that
+    prints it beside a historical研究日 has to admit which口径 it is.
+    Research surfaces (单产品研究, 评价方案) skip the snapshot entirely once a
+    research day is in force and recompute instead.
+    """
+
+    as_of = _pit_as_of()
+    definitions = snapshot_metric_definitions(_current_data_dir())
+    used = bool(metrics) or any(condition.field in definitions for condition in conditions)
+    return {
+        "as_of": as_of,
+        "snapshot_is_hindsight": bool(as_of and used),
+        "warnings": (
+            [f"快照指标按全部已下载数据计算，未按研究日 {as_of} 重算；用于概览筛选，不要当作该日的研究结论。"]
+            if as_of and used
+            else []
+        ),
+    }
+
+
 def _load_timeseries(kind: str, ts_code: str) -> list[dict[str, Any]]:
     if kind not in {"etf", "fund"}:
         return []
-    return load_price_points(kind, ts_code, _current_data_dir(), preserve_missing=True)
+    return _pit_cut(
+        load_price_points(kind, ts_code, _current_data_dir(), preserve_missing=True),
+        _pit_as_of(),
+    )
 
 
 def _product_research_data_path(filename: str) -> Path | None:
@@ -720,7 +772,7 @@ def _product_research_data_path(filename: str) -> Path | None:
 
 def _load_product_research_points(
     kind: str, ts_code: str, basis: str,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
     """Read an explicit real price basis without the chart reader's fallback.
 
     SSE sessions restore ETF missing rows. Fund NAVs retain their publication
@@ -769,7 +821,21 @@ def _load_product_research_points(
         {"date": row.date.strftime("%Y-%m-%d"), "close": float(row.close) if pd.notna(row.close) else None}
         for row in frame.itertuples(index=False)
     ]
-    return points, {"observationFrequency": frequency, "warnings": warnings}
+    as_of = _pit_as_of()
+    research = _pit_cut(points, as_of)
+    if not research:
+        raise ValueError(f"研究日 {as_of} 及之前没有该产品的{label}数据；请前移研究日或关闭 PIT 口径查看。")
+    # The rows after the研究日 are returned in a lane of their own so no caller
+    # can mistake them for research input: they exist only to let 未来模拟 be
+    # scored against what actually happened.
+    future = points[len(research):] if as_of else []
+    if as_of:
+        warnings.append(f"已按研究日 {as_of} 截断，之后的数据不参与计算。")
+    return research, {
+        "observationFrequency": frequency,
+        "warnings": warnings,
+        "asOf": as_of,
+    }, future
 
 
 def _empty_current_size() -> dict[str, Any]:
@@ -782,11 +848,58 @@ def _empty_current_size() -> dict[str, Any]:
     }
 
 
+def _size_as_of(ts_code: str, as_of: str) -> dict[str, Any]:
+    """规模 on the research day, not the latest row on disk.
+
+    规模 is computed (份额 × 单位净值), so it moves with the research day like any
+    other metric. The validated snapshot has no `as_of` and cannot answer for a
+    historical day, so under a research day the source rows are read directly and
+    cut at the event date — the same口径 the `builtin-fund-size-latest` indicator
+    uses.
+    """
+
+    # `_current_data_dir()` rather than the manifest inventory: the share file is
+    # not a published research series, and the snapshot builder reads it from the
+    # same place — two resolution rules for one file is how they drift apart.
+    path = _current_data_dir() / "etf_share_size_df.parquet"
+    if not path.exists():
+        return _empty_current_size()
+    try:
+        frame = pd.read_parquet(
+            path,
+            columns=["ts_code", "date", "total_share", "total_size", "nav"],
+            filters=[("ts_code", "==", ts_code)],
+        )
+    except Exception:  # noqa: BLE001 - a missing column must not break the page
+        return _empty_current_size()
+    if frame.empty:
+        return _empty_current_size()
+    frame["date"] = _date_values(frame["date"])
+    frame = frame.dropna(subset=["date"]).sort_values("date")
+    frame = frame[frame["date"] <= pd.Timestamp(as_of)]
+    if frame.empty:
+        return _empty_current_size()
+    row = frame.iloc[-1]
+    size = _serialize(row.get("total_size"))
+    if size is None:
+        return _empty_current_size()
+    return {
+        "current_size": size,
+        "current_size_as_of": _serialize(row["date"]),
+        "current_size_source": "etf_share_size_pit",
+        "current_share": _serialize(row.get("total_share")),
+        "current_unit_nav": _serialize(row.get("nav")),
+    }
+
+
 def _load_current_size(kind: str, ts_code: str) -> dict[str, Any]:
     """Read the derived current-size metric from the validated local snapshot."""
 
     if kind != "etf":
         return _empty_current_size()
+    as_of = _pit_as_of()
+    if as_of:
+        return _size_as_of(ts_code, as_of)
     snapshot, state = load_product_filter_snapshot("etf", _current_data_dir())
     if state.get("status") != "ready" or snapshot.empty:
         return _empty_current_size()
@@ -1217,6 +1330,7 @@ def instrument_products(
         ],
         "applied_conditions": _serialized_conditions(parsed_conditions),
         "snapshot": snapshot_state,
+        "pit": _snapshot_pit_note(selected_snapshot_metrics, parsed_conditions),
         "sort_by": sort_column,
         "sort_dir": sort_dir,
         "kind": kind,
@@ -1303,7 +1417,7 @@ def instrument_product_analysis(
     points = _load_timeseries(kind, ts_code)
     try:
         parameters = request.model_dump()
-        research_points, source_context = _load_product_research_points(kind, ts_code, request.analysis_basis)
+        research_points, source_context, future_points = _load_product_research_points(kind, ts_code, request.analysis_basis)
         regime_lineage = None
         if request.regime is not None:
             regime_input, regime_lineage = _resolve_product_regime_reference(
@@ -1315,6 +1429,8 @@ def instrument_product_analysis(
             points=points,
             parameters=parameters,
             research_points=research_points,
+            future_points=future_points,
+            as_of=source_context.get("asOf"),
         )
         response["researchContext"].update(source_context)
         if regime_lineage is not None:

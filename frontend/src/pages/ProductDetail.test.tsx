@@ -22,6 +22,8 @@ import type {
   FuturePathSimulation,
   ProductAnalysisRequest,
   ProductAnalysisResponse,
+  RealizedFuturePath,
+  RealizedMethodScore,
   SimulationMethod,
   TerminalNavDensity,
 } from '../services/productAnalysis'
@@ -31,7 +33,7 @@ vi.mock('echarts-for-react', () => ({
     option?: {
       grid?: unknown | Array<{ left?: string }>;
       xAxis?: { type?: string; name?: string } | Array<{ type?: string; name?: string }>;
-      yAxis?: { type?: string } | Array<{ type?: string }>;
+      yAxis?: { type?: string; min?: number; max?: number } | Array<{ type?: string; min?: number; max?: number }>;
       series?: Array<{ name?: string; data?: unknown[]; markArea?: { data?: unknown[] } }>;
     };
   }) => {
@@ -41,6 +43,7 @@ vi.mock('echarts-for-react', () => ({
     const grids = Array.isArray(option?.grid) ? option.grid : option?.grid ? [option.grid] : []
     const terminalHistogram = (option?.series ?? []).find((series) => series.name === '期末净值直方图')
     const medianPath = (option?.series ?? []).find((series) => series.name === '中位路径')
+    const realizedPath = (option?.series ?? []).find((series) => series.name === '实际走势')
     const priceSeries = (option?.series ?? []).find((series) => series.name === '价格')
     const terminalHistogramTotal = ((terminalHistogram?.data ?? []) as unknown[]).reduce<number>((sum, item) => {
       const count = Array.isArray(item) ? Number(item[0]) : 0
@@ -57,6 +60,9 @@ vi.mock('echarts-for-react', () => ({
       data-terminal-histogram-total={terminalHistogramTotal}
       data-simulation-start={medianPath ? String(Number(medianPath.data?.[0])) : undefined}
       data-regime-mark-area={JSON.stringify(priceSeries?.markArea?.data ?? [])}
+      data-y-axis-min={yAxis?.min === undefined ? undefined : String(yAxis.min)}
+      data-y-axis-max={yAxis?.max === undefined ? undefined : String(yAxis.max)}
+      data-realized-length={realizedPath ? String((realizedPath.data ?? []).length) : undefined}
     />
   },
 }))
@@ -180,40 +186,61 @@ const makeTimeSeriesResponse = (request: EvaluateTimeSeriesIndicatorsRequest): E
   }
 }
 
+const SIMULATION_METHOD_LABELS: Record<SimulationMethod, string> = {
+  gaussian: '标准正态蒙特卡洛',
+  parametric: '参数化蒙特卡洛（偏度/峰度校准）',
+  block_bootstrap: '历史区块 Bootstrap',
+  fhs_ewma: '滤波历史模拟 · EWMA',
+  fhs_garch: '滤波历史模拟 · GARCH(1,1)',
+}
+
 const makeSimulation = (
   method: SimulationMethod,
   pathCount: number,
   horizon: number,
   targetReturn: number,
   blockLength: number,
-): FuturePathSimulation => ({
-  method,
-  methodLabel: method === 'parametric' ? '参数化蒙特卡洛（偏度/峰度校准）' : '历史区块 Bootstrap',
-  days: [0, horizon],
-  samplePaths: [[1, 1.03], [1, 0.98]],
-  percentiles: {
-    p05: [1, 0.94], p25: [1, 0.98], p50: [1, 1.03], p75: [1, 1.07], p95: [1, 1.12],
-  },
-  terminal: {
-    p05: 0.94, p25: 0.98, p50: 1.03, p75: 1.07, p95: 1.12,
-    lossProbability: 0.25, valueAtRisk95: 0.06, conditionalValueAtRisk95: 0.08,
-    targetHitProbability: 0.42, averageMaxDrawdown: 0.07, p05Return: -0.06, medianReturn: 0.03,
-  },
-  assumptions: {
-    sourceObservationCount: 24,
-    targetReturnPercent: targetReturn,
-    meanDailyLogReturn: method === 'parametric' ? 0.0002 : null,
-    dailyLogVolatility: method === 'parametric' ? 0.008 : null,
-    historicalLogSkewness: method === 'parametric' ? -0.2 : null,
-    historicalLogExcessKurtosis: method === 'parametric' ? 0.8 : null,
-    fittedLogSkewness: method === 'parametric' ? -0.18 : null,
-    fittedLogExcessKurtosis: method === 'parametric' ? 0.76 : null,
-    shapeCalibrationStatus: method === 'parametric' ? 'matched' : null,
-    shapeSkewParameter: method === 'parametric' ? 0.1 : null,
-    tailWeightParameter: method === 'parametric' ? 1.1 : null,
-    averageBlockLength: method === 'block_bootstrap' ? blockLength : null,
-  },
-})
+  ewmaLambda = 0.94,
+): FuturePathSimulation => {
+  const moments = method === 'gaussian' || method === 'parametric'
+  const filtered = method === 'fhs_ewma' || method === 'fhs_garch'
+  return {
+    method,
+    methodLabel: SIMULATION_METHOD_LABELS[method],
+    days: [0, horizon],
+    samplePaths: [[1, 1.03], [1, 0.98]],
+    percentiles: {
+      p05: [1, 0.94], p25: [1, 0.98], p50: [1, 1.03], p75: [1, 1.07], p95: [1, 1.12],
+    },
+    terminal: {
+      p05: 0.94, p25: 0.98, p50: 1.03, p75: 1.07, p95: 1.12,
+      lossProbability: 0.25, valueAtRisk95: 0.06, conditionalValueAtRisk95: 0.08,
+      targetHitProbability: 0.42, averageMaxDrawdown: 0.07, p05Return: -0.06, medianReturn: 0.03,
+    },
+    assumptions: {
+      sourceObservationCount: 24,
+      targetReturnPercent: targetReturn,
+      meanDailyLogReturn: moments || filtered ? 0.0002 : null,
+      dailyLogVolatility: moments || filtered ? 0.008 : null,
+      historicalLogSkewness: moments || filtered ? -0.2 : null,
+      historicalLogExcessKurtosis: moments || filtered ? 0.8 : null,
+      fittedLogSkewness: method === 'parametric' ? -0.18 : null,
+      fittedLogExcessKurtosis: method === 'parametric' ? 0.76 : null,
+      shapeCalibrationStatus: method === 'parametric' ? 'matched' : null,
+      shapeSkewParameter: method === 'parametric' ? 0.1 : null,
+      tailWeightParameter: method === 'parametric' ? 1.1 : null,
+      averageBlockLength: method === 'block_bootstrap' ? blockLength : null,
+      conditionalVolatilityStart: filtered ? 0.012 : null,
+      volatilityPersistence: filtered ? (method === 'fhs_ewma' ? 1 : 0.972) : null,
+      garchOmega: filtered ? (method === 'fhs_ewma' ? 0 : 1.8e-6) : null,
+      garchAlpha: filtered ? (method === 'fhs_ewma' ? 1 - ewmaLambda : 0.083) : null,
+      garchBeta: filtered ? (method === 'fhs_ewma' ? ewmaLambda : 0.889) : null,
+      ewmaLambda: method === 'fhs_ewma' ? ewmaLambda : null,
+      residualSkewness: filtered ? -0.11 : null,
+      residualExcessKurtosis: filtered ? 1.42 : null,
+    },
+  }
+}
 
 const makeDensity = (pathCount: number): TerminalNavDensity => ({
   sampleSize: pathCount,
@@ -234,13 +261,65 @@ const makeDensity = (pathCount: number): TerminalNavDensity => ({
   histogramBinWidth: 0.2,
 })
 
+/** Opt-in realised future, so the默认 fixture keeps testing the PIT-off path. */
+let realizedFuture: RealizedFuturePath | null = null
+
+const makeRealized = (
+  overrides: Partial<RealizedFuturePath> = {},
+  score: Partial<RealizedMethodScore> = {},
+): RealizedFuturePath => {
+  const covered = overrides.coveredDays ?? 21
+  const methodScore = (methodLabel: string): RealizedMethodScore => ({
+    methodLabel,
+    percentileRank: 0.18,
+    band: 1,
+    bandLabel: '5% — 25% 分位',
+    verdict: '实际走势落在偏悲观区间（5%—25% 分位）：该模型的中枢偏乐观。',
+    containmentRatio: 0.9,
+    breachDays: 2,
+    worstBreachGap: -0.031,
+    worstBreachDay: 14,
+    aboveMedianRatio: 0.2,
+    simulatedP05: 0.9,
+    simulatedP50: 1.01,
+    simulatedP95: 1.12,
+    ...score,
+  })
+  return {
+    asOf: '2026-01-25',
+    baseDate: '2026-01-25',
+    baseNav: 1,
+    startDate: '2026-01-26',
+    endDate: '2026-02-24',
+    requestedDays: 21,
+    coveredDays: covered,
+    observationDays: covered,
+    complete: true,
+    terminalNav: 0.964,
+    terminalReturn: -0.036,
+    maxDrawdown: 0.052,
+    nav: Array.from({ length: covered + 1 }, (_, index) => 1 - index * 0.0018),
+    dates: Array.from({ length: covered + 1 }, (_, index) => `2026-01-${String(25 + index).padStart(2, '0')}`),
+    byMethod: Object.fromEntries(
+      (Object.keys(SIMULATION_METHOD_LABELS) as SimulationMethod[]).map((method) => [
+        method,
+        methodScore(SIMULATION_METHOD_LABELS[method]),
+      ]),
+    ) as Record<SimulationMethod, RealizedMethodScore>,
+    ...overrides,
+  }
+}
+
 const makeAnalysisResponse = (request: ProductAnalysisRequest): ProductAnalysisResponse => {
   const incomplete = request.statistics_period === '1M'
   const returns = incomplete
     ? []
     : Array.from({ length: 24 }, (_, index) => ({ date: `2026-01-${String(index + 2).padStart(2, '0')}`, return: index % 2 ? 0.2 : -0.1 }))
-  const parametric = makeSimulation('parametric', request.simulation_path_count, request.simulation_horizon, request.simulation_target_return, request.bootstrap_block_length)
-  const bootstrap = makeSimulation('block_bootstrap', request.simulation_path_count, request.simulation_horizon, request.simulation_target_return, request.bootstrap_block_length)
+  const methods = Object.keys(SIMULATION_METHOD_LABELS) as SimulationMethod[]
+  const byMethod = Object.fromEntries(methods.map((method) => [
+    method,
+    makeSimulation(method, request.simulation_path_count, request.simulation_horizon, request.simulation_target_return, request.bootstrap_block_length, request.fhs_ewma_lambda),
+  ])) as Record<SimulationMethod, FuturePathSimulation>
   const qqPoints = [
     { percentile: 0.05, theoreticalQuantile: -1.64, observedReturn: -0.3, referenceReturn: -0.25, tail: 'lower' as const },
     { percentile: 0.5, theoreticalQuantile: 0, observedReturn: 0.05, referenceReturn: 0.05, tail: 'center' as const },
@@ -286,9 +365,11 @@ const makeAnalysisResponse = (request: ProductAnalysisRequest): ProductAnalysisR
     },
     normalQq: incomplete ? null : { sampleSize: returns.length, points: qqPoints, keyPoints: qqPoints },
     simulation: incomplete || !request.include_simulation ? null : {
-      initialNav: 1, parametric, blockBootstrap: bootstrap,
-      comparison: { p05ReturnGap: 0.01, medianReturnGap: 0.01, lossProbabilityGap: 0.02, conditionalValueAtRiskGap: 0.01, level: 'low', message: '两种模型结果接近。' },
-      densities: { parametric: makeDensity(request.simulation_path_count), block_bootstrap: makeDensity(request.simulation_path_count) },
+      initialNav: 1, methods, byMethod,
+      realized: realizedFuture,
+      realizedStatus: realizedFuture ? (realizedFuture.complete ? 'complete' : 'partial') : 'off',
+      comparison: { p05ReturnGap: 0.01, medianReturnGap: 0.01, lossProbabilityGap: 0.02, conditionalValueAtRiskGap: 0.01, level: 'low', message: '各模型结果接近。' },
+      densities: Object.fromEntries(methods.map((method) => [method, makeDensity(request.simulation_path_count)])) as Record<SimulationMethod, TerminalNavDensity>,
     },
     simulationStatus: !request.include_simulation ? 'not_requested' : incomplete ? 'insufficient_sample' : 'complete',
     researchContext: {
@@ -382,6 +463,7 @@ describe('ProductDetail custom indicators', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    realizedFuture = null
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -466,10 +548,14 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.getByText(/所有路径统一从虚拟净值 1\.0000 出发/)).toBeInTheDocument()
     expect(screen.getByLabelText('模拟未来区间')).toHaveValue('252')
     expect(screen.getByLabelText('模拟路径数')).toHaveValue('500')
-    expect(screen.getByLabelText('Bootstrap 平均区块长度')).toHaveValue('20')
     expect(screen.getByLabelText('目标期末收益率')).toHaveValue(5)
-    expect(screen.getByRole('radio', { name: '参数化蒙特卡洛' })).toBeChecked()
+    // A model's own parameter belongs under that model. Sitting in the shared
+    // row it read as though the block length applied to all five lanes.
+    expect(screen.getByTestId('simulation-experiment-settings')).not.toHaveTextContent('区块')
+    expect(screen.getByRole('radio', { name: '四矩校准' })).toBeChecked()
     expect(screen.getByRole('radio', { name: '区块 Bootstrap' })).not.toBeChecked()
+    expect(screen.getByTestId('simulation-model-parameter')).toHaveTextContent('本模型无可调参数')
+    expect(screen.queryByLabelText('Bootstrap 平均区块长度')).not.toBeInTheDocument()
     expect(screen.queryByTestId('monte-carlo-combined-chart')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '运行模拟' }))
     const combinedChart = await screen.findByTestId('monte-carlo-combined-chart')
@@ -485,8 +571,8 @@ describe('ProductDetail custom indicators', () => {
     expect(combinedChartRenderer).toHaveAttribute('data-series', expect.stringContaining('期末净值直方图'))
     expect(combinedChartRenderer).toHaveAttribute('data-series', expect.stringContaining('期末净值概率密度'))
     expect(screen.getByText(/共计 500 条/)).toBeInTheDocument()
-    expect(screen.getByText('双模型结果对比')).toBeInTheDocument()
-    expect(screen.getByRole('table', { name: '参数化蒙特卡洛与区块 Bootstrap 模拟结果对比' })).toBeInTheDocument()
+    expect(screen.getByText('5 个模型结果对比')).toBeInTheDocument()
+    expect(screen.getByRole('table', { name: '全部模拟模型的结果对比' })).toBeInTheDocument()
     expect(screen.getByText('95% CVaR（预期短缺）')).toBeInTheDocument()
     expect(screen.getAllByText('平均最大回撤')).toHaveLength(2)
     expect(screen.getByText('达到 5% 概率')).toBeInTheDocument()
@@ -499,6 +585,7 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.getByRole('radio', { name: '区块 Bootstrap' })).toBeChecked()
     expect(screen.getByTestId('monte-carlo-combined-chart')).toHaveAccessibleName('历史区块 Bootstrap：路径与期末净值概率分布组合图')
     expect(screen.getByText(/平均区块长度 20 个收益观察值/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Bootstrap 平均区块长度')).toHaveValue('20')
     await user.click(screen.getByRole('tab', { name: '收益统计' }))
     expect(screen.getByRole('heading', { name: '正态 Q-Q 图' })).toBeInTheDocument()
     expect(screen.getByText('查看关键分位点数据')).toBeInTheDocument()
@@ -549,6 +636,142 @@ describe('ProductDetail custom indicators', () => {
     await user.click(screen.getByRole('tab', { name: '收益统计' }))
     expect(await screen.findByText(/要求产品完整覆盖所选区间/)).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '未来虚拟净值模拟' })).not.toBeInTheDocument()
+  })
+
+  const openSimulation = async (user: ReturnType<typeof userEvent.setup>) => {
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+    await screen.findByRole('tab', { name: '未来模拟' })
+    await user.click(screen.getByRole('tab', { name: '未来模拟' }))
+    await user.selectOptions(screen.getByLabelText('模拟未来区间'), '21')
+    await user.click(screen.getByRole('button', { name: '运行模拟' }))
+    return screen.findByTestId('monte-carlo-combined-chart')
+  }
+
+  it('研究日之后的数据够长时，把实际走势叠加到模拟图上并给出事后评分', async () => {
+    const user = userEvent.setup()
+    realizedFuture = makeRealized()
+
+    const chart = await openSimulation(user)
+
+    const strip = screen.getByTestId('realized-future-strip')
+    expect(strip).toHaveTextContent('完整覆盖 21/21 个交易日')
+    expect(strip).toHaveTextContent('0.9640')
+    expect(strip).toHaveTextContent('-3.6%')
+    expect(strip).toHaveTextContent('18.0% 分位')
+    expect(strip).toHaveTextContent('该模型的中枢偏乐观')
+    // The drawdown only means something next to the model's own average.
+    expect(strip).toHaveTextContent('模拟路径平均')
+    // The overlay is a fact and the quantiles are scenarios; the caveat travels
+    // with the numbers rather than sitting in a page footnote.
+    expect(strip).toHaveTextContent('在研究日 2026-01-25 当天不可得')
+
+    const renderer = chart.querySelector('[data-testid="chart"]')
+    expect(renderer).toHaveAttribute('data-series', expect.stringContaining('实际走势'))
+    // Anchor day plus one point per covered future day.
+    expect(renderer).toHaveAttribute('data-realized-length', '22')
+
+    // Same realised path, one score per model — that is what makes 双模型对比
+    // answer "which one was closer" instead of only "how far apart are they".
+    expect(screen.getByRole('columnheader', { name: '实际所处分位' })).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: '实际留在区间' })).toBeInTheDocument()
+  })
+
+  it('研究日之后数据只走完一部分时，给区间不给分位', async () => {
+    const user = userEvent.setup()
+    realizedFuture = makeRealized(
+      { coveredDays: 8, observationDays: 8, complete: false, endDate: '2026-02-05' },
+      { percentileRank: null },
+    )
+
+    await openSimulation(user)
+
+    const strip = screen.getByTestId('realized-future-strip')
+    expect(strip).toHaveTextContent('仅覆盖 8/21 个交易日')
+    expect(strip).toHaveTextContent('区间未走完，只给所处区间')
+    expect(strip).toHaveTextContent('5% — 25% 分位')
+  })
+
+  it('没有 PIT 研究日时说明为什么看不到实际走势，而不是留白', async () => {
+    const user = userEvent.setup()
+
+    const chart = await openSimulation(user)
+
+    expect(screen.queryByTestId('realized-future-strip')).not.toBeInTheDocument()
+    expect(screen.getByText(/未启用 PIT 研究日/)).toBeInTheDocument()
+    expect(chart.querySelector('[data-testid="chart"]')).not.toHaveAttribute('data-realized-length')
+    expect(screen.queryByRole('columnheader', { name: '实际所处分位' })).not.toBeInTheDocument()
+  })
+
+  it('实际走势跌出模拟区间时，纵轴跟着放开，不把证据裁掉', async () => {
+    const user = userEvent.setup()
+    // The density fixture spans 0.88 — 1.12; this path ends well below it.
+    realizedFuture = makeRealized({ nav: [1, 0.9, 0.72, 0.61], coveredDays: 3, observationDays: 3, terminalNav: 0.61 })
+
+    const chart = await openSimulation(user)
+
+    const renderer = chart.querySelector('[data-testid="chart"]')
+    expect(Number(renderer?.getAttribute('data-y-axis-min'))).toBeCloseTo(0.61, 5)
+    expect(Number(renderer?.getAttribute('data-y-axis-max'))).toBeCloseTo(1.12, 5)
+  })
+
+  it('每个模型的参数只出现在它自己的面板里，并且只发给后端一次', async () => {
+    const user = userEvent.setup()
+
+    await openSimulation(user)
+
+    // Bootstrap's block length and FHS's decay used to share one row with the
+    // horizon and the path budget, which said they applied to every lane.
+    await user.click(screen.getByRole('radio', { name: '区块 Bootstrap' }))
+    expect(screen.getByLabelText('Bootstrap 平均区块长度')).toBeInTheDocument()
+    expect(screen.queryByLabelText('EWMA 衰减系数')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: 'FHS · EWMA' }))
+    expect(screen.queryByLabelText('Bootstrap 平均区块长度')).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('EWMA 衰减系数'), '0.97')
+
+    // Changing one model's parameter invalidates the whole batch: five lanes
+    // are only comparable when they come from the same run.
+    expect(screen.queryByTestId('monte-carlo-combined-chart')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '运行模拟' }))
+    await screen.findByTestId('monte-carlo-combined-chart')
+
+    const calls = vi.mocked(analyzeProduct).mock.calls
+    const [, , request] = calls[calls.length - 1]
+    expect(request.fhs_ewma_lambda).toBe(0.97)
+    expect(request.bootstrap_block_length).toBe(20)
+
+    // A conditional model has to say so — that is the whole reason it exists.
+    expect(screen.getByTestId('simulation-model-picker')).toHaveTextContent('条件模型 · 从当前波动状态出发')
+    expect(screen.getByText(/起始条件日波动/)).toBeInTheDocument()
+    expect(screen.getByText(/持续性恒为 1/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('radio', { name: '标准正态' }))
+    expect(screen.getByTestId('simulation-model-picker')).toHaveTextContent('无条件模型 · 忽略当前波动状态')
+    expect(screen.getByText(/本模型不使用这两个形状参数/)).toBeInTheDocument()
+    expect(screen.getByTestId('simulation-model-parameter')).toHaveTextContent('本模型无可调参数')
+  })
+
+  it('实际走势走完后，把中枢最接近的模型标出来', async () => {
+    const user = userEvent.setup()
+    // Only the GARCH lane's median sat near what happened; the rest were off.
+    realizedFuture = makeRealized({
+      byMethod: {
+        gaussian: { percentileRank: 0.02 },
+        parametric: { percentileRank: 0.05 },
+        block_bootstrap: { percentileRank: 0.09 },
+        fhs_ewma: { percentileRank: 0.2 },
+        fhs_garch: { percentileRank: 0.46 },
+      } as RealizedFuturePath['byMethod'],
+    })
+
+    await openSimulation(user)
+
+    const marks = screen.getAllByText('最接近')
+    // One on the model tab, one on that model's row in the comparison table.
+    expect(marks).toHaveLength(2)
+    expect(screen.getByRole('radio', { name: /FHS · GARCH/ }).closest('label')).toHaveTextContent('最接近')
+    const garchRow = screen.getByRole('rowheader', { name: /滤波历史模拟 · GARCH/ })
+    expect(garchRow).toHaveTextContent('最接近')
   })
 
   it('场外公募基金展示成立日期，并仅在披露时展示到期日期', async () => {

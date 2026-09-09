@@ -44,7 +44,7 @@ def test_product_analysis_route_runs_complete_njit_contract(monkeypatch) -> None
         lambda _kind: pd.DataFrame([{"ts_code": "510300.SH", "name": "沪深300ETF"}]),
     )
     monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda _kind, _code: _points())
-    monkeypatch.setattr(instrument_routes, "_load_product_research_points", lambda *_args: (_points(), {}))
+    monkeypatch.setattr(instrument_routes, "_load_product_research_points", lambda *_args: (_points(), {}, []))
     request = instrument_routes.ProductAnalysisRequest(
         include_simulation=True,
         statistics_period="ALL",
@@ -57,12 +57,17 @@ def test_product_analysis_route_runs_complete_njit_contract(monkeypatch) -> None
 
     assert response["product_id"] == "510300.SH"
     assert response["execution"]["execution_backend"] == "numba_njit_fixed_signature"
-    assert response["execution"]["kernel_coverage"] == "21/21"
+    assert response["execution"]["kernel_coverage"] == "25/25"
     assert response["execution"]["nopython"] is True
     assert response["execution"]["object_mode"] == 0
     assert response["execution"]["python_fallback"] == 0
-    assert response["simulation"]["parametric"]["method"] == "parametric"
-    assert response["simulation"]["blockBootstrap"]["method"] == "block_bootstrap"
+    # All five lanes come back from one route call, each keyed by its own name.
+    assert response["simulation"]["methods"] == [
+        "gaussian", "parametric", "block_bootstrap", "fhs_ewma", "fhs_garch",
+    ]
+    for method in response["simulation"]["methods"]:
+        assert response["simulation"]["byMethod"][method]["method"] == method
+        assert method in response["simulation"]["densities"]
 
 
 def test_product_analysis_price_points_preserve_missing_physical_fields(monkeypatch) -> None:
@@ -237,7 +242,7 @@ def test_research_basis_is_explicit_and_missing_adjusted_nav_never_uses_price(tm
     pd.DataFrame({"ts_code": ["510300.SH"], "date": ["2025-01-02"], "close": [4.0]}).to_parquet(tmp_path / "etf_daily_candle_df.parquet")
     with pytest.raises(ValueError, match="复权净值"):
         instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
-    points, context = instrument_routes._load_product_research_points("etf", "510300.SH", "price")
+    points, context, _future = instrument_routes._load_product_research_points("etf", "510300.SH", "price")
     assert points[0]["close"] == 4.0
     assert context["observationFrequency"] == "trading_observations"
     with pytest.raises(ValueError, match="场外基金"):
@@ -249,7 +254,7 @@ def test_etf_research_restores_missing_sse_sessions_but_not_holidays(tmp_path, m
     monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
     pd.DataFrame({"ts_code": ["510300.SH", "510300.SH"], "nav_date": [20250102, 20250106], "adj_nav": [1.0, 1.2]}).to_parquet(tmp_path / "etf_daily_df.parquet")
     pd.DataFrame({"exchange": ["SSE"] * 5, "cal_date": ["20250102", "20250103", "20250104", "20250105", "20250106"], "is_open": [1, 1, 0, 0, 1]}).to_parquet(tmp_path / "trade_day_df.parquet")
-    points, context = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    points, context, _future = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
     assert [point["date"] for point in points] == ["2025-01-02", "2025-01-03", "2025-01-06"]
     assert points[1]["close"] is None
     assert context["observationFrequency"] == "sse_trading_days"

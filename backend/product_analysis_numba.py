@@ -16,7 +16,12 @@ from numba import boolean, float64, int64, njit, types, uint8, uint64
 
 
 PRODUCT_ANALYSIS_ENGINE_VERSION = "product-analysis-njit-1.0.0"
-PRODUCT_ANALYSIS_KERNEL_VERSION = "product-scenario-statistics-simulation-3"
+PRODUCT_ANALYSIS_KERNEL_VERSION = "product-scenario-statistics-simulation-5"
+
+# Every simulation lane packs the same assumption block behind the day vector so
+# one service-side reader can decode any of them. Slots a lane cannot fill are
+# NaN rather than absent, which keeps the layout a constant.
+SIMULATION_ASSUMPTION_SLOTS = 20
 
 _F1 = float64[::1]
 _F2 = float64[:, ::1]
@@ -29,6 +34,8 @@ _SIM_RESULT = types.Tuple((_F2, _F2, _F1, _F1, _F1))
 _DENSITY_RESULT = types.Tuple((_F2, _F2, _F1))
 _RANDOM_RESULT = types.Tuple((uint64, float64))
 _REGIME_RESULT = types.Tuple((_F2, _F2, _F1, _I1, _I1))
+_REALIZED_RESULT = types.Tuple((_F1, _F1))
+_FILTER_RESULT = types.Tuple((_F1, _F1))
 
 
 @njit(_F2(_F1, _I1), cache=False, nogil=True)
@@ -702,7 +709,7 @@ def _summarize_simulation(
 
 
 @njit(
-    _SIM_RESULT(_F1, float64, int64, int64, int64, float64),
+    _SIM_RESULT(_F1, float64, int64, int64, int64, float64, int64),
     cache=False,
     nogil=True,
 )
@@ -713,13 +720,25 @@ def parametric_monte_carlo_kernel(
     path_count: int,
     seed: int,
     target_return_percent: float,
+    shape_mode: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Draw iid daily log returns from a fitted marginal distribution.
+
+    ``shape_mode`` picks the marginal: ``0`` keeps the textbook standard normal,
+    which is the baseline every richer lane has to beat, and ``1`` calibrates a
+    sinh-arcsinh transform to the sample's skewness and excess kurtosis. Both
+    modes share one path loop, so the only difference between the two lanes the
+    platform exposes is the innovation — nothing else can drift between them.
+    """
+
     valid_count = 0
     for value in returns_percent:
         if np.isfinite(value) and value > -100.0:
             valid_count += 1
     if valid_count < 20 or initial_nav <= 0.0 or horizon_days < 1 or path_count < 1:
         raise ValueError("parametric simulation requires valid parameters and 20 returns")
+    if shape_mode != 0 and shape_mode != 1:
+        raise ValueError("parametric shape mode must be 0 (normal) or 1 (sinh-arcsinh)")
     log_returns = np.empty(valid_count, dtype=np.float64)
     position = 0
     for value in returns_percent:
@@ -733,7 +752,14 @@ def parametric_monte_carlo_kernel(
         difference = value - mean
         sample_variance += difference * difference
     volatility = math.sqrt(max(0.0, sample_variance / (valid_count - 1)))
-    calibration = _calibrate_sinh_arcsinh(shape[2], shape[3])
+    if shape_mode == 1:
+        calibration = _calibrate_sinh_arcsinh(shape[2], shape[3])
+    else:
+        # No calibration to report: this lane's whole point is an untouched
+        # standard normal, so every shape slot stays empty and the inactive flag
+        # is what makes the path loop below skip the transform.
+        calibration = np.full(8, np.nan, dtype=np.float64)
+        calibration[0] = 0.0
     paths = np.empty((path_count, horizon_days + 1), dtype=np.float64)
     max_drawdowns = np.empty(path_count, dtype=np.float64)
     state = np.uint64(seed if seed != 0 else 1)
@@ -778,23 +804,22 @@ def parametric_monte_carlo_kernel(
         initial_nav,
         target_return_percent / 100.0,
     )
-    assumptions = np.array(
-        [
-            valid_count,
-            target_return_percent,
-            mean,
-            volatility,
-            shape[2],
-            shape[3],
-            calibration[6] if calibration[0] == 1.0 else 0.0,
-            calibration[7] if calibration[0] == 1.0 else 0.0,
-            calibration[1],
-            calibration[2] if calibration[0] == 1.0 else np.nan,
-            calibration[3] if calibration[0] == 1.0 else np.nan,
-            np.nan,
-        ],
-        dtype=np.float64,
-    )
+    assumptions = np.full(SIMULATION_ASSUMPTION_SLOTS, np.nan, dtype=np.float64)
+    assumptions[0] = valid_count
+    assumptions[1] = target_return_percent
+    assumptions[2] = mean
+    assumptions[3] = volatility
+    assumptions[4] = shape[2]
+    assumptions[5] = shape[3]
+    if calibration[0] == 1.0:
+        assumptions[6] = calibration[6]
+        assumptions[7] = calibration[7]
+        assumptions[9] = calibration[2]
+        assumptions[10] = calibration[3]
+    elif shape_mode == 1:
+        assumptions[6] = 0.0
+        assumptions[7] = 0.0
+    assumptions[8] = calibration[1]
     # The fifth return lane is reserved for days by the common result contract;
     # attach assumptions after the day vector so the service can reconstruct it.
     packed = np.empty(days.size + assumptions.size, dtype=np.float64)
@@ -898,34 +923,458 @@ def stationary_block_bootstrap_kernel(
         initial_nav,
         target_return_percent / 100.0,
     )
-    assumptions = np.array(
-        [valid_count, target_return_percent, np.nan, np.nan, np.nan, np.nan,
-         np.nan, np.nan, np.nan, np.nan, np.nan, block_length],
-        dtype=np.float64,
-    )
+    assumptions = np.full(SIMULATION_ASSUMPTION_SLOTS, np.nan, dtype=np.float64)
+    assumptions[0] = valid_count
+    assumptions[1] = target_return_percent
+    assumptions[11] = block_length
     packed = np.empty(days.size + assumptions.size, dtype=np.float64)
     packed[: days.size] = days
     packed[days.size :] = assumptions
     return sample, percentiles, terminal, summary, packed
 
 
-@njit(_F1(_F1, _F1, float64), cache=False, nogil=True)
+@njit(float64(_F1, float64, float64, float64, float64), cache=False, nogil=True)
+def _garch_quasi_likelihood(
+    demeaned: np.ndarray,
+    omega: float,
+    alpha: float,
+    beta: float,
+    start_variance: float,
+) -> float:
+    """Gaussian quasi-log-likelihood of a GARCH(1,1) recursion.
+
+    Quasi because the innovations are almost certainly not normal — that is the
+    whole reason the simulation bootstraps residuals instead of drawing them.
+    The estimator stays consistent under misspecified innovations, which is what
+    makes this the standard first fit rather than a shortcut.
+    """
+
+    variance = start_variance
+    total = 0.0
+    for value in demeaned:
+        if not np.isfinite(variance) or variance <= 0.0:
+            return -np.inf
+        total -= 0.5 * (math.log(variance) + value * value / variance)
+        variance = omega + alpha * value * value + beta * variance
+    if not np.isfinite(total):
+        return -np.inf
+    return total
+
+
+@njit(_FILTER_RESULT(_F1, int64, float64), cache=False, nogil=True)
+def _volatility_filter(
+    log_returns: np.ndarray,
+    filter_mode: int,
+    ewma_lambda: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split a return series into a conditional volatility path and residuals.
+
+    EWMA *is* GARCH(1,1) with ``omega = 0``, ``alpha = 1 - lambda`` and
+    ``beta = lambda``, so both modes leave the same three coefficients behind and
+    the forward recursion in the simulation needs a single code path. The only
+    difference is where the coefficients come from: a decay constant the user
+    picks, or a variance-targeted fit to this product's own history.
+    """
+
+    count = log_returns.size
+    if count < 20:
+        raise ValueError("volatility filtering requires 20 valid returns")
+    total = 0.0
+    for value in log_returns:
+        if not np.isfinite(value):
+            raise ValueError("volatility filtering requires finite log returns")
+        total += value
+    mean = total / count
+    demeaned = np.empty(count, dtype=np.float64)
+    variance_sum = 0.0
+    for index in range(count):
+        deviation = log_returns[index] - mean
+        demeaned[index] = deviation
+        variance_sum += deviation * deviation
+    unconditional = variance_sum / (count - 1)
+    if not np.isfinite(unconditional) or unconditional <= 0.0:
+        raise ValueError("volatility filtering requires a positive sample variance")
+
+    quasi_likelihood = np.nan
+    if filter_mode == 0:
+        if not (0.5 <= ewma_lambda < 1.0):
+            raise ValueError("EWMA decay must sit inside [0.5, 1)")
+        omega = 0.0
+        alpha = 1.0 - ewma_lambda
+        beta = ewma_lambda
+    elif filter_mode == 1:
+        # Variance targeting pins omega to the sample variance, which turns a
+        # three-parameter fit into a 2-D search the house grid-then-refine
+        # pattern carries without scipy — and guarantees the model's long-run
+        # volatility equals the sample's instead of drifting off it.
+        # ponytail: grid + coordinate refinement. Swap in a real optimiser only
+        # if a fit is ever shown to sit off the likelihood surface's peak.
+        best_alpha = 0.05
+        best_beta = 0.90
+        best_score = -np.inf
+        coarse_alpha = np.array([0.02, 0.04, 0.06, 0.09, 0.12, 0.16, 0.20, 0.25])
+        coarse_beta = np.array([0.55, 0.66, 0.74, 0.81, 0.86, 0.90, 0.93, 0.96])
+        for alpha_candidate in coarse_alpha:
+            for beta_candidate in coarse_beta:
+                if alpha_candidate + beta_candidate >= 0.9995:
+                    continue
+                score = _garch_quasi_likelihood(
+                    demeaned,
+                    unconditional * (1.0 - alpha_candidate - beta_candidate),
+                    alpha_candidate,
+                    beta_candidate,
+                    unconditional,
+                )
+                if score > best_score:
+                    best_score = score
+                    best_alpha = alpha_candidate
+                    best_beta = beta_candidate
+        alpha_step = 0.02
+        beta_step = 0.02
+        for _ in range(16):
+            anchor_alpha = best_alpha
+            anchor_beta = best_beta
+            for alpha_direction in range(-1, 2):
+                for beta_direction in range(-1, 2):
+                    if alpha_direction == 0 and beta_direction == 0:
+                        continue
+                    alpha_candidate = anchor_alpha + alpha_direction * alpha_step
+                    beta_candidate = anchor_beta + beta_direction * beta_step
+                    if alpha_candidate < 0.0005 or alpha_candidate > 0.6:
+                        continue
+                    if beta_candidate < 0.0005 or beta_candidate > 0.999:
+                        continue
+                    if alpha_candidate + beta_candidate >= 0.9995:
+                        continue
+                    score = _garch_quasi_likelihood(
+                        demeaned,
+                        unconditional * (1.0 - alpha_candidate - beta_candidate),
+                        alpha_candidate,
+                        beta_candidate,
+                        unconditional,
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_alpha = alpha_candidate
+                        best_beta = beta_candidate
+            alpha_step *= 0.7
+            beta_step *= 0.7
+        alpha = best_alpha
+        beta = best_beta
+        omega = unconditional * (1.0 - alpha - beta)
+        quasi_likelihood = best_score
+    else:
+        raise ValueError("volatility filter mode must be 0 (EWMA) or 1 (GARCH)")
+
+    # A long run of identical closes drives an omega-free EWMA recursion toward
+    # zero variance, which would then divide the next residual by nothing. Money
+    # market funds do exactly that. ponytail: hard floor at a millionth of the
+    # sample variance; a per-product floor only matters if one is ever hit for
+    # long enough to distort the filtered path.
+    variance_floor = unconditional * 1e-6
+    residuals = np.empty(count, dtype=np.float64)
+    variance = unconditional
+    for index in range(count):
+        if variance < variance_floor:
+            variance = variance_floor
+        deviation = demeaned[index]
+        residuals[index] = deviation / math.sqrt(variance)
+        variance = omega + alpha * deviation * deviation + beta * variance
+        if not np.isfinite(variance):
+            raise ValueError("volatility filter produced a non-finite variance")
+    if variance < variance_floor:
+        variance = variance_floor
+    # `variance` now holds the conditional variance of the first simulated day —
+    # the one thing an unconditional model cannot know and the reason this lane
+    # answers "what next" rather than "what on average".
+    variance_next = variance
+
+    # Rescale to unit variance. Variance targeting already matched the long-run
+    # level, so residuals that come out slightly off unit would re-introduce the
+    # bias the targeting removed.
+    residual_sum = 0.0
+    for value in residuals:
+        residual_sum += value * value
+    residual_scale = math.sqrt(residual_sum / count)
+    if not np.isfinite(residual_scale) or residual_scale <= 0.0:
+        raise ValueError("volatility filter produced degenerate residuals")
+    for index in range(count):
+        residuals[index] = residuals[index] / residual_scale
+
+    parameters = np.array(
+        [
+            mean,
+            omega,
+            alpha,
+            beta,
+            variance_next,
+            unconditional,
+            alpha + beta,
+            quasi_likelihood,
+        ],
+        dtype=np.float64,
+    )
+    return residuals, parameters
+
+
+@njit(
+    _SIM_RESULT(_F1, float64, int64, int64, int64, float64, int64, float64),
+    cache=False,
+    nogil=True,
+)
+def filtered_historical_simulation_kernel(
+    returns_percent: np.ndarray,
+    initial_nav: float,
+    horizon_days: int,
+    path_count: int,
+    seed: int,
+    target_return_percent: float,
+    filter_mode: int,
+    ewma_lambda: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Bootstrap standardised residuals, re-inflated from today's volatility.
+
+    This is the lane that fixes the shared blind spot of the other three: they
+    are all unconditional, so a研究日 sitting in a volatility spike gets the same
+    fan as one sitting in a calm stretch. Here the fan starts from the
+    conditional variance the filter left behind and clusters forward, and a
+    large residual drawn from a calm stretch lands on top of a turbulent
+    variance — which is how a path worse than anything in the history gets made
+    at all.
+    """
+
+    valid_count = 0
+    for value in returns_percent:
+        if np.isfinite(value) and value > -100.0:
+            valid_count += 1
+    if valid_count < 20 or initial_nav <= 0.0 or horizon_days < 1 or path_count < 1:
+        raise ValueError("filtered simulation requires valid parameters and 20 returns")
+    log_returns = np.empty(valid_count, dtype=np.float64)
+    position = 0
+    for value in returns_percent:
+        if np.isfinite(value) and value > -100.0:
+            log_returns[position] = math.log1p(value / 100.0)
+            position += 1
+    residuals, parameters = _volatility_filter(log_returns, filter_mode, ewma_lambda)
+    mean = parameters[0]
+    omega = parameters[1]
+    alpha = parameters[2]
+    beta = parameters[3]
+    variance_start = parameters[4]
+    unconditional = parameters[5]
+    variance_floor = unconditional * 1e-6
+    shape = _adjusted_distribution_shape(log_returns)
+    residual_shape = _adjusted_distribution_shape(residuals)
+
+    paths = np.empty((path_count, horizon_days + 1), dtype=np.float64)
+    max_drawdowns = np.empty(path_count, dtype=np.float64)
+    state = np.uint64(seed if seed != 0 else 1)
+    for path_index in range(path_count):
+        nav = initial_nav
+        peak = initial_nav
+        worst = 0.0
+        paths[path_index, 0] = nav
+        variance = variance_start
+        for day in range(1, horizon_days + 1):
+            if variance < variance_floor:
+                variance = variance_floor
+            state, draw = _next_uniform(state)
+            index = int(math.floor(draw * valid_count))
+            if index >= valid_count:
+                index = valid_count - 1
+            deviation = math.sqrt(variance) * residuals[index]
+            nav *= math.exp(mean + deviation)
+            if not np.isfinite(nav) or nav <= 0.0:
+                raise ValueError("non-finite filtered simulation path")
+            if nav > peak:
+                peak = nav
+            drawdown = (peak - nav) / peak
+            if drawdown > worst:
+                worst = drawdown
+            paths[path_index, day] = nav
+            variance = omega + alpha * deviation * deviation + beta * variance
+            if not np.isfinite(variance):
+                raise ValueError("non-finite filtered simulation variance")
+        max_drawdowns[path_index] = worst
+    sample, percentiles, terminal, summary, days = _summarize_simulation(
+        paths,
+        max_drawdowns,
+        initial_nav,
+        target_return_percent / 100.0,
+    )
+    assumptions = np.full(SIMULATION_ASSUMPTION_SLOTS, np.nan, dtype=np.float64)
+    assumptions[0] = valid_count
+    assumptions[1] = target_return_percent
+    assumptions[2] = mean
+    assumptions[3] = math.sqrt(unconditional)
+    assumptions[4] = shape[2]
+    assumptions[5] = shape[3]
+    assumptions[12] = math.sqrt(variance_start)
+    assumptions[13] = parameters[6]
+    assumptions[14] = omega
+    assumptions[15] = alpha
+    assumptions[16] = beta
+    if filter_mode == 0:
+        assumptions[17] = ewma_lambda
+    assumptions[18] = residual_shape[2]
+    assumptions[19] = residual_shape[3]
+    packed = np.empty(days.size + assumptions.size, dtype=np.float64)
+    packed[: days.size] = days
+    packed[days.size :] = assumptions
+    return sample, percentiles, terminal, summary, packed
+
+
+@njit(_REALIZED_RESULT(_F1, float64, _F2, _F1, float64), cache=False, nogil=True)
+def realized_path_comparison_kernel(
+    future_closes: np.ndarray,
+    base_close: float,
+    percentiles: np.ndarray,
+    terminal_values: np.ndarray,
+    initial_nav: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Score what actually happened after the research day against one model.
+
+    The realised prices arrive here only to be *measured*; nothing computed in
+    this kernel can reach the simulation inputs, which is what keeps the panel
+    free of look-ahead. Coverage is treated as a spectrum: a horizon the data
+    only partly covers still scores the days it has, and only the exact
+    percentile rank — which compares one terminal value against a distribution
+    of the same length — waits for a complete horizon.
+    """
+
+    day_count = percentiles.shape[1]
+    horizon = day_count - 1
+    if horizon < 1 or initial_nav <= 0.0:
+        raise ValueError("realized comparison requires a positive initial nav and horizon")
+    if not np.isfinite(base_close) or base_close <= 0.0:
+        raise ValueError("realized comparison requires a positive base close")
+    usable = future_closes.size
+    if usable > horizon:
+        usable = horizon
+    path = np.empty(usable + 1, dtype=np.float64)
+    path[0] = initial_nav
+    covered = 0
+    finite_count = 0
+    inside_count = 0
+    above_median_count = 0
+    breach_count = 0
+    # Signed distance outside the 5%—95% envelope, at its widest. A "first
+    # breach day" was tried here and read as noise: on day one the envelope is
+    # a single day of volatility wide, so almost any real move breaches it
+    # while the path still sits inside the band for the other 250 days.
+    worst_gap = 0.0
+    worst_gap_day = -1.0
+    peak = initial_nav
+    worst_drawdown = 0.0
+    for day in range(1, usable + 1):
+        close = future_closes[day - 1]
+        if not np.isfinite(close) or close <= 0.0:
+            path[day] = np.nan
+            continue
+        nav = initial_nav * close / base_close
+        path[day] = nav
+        covered = day
+        finite_count += 1
+        if nav > peak:
+            peak = nav
+        drawdown = (peak - nav) / peak
+        if drawdown > worst_drawdown:
+            worst_drawdown = drawdown
+        gap = 0.0
+        if nav < percentiles[0, day]:
+            gap = nav - percentiles[0, day]
+        elif nav > percentiles[4, day]:
+            gap = nav - percentiles[4, day]
+        if gap == 0.0:
+            inside_count += 1
+        else:
+            breach_count += 1
+            if abs(gap) > abs(worst_gap):
+                worst_gap = gap
+                worst_gap_day = float(day)
+        if nav > percentiles[2, day]:
+            above_median_count += 1
+    terminal_nav = np.nan
+    terminal_return = np.nan
+    band = -1.0
+    if covered > 0:
+        terminal_nav = path[covered]
+        terminal_return = terminal_nav / initial_nav - 1.0
+        band = 5.0
+        for index in range(5):
+            if terminal_nav <= percentiles[index, covered]:
+                band = float(index)
+                break
+    percentile_rank = np.nan
+    if covered == horizon and covered > 0 and terminal_values.size > 0:
+        below = 0
+        for value in terminal_values:
+            if value <= terminal_nav:
+                below += 1
+        percentile_rank = below / terminal_values.size
+    containment = np.nan
+    above_median_ratio = np.nan
+    if finite_count > 0:
+        containment = inside_count / finite_count
+        above_median_ratio = above_median_count / finite_count
+    summary = np.array(
+        [
+            float(horizon),
+            float(covered),
+            1.0 if covered == horizon and covered > 0 else 0.0,
+            terminal_nav,
+            terminal_return,
+            percentile_rank,
+            band,
+            containment,
+            float(breach_count),
+            worst_gap if worst_gap_day >= 0.0 else np.nan,
+            worst_gap_day,
+            worst_drawdown if finite_count > 0 else np.nan,
+            above_median_ratio,
+            float(finite_count),
+        ],
+        dtype=np.float64,
+    )
+    return path, summary
+
+
+@njit(_F1(_F2, float64), cache=False, nogil=True)
 def simulation_comparison_kernel(
-    parametric_summary: np.ndarray,
-    bootstrap_summary: np.ndarray,
+    summaries: np.ndarray,
     initial_nav: float,
 ) -> np.ndarray:
+    """Spread of the headline figures across every model that ran.
+
+    A spread over N lanes rather than a difference between two: with five models
+    the question stopped being "do these two agree" and became "how much of this
+    number is the model's choice rather than the product's history".
+    """
+
+    lane_count = summaries.shape[0]
+    if lane_count < 2 or summaries.shape[1] < 12:
+        raise ValueError("model comparison needs at least two 12-slot summaries")
+    if not np.isfinite(initial_nav) or initial_nav <= 0.0:
+        raise ValueError("model comparison requires a positive initial nav")
     output = np.empty(5, dtype=np.float64)
-    output[0] = abs(
-        (parametric_summary[0] / initial_nav - 1.0)
-        - (bootstrap_summary[0] / initial_nav - 1.0)
-    )
-    output[1] = abs(
-        (parametric_summary[2] / initial_nav - 1.0)
-        - (bootstrap_summary[2] / initial_nav - 1.0)
-    )
-    output[2] = abs(parametric_summary[5] - bootstrap_summary[5])
-    output[3] = abs(parametric_summary[7] - bootstrap_summary[7])
+    # p05 terminal nav, median terminal nav, loss probability, 95% CVaR. The
+    # first two are navs and read as returns; the last two already are ratios.
+    columns = np.array([0, 2, 5, 7], dtype=np.int64)
+    for position in range(columns.size):
+        column = columns[position]
+        lowest = np.inf
+        highest = -np.inf
+        for lane in range(lane_count):
+            value = summaries[lane, column]
+            if column == 0 or column == 2:
+                value = value / initial_nav - 1.0
+            if not np.isfinite(value):
+                raise ValueError("model comparison requires finite summaries")
+            if value < lowest:
+                lowest = value
+            if value > highest:
+                highest = value
+        output[position] = highest - lowest
     largest = max(output[0], output[1], output[2], output[3])
     output[4] = 2.0 if largest >= 0.1 else (1.0 if largest >= 0.03 else 0.0)
     return output
@@ -962,7 +1411,14 @@ def terminal_density_kernel(
     alternate_scale = interquartile_range / 1.34
     if robust_scale <= 0.0 or (alternate_scale > 0.0 and alternate_scale < robust_scale):
         robust_scale = alternate_scale
-    minimum_bandwidth = max(abs(mean) * 0.0005, 1e-6)
+    # Anchored on the median, not the mean. `robust_scale` above already prefers
+    # the IQR when an outlier dominates, but this floor did not: one path that
+    # compounded to 1e12 — which the filtered lanes can produce, since EWMA's
+    # variance has no mean reversion — dragged the mean to 1e9 and set the
+    # floor, and with it the chart's whole nav axis, to six figures. The
+    # quantiles were fine; the axis made them invisible.
+    median_nav = _linear_quantile(sorted_values, 0.5)
+    minimum_bandwidth = max(abs(median_nav) * 0.0005, 1e-6)
     bandwidth = max(
         minimum_bandwidth,
         0.9 * robust_scale * sorted_values.size ** (-0.2),
@@ -1233,7 +1689,11 @@ _PRODUCTION_KERNELS = (
     _summarize_simulation,
     parametric_monte_carlo_kernel,
     stationary_block_bootstrap_kernel,
+    _garch_quasi_likelihood,
+    _volatility_filter,
+    filtered_historical_simulation_kernel,
     simulation_comparison_kernel,
+    realized_path_comparison_kernel,
     terminal_density_kernel,
     regime_analysis_kernel,
 )
@@ -1290,9 +1750,24 @@ def warm_product_analysis_numba_kernels() -> dict[str, object]:
     paths = np.ascontiguousarray(np.ones((2, 3), dtype=np.float64))
     drawdowns = np.ascontiguousarray(np.zeros(2, dtype=np.float64))
     _summarize_simulation(paths, drawdowns, 1.0, 0.05)
-    parametric = parametric_monte_carlo_kernel(returns, 1.0, 2, 3, 1, 5.0)
+    parametric = parametric_monte_carlo_kernel(returns, 1.0, 2, 3, 1, 5.0, 1)
+    parametric_monte_carlo_kernel(returns, 1.0, 2, 3, 1, 5.0, 0)
     bootstrap = stationary_block_bootstrap_kernel(returns, np.zeros(returns.size, dtype=np.int64), 1.0, 2, 3, 2, 5.0, 5)
-    simulation_comparison_kernel(parametric[3], bootstrap[3], 1.0)
+    _garch_quasi_likelihood(log_returns, 1e-6, 0.05, 0.9, 1e-4)
+    _volatility_filter(log_returns, 0, 0.94)
+    _volatility_filter(log_returns, 1, 0.94)
+    filtered_historical_simulation_kernel(returns, 1.0, 2, 3, 3, 5.0, 0, 0.94)
+    filtered_historical_simulation_kernel(returns, 1.0, 2, 3, 4, 5.0, 1, 0.94)
+    simulation_comparison_kernel(
+        np.ascontiguousarray(np.vstack((parametric[3], bootstrap[3]))), 1.0
+    )
+    realized_path_comparison_kernel(
+        np.ascontiguousarray(np.array([1.01, np.nan], dtype=np.float64)),
+        1.0,
+        parametric[1],
+        parametric[2],
+        1.0,
+    )
     terminal_density_kernel(parametric[2], parametric[1], 21, 1.0)
     regime_analysis_kernel(
         dates,
@@ -1309,16 +1784,19 @@ def warm_product_analysis_numba_kernels() -> dict[str, object]:
 
 
 __all__ = [
+    "SIMULATION_ASSUMPTION_SLOTS",
     "bollinger_kernel",
     "box_plot_kernel",
     "daily_returns_percent_kernel",
     "distribution_interpretation_codes_kernel",
+    "filtered_historical_simulation_kernel",
     "histogram_normal_pdf_kernel",
     "kdj_kernel",
     "moving_average_kernel",
     "normal_qq_kernel",
     "parametric_monte_carlo_kernel",
     "product_analysis_execution_audit",
+    "realized_path_comparison_kernel",
     "regime_analysis_kernel",
     "return_statistics_kernel",
     "simulation_comparison_kernel",

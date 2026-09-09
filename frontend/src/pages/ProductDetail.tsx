@@ -34,18 +34,25 @@ import {
 } from '../components/metrics/useMetricDisplayPreference';
 import {
   BOOTSTRAP_BLOCK_LENGTH_OPTIONS,
+  FHS_EWMA_LAMBDA_OPTIONS,
   MIN_SIMULATION_OBSERVATIONS,
   MONTE_CARLO_HORIZON_OPTIONS,
   MONTE_CARLO_PATH_OPTIONS,
+  SIMULATION_METHOD_META,
+  SIMULATION_METHOD_ORDER,
   STATISTICS_PERIOD_OPTIONS,
   analyzeProduct,
   type DistributionInterpretation,
+  type FuturePathSimulation,
   type ProductAnalysisResponse,
   type ProductAnalysisRequest,
   type ProductRegimeSegment,
+  type RealizedFuturePath,
+  type RealizedMethodScore,
   type SimulationMethod,
   type StatisticsPeriod,
 } from '../services/productAnalysis';
+import { useResearchDay } from '../app/ResearchContext';
 import { readReturnNavigationState, returnToOrigin } from '../utils/returnNavigation';
 
 interface TimeSeriesPoint {
@@ -127,6 +134,10 @@ const histogramBinWidthOptions = [
 ];
 
 const FUTURE_SIMULATION_INITIAL_NAV = 1;
+// Near-black against the pastel scenario palette: the overlay is the only line
+// on the chart that is a fact, and it has to read that way at a glance.
+const REALIZED_COLOR = '#0f172a';
+const REALIZED_SERIES_NAME = '实际走势';
 
 const decimalFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
 const signedPercentFormatters: Record<number, Intl.NumberFormat> = {};
@@ -311,6 +322,136 @@ function MetricCard({ title, value, description }: { title: string; value: strin
   );
 }
 
+/**
+ * What actually happened after the研究日, in one strip.
+ *
+ * Deliberately not another `MetricCard` row: the simulated quantiles above are
+ * scenarios and these four numbers are facts, and a reader who cannot tell them
+ * apart at a glance will quote a quantile as an outcome. One block, its own
+ * frame, and the hindsight caveat attached to it rather than buried in a
+ * footnote.
+ */
+/**
+ * The fitted numbers behind whichever model is on screen.
+ *
+ * Three shapes, not five: the normal and four-moment lanes differ only in what
+ * they matched, and the two filtered lanes differ only in where their
+ * coefficients came from.
+ */
+function simulationAssumptionNote(simulation: FuturePathSimulation): string {
+  const { assumptions: a, method } = simulation;
+  if (method === 'block_bootstrap') {
+    return ` 名义平均区块长度 ${a.averageBlockLength} 个收益观察值；遇缺口或区间末尾重新抽样，实际区块长度可能更短。`;
+  }
+  if (method === 'fhs_ewma' || method === 'fhs_garch') {
+    const conditional = formatRatioPercent(a.conditionalVolatilityStart);
+    const longRun = formatRatioPercent(a.dailyLogVolatility);
+    const coefficients = method === 'fhs_ewma'
+      // The panel above already says EWMA has no mean reversion; repeating it
+      // here just made the same sentence appear twice on one screen.
+      ? `λ = ${formatDecimal(a.ewmaLambda, 2)}（α = ${formatDecimal(a.garchAlpha, 3)}、β = ${formatDecimal(a.garchBeta, 3)}、ω = 0）`
+      : `准极大似然拟合 α = ${formatDecimal(a.garchAlpha, 3)}、β = ${formatDecimal(a.garchBeta, 3)}、ω = ${(a.garchOmega ?? 0).toExponential(2)}，持续性 ${formatDecimal(a.volatilityPersistence, 3)}`;
+    return ` 起始条件日波动 ${conditional}，长期日波动 ${longRun}${
+      a.conditionalVolatilityStart !== null && a.dailyLogVolatility !== null
+        ? `（当前是长期的 ${formatDecimal(a.conditionalVolatilityStart / a.dailyLogVolatility, 2)} 倍）`
+        : ''
+    }；${coefficients}。滤波后残差偏度 ${formatDecimal(a.residualSkewness, 2)}、超额峰度 ${formatDecimal(a.residualExcessKurtosis, 2)}——这些残差就是路径抽样的来源，峰度仍高说明肥尾不是波动聚集单独造成的。`;
+  }
+  const base = ` 日均对数收益 ${formatRatioPercent(a.meanDailyLogReturn)}，日波动 ${formatRatioPercent(a.dailyLogVolatility)}；历史对数收益偏度 ${formatDecimal(a.historicalLogSkewness, 2)}、超额峰度 ${formatDecimal(a.historicalLogExcessKurtosis, 2)}`;
+  if (method === 'gaussian') {
+    return `${base}——本模型不使用这两个形状参数，只用均值与波动率。`;
+  }
+  return `${base}，拟合值分别为 ${formatDecimal(a.fittedLogSkewness, 2)}、${formatDecimal(a.fittedLogExcessKurtosis, 2)}（${
+    a.shapeCalibrationStatus === 'matched' ? '四矩校准已匹配'
+      : a.shapeCalibrationStatus === 'approximate' ? '四矩近似校准' : '正态安全降级'
+  }）。`;
+}
+
+function RealizedFutureStrip({
+  realized,
+  score,
+  simulatedAverageMaxDrawdown,
+}: {
+  realized: RealizedFuturePath;
+  score: RealizedMethodScore;
+  /** The model's own average path drawdown, so 42% vs 22% reads as one figure. */
+  simulatedAverageMaxDrawdown: number;
+}) {
+  const coverage = realized.complete
+    ? `完整覆盖 ${realized.coveredDays}/${realized.requestedDays} 个交易日`
+    : `仅覆盖 ${realized.coveredDays}/${realized.requestedDays} 个交易日`;
+  const gapToMedian =
+    realized.terminalNav !== null && score.simulatedP50 !== null
+      ? realized.terminalNav / score.simulatedP50 - 1
+      : null;
+  return (
+    <section
+      data-testid="realized-future-strip"
+      aria-label="研究日之后的实际走势回看"
+      className="mt-4 overflow-hidden rounded-2xl border border-slate-900/15 bg-slate-50"
+    >
+      <div className="flex flex-col gap-1 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-baseline sm:justify-between">
+        <h4 className="text-sm font-semibold text-slate-900">
+          研究日之后实际发生了什么
+          <span className="ml-2 text-xs font-normal text-slate-500">
+            {realized.baseDate} → {realized.endDate}
+          </span>
+        </h4>
+        <span
+          className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${realized.complete ? 'bg-slate-900 text-white' : 'bg-amber-100 text-amber-800'}`}
+        >
+          {coverage}
+        </span>
+      </div>
+      <dl className="grid gap-x-4 gap-y-3 px-4 py-3 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          { label: '实际期末净值', value: formatDecimal(realized.terminalNav, 4), note: `基准日净值 ${formatDecimal(realized.baseNav, 2)}` },
+          { label: '实际期末收益', value: formatRatioPercent(realized.terminalReturn), note: gapToMedian === null ? '—' : `相对模拟中位数 ${formatRatioPercent(gapToMedian)}` },
+          {
+            label: '落在模拟分布',
+            value: score.percentileRank === null ? score.bandLabel ?? '--' : `${formatRatioPercent(score.percentileRank)} 分位`,
+            note: score.percentileRank === null ? '区间未走完，只给所处区间' : score.bandLabel ?? '',
+          },
+          {
+            label: '实际期间最大回撤',
+            value: formatRatioPercent(realized.maxDrawdown),
+            note: `模拟路径平均 ${formatRatioPercent(simulatedAverageMaxDrawdown)}`,
+          },
+        ].map((item) => (
+          <div key={item.label}>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">{item.label}</dt>
+            <dd className="mt-1 text-2xl font-bold tabular-nums text-slate-900">{item.value}</dd>
+            <dd className="mt-0.5 text-xs text-slate-500">{item.note}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="space-y-1 border-t border-slate-200 px-4 py-3 text-xs leading-5 text-slate-600">
+        <p>
+          {score.methodLabel}当时给出的第 {realized.coveredDays} 个交易日中位数为{' '}
+          {formatDecimal(score.simulatedP50, 4)}，5%—95% 区间{' '}
+          {formatDecimal(score.simulatedP05, 4)} — {formatDecimal(score.simulatedP95, 4)}。{score.verdict}
+        </p>
+        <p>
+          实际路径有 {realized.observationDays - score.breachDays} / {realized.observationDays} 个已披露交易日留在 5%—95% 区间内
+          （占比 {formatRatioPercent(score.containmentRatio)}，其中 {formatRatioPercent(score.aboveMedianRatio)} 的交易日位于中位数之上）。
+          {score.worstBreachDay === null
+            ? ' 期间没有走出该区间。'
+            : ` 偏离最远出现在第 ${score.worstBreachDay} 个交易日（${realized.dates[score.worstBreachDay] ?? '日期缺失'}），越出区间 ${formatDecimal(Math.abs(score.worstBreachGap ?? 0), 4)} 个净值单位（${(score.worstBreachGap ?? 0) < 0 ? '向下' : '向上'}）。`}
+          {' '}单条路径的区间内天数波动很大，只作描述用，模型好坏看期末分位。
+        </p>
+        {realized.observationDays < realized.coveredDays && (
+          <p className="text-amber-700">
+            其中 {realized.coveredDays - realized.observationDays} 个交易日没有披露净值，未纳入区间与回撤统计。
+          </p>
+        )}
+        <p className="font-medium text-slate-700">
+          这条走势在研究日 {realized.asOf} 当天不可得，只用于事后检验模型，不参与任何模拟输入。
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function DistributionMetricCard({
   title,
   value,
@@ -376,6 +517,7 @@ export default function ProductDetail() {
   const [researchPeriods, setResearchPeriods] = useState<string[]>(['1Y']);
   const [researchResults, setResearchResults] = useState<EvaluationResult[]>([]);
   const [researchAsOf, setResearchAsOf] = useState('');
+  const platformAsOf = useResearchDay();
   const [researchLoading, setResearchLoading] = useState(false);
   const [researchError, setResearchError] = useState<string | null>(null);
   const [definitionIndicator, setDefinitionIndicator] = useState<IndicatorDefinition | null>(null);
@@ -384,6 +526,7 @@ export default function ProductDetail() {
   const [simulationHorizon, setSimulationHorizon] = useState(252);
   const [simulationPathCount, setSimulationPathCount] = useState(500);
   const [bootstrapBlockLength, setBootstrapBlockLength] = useState(20);
+  const [fhsEwmaLambda, setFhsEwmaLambda] = useState(0.94);
   const [simulationTargetReturn, setSimulationTargetReturn] = useState(5);
   const [simulationRun, setSimulationRun] = useState(0);
   const [activeTab, setActiveTab] = useState<'chart' | 'regime' | 'statistics' | 'simulation'>('chart');
@@ -696,7 +839,8 @@ export default function ProductDetail() {
     boll_period: 20, boll_multiplier: 2, kdj_period: 9, kdj_k_smoothing: 3, kdj_d_smoothing: 3,
     histogram_bin_width: histogramBinWidth,
     simulation_horizon: 252, simulation_path_count: 500,
-    bootstrap_block_length: 20, simulation_target_return: 5, simulation_run: 0,
+    bootstrap_block_length: 20, fhs_ewma_lambda: 0.94,
+    simulation_target_return: 5, simulation_run: 0,
     regime: selectedHistoricalRegimeRunSummary && selectedHistoricalRegimePublication ? {
       run_id: selectedHistoricalRegimeRunSummary.id,
       publication_id: selectedHistoricalRegimePublication.id,
@@ -704,7 +848,7 @@ export default function ProductDetail() {
       ...(selectedSegmentId ? { segment_id: selectedSegmentId } : {}),
     } : null,
   }), [statisticsPeriod, analysisBasis, histogramBinWidth, selectedHistoricalRegimeRunSummary, selectedHistoricalRegimePublication, selectedStateId, selectedSegmentId]);
-  const simulationKey = JSON.stringify([productId, productKind, analysisRequest, simulationHorizon, simulationPathCount, bootstrapBlockLength, simulationTargetReturn]);
+  const simulationKey = JSON.stringify([productId, productKind, analysisRequest, simulationHorizon, simulationPathCount, bootstrapBlockLength, fhsEwmaLambda, simulationTargetReturn]);
   const currentSimulation = simulationRecord?.key === simulationKey ? simulationRecord : null;
   const simulationAnalysis = currentSimulation?.result;
   useEffect(() => {
@@ -725,7 +869,8 @@ export default function ProductDetail() {
       const result = await analyzeProduct(productId, productKind, {
         ...analysisRequest, include_simulation: true,
         simulation_horizon: simulationHorizon, simulation_path_count: simulationPathCount,
-        bootstrap_block_length: bootstrapBlockLength, simulation_target_return: simulationTargetReturn,
+        bootstrap_block_length: bootstrapBlockLength, fhs_ewma_lambda: fhsEwmaLambda,
+        simulation_target_return: simulationTargetReturn,
         simulation_run: nextRun,
       }, controller.signal);
       if (!controller.signal.aborted && generation === simulationGeneration.current) setSimulationRecord({ key: simulationKey, result });
@@ -1416,11 +1561,31 @@ export default function ProductDetail() {
   }, [normalQqData]);
 
   const simulationInitialNav = simulationAnalysis?.simulation?.initialNav ?? FUTURE_SIMULATION_INITIAL_NAV;
-  const parametricSimulation = simulationAnalysis?.simulation?.parametric ?? null;
-  const bootstrapSimulation = simulationAnalysis?.simulation?.blockBootstrap ?? null;
-  const activeSimulation = simulationMethod === 'parametric' ? parametricSimulation : bootstrapSimulation;
+  const simulationMethods = simulationAnalysis?.simulation?.methods ?? SIMULATION_METHOD_ORDER;
+  const activeSimulation = simulationAnalysis?.simulation?.byMethod[simulationMethod] ?? null;
   const simulationComparison = simulationAnalysis?.simulation?.comparison ?? null;
   const terminalNavDensity = simulationAnalysis?.simulation?.densities[simulationMethod] ?? null;
+  const realized = simulationAnalysis?.simulation?.realized ?? null;
+  const realizedStatus = simulationAnalysis?.simulation?.realizedStatus ?? 'off';
+  const realizedScore = realized?.byMethod[simulationMethod] ?? null;
+  /**
+   * Whose median sat closest to what actually happened, once the horizon is
+   * fully covered. One product on one research day proves nothing about the
+   * models in general — but it turns the model strip into a scoreboard, which
+   * is the only reason a reader compares five lanes at all.
+   */
+  const closestMethod = useMemo<SimulationMethod | null>(() => {
+    if (!realized?.complete) return null;
+    let best: SimulationMethod | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const method of simulationMethods) {
+      const rank = realized.byMethod[method]?.percentileRank;
+      if (rank === null || rank === undefined) continue;
+      const distance = Math.abs(rank - 0.5);
+      if (distance < bestDistance) { bestDistance = distance; best = method; }
+    }
+    return best;
+  }, [realized, simulationMethods]);
 
   const simulationOption = useMemo(() => {
     if (!activeSimulation || !terminalNavDensity || simulationInitialNav === null) {
@@ -1439,21 +1604,25 @@ export default function ProductDetail() {
       simulatedReturn: point.simulatedReturn,
     }));
     const countAxisMax = terminalNavDensity.countAxisMax;
-    const navAxisMin = terminalNavDensity.navAxisMin;
-    const navAxisMax = terminalNavDensity.navAxisMax;
+    // The realised path is exactly what may fall outside the simulated range,
+    // and that case matters most — an axis fitted to the simulation alone would
+    // clip the evidence out of sight.
+    const realizedNavValues = (realized?.nav ?? []).filter((value): value is number => value !== null);
+    const navAxisMin = Math.min(terminalNavDensity.navAxisMin, ...realizedNavValues);
+    const navAxisMax = Math.max(terminalNavDensity.navAxisMax, ...realizedNavValues);
     return {
       animation: false,
       aria: {
         enabled: true,
         decal: { show: true },
-        description: `${activeSimulation.methodLabel}虚拟净值路径图，右侧叠加 ${terminalNavDensity.sampleSize} 条模拟期末净值的横向直方图与概率密度曲线。`,
+        description: `${activeSimulation.methodLabel}虚拟净值路径图，右侧叠加 ${terminalNavDensity.sampleSize} 条模拟期末净值的横向直方图与概率密度曲线。${realized ? `另叠加研究日 ${realized.asOf} 之后 ${realized.coveredDays} 个交易日的实际净值走势。` : ''}`,
       },
       tooltip: {
         trigger: 'axis',
         valueFormatter: (value: number | string) => formatDecimal(Number(value), 4),
       },
       legend: {
-        data: percentileSeries.map((series) => series.name),
+        data: [...percentileSeries.map((series) => series.name), ...(realized ? [REALIZED_SERIES_NAME] : [])],
         top: 4,
         textStyle: { color: '#475569', fontSize: 11 },
       },
@@ -1631,9 +1800,36 @@ export default function ProductDetail() {
           lineStyle: { width: 1.5, type: 'dotted', color: '#7c3aed' },
           z: 4,
         },
+        // Drawn last and darkest: one line here is a fact and the others are
+        // scenarios, and a reader must never quote a quantile as what happened.
+        ...(realized ? [{
+          name: REALIZED_SERIES_NAME,
+          type: 'line',
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          data: realized.nav,
+          showSymbol: false,
+          connectNulls: false,
+          lineStyle: { width: 2.6, color: REALIZED_COLOR },
+          z: 6,
+          tooltip: {
+            valueFormatter: (value: number | string) => formatDecimal(Number(value), 4),
+          },
+        }] : []),
+        ...(realized?.complete && realized.terminalNav !== null ? [{
+          name: '实际期末净值',
+          type: 'line',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: [[0, realized.terminalNav], [countAxisMax, realized.terminalNav]],
+          showSymbol: false,
+          silent: true,
+          lineStyle: { width: 2, color: REALIZED_COLOR },
+          z: 6,
+        }] : []),
       ],
     };
-  }, [activeSimulation, simulationHorizon, terminalNavDensity]);
+  }, [activeSimulation, realized, simulationHorizon, terminalNavDensity]);
 
   const statisticsRange = useMemo(() => {
     if (dailyReturns.length === 0) {
@@ -1842,6 +2038,15 @@ export default function ProductDetail() {
                   <div className="grid gap-3">
                     <label className="text-sm font-medium text-slate-700">截止日（可选）
                       <input type="date" value={researchAsOf} onChange={(event) => setResearchAsOf(event.target.value)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" />
+                      {/* 未填不等于"用全部数据"——它跟随平台研究日。说出来，
+                          否则被截断的数字看起来像 bug。 */}
+                      <span className="mt-1 block text-xs font-normal text-slate-500">
+                        {researchAsOf
+                          ? '仅本页生效，覆盖平台研究日。'
+                          : platformAsOf
+                            ? `未填则跟随平台研究日 ${platformAsOf}。`
+                            : '未填则使用磁盘上的全部数据。'}
+                      </span>
                     </label>
                   </div>
                 </div>
@@ -2072,100 +2277,162 @@ export default function ProductDetail() {
                   <div>
                     <div className="max-w-2xl">
                       <h2 id="future-simulation-title" className="text-base font-semibold text-slate-900">未来虚拟净值模拟</h2>
-                      <details className="mt-2 text-xs leading-5 text-slate-500"><summary className="cursor-pointer">两种模拟方法如何使用历史样本</summary><p className="mt-2">参数化蒙特卡洛使用 sinh-arcsinh 分布同时校准历史对数收益的均值、波动率、偏度与超额峰度；区块 Bootstrap 成段抽取历史收益，保留段内短期依赖，条件研究时，区块不会连续跨越情景区间；遇到缺失值或区间末尾会重新抽样。模拟按一个收益观察值对应一个交易日建模，非日频净值需结合数据口径解释。</p></details>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">
+                      {/* Each model now explains itself inside its own panel, so
+                          the old "how the two methods use the sample" disclosure
+                          was saying it twice. */}
+                      <p className="mt-1.5 text-xs leading-5 text-slate-500">
                         所有路径统一从虚拟净值 1.0000 出发；期末 0.9000 表示亏损 10%，1.1000 表示盈利 10%。
+                        模拟按一个收益观察值对应一个交易日建模，非日频净值需结合数据口径解释。
                       </p>
                     </div>
-                    <div className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                      <label className="text-xs font-medium text-slate-600">
-                        模拟未来区间
-                        <select
-                          aria-label="模拟未来区间"
-                          value={simulationHorizon}
-                          onChange={(event) => setSimulationHorizon(Number(event.target.value))}
-                          className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
-                        >
-                          {MONTE_CARLO_HORIZON_OPTIONS.map((option) => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-xs font-medium text-slate-600">
-                        模拟路径数
-                        <select
-                          aria-label="模拟路径数"
-                          value={simulationPathCount}
-                          onChange={(event) => setSimulationPathCount(Number(event.target.value))}
-                          className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
-                        >
-                          {MONTE_CARLO_PATH_OPTIONS.map((count) => (
-                            <option key={count} value={count}>{count} 条</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-xs font-medium text-slate-600">
-                        Bootstrap 平均区块
-                        <select
-                          aria-label="Bootstrap 平均区块长度"
-                          value={bootstrapBlockLength}
-                          onChange={(event) => setBootstrapBlockLength(Number(event.target.value))}
-                          className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
-                        >
-                          {BOOTSTRAP_BLOCK_LENGTH_OPTIONS.map((length) => (
-                            <option key={length} value={length}>{length} 个收益观察值</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-xs font-medium text-slate-600">
-                        目标期末收益率
-                        <span className="relative mt-1 block">
-                          <input
-                            aria-label="目标期末收益率"
-                            type="number"
-                            min="-100"
-                            max="1000"
-                            step="1"
-                            value={simulationTargetReturn}
-                            onChange={(event) => setSimulationTargetReturn(Math.max(-100, Math.min(1000, Number(event.target.value) || 0)))}
-                            className="min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 pr-8 text-sm"
-                          />
-                          <span className="pointer-events-none absolute right-3 top-2.5 text-sm text-slate-400">%</span>
-                        </span>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => void runSimulation()}
-                        disabled={analysisLoading || !analysis?.researchContext?.simulationEligible || Boolean(currentSimulation?.loading)}
-                        className="min-h-10 self-end rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2"
-                      >
-                        {currentSimulation?.loading ? '正在模拟…' : activeSimulation ? '重新模拟' : '运行模拟'}
-                      </button>
-                    </div>
-                  </div>
-                  <fieldset className="mt-5">
-                    <legend className="sr-only">模拟方法</legend>
-                    <div className="inline-flex rounded-xl border border-violet-200 bg-white p-1" aria-label="模拟方法">
-                      {([
-                        ['parametric', '参数化蒙特卡洛'],
-                        ['block_bootstrap', '区块 Bootstrap'],
-                      ] as Array<[SimulationMethod, string]>).map(([method, label]) => (
-                        <label
-                          key={method}
-                          className={`cursor-pointer rounded-lg px-4 py-2 text-sm font-semibold transition ${simulationMethod === method ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-violet-50'}`}
-                        >
-                          <input
-                            className="sr-only"
-                            type="radio"
-                            name="simulation-method"
-                            value={method}
-                            checked={simulationMethod === method}
-                            onChange={() => setSimulationMethod(method)}
-                          />
-                          {label}
+                    {/* Two sections, in reading order: what the experiment is,
+                        then which model answers it. The old single row mixed
+                        Bootstrap's block length in with the horizon and the
+                        path budget, which read as though all five applied
+                        everywhere — only one of them did. */}
+                    <fieldset className="mt-5" data-testid="simulation-experiment-settings">
+                      <legend className="text-[11px] font-semibold uppercase tracking-[0.08em] text-violet-800">
+                        ① 实验设置 · 对所有模型一致
+                      </legend>
+                      <div className="mt-2 grid min-w-0 gap-3 rounded-xl border border-violet-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <label className="text-xs font-medium text-slate-600">
+                          模拟未来区间
+                          <select
+                            aria-label="模拟未来区间"
+                            value={simulationHorizon}
+                            onChange={(event) => setSimulationHorizon(Number(event.target.value))}
+                            className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                          >
+                            {MONTE_CARLO_HORIZON_OPTIONS.map((option) => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
                         </label>
-                      ))}
+                        <label className="text-xs font-medium text-slate-600">
+                          模拟路径数
+                          <select
+                            aria-label="模拟路径数"
+                            value={simulationPathCount}
+                            onChange={(event) => setSimulationPathCount(Number(event.target.value))}
+                            className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                          >
+                            {MONTE_CARLO_PATH_OPTIONS.map((count) => (
+                              <option key={count} value={count}>{count} 条 / 每个模型</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="text-xs font-medium text-slate-600">
+                          目标期末收益率
+                          <span className="relative mt-1 block">
+                            <input
+                              aria-label="目标期末收益率"
+                              type="number"
+                              min="-100"
+                              max="1000"
+                              step="1"
+                              value={simulationTargetReturn}
+                              onChange={(event) => setSimulationTargetReturn(Math.max(-100, Math.min(1000, Number(event.target.value) || 0)))}
+                              className="min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 pr-8 text-sm"
+                            />
+                            <span className="pointer-events-none absolute right-3 top-2.5 text-sm text-slate-400">%</span>
+                          </span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void runSimulation()}
+                          disabled={analysisLoading || !analysis?.researchContext?.simulationEligible || Boolean(currentSimulation?.loading)}
+                          className="min-h-10 self-end rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2"
+                        >
+                          {currentSimulation?.loading ? '正在模拟…' : activeSimulation ? '重新模拟' : '运行模拟'}
+                        </button>
+                      </div>
+                      <p className="mt-1.5 text-[11px] leading-4 text-slate-500">
+                        一次运行同时跑完所有模型，共用同一区间、路径预算与目标收益——否则对比表与实际走势叠加都失去意义。
+                      </p>
+                    </fieldset>
+                  </div>
+                  <fieldset className="mt-4" data-testid="simulation-model-picker">
+                    <legend className="text-[11px] font-semibold uppercase tracking-[0.08em] text-violet-800">
+                      ② 选择模型 · 参数各自独立
+                    </legend>
+                    <div className="mt-2 overflow-hidden rounded-xl border border-violet-200 bg-white">
+                      <div className="flex flex-wrap gap-1 border-b border-violet-100 bg-violet-50/70 p-1.5" role="radiogroup" aria-label="模拟方法">
+                        {simulationMethods.map((method) => {
+                          const meta = SIMULATION_METHOD_META[method];
+                          const active = simulationMethod === method;
+                          return (
+                            <label
+                              key={method}
+                              className={`cursor-pointer rounded-lg px-3 py-1.5 text-xs font-semibold transition ${active ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-white'}`}
+                            >
+                              <input
+                                className="sr-only"
+                                type="radio"
+                                name="simulation-method"
+                                value={method}
+                                checked={active}
+                                onChange={() => setSimulationMethod(method)}
+                              />
+                              {meta.tab}
+                              {closestMethod === method && (
+                                <span className={`ml-1.5 rounded px-1 py-0.5 text-[10px] font-bold ${active ? 'bg-white/25' : 'bg-slate-900 text-white'}`}>
+                                  最接近
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="flex flex-col gap-3 px-4 py-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 lg:max-w-2xl">
+                          <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                            {activeSimulation?.methodLabel ?? SIMULATION_METHOD_META[simulationMethod].tab}
+                            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${SIMULATION_METHOD_META[simulationMethod].conditional ? 'border-violet-300 bg-violet-50 text-violet-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                              {SIMULATION_METHOD_META[simulationMethod].conditional ? '条件模型 · 从当前波动状态出发' : '无条件模型 · 忽略当前波动状态'}
+                            </span>
+                          </p>
+                          <p className="mt-1.5 text-xs leading-5 text-slate-600">{SIMULATION_METHOD_META[simulationMethod].summary}</p>
+                        </div>
+                        <div className="shrink-0 lg:w-64" data-testid="simulation-model-parameter">
+                          {SIMULATION_METHOD_META[simulationMethod].parameter === 'bootstrap_block_length' ? (
+                            <label className="text-xs font-medium text-slate-600">
+                              本模型参数 · 平均区块长度
+                              <select
+                                aria-label="Bootstrap 平均区块长度"
+                                value={bootstrapBlockLength}
+                                onChange={(event) => setBootstrapBlockLength(Number(event.target.value))}
+                                className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                              >
+                                {BOOTSTRAP_BLOCK_LENGTH_OPTIONS.map((length) => (
+                                  <option key={length} value={length}>{length} 个收益观察值</option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : SIMULATION_METHOD_META[simulationMethod].parameter === 'fhs_ewma_lambda' ? (
+                            <label className="text-xs font-medium text-slate-600">
+                              本模型参数 · 衰减系数 λ
+                              <select
+                                aria-label="EWMA 衰减系数"
+                                value={fhsEwmaLambda}
+                                onChange={(event) => setFhsEwmaLambda(Number(event.target.value))}
+                                className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                              >
+                                {FHS_EWMA_LAMBDA_OPTIONS.map((option) => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : (
+                            <p className="rounded-xl border border-dashed border-slate-200 px-3 py-2 text-[11px] leading-4 text-slate-500">
+                              本模型无可调参数：所有取值都由样本自动确定。
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     </div>
+                    <p className="mt-1.5 text-[11px] leading-4 text-slate-500">
+                      改动任一模型的参数都会让整批结果失效，需要重新运行——五个模型必须来自同一次运行才可比。
+                    </p>
                   </fieldset>
                   {activeSimulation && simulationOption ? (
                     <>
@@ -2173,9 +2440,7 @@ export default function ProductDetail() {
                         当前方法：{activeSimulation.methodLabel}；样本 {activeSimulation.assumptions.sourceObservationCount} 个有效收益观察值。
                         {' '}{simulationAnalysis?.researchContext?.startDate} — {simulationAnalysis?.researchContext?.endDate} · {simulationAnalysis?.researchContext?.basisLabel}。
 
-                        {activeSimulation.method === 'parametric'
-                          ? ` 日均对数收益 ${formatRatioPercent(activeSimulation.assumptions.meanDailyLogReturn)}，日波动 ${formatRatioPercent(activeSimulation.assumptions.dailyLogVolatility)}；历史对数收益偏度 ${formatDecimal(activeSimulation.assumptions.historicalLogSkewness, 2)}、超额峰度 ${formatDecimal(activeSimulation.assumptions.historicalLogExcessKurtosis, 2)}，拟合值分别为 ${formatDecimal(activeSimulation.assumptions.fittedLogSkewness, 2)}、${formatDecimal(activeSimulation.assumptions.fittedLogExcessKurtosis, 2)}（${activeSimulation.assumptions.shapeCalibrationStatus === 'matched' ? '四矩校准已匹配' : activeSimulation.assumptions.shapeCalibrationStatus === 'approximate' ? '四矩近似校准' : '正态安全降级'}）。`
-                          : ` 名义平均区块长度 ${activeSimulation.assumptions.averageBlockLength} 个收益观察值；遇缺口或区间末尾重新抽样，实际区块长度可能更短。`}
+                        {simulationAssumptionNote(activeSimulation)}
                       </p>
                       <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer">模拟样本与数据来源</summary><p className="mt-2 break-all">{simulationAnalysis?.researchContext?.scope === 'full' ? '完整样本' : simulationAnalysis?.researchContext?.stateLabel} · {simulationAnalysis?.researchContext?.returnObservations} 个有效收益 · 数据指纹 {simulationAnalysis?.researchContext?.dataFingerprint}</p>{simulationAnalysis?.researchContext?.warnings?.map((warning, index) => <p key={index} className="mt-1">{warning}</p>)}</details>
                       <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-live="polite">
@@ -2188,6 +2453,26 @@ export default function ProductDetail() {
                         <MetricCard title="平均最大回撤" value={formatRatioPercent(activeSimulation.terminal.averageMaxDrawdown)} description="每条模拟路径最大回撤的平均值" />
                         <MetricCard title={`达到 ${simulationTargetReturn}% 概率`} value={formatRatioPercent(activeSimulation.terminal.targetHitProbability)} description="期末收益达到目标的路径比例" />
                       </div>
+                      {realized && realizedScore ? (
+                        <RealizedFutureStrip
+                          realized={realized}
+                          score={realizedScore}
+                          simulatedAverageMaxDrawdown={activeSimulation.terminal.averageMaxDrawdown}
+                        />
+                      ) : (
+                        <p className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-3 text-xs leading-5 text-slate-500">
+                          {realizedStatus === 'off' ? (
+                            <>
+                              未启用 PIT 研究日，模拟没有可以对照的后续走势。把顶部的 PIT 标签切到历史某一天（只影响本标签页），或在
+                              {' '}
+                              <Link to="/settings/pit-snapshots" className="text-sky-700 underline hover:no-underline">数据版本管理</Link>
+                              {' '}应用一个研究日靠前的版本，这里会自动叠加那之后的实际走势并给模型评分。
+                            </>
+                          ) : (
+                            '研究日之后还没有该产品的行情数据，暂时无法回看实际走势。把研究日往前移，或等数据刷新到更晚的日期。'
+                          )}
+                        </p>
+                      )}
                       <div
                         data-testid="monte-carlo-combined-chart"
                         aria-label={`${activeSimulation.methodLabel}：路径与期末净值概率分布组合图`}
@@ -2197,21 +2482,22 @@ export default function ProductDetail() {
                       </div>
                       <p className="mt-2 text-xs leading-5 text-slate-500">
                         右侧约占图表六分之一：横向柱状图按期末净值区间展示实际路径数，共计 {terminalNavDensity?.sampleSize ?? 0} 条；紫色曲线为同一批模拟结果的平滑概率密度，并按区间路径数尺度对齐。
+                        {realized && `深色实线为研究日之后的实际净值走势（第 1 — ${realized.coveredDays} 个交易日）${realized.complete ? '；右侧同色横线标出实际期末净值在模拟分布中的位置。' : '。'}`}
                       </p>
-                      {parametricSimulation && bootstrapSimulation && simulationComparison && simulationInitialNav !== null && (
-                        <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                      {simulationComparison && simulationInitialNav !== null && (
+                        <div data-testid="simulation-model-comparison" className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
                           <div className="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
-                              <h4 className="text-sm font-semibold text-slate-900">双模型结果对比</h4>
-                              <p className="mt-1 text-xs text-slate-500">同一历史区间、未来周期、路径数、目标收益与随机轮次。</p>
+                              <h4 className="text-sm font-semibold text-slate-900">{simulationMethods.length} 个模型结果对比</h4>
+                              <p className="mt-1 text-xs text-slate-500">同一历史区间、未来周期、路径数、目标收益与随机轮次；差异只来自模型假设本身。</p>
                             </div>
                             <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${simulationComparison.level === 'high' ? 'bg-rose-100 text-rose-700' : simulationComparison.level === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                              模型敏感度：{simulationComparison.level === 'high' ? '高' : simulationComparison.level === 'medium' ? '中' : '低'}
+                              模型分歧度：{simulationComparison.level === 'high' ? '高' : simulationComparison.level === 'medium' ? '中' : '低'}
                             </span>
                           </div>
                           <div className="overflow-x-auto">
                             <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
-                              <caption className="sr-only">参数化蒙特卡洛与区块 Bootstrap 模拟结果对比</caption>
+                              <caption className="sr-only">全部模拟模型的结果对比</caption>
                               <thead className="bg-slate-50 text-slate-500">
                                 <tr>
                                   <th scope="col" className="px-4 py-3">模型</th>
@@ -2221,24 +2507,51 @@ export default function ProductDetail() {
                                   <th scope="col" className="px-3 py-3 text-right">95% CVaR</th>
                                   <th scope="col" className="px-3 py-3 text-right">平均最大回撤</th>
                                   <th scope="col" className="px-4 py-3 text-right">目标达成概率</th>
+                                  {realized && (
+                                    <>
+                                      <th scope="col" className="px-3 py-3 text-right">实际所处分位</th>
+                                      <th scope="col" className="px-4 py-3 text-right">实际留在区间</th>
+                                    </>
+                                  )}
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100 text-slate-700">
-                                {[parametricSimulation, bootstrapSimulation].map((simulation) => (
-                                  <tr key={simulation.method}>
-                                    <th scope="row" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">{simulation.methodLabel}</th>
+                                {simulationMethods.map((method) => simulationAnalysis?.simulation?.byMethod[method]).filter((simulation): simulation is FuturePathSimulation => Boolean(simulation)).map((simulation) => (
+                                  <tr key={simulation.method} className={simulation.method === simulationMethod ? 'bg-violet-50/60' : undefined}>
+                                    <th scope="row" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">
+                                      {simulation.methodLabel}
+                                      {closestMethod === simulation.method && (
+                                        <span className="ml-1.5 rounded bg-slate-900 px-1 py-0.5 text-[10px] font-bold text-white">最接近</span>
+                                      )}
+                                    </th>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.p05Return)}</td>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.medianReturn)}</td>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.lossProbability)}</td>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.conditionalValueAtRisk95)}</td>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.averageMaxDrawdown)}</td>
                                     <td className="px-4 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.targetHitProbability)}</td>
+                                    {realized && (
+                                      <>
+                                        <td className="px-3 py-3 text-right tabular-nums font-semibold text-slate-900">
+                                          {realized.byMethod[simulation.method].percentileRank === null
+                                            ? realized.byMethod[simulation.method].bandLabel ?? '--'
+                                            : `${formatRatioPercent(realized.byMethod[simulation.method].percentileRank)} 分位`}
+                                        </td>
+                                        <td className="px-4 py-3 text-right tabular-nums">
+                                          {formatRatioPercent(realized.byMethod[simulation.method].containmentRatio)}
+                                        </td>
+                                      </>
+                                    )}
                                   </tr>
                                 ))}
                               </tbody>
                             </table>
                           </div>
-                          <p className="border-t border-slate-100 px-4 py-3 text-xs leading-5 text-slate-600">{simulationComparison.message}</p>
+                          <p className="border-t border-slate-100 px-4 py-3 text-xs leading-5 text-slate-600">
+                            {simulationComparison.message}
+                            {' '}最保守与最乐观模型之间：5% 分位收益差 {formatRatioPercent(simulationComparison.p05ReturnGap)}、中位收益差 {formatRatioPercent(simulationComparison.medianReturnGap)}、亏损概率差 {formatRatioPercent(simulationComparison.lossProbabilityGap)}、95% CVaR 差 {formatRatioPercent(simulationComparison.conditionalValueAtRiskGap)}。
+                            {realized && ' 右两列是同一条实际走势对每个模型的事后评分：期末分位越靠近 50%，该模型当时的中枢越接近后来发生的事——单个产品、单个研究日的一次命中不足以判定模型优劣。'}
+                          </p>
                         </div>
                       )}
                     </>

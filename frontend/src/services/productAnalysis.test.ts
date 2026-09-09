@@ -21,6 +21,7 @@ const request: ProductAnalysisRequest = {
   simulation_horizon: 252,
   simulation_path_count: 500,
   bootstrap_block_length: 20,
+  fhs_ewma_lambda: 0.94,
   simulation_target_return: 5,
   simulation_run: 0,
   regime: null,

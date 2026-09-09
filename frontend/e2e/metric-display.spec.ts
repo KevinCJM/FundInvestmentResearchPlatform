@@ -29,12 +29,23 @@ type AnalysisRequest = {
   simulation_horizon: number
   simulation_path_count: number
   bootstrap_block_length: number
+  fhs_ewma_lambda: number
   simulation_target_return: number
 }
 
-const makeSimulation = (method: 'parametric' | 'block_bootstrap', request: AnalysisRequest) => ({
+const SIMULATION_METHODS = ['gaussian', 'parametric', 'block_bootstrap', 'fhs_ewma', 'fhs_garch'] as const
+type SpecSimulationMethod = (typeof SIMULATION_METHODS)[number]
+const SIMULATION_METHOD_LABELS: Record<SpecSimulationMethod, string> = {
+  gaussian: '标准正态蒙特卡洛',
+  parametric: '参数化蒙特卡洛（偏度/峰度校准）',
+  block_bootstrap: '历史区块 Bootstrap',
+  fhs_ewma: '滤波历史模拟 · EWMA',
+  fhs_garch: '滤波历史模拟 · GARCH(1,1)',
+}
+
+const makeSimulation = (method: SpecSimulationMethod, request: AnalysisRequest) => ({
   method,
-  methodLabel: method === 'parametric' ? '参数化蒙特卡洛（偏度/峰度校准）' : '历史区块 Bootstrap',
+  methodLabel: SIMULATION_METHOD_LABELS[method],
   days: [0, request.simulation_horizon],
   samplePaths: [[1, 1.03], [1, 0.98]],
   percentiles: {
@@ -58,6 +69,14 @@ const makeSimulation = (method: 'parametric' | 'block_bootstrap', request: Analy
     shapeSkewParameter: method === 'parametric' ? 0.1 : null,
     tailWeightParameter: method === 'parametric' ? 1.1 : null,
     averageBlockLength: method === 'block_bootstrap' ? request.bootstrap_block_length : null,
+    conditionalVolatilityStart: method.startsWith('fhs') ? 0.011 : null,
+    volatilityPersistence: method.startsWith('fhs') ? 0.97 : null,
+    garchOmega: method === 'fhs_garch' ? 2e-6 : method === 'fhs_ewma' ? 0 : null,
+    garchAlpha: method.startsWith('fhs') ? 0.08 : null,
+    garchBeta: method.startsWith('fhs') ? 0.89 : null,
+    ewmaLambda: method === 'fhs_ewma' ? request.fhs_ewma_lambda : null,
+    residualSkewness: method.startsWith('fhs') ? -0.2 : null,
+    residualExcessKurtosis: method.startsWith('fhs') ? 1.1 : null,
   },
 })
 
@@ -90,8 +109,7 @@ const makeAnalysis = (request: AnalysisRequest) => {
     { percentile: 0.5, theoreticalQuantile: 0, observedReturn: 0.05, referenceReturn: 0.05, tail: 'center' },
     { percentile: 0.95, theoreticalQuantile: 1.64, observedReturn: 0.4, referenceReturn: 0.35, tail: 'upper' },
   ]
-  const parametric = makeSimulation('parametric', request)
-  const bootstrap = makeSimulation('block_bootstrap', request)
+  const byMethod = Object.fromEntries(SIMULATION_METHODS.map((method) => [method, makeSimulation(method, request)]))
   return {
     schema_version: 1,
     product_id: '510300.SH',
@@ -141,16 +159,15 @@ const makeAnalysis = (request: AnalysisRequest) => {
     simulationStatus: incomplete ? 'insufficient_sample' : request.include_simulation ? 'complete' : 'not_requested',
     simulation: incomplete || !request.include_simulation ? null : {
       initialNav: 1,
-      parametric,
-      blockBootstrap: bootstrap,
+      methods: [...SIMULATION_METHODS],
+      byMethod,
+      realized: null,
+      realizedStatus: 'off',
       comparison: {
         p05ReturnGap: 0.01, medianReturnGap: 0.01, lossProbabilityGap: 0.02,
-        conditionalValueAtRiskGap: 0.01, level: 'low', message: '两种模型结果接近。',
+        conditionalValueAtRiskGap: 0.01, level: 'low', message: '各模型结果接近。',
       },
-      densities: {
-        parametric: makeDensity(request.simulation_path_count),
-        block_bootstrap: makeDensity(request.simulation_path_count),
-      },
+      densities: Object.fromEntries(SIMULATION_METHODS.map((method) => [method, makeDensity(request.simulation_path_count)])),
     },
     regimeAnalysis: null,
     researchContext: {
