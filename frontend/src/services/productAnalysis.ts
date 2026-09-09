@@ -153,16 +153,66 @@ export interface TerminalNavDensity {
   histogramBinWidth: number
 }
 
-export interface ProductRegimeStatistic {
+export interface ProductRegimeState {
   stateId: string
   stateLabel: string
   color: string
   observations: number
   returnObservations: number
-  cumulativeReturn: number | null
+  segmentCount: number
+  medianSegmentObservations: number | null
+  eligibleSegmentCount: number
+  meanDailyReturn: number | null
   annualizedVolatility: number | null
-  maxDrawdown: number | null
   winRate: number | null
+  medianSegmentReturn: number | null
+  worstSegmentReturn: number | null
+  medianSegmentDrawdown: number | null
+  worstSegmentDrawdown: number | null
+}
+
+export interface ProductRegimeSegment {
+  id: string
+  stateId: string
+  stateLabel: string
+  color: string
+  startDate: string
+  endDate: string
+  observations: number
+  returnObservations: number
+  cumulativeReturn: number | null
+  maxDrawdown: number | null
+  status: string
+  reason: string | null
+  windowClipped?: boolean
+  validObservations?: number
+}
+
+export interface ProductRegimeAnalysis {
+  states: ProductRegimeState[]
+  segments: ProductRegimeSegment[]
+  selectedStateId: string | null
+  selectedSegmentId: string | null
+}
+
+export interface ProductResearchContext {
+  windowStartDate?: string | null
+  windowEndDate?: string | null
+  observationFrequency?: string
+  warnings?: string[]
+  startDate: string | null
+  endDate: string | null
+  observations: number
+  returnObservations: number
+  segmentCount: number
+  scope: 'full' | 'state' | 'segment'
+  stateLabel?: string | null
+  analysisBasis: 'adjusted_nav' | 'price'
+  basisLabel: string
+  dataFingerprint: string
+  boundaryPolicy: string
+  simulationEligible: boolean
+  simulationMessage: string | null
 }
 
 export interface ProductAnalysisExecution extends FixedNjitExecutionAudit {
@@ -227,11 +277,15 @@ export interface ProductAnalysisResponse {
       block_bootstrap: TerminalNavDensity
     }
   } | null
-  regimeStatistics: ProductRegimeStatistic[]
+  regimeAnalysis: ProductRegimeAnalysis | null
+  researchContext: ProductResearchContext
+  simulationStatus: 'not_requested' | 'insufficient_sample' | 'complete'
 }
 
 export interface ProductAnalysisRequest {
   statistics_period: StatisticsPeriod
+  analysis_basis?: 'adjusted_nav' | 'price'
+  include_simulation?: boolean
   include_technical?: boolean
   price_ma_periods: number[]
   volume_ma_periods: number[]
@@ -249,6 +303,8 @@ export interface ProductAnalysisRequest {
   regime: {
     run_id: string
     publication_id: string
+    state_id?: string
+    segment_id?: string
   } | null
 }
 

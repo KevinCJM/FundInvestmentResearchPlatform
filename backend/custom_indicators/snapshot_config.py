@@ -36,21 +36,6 @@ def snapshot_field_name(indicator_id: str, indicator_revision: int, period: str)
     return f"metric_{readable}_{period.lower()}_{digest}"
 
 
-def _legacy_normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
-    indicator_id = str(item.get("indicator_id") or "").strip()
-    revision = int(item.get("indicator_revision") or 0)
-    period = str(item.get("period") or "").strip().upper()
-    field = str(item.get("field") or "").strip() or snapshot_field_name(
-        indicator_id, revision, period
-    )
-    return {
-        "indicator_id": indicator_id,
-        "indicator_revision": revision,
-        "period": period,
-        "field": field,
-    }
-
-
 def normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
     """Normalize scalar or explicit time-series-channel snapshot configuration."""
 
@@ -58,6 +43,9 @@ def normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
     revision = int(item.get("indicator_revision") or 0)
     period = str(item.get("period") or "").strip().upper()
     channel_id = str(item.get("channel_id") or "").strip() or None
+    if item.get("output_id"):
+        from .errors import ValidationError
+        raise ValidationError("REMOVED_SCALAR_OUTPUT_REFERENCE", "请改用独立指标引用，快照不再接受标量子结果。", field="output_id")
     reducer = str(item.get("reducer") or "").strip() or None
     if channel_id and reducer is None:
         reducer = "last_finite"
@@ -84,7 +72,7 @@ def normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
             channel = re.sub(
                 r"[^a-z0-9]+",
                 "_",
-                channel_id.lower(),
+                (channel_id or "").lower(),
             ).strip("_")[:20]
             digest = hashlib.sha256(
                 json.dumps(

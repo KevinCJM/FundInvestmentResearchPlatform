@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AutoAssetClassification from './AutoAssetClassification'
+import { ResearchContextProvider } from '../app/ResearchContext'
 
 // Deliberately NOT mocking ../services/productPools: the page tests all stub it,
 // so the request path, query parameters and response mapping of the real client
@@ -117,9 +118,11 @@ afterEach(() => {
 function renderWithUniverse() {
   return render(
     <MemoryRouter initialEntries={[`/pre-investment/saa/auto-classification?universe=${SNAPSHOT_ID}`]}>
-      <Routes>
-        <Route path="/pre-investment/saa/auto-classification" element={<AutoAssetClassification />} />
-      </Routes>
+      <ResearchContextProvider>
+        <Routes>
+          <Route path="/pre-investment/saa/auto-classification" element={<AutoAssetClassification />} />
+        </Routes>
+      </ResearchContextProvider>
     </MemoryRouter>,
   )
 }

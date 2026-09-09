@@ -44,7 +44,9 @@ def test_product_analysis_route_runs_complete_njit_contract(monkeypatch) -> None
         lambda _kind: pd.DataFrame([{"ts_code": "510300.SH", "name": "沪深300ETF"}]),
     )
     monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda _kind, _code: _points())
+    monkeypatch.setattr(instrument_routes, "_load_product_research_points", lambda *_args: (_points(), {}))
     request = instrument_routes.ProductAnalysisRequest(
+        include_simulation=True,
         statistics_period="ALL",
         simulation_horizon=21,
         simulation_path_count=200,
@@ -227,3 +229,68 @@ def test_product_regime_reference_rejects_wrong_publication_usage(
         )
     assert error.value.status_code == 422
     assert error.value.detail == "该历史情景版本未发布到产品研究。"
+
+
+def test_research_basis_is_explicit_and_missing_adjusted_nav_never_uses_price(tmp_path, monkeypatch):
+    monkeypatch.delenv("TUSHARE_DATA_DIR", raising=False)
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+    pd.DataFrame({"ts_code": ["510300.SH"], "date": ["2025-01-02"], "close": [4.0]}).to_parquet(tmp_path / "etf_daily_candle_df.parquet")
+    with pytest.raises(ValueError, match="复权净值"):
+        instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    points, context = instrument_routes._load_product_research_points("etf", "510300.SH", "price")
+    assert points[0]["close"] == 4.0
+    assert context["observationFrequency"] == "trading_observations"
+    with pytest.raises(ValueError, match="场外基金"):
+        instrument_routes._load_product_research_points("fund", "000001.OF", "price")
+
+
+def test_etf_research_restores_missing_sse_sessions_but_not_holidays(tmp_path, monkeypatch):
+    monkeypatch.delenv("TUSHARE_DATA_DIR", raising=False)
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+    pd.DataFrame({"ts_code": ["510300.SH", "510300.SH"], "nav_date": [20250102, 20250106], "adj_nav": [1.0, 1.2]}).to_parquet(tmp_path / "etf_daily_df.parquet")
+    pd.DataFrame({"exchange": ["SSE"] * 5, "cal_date": ["20250102", "20250103", "20250104", "20250105", "20250106"], "is_open": [1, 1, 0, 0, 1]}).to_parquet(tmp_path / "trade_day_df.parquet")
+    points, context = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    assert [point["date"] for point in points] == ["2025-01-02", "2025-01-03", "2025-01-06"]
+    assert points[1]["close"] is None
+    assert context["observationFrequency"] == "sse_trading_days"
+
+
+def test_nav_research_works_without_candle_data_and_keeps_nav_date_frequency(tmp_path, monkeypatch):
+    monkeypatch.delenv("TUSHARE_DATA_DIR", raising=False)
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda *_: [])
+    monkeypatch.setattr(instrument_routes, "_load_instruments", lambda _: pd.DataFrame([{"ts_code": "000001.OF"}]))
+    pd.DataFrame({"ts_code": ["000001.OF"] * 3, "date": ["2025-01-02", "2025-01-09", "2025-01-16"], "adj_nav": [1.0, None, 1.2]}).to_parquet(tmp_path / "fund_nav_df.parquet")
+    response = instrument_routes.instrument_product_analysis("000001.OF", instrument_routes.ProductAnalysisRequest(), "fund")
+    assert response["technical"]["availability"] == {"ohlc": False, "volume": False, "kdj": False}
+    assert response["returnStatistics"]["sampleSize"] == 0
+    assert response["simulationStatus"] == "not_requested"
+    assert response["researchContext"]["analysisBasis"] == "adjusted_nav"
+    assert response["researchContext"]["observationFrequency"] == "nav_observations"
+    assert any("252" in warning for warning in response["researchContext"]["warnings"])
+
+
+def test_research_loader_cannot_read_unpublished_physical_snapshot_file(tmp_path, monkeypatch):
+    import json
+    monkeypatch.delenv("TUSHARE_DATA_DIR", raising=False)
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    pd.DataFrame({"ts_code": ["510300.SH"], "date": ["2025-01-02"], "adj_nav": [1.0]}).to_parquet(snapshot / "etf_daily_df.parquet")
+    (tmp_path / "tushare_active.json").write_text(json.dumps({"schema_version": 1, "snapshot_dir": "snapshot", "files": {"trade_day_df.parquet": 1}}))
+    with pytest.raises(ValueError, match="缺少复权净值"):
+        instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+
+
+@pytest.mark.parametrize("selection", [{"state_id": "absent"}, {"segment_id": "segment-99"}, {"state_id": "bull", "segment_id": "segment-0"}])
+def test_route_rejects_invalid_published_state_or_segment(tmp_path, monkeypatch, selection):
+    from fastapi import HTTPException
+    monkeypatch.setenv("HISTORICAL_REGIME_DATA_DIR", str(tmp_path))
+    repository = instrument_routes.RegimeRunRepository(tmp_path / "historical_regime_runs.json")
+    analytical = {"definition_id": "regime", "definition_revision": 1, "states": [{"id": "bear"}, {"id": "bull"}], "segments": [{"state_id": "bear", "start_date": "2025-01-02", "end_date": "2025-01-03"}], "application_bindings": []}
+    analytical["content_hash"] = instrument_routes._historical_regime_snapshot_hash(analytical)
+    run = repository.create(analytical)
+    repository.add_publications(run["id"], [{"id": "published", "usage": "product_research", "run_id": run["id"], "run_content_hash": run["content_hash"], "definition_revision": 1}])
+    with pytest.raises(HTTPException) as raised:
+        instrument_routes._resolve_product_regime_reference(instrument_routes.ProductAnalysisRegime(run_id=run["id"], publication_id="published", **selection))
+    assert raised.value.status_code == 422

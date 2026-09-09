@@ -11,6 +11,8 @@ import {
 } from '../services/customIndicators'
 import type {
   EvaluateTimeSeriesIndicatorsRequest,
+  EvaluateTimeSeriesIndicatorsResponse,
+  TimeSeriesIndicatorResult,
   IndicatorDefinition,
 } from '../services/customIndicators'
 import { getHistoricalRegimeRun, listHistoricalRegimeRuns } from '../services/historicalRegimes'
@@ -84,7 +86,7 @@ const fixedIndicatorExecution = {
   kernel_signatures: { typed_indicator_plan: ['fixed'] },
 }
 
-const makeTimeSeriesResponse = (request: EvaluateTimeSeriesIndicatorsRequest) => {
+const makeTimeSeriesResponse = (request: EvaluateTimeSeriesIndicatorsRequest): EvaluateTimeSeriesIndicatorsResponse => {
   const dates = Array.from({ length: 25 }, (_, index) => (
     new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10)
   ))
@@ -102,7 +104,7 @@ const makeTimeSeriesResponse = (request: EvaluateTimeSeriesIndicatorsRequest) =>
       { id: 'j', label: 'J 值' },
     ],
   }
-  const results = request.indicator_instances.map((instance, instanceIndex) => {
+  const results = request.indicator_instances.map<TimeSeriesIndicatorResult>((instance, instanceIndex) => {
     const indicatorId = instance.indicator_id ?? 'inline-series'
     const channels = (outputById[indicatorId] ?? [{ id: 'value', label: '数值' }]).map(
       (channel, channelIndex) => ({
@@ -123,18 +125,18 @@ const makeTimeSeriesResponse = (request: EvaluateTimeSeriesIndicatorsRequest) =>
       result_kind: 'time_series' as const,
       target: { ...request.target, name: '沪深300ETF' },
       period: request.period,
-      parameters: instance.parameters,
+      parameters: instance.parameters ?? {},
       axis_anchor: 'market_close',
       history_policy: indicatorId === 'builtin-kdj-series' ? 'full_history' as const : 'lookback' as const,
       status: 'ok' as const,
       warnings: [],
       window: {
         requested_as_of: request.as_of ?? null,
-        effective_as_of: dates.at(-1) ?? null,
+        effective_as_of: dates[dates.length - 1] ?? null,
         start_date: dates[0],
-        end_date: dates.at(-1) ?? null,
+        end_date: dates[dates.length - 1] ?? null,
         observation_count: dates.length,
-        data_latest_date: dates.at(-1) ?? null,
+        data_latest_date: dates[dates.length - 1] ?? null,
       },
       dates,
       channels,
@@ -283,15 +285,30 @@ const makeAnalysisResponse = (request: ProductAnalysisRequest): ProductAnalysisR
       quartiles: { q1: -0.05, median: 0.05, q3: 0.15, iqr: 0.2 }, whiskers: { lower: -0.1, upper: 0.2 },
     },
     normalQq: incomplete ? null : { sampleSize: returns.length, points: qqPoints, keyPoints: qqPoints },
-    simulation: incomplete ? null : {
+    simulation: incomplete || !request.include_simulation ? null : {
       initialNav: 1, parametric, blockBootstrap: bootstrap,
       comparison: { p05ReturnGap: 0.01, medianReturnGap: 0.01, lossProbabilityGap: 0.02, conditionalValueAtRiskGap: 0.01, level: 'low', message: '两种模型结果接近。' },
       densities: { parametric: makeDensity(request.simulation_path_count), block_bootstrap: makeDensity(request.simulation_path_count) },
     },
-    regimeStatistics: request.regime ? [
-      { stateId: 'bull', stateLabel: '牛市', color: '#16a34a', observations: 5, returnObservations: 4, cumulativeReturn: 0.02, annualizedVolatility: 0.12, maxDrawdown: -0.03, winRate: 0.5 },
-      { stateId: 'range', stateLabel: '震荡', color: '#f59e0b', observations: 5, returnObservations: 4, cumulativeReturn: 0.01, annualizedVolatility: 0.08, maxDrawdown: -0.01, winRate: 0.5 },
-    ] : [],
+    simulationStatus: !request.include_simulation ? 'not_requested' : incomplete ? 'insufficient_sample' : 'complete',
+    researchContext: {
+      startDate: '2026-01-02', endDate: '2026-01-25', observations: 25, returnObservations: returns.length,
+      segmentCount: request.regime?.state_id ? 1 : 2, scope: request.regime?.segment_id ? 'segment' : request.regime?.state_id ? 'state' : 'full',
+      stateLabel: request.regime?.state_id === 'bull' ? '牛市' : request.regime?.state_id === 'range' ? '震荡' : undefined,
+      boundaryPolicy: 'within_continuous_segment', simulationEligible: !incomplete, simulationMessage: incomplete ? '有效收益样本不足。' : null,
+      analysisBasis: request.analysis_basis ?? 'adjusted_nav', basisLabel: '复权净值', dataFingerprint: 'fixture',
+    },
+    regimeAnalysis: request.regime ? {
+      selectedStateId: request.regime.state_id ?? null, selectedSegmentId: request.regime.segment_id ?? null,
+      states: [
+        { stateId: 'bull', stateLabel: '牛市', color: '#16a34a', observations: 5, returnObservations: 4, segmentCount: 1, medianSegmentObservations: 5, eligibleSegmentCount: 1, meanDailyReturn: 0.005, annualizedVolatility: 0.12, winRate: 0.5, medianSegmentReturn: 0.02, worstSegmentReturn: 0.02, medianSegmentDrawdown: -0.03, worstSegmentDrawdown: -0.03 },
+        { stateId: 'range', stateLabel: '震荡', color: '#f59e0b', observations: 5, returnObservations: 4, segmentCount: 1, medianSegmentObservations: 5, eligibleSegmentCount: 1, meanDailyReturn: 0.001, annualizedVolatility: 0.08, winRate: 0.5, medianSegmentReturn: 0.01, worstSegmentReturn: 0.01, medianSegmentDrawdown: -0.01, worstSegmentDrawdown: -0.01 },
+      ],
+      segments: [
+        { id: 'bull-1', stateId: 'bull', stateLabel: '牛市', color: '#16a34a', startDate: '2026-01-02', endDate: '2026-01-05', observations: 4, returnObservations: 3, cumulativeReturn: 0.02, maxDrawdown: -0.03, status: 'complete', reason: null },
+        { id: 'range-1', stateId: 'range', stateLabel: '震荡', color: '#f59e0b', startDate: '2026-01-06', endDate: '2026-01-10', observations: 5, returnObservations: 4, cumulativeReturn: 0.01, maxDrawdown: -0.01, status: 'complete', reason: null },
+      ],
+    } : null,
   }
 }
 
@@ -440,7 +457,11 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.getByText('当前规模')).toBeInTheDocument()
     expect(screen.getByText('12.35 亿')).toBeInTheDocument()
     expect(screen.getByText('快照截至 2026-06-30 · 100,000 万份 × 1.23 元/份')).toBeInTheDocument()
-    expect(screen.getByLabelText('统计区间')).toHaveValue('ALL')
+    expect(screen.queryByLabelText('分析样本区间')).not.toBeInTheDocument()
+    expect(vi.mocked(analyzeProduct).mock.calls.every(([, , request]) => request.include_simulation === false)).toBe(true)
+    await user.click(screen.getByRole('tab', { name: '未来模拟' }))
+    expect(screen.getByLabelText('分析样本区间')).toHaveValue('ALL')
+    expect(screen.queryByLabelText('收益数据口径')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '未来虚拟净值模拟' })).toBeInTheDocument()
     expect(screen.getByText(/所有路径统一从虚拟净值 1\.0000 出发/)).toBeInTheDocument()
     expect(screen.getByLabelText('模拟未来区间')).toHaveValue('252')
@@ -449,7 +470,9 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.getByLabelText('目标期末收益率')).toHaveValue(5)
     expect(screen.getByRole('radio', { name: '参数化蒙特卡洛' })).toBeChecked()
     expect(screen.getByRole('radio', { name: '区块 Bootstrap' })).not.toBeChecked()
-    const combinedChart = screen.getByTestId('monte-carlo-combined-chart')
+    expect(screen.queryByTestId('monte-carlo-combined-chart')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '运行模拟' }))
+    const combinedChart = await screen.findByTestId('monte-carlo-combined-chart')
     const combinedChartRenderer = combinedChart.querySelector('[data-testid="chart"]')
     expect(combinedChart).toHaveAccessibleName('参数化蒙特卡洛（偏度/峰度校准）：路径与期末净值概率分布组合图')
     expect(screen.getByText(/历史对数收益偏度/)).toBeInTheDocument()
@@ -468,12 +491,15 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.getAllByText('平均最大回撤')).toHaveLength(2)
     expect(screen.getByText('达到 5% 概率')).toBeInTheDocument()
     await user.selectOptions(screen.getByLabelText('模拟路径数'), '200')
-    await waitFor(() => expect(combinedChartRenderer).toHaveAttribute('data-terminal-histogram-total', '200'))
+    expect(screen.queryByTestId('monte-carlo-combined-chart')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '运行模拟' }))
+    await waitFor(() => expect(screen.getByTestId('monte-carlo-combined-chart').querySelector('[data-testid="chart"]')).toHaveAttribute('data-terminal-histogram-total', '200'))
     expect(screen.getByText(/共计 200 条/)).toBeInTheDocument()
     await user.click(screen.getByRole('radio', { name: '区块 Bootstrap' }))
     expect(screen.getByRole('radio', { name: '区块 Bootstrap' })).toBeChecked()
-    expect(combinedChart).toHaveAccessibleName('历史区块 Bootstrap：路径与期末净值概率分布组合图')
-    expect(screen.getByText(/平均区块长度 20 个交易日/)).toBeInTheDocument()
+    expect(screen.getByTestId('monte-carlo-combined-chart')).toHaveAccessibleName('历史区块 Bootstrap：路径与期末净值概率分布组合图')
+    expect(screen.getByText(/平均区块长度 20 个收益观察值/)).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '收益统计' }))
     expect(screen.getByRole('heading', { name: '正态 Q-Q 图' })).toBeInTheDocument()
     expect(screen.getByText('查看关键分位点数据')).toBeInTheDocument()
     expect(screen.getByTestId('distribution-diagnostics-grid')).toHaveClass('lg:grid-cols-2')
@@ -489,6 +515,7 @@ describe('ProductDetail custom indicators', () => {
       indicator_ids: ['total-return'], targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1Y',
       as_of: undefined,
     }))
+    await user.click(screen.getByRole('tab', { name: '走势与指标' }))
     expect(screen.getByText(/1Y · 2025-01-06 至 2026-01-06 · 250 个观察值/)).toBeInTheDocument()
     expect(screen.getByLabelText('区间累计收益计算区间')).toHaveValue('1Y')
     await user.selectOptions(screen.getByLabelText('区间累计收益计算区间'), '1M')
@@ -507,21 +534,25 @@ describe('ProductDetail custom indicators', () => {
       periodsByIndicator: {},
     }))
 
+    await user.click(screen.getByRole('tab', { name: '未来模拟' }))
     await user.selectOptions(screen.getByLabelText('模拟未来区间'), '21')
     await user.selectOptions(screen.getByLabelText('模拟路径数'), '200')
     await user.selectOptions(screen.getByLabelText('Bootstrap 平均区块长度'), '10')
     await user.clear(screen.getByLabelText('目标期末收益率'))
     await user.type(screen.getByLabelText('目标期末收益率'), '8')
-    await user.click(screen.getByRole('button', { name: '重新模拟' }))
+    await user.click(screen.getByRole('button', { name: '运行模拟' }))
     expect(screen.getByText('200 条虚拟路径中的样本比例')).toBeInTheDocument()
     expect(screen.getByText('达到 8% 概率')).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('统计区间'), '1M')
-    expect(screen.getByText(/要求产品完整覆盖所选区间/)).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('分析样本区间'), '1M')
+    expect(screen.queryByTestId('monte-carlo-combined-chart')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '收益统计' }))
+    expect(await screen.findByText(/要求产品完整覆盖所选区间/)).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '未来虚拟净值模拟' })).not.toBeInTheDocument()
   })
 
   it('场外公募基金展示成立日期，并仅在披露时展示到期日期', async () => {
+    const user = userEvent.setup()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -540,6 +571,10 @@ describe('ProductDetail custom indicators', () => {
     expect(await screen.findByLabelText('成立日期：2001-01-01')).toBeInTheDocument()
     expect(screen.getByLabelText('到期日期：2030-12-31')).toBeInTheDocument()
     expect(screen.queryByText(/上市日期/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '收益统计' }))
+    expect(screen.getByLabelText('当前收益口径')).toHaveTextContent('复权净值')
+    expect(screen.queryByRole('button', { name: '分析设置' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('收益数据口径')).not.toBeInTheDocument()
   })
 
   it('分析接口失败时显式提示且不执行浏览器本地回退', async () => {
@@ -596,9 +631,10 @@ describe('ProductDetail custom indicators', () => {
 
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 
+    await user.click(await screen.findByRole('tab', { name: '情景表现' }))
     const selector = await screen.findByRole('combobox', { name: '历史情景背景' })
     await waitFor(() => expect(selector).toBeEnabled())
-    expect(within(selector).getByRole('option', { name: '关闭历史情景背景' })).toBeInTheDocument()
+    expect(within(selector).getByRole('option', { name: '不使用情景 · 普通研究' })).toBeInTheDocument()
     expect(within(selector).getByRole('option', { name: /沪深300牛熊震荡 · v3 · 实时识别/ })).toBeInTheDocument()
     expect(within(selector).queryByRole('option', { name: /可变试算/ })).not.toBeInTheDocument()
     expect(within(selector).queryByRole('option', { name: /仅研究展示/ })).not.toBeInTheDocument()
@@ -607,13 +643,15 @@ describe('ProductDetail custom indicators', () => {
     await user.selectOptions(selector, 'run-eligible')
     expect(await screen.findByTestId('historical-regime-selection-meta')).toHaveTextContent('不可变运行 · 定义版本 v3')
     expect(getHistoricalRegimeRun).toHaveBeenCalledWith('run-eligible')
-    expect(screen.getByTestId('historical-regime-selection-meta')).toHaveTextContent('实时识别：按当时可得信息生成')
-    expect(within(screen.getByLabelText('历史情景图例')).getByText('牛市')).toBeInTheDocument()
+    expect(screen.getByTestId('historical-regime-selection-meta')).toHaveTextContent('实时模式：历史研究结果，可得性以版本证据为准')
+    expect(within(screen.getByLabelText('市场状态')).getByRole('option', { name: '牛市' })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '情景表现' }))
     const regimePerformance = await screen.findByRole('table', { name: '产品历史情景表现' })
     expect(within(regimePerformance).getByRole('row', { name: /牛市/ })).toHaveTextContent('%')
     expect(within(regimePerformance).getByRole('row', { name: /震荡/ })).toHaveTextContent('%')
     expect(screen.getByText(/跨情景边界收益不会归入任一状态/)).toBeInTheDocument()
 
+    await user.click(screen.getByRole('tab', { name: '走势与指标' }))
     const getMainPriceChart = () => screen.getAllByTestId('chart')
       .find((chart) => chart.dataset.series?.split(',').includes('价格'))
     await waitFor(() => expect(getMainPriceChart()).not.toHaveAttribute('data-regime-mark-area', '[]'))
@@ -628,16 +666,19 @@ describe('ProductDetail custom indicators', () => {
       ],
     ])
 
-    await user.selectOptions(selector, '')
+    await user.click(screen.getByRole('button', { name: '调整情景' }))
+    await user.click(screen.getByRole('button', { name: '清除情景' }))
+    await user.click(screen.getByRole('tab', { name: '走势与指标' }))
     await waitFor(() => expect(getMainPriceChart()).toHaveAttribute('data-regime-mark-area', '[]'))
-    expect(screen.getByText('当前未叠加历史情景背景。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '调整情景' })).not.toBeInTheDocument()
     expect(screen.queryByRole('table', { name: '产品历史情景表现' })).not.toBeInTheDocument()
     expect(listHistoricalRegimeRuns).toHaveBeenCalledTimes(1)
     const regimeAnalysisCall = vi.mocked(analyzeProduct).mock.calls.find(([, , request]) => request.regime?.run_id === 'run-eligible')
     expect(regimeAnalysisCall?.[2].regime).toEqual({ run_id: 'run-eligible', publication_id: 'publication-run-eligible' })
   })
 
-  it('没有合格发布版本时显示明确空态且不伪造图表背景', async () => {
+  it('没有合格发布版本时仅在情景页显示空态且不伪造图表背景', async () => {
+    const user = userEvent.setup()
     vi.mocked(listHistoricalRegimeRuns).mockResolvedValue([
       makeHistoricalRegimeRun('run-display-only', '仅研究展示', { usage: 'research_display' }),
       makeHistoricalRegimeRun('run-mutable', '可变试算', { immutable: false }),
@@ -645,11 +686,96 @@ describe('ProductDetail custom indicators', () => {
 
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 
-    expect(await screen.findByText(/暂无已发布到“产品研究”的不可变历史情景版本/)).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: '历史情景背景' })).toBeDisabled()
+    await screen.findByRole('tab', { name: '情景表现' })
+    expect(screen.queryByText('暂无可用情景')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('分析样本区间')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '情景表现' }))
+    expect(await screen.findByRole('heading', { name: '暂无可用情景' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '前往情景中心' })).toHaveAttribute('href', '/settings/scenario-algorithms')
+    expect(screen.queryByRole('combobox', { name: '历史情景背景' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '收益统计' }))
+    expect(screen.queryByText('暂无可用情景')).not.toBeInTheDocument()
     const mainPriceChart = screen.getAllByTestId('chart')
       .find((chart) => chart.dataset.series?.split(',').includes('价格'))
     expect(mainPriceChart).toHaveAttribute('data-regime-mark-area', '[]')
+  })
+
+  it('情景与单段联动研究条件，切换后忽略迟到的模拟响应', async () => {
+    const user = userEvent.setup()
+    const run = makeHistoricalRegimeRun('run-eligible', '沪深300牛熊震荡')
+    vi.mocked(listHistoricalRegimeRuns).mockResolvedValue([run])
+    vi.mocked(getHistoricalRegimeRun).mockResolvedValue(run)
+    let finishSimulation: (() => void) | undefined
+    let simulationSignal: AbortSignal | undefined
+    vi.mocked(analyzeProduct).mockImplementation(async (_id, _kind, request, signal) => {
+      if (!request.include_simulation) return makeAnalysisResponse(request)
+      simulationSignal = signal
+      return new Promise(resolve => { finishSimulation = () => resolve(makeAnalysisResponse(request)) })
+    })
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+    await user.click(await screen.findByRole('tab', { name: '情景表现' }))
+    const scheme = await screen.findByLabelText('历史情景背景')
+    await waitFor(() => expect(scheme).toBeEnabled())
+    await user.selectOptions(scheme, 'run-eligible')
+    await user.click(screen.getByRole('tab', { name: '情景表现' }))
+    expect(await screen.findByRole('table', { name: '产品历史情景表现' })).toHaveTextContent('可计算 1/1 段')
+    await user.click(screen.getByRole('button', { name: '牛市' }))
+    expect(screen.getByLabelText('市场状态')).toHaveValue('bull')
+    await user.click(await screen.findByRole('button', { name: '查看区间 2026-01-02 至 2026-01-05' }))
+    await waitFor(() => expect(screen.getByLabelText('连续区间')).toHaveValue('bull-1'))
+    expect(vi.mocked(analyzeProduct).mock.lastCall?.[2].regime).toEqual({ run_id: 'run-eligible', publication_id: 'publication-run-eligible', state_id: 'bull', segment_id: 'bull-1' })
+    const settings = screen.getByRole('button', { name: '分析设置' })
+    expect(settings).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByLabelText('收益数据口径')).not.toBeInTheDocument()
+    await user.click(settings)
+    await user.selectOptions(screen.getByLabelText('收益数据口径'), 'price')
+    await user.click(settings)
+    expect(screen.getByLabelText('当前收益口径')).toHaveTextContent('交易价格')
+    await waitFor(() => expect(vi.mocked(analyzeProduct).mock.lastCall?.[2]).toMatchObject({
+      analysis_basis: 'price', regime: { run_id: 'run-eligible', publication_id: 'publication-run-eligible', state_id: 'bull' },
+    }))
+    expect(vi.mocked(analyzeProduct).mock.lastCall?.[2].regime).not.toHaveProperty('segment_id')
+    expect(screen.getByLabelText('市场状态')).toHaveValue('bull')
+    expect(screen.getByLabelText('连续区间')).toHaveValue('')
+    expect(vi.mocked(analyzeProduct).mock.calls.every(([, , request]) => !request.include_simulation)).toBe(true)
+    await user.click(screen.getByRole('tab', { name: '未来模拟' }))
+    await user.click(screen.getByRole('button', { name: '运行模拟' }))
+    expect(screen.getByRole('button', { name: '正在模拟…' })).toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('市场状态'), 'range')
+    expect(simulationSignal?.aborted).toBe(true)
+    expect(screen.getByLabelText('连续区间')).toHaveValue('')
+    await act(async () => { finishSimulation?.() })
+    expect(screen.queryByTestId('monte-carlo-combined-chart')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '运行模拟' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: '清除情景' }))
+    expect(screen.queryByLabelText('市场状态')).not.toBeInTheDocument()
+    expect(screen.getByTestId('product-research-scope')).toHaveTextContent('完整样本')
+    expect(screen.getByTestId('product-research-scope')).not.toHaveTextContent('段')
+  })
+
+  it('行情为空时保留产品资料与研究入口', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({
+      product_id: '510300.SH', name: '暂无行情的产品', management: '示例管理人',
+      base_info: { ts_code: '510300.SH', list_date: '20120528' }, metrics: {}, timeseries: [],
+    }) }))
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+    expect(await screen.findByRole('heading', { name: '暂无行情的产品' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('分析样本')).not.toBeInTheDocument()
+    expect(screen.getByText('暂无可视化数据')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '情景表现' })).toBeInTheDocument()
+  })
+
+  it('工作区支持键盘切换，切换标签不触发重新模拟', async () => {
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+    const firstTab = await screen.findByRole('tab', { name: '走势与指标' })
+    firstTab.focus()
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('tab', { name: '情景表现' })).toHaveFocus()
+    expect(screen.getByRole('tab', { name: '情景表现' })).toHaveAttribute('aria-selected', 'true')
+    await user.keyboard('{End}')
+    expect(screen.getByRole('tab', { name: '未来模拟' })).toHaveFocus()
+    expect(vi.mocked(analyzeProduct).mock.calls.every(([, , request]) => !request.include_simulation)).toBe(true)
   })
 
   it('从手动构建大类进入后返回原来源页', async () => {

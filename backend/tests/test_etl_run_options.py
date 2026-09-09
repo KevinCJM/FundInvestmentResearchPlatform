@@ -28,6 +28,7 @@ from backend.services import etl_routes
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(etl_service, '_launch', etl_service._launch_inline)
     monkeypatch.setenv("DATA_SOURCE_CENTER_ENABLED", "true")
     result = SourceStore(tmp_path)
     result.seed()

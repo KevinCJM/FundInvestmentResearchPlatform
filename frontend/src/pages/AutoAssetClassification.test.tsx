@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AutoAssetClassification from './AutoAssetClassification'
 import { getInvestableUniverse, searchInvestableUniverseProducts } from '../services/productPools'
+import { ResearchContextProvider } from '../app/ResearchContext'
 
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }))
 vi.mock('../services/productPools', () => ({
@@ -17,9 +18,11 @@ const META = {
     { id: 'hierarchical', label: '相关性层次聚类' },
     { id: 'kmedoids', label: 'K-medoids（代表产品）' },
     { id: 'rule', label: '合同分类规则映射' },
+    { id: 'gmm', label: '高斯混合（软分配）' },
   ],
   features: [
     { id: 'correlation', label: '收益相关性距离' },
+    { id: 'denoised', label: '去噪相关性距离（RMT）' },
     { id: 'pca', label: '主成分载荷' },
   ],
   linkages: [{ id: 'average', label: 'average' }, { id: 'ward', label: 'ward' }],
@@ -142,10 +145,12 @@ function LocationProbe() {
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={['/pre-investment/saa/auto-classification?universe=universe-1']}>
-      <Routes>
-        <Route path="/pre-investment/saa/auto-classification" element={<AutoAssetClassification />} />
-        <Route path="*" element={<LocationProbe />} />
-      </Routes>
+      <ResearchContextProvider>
+        <Routes>
+          <Route path="/pre-investment/saa/auto-classification" element={<AutoAssetClassification />} />
+          <Route path="*" element={<LocationProbe />} />
+        </Routes>
+      </ResearchContextProvider>
     </MemoryRouter>,
   )
 }
@@ -270,6 +275,38 @@ describe('AutoAssetClassification', () => {
     expect(previewBody.blockBy).toBe('none')
     await screen.findByText('④ 大类映射草案')
     expect(screen.queryByText(/^合同分层（/)).not.toBeInTheDocument()
+  })
+
+  it('greys out the parameters the selected algorithm ignores', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await waitFor(() => expect(screen.getByLabelText('算法')).toBeInTheDocument())
+
+    // hierarchical is the only algorithm that reads a linkage method.
+    expect(screen.getByLabelText('连接方式（层次聚类）')).not.toBeDisabled()
+    expect(screen.getByLabelText('按合同分层（硬约束）')).not.toBeDisabled()
+    expect(screen.getByLabelText('大类个数')).not.toBeDisabled()
+
+    await user.selectOptions(screen.getByLabelText('算法'), 'gmm')
+    expect(screen.getByLabelText('连接方式（层次聚类）')).toBeDisabled()
+    expect(screen.getByText('仅层次聚类需要连接方式，该算法不读取此项')).toBeInTheDocument()
+    // A mixture still clusters, so blocking and K stay live.
+    expect(screen.getByLabelText('按合同分层（硬约束）')).not.toBeDisabled()
+    expect(screen.getByLabelText('大类个数')).not.toBeDisabled()
+
+    await user.selectOptions(screen.getByLabelText('算法'), 'rule')
+    expect(screen.getByLabelText('连接方式（层次聚类）')).toBeDisabled()
+    expect(screen.getByLabelText('按合同分层（硬约束）')).toBeDisabled()
+    expect(screen.getByLabelText('大类个数')).toBeDisabled()
+    expect(screen.getByLabelText('自动建议大类个数')).toBeDisabled()
+    expect(screen.getByText('规则映射本身就按合同分类，再分层没有意义')).toBeInTheDocument()
+    expect(screen.getByText('规则映射的大类个数由合同标签自然决定')).toBeInTheDocument()
+    // The hint panel must not explain a control the user cannot reach.
+    expect(screen.queryByText('分层')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('算法'), 'hierarchical')
+    expect(screen.getByLabelText('连接方式（层次聚类）')).not.toBeDisabled()
+    expect(screen.getByLabelText('按合同分层（硬约束）')).not.toBeDisabled()
   })
 
   it('refuses to run before enough products are selected', async () => {

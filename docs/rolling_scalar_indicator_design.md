@@ -53,6 +53,8 @@ y_t=f\left(X_{t-w+1:t}\right)
 
 ## 4. 编译方式
 
+当前唯一的转换实现是 `backend/custom_indicators/rolling_series.py`。两个有效 API（`derive-rolling-series` 与 `rolling-scalar-draft`）复用它；`rolling_scalar.py` 只提供当前 API 使用的版本和边界元数据，不再包含另一套 AST 转换、定义哈希或来源校验实现。未被调用的旧定义生成函数与旧服务校验入口已删除。
+
 不在请求期逐日调用 Python 标量函数。系统在定义阶段把标量 DAG 展开成等价时序 DAG：
 
 | 标量归约 | 滚动时序表达 |
@@ -121,7 +123,15 @@ DSL 展开为：
 
 ## 7. 数学公式展示
 
-公式展示与计算实现分层。DSL 和 NJIT 仍保留完整滚动语义；指标中心的主公式只显示紧凑数学符号：
+公式使用三个独立字段，不能混用：
+
+- `editable_latex`：高级公式编辑区的可编辑 LaTeX，使用 `r_f`、`\frac{}{}`、`\sqrt{}`，完整保留窗口、`ddof`、`min_periods` 等参数；支持反复解析、修改、保存。
+- `expression` / `python_expression`：接口内部的规范 DSL，供编译和嵌套构建使用，不直接当作高级编辑区默认内容。
+- `display_latex`：下方数学排版的紧凑符号，只用于展示，不作为编辑源码。
+
+载入指标及展开向导使用同一个 LaTeX 源码生成器，并校验转换前后语法树等价。不改参数的往返操作保留原源码与来源锁定；滚动派生草稿转换为 LaTeX 后须重新取得匹配源码的编译令牌。历史版本不批量改写，Excel 和 NJIT 数值逻辑不变。
+
+DSL 和 NJIT 保留完整滚动语义；指标中心的主公式只显示紧凑数学符号：
 
 | 计算算子 | 主公式符号 |
 |---|---|

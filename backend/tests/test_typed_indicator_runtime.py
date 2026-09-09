@@ -240,7 +240,7 @@ def test_runtime_trace_records_actual_shape_and_cost() -> None:
     portfolio = next(
         item
         for item in trace["nodes"]
-        if runtime.plan.nodes[item["node_id"]].operator_id == "portfolio_returns"
+        if runtime.plan.nodes[item["node_id"]].operator_id == "matvec"
     )
     assert portfolio["actual_shape"] == [RETURNS.shape[0]]
     assert trace["total_runtime_cost"] > 0

@@ -65,13 +65,13 @@ describe('DataSourceCenter', () => {
     expect(screen.getByRole('button', { name: /ETF 日行情/ })).toBeInTheDocument()
   })
 
-  it('自定义来源说明接口下载入口并明确未开放定时调度', async () => {
+  it('自定义来源说明下载入口并区分配置与发布', async () => {
     catalog.sources = [{ config: { ...source, id: 'vendor', name: '测试来源', transport: 'http', base_url: 'https://example.com' }, revision: 1, builtin: false, updated_at: '' }]
     catalog.interfaces = []
     render(<MemoryRouter><DataSourceCenter /></MemoryRouter>)
     await screen.findByRole('region', { name: '数据源使用引导' })
     expect(screen.getByText(/进入统一下载页选择本来源支持的数据/)).toBeVisible()
-    expect(screen.getByText(/定时调度尚未开放/)).toBeVisible()
+    expect(screen.getByText(/配置和样本预览不会下载完整历史，也不会自动发布研究数据/)).toBeVisible()
     expect(screen.queryByRole('link', { name: '进入 Tushare 下载与更新 →' })).not.toBeInTheDocument()
   })
 
@@ -89,7 +89,7 @@ describe('DataSourceCenter', () => {
   it('已保存接口可展开编辑，不因初始化来源锁定', async () => {
     await openInterface()
     expect(screen.getByLabelText('接口 API 名称')).not.toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '1. 接口结构' }))
+    fireEvent.click(screen.getByRole('button', { name: '1. 数据与接口' }))
     expect(screen.getByLabelText('接口 API 名称')).toBeVisible()
     expect(screen.getByLabelText('接口 API 名称')).toBeEnabled()
     expect(screen.getByLabelText('请求方式')).toBeEnabled()
@@ -135,6 +135,7 @@ describe('DataSourceCenter', () => {
 
   it('离线预览不触发真实采样', async () => {
     await openInterface()
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
     vi.mocked(api.previewSourceMapping).mockResolvedValue({ ...ready, source_rows: 1, preview_only: true, tables: [{ table_id: target.table_id, columns: ['close'], rows: [{ close: 3.5 }], accepted_rows: 1, rejected_rows: 0 }] })
     fireEvent.change(screen.getByLabelText('粘贴来源样本（按接口响应格式）'), { target: { value: '{"data":{"fields":["close"],"items":[[3.5]]}}' } })
     fireEvent.click(screen.getByRole('button', { name: '离线映射预览' }))
@@ -166,9 +167,160 @@ describe('DataSourceCenter', () => {
     await waitFor(() => expect(api.saveSource).toHaveBeenCalledWith(expect.objectContaining({ id: 'vendor', transport: 'http', name: '自定义行情' }), 0))
   })
 
+  it('三个步骤保留非法草稿并阻止对旧配置采样', async () => {
+    await openInterface()
+    fireEvent.click(screen.getByRole('button', { name: '1. 数据与接口' }))
+    const input = screen.getByLabelText('默认请求参数（JSON，不含凭据）')
+    fireEvent.change(input, { target: { value: '{unfinished' } })
+    fireEvent.click(screen.getByRole('button', { name: '2. 字段对应' }))
+    expect(input).not.toBeVisible()
+    expect(screen.getByLabelText('close 转换方式')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
+    expect(screen.getByRole('button', { name: '确认并采样一次', hidden: true })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '1. 数据与接口' }))
+    expect(input).toHaveValue('{unfinished')
+    fireEvent.click(screen.getByRole('button', { name: '保存接口配置' }))
+    expect(api.saveInterface).not.toHaveBeenCalled()
+    expect(api.sampleSourceInterface).not.toHaveBeenCalled()
+  })
+
+  it('字段搜索和筛选不把已保存配置标成脏草稿', async () => {
+    await openInterface()
+    fireEvent.change(screen.getByLabelText('日行情 搜索字段'), { target: { value: '不存在' } })
+    expect(screen.getByLabelText('close 转换方式')).not.toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '显示全部字段' }))
+    expect(screen.getByLabelText('close 转换方式')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
+    expect(screen.getByRole('button', { name: '确认并采样一次', hidden: true })).toBeEnabled()
+    expect(screen.getByRole('link', { name: '进入下载工作区 →' })).toHaveAttribute('href', '/settings/data-sources?source=tushare')
+  })
+
+  it('新增但未填写的参数行不会提交旧参数或允许真实采样', async () => {
+    await openInterface()
+    fireEvent.click(screen.getByRole('button', { name: '1. 数据与接口' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加默认请求参数' }))
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
+    expect(screen.getByRole('button', { name: '确认并采样一次', hidden: true })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '保存接口配置' }))
+    expect(api.saveInterface).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByLabelText('默认请求参数 1 名称')).toBeVisible())
+    expect(screen.getByRole('alert')).toHaveTextContent('请修正')
+  })
+
+  it('未知来源列保持未选择，不擅自使用第一列', async () => {
+    catalog.interfaces[0].config.source_fields = [{ name: 'unrelated', data_type: 'string', description: '不相关字段', unit: '' }]
+    catalog.interfaces[0].config.mappings[0].fields = []
+    await openInterface()
+    fireEvent.change(screen.getByLabelText('日行情 字段筛选'), { target: { value: 'all' } })
+    fireEvent.change(screen.getByLabelText('close 转换方式'), { target: { value: 'copy' } })
+    expect(screen.getByLabelText('close 来源字段')).toHaveValue('')
+    fireEvent.click(screen.getByRole('button', { name: '保存接口配置' }))
+    expect(api.saveInterface).not.toHaveBeenCalled()
+  })
+
+  it('金额固定值直接填写且保留十进制精度，不携带无关来源列', async () => {
+    catalog.targets.tables[0] = { ...target, fields: target.fields.map(field => field.name === 'close' ? { ...field, data_type: 'decimal128(30,10)' } : field) }
+    await openInterface()
+    fireEvent.change(screen.getByLabelText('close 转换方式'), { target: { value: 'constant' } })
+    fireEvent.change(screen.getByLabelText('close 固定值'), { target: { value: '9007199254740993.1234567891' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存接口配置' }))
+    await waitFor(() => expect(api.saveInterface).toHaveBeenCalledWith(expect.objectContaining({ mappings: [expect.objectContaining({ fields: [expect.objectContaining({ operation: 'constant', source_field: null, constant: '9007199254740993.1234567891' })] })] }), 1))
+  })
+
+  it('只读模式仍可筛选全部字段，但不能更改对应关系', async () => {
+    catalog.editing_enabled = false
+    await openInterface()
+    expect(screen.getByLabelText('日行情 字段筛选')).toBeEnabled()
+    expect(screen.getByLabelText('日行情 搜索字段')).toBeEnabled()
+    fireEvent.change(screen.getByLabelText('日行情 字段筛选'), { target: { value: 'all' } })
+    expect(screen.getByLabelText('close 转换方式')).toBeVisible()
+    expect(screen.getByLabelText('close 转换方式')).toBeDisabled()
+    expect(screen.getByLabelText('目标标准表')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '添加身份解析' })).toBeDisabled()
+    expect(api.saveInterface).not.toHaveBeenCalled()
+  })
+
+  it('更换目标表取消时保留现有映射，确认后才清空', async () => {
+    catalog.targets.tables.push({ ...target, table_id: 'market.nav', label: '基金净值' })
+    await openInterface()
+    vi.mocked(window.confirm).mockReturnValueOnce(false)
+    fireEvent.change(screen.getByLabelText('目标标准表'), { target: { value: 'market.nav' } })
+    expect(screen.getByLabelText('目标标准表')).toHaveValue(target.table_id)
+    expect(screen.getByLabelText('close 转换方式')).toHaveValue('copy')
+    fireEvent.change(screen.getByLabelText('目标标准表'), { target: { value: 'market.nav' } })
+    expect(screen.getByLabelText('目标标准表')).toHaveValue('market.nav')
+    expect(screen.getByLabelText('close 转换方式')).toHaveValue('')
+  })
+
+  it('保存请求期间禁止重复提交和切换接口', async () => {
+    await openInterface()
+    let finish!: (value: api.ConfigRecord<api.InterfaceConfig>) => void
+    vi.mocked(api.saveInterface).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const save = screen.getByRole('button', { name: '保存接口配置' })
+    fireEvent.click(save)
+    fireEvent.click(save)
+    fireEvent.click(screen.getByRole('button', { name: '来源概览' }))
+    expect(api.saveInterface).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('当前操作尚未结束，请勿切换配置。')).toBeVisible()
+    expect(screen.getByRole('button', { name: '处理中…' })).toBeDisabled()
+    finish(catalog.interfaces[0])
+    await screen.findByRole('button', { name: '保存接口配置' })
+  })
+
+  it('未配置凭据时解释原因并禁止真实采样', async () => {
+    catalog.sources[0].credential_configured = false
+    await openInterface()
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
+    fireEvent.click(screen.getByText('真实接口采样（消耗配额）'))
+    expect(screen.getByText(/请先在数据源设置中保存认证凭据/)).toBeVisible()
+    expect(screen.getByRole('button', { name: '确认并采样一次' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '校验映射定义' })).toBeEnabled()
+  })
+
+  it.each([
+    [0, [], '样本为空，尚未验证实际数据'],
+    [1, [], '样本尚未完整通过，请检查映射与拒绝记录'],
+  ] as const)('不把无输出的样本误报为成功（%s行）', async (rows, tables, message) => {
+    await openInterface()
+    vi.mocked(api.previewSourceMapping).mockResolvedValue({ ...ready, source_rows: rows, preview_only: true, tables: [...tables] })
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
+    fireEvent.change(screen.getByLabelText('粘贴来源样本（按接口响应格式）'), { target: { value: '[]' } })
+    fireEvent.click(screen.getByRole('button', { name: '离线映射预览' }))
+    expect(await screen.findByText(message)).toBeVisible()
+    expect(screen.queryByText('样本转换通过（仅预览）')).not.toBeInTheDocument()
+  })
+
+  it('修改采样参数清除旧结果，采样期间参数不可改', async () => {
+    await openInterface()
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
+    fireEvent.click(screen.getByText('真实接口采样（消耗配额）'))
+    fireEvent.click(screen.getByText('高级：采样参数 JSON'))
+    const params = screen.getByLabelText('本次采样参数（覆盖默认参数）')
+    fireEvent.change(params, { target: { value: '{"ts_code":"510300.SH"}' } })
+    expect(screen.queryByRole('region', { name: '映射验证结果' })).not.toBeInTheDocument()
+    let finish!: (value: api.MappingPreview) => void
+    vi.mocked(api.sampleSourceInterface).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: '确认并采样一次' }))
+    expect(params).toBeDisabled()
+    await waitFor(() => expect(api.sampleSourceInterface).toHaveBeenCalledWith(config.id, 1, { ts_code: '510300.SH' }))
+    finish({ ...ready, source_rows: 0, preview_only: true, tables: [] })
+    await waitFor(() => expect(params).toBeEnabled())
+  })
+
+  it('连接设置下一步返回已有数据，不强迫新建接口', async () => {
+    render(<MemoryRouter><DataSourceCenter /></MemoryRouter>)
+    await screen.findByRole('region', { name: '数据源使用引导' })
+    fireEvent.click(screen.getByRole('button', { name: '查看连接设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '下一步：选择需要的数据' }))
+    expect(screen.getByRole('region', { name: '数据源使用引导' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /ETF 日行情/ })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: '新建接口' })).not.toBeInTheDocument()
+  })
+
   it('只读环境不允许保存或真实采样', async () => {
     catalog.editing_enabled = false
     await openInterface()
+    fireEvent.click(screen.getByRole('button', { name: '3. 验证与使用' }))
     expect(screen.getByRole('button', { name: '保存接口配置' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '确认并采样一次', hidden: true })).toBeDisabled()
     expect(screen.getByRole('button', { name: '校验映射定义' })).toBeEnabled()

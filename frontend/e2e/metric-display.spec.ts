@@ -22,6 +22,8 @@ const indicator = {
 
 type AnalysisRequest = {
   statistics_period: string
+  analysis_basis?: 'adjusted_nav' | 'price'
+  include_simulation?: boolean
   price_ma_periods: number[]
   volume_ma_periods: number[]
   simulation_horizon: number
@@ -136,7 +138,8 @@ const makeAnalysis = (request: AnalysisRequest) => {
       quartiles: { q1: -0.05, median: 0.05, q3: 0.15, iqr: 0.2 }, whiskers: { lower: -0.1, upper: 0.2 },
     },
     normalQq: incomplete ? null : { sampleSize: returns.length, points: qqPoints, keyPoints: qqPoints },
-    simulation: incomplete ? null : {
+    simulationStatus: incomplete ? 'insufficient_sample' : request.include_simulation ? 'complete' : 'not_requested',
+    simulation: incomplete || !request.include_simulation ? null : {
       initialNav: 1,
       parametric,
       blockBootstrap: bootstrap,
@@ -149,7 +152,14 @@ const makeAnalysis = (request: AnalysisRequest) => {
         block_bootstrap: makeDensity(request.simulation_path_count),
       },
     },
-    regimeStatistics: [],
+    regimeAnalysis: null,
+    researchContext: {
+      analysisBasis: request.analysis_basis ?? 'adjusted_nav', basisLabel: request.analysis_basis === 'price' ? '交易价格' : '复权净值',
+      startDate: '2026-01-02', endDate: '2026-01-26', observations: incomplete ? 0 : 25,
+      returnObservations: returns.length, segmentCount: incomplete ? 0 : 1, scope: 'full',
+      boundaryPolicy: '仅使用相邻有效观察值，缺失价格不连接。', simulationEligible: !incomplete,
+      simulationMessage: incomplete ? '有效收益样本不足，无法模拟。' : null,
+    },
   }
 }
 
@@ -172,6 +182,9 @@ async function mockMetricDisplayApi(page: Page) {
           }
         }),
       } })
+    }
+    if (url.pathname === '/api/historical-regimes/runs') {
+      return route.fulfill({ json: { items: [] } })
     }
     if (url.pathname === '/api/custom-indicators/meta') {
       return route.fulfill({ json: { periods: [{ value: '1M', label: '近 1 月', description: '自然月窗口' }, { value: '1Y', label: '近 1 年', description: '自然年窗口' }] } })
@@ -199,6 +212,13 @@ async function mockMetricDisplayApi(page: Page) {
         },
       } })
     }
+    if (url.pathname === '/api/custom-indicators/evaluate-series') {
+      return route.fulfill({ json: { results: [], execution: {
+        execution_backend: 'numba_njit_fixed_signature', nopython: true,
+        object_mode: 0, python_fallback: 0, request_time_compilation: 0,
+        kernel_signatures: { ui_contract_fixture: ['fixed'] },
+      } } })
+    }
     if (url.pathname === '/api/instruments/products/510300.SH/analysis') {
       return route.fulfill({ json: makeAnalysis(route.request().postDataJSON() as AnalysisRequest) })
     }
@@ -206,50 +226,40 @@ async function mockMetricDisplayApi(page: Page) {
   })
 }
 
-test('详情页在三档宽度统一展示指标值、窗口和定义抽屉', async ({ page }) => {
+test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与显式模拟', async ({ page }, testInfo) => {
   await mockMetricDisplayApi(page)
-  await page.goto('/product/510300.SH?kind=etf')
+  await page.goto('/product-research/products/510300.SH?kind=etf')
 
   await expect(page.getByRole('heading', { name: '自定义研究指标' })).toBeVisible()
+  await page.getByText('产品资料与规模口径', { exact: true }).click()
   await expect(page.getByLabel('上市日期：2012-05-28')).toBeVisible()
   await expect(page.getByLabel('退市日期：2026-12-31')).toBeVisible()
-  await expect(page.getByLabel('统计区间')).toHaveValue('ALL')
-  await expect(page.getByRole('heading', { name: '未来虚拟净值模拟' })).toBeVisible()
-  await expect(page.getByText(/所有路径统一从虚拟净值 1\.0000 出发/)).toBeVisible()
-  await expect(page.getByLabel('模拟未来区间')).toHaveValue('252')
-  await expect(page.getByLabel('模拟路径数')).toHaveValue('500')
-  await expect(page.getByLabel('Bootstrap 平均区块长度')).toHaveValue('20')
-  await expect(page.getByLabel('目标期末收益率')).toHaveValue('5')
-  await expect(page.getByRole('radio', { name: '参数化蒙特卡洛' })).toBeChecked()
-  const combinedMonteCarloChart = page.getByLabel('参数化蒙特卡洛（偏度/峰度校准）：路径与期末净值概率分布组合图')
-  await expect(combinedMonteCarloChart).toBeVisible()
-  await expect(combinedMonteCarloChart.locator('canvas')).toHaveCount(1)
-  await expect(page.getByText(/横向柱状图按期末净值区间展示实际路径数，共计 500 条/)).toBeVisible()
-  await page.getByLabel('模拟路径数').selectOption('200')
-  await expect(page.getByText(/共计 200 条/)).toBeVisible()
-  await expect(page.getByRole('heading', { name: '双模型结果对比' })).toBeVisible()
-  await page.getByText('区块 Bootstrap', { exact: true }).click()
-  await expect(page.getByRole('radio', { name: '区块 Bootstrap' })).toBeChecked()
-  await expect(page.getByLabel('历史区块 Bootstrap：路径与期末净值概率分布组合图')).toBeVisible()
-  await expect(page.getByRole('heading', { name: '箱形图' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '正态 Q-Q 图' })).toBeVisible()
-  await expect(page.getByText('查看关键分位点数据')).toBeVisible()
-  const diagnosticGrid = page.getByTestId('distribution-diagnostics-grid')
-  const diagnosticCards = diagnosticGrid.locator(':scope > div')
-  await expect(diagnosticCards).toHaveCount(2)
-  const boxPlotBounds = await diagnosticCards.nth(0).boundingBox()
-  const normalQqBounds = await diagnosticCards.nth(1).boundingBox()
-  expect(boxPlotBounds).not.toBeNull()
-  expect(normalQqBounds).not.toBeNull()
-  if ((page.viewportSize()?.width ?? 0) >= 1024) {
-    expect(Math.abs(boxPlotBounds!.y - normalQqBounds!.y)).toBeLessThanOrEqual(2)
-    expect(boxPlotBounds!.x + boxPlotBounds!.width).toBeLessThan(normalQqBounds!.x)
-  } else {
-    expect(normalQqBounds!.y).toBeGreaterThan(boxPlotBounds!.y + boxPlotBounds!.height)
-  }
+  await expect(page.getByLabel('分析样本区间')).not.toBeVisible()
+  await expect(page.getByText('暂无可用情景', { exact: true })).not.toBeVisible()
+  await page.getByRole('tab', { name: '情景表现', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '暂无可用情景', exact: true })).toBeVisible()
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.waitForTimeout(1100)
+  await page.screenshot({ path: `../output/product-controls/${testInfo.project.name}-empty-scenario.png`, fullPage: true })
+  await page.getByRole('tab', { name: '收益统计', exact: true }).click()
+  await expect(page.getByLabel('分析样本区间')).toHaveValue('ALL')
+  await expect(page.getByText('暂无可用情景', { exact: true })).not.toBeVisible()
+  await expect(page.getByLabel('收益数据口径')).not.toBeVisible()
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.waitForTimeout(1100)
+  await page.screenshot({ path: `../output/product-controls/${testInfo.project.name}-toolbar.png`, fullPage: true })
+  await page.getByRole('button', { name: '分析设置', exact: true }).click()
+  await expect(page.getByLabel('收益数据口径')).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.waitForTimeout(1100)
+  await page.screenshot({ path: `../output/product-controls/${testInfo.project.name}-settings.png`, fullPage: true })
+  await page.getByRole('region', { name: '分析样本', exact: true }).screenshot({ path: `../output/product-controls/${testInfo.project.name}-settings-detail.png` })
+  await page.getByRole('button', { name: '分析设置', exact: true }).click()
+  await expect(page.getByLabel('收益数据口径')).not.toBeVisible()
+  await page.getByRole('tab', { name: '走势与指标', exact: true }).click()
   await expect(page.getByText('1.83%')).toBeVisible()
   await expect(page.getByText(/1Y · 2025-01-06 至 2026-01-06 · 250 个观察值/)).toBeVisible()
-  await expect(page.getByLabel('累计收益率计算区间')).toHaveValue('1Y')
   await page.getByLabel('累计收益率计算区间').selectOption('1M')
   await expect(page.getByLabel('累计收益率计算区间')).toHaveValue('1M')
   await expect(page.getByText(/1M · 2025-12-06 至 2026-01-06 · 21 个观察值/)).toBeVisible()
@@ -257,11 +267,7 @@ test('详情页在三档宽度统一展示指标值、窗口和定义抽屉', as
   const selectorPanel = page.getByRole('dialog', { name: '选择研究指标面板' })
   await expect(selectorPanel).toBeVisible()
   await expect(page.getByLabel('按指标来源筛选')).toHaveValue('all')
-  await expect(page.getByLabel('按指标来源筛选').getByRole('option')).toHaveText([
-    '全部',
-    '内置指标',
-    '工作区指标',
-  ])
+  await expect(page.getByLabel('按指标来源筛选').getByRole('option')).toHaveText(['全部', '内置指标', '工作区指标'])
   const panelBox = await selectorPanel.boundingBox()
   const viewportWidth = page.viewportSize()?.width ?? 0
   expect(panelBox).not.toBeNull()
@@ -273,17 +279,51 @@ test('详情页在三档宽度统一展示指标值、窗口和定义抽屉', as
   await expect(page.getByText('真实数据、严格窗口、缺失不填充')).toBeVisible()
   await expect(page.getByTestId('metric-formula-latex').locator('.katex')).toBeVisible()
   await page.getByRole('button', { name: '关闭' }).click()
-
   await page.getByRole('button', { name: '移除指标 累计收益率' }).click()
   await expect(page.getByText('1.83%')).not.toBeVisible()
   await expect(page.getByRole('button', { name: /选择研究指标/ })).toContainText('已选 0/8')
 
-  await page.getByLabel('模拟未来区间').selectOption('21')
+  await page.getByRole('tab', { name: '收益统计', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '箱形图' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '正态 Q-Q 图' })).toBeVisible()
+  await expect(page.getByText('查看关键分位点数据')).toBeVisible()
+  const diagnosticCards = page.getByTestId('distribution-diagnostics-grid').locator(':scope > div')
+  await expect(diagnosticCards).toHaveCount(2)
+  const boxPlotBounds = await diagnosticCards.nth(0).boundingBox()
+  const normalQqBounds = await diagnosticCards.nth(1).boundingBox()
+  expect(boxPlotBounds).not.toBeNull()
+  expect(normalQqBounds).not.toBeNull()
+  if (viewportWidth >= 1024) {
+    expect(Math.abs(boxPlotBounds!.y - normalQqBounds!.y)).toBeLessThanOrEqual(2)
+    expect(boxPlotBounds!.x + boxPlotBounds!.width).toBeLessThan(normalQqBounds!.x)
+  } else {
+    expect(normalQqBounds!.y).toBeGreaterThan(boxPlotBounds!.y + boxPlotBounds!.height)
+  }
+
+  await page.getByRole('tab', { name: '未来模拟', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '未来虚拟净值模拟' })).toBeVisible()
+  await expect(page.getByLabel('模拟未来区间')).toHaveValue('252')
+  await expect(page.getByLabel('模拟路径数')).toHaveValue('500')
+  await expect(page.getByLabel('Bootstrap 平均区块长度')).toHaveValue('20')
+  await expect(page.getByLabel('目标期末收益率')).toHaveValue('5')
+  const combinedMonteCarloChart = page.getByLabel('参数化蒙特卡洛（偏度/峰度校准）：路径与期末净值概率分布组合图')
+  await expect(combinedMonteCarloChart).not.toBeVisible()
+  await page.getByRole('button', { name: '运行模拟', exact: true }).click()
+  await expect(combinedMonteCarloChart).toBeVisible()
+  await expect(combinedMonteCarloChart.locator('canvas')).toHaveCount(1)
+  await expect(page.getByRole('heading', { name: '双模型结果对比' })).toBeVisible()
+  await page.getByText('区块 Bootstrap', { exact: true }).click()
+  await expect(page.getByRole('radio', { name: '区块 Bootstrap' })).toBeChecked()
+  await expect(page.getByLabel('历史区块 Bootstrap：路径与期末净值概率分布组合图')).toBeVisible()
   await page.getByLabel('模拟路径数').selectOption('200')
-  await page.getByRole('button', { name: '重新模拟' }).click()
-  await expect(page.getByText('200 条虚拟路径中的样本比例')).toBeVisible()
-  await page.getByLabel('统计区间').selectOption('1M')
-  await expect(page.getByText(/要求产品完整覆盖所选区间/)).toBeVisible()
+  await expect(page.getByLabel('历史区块 Bootstrap：路径与期末净值概率分布组合图')).not.toBeVisible()
+  await page.getByLabel('模拟未来区间').selectOption('21')
+  await page.getByRole('button', { name: '运行模拟', exact: true }).click()
+  await expect(page.getByText(/共计 200 条/)).toBeVisible()
+  await page.getByLabel('分析样本区间').selectOption('1M')
+  await expect(page.getByRole('button', { name: '运行模拟', exact: true })).toBeDisabled()
+  await page.getByRole('tab', { name: '收益统计', exact: true }).click()
+  await expect(page.getByText(/要求产品完整覆盖所选区间/).first()).toBeVisible()
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)

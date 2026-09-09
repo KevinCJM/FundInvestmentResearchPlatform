@@ -21,7 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 
 
 AUTO_CLASS_ENGINE_VERSION = "auto-asset-class-njit-1.0.0"
-AUTO_CLASS_KERNEL_VERSION = "auto-asset-class-kernels-2"
+AUTO_CLASS_KERNEL_VERSION = "auto-asset-class-kernels-3"
 
 _F1 = float64[::1]
 _F2 = float64[:, ::1]
@@ -577,6 +577,304 @@ def kmedoids_kernel(distance: np.ndarray, clusters: int64, seed: int64, max_iter
     return labels, medoids
 
 
+@njit(_F2(_F2, int64), cache=False, nogil=True)
+def denoise_correlation_kernel(correlation: np.ndarray, observations: int64) -> np.ndarray:
+    """Marchenko-Pastur eigenvalue clipping: noise modes collapse to one level.
+
+    For N products over T observations the eigenvalues of a pure-noise
+    correlation matrix stay below (1 + sqrt(N/T))^2.  Everything at or under
+    that bound says nothing about which products actually move together, so it
+    is flattened to a single average level (trace preserved) and only the
+    systematic modes survive to drive the distance matrix.  This is the standard
+    pre-step for correlation-based asset clustering; with 40 ETFs over one year
+    of daily data roughly half the spectrum is noise.
+    """
+
+    size = correlation.shape[0]
+    output = np.zeros((size, size), dtype=np.float64)
+    if size == 0:
+        return output
+    for left in range(size):
+        for right in range(size):
+            value = 0.5 * (correlation[left, right] + correlation[right, left])
+            if not np.isfinite(value):
+                value = 0.0
+            output[left, right] = value
+    # q >= 1 leaves the sample correlation rank-deficient: no signal/noise split
+    # is identifiable there, so the raw matrix is the honest answer.
+    if size < 2 or observations <= size:
+        return output
+    values, vectors = np.linalg.eigh(output)
+    bound = (1.0 + np.sqrt(size / observations)) ** 2
+    noise_total = 0.0
+    noise_count = 0
+    for index in range(size):
+        if values[index] <= bound:
+            noise_total += values[index]
+            noise_count += 1
+    # All-signal or all-noise: clipping would either change nothing or erase the
+    # whole structure into an identity matrix.  Leave the input alone.
+    if noise_count == 0 or noise_count == size:
+        return output
+    flat = noise_total / noise_count
+    filtered = np.zeros(size, dtype=np.float64)
+    for index in range(size):
+        filtered[index] = flat if values[index] <= bound else values[index]
+    rebuilt = np.zeros((size, size), dtype=np.float64)
+    for left in range(size):
+        for right in range(left, size):
+            total = 0.0
+            for mode in range(size):
+                total += vectors[left, mode] * filtered[mode] * vectors[right, mode]
+            rebuilt[left, right] = total
+            rebuilt[right, left] = total
+    # Clipping breaks the unit diagonal; rescale back to a correlation matrix.
+    scale = np.zeros(size, dtype=np.float64)
+    for index in range(size):
+        diagonal = rebuilt[index, index]
+        scale[index] = np.sqrt(diagonal) if diagonal > 0.0 else 1.0
+    for left in range(size):
+        for right in range(size):
+            value = rebuilt[left, right] / (scale[left] * scale[right])
+            if value > 1.0:
+                value = 1.0
+            elif value < -1.0:
+                value = -1.0
+            output[left, right] = value
+        output[left, left] = 1.0
+    return output
+
+
+@njit(_I1(_F2, int64, int64, int64), cache=False, nogil=True)
+def spectral_labels_kernel(
+    distance: np.ndarray, clusters: int64, seed: int64, max_iter: int64
+) -> np.ndarray:
+    """Normalised-cut spectral clustering (Ng-Jordan-Weiss) on the distance graph.
+
+    A Gaussian kernel turns distances into graph weights, the symmetric
+    normalised affinity is embedded by its leading eigenvectors, and k-means
+    cuts that embedding.  Unlike k-means/k-medoids in the raw space this makes
+    no round-cluster assumption: a chain of products drifting from 沪深300
+    towards 创业板 stays one connected class instead of being split at an
+    arbitrary radius.
+    """
+
+    size = distance.shape[0]
+    labels = np.zeros(size, dtype=np.int64)
+    wanted = clusters
+    if wanted < 1:
+        wanted = 1
+    if wanted > size:
+        wanted = size
+    if size < 3 or wanted < 2:
+        return labels
+    # Kernel width from the pool's own scale, so the graph neither saturates nor
+    # disconnects when the distance unit changes.
+    total = 0.0
+    pairs = 0
+    for left in range(size):
+        for right in range(size):
+            if left == right:
+                continue
+            value = distance[left, right]
+            if np.isfinite(value):
+                total += value
+                pairs += 1
+    sigma = total / pairs if pairs > 0 else 0.0
+    if sigma <= 0.0:
+        return labels
+    scale = 2.0 * sigma * sigma
+    weights = np.zeros((size, size), dtype=np.float64)
+    degree = np.zeros(size, dtype=np.float64)
+    for left in range(size):
+        for right in range(size):
+            if left == right:
+                continue
+            value = distance[left, right]
+            if not np.isfinite(value):
+                continue
+            weight = np.exp(-(value * value) / scale)
+            weights[left, right] = weight
+            degree[left] += weight
+    for index in range(size):
+        # An isolated node would divide by zero; park it at unit degree so it
+        # embeds near the origin and joins whichever class claims it.
+        if degree[index] <= 0.0:
+            degree[index] = 1.0
+        degree[index] = 1.0 / np.sqrt(degree[index])
+    normalized = np.zeros((size, size), dtype=np.float64)
+    for left in range(size):
+        for right in range(size):
+            normalized[left, right] = weights[left, right] * degree[left] * degree[right]
+    _values, vectors = np.linalg.eigh(normalized)
+    embedding = np.zeros((size, wanted), dtype=np.float64)
+    for component in range(wanted):
+        source = size - 1 - component
+        for row in range(size):
+            loading = vectors[row, source]
+            if not np.isfinite(loading):
+                loading = 0.0
+            embedding[row, component] = loading
+    for row in range(size):
+        norm = 0.0
+        for component in range(wanted):
+            norm += embedding[row, component] * embedding[row, component]
+        norm = np.sqrt(norm)
+        if norm > 0.0:
+            for component in range(wanted):
+                embedding[row, component] /= norm
+    return kmeans_kernel(embedding, wanted, seed, max_iter)
+
+
+@njit(types.Tuple((_I1, _F2))(_F2, int64, int64, int64), cache=False, nogil=True)
+def gmm_kernel(features: np.ndarray, clusters: int64, seed: int64, max_iter: int64):
+    """Diagonal-covariance Gaussian mixture by EM, started from k-means.
+
+    Returns hard labels plus the posterior membership matrix.  k-means forces
+    every class to be a ball of the same radius; a mixture lets a tight 货币类
+    cluster and a sprawling 主题类 cluster coexist, and the posteriors say how
+    confidently a product belongs rather than only where it landed.
+
+    ponytail: diagonal covariance only; full covariance needs a per-component
+    Cholesky and only pays off once features outnumber products per class.
+    """
+
+    rows, columns = features.shape
+    wanted = clusters
+    if wanted < 1:
+        wanted = 1
+    if wanted > rows:
+        wanted = rows
+    labels = np.zeros(rows, dtype=np.int64)
+    responsibility = np.zeros((rows, wanted), dtype=np.float64)
+    if rows == 0 or columns == 0 or wanted < 2:
+        for row in range(rows):
+            responsibility[row, 0] = 1.0
+        return labels, responsibility
+    labels = kmeans_kernel(features, wanted, seed, max_iter)
+
+    # Variance floor keeps a degenerate component (one member, or duplicate
+    # products) from collapsing to a delta and swallowing the likelihood.
+    floor = 0.0
+    for column in range(columns):
+        mean = 0.0
+        for row in range(rows):
+            mean += features[row, column]
+        mean /= rows
+        spread = 0.0
+        for row in range(rows):
+            diff = features[row, column] - mean
+            spread += diff * diff
+        floor += spread / rows
+    floor = floor / columns * 1e-6
+    if floor <= 0.0 or not np.isfinite(floor):
+        floor = 1e-9
+
+    weights = np.zeros(wanted, dtype=np.float64)
+    means = np.zeros((wanted, columns), dtype=np.float64)
+    variances = np.zeros((wanted, columns), dtype=np.float64)
+    counts = np.zeros(wanted, dtype=np.int64)
+    for row in range(rows):
+        component = labels[row]
+        counts[component] += 1
+        for column in range(columns):
+            means[component, column] += features[row, column]
+    for component in range(wanted):
+        if counts[component] > 0:
+            for column in range(columns):
+                means[component, column] /= counts[component]
+    for row in range(rows):
+        component = labels[row]
+        for column in range(columns):
+            diff = features[row, column] - means[component, column]
+            variances[component, column] += diff * diff
+    weight_total = 0.0
+    for component in range(wanted):
+        if counts[component] > 0:
+            for column in range(columns):
+                value = variances[component, column] / counts[component]
+                variances[component, column] = value if value > floor else floor
+            weights[component] = counts[component] / rows
+        else:
+            for column in range(columns):
+                variances[component, column] = floor
+            # A component k-means left empty is kept alive at one phantom point
+            # so EM can still claim it back instead of dividing by zero.
+            weights[component] = 1.0 / rows
+        weight_total += weights[component]
+    for component in range(wanted):
+        weights[component] /= weight_total
+
+    log_two_pi = np.log(2.0 * np.pi)
+    scores = np.zeros(wanted, dtype=np.float64)
+    previous = 0.0
+    for iteration in range(max_iter):
+        likelihood = 0.0
+        for row in range(rows):
+            best = -np.inf
+            for component in range(wanted):
+                value = np.log(weights[component])
+                for column in range(columns):
+                    variance = variances[component, column]
+                    diff = features[row, column] - means[component, column]
+                    value -= 0.5 * (log_two_pi + np.log(variance) + diff * diff / variance)
+                scores[component] = value
+                if value > best:
+                    best = value
+            # log-sum-exp: the raw densities underflow long before the ratios do.
+            total = 0.0
+            for component in range(wanted):
+                scores[component] = np.exp(scores[component] - best)
+                total += scores[component]
+            if total > 0.0:
+                for component in range(wanted):
+                    responsibility[row, component] = scores[component] / total
+                likelihood += best + np.log(total)
+            else:
+                for component in range(wanted):
+                    responsibility[row, component] = 1.0 / wanted
+        for component in range(wanted):
+            mass = 0.0
+            for row in range(rows):
+                mass += responsibility[row, component]
+            if mass <= 0.0:
+                weights[component] = 1.0 / rows
+                continue
+            weights[component] = mass / rows
+            for column in range(columns):
+                mean = 0.0
+                for row in range(rows):
+                    mean += responsibility[row, component] * features[row, column]
+                mean /= mass
+                means[component, column] = mean
+                spread = 0.0
+                for row in range(rows):
+                    diff = features[row, column] - mean
+                    spread += responsibility[row, component] * diff * diff
+                spread /= mass
+                variances[component, column] = spread if spread > floor else floor
+        weight_total = 0.0
+        for component in range(wanted):
+            weight_total += weights[component]
+        if weight_total > 0.0:
+            for component in range(wanted):
+                weights[component] /= weight_total
+        if iteration > 0 and likelihood - previous <= 1e-9 * (np.abs(previous) + 1.0):
+            break
+        previous = likelihood
+
+    for row in range(rows):
+        best_component = 0
+        best_value = -1.0
+        for component in range(wanted):
+            value = responsibility[row, component]
+            if value > best_value:
+                best_value = value
+                best_component = component
+        labels[row] = best_component
+    return labels, responsibility
+
+
 @njit(_F2(_F2, _I1, int64), cache=False, nogil=True)
 def affinity_from_distance_kernel(distance: np.ndarray, labels: np.ndarray, clusters: int64) -> np.ndarray:
     """Affinity[i, k] = -mean distance from i to the members of cluster k.
@@ -1102,6 +1400,9 @@ _PUBLIC_KERNELS = (
     cut_linkage_kernel,
     kmeans_kernel,
     kmedoids_kernel,
+    denoise_correlation_kernel,
+    spectral_labels_kernel,
+    gmm_kernel,
     affinity_from_distance_kernel,
     capacity_assign_kernel,
     mean_offdiagonal_kernel,
@@ -1174,6 +1475,10 @@ def warm_auto_class_numba_kernels() -> dict[str, object]:
         labels = cut_linkage_kernel(np.ascontiguousarray(linkage), distance.shape[0], 2)
     kmeans_kernel(features, 2, 7, 32)
     kmedoids_kernel(np.ascontiguousarray(distance), 2, 7, 32)
+    # T well above N so the warmup walks the eigen-clipping branch, not the guard.
+    denoised = denoise_correlation_kernel(np.ascontiguousarray(correlation), 250)
+    spectral_labels_kernel(np.ascontiguousarray(corr_to_distance_kernel(denoised)), 2, 7, 32)
+    gmm_kernel(features, 2, 7, 32)
     affinity = affinity_from_distance_kernel(np.ascontiguousarray(distance), labels, 2)
     floor = mean_offdiagonal_kernel(np.ascontiguousarray(distance))
     assigned = capacity_assign_kernel(np.ascontiguousarray(affinity), labels, 1, 3, 1, -floor)
@@ -1216,8 +1521,10 @@ __all__ = [
     "corr_to_distance_kernel",
     "cross_class_corr_kernel",
     "cut_linkage_kernel",
+    "denoise_correlation_kernel",
     "euclidean_distance_kernel",
     "finite_rows_kernel",
+    "gmm_kernel",
     "intra_class_mean_corr_kernel",
     "intra_class_weights_kernel",
     "kmeans_kernel",
@@ -1226,6 +1533,7 @@ __all__ = [
     "pca_features_kernel",
     "robust_standardize_kernel",
     "silhouette_kernel",
+    "spectral_labels_kernel",
     "warm_auto_class_numba_kernels",
     "winsorize_returns_kernel",
 ]

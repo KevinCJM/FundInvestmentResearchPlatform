@@ -3,6 +3,7 @@ from __future__ import annotations
 """Python orchestration for the fixed-signature ProductDetail compute graph."""
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -14,7 +15,6 @@ try:
     from backend.product_analysis_numba import (
         bollinger_kernel,
         box_plot_kernel,
-        daily_returns_percent_kernel,
         distribution_interpretation_codes_kernel,
         histogram_normal_pdf_kernel,
         kdj_kernel,
@@ -22,7 +22,7 @@ try:
         normal_qq_kernel,
         parametric_monte_carlo_kernel,
         product_analysis_execution_audit,
-        regime_performance_kernel,
+        regime_analysis_kernel,
         return_statistics_kernel,
         simulation_comparison_kernel,
         stationary_block_bootstrap_kernel,
@@ -34,7 +34,6 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from product_analysis_numba import (
         bollinger_kernel,
         box_plot_kernel,
-        daily_returns_percent_kernel,
         distribution_interpretation_codes_kernel,
         histogram_normal_pdf_kernel,
         kdj_kernel,
@@ -42,7 +41,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         normal_qq_kernel,
         parametric_monte_carlo_kernel,
         product_analysis_execution_audit,
-        regime_performance_kernel,
+        regime_analysis_kernel,
         return_statistics_kernel,
         simulation_comparison_kernel,
         stationary_block_bootstrap_kernel,
@@ -212,6 +211,8 @@ def _simulation_seed(product_id: str, payload: Mapping[str, object], lane: str) 
             str(payload.get("simulation_horizon")),
             str(payload.get("simulation_path_count")),
             str(payload.get("simulation_run")),
+            str(payload.get("analysis_basis")),
+            json.dumps(payload.get("regime"), sort_keys=True, ensure_ascii=False),
             lane,
         ]
     )
@@ -324,63 +325,87 @@ def _density_payload(
     }
 
 
-def _regime_payload(
+def _regime_analysis(
     frame: pd.DataFrame,
     regime: Mapping[str, object] | None,
-) -> list[dict[str, object]]:
-    if not regime:
-        return []
-    states = list(regime.get("states") or [])
-    segments = list(regime.get("segments") or [])
-    if not states or not segments:
-        return []
+) -> tuple[dict[str, object] | None, np.ndarray, np.ndarray, np.ndarray]:
+    states = list(regime.get("states") or []) if regime else []
+    segments = [dict(item) for item in regime.get("segments") or []] if regime else []
     state_codes = {str(state.get("id")): index for index, state in enumerate(states)}
-    start_days: list[int] = []
-    end_days: list[int] = []
-    segment_codes: list[int] = []
-    for segment in segments:
+    if len(state_codes) != len(states):
+        raise ValueError("历史情景状态标识重复")
+    selected_state_id = regime.get("state_id") if regime else None
+    selected_segment_id = regime.get("segment_id") if regime else None
+    if selected_state_id is not None and selected_state_id not in state_codes:
+        raise ValueError("所选市场状态不属于该历史情景版本")
+    starts: list[int] = []
+    ends: list[int] = []
+    codes: list[int] = []
+    selected_segment = -1
+    for index, segment in enumerate(segments):
+        segment_id = str(segment.get("id") or f"segment-{index}")
+        segment["id"] = segment_id
         start = pd.to_datetime(segment.get("start_date"), errors="coerce")
         end = pd.to_datetime(segment.get("end_date"), errors="coerce")
         code = state_codes.get(str(segment.get("state_id")))
         if pd.isna(start) or pd.isna(end) or code is None or start > end:
-            continue
-        start_days.append(int(pd.Timestamp(start).to_datetime64().astype("datetime64[D]").astype(np.int64)))
-        end_days.append(int(pd.Timestamp(end).to_datetime64().astype("datetime64[D]").astype(np.int64)))
-        segment_codes.append(code)
-    if not start_days:
-        return []
-    date_days = np.array(
-        frame["date"].to_numpy(dtype="datetime64[D]").view(np.int64),
-        dtype=np.int64,
-        copy=True,
-        order="C",
+            raise ValueError("历史情景区间的日期或状态无效")
+        starts.append(int(pd.Timestamp(start).to_datetime64().astype("datetime64[D]").astype(np.int64)))
+        ends.append(int(pd.Timestamp(end).to_datetime64().astype("datetime64[D]").astype(np.int64)))
+        codes.append(code)
+        if segment_id == selected_segment_id:
+            selected_segment = index
+            if selected_state_id is not None and segment["state_id"] != selected_state_id:
+                raise ValueError("所选区间不属于所选市场状态")
+            selected_state_id = segment["state_id"]
+    if selected_segment_id is not None and selected_segment < 0:
+        raise ValueError("所选区间不属于该历史情景版本")
+    values, segment_values, returns, return_segments, context = regime_analysis_kernel(
+        np.array(frame["date"].to_numpy(dtype="datetime64[D]").view(np.int64), dtype=np.int64, copy=True, order="C"),
+        _float_array(frame, "close"), _int_array(starts), _int_array(ends),
+        _int_array(codes), len(states), state_codes.get(selected_state_id, -1), selected_segment,
     )
-    values = regime_performance_kernel(
-        date_days,
-        _float_array(frame, "close"),
-        _int_array(start_days),
-        _int_array(end_days),
-        _int_array(segment_codes),
-        len(states),
-    )
-    output: list[dict[str, object]] = []
+    if not regime:
+        return None, returns, return_segments, context
+    state_rows = []
     for index, state in enumerate(states):
-        if values[index, 0] <= 0:
+        row = values[index]
+        state_rows.append({
+            "stateId": str(state["id"]),
+            "stateLabel": str(state.get("label") or state["id"]),
+            "color": str(state.get("color") or "#64748b"),
+            "observations": int(row[0]), "returnObservations": int(row[1]),
+            "segmentCount": int(row[2]), "medianSegmentObservations": _optional_float(row[3]),
+            "eligibleSegmentCount": int(row[4]), "meanDailyReturn": _optional_float(row[5]),
+            "annualizedVolatility": _optional_float(row[6]), "winRate": _optional_float(row[7]),
+            "medianSegmentReturn": _optional_float(row[8]), "worstSegmentReturn": _optional_float(row[9]),
+            "medianSegmentDrawdown": _optional_float(row[10]), "worstSegmentDrawdown": _optional_float(row[11]),
+        })
+    segment_rows = []
+    for index, segment in enumerate(segments):
+        row = segment_values[index]
+        if row[0] <= 0:
             continue
-        output.append(
-            {
-                "stateId": str(state.get("id")),
-                "stateLabel": str(state.get("label") or state.get("id")),
-                "color": str(state.get("color") or "#64748b"),
-                "observations": int(values[index, 0]),
-                "returnObservations": int(values[index, 1]),
-                "cumulativeReturn": _optional_float(values[index, 2]),
-                "annualizedVolatility": _optional_float(values[index, 3]),
-                "maxDrawdown": _optional_float(values[index, 4]),
-                "winRate": _optional_float(values[index, 5]),
-            }
-        )
-    return output
+        state = states[codes[index]]
+        start_date = frame.iloc[int(row[5])]["date"].strftime("%Y-%m-%d")
+        end_date = frame.iloc[int(row[6])]["date"].strftime("%Y-%m-%d")
+        status_code = int(row[4])
+        segment_rows.append({
+            "id": segment["id"], "stateId": state["id"],
+            "stateLabel": str(state.get("label") or state["id"]),
+            "color": str(state.get("color") or "#64748b"),
+            "startDate": start_date, "endDate": end_date,
+            "observations": int(row[0]), "returnObservations": int(row[1]),
+            "cumulativeReturn": _optional_float(row[2]), "maxDrawdown": _optional_float(row[3]),
+            "status": {0: "complete", 1: "insufficient_sample", 2: "missing_data"}[status_code],
+            "reason": {0: None, 1: "至少需要两个有效价格观察值。", 2: "区间存在缺失或无效价格，区间收益与回撤不计算。"}[status_code],
+            "windowClipped": start_date != segment["start_date"] or end_date != segment["end_date"],
+            "validObservations": int(row[7]),
+        })
+    return {
+        "states": state_rows, "segments": segment_rows,
+        "selectedStateId": selected_state_id, "selectedSegmentId": selected_segment_id,
+    }, returns, return_segments, context
 
 
 def build_product_analysis_response(
@@ -388,8 +413,16 @@ def build_product_analysis_response(
     product_id: str,
     points: Sequence[Mapping[str, object]],
     parameters: Mapping[str, object],
+    research_points: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
-    frame = _prepare_frame(points)
+    if points:
+        frame = _prepare_frame(points)
+    else:
+        frame = pd.DataFrame({name: pd.Series(dtype="float64") for name in ("open", "high", "low", "close", "volume")})
+        frame["date"] = pd.Series(dtype="datetime64[ns]")
+    research_frame = _prepare_frame(research_points) if research_points is not None else frame
+    if research_frame.empty:
+        raise ValueError("产品研究数据没有有效日期")
     open_values = _float_array(frame, "open")
     close = _float_array(frame, "close")
     high = _float_array(frame, "high")
@@ -431,11 +464,12 @@ def build_product_analysis_response(
         kdj = np.empty((3, 0), dtype=np.float64)
 
     statistics_frame, window = _statistics_window(
-        frame,
+        research_frame,
         str(parameters["statistics_period"]),
     )
-    statistics_close = _float_array(statistics_frame, "close")
-    returns = daily_returns_percent_kernel(statistics_close)
+    regime_analysis, returns, return_segments, context_counts = _regime_analysis(
+        statistics_frame, parameters.get("regime")
+    )
     statistics = return_statistics_kernel(returns)
     interpretation = _distribution_interpretation(
         distribution_interpretation_codes_kernel(statistics)
@@ -458,7 +492,10 @@ def build_product_analysis_response(
     ]
 
     simulation: dict[str, object] | None = None
-    if int(statistics[6]) >= MIN_SIMULATION_OBSERVATIONS:
+    eligible = int(statistics[6]) >= MIN_SIMULATION_OBSERVATIONS
+    requested = bool(parameters.get("include_simulation", False))
+    simulation_status = "not_requested" if not requested else "insufficient_sample"
+    if requested and eligible:
         horizon = int(parameters["simulation_horizon"])
         path_count = int(parameters["simulation_path_count"])
         target_return = float(parameters["simulation_target_return"])
@@ -472,6 +509,7 @@ def build_product_analysis_response(
         )
         bootstrap_result = stationary_block_bootstrap_kernel(
             returns,
+            return_segments,
             1.0,
             horizon,
             path_count,
@@ -505,6 +543,7 @@ def build_product_analysis_response(
             "medium": "两种模型存在一定差异，建议同时查看参数化假设与历史区块情景。",
             "low": "两种模型结果接近，但仍不代表对未来走势形成预测。",
         }[level]
+        simulation_status = "complete"
         simulation = {
             "initialNav": 1.0,
             "parametric": parametric,
@@ -524,8 +563,17 @@ def build_product_analysis_response(
         }
 
     qq_tail = {0: "lower", 1: "center", 2: "upper"}
+    scope = "full"
+    state_label = None
+    if regime_analysis:
+        scope = "segment" if regime_analysis["selectedSegmentId"] else ("state" if regime_analysis["selectedStateId"] else "full")
+        state_label = next((item["stateLabel"] for item in regime_analysis["states"] if item["stateId"] == regime_analysis["selectedStateId"]), None)
+    basis = str(parameters.get("analysis_basis") or "price")
+    conditional_message = "假设未来持续处于所选状态；不估计状态切换或发生概率。" if scope != "full" else "从研究窗口的历史收益抽样；不代表未来预测。"
+    simulation_message = conditional_message if eligible else f"至少需要 {MIN_SIMULATION_OBSERVATIONS} 个有效收益观察值，当前有 {int(statistics[6])} 个。"
+    fingerprint = hashlib.sha256(statistics_frame[["date", "close"]].to_json(date_format="iso").encode()).hexdigest()
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "product_id": product_id,
         "execution": validate_execution_audit(product_analysis_execution_audit()),
         "window": window,
@@ -627,7 +675,20 @@ def build_product_analysis_response(
             }
         ),
         "simulation": simulation,
-        "regimeStatistics": _regime_payload(frame, parameters.get("regime")),
+        "simulationStatus": simulation_status,
+        "regimeAnalysis": regime_analysis,
+        "researchContext": {
+            "startDate": statistics_frame.iloc[int(context_counts[3])]["date"].strftime("%Y-%m-%d") if context_counts[3] >= 0 else None,
+            "endDate": statistics_frame.iloc[int(context_counts[4])]["date"].strftime("%Y-%m-%d") if context_counts[4] >= 0 else None,
+            "windowStartDate": statistics_frame.iloc[0]["date"].strftime("%Y-%m-%d") if len(statistics_frame) else None,
+            "windowEndDate": statistics_frame.iloc[-1]["date"].strftime("%Y-%m-%d") if len(statistics_frame) else None,
+            "observations": int(context_counts[0]), "returnObservations": int(context_counts[1]),
+            "segmentCount": int(context_counts[2]), "scope": scope, "stateLabel": state_label,
+            "boundaryPolicy": "情景收益仅取同一连续区间内相邻有效观察值，跨状态边界与缺失价格不连接；多段覆盖范围不代表连续持有，区间路径指标仅统计完整有效路径。" if scope != "full" else "使用完整研究窗口内相邻有效观察值，缺失价格不连接。",
+            "simulationEligible": eligible, "simulationMessage": simulation_message,
+            "analysisBasis": basis, "basisLabel": "复权净值" if basis == "adjusted_nav" else "市场收盘价",
+            "dataFingerprint": fingerprint,
+        },
     }
 
 

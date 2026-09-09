@@ -65,6 +65,12 @@
       }
     },
     "fact_check": {
+      "verify_operator_causality_baseline": {
+        "action": "verify current operator causality metadata and future-perturbation probes against the registry and causality baseline"
+      },
+      "verify_factor_research_temporal_and_release_contracts": {
+        "action": "verify distinct characteristic versus return-series outputs, purged labels and maturity-dated rolling IC, frozen-input delayed-entry spreads, uploaded FF3 reference breakpoints and lagged weights, no missing-held-asset renormalization, explicit RF/total-return basis, checked downloads, actual fixed-signature NJIT readiness, immutable research-only releases and pending product-pool admission"
+      },
       "read_reference_map_first": {
         "action": "read_reference_map"
       },
@@ -81,7 +87,7 @@
         "action": "compare frontend fetch payloads with backend Pydantic/request handling before editing"
       },
       "verify_restricted_formula_contract": {
-        "action": "verify AST whitelist, operator signatures, DAG limits, and finite scalar public output with runtime tests"
+        "action": "verify AST whitelist, operator signatures and DAG budgets; preserve legacy single-scalar contracts while validating every named scalar-bundle root separately, with explicit output references and no mixed-shape public bundle"
       },
       "verify_real_series_window_and_revision_lock": {
         "action": "verify real parquet-only windows, null plus warning semantics, optimistic revisions, and plan-locked indicator history"
@@ -107,6 +113,71 @@
     }
   },
   "routes": [
+    {
+      "id": "R83",
+      "task_type": "factor_research_center_studies_attribution_or_workflow_evidence",
+      "match_keywords": [
+        "因子研究中心",
+        "因子研究",
+        "因子库",
+        "因子发布",
+        "因子归因",
+        "收益贡献",
+        "风格归因",
+        "滚动暴露",
+        "factor research",
+        "factor_research",
+        "FactorResearchCenter",
+        "FactorEvidencePanel",
+        "RankIC",
+        "滚动IC",
+        "产品特征因子",
+        "因子收益率",
+        "双排序",
+        "return-plans",
+        "RBSA",
+        "FF3"
+      ],
+      "negative_keywords": [
+        "Tushare download only",
+        "static process prototype only"
+      ],
+      "route_priority": 97,
+      "first_read_modules": [
+        "factor_research_center"
+      ],
+      "expand_to_modules": [
+        "backend_custom_indicator_service",
+        "market_data_snapshot_lifecycle",
+        "frontend_investment_process_framework",
+        "backend_api_shell",
+        "frontend_app_shell"
+      ],
+      "pitfall_ids": [
+        "P03",
+        "P19"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression",
+        "run_frontend_build_when_deps_available",
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_factor_research_temporal_and_release_contracts",
+        "verify_market_snapshot_and_dashboard_boundaries"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "versioned_factor_research",
+        "real_data_required",
+        "manual_investment_decision"
+      ]
+    },
     {
       "id": "R01",
       "task_type": "general_project_orientation_or_cross_cutting_change",
@@ -670,6 +741,7 @@
         "indicator",
         "cal_indicators",
         "numba",
+        "causality",
         "finance_math",
         "latex",
         "DAG",
@@ -701,6 +773,20 @@
         "infer_expression",
         "portfolio indicator",
         "MetricPresentation",
+        "independent indicators",
+        "shared DAG",
+        "value_at",
+        "linear_fit",
+        "snapshot last_finite",
+        "runtime parameters",
+        "可变参数",
+        "参数化指标",
+        "独立指标",
+        "公共子表达式",
+        "算子原语化",
+        "最大回撤分析",
+        "多标量",
+        "添加结果",
         "指标展示协议",
         "指标选择器",
         "指标",
@@ -746,6 +832,7 @@
         "verify_typed_21_registry_and_availability",
         "verify_real_series_window_and_revision_lock",
         "verify_typed_context_and_portfolio_snapshot",
+        "verify_operator_causality_baseline",
         "verify_locked_metric_presentation_and_unavailable_states",
         "verify_generation_bound_batch_arrays_and_worker_cleanup",
         "verify_fused_kernel_parity_and_paged_result_contract"
@@ -773,6 +860,10 @@
         "数据模型",
         "数据映射",
         "数据同步",
+        "数据存储",
+        "外接磁盘",
+        "磁盘迁移",
+        "DataStoragePanel",
         "下载工作台"
       ],
       "negative_keywords": [
@@ -782,7 +873,8 @@
       "first_read_modules": [
         "backend_data_model_catalog",
         "backend_data_source_etl",
-        "frontend_data_source_center"
+        "frontend_data_source_center",
+        "backend_data_storage"
       ],
       "expand_to_modules": [
         "data_ingestion_config",

@@ -210,6 +210,12 @@ def _series(
 
 
 _VARIABLES = (
+    VariableDefinition(
+        "observation_dates", "净值观察日期", r"\mathbf{d}", "series", ("time",), ("L",),
+        "date", None, "day", "与当前净值窗口逐项对齐的真实日期；不是观察序号。",
+        ("single_product",), ("etf", "fund"), "当前净值窗口的日期轴",
+        transform="aligned_window_dates",
+    ),
     _series(
         "returns",
         "复权净值普通收益率",
@@ -543,6 +549,7 @@ VARIABLE_ALIASES = {
 # Parse persisted formulas that predate the canonical text-style subscripts.
 # These are input aliases only; catalog output always uses the forms above.
 LEGACY_VARIABLE_LATEX = {
+    r"r_{f}": "risk_free_rate_per_observation",
     r"\mathbf{p}_{adj}": "adjusted_nav",
     r"\mathbf{c}_{prev}": "previous_close",
     r"\mathbf{r}_{quote}": "price_return",
@@ -640,7 +647,12 @@ def normalize_variable_latex(expression: str) -> str:
     for latex, variable_id in sorted(
         latex_aliases.items(), key=lambda item: len(item[0]), reverse=True
     ):
-        normalized = normalized.replace(latex, variable_id)
+        if latex.isidentifier():
+            # Plain symbols such as r_f must not rewrite parts of unknown
+            # identifiers (r_future / custom_r_f), hiding a real input error.
+            normalized = re.sub(rf"\b{re.escape(latex)}\b", variable_id, normalized)
+        else:
+            normalized = normalized.replace(latex, variable_id)
     return normalized
 
 

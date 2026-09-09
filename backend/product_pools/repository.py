@@ -18,6 +18,7 @@ try:  # pragma: no cover - Windows fallback for local development
 except ImportError:  # pragma: no cover
     fcntl = None
 
+from .domain import content_hash
 from .errors import (
     ProductPoolConflictError,
     ProductPoolNotFoundError,
@@ -288,6 +289,10 @@ class ProductPoolRepository:
             "created_at": utc_now(),
             "immutable": True,
         }
+        # The snapshot claims to be immutable; without a digest that claim is
+        # unverifiable, and `membership.py` has always read this field back.
+        # Hashed after id/created_at so the digest covers the identity too.
+        snapshot["content_hash"] = content_hash(snapshot)
         with self.store.locked():
             payload = self.store.read_unlocked()
             payload["universe_snapshots"].append(snapshot)

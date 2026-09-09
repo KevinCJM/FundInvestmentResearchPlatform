@@ -64,15 +64,11 @@ SUPPORTED_OPERATOR_REGISTRY_VERSIONS = frozenset(
         TYPED_OPERATOR_REGISTRY_VERSION,
     }
 )
-PUBLIC_OPERATOR_EXCLUSIONS = frozenset(
-    {
-        "cumulative_return",
-        "total_return",
-        "annualized_return",
-        "portfolio_returns",
-        "active_returns",
-    }
-)
+from .operator_lowering import COMPOSITE_OPERATOR_IDS
+
+# Persisted formula spellings are accepted by the compiler, never offered as
+# opaque numeric operations in the authoring catalog.
+PUBLIC_OPERATOR_EXCLUSIONS = COMPOSITE_OPERATOR_IDS
 PRICE_SEMANTIC_DIMENSIONS = frozenset(
     {"adjusted_nav", "reported_nav", "raw_market_price"}
 )
@@ -251,6 +247,19 @@ class TypedOperatorSpec:
 
 
 _OPERATOR_ARGUMENT_NAMES: Mapping[tuple[str, int], tuple[str, ...]] = {
+    ("last_drawdown_interval", 1): ("drawdowns",),
+    ("interval_start", 1): ("interval",),
+    ("interval_trough", 1): ("interval",),
+    ("interval_recovery", 1): ("interval",),
+    ("value_at", 2): ("values", "position"),
+    ("require_positive", 1): ("values",),
+    ("require_nonnegative", 1): ("values",),
+    ("linear_fit", 1): ("values",),
+    ("linear_fit", 2): ("x", "y"),
+    **{(f"fit_{field}", 1): ("fit",) for field in (
+        "slope", "intercept", "residual_sum_squares", "total_sum_squares", "observation_count",
+    )},
+    ("days_between", 2): ("start_date", "end_date"),
     **{
         (operator_id, 2): ("lhs", "rhs")
         for operator_id in (
@@ -526,7 +535,9 @@ def _multiply_type(inputs: tuple[ValueType, ...]) -> ValueType:
 def _divide_type(inputs: tuple[ValueType, ...]) -> ValueType:
     lhs, rhs = inputs
     output = _elementwise_structure("divide", lhs, rhs)
-    if rhs.is_scalar and rhs.semantic_dimension == "dimensionless":
+    if rhs.is_scalar and rhs.semantic_dimension in {"dimensionless", "count"}:
+        if lhs.semantic_dimension == "count" and rhs.semantic_dimension == "count":
+            return output.with_semantics("dimensionless")
         return output.with_semantics(lhs.semantic_dimension, lhs.price_basis)
     if lhs.semantic_dimension == rhs.semantic_dimension:
         if (
@@ -2708,6 +2719,14 @@ def get_typed_operator_registry(
             if alias in registry:
                 raise RuntimeError(f"重复算子别名: {alias}")
             registry[alias] = spec
+    from .primitive_access import access_operator_specs
+    from .regression_state import fit_operator_specs
+    for spec in (*access_operator_specs(version), *fit_operator_specs(version)):
+        registry[spec.operator_id] = spec
+    if version == TYPED_OPERATOR_REGISTRY_VERSION:
+        from .drawdown_interval import interval_operator_specs
+        for spec in interval_operator_specs(version):
+            registry[spec.operator_id] = spec
     return MappingProxyType(registry)
 
 
@@ -2715,11 +2734,16 @@ def get_typed_operator_catalog(
     version: str = TYPED_OPERATOR_REGISTRY_VERSION,
 ) -> dict[str, Any]:
     registry = get_typed_operator_registry(version)
+    historical_ids = {spec.operator_id for spec in _canonical_specs()}
+    exclusions = PUBLIC_OPERATOR_EXCLUSIONS if version == TYPED_OPERATOR_REGISTRY_VERSION else frozenset({
+        "cumulative_return", "total_return", "annualized_return", "portfolio_returns", "active_returns",
+    })
     canonical = sorted(
         {
             spec.operator_id: spec
             for spec in registry.values()
-            if spec.operator_id not in PUBLIC_OPERATOR_EXCLUSIONS
+            if spec.operator_id not in exclusions
+            and (version == TYPED_OPERATOR_REGISTRY_VERSION or spec.operator_id in historical_ids)
         }.values(),
         key=lambda item: (item.category, item.operator_id),
     )

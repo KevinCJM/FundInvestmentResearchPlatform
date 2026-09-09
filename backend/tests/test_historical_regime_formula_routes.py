@@ -115,7 +115,7 @@ def test_formula_contract_and_compilation_audit_are_exposed_by_api(client: TestC
     meta = client.get("/api/historical-regimes/meta")
     assert meta.status_code == 200
     language = meta.json()["formula_language"]
-    assert language["allowlist_version"] == "typed-njit-causal-1"
+    assert language["allowlist_version"] == "typed-njit-causal-2"
     assert language["njit_required"] is True
     assert language["python_fallback"] == 0
     assert language["provenance"]["field"] == "features.formula_provenance"

@@ -2037,126 +2037,19 @@ def _configured_snapshot_values(
 
     try:
         from backend.custom_indicators.service import CustomIndicatorService
-        from backend.custom_indicators.series_provider import market_data_generation
+        from backend.custom_indicators.snapshot_execution import configured_snapshot_values
     except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         from custom_indicators.service import CustomIndicatorService
-        from custom_indicators.series_provider import market_data_generation
+        from custom_indicators.snapshot_execution import configured_snapshot_values
 
     service = CustomIndicatorService(
         workspace_data_dir=workspace_data_dir,
         market_data_dir=market_data_dir,
     )
-    config = service.get_snapshot_config()
-    configured = [item for item in config.get("items", []) if item.get("status") == "ready"]
-    service.warm_snapshot_numba_plans(configured)
-    result = output.copy()
-    for item in configured:
-        field = str(item["field"])
-        result[field] = np.nan
-        result[f"{field}__status"] = "unavailable"
-        result[f"{field}__observation_count"] = 0
-        for suffix in ("start_date", "end_date", "effective_as_of", "warning_code", "warning_message"):
-            result[f"{field}__{suffix}"] = None
-
-    targets = [
-        {"kind": str(row.instrument_type), "product_id": str(row.ts_code)}
-        for row in result[["instrument_type", "ts_code"]].itertuples(index=False)
-    ]
-    row_indexes = {
-        (str(row.instrument_type), str(row.ts_code)): row.Index
-        for row in result[["instrument_type", "ts_code"]].itertuples()
-    }
-    status_counts = {"ok": 0, "warning": 0, "unavailable": 0, "error": 0}
-    failures: list[dict[str, str]] = []
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for item in configured:
-        groups.setdefault(str(item["period"]), []).append(item)
-
-    for period, period_items in groups.items():
-        for metric_start in range(0, len(period_items), 10):
-            metric_batch = period_items[metric_start : metric_start + 10]
-            indicator_ids = [str(item["indicator_id"]) for item in metric_batch]
-            versions = {
-                str(item["indicator_id"]): int(item["indicator_revision"])
-                for item in metric_batch
-            }
-            fields = {str(item["indicator_id"]): str(item["field"]) for item in metric_batch}
-            for target_start in range(0, len(targets), 50):
-                target_batch = targets[target_start : target_start + 50]
-                response = service.evaluate(
-                    indicator_ids=indicator_ids,
-                    indicator_versions=versions,
-                    inline_definition=None,
-                    targets=target_batch,
-                    period=period,
-                    include_series=False,
-                    prefer_snapshot=False,
-                )
-                for item in response.get("results", []):
-                    status = str(item.get("status") or "error")
-                    status_counts[status if status in status_counts else "error"] += 1
-                    value = item.get("value")
-                    target = item.get("target") or {}
-                    field = fields.get(str(item.get("indicator_id")))
-                    if not field:
-                        continue
-                    row_index = row_indexes.get(
-                        (str(target.get("kind")), str(target.get("product_id")))
-                    )
-                    if row_index is None:
-                        continue
-                    result.at[row_index, f"{field}__status"] = status
-                    window = item.get("window") or {}
-                    result.at[row_index, f"{field}__observation_count"] = int(
-                        window.get("observation_count") or 0
-                    )
-                    for suffix in ("start_date", "end_date", "effective_as_of"):
-                        result.at[row_index, f"{field}__{suffix}"] = window.get(suffix)
-                    warnings = item.get("warnings") or []
-                    if warnings:
-                        result.at[row_index, f"{field}__warning_code"] = warnings[0].get("code")
-                        result.at[row_index, f"{field}__warning_message"] = warnings[0].get("message")
-                    if value is not None and np.isfinite(float(value)):
-                        result.at[row_index, field] = float(value)
-
-    metadata_items = [
-        {
-            "field": item["field"],
-            "indicator_id": item["indicator_id"],
-            "indicator_revision": item["indicator_revision"],
-            "period": item["period"],
-            "name": item.get("name"),
-            "source": item.get("source"),
-            "presentation": item.get("presentation"),
-        }
-        for item in configured
-    ]
-    missing_definitions = [
-        {
-            "indicator_id": str(item.get("indicator_id")),
-            "message": str(item.get("status_message") or "指标版本不存在。"),
-        }
-        for item in config.get("items", [])
-        if item.get("status") != "ready"
-    ]
-    failures.extend(missing_definitions)
-    return result, {
-        "schema_version": 1,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "data_generation": market_data_generation(market_data_dir),
-        "config_revision": config.get("revision"),
-        "configured_count": len(configured),
-        "items": metadata_items,
-        "status_counts": status_counts,
-        "failures": failures,
-        "legacy_columns": [
-            "amount_avg_20d",
-            "volume_avg_20d",
-            "premium_discount_latest",
-            "current_size",
-        ],
-        "legacy_note": "这些列是兼容属性；新增快照指标只能从指标中心配置。",
-    }
+    try:
+        return configured_snapshot_values(output, service)
+    finally:
+        service.close_compute_engine()
 
 
 def rebuild_analytics_snapshot(

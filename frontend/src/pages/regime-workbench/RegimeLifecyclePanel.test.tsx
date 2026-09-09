@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import RegimeLifecyclePanel from './RegimeLifecyclePanel'
@@ -112,5 +112,141 @@ describe('RegimeLifecyclePanel', () => {
     await user.click(screen.getByRole('button', { name: '发布运行' }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith(`/runs/${run.id}/publish`))).toBe(true))
     expect(JSON.parse(String(fetchMock.mock.calls.find(([path]) => String(path).endsWith('/compare'))?.[1]?.body)).run_ids).toEqual([run.id, second.id])
+  })
+
+  it('完整结果入口传递当前选中的正式run ID，未提供回调时保持原用法', async () => {
+    const second = { ...run, id: 'RUN-FORMAL-2', name: '另一份正式运行' }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/runs?definition_id=')) return ok({ items: [run, second] })
+      throw new Error('Unexpected request: ' + String(input))
+    }))
+    const onViewResult = vi.fn()
+    const user = userEvent.setup()
+    const props = { definition, dirty: false, valid: true, mode: 'realtime' as const, asOf: '', onError: vi.fn(), onNotice: vi.fn() }
+    const { rerender } = render(<RegimeLifecyclePanel {...props} onViewResult={onViewResult} />)
+    await user.click(await screen.findByRole('button', { name: '查看完整情景结果' }))
+    expect(onViewResult).toHaveBeenLastCalledWith(run.id)
+    await user.click(screen.getByRole('button', { name: /另一份正式运行/ }))
+    await user.click(await screen.findByRole('button', { name: '查看完整情景结果' }))
+    expect(onViewResult).toHaveBeenLastCalledWith(second.id)
+    rerender(<RegimeLifecyclePanel {...props} />)
+    expect(screen.queryByRole('button', { name: '查看完整情景结果' })).not.toBeInTheDocument()
+  })
+
+  it('切换定义后旧正式运行的慢响应不能混入新定义记录', async () => {
+    let resolveOld!: (response: Response) => void
+    const pendingOld = new Promise<Response>(resolve => { resolveOld = resolve })
+    const nextDefinition = { ...definition, id: 'REGIME-V2-2', name: '另一份定义' }
+    const nextRun = { ...run, id: 'RUN-OTHER-DEFINITION', definition_id: nextDefinition.id, name: '另一份定义的运行' }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/runs?definition_id=' + definition.id)) return ok({ items: [] })
+      if (path.endsWith('/runs?definition_id=' + nextDefinition.id)) return ok({ items: [nextRun] })
+      if (path.endsWith('/prepare')) return ok({ plan_id: 'PLAN', compile_token: 'TOKEN', graph_hash: 'graph', runtime_audit: fixedExecution })
+      if (path.endsWith('/run') && init?.method === 'POST') return pendingOld
+      throw new Error('Unexpected request: ' + path)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    const onViewResult = vi.fn()
+    const onNotice = vi.fn()
+    const props = { dirty: false, valid: true, mode: 'realtime' as const, asOf: '', onError: vi.fn(), onNotice, onViewResult }
+    const { rerender } = render(<RegimeLifecyclePanel {...props} definition={definition} />)
+    await user.click(screen.getByRole('button', { name: '显式预热计划' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '运行已保存版本' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: '运行已保存版本' }))
+    rerender(<RegimeLifecyclePanel {...props} definition={nextDefinition} />)
+    await screen.findByText(nextRun.id)
+    await act(async () => { resolveOld(ok(run)); await pendingOld })
+    expect(screen.queryByText(run.id)).not.toBeInTheDocument()
+    expect(screen.getByText('1 条')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '查看完整情景结果' }))
+    expect(onViewResult).toHaveBeenLastCalledWith(nextRun.id)
+    expect(onNotice.mock.calls.some(([message]) => String(message).includes(run.id))).toBe(false)
+  })
+
+  it('发布旧选中运行完成时保留当前运行详情且不重复取数', async () => {
+    let resolvePublish!: (response: Response) => void
+    const pendingPublish = new Promise<Response>(resolve => { resolvePublish = resolve })
+    const second = { ...run, id: 'RUN-FORMAL-2', name: '另一份正式运行' }
+    const summaries = [run, second].map(({ series: _series, calculation_audits: _audits, ...item }) => ({ ...item, series_included: false }))
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.includes('/runs?definition_id=')) return ok({ items: summaries })
+      if (path.endsWith('/runs/' + run.id + '/publish')) return pendingPublish
+      if (path.endsWith('/runs/' + run.id)) return ok(run)
+      if (path.endsWith('/runs/' + second.id)) return ok(second)
+      throw new Error('Unexpected request: ' + path)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    const onViewResult = vi.fn()
+    const onNotice = vi.fn()
+    render(<RegimeLifecyclePanel definition={definition} dirty={false} valid mode="realtime" asOf="" onError={vi.fn()} onNotice={onNotice} onViewResult={onViewResult} />)
+    await screen.findByRole('button', { name: '查看完整情景结果' })
+    await user.click(screen.getByRole('button', { name: '发布运行' }))
+    await user.click(screen.getByRole('button', { name: /另一份正式运行/ }))
+    await screen.findByText(second.id)
+    await act(async () => {
+      resolvePublish(ok({ run_id: run.id, publication: { id: 'PUB-1', usage: 'research_display', published_at: '2026-09-04' }, publications: [] }))
+      await pendingPublish
+    })
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith('已发布至“研究展示”。'))
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).endsWith('/runs/' + second.id))).toHaveLength(1)
+    expect(screen.getByText(second.id)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '查看完整情景结果' }))
+    expect(onViewResult).toHaveBeenLastCalledWith(second.id)
+  })
+
+  it.each(['mode', 'asOf'] as const)('修改%s后正式运行计划立即失效，重新准备后才能执行', async field => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path.includes('/runs?definition_id=')) return ok({ items: [] })
+      if (path.endsWith('/prepare')) return ok({ plan_id: 'PLAN', compile_token: 'TOKEN', graph_hash: 'graph', runtime_audit: fixedExecution })
+      throw new Error('Unexpected request: ' + path)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    const props = { definition, dirty: false, valid: true, mode: 'realtime' as const, asOf: '2025-12-31', onError: vi.fn(), onNotice: vi.fn() }
+    const { rerender } = render(<RegimeLifecyclePanel {...props} />)
+    await user.click(screen.getByRole('button', { name: '显式预热计划' }))
+    expect(await screen.findByText(/计算计划已就绪/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '运行已保存版本' })).toBeEnabled()
+    rerender(<RegimeLifecyclePanel {...props} mode={field === 'mode' ? 'retrospective' : 'realtime'} asOf={field === 'asOf' ? '2026-06-30' : props.asOf} />)
+    expect(screen.getByRole('button', { name: '运行已保存版本' })).toBeDisabled()
+    expect(screen.queryByText(/计算计划已就绪/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '显式预热计划' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '运行已保存版本' })).toBeEnabled())
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).endsWith('/prepare'))).toHaveLength(2)
+  })
+
+  it('模式变更前的慢准备响应不能覆盖新计划', async () => {
+    let resolveOld!: (response: Response) => void
+    const oldResponse = new Promise<Response>(resolve => { resolveOld = resolve })
+    let prepares = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.includes('/runs?definition_id=')) return ok({ items: [] })
+      if (path.endsWith('/prepare')) {
+        prepares += 1
+        if (prepares === 1) return oldResponse
+        return ok({ plan_id: 'NEW', compile_token: 'NEW-TOKEN', graph_hash: 'graph', runtime_audit: fixedExecution })
+      }
+      if (path.endsWith('/run') && init?.method === 'POST') return ok(run)
+      throw new Error('Unexpected request: ' + path)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    const props = { definition, dirty: false, valid: true, asOf: '', onError: vi.fn(), onNotice: vi.fn() }
+    const { rerender } = render(<RegimeLifecyclePanel {...props} mode="realtime" />)
+    await user.click(screen.getByRole('button', { name: '显式预热计划' }))
+    rerender(<RegimeLifecyclePanel {...props} mode="retrospective" />)
+    expect(fetchMock.mock.calls.find(([path]) => String(path).endsWith('/prepare'))?.[1]?.signal?.aborted).toBe(true)
+    await user.click(screen.getByRole('button', { name: '显式预热计划' }))
+    await screen.findByText(/计算计划已就绪/)
+    await act(async () => { resolveOld(ok({ plan_id: 'OLD', compile_token: 'OLD-TOKEN', graph_hash: 'graph', runtime_audit: fixedExecution })); await oldResponse })
+    await user.click(screen.getByRole('button', { name: '运行已保存版本' }))
+    const call = fetchMock.mock.calls.find(([path]) => String(path).endsWith('/run'))
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ mode: 'retrospective', compile_token: 'NEW-TOKEN' })
   })
 })

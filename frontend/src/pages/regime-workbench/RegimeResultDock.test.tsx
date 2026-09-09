@@ -1,7 +1,38 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { RegimePreviewRun } from '../../services/regimeGraph'
+import type { RegimeGraphNode, RegimeNodeSchema, RegimePreviewRun } from '../../services/regimeGraph'
 import RegimeResultDock from './RegimeResultDock'
+
+describe('RegimeResultDock node names', () => {
+  it('优先展示自定义名称，默认名称来自节点目录，缺失目录时仍可按节点编号区分', () => {
+    const nodes: RegimeGraphNode[] = [
+      { id: 'price', type: 'source.index', label: '我的识别指数', parameters: {}, inputs: {} },
+      { id: 'extrema', type: 'segment.extrema', parameters: {}, inputs: {} },
+      { id: 'change', type: 'segment.change', label: '', parameters: {}, inputs: {} },
+      { id: 'duration', type: 'segment.duration', label: '  ', parameters: {}, inputs: {} },
+      { id: 'legacy-node', type: 'legacy.operator', parameters: {}, inputs: {} },
+    ]
+    const schemas: RegimeNodeSchema[] = [
+      { id: 'source.index', label: '指数行情', category: 'source', inputs: [], outputs: [] },
+      { id: 'segment.extrema', label: '局部峰谷识别', category: 'segment', inputs: [], outputs: [] },
+      { id: 'change-schema', type: 'segment.change', label: '区间涨跌幅', category: 'segment', inputs: [], outputs: [] },
+      { id: 'duration-schema', type_id: 'segment.duration', label: '区间长度', category: 'segment', inputs: [], outputs: [] },
+    ]
+    const onPreviewNode = vi.fn()
+    const props = { run: { id: 'PREVIEW-NAMES', status: 'completed' } as RegimePreviewRun, page: null, nodes, previewNodeId: '', loadingSeries: false, height: 420, collapsed: false, onPreviewNode, onLoadSeries: vi.fn(), onHeight: vi.fn(), onCollapsed: vi.fn() }
+    const originalNodes = JSON.stringify(nodes)
+    const { rerender } = render(<RegimeResultDock {...props} schemas={[]} />)
+    expect(screen.getByRole('option', { name: 'extrema' })).toHaveValue('extrema')
+    rerender(<RegimeResultDock {...props} schemas={schemas} />)
+    const selector = screen.getByRole('combobox', { name: '预览节点' })
+    expect(within(selector).getAllByRole('option').map(option => option.textContent)).toEqual([
+      '最终输出', '我的识别指数', '局部峰谷识别', '区间涨跌幅', '区间长度', 'legacy-node',
+    ])
+    fireEvent.change(selector, { target: { value: 'change' } })
+    expect(onPreviewNode).toHaveBeenCalledWith('change')
+    expect(JSON.stringify(nodes)).toBe(originalNodes)
+  })
+})
 
 describe('RegimeResultDock evaluation targets', () => {
   it('只展示试算接口返回的多评价目标摘要，不伪造条件收益', () => {
@@ -33,7 +64,7 @@ describe('RegimeResultDock evaluation targets', () => {
       },
     }
 
-    render(<RegimeResultDock run={run} page={null} nodes={[]} previewNodeId="" loadingSeries={false} height={420} collapsed={false} onPreviewNode={vi.fn()} onLoadSeries={vi.fn()} onHeight={vi.fn()} onCollapsed={vi.fn()} />)
+    render(<RegimeResultDock run={run} page={null} nodes={[]} schemas={[]} previewNodeId="" loadingSeries={false} height={420} collapsed={false} onPreviewNode={vi.fn()} onLoadSeries={vi.fn()} onHeight={vi.fn()} onCollapsed={vi.fn()} />)
 
     expect(screen.getByRole('region', { name: '试算评价目标结果' })).toBeInTheDocument()
     expect(screen.getByText('沪深300全收益')).toBeInTheDocument()

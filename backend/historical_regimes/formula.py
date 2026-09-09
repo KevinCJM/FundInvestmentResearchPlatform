@@ -34,6 +34,7 @@ from cal_indicators.typed_numba_kernels import (
 from cal_indicators.typed_numba_plan import numba_plan_id
 from compute_policy import validate_execution_audit
 from custom_indicators.errors import ValidationError
+from computation_graph.series_runtime import compute_warmed_series
 
 from .numba_kernels import (
     execution_audit as historical_regime_execution_audit,
@@ -45,7 +46,7 @@ from .numba_kernels import (
 
 
 FORMULA_LANGUAGE_ID = "historical-regime-typed-causal-series"
-FORMULA_ALLOWLIST_VERSION = "typed-njit-causal-1"
+FORMULA_ALLOWLIST_VERSION = "typed-njit-causal-2"
 FORMULA_EVALUATOR_VERSION = TYPED_COMPILER_VERSION
 MAX_EXPRESSION_LENGTH = 1000
 MAX_AST_NODES = 128
@@ -66,6 +67,7 @@ CAUSAL_OPERATOR_IDS = frozenset(
         "subtract",
         "multiply",
         "divide",
+        "divide_or_default",
         "power",
         "minimum",
         "maximum",
@@ -95,6 +97,11 @@ CAUSAL_OPERATOR_IDS = frozenset(
         "new_high_mask",
         "lag",
         "difference",
+        "rolling_mean",
+        "rolling_std",
+        "rolling_min",
+        "rolling_max",
+        "recursive_smooth",
     }
 )
 
@@ -121,6 +128,11 @@ FUNCTION_SYNTAX = (
     ("clip", "clip(x, lower, upper)"),
     ("lag", "lag(x, periods)"),
     ("difference", "difference(x, periods)"),
+    ("rolling_mean", "rolling_mean(x, window, min_periods)"),
+    ("rolling_std", "rolling_std(x, window, ddof, min_periods)"),
+    ("rolling_min", "rolling_min(x, window, min_periods)"),
+    ("rolling_max", "rolling_max(x, window, min_periods)"),
+    ("recursive_smooth", "recursive_smooth(x, window, initial)"),
     ("cumulative_sum", "cumulative_sum(x)"),
     ("cumulative_product", "cumulative_product(x)"),
     ("cumulative_max", "cumulative_max(x)"),
@@ -318,7 +330,10 @@ def _compose_formula(
         )
     nodes = {node.node_id: node for node in plan.nodes}
     for node in plan.nodes:
-        if node.operator_id not in {"lag", "difference"} or len(node.inputs) != 2:
+        if node.operator_id not in {
+            "lag", "difference", "rolling_mean", "rolling_std", "rolling_min",
+            "rolling_max", "recursive_smooth",
+        } or len(node.inputs) < 2:
             continue
         periods_node = nodes[node.inputs[1]]
         try:
@@ -463,7 +478,8 @@ def evaluate_formula(
             for name, values in numeric.items()
         }
         try:
-            result = np.asarray(runtime.compute(context), dtype=np.float64)
+            permits_warmup_missing = any(node.operator_id in {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"} for node in plan.nodes)
+            result = np.asarray(compute_warmed_series(runtime, context) if permits_warmup_missing else runtime.compute(context), dtype=np.float64)
         except TypedDslError as exc:
             if exc.code == "INSUFFICIENT_SAMPLE":
                 continue

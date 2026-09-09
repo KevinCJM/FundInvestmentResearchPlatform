@@ -26,6 +26,12 @@ from backend.services.refresh_runtime import InterProcessFileLock, atomic_write_
 TEST_TOKEN = "unit-test-token-1234567890"
 
 
+@pytest.fixture(autouse=True)
+def isolated_refresh_configuration(monkeypatch, tmp_path):
+    # Command/fingerprint helpers must never open the user's real SQLite store.
+    monkeypatch.setattr(data_refresh, 'DATA_DIR', tmp_path)
+
+
 def _write_test_token(data_dir: Path) -> None:
     data_refresh.save_local_tushare_token(TEST_TOKEN, data_dir=data_dir)
 

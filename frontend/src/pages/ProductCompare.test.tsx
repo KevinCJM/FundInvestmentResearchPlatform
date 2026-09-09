@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProductCompare from './ProductCompare'
 import { evaluateCustomIndicators, getCustomIndicatorMeta, listCustomIndicators } from '../services/customIndicators'
-import type { IndicatorDefinition } from '../services/customIndicators'
+import type { IndicatorDefinition, MetricPresentation } from '../services/customIndicators'
 
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }))
 vi.mock('../services/customIndicators', () => ({
@@ -21,6 +21,16 @@ const annualIndicator: IndicatorDefinition = {
   periods: ['1Y'], unit: '%', display_format: 'percent', precision: 2,
   direction: 'higher_better', annual_risk_free_rate_percent: 1.5,
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+}
+
+const annualPresentation: MetricPresentation = {
+  indicator_id: annualIndicator.id, revision: annualIndicator.revision,
+  name: annualIndicator.name, source: annualIndicator.source,
+  category: 'return', category_label: '收益', context_kind: 'single_product', catalog_status: 'current',
+  display_format: 'percent', precision: 2, unit: '%', notation: 'standard', value_scale: 100,
+  output_measure: 'return_decimal', direction: 'higher_better', description: annualIndicator.description,
+  methodology: '区间净值收益', data_basis: '复权净值', minimum_observations: 2,
+  applicable_product_kinds: ['etf', 'fund'],
 }
 
 const monthlyIndicator: IndicatorDefinition = {
@@ -107,8 +117,8 @@ describe('ProductCompare custom indicators', () => {
     vi.mocked(getCustomIndicatorMeta).mockResolvedValue({ periods: [{ value: '1M', label: '近 1 月', description: '运行周期' }, { value: '1Y', label: '近 1 年', description: '运行周期' }] } as any)
     vi.mocked(evaluateCustomIndicators).mockResolvedValue({
       results: [
-        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' }, period: '1Y', value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' } },
-        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, target: { kind: 'etf', product_id: '159915.SZ', name: '创业板ETF' }, period: '1Y', value: null, status: 'warning', warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '样本不足' }], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: '2026-01-06', observation_count: 10, data_latest_date: '2026-01-06' } },
+        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' }, period: '1Y', value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' } },
+        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '159915.SZ', name: '创业板ETF' }, period: '1Y', value: null, status: 'warning', warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '样本不足' }], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: '2026-01-06', observation_count: 10, data_latest_date: '2026-01-06' } },
       ], summary: { total: 2, ok: 1, warning: 1, error: 0 }, cache: { hits: 0, misses: 2 },
       execution: compareResponse('510300.SH').execution,
     })

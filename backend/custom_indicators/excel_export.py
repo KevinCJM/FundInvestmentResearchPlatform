@@ -106,6 +106,18 @@ def _write_value(
     worksheet.write(row, column, str(value), cell_format)
 
 
+def _result_number(result: Mapping[str, Any], *, excel_date: bool = True) -> float | None:
+    value = result.get("value")
+    if value is None:
+        return None
+    if (result.get("presentation") or {}).get("display_format") == "date":
+        day = datetime.fromisoformat(str(value)[:10])
+        # Internal calculation cells use epoch days; visible Excel dates use
+        # the workbook's 1900 date system. This is serialization, not math.
+        return float((day - datetime(1899, 12, 30) if excel_date else day - datetime(1970, 1, 1)).days)
+    return float(value)
+
+
 def _formats(workbook: Any) -> tuple[FormulaFormats, dict[str, Any]]:
     title = workbook.add_format(
         {
@@ -249,6 +261,7 @@ def _formats(workbook: Any) -> tuple[FormulaFormats, dict[str, Any]]:
         "value": value,
         "header": header,
         "number": number,
+        "date": workbook.add_format({"num_format": "yyyy-mm-dd"}),
         "integer": integer,
         "warning": warning,
         "success": success,
@@ -326,18 +339,19 @@ def _summary_sheet(
             f"{window.get('start_date') or '—'} 至 {window.get('end_date') or '—'}",
             formats["value"],
         )
-        backend_value = result.get("value")
+        backend_value = _result_number(result)
+        result_format = formats["date"] if (result.get("presentation") or {}).get("display_format") == "date" else formats["number"]
         if compiler is not None:
             worksheet.write_formula(
                 row,
                 6,
                 compiler.result_formula(sheet_qualified=True),
-                formats["number"],
+                result_format,
                 float(backend_value) if backend_value is not None else 0,
             )
         else:
             worksheet.write_blank(row, 6, None, formats["warning"])
-        _write_value(worksheet, row, 7, backend_value, formats["number"])
+        _write_value(worksheet, row, 7, backend_value, result_format)
         excel_cell = xl_rowcol_to_cell(row, 6)
         backend_cell = xl_rowcol_to_cell(row, 7)
         difference_cell = xl_rowcol_to_cell(row, 8)
@@ -404,7 +418,8 @@ def _write_product_summary(
         worksheet.merge_range(row, 1, row, 3, value, formats["value"])
 
     result_row = 10
-    backend_value = result.get("value")
+    backend_value = _result_number(result)
+    result_format = formats["date"] if (result.get("presentation") or {}).get("display_format") == "date" else formats["number"]
 
     # In XlsxWriter constant-memory mode each row must be completed before the
     # next row is written. Keep labels and values in strict row order.
@@ -414,7 +429,7 @@ def _write_product_summary(
             result_row,
             1,
             compiler.result_formula(),
-            formats["number"],
+            result_format,
             float(backend_value) if backend_value is not None else 0,
         )
     else:
@@ -428,7 +443,7 @@ def _write_product_summary(
         )
 
     worksheet.write(result_row + 1, 0, "平台 NJIT 结果", formats["label"])
-    _write_value(worksheet, result_row + 1, 1, backend_value, formats["number"])
+    _write_value(worksheet, result_row + 1, 1, backend_value, result_format)
 
     worksheet.write(result_row + 2, 0, "绝对差异 / 一致性", formats["label"])
     if compiler is not None and backend_value is not None:
@@ -476,7 +491,7 @@ def build_indicator_excel_workbook(
     as_of: str | None,
     data_generation: str,
 ) -> ExcelExportArtifact:
-    """Generate a formula-driven workbook from exact runtime inputs."""
+    """Export one independent metric, preserving each target's exact inputs."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     descriptor, path_text = tempfile.mkstemp(
@@ -492,27 +507,24 @@ def build_indicator_excel_workbook(
         f"_{period}_{timestamp}.xlsx"
     )
 
-    compilers: list[SingleProductExcelFormulaCompiler | None] = []
-    sheet_names: list[str] = []
-    for index, evidence in enumerate(targets, start=1):
-        sheet_name = _safe_sheet_name(index, evidence.target["product_id"])
-        sheet_names.append(sheet_name)
-        if not evidence.context:
-            compilers.append(None)
-            continue
-        compilers.append(
-            SingleProductExcelFormulaCompiler(
-                plan=plan,
-                context=evidence.context,
+    compilers = []
+    worksheet_jobs = []
+    try:
+        for index, evidence in enumerate(targets, start=1):
+            sheet_name = _safe_sheet_name(index, evidence.target["product_id"])
+            compiler = SingleProductExcelFormulaCompiler(
+                plan=plan, context=evidence.context,
                 dates_by_variable=evidence.dates_by_variable,
-                sheet_name=sheet_name,
-                prefix=f"P{index:02d}",
-            )
-        )
-
+                sheet_name=sheet_name, prefix=f"P{index:02d}",
+            ) if evidence.context else None
+            compilers.append(compiler)
+            worksheet_jobs.append((definition, plan, evidence, sheet_name, compiler))
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
     formula_cells = sum(
         compiler.estimated_formula_cells
-        for compiler in compilers
+        for _, _, _, _, compiler in worksheet_jobs
         if compiler is not None
     )
     max_formula_cells = max(
@@ -549,23 +561,12 @@ def build_indicator_excel_workbook(
         formula_formats, common_formats = _formats(workbook)
 
         _summary_sheet(
-            workbook,
-            definition=definition,
-            plan=plan,
-            period=period,
-            as_of=as_of,
-            data_generation=data_generation,
-            targets=targets,
-            compilers=compilers,
+            workbook, definition=definition, plan=plan, period=period, as_of=as_of,
+            data_generation=data_generation, targets=targets, compilers=compilers,
             formats=common_formats,
         )
 
-        for evidence, sheet_name, compiler in zip(
-            targets,
-            sheet_names,
-            compilers,
-            strict=True,
-        ):
+        for output_definition, _output_plan, evidence, sheet_name, compiler in worksheet_jobs:
             worksheet = workbook.add_worksheet(sheet_name)
             worksheet.hide_gridlines(2)
             worksheet.freeze_panes(14, 0)
@@ -576,7 +577,7 @@ def build_indicator_excel_workbook(
             _write_product_summary(
                 worksheet,
                 evidence=evidence,
-                definition=definition,
+                definition=output_definition,
                 period=period,
                 as_of=as_of,
                 compiler=compiler,
@@ -587,9 +588,7 @@ def build_indicator_excel_workbook(
                     worksheet,
                     formats=formula_formats,
                     backend_value=(
-                        float(evidence.result["value"])
-                        if evidence.result.get("value") is not None
-                        else None
+                        _result_number(evidence.result, excel_date=False)
                     ),
                 )
             else:
@@ -689,6 +688,7 @@ def build_series_indicator_excel_workbook(
                 sheet_name=calculation_sheet,
                 prefix=f"S{index:02d}",
                 first_block_row=12,
+                runtime_parameters=parameters,
             )
         )
 

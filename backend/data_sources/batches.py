@@ -12,9 +12,11 @@ import pyarrow.parquet as pq
 from .mapping import map_table, validate_mapping
 from .models import InterfaceConfig
 from .store import SourceStore, utc_now
+from backend.data_storage import guard_path
 
 
 def atomic_bytes(path: Path, data: bytes) -> None:
+    guard_path(path, write=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(dir=path.parent)
     try:

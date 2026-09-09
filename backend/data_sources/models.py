@@ -72,6 +72,16 @@ class SourceField(StrictModel):
     unit: str = Field(default="", max_length=100)
 
 
+class RequestField(StrictModel):
+    name: str = Field(pattern=FIELD_PATTERN)
+    label: str = Field(min_length=1, max_length=100)
+    data_type: Literal['text', 'date', 'number'] = 'text'
+    required: bool = False
+    date_format: Literal['compact', 'iso'] = 'compact'
+    description: str = Field(default='', max_length=500)
+    placeholder: str = Field(default='', max_length=100)
+
+
 class ResponseFormat(StrictModel):
     format: Literal["json_records", "json_columns", "csv"] = "json_records"
     records_path: str = Field(default="", max_length=200, pattern=r"^$|^[A-Za-z_][A-Za-z0-9_.]*$")
@@ -152,6 +162,7 @@ class InterfaceConfig(StrictModel):
     headers: dict[str, str] = Field(default_factory=dict)
     response: ResponseFormat = Field(default_factory=ResponseFormat)
     source_fields: list[SourceField] = Field(default_factory=list, max_length=300)
+    request_fields: list[RequestField] | None = Field(default=None, max_length=50)
     policy: DownloadPolicy = Field(default_factory=DownloadPolicy)
     pagination: Pagination = Field(default_factory=Pagination)
     start_param: str = Field(default="start_date", pattern=FIELD_PATTERN)
@@ -187,6 +198,9 @@ class InterfaceConfig(StrictModel):
                 raise ValueError("请求头格式无效。")
             if name.lower() in {"host", "content-length", "connection", "transfer-encoding"}:
                 raise ValueError("不允许覆盖协议控制头。")
+        request_names = [item.name for item in (self.request_fields or [])]
+        if len(request_names) != len(set(request_names)):
+            raise ValueError('请求参数定义不能重名。')
         names = [item.name for item in self.source_fields]
         if len(names) != len(set(names)):
             raise ValueError("来源字段不能重名。")

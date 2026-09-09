@@ -47,8 +47,9 @@ def test_fit_classes_returns_sanitised_payload(monkeypatch, tmp_path: Path) -> N
         {"name": "ClassA", "mean_corr": 0.9, "pca_evr1": 0.8, "max_te": 0.05},
     ]
 
-    monkeypatch.setattr(routes, "compute_classes_nav", lambda *_: (nav, corr, metrics))
-    monkeypatch.setattr(routes, "compute_class_consistency", lambda *_: consistency_rows)
+    # **_k absorbs the research-context kwargs the route now threads through.
+    monkeypatch.setattr(routes, "compute_classes_nav", lambda *_a, **_k: (nav, corr, metrics))
+    monkeypatch.setattr(routes, "compute_class_consistency", lambda *_a, **_k: consistency_rows)
 
     payload = routes.FitRequest(
         startDate="2024-01-01",
@@ -82,7 +83,7 @@ def test_rolling_corr_rejects_non_finite(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         routes,
         "compute_rolling_corr",
-        lambda *_: (idx, series, metrics),
+        lambda *_a, **_k: (idx, series, metrics),
     )
 
     payload = routes.RollingRequest(

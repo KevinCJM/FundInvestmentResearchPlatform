@@ -9,7 +9,7 @@ const renderPrototype = (pageKey: string) => render(
 )
 
 describe('PrototypeWorkspace', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals() })
 
   it('明确标识静态演示且不会请求后端', async () => {
     const fetchSpy = vi.fn()

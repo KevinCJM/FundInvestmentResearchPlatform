@@ -80,7 +80,6 @@ REDUCTION_OPCODES = {
 SCAN_OPCODES = {
     "cumulative_sum": 80,
     "cumulative_product": 81,
-    "cumulative_return": 82,
     "cumulative_max": 83,
     "cumulative_min": 84,
 }
@@ -102,13 +101,6 @@ AXIS_REDUCTION_OPCODES = {
     "min": 125,
     "max": 126,
 }
-REGRESSION_OPCODES = {
-    "linear_slope": 140,
-    "linear_intercept": 141,
-    "linear_r_squared": 142,
-    "regression_standard_error": 143,
-}
-
 
 CANONICAL_OPERATOR_IDS = (
     "add", "subtract", "multiply", "divide", "power", "minimum", "maximum",
@@ -129,7 +121,10 @@ CANONICAL_OPERATOR_IDS = (
     "sum_asset", "mean_asset", "product_asset", "variance_asset", "std_asset", "min_asset",
     "max_asset", "transpose", "dot", "outer", "matmul", "matvec", "diag", "trace",
     "solve", "covariance", "correlation", "portfolio_returns", "quadratic_form",
-    "active_returns",
+    "active_returns", "last_drawdown_interval",
+    "interval_start", "interval_trough", "interval_recovery", "value_at", "days_between",
+    "require_positive", "require_nonnegative", "linear_fit", "fit_slope", "fit_intercept",
+    "fit_residual_sum_squares", "fit_total_sum_squares", "fit_observation_count",
 )
 
 
@@ -711,11 +706,11 @@ def scan_1d(opcode: int, values: np.ndarray) -> np.ndarray:
         for index in range(values.size):
             running += values[index]
             result[index] = running
-    elif opcode in (81, 82):
+    elif opcode == 81:
         running = 1.0
         for index in range(values.size):
-            running *= values[index] if opcode == 81 else 1.0 + values[index]
-            result[index] = running if opcode == 81 else running - 1.0
+            running *= values[index]
+            result[index] = running
     elif opcode == 83:
         running = values[0]
         for index in range(values.size):
@@ -989,25 +984,6 @@ def divide_or_default_1d(
 
 
 @njit(cache=True, nogil=True)
-def total_return_1d(values: np.ndarray) -> float:
-    _validate_nonempty(values.size)
-    growth = 1.0
-    for value in values:
-        growth *= 1.0 + value
-    return growth - 1.0
-
-
-@njit(cache=True, nogil=True)
-def annualized_return_1d(values: np.ndarray, periods_per_year: float) -> float:
-    if periods_per_year <= 0.0:
-        raise ValueError("INVALID_PARAMETER")
-    growth = total_return_1d(values) + 1.0
-    if growth < 0.0:
-        raise ValueError("DOMAIN_ERROR")
-    return growth ** (periods_per_year / values.size) - 1.0
-
-
-@njit(cache=True, nogil=True)
 def axis_reduce_asset(opcode: int, values: np.ndarray) -> np.ndarray:
     if values.shape[0] == 0 or values.shape[1] == 0:
         raise ValueError("INSUFFICIENT_SAMPLE")
@@ -1151,76 +1127,6 @@ def max_consecutive_true_1d(mask: np.ndarray) -> float:
 
 
 @njit(cache=True, nogil=True)
-def regression_1d(opcode: int, values: np.ndarray) -> float:
-    count = values.size
-    if count < 2 or (opcode == 143 and count < 3):
-        raise ValueError("INSUFFICIENT_SAMPLE")
-    mean_x = (count - 1) * 0.5
-    mean_y = reduce_1d(62, values, 1)
-    xx = 0.0
-    xy = 0.0
-    yy = 0.0
-    for index in range(count):
-        dx = index - mean_x
-        dy = values[index] - mean_y
-        xx += dx * dx
-        xy += dx * dy
-        yy += dy * dy
-    if xx == 0.0:
-        raise ValueError("DOMAIN_ERROR")
-    slope = xy / xx
-    intercept = mean_y - slope * mean_x
-    if opcode == 140:
-        return slope
-    if opcode == 141:
-        return intercept
-    residual = 0.0
-    for index in range(count):
-        error = values[index] - (intercept + slope * index)
-        residual += error * error
-    if opcode == 142:
-        if yy == 0.0:
-            raise ValueError("DOMAIN_ERROR")
-        return 1.0 - residual / yy
-    return math.sqrt(residual / (count - 2))
-
-
-@njit(cache=True, nogil=True)
-def regression_2series(opcode: int, x: np.ndarray, y: np.ndarray) -> float:
-    count = x.size
-    if count < 2 or (opcode == 143 and count < 3):
-        raise ValueError("INSUFFICIENT_SAMPLE")
-    mean_x = reduce_1d(62, x, 1)
-    mean_y = reduce_1d(62, y, 1)
-    xx = 0.0
-    xy = 0.0
-    yy = 0.0
-    for index in range(count):
-        dx = x[index] - mean_x
-        dy = y[index] - mean_y
-        xx += dx * dx
-        xy += dx * dy
-        yy += dy * dy
-    if xx == 0.0:
-        raise ValueError("DOMAIN_ERROR")
-    slope = xy / xx
-    intercept = mean_y - slope * mean_x
-    if opcode == 140:
-        return slope
-    if opcode == 141:
-        return intercept
-    residual = 0.0
-    for index in range(count):
-        error = y[index] - (intercept + slope * x[index])
-        residual += error * error
-    if opcode == 142:
-        if yy == 0.0:
-            raise ValueError("DOMAIN_ERROR")
-        return 1.0 - residual / yy
-    return math.sqrt(residual / (count - 2))
-
-
-@njit(cache=True, nogil=True)
 def transpose_2d(values: np.ndarray) -> np.ndarray:
     return values.T.copy()
 
@@ -1355,11 +1261,6 @@ def correlation_2d(values: np.ndarray) -> np.ndarray:
     return result
 
 
-@njit(cache=True, nogil=True)
-def quadratic_form_kernel(weights: np.ndarray, matrix: np.ndarray) -> float:
-    return float(weights @ matrix @ weights)
-
-
 @dataclass(frozen=True)
 class KernelSpec:
     operator_id: str
@@ -1412,6 +1313,17 @@ def _unique_dispatchers(values: Iterable[CPUDispatcher]) -> tuple[CPUDispatcher,
 
 
 def _operator_dispatchers(operator_id: str) -> tuple[CPUDispatcher, ...]:
+    from .primitive_access import ACCESS_KERNELS
+    from .regression_state import FIT_PROJECTION_KERNELS, linear_fit_pair_kernel, linear_fit_time_kernel
+    from .operator_lowering import COMPOSITE_DEPENDENCIES
+    if operator_id in ACCESS_KERNELS:
+        return (ACCESS_KERNELS[operator_id],)
+    if operator_id in FIT_PROJECTION_KERNELS:
+        return (FIT_PROJECTION_KERNELS[operator_id],)
+    if operator_id == "linear_fit":
+        return (linear_fit_time_kernel, linear_fit_pair_kernel)
+    if operator_id in COMPOSITE_DEPENDENCIES:
+        return _unique_dispatchers(kernel for name in COMPOSITE_DEPENDENCIES[operator_id] for kernel in _operator_dispatchers(name))
     if operator_id in BASIC_OPCODES:
         return (binary_scalar, binary_1d, binary_1d_right_scalar, binary_1d_left_scalar, binary_2d, binary_2d_right_scalar, binary_2d_left_scalar)
     if operator_id in UNARY_OPCODES:
@@ -1460,10 +1372,6 @@ def _operator_dispatchers(operator_id: str) -> tuple[CPUDispatcher, ...]:
         return (recursive_smooth_1d,)
     if operator_id == "divide_or_default":
         return (divide_or_default_1d,)
-    if operator_id == "total_return":
-        return (total_return_1d,)
-    if operator_id == "annualized_return":
-        return (annualized_return_1d,)
     if operator_id.endswith("_time"):
         return (axis_reduce_time_fixed,)
     if operator_id.endswith("_asset"):
@@ -1476,22 +1384,26 @@ def _operator_dispatchers(operator_id: str) -> tuple[CPUDispatcher, ...]:
         return (count_true_1d, count_true_2d)
     if operator_id == "max_consecutive_true":
         return (max_consecutive_true_1d,)
-    if operator_id in REGRESSION_OPCODES:
-        return (regression_1d, regression_2series)
     mapping = {
         "transpose": (transpose_2d,), "dot": (dot_1d,), "outer": (outer_1d,),
         "matmul": (matmul_2d,), "matvec": (matvec_2d,), "diag": (diag_1d, diag_2d),
         "trace": (trace_2d,), "solve": (solve_2d,), "covariance": (covariance_1d, covariance_2d),
-        "correlation": (correlation_1d, correlation_2d), "portfolio_returns": (matvec_2d,),
-        "quadratic_form": (quadratic_form_kernel,), "active_returns": (binary_1d,),
+        "correlation": (correlation_1d, correlation_2d),
     }
     return mapping[operator_id]
 
 
 @lru_cache(maxsize=1)
 def get_numba_kernel_registry() -> dict[str, KernelSpec]:
+    from .drawdown_interval import INTERVAL_KERNELS
+    from .primitive_access import ACCESS_KERNELS
+    from .regression_state import FIT_PROJECTION_KERNELS, linear_fit_pair_kernel, linear_fit_time_kernel
+    fixed_kernels = {name: (kernel,) for name, kernel in {**INTERVAL_KERNELS, **ACCESS_KERNELS, **FIT_PROJECTION_KERNELS}.items()}
+    fixed_kernels["linear_fit"] = (linear_fit_time_kernel, linear_fit_pair_kernel)
     registry: dict[str, KernelSpec] = {}
     for opcode, operator_id in enumerate(CANONICAL_OPERATOR_IDS, start=1):
+        if operator_id in fixed_kernels:
+            continue  # Structured signatures are registered below.
         lane = "numba_blas" if operator_id in {"dot", "outer", "matmul", "matvec", "solve", "portfolio_returns", "quadratic_form"} else "numba"
         registry[operator_id] = KernelSpec(
             operator_id=operator_id,
@@ -1530,6 +1442,16 @@ def get_numba_kernel_registry() -> dict[str, KernelSpec]:
             status_contract="stable_integer_status_at_batch_boundary",
             warmup_cases=("scalar", "float64[::1]", "float64[:,::1]"),
         )
+    for operator_id, dispatchers in fixed_kernels.items():
+        registry[operator_id] = KernelSpec(
+            operator_id=operator_id, operator_version="2.3.0", opcode=len(registry) + 1,
+            kernel_version=NUMERIC_KERNEL_VERSION, execution_lane="numba",
+            input_signatures=tuple(str(signature) for dispatcher in dispatchers for signature in dispatcher.signatures),
+            output_signature=" | ".join(sorted({str(signature.return_type) for dispatcher in dispatchers for signature in dispatcher.nopython_signatures})),
+            serial_kernels=dispatchers, parallel_policy="outer_product_dimension_only",
+            status_contract="typed_state_or_scalar_with_independent_missing_status",
+            warmup_cases=("explicit_fixed_signature",),
+        )
     return registry
 
 
@@ -1540,7 +1462,7 @@ def _compile(dispatcher: CPUDispatcher, signatures: Iterable[tuple[Any, ...]]) -
 
 @lru_cache(maxsize=1)
 def warm_numba_kernel_registry() -> dict[str, Any]:
-    """Compile every fixed layout used by the 97 canonical operators."""
+    """Compile every fixed layout used by the current canonical operators."""
 
     f1 = types.float64[::1]
     f2 = types.float64[:, ::1]
@@ -1597,7 +1519,7 @@ def warm_numba_kernel_registry() -> dict[str, Any]:
     _compile(scan_1d, ((i8, f1),))
     _compile(drawdown_series_1d, ((f1,),))
     _compile(new_high_mask_1d, ((f1,),))
-    for dispatcher in (first_1d, last_1d, length_1d, total_return_1d):
+    for dispatcher in (first_1d, last_1d, length_1d):
         _compile(dispatcher, ((f1,),))
     _compile(lag_1d_parameter, ((f1, f8),))
     _compile(difference_1d_parameter, ((f1, f8),))
@@ -1607,7 +1529,6 @@ def warm_numba_kernel_registry() -> dict[str, Any]:
     _compile(rolling_max_1d, ((f1, f8, f8),))
     _compile(recursive_smooth_1d, ((f1, f8, f8),))
     _compile(divide_or_default_1d, ((f1, f1, f8),))
-    _compile(annualized_return_1d, ((f1, f8),))
     _compile(axis_reduce_time_fixed, ((i8, f2),))
     _compile(axis_reduce_asset, ((i8, f2),))
     _compile(masked_reduce_1d, ((i8, f1, u1),))
@@ -1617,8 +1538,6 @@ def warm_numba_kernel_registry() -> dict[str, Any]:
     _compile(count_true_1d, ((u1,),))
     _compile(count_true_2d, ((u2,),))
     _compile(max_consecutive_true_1d, ((u1,),))
-    _compile(regression_1d, ((i8, f1),))
-    _compile(regression_2series, ((i8, f1, f1),))
     _compile(transpose_2d, ((f2,),))
     _compile(dot_1d, ((f1, f1),))
     _compile(outer_1d, ((f1, f1),))
@@ -1632,7 +1551,6 @@ def warm_numba_kernel_registry() -> dict[str, Any]:
     _compile(covariance_2d, ((f2,),))
     _compile(correlation_1d, ((f1, f1),))
     _compile(correlation_2d, ((f2,),))
-    _compile(quadratic_form_kernel, ((f1, f2),))
     registry = get_numba_kernel_registry()
     missing = [operator_id for operator_id, spec in registry.items() if not spec.compiled_signatures]
     if missing:
@@ -1659,6 +1577,19 @@ def kernel_registry_status(*, warmed: bool | None = None) -> dict[str, Any]:
 
 
 def kernel_catalog_entry(operator_id: str) -> dict[str, Any]:
+    from .operator_lowering import COMPOSITE_DEPENDENCIES
+    if operator_id in COMPOSITE_DEPENDENCIES:
+        # Historical catalogs describe a compiler expansion, not an installed
+        # second kernel or proof that a composite formula is already prepared.
+        return {
+            "njit_supported": True,
+            "kernel_version": NUMERIC_KERNEL_VERSION,
+            "execution_lane": "compiler_expansion",
+            "compiled_signatures": [],
+            "warmup_status": "formula_preparation_required",
+            "expanded_operators": list(COMPOSITE_DEPENDENCIES[operator_id]),
+            "status_contract": "current_primitive_dag",
+        }
     return get_numba_kernel_registry()[operator_id].catalog_entry()
 
 

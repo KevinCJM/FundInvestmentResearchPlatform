@@ -1,5 +1,5 @@
 import { useRef, useState, type KeyboardEvent } from 'react'
-import HistoricalRegimeDirectory from './HistoricalRegimeDirectory'
+import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
 import ScenarioSimulationCenter from './ScenarioAlgorithmCenter'
 
 type CenterId = 'historical' | 'simulation'
@@ -19,6 +19,8 @@ const centers: Array<{ id: CenterId; label: string; description: string }> = [
 
 export default function ScenarioCenters() {
   const [activeCenter, setActiveCenter] = useState<CenterId>('historical')
+  const [simulationVisited, setSimulationVisited] = useState(false)
+  const activateCenter = (id: CenterId) => { if (id === 'simulation') setSimulationVisited(true); setActiveCenter(id) }
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -29,13 +31,13 @@ export default function ScenarioCenters() {
       : event.key === 'End'
         ? centers.length - 1
         : (index + (event.key === 'ArrowRight' ? 1 : -1) + centers.length) % centers.length
-    setActiveCenter(centers[nextIndex].id)
+    activateCenter(centers[nextIndex].id)
     tabRefs.current[nextIndex]?.focus()
   }
 
   return (
     <div className="space-y-5" data-testid="scenario-centers">
-      <section className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm" aria-label="情景研究中心切换">
+      <section className="rounded-xl border border-slate-200 bg-white p-1" aria-label="情景研究中心切换">
         <div role="tablist" aria-label="情景研究类型" className="grid gap-2 md:grid-cols-2">
           {centers.map((center, index) => {
             const active = activeCenter === center.id
@@ -49,25 +51,20 @@ export default function ScenarioCenters() {
                 aria-selected={active}
                 aria-controls={`scenario-center-panel-${center.id}`}
                 tabIndex={active ? 0 : -1}
-                onClick={() => setActiveCenter(center.id)}
+                onClick={() => activateCenter(center.id)}
                 onKeyDown={(event) => handleKeyDown(event, index)}
-                className={`min-h-20 rounded-xl px-4 py-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${active ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-50'}`}
+                className={`min-h-11 rounded-lg px-4 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${active ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-50'}`}
               >
                 <span className="block text-sm font-bold">{center.label}</span>
-                <span className={`mt-1 block text-xs leading-5 ${active ? 'text-slate-300' : 'text-slate-500'}`}>{center.description}</span>
+                <span className="sr-only">{center.description}</span>
               </button>
             )
           })}
         </div>
       </section>
 
-      <section
-        role="tabpanel"
-        id={`scenario-center-panel-${activeCenter}`}
-        aria-labelledby={`scenario-center-tab-${activeCenter}`}
-      >
-        {activeCenter === 'historical' ? <HistoricalRegimeDirectory /> : <ScenarioSimulationCenter />}
-      </section>
+      <section role="tabpanel" hidden={activeCenter !== 'historical'} id="scenario-center-panel-historical" aria-labelledby="scenario-center-tab-historical"><HistoricalRegimeWorkbench /></section>
+      <section role="tabpanel" hidden={activeCenter !== 'simulation'} id="scenario-center-panel-simulation" aria-labelledby="scenario-center-tab-simulation">{simulationVisited && <ScenarioSimulationCenter />}</section>
     </div>
   )
 }

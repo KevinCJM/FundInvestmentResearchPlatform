@@ -13,8 +13,8 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from compute_policy import validate_execution_audit
 
 
-RESEARCH_SERIES_ENGINE_VERSION = "research-series-njit-1.0.0"
-RESEARCH_SERIES_KERNEL_VERSION = "profile-statistics-1"
+RESEARCH_SERIES_ENGINE_VERSION = "research-series-njit-1.1.0"
+RESEARCH_SERIES_KERNEL_VERSION = "profile-statistics-2"
 
 _F1 = float64[::1]
 _I1 = int64[::1]
@@ -439,7 +439,30 @@ def pair_valid_indices_kernel(
     return output[:output_size]
 
 
+@njit(_F1(_F1, _F1, int64), cache=False, nogil=True)
+def adjusted_price_kernel(prices: np.ndarray, factors: np.ndarray, forward: int) -> np.ndarray:
+    """Exact-date factors; forward anchor is the last selected observation."""
+    if prices.size != factors.size:
+        raise ValueError("price and factor lengths differ")
+    output = np.full(prices.size, np.nan, dtype=np.float64)
+    if not prices.size:
+        return output
+    anchor = factors[-1] if forward else 1.0
+    if not np.isfinite(anchor) or anchor <= 0:
+        raise ValueError("invalid adjustment anchor")
+    for i in range(prices.size):
+        if not np.isfinite(prices[i]):
+            continue
+        if not np.isfinite(factors[i]) or factors[i] <= 0:
+            raise ValueError("missing or invalid adjustment factor")
+        output[i] = prices[i] * (factors[i] / anchor)
+        if not np.isfinite(output[i]):
+            raise ValueError("adjusted price overflow")
+    return output
+
+
 _DISPATCHERS = (
+    adjusted_price_kernel,
     _linear_quantile_sorted,
     distribution_summary_kernel,
     index_profile_kernel,
@@ -488,6 +511,8 @@ def research_series_numba_execution_audit() -> dict[str, object]:
 
 def warm_research_series_numba_kernels() -> dict[str, object]:
     values = np.ascontiguousarray(np.array([100.0, 101.0, np.nan, 103.0], dtype=np.float64))
+    adjusted_price_kernel(values, np.ones(values.size, dtype=np.float64), np.int64(0))
+    adjusted_price_kernel(values, np.ones(values.size, dtype=np.float64), np.int64(1))
     distribution = distribution_summary_kernel(values)
     index_result = index_profile_kernel(values, np.int64(2), np.float64(252.0))
     macro_result = macro_profile_kernel(values, np.int64(2))

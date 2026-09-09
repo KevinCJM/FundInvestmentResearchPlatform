@@ -6,10 +6,11 @@ import {
 export type ProductKind = 'etf' | 'fund'
 
 export type IndicatorSource = 'built_in' | 'custom'
-export type IndicatorDisplayFormat = 'number' | 'percent'
-export type IndicatorDirection = 'higher_better' | 'lower_better'
+export type IndicatorDisplayFormat = 'number' | 'percent' | 'date'
+
+export type IndicatorDirection = 'higher_better' | 'lower_better' | 'neutral'
 export type EvaluationStatus = 'ok' | 'warning' | 'unavailable' | 'error'
-export type IndicatorShape = 'scalar' | 'series' | 'vector' | 'matrix' | 'mask' | 'tuple' | 'unknown'
+export type IndicatorShape = 'scalar' | 'series' | 'vector' | 'matrix' | 'mask' | 'tuple' | 'record' | 'unknown'
 export type IndicatorContextDomain = 'single_product' | 'portfolio'
 export type IndicatorResultKind = 'scalar' | 'time_series'
 export type IndicatorType = 'return' | 'risk' | 'risk_adjusted' | 'path' | 'market_liquidity' | 'technical' | 'other'
@@ -136,8 +137,9 @@ export interface SeriesOutputDefinition {
   id: string
   label: string
   expression: string
+  editable_latex?: string | null
   unit: string
-  display_format: IndicatorDisplayFormat
+  display_format: 'number' | 'percent'
   precision: number
   output_measure: SeriesOutputMeasureId
   inferred_output_measure?: SeriesOutputMeasureId | null
@@ -152,6 +154,7 @@ export interface SeriesOutputInference {
   id: string
   label: string
   expression: string
+  editable_latex?: string | null
   latex: string
   display_latex?: string | null
   math_notation_version?: string | null
@@ -169,10 +172,18 @@ export interface SeriesOutputInference {
   root_id: string | number
 }
 
+export interface IndicatorReference {
+  indicator_id: string
+  indicator_revision?: number
+}
+
 export interface IndicatorDraft {
+  parameter_contract_version?: '1.0' | null
   name: string
   description: string
   expression: string
+  /** Response-only reversible LaTeX; never the compact preview notation. */
+  editable_latex?: string | null
   /** Legacy response compatibility only. v2 definitions do not persist runtime periods. */
   periods?: readonly string[]
   unit: string
@@ -207,6 +218,11 @@ export interface IndicatorDraft {
   rolling_source?: RollingSourceDefinition | null
   rolling_transform?: {
     version?: string
+    window_observations?: number
+    source_expression?: string
+    generated_expression?: string
+    series_variables?: string[]
+    reduction_mappings?: string[]
     rewritten_reductions?: string[]
     source_variables?: string[]
   } | null
@@ -333,6 +349,8 @@ export interface IndicatorVariable {
 }
 
 export interface IndicatorOperatorParameter {
+  intermediate_kind?: 'linear_fit' | 'drawdown_interval'
+  suggested_variable?: string
   name: string
   label?: string
   description?: string
@@ -340,8 +358,10 @@ export interface IndicatorOperatorParameter {
   allowed_shapes?: IndicatorShape[]
   allowed_types?: string[]
   allowed_semantic_roles?: string[]
+  excluded_semantic_dimensions?: string[]
   optional?: boolean
   default?: number | string | null
+  parameterizable?: boolean
   source_policy?: 'fixed_constant' | string
   constant_kind?: 'integer' | 'number' | string
   minimum?: number
@@ -356,6 +376,7 @@ export interface IndicatorOperatorParameterSet {
 }
 
 export interface IndicatorOperator {
+  intermediate_kind?: 'linear_fit' | 'drawdown_interval'
   name: string
   label: string
   signature: string
@@ -521,12 +542,14 @@ export interface ValidationResponse {
   python_expression: string | null
   dag: IndicatorDag | null
   latex?: string | null
+  editable_latex?: string | null
   display_latex?: string | null
   math_notation_version?: string | null
   compile_token?: string | null
   compile_token_scope?: 'current_process_warm_cache' | string
   result_kind?: IndicatorResultKind
   output_contract?: 'scalar' | 'series_bundle'
+  output_measure?: string
   output_channels?: SeriesOutputDefinition[]
   output_inferences?: Record<string, SeriesOutputInference>
   channel_types?: IndicatorDefinition['channel_types']
@@ -563,8 +586,12 @@ export interface ComposeIndicatorRequest {
 }
 
 export interface InferenceResponse {
+  /** Compatibility input; not necessarily normalized. */
   latex: string
   expression?: string
+  /** Lossless source for the advanced editor, not display_latex. */
+  editable_latex?: string | null
+  python_expression?: string
   normalized_expression?: string
   display_latex?: string
   math_notation_version?: string
@@ -696,12 +723,14 @@ export interface EvaluationSeriesPoint {
 }
 
 export interface EvaluationResult {
+  result_kind?: IndicatorResultKind
   indicator_id: string | null
   indicator_revision: number | null
   indicator_name: string
   target: { kind: ProductKind | 'portfolio'; product_id: string; name: string }
   period: string
-  value: number | null
+  value: number | string | null
+  value_type?: 'number' | 'date' | 'duration'
   status: EvaluationStatus
   warnings: EvaluationWarning[]
   window: EvaluationWindow
@@ -712,6 +741,7 @@ export interface EvaluationResult {
 }
 
 export interface EvaluateIndicatorsRequest {
+  indicator_refs?: IndicatorReference[]
   indicator_ids?: string[]
   inline_definition?: IndicatorDraft
   compile_token?: string
@@ -726,7 +756,7 @@ export interface SeriesIndicatorInstance {
   indicator_revision?: number
   inline_definition?: IndicatorDraft
   compile_token?: string
-  /** Deprecated compatibility field. New time-series definitions lock constants in the formula. */
+  /** Per-instance overrides of explicitly opened parameters; omitted keys use revision defaults. */
   parameters?: Record<string, number>
 }
 
@@ -760,6 +790,7 @@ export interface TimeSeriesIndicatorResult {
   target: { kind: ProductKind; product_id: string; name: string }
   period: string
   parameters: Record<string, number>
+  parameter_hash?: string
   axis_anchor: string
   history_policy: SeriesHistoryPolicy
   lookback_observations?: number
@@ -1054,7 +1085,7 @@ const DEFAULT_ERROR: ApiErrorDetail = {
   message: '请求失败，请稍后重试。',
 }
 
-async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
@@ -1158,9 +1189,10 @@ export const listCustomIndicators = (options: IndicatorListOptions = {}) => {
   if (options.category) params.set('category', options.category)
   if (options.includeCompatibility) params.set('include_compatibility', 'true')
   const query = params.toString()
-  return apiRequest<{ items: IndicatorDefinition[]; total: number }>(
+  const response = apiRequest<{ items: IndicatorDefinition[]; total: number }>(
     `/api/custom-indicators${query ? `?${query}` : ''}`,
   )
+  return response
 }
 
 export const getCustomIndicator = (id: string) =>
@@ -1256,11 +1288,22 @@ export const getVariableAvailability = (input: {
   body: JSON.stringify(input),
 })
 
-export const evaluateCustomIndicators = (input: EvaluateIndicatorsRequest) =>
-  calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', {
-    method: 'POST',
-    body: JSON.stringify(input),
+export const evaluateCustomIndicators = async (input: EvaluateIndicatorsRequest) => {
+  if (input.inline_definition || (input.indicator_refs?.length ?? input.indicator_ids?.length ?? 0) <= 1) {
+    // Singleton and validated inline plans were prepared on startup/save/validate.
+    return calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', { method: 'POST', body: JSON.stringify(input) })
+  }
+  const prepared = await apiRequest<{ prepared: boolean; indicator_refs: IndicatorReference[] }>('/api/custom-indicators/prepare', {
+    method: 'POST', body: JSON.stringify({ indicator_ids: input.indicator_ids ?? [], indicator_refs: input.indicator_refs ?? [], inline_definition: input.inline_definition, compile_token: input.compile_token }),
   })
+  if (!prepared.prepared) throw new Error('计算计划尚未准备完成。')
+  // Use the prepared revisions; a concurrent catalog edit must not switch the
+  // algorithm between preparation and execution. Inline drafts retain tokens.
+  const request = input.inline_definition ? input : { ...input, indicator_ids: [], indicator_refs: prepared.indicator_refs }
+  return calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', {
+    method: 'POST', body: JSON.stringify(request),
+  })
+}
 
 export const evaluateTimeSeriesIndicators = (
   input: EvaluateTimeSeriesIndicatorsRequest,

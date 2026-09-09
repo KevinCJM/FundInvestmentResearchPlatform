@@ -196,6 +196,7 @@ def market_data_generation(data_dir: Path = DEFAULT_DATA_DIR) -> str:
         "etf_daily_df.parquet",
         "fund_nav_df.parquet",
         "etf_daily_candle_df.parquet",
+        "index_daily_df.parquet",
         "trade_day_df.parquet",
     ):
         path = resolved / filename
@@ -847,7 +848,7 @@ def _scan_source_batch(
 
     schema = _parquet_columns(path)
     fingerprint = _file_fingerprint(path)
-    date_field = "date" if "date" in schema else "nav_date" if "nav_date" in schema else None
+    date_field = next((name for name in ("date", "nav_date", "trade_date") if name in schema), None)
     if date_field is None or "ts_code" not in schema:
         for product_id in identities:
             for variable_id in variable_ids:
@@ -1298,6 +1299,25 @@ def load_product_variable_series(
     )
 
 
+def _window_source_variables(
+    product_series: ProductVariableSeries,
+    selected: pd.DataFrame,
+    context: dict[str, Any],
+) -> None:
+    """Map physical levels and the aligned date axis after fixing the window."""
+    dates = selected["date"].to_numpy(dtype="datetime64[D]")
+    if np.isnat(dates).any() or (dates.size > 1 and not np.all(dates[1:] > dates[:-1])):
+        raise ValidationError("INVALID_DATE_AXIS", "净值日期必须唯一、有效且严格递增。")
+    context["observation_dates"] = np.ascontiguousarray(dates.astype(np.float64))
+    for variable_id in product_series.requested_variables:
+        if variable_id in {"returns", "log_returns", "observation_count", "window_elapsed_days"}:
+            continue
+        if variable_id not in selected.columns:
+            continue
+        values = np.ascontiguousarray(selected[variable_id].to_numpy(dtype=np.float64, copy=False))
+        context[variable_id] = values
+
+
 def select_variable_window(
     product_series: ProductVariableSeries,
     period: str,
@@ -1342,13 +1362,7 @@ def select_variable_window(
         "observation_count": float(base.observation_count),
         "window_elapsed_days": float(elapsed_days),
     }
-    for variable_id in product_series.requested_variables:
-        if variable_id in {"returns", "log_returns", "observation_count", "window_elapsed_days"}:
-            continue
-        if variable_id in selected.columns:
-            context[variable_id] = np.ascontiguousarray(
-                selected[variable_id].to_numpy(dtype=np.float64)
-            )
+    _window_source_variables(product_series, selected, context)
     copy_coverage = {
         name: dict(details) for name, details in product_series.coverage.items()
     }
@@ -1359,6 +1373,8 @@ def select_variable_window(
             if variable_id in selected.columns
             else base.observation_count
         )
+        if isinstance(context.get(variable_id), np.ndarray):
+            details["window_rows"] = int(context[variable_id].size)
         details["window_start_date"] = base.start_date
         details["window_end_date"] = base.end_date
     date_tokens = "|".join(selected["date"].dt.strftime("%Y-%m-%d").tolist())
@@ -1479,7 +1495,6 @@ def select_variable_window_fast(
     if spec.kind != "lifetime" and boundary_day - anchor_day > 10:
         raise ValidationError("INSUFFICIENT_SAMPLE", f"现有历史未完整覆盖 {period} 自然周期。")
 
-    selected_days = date_days[anchor_position : effective_position + 1]
     open_days = prepared.open_days
     has_full_calendar = bool(
         open_days.size
@@ -1567,13 +1582,7 @@ def select_variable_window_fast(
         "observation_count": float(returns.size),
         "window_elapsed_days": float(elapsed_days),
     }
-    for variable_id in product_series.requested_variables:
-        if variable_id in {"returns", "log_returns", "observation_count", "window_elapsed_days"}:
-            continue
-        if variable_id in selected.columns:
-            context[variable_id] = np.ascontiguousarray(
-                selected[variable_id].to_numpy(dtype=np.float64, copy=False)
-            )
+    _window_source_variables(product_series, selected, context)
     copy_coverage = {
         name: dict(details) for name, details in product_series.coverage.items()
     }
@@ -1586,6 +1595,8 @@ def select_variable_window_fast(
             if variable_id in selected.columns
             else int(returns.size)
         )
+        if isinstance(context.get(variable_id), np.ndarray):
+            details["window_rows"] = int(context[variable_id].size)
         details["window_start_date"] = start_date
         details["window_end_date"] = end_date
     selected_day_view = prepared.date_days[start_position : effective_position + 1]

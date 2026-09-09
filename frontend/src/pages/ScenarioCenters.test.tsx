@@ -1,9 +1,10 @@
+import { useState } from 'react'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import ScenarioCenters from './ScenarioCenters'
 
-vi.mock('./HistoricalRegimeDirectory', () => ({ default: () => <h2>V2 算法目录内容</h2> }))
+vi.mock('./HistoricalRegimeWorkbench', () => ({ default: function MockWorkbench() { const [count, setCount] = useState(0); return <><h2>时序算法工作台内容</h2><button onClick={() => setCount(value => value + 1)}>草稿修改 {count}</button></> } }))
 vi.mock('./ScenarioAlgorithmCenter', () => ({ default: () => <h2>情景模拟与压测内容</h2> }))
 
 describe('ScenarioCenters', () => {
@@ -12,7 +13,7 @@ describe('ScenarioCenters', () => {
     render(<ScenarioCenters />)
 
     expect(screen.getByRole('tab', { name: /历史情景识别/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('heading', { name: 'V2 算法目录内容' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '时序算法工作台内容' })).toBeInTheDocument()
 
     await act(async () => { await user.click(screen.getByRole('tab', { name: /情景模拟与压测/ })) })
     expect(screen.getByRole('tab', { name: /情景模拟与压测/ })).toHaveAttribute('aria-selected', 'true')
@@ -28,4 +29,14 @@ describe('ScenarioCenters', () => {
     expect(screen.getByRole('tab', { name: /情景模拟与压测/ })).toHaveFocus()
     expect(screen.getByRole('heading', { name: '情景模拟与压测内容' })).toBeInTheDocument()
   })
+  it('切换模拟中心再返回时保留情景草稿', async () => {
+    const user = userEvent.setup()
+    render(<ScenarioCenters />)
+    await user.click(screen.getByRole('button', { name: '草稿修改 0' }))
+    await user.click(screen.getByRole('tab', { name: /情景模拟与压测/ }))
+    expect(screen.queryByRole('button', { name: '草稿修改 1' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: /历史情景识别/ }))
+    expect(screen.getByRole('button', { name: '草稿修改 1' })).toBeInTheDocument()
+  })
+
 })

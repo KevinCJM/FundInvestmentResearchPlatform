@@ -13,7 +13,7 @@ def parse_run_options(payload: object = None) -> EtlRunOptions:
     try:
         return EtlRunOptions.model_validate({} if payload is None else payload)
     except ValidationError:
-        raise CenterError("ETL_RUN_OPTIONS_INVALID", "请选择全量或增量，运行参数必须为文本键值。", 422) from None
+        raise CenterError("ETL_RUN_OPTIONS_INVALID", "请选择全量、手动增量或自动增量，运行参数必须为文本键值。", 422) from None
 
 
 def bind_parameters(definition: EtlDefinition, options: EtlRunOptions) -> EtlDefinition:
@@ -23,6 +23,8 @@ def bind_parameters(definition: EtlDefinition, options: EtlRunOptions) -> EtlDef
         raise CenterError("ETL_PARAMETER_UNKNOWN", "运行请求包含未声明的参数。", 422)
     values: dict[str, str] = {}
     for identifier, parameter in declared.items():
+        if options.mode == 'auto_incremental' and parameter.data_type == 'date':
+            continue  # Dates come from the server-owned snapshot plan.
         value = options.parameters.get(identifier, parameter.default).strip()
         if not value:
             if parameter.required:
@@ -48,4 +50,6 @@ def bind_parameters(definition: EtlDefinition, options: EtlRunOptions) -> EtlDef
 
 
 def download_mode(step_mode: str, options: EtlRunOptions) -> str:
+    if options.mode == 'auto_incremental':
+        return 'auto_incremental'
     return options.mode if step_mode == "inherit" else step_mode

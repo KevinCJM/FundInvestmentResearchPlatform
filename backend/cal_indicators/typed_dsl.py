@@ -787,7 +787,7 @@ class TypedSeriesBundlePlan:
             "dsl_version": self.dsl_version,
             "compiler_version": self.compiler_version,
             "operator_registry_version": self.operator_registry_version,
-            "output_contract": "series_bundle",
+            "output_contract": getattr(self, "output_contract", "series_bundle"),
             **self.graph_payload(),
         }
 
@@ -815,6 +815,7 @@ class _TypedDagBuilder:
         self.max_depth = max_depth
         self.nodes: list[TypedDagNode] = []
         self.cache: dict[str, int] = {}
+        self.structural_cache: dict[tuple[Any, ...], int] = {}
 
     def build(self, root: ast.AST) -> int:
         return self._build(root, depth=1)
@@ -825,6 +826,15 @@ class _TypedDagBuilder:
         input_types: tuple[ValueType, ...],
     ) -> ValueType:
         try:
+            if any(value.kind == "record" for value in input_types) and spec.operator_id not in {
+                "interval_start", "interval_trough", "interval_recovery",
+                "fit_slope", "fit_intercept", "fit_residual_sum_squares", "fit_total_sum_squares", "fit_observation_count",
+            }:
+                raise TypedDslError("STATE_FIELD_REQUIRED", "这是计算中间状态，请使用字段提取算子得到一个数值或位置。")
+            if any(value.semantic_dimension == "date" for value in input_types) and spec.operator_id not in {
+                "value_at", "days_between",
+            }:
+                raise TypedDslError("DATE_OPERATOR_REQUIRED", "日期不能作为普通数值计算；请使用日期索引或日期差算子。")
             return spec.infer_output(input_types)
         except TypedDslError as exc:
             if exc.node_id is None:
@@ -890,6 +900,9 @@ class _TypedDagBuilder:
                 formula_fragment=ast.unparse(node),
                 raw=cache_key,
             )
+
+        if isinstance(node, ast.Attribute):
+            raise TypedDslError("ILLEGAL_AST", "不允许直接访问属性；请使用白名单字段提取算子。")
 
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
             input_id = self._build(node.operand, depth=depth + 1)
@@ -1035,14 +1048,15 @@ class _TypedDagBuilder:
                                 "actual": ast.unparse(node.args[1]),
                             },
                         )
+            from .operator_lowering import expand_operator
+            expanded = expand_operator(spec.operator_id, tuple(self.nodes[index].formula_fragment for index in input_ids))
+            if expanded is not None:
+                root = self._build(ast.parse(expanded, mode="eval").body, depth=depth)
+                self.cache[cache_key] = root
+                return root
             return self._append_operator(
-                "call",
-                spec,
-                input_ids,
-                input_types,
-                output_type,
-                ast.unparse(node),
-                cache_key,
+                "call", spec, input_ids, input_types, output_type,
+                ast.unparse(node), cache_key,
             )
 
         raise TypedDslError(
@@ -1061,6 +1075,17 @@ class _TypedDagBuilder:
         formula_fragment: str,
         raw: str,
     ) -> int:
+        # Parent source uses canonical children too, so a nested historical
+        # spelling cannot survive invisibly behind the visible primitive DAG.
+        fragment = ast.parse(formula_fragment, mode="eval").body
+        children = [ast.parse(self.nodes[index].formula_fragment, mode="eval").body for index in input_ids]
+        if isinstance(fragment, ast.Call):
+            fragment = ast.Call(func=ast.Name(id=spec.operator_id, ctx=ast.Load()), args=children, keywords=[])
+        elif isinstance(fragment, ast.BinOp):
+            fragment.left, fragment.right = children
+        elif isinstance(fragment, ast.UnaryOp):
+            fragment.operand = children[0]
+        formula_fragment = ast.unparse(fragment)
         return self._append(
             kind=kind,
             label=spec.operator_id,
@@ -1086,6 +1111,13 @@ class _TypedDagBuilder:
         formula_fragment: str,
         raw: str,
     ) -> int:
+        binding = float(label).hex() if kind == "constant" else label if kind == "variable" else ""
+        structural_key = ("operator" if spec else kind, spec.operator_id if spec else None,
+                          spec.version if spec else None, inferred_type, inputs, binding)
+        if structural_key in self.structural_cache:
+            node_id = self.structural_cache[structural_key]
+            self.cache[raw] = node_id
+            return node_id
         if len(self.nodes) >= self.max_nodes:
             raise TypedDslError(
                 "FORMULA_TOO_COMPLEX",
@@ -1112,6 +1144,7 @@ class _TypedDagBuilder:
             )
         )
         self.cache[raw] = node_id
+        self.structural_cache[structural_key] = node_id
         return node_id
 
 
@@ -1147,7 +1180,7 @@ def _check_output_contract(output_type: ValueType, output_contract: str) -> None
         raise TypedDslError(
             "OUTPUT_CONTRACT_MISMATCH",
             f"指标最终结果必须是{expected_label}，当前公式输出为{user_type_label(output_type)}。"
-            "请继续使用求和、平均值、标准差等归约算子，将结果转换为单个数值。"
+            + ("请使用字段提取算子从中间状态得到单个结果。" if output_type.kind == "record" else "请继续使用求和、平均值、标准差等归约算子，将结果转换为单个数值。")
             if output_contract == "scalar"
             else f"输出数据要求为{expected_label}，当前公式输出为{user_type_label(output_type)}。",
             details={"contract": output_contract, "actual": output_type.to_dict()},
@@ -1218,7 +1251,10 @@ def compose_typed_expression(
         "symbolic": "+".join(costs) if costs else "0",
         "node_count": len(builder.nodes),
     }
-    canonical_expression = ast.dump(ast_root, include_attributes=False)
+    compiled_source = builder.nodes[root_id].formula_fragment
+    canonical_expression = ast.dump(ast.parse(compiled_source, mode="eval").body, include_attributes=False)
+    if canonical_expression != ast.dump(ast_root, include_attributes=False):
+        python_expression = compiled_source
     return TypedExpressionPlan(
         expression=expression,
         python_expression=python_expression,
@@ -1251,7 +1287,7 @@ def compose_typed_series_bundle(
     max_nodes: int = DEFAULT_MAX_NODES,
     max_depth: int = DEFAULT_MAX_DEPTH,
 ) -> TypedSeriesBundlePlan:
-    """Compile named series outputs into one DAG with shared subexpressions."""
+    """Compile homogeneous named outputs; expression semantics remain unchanged."""
 
     normalized_items = tuple(
         (str(name).strip(), str(expression).strip())
@@ -1309,11 +1345,18 @@ def compose_typed_series_bundle(
         python_expression, ast_root = parser.parse(expression)
         root_id = builder.build(ast_root)
         output_type = builder.nodes[root_id].inferred_type
-        _check_output_contract(output_type, "series")
+        try:
+            _check_output_contract(output_type, "series")
+        except TypedDslError as exc:
+            exc.details["output_id"] = name
+            raise
         roots[name] = root_id
+        compiled_source = builder.nodes[root_id].formula_fragment
+        if ast.dump(ast.parse(compiled_source, mode="eval").body, include_attributes=False) != ast.dump(ast_root, include_attributes=False):
+            python_expression = compiled_source
         python_expressions.append((name, python_expression))
         canonical_roots.append(
-            (name, ast.dump(ast_root, include_attributes=False))
+            (name, ast.dump(ast.parse(python_expression, mode="eval").body, include_attributes=False))
         )
 
     output_types = {
@@ -1486,7 +1529,8 @@ class TypedIndicatorRuntime:
             )
         return cls(plan, _compiled_plan=compiled, **kwargs)
 
-    def compute(self, context: Mapping[str, Any]) -> Any:
+    def prepare_context(self, context: Mapping[str, Any]) -> tuple[tuple[Any, ...], dict[str, int], list[dict[str, Any]]]:
+        """Validate inputs and budget without executing numerical formula nodes."""
         bindings: dict[str, int] = {}
         self.last_trace = ()
         variable_nodes = {
@@ -1545,8 +1589,12 @@ class TypedIndicatorRuntime:
                 node_id=self.plan.root_id,
                 details={"live_elements": live_elements},
             )
+        return tuple(arguments), bindings, trace
+
+    def compute(self, context: Mapping[str, Any]) -> Any:
+        arguments, bindings, trace = self.prepare_context(context)
         try:
-            result = self.compiled_plan.compute(tuple(arguments))
+            result = self.compiled_plan.compute(arguments)
         except (TypeError, ValueError, ZeroDivisionError, FloatingPointError) as exc:
             code = str(exc).strip()
             stable_codes = {
@@ -1621,6 +1669,8 @@ class TypedIndicatorRuntime:
                     shape.append(bindings[dynamic.group(1)])
                 else:
                     shape.append(1)
+            if node.inferred_type.kind == "record":
+                shape = [len(node.inferred_type.fields)]
             shapes[node.node_id] = tuple(shape)
             node_cost = 0
             if node.operator_id is not None:

@@ -11,7 +11,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from cal_indicators.typed_dsl import TypedDslError
+
 from .errors import ValidationError
+from .formula_source import canonical_formula_source
 from .variable_registry import get_variable
 
 
@@ -360,6 +363,12 @@ def normalize_rolling_source(raw: Any) -> dict[str, Any] | None:
             "滚动来源必须是对象。",
             field="rolling_source",
         )
+    if raw.get("output_id") is not None:
+        raise ValidationError(
+            "REMOVED_SCALAR_OUTPUT_REFERENCE",
+            "滚动来源必须引用独立指标及其版本，不能引用已取消的标量子结果。",
+            field="rolling_source",
+        )
     kind = str(raw.get("kind") or ROLLING_SOURCE_KIND)
     transform_version = str(
         raw.get("transform_version")
@@ -588,15 +597,9 @@ def verify_rolling_series_definition(
     actual_expression = str(actual_outputs[0].get("expression") or "").strip()
     expected_expression = str(expected["expression"]).strip()
     try:
-        actual_ast = ast.dump(
-            ast.parse(actual_expression, mode="eval"),
-            include_attributes=False,
-        )
-        expected_ast = ast.dump(
-            ast.parse(expected_expression, mode="eval"),
-            include_attributes=False,
-        )
-    except SyntaxError as exc:
+        actual_ast = canonical_formula_source(actual_expression)
+        expected_ast = canonical_formula_source(expected_expression)
+    except (SyntaxError, TypedDslError) as exc:
         raise ValidationError(
             "ROLLING_SOURCE_FORMULA_MISMATCH",
             "滚动指标公式已不是有效的受控表达式。",

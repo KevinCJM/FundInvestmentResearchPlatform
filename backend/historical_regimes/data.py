@@ -22,6 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from historical_regimes.numba_kernels import relative_transform_kernel
 
 from custom_indicators.errors import NotFoundError, ValidationError
+from research_series.product_sources import PRODUCT_SOURCES, ProductSourceError, product_pit, read_product_observations, apply_product_adjustment, ETF_ADJUSTED_FIELDS, product_source_spec
 
 
 INDEX_HISTORY_FILES = {
@@ -280,6 +281,47 @@ def _index_bundle(
     return DataBundle(frame=frame, snapshot=snapshot)
 
 
+def _product_bundle(spec: dict[str, Any], mode: str, as_of: Optional[str], market_data_dir: Path) -> DataBundle:
+    kind = str(spec["kind"])
+    root = resolve_tushare_data_dir(market_data_dir)
+    try:
+        raw = read_product_observations(root, kind, spec, mode)
+    except ProductSourceError as exc:
+        raise ValidationError(exc.code, exc.message, "target") from exc
+    frame, revision_meta = _normalise_observations(
+        raw, mode, as_of,
+        availability_mode=str(spec["availability_mode"]) if spec.get("availability_mode") else None,
+    )
+    for key, lower in (("start_date", True), ("end_date", False)):
+        if spec.get(key):
+            bound = _parse_date(spec[key], f"target.{key}")
+            frame = frame.loc[frame["observation_date"] >= bound if lower else frame["observation_date"] <= bound].copy()
+    if frame.empty:
+        raise ValidationError("EMPTY_DATE_RANGE", "所选日期区间没有产品行情。", "target")
+    source = product_source_spec(kind, spec.get("field"))
+    field = str(spec.get("field") or source["default_field"])
+    try:
+        frame = apply_product_adjustment(frame, kind, field)
+    except ProductSourceError as exc:
+        raise ValidationError(exc.code, exc.message, "target.field") from exc
+    pit = product_pit(kind, field)
+    if (kind == "etf" and field in ETF_ADJUSTED_FIELDS) or field == "adj_nav":
+        pit.update(supported=False, availability_status="retrospective_adjustment")
+    if frame["availability_unknown"].any():
+        pit.update(supported=False, availability_status="unknown_retrospective_only")
+    snapshot = {
+        **revision_meta, "kind": kind, "ts_code": str(spec["ts_code"]),
+        **({"adjustment": raw.attrs["adjustment"]} if raw.attrs.get("adjustment") else {}),
+        "source_api": source["source_api"], "field": spec.get("field") or source["default_field"],
+        "file": source["filename"], "fingerprint": _hash_frame(frame), "pit": pit,
+        "selected_observations": len(frame),
+        "first_observation_date": frame["observation_date"].iloc[0].date().isoformat(),
+        "last_observation_date": frame["observation_date"].iloc[-1].date().isoformat(),
+        "latest_available_at": frame["available_at"].max().date().isoformat(),
+    }
+    return DataBundle(frame=frame, snapshot=snapshot)
+
+
 def _indicator_bundle(
     spec: dict[str, Any],
     mode: str,
@@ -339,6 +381,8 @@ def resolve_target(
         return _inline_bundle(spec, mode, as_of)
     if kind == "index":
         return _index_bundle(spec, mode, as_of, market_data_dir)
+    if kind in PRODUCT_SOURCES:
+        return _product_bundle(spec, mode, as_of, market_data_dir)
     if kind == "indicator":
         return _indicator_bundle(spec, mode, as_of, indicator_service)
     if kind != "relative":

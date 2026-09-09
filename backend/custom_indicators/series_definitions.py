@@ -7,7 +7,7 @@ import copy
 import math
 from typing import Any, Mapping
 
-from cal_indicators.typed_dsl import TypedExpressionParser
+from cal_indicators.typed_dsl import TypedDslError
 from cal_indicators.typed_numba_kernels import NUMERIC_KERNEL_VERSION
 from cal_indicators.typed_operators import (
     TYPED_DSL_VERSION,
@@ -16,12 +16,13 @@ from cal_indicators.typed_operators import (
 from cal_indicators.typed_types import ValueType
 
 from .errors import ValidationError
-from .rolling_scalar import (
-    lift_scalar_expression,
-    rolling_source_metadata,
-    validate_scalar_rolling_source,
-)
+from .formula_source import canonical_formula_source
 from .periods import SUPPORTED_PERIODS
+from .series_parameters import (
+    PARAMETER_CONTRACT_VERSION,
+    resolve_parameter_values,
+    validate_parameter_definition,
+)
 from .rolling_series import (
     derive_rolling_series_definition,
     normalize_rolling_source,
@@ -400,172 +401,6 @@ def _common(
     }
 
 
-def rolling_scalar_time_series_definition(
-    *,
-    timestamp: str,
-    source_definition: Mapping[str, Any],
-    window_observations: Any,
-    min_periods: Any | None = None,
-    name: str | None = None,
-    description: str | None = None,
-    channel_id: str = "value",
-    channel_label: str | None = None,
-    read_only: bool = False,
-) -> dict[str, Any]:
-    """Lift one locked scalar indicator into a normal time-series definition.
-
-    This is a definition-time transform only. The generated formula is later
-    compiled by the ordinary fixed-signature time-series NJIT path.
-    """
-
-    validate_scalar_rolling_source(source_definition)
-    source_id = str(source_definition.get("id") or "").strip()
-    source_revision = int(source_definition.get("revision") or 0)
-    if not source_id or source_revision < 1:
-        raise ValidationError(
-            "INVALID_ROLLING_SOURCE",
-            "来源标量指标必须是已保存的不可变版本。",
-            field="rolling_source.indicator_id",
-        )
-
-    lifted = lift_scalar_expression(
-        str(source_definition.get("expression") or ""),
-        window_observations=window_observations,
-        min_periods=min_periods,
-    )
-    window = int(lifted["window_observations"])
-    minimum = int(lifted["min_periods"])
-    source_name = str(source_definition.get("name") or source_id)
-    resolved_name = str(name or f"{window} 日滚动{source_name}").strip()
-    resolved_description = str(
-        description
-        or f"由“{source_name}”第 {source_revision} 版按最近 {window} 个有效观察值滚动计算。"
-    ).strip()
-    resolved_channel_id = str(channel_id or "value").strip()
-    if not resolved_channel_id.isidentifier():
-        raise ValidationError(
-            "INVALID_SERIES_CHANNEL_ID",
-            "时序输出通道 ID 必须是有效标识符。",
-            field="series_outputs.0.id",
-        )
-
-    required_variables = list(source_definition.get("required_variables") or [])
-    axis_anchor = next(
-        (
-            variable
-            for variable in required_variables
-            if (definition := get_variable(str(variable))) is not None
-            and definition.kind == "series"
-            and "single_product" in definition.domains
-        ),
-        None,
-    )
-    if axis_anchor is None:
-        raise ValidationError(
-            "INVALID_AXIS_ANCHOR",
-            "来源标量指标没有可用于滚动时序日期轴的单产品序列变量。",
-            field="axis_anchor",
-        )
-
-    unit = str(source_definition.get("unit") or "")
-    display_format = str(source_definition.get("display_format") or "number")
-    precision = int(source_definition.get("precision", 4))
-    rolling_source = rolling_source_metadata(
-        source_definition,
-        window_observations=window,
-        min_periods=minimum,
-    )
-    return {
-        "source": "built_in" if read_only else "user_defined",
-        "read_only": bool(read_only),
-        "created_at": timestamp,
-        "updated_at": timestamp,
-        "name": resolved_name,
-        "description": resolved_description,
-        "expression": str(lifted["expression"]),
-        "series_outputs": [
-            _channel(
-                resolved_channel_id,
-                str(channel_label or resolved_name),
-                str(lifted["expression"]),
-                unit=unit,
-                output_measure="auto",
-                precision=precision,
-                display_format=display_format,
-            )
-        ],
-        "parameter_schema": [],
-        "fixed_parameters": [
-            {
-                "id": "window_observations",
-                "label": "滚动观察数",
-                "type": "integer",
-                "value": window,
-                "source": "rolling_transform",
-            },
-            {
-                "id": "min_periods",
-                "label": "最少有效观察数",
-                "type": "integer",
-                "value": minimum,
-                "source": "rolling_transform",
-            },
-        ],
-        "result_kind": TIME_SERIES_RESULT_KIND,
-        "output_contract": TIME_SERIES_OUTPUT_CONTRACT,
-        "context_kind": "single_product",
-        "indicator_type": str(source_definition.get("indicator_type") or "other"),
-        "category_id": str(source_definition.get("category_id") or source_definition.get("indicator_type") or "other"),
-        "category_label": str(source_definition.get("category_label") or "技术与时序指标"),
-        "direction": str(source_definition.get("direction") or "higher_better"),
-        "unit": unit,
-        "display_format": display_format,
-        "precision": precision,
-        "output_measure": "series_bundle",
-        "annual_risk_free_rate_percent": float(
-            source_definition.get("annual_risk_free_rate_percent") or 0.0
-        ),
-        "periods": list(SUPPORTED_PERIODS),
-        "period_policy": "all_supported",
-        "dsl_version": TYPED_DSL_VERSION,
-        "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
-        "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
-        "variable_registry_version": VARIABLE_REGISTRY_VERSION,
-        "data_contract_version": DATA_CONTRACT_VERSION,
-        "context_schema_version": CONTEXT_SCHEMA_VERSION,
-        "axis_anchor": str(axis_anchor),
-        "history_policy": "lookback",
-        "history_inference_source": "rolling_scalar_transform",
-        "lookback_parameter": None,
-        "lookback_observations": window,
-        "required_variables": required_variables,
-        "applicable_product_kinds": list(
-            source_definition.get("applicable_product_kinds") or ["etf", "fund"]
-        ),
-        "minimum_observations": minimum,
-        "methodology": (
-            f"将来源标量公式中的 {lifted['lifted_reductions']} 个归约步骤转换为"
-            f"固定 {window} 个观察值、最少 {minimum} 个有效观察值的滚动计算。"
-        ),
-        "data_basis": str(
-            source_definition.get("data_basis")
-            or "沿用来源指标的真实单产品数据口径；日期对齐，缺失不填充"
-        ),
-        "availability_status": "ready",
-        "formula_version": TYPED_DSL_VERSION,
-        "template_origin": None,
-        "rolling_source": rolling_source,
-        "rolling_transform": {
-            "version": str(lifted["transform_version"]),
-            "window_observations": window,
-            "min_periods": minimum,
-            "source_expression": str(source_definition.get("expression") or ""),
-            "generated_expression": str(lifted["expression"]),
-            "lifted_reductions": int(lifted["lifted_reductions"]),
-        },
-    }
-
-
 def time_series_builtin_indicators(
     timestamp: str,
     scalar_indicators: list[dict[str, Any]] | None = None,
@@ -727,7 +562,7 @@ def time_series_builtin_indicators(
     return [price_ma, bollinger, volume_ma, kdj, rolling_sharpe]
 
 def parameter_variable_types(definition: Mapping[str, Any]) -> dict[str, ValueType]:
-    """Compatibility support for old persisted parameterized definitions."""
+    """Stable scalar types for explicitly declared algorithm parameters."""
 
     output: dict[str, ValueType] = {}
     for item in definition.get("parameter_schema") or []:
@@ -750,13 +585,15 @@ def normalize_series_parameters(
     definition: Mapping[str, Any],
     supplied: Mapping[str, Any] | None,
 ) -> dict[str, float]:
-    """Time-series algorithm parameters are immutable definition constants."""
+    """Resolve explicitly opened parameters; historical fixed contracts stay fixed."""
 
+    if definition.get("parameter_contract_version") == PARAMETER_CONTRACT_VERSION:
+        return resolve_parameter_values(definition, supplied)
     supplied_values = dict(supplied or {})
     if supplied_values:
         raise ValidationError(
-            "SERIES_RUNTIME_PARAMETERS_NOT_SUPPORTED",
-            "时序指标的窗口、平滑周期和阈值必须固定在指标公式中；请创建另一个指标或新版本。",
+            "SERIES_PARAMETERS_FIXED_IN_DEFINITION",
+            "此历史指标版本未开放可变参数；请复制为新指标并开放需要调整的输入。",
             field="parameters",
             diagnostics=[
                 {
@@ -770,12 +607,7 @@ def normalize_series_parameters(
     return {}
 
 def _normalized_parameter_schema(items: Any) -> list[dict[str, Any]]:
-    """Validate legacy runtime parameters before freezing their defaults.
-
-    New time-series definitions do not persist runtime algorithm parameters. This
-    parser exists only so an older saved definition can be migrated to literal
-    constants without accepting runtime overrides.
-    """
+    """Normalize schema metadata before applying its versioned binding contract."""
 
     if not isinstance(items, list) or len(items) > MAX_SERIES_PARAMETERS:
         raise ValidationError(
@@ -881,7 +713,7 @@ def _normalized_parameter_schema(items: Any) -> list[dict[str, Any]]:
 
 
 def normalize_parameter_schema(items: Any) -> list[dict[str, Any]]:
-    """Validate legacy parameter metadata used by compose/infer compatibility."""
+    """Validate shared parameter metadata for definitions and compose/infer."""
 
     return _normalized_parameter_schema(copy.deepcopy(items))
 
@@ -1042,8 +874,8 @@ def _freeze_parameter_defaults(
         for item in parameters
     }
     try:
-        parsed = ast.parse(expression, mode="eval")
-    except SyntaxError as exc:
+        parsed = ast.parse(canonical_formula_source(expression), mode="eval")
+    except (SyntaxError, TypedDslError) as exc:
         raise ValidationError(
             "SERIES_PARAMETER_FREEZE_FAILED",
             "旧版时序参数只能在可解析的受限 DSL 公式中固化。",
@@ -1098,12 +930,16 @@ def normalize_time_series_definition(
         else defaults.get("parameter_schema", [])
     )
     parameters = _normalized_parameter_schema(raw_parameters or [])
+    parameter_version = fields.get("parameter_contract_version", defaults.get("parameter_contract_version"))
+    if parameter_version not in (None, PARAMETER_CONTRACT_VERSION):
+        raise ValidationError("INVALID_PARAMETER_CONTRACT", "不支持的参数契约版本。", field="parameter_contract_version")
+    runtime_parameters = parameter_version == PARAMETER_CONTRACT_VERSION
     raw_outputs = copy.deepcopy(
         fields.get("series_outputs")
         if "series_outputs" in fields
         else defaults.get("series_outputs", [])
     )
-    if parameters:
+    if parameters and not runtime_parameters:
         if not isinstance(raw_outputs, list):
             raise ValidationError(
                 "INVALID_SERIES_OUTPUTS",
@@ -1116,6 +952,11 @@ def normalize_time_series_definition(
                     str(output.get("expression") or ""), parameters
                 )
     outputs = _normalized_outputs(raw_outputs)
+    if runtime_parameters:
+        validate_parameter_definition({
+            **fields, "series_outputs": outputs, "parameter_schema": parameters,
+            "operator_registry_version": fields.get("operator_registry_version") or defaults.get("operator_registry_version"),
+        })
 
     axis_anchor = str(fields.get("axis_anchor") or defaults.get("axis_anchor") or "").strip()
     anchor_definition = get_variable(axis_anchor)
@@ -1152,7 +993,7 @@ def normalize_time_series_definition(
     )
     fixed_parameters = _normalized_fixed_parameters(raw_fixed_parameters or [])
     fixed_by_id = {str(item["id"]): item for item in fixed_parameters}
-    for item in parameters:
+    for item in parameters if not runtime_parameters else []:
         parameter_id = str(item["id"])
         fixed_by_id.setdefault(
             parameter_id,
@@ -1164,7 +1005,8 @@ def normalize_time_series_definition(
                 "source": "legacy_parameter_default",
             },
         )
-    fixed_parameters = list(fixed_by_id.values())
+    fixed_parameters = [item for key, item in fixed_by_id.items()
+                        if not runtime_parameters or key not in {p["id"] for p in parameters}]
 
     indicator_type = str(
         fields.get("indicator_type")
@@ -1188,7 +1030,7 @@ def normalize_time_series_definition(
     direction = str(
         fields.get("direction") or defaults.get("direction") or "higher_better"
     )
-    if direction not in {"higher_better", "lower_better"}:
+    if direction not in {"neutral", "higher_better", "lower_better"}:
         raise ValidationError(
             "INVALID_DIRECTION",
             "不支持的指标优劣方向。",
@@ -1236,8 +1078,8 @@ def normalize_time_series_definition(
         "description": description,
         "expression": first["expression"],
         "series_outputs": outputs,
-        # Algorithm parameters are constants embedded in each expression.
-        "parameter_schema": [],
+        **({"parameter_contract_version": parameter_version} if runtime_parameters else {}),
+        "parameter_schema": parameters if runtime_parameters else [],
         "fixed_parameters": fixed_parameters,
         "result_kind": TIME_SERIES_RESULT_KIND,
         "output_contract": TIME_SERIES_OUTPUT_CONTRACT,
@@ -1344,7 +1186,6 @@ __all__ = [
     "normalize_time_series_definition",
     "parameter_variable_types",
     "resolve_series_output_measure",
-    "rolling_scalar_time_series_definition",
     "series_expressions",
     "series_output_measure_catalog",
     "time_series_builtin_indicators",

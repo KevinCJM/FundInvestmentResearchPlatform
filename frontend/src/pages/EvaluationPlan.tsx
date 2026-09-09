@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { systemText } from '../i18n/runtime'
 import { useSearchParams } from 'react-router-dom'
 import EvaluationProductSelector from '../components/evaluation/EvaluationProductSelector'
 import {
@@ -33,6 +34,7 @@ import {
 type IndicatorEntry = {
   id: string
   indicatorId: string
+  indicatorRevision?: number
   period: string
   weight: number
   direction: IndicatorDirection
@@ -196,7 +198,7 @@ export default function EvaluationPlanPage() {
     product_kind: productKind,
     indicators: entries.map((entry) => ({
       indicator_id: entry.indicatorId,
-      indicator_revision: indicators.find((item) => item.id === entry.indicatorId)?.revision ?? 1,
+      indicator_revision: entry.indicatorRevision ?? indicators.find((item) => item.id === entry.indicatorId)?.revision ?? 1,
       period: entry.period,
       weight: entry.weight,
       direction: entry.direction,
@@ -208,6 +210,7 @@ export default function EvaluationPlanPage() {
   const validateDraft = () => {
     if (!name.trim()) return '请填写评价方案名称。'
     if (entries.length === 0) return '请至少选择一个指标。'
+    if (entries.some(entry => entry.direction === 'neutral')) return '部分结果默认仅展示，请为参与评分的结果明确选择越高越好或越低越好。'
     if (selectedTargets.length === 0) return `请至少选择一个${kindLabel}产品。`
     if (selectedTargets.some((item) => item.instrument_type && item.instrument_type !== productKind)) return '评价方案中存在其他品类产品，请重新选择。'
     if (!weightControl) return weightControlError || '指标权重正在由 NJIT 内核校验，请稍候。'
@@ -255,6 +258,7 @@ export default function EvaluationPlanPage() {
     setEntries(plan.indicators.map((entry) => ({
       id: crypto.randomUUID(),
       indicatorId: entry.indicator_id,
+      indicatorRevision: entry.indicator_revision,
       period: entry.period,
       weight: entry.weight,
       direction: entry.direction,
@@ -355,7 +359,7 @@ function IndicatorConfiguration({ productKind, indicators, selectableIndicators,
     <div className="mt-4 overflow-auto"><table className="min-w-[980px] w-full text-sm"><caption className="sr-only">{kindLabel}评价指标配置</caption><thead className="bg-slate-50 text-left text-slate-500"><tr><th scope="col" className="px-3 py-3">指标定义</th><th scope="col" className="px-3 py-3">方向</th><th scope="col" className="px-3 py-3">周期</th><th scope="col" className="px-3 py-3">输入权重</th><th scope="col" className="px-3 py-3">有效占比</th><th scope="col" className="px-3 py-3">操作</th></tr></thead><tbody>{entries.map((entry, entryIndex) => {
       const definition = indicators.find((item) => item.id === entry.indicatorId)
       const overridden = definition && entry.direction !== definition.direction
-      return <tr key={entry.id} className="border-t border-slate-100"><td className="px-3 py-3"><p className="font-medium text-slate-800">{definition ? indicatorOptionLabel(definition) : entry.indicatorId}</p><p className="mt-1 text-xs text-slate-500">{definition?.presentation?.category_label ?? definition?.category_label ?? '未分类'} · {definition?.unit || '无单位'} · 最少 {definition?.minimum_observations ?? 1} 个观察值</p>{disabledReasons[entry.indicatorId] && <p className="mt-1 text-xs text-rose-600">{disabledReasons[entry.indicatorId]}</p>}</td><td className="px-3 py-3"><select value={entry.direction} onChange={(event) => onEntryChange(entry.id, { direction: event.target.value as IndicatorDirection })} className="min-h-11 rounded border border-slate-200 px-2"><option value="higher_better">数值高优先</option><option value="lower_better">数值低优先</option></select>{overridden && <p className="mt-1 text-xs text-amber-700">已覆盖指标默认方向</p>}</td><td className="px-3 py-3"><select value={entry.period} onChange={(event) => onEntryChange(entry.id, { period: event.target.value })} className="min-h-11 rounded border border-slate-200 px-2">{runtimePeriods.map((period) => <option key={period} value={period}>{indicatorPeriodOptionLabel(period)}</option>)}</select></td><td className="px-3 py-3"><input aria-label={`${definition?.name ?? '指标'}权重`} type="number" min="0" value={entry.weight} onChange={(event) => onEntryChange(entry.id, { weight: Number(event.target.value) || 0 })} className="min-h-11 w-24 rounded border border-slate-200 px-2 text-right" /></td><td className="px-3 py-3 font-medium text-violet-700">{weightControl?.positive && weightControl.normalized_shares[entryIndex] !== undefined ? `${(weightControl.normalized_shares[entryIndex] * 100).toFixed(1)}%` : '—'}</td><td className="px-3 py-3"><div className="flex gap-2"><button type="button" onClick={() => onEntriesChange((current) => [...current, { ...entry, id: crypto.randomUUID(), period: runtimePeriods.find((period) => !current.some((item) => item.indicatorId === entry.indicatorId && item.period === period)) ?? entry.period }])} className="text-violet-700 hover:underline">复制周期</button><button type="button" onClick={() => onEntriesChange((current) => current.filter((item) => item.id !== entry.id))} className="text-rose-600 hover:underline">删除</button></div></td></tr>
+      return <tr key={entry.id} className="border-t border-slate-100"><td className="px-3 py-3"><p className="font-medium text-slate-800">{definition ? indicatorOptionLabel(definition) : entry.indicatorId}</p><p className="mt-1 text-xs text-slate-500">{definition?.presentation?.category_label ?? definition?.category_label ?? '未分类'} · {definition?.unit || '无单位'} · 最少 {definition?.minimum_observations ?? 1} 个观察值</p>{disabledReasons[entry.indicatorId] && <p className="mt-1 text-xs text-rose-600">{disabledReasons[entry.indicatorId]}</p>}</td><td className="px-3 py-3"><select value={entry.direction} onChange={(event) => onEntryChange(entry.id, { direction: event.target.value as IndicatorDirection })} className="min-h-11 rounded border border-slate-200 px-2"><option value="neutral" disabled>{systemText('scalarResult.chooseDirection', {}, '请选择评分方向')}</option><option value="higher_better">数值高优先</option><option value="lower_better">数值低优先</option></select>{overridden && <p className="mt-1 text-xs text-amber-700">已覆盖指标默认方向</p>}</td><td className="px-3 py-3"><select value={entry.period} onChange={(event) => onEntryChange(entry.id, { period: event.target.value })} className="min-h-11 rounded border border-slate-200 px-2">{runtimePeriods.map((period) => <option key={period} value={period}>{indicatorPeriodOptionLabel(period)}</option>)}</select></td><td className="px-3 py-3"><input aria-label={`${definition?.name ?? '指标'}权重`} type="number" min="0" value={entry.weight} onChange={(event) => onEntryChange(entry.id, { weight: Number(event.target.value) || 0 })} className="min-h-11 w-24 rounded border border-slate-200 px-2 text-right" /></td><td className="px-3 py-3 font-medium text-violet-700">{weightControl?.positive && weightControl.normalized_shares[entryIndex] !== undefined ? `${(weightControl.normalized_shares[entryIndex] * 100).toFixed(1)}%` : '—'}</td><td className="px-3 py-3"><div className="flex gap-2"><button type="button" onClick={() => onEntriesChange((current) => [...current, { ...entry, id: crypto.randomUUID(), period: runtimePeriods.find((period) => !current.some((item) => item.indicatorId === entry.indicatorId && item.period === period)) ?? entry.period }])} className="text-violet-700 hover:underline">复制周期</button><button type="button" onClick={() => onEntriesChange((current) => current.filter((item) => item.id !== entry.id))} className="text-rose-600 hover:underline">删除</button></div></td></tr>
     })}</tbody></table></div>
   </section>
 }

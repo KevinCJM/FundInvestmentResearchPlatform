@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import nullcontext
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,7 @@ from backend.data_sources.legacy_bridge import (
 )
 from backend.data_sources.models import CenterError, DownloadPolicy
 from backend.data_sources.transport import TransientSourceError
+from backend.data_sources.fund_events import FundEventDownload
 
 
 DEFAULT_START_DATE = "20100101"
@@ -85,7 +87,7 @@ CLI_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 class ResponseTruncatedError(RuntimeError):
-    """Raised when an API response reaches its documented single-call cap."""
+    """Raised at a configured or conservative single-call truncation guard."""
 
 FUND_BASIC_FIELDS = [
     "ts_code",
@@ -322,7 +324,7 @@ ACTION_LABELS = {
     "fund_scale": "公募基金资产规模",
     "fund_portfolio": "公募基金季度股票持仓披露",
     "fund_dividend": "公募基金分红",
-    "fund_adjustment": "公募基金复权因子",
+    "fund_adjustment": "ETF 复权因子",
     "fund_benchmark": "公募基金业绩基准库",
     "stock_basic": "股票目录",
     "index_info": "指数基础信息",
@@ -475,6 +477,8 @@ ETF_INFO_COLUMNS = [
 
 
 def ensure_output_dir(path: Path) -> None:
+    from backend.data_storage import guard_path
+    guard_path(path, write=True)
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -594,6 +598,8 @@ def call_tushare_api(
     api_name: Optional[str] = None,
     retry_jitter_sec: float = 0.25,
     allow_capped_response: bool = False,
+    request_guard: Callable[[], None] | None = None,
+    interrupt_wait: Callable[[float], None] | None = None,
     **kwargs: Any,
 ) -> pd.DataFrame:
     policy = getattr(func, "download_policy", None)
@@ -604,6 +610,9 @@ def call_tushare_api(
     last_err: Optional[Exception] = None
     delay = backoff_sec
     for attempt in range(1, max_retries + 1):
+        # Cancellation/budget errors are orchestration, never retryable I/O.
+        if request_guard is not None:
+            request_guard()
         try:
             limiter.acquire()
             df = func(**kwargs)
@@ -635,18 +644,25 @@ def call_tushare_api(
                 marker in msg for marker in ("permission", "no privilege", "not authorized")
             ) or any(marker in str(exc) for marker in ("权限不足", "无权限", "积分不足"))
             if is_permission_error:
-                raise PermissionError(f"{context} 权限不足: {exc}") from exc
+                raise CenterError("SOURCE_PERMISSION_OR_PARAMS", f"{context} 权限不足，请核验账户权限。", 502) from exc
+            if not (isinstance(exc, (TransientSourceError, ConnectionError, TimeoutError)) or is_rate_limit):
+                # Programming, disk and data-contract errors are not network retries.
+                raise
             if attempt >= max_retries:
                 break
             base_wait = max(wait_on_rate_limit_sec, delay) if is_rate_limit else delay
             base_wait = max(base_wait, getattr(exc, "retry_after_seconds", 0.0))
             jitter = random.uniform(0.0, max(retry_jitter_sec, 0.0))
             wait = base_wait + jitter
-            reason = "触发限流" if is_rate_limit else "请求异常"
+            reason = ("触发限流" if is_rate_limit else "请求异常") + f"（{getattr(exc, 'code', type(exc).__name__)}）"
             print(f"[INFO] {context} {reason}，等待 {wait:.2f}s 后进行第 {attempt + 1}/{max_retries} 次尝试。")
-            time.sleep(wait)
+            (interrupt_wait or time.sleep)(wait)
             delay *= 2
-    raise RuntimeError(f"{context} 请求失败: {last_err}") from last_err
+    code = last_err.code if isinstance(last_err, TransientSourceError) else "SOURCE_RATE_LIMIT" if is_rate_limit else "SOURCE_CONNECTION"
+    detail = last_err.message if isinstance(last_err, TransientSourceError) else "限流或连接异常。"
+    # Preserve the safe transport category through the worker JSON boundary;
+    # raw exception text may contain credentials/URLs and must not be exposed.
+    raise CenterError(code, f"{context} 请求失败，已尝试 {max_retries} 次：{detail} 检查点保留，可在数据源恢复后继续。", 502) from last_err
 
 
 def _empty_response_retry_delay(args: argparse.Namespace, attempt: int) -> float:
@@ -1892,7 +1908,7 @@ def save_latest_nav(
 ) -> None:
     out_path = output_dir / "etf_daily_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
-    start_date = incremental_start_date(
+    start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
         output_dir,
         latest_parquet_date(out_path, "date"),
         lookback_days=lookback_days,
@@ -2101,7 +2117,7 @@ def save_latest_etf_share_size(
     out_path = output_dir / "etf_share_size_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
     if out_path.exists():
-        start_date = incremental_start_date(
+        start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
             output_dir,
             latest_parquet_date(out_path, "date"),
             lookback_days=lookback_days,
@@ -2158,7 +2174,7 @@ def save_latest_candles(
 ) -> None:
     out_path = output_dir / "etf_daily_candle_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
-    start_date = incremental_start_date(
+    start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
         output_dir,
         latest_parquet_date(out_path, "date"),
         lookback_days=lookback_days,
@@ -2455,7 +2471,7 @@ def save_latest_public_fund_nav(
 ) -> None:
     out_path = output_dir / "fund_nav_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
-    start_date = incremental_start_date(
+    start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
         output_dir,
         latest_parquet_date(out_path, "date"),
         lookback_days=lookback_days,
@@ -2954,6 +2970,12 @@ def fetch_index_date_window(
         context=f"{api_name} {code or 'all'} {start_date}-{end_date}",
         **kwargs,
     )
+    if frame.empty:
+        frame = _call_index_api(
+            pro, api_name, limiter, args, allow_capped_response=True,
+            context=f"{api_name} {code or 'all'} {start_date}-{end_date} 空响应独立复核",
+            **kwargs,
+        )
     limit = API_ROW_LIMITS.get(api_name)
     if limit is not None and len(frame) >= limit:
         start = pd.to_datetime(start_date, format="%Y%m%d")
@@ -2998,6 +3020,8 @@ def _index_incremental_start(
     path: Path,
     args: argparse.Namespace,
 ) -> str:
+    if getattr(args, 'automatic_start_date', None):
+        return args.automatic_start_date
     if not path.exists():
         return args.start_date
     latest = latest_parquet_date(path, "trade_date")
@@ -3806,7 +3830,9 @@ def save_fund_scale(output_dir: Path) -> None:
 def _event_dates(args: argparse.Namespace, out_path: Path) -> list[str]:
     if args.smoke:
         return [args.end_date]
-    if args.latest:
+    if getattr(args, 'automatic_start_date', None):
+        start = pd.to_datetime(args.automatic_start_date, format='%Y%m%d')
+    elif args.latest:
         if out_path.exists() and parquet.ParquetFile(out_path).metadata.num_rows:
             latest = latest_parquet_date(out_path, "available_at")
             start = max(
@@ -3834,7 +3860,9 @@ def _consolidate_ordered_parts(part_paths: list[Path], out_path: Path) -> int:
     output_schema: pa.Schema | None = None
     for path in part_paths:
         schema = parquet.ParquetFile(path).schema_arrow.remove_metadata()
-        output_schema = schema if output_schema is None else _union_arrow_schema(output_schema, schema)
+        # Empty/all-null shards carry Arrow null fields. Promote only null to
+        # the later concrete type; incompatible concrete types must still fail.
+        output_schema = schema if output_schema is None else pa.unify_schemas([output_schema, schema])
     assert output_schema is not None
     ensure_output_dir(out_path.parent)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -3921,109 +3949,83 @@ def _save_fund_event_dataset(
     if not dates:
         print(f"[INFO] {api_name} 已是最新，无需更新。")
         return
-    allowed_codes = set(universe["ts_code"].dropna().astype(str))
-    checkpoint_dir = history_checkpoint_dir(out_path, args)
-    ensure_output_dir(checkpoint_dir)
-    part_by_date: dict[str, Path] = {}
-    empty_by_date: dict[str, Path] = {}
-    pending: list[str] = []
-    for date_value in dates:
-        part_path, empty_path = history_checkpoint_paths(checkpoint_dir, date_value)
-        part_by_date[date_value] = part_path
-        empty_by_date[date_value] = empty_path
-        if not part_path.exists() and not empty_path.exists():
-            pending.append(date_value)
-
     api_func = getattr(pro, api_name)
+    policy = getattr(api_func, 'download_policy', None)
+    pagination = getattr(api_func, 'pagination_config', None)
+    paged_holdings = api_name == 'fund_portfolio' and getattr(pagination, 'mode', 'none') == 'offset'
+    by_fund_history = api_name == 'fund_portfolio' and not args.latest and not args.smoke
+    session = FundEventDownload(
+        directory=history_checkpoint_dir(out_path, args), dates=dates, universe=universe,
+        api_name=api_name, fields=fields, smoke=args.smoke,
+        strategy='fund_announcement_history' if by_fund_history else 'announcement',
+        max_requests=getattr(args, 'fund_event_max_requests', 100_000),
+        idle_timeout=getattr(args, 'fund_event_idle_timeout', 180),
+        max_runtime=min(getattr(args, 'fund_event_max_runtime', 86_400),
+                        policy.max_runtime_seconds if isinstance(policy, DownloadPolicy) else 86_400),
+    )
 
-    def fetch_one(date_value: str) -> pd.DataFrame:
+    def fetch(date_value: str, code: str | None) -> pd.DataFrame:
+        if code and paged_holdings:
+            return fetch_pages(code, date_value)
         params = {"ann_date": date_value, "fields": fields_arg(fields)}
-        try:
-            frame = call_tushare_api(
-                api_func,
-                limiter,
-                max_retries=args.max_retries,
-                backoff_sec=args.backoff_sec,
-                wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
-                retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
-                context=f"{api_name} ann_date={date_value}",
-                api_name=api_name,
-                **params,
-            )
-        except ResponseTruncatedError:
-            print(f"[WARN] {api_name} {date_value} 达到单次上限，改为逐只基金补抓。")
-            pieces: list[pd.DataFrame] = []
-            for code in sorted(allowed_codes):
-                piece = call_tushare_api(
-                    api_func,
-                    limiter,
-                    max_retries=args.max_retries,
-                    backoff_sec=args.backoff_sec,
-                    wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
-                    retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
-                    context=f"{api_name} {code} ann_date={date_value}",
-                    api_name=api_name,
-                    ts_code=code,
-                    **params,
-                )
-                if not piece.empty:
-                    pieces.append(piece)
-            frame = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame(columns=fields)
-        if frame.empty:
-            return frame
-        frame = frame[frame["ts_code"].astype(str).isin(allowed_codes)].copy()
-        if frame.empty:
-            return frame
-        prepared = _prepare_fund_event_rows(
-            frame,
-            fields=fields,
-            source_api=api_name,
-            observation_column=observation_column,
+        if code:
+            params['ts_code'] = code
+        return invoke(params, f'{api_name} {code or "全市场"} ann_date={date_value}')
+
+    def fetch_history(code: str, start: str, end: str) -> pd.DataFrame:
+        if start == end and paged_holdings:
+            return fetch_pages(code, start)
+        return invoke(dict(ts_code=code, start_date=start, end_date=end, fields=fields_arg(fields)),
+                      f'{api_name} {code} 公告区间={start}—{end}')
+
+    def fetch_pages(code, date):
+        def page(offset, limit):
+            return invoke(dict(ts_code=code, ann_date=date, fields=fields_arg(fields), offset=offset, limit=limit),
+                          f'{api_name} {code} ann_date={date} offset={offset}', paged=True)
+        return session.announcement_pages(code, date, page, page_size=pagination.page_size,
+                                          max_pages=pagination.max_pages)
+
+    def invoke(params, context, *, paged=False):
+        def guarded_api(**kwargs):
+            session.check()  # Recheck after the outer shared limiter wait.
+            return api_func(**kwargs)
+        guarded_api.download_policy = policy
+        return call_tushare_api(
+            guarded_api, limiter, max_retries=1 if args.smoke else args.max_retries,
+            backoff_sec=args.backoff_sec, wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+            retry_jitter_sec=getattr(args, 'retry_jitter_sec', 0.25),
+            context=context, api_name=api_name, allow_capped_response=paged,
+            request_guard=session.before_request, interrupt_wait=session.pause, **params,
         )
+
+    def prepare(frame: pd.DataFrame) -> pd.DataFrame:
+        prepared = frame if 'available_at' in frame.columns else _prepare_fund_event_rows(
+            frame, fields=fields, source_api=api_name, observation_column=observation_column)
         return (
             prepared.drop_duplicates(subset=duplicate_subset, keep="last")
             .sort_values(sort_columns, kind="mergesort")
             .reset_index(drop=True)
         )
 
-    errors: list[str] = []
-    with ThreadPoolExecutor(max_workers=min(args.max_workers, max(len(pending), 1))) as executor:
-        pending_iter = iter(pending)
-        futures: dict[Any, str] = {}
-
-        def submit_next() -> None:
-            try:
-                date_value = next(pending_iter)
-            except StopIteration:
-                return
-            futures[executor.submit(fetch_one, date_value)] = date_value
-
-        for _ in range(min(len(pending), args.max_workers * 2)):
-            submit_next()
-        completed = 0
-        while futures:
-            done, _ = wait(futures, return_when=FIRST_COMPLETED)
-            for future in done:
-                date_value = futures.pop(future)
-                try:
-                    frame = future.result()
-                    if frame.empty:
-                        mark_empty_checkpoint(empty_by_date[date_value])
-                    else:
-                        save_dataframe(frame, part_by_date[date_value], quiet=True)
-                        empty_by_date[date_value].unlink(missing_ok=True)
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(date_value)
-                    print(f"[WARN] {api_name} {date_value} 失败: {exc}")
-                completed += 1
-                if completed % 100 == 0 or completed == len(pending):
-                    print(f"[INFO] {api_name} 日期进度 {completed}/{len(pending)}，异常 {len(errors)}。")
-                submit_next()
-    if errors:
-        raise RuntimeError(
-            f"{api_name} 有 {len(errors)} 个公告日请求异常；检查点已保留: {', '.join(errors[:10])}"
-        )
-    parts = [part_by_date[date_value] for date_value in dates if part_by_date[date_value].exists()]
+    workers = min(args.max_workers, len(session.inceptions) if by_fund_history else len(dates),
+                  policy.max_concurrency if isinstance(policy, DownloadPolicy) else args.max_workers)
+    guard = getattr(type(pro), 'request_guard', None)
+    with guard(pro, session.check) if guard else nullcontext():
+        if by_fund_history:
+            parts = session.run_history(fetch=fetch_history, prepare=prepare, save=save_dataframe,
+                                        cap_error=ResponseTruncatedError, max_workers=workers,
+                                        sort_columns=sort_columns)
+        else:
+            parts = session.run(fetch=fetch, prepare=prepare, save=save_dataframe,
+                                cap_error=ResponseTruncatedError, max_workers=workers)
+    # Only the fully validated collector may resolve a capped broad request.
+    # Ordinary errors remain tracked; dynamic Tushare methods are not callbacks.
+    acknowledge = getattr(type(pro), 'acknowledge_partition', None)
+    if acknowledge is not None:
+        requests = session.acknowledgements if by_fund_history else [{'ann_date': date} for date in dates]
+        for params in requests:
+            acknowledge(pro, api_name, **params, fields=fields_arg(fields))
+    print(f'[STAGE] {api_name} 合并与校验；下载分片完成不等于数据集已完成。')
     if not parts:
         if args.latest and out_path.exists():
             print(f"[INFO] {api_name} 本次没有新增记录，保留现有文件。")
@@ -4095,6 +4097,31 @@ def save_fund_dividend(
     )
 
 
+def _prepare_fund_adjustment_rows(frame, start, end, *, code=None):
+    """Validate provider identity/dates before serializing price factors."""
+    required = set(FUND_ADJUSTMENT_FIELDS)
+    if not required <= set(frame.columns) or frame[list(required)].isna().any().any():
+        raise ValueError('fund_adj 响应缺少代码、日期或复权因子。')
+    out = frame.copy()
+    dates = date_series(out['trade_date'])
+    codes = out['ts_code'].astype('string')
+    factors = pd.to_numeric(out['adj_factor'], errors='coerce')
+    if (not codes.str.fullmatch(r'\d{6}\.(SH|SZ)', na=False).all()
+            or (code is not None and not codes.eq(code).all())
+            or dates.isna().any() or not dates.between(pd.Timestamp(start), pd.Timestamp(end)).all()
+            or out.duplicated(['ts_code', 'trade_date']).any()
+            or not factors.between(0, float('inf'), inclusive='neither').all()):
+        raise ValueError('fund_adj 返回的基金身份、日期、唯一键或复权因子不合法。')
+    out['adj_factor'] = factors.astype('float64')
+    out['date'] = dates
+    out['observation_date'] = dates
+    out['available_at'] = dates
+    out['availability_status'] = 'date_only'
+    out['source_api'] = 'fund_adj'
+    out['ingested_at'] = _ingestion_timestamp()
+    return out
+
+
 def fetch_fund_adjustment(
     pro: Any,
     code: str,
@@ -4102,6 +4129,8 @@ def fetch_fund_adjustment(
     limiter: RateLimiter,
     args: argparse.Namespace,
 ) -> Optional[pd.DataFrame]:
+    if not re.fullmatch(r'\d{6}\.(SH|SZ)', code):
+        raise ValueError('fund_adj 仅请求当前 ETF 目录中的交易所代码，不请求场外 .OF 代码。')
     chunks = (
         [(args.end_date, args.end_date)]
         if args.smoke
@@ -4113,9 +4142,8 @@ def fetch_fund_adjustment(
             )
         )
     )
-    frames = _fetch_history_chunks_with_empty_retry(
-        chunks,
-        lambda start, end: call_tushare_api(
+    def fetch_chunk(start, end):
+        frame = call_tushare_api(
             pro.fund_adj,
             limiter,
             max_retries=args.max_retries,
@@ -4128,21 +4156,19 @@ def fetch_fund_adjustment(
             start_date=start,
             end_date=end,
             fields=fields_arg(FUND_ADJUSTMENT_FIELDS),
-        ),
+        )
+        return _prepare_fund_adjustment_rows(frame, start, end, code=code) if frame is not None and not frame.empty else frame
+
+    frames = _fetch_history_chunks_with_empty_retry(
+        chunks, fetch_chunk,
         args=args,
         context=f"fund_adj {code}",
     )
     if not frames:
         return None
     frame = pd.concat(frames, ignore_index=True)
-    frame["date"] = date_series(frame["trade_date"])
     frame["name"] = name
-    frame["observation_date"] = frame["date"]
-    frame["available_at"] = frame["date"]
-    frame["availability_status"] = "date_only"
-    frame["source_api"] = "fund_adj"
-    frame["ingested_at"] = _ingestion_timestamp()
-    return frame.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    return frame.sort_values("date").reset_index(drop=True)
 
 
 def save_fund_adjustment(
@@ -4150,16 +4176,18 @@ def save_fund_adjustment(
     output_dir: Path,
     limiter: RateLimiter,
     args: argparse.Namespace,
-    fund_info: Optional[pd.DataFrame] = None,
+    etf_info: Optional[pd.DataFrame] = None,
 ) -> None:
-    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    universe = load_or_create_etf_universe(pro, output_dir, limiter, args, etf_info)
+    if universe.empty or not universe['ts_code'].astype('string').str.fullmatch(r'\d{6}\.(SH|SZ)', na=False).all():
+        raise ValueError('ETF 复权因子需要有效的交易所 ETF 目录。')
     out_path = output_dir / "fund_adj_factor_df.parquet"
     if args.latest:
         has_baseline = bool(
             out_path.exists() and parquet.ParquetFile(out_path).metadata.num_rows
         )
         if has_baseline:
-            start = incremental_start_date(
+            start = getattr(args, 'automatic_start_date', None) or incremental_start_date(
                 output_dir,
                 latest_parquet_date(out_path, "date"),
                 lookback_days=args.incremental_lookback_days,
@@ -4188,16 +4216,10 @@ def save_fund_adjustment(
             universe=universe,
             limiter=limiter,
             args=args,
-            universe_label="场外公募基金",
+            universe_label="ETF",
         )
         if frames:
-            incoming = pd.concat(frames, ignore_index=True)
-            incoming["date"] = date_series(incoming["trade_date"])
-            incoming["observation_date"] = incoming["date"]
-            incoming["available_at"] = incoming["date"]
-            incoming["availability_status"] = "date_only"
-            incoming["source_api"] = "fund_adj"
-            incoming["ingested_at"] = _ingestion_timestamp()
+            incoming = _prepare_fund_adjustment_rows(pd.concat(frames, ignore_index=True), start, args.end_date)
             append_incremental_rows(
                 incoming,
                 out_path,
@@ -4209,7 +4231,7 @@ def save_fund_adjustment(
     save_full_history_with_checkpoints(
         universe=universe,
         out_path=out_path,
-        label="场外公募基金复权因子",
+        label="ETF 复权因子",
         fetcher=lambda code, name: fetch_fund_adjustment(pro, code, name, limiter, args),
         duplicate_subset=["ts_code", "date"],
         sort_cols=["ts_code", "date"],
@@ -4300,6 +4322,8 @@ def save_macro_money_credit(
 
 
 def _macro_range_start(args: argparse.Namespace, out_path: Path) -> str:
+    if getattr(args, 'automatic_start_date', None):
+        return args.automatic_start_date
     if args.smoke:
         return args.end_date
     if not args.latest or not out_path.exists():
@@ -4398,13 +4422,19 @@ def save_macro_release_calendar(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch platform data from Tushare only.")
     parser.add_argument("--output-dir", type=Path, default=None, help="输出目录；默认 data，smoke 默认临时目录。")
     parser.add_argument("--start-date", default=DEFAULT_START_DATE, help="开始日期 YYYYMMDD。")
     parser.add_argument("--end-date", default=TODAY, help="结束日期 YYYYMMDD。")
     parser.add_argument("--max-workers", type=int, default=16, help="Tushare 下载线程池并发数。")
     parser.add_argument("--max-retries", type=int, default=3, help="单次接口最大重试次数。")
+    parser.add_argument('--fund-event-max-requests', type=int, default=100_000,
+                        help='持仓/分红每次执行的请求预算（含重试/空响应复核），触及后保留检查点并停止。')
+    parser.add_argument('--fund-event-idle-timeout', type=int, default=180,
+                        help='持仓/分红没有响应或有效检查点的最长秒数。')
+    parser.add_argument('--fund-event-max-runtime', type=int, default=86_400,
+                        help='持仓/分红下载最大秒数，不能放宽接口配置时限。')
     parser.add_argument(
         "--empty-response-retries",
         type=int,
@@ -4518,7 +4548,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--macro-rates", action="store_true", help="更新 Shibor、LPR 与回购行情。")
     parser.add_argument("--macro-release-calendar", action="store_true", help="更新中国宏观数据发布日历。")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.output_dir_explicit = args.output_dir is not None
     args.start_date = normalize_yyyymmdd(args.start_date, default=DEFAULT_START_DATE)
     args.end_date = normalize_yyyymmdd(args.end_date, default=TODAY)
@@ -4534,6 +4564,9 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-latest-days 必须大于 0。")
     if args.max_workers < 1:
         parser.error("--max-workers 必须大于 0。")
+    for name in ('fund_event_max_requests', 'fund_event_idle_timeout', 'fund_event_max_runtime'):
+        if getattr(args, name) < 1:
+            parser.error(f'--{name.replace("_", "-")} 必须大于 0。')
     if args.empty_response_retries < 0:
         parser.error("--empty-response-retries 不能小于 0。")
     if args.incremental_batch_days < 1:
@@ -4700,7 +4733,7 @@ def _run_action_once(
     return result
 
 
-def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
+def _run_actions(args: argparse.Namespace, actions: list[str], *, client: Any = None) -> None:
     if args.latest:
         unsupported = set(actions) - {
             "etf_info",
@@ -4730,8 +4763,9 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
             raise ValueError(f"--latest 不支持这些任务: {', '.join(sorted(unsupported))}")
 
     ensure_output_dir(args.output_dir)
-    token = require_tushare_token()
-    pro = create_client(token, args)
+    # A registered ETL adapter supplies the same configured client while keeping
+    # credentials and outputs inside its controlled acquisition boundary.
+    pro = client if client is not None else create_client(require_tushare_token(), args)
     limiter = RateLimiter(args.max_calls_per_minute, min_interval_sec=args.min_call_interval_sec)
 
     print(f"[INFO] 输出目录: {args.output_dir.resolve()}")
@@ -4840,7 +4874,7 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
     if "fund_adjustment" in actions:
         run_action(
             "fund_adjustment",
-            lambda: save_fund_adjustment(pro, args.output_dir, limiter, args, fund_info),
+            lambda: save_fund_adjustment(pro, args.output_dir, limiter, args, etf_info),
         )
     if "fund_benchmark" in actions:
         run_action(

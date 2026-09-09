@@ -34,12 +34,14 @@ from cal_indicators.typed_numba_plan import (
 from compute_policy import NJIT_BACKEND, validate_execution_audit
 
 from .errors import ValidationError
+from .formula_source import canonical_formula_source, editable_formula_latex
 from .excel_export import (
     ExcelExportArtifact,
     SeriesExcelTargetEvidence,
     build_series_indicator_excel_workbook,
 )
 from .presentation import metric_presentation
+from .series_parameters import parameter_hash
 from .repository import IndicatorRepository
 from .runtime_context import (
     RUNTIME_SCALAR_CONTEXT_NAMES,
@@ -197,7 +199,9 @@ def _constant_series_node(
     return constant
 
 
-def _validate_fixed_series_configuration(plan: TypedSeriesBundlePlan) -> None:
+def _validate_fixed_series_configuration(
+    plan: TypedSeriesBundlePlan, parameter_ids: set[str] | None = None,
+) -> None:
     """Reject data-dependent algorithm configuration before NJIT compilation."""
 
     nodes = {int(node.node_id): node for node in plan.nodes}
@@ -209,6 +213,9 @@ def _validate_fixed_series_configuration(plan: TypedSeriesBundlePlan) -> None:
             continue
         for parameter_name, input_node_id in node.arguments:
             if parameter_name not in fixed_names:
+                continue
+            input_node = nodes[int(input_node_id)]
+            if input_node.kind == "variable" and str(input_node.label) in (parameter_ids or set()):
                 continue
             if _constant_series_node(int(input_node_id), nodes, memo):
                 continue
@@ -246,6 +253,7 @@ def _definition_key(definition: Mapping[str, Any]) -> str:
             for item in definition.get("series_outputs") or []
         ],
         "parameter_schema": definition.get("parameter_schema"),
+        "parameter_contract_version": definition.get("parameter_contract_version"),
         "axis_anchor": definition.get("axis_anchor"),
         # History policy and output presentation are compiler-derived metadata;
         # neither changes the numerical DAG or its fixed NJIT signature.
@@ -325,12 +333,15 @@ def _compile_definition(
     }
     try:
         plan = compose_typed_series_bundle(
-            series_expressions(definition),
+            {
+                channel_id: canonical_formula_source(expression)
+                for channel_id, expression in series_expressions(definition).items()
+            },
             variable_types=context_types,
             dsl_version=str(definition["dsl_version"]),
             operator_registry_version=str(definition["operator_registry_version"]),
         )
-        _validate_fixed_series_configuration(plan)
+        _validate_fixed_series_configuration(plan, set(parameter_types))
         compiled = compile_numba_series_plan(plan)
     except (NumbaPlanCompileError, TypedDslError) as exc:
         diagnostics = [
@@ -951,9 +962,16 @@ def _positive_integer_argument(
     return int(value)
 
 
-def _infer_series_history(plan: TypedSeriesBundlePlan) -> dict[str, Any]:
+def _parameter_constants(plan: TypedSeriesBundlePlan, parameters: Mapping[str, float]) -> dict[int, float | None]:
+    return {int(node.node_id): float(parameters[str(node.label)]) for node in plan.nodes
+            if node.kind == "variable" and str(node.label) in parameters}
+
+
+def _infer_series_history(
+    plan: TypedSeriesBundlePlan, parameters: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
     nodes = {int(node.node_id): node for node in plan.nodes}
-    constants: dict[int, float | None] = {}
+    constants = _parameter_constants(plan, parameters or {})
     memo: dict[int, tuple[bool, int, int]] = {}
     full_history_operators = {
         "recursive_smooth",
@@ -1014,11 +1032,12 @@ def _infer_series_history(plan: TypedSeriesBundlePlan) -> dict[str, Any]:
 
 def _infer_series_value_ranges(
     plan: TypedSeriesBundlePlan,
+    parameters: Mapping[str, float] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Conservatively prove simple output bounds from the typed DAG."""
 
     nodes = {int(node.node_id): node for node in plan.nodes}
-    constants: dict[int, float | None] = {}
+    constants = _parameter_constants(plan, parameters or {})
     memo: dict[int, tuple[float | None, float | None, bool]] = {}
 
     def visit(node_id: int) -> tuple[float | None, float | None, bool]:
@@ -1154,12 +1173,14 @@ def _ensure_series_compiled_contract(
     definition: Mapping[str, Any],
     plan: TypedSeriesBundlePlan,
     contract: Mapping[str, Any],
+    parameters: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
+    effective = parameters if parameters is not None else {str(item["id"]): item["default"] for item in definition.get("parameter_schema") or []}
     output = dict(contract)
-    output.update(_infer_series_history(plan))
+    output.update(_infer_series_history(plan, effective))
     catalog = {str(item["id"]): item for item in series_output_measure_catalog()}
     metadata = {str(item["id"]): item for item in definition.get("series_outputs") or []}
-    inferred_ranges = _infer_series_value_ranges(plan)
+    inferred_ranges = _infer_series_value_ranges(plan, effective)
     measures: dict[str, dict[str, Any]] = {}
     for channel_id, value_type in plan.output_types.items():
         item = metadata[channel_id]
@@ -1276,6 +1297,7 @@ def _annotated_series_graph(
             "label": str(channel_metadata.get("label") or channel_id),
             "expression": expression,
             "latex": expression,
+            "editable_latex": editable_formula_latex(python_expression),
             "display_latex": render_python_expression_latex(
                 python_expression,
                 symbols,
@@ -1481,6 +1503,7 @@ def _result_base(
         "target": dict(target),
         "period": period,
         "parameters": dict(parameters),
+        "parameter_hash": parameter_hash(parameters),
         "axis_anchor": definition.get("axis_anchor"),
         "history_policy": definition.get("history_policy"),
         "lookback_observations": int(
@@ -1524,8 +1547,10 @@ def _series_cache_key(
     as_of: str | None,
     source: ProductChartSeries,
     data_generation: str,
+    max_points: int,
 ) -> str:
     payload = {
+        "max_points": max_points,
         "definition": _definition_contract_key(definition),
         "id": definition.get("id"),
         "revision": definition.get("revision"),
@@ -1601,16 +1626,13 @@ def _resolve_instance(
             **identity,
         }
         plan, compiled = _get_warmed_definition(definition)
-    supplied_parameters = dict(instance.get("parameters") or {})
-    if supplied_parameters:
-        raise ValidationError(
-            "SERIES_PARAMETERS_FIXED_IN_DEFINITION",
-            "时序指标的窗口、倍数和平滑周期已经锁定在指标公式中，运行时不能覆盖。请复制指标并修改公式常量。",
-            field="parameters",
-        )
-    # Historical parameterised revisions remain reproducible at their saved
-    # defaults, but callers can no longer turn one revision into many formulas.
-    parameters = normalize_series_parameters(definition, {})
+    parameters = normalize_series_parameters(definition, instance.get("parameters"))
+    # Instance-specific history/presentation never mutates the stored revision
+    # or the shared prewarmed numerical plan.
+    contract = _ensure_series_compiled_contract(
+        definition, plan, _compiled_contract(definition, plan, compiled), parameters,
+    )
+    apply_series_compiled_contract(definition, contract)
     return definition, plan, compiled, parameters
 
 
@@ -1688,7 +1710,10 @@ class TimeSeriesIndicatorService:
         period: str,
         as_of: str | None = None,
         max_points: int = MAX_SERIES_DISPLAY_POINTS,
+        _snapshot_only: bool = False,
     ) -> dict[str, Any]:
+        # Internal snapshot jobs reduce the full requested window before chart
+        # truncation. This option is deliberately absent from public API models.
         normalized_period = str(period or "").strip().upper()
         if not indicator_instances or len(indicator_instances) > MAX_SERIES_INSTANCES:
             raise ValidationError(
@@ -1807,7 +1832,10 @@ class TimeSeriesIndicatorService:
                 as_of,
                 source,
                 market_data_generation(self.market_data_dir),
+                int(max_points),
             )
+            if _snapshot_only:
+                key = f"{key}:snapshot-last-finite-v1"
             cached = self.cache.get(key) if self.cache is not None else None
             if cached is not None:
                 results.append(cached)
@@ -1824,7 +1852,7 @@ class TimeSeriesIndicatorService:
                     as_of,
                     history_policy=str(definition["history_policy"]),  # type: ignore[arg-type]
                     lookback_observations=source_lookback,
-                    max_display_points=int(max_points),
+                    max_display_points=max(1, len(source.frame)) if _snapshot_only else int(max_points),
                 )
                 context = _build_series_runtime_context(
                     definition,
@@ -1841,6 +1869,7 @@ class TimeSeriesIndicatorService:
                     for item in definition.get("series_outputs") or []
                 }
                 channels: list[dict[str, Any]] = []
+                snapshot_channels: list[dict[str, Any]] = []
                 has_finite = False
                 for channel_name, values in zip(compiled.channel_names, outputs):
                     array = np.asarray(values, dtype=np.float64)
@@ -1850,6 +1879,18 @@ class TimeSeriesIndicatorService:
                             "时序 NJIT 输出长度与日期轴不一致。",
                             field=f"series_outputs.{channel_name}",
                         )
+                    if _snapshot_only:
+                        from .snapshot_execution import last_finite_snapshot_value
+                        value, position = last_finite_snapshot_value(
+                            np.ascontiguousarray(array), window.display_start, window.display_end,
+                        )
+                        finite = position >= 0
+                        has_finite = has_finite or finite
+                        snapshot_channels.append({
+                            "id": channel_name, "value": float(value) if finite else None,
+                            "value_date": window.compute_frame.iloc[position]["date"].strftime("%Y-%m-%d") if finite else None,
+                        })
+                        continue
                     visible = array[window.display_start : window.display_end]
                     serialized: list[float | None] = []
                     for value in visible:
@@ -1884,7 +1925,7 @@ class TimeSeriesIndicatorService:
                             "values": serialized,
                         }
                     )
-                dates = [
+                dates = [] if _snapshot_only else [
                     value.strftime("%Y-%m-%d")
                     for value in window.display_frame["date"]
                 ]
@@ -1911,6 +1952,7 @@ class TimeSeriesIndicatorService:
                     },
                     "dates": dates,
                     "channels": channels,
+                    **({"snapshot_channels": snapshot_channels} if _snapshot_only else {}),
                     "data_lineage": copy.deepcopy(source.lineage),
                     "source_fingerprints": dict(source.fingerprints),
                     "execution": compiled.metadata(),

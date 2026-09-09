@@ -3,7 +3,7 @@ import {
   assertCompliantNumericalExecution,
 } from '../utils/fixedNjitExecution'
 
-export type ResearchSeriesKind = 'index' | 'macro' | 'indicator' | 'upload' | string
+export type ResearchSeriesKind = 'index' | 'etf' | 'fund' | 'macro' | 'indicator' | 'upload' | string
 
 export interface ResearchInlineRow {
   date?: string
@@ -28,7 +28,7 @@ export interface ResearchSeriesCatalogItem {
   source_api?: string
   dataset?: string
   default_field?: string
-  fields?: Array<string | { id?: string; name?: string; label?: string; unit?: string; dtype?: string; nullable?: boolean }>
+  fields?: Array<string | { id?: string; name?: string; label?: string; unit?: string; dtype?: string; nullable?: boolean; available?: boolean; unavailable_reason?: string | null; binding_parameters?: Record<string, unknown> }>
   coverage?: {
     start_date?: string | null
     end_date?: string | null
@@ -49,6 +49,11 @@ export interface ResearchSeriesCatalogItem {
   profile_operations?: string[]
   regime_node_type?: string
   binding_parameters?: Record<string, unknown>
+  indicator_version?: { indicator_id: string; revision: number; dsl_version?: string }
+  binding_supported?: boolean
+  binding_reason?: string | null
+  product_kinds?: string[]
+  periods?: string[]
   capability?: {
     available?: boolean
     accepted_formats?: string[]
@@ -222,6 +227,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ResearchSeriesApiError(response.status, message)
   }
   return response.json() as Promise<T>
+}
+
+export interface ResearchImportFile {
+  columns: string[]
+  rows: Record<string, string | number | null>[]
+  sheets: string[]
+  sheet: string | null
+}
+
+export function parseResearchFile(file: File, sheet?: string, signal?: AbortSignal) {
+  if (file.size > 8 * 1024 * 1024) return Promise.reject(new Error('文件大小不能超过 8 MB。'))
+  const query = new URLSearchParams({ filename: file.name, ...(sheet ? { sheet } : {}) })
+  return request<ResearchImportFile>(`/api/research-series/parse-file?${query}`, {
+    method: 'POST', body: file, signal, headers: { 'Content-Type': 'application/octet-stream' },
+  })
+}
+
+export function listUploadedResearchSeries(options: { query?: string; offset?: number; limit?: number }, signal?: AbortSignal) {
+  return request<ResearchSeriesCatalogResponse>(`/api/research-series/uploads?${queryString({ q: options.query, offset: options.offset, limit: options.limit })}`, { signal })
+}
+
+export function searchResearchProducts(kind: string, query: string, page: number, signal?: AbortSignal) {
+  return request<{ items: Array<{ ts_code: string; name: string }>; total: number }>(
+    `/api/instruments/products?${queryString({ kind, q: query, page, page_size: 50 })}`, { signal },
+  )
 }
 
 function queryString(values: Record<string, string | number | undefined>) {

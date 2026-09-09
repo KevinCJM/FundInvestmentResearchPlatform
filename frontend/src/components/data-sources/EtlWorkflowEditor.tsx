@@ -1,49 +1,100 @@
+import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { SourceCatalog } from '../../services/dataSources'
-import { blankStep, stepLabels, type EtlDefinition, type EtlKind, type EtlParameter } from '../../services/etl'
-import { buttonClass, inputClass, JsonField } from './EditorFields'
-import EtlDownloadFields from './EtlDownloadFields'
+import { blankStep, stepLabels, type EtlDefinition, type EtlKind } from '../../services/etl'
+import GraphCanvas from '../computation-graph/GraphCanvas'
+import { graphOrder, layoutGraph } from '../computation-graph/graph'
+import type { CanvasConnection, CanvasNodeChange } from '../computation-graph/types'
+import { asGraph, connectEtl, connectionProblem, duplicateEtlNodes, etlEdges, etlPositions, removeEtlEdges, removeEtlNodes } from './etlGraphAdapter'
+import { buttonClass, inputClass } from './EditorFields'
+import EtlParameterDefinitions from './EtlParameterDefinitions'
+import EtlNodeInspector from './EtlNodeInspector'
 
-export default function EtlWorkflowEditor({ definition, catalog, onChange }: { definition: EtlDefinition; catalog: SourceCatalog; onChange: (value: EtlDefinition) => void }) {
-  const patch = (index: number, value: EtlDefinition['steps'][number]) => onChange({ ...definition, steps: definition.steps.map((s, i) => i === index ? value : s) })
-  const move = (index: number, offset: number) => { const next = [...definition.steps]; [next[index], next[index + offset]] = [next[index + offset], next[index]]; onChange({ ...definition, steps: next }) }
-  const add = (kind: EtlKind) => {
-    const step = blankStep(kind)
-    const expected = { map: 'download', resolve: 'map', snapshot: 'resolve' }[kind as 'map' | 'resolve' | 'snapshot']
-    const prior = definition.steps.filter(s => s.kind === expected)
-    step.inputs = kind === 'snapshot' ? prior.map(s => s.id) : prior.slice(-1).map(s => s.id)
-    if (kind === 'download') step.source_id = catalog.sources[0]?.config.id
-    if (kind === 'resolve') {
-      const input = prior[prior.length - 1]
-      const download = definition.steps.find(s => s.id === input?.inputs[0])
-      step.table_id = catalog.interfaces.find(i => i.config.id === download?.interface_id)?.config.mappings.find(m => m.enabled)?.target_table
-    }
-    onChange({ ...definition, steps: [...definition.steps, step] })
+const testIds = { canvas: 'etl-graph-canvas', mobile: 'etl-graph-mobile-list', flow: 'etl-graph-desktop-flow', minimap: 'etl-canvas-minimap' }
+const portColor = (type?: string) => type === 'control' ? '#94a3b8' : '#4f46e5'
+
+export default function EtlWorkflowEditor({ definition, catalog, onChange, readOnly = false, canUndo = false, canRedo = false, onUndo, onRedo }: {
+  definition: EtlDefinition; catalog: SourceCatalog; onChange: (value: EtlDefinition) => void
+  readOnly?: boolean; canUndo?: boolean; canRedo?: boolean; onUndo?: () => void; onRedo?: () => void
+}) {
+  const graph = useMemo(() => asGraph(definition), [definition])
+  const current = useRef(graph); current.current = graph
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(!definition.steps.length)
+  const [query, setQuery] = useState('')
+  const [error, setError] = useState('')
+  const [viewKey, setViewKey] = useState(0)
+  const locked = readOnly || !catalog.editing_enabled
+  const schemas = catalog.graph_schemas ?? []
+  const edges = useMemo(() => etlEdges(graph), [graph])
+  const positions = useMemo(() => etlPositions(graph), [graph])
+  const order = useMemo(() => { try { return graphOrder(graph.steps.map(s => s.id), edges) } catch { return graph.steps.map(s => s.id) } }, [graph, edges])
+  const selected = graph.steps.find(s => s.id === selectedId)
+  const nodes = useMemo(() => graph.steps.map(step => {
+    const configured = step.kind === 'download' ? Boolean(step.interface_id && catalog.interfaces.find(r => r.config.id === step.interface_id)?.validation?.ready)
+      : step.kind === 'task' ? Boolean(step.task_id) : step.kind === 'resolve' ? Boolean(step.table_id && step.inputs.length) : Boolean(step.inputs.length)
+    return { id: step.id, type: step.kind, label: step.name, inputs: Object.fromEntries(step.inputs.map(id => [id, id])), position: positions[step.id], ready: configured, statusLabel: `执行 ${order.indexOf(step.id) + 1} · ${configured ? '已配置，待校验' : '待完善配置'}` }
+  }), [graph, catalog, positions, order])
+  const commit = (next: EtlDefinition) => {
+    if (locked) return
+    current.current = next; setError(''); onChange(next)
   }
-  return <section className="space-y-4" aria-label="ETL 流程编辑器">
-    <div className="grid gap-3 sm:grid-cols-[1fr_200px]"><label className="text-sm font-semibold">流程名称<input className={inputClass} value={definition.name} required onChange={e => onChange({ ...definition, name: e.target.value })} /></label><label className="text-sm font-semibold">最长运行时间（秒）<input className={inputClass} type="number" min={10} max={86400} value={definition.max_runtime_seconds} onChange={e => onChange({ ...definition, max_runtime_seconds: Number(e.target.value) })} /></label></div>
-    <label className="block text-sm font-semibold">流程说明<textarea className={inputClass} value={definition.description} onChange={event => onChange({ ...definition, description: event.target.value })} /></label>
-    <p className="text-sm leading-6 text-slate-600">流程定义处理顺序，本次运行决定全量或增量。基础信息可固定每次全量刷新；其他下载默认跟随运行模式。移动步骤后请重新校验依赖。</p>
-    <details className="rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-xs font-semibold">高级：运行参数定义</summary><JsonField label="运行参数定义 JSON" objectOnly={false} value={definition.parameters ?? []} onChange={value => {
-      if (!Array.isArray(value) || value.some(item => !item || typeof item !== 'object' || typeof item.id !== 'string' || typeof item.label !== 'string' || !['text', 'date'].includes(item.data_type))) throw new Error('请提供含 id、label、data_type 的参数数组。')
-      onChange({ ...definition, parameters: value as EtlParameter[] })
-    }} /></details>
-    {definition.steps.map((step, index) => {
-      const expected = { map: 'download', resolve: 'map', snapshot: 'resolve' }[step.kind as 'map' | 'resolve' | 'snapshot']
-      const candidates = definition.steps.slice(0, index).filter(s => s.kind === expected)
-      const unresolved = step.inputs.filter(id => !candidates.some(s => s.id === id))
-      return <article key={step.id} aria-label={`步骤 ${index + 1} ${step.name}`} className="min-w-0 space-y-3 rounded-xl border border-slate-200 bg-white p-4">
-        <div className="flex flex-wrap items-center gap-2"><h3 className="mr-auto text-sm font-bold">{index + 1}. {stepLabels[step.kind]}</h3><button type="button" className={buttonClass} aria-label={`步骤 ${index + 1} 上移`} disabled={index === 0} onClick={() => move(index, -1)}>上移</button><button type="button" className={buttonClass} aria-label={`步骤 ${index + 1} 下移`} disabled={index === definition.steps.length - 1} onClick={() => move(index, 1)}>下移</button><button type="button" className={buttonClass} aria-label={`删除步骤 ${index + 1}`} onClick={() => { if (!definition.steps.some(s => s.inputs.includes(step.id)) || window.confirm('后续步骤引用了此步骤。删除后需要重新选择输入，继续？')) onChange({ ...definition, steps: definition.steps.filter(s => s.id !== step.id) }) }}>删除</button></div>
-        <label className="block text-xs font-semibold">步骤名称<input className={inputClass} value={step.name} onChange={e => patch(index, { ...step, name: e.target.value })} /></label>
-        {step.kind === 'download' ? <EtlDownloadFields step={step} catalog={catalog} onChange={value => patch(index, value)} /> : <fieldset className="space-y-2"><legend className="text-xs font-semibold">使用哪些前置结果</legend>{candidates.map(s => <label key={s.id} className="flex min-h-10 items-center gap-2 rounded-lg bg-slate-50 px-3 text-sm"><input type={step.kind === 'map' ? 'radio' : 'checkbox'} name={`input-${step.id}`} checked={step.inputs.includes(s.id)} onChange={e => patch(index, { ...step, inputs: step.kind === 'map' ? [s.id] : e.target.checked ? [...step.inputs, s.id] : step.inputs.filter(id => id !== s.id) })} />{s.name}</label>)}{!candidates.length || unresolved.length ? <p role="alert" className="text-xs text-rose-700">缺少有效前置结果。先添加对应步骤，或调整顺序后重新选择输入。</p> : null}</fieldset>}
-        {step.kind === 'resolve' ? <>
-          <label className="block text-xs font-semibold">取值业务表<select className={inputClass} value={step.table_id ?? ''} onChange={e => patch(index, { ...step, table_id: e.target.value })}><option value="">请选择</option>{catalog.targets.categories.map(c => <optgroup key={c.category_id} label={c.label}>{catalog.targets.tables.filter(t => t.source_mappable && t.category_id === c.category_id).map(t => <option key={t.table_id} value={t.table_id}>{t.label}</option>)}</optgroup>)}</select></label>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={step.include_history} onChange={e => patch(index, { ...step, include_history: e.target.checked })} />包含启动时锁定的历史候选</label>
-          {step.include_history ? <label className="block text-xs font-semibold">历史数据范围<select className={inputClass} value={step.history_scope ?? 'table'} onChange={event => patch(index, { ...step, history_scope: event.target.value as 'table' | 'matching_inputs' })}><option value="table">本表全部历史候选</option><option value="matching_inputs">仅同接口、同产品及同口径历史</option></select></label> : null}
-          <details><summary className="cursor-pointer text-xs font-semibold">取值日期范围与历史时点</summary><div className="mt-3 grid gap-3 sm:grid-cols-3">{(['start_date', 'end_date', 'as_of'] as const).map(key => <label key={key} className="text-xs">{({ start_date: '取值开始日期', end_date: '取值结束日期', as_of: '历史可得截止时点' })[key]}<input className={inputClass} type={key === 'as_of' ? 'text' : 'date'} value={step[key] ?? ''} placeholder={key === 'as_of' ? '带时区的 ISO 时间，可留空' : undefined} onChange={e => patch(index, { ...step, [key]: e.target.value || null })} /></label>)}</div></details>
-        </> : null}
-        {step.kind === 'snapshot' ? <p className="rounded-lg bg-indigo-50 p-3 text-xs leading-6 text-indigo-900">需要选择已取值的产品信息和基金净值；日行情、交易日历可选。使用本次输入和锁定指标配置计算，不读取旧活跃价格，不自动发布。</p> : null}
-      </article>
-    })}
-    <div className="flex flex-wrap gap-2">{(Object.keys(stepLabels) as EtlKind[]).map(kind => <button type="button" key={kind} className={buttonClass} disabled={definition.steps.length >= 40} onClick={() => add(kind)}>＋{stepLabels[kind]}</button>)}</div>
+  const action = (operation: () => EtlDefinition) => { if (!locked) { try { commit(operation()) } catch (reason) { setError(reason instanceof Error ? reason.message : '无法修改计算图。') } } }
+  const select = (id: string) => { setSelectedId(id); setInspectorOpen(true) }
+  const changes = (items: CanvasNodeChange[]) => {
+    const selection = items.filter((item): item is Extract<CanvasNodeChange, { type: 'select' }> => item.type === 'select')
+    if (selection.length) select(selection[selection.length - 1].id)
+    if (locked) return
+    const removed = items.filter(item => item.type === 'remove').map(item => item.id)
+    const moved = items.filter((item): item is Extract<CanvasNodeChange, { type: 'position' }> => item.type === 'position')
+    if (!removed.length && !moved.length) return
+    let next = removed.length ? removeEtlNodes(current.current, removed) : current.current
+    if (moved.length) next = { ...next, canvas: { version: 1, ...next.canvas, positions: { ...etlPositions(next), ...Object.fromEntries(moved.filter(item => next.steps.some(s => s.id === item.id)).map(item => [item.id, item.position])) } } }
+    commit(next)
+  }
+  const connect = (edge: CanvasConnection) => action(() => connectEtl(current.current, edge, schemas))
+  const add = (kind: EtlKind) => {
+    if (locked || graph.steps.length >= 40) return
+    const step = blankStep(kind)
+    if (kind === 'download') step.source_id = catalog.sources[0]?.config.id
+    const inputType = schemas.find(s => s.id === kind)?.inputs.find(p => p.id === 'data')?.value_type
+    const selectedOutput = schemas.find(s => s.id === selected?.kind)?.outputs.find(p => p.id === 'data')?.value_type
+    if (selected && inputType && selectedOutput === inputType) step.inputs = [selected.id]
+    if (kind === 'resolve' && selected?.kind === 'map') {
+      const upstream = graph.steps.find(s => s.id === selected.inputs[0])
+      step.table_id = catalog.interfaces.find(r => r.config.id === upstream?.interface_id)?.config.mappings.find(m => m.enabled)?.target_table
+    }
+    const origin = selected ? positions[selected.id] : { x: 0, y: 0 }
+    commit({ ...graph, steps: [...graph.steps, step], canvas: { version: 1, ...graph.canvas, positions: { ...positions, [step.id]: { x: origin.x + (selected ? 300 : 0), y: origin.y + (selected ? 0 : graph.steps.length * 170) } } } })
+    select(step.id)
+  }
+  const keyboard = (event: KeyboardEvent<HTMLElement>) => {
+    if (locked || !(event.metaKey || event.ctrlKey) || (event.target as HTMLElement).closest('input,textarea,select,[contenteditable="true"]')) return
+    if (event.key.toLowerCase() === 'z') { event.preventDefault(); if (event.shiftKey) onRedo?.(); else onUndo?.() }
+    if (event.key.toLowerCase() === 'y') { event.preventDefault(); onRedo?.() }
+  }
+  return <section className="min-w-0 space-y-4" aria-label="ETL 流程编辑器" onKeyDown={keyboard}>
+    <div className="flex flex-wrap gap-2"><button type="button" className={buttonClass} aria-expanded={libraryOpen} onClick={() => setLibraryOpen(v => !v)}>节点库</button><button type="button" className={buttonClass} disabled={locked || !canUndo} onClick={onUndo}>撤销</button><button type="button" className={buttonClass} disabled={locked || !canRedo} onClick={onRedo}>重做</button><button type="button" className={buttonClass} disabled={locked || !graph.steps.length} onClick={() => { commit({ ...graph, canvas: { version: 1, positions: layoutGraph(graph.steps.map(s => s.id), edges) } }); setViewKey(v => v + 1) }}>自动布局</button>{selected && !inspectorOpen ? <button type="button" className={buttonClass} onClick={() => setInspectorOpen(true)}>打开节点设置</button> : null}</div>
+    {libraryOpen ? <section aria-label="ETL 节点库" className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3"><label className="text-xs">查找节点类型<input aria-label="查找节点类型" className={inputClass} value={query} onChange={e => setQuery(e.target.value)} placeholder="下载、映射、取值、快照、数据集" /></label><div className="flex flex-wrap gap-2">{schemas.filter(s => `${s.label} ${s.category_label}`.includes(query)).map(schema => <button type="button" className={buttonClass} key={schema.id} disabled={locked || graph.steps.length >= 40} onClick={() => add(schema.id as EtlKind)}>＋{schema.label}</button>)}</div>{!schemas.length ? <p role="alert" className="text-xs text-amber-900">节点合同未加载，请更新后端并重新加载页面。</p> : null}<p className="text-xs text-slate-500">先选择节点，再添加兼容节点时自动连接。其他依赖可拖线或在检查器中选择。</p></section> : null}
+    {error ? <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p> : null}
+    <p className="text-xs leading-5 text-slate-500">实线传递数据，虚线控制先后。拖动位置不改变执行顺序；同层节点按原顺序执行，当前不并行下载。旧流程自动呈现为图，保存后记录布局。</p>
+    <div className="relative min-w-0">
+      <GraphCanvas key={viewKey} nodes={nodes} edges={edges} schemas={schemas} selectedNodeId={selected?.id ?? null}
+        ariaLabel="ETL 可编辑计算图画布" testIds={testIds} readOnly={locked} portColor={portColor} minZoom={0.05}
+        flowClassName="hidden h-[620px] min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white md:block"
+        description="拖动端口连接依赖；点击节点打开设置。运行模式与参数在上方选择。"
+        onNodesChange={changes} onConnect={connect} validateConnection={edge => !connectionProblem(current.current, edge, schemas)}
+        onDuplicate={ids => action(() => duplicateEtlNodes(current.current, ids))}
+        onEdgesRemove={ids => action(() => removeEtlEdges(current.current, ids))}
+        viewport={graph.canvas?.viewport ?? undefined} onViewportCommit={viewport => { if (!locked) commit({ ...current.current, canvas: { version: 1, ...current.current.canvas, positions: etlPositions(current.current), viewport } }) }} />
+      {selected && inspectorOpen ? <div className="mt-3 max-h-[640px] overflow-y-auto xl:absolute xl:right-5 xl:top-20 xl:mt-0 xl:w-[360px]">
+        <EtlNodeInspector step={selected} definition={graph} catalog={catalog} schemas={schemas} readOnly={locked}
+          onPatch={step => action(() => ({ ...current.current, steps: current.current.steps.map(s => s.id === step.id ? { ...s, ...step, after: step.after ?? s.after } : s) }))}
+          onConnect={connect} onDisconnect={id => action(() => removeEtlEdges(current.current, [id]))}
+          onRemove={() => action(() => removeEtlNodes(current.current, [selected.id]))} onClose={() => setInspectorOpen(false)} />
+      </div> : null}
+    </div>
+    <details className="rounded-xl border border-slate-200 p-3"><summary className="cursor-pointer text-sm font-semibold">执行顺序 · {order.length} 个节点</summary><div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{order.map((id, i) => <button type="button" className={`${buttonClass} text-left`} key={id} onClick={() => select(id)}>{i + 1}. {graph.steps.find(s => s.id === id)?.name}</button>)}</div></details>
+    <details className="rounded-xl border border-slate-200 p-3"><summary className="cursor-pointer text-sm font-semibold">流程名称、说明与运行参数</summary><fieldset disabled={locked} className="mt-3 space-y-3"><div className="grid gap-3 sm:grid-cols-[1fr_200px]"><label className="text-sm font-semibold">流程名称<input className={inputClass} value={definition.name} required onChange={e => commit({ ...graph, name: e.target.value })} /></label><label className="text-sm font-semibold">最长运行时间（秒）<input className={inputClass} type="number" min={10} max={86400} value={definition.max_runtime_seconds} onChange={e => commit({ ...graph, max_runtime_seconds: Number(e.target.value) })} /></label></div><label className="block text-sm">流程说明<textarea className={inputClass} value={definition.description} onChange={e => commit({ ...graph, description: e.target.value })} /></label><EtlParameterDefinitions value={definition.parameters ?? []} onChange={parameters => commit({ ...graph, parameters })} /></fieldset></details>
   </section>
 }

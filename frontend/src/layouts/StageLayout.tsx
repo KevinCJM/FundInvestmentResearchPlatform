@@ -1,19 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
-import { getStage, type StageId } from '../app/processRegistry'
+import { type StageId } from '../app/processRegistry'
+import { useLocalizedStage } from '../i18n/navigation'
+import { useI18n } from '../i18n/runtime'
 import ActualPortfolioSelector from '../components/ActualPortfolioSelector'
+import FactorEvidencePanel from '../components/FactorEvidencePanel'
+import type { ContextType } from '../services/factorResearch'
 
 export default function StageLayout({ stageId }: { stageId: StageId }) {
-  const stage = getStage(stageId)
+  const { s } = useI18n()
+  const stage = useLocalizedStage(stageId)
   const location = useLocation()
   const [isStageNavOpen, setIsStageNavOpen] = useState(false)
   const stageNavRef = useRef<HTMLDivElement>(null)
   const stageNavTriggerRef = useRef<HTMLButtonElement>(null)
   const previousPathRef = useRef(location.pathname)
   const navigationOptions = [
-    { label: `${stage.label}总览`, path: stage.path },
+    { label: s('navigation.overview', { stage: stage.label }), path: stage.path },
     ...stage.nodes.map((node) => ({ label: node.label, path: node.path })),
-    ...(stage.tools ?? []).map((tool) => ({ label: `工具 · ${tool.label}`, path: tool.path })),
+    ...(stage.tools ?? []).map((tool) => ({ label: s('navigation.tool', { name: tool.label }), path: tool.path })),
   ]
   const selectedOption = navigationOptions.find((item) => location.pathname === item.path)
     ?? [...navigationOptions]
@@ -22,6 +27,12 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
     ?? navigationOptions[0]
   const isCrossPortfolioWorkspace = location.pathname === '/investment-execution/trade-allocation' || location.pathname === '/fund-accounting/account-statements'
   const isFullBleedWorkspace = location.pathname.startsWith('/settings/scenario-algorithms/workbench')
+  const factorContext: ContextType | undefined = stage.id === 'product-research'
+    ? (location.pathname.startsWith('/product-research/products/') ? undefined : 'product_research')
+    : stage.id === 'pre-investment' ? (location.pathname.includes('/taa') ? 'taa' : location.pathname.includes('/saa') ? 'saa' : 'allocation')
+    : stage.id === 'portfolio-center' ? 'portfolio'
+    : stage.id === 'post-investment' ? 'post_investment'
+    : location.pathname === '/settings/scenario-algorithms' ? 'regime' : undefined
 
   useEffect(() => {
     if (previousPathRef.current !== location.pathname) {
@@ -83,7 +94,7 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
         type="button"
         aria-expanded={isStageNavOpen}
         aria-controls="stage-subpage-navigation"
-        aria-label={`${stage.label}阶段导航`}
+        aria-label={s('navigation.stageAria', { stage: stage.label })}
         onClick={() => setIsStageNavOpen((current) => !current)}
         className="inline-flex min-h-11 w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-left shadow-sm transition hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 sm:w-auto sm:max-w-[280px]"
       >
@@ -93,7 +104,7 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
           </svg>
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">阶段导航</span>
+          <span className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{s('navigation.stage')}</span>
           <span className="block truncate text-sm font-semibold text-slate-800">{selectedOption.label}</span>
         </span>
         <svg aria-hidden="true" viewBox="0 0 20 20" fill="currentColor" className={`ml-1 h-4 w-4 shrink-0 text-slate-400 transition-transform motion-reduce:transition-none ${isStageNavOpen ? 'rotate-180' : ''}`}>
@@ -102,10 +113,10 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
       </button>
 
       {isStageNavOpen ? (
-        <aside id="stage-subpage-navigation" className="absolute left-0 top-full z-40 mt-2 max-h-[min(70vh,720px)] w-full min-w-0 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-xl sm:left-auto sm:right-0 sm:w-[340px] sm:max-w-[calc(100vw-3rem)]" aria-label={`${stage.label}子页面导航`}>
+        <aside id="stage-subpage-navigation" className="absolute left-0 top-full z-40 mt-2 max-h-[min(70vh,720px)] w-full min-w-0 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-xl sm:left-auto sm:right-0 sm:w-[340px] sm:max-w-[calc(100vw-3rem)]" aria-label={s('navigation.subpages', { stage: stage.label })}>
           <Link to={stage.path} onClick={() => setIsStageNavOpen(false)} className="block rounded-xl px-3 py-3 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <span className="text-sm font-semibold text-slate-900">{stage.label}总览</span>
-            <span className="mt-1 block text-xs text-slate-500">查看本阶段全部流程节点</span>
+            <span className="text-sm font-semibold text-slate-900">{s('navigation.overview', { stage: stage.label })}</span>
+            <span className="mt-1 block text-xs text-slate-500">{s('navigation.viewAll')}</span>
           </Link>
           <div className="my-2 border-t border-slate-100" />
           <nav className="grid gap-1">
@@ -125,7 +136,7 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
           </nav>
           {stage.tools?.length ? (
             <div className="mt-4 border-t border-slate-100 pt-3">
-              <p className="px-3 text-xs font-semibold uppercase tracking-wide text-slate-400">现有工具</p>
+              <p className="px-3 text-xs font-semibold uppercase tracking-wide text-slate-400">{s('navigation.tools')}</p>
               <nav className="mt-2 grid gap-1">
                 {stage.tools.map((tool) => (
                   <NavLink
@@ -151,8 +162,8 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
     <div className="min-h-[calc(100vh-64px)] bg-slate-50">
       {!isFullBleedWorkspace ? <section className="relative z-30 border-b border-slate-200 bg-white">
         <div className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6 lg:px-8">
-          <nav aria-label="面包屑" className="flex items-center gap-2 text-xs text-slate-500">
-            <Link to="/" className="rounded hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500">流程首页</Link>
+          <nav aria-label={s('navigation.breadcrumb')} className="flex items-center gap-2 text-xs text-slate-500">
+            <Link to="/" className="rounded hover:text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500">{s('navigation.workflowHome')}</Link>
             <span aria-hidden="true">/</span>
             <span className="font-medium text-slate-800">{stage.label}</span>
           </nav>
@@ -171,7 +182,8 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
       </section> : null}
 
       <div className={isFullBleedWorkspace ? 'w-full' : 'mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8'}>
-        <section className="min-w-0" aria-label={`${stage.label}工作区`}>
+        <section className="min-w-0" aria-label={s('navigation.workspace', { stage: stage.label })}>
+          {factorContext && <FactorEvidencePanel key={location.pathname} contextType={factorContext} />}
           <Outlet />
         </section>
       </div>

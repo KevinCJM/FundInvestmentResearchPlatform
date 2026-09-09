@@ -20,12 +20,10 @@ class SharedQuota:
         """Reserve both levels atomically, or return a bounded wait duration."""
         with self.store.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute("DELETE FROM source_quota WHERE called_at<=?", (now - 60,))
-            db.execute("DELETE FROM source_lease WHERE expires_at<=?", (now,))
             wait = 0.0
             for key, policy in policies:
-                existing = db.execute("SELECT called_at,reserved_rows FROM source_quota WHERE quota_key=? ORDER BY called_at", (key,)).fetchall()
-                active = db.execute("SELECT COUNT(*) FROM source_lease WHERE quota_key=?", (key,)).fetchone()[0]
+                existing = db.execute("SELECT called_at,reserved_rows FROM source_quota WHERE quota_key=? AND called_at>? ORDER BY called_at", (key, now - 60)).fetchall()
+                active = db.execute("SELECT COUNT(*) FROM source_lease WHERE quota_key=? AND expires_at>?", (key, now)).fetchone()[0]
                 if active >= policy.max_concurrency:
                     wait = max(wait, 0.1)
                 if existing:
@@ -40,6 +38,10 @@ class SharedQuota:
                         wait = max(wait, 60 - (now - existing[0][0]))
             if wait > 0:
                 return wait
+            # Waiting threads must not generate journal writes/fsyncs. Prune
+            # only when granting an atomic source + API reservation.
+            db.execute("DELETE FROM source_quota WHERE called_at<=?", (now - 60,))
+            db.execute("DELETE FROM source_lease WHERE expires_at<=?", (now,))
             for key, policy in policies:
                 db.execute("INSERT INTO source_quota VALUES (?,?,?)", (key, now, rows))
                 expiry = now + policy.connect_timeout_seconds + policy.read_timeout_seconds + 10
@@ -47,11 +49,13 @@ class SharedQuota:
         return 0.0
 
     @contextmanager
-    def acquire(self, source_id: str, api_key: str, source: DownloadPolicy, interface: DownloadPolicy, rows: int) -> Iterator[None]:
+    def acquire(self, source_id: str, api_key: str, source: DownloadPolicy, interface: DownloadPolicy, rows: int, *, check=None) -> Iterator[None]:
         policies = [("source:" + source_id, source), ("api:" + source_id + ":" + api_key, interface)]
         lease_id = uuid.uuid4().hex
         deadline = time.monotonic() + min(source.max_runtime_seconds, interface.max_runtime_seconds)
         while True:
+            if check is not None:
+                check()
             wait = self.reserve(policies, rows, time.time(), lease_id)
             if wait <= 0:
                 break
@@ -59,6 +63,8 @@ class SharedQuota:
                 raise CenterError("QUOTA_WAIT_TIMEOUT", "等待共享配额超过任务上限。", 429)
             time.sleep(min(wait, 1.0))
         try:
+            if check is not None:
+                check()
             yield
         finally:
             with self.store.connection() as db:

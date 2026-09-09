@@ -67,6 +67,27 @@ def _rotation_template(
 
 TEMPLATES_V2: list[dict[str, Any]] = [
     {
+        "id": "peak-trough-ps-v2", "name": "峰谷定界法", "version": 2,
+        "tags": ["事后识别", "峰谷定界", "牛熊震荡", "月频"],
+        "description": "月频峰谷划分牛熊趋势，再按振幅、方向效率和持续长度合并震荡；所有规则可编辑，仅限事后研究。",
+        "definition": {
+            "schema_version": "2.0", "name": "沪深300峰谷定界法", "template_id": "peak-trough-ps-v2",
+            "description": "月度原始指数峰谷定界。左右各 8 月、最短阶段 4 月、最短周期 16 月，超过 20% 的短阶段可例外保留。首尾不完整区间不外推；修改频率后须重新选择以观测期数计的参数。",
+            "graph": {
+                "nodes": [
+                    {"id": "market", "type": "source.index", "parameters": {"ts_code": "000300.SH", "name": "沪深300", "source_api": "index_daily", "field": "close"}},
+                    {"id": "monthly", "type": "align.resample", "parameters": {"frequency": "monthly", "aggregation": "last"}, "inputs": {"value": _ref("market")}},
+                    {"id": "dating", "type": "model.peak_trough", "parameters": {"left_window": 8, "right_window": 8, "head_window": 6, "tail_window": 6, "min_phase": 4, "min_cycle": 16, "amplitude_exception": 0.2, "sideways_enabled": True, "small_swing_threshold": 0.03, "sideways_max_range": 0.06, "sideways_max_efficiency": 0.25, "sideways_min_duration": 3}, "inputs": {"value": _ref("monthly")}},
+                ],
+                "outputs": {"state": _ref("dating", "state")},
+                "exposed_node_ids": ["market", "monthly", "dating"],
+            },
+            "states": copy.deepcopy(MARKET_STATES),
+            "evaluation_targets": [], "validation": {"walk_forward": True, "folds": 4},
+            "usage_intent": "research_display",
+        },
+    },
+    {
         "id": "blank-three-state",
         "name": "从零搭建三状态模型",
         "description": "最小可运行图谱；替换数据源、算子、阈值或继续添加节点。",
@@ -92,23 +113,24 @@ TEMPLATES_V2: list[dict[str, Any]] = [
     },
     {
         "id": "bull-bear-causal-v2",
+        "version": 2,
         "name": "指数牛熊震荡 · 可编辑图谱",
-        "description": "对数价格、滚动斜率、滞回和确认期均可替换或调参。",
+        "description": "指数＋单向滤波＋幅度门槛＋连续确认；震荡由平坦趋势与低方向效率共同识别。",
         "definition": {
             "schema_version": "2.0",
-            "name": "沪深300牛熊震荡 v2",
-            "description": "以单边算子识别实时可用的牛熊震荡状态。",
+            "name": "沪深300牛熊震荡 · 趋势滤波",
+            "description": "慢趋势区分牛熊，幅度与连续确认过滤短反向信号；平坦斜率与低方向效率识别震荡。参数为研究起点，需样本外验证；实时不回填历史。",
             "template_id": "bull-bear-causal-v2",
             "graph": {
                 "nodes": [
                     {"id": "market", "type": "source.index", "parameters": {"ts_code": "000300.SH", "name": "沪深300", "source_api": "index_daily", "field": "close"}},
                     {"id": "log_price", "type": "transform.log", "inputs": {"value": _ref("market")}},
-                    {"id": "trend", "type": "rolling.slope", "parameters": {"window": 20}, "inputs": {"value": _ref("log_price")}},
-                    {"id": "classifier", "type": "model.hysteresis", "parameters": {"upper_enter": 0.0015, "upper_exit": 0.0002, "lower_enter": -0.0015, "lower_exit": -0.0002}, "inputs": {"value": _ref("trend")}},
-                    {"id": "confirmed", "type": "post.confirmation", "parameters": {"confirmation": 3, "min_duration": 5}, "inputs": {"state": _ref("classifier", "state")}},
+                    {"id": "trend", "type": "filter.super_smoother", "parameters": {"period": 126}, "inputs": {"value": _ref("log_price")}},
+                    {"id": "metrics", "type": "feature.trend_metrics", "parameters": {"volatility_window": 60, "slope_window": 20, "efficiency_window": 60, "scale_floor": 0.0001, "shock_window": 5, "drawdown_alert": 0.2, "shock_alert": 0.08}, "inputs": {"log_price": _ref("log_price"), "trend": _ref("trend")}},
+                    {"id": "classifier", "type": "model.trend_regime", "parameters": {"band": 1.0, "trend_enter": 0.1, "flat_threshold": 0.05, "efficiency_ceiling": 0.25, "confirmation": 3}, "inputs": {"distance": _ref("metrics", "distance"), "slope": _ref("metrics", "slope"), "efficiency": _ref("metrics", "efficiency")}},
                 ],
-                "outputs": {"state": _ref("confirmed", "state")},
-                "exposed_node_ids": ["market", "log_price", "trend", "classifier"],
+                "outputs": {"state": _ref("classifier", "state")},
+                "exposed_node_ids": ["market", "log_price", "trend", "metrics", "classifier"],
             },
             "states": copy.deepcopy(MARKET_STATES),
             "evaluation_targets": [{"id": "csi300", "name": "沪深300", "source": {"kind": "index", "ts_code": "000300.SH", "source_api": "index_daily", "field": "close"}, "primary": True}],
@@ -165,9 +187,54 @@ TEMPLATES_V2: list[dict[str, Any]] = [
 ]
 
 
+def _legacy_daily_peak_template() -> dict[str, Any]:
+    item = copy.deepcopy(TEMPLATES_V2[0])
+    item.update(id="peak-trough-daily-legacy-v1", name="峰谷定界法 · 旧版日频兼容", version=1,
+                tags=["事后识别", "峰谷定界", "牛熊震荡", "日频"],
+                description="日频峰谷趋势＋小波段合并；以整段振幅、方向效率及至少 20 个观测间隔识别震荡。阈值为可调研究起点。")
+    definition = item["definition"]
+    definition.update(template_id=item["id"], name="沪深300日频峰谷牛熊震荡", description=item["description"])
+    nodes = definition["graph"]["nodes"]
+    definition["graph"]["nodes"] = [nodes[0], nodes[2]]
+    nodes[2]["inputs"]["value"] = _ref("market")
+    nodes[2]["parameters"]["sideways_min_duration"] = 20
+    definition["graph"]["exposed_node_ids"] = ["market", "dating"]
+    return item
+
+
+def _daily_peak_template() -> dict[str, Any]:
+    nodes = [
+        {"id": "market", "type": "source.index", "parameters": {"ts_code": "000300.SH", "name": "沪深300", "source_api": "index_daily", "field": "close"}},
+        {"id": "pivots", "type": "pivot.local_extrema", "parameters": {"left_window": 8, "right_window": 8, "head_window": 6, "tail_window": 6}, "inputs": {"value": _ref("market")}},
+        {"id": "segments", "type": "segment.between_pivots", "inputs": {"pivot": _ref("pivots", "pivot")}},
+        {"id": "change", "type": "segment.change", "inputs": {"value": _ref("market"), "start": _ref("segments", "start"), "end": _ref("segments", "end")}},
+        {"id": "upper", "type": "source.constant", "label": "上涨门槛", "parameters": {"value": .03}, "inputs": {"anchor": _ref("market")}},
+        {"id": "lower", "type": "source.constant", "label": "下跌门槛", "parameters": {"value": -.03}, "inputs": {"anchor": _ref("market")}},
+        {"id": "classifier", "type": "model.range_threshold", "inputs": {"value": _ref("change"), "upper_bound": _ref("upper"), "lower_bound": _ref("lower")}},
+    ]
+    return {"id": "peak-trough-daily-v2", "name": "峰谷定界法 · 日频牛熊震荡", "version": 2,
+            "tags": ["事后识别", "峰谷定界", "独立算子", "日频"],
+            "description": "峰谷定位、区间涨跌幅、上下门槛独立配置；单个小幅完整波段即可判断震荡，不默认合并或过滤。",
+            "definition": {"schema_version": "2.0", "name": "沪深300日频峰谷牛熊震荡", "template_id": "peak-trough-daily-v2",
+                "description": "按四窗口定位峰谷，再计算相邻峰谷收益。涨幅超过3%为牛，跌幅超过3%为熊，其余为震荡；阈值为可调研究起点。未完成尾段不外推。",
+                "graph": {"nodes": nodes, "outputs": {"state": _ref("classifier", "state")}, "exposed_node_ids": [node["id"] for node in nodes]},
+                "states": copy.deepcopy(MARKET_STATES), "evaluation_targets": [], "validation": {"walk_forward": True, "folds": 4}, "usage_intent": "research_display"}}
+
+
+TEMPLATES_V2.insert(1, _daily_peak_template())
+TEMPLATES_V2.append(_legacy_daily_peak_template())
+
+
 def _versioned_template(item: dict[str, Any]) -> dict[str, Any]:
+    from .v2_registry import NODE_REGISTRY
     result = copy.deepcopy(item)
-    result["version"] = 1
+    result["version"] = int(item.get("version", 1))
+    causal = all(NODE_REGISTRY.get(node["type"], {}).get("supports_realtime") is True
+                 and NODE_REGISTRY.get(node["type"], {}).get("causal") is True
+                 and NODE_REGISTRY.get(node["type"], {}).get("repaints") is False
+                 for node in result["definition"]["graph"]["nodes"])
+    result["supported_modes"] = ["realtime", "retrospective"] if causal else ["retrospective"]
+    result["default_mode"] = "realtime" if causal else "retrospective"
     encoded = json.dumps(
         result["definition"],
         ensure_ascii=False,

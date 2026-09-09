@@ -69,6 +69,9 @@ _NATIVE_EXCEL_FUNCTIONS = frozenset(
         "SIGN",
         "SKEW",
         "SLOPE",
+        "LOOKUP",
+        "ROW",
+        "INT",
         "SQRT",
         "STDEV",
         "STDEVP",
@@ -254,6 +257,8 @@ _SPECIAL_ELEMENTWISE = frozenset(
 
 # Every operator currently exposed by IndicatorStudio in the single-product domain,
 # plus three frozen typed compatibility operators used by historical definitions.
+from .excel_computation_state import STATE_OPERATORS, SCALAR_OPERATORS
+
 EXCEL_SINGLE_PRODUCT_OPERATOR_IDS = frozenset(
     _ELEMENTWISE_UNARY
     | _ELEMENTWISE_BINARY
@@ -266,7 +271,7 @@ EXCEL_SINGLE_PRODUCT_OPERATOR_IDS = frozenset(
     | _RECURSIVE_OPERATORS
     | _SPECIAL_ELEMENTWISE
     | {
-        "max_consecutive_true",
+        "max_consecutive_true", *STATE_OPERATORS, *SCALAR_OPERATORS,
     }
 )
 
@@ -433,6 +438,7 @@ class SingleProductExcelFormulaCompiler:
         prefix: str,
         first_block_row: int = 14,
     ) -> None:
+        self.runtime_parameters: Mapping[str, float] = {}
         self.plan = plan
         self.context = context
         self.sheet_name = sheet_name
@@ -495,10 +501,14 @@ class SingleProductExcelFormulaCompiler:
         if len(node.inputs) <= index:
             return float(default)
         input_node = self.node_by_id[int(node.inputs[index])]
+        if input_node.kind == "variable" and input_node.label in self.runtime_parameters:
+            value = float(self.runtime_parameters[input_node.label])
+            if math.isfinite(value):
+                return value
         if input_node.kind != "constant":
             raise ValidationError(
                 "EXCEL_EXPORT_LITERAL_REQUIRED",
-                f"算子 {node.operator_id} 的配置参数必须是公式中的有限常量。",
+                f"算子 {node.operator_id} 的配置参数必须是常量或已验证的运行参数。",
                 field="expression",
             )
         return self._constant_value(input_node)
@@ -507,16 +517,7 @@ class SingleProductExcelFormulaCompiler:
         return [self.placements[int(node_id)] for node_id in node.inputs]
 
     def _integer_constant_input(self, node: TypedDagNode, index: int, default: int) -> int:
-        if len(node.inputs) <= index:
-            return default
-        input_node = self.node_by_id[int(node.inputs[index])]
-        if input_node.kind != "constant":
-            raise ValidationError(
-                "EXCEL_EXPORT_LITERAL_REQUIRED",
-                f"算子 {node.operator_id} 的长度参数必须是公式中的整数常量。",
-                field="expression",
-            )
-        value = self._constant_value(input_node)
+        value = self._constant_input(node, index, float(default))
         if not value.is_integer():
             raise ValidationError(
                 "EXCEL_EXPORT_LITERAL_REQUIRED",
@@ -553,6 +554,8 @@ class SingleProductExcelFormulaCompiler:
             return 1
 
         output_type = node.inferred_type
+        if output_type.kind == "record":
+            return len(output_type.fields)
         if output_type.kind == "matrix":
             raise ValidationError(
                 "EXCEL_EXPORT_MATRIX_UNSUPPORTED",
@@ -601,15 +604,8 @@ class SingleProductExcelFormulaCompiler:
             return "masked_values", inputs[0].rows
         if operator_id == "max_consecutive_true":
             return "streak", inputs[0].rows
-        if operator_id in {
-            "linear_slope",
-            "linear_intercept",
-            "linear_r_squared",
-            "regression_standard_error",
-        } and len(inputs) == 1:
+        if operator_id == "linear_fit" and len(inputs) == 1:
             return "regression_index", inputs[0].rows
-        if operator_id in {"total_return", "annualized_return"}:
-            return "growth_factors", inputs[0].rows
         if operator_id == "recursive_smooth":
             # Column B remains the public result and is blank when the current
             # input is missing. Column C carries the recursive state so the next
@@ -622,7 +618,7 @@ class SingleProductExcelFormulaCompiler:
         if node.kind == "variable":
             dates = self.dates_by_variable.get(node.label, ())
             return dates if len(dates) == rows else ()
-        if node.kind == "constant" or node.inferred_type.is_scalar:
+        if node.kind == "constant" or node.inferred_type.is_scalar or node.inferred_type.kind == "record":
             return ()
         inputs = self._input_placements(node)
         operator_id = str(node.operator_id or "")
@@ -705,6 +701,8 @@ class SingleProductExcelFormulaCompiler:
             formula = f"={self.root.cell(absolute=False)}"
         else:
             formula = self.formula_for_node(root_node)
+        if root_node.inferred_type.semantic_dimension == "date":
+            formula = f"=({formula[1:]})+DATE(1970,1,1)"
         if not sheet_qualified:
             return formula
         quoted_sheet = self.sheet_name.replace("'", "''")
@@ -1127,6 +1125,9 @@ class SingleProductExcelFormulaCompiler:
         operator_id = str(node.operator_id or "")
         inputs = self._input_placements(node)
         ranges = [self._range_ref(item) for item in inputs]
+        if operator_id in SCALAR_OPERATORS:
+            from .excel_computation_state import scalar_formula
+            return scalar_formula(self, node)
         if operator_id in _ELEMENTWISE_UNARY | _ELEMENTWISE_BINARY | _SPECIAL_ELEMENTWISE:
             return self._elementwise_formula(node, inputs, 0)
         if operator_id == "dot":
@@ -1196,39 +1197,6 @@ class SingleProductExcelFormulaCompiler:
                 )
             function = "COVARIANCE.S" if operator_id == "covariance" else "CORREL"
             return f"=IFERROR({function}({ranges[0]},{ranges[1]}),NA())"
-        if operator_id in {
-            "linear_slope",
-            "linear_intercept",
-            "linear_r_squared",
-            "regression_standard_error",
-        }:
-            x_values, y_values = self._linear_ranges(node, placement)
-            function = {
-                "linear_slope": "SLOPE",
-                "linear_intercept": "INTERCEPT",
-                "linear_r_squared": "RSQ",
-                "regression_standard_error": "STEYX",
-            }[operator_id]
-            minimum = 3 if operator_id == "regression_standard_error" else 2
-            return (
-                f"=IF(COUNT({y_values})<{minimum},NA(),"
-                f"IFERROR({function}({y_values},{x_values}),NA()))"
-            )
-        if operator_id == "total_return":
-            if placement.helper_start_col is None:
-                raise RuntimeError("total-return helper range is missing")
-            return f"=PRODUCT({placement.helper_range_a1(absolute=False)})-1"
-        if operator_id == "annualized_return":
-            if placement.helper_start_col is None:
-                raise RuntimeError("annualized-return helper range is missing")
-            values = ranges[0]
-            periods_per_year = ranges[1]
-            helper = placement.helper_range_a1(absolute=False)
-            return (
-                f"=IF(COUNT({values})<1,NA(),"
-                f"POWER(PRODUCT({helper}),"
-                f"{periods_per_year}/COUNT({values}))-1)"
-            )
         raise ValidationError(
             "EXCEL_EXPORT_OPERATOR_UNSUPPORTED",
             f"算子 {operator_id} 没有标量 Excel 公式实现。",
@@ -1237,6 +1205,9 @@ class SingleProductExcelFormulaCompiler:
 
     def formula_for_node(self, node: TypedDagNode, index: int = 0) -> str:
         placement = self.placements[node.node_id]
+        if node.operator_id in STATE_OPERATORS:
+            from .excel_computation_state import state_formulas
+            return state_formulas(self, node, placement)[index]
         if node.kind in {"variable", "constant"}:
             raise ValueError("input nodes do not have generated Excel formulas")
         if placement.is_scalar:
@@ -1277,9 +1248,6 @@ class SingleProductExcelFormulaCompiler:
                     formats.integer,
                 )
                 continue
-            elif placement.helper_kind == "growth_factors":
-                value_ref = self._element_ref(inputs[0], index)
-                formula = f"=1+({value_ref})"
             elif placement.helper_kind == "recursive_state":
                 current = self._element_ref(inputs[0], index)
                 periods = self._excel_number_literal(
@@ -1423,6 +1391,11 @@ class SingleProductExcelFormulaCompiler:
                 )
                 continue
 
+            if node.operator_id in STATE_OPERATORS:
+                from .excel_computation_state import write_state
+                write_state(self, worksheet, node, placement, formats)
+                continue
+
             if placement.is_scalar:
                 worksheet.write(placement.header_row, 0, "Excel 公式", formats.header)
                 worksheet.write(placement.header_row, 1, "计算结果", formats.header)
@@ -1432,8 +1405,6 @@ class SingleProductExcelFormulaCompiler:
                     worksheet.write(placement.header_row, 2, "连续 TRUE 计数", formats.header)
                 elif placement.helper_kind == "regression_index":
                     worksheet.write(placement.header_row, 2, "回归自变量 0..N-1", formats.header)
-                elif placement.helper_kind == "growth_factors":
-                    worksheet.write(placement.header_row, 2, "逐期增长因子 1+r", formats.header)
                 formula = self.formula_for_node(node)
                 _assert_native_excel_formula(formula)
                 worksheet.write(
@@ -1520,7 +1491,9 @@ class SeriesBundleExcelFormulaCompiler(SingleProductExcelFormulaCompiler):
         sheet_name: str,
         prefix: str,
         first_block_row: int = 18,
+        runtime_parameters: Mapping[str, float] | None = None,
     ) -> None:
+        self.runtime_parameters = dict(runtime_parameters or {})
         self.plan = plan
         self.context = context
         self.sheet_name = sheet_name

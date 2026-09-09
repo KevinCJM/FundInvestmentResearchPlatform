@@ -5,6 +5,7 @@ import json
 import random
 import time
 from functools import partial
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from .models import CenterError, DownloadPolicy, InterfaceConfig, SourceConfig
 from .quota import SharedQuota
 from .store import DEFAULT_ROOT, SourceStore
 from .transport import TransientSourceError, request
+from backend.data_storage import guard_path
 
 
 def effective_policy(source: DownloadPolicy, interface: DownloadPolicy) -> DownloadPolicy:
@@ -27,7 +29,8 @@ def effective_policy(source: DownloadPolicy, interface: DownloadPolicy) -> Downl
     return DownloadPolicy.model_validate(result)
 
 
-def fetch_once(store: SourceStore, source: SourceConfig, interface: InterfaceConfig, params: dict[str, Any] | None = None, *, credential: str | None = None, sample: bool = False) -> tuple[Any, list[dict[str, Any]]]:
+def fetch_once(store: SourceStore, source: SourceConfig, interface: InterfaceConfig, params: dict[str, Any] | None = None, *, credential: str | None = None, sample: bool = False, check=None) -> tuple[Any, list[dict[str, Any]]]:
+    guard_path(store.root, write=True)
     if source.id != interface.source_id or not source.enabled or not interface.enabled:
         raise CenterError("SOURCE_DISABLED", "数据源或接口未启用。")
     policy = effective_policy(source.policy, interface.policy)
@@ -60,7 +63,9 @@ def fetch_once(store: SourceStore, source: SourceConfig, interface: InterfaceCon
             secret = credential or read_credential(store, source.id)
             headers["Authorization" if source.auth_mode == "bearer" else source.auth_header] = "Bearer " + secret if source.auth_mode == "bearer" else secret
     quota = SharedQuota(store)
-    with quota.acquire(source.id, interface.api_name or interface.id, source.policy, interface.policy, policy.max_rows_per_request):
+    with quota.acquire(source.id, interface.api_name or interface.id, source.policy, interface.policy,
+                       policy.max_rows_per_request, **({'check': check} if check else {})):
+        guard_path(store.root, write=True)
         raw = request(url, method, body, headers, policy)
     if source.transport == "tushare":
         try:
@@ -116,21 +121,34 @@ def fetch_with_retry(store: SourceStore, source: SourceConfig, interface: Interf
 
 class ConfiguredTushareClient:
     """The old downloader owns slicing/retries; this client owns actual I/O."""
-    def __init__(self, credential: str, root: Path = DEFAULT_ROOT, *, capture: bool = False) -> None:
+    def __init__(self, credential: str, root: Path = DEFAULT_ROOT, *, capture: bool = False,
+                 source_id: str = 'tushare', on_batch=None) -> None:
         self.store = SourceStore(root)
         self.store.seed()
         with self.store.connection() as db:
-            frozen = db.execute("SELECT * FROM source_config WHERE source_id='tushare' ORDER BY kind,id").fetchall()
+            frozen = db.execute("SELECT * FROM source_config WHERE source_id=? ORDER BY kind,id", (source_id,)).fetchall()
         decoded = [self.store.decode(row) for row in frozen]
-        entry = next((item["config"] for item in decoded if item["config"]["id"] == "tushare" and "transport" in item["config"]), None)
+        entry = next((item["config"] for item in decoded if item["config"]["id"] == source_id and "transport" in item["config"]), None)
         if entry is None:
             raise CenterError("SOURCE_NOT_CONFIGURED", "原市场下载流程的数据源已删除，请使用已保存接口的下载入口。")
         self.source = SourceConfig.model_validate(entry)
-        self.interfaces = {item["config"]["id"].removeprefix("tushare."): InterfaceConfig.model_validate(item["config"]) for item in decoded if "api_name" in item["config"]}
+        self.interfaces = {item["config"]["id"].removeprefix(source_id + '.'): InterfaceConfig.model_validate(item["config"]) for item in decoded if "api_name" in item["config"]}
         self.configuration_hash = hashlib.sha256(json.dumps([{"config": item["config"], "revision": item["revision"]} for item in decoded], sort_keys=True).encode()).hexdigest()
         self.capture = capture
+        self.on_batch = on_batch
         self.credential = credential
         self.started_at = time.monotonic()
+        self._request_check = None
+
+    @contextmanager
+    def request_guard(self, check):
+        """One dataset owns this client; checks also interrupt shared quota waits."""
+        previous = self._request_check
+        self._request_check = check
+        try:
+            yield
+        finally:
+            self._request_check = previous
 
     def __getattr__(self, api: str):
         if api not in self.interfaces:
@@ -161,8 +179,11 @@ class ConfiguredTushareClient:
             params[interface.pagination.cursor_param] = params.pop("offset")
         if "limit" in params and interface.pagination.limit_param != "limit":
             params[interface.pagination.limit_param] = params.pop("limit")
-        _, rows = fetch_once(self.store, self.source, interface, params, credential=self.credential)
+        checks = {'check': self._request_check} if self._request_check is not None else {}
+        _, rows = fetch_once(self.store, self.source, interface, params, credential=self.credential, **checks)
         if self.capture:
             from .batches import capture_batch
-            capture_batch(self.store, interface, rows, {**interface.params, **params}, self.configuration_hash)
+            batch = capture_batch(self.store, interface, rows, {**interface.params, **params}, self.configuration_hash)
+            if self.on_batch is not None:
+                self.on_batch(batch)
         return pd.DataFrame.from_records(rows)

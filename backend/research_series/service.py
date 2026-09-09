@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import numpy as np
 import pandas as pd
@@ -20,8 +20,12 @@ import pyarrow.parquet as pq
 
 try:
     from backend.market_data import MarketDataManifestError, read_active_manifest
+    from backend.custom_indicators.repository import IndicatorRepository
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from market_data import MarketDataManifestError, read_active_manifest
+    from custom_indicators.repository import IndicatorRepository
+
+from .product_sources import (PRODUCT_SOURCES, ProductSourceError, product_fields, product_pit, present_product_codes, read_product_observations, apply_product_adjustment, adjustment_path, ADJUSTMENT_FILE, ETF_ADJUSTED_FIELDS, product_source_spec)
 
 from .numba_kernels import (
     align_values_kernel,
@@ -615,9 +619,13 @@ class ResearchSeriesService:
         self,
         data_dir: Path | None = None,
         workspace_data_dir: Path | None = None,
+        indicator_versions: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.data_dir = (data_dir or DEFAULT_DATA_DIR).expanduser().resolve()
         self.workspace_data_dir = (workspace_data_dir or self.data_dir).expanduser().resolve()
+        self._indicator_versions = indicator_versions or IndicatorRepository(
+            self.workspace_data_dir / "custom_indicators.json", []
+        ).list_all_versions
 
     def _active_snapshot(self) -> tuple[Path, dict[str, object]]:
         try:
@@ -774,6 +782,70 @@ class ResearchSeriesService:
         for item in items:
             unique.setdefault(str(item["id"]), item)
         return list(unique.values())
+
+    def _product_catalog_items(self, snapshot: Path, manifest: dict[str, object], kind: str) -> list[dict[str, Any]]:
+        spec = PRODUCT_SOURCES[kind]
+        published = manifest.get("files", {})
+        info_path = snapshot / spec["info_file"]
+        if spec["info_file"] not in published or not info_path.is_file():
+            return []
+        info = pd.read_parquet(info_path, columns=["ts_code", "name"]).drop_duplicates("ts_code")
+        # Each field pins the file it actually reads; NAV never borrows a price checksum.
+        sources = [spec, product_source_spec(kind, "adj_nav")] if kind == "etf" else [spec]
+        field_sources = []
+        for source in sources:
+            path = snapshot / source["filename"]
+            has_file = source["filename"] in published and path.is_file() and pq.ParquetFile(path).metadata.num_rows > 0
+            if has_file:
+                has_file = {"ts_code", source["date_field"]}.issubset(pq.ParquetFile(path).schema_arrow.names)
+            fields = product_fields(path, kind) if has_file else []
+            codes = present_product_codes(path) if fields else frozenset()
+            checksum = _file_checksum(path) if codes else None
+            if kind == "etf" and source["source_api"] == "fund_nav" and not fields:
+                fields = [{"name": "adj_nav", "label": spec["fields"]["adj_nav"][0], "unit": "source_unit", "dtype": "float64", "nullable": True}]
+            field_sources.extend((field, source, codes, checksum) for field in fields)
+        factor_path = adjustment_path(snapshot) if kind == "etf" and ADJUSTMENT_FILE in published else None
+        factor_codes = present_product_codes(factor_path) if factor_path else frozenset()
+        factor_checksum = _file_checksum(factor_path) if factor_path else None
+        items = []
+        for row in info.to_dict("records"):
+            code = _text(row.get("ts_code"))
+            if not code:
+                continue
+            name = _text(row.get("name")) or code
+            fields = []
+            bindings = {}
+            for field, source, codes, checksum in field_sources:
+                field_name = field["name"]
+                needs_factor = kind == "etf" and field_name in ETF_ADJUSTED_FIELDS
+                enabled = code in codes and (not needs_factor or code in factor_codes)
+                field_binding = {
+                    "ts_code": code, "source_api": source["source_api"], "name": name,
+                    "field": field_name, "frequency": "daily", **_snapshot_identity(snapshot, manifest),
+                    "source_file": source["filename"], "file_checksum": checksum,
+                    **({"adjustment_checksum": factor_checksum} if kind == "etf" and source["source_api"] == "fund_daily" and code in factor_codes else {}),
+                }
+                if enabled:
+                    bindings[field_name] = field_binding
+                reason = None if enabled else "缺少复权因子" if code in codes and needs_factor else "缺少该产品净值数据" if field_name == "adj_nav" else "缺少该产品行情数据"
+                fields.append({**field, "available": enabled, "unavailable_reason": reason,
+                               **({"binding_parameters": field_binding} if kind == "etf" and enabled else {})})
+            default = spec["default_field"] if spec["default_field"] in bindings else next(iter(bindings), None)
+            available = default is not None
+            binding = bindings.get(default, {})
+            items.append({
+                "id": f"{kind}:{spec['source_api']}:{code}", "kind": kind, "name": name, "code": code,
+                "category": spec["label"], "status": "available" if available else "not_downloaded",
+                "status_reason": None if available else "series_not_present_in_active_snapshot",
+                "source_api": binding.get("source_api", spec["source_api"]), "dataset": binding.get("source_file", spec["filename"]),
+                "default_field": default, "fields": fields if available else [],
+                "unit": spec["fields"][default][1] if default else None, "frequency": "daily",
+                "pit": product_pit(kind, default), "vintage": {"supported": False},
+                "profile_operations": INDEX_PROFILE_OPERATIONS if available else [],
+                "regime_node_type": f"source.{kind}" if available else None,
+                "binding_parameters": binding if available else {},
+            })
+        return items
 
     @staticmethod
     def _missing_index_catalog_item() -> dict[str, Any]:
@@ -944,72 +1016,73 @@ class ResearchSeriesService:
         }
 
     def _indicator_catalog_items(self) -> list[dict[str, Any]]:
-        path = self.workspace_data_dir / "custom_indicators.json"
-        if not path.exists():
-            return [self._missing_indicator_item()]
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return [self._missing_indicator_item()]
         items: list[dict[str, Any]] = []
-        for entry in payload.get("items", []) if isinstance(payload, dict) else []:
-            versions = [entry.get("current"), *(entry.get("history") or [])] if isinstance(entry, dict) else []
-            for version in versions:
-                if not isinstance(version, dict):
-                    continue
-                indicator_id = _text(version.get("id"))
-                revision = int(version.get("revision") or 1)
-                if not indicator_id:
-                    continue
-                series_id = f"indicator:{indicator_id}@{revision}"
-                periods = [str(period) for period in version.get("periods", [])]
-                items.append(
-                    {
-                        "id": series_id,
-                        "kind": "indicator",
+        for version in self._indicator_versions():
+            if not isinstance(version, dict) or version.get("ui_exposed") is False:
+                continue
+            indicator_id = _text(version.get("id"))
+            revision = int(version.get("revision") or 1)
+            if not indicator_id:
+                continue
+            series_id = f"indicator:{indicator_id}@{revision}"
+            periods = [str(period) for period in version.get("periods", [])]
+            product_kinds = [kind for kind in (version.get("applicable_product_kinds") or []) if kind in {"etf", "fund"}]
+            binding_reason = (
+                "该版本没有可计算的公式。" if not version.get("expression") else
+                "该版本尚未转换为时序计算支持的类型化指标。" if not str(version.get("dsl_version") or "").startswith("2.") else
+                "该指标面向组合，不能用于单产品时序。" if version.get("context_kind", "single_product") != "single_product" else
+                "该指标不适用于基金或 ETF。" if not product_kinds else None
+            )
+            items.append(
+                {
+                    "id": series_id,
+                    "kind": "indicator",
+                    "name": _text(version.get("name")) or indicator_id,
+                    "code": indicator_id,
+                    "category": "指标版本",
+                    "status": "available" if version.get("expression") else "not_downloaded",
+                    "status_reason": None if version.get("expression") else "indicator_expression_missing",
+                    "source_api": "workspace_indicator_registry",
+                    "dataset": "custom_indicators.json",
+                    "default_field": "value",
+                    "fields": [
+                        {
+                            "name": "value",
+                            "label": _text(version.get("name")) or "指标值",
+                            "unit": _text(version.get("unit")) or "dimensionless",
+                            "dtype": "float64",
+                            "nullable": True,
+                        }
+                    ],
+                    "unit": _text(version.get("unit")) or "dimensionless",
+                    "frequency": "period_defined",
+                    "periods": periods,
+                    "product_kinds": product_kinds,
+                    "binding_supported": binding_reason is None,
+                    "binding_reason": binding_reason,
+                    "coverage": {"start_date": None, "end_date": None, "observations": None},
+                    "missing": {"count": None, "rate": None},
+                    "pit": {"supported": False, "reason": "depends_on_bound_source"},
+                    "vintage": {"supported": True, "revision": revision},
+                    "profile_operations": [],
+                    "indicator_version": {
+                        "indicator_id": indicator_id,
+                        "revision": revision,
+                        "dsl_version": version.get("dsl_version"),
+                        "operator_registry_version": version.get("operator_registry_version"),
+                    },
+                    "regime_node_type": "source.indicator",
+                    "binding_parameters": {
+                        "indicator_id": indicator_id,
+                        "indicator_revision": revision,
+                        "product_kind": "",
+                        "product_id": "",
+                        "period": periods[0] if periods else "",
                         "name": _text(version.get("name")) or indicator_id,
-                        "code": indicator_id,
-                        "category": "指标版本",
-                        "status": "available" if version.get("expression") else "not_downloaded",
-                        "status_reason": None if version.get("expression") else "indicator_expression_missing",
-                        "source_api": "workspace_indicator_registry",
-                        "dataset": "custom_indicators.json",
-                        "default_field": "value",
-                        "fields": [
-                            {
-                                "name": "value",
-                                "label": _text(version.get("name")) or "指标值",
-                                "unit": _text(version.get("unit")) or "dimensionless",
-                                "dtype": "float64",
-                                "nullable": True,
-                            }
-                        ],
-                        "unit": _text(version.get("unit")) or "dimensionless",
-                        "frequency": "period_defined",
-                        "periods": periods,
-                        "coverage": {"start_date": None, "end_date": None, "observations": None},
-                        "missing": {"count": None, "rate": None},
-                        "pit": {"supported": False, "reason": "depends_on_bound_source"},
-                        "vintage": {"supported": True, "revision": revision},
-                        "profile_operations": [],
-                        "indicator_version": {
-                            "indicator_id": indicator_id,
-                            "revision": revision,
-                            "dsl_version": version.get("dsl_version"),
-                            "operator_registry_version": version.get("operator_registry_version"),
-                        },
-                        "regime_node_type": "source.indicator",
-                        "binding_parameters": {
-                            "indicator_id": indicator_id,
-                            "indicator_revision": revision,
-                            "product_kind": "",
-                            "product_id": "",
-                            "period": periods[0] if periods else "",
-                            "name": _text(version.get("name")) or indicator_id,
-                        },
-                        "binding_required_inputs": ["product_kind", "product_id"],
-                    }
-                )
+                    },
+                    "binding_required_inputs": ["product_kind", "product_id"],
+                }
+            )
         return items or [self._missing_indicator_item()]
 
     @staticmethod
@@ -1101,10 +1174,14 @@ class ResearchSeriesService:
         offset: int = 0,
         limit: int = 200,
     ) -> dict[str, Any]:
-        snapshot, manifest = self._active_snapshot()
+        # Workspace definitions and user uploads do not depend on market downloads.
+        snapshot, manifest = self._active_snapshot() if kind not in {"indicator", "upload"} else (None, None)
         items: list[dict[str, Any]] = []
         if kind in {None, "index"}:
             items.extend(self._index_catalog_items(snapshot, manifest))
+        for product_kind in PRODUCT_SOURCES:
+            if kind in {None, product_kind}:
+                items.extend(self._product_catalog_items(snapshot, manifest, product_kind))
         if kind in {None, "macro"}:
             items.extend(self._macro_catalog_items(snapshot, manifest))
         if kind in {None, "indicator"}:
@@ -1126,7 +1203,7 @@ class ResearchSeriesService:
         total = len(items)
         return {
             "schema_version": CATALOG_SCHEMA_VERSION,
-            "snapshot": self._snapshot_payload(snapshot, manifest),
+            "snapshot": self._snapshot_payload(snapshot, manifest) if snapshot is not None else None,
             "items": items[offset : offset + limit],
             "total": total,
             "offset": offset,
@@ -1141,6 +1218,68 @@ class ResearchSeriesService:
             },
             "execution": research_series_numba_execution_audit(),
         }
+
+    def _remember_upload(self, parameters: dict[str, Any]) -> None:
+        """Keep a searchable label/binding receipt without changing data artifacts."""
+        content = json.dumps(parameters, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        key = hashlib.sha256(content).hexdigest()
+        root = self.data_dir / UPLOAD_ARTIFACT_DIRNAME / "catalog"
+        root.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".receipt-", dir=root)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, root / f"{key}.json")
+            except FileExistsError:
+                pass
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def uploaded_series(self, *, query: str = "", offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        root = self.data_dir / UPLOAD_ARTIFACT_DIRNAME
+        items = []
+        seen = set()
+        bindings = []
+        for receipt in sorted((root / "catalog").glob("*.json")):
+            try:
+                binding = json.loads(receipt.read_text(encoding="utf-8"))
+                if not isinstance(binding, dict):
+                    continue
+                bindings.append((receipt.stem, binding))
+                seen.add(binding.get("artifact_id"))
+            except (OSError, ValueError):
+                continue
+        # Existing artifacts created before searchable receipts remain selectable.
+        for artifact in sorted(root.glob("*.parquet")):
+            artifact_id = f"upload-sha256-{artifact.stem}"
+            if artifact_id not in seen and _UPLOAD_ARTIFACT_PATTERN.fullmatch(artifact_id):
+                bindings.append((artifact.stem, {
+                    **self._upload_catalog_item()["binding_parameters"],
+                    "artifact_id": artifact_id, "checksum": f"sha256:{artifact.stem}",
+                    "name": f"已上传时序 · {artifact.stem[:8]}",
+                }))
+        for key, binding in bindings:
+            match = _UPLOAD_ARTIFACT_PATTERN.fullmatch(str(binding.get("artifact_id", "")))
+            if not match or binding.get("checksum") != f"sha256:{match[1]}":
+                continue
+            path = root / f"{match[1]}.parquet"
+            if not path.is_file():
+                continue
+            try:
+                metadata = pq.ParquetFile(path).metadata
+            except (OSError, pa.ArrowException):
+                continue
+            item = {**self._upload_catalog_item(), "id": f"upload:{key}",
+                    "name": binding.get("name") or "已上传时序",
+                    "binding_parameters": binding, "binding_required_inputs": [],
+                    "frequency": binding.get("frequency", "daily"),
+                    "coverage": {"observations": metadata.num_rows}}
+            if query.casefold() in f'{item["name"]} {binding["artifact_id"]}'.casefold():
+                items.append(item)
+        return {"items": items[offset:offset + limit], "total": len(items), "offset": offset, "limit": limit}
 
     @staticmethod
     def _filter_profile_dates(
@@ -1202,7 +1341,7 @@ class ResearchSeriesService:
             "publisher": _text(row.get("publisher")),
         }
 
-    def _profile_index(
+    def _profile_market(
         self,
         snapshot: Path,
         manifest: dict[str, object],
@@ -1213,29 +1352,68 @@ class ResearchSeriesService:
         end_date: str | None,
         rolling_window: int,
         sample_limit: int,
+        as_of: str | None = None,
+        availability_mode: str = "point_in_time",
     ) -> dict[str, Any]:
         parts = series_id.split(":", 2)
-        if len(parts) != 3 or parts[0] != "index":
-            raise ResearchSeriesError("INVALID_SERIES_ID", "指数 series_id 格式无效。", field="series_id")
-        source_api, code = parts[1], parts[2]
-        filename = INDEX_SOURCE_FILES.get(source_api)
+        if len(parts) != 3 or parts[0] not in {"index", "etf", "fund"}:
+            raise ResearchSeriesError("INVALID_SERIES_ID", "行情 series_id 格式无效。", field="series_id")
+        kind, source_api, code = parts
+        product = PRODUCT_SOURCES.get(kind)
+        if product and source_api != product["source_api"]:
+            raise ResearchSeriesError("PRODUCT_SOURCE_MISMATCH", "产品类型与行情来源不匹配。", field="series_id")
+        if product:
+            product = product_source_spec(kind, field)
+            source_api = product["source_api"]
+        filename = product["filename"] if product else INDEX_SOURCE_FILES.get(source_api)
+        if product and filename not in manifest.get("files", {}):
+            raise ResearchSeriesError("PRODUCT_FILE_NOT_PUBLISHED", "产品行情文件不在活跃快照清单中。", status_code=404)
         if not filename:
             raise ResearchSeriesError("INDEX_SOURCE_UNSUPPORTED", "该指数行情来源暂不支持分析。", field="series_id")
         path = snapshot / filename
         if not path.exists() or pq.ParquetFile(path).metadata.num_rows == 0:
-            raise ResearchSeriesError("SERIES_NOT_DOWNLOADED", "该指数序列未下载到活跃快照。", status_code=404)
-        numeric_fields = _numeric_fields(path)
-        selected_field = field or ("close" if "close" in numeric_fields else numeric_fields[0] if numeric_fields else None)
-        if not selected_field or selected_field not in numeric_fields:
-            raise ResearchSeriesError("PROFILE_FIELD_INVALID", "请选择可计算的数值字段。", field="field")
-        frame = pd.read_parquet(
-            path,
-            columns=["ts_code", "trade_date", selected_field],
-            filters=[("ts_code", "==", code)],
-        )
-        frame = frame[frame["ts_code"].astype(str) == code]
-        frame = self._filter_profile_dates(frame, "trade_date", start_date, end_date)
-        frame = frame.sort_values("_observation_date").drop_duplicates("_observation_date", keep="last")
+            raise ResearchSeriesError("SERIES_NOT_DOWNLOADED", "该行情序列未下载到活跃快照。", status_code=404)
+        if product:
+            selected_field = field or product["default_field"]
+            try:
+                frame = read_product_observations(snapshot, kind, {"ts_code": code, "source_api": source_api, "field": selected_field}, "realtime" if availability_mode == "point_in_time" else "retrospective")
+            except ProductSourceError as exc:
+                raise ResearchSeriesError(exc.code, exc.message, field="series_id") from exc
+            if as_of:
+                cutoff = _parse_optional_date(as_of, "as_of")
+                frame = frame.loc[frame["available_at"] <= cutoff].copy()
+            frame = self._filter_profile_dates(frame, "observation_date", start_date, end_date)
+            order = ["_observation_date", "available_at"]
+            if "revision" in frame:
+                frame["revision"] = pd.to_numeric(frame["revision"], errors="coerce").fillna(0)
+                order.append("revision")
+            frame = frame.sort_values(order, kind="stable").drop_duplicates("_observation_date", keep="first" if availability_mode == "point_in_time" else "last")
+            try:
+                frame = apply_product_adjustment(frame, kind, selected_field)
+            except ProductSourceError as exc:
+                raise ResearchSeriesError(exc.code, exc.message, field="field") from exc
+            pit = {**product_pit(kind, selected_field), "as_of": as_of}
+            if (kind == "etf" and selected_field in ETF_ADJUSTED_FIELDS) or selected_field == "adj_nav":
+                pit.update(supported=False, availability_status="retrospective_adjustment")
+            if frame["availability_unknown"].any():
+                pit.update(supported=False, availability_status="unknown_retrospective_only")
+            identity = {"name": code, "category": product["label"]}
+            info = snapshot / product["info_file"]
+            if product["info_file"] in manifest.get("files", {}) and info.is_file():
+                selected = pd.read_parquet(info, columns=["ts_code", "name"], filters=[("ts_code", "==", code)])
+                if not selected.empty:
+                    identity["name"] = _text(selected.iloc[0]["name"]) or code
+        else:
+            numeric_fields = _numeric_fields(path)
+            selected_field = field or ("close" if "close" in numeric_fields else numeric_fields[0] if numeric_fields else None)
+            if not selected_field or selected_field not in numeric_fields:
+                raise ResearchSeriesError("PROFILE_FIELD_INVALID", "请选择可计算的数值字段。", field="field")
+            frame = pd.read_parquet(path, columns=["ts_code", "trade_date", selected_field], filters=[("ts_code", "==", code)])
+            frame = frame[frame["ts_code"].astype(str) == code]
+            frame = self._filter_profile_dates(frame, "trade_date", start_date, end_date)
+            frame = frame.sort_values("_observation_date").drop_duplicates("_observation_date", keep="last")
+            identity = self._index_identity(snapshot, source_api, code)
+            pit = {"supported": True, "observation_field": "trade_date", "available_at_field": "trade_date", "availability_status": "date_only_market_close"}
         self._validate_profile_size(frame)
         values = np.ascontiguousarray(pd.to_numeric(frame[selected_field], errors="coerce").to_numpy(dtype=np.float64))
         normalized, returns, cumulative, drawdown, rolling_volatility = index_profile_kernel(
@@ -1245,7 +1423,6 @@ class ResearchSeriesService:
         )
         indices = sample_indices_kernel(np.int64(values.size), np.int64(sample_limit))
         raw_distribution = _distribution_payload(values)
-        identity = self._index_identity(snapshot, source_api, code)
         binding_parameters = {
             "ts_code": code,
             "source_api": source_api,
@@ -1256,14 +1433,17 @@ class ResearchSeriesService:
             "source_file": filename,
             "file_checksum": _file_checksum(path),
         }
+        if product and kind == "etf" and selected_field in ETF_ADJUSTED_FIELDS:
+            binding_parameters["adjustment_checksum"] = frame.attrs["adjustment"]["checksum"]
         return {
             "schema_version": PROFILE_SCHEMA_VERSION,
+            **({"adjustment": frame.attrs["adjustment"]} if product and frame.attrs.get("adjustment") else {}),
             "series": {
                 "id": series_id,
-                "kind": "index",
+                "kind": kind,
                 "code": code,
                 "field": selected_field,
-                "unit": _field_unit(selected_field, "index"),
+                "unit": product["fields"][selected_field][1] if product else _field_unit(selected_field, "index"),
                 "frequency": "daily",
                 "source_api": source_api,
                 "dataset": filename,
@@ -1300,12 +1480,7 @@ class ResearchSeriesService:
                 "raw": raw_distribution,
                 "return": _distribution_payload(returns),
             },
-            "pit": {
-                "supported": True,
-                "observation_field": "trade_date",
-                "available_at_field": "trade_date",
-                "availability_status": "date_only_market_close",
-            },
+            "pit": {**pit, **({"available_at": [_date_text(frame["available_at"].iloc[index]) for index in indices]} if product else {})},
             "vintage": {"supported": False, "values": []},
             "transform_definitions": {
                 "normalized": "full selected sample z-score",
@@ -1314,10 +1489,10 @@ class ResearchSeriesService:
                 "drawdown": "current value / running finite peak - 1",
                 "rolling_volatility": f"{rolling_window}-observation sample volatility annualized by sqrt(252)",
             },
-            "regime_node_type": "source.index",
+            "regime_node_type": f"source.{kind}",
             "binding_parameters": binding_parameters,
             "binding": {
-                "node_type": "source.index",
+                "node_type": f"source.{kind}",
                 "parameters": binding_parameters,
             },
             "execution": research_series_numba_execution_audit(),
@@ -1743,6 +1918,8 @@ class ResearchSeriesService:
             if artifact is not None
             else {}
         )
+        if artifact is not None:
+            self._remember_upload(binding_parameters)
         fingerprint = (
             str(artifact["checksum"]).removeprefix("sha256:")
             if artifact is not None
@@ -1924,8 +2101,8 @@ class ResearchSeriesService:
                 sample_limit=sample_limit,
             )
         snapshot, manifest = self._active_snapshot()
-        if series_id.startswith("index:"):
-            result = self._profile_index(
+        if series_id.startswith(("index:", "etf:", "fund:")):
+            result = self._profile_market(
                 snapshot,
                 manifest,
                 series_id=series_id,
@@ -1934,6 +2111,8 @@ class ResearchSeriesService:
                 end_date=end_date,
                 rolling_window=rolling_window,
                 sample_limit=sample_limit,
+                as_of=as_of,
+                availability_mode=availability_mode,
             )
         elif series_id.startswith("macro:"):
             result = self._profile_macro(

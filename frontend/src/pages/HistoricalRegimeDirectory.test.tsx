@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -42,16 +42,36 @@ describe('HistoricalRegimeDirectory', () => {
     const user = userEvent.setup()
     renderDirectory()
 
-    expect(await screen.findByRole('heading', { name: '历史情景识别 · V2 算法目录' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '历史情景识别' })).toBeInTheDocument()
     expect(await screen.findByRole('heading', { name: '自由牛熊识别' })).toBeInTheDocument()
     expect(screen.getByText('战术配置')).toBeInTheDocument()
     expect(screen.getByText('正式运行').parentElement).toHaveTextContent('1')
-    expect(screen.getByRole('link', { name: '从模板开始' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?template=builtin-bull-bear')
+    expect(screen.getByRole('link', { name: '使用模板：牛熊震荡模板' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?template=builtin-bull-bear')
     expect(screen.getByRole('link', { name: '研究数据实验室' })).toHaveAttribute('href', '/settings/research-data-lab')
+    expect(screen.getByRole('link', { name: '从模板开始' })).toHaveAttribute('href', '#regime-templates')
+    expect(screen.getByRole('link', { name: '继续已有研究' })).toHaveAttribute('href', '#regime-saved')
+    const templateRegion = screen.getByRole('region', { name: '选择研究模板' })
+    const savedRegion = screen.getByRole('region', { name: '已有识别方案' })
+    expect(templateRegion.compareDocumentPosition(savedRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
-    await user.clear(screen.getByLabelText('自由牛熊识别 精确 revision'))
-    await user.type(screen.getByLabelText('自由牛熊识别 精确 revision'), '2')
+    await act(async () => {
+      await user.clear(screen.getByLabelText('自由牛熊识别 精确 revision'))
+      await user.type(screen.getByLabelText('自由牛熊识别 精确 revision'), '2')
+    })
     expect(screen.getByRole('link', { name: '打开精确版本' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?definition=graph-1&revision=2')
+    await act(async () => { await user.click(screen.getByRole('link', { name: '使用模板：牛熊震荡模板' })) })
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/settings/scenario-algorithms/workbench?template=builtin-bull-bear')
+  })
+
+  it('没有模板时保留自由构建入口，不把用户困在模板选择', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ok({ items: [] })))
+    const user = userEvent.setup()
+    renderDirectory()
+
+    expect(await screen.findByText(/当前没有可用模板/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '从空白画板自由构建' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench')
+    await act(async () => { await user.click(screen.getByRole('link', { name: '自由构建' })) })
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('/settings/scenario-algorithms/workbench')
   })
 
   it('V1 仅在只读迁移区出现，调用真实复制接口后打开新 V2 精确版本', async () => {
@@ -75,4 +95,17 @@ describe('HistoricalRegimeDirectory', () => {
     await waitFor(() => expect(screen.getByTestId('location-probe')).toHaveTextContent('/settings/scenario-algorithms/workbench?definition=migrated-v2&revision=1'))
     expect(fetchMock.mock.calls.some(([path, init]) => String(path).includes('/definitions/legacy-1/copy-to-v2?revision=2') && init?.method === 'POST')).toBe(true)
   })
+})
+
+
+it('峰谷模板仅放入事后识别分组，并携带正确模式进入工作台', async () => {
+  vi.stubGlobal('fetch', vi.fn(async input => String(input).endsWith('/templates/v2') ? ok({ items: [
+    { id: 'peak-trough-ps-v2', name: '峰谷定界法', default_mode: 'retrospective', supported_modes: ['retrospective'] },
+    { id: 'bull-bear-causal-v2', name: '指数牛熊震荡', default_mode: 'realtime' },
+  ] }) : ok({ items: [] })))
+  renderDirectory()
+  await screen.findByRole('region', { name: '事后识别' })
+  const offline = screen.getByRole('region', { name: '事后识别' })
+  expect(within(offline).getByRole('link', { name: '使用模板：峰谷定界法' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?template=peak-trough-ps-v2&mode=retrospective')
+  expect(within(screen.getByRole('region', { name: '实时识别' })).queryByText('峰谷定界法')).not.toBeInTheDocument()
 })

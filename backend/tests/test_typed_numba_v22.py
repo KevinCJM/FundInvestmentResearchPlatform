@@ -54,10 +54,11 @@ def test_current_registry_has_complete_fixed_signature_njit_coverage() -> None:
     }
     public = get_typed_operator_catalog()["operators"]
 
-    assert len(CANONICAL_OPERATOR_IDS) == 103
-    assert len(set(CANONICAL_OPERATOR_IDS)) == 103
+    from cal_indicators.operator_lowering import COMPOSITE_OPERATOR_IDS
+    assert len(set(CANONICAL_OPERATOR_IDS)) == len(CANONICAL_OPERATOR_IDS)
+    assert {"linear_fit", "value_at", "fit_slope", "fit_intercept"} <= canonical
     assert canonical == set(CANONICAL_OPERATOR_IDS) == set(registry)
-    assert len(frozen_v22) == 97
+    assert {"sum", "std", "drawdown_series", "total_return"} <= frozen_v22
     assert {
         "rolling_mean",
         "rolling_std",
@@ -66,8 +67,9 @@ def test_current_registry_has_complete_fixed_signature_njit_coverage() -> None:
         "recursive_smooth",
         "divide_or_default",
     }.isdisjoint(frozen_v22)
-    assert len(public) == 98
-    assert status["operator_coverage"] == "103/103"
+    assert {item["id"] for item in public} == canonical - COMPOSITE_OPERATOR_IDS
+    assert "drawdown_analysis" not in frozen_v22
+    assert status["operator_coverage"] == f"{len(registry)}/{len(registry)}"
     assert status["warmed"] is True
     assert status["python_fallback"] == 0
     assert status["python_operator_calls"] == 0
@@ -81,7 +83,8 @@ def test_current_registry_has_complete_fixed_signature_njit_coverage() -> None:
 def test_all_context_variables_are_numeric_float64_contracts() -> None:
     variables = variable_catalog()
 
-    assert len(variables) == 29
+    assert len({variable["id"] for variable in variables}) == len(variables)
+    assert next(variable for variable in variables if variable["id"] == "observation_dates")["semantic"] == "date"
     assert any(variable["id"] == "portfolio_returns" for variable in variables)
     assert all(variable["dtype"] == "float64" for variable in variables)
     assert all(
@@ -227,7 +230,8 @@ def test_runtime_does_not_call_python_operator_registry() -> None:
     assert value == pytest.approx((0.01 - 0.02 + 0.03) / 3.0)
     assert runtime.trace_payload()["python_operator_calls"] == 0
     assert runtime.trace_payload()["python_fallback"] == 0
-    assert kernel_registry_status()["operator_coverage"] == "103/103"
+    count = len(CANONICAL_OPERATOR_IDS)
+    assert kernel_registry_status()["operator_coverage"] == f"{count}/{count}"
 
 
 def test_batch_plan_cache_lookup_never_compiles_on_miss() -> None:

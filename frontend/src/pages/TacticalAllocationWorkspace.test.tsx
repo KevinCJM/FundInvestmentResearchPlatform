@@ -45,6 +45,20 @@ const run = {
   publications: [{ id: 'PUB-1', usage: 'taa', published_at: '2026-09-03', definition_revision: 3, run_id: 'RUN-REGIME-1', run_content_hash: 'run-hash', gate: 'causality_passed' }],
 }
 
+const v2Run = {
+  ...run,
+  id: 'RUN-V2',
+  schema_version: '2.0',
+  name: 'V2 牛熊识别',
+  content_hash: 'a'.repeat(64),
+  definition_snapshot_hash: 'b'.repeat(64),
+  governance: { formal_gate_passed: true, publish_eligible_usages: ['taa', 'formal_backtest'] },
+  publications: [{
+    ...run.publications[0], id: 'PUB-V2', run_id: 'RUN-V2',
+    run_content_hash: 'a'.repeat(64), gate: 'comprehensive_formal_gate_passed',
+  }],
+}
+
 const result = {
   schema_version: '1.0',
   run_id: 'RUN-REGIME-1',
@@ -101,6 +115,48 @@ describe('TacticalAllocationWorkspace', () => {
     const timingCard = (await screen.findByText('严格时序')).parentElement
     expect(timingCard).toHaveTextContent('regime.effective_date <= asset_return.period_start')
     expect(screen.getByText(/returns-hash/)).toBeInTheDocument()
+  })
+
+  it('V2 综合发布版本可从轻量列表进入 TAA，旧 gate 的 V2 不会混入', async () => {
+    const summary = { ...v2Run, states: undefined, series: undefined, series_included: false }
+    const wrongGate = {
+      ...v2Run, id: 'V2-WRONG-GATE',
+      publications: [{ ...v2Run.publications[0], run_id: 'V2-WRONG-GATE', gate: 'causality_passed' }],
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path === '/api/historical-regimes/runs') return ok({ items: [summary, wrongGate, run] })
+      if (path === '/api/historical-regimes/runs/RUN-V2') return ok(v2Run)
+      if (path.endsWith('/RUN-V2/taa-backtest') && init?.method === 'POST') return ok({
+        ...result, run_id: 'RUN-V2',
+        gate: { ...result.gate, run_content_hash: v2Run.content_hash, publication_ids: ['PUB-V2'] },
+      })
+      throw new Error(`unexpected ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<MemoryRouter><TacticalAllocationWorkspace /></MemoryRouter>)
+
+    expect(await screen.findByRole('option', { name: /V2 牛熊识别 · R3 · RUN-V2/ })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /V2-WRONG-GATE/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: /沪深300 牛熊状态/ })).toBeInTheDocument()
+    expect((await screen.findByLabelText('状态权重偏移') as HTMLTextAreaElement).value).toContain('bull')
+    await act(async () => { await user.click(screen.getByRole('button', { name: '运行 TAA 回测' })) })
+    expect(await screen.findByText('SAA 与情景驱动 TAA 对照')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).endsWith('/RUN-V2/taa-backtest'))).toHaveLength(1)
+  })
+
+  it('所选详情与已发布摘要不一致时阻止运行', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/api/historical-regimes/runs') return ok({ items: [{ ...v2Run, states: undefined }] })
+      if (path === '/api/historical-regimes/runs/RUN-V2') return ok({ ...v2Run, content_hash: 'c'.repeat(64) })
+      throw new Error(`unexpected ${path}`)
+    }))
+    render(<MemoryRouter><TacticalAllocationWorkspace /></MemoryRouter>)
+    expect(await screen.findByRole('alert')).toHaveTextContent('与已发布版本不一致')
+    expect(screen.getByRole('button', { name: '运行 TAA 回测' })).toBeDisabled()
+    expect(screen.queryByText('版本可用于 TAA')).not.toBeInTheDocument()
   })
 
   it('没有合格的发布版本时阻止运行并解释门禁', async () => {

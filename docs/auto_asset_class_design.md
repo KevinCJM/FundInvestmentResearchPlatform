@@ -68,6 +68,14 @@ etf_weight        类内权重，按大类归一化到 100
 
 这是默认特征，因为**大类资产的经济本质就是同涨同跌**。分类依据是行为而不是标签，能自动发现「名字叫债基但走得像权益」的产品。
 
+### F1' 去噪相关性（RMT）
+
+同样是 F1 的距离，但相关矩阵先过 Marchenko–Pastur 特征值裁剪：N 个产品 T 个交易日，纯噪声相关矩阵的特征值上界是 (1 + √(N/T))²，落在界内的特征值全部抹平成同一水平（保迹），只留系统性模式。40 只 ETF × 1 年日频，大约一半的谱是噪声。
+
+两个边界：`T ≤ N` 时样本相关矩阵秩亏，信号/噪声无法区分，直接返回原矩阵；全信号或全噪声时裁剪要么无效要么把结构抹成单位阵，同样返回原矩阵。
+
+**去噪只影响聚类几何**——诊断里报告的相关性、显著特征值个数仍然来自原始观测矩阵。
+
 ### F2 风险收益画像
 
 直接读 `instrument_metrics_snapshot.parquet`（已有 38 列）：
@@ -139,16 +147,19 @@ s.t.   w_i >= 0,  Σ w_i = 1
 | **相关性层次聚类** ⭐ | D（F1 距离），ward / average linkage，切树到 K | 默认。无需初值、结果确定、树状图天然可解释「为什么这两个在一起」 |
 | **K-medoids (PAM)** | D | 类中心是**真实产品** → 直接得到「代表产品」，正是 SAA 建大类要的东西 |
 | **K-means** | X（F2/F4 标准化特征） | 快，但质心是虚拟点，且对量纲敏感；作为对照 |
-| **GMM 软聚类** | X | 输出归属概率 → 天然的亲和度矩阵 + 边界产品提示（「该产品 45% 像权益、40% 像转债」） |
-| **DBSCAN / HDBSCAN** | D | 不强制分配，专门用来**捞离群产品**（分级 B、打新、纯套利），进「待观察」池 |
+| **谱聚类（NJW 归一化割）** | D → 高斯核图 | 唯一不假设「类是圆的」的算法。核宽取池内平均距离自适应；对连续过渡的产品链（沪深300 → 中证500 → 创业板）不会在任意半径处切断 |
+| **GMM 软聚类** | X | 对角协方差 + EM，k-means 初值。每类有各自的松紧度（货币类很紧、主题类很散），输出归属概率而非硬标签 |
+| **DBSCAN / HDBSCAN** | D | 未实现。不强制分配、专门捞离群产品——但现有 `unassigned_policy=park` + 容量约束已经在做这件事，暂不重复建设 |
 
-推荐默认 `corr-hierarchical`，备选 `kmedoids`。
+推荐默认 `corr-hierarchical`，备选 `kmedoids`。产品池大、边界模糊时用 `spectral` / `gmm` 做交叉验证：三种算法都把两只产品分到一起，这个结论才稳。
+
+**GMM 后验的去向**：概率留在内核内部，只用于取 argmax 定标签。下游的亲和度—容量—权重链条是「负距离」量纲，混入 [0,1] 概率会破坏 `capacity_assign_kernel` 的 `affinity_floor` 语义。要在界面上展示归属置信度，需要单独开一条字段，不能复用 affinity。
 
 ### C 类：数学回归 / 降维
 
 - **RBSA 直接分类**：按 F4 暴露向量的最大分量归类，`A[i,k] = w_ik`。金融解释性最强。
 - **PCA / 特征值分解**：对相关矩阵做谱分解，前几个主成分的载荷符号与大小分类；同时用 **Marchenko–Pastur 上界**统计显著特征值个数，作为 K 的建议值——这是把「该分几类」从拍脑袋变成有依据的关键一步。
-- **去噪**：MP 去噪 / 收缩估计后的相关矩阵再进聚类，样本期短时明显更稳。
+- **去噪** ✅ 已实现为特征集 `denoised`（见 F1'）：MP 特征值裁剪后的相关矩阵再进聚类，样本期短时明显更稳。收缩估计（Ledoit-Wolf）暂未实现。
 
 ### D 类：树模型（第二阶段）
 
@@ -287,16 +298,16 @@ s.t. Σ_k x[i,k] <= 1                    每个产品最多进一类
 
 | 文件 | 内容 |
 |---|---|
-| `backend/auto_class_numba.py` | 21 个 fixed-signature NJIT 内核：稳健标准化、winsorize、相关/距离矩阵、PCA 载荷与特征值、Lance-Williams 层次聚类与切树、K-means、K-medoids、亲和度、容量选择、轮廓系数、类内/类间相关、类内权重、产品池限额注水、**分层 K 分配** |
+| `backend/auto_class_numba.py` | 24 个 fixed-signature NJIT 内核：稳健标准化、winsorize、相关/距离矩阵、**MP 去噪**、PCA 载荷与特征值、Lance-Williams 层次聚类与切树、K-means、K-medoids、**谱聚类**、**GMM**、亲和度、容量选择、轮廓系数、类内/类间相关、类内权重、产品池限额注水、**分层 K 分配** |
 | `backend/fund_taxonomy.py` | A 股公募/ETF 三级合同分类表与匹配器（见 4.A），纯查表、可复现、可解释 |
 | `backend/auto_asset_class.py` | 编排层：产品解析、特征装配、K 建议、分类、**合同分层**、命名、诊断与序列化 |
 | `backend/services/auto_class_routes.py` | `GET /api/asset-classes/auto/meta`、`POST /api/asset-classes/auto/preview` |
 | `backend/app.py` | 启动预热接入 `warm_auto_class_numba_kernels()`，readiness 覆盖新链路 |
-| `backend/tests/test_auto_asset_class.py` | 130 条测试：内核对照参考实现、边界、确定性、编排、路由、**三级分类表与合同分层** |
+| `backend/tests/test_auto_asset_class.py` | 137 条测试：内核对照参考实现、边界、确定性、编排、路由、**三级分类表与合同分层** |
 | `backend/tests/conftest.py` | 统一 `sys.path`；并把测试的 `NUMBA_CACHE_DIR` 隔离到 `.numba_cache/tests` |
 
-算法：`rule` / `hierarchical`（average、complete、ward）/ `kmedoids` / `kmeans`。
-特征：`correlation` / `metrics` / `pca` / `blend`。
+算法：`rule` / `hierarchical`（average、complete、ward）/ `kmedoids` / `kmeans` / `spectral` / `gmm`。
+特征：`correlation` / `denoised` / `metrics` / `pca` / `blend`。
 类内权重：`equal` / `inv_vol` / `inv_var` / `affinity`。
 合同分类层级 `taxonomy_level`：`asset_class` / `category` / `detail`（决定大类命名与 `rule` 算法粒度）。
 合同分层 `block_by`：`none` / `asset_class` / `category` / `detail`（统计聚类不可跨越的硬约束）。

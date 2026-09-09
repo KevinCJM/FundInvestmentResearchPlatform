@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .models import CenterError, InterfaceConfig, SourceConfig
+from backend.data_storage import guard_path
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "data"
 
@@ -21,6 +22,7 @@ def utc_now() -> str:
 class SourceStore:
     def __init__(self, root: Path = DEFAULT_ROOT) -> None:
         self.root = Path(root)
+        guard_path(self.root, write=True)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "data_sources.sqlite3"
         with self.connection() as db:
@@ -38,6 +40,7 @@ class SourceStore:
             CREATE TABLE IF NOT EXISTS source_run (
                 id TEXT PRIMARY KEY, interface_id TEXT NOT NULL, status TEXT NOT NULL,
                 snapshot TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS source_run_created ON source_run(created_at DESC);
             CREATE TABLE IF NOT EXISTS source_preset (
                 kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
                 PRIMARY KEY(kind,id));
@@ -46,13 +49,30 @@ class SourceStore:
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=15)
-        db.row_factory = sqlite3.Row
+        guard_path(self.root)
+        db = None
         try:
+            db = sqlite3.connect(self.path, timeout=15)
+            db.row_factory = sqlite3.Row
             with db:
                 yield db
+        except sqlite3.OperationalError as exc:
+            # Never leak SQL, paths or bound configuration values. This is a
+            # local storage failure, not permission to retry a supplier request.
+            code = getattr(exc, 'sqlite_errorcode', 0) & 0xff
+            errors = {
+                sqlite3.SQLITE_BUSY: ('SOURCE_DB_BUSY', '控制数据库锁等待超时'),
+                sqlite3.SQLITE_LOCKED: ('SOURCE_DB_BUSY', '控制数据库被并发事务占用'),
+                sqlite3.SQLITE_FULL: ('SOURCE_DB_FULL', '控制数据库所在磁盘空间不足'),
+                sqlite3.SQLITE_IOERR: ('SOURCE_DB_IO', '控制数据库磁盘读写失败，请检查数据盘连接'),
+                sqlite3.SQLITE_CANTOPEN: ('SOURCE_DB_OPEN', '控制数据库无法打开，请检查数据盘与权限'),
+                sqlite3.SQLITE_READONLY: ('SOURCE_DB_READONLY', '控制数据库不可写，请检查数据盘权限'),
+            }
+            identifier, message = errors.get(code, ('SOURCE_DB_OPERATIONAL', '控制数据库操作失败'))
+            raise CenterError(identifier, message + '；检查点保留，未发布数据。', 503) from None
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
     def seed(self) -> None:
         from .presets import default_interfaces, default_source

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, get_args
 
 import numpy as np
 import pandas as pd
@@ -226,6 +226,68 @@ def test_kmedoids_and_kmeans_recover_planted_groups() -> None:
     assert len(set(medoids.tolist())) == 3
     features = kernels.robust_standardize_kernel(_c(correlation))
     assert _grouping_is_exact(kernels.kmeans_kernel(features, 3, 7, 200), 3, 4)
+
+
+def test_spectral_and_gmm_recover_planted_groups() -> None:
+    returns = _grouped_returns()
+    correlation = kernels.correlation_matrix_kernel(returns)
+    distance = kernels.corr_to_distance_kernel(_c(correlation))
+    features = kernels.robust_standardize_kernel(_c(correlation))
+
+    spectral = kernels.spectral_labels_kernel(_c(distance), 3, 7, 200)
+    assert _grouping_is_exact(spectral, 3, 4)
+    assert spectral.tolist() == kernels.spectral_labels_kernel(_c(distance), 3, 7, 200).tolist()
+
+    labels, posterior = kernels.gmm_kernel(features, 3, 7, 200)
+    assert _grouping_is_exact(labels, 3, 4)
+    assert posterior.shape == (12, 3)
+    assert np.allclose(posterior.sum(axis=1), 1.0)
+    assert np.all(posterior >= 0.0)
+    # argmax of the posterior is what becomes the label.
+    assert posterior.argmax(axis=1).tolist() == labels.tolist()
+    assert labels.tolist() == kernels.gmm_kernel(features, 3, 7, 200)[0].tolist()
+
+
+def test_spectral_and_gmm_degrade_safely_on_tiny_pools() -> None:
+    returns = _grouped_returns(periods=120, groups=2, per_group=1, seed=5)
+    correlation = kernels.correlation_matrix_kernel(returns)
+    distance = kernels.corr_to_distance_kernel(_c(correlation))
+    features = kernels.robust_standardize_kernel(_c(correlation))
+    # Two products cannot support a graph cut; one class is the honest answer.
+    assert set(kernels.spectral_labels_kernel(_c(distance), 3, 7, 50).tolist()) == {0}
+    single, posterior = kernels.gmm_kernel(features, 1, 7, 50)
+    assert set(single.tolist()) == {0}
+    assert np.allclose(posterior, 1.0)
+
+
+def test_denoise_correlation_flattens_the_noise_spectrum() -> None:
+    returns = _grouped_returns()
+    correlation = _c(kernels.correlation_matrix_kernel(returns))
+    denoised = kernels.denoise_correlation_kernel(correlation, returns.shape[0])
+
+    assert np.allclose(np.diag(denoised), 1.0)
+    assert np.allclose(denoised, denoised.T)
+    assert np.trace(denoised) == pytest.approx(np.trace(correlation))
+
+    raw_eigenvalues = np.linalg.eigvalsh(correlation)
+    denoised_eigenvalues = np.linalg.eigvalsh(denoised)
+    # Three planted factors survive; the other nine collapse to one level.
+    assert denoised_eigenvalues[-3:] == pytest.approx(raw_eigenvalues[-3:], abs=0.05)
+    noise = denoised_eigenvalues[:-3]
+    assert noise.max() - noise.min() < 0.02
+    assert noise.max() - noise.min() < (raw_eigenvalues[:-3].max() - raw_eigenvalues[:-3].min())
+    # Clustering the denoised distance still finds the planted groups.
+    distance = kernels.corr_to_distance_kernel(_c(denoised))
+    linkage = kernels.agglomerative_linkage_kernel(_c(distance), kernels.LINKAGE_AVERAGE)
+    assert _grouping_is_exact(kernels.cut_linkage_kernel(_c(linkage), 12, 3), 3, 4)
+
+
+def test_denoise_correlation_leaves_rank_deficient_samples_alone() -> None:
+    returns = _grouped_returns(periods=400)
+    correlation = _c(kernels.correlation_matrix_kernel(returns))
+    # T <= N: no signal/noise split is identifiable, so nothing may be clipped.
+    assert np.allclose(kernels.denoise_correlation_kernel(correlation, 12), correlation)
+    assert np.allclose(kernels.denoise_correlation_kernel(correlation, 4), correlation)
 
 
 def test_clustering_is_deterministic_across_repeated_runs() -> None:
@@ -624,6 +686,44 @@ def test_rule_algorithm_uses_contract_labels(tmp_path: Path) -> None:
     assert result["diagnostics"]["contract_deviations"] == []
 
 
+@pytest.mark.parametrize("algorithm", ["spectral", "gmm"])
+def test_spectral_and_gmm_run_end_to_end(tmp_path: Path, algorithm: str) -> None:
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", algorithm=algorithm, k=3, size_min=1, size_max=5
+        ),
+    )
+    assert result["algorithm"] == algorithm
+    assert len(result["classes"]) == 3
+    assert sum(group["size"] for group in result["classes"]) + len(result["unassigned"]) == len(codes)
+
+
+def test_denoised_feature_set_runs_end_to_end(tmp_path: Path) -> None:
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", features="denoised", k=3, size_min=1, size_max=5
+        ),
+    )
+    assert result["features"] == "denoised"
+    assert len(result["classes"]) == 3
+    # Denoising only reshapes the clustering geometry; reported correlations
+    # must stay the raw observed ones.
+    raw = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", features="correlation", k=3, size_min=1, size_max=5
+        ),
+    )
+    assert (
+        result["diagnostics"]["significant_eigenvalues"]
+        == raw["diagnostics"]["significant_eigenvalues"]
+    )
+
+
 def test_unknown_codes_are_reported_not_silently_dropped(tmp_path: Path) -> None:
     codes = _write_fixture(tmp_path)
     result = service.run_auto_classification(
@@ -805,6 +905,22 @@ def test_unrestricted_pool_leaves_class_capacity_at_full(tmp_path: Path) -> None
     assert all(member["max_weight"] is None and member["capped"] is False
                for group in result["classes"] for member in group["etfs"])
     assert not any("产品池限额" in warning for warning in result["warnings"])
+
+
+def test_request_model_accepts_every_option_the_meta_route_advertises() -> None:
+    """A registry entry the request schema rejects reaches the UI as an
+    unrenderable 422, not as a usable option."""
+
+    fields = routes.AutoClassPreviewRequest.model_fields
+    for field, registry in (
+        ("algorithm", service.ALGORITHMS),
+        ("features", service.FEATURE_SETS),
+        ("linkage", service.LINKAGE_METHODS),
+        ("weightMode", service.WEIGHT_MODES),
+        ("blockBy", service.BLOCK_MODES),
+        ("taxonomyLevel", taxonomy.TAXONOMY_LEVELS),
+    ):
+        assert set(get_args(fields[field].annotation)) == set(registry), field
 
 
 def test_meta_route_exposes_every_supported_option() -> None:

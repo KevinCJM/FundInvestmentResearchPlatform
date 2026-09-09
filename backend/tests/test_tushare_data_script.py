@@ -1427,6 +1427,7 @@ def test_missing_only_consolidation_rejects_duplicate_code_without_replacing_bas
 
 def test_manual_cli_lock_persists_redacted_failure_and_releases(monkeypatch, tmp_path: Path) -> None:
     module = _load_data_script()
+    monkeypatch.setattr(module, 'configuration_fingerprint', lambda: 'offline-config')
     lock_path = tmp_path / ".refresh.lock"
     state_path = tmp_path / ".refresh.json"
     args = types.SimpleNamespace(latest=True, output_dir=tmp_path)
@@ -1477,6 +1478,7 @@ def test_manual_cli_rejects_duplicate_before_running(monkeypatch, tmp_path: Path
 
 def test_manual_cli_persists_heartbeat_and_local_snapshot(monkeypatch, tmp_path: Path) -> None:
     module = _load_data_script()
+    monkeypatch.setattr(module, 'configuration_fingerprint', lambda: 'offline-config')
     lock_path = tmp_path / ".refresh.lock"
     state_path = tmp_path / ".refresh.json"
     args = types.SimpleNamespace(latest=False, output_dir=tmp_path)
@@ -1504,6 +1506,7 @@ def test_manual_cli_persists_heartbeat_and_local_snapshot(monkeypatch, tmp_path:
 
 def test_manual_cli_snapshot_failure_does_not_mark_fetch_failed(monkeypatch, tmp_path: Path) -> None:
     module = _load_data_script()
+    monkeypatch.setattr(module, 'configuration_fingerprint', lambda: 'offline-config')
     state_path = tmp_path / ".refresh.json"
     args = types.SimpleNamespace(latest=False, output_dir=tmp_path)
     monkeypatch.setattr(module, "GLOBAL_REFRESH_LOCK_PATH", tmp_path / ".refresh.lock")
@@ -1525,6 +1528,29 @@ def test_manual_cli_snapshot_failure_does_not_mark_fetch_failed(monkeypatch, tmp
     assert persisted["analytics_snapshot"]["status"] == "failed"
     assert persisted["warnings"][0]["code"] == "ANALYTICS_REBUILD_FAILED"
     assert "无需重新拉取数据" in persisted["message"]
+
+
+@pytest.mark.parametrize('second', ['empty', 'data', 'error'])
+def test_index_empty_response_requires_independent_confirmation(monkeypatch, second):
+    module = _load_data_script()
+    calls = []
+    def query(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1 or second == 'empty':
+            return pd.DataFrame()
+        if second == 'error':
+            raise RuntimeError('offline confirmation failure')
+        return pd.DataFrame([{'ts_code': 'A.TI', 'trade_date': '20260904', 'close': 1.0}])
+    monkeypatch.setattr(module, '_call_index_api', query)
+    def invoke():
+        return module.fetch_index_date_window(pro=object(), api_name='ths_daily', limiter=object(),
+            args=object(), code='A.TI', start_date='20260904', end_date='20260904')
+    if second == 'error':
+        with pytest.raises(RuntimeError): invoke()
+    else:
+        assert len(invoke()) == (1 if second == 'data' else 0)
+    assert len(calls) == 2
+    assert '独立复核' in calls[1]['context']
 
 
 def test_index_capped_range_is_bisected_before_results_are_accepted() -> None:
@@ -2135,3 +2161,50 @@ def test_tushare_download_document_tracks_executable_contract() -> None:
     assert "代码已支持但未下载" in document
     assert "本地派生" in document
     assert "TushareDownload.md" in agents
+
+
+@pytest.mark.parametrize('latest', [False, True])
+def test_adjustment_uses_etf_directory_not_off_exchange_funds(tmp_path, monkeypatch, latest):
+    module = _load_data_script()
+    pd.DataFrame([{'ts_code':'510300.SH', 'name':'ETF'}]).to_parquet(tmp_path / 'etf_info_df.parquet')
+    pd.DataFrame([{'ts_code':'000001.OF', 'name':'场外'}]).to_parquet(tmp_path / 'fund_info_df.parquet')
+    calls = []
+    def fetch(**params):
+        calls.append(params)
+        assert params.get('ts_code', '510300.SH') == '510300.SH'
+        return pd.DataFrame([{'ts_code':'510300.SH', 'trade_date':'20260904', 'adj_factor':1.5}])
+    args = module.parse_args(['--start-date','20260904','--end-date','20260904','--max-workers','1',
+                              '--max-retries','1','--output-dir',str(tmp_path)] + (['--latest'] if latest else []))
+    monkeypatch.setattr(module, 'load_open_trade_dates', lambda *a, **kw: ['20260904'])
+    module.save_fund_adjustment(types.SimpleNamespace(fund_adj=fetch), tmp_path, module.RateLimiter(100000), args)
+    result = pd.read_parquet(tmp_path / 'fund_adj_factor_df.parquet')
+    assert len(calls) == 1 and result.ts_code.tolist() == ['510300.SH']
+    assert result.adj_factor.tolist() == [1.5] and result.source_api.tolist() == ['fund_adj']
+    assert result.available_at.iloc[0] == pd.Timestamp('20260904')
+
+
+@pytest.mark.parametrize('case', ['off_exchange','different_code','wrong_date','invalid_date','duplicate','negative','nan','infinite','missing'])
+def test_adjustment_invalid_responses_fail_closed(case):
+    module = _load_data_script()
+    row = {'ts_code':'510300.SH', 'trade_date':'20260904', 'adj_factor':1.}
+    if case == 'off_exchange': row['ts_code'] = '000001.OF'
+    if case == 'different_code': row['ts_code'] = '513500.SH'
+    if case == 'wrong_date': row['trade_date'] = '20260903'
+    if case == 'invalid_date': row['trade_date'] = 'not-a-date'
+    if case == 'negative': row['adj_factor'] = -1.
+    if case == 'nan': row['adj_factor'] = float('nan')
+    if case == 'infinite': row['adj_factor'] = float('inf')
+    if case == 'missing': del row['adj_factor']
+    with pytest.raises(ValueError):
+        module._prepare_fund_adjustment_rows(pd.DataFrame([row] * (2 if case == 'duplicate' else 1)),
+                                             '20260904','20260904',code='510300.SH')
+
+
+def test_adjustment_rejects_off_exchange_before_request(tmp_path):
+    module = _load_data_script()
+    args = module.parse_args(['--start-date','20260904','--end-date','20260904'])
+    def unexpected(**params):
+        pytest.fail('Invalid off-exchange code must not consume quota')
+    with pytest.raises(ValueError):
+        module.fetch_fund_adjustment(types.SimpleNamespace(fund_adj=unexpected), '000001.OF', '场外',
+                                      module.RateLimiter(100000), args)

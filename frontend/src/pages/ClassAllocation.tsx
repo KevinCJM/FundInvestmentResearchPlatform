@@ -16,6 +16,7 @@ import {
   RegimeConditioningPanel,
 } from '../components/HistoricalRegimeBacktest';
 import type { HistoricalRegimeBacktestReference } from '../services/portfolioRegime';
+import { apiErrorMessage } from '../utils/apiError'
 
 // Helper component for section titles
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -274,7 +275,7 @@ export default function ClassAllocation() {
       const data = await response.json();
       if (!response.ok) {
         const fallback = strategy.type === 'risk_budget' ? '风险预算权重计算失败' : '指定目标权重计算失败';
-        throw new Error(data?.detail || fallback);
+        throw new Error(apiErrorMessage(data, fallback));
       }
       assertFixedNjitExecution(data?.execution, '大类权重求解');
       return (data.weights || []) as number[];
@@ -311,7 +312,7 @@ export default function ClassAllocation() {
       });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data?.detail || '批量调仓权重计算失败');
+        throw new Error(apiErrorMessage(data, '批量调仓权重计算失败'));
       }
       assertFixedNjitExecution(data?.execution, '批量调仓权重计算');
       const markers = (data.dates || []).map((d: string, idx: number) => ({
@@ -697,7 +698,7 @@ export default function ClassAllocation() {
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || '计算失败');
+      if (!res.ok) throw new Error(apiErrorMessage(data, '计算失败'));
       assertFixedNjitExecution(data?.execution, '大类配置有效前沿');
       setFrontierData(data);
     } catch (e: any) {

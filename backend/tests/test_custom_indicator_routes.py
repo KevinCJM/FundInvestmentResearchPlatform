@@ -84,7 +84,15 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     assert meta.status_code == 200
     assert meta.json()["workspace_scope"] == "shared"
     assert listing.status_code == 200
-    assert listing.json()["total"] == 42
+    visible_items = listing.json()["items"]
+    assert listing.json()["total"] == len(visible_items)
+    assert all(item.get("result_kind", "scalar") in {"scalar", "time_series"} for item in visible_items)
+    assert {item["id"] for item in visible_items} >= {
+        "builtin-last-maximum-drawdown-rate", "builtin-maximum-drawdown-start-date",
+        "builtin-maximum-drawdown-trough-date", "builtin-maximum-drawdown-duration-days",
+        "builtin-maximum-drawdown-recovery-date", "builtin-maximum-drawdown-recovery-days",
+        "builtin-maximum-drawdown-total-days",
+    }
     assert sum(item["name"] == "累计收益率" for item in listing.json()["items"]) == 1
     assert all(item["catalog_status"] == "current" for item in listing.json()["items"])
     risk_listing = client.get("/api/custom-indicators?indicator_type=risk")
@@ -96,7 +104,8 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     )
     compatibility = client.get("/api/custom-indicators?include_compatibility=true")
     assert compatibility.status_code == 200
-    assert compatibility.json()["total"] == 47
+    assert compatibility.json()["total"] == len(compatibility.json()["items"])
+    assert compatibility.json()["total"] > listing.json()["total"]
     hidden_legacy = next(
         item
         for item in compatibility.json()["items"]

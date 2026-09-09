@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
@@ -376,6 +377,7 @@ def _verify_metric_samples(
     candle_samples: dict[str, pd.DataFrame],
     requested: dict[str, list[str]],
     open_dates: pd.DatetimeIndex | None = None,
+    use_configured_metrics: bool = False,
 ) -> dict[str, int]:
     verified = {"etf": 0, "fund": 0, "premium_discount": 0}
     comparable = (
@@ -401,7 +403,7 @@ def _verify_metric_samples(
                 snapshot["instrument_type"].eq(kind) & snapshot["ts_code"].astype(str).eq(code)
             ].iloc[0]
             for metric in comparable:
-                if metric in row.index:
+                if metric in row.index and (not use_configured_metrics or metric in {"first_date", "latest_date", "observation_count"}):
                     _assert_metric_equal(code, metric, row.get(metric), actual.get(metric))
             verified[kind] += 1
 
@@ -422,6 +424,84 @@ def _verify_metric_samples(
                 code, "premium_discount_latest", row.get("premium_discount_latest"), expected_premium
             )
             verified["premium_discount"] += 1
+    return verified
+
+
+def _verify_configured_metric_samples(
+    snapshot_dir: Path,
+    snapshot: pd.DataFrame,
+    requested: dict[str, list[str]],
+) -> dict[str, int]:
+    """Re-evaluate the recorded definitions, never compare them to fixed formulas."""
+    metadata_path = snapshot_dir / "instrument_metrics_snapshot.meta.json"
+    if not metadata_path.is_file():
+        if any(str(column).endswith("__status") for column in snapshot.columns):
+            raise SnapshotValidationError("配置指标快照缺少指标版本记录。")
+        return {}
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        items = metadata["items"]
+        if not isinstance(items, list) or len(items) != metadata["configured_count"]:
+            raise ValueError("invalid configured count")
+        fields: set[str] = set()
+        for item in items:
+            field = item["field"]
+            if (
+                not isinstance(field, str) or not field or field in fields
+                or field not in snapshot.columns
+                or not isinstance(item["indicator_id"], str) or not item["indicator_id"]
+                or type(item["indicator_revision"]) is not int or item["indicator_revision"] < 1
+                or not isinstance(item["period"], str) or not item["period"]
+            ):
+                raise ValueError("invalid recorded indicator")
+            fields.add(field)
+        status_fields = {str(column).removesuffix("__status") for column in snapshot.columns if str(column).endswith("__status")}
+        if status_fields - fields:
+            raise ValueError("missing recorded indicator")
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise SnapshotValidationError("配置指标快照的指标版本记录无效，拒绝使用固定公式代替。") from exc
+    if not items:
+        return {}
+
+    from backend.custom_indicators.service import CustomIndicatorService
+
+    service = CustomIndicatorService(
+        workspace_data_dir=snapshot_dir.parent, market_data_dir=snapshot_dir,
+    )
+    service.warm_snapshot_numba_plans(items)
+    targets = [{"kind": kind, "product_id": code} for kind, codes in requested.items() for code in codes]
+    rows = snapshot.set_index(["instrument_type", "ts_code"])
+    verified: dict[str, int] = {}
+    for item in items:
+        field = item["field"]
+        verified[field] = 0
+        for start in range(0, len(targets), 50):
+            batch = targets[start:start + 50]
+            response = service.evaluate(
+                indicator_ids=[item["indicator_id"]],
+                indicator_versions={item["indicator_id"]: item["indicator_revision"]},
+                inline_definition=None, targets=batch, period=item["period"],
+                include_series=False, prefer_snapshot=False,
+            )
+            expected_targets = {(target["kind"], target["product_id"]) for target in batch}
+            observed: set[tuple[str, str]] = set()
+            for result in response.get("results", []):
+                target = result.get("target") or {}
+                key = (target.get("kind"), target.get("product_id"))
+                if key not in expected_targets or key in observed or result.get("indicator_id") != item["indicator_id"]:
+                    raise SnapshotValidationError(f"配置指标抽样复算返回标的或指标不匹配: {field}")
+                observed.add(key)
+                if result.get("status") not in {"ok", "warning", "unavailable"}:
+                    raise SnapshotValidationError(f"配置指标抽样复算失败: {key[1]} {field}")
+                row = rows.loc[key]
+                status_column = f"{field}__status"
+                if status_column in row and row[status_column] != result.get("status"):
+                    raise SnapshotValidationError(f"配置指标抽样复算状态不一致: {key[1]} {field}")
+                metric = "value_date" if (item.get("presentation") or {}).get("value_type") == "date" else field
+                _assert_metric_equal(key[1], metric, row[field], result.get("value"))
+                verified[field] += 1
+            if observed != expected_targets:
+                raise SnapshotValidationError(f"配置指标抽样复算结果缺失: {field}")
     return verified
 
 
@@ -597,17 +677,20 @@ def validate_tushare_snapshot(
         raise SnapshotValidationError(
             "instrument_metrics_snapshot.parquet 缺少 candle_source_fingerprint 列。"
         )
+    configured_samples = _verify_configured_metric_samples(snapshot, metrics_frame, requested_samples)
+    datasets["analytics_snapshot"]["configured_metric_samples"] = configured_samples
     datasets["analytics_snapshot"]["independent_metric_samples"] = _verify_metric_samples(
         metrics_frame,
         nav_samples,
         candle_samples,
         requested_samples,
         load_sse_open_dates(snapshot / "trade_day_df.parquet"),
+        (snapshot / "instrument_metrics_snapshot.meta.json").is_file(),
     )
     inventory = {
         path.name: {"size": path.stat().st_size, "mtime_ns": path.stat().st_mtime_ns}
         for path in snapshot.iterdir()
-        if path.is_file() and path.suffix == ".parquet"
+        if path.is_file() and (path.suffix == ".parquet" or path.name == "instrument_metrics_snapshot.meta.json")
     }
     return {
         "status": "passed",

@@ -45,11 +45,14 @@ from fit import (
     _load_adj_nav,
     _pick_series,
     compute_classes_nav,
+    last_nav_lineage,
     compute_nav_performance_payload,
     compute_rolling_corr,
     serialize_rolling_correlation_payload,
 )
 from market_data import resolve_market_data_file, resolve_tushare_data_dir
+from backend.data_storage import StorageError, StorageManager, storage_lifespan
+from pit.context import PitContextError, ResearchContext, build_context, resolve_request_context
 from cal_indicators.typed_numeric_backend import warm_typed_numeric_backend
 
 
@@ -70,6 +73,13 @@ class FrontierRequest(BaseModel):
 class SaveRequest(BaseModel):
     asset_alloc_name: str
     classes: List[FitClassIn]
+    # Provenance. Without these the saved allocation cannot answer "which
+    # product pool, which data vintage, which research day produced this",
+    # which is exactly what an audit asks first.
+    universe_snapshot_id: Optional[str] = None
+    data_release_id: Optional[str] = None
+    as_of: Optional[str] = None
+    run_mode: str = "RESEARCH"
 
 
 class ETFIn(BaseModel):
@@ -137,6 +147,10 @@ class RollingResponse(BaseModel):
 async def lifespan(_app: FastAPI):
     """Fail closed until every main-process and worker NJIT lane is hot."""
 
+    from backend.data_sources.etl_executor import reconnect
+    from backend.data_sources.etl_store import EtlStore
+    from backend.data_sources.store import SourceStore
+    _app.state.etl_runtime = reconnect(EtlStore(SourceStore()))
     optimizer_status = warm_optimizer_numba_kernels()
     typed_status = warm_typed_numeric_backend()
     from backtest_numba import warm_backtest_numba_kernels
@@ -172,6 +186,10 @@ async def lifespan(_app: FastAPI):
     business_numeric_status = warm_business_numeric_kernels()
     research_series_status = warm_research_series_numba_kernels()
     strategy_status = warm_strategy_numba_kernels()
+    from services.factor_research_routes import factor_service
+    factor_status = factor_service.warm()
+    if factor_status.get("complete") is not True:
+        raise RuntimeError("因子研究中心 NJIT 启动预热未完成")
     regime_graph_plan_status = regime_graph_v2_service.prewarm_saved_definitions()
     if regime_graph_plan_status.get("complete") is not True:
         raise RuntimeError("历史情景 V2 已保存定义未能全部完成启动预热")
@@ -180,6 +198,17 @@ async def lifespan(_app: FastAPI):
     if not resolution_status["complete"]:
         raise RuntimeError("Multi-source resolution NJIT warmup incomplete")
     indicator_service.start_compute_engine()
+    # The PIT capability sheet scans two date columns across ~37M rows. Warming
+    # it here spends that once at boot instead of on the first analyst who opens
+    # the page. A data problem must not block startup, so this is not fail-closed:
+    # the audit itself reports missing or unreadable datasets as findings.
+    try:
+        from pit.audit import audit_all as _warm_pit_audit
+
+        pit_status = {"complete": True, "summary": _warm_pit_audit(DATA_DIR)["summary"]}
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never gate boot
+        pit_status = {"complete": False, "error": str(exc)}
+    _app.state.pit_audit = pit_status
     _app.state.numba_warmup = {
         "complete": True,
         "optimizer": optimizer_status,
@@ -201,6 +230,7 @@ async def lifespan(_app: FastAPI):
         "portfolio_strategy": strategy_status,
         "workers": indicator_service.compute_engine.status(),
         "source_resolution": resolution_status,
+        "factor_research": factor_status,
     }
     try:
         yield
@@ -208,7 +238,32 @@ async def lifespan(_app: FastAPI):
         indicator_service.close_compute_engine()
 
 
-app = FastAPI(title="Fund Investment Research Platform", lifespan=lifespan)
+app = FastAPI(title="Fund Investment Research Platform", lifespan=storage_lifespan(lifespan))
+
+
+@app.middleware('http')
+async def storage_readiness(request: Request, call_next):
+    # Keep the diagnostic endpoint reachable if a mounted data disk disconnects.
+    if not request.url.path.startswith('/api/data-storage'):
+        try:
+            StorageManager().guard()
+        except (StorageError, OSError) as exc:
+            return JSONResponse(status_code=503, content={'detail': {
+                'code': exc.code if isinstance(exc, StorageError) else 'STORAGE_IO_ERROR',
+                'message': exc.message if isinstance(exc, StorageError) else '数据磁盘无法访问，请重新连接。',
+            }})
+    return await call_next(request)
+
+def _system_pit() -> "ResearchContext":
+    """The system-level PIT口径 for a request that states none of its own.
+
+    `DATA_DIR` is defined further down this module; the lookup happens when a
+    request calls this, long after import finishes. Measured at 0.08 ms, so it
+    runs per request rather than being cached into staleness.
+    """
+
+    return resolve_request_context(DATA_DIR)
+
 
 
 def _cors_origins() -> List[str]:
@@ -230,6 +285,12 @@ def _cors_origins() -> List[str]:
     # so cross-origin requests are unnecessary unless explicitly configured.
     return []
 
+
+# Added before CORS so CORS stays the outermost layer: a rejected PIT header
+# still has to come back as a readable 400 to a cross-origin dev frontend.
+from services.pit_routes import PitViewOverrideMiddleware
+
+app.add_middleware(PitViewOverrideMiddleware)
 
 # CORS is only needed for separate frontend deployments. Production defaults to
 # same-origin access and never falls back to an unrestricted wildcard.
@@ -277,10 +338,16 @@ from services.business_numeric_routes import router as business_numeric_router
 from services.research_series_routes import router as research_series_router
 from services.auto_class_routes import router as auto_class_router
 from services.product_pool_routes import router as product_pool_router
+from services.pit_routes import router as pit_router
+from services.factor_research_routes import router as factor_research_router
+from services.localization_routes import router as localization_router
 
 app.include_router(data_router)
+app.include_router(pit_router)
 app.include_router(data_model_router)
 app.include_router(data_source_router)
+from services.storage_routes import router as storage_router
+app.include_router(storage_router)
 app.include_router(etl_router)
 app.include_router(custom_indicator_router)
 app.include_router(instrument_router)
@@ -292,6 +359,8 @@ app.include_router(business_numeric_router)
 app.include_router(research_series_router)
 app.include_router(auto_class_router)
 app.include_router(product_pool_router)
+app.include_router(factor_research_router)
+app.include_router(localization_router)
 
 
 @app.get("/api/health")
@@ -314,10 +383,12 @@ def solve(req: SolveRequest):
             content={"detail": "当前风险预算求解仅支持波动率；VaR/ES 不会被静默当作波动率处理"},
         )
     try:
+        _pit = _system_pit()
         data = _load_adj_nav(
             DATA_DIR,
             [item.code for item in req.etfs],
             [item.name for item in req.etfs],
+            as_of=_pit.as_of, run_mode=_pit.run_mode,
         )
     except (FileNotFoundError, ValueError) as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -370,8 +441,9 @@ def fit_classes(req: FitRequest):
         )
         for c in req.classes
     ]
-    NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
-    consistency_rows = compute_class_consistency(DATA_DIR, classes, start)
+    _pit = _system_pit()
+    NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
+    consistency_rows = compute_class_consistency(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
     performance = compute_nav_performance_payload(NAV)
 
     def finite_or_none(x: float):
@@ -439,9 +511,11 @@ def rolling_corr(req: RollingRequest):
     except Exception:
         raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
     etfs = [ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in req.etfs]
-    idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window),
-                                                    req.targetCode,
-                                                    req.targetName)
+    _pit = _system_pit()
+    idx, series_map, metrics = compute_rolling_corr(
+        DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName,
+        as_of=_pit.as_of, run_mode=_pit.run_mode,
+    )
     return RollingResponse(
         **serialize_rolling_correlation_payload(idx, series_map, metrics)
     )
@@ -468,9 +542,11 @@ def rolling_corr_classes(req: RollingClassesRequest):
         )
         for c in req.classes
     ]
+    _pit = _system_pit()
     idx, series_map, metrics = compute_rolling_corr_classes(DATA_DIR, classes, start,
                                                             int(req.window),
-                                                            req.targetClassName)
+                                                            req.targetClassName,
+                                                            as_of=_pit.as_of, run_mode=_pit.run_mode)
     return RollingResponse(
         **serialize_rolling_correlation_payload(idx, series_map, metrics)
     )
@@ -496,6 +572,11 @@ def save_allocation(req: SaveRequest):
     else:
         info_df = pd.DataFrame()
 
+    try:
+        context = resolve_request_context(DATA_DIR, req.as_of, req.run_mode, req.data_release_id)
+    except PitContextError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     new_rows = []
     for ac in req.classes:
         for etf in ac.etfs:
@@ -506,6 +587,10 @@ def save_allocation(req: SaveRequest):
                 "etf_name": etf.name,
                 "etf_weight": etf.weight,
                 "creat_time": now,
+                "universe_snapshot_id": req.universe_snapshot_id or None,
+                "data_release_id": context.data_release_id,
+                "as_of": context.as_of,
+                "run_mode": context.run_mode,
             })
 
     new_info_df = pd.DataFrame(new_rows)
@@ -518,7 +603,10 @@ def save_allocation(req: SaveRequest):
         classes_spec = [
             ClassSpec(id=c.id, name=c.name, etfs=[ETFSpec(code=e.code, name=e.name, weight=e.weight) for e in c.etfs])
             for c in req.classes]
-        NAV, _, _ = compute_classes_nav(DATA_DIR, classes_spec, start_date)
+        NAV, _, _ = compute_classes_nav(
+            DATA_DIR, classes_spec, start_date, as_of=context.as_of, run_mode=context.run_mode
+        )
+        nav_lineage = last_nav_lineage()
 
         # 将宽表 NAV 转换为长表
         nav_long = NAV.reset_index().melt(id_vars=["date"], var_name="asset_name", value_name="nv")
@@ -545,7 +633,17 @@ def save_allocation(req: SaveRequest):
                 info_df_rollback.to_parquet(info_path, index=False)
         return JSONResponse(status_code=500, content={"detail": f"计算并保存净值时出错: {e}"})
 
-    return {"ok": True, "message": f"配置 '{alloc_name}' 已成功保存"}
+    return {
+        "ok": True,
+        "message": f"配置 '{alloc_name}' 已成功保存",
+        "lineage": {
+            "universe_snapshot_id": req.universe_snapshot_id or None,
+            "data_release_id": context.data_release_id,
+            "as_of": context.as_of,
+            "run_mode": context.run_mode,
+            "pit": nav_lineage,
+        },
+    }
 
 
 @app.get("/api/list-allocations")
@@ -555,6 +653,40 @@ def list_allocations():
         return []
     df = pd.read_parquet(info_path)
     return sorted(df["asset_alloc_name"].unique().tolist())
+
+
+@app.get("/api/allocation-lineage")
+def allocation_lineage(name: str):
+    """Provenance of one saved allocation.
+
+    Allocations saved before the lineage columns existed answer with nulls and
+    `traceable: false` — an honest "we do not know" beats inventing a snapshot.
+    """
+
+    info_path = DATA_DIR / "asset_alloc_info.parquet"
+    if not info_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "配置文件不存在"})
+    df = pd.read_parquet(info_path)
+    rows = df[df["asset_alloc_name"] == name]
+    if rows.empty:
+        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{name}' 的配置"})
+
+    def first(column: str):
+        if column not in rows.columns:
+            return None
+        values = rows[column].dropna()
+        return str(values.iloc[0]) if not values.empty else None
+
+    lineage = {
+        "asset_alloc_name": name,
+        "universe_snapshot_id": first("universe_snapshot_id"),
+        "data_release_id": first("data_release_id"),
+        "as_of": first("as_of"),
+        "run_mode": first("run_mode"),
+        "created_at": first("creat_time"),
+    }
+    lineage["traceable"] = bool(lineage["universe_snapshot_id"] and lineage["as_of"])
+    return lineage
 
 
 @app.get("/api/load-allocation")

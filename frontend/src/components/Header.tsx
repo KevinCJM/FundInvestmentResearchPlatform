@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import { NavLink } from 'react-router-dom';
+import PitBadge from './PitBadge';
+import { availableLanguages, chooseLocale, useI18n } from '../i18n/runtime';
+import { routeTranslationKey, type Locale } from '../i18n/catalogs';
 
 const navItems = [
   { path: '/', label: '首页' },
@@ -15,6 +18,7 @@ const navItems = [
 ];
 
 export default function Header() {
+  const { s, locale } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
   const baseStyle = 'whitespace-nowrap px-3 py-2 rounded-md text-sm font-medium';
   const activeStyle = 'bg-gray-900 text-white';
@@ -22,11 +26,13 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950 shadow" data-testid="site-header">
-      <nav className="mx-auto max-w-[1600px] px-4 py-3 sm:px-6 lg:px-8" aria-label="主导航">
-        <div className="flex items-center justify-between gap-3">
-          <NavLink to="/" className="shrink-0 text-sm font-bold tracking-wide text-white" aria-label="基金量化投研平台主页">基金量化投研平台</NavLink>
-          <button type="button" className="rounded-md border border-slate-600 px-3 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-sky-300 xl:hidden" aria-expanded={menuOpen} aria-controls="mobile-navigation" onClick={() => setMenuOpen((open) => !open)}>菜单</button>
+      <nav className="mx-auto max-w-[1600px] px-4 py-3 sm:px-6 lg:px-8" aria-label={s('navigation.main')}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <NavLink to="/" className="shrink-0 text-sm font-bold tracking-wide text-white" aria-label={s('app.home')}>{s('app.title')}</NavLink>
+          <label className="shrink-0"><span className="sr-only">{s('i18n.language')}</span><select aria-label={s('i18n.language')} value={locale} onChange={event => void chooseLocale(event.target.value as Locale)} className="min-h-10 max-w-[100px] rounded-md border border-slate-600 bg-slate-900 px-2 text-xs text-white">{availableLanguages().filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.id === 'zh-CN' ? '中文' : item.label}</option>)}</select></label>
+          <button type="button" className="rounded-md border border-slate-600 px-3 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-sky-300 xl:hidden" aria-expanded={menuOpen} aria-controls="mobile-navigation" onClick={() => setMenuOpen((open) => !open)}>{s('navigation.menu')}</button>
           <div className="hidden items-center space-x-1 xl:flex">
+          <PitBadge />
           {navItems.map((item) => (
             <NavLink
               key={item.label}
@@ -34,14 +40,15 @@ export default function Header() {
               end={item.path === '/'} // `end` 仅用于根路径，避免前缀匹配
               className={({ isActive }) => `${baseStyle} ${isActive ? activeStyle : inactiveStyle}`}
             >
-              {item.label}
+              {s(routeTranslationKey(item.path), {}, item.label)}
             </NavLink>
           ))}
           </div>
         </div>
         {menuOpen && <div id="mobile-navigation" className="mt-3 grid gap-1 border-t border-slate-700 pt-3 xl:hidden">
+          <div className="pb-1"><PitBadge /></div>
           {navItems.map((item) => (
-            <NavLink key={item.label} to={item.path} end={item.path === '/'} onClick={() => setMenuOpen(false)} className={({ isActive }) => `${baseStyle} text-left ${isActive ? activeStyle : inactiveStyle}`}>{item.label}</NavLink>
+            <NavLink key={item.label} to={item.path} end={item.path === '/'} onClick={() => setMenuOpen(false)} className={({ isActive }) => `${baseStyle} text-left ${isActive ? activeStyle : inactiveStyle}`}>{s(routeTranslationKey(item.path), {}, item.label)}</NavLink>
           ))}
         </div>}
       </nav>

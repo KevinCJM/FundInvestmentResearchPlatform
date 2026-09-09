@@ -20,6 +20,7 @@ from .etl_models import EtlDefinition, EtlRunOptions
 from .etl_parameters import bind_parameters, download_mode, parse_run_options
 from .etl_history import history_batch_ids
 from .etl_store import EtlStore, public_run
+from .etl_collection import record_resume, resume_warnings
 from .mapping import validate_mapping
 from .models import CenterError, InterfaceConfig, SourceConfig
 from .resolution_store import get_policy, resolve_saved
@@ -27,9 +28,9 @@ from .runtime import effective_policy
 from .service import enabled, parse_config
 from .store import SourceStore, utc_now
 try:
-    from backend.services.refresh_runtime import InterProcessFileLock
+    from backend.services.refresh_runtime import InterProcessFileLock, is_file_lock_held
 except ModuleNotFoundError:
-    from services.refresh_runtime import InterProcessFileLock
+    from services.refresh_runtime import InterProcessFileLock, is_file_lock_held
 
 OWNER = uuid.uuid4().hex
 _ACTIVE: dict[str, threading.Thread] = {}
@@ -44,9 +45,18 @@ def parse_definition(payload) -> EtlDefinition:
 
 
 def inspect_plan(store: SourceStore, definition: EtlDefinition, *, credentials: bool = False) -> dict:
-    frozen, outputs, plan = {}, {}, []
-    for step in definition.steps:
-        if step.kind == "download":
+    frozen, outputs, plan, tasks, origins = {}, {}, [], {}, {}
+    for step in definition.execution_steps():
+        if step.kind == 'task':
+            from .task_catalog import inspect_task
+            available = outputs[step.inputs[0]] if step.inputs else set()
+            tasks[step.id] = inspect_task(store, step, available, require_values=credentials)
+            origin = origins.get(step.inputs[0]) if step.inputs else None
+            if origin and step.source_id and origin != step.source_id:
+                raise CenterError('ETL_TASK_SOURCE_MIX', '数据集工作区不能混入不同来源；跨来源请使用标准映射与多源取值节点。')
+            origins[step.id] = step.source_id or origin
+            outputs[step.id] = available | set(tasks[step.id]['spec']['provides'])
+        elif step.kind == "download":
             saved = store.get("interface", step.interface_id)
             if saved["revision"] != step.interface_revision:
                 raise CenterError("REVISION_CONFLICT", f"{step.name} 的接口修订已变化，请重新选择接口。", 409)
@@ -84,16 +94,25 @@ def inspect_plan(store: SourceStore, definition: EtlDefinition, *, credentials: 
             outputs[step.id] = {step.table_id}
         else:
             outputs[step.id] = {"instrument_metrics_snapshot"}
-        plan.append({"id": step.id, "name": step.name, "kind": step.kind, "inputs": step.inputs, "tables": sorted(outputs[step.id])})
-    return {"downloads": frozen, "plan": plan}
+        plan.append({"id": step.id, "name": step.name, "kind": step.kind, "inputs": step.inputs, "after": step.after, "tables": sorted(outputs[step.id])})
+    return {"downloads": frozen, "tasks": tasks, "plan": plan}
 
 
 def validate(store: SourceStore, payload, options=None) -> dict:
     try:
         definition = parse_definition(payload)
+        automatic = None
         if options is not None:
-            definition = bind_parameters(definition, parse_run_options(options))
+            parsed_options = parse_run_options(options)
+            definition = bind_parameters(definition, parsed_options)
+            if parsed_options.mode == 'auto_incremental':
+                from .auto_incremental import plan
+                automatic = plan(store, definition)
+                definition = automatic['definition']
         inspection = inspect_plan(store, definition)
+        if automatic:
+            public = automatic['public']
+            return {'valid': public['ready'], 'errors': public['errors'], 'steps': inspection['plan'], 'auto_plan': public, 'published': False}
         return {"valid": True, "errors": [], "steps": inspection["plan"], "published": False}
     except CenterError as exc:
         return {"valid": False, "errors": [{"code": exc.code, "message": exc.message}], "steps": []}
@@ -122,10 +141,11 @@ def execution_fingerprint() -> str:
     """Pin transforms and numerical definitions without depending on git state."""
     from .resolution_store import _checksum
     backend = Path(__file__).resolve().parents[1]
-    paths = [backend / "services" / "instrument_analytics.py"]
-    for package in ("data_sources", "data_model", "custom_indicators", "cal_indicators"):
+    paths = [backend / "services" / "instrument_analytics.py", backend.parent / 'T01_get_data.py',
+             backend / 'data_storage.py']
+    for package in ("computation_graph", "data_sources", "data_model", "custom_indicators", "cal_indicators"):
         paths.extend(sorted((backend / package).rglob("*.py")))
-    return fingerprint({str(path.relative_to(backend)): _checksum(path) for path in paths})
+    return fingerprint({str(path.relative_to(backend.parent)): _checksum(path) for path in paths})
 
 
 def _freeze(store: SourceStore, definition: EtlDefinition, options: EtlRunOptions | None = None) -> dict:
@@ -144,6 +164,8 @@ def _freeze(store: SourceStore, definition: EtlDefinition, options: EtlRunOption
     saved = get_policy(store)
     frozen["policy"] = {"config": saved["config"], "revision": saved["revision"]}
     frozen["history"] = {}
+    from .task_runtime import freeze_tasks
+    freeze_tasks(store, definition, frozen, options)
     with store.connection() as db:
         for step in definition.steps:
             if step.kind == "resolve" and step.include_history:
@@ -152,6 +174,12 @@ def _freeze(store: SourceStore, definition: EtlDefinition, options: EtlRunOption
 
 
 def _launch(journal: EtlStore, run: dict, lock) -> dict:
+    from .etl_executor import launch
+    return launch(journal, run, lock)
+
+
+def _launch_inline(journal: EtlStore, run: dict, lock) -> dict:
+    """Injectable offline test harness; production always uses _launch."""
     thread = threading.Thread(target=execute, args=(journal, run, lock), daemon=True, name="etl-" + run["run_id"][:8])
     _ACTIVE[run["run_id"]] = thread
     try:
@@ -197,9 +225,22 @@ def start(store: SourceStore, payload: dict) -> dict:
             definition = parse_definition(payload.get("definition"))
         options = parse_run_options(payload.get("options"))
         template = definition.model_dump(mode="json")
-        definition = bind_parameters(definition, options)
+        definition = bind_parameters(definition, options).compiled()
+        automatic = None
+        if options.mode == 'auto_incremental':
+            from .auto_incremental import plan, freeze_baseline
+            automatic = plan(store, definition)
+            if not automatic['public']['ready']:
+                raise CenterError('AUTO_PLAN_BLOCKED', '；'.join(e['message'] for e in automatic['public']['errors']), 422)
+            if payload.get('auto_plan_id') != automatic['public']['plan_id']:
+                raise CenterError('AUTO_PLAN_CHANGED', '请先预览自动增量计划；快照、日期或配置变化后需要重新确认。', 409)
+            definition = automatic['definition']
         frozen = _freeze(store, definition, options)
         directory = store.root / "etl_runs" / run_id
+        if automatic:
+            baseline = freeze_baseline(journal, automatic, directory / 'baseline' / 'data')
+            frozen['task_baseline'] = {'run_id': None, 'workspace': baseline}
+            frozen['auto_plan'] = automatic['public']
         config_dir = directory / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_artifacts = []
@@ -212,6 +253,7 @@ def start(store: SourceStore, payload: dict) -> dict:
         run = {"run_id": run_id, "request_hash": request_hash, "workflow_id": payload.get("workflow_id"),
                "workflow_revision": payload.get("expected_revision"), "definition": definition.model_dump(mode="json"),
                "template_definition": template, "options": options.model_dump(mode="json"),
+               **({'auto_plan': automatic['public']} if automatic else {}),
                "name": definition.name, "status": "RUNNING", "owner_pid": os.getpid(), "owner_instance": OWNER,
                "created_at": utc_now(), "started_at": utc_now(), "attempt": 1, "published": False, "frozen": frozen,
                "steps": [{"id": s.id, "name": s.name, "kind": s.kind, "status": "PENDING", "attempt": 0} for s in definition.steps]}
@@ -222,30 +264,68 @@ def start(store: SourceStore, payload: dict) -> dict:
         raise
 
 
+def recovery_status(store: SourceStore, run: dict, current_fingerprint: str | None = None) -> dict:
+    """Cheap read-only eligibility. Full artifact validation stays under the lock."""
+    blockers = []
+    if run['status'] not in {'FAILED', 'CANCELLED', 'INTERRUPTED'}:
+        blockers.append({'code': 'ETL_NOT_RESUMABLE', 'message': '只有失败、中断或取消的任务可以继续。'})
+    if is_file_lock_held(store.root / '.tushare_refresh.lock'):
+        blockers.append({'code': 'DATA_TASK_RUNNING', 'message': '后台仍有下载或数据处理进程持有任务锁。调度服务中断不代表工作进程已停止；请等待其结束，不能重复启动或删除锁文件。'})
+    current_fingerprint = current_fingerprint or execution_fingerprint()
+    if run.get('frozen', {}).get('execution_fingerprint') != current_fingerprint:
+        blockers.append({'code': 'ETL_IMPLEMENTATION_CHANGED', 'message': '执行程序已更新，旧任务不能原地续跑。已下载文件与检查点仍保留；需恢复原执行版本，或经过兼容性核验迁移到新运行，不能直接改写旧任务的版本标识。'})
+    return {'can_resume': not blockers, 'artifact_check_pending': not blockers, 'blockers': blockers,
+            'warnings': resume_warnings(run)}
+
+
 def resume(store: SourceStore, identifier: str, confirm: bool) -> dict:
     _writable()
     if not confirm:
         raise CenterError("CONFIRM_ETL", "继续未完成步骤可能重新访问数据源，请确认。", 422)
-    journal, lock = EtlStore(store), _lock(store)
+    journal = EtlStore(store)
+    status = recovery_status(store, journal.interrupted(journal.get_run(identifier)))
+    if not status['can_resume']:
+        raise CenterError(status['blockers'][0]['code'], '\n'.join(item['message'] for item in status['blockers']), 409)
+    lock = _lock(store)
     try:
         run = journal.interrupted(journal.get_run(identifier))
         if run["status"] not in {"FAILED", "CANCELLED", "INTERRUPTED"}:
             raise CenterError("ETL_NOT_RESUMABLE", "只有失败、中断或取消的任务可以继续。", 409)
         if run["frozen"].get("execution_fingerprint") != execution_fingerprint():
             raise CenterError("ETL_IMPLEMENTATION_CHANGED", "计算或映射代码已变化，请建立新运行，不能改写历史运行的执行契约。", 409)
+        from .task_runtime import verify_sources
+        from .task_workspace import read_inventory
+        verify_sources(store, run['frozen'])
+        for state in run['steps']:
+            if state['status'] == 'SUCCEEDED' and state.get('output', {}).get('workspace'):
+                read_inventory(journal, state['output']['workspace'])
         for frozen in run["frozen"]["downloads"].values():
             for kind, record in (("source", frozen["source"]), ("interface", frozen["interface"])):
                 if store.get(kind, record["config"]["id"])["revision"] != record["revision"]:
                     raise CenterError("ETL_CONFIG_CHANGED", "来源或接口配置已改变，请使用新运行，不能修改历史运行契约。", 409)
         for item in run["frozen"]["config_artifacts"]:
             journal.checked_path(item)
+        if run.get('recovery_receipt'):
+            receipt = json.loads(journal.checked_path(run['recovery_receipt']).read_text())
+            journal.checked_path(receipt['original_run'])
+            if receipt['target_execution'] != run['frozen']['execution_fingerprint']:
+                raise CenterError('ETL_MIGRATION_BLOCKED', '恢复清单的目标版本与运行不一致。', 409)
+            for shard in receipt['shards'].get('files', []):
+                journal.checked_path(shard['imported'])
+            for shard in receipt['shards'].get('history', {}).get('files', []):
+                journal.checked_path(shard['imported'])
+            if receipt['shards'].get('day_import_receipt'):
+                journal.checked_path(receipt['shards']['day_import_receipt'])
         for state in run["steps"]:
             if state["status"] == "SUCCEEDED":
                 for artifact in state.get("artifacts", []):
                     journal.checked_path(artifact)
             else:
                 state.update(status="PENDING", error=None)
-        run.update(status="RUNNING", owner_pid=os.getpid(), owner_instance=OWNER, error=None, started_at=utc_now(), finished_at=None, attempt=run["attempt"] + 1)
+        resumed_at = utc_now()
+        record_resume(run, resumed_at)
+        run.update(status="RUNNING", owner_pid=os.getpid(), owner_instance=OWNER, error=None, started_at=resumed_at, finished_at=None, attempt=run["attempt"] + 1)
+        run.pop('executor', None)
         journal.request_cancel(identifier, False)
         journal.save_run(run)
         return _launch(journal, run, lock)
@@ -317,12 +397,25 @@ def execute(journal: EtlStore, run: dict, lock) -> None:
             if current["status"] == "SUCCEEDED":
                 continue
             check()
+            if run.get('executor') and execution_fingerprint() != run['frozen']['execution_fingerprint']:
+                raise CenterError('ETL_IMPLEMENTATION_CHANGED', '代码已更新，当前步骤完成后已停止推进；不能混用新旧执行版本。', 409)
             current.update(status="RUNNING", started_at=utc_now(), attempt=current["attempt"] + 1)
+            # An attempt never inherits another attempt's counters or timestamps.
+            for key in ('rows', 'pages', 'finished_at', 'error', 'code', 'heartbeat_at'):
+                current.pop(key, None)
+            current['progress'] = {'phase': '准备执行', 'message': '正在校验输入和准备工作区。',
+                                   'completed': None, 'total': None, 'logs': []}
             journal.save_run(run)
             directory = journal.root / "etl_runs" / run["run_id"] / step.id / str(current["attempt"])
             directory.mkdir(parents=True, exist_ok=True)
             artifacts = []
-            if step.kind == "download":
+            if step.kind == 'task':
+                from .task_runtime import execute_task
+                remaining = max(1, int(definition.max_runtime_seconds - (time.monotonic() - started)))
+                output = execute_task(journal, run, step, states, directory, check, lock, remaining)
+                artifacts.append(output['workspace'])
+                current['mode'] = download_mode(step.mode, parse_run_options(run.get('options')))
+            elif step.kind == "download":
                 frozen = run["frozen"]["downloads"][step.id]
                 source = SourceConfig.model_validate(frozen["source"]["config"])
                 interface = InterfaceConfig.model_validate(frozen["effective_interface"])
@@ -333,7 +426,13 @@ def execute(journal: EtlStore, run: dict, lock) -> None:
                     params, key = incremental_params(journal.sources, source, interface, download_mode(step.mode, parse_run_options(run.get("options"))))
                 current["mode"] = frozen.get("mode", download_mode(step.mode, parse_run_options(run.get("options"))))
                 def progress(pages, count):
+                    captured_at = utc_now()
+                    window = current['progress'].setdefault('collection_window', {'first_at': captured_at})
+                    window['last_at'] = captured_at
                     current.update(pages=pages, rows=count)
+                    current['progress'].update(phase='下载分页', message=f'已接收 {pages} 页数据。',
+                                               batches=pages, received_rows=count, activity_at=utc_now())
+                    current['heartbeat_at'] = utc_now()
                     journal.save_run(run)
                 remaining = max(1, int(definition.max_runtime_seconds - (time.monotonic() - started)))
                 bounded = source.model_copy(update={"policy": source.policy.model_copy(update={"max_runtime_seconds": min(remaining, source.policy.max_runtime_seconds)})})
@@ -377,7 +476,9 @@ def execute(journal: EtlStore, run: dict, lock) -> None:
             receipt = journal.write_json(directory / "result.json", output)
             current.update(status="SUCCEEDED", output=output, artifacts=[*artifacts, receipt], rows=output.get("rows", 0), finished_at=utc_now(), error=None)
             journal.save_run(run)
-        run.update(status="SUCCEEDED", message="流程完成：下载、取值和快照结果已保存为独立候选，尚未发布到正式研究。")
+        warning_count = sum(s.get('output', {}).get('mapped_rejected_batches', 0) + s.get('output', {}).get('warnings', 0) for s in run['steps'])
+        run.update(status='SUCCEEDED', warning_count=warning_count,
+                   message=('流程采集完成，但有映射或数据告警，请检查步骤结果；不能标记标准数据就绪。' if warning_count else '流程完成，结果已保存为私有候选，尚未发布到正式研究。'))
     except Exception as exc:
         code = exc.code if isinstance(exc, CenterError) else "ETL_STEP_FAILED"
         message = exc.message if isinstance(exc, CenterError) else f"步骤执行失败（{type(exc).__name__}）；已完成步骤保留。"

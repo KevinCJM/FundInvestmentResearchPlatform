@@ -4,6 +4,7 @@ import {
   type HistoricalRegimeRun,
   type RegimePublication,
 } from '../services/historicalRegimes'
+import { eligibleRegimePublications } from '../services/regimePublicationEligibility'
 import type {
   HistoricalRegimeBacktestReference,
   RegimeConditioningResult,
@@ -17,32 +18,8 @@ interface EligiblePublication {
 }
 
 export function eligibleFormalBacktestPublications(runs: HistoricalRegimeRun[]): EligiblePublication[] {
-  return runs.flatMap((run) => {
-    const definitionRevision = Number(run.definition_revision ?? 0)
-    if (
-      run.schema_version !== '2.0'
-      || run.mode !== 'realtime'
-      || run.immutable !== true
-      || !/^[a-f0-9]{64}$/.test(run.content_hash ?? '')
-      || !/^[a-f0-9]{64}$/.test(run.definition_snapshot_hash ?? '')
-      || !run.definition_id
-      || !Number.isInteger(definitionRevision)
-      || definitionRevision < 1
-      || run.causality?.is_causal !== true
-      || run.causality?.realtime_eligible !== true
-      || run.governance?.formal_gate_passed !== true
-      || !run.governance?.publish_eligible_usages?.includes('formal_backtest')
-    ) return []
-    return (run.publications ?? []).flatMap((publication) => (
-      publication.usage === 'formal_backtest'
-      && publication.run_id === run.id
-      && publication.run_content_hash === run.content_hash
-      && publication.definition_revision === definitionRevision
-      && publication.gate === 'comprehensive_formal_gate_passed'
-        ? [{ run, publication }]
-        : []
-    ))
-  })
+  return runs.flatMap((run) => eligibleRegimePublications(run, 'formal_backtest')
+    .map((publication) => ({ run, publication })))
 }
 
 function publicationValue(item: EligiblePublication) {

@@ -6,6 +6,7 @@ import {
   listHistoricalRegimeRuns,
   type HistoricalRegimeRun,
 } from '../services/historicalRegimes'
+import { eligibleRegimePublications, isRegimeRunEligibleForTaa } from '../services/regimePublicationEligibility'
 import {
   backtestHistoricalRegimeTaa,
   type TaaBacktestRequest,
@@ -24,23 +25,6 @@ const SAMPLE_RETURNS = `date,period_start,沪深300,中债综合
 2024-01-11,2024-01-10,0.0039,0.0002
 2024-01-12,2024-01-11,0.0063,-0.0007
 2024-01-15,2024-01-12,-0.0027,0.0009`
-
-function isEligible(run: HistoricalRegimeRun) {
-  const published = Boolean(run.content_hash) && (run.publications ?? []).some((item) => (
-    (item.usage === 'taa' || item.usage === 'formal_backtest')
-    && item.run_id === run.id
-    && item.definition_revision === run.definition_revision
-    && item.run_content_hash === run.content_hash
-    && item.gate === 'causality_passed'
-  ))
-  return run.immutable === true
-    && run.mode === 'realtime'
-    && run.causality?.is_causal === true
-    && run.causality?.uses_future_data === false
-    && run.causality?.repaints !== true
-    && run.causality?.realtime_eligible === true
-    && published
-}
 
 function numericRecord(text: string, label: string) {
   let value: unknown
@@ -160,9 +144,9 @@ export default function TacticalAllocationWorkspace() {
     setResult(null)
   }
 
-  const eligibleRuns = useMemo(() => runs.filter(isEligible), [runs])
+  const eligibleRuns = useMemo(() => runs.filter(isRegimeRunEligibleForTaa), [runs])
   const selectedRunSummary = eligibleRuns.find((run) => run.id === selectedRunId) ?? null
-  const selectedRun = selectedRunDetail?.id === selectedRunId ? selectedRunDetail : null
+  const selectedRun = selectedRunDetail?.id === selectedRunId && isRegimeRunEligibleForTaa(selectedRunDetail) ? selectedRunDetail : null
 
   useEffect(() => {
     let active = true
@@ -170,7 +154,7 @@ export default function TacticalAllocationWorkspace() {
       .then((items) => {
         if (!active) return
         setRuns(items)
-        const eligible = items.filter(isEligible)
+        const eligible = items.filter(isRegimeRunEligibleForTaa)
         setSelectedRunId((current) => current || eligible[0]?.id || '')
       })
       .catch((failure) => { if (active) setError(failure instanceof Error ? failure.message : '历史情景版本加载失败。') })
@@ -186,7 +170,16 @@ export default function TacticalAllocationWorkspace() {
     let active = true
     setSelectedRunDetail(null); setLoadingSelectedRun(true)
     void getHistoricalRegimeRun(selectedRunSummary.id)
-      .then((detail) => { if (active) setSelectedRunDetail(detail) })
+      .then((detail) => {
+        if (!active) return
+        if (
+          detail.id !== selectedRunSummary.id
+          || detail.content_hash !== selectedRunSummary.content_hash
+          || detail.definition_revision !== selectedRunSummary.definition_revision
+          || !isRegimeRunEligibleForTaa(detail)
+        ) throw new Error('所选情景详情与已发布版本不一致或未通过应用检查，请刷新后重新选择。')
+        setSelectedRunDetail(detail)
+      })
       .catch((failure) => { if (active) setError(failure instanceof Error ? failure.message : '所选历史情景详情加载失败。') })
       .finally(() => { if (active) setLoadingSelectedRun(false) })
     return () => { active = false }
@@ -314,9 +307,9 @@ export default function TacticalAllocationWorkspace() {
                     </select>
                   </label>
                   <div className="rounded-lg bg-emerald-50 px-3 py-2.5 text-xs leading-5 text-emerald-800">
-                    <div className="font-semibold">{loadingSelectedRun ? '正在按需读取详情' : '门禁通过'}</div>
+                    <div className="font-semibold">{loadingSelectedRun ? '正在核验所选版本' : selectedRun ? '版本可用于 TAA' : '等待详情核验'}</div>
                     <div>immutable · realtime · causal</div>
-                    <div>{selectedRun?.publications.filter((item) => item.usage === 'taa' || item.usage === 'formal_backtest').map((item) => item.usage).join(' / ')}</div>
+                    <div>{selectedRun ? eligibleRegimePublications(selectedRun, 'taa').map((item) => item.usage).join(' / ') : ''}</div>
                   </div>
                 </div>
               ) : (

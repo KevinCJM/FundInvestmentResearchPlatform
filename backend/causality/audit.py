@@ -77,8 +77,18 @@ def candidate_pool(panel: SyntheticPanel) -> tuple[_Candidate, ...]:
     asset_returns = np.asarray(variables["asset_returns"])
     weights = np.asarray(variables["asset_weights"])
     covariance = np.cov(asset_returns, rowvar=False) + np.eye(panel.assets) * 1e-3
+    dates = np.arange(returns.size, dtype=np.float64) + 20_000.0
+    drawdowns = np.zeros(returns.size, dtype=np.float64)
+    for index in range(1, returns.size):
+        phase = index % 10
+        if 1 <= phase <= 5:
+            drawdowns[index] = -0.01 * phase
+    registry = get_typed_operator_registry()
+    fit_type = registry["linear_fit"].infer_output((ValueType.series(),))
+    from cal_indicators.drawdown_interval import INTERVAL_TYPE
 
     return (
+        _Candidate("series<drawdown>", ValueType.series(semantic_dimension="return_decimal"), (drawdowns,)),
         _Candidate("series<return>", ValueType.series(semantic_dimension="return_decimal"), (returns,)),
         _Candidate("series", ValueType.series(), (returns,)),
         _Candidate(
@@ -86,6 +96,7 @@ def candidate_pool(panel: SyntheticPanel) -> tuple[_Candidate, ...]:
             ValueType.series(semantic_dimension="adjusted_nav", price_basis="adjusted_nav"),
             (nav,),
         ),
+        _Candidate("series<date>", ValueType.series(semantic_dimension="date"), (dates,)),
         _Candidate("matrix<return>", ValueType.matrix(semantic_dimension="return_decimal"), (asset_returns,)),
         _Candidate("matrix", ValueType.matrix(), (asset_returns,)),
         _Candidate("mask<time>", ValueType.mask(("time",), ("T",)), (returns > 0,)),
@@ -97,6 +108,9 @@ def candidate_pool(panel: SyntheticPanel) -> tuple[_Candidate, ...]:
         # 所以给出几个备选，谁先算得通用谁。
         _Candidate("scalar", ValueType.scalar(), (0.37, 5.0, 2.0, 0.9)),
         _Candidate("scalar<count>", ValueType.scalar(semantic_dimension="count"), (5.0, 2.0, 1.0)),
+        _Candidate("scalar<date>", ValueType.scalar(semantic_dimension="date"), (20_000.0, 20_005.0, 20_010.0)),
+        _Candidate("state<drawdown_interval>", INTERVAL_TYPE, ((1.0, 5.0, 8.0, 1.0),)),
+        _Candidate("state<linear_fit>", fit_type, ((0.1, 0.2, 0.3, 1.2, float(returns.size)),)),
     )
 
 

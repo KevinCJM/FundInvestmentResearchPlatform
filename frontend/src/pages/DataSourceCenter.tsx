@@ -21,7 +21,9 @@ export default function DataSourceCenter() {
   const [newKind, setNewKind] = useState<'source' | 'interface' | null>(null)
   const [dirty, setDirty] = useState(false)
   const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<'all' | 'incomplete' | 'disabled'>('all')
+  const [filter, setFilter] = useState<'all' | 'incomplete' | 'disabled' | 'ready'>('all')
+  const [sort, setSort] = useState<'name' | 'status'>('name')
+  const [operationBusy, setOperationBusy] = useState(false)
   const [category, setCategory] = useState('all')
   const [notice, setNotice] = useState('')
 
@@ -48,7 +50,10 @@ export default function DataSourceCenter() {
     }
   }, [loading, catalog, params])
 
-  const allowLeave = () => !dirty || window.confirm('当前修改尚未保存，放弃修改并切换？')
+  const allowLeave = () => {
+    if (operationBusy) { setNotice('当前操作尚未结束，请勿切换配置。'); return false }
+    return !dirty || window.confirm('当前修改尚未保存，放弃修改并切换？')
+  }
   const navigateEditor = (action: () => void) => {
     if (!allowLeave()) return
     setDirty(false); setNotice(''); action()
@@ -60,11 +65,18 @@ export default function DataSourceCenter() {
     return sourceInterfaces.filter(item => {
       if (filter === 'incomplete' && item.validation?.ready) return false
       if (filter === 'disabled' && item.config.enabled) return false
+      if (filter === 'ready' && (!item.config.enabled || !item.validation?.ready)) return false
       const targets = catalog?.targets.tables.filter(table => item.config.mappings.some(mapping => mapping.target_table === table.table_id)) ?? []
       if (category !== 'all' && !targets.some(table => table.category_id === category)) return false
       return `${item.config.name} ${item.config.api_name} ${item.config.id} ${targets.map(table => `${table.label} ${table.table_id}`).join(' ')}`.toLowerCase().includes(keyword)
+    }).sort((a, b) => {
+      if (sort === 'status') {
+        const order = Number(Boolean(a.validation?.ready)) - Number(Boolean(b.validation?.ready))
+        if (order) return order
+      }
+      return a.config.name.localeCompare(b.config.name, 'zh-CN') || a.config.id.localeCompare(b.config.id)
     })
-  }, [catalog, sourceInterfaces, query, category, filter])
+  }, [catalog, sourceInterfaces, query, category, filter, sort])
 
   const openInterface = (id: string) => navigateEditor(() => {
     const item = catalog?.interfaces.find(entry => entry.config.id === id)
@@ -94,7 +106,9 @@ export default function DataSourceCenter() {
     <DataWorkspaceNav beforeNavigate={allowLeave} />
     <header className="rounded-2xl border border-slate-200 bg-white p-5">
       <h1 className="text-2xl font-bold text-slate-950">数据源与接口映射</h1>
-      <p className="mt-2 text-sm leading-6 text-slate-600">首次接入在这里配置；日常更新请进入“同步数据”。标准表只读，外部数据需要按这些字段导入。</p>
+      <p className="mt-2 text-sm leading-6 text-slate-600">告诉系统：数据从哪里来、每一列对应什么。已有接口直接选择，不必重新配置。</p>
+      <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">选需要的数据 → 确认连接 → 对应字段 → 验证样本 → 去下载</p>
+      <details className="mt-3 text-sm text-slate-600"><summary className="cursor-pointer font-semibold">第一次使用？三个概念就够了</summary><p className="mt-2 leading-6">数据源是供应商，例如 Tushare；接口是一类数据，例如基金净值；字段映射是把供应商的列对应到系统的列，例如 close → 收盘价。保存配置不等于下载，样本通过也不等于数据已发布。</p></details>
       <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-indigo-700">
         <Link to="/settings/data-model" onClick={event => { if (!allowLeave()) event.preventDefault() }}>查看系统标准表 →</Link>
         {interfaceRecord && source?.config.transport === 'tushare' ? <Link to="/settings/data-sources" onClick={event => { if (!allowLeave()) event.preventDefault() }}>进入 Tushare 下载与更新 →</Link> : null}
@@ -113,21 +127,22 @@ export default function DataSourceCenter() {
           <button type="button" className={buttonClass} disabled={!catalog.editing_enabled} onClick={() => navigateEditor(() => { setNewKind('source'); setInterfaceId(null); setEditingSource(true) })}>新建数据源</button>
         </div>
         <label className="block text-xs font-semibold text-slate-600">搜索接口<input className={inputClass} value={query} onChange={e => setQuery(e.target.value)} placeholder="例如：ETF 行情、基金净值" /></label>
-        <label className="block text-xs font-semibold text-slate-600">接口状态<select className={inputClass} value={filter} onChange={e => setFilter(e.target.value as typeof filter)}><option value="all">全部接口</option><option value="incomplete">映射待完善</option><option value="disabled">已停用</option></select></label>
+        <label className="block text-xs font-semibold text-slate-600">接口状态<select className={inputClass} value={filter} onChange={e => setFilter(e.target.value as typeof filter)}><option value="all">全部接口</option><option value="incomplete">映射待完善</option><option value="ready">已启用且定义已校验</option><option value="disabled">已停用</option></select></label>
         <label className="block text-xs font-semibold text-slate-600">数据分类<select className={inputClass} value={category} onChange={e => setCategory(e.target.value)}><option value="all">全部分类</option>{catalog.targets.categories.map(item => <option key={item.category_id} value={item.category_id}>{item.label}</option>)}</select></label>
+        <label className="block text-xs font-semibold text-slate-600">接口排序<select className={inputClass} value={sort} onChange={e => setSort(e.target.value as typeof sort)}><option value="name">按数据名称</option><option value="status">待完善优先</option></select></label>
         <button type="button" className={buttonClass} disabled={!catalog.editing_enabled || !source} onClick={addInterface}>新建接口</button>
         <p className="text-xs text-slate-500">显示 {interfaces.length} / {sourceInterfaces.length} 个接口</p>
-        <label className="block text-xs font-semibold text-slate-600 xl:hidden">选择接口<select aria-label="选择接口" className={inputClass} value={interfaces.some(item => item.config.id === interfaceId) ? interfaceId ?? '' : ''} onChange={event => { if (event.target.value) openInterface(event.target.value) }}><option value="">选择接口查看映射</option>{interfaces.map(item => <option key={item.config.id} value={item.config.id}>{item.config.name}{item.validation?.ready ? '' : '（待完善）'}</option>)}</select></label>
+        {interfaceRecord || editingSource || newKind ? <><label className="block text-xs font-semibold text-slate-600 xl:hidden">选择接口<select aria-label="选择接口" className={inputClass} value={interfaces.some(item => item.config.id === interfaceId) ? interfaceId ?? '' : ''} onChange={event => { if (event.target.value) openInterface(event.target.value) }}><option value="">选择接口查看映射</option>{interfaces.map(item => <option key={item.config.id} value={item.config.id}>{item.config.name}{item.validation?.ready ? '' : '（待完善）'}</option>)}</select></label>
         <div className="hidden max-h-[60vh] space-y-2 overflow-y-auto xl:block">{interfaces.map(item => <button type="button" key={item.config.id} aria-pressed={interfaceId === item.config.id && !newKind} onClick={() => openInterface(item.config.id)} className={`block w-full rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${interfaceId === item.config.id && !newKind ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
           <span className="block text-sm font-semibold">{item.config.name}</span><code className="mt-1 block break-all text-xs text-slate-500">{item.config.api_name || item.config.id}</code>
           <span className={`mt-2 block text-xs ${item.config.enabled && item.validation?.ready ? 'text-slate-600' : 'text-amber-800'}`}>{item.config.enabled ? '已启用' : '已停用'} · {item.validation?.ready ? '定义已校验' : '映射待完善'}</span>
-        </button>)}{!interfaces.length ? <p className="p-3 text-sm text-slate-500">没有符合条件的接口。可切换为“全部接口”或清空搜索。</p> : null}</div>
+        </button>)}{!interfaces.length ? <p className="p-3 text-sm text-slate-500">没有符合条件的接口。可切换为“全部接口”或清空搜索。</p> : null}</div></> : null}
       </aside>
       <div className="min-w-0">{interfaceRecord && source && newKind !== 'source'
-        ? <InterfaceEditor key={`${interfaceRecord.config.id}:${interfaceRecord.revision}:${refresh}`} record={interfaceRecord} source={source.config} targets={catalog.targets} editingEnabled={catalog.editing_enabled} onSaved={id => saved('interface', id)} onDirty={setDirty} />
+        ? <InterfaceEditor key={`${interfaceRecord.config.id}:${interfaceRecord.revision}:${refresh}`} record={interfaceRecord} source={source.config} targets={catalog.targets} editingEnabled={catalog.editing_enabled} credentialConfigured={source.credential_configured === true} onSaved={id => saved('interface', id)} onDirty={setDirty} onBusy={setOperationBusy} />
         : sourceRecord && (editingSource || newKind === 'source')
-          ? <SourceEditor key={`${sourceRecord.config.id}:${sourceRecord.revision}:${refresh}`} record={sourceRecord} editingEnabled={catalog.editing_enabled} onSaved={id => saved('source', id)} onDirty={setDirty} onCredentialChanged={configured => setCatalog(current => current ? { ...current, sources: current.sources.map(item => item.config.id === sourceRecord.config.id ? { ...item, credential_configured: configured } : item) } : current)} onNext={addInterface} />
-          : source ? <SourceOverview source={source} interfaces={sourceInterfaces} editingEnabled={catalog.editing_enabled} onConnect={editSource} onAddInterface={addInterface} onReview={() => { setFilter('incomplete'); setQuery(''); setCategory('all') }} />
+          ? <SourceEditor key={`${sourceRecord.config.id}:${sourceRecord.revision}:${refresh}`} record={sourceRecord} editingEnabled={catalog.editing_enabled} onSaved={id => saved('source', id)} onDirty={setDirty} onBusy={setOperationBusy} onCredentialChanged={configured => setCatalog(current => current ? { ...current, sources: current.sources.map(item => item.config.id === sourceRecord.config.id ? { ...item, credential_configured: configured } : item) } : current)} onNext={() => navigateEditor(() => { setEditingSource(false); setNewKind(null); setInterfaceId(null) })} />
+          : source ? <SourceOverview key={`${source.config.id}:${query}:${filter}:${category}:${sort}`} source={source} interfaces={interfaces} total={sourceInterfaces.length} targets={catalog.targets} editingEnabled={catalog.editing_enabled} onConnect={editSource} onAddInterface={addInterface} onOpen={openInterface} onClear={() => { setFilter('all'); setQuery(''); setCategory('all') }} onReview={() => { setFilter('incomplete'); setQuery(''); setCategory('all') }} />
             : <p>请先新建数据源。</p>}
       </div>
     </div>

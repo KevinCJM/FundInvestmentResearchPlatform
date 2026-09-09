@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
+from backend.data_storage import StorageError
 
 try:
     from backend.data_sources import service
@@ -78,7 +79,7 @@ def revision(payload: dict) -> int:
 async def invoke(operation, *args):
     try:
         return await run_in_threadpool(operation, *args)
-    except CenterError as exc:
+    except (CenterError, StorageError) as exc:
         raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message}) from None
     except (ValueError, TypeError):
         raise HTTPException(422, detail={"code": "INVALID_CONFIGURATION", "message": "配置格式、约束或样本无效。"}) from None

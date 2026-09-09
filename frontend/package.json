@@ -7,8 +7,10 @@
     "dev": "node node_modules/vite/bin/vite.js",
     "build": "node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview",
+    "factor:preview": "node ../scripts/start_factor_research_preview.mjs",
     "test": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "i18n:check": "node ../scripts/check_i18n.mjs"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
@@ -17,6 +19,8 @@
     "echarts": "^5.6.0",
     "echarts-for-react": "^3.0.2",
     "katex": "^0.16.47",
+    "i18next": "26.4.2",
+    "react-i18next": "17.0.13",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^7.9.1"

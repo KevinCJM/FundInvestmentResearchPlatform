@@ -12,6 +12,198 @@
   },
   "modules": [
     {
+      "id": "backend_data_storage",
+      "name": "Managed data storage and offline disk relocation",
+      "path": "backend/data_storage.py",
+      "kind": "data_and_config",
+      "purpose": "Checks a local disk target, schedules a first relocation of the complete data area, copies and verifies offline, preserves the original backup and rejects missing storage without fallback.",
+      "module_tags": ["storage", "disk", "migration", "data", "local-only"],
+      "entry_files": ["backend/data_storage.py", "backend/storage_migration.py", "backend/services/storage_routes.py", "scripts/manage_data_storage.py", "start_services.sh", "docs/data_storage_design.md", "frontend/src/services/dataStorage.ts", "frontend/src/components/data-sources/DataStoragePanel.tsx"],
+      "key_symbols": ["StorageManager", "StorageMigration", "guard_path", "storage_lifespan", "DataStoragePanel"],
+      "child_modules": [],
+      "first_read_files": ["docs/data_storage_design.md", "backend/data_storage.py", "backend/storage_migration.py", "backend/services/storage_routes.py"],
+      "then_check_files": ["scripts/manage_data_storage.py", "start_services.sh", "backend/app.py", "backend/data_sources/store.py", "backend/data_sources/runtime.py", "backend/data_sources/batches.py", "backend/services/refresh_runtime.py", "backend/market_data.py", "T01_get_data.py", "frontend/src/services/dataStorage.ts", "frontend/src/components/data-sources/DataStoragePanel.tsx", "frontend/src/pages/DataManagement.tsx"],
+      "upstream_dependencies": ["data_ingestion_config", "backend_data_source_etl", "market_data_snapshot_lifecycle"],
+      "downstream_dependencies": ["frontend_data_source_center", "backend_api_shell"],
+      "out_of_scope_dependencies": ["automatic disk formatting", "second cross-disk relocation", "real external disk migration without user-selected target"],
+      "related_tests": ["backend/tests/test_data_storage.py", "frontend/src/components/data-sources/DataStoragePanel.test.tsx", "frontend/src/pages/DataManagement.test.tsx", "frontend/e2e/data-storage.spec.ts"],
+      "related_configs": [".gitignore", "AGENTS.md"],
+      "risk_flags": ["missing_disk_must_not_recreate_mount_or_fallback", "offline_migration_excludes_api_and_download_workers", "copy_is_not_space_reclamation", "first_relocation_only", "private_credentials_require_posix_permissions"],
+      "edit_risk": "high",
+      "blast_radius": ["all persisted data and metadata", "download checkpoints and quotas", "snapshot readers", "local disk capacity"],
+      "pitfall_ids": ["P05", "P09", "P11", "P15"],
+      "minimum_regression": ["/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q", "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'", "bash -n start_services.sh"],
+      "routing_confidence": "high",
+      "scope_flags": ["local_only", "offline_switch", "no_implicit_delete"],
+      "grounding": {"fact_status": "grounded", "evidence": ["backend/tests/test_data_storage.py", "frontend/src/components/data-sources/DataStoragePanel.test.tsx", "scripts/manage_data_storage.py", "docs/data_storage_design.md"], "unsampled_paths": []}
+    },
+    {
+      "id": "factor_research_center",
+      "name": "Two-module factor research center and investment evidence",
+      "path": "backend/factor_research",
+      "kind": "full_stack_research_module",
+      "purpose": "Two algorithm/output modules at one entry: product characteristics with daily/weekly/monthly sampling and maturity-dated rolling IC; factor returns with frozen-input characteristic spreads, uploaded point-in-time-panel FF3-style 2x3 construction, immutable datasets and checked CSV/JSON export. RBSA, FF3 and generic total/excess-return attribution share fixed-signature NJIT readiness. Fixed or prior-window rolling exposures feed daily factor/intercept/residual contributions, with RF explicitly restored for excess-return models; beginning-wealth linking reconciles full/in-sample/out-of-sample/monthly totals without skipping gaps. Frontend exposes coefficient paths, contribution reconciliation, raw-decimal CSV and legacy-run read-only compatibility. PBSA and Brinson remain outside this module. Existing research-only releases, manual candidate admission and workflow evidence remain compatible. Native stock and QDII data capabilities remain gated; imported custom-market FF3 is not an official French replication or a Barra risk model.",
+      "module_tags": [
+        "factor-research",
+        "etf",
+        "fund",
+        "njit",
+        "immutable-research",
+        "investment-evidence"
+      ],
+      "entry_files": [
+        "backend/factor_research",
+        "backend/services/factor_research_routes.py",
+        "frontend/src/services/factorResearch.ts",
+        "frontend/src/pages/FactorResearchCenter.tsx",
+        "frontend/src/components/factor-research",
+        "frontend/src/components/FactorEvidencePanel.tsx",
+        "frontend/src/test/factorFixtures.ts",
+        "frontend/src/test/factorReturnFixtures.ts",
+        "frontend/e2e/factor-returns.spec.ts",
+        "frontend/e2e/factor-research.spec.ts",
+        "frontend/e2e/factor-research-live.spec.ts",
+        "frontend/playwright.factor-live.config.ts",
+        "scripts/start_factor_research_preview.mjs",
+        "因子研究中心_详细设计.md",
+        "因子研究中心_双模块详细设计.md",
+        "因子研究中心_首套因子验收.md"
+      ],
+      "first_read_files": [
+        "因子研究中心_双模块详细设计.md",
+        "因子研究中心_详细设计.md",
+        "backend/factor_research/contracts.py",
+        "backend/factor_research/service.py",
+        "backend/factor_research/numba_kernels.py",
+        "frontend/src/pages/FactorResearchCenter.tsx"
+      ],
+      "then_check_files": [
+        "backend/factor_research/data.py",
+        "backend/factor_research/catalog.py",
+        "backend/factor_research/repository.py",
+        "backend/factor_research/return_contracts.py",
+        "backend/factor_research/return_service.py",
+        "backend/factor_research/return_kernels.py",
+        "backend/services/factor_research_routes.py",
+        "backend/app.py",
+        "backend/services/product_pool_routes.py",
+        "backend/product_pools/service.py",
+        "backend/custom_indicators/series_provider.py",
+        "frontend/src/services/factorResearch.ts",
+        "frontend/src/components/FactorEvidencePanel.tsx",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/pages/ProductDetail.tsx",
+        "因子研究中心_首套因子验收.md"
+      ],
+      "related_tests": [
+        "backend/tests/test_factor_research_numba.py",
+        "backend/tests/test_factor_research_service.py",
+        "backend/tests/test_factor_return_kernels.py",
+        "backend/tests/test_factor_return_service.py",
+        "backend/tests/test_product_pools.py",
+        "frontend/src/pages/FactorResearchCenter.test.tsx",
+        "frontend/src/pages/FactorReturnCenter.test.tsx",
+        "frontend/e2e/factor-returns.spec.ts",
+        "frontend/src/App.test.tsx",
+        "frontend/src/pages/ProductDetail.test.tsx",
+        "frontend/e2e/factor-research.spec.ts",
+        "frontend/e2e/factor-research-live.spec.ts"
+      ],
+      "related_configs": [
+        "backend/requirements.txt",
+        "frontend/package.json",
+        "frontend/playwright.config.ts",
+        "frontend/playwright.factor-live.config.ts",
+        ".gitignore"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_factor_research_numba.py backend/tests/test_factor_research_service.py backend/tests/test_factor_return_kernels.py backend/tests/test_factor_return_service.py backend/tests/test_product_pools.py -q",
+        "npm run test --prefix frontend -- --run FactorResearchCenter.test.tsx FactorReturnCenter.test.tsx App.test.tsx ProductDetail.test.tsx",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- factor-research.spec.ts factor-returns.spec.ts"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell",
+        "backend_custom_indicator_service",
+        "market_data_snapshot_lifecycle",
+        "frontend_app_shell",
+        "frontend_investment_process_framework"
+      ],
+      "downstream_dependencies": [],
+      "child_modules": [],
+      "out_of_scope_dependencies": [
+        "full historical point-in-time revised datasets",
+        "live ETF execution and fund subscription settlement",
+        "automatic SAA/TAA/optimizer signal consumption",
+        "native-snapshot stock and cross-market QDII factor calculations",
+        "official Kenneth French data replication and complete Barra covariance/specific-risk models"
+      ],
+      "grounding": {
+        "evidence": [
+          "backend/factor_research/service.py",
+          "backend/factor_research/numba_kernels.py",
+          "backend/tests/test_factor_research_numba.py",
+          "backend/tests/test_factor_research_service.py",
+          "frontend/src/pages/FactorResearchCenter.test.tsx",
+          "frontend/e2e/factor-research.spec.ts",
+          "frontend/e2e/factor-research-live.spec.ts",
+          "因子研究中心_首套因子验收.md"
+        ],
+        "fact_status": "grounded",
+        "unsampled_paths": []
+      },
+      "key_symbols": [
+        "FactorResearchService",
+        "FactorReturnService",
+        "build_contribution_analysis",
+        "exposure_path_kernel",
+        "daily_contributions_kernel",
+        "link_contributions_kernel",
+        "AttributionResults",
+        "ReturnPlanFields",
+        "FF3SourceFields",
+        "Study",
+        "StudyFields",
+        "FactorResearchCenter",
+        "FactorEvidencePanel",
+        "IndicatorEvaluationGateway",
+        "build_router",
+        "execution_audit"
+      ],
+      "pitfall_ids": [
+        "P03",
+        "P19"
+      ],
+      "risk_flags": [
+        "factor_returns_not_benchmark_or_characteristic_scores",
+        "announcement_lag_not_full_revision_pit",
+        "fixed_universe_survivorship_bias",
+        "no_future_missing_data_selection",
+        "fixed_njit_signatures_warmed_before_requests",
+        "manual_product_pool_admission",
+        "immutable_release_validity_and_staleness",
+        "workflow_binding_not_automatic_allocation",
+        "rolling_ic_maturity_date_and_sample_boundary",
+        "factor_spreads_not_overlapping_forward_labels",
+        "ff3_uploaded_panel_not_verified_full_market_pit",
+        "no_rf_zero_fill_or_total_return_alpha_claim"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "workspace_shared_feature",
+        "real_data_required"
+      ],
+      "blast_radius": [
+        "system settings",
+        "research scores and NAV simulation",
+        "return attribution",
+        "product pool evaluation sources",
+        "investment evidence panels"
+      ],
+      "edit_risk": "high",
+      "routing_confidence": "high"
+    },
+    {
       "id": "project_docs",
       "name": "Project documentation and product scope",
       "path": "README.md",
@@ -32,7 +224,8 @@
         "docs/requirements.md",
         "docs/custom_indicator_design.md",
         "docs/weight_reuse_task_plan.md",
-        "docs/test_report.md"
+        "docs/test_report.md",
+        "docs/product_scenario_research_design.md"
       ],
       "key_symbols": [],
       "child_modules": [],
@@ -95,7 +288,7 @@
       "name": "FastAPI app shell and static hosting",
       "path": "backend/app.py",
       "kind": "backend_api_entrypoint",
-      "purpose": "Creates the FastAPI app, configures permissive local CORS, includes modular routers, retains legacy inline endpoints, exposes ETF product APIs, and mounts the built Vite app from frontend/dist.",
+      "purpose": "Creates the FastAPI app, configures permissive local CORS, includes modular routers, retains legacy inline endpoints, exposes ETF product APIs, and mounts the built Vite app from frontend/dist. start_services.sh manages local backend/frontend start, stop, restart and status; readiness checks NJIT and worker warmup plus the frontend page and API proxy before printing Chinese success feedback and the browser URL.",
       "module_tags": [
         "backend",
         "fastapi",
@@ -106,6 +299,7 @@
       "entry_files": [
         "backend/app.py",
         "backend/run.py",
+        "start_services.sh",
         "backend/services/business_numeric_routes.py"
       ],
       "key_symbols": [
@@ -627,7 +821,7 @@
       "name": "Unified ETF/public-fund dashboard analytics and metric snapshots",
       "path": "backend/services/instrument_analytics.py",
       "kind": "backend_analytics_feature",
-      "purpose": "Serves small-table ETF/public-fund summaries, independent trend series, filtered rankings, and data-quality metadata; during data refresh it streams NAV and candle parquet row groups, then materializes the exact Indicator Center revisions and periods selected by the workspace snapshot configuration. Shared series-quality gates require complete metric windows and reject adjusted-NAV discontinuities.",
+      "purpose": "Serves small-table ETF/public-fund summaries, independent trend series, filtered rankings, and data-quality metadata; during data refresh it streams NAV and candle parquet row groups, then materializes the exact Indicator Center revisions and periods selected by the workspace snapshot configuration. Shared series-quality gates require complete metric windows and reject adjusted-NAV discontinuities. Product analysis reads an explicit adjusted-NAV or ETF close basis from the active inventory, preserves missing observations and regime boundaries, and returns segment evidence plus explicitly requested fixed-signature conditional simulations.",
       "module_tags": [
         "backend",
         "analytics",
@@ -720,7 +914,8 @@
       ],
       "minimum_regression": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/services/instrument_analytics.py backend/services/instrument_routes.py backend/series_quality.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q"
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_product_analysis_numba.py tests/test_product_analysis_routes.py -q'"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -747,7 +942,7 @@
       "name": "Versioned Tushare data resolution, validation, and activation",
       "path": "backend/market_data.py",
       "kind": "market_data_lifecycle",
-      "purpose": "Resolves every Tushare reader through an active version manifest with legacy fallback, runs a read-only whole-snapshot promotion gate with independent metric samples and source fingerprints, and atomically activates only unchanged validated files.",
+      "purpose": "Resolves every Tushare reader through an active version manifest with legacy fallback, runs a read-only whole-snapshot promotion gate with independent metric samples and source fingerprints, and atomically activates only unchanged validated files. Configured metric snapshots are re-evaluated from their recorded Indicator Center IDs, revisions and periods with prefer_snapshot=false after NJIT warmup; fixed formulas only validate snapshots without configured metadata. Missing metadata, failed or missing results, value/status mismatches block activation. The recorded metadata file is included in the validation inventory.",
       "module_tags": [
         "backend",
         "market-data",
@@ -1081,6 +1276,13 @@
         "process_and_numba_thread_oversubscription",
         "data_generation_cache_invalidation",
         "snapshot_config_locks_indicator_revision_and_period",
+        "independent_scalar_consumers_lock_indicator_id_and_revision",
+        "runtime_series_parameters_require_explicit_contract_version_and_author_opened_operator_positions",
+        "runtime_series_defaults_are_revision_locked_and_overrides_recompute_history_ranges_cache_and_excel_without_new_jit_signatures",
+        "removed_market_attribution_has_no_hidden_catalog_or_evaluation_entry",
+        "independent_drawdown_dates_share_last_equal_maximum_interval",
+        "rolling_routes_use_one_transformer_and_preserve_data_provenance",
+        "scalar_date_and_series_channel_snapshots_keep_distinct_locked_presentation",
         "snapshot_read_requires_matching_config_revision_and_data_generation",
         "large_result_expiration_contract"
       ],
@@ -1136,10 +1338,10 @@
     },
     {
       "id": "backend_typed_indicator_v2",
-      "name": "Typed v2.2 indicator type system, NJIT kernel registry, and fused formula runtime",
+      "name": "Typed indicator primitives, shared DAG and fixed-signature NJIT runtime",
       "path": "backend/cal_indicators/typed_dsl.py",
       "kind": "backend_indicator_engine",
-      "purpose": "Typed DSL 2.2 keeps nominal axes, bool masks, semantic dimensions and price-basis checks while adding an explicit 95-operator fixed-signature NJIT KernelSpec registry, compiler-owned per-formula and multi-metric fused Numba plans, startup signature warmup, integer status outputs, and fail-closed execution with no Python operator fallback. Product-facing metadata exposes kernel coverage and compile state, while typed 2.0/2.1 and legacy v1 definitions are adapted without rewriting persisted history.",
+      "purpose": "Typed DSL preserves nominal axes, bool masks, semantic dimensions and price-basis checks. Current formulas use mathematical and state primitives; supported historical business function spellings lower into the same current DAG rather than alternate production algorithms. Independent scalar metrics merge structurally identical nodes under matching bindings, versions and windows; selected roots prune unrelated branches. Drawdown dates share the last equally deepest interval and regression projections share a fitted state. Startup/save/explicit preparation owns fixed-signature NJIT compilation; formal evaluation fails closed without Python fallback or new signatures. Ordinary time-series multi-channel contracts remain separate from removed scalar bundles.",
       "module_tags": [
         "backend",
         "indicators",
@@ -1208,6 +1410,9 @@
         "backend/services/custom_indicator_routes.py"
       ],
       "then_check_files": [
+        "backend/causality/audit.py",
+        "backend/causality/baseline.json",
+        "backend/tests/test_causality.py",
         "backend/tests/test_typed_indicator_types.py",
         "backend/tests/test_typed_indicator_catalog.py",
         "backend/tests/test_typed_indicator_compiler.py",
@@ -1238,7 +1443,8 @@
         "backend/tests/test_typed_indicator_product_service.py",
         "backend/tests/test_custom_indicator_variables.py",
         "backend/tests/test_custom_indicator_service.py",
-        "backend/tests/test_custom_indicator_routes.py"
+        "backend/tests/test_custom_indicator_routes.py",
+        "backend/tests/test_causality.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -1254,7 +1460,8 @@
         "public_typed_api_contract",
         "njit_kernel_registry_set_equality",
         "startup_warmup_must_cover_all_signatures",
-        "python_operator_fallback_forbidden"
+        "python_operator_fallback_forbidden",
+        "operator_causality_baseline_complete"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -1268,7 +1475,7 @@
         "P13"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py"
       ],
       "routing_confidence": "high",
@@ -1289,6 +1496,9 @@
           "backend/custom_indicators/typed_service.py",
           "backend/custom_indicators/service.py",
           "backend/services/custom_indicator_routes.py",
+          "backend/causality/audit.py",
+          "backend/causality/baseline.json",
+          "backend/tests/test_causality.py",
           "backend/tests/test_typed_indicator_compiler.py",
           "backend/tests/test_typed_indicator_runtime.py",
           "backend/tests/test_typed_numba_v22.py",
@@ -1410,7 +1620,7 @@
       "name": "Historical regime graph, research-series, and scenario-stress services",
       "path": "backend/historical_regimes/v2_service.py",
       "kind": "backend_api_feature",
-      "purpose": "Provides the versioned Regime Graph v2 registry, typed graph inference, explicit fixed-signature NJIT preparation and execution, non-authorizing persistent plan manifests, immutable artifacts, research-series catalog/profile, historical-state experiments, and published-state scenario-stress integration.",
+      "purpose": "Provides the versioned Regime Graph v2 registry, typed graph inference, explicit fixed-signature NJIT preparation and execution, non-authorizing persistent plan manifests, immutable artifacts, research-series catalog/profile, historical-state experiments, and published-state scenario-stress integration. Completed previews expose a read-only overview from deep-frozen definitions and final series; saved details use the same observation-index segment and full-sample summary contract without rerunning the graph. The version-2 bull/bear template uses causal log-index Super Smoother, prior-return RMS scaling, directional efficiency and persistent three-state confirmation. KAMA is available for comparison; short reversed runs can only be merged retrospectively. Final series persist traceable trend and raw-price risk evidence. Legacy PS-style peak/trough dating has retrospective monthly and daily compatibility templates with independent left/right/head/tail windows; legacy symmetric parameters and two-state definitions remain supported. Those legacy templates classify sideways intervals by merging bounded small reversed waves with low full-path efficiency, minimum duration and a directional peak/trough structure guard; only complete intervals are classified and full-sample availability never becomes an executable trading date. Daily peak template v2 separates local-extrema detection, complete interval boundaries, independently selected statistics and threshold classification; legacy templates retain their old definitions. A bounded graph-authoring adapter roundtrips registered node calls and port references; numeric expressions and 24 causal operator nodes use the Indicator Center typed registry and warmed numeric plan. Enum and named numeric series outputs have explicit contracts; presentation metadata is frozen with results and empty metadata is omitted for legacy compatibility. Full-input dating availability follows node metadata through final-output ancestors. The read-only authoring resolver returns per-output mathematical notation and dependency equations; numeric expressions reuse the canonical indicator renderer, while domain operators preserve their exact names and parameters without computing data. Independent node previews project unfinished drafts onto one output and its ancestors, preserve realtime eligibility and as-of checks, reuse warmed graph execution, and cannot be saved or published as regime definitions. A read-only normalized-chart endpoint rebases frozen numeric preview outputs using the existing warmed binary arithmetic kernel; it rejects enums and invalid bases and never changes graph results or stored source values. Node-series pages include a frozen upstream-output catalog in nearest-ancestor order with node names, port names and numeric plotting eligibility; these read-only overlays never resolve sources or rerun the graph. Source-file decoding accepts bounded CSV/XLSX/JSON input with explicit sheet/column selection and no persistence until profile registration. Named upload receipts are immutable and searchable through /research-series/uploads, including older artifacts without receipts. Production indicator catalog uses the same built-in/custom exact-version registry as indicator execution and declares compatible product kinds and unsupported-version reasons. Workspace-only indicator/upload catalogs do not require a market snapshot. Exact Indicator Center revisions can also become upstream-fed indicator calculation nodes with named numeric outputs, original runtime parameters and supported scalar-to-rolling conversion; unavailable contracts carry reasons. Every output uses a separate warmed formula plan. Creation of inline/product-bound indicator source nodes is hidden while stored definitions retain their execution contract. ETF price fields optionally use exact-date fund_adj factors with separate frozen checksums, warmed fixed-signature price adjustment, post-cutoff forward-adjustment anchors and retrospective-only enforcement. Missing factors disable adjusted market-price choices. ETF adjusted NAV reads the separately published etf_daily_df.parquet fund_nav source without price factors; per-field bindings pin the correct file checksum, preserve announcement cutoffs and reject realtime use. NAV-only ETFs remain selectable. Alignment diagnostics name the blocked node.",
       "module_tags": [
         "backend",
         "historical-regime",
@@ -1436,7 +1646,15 @@
         "backend/scenario_stress/service.py",
         "backend/services/historical_regime_routes.py",
         "backend/services/research_series_routes.py",
-        "backend/services/scenario_stress_routes.py"
+        "backend/services/scenario_stress_routes.py",
+        "backend/historical_regimes/segment_numba.py",
+        "backend/historical_regimes/authoring.py",
+        "backend/computation_graph/series_contracts.py",
+        "backend/computation_graph/series_expression.py",
+        "backend/computation_graph/series_operators.py",
+        "backend/computation_graph/series_runtime.py",
+        "backend/computation_graph/series_numba.py",
+        "backend/historical_regimes/math_presentation.py"
       ],
       "key_symbols": [
         "RegimeGraphV2Service",
@@ -1448,6 +1666,7 @@
         "infer",
         "prepare",
         "preview",
+        "preview_overview",
         "run",
         "publish"
       ],
@@ -1468,7 +1687,32 @@
         "backend/tests/test_historical_regime_v2.py",
         "backend/tests/test_historical_regime_v2_p1.py",
         "backend/tests/test_research_series_routes.py",
-        "backend/tests/test_scenario_stress.py"
+        "backend/tests/test_scenario_stress.py",
+        "backend/historical_regimes/trend_numba.py",
+        "backend/tests/test_historical_regime_trend.py",
+        "backend/scripts/benchmark_regime_trend.py",
+        "backend/historical_regimes/peak_trough_numba.py",
+        "backend/tests/test_historical_regime_peak_trough.py",
+        "docs/research/peak-trough-regime-implementation-2026-09-07.md",
+        "backend/historical_regimes/segment_numba.py",
+        "backend/historical_regimes/authoring.py",
+        "docs/research/regime-authoring-design-2026-09-07.md",
+        "backend/computation_graph/series_contracts.py",
+        "backend/computation_graph/series_expression.py",
+        "backend/computation_graph/series_operators.py",
+        "backend/computation_graph/series_runtime.py",
+        "backend/computation_graph/series_numba.py",
+        "docs/research/regime-series-studio-design-2026-09-07.md",
+        "backend/historical_regimes/node_preview.py",
+        "backend/research_series/file_import.py",
+        "docs/research/regime-source-forms-2026-09-08.md",
+        "backend/historical_regimes/indicator_nodes.py",
+        "docs/research/regime-indicator-nodes-2026-09-08.md",
+        "backend/historical_regimes/data.py",
+        "backend/research_series/product_sources.py",
+        "docs/research/regime-product-sources-2026-09-08.md",
+        "backend/research_series/numba_kernels.py",
+        "TushareDownload.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -1497,20 +1741,53 @@
         "backend/tests/test_research_series_numba.py",
         "backend/tests/test_research_series_routes.py",
         "backend/tests/test_scenario_stress.py",
-        "backend/tests/test_scenario_stress_routes.py"
+        "backend/tests/test_scenario_stress_routes.py",
+        "backend/tests/test_historical_regime_trend.py",
+        "backend/tests/test_historical_regime_peak_trough.py",
+        "backend/tests/test_regime_segments.py",
+        "backend/tests/test_regime_authoring.py",
+        "backend/tests/test_regime_series_builder.py",
+        "backend/tests/test_regime_math_presentation.py",
+        "backend/tests/test_regime_node_preview.py",
+        "backend/tests/test_regime_chart_normalization.py",
+        "backend/tests/test_research_series_import.py",
+        "backend/tests/test_regime_indicator_nodes.py",
+        "backend/tests/test_regime_product_sources.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
         "AGENTS.md"
       ],
       "risk_flags": [
+        "realtime_blocks_retrospective_nodes_and_automatic_retrospective_diagnostics",
         "no_request_time_compilation",
         "pit_asof_required_for_formal_use",
         "missing_values_never_zero_filled",
         "published_version_lineage_lock",
         "third_party_model_isolation",
         "persisted_plan_manifest_never_authorizes_execution",
-        "large_arrays_externalized"
+        "large_arrays_externalized",
+        "preview_overview_uses_frozen_run_metadata",
+        "overview_intervals_use_inclusive_observation_indices",
+        "unknown_intervals_are_not_neutral_states",
+        "effective_timeline_requires_complete_server_projection",
+        "trend_confirmation_never_backfills_and_missing_resets_candidate",
+        "sideways_requires_flat_slope_and_low_directional_efficiency",
+        "retrospective_merge_preserves_crashes_unknowns_and_unfinished_tail",
+        "template_upgrade_does_not_mutate_saved_runs",
+        "peak_trough_durations_count_input_observations",
+        "peak_trough_unknown_edges_never_extend_or_become_sideways",
+        "peak_trough_global_censoring_requires_full_sample_knowledge",
+        "peak_trough_split_windows_override_legacy_fields_independently",
+        "peak_trough_sideways_requires_complete_bounded_reverse_waves",
+        "peak_trough_sideways_preserves_directional_structure_and_unknowns",
+        "independent_segment_stats_require_same_boundary_node_and_exact_axis",
+        "enumerated_neutral_not_missing",
+        "formula_authoring_never_executes_python_or_prepares_numeric_plan",
+        "enum_values_cannot_feed_numeric_series_ports",
+        "rolling_warmup_missing_preserved_without_python_fallback",
+        "typed_formula_availability_propagates_input_publication_times",
+        "node_preview_projection_does_not_relax_formal_state_output_or_realtime_contracts"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -1526,8 +1803,15 @@
         "P14"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py"
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_trend.py tests/test_historical_regime_peak_trough.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py backend/historical_regimes/trend_numba.py backend/historical_regimes/v2_numba.py backend/historical_regimes/v2_templates.py backend/historical_regimes/peak_trough_numba.py backend/historical_regimes/segment_numba.py backend/historical_regimes/authoring.py",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_series_builder.py tests/test_regime_segments.py tests/test_regime_authoring.py tests/test_indicator_graph.py tests/test_indicator_formula_roundtrip.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_math_presentation.py tests/test_regime_authoring.py tests/test_regime_series_builder.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_node_preview.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_chart_normalization.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_research_series_import.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_indicator_nodes.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_product_sources.py -q'"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1550,7 +1834,27 @@
           "backend/tests/test_historical_regime_v2.py",
           "backend/tests/test_historical_regime_v2_p1.py",
           "backend/tests/test_research_series_routes.py",
-          "backend/tests/test_scenario_stress.py"
+          "backend/tests/test_scenario_stress.py",
+          "backend/historical_regimes/trend_numba.py",
+          "backend/tests/test_historical_regime_trend.py",
+          "backend/historical_regimes/peak_trough_numba.py",
+          "backend/tests/test_historical_regime_peak_trough.py",
+          "backend/computation_graph/series_contracts.py",
+          "backend/computation_graph/series_expression.py",
+          "backend/computation_graph/series_operators.py",
+          "backend/computation_graph/series_runtime.py",
+          "backend/computation_graph/series_numba.py",
+          "backend/tests/test_regime_series_builder.py",
+          "backend/historical_regimes/math_presentation.py",
+          "backend/tests/test_regime_math_presentation.py",
+          "backend/historical_regimes/node_preview.py",
+          "backend/tests/test_regime_node_preview.py",
+          "backend/tests/test_regime_chart_normalization.py",
+          "backend/tests/test_research_series_import.py",
+          "backend/research_series/file_import.py",
+          "backend/historical_regimes/indicator_nodes.py",
+          "docs/research/regime-indicator-nodes-2026-09-08.md",
+          "backend/tests/test_regime_indicator_nodes.py"
         ],
         "unsampled_paths": []
       }
@@ -1560,7 +1864,7 @@
       "name": "Historical regime graph workbench, data lab, and scenario UI",
       "path": "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "Lets researchers build typed historical-regime graphs from blank canvases or templates, inspect versioned data and node series, run and compare experiments, publish immutable versions, and reuse them in scenario simulation and portfolio workflows.",
+      "purpose": "Lets researchers build typed historical-regime graphs through an Indicator-Studio-like same-page library, definition and preview layout with lossless guided forms or expandable canvases, open tools in non-resizing drawers, inspect frozen complete final results separately from node debugging, compare experiments, publish immutable versions, and reuse eligible versions in scenario simulation and portfolio workflows. Trend results show the identification index and filter separately from the replaceable evaluation series, with raw-risk and pre-merge phase evidence. The main scenario-center entry opens the studio directly; its library separates real-time and retrospective templates and retains the old directory for historical versions and migration; loading a retrospective graph selects retrospective mode after the catalog loads. Peak/trough evidence has an independent identification-index plot, retained extrema and complete-phase boundaries. Legacy peak/trough forms expose four independent windows and sideways controls while displaying inherited legacy values; evidence distinguishes original waves from merged sideways boundaries, width, ER and wave count. Three authoring modes share one definition: canvas, guided typed connections and full-graph formula source. Pending formula edits block running/saving/mode switching; explicit apply or restore is required, stale async responses cannot overwrite newer drafts, and original node positions survive formula apply. Resource classification uses the existing registry; CalculationSteps and SeriesOutputFields are shared with Indicator Center, whose storage and computation semantics remain unchanged. Guided configuration summarizes dependencies of the selected output and opens one selected calculation step in a drawer; output configuration supports an enum main channel and optional numeric channels. Numeric charts use frozen channel metadata and preserve missing values. Execution mode, cutoff and data controls belong to preview. Switching scenario-center tabs retains drafts; asynchronous template and saved-definition loads cannot overwrite newer selections or edits. Server-authored mathematical LaTeX is rendered with KaTeX in all three modes; preview follows the selected output and hides outdated or unapplied drafts, with dependency equations and parameters available on demand. Canvas and guided node drawers can preview one node and its ancestors before a final output exists. Node previews have separate transient job state, mode and cutoff, stale-result and cancellation handling, full paginated chart history and a recent-row table. Node charts offer a display-only first-visible-observation-equals-one switch. Slider and inside zoom select the exact category base; backend-normalized values and percentage changes preserve raw tables and zoom bounds. Late responses are ignored and nonpositive or missing bases are rejected. Node charts optionally load transitive upstream numeric outputs from the same preview with full pagination. Each overlay selects a shared left axis, shared right axis or independent subplot; all panels share date-based zoom and tooltips. Sparse calendars retain original observations and missing values. Numeric overlays normalize against the same visible date using the warmed backend endpoint; missing bases remain explicit errors. Raw comparison tables remain available. Scenario help tips render in a fixed body portal to escape drawer overflow, clamp to the viewport and flip below the trigger when necessary. Hover and keyboard access are retained; Escape dismisses the hint before the drawer, and container scrolling removes detached hints. The shared-left-axis overlay is labeled 同图同轴. Scenario source editors share single-binding controls across canvas and guided forms. Uploads support file preview, column mapping, confirmation and saved-version selection; cancelled or failed uploads preserve the old binding. Stored product-bound indicator source definitions retain their separate version and fund/ETF target choices as a compatibility contract. Index/macro/upload/indicator identity fields are read-only; replacing a source clears old identity and provenance. Indicator Center implementation remains unchanged. The node library uses one dropdown and text search, exposes Indicator Center calculations as a distinct category, and hides manual-entry and product-bound indicator creation. Native multi-output indicator nodes connect explicit upstream inputs without a second product picker. Existing inline data is read-only; the manual editor was removed. Binary arithmetic preview errors offer one user-triggered, undoable insertion of an explicit common-date alignment node followed by preview; structured server diagnostics remain visible. Unavailable adjusted source fields show their reason and cannot be selected. One ETF picker switches between market prices and downloaded adjusted NAV, rebinding field-specific files within the same frozen generation; field editing waits for catalog metadata and older generations require explicit product reselection.",
       "module_tags": [
         "frontend",
         "historical-regime",
@@ -1586,7 +1890,15 @@
         "frontend/src/services/taaBacktest.ts",
         "frontend/src/services/regimeGraph.ts",
         "frontend/src/services/researchSeries.ts",
-        "frontend/src/services/scenarioStress.ts"
+        "frontend/src/services/scenarioStress.ts",
+        "frontend/src/pages/regime-workbench/RegimeFormulaEditor.tsx",
+        "frontend/src/components/computation-graph/CalculationSteps.tsx",
+        "frontend/src/components/computation-graph/SeriesOutputFields.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
+        "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
+        "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx"
       ],
       "key_symbols": [
         "HistoricalRegimeWorkbench",
@@ -1597,7 +1909,9 @@
         "RegimeNodeInspector",
         "RegimeResultDock",
         "RegimeValidationPanel",
-        "RegimeExperimentPanel"
+        "RegimeExperimentPanel",
+        "RegimeDefinitionLibrary",
+        "RegimeGuidedFormulaPanel"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -1613,7 +1927,38 @@
         "frontend/src/pages/regime-workbench/RegimeValidationPanel.tsx",
         "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
         "frontend/src/pages/ResearchDataLab.test.tsx",
-        "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx"
+        "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeTimelineChart.tsx",
+        "frontend/src/pages/regime-workbench/RegimeEvidencePanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeTrend.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeFormulaEditor.tsx",
+        "frontend/src/components/computation-graph/CalculationSteps.tsx",
+        "frontend/src/components/computation-graph/SeriesOutputFields.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
+        "docs/research/regime-series-studio-design-2026-09-07.md",
+        "frontend/src/components/indicator-graph/IndicatorGraphEditor.tsx",
+        "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
+        "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
+        "docs/research/regime-studio-ui-parity-2026-09-07.md",
+        "docs/research/assets/regime-studio-canvas-2026-09-07.png",
+        "docs/research/assets/regime-studio-guided-2026-09-07.png",
+        "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx",
+        "docs/research/assets/regime-math-formula-2026-09-07.png",
+        "docs/research/assets/regime-math-steps-2026-09-07.png",
+        "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.tsx",
+        "frontend/src/services/regimePreviewSeries.test.ts",
+        "frontend/e2e/regime-upstream-preview.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeUploadSeriesEditor.tsx",
+        "frontend/src/pages/regime-workbench/RegimeIndicatorSourceFields.tsx",
+        "docs/research/regime-source-forms-2026-09-08.md",
+        "frontend/src/pages/regime-workbench/RegimeResourceLibrary.tsx",
+        "docs/research/regime-indicator-nodes-2026-09-08.md",
+        "docs/research/regime-product-sources-2026-09-08.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -1638,18 +1983,49 @@
         "frontend/src/pages/TacticalAllocationWorkspace.test.tsx",
         "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
         "frontend/src/pages/regime-workbench/RegimeResultDock.test.tsx",
-        "frontend/src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx"
+        "frontend/src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeTrend.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeFormulaEditor.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.test.tsx",
+        "frontend/e2e/historical-regime-workbench.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeMathPreview.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.test.tsx",
+        "frontend/e2e/regime-source-picker.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.test.tsx",
+        "frontend/e2e/regime-node-preview.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.test.tsx",
+        "frontend/src/services/regimePreviewSeries.test.ts",
+        "frontend/e2e/regime-upstream-preview.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeHelpTip.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSourceForms.test.tsx",
+        "frontend/e2e/regime-source-forms.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeResourceLibrary.test.tsx",
+        "frontend/e2e/regime-indicator-nodes.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
         "frontend/vite.config.ts"
       ],
       "risk_flags": [
+        "realtime_disables_retrospective_node_selection_and_blocks_existing_graph_runs",
         "stale_preview_response",
         "dynamic_schema_contract",
         "graph_keyboard_accessibility",
         "chart_requires_table_alternative",
-        "publication_lineage_lock"
+        "publication_lineage_lock",
+        "preview_identity_includes_execution_context",
+        "full_series_required_for_global_regime_overlays",
+        "frozen_result_labels_and_colors",
+        "formal_result_identity_separate_from_current_draft",
+        "classification_filter_overlay_must_not_use_evaluation_price_axis",
+        "template_mode_selection_waits_for_catalog",
+        "peak_trough_plot_uses_dating_index_and_marks_retrospective_semantics",
+        "deprecated_symmetric_peak_parameters_hidden_but_inherited_values_displayed",
+        "scenario_center_tab_switch_preserves_draft",
+        "definition_load_checks_request_and_draft_signature",
+        "research_source_search_queries_full_catalog_with_pagination_and_stale_response_guard",
+        "index_identity_bound_once_and_shown_readonly_without_implicit_snapshot_rebinding",
+        "partial_node_preview_preserves_draft_and_full_regime_run_state"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -1664,8 +2040,18 @@
         "P14"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/HistoricalRegimeDirectory.test.tsx src/pages/HistoricalRegimeWorkbench.test.tsx src/pages/ResearchDataLab.test.tsx src/pages/ScenarioAlgorithmCenter.test.tsx src/pages/regime-workbench/RegimeP1Panels.test.tsx src/pages/regime-workbench/RegimeResultDock.test.tsx src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx'",
-        "npm run build --prefix frontend"
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/HistoricalRegimeDirectory.test.tsx src/pages/HistoricalRegimeWorkbench.test.tsx src/pages/ResearchDataLab.test.tsx src/pages/ScenarioAlgorithmCenter.test.tsx src/pages/regime-workbench/RegimeP1Panels.test.tsx src/pages/regime-workbench/RegimeResultDock.test.tsx src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx src/pages/regime-workbench/RegimeTrend.test.tsx src/pages/regime-workbench/regimeResultAdapter.test.ts src/pages/regime-workbench/RegimeResultView.test.tsx'",
+        "npm run build --prefix frontend",
+        "npm run test --prefix frontend -- --run RegimeSeriesOutputs.test.tsx HistoricalRegimeWorkbench.test.tsx ScenarioCenters.test.tsx RegimeFormulaEditor.test.tsx RegimeTrend.test.tsx IndicatorStudio.test.tsx IndicatorStudio.roundtrip.test.tsx",
+        "npm run test:e2e --prefix frontend -- historical-regime-workbench.spec.ts regime-source-picker.spec.ts --workers=1",
+        "npm run test --prefix frontend -- --run RegimeMathPreview.test.tsx RegimeFormulaEditor.test.tsx",
+        "npm run test --prefix frontend -- --run RegimeResearchSeriesPicker.test.tsx",
+        "npm run test --prefix frontend -- --run RegimeNodePreviewPanel.test.tsx",
+        "npm run test:e2e --prefix frontend -- regime-node-preview.spec.ts --workers=1",
+        "npm run test --prefix frontend -- --run RegimeNodeSeriesChart.test.tsx",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/services/regimePreviewSeries.test.ts src/pages/regime-workbench/RegimeNodeSeriesChart.test.tsx'",
+        "npm run test --prefix frontend -- --run RegimeSourceForms.test.tsx RegimeResearchSeriesPicker.test.tsx",
+        "npm run test --prefix frontend -- --run RegimeResourceLibrary.test.tsx"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1683,7 +2069,43 @@
           "frontend/src/services/regimeGraph.ts",
           "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
           "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
-          "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx"
+          "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx",
+          "frontend/src/pages/HistoricalRegimeDirectory.tsx",
+          "frontend/src/pages/HistoricalRegimeDirectory.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeTimelineChart.tsx",
+          "frontend/src/pages/regime-workbench/RegimeEvidencePanel.tsx",
+          "frontend/src/pages/regime-workbench/RegimeTrend.test.tsx",
+          "frontend/src/components/computation-graph/CalculationSteps.tsx",
+          "frontend/src/components/computation-graph/SeriesOutputFields.tsx",
+          "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
+          "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
+          "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
+          "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
+          "frontend/src/pages/ScenarioCenters.tsx",
+          "frontend/src/pages/ScenarioCenters.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx",
+          "frontend/src/pages/regime-workbench/RegimeMathPreview.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.tsx",
+          "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.test.tsx",
+          "frontend/e2e/regime-source-picker.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.tsx",
+          "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.test.tsx",
+          "frontend/e2e/regime-node-preview.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.tsx",
+          "frontend/src/services/regimePreviewSeries.test.ts",
+          "frontend/e2e/regime-upstream-preview.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeHelpTip.tsx",
+          "frontend/src/pages/regime-workbench/RegimeHelpTip.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeSourceForms.test.tsx",
+          "frontend/e2e/regime-source-forms.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeUploadSeriesEditor.tsx",
+          "frontend/src/pages/regime-workbench/RegimeIndicatorSourceFields.tsx",
+          "frontend/src/pages/regime-workbench/RegimeResourceLibrary.tsx",
+          "docs/research/regime-indicator-nodes-2026-09-08.md",
+          "frontend/src/pages/regime-workbench/RegimeResourceLibrary.test.tsx",
+          "frontend/e2e/regime-indicator-nodes.spec.ts"
         ],
         "unsampled_paths": []
       }
@@ -1945,7 +2367,7 @@
       "name": "Custom indicator studio and API client",
       "path": "frontend/src/pages/IndicatorStudio.tsx",
       "kind": "frontend_feature_page",
-      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, a reusable focus-aware remote-search dropdown, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a single-result DAG plus accessible table, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types.",
+      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, a reusable focus-aware remote-search dropdown, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a shared DAG with named numeric scalar results or time-series channels plus accessible result tables, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types.",
       "module_tags": [
         "frontend",
         "custom-indicators",
@@ -2014,7 +2436,9 @@
         "existing_indicator_revision_and_protocol_lock",
         "executable_source_and_display_latex_must_not_be_confused",
         "availability_failure_must_disable_variables",
-        "single_result_dag_contract",
+        "versioned_independent_scalar_and_time_series_channel_contract",
+        "output_identity_is_stable_across_label_and_order_changes",
+        "saved_source_changes_invalidate_inline_compile_tokens",
         "echarts_browser_rendering",
         "katex_formula_rendering",
         "search_dropdown_must_close_when_focus_leaves_or_escape_is_pressed",
@@ -2193,7 +2617,7 @@
       "name": "ETF/public-fund panorama dashboard and product research pages",
       "path": "frontend/src/pages/ProductResearch.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "ETF/public-fund panorama dashboard with explicit read-only snapshot labels, URL-scoped views, partial-data cards, accessible charts and tables, plus product filtering and a shared-protocol indicator-analysis view, detail cards, and comparison matrix.",
+      "purpose": "ETF/public-fund panorama dashboard with explicit read-only snapshot labels, URL-scoped views, partial-data cards, accessible charts and tables, plus product filtering and a shared-protocol indicator-analysis view, detail cards, and comparison matrix. Single-product research uses four workspaces and one published scenario context; conditional statistics preserve continuous segment boundaries and simulations run only on explicit request.",
       "module_tags": [
         "frontend",
         "etf",
@@ -2227,7 +2651,8 @@
         "frontend/src/components/dashboard/types.ts",
         "frontend/src/components/dashboard/useDataRefresh.ts",
         "frontend/src/components/dashboard/useInstrumentDashboard.ts",
-        "frontend/src/utils/performance.ts"
+        "frontend/src/utils/performance.ts",
+        "frontend/src/components/product-research/ProductScenarioPanel.tsx"
       ],
       "key_symbols": [
         "Dashboard",
@@ -2278,7 +2703,8 @@
         "frontend/src/utils/performance.ts",
         "backend/services/instrument_analytics.py",
         "backend/services/instrument_routes.py",
-        "backend/services/data_routes.py"
+        "backend/services/data_routes.py",
+        "docs/product_scenario_research_design.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -2303,7 +2729,9 @@
         "frontend/src/components/dashboard/useDataRefresh.test.tsx",
         "frontend/src/pages/ProductResearch.test.tsx",
         "frontend/src/pages/ProductDetail.test.tsx",
-        "frontend/src/pages/ProductCompare.test.tsx"
+        "frontend/src/pages/ProductCompare.test.tsx",
+        "frontend/e2e/product-scenario.spec.ts",
+        "frontend/e2e/metric-display.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -2726,6 +3154,7 @@
       ],
       "related_tests": [
         "backend/tests/test_tushare_data_script.py",
+        "backend/tests/test_fund_event_download.py",
         "backend/tests/test_data_refresh.py",
         "backend/tests/test_index_data.py",
         "backend/tests/test_instrument_routes.py",
@@ -2928,9 +3357,12 @@
         "scripts/smoke_data_source_center.py",
         "scripts/smoke_etl_workflow.py",
         "scripts/smoke_multi_source.py",
+        "scripts/smoke_fund_events.py",
         "docs/data_source_center_design.md",
         "docs/data_sync_user_flow.md",
         "docs/etl_workflow_design.md",
+        "docs/auto_incremental_design.md",
+        "docs/etl_generic_full_data_design.md",
         "docs/multi_source_resolution_design.md"
       ],
       "key_symbols": [
@@ -2948,6 +3380,15 @@
         "backend/services/etl_routes.py"
       ],
       "then_check_files": [
+        "backend/data_sources/etl_executor.py",
+        "backend/data_sources/fund_events.py",
+        "backend/data_sources/fund_event_recovery.py",
+        "backend/data_sources/index_history_recovery.py",
+        "backend/services/etl_recovery.py",
+        "backend/data_sources/etl_migration.py",
+        "backend/data_sources/etl_collection.py",
+        "backend/data_sources/etl_runner.py",
+        "backend/data_sources/task_receipt.py",
         "backend/data_sources/resolution.py",
         "backend/data_sources/mapping.py",
         "backend/data_sources/sync_jobs.py",
@@ -2977,6 +3418,19 @@
         "backend/tests/test_data_source_center.py",
         "backend/tests/test_etl_snapshot.py",
         "backend/tests/test_etl_run_options.py",
+        "backend/tests/test_auto_incremental.py",
+        "backend/tests/test_etl_progress.py",
+        "backend/tests/test_etl_recovery.py",
+        "backend/tests/test_etl_collection.py",
+        "backend/tests/test_etl_migration.py",
+        "backend/tests/test_index_history_recovery.py",
+        "backend/tests/test_etl_web_recovery.py",
+        "backend/tests/test_fund_event_download.py",
+        "backend/tests/test_fund_event_recovery.py",
+        "backend/tests/test_etl_executor.py",
+        "backend/tests/etl_lifecycle_fixture.py",
+        "backend/tests/test_etl_dataset_tasks.py",
+        "backend/tests/test_etl_graph.py",
         "backend/tests/test_etl_workflows.py",
         "backend/tests/test_multi_source_resolution.py",
         "backend/tests/test_resolution_routes.py",
@@ -3010,6 +3464,7 @@
       ],
       "minimum_regression": [
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_akshare_adapter.py tests/test_data_source_center.py tests/test_etl_snapshot.py tests/test_etl_workflows.py tests/test_multi_source_resolution.py tests/test_resolution_routes.py tests/test_source_sync_jobs.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_executor.py -q",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_sources/service.py backend/data_sources/etl_service.py backend/services/data_source_routes.py backend/services/etl_routes.py"
       ],
       "routing_confidence": "high",
@@ -3062,6 +3517,8 @@
         "frontend/e2e/data-source-center.spec.ts",
         "frontend/e2e/data-sync-flow.spec.ts",
         "frontend/e2e/etl-workflow.spec.ts",
+        "frontend/e2e/auto-incremental.spec.ts",
+        "frontend/e2e/etl-progress.spec.ts",
         "frontend/e2e/multi-source.spec.ts"
       ],
       "key_symbols": [
@@ -3101,6 +3558,8 @@
       ],
       "related_tests": [
         "frontend/src/components/data-sources/DataDownloadWorkspace.test.tsx",
+        "frontend/src/components/data-sources/EtlRunActions.test.tsx",
+        "frontend/src/components/data-sources/EtlRunHistory.test.tsx",
         "frontend/src/components/data-sources/ResolutionPanel.test.tsx",
         "frontend/src/components/data-sources/SourceSyncPanel.test.tsx",
         "frontend/src/components/dashboard/DataSyncFlow.test.tsx",

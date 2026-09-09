@@ -15,9 +15,13 @@ from numba import float64, int64, njit, types
 from numba.core.registry import CPUDispatcher
 
 from compute_policy import NJIT_BACKEND, validate_execution_audit
+from .trend_numba import TREND_KERNELS
+from .peak_trough_numba import PEAK_TROUGH_KERNELS
+from .segment_numba import SEGMENT_KERNELS
+from computation_graph.series_numba import causal_available_kernel, valid_series_output_kernel
 
 
-KERNEL_VERSION = "regime-graph-kernels/2.3.0"
+KERNEL_VERSION = "regime-graph-kernels/2.8.0"
 _F64 = float64[::1]
 _I64 = int64[::1]
 _F64_2D = float64[:, ::1]
@@ -259,8 +263,12 @@ def confirmation_state_kernel(states: np.ndarray, confirmation: int, min_duratio
     candidate = -1
     candidate_count = 0
     for index in range(size):
+        if active >= 0:
+            active_duration += 1
         observed = states[index]
         if observed < 0:
+            candidate = -1
+            candidate_count = 0
             result[index] = -1
             continue
         if active < 0:
@@ -275,16 +283,15 @@ def confirmation_state_kernel(states: np.ndarray, confirmation: int, min_duratio
             result[index] = active
             continue
         if observed == active:
-            active_duration += 1
             candidate = -1
             candidate_count = 0
-        elif active_duration >= duration_floor:
+        else:
             if observed == candidate:
                 candidate_count += 1
             else:
                 candidate = observed
                 candidate_count = 1
-            if candidate_count >= confirm_count:
+            if candidate_count >= confirm_count and active_duration > duration_floor:
                 active = candidate
                 active_duration = 1
                 candidate = -1
@@ -1108,6 +1115,11 @@ def final_output_contract_kernel(
 
 
 KERNELS: dict[str, CPUDispatcher] = {
+    "causal_available": causal_available_kernel,
+    "valid_series_output": valid_series_output_kernel,
+    **TREND_KERNELS,
+    **PEAK_TROUGH_KERNELS,
+    **SEGMENT_KERNELS,
     "unary_transform": unary_transform_kernel,
     "binary_math": binary_math_kernel,
     "ema": ema_kernel,

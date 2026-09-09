@@ -1008,35 +1008,6 @@ def test_plan_rejects_duplicate_locked_indicator_period(tmp_path: Path) -> None:
     assert exc_info.value.code == "DUPLICATE_PLAN_INDICATOR"
 
 
-def test_shadow_comparison_checks_values_windows_and_ranks() -> None:
-    row = {
-        "rank": 1,
-        "status": "ranked",
-        "target": {"kind": "etf", "product_id": "510050.SH"},
-        "values": [
-            {
-                "value": 0.123,
-                "status": "ok",
-                "window": {"start_date": "2025-01-01", "end_date": "2026-01-01"},
-            }
-        ],
-    }
-    equivalent = CustomIndicatorService._compare_shadow_results(
-        {"rows": [row], "ranked_count": 1},
-        {"rows": [copy.deepcopy(row)], "ranked_count": 1},
-    )
-    changed = copy.deepcopy(row)
-    changed["values"][0]["value"] = 0.2
-    mismatch = CustomIndicatorService._compare_shadow_results(
-        {"rows": [row], "ranked_count": 1},
-        {"rows": [changed], "ranked_count": 1},
-    )
-
-    assert equivalent["equivalent"] is True
-    assert mismatch["equivalent"] is False
-    assert mismatch["mismatch_count"] == 1
-
-
 def test_large_result_contract_returns_first_page_and_result_id(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

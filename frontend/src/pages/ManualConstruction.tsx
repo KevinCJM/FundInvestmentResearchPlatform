@@ -20,6 +20,7 @@ import {
   assertFixedNjitExecutionLanes,
   type FixedNjitExecutionAudit,
 } from '../utils/fixedNjitExecution'
+import { apiErrorMessage } from '../utils/apiError'
 
 type WeightMode = 'custom' | 'equal' | 'risk'
 type RiskMetric = 'vol' | 'var' | 'es'
@@ -520,7 +521,7 @@ export default function AssetClassConstructionPage() {
         body: JSON.stringify({ asset_alloc_name: name, classes: payloadClasses }),
       })
       const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail || `错误 ${resp.status}`)
+      if (!resp.ok) throw new Error(apiErrorMessage(data, `错误 ${resp.status}`))
       alert(`配置 “${name}” 保存成功！`)
       setSaveModal(false)
       setAllocName('')
@@ -538,7 +539,7 @@ export default function AssetClassConstructionPage() {
       setLoading(true)
       const resp = await fetch(`/api/load-allocation?name=${encodeURIComponent(name)}`)
       const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail || `错误 ${resp.status}`)
+      if (!resp.ok) throw new Error(apiErrorMessage(data, `错误 ${resp.status}`))
       setClasses(data)
       setLoadModal(false)
       setAllocSearch('')

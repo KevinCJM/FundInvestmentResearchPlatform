@@ -14,16 +14,35 @@ from product_pools.errors import ProductPoolDomainError
 from product_pools.membership import InvestableUniverseMembership
 from product_pools.repository import InvestableUniverseRepository
 from auto_asset_class import (
+    ALGORITHMS,
+    BLOCK_MODES,
+    FEATURE_SETS,
+    LINKAGE_METHODS,
+    WEIGHT_MODES,
     AutoClassError,
     AutoClassRequestSpec,
     auto_classification_meta,
     run_auto_classification,
 )
+from fund_taxonomy import TAXONOMY_LEVELS
+from pit.catalog import RUN_MODES
+from pit.context import PitContextError, resolve_request_context
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
 
 router = APIRouter(prefix="/api/asset-classes/auto", tags=["auto-asset-class"])
+
+
+# Bound to the engine registries rather than retyped: a new algorithm or feature
+# set must not be able to reach production as a 422 the UI cannot even render.
+_ALGORITHM = Literal[*tuple(ALGORITHMS)]
+_FEATURES = Literal[*tuple(FEATURE_SETS)]
+_LINKAGE = Literal[*tuple(LINKAGE_METHODS)]
+_WEIGHT_MODE = Literal[*tuple(WEIGHT_MODES)]
+_TAXONOMY_LEVEL = Literal[*TAXONOMY_LEVELS]
+_BLOCK_MODE = Literal[*tuple(BLOCK_MODES)]
+_RUN_MODE = Literal[*tuple(RUN_MODES)]
 
 
 class PoolProduct(BaseModel):
@@ -36,19 +55,27 @@ class AutoClassPreviewRequest(BaseModel):
     universe_snapshot_id: str = Field(min_length=1, max_length=120)
     products: list[PoolProduct] = Field(default_factory=list)
     startDate: str = "2020-01-01"
-    algorithm: Literal["rule", "hierarchical", "kmedoids", "kmeans"] = "hierarchical"
-    features: Literal["correlation", "metrics", "pca", "blend"] = "correlation"
-    linkage: Literal["average", "complete", "ward"] = "average"
+    algorithm: _ALGORITHM = "hierarchical"
+    features: _FEATURES = "correlation"
+    linkage: _LINKAGE = "average"
     k: Optional[int] = None
     sizeMin: int = 2
     sizeMax: int = 8
     unassignedPolicy: Literal["park", "force"] = "park"
-    weightMode: Literal["equal", "inv_vol", "inv_var", "affinity"] = "inv_vol"
+    weightMode: _WEIGHT_MODE = "inv_vol"
     # Contract-taxonomy level used to name the classes.
-    taxonomyLevel: Literal["asset_class", "category", "detail"] = "asset_class"
+    taxonomyLevel: _TAXONOMY_LEVEL = "asset_class"
     # Taxonomy level the statistical clustering may not cross.
-    blockBy: Literal["none", "asset_class", "category", "detail"] = "none"
+    blockBy: _BLOCK_MODE = "none"
     seed: int = 20260101
+    # Research context: which day the run pretends to stand on, how strictly,
+    # and against which data vintage.
+    # All three default to None on purpose: an unstated field must be
+    # distinguishable from an explicit choice, otherwise the system-level PIT
+    # setting could never apply.
+    asOf: Optional[str] = None
+    runMode: Optional[_RUN_MODE] = None
+    dataReleaseId: Optional[str] = None
 
 
 @router.get("/meta")
@@ -108,6 +135,11 @@ def auto_class_preview(req: AutoClassPreviewRequest):
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    try:
+        context = resolve_request_context(DATA_DIR, req.asOf, req.runMode, req.dataReleaseId)
+    except PitContextError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     spec = AutoClassRequestSpec(
         codes=[item.code for item in req.products],
         names=[item.name for item in req.products],
@@ -123,6 +155,11 @@ def auto_class_preview(req: AutoClassPreviewRequest):
         taxonomy_level=req.taxonomyLevel,
         block_by=req.blockBy,
         seed=req.seed,
+        # A request that states nothing inherits the system-level PIT setting,
+        # so the口径 is right even when a page forgets to send it.
+        as_of=context.as_of,
+        run_mode=context.run_mode,
+        data_release_id=context.data_release_id,
         max_weights=max_weights,
     )
     try:

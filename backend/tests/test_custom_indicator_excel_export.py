@@ -105,6 +105,7 @@ def _compiler(expression: str) -> tuple[SingleProductExcelFormulaCompiler, objec
         "returns": np.asarray([0.01, -0.02, 0.03, 0.015, -0.005], dtype=np.float64),
         "log_returns": np.asarray([0.00995, -0.02020, 0.02956, 0.01489, -0.00501], dtype=np.float64),
         "adjusted_nav": np.asarray([1.0, 1.01, 0.9898, 1.019494, 1.034786, 1.029612], dtype=np.float64),
+        "observation_dates": np.asarray([20455., 20458., 20459., 20460., 20461., 20462.]),
         "observation_count": 5.0,
         "window_elapsed_days": 7.0,
         "risk_free_return_window": 0.0004,
@@ -168,6 +169,20 @@ _OPERATOR_EXPRESSIONS = {
     "sum_where": "sum_where(returns, greater_than(returns, 0.0))",
     "variance_where": "variance_where(returns, greater_than(returns, 0.0))",
     "where": "mean(where(greater_than(returns, 0.0), returns, negate(returns)))",
+    "last_drawdown_interval": "interval_start(last_drawdown_interval(drawdown_series(adjusted_nav)))",
+    "interval_start": "interval_start(last_drawdown_interval(drawdown_series(adjusted_nav)))",
+    "interval_trough": "interval_trough(last_drawdown_interval(drawdown_series(adjusted_nav)))",
+    "interval_recovery": "interval_recovery(last_drawdown_interval(drawdown_series(adjusted_nav)))",
+    "value_at": "value_at(observation_dates, 1)",
+    "days_between": "days_between(value_at(observation_dates, 0), value_at(observation_dates, 1))",
+    "require_positive": "require_positive(1)",
+    "require_nonnegative": "require_nonnegative(0)",
+    "linear_fit": "fit_slope(linear_fit(returns))",
+    "fit_slope": "fit_slope(linear_fit(returns))",
+    "fit_intercept": "fit_intercept(linear_fit(returns))",
+    "fit_residual_sum_squares": "fit_residual_sum_squares(linear_fit(returns))",
+    "fit_total_sum_squares": "fit_total_sum_squares(linear_fit(returns))",
+    "fit_observation_count": "fit_observation_count(linear_fit(returns))",
     "drawdown_series": "min_value(drawdown_series(adjusted_nav))",
     "new_high_mask": "count_true(new_high_mask(adjusted_nav))",
     "cumulative_max": "last(cumulative_max(returns))",
@@ -191,15 +206,11 @@ _OPERATOR_EXPRESSIONS = {
     "correlation": "correlation(returns, log_returns)",
     "covariance": "covariance(returns, log_returns)",
     "excess_kurtosis": "excess_kurtosis(returns)",
-    "linear_intercept": "linear_intercept(returns)",
-    "linear_r_squared": "linear_r_squared(returns)",
-    "linear_slope": "linear_slope(returns)",
     "mean_absolute_deviation": "mean_absolute_deviation(returns)",
     "median": "median(returns)",
     "normal_pdf": "normal_pdf(0.0)",
     "normal_ppf": "normal_ppf(0.5)",
     "quantile": "quantile(returns, 0.5)",
-    "regression_standard_error": "regression_standard_error(returns)",
     "root_mean_square": "root_mean_square(returns)",
     "skewness": "skewness(returns)",
     "rolling_mean": "mean(rolling_mean(returns, 3.0, 2.0))",
@@ -211,6 +222,10 @@ _OPERATOR_EXPRESSIONS = {
 }
 
 _COMPAT_OPERATOR_EXPRESSIONS = {
+    "linear_intercept": "linear_intercept(returns)",
+    "linear_r_squared": "linear_r_squared(returns)",
+    "linear_slope": "linear_slope(returns)",
+    "regression_standard_error": "regression_standard_error(returns)",
     "active_returns": "mean(active_returns(returns, log_returns))",
     "annualized_return": "annualized_return(returns, periods_per_year)",
     "cumulative_return": "last(cumulative_return(returns))",
@@ -237,7 +252,9 @@ def test_every_current_operator_generates_an_excel_formula(
     expression: str,
 ) -> None:
     compiler, plan = _compiler(expression)
-    node = next(item for item in plan.nodes if item.operator_id == operator_id)
+    node = next(item for item in plan.nodes if item.node_id == plan.root_id) if operator_id in _COMPAT_OPERATOR_EXPRESSIONS else next(item for item in plan.nodes if item.operator_id == operator_id)
+    if operator_id in _COMPAT_OPERATOR_EXPRESSIONS:
+        assert operator_id not in {item.operator_id for item in plan.nodes}
     placement = compiler.placements[node.node_id]
     formula = compiler.formula_for_node(node, 0)
     assert formula.startswith("=")
@@ -267,6 +284,8 @@ def test_excel_compiler_accepts_every_current_single_product_variable() -> None:
             if variable["structural_type"] == "scalar"
             else f"mean({variable_id})"
         )
+        if variable.get("semantic") == "date":
+            expression = f"value_at({variable_id}, 0)"
         plan = compose_typed_expression(
             expression,
             variable_types=variable_types("single_product"),
@@ -293,6 +312,10 @@ def test_service_exports_every_current_single_product_variable(
     tmp_path: Path,
 ) -> None:
     _write_etf_data(tmp_path)
+    # A fixed benchmark is a separate source, not the tested product's NAV.
+    dates = pd.read_parquet(tmp_path / "etf_daily_df.parquet")["date"].drop_duplicates().sort_values()
+    pd.DataFrame({"ts_code": "H00300.CSI", "trade_date": dates,
+                  "close": 1000.0 + np.arange(len(dates))}).to_parquet(tmp_path / "index_daily_df.parquet", index=False)
     service = CustomIndicatorService(tmp_path, tmp_path)
     service.warm_numba_plans()
 
@@ -303,6 +326,8 @@ def test_service_exports_every_current_single_product_variable(
             if variable["structural_type"] == "scalar"
             else f"mean({variable_id})"
         )
+        if variable.get("semantic") == "date":
+            expression = f"value_at({variable_id}, 0)"
         draft = _inline_draft(f"导出 {variable_id}", expression)
         validation = service.validate(draft)
         assert validation["valid"] is True, variable_id
@@ -341,7 +366,7 @@ def test_every_current_builtin_indicator_exports_with_excel_formulas(
         if item.get("source") == "built_in"
         and item.get("dsl_version") == "2.2.0"
     ]
-    assert len(current_builtins) == 35
+    assert len(current_builtins) == 34  # max drawdown now has a native multi-output definition
 
     for definition in current_builtins:
         artifact = service.export_excel(

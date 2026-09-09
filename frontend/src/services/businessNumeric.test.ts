@@ -11,7 +11,7 @@ const execution = {
 }
 
 describe('businessNumeric client', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals() })
 
   it('发送数值分组并只接受固定签名 NJIT 返回', async () => {
     const fetchMock = vi.fn(async () => ({

@@ -24,13 +24,18 @@ function run(overrides: Partial<HistoricalRegimeRun> = {}): HistoricalRegimeRun 
 }
 
 describe('HistoricalRegimeBacktest', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals() })
 
   it('只暴露严格匹配的 realtime、因果、formal_backtest v2 发布', () => {
     const items = eligibleFormalBacktestPublications([
       run(),
       run({ id: 'retrospective', mode: 'retrospective' }),
-      run({ id: 'non-causal', causality: { ...run().causality, is_causal: false } }),
+      run({ causality: { ...run().causality, is_causal: false } }),
+      run({ causality: { ...run().causality, uses_future_data: true } }),
+      run({ causality: { ...run().causality, repaints: true } }),
+      run({ schema_version: '1.0', publications: [{ ...run().publications[0], gate: 'causality_passed' }] }),
+      run({ publications: [{ ...run().publications[0], gate: 'causality_passed' }] }),
+      run({ definition_snapshot_hash: undefined }),
       run({ id: 'wrong-usage', publications: [{ ...run().publications[0], run_id: 'wrong-usage', usage: 'taa' }] }),
       run({ id: 'wrong-lineage', publications: [{ ...run().publications[0], run_id: 'wrong-lineage', run_content_hash: 'c'.repeat(64) }] }),
     ])

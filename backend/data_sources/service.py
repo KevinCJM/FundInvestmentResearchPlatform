@@ -50,17 +50,22 @@ def mutation_lock(store: SourceStore) -> Iterator[None]:
 
 
 def catalog(store: SourceStore) -> dict[str, Any]:
+    from .request_schema import request_fields
+    from .etl_graph import graph_schemas
+    from .task_catalog import task_catalog
     store.seed()
     sources = store.list("source")
     for source in sources:
         source["credential_configured"] = configured(store, source["config"]["id"])
+        source['credential_required'] = source['config']['transport'] == 'tushare' or source['config']['auth_mode'] != 'none'
     interfaces = store.list("interface")
     by_id = {item["config"]["id"]: SourceConfig.model_validate(item["config"]) for item in sources}
     for item in interfaces:
         config = InterfaceConfig.model_validate(item["config"])
+        item['request_fields'] = request_fields(by_id[config.source_id], config)
         item["validation"] = validate_mapping(config)
         item["effective_policy"] = effective_policy(by_id[config.source_id].policy, config.policy).model_dump(mode="json")
-    return {"sources": sources, "interfaces": interfaces, "targets": get_data_model_catalog(), "editing_enabled": enabled(), "batches": recent_batches(store),
+    return {"sources": sources, "interfaces": interfaces, "etl_tasks": task_catalog(store)['tasks'], "graph_schemas": graph_schemas(), "targets": get_data_model_catalog(), "editing_enabled": enabled(), "batches": recent_batches(store),
             "templates": {"source": SourceConfig(id="custom", name="新数据源", base_url="https://example.com", enabled=False).model_dump(mode="json"),
                           "interface": InterfaceConfig(id="custom.endpoint", source_id="custom", name="新接口").model_dump(mode="json")},
             "boundary": "配置与映射中心；标准化结果先进入独立候选数据，不自动替换既有研究数据。"}

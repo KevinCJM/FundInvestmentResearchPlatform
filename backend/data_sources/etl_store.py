@@ -98,20 +98,39 @@ class EtlStore:
         if run["status"] != "RUNNING":
             return run
         try:
+            if run.get('executor'):
+                from .etl_executor import executor_alive
+                if not executor_alive(run):
+                    raise ProcessLookupError
             os.kill(run["owner_pid"], 0)
         except ProcessLookupError:
-            run["status"] = "INTERRUPTED"
-            run["error"] = "服务已退出。已完成步骤保留，可继续未完成步骤。"
-            for step in run["steps"]:
-                if step["status"] == "RUNNING":
-                    step["status"] = "INTERRUPTED"
-            self.save_run(run)
+            # A late status poll must not overwrite a completion or a new owner.
+            with self.sources.connection() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute('SELECT body,cancel_requested FROM etl_run WHERE id=?', (run['run_id'],)).fetchone()
+                latest = json.loads(row[0])
+                latest['cancel_requested'] = bool(row[1])
+                same_owner = all(latest.get(k) == run.get(k) for k in ('owner_pid', 'owner_instance', 'executor', 'attempt'))
+                if latest['status'] == 'RUNNING' and same_owner:
+                    latest['status'] = 'INTERRUPTED'
+                    latest['error'] = ('独立任务执行器已退出，检查点保留；需核验下载锁和执行版本后续跑。' if latest.get('executor') else
+                                       '调度服务已退出，后台工作进程可能仍在执行。已完成步骤保留，续跑前需核验下载锁和执行版本。')
+                    for step in latest['steps']:
+                        if step['status'] == 'RUNNING':
+                            step['status'] = 'INTERRUPTED'
+                    latest['updated_at'] = utc_now()
+                    db.execute('UPDATE etl_run SET body=?,updated_at=? WHERE id=?',
+                               (json.dumps(latest, ensure_ascii=False, default=str), latest['updated_at'], run['run_id']))
+                return latest
         return run
 
 
 def public_run(run: dict, *, detail: bool = True) -> dict:
-    hidden = {"frozen", "owner_pid", "request_hash"}
+    from .etl_collection import collection_timing
+    hidden = {"frozen", "owner_pid", "owner_instance", "executor", "request_hash"}
     result = {k: v for k, v in run.items() if k not in hidden}
     if not detail:
         result.pop("definition", None)
+        result.pop("template_definition", None)
+    result['collection_timing'] = collection_timing(run)
     return result

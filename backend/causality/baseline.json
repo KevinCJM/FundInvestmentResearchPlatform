@@ -86,6 +86,11 @@
       "category": "sequence",
       "note": "人工核定：返回 x[n:]-x[:-n]，第 j 项属于时点 j+n（右对齐）。按左对齐比较会误报为泄露。"
     },
+    "days_between": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "纯日期标量差；不读取时间序列未来数据。"
+    },
     "divide": {
       "verdict": "causal",
       "category": "basic",
@@ -99,11 +104,6 @@
     "dot": {
       "verdict": "window_consuming",
       "category": "linear_algebra",
-      "note": ""
-    },
-    "drawdown_analysis": {
-      "verdict": "window_consuming",
-      "category": "path",
       "note": ""
     },
     "drawdown_series": {
@@ -131,6 +131,31 @@
       "category": "reduction",
       "note": "只读窗口头部，改动尾部输出不变，故非消费整窗。"
     },
+    "fit_intercept": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_observation_count": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_residual_sum_squares": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_slope": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_total_sum_squares": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
     "greater_equal": {
       "verdict": "causal",
       "category": "comparison",
@@ -141,6 +166,21 @@
       "category": "comparison",
       "note": ""
     },
+    "interval_recovery": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "只读取已识别回撤区间的恢复位置。"
+    },
+    "interval_start": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "只读取已识别回撤区间的峰值位置。"
+    },
+    "interval_trough": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "只读取已识别回撤区间的谷底位置。"
+    },
     "lag": {
       "verdict": "causal",
       "category": "sequence",
@@ -150,6 +190,11 @@
       "verdict": "window_consuming",
       "category": "reduction",
       "note": "取窗口最后一个值，必须在截断到决策日的窗口上求值。"
+    },
+    "last_drawdown_interval": {
+      "verdict": "window_consuming",
+      "category": "path",
+      "note": "最大回撤区间依赖完整输入窗口；公式层必须把窗口右端锁定在决策日。"
     },
     "length": {
       "verdict": "causal",
@@ -165,6 +210,11 @@
       "verdict": "causal",
       "category": "comparison",
       "note": ""
+    },
+    "linear_fit": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": "OLS 拟合使用整个输入窗口；公式层必须把窗口右端锁定在决策日。"
     },
     "linear_intercept": {
       "verdict": "window_consuming",
@@ -381,6 +431,16 @@
       "category": "basic",
       "note": ""
     },
+    "require_nonnegative": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": "仅做标量定义域检查。"
+    },
+    "require_positive": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": "仅做标量定义域检查。"
+    },
     "recursive_smooth": {
       "verdict": "causal",
       "category": "rolling",
@@ -515,6 +575,11 @@
       "verdict": "window_consuming",
       "category": "mask",
       "note": ""
+    },
+    "value_at": {
+      "verdict": "causal",
+      "category": "sequence",
+      "note": "按显式零基位置读取序列；审计确认未来尾部扰动不会改变已指定位置。"
     },
     "where": {
       "verdict": "causal",

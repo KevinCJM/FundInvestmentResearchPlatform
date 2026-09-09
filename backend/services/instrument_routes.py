@@ -18,7 +18,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from custom_indicators.errors import NotFoundError
-from custom_indicators.series_provider import load_price_points
+from custom_indicators.series_provider import _date_values, load_price_points
+from series_quality import load_sse_open_dates
 from historical_regimes.repository import RegimeRunRepository
 from services.instrument_analytics import (
     ETF_ONLY_METRICS,
@@ -45,7 +46,7 @@ try:
         numeric_sort_order_kernel,
         numeric_stat_kernel,
     )
-    from backend.market_data import resolve_tushare_data_dir
+    from backend.market_data import read_active_manifest, resolve_market_data_file, resolve_tushare_data_dir
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from compute_policy import validate_execution_audit
     from instrument_analytics_numba import (
@@ -58,7 +59,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         numeric_sort_order_kernel,
         numeric_stat_kernel,
     )
-    from market_data import resolve_tushare_data_dir
+    from market_data import read_active_manifest, resolve_market_data_file, resolve_tushare_data_dir
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -166,17 +167,29 @@ def _resolve_product_regime_reference(
         ],
         "segments": [
             {
+                "id": f"segment-{index}",
                 "state_id": str(item.get("state_id") or ""),
                 "start_date": str(item.get("start_date") or ""),
                 "end_date": str(item.get("end_date") or ""),
             }
-            for item in segments
+            for index, item in enumerate(segments)
             if isinstance(item, dict)
             and item.get("state_id")
             and item.get("start_date")
             and item.get("end_date")
         ],
     }
+    analytical_input["state_id"] = reference.state_id
+    analytical_input["segment_id"] = reference.segment_id
+    available_states = {item["id"] for item in analytical_input["states"]}
+    if reference.state_id is not None and reference.state_id not in available_states:
+        raise HTTPException(status_code=422, detail="所选市场状态不属于该历史情景版本。")
+    if reference.segment_id is not None:
+        selected = next((item for item in analytical_input["segments"] if item["id"] == reference.segment_id), None)
+        if selected is None:
+            raise HTTPException(status_code=422, detail="所选区间不属于该历史情景版本。")
+        if reference.state_id is not None and selected["state_id"] != reference.state_id:
+            raise HTTPException(status_code=422, detail="所选区间不属于所选市场状态。")
     lineage = {
         "run_id": run["id"],
         "publication_id": publication["id"],
@@ -219,29 +232,21 @@ class ProductCondition:
     input_scale: float = 1.0
 
 
-class ProductAnalysisRegimeState(BaseModel):
-    id: str = Field(min_length=1, max_length=80)
-    label: str = Field(min_length=1, max_length=120)
-    color: str = Field(default="#64748b", max_length=32)
-
-
-class ProductAnalysisRegimeSegment(BaseModel):
-    state_id: str = Field(min_length=1, max_length=80)
-    start_date: str = Field(min_length=8, max_length=32)
-    end_date: str = Field(min_length=8, max_length=32)
-
-
 class ProductAnalysisRegime(BaseModel):
     """Immutable published historical-regime reference for product research."""
 
     run_id: str = Field(min_length=1, max_length=128)
     publication_id: str = Field(min_length=1, max_length=128)
+    state_id: str | None = Field(default=None, min_length=1, max_length=80)
+    segment_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 ProductAnalysisMaPeriod = Annotated[int, Field(ge=2, le=500)]
 
 
 class ProductAnalysisRequest(BaseModel):
+    include_simulation: bool = False
+    analysis_basis: Literal["adjusted_nav", "price"] = "adjusted_nav"
     statistics_period: Literal["ALL", "1M", "3M", "6M", "1Y", "3Y", "5Y"] = "ALL"
     include_technical: bool = True
     price_ma_periods: list[ProductAnalysisMaPeriod] = Field(default_factory=lambda: [5, 10, 20], max_length=8)
@@ -699,6 +704,72 @@ def _load_timeseries(kind: str, ts_code: str) -> list[dict[str, Any]]:
     if kind not in {"etf", "fund"}:
         return []
     return load_price_points(kind, ts_code, _current_data_dir(), preserve_missing=True)
+
+
+def _product_research_data_path(filename: str) -> Path | None:
+    # An explicit operator directory is authoritative. Otherwise a manifest's
+    # inventory is the publication boundary, including the calendar dataset.
+    if not os.getenv("TUSHARE_DATA_DIR", "").strip():
+        manifest = read_active_manifest(DATA_DIR)
+        if manifest is not None:
+            if filename not in (manifest.get("files") or {}):
+                return None
+            return resolve_tushare_data_dir(DATA_DIR, strict=True) / filename
+    return resolve_market_data_file(filename, DATA_DIR)
+
+
+def _load_product_research_points(
+    kind: str, ts_code: str, basis: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Read an explicit real price basis without the chart reader's fallback.
+
+    SSE sessions restore ETF missing rows. Fund NAVs retain their publication
+    axis: a product-specific overseas NAV calendar is not available here.
+    """
+    if kind == "fund" and basis == "price":
+        raise ValueError("场外基金没有市场收盘价，请使用复权净值。")
+    filename = "etf_daily_candle_df.parquet" if basis == "price" else ("etf_daily_df.parquet" if kind == "etf" else "fund_nav_df.parquet")
+    column = "close" if basis == "price" else "adj_nav"
+    path = _product_research_data_path(filename)
+    label = "市场收盘价" if basis == "price" else "复权净值"
+    if path is None or not path.exists():
+        raise ValueError(f"缺少{label}数据；请选择已有数据的研究口径。")
+    try:
+        frame = pd.read_parquet(path, filters=[("ts_code", "==", ts_code)])
+    except Exception as exc:
+        raise ValueError(f"无法读取{label}数据。") from exc
+    date_column = next((name for name in ("date", "nav_date", "trade_date") if name in frame.columns), None)
+    if frame.empty or date_column is None or column not in frame.columns:
+        raise ValueError(f"该产品没有可用的{label}数据；请选择已有数据的研究口径。")
+    frame = frame[[date_column, column]].rename(columns={date_column: "date", column: "close"}).copy()
+    frame["date"] = _date_values(frame["date"])
+    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    frame = frame.dropna(subset=["date"]).sort_values("date").drop_duplicates("date", keep="last")
+    if frame.empty:
+        raise ValueError(f"{label}没有有效日期。")
+    warnings = []
+    frequency = "nav_observations" if kind == "fund" else "trading_observations"
+    if kind == "etf":
+        calendar_path = _product_research_data_path("trade_day_df.parquet")
+        calendar = load_sse_open_dates(calendar_path) if calendar_path is not None else pd.DatetimeIndex([])
+        if len(calendar):
+            sessions = calendar[(calendar >= frame.iloc[0]["date"]) & (calendar <= frame.iloc[-1]["date"])]
+            # Keep observed dates even if the source reports an exceptional session.
+            axis = sessions.union(pd.DatetimeIndex(frame["date"])).sort_values()
+            frame = frame.set_index("date").reindex(axis).rename_axis("date").reset_index()
+            frequency = "sse_trading_days"
+        else:
+            warnings.append("缺少可用交易日历，不能判定整行缺失；统计使用相邻已记录观察值。")
+    else:
+        warnings.append("净值按已披露日期排列；未提供产品对应市场日历，无法识别整行漏报或保证严格日频。")
+    if basis == "adjusted_nav":
+        warnings.append("按净值所属日期进行历史研究，未按公告日期还原当时可得信息。")
+    warnings.append("年化波动按每年252个收益观察值折算；非日频净值应谨慎解释。")
+    points = [
+        {"date": row.date.strftime("%Y-%m-%d"), "close": float(row.close) if pd.notna(row.close) else None}
+        for row in frame.itertuples(index=False)
+    ]
+    return points, {"observationFrequency": frequency, "warnings": warnings}
 
 
 def _empty_current_size() -> dict[str, Any]:
@@ -1230,10 +1301,9 @@ def instrument_product_analysis(
         raise HTTPException(status_code=404, detail=f"未找到编号为 {product_id} 的产品")
     ts_code = str(record.get("ts_code") or product_id)
     points = _load_timeseries(kind, ts_code)
-    if not points:
-        raise HTTPException(status_code=422, detail="产品真实行情数据不足，无法执行分析。")
     try:
         parameters = request.model_dump()
+        research_points, source_context = _load_product_research_points(kind, ts_code, request.analysis_basis)
         regime_lineage = None
         if request.regime is not None:
             regime_input, regime_lineage = _resolve_product_regime_reference(
@@ -1244,7 +1314,9 @@ def instrument_product_analysis(
             product_id=ts_code,
             points=points,
             parameters=parameters,
+            research_points=research_points,
         )
+        response["researchContext"].update(source_context)
         if regime_lineage is not None:
             response["regimeReference"] = regime_lineage
         return response

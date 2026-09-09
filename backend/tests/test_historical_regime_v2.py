@@ -655,7 +655,15 @@ def test_realtime_latent_model_records_locked_initial_training_mapping(client: T
 def test_formal_v2_run_requires_warm_plan_and_externalizes_large_arrays(
     v2_service: RegimeGraphV2Service,
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    execute_graph = v2_service._execute_graph
+
+    def realtime_only(job_id, definition, mode, *args, **kwargs):
+        assert mode == "realtime", "实时运行不得隐式调用事后算法"
+        return execute_graph(job_id, definition, mode, *args, **kwargs)
+
+    monkeypatch.setattr(v2_service, "_execute_graph", realtime_only)
     upload_frame = pd.DataFrame(_rows())
     upload_frame["vintage"] = None
     upload_frame["revision"] = 1
@@ -690,10 +698,35 @@ def test_formal_v2_run_requires_warm_plan_and_externalizes_large_arrays(
     assert response.status_code == 201, response.text
     run = response.json()
     assert len(run["series"]) == len(_rows())
+    assert run["overview"]["run_kind"] == "saved"
+    assert run["overview"]["summary"]["total"] == len(_rows())
+    assert run["overview"]["definition_id"] == saved["id"]
+    assert run["overview"]["primary_series"]["response_field"] == "series"
+    assert run["overview"]["states"] == run["states"]
+    assert run["overview"]["definition_revision"] == saved["revision"]
+    assert run["overview"]["definition_hash"] == run["definition_snapshot_hash"]
+    assert run["overview"]["definition_hash"]
+    assert run["overview"]["graph_hash"] == prepared["graph_hash"]
+    assert run["overview"]["graph_hash"]
+    assert run["overview"]["date_range"] == {
+        "start": run["series"][0]["observation_date"],
+        "end": run["series"][-1]["observation_date"],
+    }
+    all_intervals = sorted(
+        run["overview"]["segments"] + run["overview"]["unknown_intervals"],
+        key=lambda interval: interval["start_index"],
+    )
+    assert [index for interval in all_intervals
+            for index in range(interval["start_index"], interval["end_index"] + 1)] == list(range(len(run["series"])))
+    for interval in all_intervals:
+        assert interval["start_date"] == run["series"][interval["start_index"]]["observation_date"]
+        assert interval["end_date"] == run["series"][interval["end_index"]]["observation_date"]
+        assert all(row["state_id"] == interval["state_id"] for row in run["series"][interval["start_index"]:interval["end_index"] + 1])
+    assert "overview" not in v2_service.runs.get(run["id"])
     assert run["walk_forward"]["status"] == "completed"
     assert run["walk_forward"]["folds"]
     assert run["stability"]["prefix_invariance"]["status"] == "passed"
-    assert run["stability"]["realtime_vs_retrospective"]["status"] == "completed"
+    assert run["stability"]["realtime_vs_retrospective"]["status"] == "disabled"
     assert run["stability"]["parameter_sensitivity"]["candidates"]
     assert run["stability"]["recognition_delay"]["mean_observations"] == pytest.approx(0.0)
     raw = v2_service.runs.get(run["id"])
@@ -1083,3 +1116,172 @@ def test_nonshared_run_stores_merge_and_get_v2_without_production_path_assumptio
     classic_detail = local_client.get(f"/api/historical-regimes/runs/{classic_run['id']}")
     assert classic_detail.status_code == 200
     assert classic_detail.json()["id"] == classic_run["id"]
+
+
+def test_queued_preview_deep_freezes_nested_parameters(
+    v2_service: RegimeGraphV2Service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    definition = _definition()
+    expected_value = definition["graph"]["nodes"][0]["parameters"]["rows"][0]["value"]
+    plan = v2_service.prepare(definition)
+    monkeypatch.setattr(v2_service_module.threading.Thread, "start", lambda self: None)
+    created = v2_service.create_preview(definition, compile_token=plan["compile_token"])
+    definition["graph"]["nodes"][0]["parameters"]["rows"][0]["value"] = -999.0
+    frozen = v2_service._jobs[created["id"]]["definition"]
+    assert frozen.graph.nodes[0].parameters["rows"][0]["value"] == expected_value
+    assert created["definition_hash"] == v2_service_module.definition_content_hash(frozen)
+
+
+def test_preview_overview_is_complete_frozen_and_does_not_execute_again(
+    client: TestClient,
+    v2_service: RegimeGraphV2Service,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _rows(3000)
+    for index, row in enumerate(rows):
+        row["value"] = 80.0 if index in {500, 2999} else 110.0
+    definition = _definition(rows)
+    definition["graph"] = {
+        "nodes": [
+            definition["graph"]["nodes"][0],
+            {
+                "id": "classifier",
+                "type": "model.threshold",
+                "parameters": {"upper": 105.0, "lower": 95.0},
+                "inputs": {"value": {"node_id": "source", "port": "value"}},
+            },
+        ],
+        "outputs": {"state": {"node_id": "classifier", "port": "state"}},
+    }
+    prepared = client.post("/api/historical-regimes/prepare", json={"definition": definition})
+    assert prepared.status_code == 200, prepared.text
+    created = client.post(
+        "/api/historical-regimes/preview-runs",
+        json={"definition": definition, "compile_token": prepared.json()["compile_token"],
+              "mode": "retrospective", "as_of": "2030-01-01"},
+    )
+    assert created.status_code == 202, created.text
+    finished = _wait_for_preview(client, created.json()["id"])
+    assert finished["status"] == "completed", finished
+    run_id = finished["id"]
+
+    def unexpected_execution(*args: Any, **kwargs: Any):
+        raise AssertionError("Overview must never rerun the DAG")
+
+    monkeypatch.setattr(v2_service, "_execute_graph", unexpected_execution)
+    definition["states"][0]["color"] = "#000000"
+    response = client.get(f"/api/historical-regimes/preview-runs/{run_id}/overview")
+    assert response.status_code == 200, response.text
+    overview = response.json()
+    assert overview["run_kind"] == "preview"
+    assert overview["run_id"] == run_id
+    assert overview["definition_hash"] == finished["definition_hash"]
+    assert overview["graph_hash"] == finished["graph_hash"]
+    assert overview["mode"] == "retrospective"
+    assert overview["as_of"] == "2030-01-01"
+    assert overview["data_snapshots"] == finished["result"]["data_snapshots"]
+    assert overview["states"][0]["color"] == "#16a34a"
+    assert overview["summary"]["total"] == 3000
+    assert overview["summary"]["classified"] == 3000
+    assert overview["summary"]["unknown"] == 0
+    assert overview["summary"]["state_counts"] == {"bull": 2998, "sideways": 0, "bear": 2}
+    assert [(item["start_index"], item["end_index"]) for item in overview["segments"]] == [
+        (0, 499), (500, 500), (501, 2998), (2999, 2999)
+    ]
+    assert overview["capabilities"]["effective"]["available"] is False
+    assert overview["capabilities"]["probabilities"]["available"] is False
+    assert overview["primary_series"]["value_column"] == "value"
+    assert overview["primary_series"]["display_source_id"] == "source"
+    assert "series" not in overview
+    first_page = client.get(overview["primary_series"]["endpoint"], params={"limit": 500}).json()
+    second_page = client.get(overview["primary_series"]["endpoint"], params={"offset": 500, "limit": 5000}).json()
+    assert first_page["total"] == second_page["total"] == 3000
+    assert first_page["items"][-1]["state_id"] == "bull"
+    assert second_page["items"][0]["state_id"] == "bear"
+    assert len(first_page["items"]) + len(second_page["items"]) == 3000
+    assert client.get(overview["primary_series"]["endpoint"], params={"limit": 5001}).status_code == 422
+    overview["states"][0]["color"] = "#111111"
+    assert v2_service.preview_overview(run_id)["states"][0]["color"] == "#16a34a"
+
+
+@pytest.mark.parametrize("job_status", ["queued", "running", "failed", "cancelled"])
+def test_preview_overview_rejects_noncompleted_jobs(
+    client: TestClient,
+    v2_service: RegimeGraphV2Service,
+    job_status: str,
+) -> None:
+    v2_service._jobs["not-ready"] = {
+        "status": job_status,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=1),
+    }
+    response = client.get("/api/historical-regimes/preview-runs/not-ready/overview")
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "REGIME_PREVIEW_NOT_COMPLETE"
+
+
+def test_preview_overview_rejects_expired_and_missing_results(
+    client: TestClient,
+    v2_service: RegimeGraphV2Service,
+) -> None:
+    v2_service._jobs["expired"] = {
+        "status": "completed",
+        "expires_at": datetime.now(timezone.utc) - timedelta(seconds=1),
+    }
+    assert client.get("/api/historical-regimes/preview-runs/expired/overview").status_code == 404
+    v2_service._jobs["missing-result"] = {
+        "status": "completed",
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=1),
+        "_series": None,
+        "result": {},
+    }
+    response = client.get("/api/historical-regimes/preview-runs/missing-result/overview")
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "REGIME_PREVIEW_RESULT_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("connected", [False, True])
+def test_realtime_rejects_retrospective_nodes_before_queueing(
+    client: TestClient, v2_service: RegimeGraphV2Service, connected: bool,
+) -> None:
+    definition = _definition()
+    definition["graph"]["nodes"].append({
+        "id": "offline", "type": "model.turning_point",
+        "parameters": {"window": 3, "min_move": 0.08},
+        "inputs": {"value": {"node_id": "source", "port": "value"}},
+    })
+    if connected:
+        definition["graph"]["outputs"] = {"state": {"node_id": "offline", "port": "state"}}
+    prepared = v2_service.prepare(definition)
+    payload = {"definition": definition, "compile_token": prepared["compile_token"], "mode": "realtime"}
+    response = client.post("/api/historical-regimes/preview-runs", json=payload)
+    assert response.status_code == 422, response.text
+    assert "NON_CAUSAL_REALTIME_GRAPH" in response.text
+    assert not v2_service._jobs
+    saved = v2_service.create_definition(definition)
+    response = client.post("/api/historical-regimes/run", json={
+        "definition": {"schema_version": "2.0", "id": saved["id"], "revision": saved["revision"]},
+        "mode": "realtime",
+    })
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "NON_CAUSAL_REALTIME_GRAPH"
+    payload["mode"] = "retrospective"
+    response = client.post("/api/historical-regimes/preview-runs", json=payload)
+    assert response.status_code == 202, response.text
+    assert _wait_for_preview(client, response.json()["id"])["status"] == "completed"
+
+
+@pytest.mark.parametrize("metadata", [
+    {"supports_realtime": False}, {"causal": False}, {"repaints": True}, {"supports_realtime": None},
+])
+def test_realtime_gate_checks_all_causality_flags(
+    v2_service: RegimeGraphV2Service, monkeypatch: pytest.MonkeyPatch, metadata: dict,
+) -> None:
+    from custom_indicators.errors import ValidationError
+
+    schema = dict(v2_service_module.NODE_REGISTRY["filter.ema"], **metadata)
+    monkeypatch.setitem(v2_service_module.NODE_REGISTRY, "filter.ema", schema)
+    with pytest.raises(ValidationError) as exc:
+        v2_service.create_preview(_definition(), compile_token=None, mode="realtime")
+    assert exc.value.code == "NON_CAUSAL_REALTIME_GRAPH"
+    assert not v2_service._jobs

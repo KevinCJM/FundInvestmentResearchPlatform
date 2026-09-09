@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from .indicator_nodes import (is_typed_formula_node, typed_node_expression, typed_node_expressions, formula_plan_key, register_indicator_nodes)
+from computation_graph.series_contracts import regime_series_outputs
+from computation_graph.series_numba import causal_available_kernel
+
 import copy
+from research_series.product_sources import PRODUCT_SOURCES, ETF_ADJUSTED_FIELDS, adjustment_path, product_source_spec
 import functools
 import hashlib
 import itertools
@@ -91,6 +96,7 @@ from .numba_kernels import (
     validation_windows_kernel,
     warm_historical_regime_numba_kernels,
 )
+from .result_overview import build_result_overview, warm_result_overview_kernel
 from .repository import (
     RegimeDefinitionRepository,
     RegimeExperimentRepository,
@@ -155,8 +161,14 @@ from .v2_numba import (
     warm_regime_graph_numba_kernels,
 )
 from .v2_registry import NODE_REGISTRY, REGISTRY_VERSION, node_catalog
+from .trend_numba import (super_smoother_kernel, kama_kernel, trend_features_kernel,
+                          trend_regime_kernel, merge_short_regimes_kernel)
+from .segment_numba import local_extrema_kernel, between_pivots_kernel, interval_statistic_kernel, range_threshold_kernel
+from .v2_registry import STATISTIC_IDS
+from .peak_trough_numba import peak_trough_asymmetric_kernel, peak_trough_sideways_kernel, retrospective_dating_timing_kernel
 from .v2_migration import migrate_v1_definition
 from .v2_templates import get_template_v2, instantiate_template_v2, list_templates_v2
+from .node_preview import node_preview_definition, preview_output_context
 from .taa import run_taa_backtest as execute_taa_backtest
 
 
@@ -460,6 +472,8 @@ def _snapshot_identity(root: Path, manifest: Mapping[str, Any] | None) -> tuple[
 
 
 def _expected_source_filename(node_type: str, parameters: Mapping[str, Any]) -> str | None:
+    if node_type.removeprefix("source.") in PRODUCT_SOURCES:
+        return product_source_spec(node_type.removeprefix("source."), parameters.get("field"))["filename"]
     if node_type == "source.index":
         return INDEX_HISTORY_FILES.get(str(parameters.get("source_api") or "index_daily"))
     if node_type == "source.macro":
@@ -536,7 +550,9 @@ def _kernel_ids_for_definition(definition: RegimeDefinitionV2) -> list[str]:
         if node.id not in required:
             continue
         node_type = node.type
-        if node_type == "source.constant":
+        if is_typed_formula_node(node, NODE_REGISTRY):
+            kernel_ids.update({"maximum_int64", "causal_available", "valid_series_output"})
+        elif node_type == "source.constant":
             kernel_ids.add("constant_like")
         elif node_type == "align.strict_intersection":
             kernel_ids.update({"strict_intersection_indices", "take_float", "take_int64", "maximum_int64"})
@@ -563,6 +579,17 @@ def _kernel_ids_for_definition(definition: RegimeDefinitionV2) -> list[str]:
             kernel_ids.add("binary_math")
         elif node_type == "filter.ema":
             kernel_ids.add("ema")
+        elif node_type in {"pivot.local_extrema", "segment.between_pivots", "model.range_threshold", *STATISTIC_IDS}:
+            kernel_ids.add(NODE_REGISTRY[node_type]["kernel_id"])
+            if node_type == "pivot.local_extrema":
+                kernel_ids.add("retrospective_dating_timing")
+            if node_type == "model.range_threshold":
+                kernel_ids.update({"constant_like", "maximum_int64"})
+        elif node_type == "model.peak_trough":
+            kernel_ids.update({"peak_trough", "peak_trough_asymmetric", "peak_trough_remove", "peak_trough_alternate", "peak_trough_sideways", "retrospective_dating_timing"})
+        elif node_type in {"filter.super_smoother", "filter.kama", "feature.trend_metrics",
+                           "model.trend_regime", "post.merge_short_regimes"}:
+            kernel_ids.add(NODE_REGISTRY[node_type]["kernel_id"])
         elif node_type == "filter.kalman":
             kernel_ids.add("kalman_filter")
         elif node_type == "model.threshold":
@@ -642,6 +669,7 @@ class RegimeGraphV2Service:
         self.workspace_data_dir = workspace_data_dir or (Path(configured) if configured else DEFAULT_DATA_DIR)
         self.market_data_dir = market_data_dir or DEFAULT_DATA_DIR
         self.indicator_service = indicator_service
+        register_indicator_nodes(indicator_service, NODE_REGISTRY)
         self.definitions = RegimeDefinitionRepository(
             self.workspace_data_dir / "historical_regime_v2_definitions.json"
         )
@@ -659,6 +687,7 @@ class RegimeGraphV2Service:
         )
         self.artifact_dir = self.workspace_data_dir / "historical_regime_v2_artifacts"
         self._runtime_audit = warm_regime_graph_numba_kernels()
+        self._overview_runtime = warm_result_overview_kernel()
         self._plans: dict[str, dict[str, Any]] = {}
         self._plans_by_graph_hash: dict[str, str] = {}
         self._jobs: dict[str, dict[str, Any]] = {}
@@ -666,9 +695,11 @@ class RegimeGraphV2Service:
         self.startup_prewarm = self.prewarm_saved_definitions()
 
     def catalog(self) -> dict[str, Any]:
+        register_indicator_nodes(self.indicator_service, NODE_REGISTRY)
         payload = node_catalog()
         payload["runtime"] = regime_graph_numba_status()
         payload["runtime"]["shared_historical_runtime"] = historical_regime_numba_status()
+        payload["runtime"]["overview_runtime"] = copy.deepcopy(self._overview_runtime)
         payload["startup_prewarm"] = copy.deepcopy(self.startup_prewarm)
         payload["plan_persistence"] = {
             "manifest_count": len(self.plan_manifests.list()),
@@ -937,7 +968,7 @@ class RegimeGraphV2Service:
                 ],
                 "warnings": [],
             }
-        return inspect_definition_v2(definition)
+        return {**inspect_definition_v2(definition), "result_kind": "time_series", "series_outputs": regime_series_outputs(definition)}
 
     def _active_snapshot_binding(
         self,
@@ -956,12 +987,16 @@ class RegimeGraphV2Service:
         if not path.is_file():
             raise NotFoundError("SOURCE_DATA_NOT_FOUND", f"数据文件 {filename} 不存在。")
         manifest = read_active_manifest(self.market_data_dir)
+        if node_type in {"source.etf", "source.fund"} and (not manifest or filename not in manifest.get("files", {})):
+            raise ValidationError("PRODUCT_FILE_NOT_PUBLISHED", "产品行情文件不在活跃快照清单中。", "graph.nodes.parameters")
         snapshot_id, generation = _snapshot_identity(root, manifest)
+        factor = adjustment_path(root) if node_type == 'source.etf' and parameters.get('field') in ETF_ADJUSTED_FIELDS else None
         return {
             "snapshot_id": snapshot_id,
             "snapshot_generation": generation,
             "source_file": filename,
             "file_checksum": _file_checksum(path),
+            **({'adjustment_checksum': _file_checksum(factor)} if factor else {}),
         }
 
     def _bound_source_root(
@@ -978,6 +1013,8 @@ class RegimeGraphV2Service:
         )
         present = [bool(parameters.get(name)) for name in binding_names]
         if not any(present):
+            if node_type in {"source.etf", "source.fund"}:
+                self._active_snapshot_binding(node_type, parameters)
             return self.market_data_dir
         if not all(present):
             raise ValidationError(
@@ -1020,9 +1057,11 @@ class RegimeGraphV2Service:
         if expected_file is None or source_file != expected_file:
             raise ValidationError(
                 "SOURCE_FILE_MISMATCH",
-                "数据源文件与节点数据集不匹配。",
+                "数值字段与绑定的数据文件不一致，请重新选择产品后预览。",
                 "graph.nodes.parameters.source_file",
             )
+        if node_type in {"source.etf", "source.fund"} and active_manifest is not None and source_file not in active_manifest.get("files", {}):
+            raise ValidationError("PRODUCT_FILE_NOT_PUBLISHED", "产品行情文件不在活跃快照清单中。", "graph.nodes.parameters.source_file")
         source_path = candidate / source_file
         if not source_path.is_file():
             raise NotFoundError("SOURCE_DATA_NOT_FOUND", "已锁定的数据文件不存在。")
@@ -1032,6 +1071,12 @@ class RegimeGraphV2Service:
                 "已锁定的数据文件内容校验值发生变化，拒绝复用。",
                 "graph.nodes.parameters.file_checksum",
             )
+        if node_type == 'source.etf' and parameters.get('field') in ETF_ADJUSTED_FIELDS:
+            factor = adjustment_path(candidate)
+            if not factor:
+                raise ValidationError('ADJUSTMENT_DATA_NOT_FOUND', '当前快照缺少 ETF 复权因子，请补齐后重新选择 ETF。')
+            if not parameters.get('adjustment_checksum') or _file_checksum(factor) != parameters['adjustment_checksum']:
+                raise ValidationError('ADJUSTMENT_BINDING_REQUIRED', '复权因子未绑定或版本已变化，请重新选择 ETF。')
         return candidate
 
     def _upload_bundle(
@@ -1079,7 +1124,7 @@ class RegimeGraphV2Service:
             parameters = node.setdefault("parameters", {})
             if not isinstance(parameters, dict):
                 continue
-            if node_type in {"source.index", "source.macro"}:
+            if node_type in {"source.index", "source.macro", "source.etf", "source.fund"}:
                 expected = _expected_source_filename(node_type, parameters)
                 locked = all(
                     parameters.get(name)
@@ -1137,7 +1182,7 @@ class RegimeGraphV2Service:
                 continue
             source = target["source"]
             source_kind = str(source.get("kind") or "")
-            if source_kind in {"index", "macro"}:
+            if source_kind in {"index", "macro", "etf", "fund"}:
                 node_type = f"source.{source_kind}"
                 locked = all(
                     source.get(name)
@@ -1200,15 +1245,16 @@ class RegimeGraphV2Service:
     def _prepare_formula_nodes(self, definition: RegimeDefinitionV2) -> dict[str, Any]:
         prepared: dict[str, Any] = {}
         for node in definition.graph.nodes:
-            if node.type != "feature.formula":
+            if not is_typed_formula_node(node, NODE_REGISTRY):
                 continue
-            expression = str(node.parameters.get("expression") or "")
             frame = self._formula_frame(node)
-            entry = prepare_formula_plan(expression, frame)
-            plan, _ = _compose_formula(expression, frame)
-            entry["typed_expression"] = plan.to_dict()
-            entry["node_id"] = node.id
-            prepared[node.id] = entry
+            for port, expression in typed_node_expressions(node, NODE_REGISTRY).items():
+                entry = prepare_formula_plan(expression, frame)
+                plan, _ = _compose_formula(expression, frame)
+                entry["typed_expression"] = plan.to_dict()
+                entry["node_id"] = node.id
+                entry["output_port"] = port
+                prepared[formula_plan_key(node.id, port)] = entry
         return prepared
 
     def _preparation_hash(
@@ -1220,9 +1266,9 @@ class RegimeGraphV2Service:
         payload = {
             "graph_hash": inspect_definition_v2(definition)["graph_hash"],
             "formulas": {
-                node.id: str(node.parameters.get("expression") or "")
+                node.id: typed_node_expressions(node, NODE_REGISTRY)
                 for node in definition.graph.nodes
-                if node.type == "feature.formula"
+                if is_typed_formula_node(node, NODE_REGISTRY)
             },
         }
         return hashlib.sha256(
@@ -1427,8 +1473,8 @@ class RegimeGraphV2Service:
         self.startup_prewarm = copy.deepcopy(result)
         return result
 
-    def prepare(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        definition = parse_definition_v2(payload)
+    def prepare(self, payload: Mapping[str, Any], *, preview_target: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        definition = node_preview_definition(payload, preview_target) if preview_target is not None else parse_definition_v2(payload)
         inspection = validate_definition_v2(definition)
         unavailable_nodes = [
             node
@@ -1573,12 +1619,15 @@ class RegimeGraphV2Service:
         mode: str = "realtime",
         as_of: str | None = None,
         ttl_seconds: int = DEFAULT_PREVIEW_TTL_SECONDS,
+        preview_target: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if mode not in {"realtime", "retrospective"}:
             raise ValidationError("INVALID_RUN_MODE", "mode 必须是 realtime 或 retrospective。", "mode")
         if ttl_seconds < 1 or ttl_seconds > 86400:
             raise ValidationError("INVALID_PREVIEW_TTL", "ttl_seconds 必须在 1 到 86400 之间。", "ttl_seconds")
-        definition = parse_definition_v2(payload)
+        # Nested parameter rows must not share objects with the caller while queued.
+        definition = (node_preview_definition(payload, preview_target) if preview_target is not None else parse_definition_v2(payload)).model_copy(deep=True)
+        self._validate_realtime_graph(definition, mode)
         plan = self._validate_plan(definition, compile_token)
         with self._lock:
             self._prune_jobs()
@@ -1610,6 +1659,7 @@ class RegimeGraphV2Service:
                 "_node_outputs": None,
                 "_node_types": None,
                 "_plan": plan,
+                "preview_target": copy.deepcopy(preview_target),
             }
             self._jobs[job_id] = job
             thread = threading.Thread(
@@ -1732,7 +1782,7 @@ class RegimeGraphV2Service:
                 else:
                     data_root = (
                         self._bound_source_root(node.type, node.parameters)
-                        if node.type == "source.index"
+                        if node.type in {"source.index", "source.etf", "source.fund"}
                         else self.market_data_dir
                     )
                     full_bundle = resolve_target(
@@ -2162,7 +2212,7 @@ class RegimeGraphV2Service:
         if node_type in {"align.cross_section", "feature.matrix"}:
             ports = [
                 self._input(node_outputs, node.inputs[name])
-                for name in ("feature_1", "feature_2", "feature_3", "feature_4")
+                for name in (("feature_1", "feature_2", "feature_3", "feature_4") if node_type == "feature.formula" else node.inputs)
                 if name in node.inputs
             ]
             if node_type == "align.cross_section":
@@ -2176,10 +2226,10 @@ class RegimeGraphV2Service:
                 np.int64(len(ports)),
             )
             return {"features": self._port(matrix, ports[0])}
-        if node_type == "feature.formula":
+        if is_typed_formula_node(node, NODE_REGISTRY):
             ports = [
                 self._input(node_outputs, node.inputs[name])
-                for name in ("feature_1", "feature_2", "feature_3", "feature_4")
+                for name in (("feature_1", "feature_2", "feature_3", "feature_4") if node_type == "feature.formula" else node.inputs)
                 if name in node.inputs
             ]
             self._same_axis(*ports)
@@ -2196,24 +2246,22 @@ class RegimeGraphV2Service:
                     if str(alias).isidentifier() and str(port_name) in columns:
                         columns[str(alias)] = columns[str(port_name)]
             frame = pd.DataFrame(columns)
-            prepared = formula_plans.get(node.id)
-            if not isinstance(prepared, Mapping) or not prepared.get("compile_token"):
-                raise ValidationError(
-                    "FORMULA_NJIT_PLAN_NOT_WARMED",
-                    "公式节点没有可执行的预热计划。",
-                    f"graph.nodes.{node.id}.parameters.expression",
-                )
-            formula_result = evaluate_formula(
-                str(parameters.get("expression") or ""),
-                frame,
-                compile_token=str(prepared["compile_token"]),
-            )
-            values = np.ascontiguousarray(
-                formula_result.values.to_numpy(dtype=np.float64),
-                dtype=np.float64,
-            )
-            formula_audits[node.id] = copy.deepcopy(formula_result.audit)
-            return {"value": self._port(values, ports[0])}
+            results = {}
+            for output_port, expression in typed_node_expressions(node, NODE_REGISTRY).items():
+                key = formula_plan_key(node.id, output_port)
+                prepared = formula_plans.get(key)
+                if not isinstance(prepared, Mapping) or not prepared.get("compile_token"):
+                    raise ValidationError("FORMULA_NJIT_PLAN_NOT_WARMED", "指标或公式节点没有可执行的预热计划。", f"graph.nodes.{node.id}")
+                formula_result = evaluate_formula(expression, frame, compile_token=str(prepared["compile_token"]))
+                results[output_port] = np.ascontiguousarray(formula_result.values.to_numpy(dtype=np.float64))
+                formula_audits[key] = copy.deepcopy(formula_result.audit)
+            available = ports[0].available
+            for port in ports[1:]:
+                available = maximum_int64_kernel(available, port.available)
+            # Conservative for every dependency in the causal prefix, including
+            # late publication of an earlier input consumed by rolling/scan nodes.
+            available = causal_available_kernel(np.ascontiguousarray(available, dtype=np.int64))
+            return {port: PortValue(values, ports[0].dates, available) for port, values in results.items()}
         if node_type in {"transform.identity", "transform.log", "transform.lag", "transform.diff", "transform.return", "transform.yoy", "transform.mom"}:
             source = self._input(node_outputs, node.inputs["value"])
             opcode = {
@@ -2242,6 +2290,111 @@ class RegimeGraphV2Service:
             self._same_axis(left, right)
             opcode = {"math.add": 0, "math.subtract": 1, "math.multiply": 2, "math.divide": 3}[node_type]
             return {"value": self._port(binary_math_kernel(np.ascontiguousarray(left.values, dtype=np.float64), np.ascontiguousarray(right.values, dtype=np.float64), np.int64(opcode)), left)}
+        if node_type == "pivot.local_extrema":
+            source = self._input(node_outputs, node.inputs["value"])
+            pivots, prices = local_extrema_kernel(np.ascontiguousarray(source.values, dtype=np.float64),
+                np.int64(parameters.get("left_window", 8)), np.int64(parameters.get("right_window", 8)),
+                np.int64(parameters.get("head_window", 6)), np.int64(parameters.get("tail_window", 6)))
+            return {"pivot": self._port(pivots, source), "pivot_price": self._port(prices, source)}
+        if node_type == "segment.between_pivots":
+            source = self._input(node_outputs, node.inputs["pivot"])
+            starts, ends = between_pivots_kernel(np.ascontiguousarray(source.values, dtype=np.float64))
+            return {"start": self._port(starts, source), "end": self._port(ends, source)}
+        if node_type in STATISTIC_IDS:
+            source, starts, ends = [self._input(node_outputs, node.inputs[name]) for name in ("value", "start", "end")]
+            self._same_axis(source, starts, ends)
+            values = interval_statistic_kernel(np.ascontiguousarray(source.values, dtype=np.float64),
+                np.ascontiguousarray(starts.values, dtype=np.int64), np.ascontiguousarray(ends.values, dtype=np.int64),
+                np.int64(STATISTIC_IDS[node_type]), np.int64(parameters.get("ddof", 1)))
+            return {"value": self._port(values, source)}
+        if node_type == "model.range_threshold":
+            source = self._input(node_outputs, node.inputs["value"])
+            limits = []
+            for name, parameter, default in (("upper_bound", "upper", .03), ("lower_bound", "lower", -.03)):
+                bound = self._input(node_outputs, node.inputs[name]) if name in node.inputs else self._port(
+                    constant_like_kernel(source.values, np.float64(parameters.get(parameter, default))), source)
+                self._same_axis(source, bound)
+                limits.append(bound)
+            states, invalid = range_threshold_kernel(np.ascontiguousarray(source.values, dtype=np.float64),
+                np.ascontiguousarray(limits[0].values, dtype=np.float64), np.ascontiguousarray(limits[1].values, dtype=np.float64))
+            if invalid:
+                raise ValidationError("INVALID_THRESHOLDS", "每个有效时点的下界必须小于上界。", f"graph.nodes.{node.id}.inputs")
+            available = maximum_int64_kernel(source.available, maximum_int64_kernel(limits[0].available, limits[1].available))
+            return {"state": PortValue(states, source.dates, available)}
+        if node_type == "model.peak_trough":
+            if mode != "retrospective":
+                raise ValidationError("NON_CAUSAL_REALTIME_GRAPH", "峰谷定界法依赖后续数据，仅限事后识别。", f"graph.nodes.{node.id}")
+            source = self._input(node_outputs, node.inputs["value"])
+            values = peak_trough_asymmetric_kernel(
+                np.ascontiguousarray(source.values, dtype=np.float64),
+                np.int64(parameters.get("left_window", parameters.get("window", 8))),
+                np.int64(parameters.get("right_window", parameters.get("window", 8))),
+                np.int64(parameters.get("min_phase", 4)), np.int64(parameters.get("min_cycle", 16)),
+                np.int64(parameters.get("head_window", parameters.get("endpoint_window", 6))),
+                np.int64(parameters.get("tail_window", parameters.get("endpoint_window", 6))),
+                np.float64(parameters.get("amplitude_exception", 0.2)),
+            )
+            sideways = peak_trough_sideways_kernel(
+                np.ascontiguousarray(source.values, dtype=np.float64), values[0], values[2], values[3],
+                np.int64(parameters.get("sideways_enabled", False)),
+                np.int64(2 if state_count == 3 else 1), np.int64(1 if state_count == 3 else -1),
+                np.float64(parameters.get("small_swing_threshold", 0.03)),
+                np.float64(parameters.get("sideways_max_range", 0.06)),
+                np.float64(parameters.get("sideways_max_efficiency", 0.25)),
+                np.int64(parameters.get("sideways_min_duration", 20)),
+            )
+            outputs = {name: self._port(value, source) for name, value in zip(
+                ("state", "pivot", "phase_start_index", "phase_end_index", "phase_return", "boundary_line"), values)}
+            outputs.update({name: self._port(value, source) for name, value in zip(
+                ("state", "sideways_range", "sideways_efficiency", "sideways_start_index", "sideways_end_index", "sideways_swing_count"), sideways)})
+            return outputs
+        if node_type in {"filter.super_smoother", "filter.kama"}:
+            source = self._input(node_outputs, node.inputs["value"])
+            raw = np.ascontiguousarray(source.values, dtype=np.float64)
+            if node_type == "filter.super_smoother":
+                values = super_smoother_kernel(raw, np.int64(parameters.get("period", 126)))
+            else:
+                values = kama_kernel(raw, np.int64(parameters.get("window", 60)),
+                                     np.int64(parameters.get("fast", 2)), np.int64(parameters.get("slow", 126)))
+            return {"value": self._port(values, source)}
+        if node_type == "feature.trend_metrics":
+            source = self._input(node_outputs, node.inputs["log_price"])
+            trend = self._input(node_outputs, node.inputs["trend"])
+            self._same_axis(source, trend)
+            values = trend_features_kernel(
+                np.ascontiguousarray(source.values, dtype=np.float64),
+                np.ascontiguousarray(trend.values, dtype=np.float64),
+                np.int64(parameters.get("volatility_window", 60)), np.int64(parameters.get("slope_window", 20)),
+                np.int64(parameters.get("efficiency_window", 60)), np.float64(parameters.get("scale_floor", 0.0001)),
+                np.int64(parameters.get("shock_window", 5)), np.float64(parameters.get("drawdown_alert", 0.2)),
+                np.float64(parameters.get("shock_alert", 0.08)),
+            )
+            return {name: self._port(value, source) for name, value in zip(
+                ("distance", "slope", "efficiency", "scale", "drawdown", "risk", "index_value", "filtered_index"), values)}
+        if node_type == "model.trend_regime":
+            ports = [self._input(node_outputs, node.inputs[name]) for name in ("distance", "slope", "efficiency")]
+            self._same_axis(*ports)
+            values = trend_regime_kernel(
+                *(np.ascontiguousarray(port.values, dtype=np.float64) for port in ports),
+                np.float64(parameters.get("band", 1.0)), np.float64(parameters.get("trend_enter", 0.1)),
+                np.float64(parameters.get("flat_threshold", 0.05)), np.float64(parameters.get("efficiency_ceiling", 0.25)),
+                np.int64(parameters.get("confirmation", 3)),
+            )
+            return {name: self._port(value, ports[0]) for name, value in zip(
+                ("state", "candidate", "pending_count", "phase"), values)}
+        if node_type == "post.merge_short_regimes":
+            # Defense in depth for direct node execution, in addition to the graph gate.
+            if mode == "realtime":
+                raise ValidationError("NON_CAUSAL_REALTIME_GRAPH", "实时识别禁止事后区间合并。", f"graph.nodes.{node.id}")
+            source = self._input(node_outputs, node.inputs["state"])
+            price = self._input(node_outputs, node.inputs["price"])
+            self._same_axis(source, price)
+            values = merge_short_regimes_kernel(
+                np.ascontiguousarray(source.values, dtype=np.int64), np.ascontiguousarray(price.values, dtype=np.float64),
+                np.int64(parameters.get("max_duration", 10)), np.float64(parameters.get("max_move", 0.08)),
+                np.int64(parameters.get("following_confirmation", 3)),
+            )
+            return {"state": self._port(values, source)}
         if node_type in {"filter.ema", "filter.sma", "filter.kalman"}:
             source = self._input(node_outputs, node.inputs["value"])
             if node_type == "filter.ema":
@@ -2437,8 +2590,8 @@ class RegimeGraphV2Service:
                     full_bundle = _macro_bundle(target.source, mode, resolver_as_of, data_root)
                 else:
                     data_root = (
-                        self._bound_source_root("source.index", target.source)
-                        if target_kind == "index"
+                        self._bound_source_root(f"source.{target_kind}", target.source)
+                        if target_kind in {"index", "etf", "fund"}
                         else self.market_data_dir
                     )
                     full_bundle = resolve_target(
@@ -2487,6 +2640,23 @@ class RegimeGraphV2Service:
             outputs,
         )
 
+    @staticmethod
+    def _validate_realtime_graph(definition: RegimeDefinitionV2, mode: str) -> None:
+        if mode != "realtime":
+            return
+        for node in definition.graph.nodes:
+            schema = NODE_REGISTRY.get(node.type, {})
+            if (
+                schema.get("supports_realtime") is not True
+                or schema.get("causal") is not True
+                or schema.get("repaints") is not False
+            ):
+                raise ValidationError(
+                    "NON_CAUSAL_REALTIME_GRAPH",
+                    "实时识别已禁用事后分析算法；请移除该节点，或切换到事后研究。",
+                    f"graph.nodes.{node.id}",
+                )
+
     def _execute_graph(
         self,
         job_id: str | None,
@@ -2504,14 +2674,7 @@ class RegimeGraphV2Service:
             with self._lock:
                 job = self._jobs[job_id]
             self._check_cancelled(job)
-        if mode == "realtime":
-            non_realtime = [
-                node.id
-                for node in definition.graph.nodes
-                if node.id in required and NODE_REGISTRY[node.type].get("supports_realtime") is not True
-            ]
-            if non_realtime:
-                raise ValidationError("NON_CAUSAL_REALTIME_GRAPH", "实时模式不能执行非因果或重绘节点。", f"graph.nodes.{non_realtime[0]}")
+        self._validate_realtime_graph(definition, mode)
         execution_source_cache = source_cache if source_cache is not None else {}
         bundles, snapshots = self._resolve_sources(
             definition,
@@ -2563,6 +2726,26 @@ class RegimeGraphV2Service:
             progress = 0.2 + 0.65 * float(completed) / float(max(executable_count, 1))
             if job_id is not None:
                 self._update_job(job_id, progress=progress, message=f"已执行节点 {node_id}。")
+
+        if definition.graph._node_preview:
+            target = definition.graph.outputs["preview"]
+            selected = node_outputs[target.node_id][target.port]
+            return {
+                "result": {
+                    "result_kind": "node_preview", "preview_target": target.model_dump(),
+                    "row_count": int(selected.values.shape[0]), "mode": mode,
+                    "data_snapshots": snapshots,
+                    "output_catalog": [
+                        {"node_id": node_id, "port": port, "value_type": next(item["type"] for item in NODE_REGISTRY[node_map[node_id].type]["outputs"] if item["name"] == port)}
+                        for node_id, outputs in node_outputs.items() for port in outputs
+                    ],
+                    "diagnostics": {"execution_audit": copy.deepcopy(self._runtime_audit),
+                                    "formula_audits": formula_audits, "model_audits": model_audits,
+                                    "required_node_ids": sorted(required), "request_time_compilation": 0, "python_fallback": 0},
+                },
+                "series": [], "node_outputs": node_outputs,
+                "node_types": {node.id: node.type for node in definition.graph.nodes},
+            }
 
         state_ref = definition.graph.outputs["state"]
         state_port = node_outputs[state_ref.node_id][state_ref.port]
@@ -2695,6 +2878,26 @@ class RegimeGraphV2Service:
             if reason_ref is not None
             else default_reasons
         )
+        final_dependencies = set()
+        pending = [ref.node_id for ref in definition.graph.outputs.values()]
+        while pending:
+            current = pending.pop()
+            if current in final_dependencies:
+                continue
+            final_dependencies.add(current)
+            pending.extend(ref.node_id for ref in node_map[current].inputs.values())
+        dating_nodes = [node_id for node_id in final_dependencies
+                        if NODE_REGISTRY[node_map[node_id].type].get("knowledge_scope") == "full_input"]
+        retrospective_dating = bool(dating_nodes)
+        dating_knowledge_at = None
+        if retrospective_dating:
+            # Applies even when a custom graph omits or replaces temporal outputs.
+            # A downstream slice must not erase knowledge used by the dating node.
+            for node_id in sorted(dating_nodes):
+                dating_source = self._input(node_outputs, node_map[node_id].inputs["value"])
+                recognition_indices, effective_indices, knowledge_at = retrospective_dating_timing_kernel(
+                    final_states, np.ascontiguousarray(dating_source.available, dtype=np.int64))
+                dating_knowledge_at = knowledge_at if dating_knowledge_at is None else max(dating_knowledge_at, knowledge_at)
         final_contract_values = final_output_contract_kernel(
             confidence,
             recognition_indices,
@@ -2736,7 +2939,54 @@ class RegimeGraphV2Service:
             execution_source_cache,
         )
         state_definitions = definition.states
+        # Only attach evidence from the final state's actual trend lineage.
+        # Do not confuse an unrelated diagnostic model with the displayed state.
+        evidence: dict[str, PortValue] = {}
+        evidence_node = node_map[state_ref.node_id]
+        while evidence_node.type in {"post.confirmation", "post.merge_short_regimes"}:
+            evidence_node = node_map[evidence_node.inputs["state"].node_id]
+        if evidence_node.type == "model.peak_trough":
+            evidence = {name: port for name, port in node_outputs[evidence_node.id].items() if name != "state"}
+            self._same_axis(state_port, node_outputs[evidence_node.id]["state"])
+            evidence["index_value"] = self._input(node_outputs, evidence_node.inputs["value"])
+        if evidence_node.type == "model.trend_regime":
+            model_ports = node_outputs[evidence_node.id]
+            self._same_axis(state_port, model_ports["state"])
+            evidence = {name: model_ports[name] for name in ("candidate", "pending_count", "phase")}
+            evidence["raw_trend_state"] = model_ports["state"]
+            refs = [evidence_node.inputs[name] for name in ("distance", "slope", "efficiency")]
+            for name, ref in zip(("distance", "slope", "efficiency"), refs):
+                evidence[name] = self._input(node_outputs, ref)
+            if (len({ref.node_id for ref in refs}) == 1
+                    and [ref.port for ref in refs] == ["distance", "slope", "efficiency"]
+                    and node_map[refs[0].node_id].type == "feature.trend_metrics"):
+                evidence.update(node_outputs[refs[0].node_id])
+        interval_nodes = [node_map[node_id] for node_id in final_dependencies if node_map[node_id].type in STATISTIC_IDS]
+        segment_ids = {node.inputs["start"].node_id for node in interval_nodes}
+        if len(segment_ids) == 1:
+            segment_id = next(iter(segment_ids))
+            segment = node_map[segment_id]
+            pivot_node = node_map[segment.inputs["pivot"].node_id]
+            price_port = self._input(node_outputs, pivot_node.inputs["value"])
+            if price_port.dates is state_port.dates:
+                evidence.update(phase_start_index=node_outputs[segment_id]["start"],
+                                phase_end_index=node_outputs[segment_id]["end"], index_value=price_port,
+                                pivot=node_outputs[pivot_node.id]["pivot"], pivot_price=node_outputs[pivot_node.id]["pivot_price"])
+                for candidate in (node_map[node_id] for node_id in required if node_map[node_id].type in STATISTIC_IDS):
+                    if (candidate.inputs["start"].node_id != segment_id
+                            or candidate.inputs["value"] != pivot_node.inputs["value"]
+                            or self._input(node_outputs, candidate.inputs["value"]).dates is not state_port.dates):
+                        continue
+                    key = "phase_return" if candidate.type == "segment.change" else candidate.type.replace(".", "_")
+                    evidence[key] = node_outputs[candidate.id]["value"]
         series: list[dict[str, Any]] = []
+        channel_values = {}
+        for name in definition.graph.channel_metadata:
+            if name in {"state", "probabilities", "confidence", "recognition_index", "effective_index", "reason_code"}:
+                continue
+            port = self._input(node_outputs, definition.graph.outputs[name])
+            self._same_axis(state_port, port)
+            channel_values[name] = port
         for index in range(state_port.dates.shape[0]):
             observation_date = pd.Timestamp(int(state_port.dates[index]), unit="ns").date().isoformat()
             available_at = pd.Timestamp(int(state_port.available[index]), unit="ns").date().isoformat()
@@ -2750,6 +3000,8 @@ class RegimeGraphV2Service:
                 )
                 recognized_at = pd.Timestamp(recognized_ns, unit="ns").date().isoformat()
             effective_date = None
+            if retrospective_dating and recognition_index >= 0:
+                recognized_at = max(recognized_at, pd.Timestamp(int(dating_knowledge_at), unit="ns").date().isoformat())
             if 0 <= effective_index < state_port.dates.shape[0]:
                 effective_ns = max(int(state_port.dates[effective_index]), int(state_port.available[effective_index]))
                 effective_date = pd.Timestamp(effective_ns, unit="ns").date().isoformat()
@@ -2781,11 +3033,16 @@ class RegimeGraphV2Service:
                     "probability_source": "model" if probability_ref is not None else "deterministic_state",
                     "filtered_value": None,
                     "score": None,
-                    "features": {},
-                    "reasons": ["状态已识别"] if int(reason_codes[index]) == 0 else ["输入不足或状态被拒识"],
+                    "features": {**{name: _safe_number(port.values[index]) for name, port in evidence.items()},
+                                 **{f"channel:{name}": _safe_number(port.values[index]) for name, port in channel_values.items()}},
+                    "reasons": (["事后峰谷定界：相邻小幅反向波段满足整段振幅、方向效率及最短长度约束，合并为震荡；不是当时的交易信号。"]
+                                if state is not None and state.role == "neutral" and "sideways_range" in evidence and np.isfinite(evidence["sideways_range"].values[index])
+                                else ["事后峰谷分段：依据独立区间统计与分类规则判断；不提供当时交易信号。"] if state is not None and interval_nodes else ["事后峰谷定界；依赖全样本筛选，不是当时的交易信号。"] if state is not None else
+                                ["未分类：未形成完整保留峰谷区间、处于首尾边界或存在无效数据。"])
+                               if retrospective_dating else (["状态已识别"] if int(reason_codes[index]) == 0 else ["输入不足或状态被拒识"]),
                     "revision": 1,
                     "vintage": None,
-                    "is_final": True,
+                    "is_final": not retrospective_dating,
                 }
             )
         output_catalog: list[dict[str, Any]] = []
@@ -2830,6 +3087,7 @@ class RegimeGraphV2Service:
                 for target_id, item in evaluation_outputs.items()
             },
             "output_catalog": output_catalog,
+            "series_outputs": regime_series_outputs(definition),
             "diagnostics": {
                 "topological_order": inspection["topological_order"],
                 "required_node_ids": sorted(required),
@@ -2982,7 +3240,28 @@ class RegimeGraphV2Service:
         return list(hydrated["series"])
 
     def _hydrate_run(self, run: Mapping[str, Any]) -> dict[str, Any]:
-        return hydrate_v2_run_snapshot(run, artifact_dir=self.artifact_dir)
+        hydrated = hydrate_v2_run_snapshot(run, artifact_dir=self.artifact_dir)
+        definition = hydrated.get("definition")
+        if str(hydrated.get("schema_version")) == "2.0" and isinstance(definition, Mapping) and definition.get("states"):
+            diagnostics = hydrated.get("algorithm_diagnostics") or {}
+            hydrated["overview"] = build_result_overview(
+                run_kind="saved",
+                run_id=str(hydrated["id"]),
+                definition=definition,
+                series=hydrated["series"],
+                definition_id=hydrated.get("definition_id"),
+                revision=hydrated.get("definition_revision") or hydrated.get("revision"),
+                definition_hash=hydrated.get("definition_snapshot_hash") or diagnostics.get("definition_hash") or "",
+                graph_hash=diagnostics.get("graph_hash") or hydrated.get("algorithm", {}).get("parameters", {}).get("graph_hash") or "",
+                mode=hydrated.get("mode") or "realtime",
+                as_of=hydrated.get("as_of"),
+                data_snapshots=hydrated.get("data_snapshots"),
+                series_endpoint=f"/api/historical-regimes/runs/{hydrated['id']}",
+                series_artifact=hydrated.get("series_artifact"),
+                result={**diagnostics, "evaluation_results": hydrated.get("evaluation_results") or {}},
+                created_at=hydrated.get("created_at"),
+            )
+        return hydrated
 
     def hydrate_run_snapshot(self, run: Mapping[str, Any]) -> dict[str, Any]:
         """Hydrate a previously integrity-checked raw snapshot for downstream consumers."""
@@ -2997,7 +3276,7 @@ class RegimeGraphV2Service:
                     "正式运行不能引用内联数据；请先在研究数据实验室登记不可变上传版本。",
                     f"graph.nodes.{node.id}.type",
                 )
-            if node.type in {"source.index", "source.macro"}:
+            if node.type in {"source.index", "source.macro", "source.etf", "source.fund"}:
                 self._bound_source_root(node.type, node.parameters)
             elif node.type == "source.upload":
                 self._upload_bundle(node.parameters, "retrospective", None)
@@ -3026,7 +3305,7 @@ class RegimeGraphV2Service:
                     "正式运行的评价标的不能引用内联数据。",
                     f"evaluation_targets.{target.id}.source",
                 )
-            if kind in {"index", "macro"}:
+            if kind in {"index", "macro", "etf", "fund"}:
                 self._bound_source_root(f"source.{kind}", source)
             elif kind == "upload":
                 self._upload_bundle(source, "retrospective", None)
@@ -3305,33 +3584,41 @@ class RegimeGraphV2Service:
                     {**descriptor, "status": "failed", "error": exc.detail()}
                 )
 
-        alternate_mode = "retrospective" if mode == "realtime" else "realtime"
-        try:
-            alternate_execution = self._execute_graph(
-                None,
-                definition,
-                alternate_mode,
-                as_of,
-                plan=plan,
-                source_cache=source_cache,
-            )
-            alternate_codes = self._series_codes(
-                definition,
-                alternate_execution["series"],
-            )
+        if mode == "realtime":
             mode_difference = {
-                "status": "completed",
+                "status": "disabled",
                 "base_mode": mode,
-                "alternate_mode": alternate_mode,
-                **self._comparison_metrics(base_codes, alternate_codes),
+                "alternate_mode": "retrospective",
+                "reason": "实时识别已禁用事后分析；模式对比仅在事后研究中执行。",
             }
-        except IndicatorDomainError as exc:
-            mode_difference = {
-                "status": "blocked",
-                "base_mode": mode,
-                "alternate_mode": alternate_mode,
-                "error": exc.detail(),
-            }
+        else:
+            alternate_mode = "realtime"
+            try:
+                alternate_execution = self._execute_graph(
+                    None,
+                    definition,
+                    alternate_mode,
+                    as_of,
+                    plan=plan,
+                    source_cache=source_cache,
+                )
+                alternate_codes = self._series_codes(
+                    definition,
+                    alternate_execution["series"],
+                )
+                mode_difference = {
+                    "status": "completed",
+                    "base_mode": mode,
+                    "alternate_mode": alternate_mode,
+                    **self._comparison_metrics(base_codes, alternate_codes),
+                }
+            except IndicatorDomainError as exc:
+                mode_difference = {
+                    "status": "blocked",
+                    "base_mode": mode,
+                    "alternate_mode": alternate_mode,
+                    "error": exc.detail(),
+                }
 
         fold_reports: list[dict[str, Any]] = []
         classified_by_fold: list[int] = []
@@ -3675,6 +3962,7 @@ class RegimeGraphV2Service:
         stored = self.definitions.get(str(reference["id"]), revision)
         definition = parse_definition_v2(stored)
         validate_definition_v2(definition)
+        self._validate_realtime_graph(definition, mode)
         self._formal_source_gate(definition)
         try:
             plan = self._validate_plan(definition, compile_token)
@@ -3918,7 +4206,7 @@ class RegimeGraphV2Service:
                     f"parameter_grid.{index}",
                 )
             metadata = NODE_REGISTRY[node.type]
-            if metadata.get("category") in {"source", "alignment"} or node.type == "feature.formula":
+            if metadata.get("category") in {"source", "alignment"} or is_typed_formula_node(node, NODE_REGISTRY):
                 raise ValidationError(
                     "EXPERIMENT_STRUCTURE_PARAMETER_BLOCKED",
                     "批量实验只允许改变不影响数据版本、端口和公式编译计划的参数。",
@@ -4329,6 +4617,77 @@ class RegimeGraphV2Service:
                 job["expires_at"] = _utc_now() + timedelta(seconds=int(job["ttl_seconds"]))
             return self._public_job(job)
 
+    def preview_overview(self, job_id: str) -> dict[str, Any]:
+        """Read the frozen final result without executing the graph again."""
+        with self._lock:
+            self._prune_jobs()
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("REGIME_PREVIEW_NOT_FOUND", "未找到试算任务，任务可能已过期。")
+            if job["status"] != "completed":
+                raise ConflictError("REGIME_PREVIEW_NOT_COMPLETE", "试算尚未完成，暂不能读取结果总览。")
+            if job.get("_series") is None or job.get("result") is None:
+                raise NotFoundError("REGIME_PREVIEW_RESULT_UNAVAILABLE", "试算结果已不可用，请重新运行。")
+            if job.get("preview_target") is not None:
+                raise ConflictError("NODE_PREVIEW_HAS_NO_REGIME_OVERVIEW", "这是节点数据预览；完整情景结果需要运行识别算法。")
+            if job.get("_overview") is None:
+                definition = job["definition"]
+                job["_overview"] = build_result_overview(
+                    run_kind="preview",
+                    run_id=job_id,
+                    definition=definition.model_dump(mode="json"),
+                    series=job["_series"],
+                    definition_id=definition.id,
+                    revision=definition.revision,
+                    definition_hash=job["definition_hash"],
+                    graph_hash=job["graph_hash"],
+                    mode=job["mode"],
+                    as_of=job["as_of"],
+                    data_snapshots=job["result"].get("data_snapshots"),
+                    series_endpoint=f"/api/historical-regimes/preview-runs/{job_id}/series",
+                    result=job["result"],
+                    created_at=job["created_at"],
+                )
+            return copy.deepcopy(job["_overview"])
+
+    def normalized_preview_chart(
+        self, job_id: str, *, node_id: str, port: str = "value", base_index: int = 0,
+    ) -> dict[str, Any]:
+        """Rebase a frozen numeric output for display; never change stored values."""
+        with self._lock:
+            self._prune_jobs()
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("REGIME_PREVIEW_NOT_FOUND", "预览已过期，请重新预览节点。")
+            if job["status"] != "completed":
+                raise ConflictError("REGIME_PREVIEW_NOT_COMPLETE", "节点预览尚未完成。")
+            output = (job["_node_outputs"].get(node_id) or {}).get(port)
+            if output is None:
+                raise NotFoundError("REGIME_PREVIEW_PORT_NOT_FOUND", "未找到所选节点的输出。")
+            metadata = NODE_REGISTRY[job["_node_types"][node_id]]
+            value_type = next(item["type"] for item in metadata["outputs"] if item["name"] == port)
+        if value_type != "series<float64>" or output.values.ndim != 1:
+            raise ValidationError("NON_NUMERIC_NORMALIZATION", "仅数值序列支持区间归一化，市场状态等枚举值不适用。", "port")
+        values = np.ascontiguousarray(output.values, dtype=np.float64)
+        if not 0 <= base_index < values.size:
+            raise ValidationError("INVALID_NORMALIZATION_BASE", "所选区间没有可用观测，请调整时间范围。", "base_index")
+        base = float(values[base_index])
+        if not np.isfinite(base) or base <= 0.0:
+            raise ValidationError("INVALID_NORMALIZATION_BASE", "区间首日数值须大于 0 且非缺失，请调整区间起点。", "base_index")
+        # Reuse the already warmed fixed-signature arithmetic lane.
+        normalized = binary_math_kernel(values, np.full(values.size, base, dtype=np.float64), 3)
+        relative = binary_math_kernel(normalized, np.ones(values.size, dtype=np.float64), 1)
+        changes = binary_math_kernel(relative, np.full(values.size, 100.0, dtype=np.float64), 2)
+        return {
+            "run_id": job_id, "node_id": node_id, "port": port,
+            "base_index": base_index,
+            "base_date": pd.Timestamp(int(output.dates[base_index]), unit="ns").date().isoformat(),
+            "base_value": base,
+            "values": [_safe_number(value) for value in normalized],
+            "change_pct": [_safe_number(value) for value in changes],
+            "execution": copy.deepcopy(self._runtime_audit),
+        }
+
     def preview_series(
         self,
         job_id: str,
@@ -4349,6 +4708,9 @@ class RegimeGraphV2Service:
             node_outputs = job["_node_outputs"]
             node_types = job["_node_types"]
             expires_at = job["expires_at"]
+            if node_id is None and job.get("preview_target") is not None:
+                node_id = job["preview_target"]["node_id"]
+                port = port or job["preview_target"]["port"]
         if offset < 0 or limit < 1 or limit > 5000:
             raise ValidationError("INVALID_SERIES_PAGE", "offset 必须非负且 limit 必须在 1 到 5000 之间。", "limit")
         if node_id is None:
@@ -4390,12 +4752,14 @@ class RegimeGraphV2Service:
             else:
                 item["values"] = [_safe_number(part) for part in value]
             items.append(item)
+        context = preview_output_context(job["definition"], node_outputs, node_id)
         metadata = NODE_REGISTRY[node_types[node_id]]
         port_type = next(item["type"] for item in metadata["outputs"] if item["name"] == selected_port)
         return {
             "id": job_id,
             "node_id": node_id,
             "node_type": node_types[node_id],
+            **context,
             "port": selected_port,
             "value_type": port_type,
             "offset": offset,

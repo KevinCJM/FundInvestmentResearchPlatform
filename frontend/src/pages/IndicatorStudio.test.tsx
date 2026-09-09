@@ -421,6 +421,10 @@ describe('IndicatorStudio', () => {
     vi.stubGlobal('confirm', vi.fn(() => true))
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url === '/api/custom-indicators/prepare') {
+        const request = JSON.parse(String(init?.body || '{}'))
+        return json({ prepared: true, plans: [], indicator_refs: request.indicator_refs ?? (request.indicator_ids ?? []).map((id: string) => ({ indicator_id: id, indicator_revision: 1 })) })
+      }
       if (url === '/api/custom-indicators/meta') return json(activeMeta)
       if (url === '/api/custom-indicators?context_kind=single_product') {
         const items = catalog.filter((item) => (item.context_kind ?? 'single_product') === 'single_product')
@@ -642,10 +646,10 @@ describe('IndicatorStudio', () => {
       if (url === '/api/custom-indicators/compose') {
         if (composeFailure) return apiError('服务端拒绝展开，请检查参数。')
         const body = JSON.parse(String(init?.body))
-        if (body.indicator_id === reusableBuiltIn.id) return json({ expression: reusableBuiltIn.expression, latex: reusableBuiltIn.expression, display_latex: reusableBuiltIn.display_latex, inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [], dependencies: ['returns'], dag: reusableDag, indicator_origin: { indicator_id: reusableBuiltIn.id, indicator_revision: reusableBuiltIn.revision, name: reusableBuiltIn.name, source: reusableBuiltIn.source } })
-        if (body.operator_id === 'identity_series') return json({ expression: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', latex: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', display_latex: '\\left\\lvert\\mathbf{r}\\right\\rvert', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
-        if (body.operator_id === 'sequence_std') return json({ expression: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', latex: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', display_latex: '\\operatorname{Std}_{\\mathrm{ddof}=1}\\left(\\mathbf{r}\\right)', inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [] })
-        return json({ expression: '\\left(\\mathbf{r}+1\\right)', latex: '\\left(\\mathbf{r}+1\\right)', display_latex: '\\left(\\mathbf{r}\\right)+\\left(1\\right)', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
+        if (body.indicator_id === reusableBuiltIn.id) return json({ expression: reusableBuiltIn.expression, editable_latex: String.raw`\left(\operatorname{product}\left(\left(\mathbf{r}+1\right)\right)-1\right)`, latex: reusableBuiltIn.expression, display_latex: reusableBuiltIn.display_latex, inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [], dependencies: ['returns'], dag: reusableDag, indicator_origin: { indicator_id: reusableBuiltIn.id, indicator_revision: reusableBuiltIn.revision, name: reusableBuiltIn.name, source: reusableBuiltIn.source } })
+        if (body.operator_id === 'identity_series') return json({ editable_latex: String.raw`\operatorname{absolute}\left(\mathbf{r}\right)`, python_expression: 'absolute(returns)', expression: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', latex: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', display_latex: '\\left\\lvert\\mathbf{r}\\right\\rvert', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
+        if (body.operator_id === 'sequence_std') return json({ editable_latex: String.raw`\operatorname{std}\left(\operatorname{absolute}\left(\mathbf{r}\right),1\right)`, python_expression: 'std(absolute(returns), 1)', expression: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', latex: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', display_latex: '\\operatorname{Std}_{\\mathrm{ddof}=1}\\left(\\mathbf{r}\\right)', inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [] })
+        return json({ editable_latex: String.raw`\left(\mathbf{r}+1\right)`, python_expression: 'returns + 1', expression: '\\left(\\mathbf{r}+1\\right)', latex: '\\left(\\mathbf{r}+1\\right)', display_latex: '\\left(\\mathbf{r}\\right)+\\left(1\\right)', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
       }
       if (url === '/api/custom-indicators/variables/availability') {
         const body = JSON.parse(String(init?.body))
@@ -667,7 +671,7 @@ describe('IndicatorStudio', () => {
                 reason: applicable ? null : { code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', message: `${kindLabel}没有可供计算“${definition?.label || variableId}”的真实数据源。` },
               }
             })
-            const availableCount = targetStatuses.filter((item) => item.status === 'available').length
+            const availableCount = targetStatuses.filter((item: { status: string }) => item.status === 'available').length
             const status = availableCount === targetStatuses.length ? 'available' : availableCount ? 'partial' : 'source_unavailable'
             return {
               variable_id: variableId,
@@ -854,7 +858,7 @@ describe('IndicatorStudio', () => {
     expect(await screen.findByText(/来源定义哈希、版本和生成公式已锁定/)).toBeInTheDocument()
     expect(screen.getByText(/已从“年化夏普比率”v1 生成 5 日滚动时序草稿/)).toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
-    expect(screen.getByLabelText('“5 日滚动年化夏普比率”公式源码（DSL / LaTeX）')).toHaveValue(
+    expect(screen.getByLabelText('“5 日滚动年化夏普比率”公式源码（LaTeX）')).toHaveValue(
       '(rolling_mean(returns, 5) - risk_free_rate_per_observation) / rolling_std(returns, 5, 1) * sqrt(252)',
     )
   })
@@ -949,14 +953,14 @@ describe('IndicatorStudio', () => {
     await user.click(within(composer).getByRole('button', { name: '关闭参数配置' }))
 
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
-    expect(screen.getByLabelText('“20 日收盘价均线”公式源码（DSL / LaTeX）')).toHaveValue(
+    expect(screen.getByLabelText('“20 日收盘价均线”公式源码（LaTeX）')).toHaveValue(
       'rolling_mean(market_close, 20)',
     )
 
     await user.click(screen.getByRole('button', { name: '下载 Excel 计算逻辑' }))
     await waitFor(() => {
       const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/export-excel')
-      const body = JSON.parse(String((calls.at(-1)?.[1] as RequestInit).body))
+      const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
       expect(body).toMatchObject({
         period: '1Y',
         targets: [{ kind: 'etf', product_id: '510300.SH' }],
@@ -1107,6 +1111,7 @@ describe('IndicatorStudio', () => {
     await user.click(variableCombobox)
     const priceOptions = variableCombobox.parentElement?.querySelector<HTMLElement>('[role="listbox"]')
     expect(priceOptions).not.toBeNull()
+    if (!priceOptions) throw new Error('Price option list is missing')
     expect(within(priceOptions).getByText('开盘价')).toBeInTheDocument()
     expect(within(priceOptions).getByText('最高价')).toBeInTheDocument()
     expect(within(priceOptions).getByText('最低价')).toBeInTheDocument()
@@ -1123,6 +1128,7 @@ describe('IndicatorStudio', () => {
     await user.click(returnCombobox)
     const returnOptions = returnCombobox.parentElement?.querySelector<HTMLElement>('[role="listbox"]')
     expect(returnOptions).not.toBeNull()
+    if (!returnOptions) throw new Error('Return option list is missing')
     expect(within(returnOptions).getByText('复权净值普通收益率')).toBeInTheDocument()
     expect(within(returnOptions).getByText('复权净值对数收益率')).toBeInTheDocument()
   })
@@ -1194,9 +1200,9 @@ describe('IndicatorStudio', () => {
     const explanation = await within(dialog).findByRole('region', { name: '公式计算说明' })
     expect(within(explanation).getByText('输入变量与符号')).toBeInTheDocument()
     expect(within(explanation).getByText('算子与数学符号')).toBeInTheDocument()
-    expect(within(explanation).getByText('累乘')).toBeInTheDocument()
+    expect(within(explanation).getByText('全元素累乘')).toBeInTheDocument()
     expect(within(explanation).getByText('逐元素加法')).toBeInTheDocument()
-    expect(within(explanation).getByLabelText('累乘的数学符号').querySelector('.katex')).not.toBeNull()
+    expect(within(explanation).getByLabelText('全元素累乘的数学符号').querySelector('.katex')).not.toBeNull()
     await user.click(within(dialog).getByRole('button', { name: '展开为当前公式' }))
 
     await waitFor(() => {
@@ -1234,12 +1240,12 @@ describe('IndicatorStudio', () => {
 
     await user.click(screen.getByRole('button', { name: /平均盈亏比/ }))
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
-    expect(screen.getByLabelText('受限公式源码（DSL / LaTeX）')).toHaveValue(payoffIndicator.expression)
+    expect(screen.getByLabelText('受限公式源码（LaTeX）')).toHaveValue(payoffIndicator.expression)
     const preview = screen.getByTestId('formula-preview')
     expect(preview.innerHTML).not.toContain('mean_where')
     expect(preview.innerHTML).not.toContain('greater_than')
 
-    await user.type(screen.getByLabelText('受限公式源码（DSL / LaTeX）'), '+1')
+    await user.type(screen.getByLabelText('受限公式源码（LaTeX）'), '+1')
     expect(screen.getByTestId('formula-preview')).toHaveTextContent('请先解析并校验公式以生成数学排版')
     expect(screen.getByTestId('formula-preview').innerHTML).not.toContain('mean_where')
   })
@@ -1285,7 +1291,7 @@ describe('IndicatorStudio', () => {
     const composeCalls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/compose')
     const parentBody = JSON.parse(String((composeCalls[1][1] as RequestInit).body))
     expect(parentBody.arguments[0]).toMatchObject({ parameter: 'values', source: 'expression' })
-    expect(await screen.findByText('输出结果')).toBeInTheDocument()
+    expect(await screen.findByText('类型推断')).toBeInTheDocument()
   })
 
   it('引导构建允许分别切换输入，并在参数组合层校验类型与语义量纲', async () => {
@@ -1395,7 +1401,7 @@ describe('IndicatorStudio', () => {
     expect(within(catalogDialog).queryByRole('option', { name: /线性代数/ })).not.toBeInTheDocument()
   })
 
-  it('公式编辑会清除旧推导、校验、DAG 与运行结果，并提示重新校验', async () => {
+  it('公式编辑会清除旧推导、校验与运行结果，预览页不再重复展示 DAG', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
@@ -1404,21 +1410,22 @@ describe('IndicatorStudio', () => {
     await user.click(await screen.findByRole('button', { name: '添加' }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
     expect((await screen.findAllByText('12.34%')).length).toBeGreaterThan(0)
-    expect(screen.getByText('输出结果')).toBeInTheDocument()
+    expect(screen.getByText('类型推断')).toBeInTheDocument()
     expect(screen.getByText('校验通过')).toBeInTheDocument()
-    expect(screen.getByTestId('dag-chart')).toBeInTheDocument()
+    expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
-    await user.type(screen.getByLabelText('受限公式源码（DSL / LaTeX）'), '+1')
+    await user.type(screen.getByLabelText('受限公式源码（LaTeX）'), '+1')
 
-    expect(screen.queryByText('输出结果')).not.toBeInTheDocument()
+    expect(screen.queryByText('类型推断')).not.toBeInTheDocument()
+    expect(screen.getByTestId('indicator-output-settings')).toBeInTheDocument()
     expect(screen.queryByText('校验通过')).not.toBeInTheDocument()
     expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
     expect(screen.queryByText('12.34%')).not.toBeInTheDocument()
     expect(screen.getByText('公式已更改，需要重新解析并校验。')).toBeInTheDocument()
   })
 
-  it('DAG 始终使用单一 result 根，运行周期只更新展示上下文', async () => {
+  it('公式说明保留命名参数，运行周期变化不重复校验定义或展示 DAG', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
@@ -1442,27 +1449,13 @@ describe('IndicatorStudio', () => {
     expect(within(parsedComposer).getByRole('button', { name: '应用逻辑修改' })).toBeInTheDocument()
     expect(within(parsedComposer).getByRole('button', { name: '改用其他构建资源' })).toBeInTheDocument()
     await user.click(within(parsedComposer).getByRole('button', { name: '取消' }))
-    const chart = screen.getByTestId('dag-chart')
-    expect(chart).toHaveAttribute('data-layout', 'none')
-    expect(chart).toHaveAttribute('data-directed', 'true')
-    expect(chart).toHaveAttribute('data-arrow', 'arrow')
-    expect(chart).toHaveAttribute('data-link-count', '1')
-    expect(chart).toHaveAttribute('data-edge-parameter', '输入值')
-    expect(screen.getByText('预览周期：1Y')).toBeInTheDocument()
-    const table = screen.getByRole('table', { name: 'DAG 节点、输入参数和输出类型数据表' })
-    expect(table).toHaveTextContent('输入值 ← 复权净值普通收益率')
-    expect(table).toHaveTextContent('全元素标准差')
-    expect(screen.getByRole('button', { name: '适配并复位图谱' })).toBeInTheDocument()
-    const nodeDetails = screen.getByRole('article', { name: 'DAG 节点详情' })
-    expect(nodeDetails).toHaveTextContent('全元素标准差')
-    expect(nodeDetails).toHaveTextContent('理论规模：单个数值')
-    expect(table).toHaveTextContent('理论规模：随计算窗口变化的时间点数量')
-    await user.click(within(table).getByRole('button', { name: '复权净值普通收益率' }))
-    expect(nodeDetails).toHaveTextContent('复权净值普通收益率')
-
+    expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: 'DAG 节点、输入参数和输出类型数据表' })).not.toBeInTheDocument()
+    const validationCount = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate').length
     await user.selectOptions(screen.getByLabelText('计算周期'), '1M')
-    expect(screen.getByText('预览周期：1M')).toBeInTheDocument()
-    expect(screen.getByTestId('dag-chart')).toHaveAttribute('data-link-count', '1')
+    expect(screen.getByLabelText('计算周期')).toHaveValue('1M')
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(validationCount)
+    expect(screen.getByRole('heading', { name: '指标定义校验' })).toBeInTheDocument()
   })
 
   it('已有工作区指标从统一入口载入当前逻辑，修改后可另存为新指标', async () => {
@@ -1612,7 +1605,7 @@ describe('IndicatorStudio', () => {
     const previewPanel = document.getElementById('indicator-panel-preview')
 
     expect(editorTab).toHaveAttribute('aria-selected', 'true')
-    expect(editorPanel).toHaveClass('md:block')
+    expect(editorPanel).toHaveClass('md:flex')
     expect(previewPanel).toHaveClass('md:hidden')
 
     fireEvent.keyDown(editorTab, { key: 'ArrowRight' })
@@ -1639,7 +1632,8 @@ describe('IndicatorStudio', () => {
     expect(document.getElementById('indicator-panel-preview')).toHaveClass('md:block')
     expect(screen.getByLabelText('当前预览指标')).toHaveTextContent('累计收益率')
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
-    expect(await screen.findByRole('heading', { name: '层级计算 DAG' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '指标定义校验' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '层级计算 DAG' })).not.toBeInTheDocument()
     expect(screen.getByText(/已保留预览条件.*公式解析和校验通过/)).toBeInTheDocument()
   })
 
@@ -1652,7 +1646,8 @@ describe('IndicatorStudio', () => {
     await user.click(previewTab)
 
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
-    expect(await screen.findByRole('heading', { name: '层级计算 DAG' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '指标定义校验' })).toBeInTheDocument()
+    expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
   })
 
   it('算子展开失败会在抽屉内给出明确错误并允许重试', async () => {

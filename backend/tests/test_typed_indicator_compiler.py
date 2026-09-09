@@ -19,7 +19,7 @@ def test_parser_supports_multi_asset_latex_variables_and_explicit_functions() ->
     plan = compose_typed_expression(expression)
 
     assert (
-        plan.python_expression == "mean(portfolio_returns(asset_returns,asset_weights))"
+        plan.python_expression == "mean(matvec(asset_returns, asset_weights))"
     )
     assert plan.output_type == ValueType.scalar()
 

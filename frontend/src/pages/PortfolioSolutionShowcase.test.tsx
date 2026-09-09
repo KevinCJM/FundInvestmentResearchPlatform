@@ -6,7 +6,7 @@ import PortfolioSolutionCatalog from './PortfolioSolutionCatalog'
 import PortfolioSolutionShowcase from './PortfolioSolutionShowcase'
 
 describe('组合方案中心静态页面', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals() })
 
   it('方案目录可按风险等级筛选且不请求后端', async () => {
     const fetchSpy = vi.fn()

@@ -57,7 +57,19 @@ export interface DatasetMapping {
   identities: IdentityBinding[]
 }
 
+export interface RequestField {
+  name: string; label: string; data_type: 'text' | 'date' | 'number'; required?: boolean
+  date_format?: 'compact' | 'iso'; description?: string; placeholder?: string; default?: string
+}
+export interface EtlTaskSpec {
+  auto_incremental_supported?: boolean
+  id: string; name: string; category: string; source_ids: string[]; requires_source: boolean
+  parameters: RequestField[]; description: string; requires: string[]; provides: string[]
+  output_type: string; network: boolean
+}
+
 export interface InterfaceConfig {
+  request_fields?: RequestField[] | null
   id: string
   source_id: string
   name: string
@@ -90,6 +102,8 @@ export interface ConfigRecord<T> {
   builtin: boolean
   updated_at: string
   credential_configured?: boolean
+  credential_required?: boolean
+  request_fields?: RequestField[]
   validation?: MappingValidation
   effective_policy?: DownloadPolicy
 }
@@ -124,6 +138,8 @@ export interface CandidateBatch {
 }
 
 export interface SourceCatalog {
+  graph_schemas?: import('../components/computation-graph/types').GraphNodeSchema[]
+  etl_tasks?: EtlTaskSpec[]
   batches?: CandidateBatch[]
   sources: ConfigRecord<SourceConfig>[]
   interfaces: ConfigRecord<InterfaceConfig>[]

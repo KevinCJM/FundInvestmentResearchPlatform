@@ -254,9 +254,12 @@ function ProfileSummary({ profile }: { profile: ResearchSeriesProfile }) {
 function ProfileTable({ profile }: { profile: ResearchSeriesProfile }) {
   const metrics = Object.keys(profile.values)
   const hasAvailableAt = Array.isArray(profile.pit?.available_at) && profile.pit.available_at.length > 0
-  const hasVintage = typeof profile.vintage === 'object' && Array.isArray(profile.vintage?.values) && profile.vintage.values.length > 0
+  const vintageValues = profile.vintage && typeof profile.vintage === 'object' && Array.isArray(profile.vintage.values)
+    ? profile.vintage.values
+    : []
+  const hasVintage = vintageValues.length > 0
   const columns = [...metrics, ...(hasAvailableAt ? ['available_at'] : []), ...(hasVintage ? ['vintage'] : [])]
-  const rows = profile.dates.map((date, index) => ({ date, values: [...metrics.map((metric) => profile.values[metric]?.[index] ?? null), ...(hasAvailableAt ? [profile.pit?.available_at?.[index] ?? null] : []), ...(hasVintage && typeof profile.vintage === 'object' ? [profile.vintage.values?.[index] ?? null] : [])] }))
+  const rows = profile.dates.map((date, index) => ({ date, values: [...metrics.map((metric) => profile.values[metric]?.[index] ?? null), ...(hasAvailableAt ? [profile.pit?.available_at?.[index] ?? null] : []), ...(hasVintage ? [vintageValues[index] ?? null] : [])] }))
   return (
     <section aria-label="研究序列数据表" className="rounded-xl border border-slate-200 bg-white">
       <div className="border-b border-slate-200 px-4 py-3"><h4 className="text-sm font-bold text-slate-900">抽样数据表</h4><p className="mt-1 text-[11px] text-slate-500">统计使用完整样本，表格仅展示后端返回的等距抽样点。</p></div>

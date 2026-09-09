@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import PortfolioOnboardingWorkspace from './PortfolioOnboardingWorkspace'
 
 describe('PortfolioOnboardingWorkspace', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals() })
 
   it('研究方案落地只生成当前会话主数据预览', async () => {
     const fetchSpy = vi.fn()

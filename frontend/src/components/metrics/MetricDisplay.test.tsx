@@ -95,16 +95,19 @@ describe('统一指标展示协议', () => {
   })
 
   it('不可计算原因默认展示中文字段，技术代码只在详情中出现', () => {
+    const blockedInputs = [
+      { variable_id: 'market_high', label: '最高价', status: 'source_unavailable', reason_code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', reason: '该产品没有日线最高价数据', source_dataset: 'ETF 日线行情', source_field: 'high', canonical_field: 'high' },
+      { variable_id: 'market_low', label: '最低价', status: 'source_unavailable', reason_code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', reason: '该产品没有日线最低价数据', source_dataset: 'ETF 日线行情', source_field: 'low', canonical_field: 'low' },
+    ]
     render(<MetricUnavailableReason result={{
       value: null,
       status: 'unavailable',
       warnings: [{ code: 'INDICATOR_NOT_APPLICABLE', message: '指标缺少必需输入。' }],
       input_requirements: {
         status: 'blocked', required_count: 2, available_count: 0,
-        blocking_inputs: [
-          { variable_id: 'market_high', label: '最高价', status: 'source_unavailable', reason_code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', reason: '该产品没有日线最高价数据', source_dataset: 'ETF 日线行情', source_field: 'high' },
-          { variable_id: 'market_low', label: '最低价', status: 'source_unavailable', reason_code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', reason: '该产品没有日线最低价数据', source_dataset: 'ETF 日线行情', source_field: 'low' },
-        ],
+        items: blockedInputs,
+        blocking_inputs: blockedInputs,
+        partial_inputs: [],
       },
       target_data: { available_datasets: ['基金复权净值'], available_variables: ['adjusted_nav', 'returns'], data_latest_date: '2026-06-12' },
     }} />)

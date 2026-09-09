@@ -91,7 +91,7 @@ const CORE_RESEARCH_INDICATOR_IDS = [
   'builtin-total-return-v2',
   'builtin-annualized-return-v2',
   'builtin-annualized-volatility-v2',
-  'builtin-maximum-drawdown-v2',
+  'builtin-drawdown-analysis-v3',
   'builtin-annualized-sharpe-v2',
 ];
 

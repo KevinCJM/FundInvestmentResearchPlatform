@@ -8,6 +8,8 @@ import {
   searchInvestableUniverseProducts,
   type InvestableUniverseSnapshot,
 } from '../services/productPools'
+import { apiErrorMessage } from '../utils/apiError'
+import PitProvenance from '../components/PitProvenance'
 
 interface PoolItem {
   code: string
@@ -57,6 +59,7 @@ interface AutoClassResult {
   start_date: string
   end_date: string
   classes: AutoClassGroup[]
+  pit?: import('../services/pit').PitRunLineage
   unassigned: { code: string; name: string; reason: string; detail: string }[]
   skipped: { code: string; name: string; reason: string; detail: string }[]
   warnings: string[]
@@ -97,12 +100,37 @@ const ALGORITHM_HINTS: Record<string, string> = {
   hierarchical: '在收益相关性距离上做凝聚层次聚类。默认选项：无需初值、结果确定，且“为什么这两个产品在一起”可以回溯到合并树。',
   kmedoids: '以真实产品作为类中心，每个大类天然得到一只代表产品，适合直接拿来做大类代理。',
   kmeans: '在标准化特征空间上做质心聚类。速度快，但类中心是虚拟点，对特征量纲更敏感。',
+  spectral: '把相关性距离变成图，按归一化割在特征向量空间上切分。不假设类是圆的：从沪深300一路过渡到创业板的产品链会留在同一类，而不是被半径切开。',
+  gmm: '高斯混合 + EM，每个大类有自己的形状与松紧程度，输出的是归属概率而非硬标签。适合边界模糊、货币类很紧而主题类很散的产品池。',
 }
 const FEATURE_HINTS: Record<string, string> = {
   correlation: '用日收益相关性距离 √(0.5(1-ρ))。大类资产的本质是同涨同跌，这是最贴合的度量。',
+  denoised: '同样是相关性距离，但先用随机矩阵理论（Marchenko-Pastur）把落在噪声带内的特征值抹平，只留系统性模式。产品多、样本短时最有用。',
   metrics: '用收益、波动、回撤、夏普、卡玛、折溢价与成交额画像做欧氏距离。',
   pca: '对相关矩阵做特征分解，用前几个主成分载荷聚类，识别共同的系统性驱动。',
   blend: '风险收益画像与主成分载荷拼接后聚类。',
+}
+
+// One place decides what each algorithm ignores; the control, its label, its
+// reason line and the hint panel all read from here so they cannot disagree.
+function inactiveReason(parameter: 'linkage' | 'blockBy' | 'k', algorithm: string): string {
+  if (parameter === 'linkage' && algorithm !== 'hierarchical') {
+    return '仅层次聚类需要连接方式，该算法不读取此项'
+  }
+  if (parameter === 'blockBy' && algorithm === 'rule') {
+    return '规则映射本身就按合同分类，再分层没有意义'
+  }
+  if (parameter === 'k' && algorithm === 'rule') {
+    return '规则映射的大类个数由合同标签自然决定'
+  }
+  return ''
+}
+
+const SELECT_CLASS =
+  'w-full rounded border px-2 py-1 text-sm disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400'
+
+function labelClass(inactive: boolean): string {
+  return `mb-1 block font-medium ${inactive ? 'text-gray-400' : 'text-gray-700'}`
 }
 
 const BLOCK_HINTS: Record<string, string> = {
@@ -172,6 +200,12 @@ export default function AutoAssetClassification() {
   const [fitError, setFitError] = useState('')
   const [saveName, setSaveName] = useState('')
   const [saveMessage, setSaveMessage] = useState('')
+
+  // Empty string means the parameter is live; a message means it is greyed out
+  // and says why.
+  const linkageInactive = inactiveReason('linkage', algorithm)
+  const blockInactive = inactiveReason('blockBy', algorithm)
+  const kInactive = inactiveReason('k', algorithm)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -347,7 +381,7 @@ export default function AutoAssetClassification() {
         }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data?.detail || `后端错误 ${response.status}`)
+      if (!response.ok) throw new Error(apiErrorMessage(data, `后端错误 ${response.status}`))
       assertFixedNjitExecution(data.execution, '自动构建大类')
       setResult(data as AutoClassResult)
       await runFit((data as AutoClassResult).classes)
@@ -380,7 +414,7 @@ export default function AutoAssetClassification() {
         }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data?.detail || `错误 ${response.status}`)
+      if (!response.ok) throw new Error(apiErrorMessage(data, `错误 ${response.status}`))
       setSaveMessage(`配置「${name}」已保存，可在大类资产配置与回测中引用`)
     } catch (reason: any) {
       setSaveMessage(`保存失败：${reason?.message || reason}`)
@@ -527,80 +561,86 @@ export default function AutoAssetClassification() {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">算法</span>
-            <select className="w-full rounded border px-2 py-1 text-sm" value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}>
+            <select className={SELECT_CLASS} value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}>
               {meta.algorithms.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
           </label>
           <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">特征集</span>
-            <select className="w-full rounded border px-2 py-1 text-sm" value={features} onChange={(event) => setFeatures(event.target.value)}>
+            <select className={SELECT_CLASS} value={features} onChange={(event) => setFeatures(event.target.value)}>
               {meta.features.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
           </label>
-          <label className="text-sm">
-            <span className="mb-1 block font-medium text-gray-700">连接方式（层次聚类）</span>
-            <select className="w-full rounded border px-2 py-1 text-sm" value={linkage} disabled={algorithm !== 'hierarchical'} onChange={(event) => setLinkage(event.target.value)}>
-              {meta.linkages.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-            </select>
-          </label>
+          <div>
+            <label className="text-sm">
+              <span className={labelClass(Boolean(linkageInactive))}>连接方式（层次聚类）</span>
+              <select className={SELECT_CLASS} value={linkage} disabled={Boolean(linkageInactive)} onChange={(event) => setLinkage(event.target.value)}>
+                {meta.linkages.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </select>
+            </label>
+            {linkageInactive && <p className="mt-1 text-xs text-gray-500">{linkageInactive}</p>}
+          </div>
           <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">合同分类层级</span>
-            <select className="w-full rounded border px-2 py-1 text-sm" value={taxonomyLevel} onChange={(event) => setTaxonomyLevel(event.target.value)}>
+            <select className={SELECT_CLASS} value={taxonomyLevel} onChange={(event) => setTaxonomyLevel(event.target.value)}>
               {meta.taxonomy_levels.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
           </label>
-          <label className="text-sm">
-            <span className="mb-1 block font-medium text-gray-700">按合同分层（硬约束）</span>
-            <select className="w-full rounded border px-2 py-1 text-sm" value={blockBy} disabled={algorithm === 'rule'} onChange={(event) => setBlockBy(event.target.value)}>
-              {meta.block_modes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-            </select>
-          </label>
+          <div>
+            <label className="text-sm">
+              <span className={labelClass(Boolean(blockInactive))}>按合同分层（硬约束）</span>
+              <select className={SELECT_CLASS} value={blockBy} disabled={Boolean(blockInactive)} onChange={(event) => setBlockBy(event.target.value)}>
+                {meta.block_modes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </select>
+            </label>
+            {blockInactive && <p className="mt-1 text-xs text-gray-500">{blockInactive}</p>}
+          </div>
           <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">类内权重</span>
-            <select className="w-full rounded border px-2 py-1 text-sm" value={weightMode} onChange={(event) => setWeightMode(event.target.value)}>
+            <select className={SELECT_CLASS} value={weightMode} onChange={(event) => setWeightMode(event.target.value)}>
               {meta.weight_modes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
           </label>
           <div className="text-sm">
-            <span className="mb-1 block font-medium text-gray-700">大类个数 K</span>
+            <span className={labelClass(Boolean(kInactive))}>大类个数 K</span>
             <div className="flex items-center gap-2">
               <input
                 type="number"
                 min={2}
                 className="w-24 rounded border px-2 py-1 text-sm disabled:bg-gray-100"
                 value={k}
-                disabled={autoK || algorithm === 'rule'}
+                disabled={autoK || Boolean(kInactive)}
                 onChange={(event) => setK(Math.max(2, Number(event.target.value) || 2))}
                 aria-label="大类个数"
               />
-              <label className="flex items-center gap-1 text-xs text-gray-600">
+              <label className={`flex items-center gap-1 text-xs ${kInactive ? 'text-gray-400' : 'text-gray-600'}`}>
                 <input
                   type="checkbox"
                   checked={autoK}
-                  disabled={algorithm === 'rule'}
+                  disabled={Boolean(kInactive)}
                   onChange={(event) => setAutoK(event.target.checked)}
                   aria-label="自动建议大类个数"
                 />
                 自动建议
               </label>
             </div>
-            {algorithm === 'rule' && <p className="mt-1 text-xs text-amber-700">规则映射的大类个数由合同标签自然决定</p>}
+            {kInactive && <p className="mt-1 text-xs text-gray-500">{kInactive}</p>}
           </div>
           <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">每类最少产品数</span>
-            <input type="number" min={1} className="w-full rounded border px-2 py-1 text-sm" value={sizeMin} onChange={(event) => setSizeMin(Math.max(1, Number(event.target.value) || 1))} aria-label="每类最少产品数" />
+            <input type="number" min={1} className={SELECT_CLASS} value={sizeMin} onChange={(event) => setSizeMin(Math.max(1, Number(event.target.value) || 1))} aria-label="每类最少产品数" />
           </label>
           <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">每类最多产品数</span>
-            <input type="number" min={1} className="w-full rounded border px-2 py-1 text-sm" value={sizeMax} onChange={(event) => setSizeMax(Math.max(1, Number(event.target.value) || 1))} aria-label="每类最多产品数" />
+            <input type="number" min={1} className={SELECT_CLASS} value={sizeMax} onChange={(event) => setSizeMax(Math.max(1, Number(event.target.value) || 1))} aria-label="每类最多产品数" />
           </label>
           <label className="text-sm">
             <span className="mb-1 block font-medium text-gray-700">样本开始日期</span>
-            <input type="date" className="w-full rounded border px-2 py-1 text-sm" value={startDate} onChange={(event) => setStartDate(event.target.value)} aria-label="样本开始日期" />
+            <input type="date" className={SELECT_CLASS} value={startDate} onChange={(event) => setStartDate(event.target.value)} aria-label="样本开始日期" />
           </label>
           <label className="text-sm md:col-span-2">
             <span className="mb-1 block font-medium text-gray-700">装不下的产品</span>
-            <select className="w-full rounded border px-2 py-1 text-sm" value={unassignedPolicy} onChange={(event) => setUnassignedPolicy(event.target.value as 'park' | 'force')}>
+            <select className={SELECT_CLASS} value={unassignedPolicy} onChange={(event) => setUnassignedPolicy(event.target.value as 'park' | 'force')}>
               <option value="park">进入待观察池（推荐）</option>
               <option value="force">强制归入最相近大类</option>
             </select>
@@ -609,7 +649,7 @@ export default function AutoAssetClassification() {
         <div className="mt-3 rounded-lg bg-violet-50 p-3 text-xs text-violet-900">
           <p><strong>{meta.algorithms.find((item) => item.id === algorithm)?.label ?? algorithm}</strong>：{ALGORITHM_HINTS[algorithm]}</p>
           <p className="mt-1"><strong>{meta.features.find((item) => item.id === features)?.label ?? features}</strong>：{FEATURE_HINTS[features]}</p>
-          <p className="mt-1"><strong>分层</strong>：{BLOCK_HINTS[blockBy]}</p>
+          {!blockInactive && <p className="mt-1"><strong>分层</strong>：{BLOCK_HINTS[blockBy]}</p>}
         </div>
         <div className="mt-3 flex items-center gap-3">
           <button
@@ -664,6 +704,8 @@ export default function AutoAssetClassification() {
           {/* 4. 大类结果 */}
           <section className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
             <SectionTitle title="④ 大类映射草案" hint="★ 为该大类的代表产品（medoid）；权重按所选类内权重方式归一到 100%。" />
+            {/* Provenance rides with the result, not with the window frame. */}
+            <PitProvenance lineage={result.pit} />
             <div className="grid gap-3 lg:grid-cols-2">
               {result.classes.map((group) => (
                 <div key={group.id} className="rounded-xl border border-violet-200 bg-violet-50/40 p-3">

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +28,87 @@ from backend.data_sources.transport import public_address, TransientSourceError
 from backend.services import data_source_routes as routes
 
 PRESETS = {item.api_name: item for item in default_interfaces()}
+
+def test_recent_batches_use_time_index(tmp_path):
+    store = SourceStore(tmp_path)
+    with store.connection() as db:
+        plan = db.execute('EXPLAIN QUERY PLAN SELECT result FROM source_run ORDER BY created_at DESC LIMIT 30').fetchall()
+    assert any('source_run_created' in row[3] for row in plan)
+    assert not any('TEMP B-TREE' in row[3] for row in plan)
+
+
+def test_waiting_quota_does_not_write_or_count_expired_leases(tmp_path):
+    store = SourceStore(tmp_path)
+    quota = SharedQuota(store)
+    policy = DownloadPolicy(requests_per_minute=1, min_interval_seconds=0, max_concurrency=1)
+    levels = [('source:s', policy), ('api:s:a', policy)]
+    assert quota.reserve(levels, 1, 1000, 'first') == 0
+    with store.connection() as db:
+        db.execute("INSERT INTO source_quota VALUES ('unrelated',0,1)")
+        db.execute("INSERT INTO source_lease VALUES ('expired','source:s',1001)")
+    assert quota.reserve(levels, 1, 1002, 'waiting') > 0
+    with store.connection() as db:
+        # Waiting is read-only, even if housekeeping has expired rows.
+        assert db.execute("SELECT COUNT(*) FROM source_quota WHERE quota_key='unrelated'").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM source_lease WHERE lease_id='waiting'").fetchone()[0] == 0
+    assert quota.reserve(levels, 1, 1062, 'next') == 0
+    with store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM source_quota WHERE quota_key='unrelated'").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM source_lease WHERE lease_id='expired'").fetchone()[0] == 0
+
+
+def test_concurrent_quota_never_over_reserves(tmp_path):
+    store = SourceStore(tmp_path)
+    quota = SharedQuota(store)
+    policy = DownloadPolicy(requests_per_minute=4, min_interval_seconds=0, max_concurrency=4)
+    levels = [('source:s', policy), ('api:s:a', policy)]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        waits = list(pool.map(lambda i: quota.reserve(levels, 1, 1000, str(i)), range(32)))
+    assert waits.count(0) == 4
+    with store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM source_quota').fetchone()[0] == 8
+        assert db.execute('SELECT COUNT(*) FROM source_lease').fetchone()[0] == 8
+
+
+@pytest.mark.parametrize('sqlite_code,expected', [
+    (sqlite3.SQLITE_BUSY, 'SOURCE_DB_BUSY'),
+    (sqlite3.SQLITE_BUSY | (2 << 8), 'SOURCE_DB_BUSY'),
+    (sqlite3.SQLITE_LOCKED, 'SOURCE_DB_BUSY'),
+    (sqlite3.SQLITE_FULL, 'SOURCE_DB_FULL'),
+    (sqlite3.SQLITE_IOERR, 'SOURCE_DB_IO'),
+    (sqlite3.SQLITE_CANTOPEN, 'SOURCE_DB_OPEN'),
+    (sqlite3.SQLITE_READONLY, 'SOURCE_DB_READONLY'),
+    (sqlite3.SQLITE_ERROR, 'SOURCE_DB_OPERATIONAL'),
+])
+def test_database_error_is_safe_and_transaction_rolled_back(tmp_path, sqlite_code, expected):
+    store = SourceStore(tmp_path)
+    error = sqlite3.OperationalError('private credential / sensitive SQL must not leak')
+    error.sqlite_errorcode = sqlite_code
+    with pytest.raises(CenterError) as caught:
+        with store.connection() as db:
+            db.execute("INSERT INTO source_quota VALUES ('rollback',1,1)")
+            raise error
+    assert caught.value.code == expected
+    assert 'private' not in caught.value.message
+    assert 'sensitive' not in caught.value.message
+    with store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM source_quota').fetchone()[0] == 0
+
+
+def test_real_database_busy_has_bounded_safe_error(tmp_path, monkeypatch):
+    store = SourceStore(tmp_path)
+    connect = sqlite3.connect
+    locker = connect(store.path)
+    locker.execute('BEGIN IMMEDIATE')
+    monkeypatch.setattr(sqlite3, 'connect', lambda path, **kwargs: connect(path, timeout=0.02))
+    try:
+        with pytest.raises(CenterError) as caught:
+            with store.connection() as db:
+                db.execute('BEGIN IMMEDIATE')
+        assert caught.value.code == 'SOURCE_DB_BUSY'
+    finally:
+        locker.rollback()
+        locker.close()
 
 
 @pytest.fixture

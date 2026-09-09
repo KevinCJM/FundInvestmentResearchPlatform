@@ -40,13 +40,16 @@ try:
         intra_class_weights_kernel,
         kmeans_kernel,
         kmedoids_kernel,
+        denoise_correlation_kernel,
+        spectral_labels_kernel,
+        gmm_kernel,
         mean_offdiagonal_kernel,
         pca_features_kernel,
         robust_standardize_kernel,
         silhouette_kernel,
         winsorize_returns_kernel,
     )
-    from backend.fit import _load_adj_nav, _map_to_ts, _returns_wide
+    from backend.fit import _map_to_ts, _returns_wide, load_adj_nav_pit
     from backend.fund_taxonomy import (
         TAXONOMY_LEVEL_LABELS,
         TAXONOMY_LEVELS,
@@ -80,13 +83,16 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         intra_class_weights_kernel,
         kmeans_kernel,
         kmedoids_kernel,
+        denoise_correlation_kernel,
+        spectral_labels_kernel,
+        gmm_kernel,
         mean_offdiagonal_kernel,
         pca_features_kernel,
         robust_standardize_kernel,
         silhouette_kernel,
         winsorize_returns_kernel,
     )
-    from fit import _load_adj_nav, _map_to_ts, _returns_wide
+    from fit import _map_to_ts, _returns_wide, load_adj_nav_pit
     from fund_taxonomy import (
         TAXONOMY_LEVEL_LABELS,
         TAXONOMY_LEVELS,
@@ -95,6 +101,17 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         taxonomy_tree,
     )
     from market_data import resolve_market_data_file
+
+
+
+# The PIT package is imported bare-first, unlike the modules above. Startup
+# warms `pit.audit`'s dataset cache; reaching the same code through
+# `backend.pit.audit` would load a second copy with a cold cache and turn the
+# first strict-mode run into a full 37M-row rescan.
+try:
+    from pit.context import PitContextError, build_context, require_usable
+except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
+    from backend.pit.context import PitContextError, build_context, require_usable
 
 
 MIN_OBSERVATIONS = 60
@@ -114,9 +131,12 @@ ALGORITHMS = {
     "hierarchical": "相关性层次聚类",
     "kmedoids": "K-medoids（代表产品）",
     "kmeans": "K-means（特征质心）",
+    "spectral": "谱聚类（相关性图）",
+    "gmm": "高斯混合（软分配）",
 }
 FEATURE_SETS = {
     "correlation": "收益相关性距离",
+    "denoised": "去噪相关性距离（RMT）",
     "metrics": "风险收益画像",
     "pca": "主成分载荷",
     "blend": "画像 + 主成分",
@@ -169,6 +189,11 @@ class AutoClassRequestSpec:
     taxonomy_level: str = "asset_class"
     # Taxonomy level the statistics may not cross; "none" keeps pure clustering.
     block_by: str = "none"
+    # Research day: only NAV rows announced on or before it may be used.
+    as_of: Optional[str] = None
+    # RESEARCH tolerates approximate availability; STRICT_PIT fails closed.
+    run_mode: str = "RESEARCH"
+    data_release_id: Optional[str] = None
     # product code -> product-pool max weight as a fraction in (0, 1]
     max_weights: dict[str, float] = field(default_factory=dict)
 
@@ -349,9 +374,16 @@ def _build_feature_space(
     """
 
     correlation = correlation_matrix_kernel(np.ascontiguousarray(returns))
-    if spec.features == "correlation":
-        distance = corr_to_distance_kernel(np.ascontiguousarray(correlation))
-        features = robust_standardize_kernel(np.ascontiguousarray(correlation))
+    if spec.features in {"correlation", "denoised"}:
+        # The denoised matrix only shapes the clustering geometry; every
+        # reported correlation stays the raw observed one.
+        basis = correlation
+        if spec.features == "denoised":
+            basis = denoise_correlation_kernel(
+                np.ascontiguousarray(correlation), int(returns.shape[0])
+            )
+        distance = corr_to_distance_kernel(np.ascontiguousarray(basis))
+        features = robust_standardize_kernel(np.ascontiguousarray(basis))
         return correlation, distance, features
 
     blocks: list[np.ndarray] = []
@@ -405,6 +437,16 @@ def _cluster(
         return labels
     if spec.algorithm == "kmeans":
         return kmeans_kernel(np.ascontiguousarray(features), int(clusters), int(spec.seed), 200)
+    if spec.algorithm == "spectral":
+        return spectral_labels_kernel(
+            np.ascontiguousarray(distance), int(clusters), int(spec.seed), 200
+        )
+    if spec.algorithm == "gmm":
+        # Posteriors stay inside the kernel: the downstream affinity, capacity
+        # and weighting chain is distance-scaled and must not mix in a [0, 1]
+        # probability.
+        labels, _ = gmm_kernel(np.ascontiguousarray(features), int(clusters), int(spec.seed), 200)
+        return labels
     # The merge tree does not depend on K, so it is built once and only cut here.
     tree = _linkage(spec, distance) if linkage is None else linkage
     return cut_linkage_kernel(np.ascontiguousarray(tree), distance.shape[0], int(clusters))
@@ -603,6 +645,15 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
         raise AutoClassError(f"不支持的合同分类层级：{spec.taxonomy_level}")
     if spec.block_by not in BLOCK_MODES:
         raise AutoClassError(f"不支持的分层方式：{spec.block_by}")
+    try:
+        # Validates as_of/run_mode together, and refuses STRICT_PIT without a
+        # research day rather than letting it behave like research mode.
+        context = build_context(spec.as_of, spec.run_mode, spec.data_release_id)
+        # Classification names classes from the contract taxonomy, which lives in
+        # a latest-state dimension table; strict mode must not let that pass.
+        require_usable(data_dir, context, ["etf_nav", "fund_nav", "etf_info"])
+    except PitContextError as exc:
+        raise AutoClassError(str(exc)) from exc
     if spec.size_min < 1:
         raise AutoClassError("每类最少产品数不能小于 1")
     if spec.size_max < spec.size_min:
@@ -616,7 +667,11 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 by the route
         raise AutoClassError("startDate 格式错误，应为 YYYY-MM-DD") from exc
 
-    nav_frame = _load_adj_nav(data_dir, codes, spec.names)
+    loaded = load_adj_nav_pit(
+        data_dir, codes, spec.names, as_of=spec.as_of, run_mode=spec.run_mode
+    )
+    nav_frame = loaded.frame
+    pit_lineage = loaded.lineage
     if nav_frame.empty:
         raise AutoClassError("所选产品在数据集中没有净值记录")
     wide = _returns_wide(nav_frame, start)
@@ -830,7 +885,14 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
         if labels[index] < 0
     ]
 
-    warnings: list[str] = []
+    warnings: list[str] = list(pit_lineage.get("warnings") or [])
+    if pit_lineage.get("as_of_applied") and pit_lineage.get("rows_dropped_by_as_of"):
+        warnings.append(
+            f"按研究日 {pit_lineage['as_of']} 的公告时点截断，剔除 "
+            f"{pit_lineage['rows_dropped_by_as_of']} 行当时尚未公告的净值"
+        )
+    if not pit_lineage.get("as_of_applied"):
+        warnings.append("未指定研究日，使用了磁盘上的全部净值；该结果不具备时点可复现性")
     if spec.algorithm == "rule" and spec.k is not None and spec.k != clusters:
         warnings.append(f"规则映射按合同分类自然产生 {clusters} 个大类，已忽略指定的 {spec.k} 类")
     if spec.algorithm == "rule" and spec.block_by != "none":
@@ -907,6 +969,10 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
         "algorithm": spec.algorithm,
         "features": spec.features,
         "taxonomy_level": spec.taxonomy_level,
+        "as_of": spec.as_of,
+        "run_mode": spec.run_mode,
+        "data_release_id": spec.data_release_id,
+        "pit": pit_lineage,
         "block_by": spec.block_by,
         "k": clusters,
         "weight_mode": spec.weight_mode,

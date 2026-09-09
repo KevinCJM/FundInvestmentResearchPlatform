@@ -19,6 +19,7 @@ export interface RegimeGraphPortSchema {
 }
 
 export interface RegimeParameterSchema {
+  deprecated?: boolean
   type?: 'number' | 'integer' | 'string' | 'boolean' | 'array' | 'object'
   title?: string
   label?: string
@@ -34,6 +35,8 @@ export interface RegimeParameterSchema {
 }
 
 export interface RegimeNodeSchema {
+  authoring_hidden?: boolean
+  indicator_reference?: { id: string; revision: number; definition_hash: string; result_kind: string }
   id: string
   type_id?: string
   type?: string
@@ -135,6 +138,7 @@ export interface RegimeGraphDefinition {
     nodes: RegimeGraphNode[]
     edges?: RegimeGraphEdge[]
     outputs: {
+      [name: string]: RegimeGraphOutput | undefined
       state?: RegimeGraphOutput
       probabilities?: RegimeGraphOutput
       confidence?: RegimeGraphOutput
@@ -143,6 +147,7 @@ export interface RegimeGraphDefinition {
       reason_code?: RegimeGraphOutput
     }
     exposed_node_ids?: string[]
+    channel_metadata?: Record<string, { label: string; unit?: string; display_format?: 'number' | 'percent'; precision?: number }>
   }
   states: RegimeStateDefinition[]
   evaluation_targets: Array<Record<string, unknown>>
@@ -157,6 +162,8 @@ export interface RegimeGraphTemplate {
   tags?: string[]
   revision?: number
   definition?: RegimeGraphDefinition
+  default_mode?: RegimeMode
+  supported_modes?: RegimeMode[]
 }
 
 export interface RegimeGraphIssue {
@@ -284,8 +291,22 @@ export interface RegimeSeriesRow {
   [key: string]: unknown
 }
 
+export interface RegimeUpstreamOutput {
+  node_id: string
+  node_label: string
+  port: string
+  port_label: string
+  value_type: string
+  distance: number
+  plottable: boolean
+  unavailable_reason?: string | null
+}
+
 export interface RegimeSeriesPage {
   run_id: string
+  node_label?: string
+  upstream_outputs?: RegimeUpstreamOutput[]
+  value_type?: string
   node_id?: string
   port?: string
   items: RegimeSeriesRow[]
@@ -308,6 +329,8 @@ export interface RegimeFormalRun {
   created_at: string
   immutable?: boolean
   content_hash?: string
+  /** Frozen final-result view, validated by the result adapter before display. */
+  overview?: unknown
   states?: RegimeStateDefinition[]
   series?: RegimeSeriesRow[]
   segments?: Array<Record<string, unknown>>
@@ -434,8 +457,15 @@ export interface RegimeBatchExperiment {
   content_hash?: string
 }
 
+export interface RegimeGraphDiagnostic {
+  code: string
+  message: string
+  path?: string
+  node_id?: string
+}
+
 export class RegimeGraphApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly diagnostics: RegimeGraphDiagnostic[] = []) {
     super(message)
     this.name = 'RegimeGraphApiError'
   }
@@ -450,6 +480,12 @@ function errorMessage(body: unknown, fallback: string) {
   return fallback
 }
 
+function errorDiagnostics(body: unknown): RegimeGraphDiagnostic[] {
+  const diagnostics = (body as { detail?: { diagnostics?: unknown } } | null)?.detail?.diagnostics
+  return Array.isArray(diagnostics) ? diagnostics.filter((item): item is RegimeGraphDiagnostic =>
+    item && typeof item.code === 'string' && typeof item.message === 'string') : []
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -458,7 +494,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let body: unknown = null
     try { body = await response.json() } catch { /* keep stable fallback */ }
-    throw new RegimeGraphApiError(response.status, errorMessage(body, `请求失败（${response.status}）`))
+    const diagnostics = errorDiagnostics(body)
+    const message = errorMessage(body, `请求失败（${response.status}）`)
+    const reasons = [...new Set(diagnostics.map(item => item.message).filter(item => item !== message))].slice(0, 3)
+    throw new RegimeGraphApiError(response.status, [message, ...reasons].join(' '), diagnostics)
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
@@ -666,10 +705,29 @@ export async function inferRegimeGraph(definition: RegimeGraphDefinition, signal
   })
 }
 
-export async function prepareRegimeGraph(definition: RegimeGraphDefinition, signal?: AbortSignal) {
+export interface RegimeAuthoringResolution {
+  valid: boolean
+  definition: RegimeGraphDefinition | null
+  source: string
+  diagnostics: Array<{ code: string; message: string; severity?: string; line?: number | null; path?: string }>
+  compile_status: 'not_requested'
+  display_latex?: Record<string, string>
+  formula_steps?: Record<string, Array<{ node_id: string; port: string; label: string; latex: string; description: string; parameters: Array<{ label: string; value: string }> }>>
+  math_notation_version?: string
+  math_error?: string
+}
+
+export async function resolveRegimeAuthoring(definition: RegimeGraphDefinition, mode: RegimeMode,
+  sourceKind: 'graph' | 'formula', source = '', signal?: AbortSignal) {
+  return request<RegimeAuthoringResolution>('/api/historical-regimes/authoring/resolve', {
+    method: 'POST', signal, body: JSON.stringify({ definition: definitionForRequest(definition), mode, source_kind: sourceKind, source, compact: true }),
+  })
+}
+
+export async function prepareRegimeGraph(definition: RegimeGraphDefinition, signal?: AbortSignal, previewTarget?: RegimeGraphConnection) {
   const response = await request<PreparedRegimeGraph>('/api/historical-regimes/prepare', {
     method: 'POST',
-    body: JSON.stringify({ definition: definitionForRequest(definition) }),
+    body: JSON.stringify({ definition: definitionForRequest(definition), preview_target: previewTarget }),
     signal,
   })
   assertExecution(response.runtime_audit, '历史情景预热计划')
@@ -678,7 +736,7 @@ export async function prepareRegimeGraph(definition: RegimeGraphDefinition, sign
 
 export async function startRegimePreviewRun(
   definition: RegimeGraphDefinition,
-  options: { compileToken: string; mode: RegimeMode; asOf?: string; ttlSeconds?: number },
+  options: { compileToken: string; mode: RegimeMode; asOf?: string; ttlSeconds?: number; previewTarget?: RegimeGraphConnection },
   signal?: AbortSignal,
 ) {
   return request<RegimePreviewRun>('/api/historical-regimes/preview-runs', {
@@ -689,6 +747,7 @@ export async function startRegimePreviewRun(
       mode: options.mode,
       as_of: options.asOf || undefined,
       ttl_seconds: options.ttlSeconds,
+      preview_target: options.previewTarget,
     }),
     signal,
   })
@@ -703,6 +762,10 @@ export async function cancelRegimePreviewRun(runId: string, signal?: AbortSignal
   return request<RegimePreviewRun | void>(`/api/historical-regimes/preview-runs/${encodeURIComponent(runId)}`, {
     method: 'DELETE', signal,
   })
+}
+
+export async function getRegimePreviewOverview(runId: string, signal?: AbortSignal): Promise<unknown> {
+  return request<unknown>(`/api/historical-regimes/preview-runs/${encodeURIComponent(runId)}/overview`, { signal })
 }
 
 export async function getRegimePreviewSeries(
@@ -726,6 +789,43 @@ export async function getRegimePreviewSeries(
     run_id: page.run_id || raw.id || runId,
     items: (raw.items || []).map((item) => ({ ...item, date: item.date || item.observation_date || '' })),
   }
+}
+
+export async function getAllRegimePreviewSeries(runId: string, nodeId: string, port: string, signal?: AbortSignal) {
+  let offset = 0
+  let total: number | undefined
+  const items: RegimeSeriesRow[] = []
+  while (true) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+    const part = await getRegimePreviewSeries(runId, { nodeId, port, offset, limit: 5000 }, signal)
+    if (!Number.isInteger(part.total) || part.total < 0 || part.run_id !== runId || part.node_id !== nodeId || part.port !== port || part.offset !== offset ||
+      (total !== undefined && part.total !== total) || (!part.items.length && offset < part.total) || offset + part.items.length > part.total) {
+      throw new Error('节点结果分页不完整或与当前预览不一致，请重新预览。')
+    }
+    total = part.total
+    items.push(...part.items)
+    if (items.length >= total) return { ...part, offset: 0, items }
+    offset = items.length
+  }
+}
+
+export interface RegimeNormalizedChart {
+  run_id: string
+  node_id: string
+  port: string
+  base_index: number
+  base_date: string
+  base_value: number
+  values: Array<number | null>
+  change_pct: Array<number | null>
+  execution: unknown
+}
+
+export async function getRegimeNormalizedChart(runId: string, nodeId: string, port: string, baseIndex: number, signal?: AbortSignal) {
+  const params = new URLSearchParams({ node_id: nodeId, port, base_index: String(baseIndex) })
+  const result = await request<RegimeNormalizedChart>(`/api/historical-regimes/preview-runs/${encodeURIComponent(runId)}/normalized-chart?${params}`, { signal })
+  assertExecution(result.execution, '区间归一化')
+  return result
 }
 
 export async function runSavedRegimeGraph(

@@ -8,6 +8,8 @@ import {
 
 const request: ProductAnalysisRequest = {
   statistics_period: 'ALL',
+  include_simulation: false,
+  analysis_basis: 'adjusted_nav',
   price_ma_periods: [5, 20],
   volume_ma_periods: [5],
   boll_period: 20,
@@ -40,7 +42,7 @@ const response = {
     python_fallback: 0,
     request_time_compilation: 0,
   },
-} as ProductAnalysisResponse
+} as unknown as ProductAnalysisResponse
 
 describe('product analysis API', () => {
   afterEach(() => {
@@ -68,10 +70,12 @@ describe('product analysis API', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => response })
     vi.stubGlobal('fetch', fetchMock)
 
-    await analyzeProduct('510300.SH', 'etf', { ...request, regime: { run_id: 'run-1', publication_id: 'publication-1' } })
+    await analyzeProduct('510300.SH', 'etf', { ...request, regime: { run_id: 'run-1', publication_id: 'publication-1', state_id: 'bear', segment_id: 'segment-2' } })
 
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-    expect(body.regime).toEqual({ run_id: 'run-1', publication_id: 'publication-1' })
+    expect(body.regime).toEqual({ run_id: 'run-1', publication_id: 'publication-1', state_id: 'bear', segment_id: 'segment-2' })
+    expect(body.include_simulation).toBe(false)
+    expect(body.analysis_basis).toBe('adjusted_nav')
     expect(body.regime).not.toHaveProperty('states')
     expect(body.regime).not.toHaveProperty('segments')
   })

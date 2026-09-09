@@ -3,6 +3,73 @@
   "scope_mode": "subtree_only",
   "pitfalls": [
     {
+      "id": "P19",
+      "title": "factor_research_temporal_semantics_and_release_evidence",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "lookahead_and_survivorship_bias",
+        "benchmark_model_dataset_conflation",
+        "unwarmed_numerical_requests",
+        "research_release_misrepresented_as_validated_alpha",
+        "stale_release_consumption"
+      ],
+      "symptoms": [
+        "Feature, return-factor and benchmark series are treated as interchangeable.",
+        "Historical NAV rows are compressed or filled, or missing future prices determine the selected portfolio.",
+        "A research release is imported as already approved, or generic evidence bindings are described as automatic portfolio optimization.",
+        "An end-date-only study revision prevents comparable score-drift monitoring.",
+        "Overlapping forward-return labels are concatenated as factor returns, or rolling IC is dated as if future labels were known on the signal date.",
+        "ETF characteristic spreads are named SMB/HML, RF is silently zero-filled, or imported panels are advertised as verified official FF3/PIT data."
+      ],
+      "trigger_actions": [
+        "edit factor calculations, attribution, study datasets or benchmark basis",
+        "change release monitoring or product-pool gateway dispatch",
+        "connect factor evidence to investment stages"
+      ],
+      "related_paths": [
+        "backend/factor_research/data.py",
+        "backend/factor_research/numba_kernels.py",
+        "backend/factor_research/service.py",
+        "backend/services/product_pool_routes.py",
+        "frontend/src/components/FactorEvidencePanel.tsx",
+        "frontend/e2e/factor-research-live.spec.ts",
+        "因子研究中心_首套因子验收.md"
+      ],
+      "affected_modules": [
+        "factor_research_center",
+        "backend_api_shell",
+        "frontend_investment_process_framework"
+      ],
+      "blast_radius": [
+        "research validity",
+        "candidate admission",
+        "workflow evidence lineage"
+      ],
+      "check_before_edit": [
+        "Keep performance benchmark, characteristic definitions and same-market/currency factor-return datasets separate; do not default US FF3 returns to China research.",
+        "Use active canonical real data, exact QDII metadata semantics (非QDII is domestic), stable SSE dates and announcement lag; current snapshots do not prove full historical revision PIT.",
+        "Purge training labels crossing the holdout boundary; never compress/fill missing NAV or preselect using future data availability; daily drift and both-sided turnover determine NAV costs.",
+        "Check reference parity and actual NJIT dispatcher calls with fixed signatures, no Python fallback and startup readiness.",
+        "Run/release evidence is immutable; scheduled, expired, retired or stale releases cannot feed candidates; imports remain pending manual review.",
+        "Compare scoring context and factor snapshots for drift, allowing end date/revision changes; changed definitions, weights, universe or normalization are not comparable.",
+        "FACTOR_REAL_DATA=1 browser acceptance writes real research artifacts and candidates; keep it separate from offline fixtures and do not run it as an ordinary unit gate.",
+        "Separate per-signal cross-sectional IC from rolling IC statistics; use matured-label dates and keep holdout samples independent.",
+        "Characteristic spreads read checksum-verified frozen inputs, enter at the next trading close, and retain missing held-leg gaps instead of future-based reselection or survivor reweighting.",
+        "Custom FF3 2x3 construction requires explicit June/reference breakpoints, prior-year book equity announced before formation, December market cap, lagged daily market weights and complete daily RF; empty groups fail closed.",
+        "Generic total-return regressions have no risk-adjusted alpha claim. Check CSV status and content type before downloading; do not save JSON errors as data.",
+        "Fixed in-sample exposures are retrospective. Rolling windows preserve trading-day positions, exclude current/future returns and unannounced NAV, and invalidate failed refits rather than silently carrying stale successful coefficients.",
+        "Factor contributions reuse the same dated exposures; excess-return models restore RF for total-return reconciliation. Intercept and residual are separate components, not manager-skill claims.",
+        "Link interval contributions using beginning-of-day portfolio wealth; do not sum daily contributions or independently compound factor legs. A missing day invalidates full-interval attribution, and monthly summaries restart wealth independently.",
+        "Reconciliation is an accounting identity, not model validation: inspect held-out R2, residuals and coverage. Legacy artifacts without daily contribution arrays must not acquire fabricated historical results in the UI."
+      ],
+      "safe_observation_methods": [
+        "python3 -m pytest backend/tests/test_factor_research_numba.py backend/tests/test_factor_research_service.py backend/tests/test_product_pools.py -q",
+        "npm run test --prefix frontend -- --run FactorResearchCenter.test.tsx App.test.tsx ProductDetail.test.tsx",
+        "npm run test:e2e --prefix frontend -- factor-research.spec.ts"
+      ]
+    },
+    {
       "id": "P01",
       "title": "routing_facts_need_runtime_grounding_before_claims",
       "severity": "medium",
@@ -276,7 +343,7 @@
       "symptoms": [
         "A parser or operator change admits attribute access, subscripting, keywords, imports, or other non-whitelisted AST nodes.",
         "Generated operator metadata diverges from callable arity or input/output types.",
-        "A public indicator returns an array or tuple instead of a finite scalar, or bypasses node/depth limits."
+        "A legacy scalar root or a named scalar-bundle leaf returns an unchecked array/tuple instead of a finite scalar, or bypasses node/depth limits; a bundle is silently treated as its first leaf."
       ],
       "trigger_actions": [
         "edit cal_indicators runtime",
@@ -303,7 +370,7 @@
       ],
       "check_before_edit": [
         "Keep runtime definitions in memory and treat generated DSL JSON as optional metadata only.",
-        "Run malicious/invalid AST, operator arity/type, DAG limit, and finite scalar-output contract tests.",
+        "Run malicious/invalid AST, operator arity/type, DAG budget, finite scalar-leaf and shared-node failure-isolation tests. Preserve legacy single-root behavior and keep named output identities explicit.",
         "Keep NetworkX optional and do not make execution topology depend on DOT export support."
       ],
       "safe_observation_methods": [
@@ -572,6 +639,10 @@
       "related_paths": [
         "T01_get_data.py",
         "backend/services/refresh_runtime.py",
+        "backend/data_sources/etl_executor.py",
+        "backend/data_sources/etl_runner.py",
+        "backend/data_sources/task_receipt.py",
+        "backend/data_sources/fund_events.py",
         "backend/services/data_refresh.py",
         "backend/services/data_routes.py",
         "backend/market_data.py",
@@ -600,17 +671,23 @@
       "check_before_edit": [
         "Keep production refresh disabled unless the deployment protects the endpoint.",
         "Keep CLI, Web, and local snapshot rebuild on the same non-blocking filesystem lock; preserve inherited child ownership and persisted heartbeat/state.",
+        "ETL API restart reconnects the detached executor by run/attempt/nonce and OS process birth. Close the launcher FD without LOCK_UN; a shared open-file-description unlock would also unlock the live child. Missing heartbeats or old progress sidecars never prove success, permit duplicate work, or justify rewriting the frozen execution fingerprint.",
+        "Cross-date ETL collection is a non-blocking recovery warning, separate from execution/lock/artifact blockers. Preserve attempt collection windows and migration origins; use batch receipts when present, label old execution windows as estimates, and never substitute collection time for available_at or certify PIT from same-day collection. Local-only resume must not imply another supplier download.",
+        "Current fund contract inception does not bound predecessor history: local 000264/000595 holdings predate their 2013/2014 contracts. Observed fund_portfolio start/end filter ann_date (000011.OF, 20150826-20210301, observed 2026-09-08), despite doc 121 saying report period. Partition by fund/announcement range and validate every announcement without silently filtering rows; preserve reports older than the range and both split halves. events_v4 freezes range_field=ann_date and isolates v3 receipts. Never discard history solely by found_date/type/liquidation. Checkpoint each leaf, confirm empties, cancel quota waits, and acknowledge caps only after replacement shards validate. Old empty markers are not proof; old nonempty day shards need a verified migration receipt.",
+        "Do not wrap exhausted typed transport errors into RuntimeError: the worker intentionally hides arbitrary exception text. Preserve safe source error codes and bounded attempt context, never raw credentials/URLs; disk, programming and contract errors are not retryable network failures. Cross-version holdings recovery must verify current events_v4 contract, every nonempty shard checksum/page/row/identity/PIT field and two-confirmation empty receipts before cloning. Keep source receipts and collection times immutable, revalidate copied evidence on resume, and never treat SPLIT as complete coverage or import v3 under v4.",
+        "A user-approved interface request-rate change still creates a new revision. Only the explicit migration accept-rate-change option may compare parsed default-equivalent configurations while excluding requests_per_minute and min_interval_seconds for the named interface; all other source/data semantics stay exact. Locate old shards by the old configuration hash and clone verified evidence under the new hash, recording both revisions/rates. Normal resume never ignores configuration differences. Local shared quotas do not cover other machines using the same account.",
         "Stream a bounded, redacted log tail instead of capture_output, retain checkpoints after interruption, and expose persisted modules/scopes as a safe one-click retry contract when the supervising API process is lost.",
         "Long local Parquet merges must emit flushed progress often enough to refresh the supervisor's activity timer; do not treat a silent CPU-bound merge as idle.",
         "Write full refreshes to an isolated version, build the local metrics snapshot, validate it, and atomically switch the manifest; keep the old manifest on any failure.",
       "Treat analytics rebuild or promotion failure as a warning after successful fetching so operators can rebuild locally without another Tushare call.",
       "Refetch the configured trading-day overlap and let incoming rows replace matching keys while preserving atomic sorted output.",
       "Normalize date values before deduplication, then serialize them back to the existing Parquet Arrow date-column type before conversion and atomic replacement.",
-      "Make every worker share one thread-safe RateLimiter and retry policy; keep pagination sequential within each date and perform checkpoint or final Parquet writes only after worker results return to the coordinator.",
+      "Make every worker share the source/API quota and retry policy; keep pagination sequential within each date. Workers may atomically write their own disjoint request checkpoints, never the shared final output. Only the coordinator publishes the fully validated final Parquet.",
       "Copy untouched instrument groups in Arrow, preserve the original Parquet when the merged content is identical, and reuse a non-stale analytics snapshot only when every analytics source fingerprint is unchanged."
       ],
       "safe_observation_methods": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_executor.py -q",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_market_data.py backend/tests/test_market_data_validation.py -q",
         "npm run test --prefix frontend -- --run src/components/dashboard/useDataRefresh.test.tsx src/pages/Dashboard.test.tsx"
       ]
@@ -665,6 +742,7 @@
         "cross-page data consistency"
       ],
       "check_before_edit": [
+        "Managed first data-root relocation keeps the logical data path as a registered link. Check the local .storage identity and mount before resolving data paths; an offline disk must not fall back to the old backup or mkdir a missing mount. Relocate only with the API storage lease and download lock released, verify all copied bytes and mtime, and preserve frozen revisions/PIT fields. Copying does not release local space; backup cleanup requires a matching completed migration ID. Second cross-disk moves and Git-tracked data files are rejected rather than rewriting historical absolute references.",
         "Resolve the active version at operation time and use the legacy data root only when no valid manifest exists or a documented compatibility fallback applies.",
         "Keep snapshot directories inside the data root and require every core ETF, fund, calendar, and analytics file before activation.",
         "Bind activation to a passed validation report for the same directory and recheck each required file size and mtime before replacing the manifest.",
@@ -756,7 +834,8 @@
         "product_portfolio_context_leak",
         "typed_api_contract_drift",
         "njit_kernel_coverage_drift",
-        "python_operator_fallback"
+        "python_operator_fallback",
+        "operator_causality_baseline_drift"
       ],
       "symptoms": [
         "A typed-v2.2 change edits or reinterprets persisted typed 2.0, typed 2.1, or legacy v1 indicator definitions in place.",
@@ -766,7 +845,8 @@
         "A DSL 2.0 definition runs against a 2.1 operator registry, or a saved 2.1 definition advertises a variable/data/context protocol version that is not installed.",
         "A product formula accepts portfolio-only variables, or a portfolio formula silently uses a single-product-only variable.",
         "The public compose/infer/validate/evaluate-portfolio payload drifts from the typed service, or portfolio evaluation is detached from an immutable run snapshot.",
-        "A public or canonical operator lacks a warmed fixed-signature KernelSpec, or production evaluation silently calls a Python operator fallback."
+        "A public or canonical operator lacks a warmed fixed-signature KernelSpec, or production evaluation silently calls a Python operator fallback.",
+        "A newly added or removed operator is missing from the causality candidate pool/baseline, receives UNKNOWN, or leaves a stale baseline entry."
       ],
       "trigger_actions": [
         "edit typed_types, typed_operators, typed_dsl, or typed_service",
@@ -786,6 +866,9 @@
         "backend/custom_indicators/typed_service.py",
         "backend/custom_indicators/service.py",
         "backend/services/custom_indicator_routes.py",
+        "backend/causality/audit.py",
+        "backend/causality/baseline.json",
+        "backend/tests/test_causality.py",
         "backend/tests/test_typed_indicator_types.py",
         "backend/tests/test_typed_indicator_catalog.py",
         "backend/tests/test_typed_indicator_compiler.py",
@@ -815,11 +898,12 @@
         "Keep executable expression source separate from display_latex; render code identifiers only after escaping text and use canonical variable symbols with text-style subscripts.",
         "Pair each saved DSL version with its installed operator/variable/data/context versions; keep business indicator formulas out of the public pure-mathematics operator catalog.",
         "Validate context requirements before evaluation; portfolio formulas must run only against an immutable portfolio-run snapshot through evaluate-portfolio.",
-        "Require 97/97 canonical and 92/92 public KernelSpec coverage, successful startup warmup, python_fallback=0, and python_operator_calls=0.",
-        "Run typed type, catalog, compiler, NJIT kernel, runtime, and product-service tests together."
+        "Require the current canonical operator set to equal the fixed-signature KernelSpec set (currently 117/117), keep the current public catalog at 107 user-selectable operators, require successful startup warmup, python_fallback=0, and python_operator_calls=0. Do not hard-code older registry counts in future checks.",
+        "When operators are added or retired, give state/date intermediates valid causality probe candidates and require zero missing/changed/stale baseline entries; do not accept UNKNOWN as causal.",
+        "Run typed type, catalog, compiler, NJIT kernel, runtime, causality, and product-service tests together."
       ],
       "safe_observation_methods": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
         "rg -n \"ValueType|semantic_dimension|price_basis|is_mask|operator_registry_version|variable_registry_version|context_requirements\" backend/cal_indicators backend/custom_indicators backend/tests"
       ]
     },
@@ -955,10 +1039,13 @@
       "Resolve variable availability for every selected product, period, and as-of date; fail closed in both the catalog and operator parameter drawer when all relevant targets fail.",
       "Treat applicable_product_kinds as a catalog hint only; compile required_variables and report source, field, observation, coverage, or common-window blockers per product before calculation.",
       "Resolve inserted indicators by indicator_id plus revision on the server, require matching context and DSL/registry/data/schema versions, and expand to an independent scalar expression rather than a mutable runtime reference.",
+      "Runtime-constant series parameters require explicit parameter_contract_version 1.0 and author-opened positions. Preserve older frozen-default contracts; merge and validate defaults plus overrides per instance, recompute lookback and output ranges, include effective values in cache/export provenance, and reuse the prewarmed NJIT signature. Canvas parameter nodes must roundtrip without becoming data variables or literals.",
       "When lifting a scalar indicator into a rolling series, lock the source revision and definition hash, expand supported reductions at definition time, keep the window as a formula constant, and fail closed for unsupported window-level context or reductions.",
       "Keep the headline formula semantic and compact: use symbols such as mu, sigma, s, windowed min/max, smoothing S, or drawdown D; keep min_periods, NaN branches and implementation recurrences in the detailed DAG explanation.",
         "Respect ann_date <= as_of for reported NAV fields and surface partial coverage instead of silently filling or claiming full availability.",
-        "Require revision for every mutable update/delete and run plans against locked indicator revisions.",
+        "Require revision for every mutable update/delete and run plans against independent indicator IDs and locked revisions, never removed scalar child-result references. When save/readback changes draft source or metadata, invalidate old inline compile tokens before preview/export; equivalent LaTeX is not the same exact token payload.",
+        "Merge scalar computation nodes only under identical bindings, operator versions and input/window contracts. Preparation locks revisions before evaluation; formal evaluation must not compile a missing plan or rerun independent formulas as a fallback.",
+        "Snapshot scalars and dates use independent locked definitions. Time-series snapshots require channel_id plus last_finite and use the full requested window before display truncation; preserve the selected value date, channel format and missing status. Never use warmup values or the last 5000 chart points as the snapshot calculation source.",
         "Exclude products missing any selected metric from ranking instead of treating missing values as zero."
       ],
       "safe_observation_methods": [
@@ -1025,7 +1112,7 @@
         "Keep value_scale, display_format, precision, unit, notation, direction, version, and applicability explicit; never infer them from display names.",
         "Render null as an explicit unavailable state with warnings and never coerce it to zero or include it in ranking.",
         "Filter selectors by calculation context, keep field-dependent indicators visible, and use per-product input requirements to explain full or partial runtime availability while preserving hidden compatibility definitions for historical locked runs.",
-        "Keep indicator-display:v1 preferences limited to valid indicator IDs and runtime period."
+        "Keep browser display preferences limited to valid indicator/output selections and runtime periods; never persist raw results. Named scalar leaves retain their locked units, neutral direction and individual windows."
       ],
       "safe_observation_methods": [
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_routes.py tests/test_custom_indicator_service.py tests/test_portfolio_research.py -q'",

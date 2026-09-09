@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from custom_indicators.errors import IndicatorDomainError
+from backend.custom_indicators.errors import IndicatorDomainError as FactorDomainError
 from product_pools.errors import ProductPoolError
 from product_pools.repository import ProductPoolRepository
 from product_pools.service import ProductPoolService
@@ -22,9 +23,15 @@ class IndicatorEvaluationGateway:
     """Adapter that keeps the product-pool domain independent of indicator internals."""
 
     def get_plan(self, plan_id: str) -> dict[str, Any]:
+        if plan_id.startswith("factor-release-"):
+            from services.factor_research_routes import factor_service
+            return factor_service.evaluation_plan(plan_id)
         return indicator_service.get_plan(plan_id)
 
     def run_plan(self, plan_id: str, as_of: str | None = None) -> dict[str, Any]:
+        if plan_id.startswith("factor-release-"):
+            from services.factor_research_routes import factor_service
+            return factor_service.evaluation_run(plan_id, as_of)
         return indicator_service.run_plan(plan_id, as_of)
 
     def get_run_page(
@@ -34,6 +41,9 @@ class IndicatorEvaluationGateway:
         page: int,
         page_size: int,
     ) -> dict[str, Any]:
+        if result_id.startswith("factor-run-"):
+            from services.factor_research_routes import factor_service
+            return factor_service.evaluation_page(result_id, page, page_size)
         return indicator_service.get_plan_run_result(
             result_id,
             page=page,
@@ -62,7 +72,7 @@ def _call(function, *args, **kwargs):
         if exc.field:
             detail["field"] = exc.field
         raise HTTPException(status_code=exc.status_code, detail=detail) from exc
-    except IndicatorDomainError as exc:
+    except (IndicatorDomainError, FactorDomainError) as exc:
         # Evaluation is an upstream domain dependency of product-pool attach.
         # Preserve its stable business error instead of leaking an ASGI 500.
         raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc

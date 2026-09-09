@@ -6,6 +6,39 @@ from .models import CenterError
 from .store import SourceStore
 
 
+def tushare_all_data_workflow(store: SourceStore, source_id: str = 'tushare') -> EtlDefinition:
+    from .task_catalog import task_specs
+    source = store.get('source', source_id)
+    if source['config']['transport'] != 'tushare':
+        raise CenterError('ETL_TEMPLATE_SOURCE', '所选来源没有此采集适配器。')
+    steps = []
+    previous = None
+    for spec in task_specs().values():
+        identifier = 'dataset_' + (spec['action'] or 'analytics_snapshot')
+        bindings = {p['name']: p['name'] for p in spec['parameters']}
+        steps.append(EtlStep(id=identifier, name=spec['name'], kind='task', task_id=spec['id'],
+                             source_id=source_id if spec['transport'] else None,
+                             inputs=[previous] if previous else [], parameter_bindings=bindings,
+                             mode='inherit'))
+        previous = identifier
+    return EtlDefinition(name=source['config']['name'] + ' 全数据同步',
+        description='覆盖项目已接入的全部数据集：基础信息、全部 ETF、公募基金、指数及宏观数据，最后计算私有指标快照。不是供应商全站所有 API。无需单产品代码；可自由增删任务、重排依赖及修改快照位置。标准映射候选需单独核验，不自动发布。',
+        max_runtime_seconds=86400, steps=steps, parameters=[
+            EtlParameter(id='start_date', label='历史开始日期', data_type='date', date_format='compact', default='2010-01-01'),
+            EtlParameter(id='end_date', label='本次截止日期', data_type='date', date_format='compact', description='选择已完成披露的日期。全量和增量共用此流程。'),
+        ])
+
+
+def template_catalog(store: SourceStore) -> list[dict]:
+    result = []
+    for source in store.list('source'):
+        if source['config']['transport'] == 'tushare':
+            definition = tushare_all_data_workflow(store, source['config']['id'])
+            result.append({'id': source['config']['id'] + '.all-data', 'name': definition.name,
+                           'description': definition.description, 'definition': definition.model_dump(mode='json')})
+    return result
+
+
 def tushare_fund_workflow(store: SourceStore) -> EtlDefinition:
     """Use saved interfaces; products and dates are supplied at each run."""
     source = store.get("source", "tushare")

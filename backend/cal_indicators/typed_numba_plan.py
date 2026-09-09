@@ -23,6 +23,7 @@ from numba.core.registry import CPUDispatcher
 
 from cal_indicators import typed_numba_kernels as kernels
 from compute_policy import NJIT_BACKEND, validate_execution_audit
+from .shared_batch_graph import SHARED_GRAPH_VERSION
 
 if TYPE_CHECKING:
     from cal_indicators.typed_dsl import (
@@ -126,6 +127,7 @@ class CompiledNumbaSeriesPlan:
 _PLAN_CACHE: dict[str, CompiledNumbaPlan] = {}
 _PLAN_CACHE_LOCK = threading.RLock()
 _BATCH_PLAN_CACHE: dict[str, "CompiledNumbaBatchPlan"] = {}
+_BATCH_PLAN_INPUTS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
 _SERIES_PLAN_CACHE: dict[str, CompiledNumbaSeriesPlan] = {}
 
 
@@ -187,6 +189,14 @@ def _operator_call(
 ) -> str:
     operator_id = str(node.operator_id)
     args = [f"{node_prefix}{input_node.node_id}" for input_node in input_nodes]
+    from .drawdown_interval import INTERVAL_KERNELS
+    from .primitive_access import ACCESS_KERNELS
+    from .regression_state import FIT_PROJECTION_KERNELS, linear_fit_pair_kernel, linear_fit_time_kernel
+    state_kernels = {**INTERVAL_KERNELS, **ACCESS_KERNELS, **FIT_PROJECTION_KERNELS}
+    if operator_id in state_kernels:
+        return _call(state_kernels[operator_id], args, globals_map)
+    if operator_id == "linear_fit":
+        return _call(linear_fit_time_kernel if len(args) == 1 else linear_fit_pair_kernel, args, globals_map)
     ranks = tuple(_rank(input_node) for input_node in input_nodes)
     output_rank = _rank(node)
 
@@ -272,10 +282,6 @@ def _operator_call(
         return _call(kernels.recursive_smooth_1d, args, globals_map)
     if operator_id == "divide_or_default":
         return _call(kernels.divide_or_default_1d, args, globals_map)
-    if operator_id == "total_return":
-        return _call(kernels.total_return_1d, args, globals_map)
-    if operator_id == "annualized_return":
-        return _call(kernels.annualized_return_1d, args, globals_map)
     if operator_id.endswith("_time") or operator_id.endswith("_asset"):
         suffix = operator_id.rsplit("_", 1)[0]
         opcode = kernels.AXIS_REDUCTION_OPCODES[suffix]
@@ -292,9 +298,6 @@ def _operator_call(
         return _call(dispatcher, args, globals_map)
     if operator_id == "max_consecutive_true":
         return _call(kernels.max_consecutive_true_1d, args, globals_map)
-    if operator_id in kernels.REGRESSION_OPCODES:
-        dispatcher = kernels.regression_1d if len(args) == 1 else kernels.regression_2series
-        return _call(dispatcher, [str(kernels.REGRESSION_OPCODES[operator_id]), *args], globals_map)
     if operator_id == "transpose":
         return _call(kernels.transpose_2d, args, globals_map)
     if operator_id == "dot":
@@ -303,7 +306,7 @@ def _operator_call(
         return _call(kernels.outer_1d, args, globals_map)
     if operator_id == "matmul":
         return _call(kernels.matmul_2d, args, globals_map)
-    if operator_id in {"matvec", "portfolio_returns"}:
+    if operator_id == "matvec":
         return _call(kernels.matvec_2d, args, globals_map)
     if operator_id == "diag":
         return _call(kernels.diag_1d if ranks[0] == 1 else kernels.diag_2d, args, globals_map)
@@ -315,10 +318,6 @@ def _operator_call(
         return _call(kernels.covariance_2d if len(args) == 1 else kernels.covariance_1d, args, globals_map)
     if operator_id == "correlation":
         return _call(kernels.correlation_2d if len(args) == 1 else kernels.correlation_1d, args, globals_map)
-    if operator_id == "quadratic_form":
-        return _call(kernels.quadratic_form_kernel, args, globals_map)
-    if operator_id == "active_returns":
-        return _call(kernels.binary_1d, [str(kernels.BASIC_OPCODES["subtract"]), *args], globals_map)
     raise ValueError(f"unknown typed opcode: {operator_id}")
 
 
@@ -345,7 +344,8 @@ def _workspace_bytes(plan: "TypedExpressionPlan") -> int:
 
 
 def _plan_id(plan: "TypedExpressionPlan") -> str:
-    payload = "|".join(
+    from .operator_lowering import LOWERING_VERSION
+    payload = LOWERING_VERSION + "|" + "|".join(
         (
             plan.expression_hash,
             plan.dsl_version,
@@ -433,7 +433,8 @@ def compile_numba_plan(plan: "TypedExpressionPlan") -> CompiledNumbaPlan:
 
 
 def _series_plan_id(plan: "TypedSeriesBundlePlan") -> str:
-    payload = "|".join(
+    from .operator_lowering import LOWERING_VERSION
+    payload = LOWERING_VERSION + "|" + "|".join(
         (
             plan.expression_hash,
             plan.dsl_version,
@@ -589,6 +590,7 @@ class CompiledNumbaBatchPlan:
     source_serial: str
     source_parallel: str
     compile_ms: float
+    sharing: dict[str, Any]
 
     @property
     def compiled_signatures(self) -> dict[str, list[str]]:
@@ -616,6 +618,7 @@ class CompiledNumbaBatchPlan:
             "kernel_version": kernels.NUMERIC_KERNEL_VERSION,
             "engine_version": kernels.ENGINE_VERSION,
             "metric_count": self.metric_count,
+            **self.sharing,
             "compiled_signatures": signatures,
             "kernel_signatures": signatures,
             "execution_backend": NJIT_BACKEND,
@@ -636,9 +639,37 @@ class CompiledNumbaBatchPlan:
         statuses: np.ndarray,
         *,
         parallel: bool,
+        enabled: np.ndarray | None = None,
     ) -> None:
+        selected = np.ones(self.metric_count, dtype=np.uint8) if enabled is None else np.ascontiguousarray(enabled, dtype=np.uint8)
+        if selected.shape != (self.metric_count,):
+            raise ValueError("Selected roots do not match the prepared execution plan")
         dispatcher = self.parallel_dispatcher if parallel else self.serial_dispatcher
-        dispatcher(values, starts, ends, elapsed_days, output, statuses)
+        dispatcher(values, starts, ends, elapsed_days, output, statuses, selected)
+
+
+@dataclass(frozen=True)
+class SelectedNumbaBatchPlan:
+    """A root selection over a prewarmed plan; no compilation or numeric fallback."""
+    prepared: CompiledNumbaBatchPlan
+    indices: tuple[int, ...]
+
+    @property
+    def plan_id(self):
+        return self.prepared.plan_id
+
+    def metadata(self):
+        return {**self.prepared.metadata(), "selected_roots": list(self.indices), "selected_root_count": len(self.indices)}
+
+    def compute(self, values, starts, ends, elapsed_days, output, statuses, *, parallel):
+        selected = np.zeros(self.prepared.metric_count, dtype=np.uint8)
+        selected[np.asarray(self.indices, dtype=np.int64)] = 1
+        full_values = np.empty((starts.size, self.prepared.metric_count), dtype=np.float64)
+        full_status = np.empty(full_values.shape, dtype=np.int16)
+        self.prepared.compute(values, starts, ends, elapsed_days, full_values, full_status,
+                              parallel=parallel, enabled=selected)
+        np.take(full_values, self.indices, axis=1, out=output)
+        np.take(full_status, self.indices, axis=1, out=statuses)
 
 
 @numba.njit(
@@ -697,96 +728,11 @@ def _batch_source(
     *,
     parallel: bool,
 ) -> tuple[str, dict[str, Any]]:
-    globals_map: dict[str, Any] = {
-        "loop": numba.prange if parallel else range,
-        "isfinite": math.isfinite,
-    }
-    lines = [
-        "def generated_batch(values, starts, ends, elapsed_days, output, statuses):",
-        "    for row in loop(starts.size):",
-        "        start = starts[row]",
-        "        end = ends[row]",
-        "        if start < 0 or end - start < 2:",
-        "            for metric in range(output.shape[1]):",
-        "                output[row, metric] = np.nan",
-        f"                statuses[row, metric] = {kernels.STATUS_INSUFFICIENT_SAMPLE}",
-        "            continue",
-    ]
-    globals_map["np"] = np
-    needs_returns = any("returns" in plan.context_requirements for plan in plans)
-    needs_log_returns = any("log_returns" in plan.context_requirements for plan in plans)
-    nav_index = column_index.get("adjusted_nav", 0)
-    if needs_returns or needs_log_returns:
-        lines.extend(
-            [
-                f"        nav_view = values[{nav_index}, start:end]",
-                "        returns_view = np.empty(nav_view.size - 1, dtype=np.float64)",
-                "        for observation in range(returns_view.size):",
-                "            returns_view[observation] = nav_view[observation + 1] / nav_view[observation] - 1.0",
-            ]
-        )
-    if needs_log_returns:
-        lines.extend(
-            [
-                "        log_returns_view = np.empty(nav_view.size - 1, dtype=np.float64)",
-                "        for observation in range(log_returns_view.size):",
-                "            log_returns_view[observation] = math_log(nav_view[observation + 1] / nav_view[observation])",
-            ]
-        )
-        globals_map["math_log"] = math.log
-
-    for metric_index, (plan, definition) in enumerate(zip(plans, definitions)):
-        prefix = f"m{metric_index}n"
-        nodes_by_id = {node.node_id: node for node in plan.nodes}
-        node_indent = "        " if parallel else "            "
-        if not parallel:
-            lines.append("        try:")
-        for node in plan.nodes:
-            if node.kind == "constant":
-                expression = repr(float(node.label))
-            elif node.kind == "variable":
-                expression = _batch_variable_expression(
-                    node.label,
-                    column_index=column_index,
-                    definition=definition,
-                )
-            else:
-                input_nodes = tuple(nodes_by_id[input_id] for input_id in node.inputs)
-                expression = _operator_call(
-                    node,
-                    input_nodes,
-                    globals_map,
-                    node_prefix=prefix,
-                )
-            lines.append(f"{node_indent}{prefix}{node.node_id} = {expression}")
-        if parallel:
-            lines.extend(
-                [
-                    f"        metric_value = {prefix}{plan.root_id}",
-                    "        if isfinite(metric_value):",
-                    f"            output[row, {metric_index}] = metric_value",
-                    f"            statuses[row, {metric_index}] = {kernels.STATUS_OK}",
-                    "        else:",
-                    f"            output[row, {metric_index}] = np.nan",
-                    f"            statuses[row, {metric_index}] = {kernels.STATUS_NON_FINITE_RESULT}",
-                ]
-            )
-        else:
-            lines.extend(
-                [
-                    f"            metric_value = {prefix}{plan.root_id}",
-                    "            if isfinite(metric_value):",
-                    f"                output[row, {metric_index}] = metric_value",
-                    f"                statuses[row, {metric_index}] = {kernels.STATUS_OK}",
-                    "            else:",
-                    f"                output[row, {metric_index}] = np.nan",
-                    f"                statuses[row, {metric_index}] = {kernels.STATUS_NON_FINITE_RESULT}",
-                    "        except Exception:",
-                    f"            output[row, {metric_index}] = np.nan",
-                    f"            statuses[row, {metric_index}] = {kernels.STATUS_NON_FINITE_RESULT}",
-                ]
-            )
-    return "\n".join(lines) + "\n", globals_map
+    from .shared_batch_graph import build_batch_source
+    return build_batch_source(
+        plans, definitions, column_index, parallel=parallel,
+        variable_expression=_batch_variable_expression, operator_call=_operator_call,
+    )
 
 
 def _batch_plan_id(
@@ -797,6 +743,7 @@ def _batch_plan_id(
     if not plans or len(plans) != len(definitions):
         raise ValueError("batch plan requires matching plans and definitions")
     key_payload = {
+        "sharing_version": SHARED_GRAPH_VERSION,
         "plans": [_plan_id(plan) for plan in plans],
         "risk_free": [definition.get("annual_risk_free_rate_percent", 0.0) for definition in definitions],
         "columns": list(physical_columns),
@@ -811,12 +758,20 @@ def get_cached_numba_batch_plan(
     plans: tuple["TypedExpressionPlan", ...],
     definitions: tuple[dict[str, Any], ...],
     physical_columns: tuple[str, ...],
-) -> CompiledNumbaBatchPlan | None:
-    """Return only an already-warmed batch plan; never compile on request."""
-
+) -> CompiledNumbaBatchPlan | SelectedNumbaBatchPlan | None:
+    """Find a prepared exact plan or a pruned superset, never singleton fallbacks."""
     plan_id = _batch_plan_id(plans, definitions, physical_columns)
+    keys = tuple(_batch_plan_id((plan,), (definition,), physical_columns) for plan, definition in zip(plans, definitions))
     with _PLAN_CACHE_LOCK:
-        return _BATCH_PLAN_CACHE.get(plan_id)
+        exact = _BATCH_PLAN_CACHE.get(plan_id)
+        if exact is not None:
+            return exact
+        candidates = [(len(metrics), key, metrics) for key, (columns, metrics) in _BATCH_PLAN_INPUTS.items()
+                      if columns == physical_columns and set(keys).issubset(metrics)]
+        if not candidates:
+            return None
+        _, key, metrics = min(candidates)
+        return SelectedNumbaBatchPlan(_BATCH_PLAN_CACHE[key], tuple(metrics.index(item) for item in keys))
 
 
 def compile_numba_batch_plan(
@@ -833,13 +788,19 @@ def compile_numba_batch_plan(
     column_index = {name: index for index, name in enumerate(physical_columns)}
     dispatchers: list[CPUDispatcher] = []
     sources: list[str] = []
+    row_source, row_namespace = _batch_source(plans, definitions, column_index, parallel=False)
+    exec(compile(row_source, f"<typed-numba-row:{plan_id}>", "exec"), row_namespace)
+    row_dispatcher = numba.njit(cache=False, nogil=True)(row_namespace["generated_row"])
+    row_dispatcher.compile((types.float64[:, ::1], types.int64, types.int64, types.float64,
+                            types.float64[::1], types.int16[::1], types.uint8[::1]))
+    row_dispatcher.disable_compile()
     for parallel in (False, True):
-        source, namespace = _batch_source(
-            plans,
-            definitions,
-            column_index,
-            parallel=parallel,
+        source = (
+            "def generated_batch(values, starts, ends, elapsed_days, output, statuses, enabled):\n"
+            "    for row in loop(starts.size):\n"
+            "        row_kernel(values, starts[row], ends[row], elapsed_days[row], output[row], statuses[row], enabled)\n"
         )
+        namespace = {"loop": numba.prange if parallel else range, "row_kernel": row_dispatcher}
         exec(compile(source, f"<typed-numba-batch:{plan_id}>", "exec"), namespace)
         dispatcher = numba.njit(cache=False, nogil=True, parallel=parallel)(
             namespace["generated_batch"]
@@ -851,11 +812,14 @@ def compile_numba_batch_plan(
             types.float64[::1],
             types.float64[:, ::1],
             types.int16[:, ::1],
+            types.uint8[::1],
         )
         dispatcher.compile(signature)
         dispatcher.disable_compile()
         dispatchers.append(dispatcher)
-        sources.append(source)
+        sources.append(row_source + "\n" + source)
+    from .shared_batch_graph import merge_metric_plans
+    sharing = merge_metric_plans(plans, definitions, _batch_variable_expression, column_index).audit()
     compiled = CompiledNumbaBatchPlan(
         plan_id=plan_id,
         serial_dispatcher=dispatchers[0],
@@ -864,9 +828,13 @@ def compile_numba_batch_plan(
         source_serial=sources[0],
         source_parallel=sources[1],
         compile_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        sharing=sharing,
     )
     with _PLAN_CACHE_LOCK:
         _BATCH_PLAN_CACHE[plan_id] = compiled
+        _BATCH_PLAN_INPUTS[plan_id] = (physical_columns, tuple(
+            _batch_plan_id((plan,), (definition,), physical_columns) for plan, definition in zip(plans, definitions)
+        ))
     return compiled
 
 

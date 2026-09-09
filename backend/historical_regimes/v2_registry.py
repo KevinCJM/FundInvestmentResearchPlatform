@@ -6,9 +6,11 @@ import copy
 from typing import Any
 
 from compute_policy import NJIT_BACKEND, THIRD_PARTY_BACKEND
+from computation_graph.series_operators import register_series_operators
+from research_series.product_sources import PRODUCT_SOURCES
 
 
-REGISTRY_VERSION = "regime-graph-nodes/2.2.0"
+REGISTRY_VERSION = "regime-graph-nodes/2.11.0"
 
 SERIES = "series<float64>"
 BOOL_SERIES = "series<bool>"
@@ -23,6 +25,8 @@ REASON_CODES = "reason_codes<int64>"
 
 
 CATEGORY_LABELS = {
+    "indicator_calculation": "指标计算",
+    "indicator": "指标通用算子",
     "source": "数据源",
     "alignment": "数据对齐",
     "feature": "特征构建",
@@ -172,6 +176,8 @@ ENUM_LABELS = {
     "monthly": "月频",
     "quarterly": "季频",
     "yearly": "年频",
+    "annual": "年频",
+    "irregular": "不定期",
     "first": "区间首值",
     "last": "区间末值",
     "mean": "区间平均值",
@@ -262,7 +268,7 @@ def _numeric_node(
         "minimum_samples": 2 if category not in {"model", "rolling"} else 5,
         "cost_estimate": {"class": "linear", "expression": "O(T)", "unit": "observations"},
         "kernel_id": kernel_id,
-        "kernel_version": "typed-njit-v2.1" if node_id == "feature.formula" else "regime-graph-kernels/2.2.0",
+        "kernel_version": "typed-njit-v2.1" if node_id == "feature.formula" else "regime-graph-kernels/2.8.0",
         "model_version": "1" if category == "model" else None,
         "formula_language": (
             {
@@ -399,10 +405,29 @@ def _latent_model_parameter_schema() -> dict[str, Any]:
     }
 
 
+def _product_source_node(kind: str) -> dict[str, Any]:
+    spec = PRODUCT_SOURCES[kind]
+    return _source_node(f"source.{kind}", spec["label"], {
+        "type": "object", "required": ["ts_code"], "additionalProperties": False,
+        "properties": {
+            "ts_code": {"type": "string", "minLength": 1, "title": "产品代码"},
+            "source_api": ({"enum": ["fund_daily", "fund_nav"], "enum_labels": ["ETF交易行情", "ETF净值"]} if kind == "etf" else {"enum": [spec["source_api"]], "default": spec["source_api"], "enum_labels": [spec["label"]]}),
+            **({"adjustment_checksum": {"type": "string"}} if kind == "etf" else {}),
+            "field": {"enum": list(spec["fields"]), "default": spec["default_field"],
+                      "enum_labels": [label for label, _ in spec["fields"].values()], "option_source": "research_series.fields"},
+            "frequency": {"enum": ["daily"], "default": "daily"},
+            "start_date": {"type": "string", "format": "date"},
+            "end_date": {"type": "string", "format": "date"},
+            **{name: {"type": "string"} for name in ("name", "snapshot_id", "snapshot_generation", "source_file", "file_checksum")},
+        },
+    })
+
+
 NODE_REGISTRY: dict[str, dict[str, Any]] = {
+    **{f"source.{kind}": _product_source_node(kind) for kind in PRODUCT_SOURCES},
     "source.inline": _source_node(
         "source.inline",
-        "内联时序",
+        "手工输入时序",
         {
             "type": "object",
             "properties": {
@@ -418,7 +443,7 @@ NODE_REGISTRY: dict[str, dict[str, Any]] = {
     ),
     "source.upload": _source_node(
         "source.upload",
-        "不可变上传时序",
+        "上传时序",
         {
             "type": "object",
             "required": ["artifact_id", "checksum"],
@@ -462,7 +487,7 @@ NODE_REGISTRY: dict[str, dict[str, Any]] = {
     ),
     "source.indicator": _source_node(
         "source.indicator",
-        "指标中心版本",
+        "引用指标",
         {
             "type": "object",
             "required": ["indicator_id", "indicator_revision", "product_kind", "product_id", "period"],
@@ -882,6 +907,160 @@ NODE_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 
+def _trend_parameter(kind: str, default: int | float, minimum: int | float,
+                     maximum: int | float, title: str, description: str) -> dict[str, Any]:
+    return {"type": kind, "default": default, "minimum": minimum, "maximum": maximum,
+            "title": title, "description": description}
+
+
+def _trend_node(node_id: str, label: str, category: str, inputs: list[str],
+                outputs: list[dict[str, Any]], properties: dict[str, Any],
+                description: str, kernel_id: str, *, causal: bool = True) -> dict[str, Any]:
+    item = _numeric_node(node_id, label, category,
+                         [_port(name, STATE_CODES if name == "state" else SERIES) for name in inputs],
+                         outputs, {"type": "object", "properties": properties, "additionalProperties": False},
+                         causal=causal)
+    item.update(description=description, kernel_id=kernel_id)
+    if kernel_id in {"kama", "trend_features"}:
+        item["cost_estimate"] = {"class": "windowed", "expression": "O(T × window)", "unit": "observations"}
+    if kernel_id == "peak_trough":
+        item["cost_estimate"] = {"class": "windowed", "expression": "O(T × window + T × turns)", "unit": "observations"}
+    return item
+
+
+NODE_REGISTRY.update({
+    "model.peak_trough": _trend_node(
+        "model.peak_trough", "峰谷定界法（PS · 事后）", "model", ["value"],
+        [_port("state", STATE_CODES), _port("pivot", SERIES), _port("phase_start_index", INDEX_SERIES),
+         _port("phase_end_index", INDEX_SERIES), _port("phase_return", SERIES), _port("boundary_line", SERIES),
+         _port("sideways_range", SERIES), _port("sideways_efficiency", SERIES),
+         _port("sideways_start_index", INDEX_SERIES), _port("sideways_end_index", INDEX_SERIES),
+         _port("sideways_swing_count", INDEX_SERIES)],
+        {"left_window": _trend_parameter("integer", 8, 1, 5000, "左窗口", "候选峰谷与此前这些观测比较；独立控制向前寻找范围。"),
+         "right_window": _trend_parameter("integer", 8, 1, 5000, "右窗口", "候选峰谷还需与之后这些观测比较；减小可较早确认，但可能增加噪声，仍属于事后识别。"),
+         "head_window": _trend_parameter("integer", 6, 0, 5000, "首窗口", "距连续有效样本开头不足这些观测的拐点排除；仍需满足左窗口。"),
+         "tail_window": _trend_parameter("integer", 6, 0, 5000, "尾窗口", "距连续有效样本末尾不足这些观测的拐点排除；仍需满足右窗口。缩短不会强行填充未完成阶段。"),
+         "window": {**_trend_parameter("integer", 8, 1, 5000, "峰谷左右窗口", "旧方案兼容项；仅当左窗口或右窗口未指定时作为对应默认值。"), "deprecated": True},
+         "min_phase": _trend_parameter("integer", 4, 1, 10000, "最短牛熊阶段", "相邻峰谷至少相隔多少期；增大可过滤更短波段。大幅波动例外只放宽这项约束。"),
+         "min_cycle": _trend_parameter("integer", 16, 2, 20000, "最短完整周期", "峰到峰或谷到谷至少相隔多少期；增大可保留更长周期。"),
+         "endpoint_window": {**_trend_parameter("integer", 6, 0, 5000, "首尾排除窗口", "旧方案兼容项；仅当首窗口或尾窗口未指定时作为对应默认值。"), "deprecated": True},
+         "amplitude_exception": _trend_parameter("number", 0.2, 0.0, 10.0, "大幅波动例外", "例如 0.2 为阶段涨跌幅绝对值严格超过 20% 时允许短阶段；不豁免最短完整周期。"),
+         "sideways_enabled": {"type": "boolean", "default": False, "title": "启用震荡识别", "description": "合并至少两个小幅反向波段；需配置牛市、震荡、熊市三个状态。旧两态方案默认关闭。"},
+         "small_swing_threshold": _trend_parameter("number", 0.03, 0.0001, 1.0, "小波段幅度门槛", "每个候选峰谷段的涨跌幅绝对值上限，0.03 表示 3%；大波段保留趋势。"),
+         "sideways_max_range": _trend_parameter("number", 0.06, 0.0001, 1.0, "震荡最大振幅", "整段原始价格最高值 / 最低值 - 1 的上限，0.06 表示 6%；限制累计漂移和宽幅急跌反弹。"),
+         "sideways_max_efficiency": _trend_parameter("number", 0.25, 0.0, 0.99, "震荡方向效率上限", "净价格变化绝对值 / 累计逐期价格变化绝对值；越低，要求越缺少单边方向。"),
+         "sideways_min_duration": _trend_parameter("integer", 20, 2, 20000, "最短震荡长度", "以输入观测期数计；日频模板为 20，月频模板为 3。修改频率时须同时检查此参数。")},
+        "PS 思路找峰谷并筛选完整牛熊区间；可按小波段幅度、整段振幅、方向效率和持续长度合并震荡。均使用原始价格，不跨缺失，不外推未完成尾部。事后分类不产生实时交易信号；长度单位为输入观测期数。",
+        "peak_trough", causal=False),
+    "filter.super_smoother": _trend_node(
+        "filter.super_smoother", "Super Smoother 趋势滤波", "filter", ["value"], [_port("value", SERIES)],
+        {"period": _trend_parameter("integer", 126, 3, 5000, "滤波周期", "控制低通响应；不是均线天数或牛熊区间长度。连续有效样本达到该周期后输出；缺失后重新预热。")},
+        "二阶单向递推，压制短周期波动；默认中长期研究参数尚需样本外验证。", "super_smoother"),
+    "filter.kama": _trend_node(
+        "filter.kama", "KAMA 自适应趋势滤波", "filter", ["value"], [_port("value", SERIES)],
+        {"window": _trend_parameter("integer", 60, 2, 5000, "效率计算期数", "最近净位移与累计绝对位移的比较窗口；完成窗口后才输出。"),
+         "fast": _trend_parameter("integer", 2, 1, 5000, "快速响应期数", "趋势明确时的响应上限；必须小于慢速期数。"),
+         "slow": _trend_parameter("integer", 126, 2, 5000, "慢速响应期数", "方向不明确时减慢响应；不能与固定滤波周期直接等同。")},
+        "按方向效率调整增益的单向滤波；首值初始化，缺失后重新预热。", "kama"),
+    "feature.trend_metrics": _trend_node(
+        "feature.trend_metrics", "趋势偏离、斜率与方向效率", "feature", ["log_price", "trend"],
+        [_port(name, SERIES) for name in ("distance", "slope", "efficiency", "scale", "drawdown", "risk", "index_value", "filtered_index")],
+        {"volatility_window": _trend_parameter("integer", 60, 2, 5000, "波动尺度期数", "用上一期收益均方根缩放当期信号，避免急跌同时扩大自身门槛。"),
+         "slope_window": _trend_parameter("integer", 20, 1, 5000, "趋势斜率跨度", "滤波线相隔这些观测的变化，除以跨度与上一期收益尺度。"),
+         "efficiency_window": _trend_parameter("integer", 60, 2, 5000, "方向效率期数", "净位移除以累计绝对位移；0 表示无净方向，1 表示单向运动。"),
+         "scale_floor": _trend_parameter("number", 0.0001, 1e-12, 1.0, "最小收益尺度", "平价或极低波动时的分母下限，不是缺失值替代。"),
+         "shock_window": _trend_parameter("integer", 5, 1, 5000, "急跌观察期数", "原始指数短窗累计下跌观察跨度。"),
+         "drawdown_alert": _trend_parameter("number", 0.2, 0.0001, 0.99, "回撤警报幅度", "例如 0.2 为从连续有效数据运行峰值回撤 20%；只标记风险，不强制改写主状态。"),
+         "shock_alert": _trend_parameter("number", 0.08, 0.0001, 0.99, "急跌警报幅度", "例如 0.08 为短窗下跌 8%；风险标记独立于去噪。")},
+        "输入对数价格及同轴滤波线，计算无量纲趋势证据与原始价格风险；缺失返回未知。", "trend_features"),
+    "model.trend_regime": _trend_node(
+        "model.trend_regime", "滤波牛熊震荡识别", "model", ["distance", "slope", "efficiency"],
+        [_port("state", STATE_CODES), _port("candidate", STATE_CODES), _port("pending_count", SERIES), _port("phase", SERIES)],
+        {"band": _trend_parameter("number", 1.0, 1e-8, 100.0, "价格偏离门槛", "价格偏离滤波线达到多少倍历史收益尺度，才产生牛熊候选。"),
+         "trend_enter": _trend_parameter("number", 0.1, 1e-8, 100.0, "趋势进入门槛", "牛熊候选要求同方向标准化斜率达到此值；必须高于震荡斜率上限。"),
+         "flat_threshold": _trend_parameter("number", 0.05, 0.0, 100.0, "震荡斜率上限", "绝对斜率低于此值且方向效率较低，才产生震荡候选。"),
+         "efficiency_ceiling": _trend_parameter("number", 0.25, 0.0, 1.0, "震荡效率上限", "震荡必须同时满足低方向效率与平坦慢趋势。"),
+         "confirmation": _trend_parameter("integer", 3, 1, 252, "连续确认期数", "同一新候选连续出现后，从确认日切换；未命中、回到旧状态或缺失均重置计数。")},
+        "牛熊由幅度与斜率共同确认；震荡单独判断。门槛之间保留旧状态，回调/反弹不自动反转；不回填历史。阶段编码：0 上行、1 牛市回调、2 下行、3 熊市反弹、4 震荡。", "trend_regime"),
+    "post.merge_short_regimes": _trend_node(
+        "post.merge_short_regimes", "事后短反向区间合并", "postprocess", ["state", "price"], [_port("state", STATE_CODES)],
+        {"max_duration": _trend_parameter("integer", 10, 1, 5000, "可合并最长反向期数", "只检查已结束、两侧同为牛或同为熊的反向区间。"),
+         "max_move": _trend_parameter("number", 0.08, 0.0001, 0.99, "可合并幅度上限", "含前一主阶段峰谷的逆向幅度必须小于此值；保留暴跌与强反弹。"),
+         "following_confirmation": _trend_parameter("integer", 3, 1, 252, "后续主状态确认期数", "必须已有足够的后续同向观测；使用未来信息，实时模式禁用。")},
+        "仅事后研究：按原始区间从左到右单次合并短且浅的反向段，不跨未知区间，不合并未结束尾段。", "merge_short_regimes", causal=False),
+})
+PORT_LABELS.update({"log_price": "对数指数", "trend": "滤波趋势线", "distance": "标准化价格偏离",
+                    "pivot": "保留拐点（1 峰，-1 谷）", "phase_start_index": "阶段起始位置",
+                    "phase_end_index": "阶段结束位置", "phase_return": "完整阶段涨跌幅", "boundary_line": "峰谷连线",
+                    "sideways_range": "震荡整段振幅", "sideways_efficiency": "震荡方向效率",
+                    "sideways_start_index": "震荡起点", "sideways_end_index": "震荡终点", "sideways_swing_count": "合并波段数",
+                    "index_value": "识别指数点位", "filtered_index": "滤波后指数点位",
+                    "slope": "标准化趋势斜率", "efficiency": "方向效率", "scale": "历史收益尺度",
+                    "drawdown": "原始指数回撤", "risk": "风险警报（1 为触发）", "price": "原始指数价格",
+                    "candidate": "当期候选状态", "pending_count": "待确认连续期数", "phase": "行情内部阶段编码"})
+
+
+"""Regime-only node definitions; independent of the Indicator Center registry."""
+PIVOTS = "pivots<time>"
+SEGMENT_START = "segment_start<time>"
+SEGMENT_END = "segment_end<time>"
+STATISTIC_IDS = {"segment.change": 0, "segment.amplitude": 1, "segment.volatility": 2,
+                 "segment.duration": 3, "segment.efficiency": 4}
+
+
+def register_segment_nodes(registry, numeric_node, port, parameter):
+    series = "series<float64>"
+    windows = {name: parameter("integer", default, minimum, 5000, label, description)
+               for name, default, minimum, label, description in [
+                   ("left_window", 8, 1, "左窗口", "与此前这些观测比较；平台取最早极值。"),
+                   ("right_window", 8, 1, "右窗口", "与之后这些观测比较；因此仅支持事后研究。"),
+                   ("head_window", 6, 0, "首窗口", "连续有效样本开头排除的观测数。"),
+                   ("tail_window", 6, 0, "尾窗口", "连续有效样本末尾排除的观测数，不外推尾段。"),
+               ]}
+
+    def add(identifier, label, inputs, outputs, params, kernel, description, causal=False):
+        node = numeric_node(identifier, label, "model" if identifier.startswith("model.") else "feature",
+                            inputs, outputs, {"type": "object", "properties": params, "additionalProperties": False},
+                            causal=causal)
+        node.update(kernel_id=kernel, description=description)
+        registry[identifier] = node
+        return node
+
+    detect = add("pivot.local_extrema", "峰谷定位", [port("value", series)],
+                 [port("pivot", PIVOTS), port("pivot_price", series)], windows, "local_extrema",
+                 "只定位交替峰谷，不计算区间涨跌幅或市场状态。四窗口以输入观测数计；缺失断开，尾部不外推。")
+    detect["knowledge_scope"] = "full_input"
+    detect["cost_estimate"] = {"class": "rolling", "expression": "O(T × (left + right))", "unit": "observations"}
+    add("segment.between_pivots", "相邻峰谷分段", [port("pivot", PIVOTS)],
+        [port("start", SEGMENT_START), port("end", SEGMENT_END)], {}, "between_pivots",
+        "只输出完整相邻峰谷的边界；起点包含、终点不含。每段边界按原日期轴展开，未知与尾段不填充。")
+    descriptions = [
+        ("segment.change", "区间涨跌幅", "结束价格 / 起始价格 − 1；单个完整波段即可计算。"),
+        ("segment.amplitude", "区间振幅", "含首尾点的最高价格 / 最低价格 − 1，与首尾净变化分开。"),
+        ("segment.volatility", "区间收益波动率", "区间内逐期简单收益的标准差；默认样本标准差，不年化，不对价格水平求标准差。"),
+        ("segment.duration", "区间长度", "结束索引减起始索引，按输入观测间隔计。"),
+        ("segment.efficiency", "区间方向效率", "首尾价格差绝对值 / 累计逐期绝对价格变化；平价区间为 0。"),
+    ]
+    for identifier, label, description in descriptions:
+        params = {"ddof": {"type": "integer", "enum": [0, 1], "enum_labels": ["总体标准差", "样本标准差"],
+                           "default": 1, "title": "标准差口径"}} if identifier == "segment.volatility" else {}
+        add(identifier, label, [port("value", series), port("start", SEGMENT_START), port("end", SEGMENT_END)],
+            [port("value", series)], params, "interval_statistic", description)
+    add("model.range_threshold", "区间阈值分类", [port("value", series), port("upper_bound", series, required=False),
+        port("lower_bound", series, required=False)], [port("state", "state_codes<int64>")],
+        {"upper": parameter("number", .03, -100, 100, "上涨门槛", "严格高于此值为正向；连接上界输入时使用输入值。"),
+         "lower": parameter("number", -.03, -100, 100, "下跌门槛", "严格低于此值为负向；连接下界输入时使用输入值。")},
+        "range_threshold", "上界之上为牛市，下界之下为熊市，两界之间（含等号）为震荡；缺失仍未分类。支持独立常量输入。", causal=True)
+
+
+register_segment_nodes(NODE_REGISTRY, _numeric_node, _port, _trend_parameter)
+register_series_operators(NODE_REGISTRY, _numeric_node, _port)
+NODE_REGISTRY["model.peak_trough"]["knowledge_scope"] = "full_input"
+PORT_TYPE_LABELS.update({PIVOTS: "峰谷事件序列", SEGMENT_START: "完整区间起点", SEGMENT_END: "完整区间终点"})
+PORT_LABELS.update({"start": "区间起点", "end": "区间终点", "pivot_price": "拐点价格",
+                    "upper_bound": "上涨门槛输入", "lower_bound": "下跌门槛输入"})
+
+
 def _decorate_parameter_schema(node: dict[str, Any]) -> None:
     properties = node.get("parameter_schema", {}).get("properties", {})
     for name, schema in properties.items():
@@ -924,6 +1103,9 @@ def _decorate_parameter_schema(node: dict[str, Any]) -> None:
 
 def _catalog_item(node: dict[str, Any]) -> dict[str, Any]:
     item = copy.deepcopy(node)
+    item.pop("_indicator_definition", None)
+    if item["id"] in {"source.inline", "source.indicator", "source.relative"}:
+        item["authoring_hidden"] = True
     category = str(item.get("category") or "")
     item["category_label"] = CATEGORY_LABELS.get(category, "计算节点")
     item.setdefault(
@@ -934,12 +1116,26 @@ def _catalog_item(node: dict[str, Any]) -> dict[str, Any]:
         for port in item.get(port_group, []):
             name = str(port.get("name") or "")
             value_type = str(port.get("type") or "")
-            port["label"] = PORT_LABELS.get(name, "数据端口")
-            port["description"] = (
+            port.setdefault("label", PORT_LABELS.get(name, {"values": "输入序列", "lhs": "左侧输入", "rhs": "右侧输入"}.get(name, name)))
+            port.setdefault("description", (
                 f"{PORT_LABELS.get(name, '该端口')}，数据结构为"
                 f"{PORT_TYPE_LABELS.get(value_type, '受类型系统约束的数据')}。"
-            )
+            ))
             port["type_label"] = PORT_TYPE_LABELS.get(value_type, "受类型系统约束的数据")
+    source_descriptions = {
+        "source.inline": "直接录入日期和数值，作为计算输入。数据随当前计算定义保存。",
+        "source.upload": "上传 CSV、Excel（.xlsx）或 JSON，或选择已上传的数据。确认列后保存为固定版本，可重复使用。",
+        "source.etf": "按名称或代码选择 ETF，读取交易价格、成交量等字段。默认收盘价（不复权）。",
+        "source.fund": "按名称或代码选择公募基金，读取单位净值、累计净值等字段。实时分析按公告日期使用数据。",
+        "source.index": "按名称或代码选择指数，再选择所需数值字段；代码与行情来源自动绑定。",
+        "source.macro": "选择宏观数据序列和数值字段；数据集、序列代码与来源自动绑定。",
+        "source.indicator": "选择一个指标版本及基金或 ETF，生成该对象的指标历史时序。指标版本和计算对象各选一次。",
+        "source.constant": "在上游序列的每个日期输出同一个数值。基准时间轴只决定日期，不改变常量值。",
+    }
+    if item.get("id") in source_descriptions:
+        item["description"] = source_descriptions[item["id"]]
+    if item.get("id") in {"source.inline", "source.upload"}:
+        item["parameter_schema"]["properties"]["frequency"]["enum"] = ["daily", "weekly", "monthly", "quarterly", "annual", "irregular"]
     _decorate_parameter_schema(item)
     return item
 
@@ -949,6 +1145,7 @@ def node_catalog() -> dict[str, Any]:
         "schema_version": "2.0",
         "registry_version": REGISTRY_VERSION,
         "port_types": [
+            PIVOTS, SEGMENT_START, SEGMENT_END,
             SERIES,
             BOOL_SERIES,
             MATRIX,

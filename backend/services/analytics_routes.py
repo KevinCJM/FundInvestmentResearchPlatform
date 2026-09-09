@@ -20,6 +20,7 @@ from fit import (
     serialize_rolling_correlation_payload,
 )
 from optimizer import calculate_efficient_frontier_exploration, returns_from_nav_matrix
+from pit.context import resolve_request_context
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -71,8 +72,9 @@ def fit_classes(req: FitRequest):
         )
         for c in req.classes
     ]
-    NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
-    consistency_rows = compute_class_consistency(DATA_DIR, classes, start)
+    _pit = resolve_request_context(DATA_DIR)
+    NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
+    consistency_rows = compute_class_consistency(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
     performance = compute_nav_performance_payload(NAV)
 
     def finite_or_none(x: float):
@@ -150,7 +152,10 @@ def rolling_corr(req: RollingRequest):
     except Exception:
         raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
     etfs = [ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in req.etfs]
-    idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName)
+    _pit = resolve_request_context(DATA_DIR)
+    idx, series_map, metrics = compute_rolling_corr(
+        DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName, as_of=_pit.as_of, run_mode=_pit.run_mode
+    )
     return RollingResponse(
         **serialize_rolling_correlation_payload(idx, series_map, metrics)
     )

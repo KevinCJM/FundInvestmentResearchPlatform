@@ -30,7 +30,9 @@ from cal_indicators.typed_operators import (
 from cal_indicators.typed_numba_plan import NumbaPlanCompileError, compile_numba_plan
 
 from .errors import ValidationError
+from .formula_source import canonical_formula_source, editable_formula_latex
 from .series_definitions import normalize_parameter_schema, parameter_variable_types
+from .series_parameters import PARAMETER_CAPABILITIES
 from .variable_registry import (
     CONTEXT_SCHEMA_VERSION,
     DATA_CONTRACT_VERSION,
@@ -120,6 +122,20 @@ VARIABLE_METADATA: dict[str, dict[str, Any]] = {
 
 
 OPERATOR_LABELS = {
+    "last_drawdown_interval": ("最后一次最大回撤区间", "选择最后一个最深谷底及其起点、恢复位置；只作为后续计算的中间区间。"),
+    "interval_start": ("区间起点位置", "提取所选谷底前最后一个历史峰值的位置。"),
+    "interval_trough": ("区间谷底位置", "提取最后一次最大回撤谷底的位置。"),
+    "interval_recovery": ("区间恢复位置", "提取所选谷底后首次恢复原峰值的位置；尚未恢复时不可用。"),
+    "value_at": ("按位置取值", "从同轴序列取一个值；输入为日期时输出日期，输入为数值时保留原量纲。"),
+    "require_positive": ("要求正数", "验证数值严格大于零，不改变输入数值；不符合时明确失败。"),
+    "require_nonnegative": ("要求非负数", "验证数值大于或等于零，不改变输入数值；不符合时明确失败。"),
+    "linear_fit": ("线性拟合", "对同一组观察值执行一次带截距OLS，后续字段提取共享这次拟合。一个序列时使用观察序号作为解释变量。"),
+    "fit_slope": ("拟合斜率", "读取同一次拟合的斜率，不重复拟合。"),
+    "fit_intercept": ("拟合截距", "读取同一次拟合的截距，不重复拟合。"),
+    "fit_residual_sum_squares": ("残差平方和", "读取同一次拟合的残差平方和SSE，供构建拟合度或残差标准误。"),
+    "fit_total_sum_squares": ("总离差平方和", "读取同一次拟合的因变量总离差平方和SST。"),
+    "fit_observation_count": ("拟合样本数", "读取同一次拟合使用的观察数，不重新筛选样本。"),
+    "days_between": ("日期间隔天数", "计算结束日期与开始日期的自然日差。"),
     "add": ("逐元素加法", "对 A 与 B 执行逐元素加法；仅标量可广播。"),
     "subtract": ("逐元素减法", "对 A 与 B 执行逐元素减法；仅标量可广播。"),
     "multiply": ("逐元素乘法", "对同轴同 shape 输入逐元素相乘；仅标量可广播。"),
@@ -722,14 +738,14 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
             else:
                 allowed_shapes = [
                     shape
-                    for shape in ("scalar", "series", "vector", "matrix")
+                    for shape in ("scalar", "series", "vector", "matrix", "record")
                     if shape in lowered
                 ]
                 if not allowed_shapes and "same(" in lowered:
                     allowed_shapes = ["scalar", "series", "vector", "matrix"]
             parameter_meta = {
                 "name": name,
-                "label": PARAMETER_LABELS.get(name, name),
+                "label": {"start_date": "开始日期", "end_date": "结束日期", "drawdowns": "回撤序列"}.get(name, PARAMETER_LABELS.get(name, name)),
                 "description": (
                     "定义级固定常量；保存后成为指标版本的一部分。"
                     if policy.get("source_policy") == "fixed_constant"
@@ -743,7 +759,21 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
                 "requires_mask": "mask" in lowered,
             }
             parameter_meta.update(policy)
+            parameter_meta["parameterizable"] = (operator_id, name) in PARAMETER_CAPABILITIES
+            if parameter_meta["parameterizable"]:
+                parameter_meta["description"] = "数值常量；可在时序指标的计算参数面板中开放为可调参数。"
             parameter_meta["default"] = default
+            if name == "fit":
+                parameter_meta["label"] = "线性拟合结果"
+                parameter_meta["intermediate_kind"] = "linear_fit"
+            elif name == "interval":
+                parameter_meta["label"] = "最大回撤区间"
+                parameter_meta["intermediate_kind"] = "drawdown_interval"
+            elif name == "position":
+                parameter_meta["label"] = "观察位置（从0开始）"
+                parameter_meta["allowed_semantic_roles"] = ["count", "numeric_constant", "dimensionless"]
+            if operator_id == "value_at" and name == "values":
+                parameter_meta["label"] = "数值或日期序列"
             result.append(parameter_meta)
         return result
 
@@ -768,7 +798,7 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
     output = " | ".join(sorted({str(item.get("output")) for item in signatures}))
     output_shapes = [
         shape
-        for shape in ("mask", "scalar", "series", "vector", "matrix")
+        for shape in ("mask", "scalar", "series", "vector", "matrix", "record")
         if shape in output
     ]
     output_shape = (
@@ -818,6 +848,7 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": operator_id,
         "id": operator_id,
+        **({"intermediate_kind": "linear_fit"} if operator_id == "linear_fit" else {"intermediate_kind": "drawdown_interval"} if operator_id == "last_drawdown_interval" else {}),
         "family": category_id,
         "version": entry.get("version"),
         "label": label,
@@ -1099,7 +1130,9 @@ def _operator_expression(
             f"未知或重复参数: {', '.join(unknown)}",
             "arguments",
         )
-    values = [arguments[name] for name in resolved_names]
+    # Canonical DSL children no longer carry the builder's outer LaTeX
+    # parentheses. Keep each operand grouped so (a-b)*c and a-(b-c) round-trip.
+    values = [rf"\left({arguments[name]}\right)" for name in resolved_names]
     if operator_id == "add":
         return rf"\left({values[0]}+{values[1]}\right)"
     if operator_id == "subtract":
@@ -1217,15 +1250,18 @@ def infer_expression(
                 "message": "对数收益率不应直接用于增长因子累乘；请确认是否应改用普通收益率。",
             }
         )
+    executable_source = canonical_formula_source(plan.python_expression)
     return {
-        "expression": expression,
-        # ``latex`` remains the executable, round-trippable surface for older
-        # clients. New UIs render ``display_latex`` instead.
+        **({"intermediate_kind": "linear_fit" if tuple(name for name, _ in plan.output_type.fields)[0] == "slope" else "drawdown_interval"} if plan.output_type.kind == "record" else {}),
+        "expression": executable_source,
+        "editable_latex": editable_formula_latex(executable_source),
+        # Compatibility input; new editors use editable_latex and previews
+        # use display_latex. Nested composition uses canonical DSL internally.
         "latex": expression,
         "display_latex": display_latex,
         "math_notation_version": MATH_NOTATION_VERSION,
         "normalized_expression": normalized_expression,
-        "python_expression": plan.python_expression,
+        "python_expression": executable_source,
         "inferred_type": output["display"],
         "shape": output["kind"],
         "semantic_warnings": warnings,

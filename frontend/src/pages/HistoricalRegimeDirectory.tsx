@@ -22,8 +22,10 @@ function definitionHref(definitionId: string, revision: number) {
   return `${workbenchPath}?${query.toString()}`
 }
 
-function templateHref(templateId: string) {
-  return `${workbenchPath}?${new URLSearchParams({ template: templateId }).toString()}`
+function templateHref(template: RegimeGraphTemplate) {
+  const query = new URLSearchParams({ template: template.id })
+  if (template.default_mode === 'retrospective') query.set('mode', 'retrospective')
+  return `${workbenchPath}?${query.toString()}`
 }
 
 function formatTime(value?: string) {
@@ -135,8 +137,8 @@ export default function HistoricalRegimeDirectory() {
   return <div className="space-y-5" data-testid="historical-regime-directory">
     <section className="overflow-hidden rounded-3xl bg-slate-950 p-5 text-white shadow-lg sm:p-7">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-        <div className="max-w-3xl"><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-300">Historical regime graph directory</p><h2 className="mt-2 text-2xl font-black sm:text-3xl">历史情景识别 · V2 算法目录</h2><p className="mt-3 text-sm leading-6 text-slate-300">从原始时序、指标、公式、滤波和模型自由组装识别图谱。目录管理精确修订、正式运行和下游应用，研究逻辑不再被固定模型表单限制。</p></div>
-        <div className="grid gap-2 sm:grid-cols-2 lg:w-[420px]"><Link to={workbenchPath} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-indigo-500 px-4 text-sm font-bold text-white">新建空白图</Link><Link to="/settings/research-data-lab" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/20 px-4 text-sm font-bold text-white">研究数据实验室</Link></div>
+        <div className="max-w-3xl"><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-300">Historical regime graph directory</p><h2 className="mt-2 text-2xl font-black sm:text-3xl">历史情景识别</h2><p className="mt-3 text-sm leading-6 text-slate-300">识别牛熊、波动或宏观状态，检查不同情景下的市场与产品表现。从模板开始，逐步调整为自己的研究规则。</p><Link to="/settings/research-data-lab" className="mt-3 inline-flex min-h-9 items-center text-xs font-semibold text-indigo-200 underline">研究数据实验室</Link></div>
+        <div className="grid gap-2 sm:grid-cols-3 lg:w-[450px]"><a href="#regime-templates" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-indigo-500 px-4 text-sm font-bold text-white">从模板开始</a><a href="#regime-saved" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/20 px-4 text-sm font-bold text-white">继续已有研究</a><Link to={workbenchPath} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/20 px-4 text-sm font-bold text-white">自由构建</Link></div>
       </div>
     </section>
 
@@ -144,16 +146,25 @@ export default function HistoricalRegimeDirectory() {
     {notice ? <p role="status" className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-950">{notice}</p> : null}
     {loading ? <p role="status" className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600">正在读取 V2 定义、模板、运行摘要与旧版迁移目录…</p> : null}
 
-    <section aria-labelledby="saved-v2-heading">
-      <div className="mb-3 flex items-end justify-between gap-3"><div><h2 id="saved-v2-heading" className="text-lg font-black text-slate-950">我的 V2 图谱</h2><p className="mt-1 text-xs text-slate-500">打开时必须指定 revision；工作台不会悄悄切换到最新版本。</p></div><span className="text-xs font-bold text-slate-500">{definitions.length} 个定义</span></div>
-      <div className="grid gap-3 2xl:grid-cols-2">{definitions.map((definition) => definition.id ? <DefinitionCard key={definition.id} definition={definition} runs={runsByDefinition.get(definition.id) || []} /> : null)}</div>
-      {!loading && !definitions.length ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center"><h3 className="text-sm font-bold text-slate-900">还没有 V2 图谱</h3><p className="mt-2 text-xs text-slate-500">从空白图开始，或选择一个系统模板实例化为可编辑草稿。</p><Link to={workbenchPath} className="mt-4 inline-flex min-h-10 items-center rounded-lg bg-slate-950 px-4 text-xs font-bold text-white">创建第一个图谱</Link></div> : null}
+    <section id="regime-templates" tabIndex={-1} aria-labelledby="templates-heading" className="scroll-mt-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm focus:outline-indigo-500 sm:p-5">
+      <div className="flex items-end justify-between gap-3"><div><h2 id="templates-heading" className="text-lg font-black text-slate-950">选择研究模板</h2><p className="mt-1 text-xs leading-5 text-slate-500">先选要识别的市场状态，再设置数据与参数、运行看结果。模板中的规则都可以查看和修改，也可以随时进入自由画板。</p></div><span className="shrink-0 text-xs font-bold text-slate-500">{templates.length} 个</span></div>
+      {(['realtime', 'retrospective'] as const).map(mode => {
+        const items = templates.filter(template => (template.default_mode ?? 'realtime') === mode)
+        if (!items.length) return null
+        const label = mode === 'realtime' ? '实时识别' : '事后识别'
+        return <section key={mode} aria-label={label} className="mt-5">
+          <h3 className="text-sm font-bold text-slate-900">{label}</h3>
+          <p className="mt-1 text-xs text-slate-500">{mode === 'realtime' ? '使用当时可得数据；也可用于历史回放。' : '用于解释历史区间；需要之后的数据，不能用作当时的交易信号。'}</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{items.map(template => <article key={template.id} className="flex min-h-40 flex-col rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap gap-1">{(template.tags || []).slice(0, 3).map((tag) => <span key={tag} className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600">{tag}</span>)}</div><h3 className="mt-2 text-sm font-bold text-slate-950">{template.name}</h3><p className="mt-1 flex-1 text-xs leading-5 text-slate-500">{template.description || '从这套识别规则开始，按研究需要调整。'}</p><Link to={templateHref(template)} aria-label={`使用模板：${template.name}`} className="mt-3 inline-flex min-h-9 items-center justify-center rounded-lg border border-indigo-300 px-3 text-xs font-bold text-indigo-700">使用此模板</Link></article>)}</div>
+        </section>
+      })}
+      {!loading && !templates.length ? <p className="mt-4 rounded-xl bg-slate-50 p-4 text-xs text-slate-500">当前没有可用模板。可以<Link to={workbenchPath} className="font-bold text-indigo-700 underline">从空白画板自由构建</Link>，或继续已有研究。</p> : null}
     </section>
 
-    <section aria-labelledby="templates-heading" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-      <div className="flex items-end justify-between gap-3"><div><h2 id="templates-heading" className="text-lg font-black text-slate-950">系统模板</h2><p className="mt-1 text-xs text-slate-500">模板只提供起点；实例化后节点、参数、状态和验证规则均可修改。</p></div><span className="text-xs font-bold text-slate-500">{templates.length} 个</span></div>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{templates.map((template) => <article key={template.id} className="flex min-h-40 flex-col rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap gap-1">{(template.tags || []).slice(0, 3).map((tag) => <span key={tag} className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-bold text-slate-600">{tag}</span>)}</div><h3 className="mt-2 text-sm font-bold text-slate-950">{template.name}</h3><p className="mt-1 flex-1 text-xs leading-5 text-slate-500">{template.description || '服务端内置历史情景图谱模板。'}</p><Link to={templateHref(template.id)} className="mt-3 inline-flex min-h-9 items-center justify-center rounded-lg border border-indigo-300 px-3 text-xs font-bold text-indigo-700">从模板开始</Link></article>)}</div>
-      {!loading && !templates.length ? <p className="mt-4 rounded-xl bg-slate-50 p-4 text-xs text-slate-500">服务端当前没有可用模板，仍可从空白计算图开始。</p> : null}
+    <section id="regime-saved" tabIndex={-1} aria-labelledby="saved-v2-heading" className="scroll-mt-5 focus:outline-indigo-500">
+      <div className="mb-3 flex items-end justify-between gap-3"><div><h2 id="saved-v2-heading" className="text-lg font-black text-slate-950">已有识别方案</h2><p className="mt-1 text-xs text-slate-500">打开保存的版本继续研究，已有结果和发布引用保留原版本。</p></div><span className="text-xs font-bold text-slate-500">{definitions.length} 个方案</span></div>
+      <div className="grid gap-3 2xl:grid-cols-2">{definitions.map((definition) => definition.id ? <DefinitionCard key={definition.id} definition={definition} runs={runsByDefinition.get(definition.id) || []} /> : null)}</div>
+      {!loading && !definitions.length ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center"><h3 className="text-sm font-bold text-slate-900">还没有识别方案</h3><p className="mt-2 text-xs text-slate-500">选择上方模板开始第一次研究，保存后可在这里继续。</p><a href="#regime-templates" className="mt-4 inline-flex min-h-10 items-center rounded-lg bg-slate-950 px-4 text-xs font-bold text-white">选择第一个模板</a></div> : null}
     </section>
 
     <details className="rounded-2xl border border-amber-200 bg-amber-50/50 p-4 shadow-sm sm:p-5">

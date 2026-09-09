@@ -1,6 +1,10 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { ActualPortfolioProvider } from './app/ActualPortfolioContext'
+import { ResearchContextProvider } from './app/ResearchContext'
+import PitSnapshots from './pages/PitSnapshots'
 import Header from './components/Header'
+import LocalizationProvider from './i18n/LocalizationProvider'
+import LanguageTerminology from './pages/LanguageTerminology'
 import LegacyRedirect from './components/LegacyRedirect'
 import StageLayout from './layouts/StageLayout'
 import AutoAssetClassification from './pages/AutoAssetClassification'
@@ -17,6 +21,7 @@ import HoldingDiagnosis from './pages/HoldingDiagnosis'
 import HistoricalRegimeWorkbench from './pages/HistoricalRegimeWorkbench'
 import DataQuality from './pages/IndexData'
 import IndicatorStudio from './pages/IndicatorStudio'
+import FactorResearchCenter from './pages/FactorResearchCenter'
 import ManualConstruction from './pages/ManualConstruction'
 import PortfolioConstruction from './pages/PortfolioConstruction'
 import PortfolioCenterWorkspace from './pages/PortfolioCenterWorkspace'
@@ -54,8 +59,9 @@ const saaHub = (
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <LocalizationProvider><BrowserRouter>
       <ActualPortfolioProvider>
+        <ResearchContextProvider>
         <div className="min-h-screen bg-gray-100">
           <Header />
           <main>
@@ -174,13 +180,15 @@ export default function App() {
               <Route path="data-refresh" element={<LegacyRedirect to="/settings/data-sources" />} />
               <Route path="data-quality" element={<DataQuality />} />
               <Route path="research-data-lab" element={<ResearchDataLab />} />
-              <Route path="pit-snapshots" element={prototypePage('pit-snapshots')} />
+              <Route path="pit-snapshots" element={<PitSnapshots />} />
               <Route path="research-parameters" element={prototypePage('research-parameters')} />
               <Route path="indicators-models" element={<IndicatorStudio />} />
+              <Route path="factor-research" element={<FactorResearchCenter />} />
               <Route path="scenario-algorithms" element={<ScenarioCenters />} />
               <Route path="scenario-algorithms/workbench" element={<HistoricalRegimeWorkbench />} />
               <Route path="backtest-center" element={prototypePage('backtest-center')} />
               <Route path="system-parameters" element={prototypePage('system-parameters')} />
+              <Route path="language-terminology" element={<LanguageTerminology />} />
             </Route>
 
             <Route path="/research" element={<LegacyRedirect to="/product-research/products" />} />
@@ -198,7 +206,8 @@ export default function App() {
           </Routes>
           </main>
         </div>
+        </ResearchContextProvider>
       </ActualPortfolioProvider>
-    </BrowserRouter>
+    </BrowserRouter></LocalizationProvider>
   )
 }

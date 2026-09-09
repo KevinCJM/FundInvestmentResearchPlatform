@@ -6,13 +6,19 @@ import hashlib
 import json
 import copy
 import math
-from collections import deque
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationInfo, ValidationError as PydanticValidationError, model_validator, model_serializer
+from computation_graph.series_contracts import ChannelPresentation
+from .indicator_nodes import validate_typed_series_node
 
 from compute_policy import ComputePolicyError, validate_execution_audit
 from custom_indicators.errors import ValidationError
+
+try:
+    from backend.computation_graph import GraphPortRef, GraphEdge, dependency_order
+except ModuleNotFoundError:  # backend/ direct application entry
+    from computation_graph import GraphPortRef, GraphEdge, dependency_order
 
 from .v2_registry import (
     CONFIDENCE,
@@ -22,17 +28,18 @@ from .v2_registry import (
     REASON_CODES,
     REGISTRY_VERSION,
     STATE_CODES,
+    SERIES,
 )
 
 
-class GraphPortRefV2(BaseModel):
+class GraphPortRefV2(GraphPortRef):
     model_config = ConfigDict(extra="forbid")
 
     node_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
     port: str = Field(default="value", min_length=1, max_length=64)
 
 
-class GraphEdgeV2(BaseModel):
+class GraphEdgeV2(GraphEdge):
     """A canonical graph edge; target.port names the target node input slot."""
 
     model_config = ConfigDict(extra="forbid")
@@ -62,18 +69,30 @@ class RegimeGraphNodeV2(BaseModel):
 
 class RegimeGraphV2(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _node_preview: bool = PrivateAttr(default=False)
 
     nodes: list[RegimeGraphNodeV2] = Field(min_length=1, max_length=128)
     edges: list[GraphEdgeV2] = Field(default_factory=list, max_length=256)
     outputs: dict[str, GraphPortRefV2]
     exposed_node_ids: list[str] = Field(default_factory=list, max_length=64)
+    channel_metadata: dict[str, ChannelPresentation] = Field(default_factory=dict, max_length=8)
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_serialization(self, handler):
+        result = handler(self)
+        if not self.channel_metadata:
+            result.pop("channel_metadata", None)
+        return result
 
     @model_validator(mode="after")
-    def validate_unique_node_ids(self) -> "RegimeGraphV2":
+    def validate_unique_node_ids(self, info: ValidationInfo) -> "RegimeGraphV2":
+        self._node_preview = bool((info.context or {}).get("node_preview"))
         node_ids = [node.id for node in self.nodes]
         if len(node_ids) != len(set(node_ids)):
             raise ValueError("graph.nodes 中的节点 id 必须唯一")
-        if "state" not in self.outputs:
+        if self._node_preview and set(self.outputs) != {"preview"}:
+            raise ValueError("节点预览必须且只能声明 preview 输出")
+        if not self._node_preview and "state" not in self.outputs:
             raise ValueError("graph.outputs 必须声明 state 根输出")
         allowed_outputs = {
             "state",
@@ -83,7 +102,15 @@ class RegimeGraphV2(BaseModel):
             "effective_index",
             "reason_code",
         }
-        unknown_outputs = sorted(set(self.outputs) - allowed_outputs)
+        if self._node_preview:
+            allowed_outputs.add("preview")
+        if set(self.channel_metadata) - set(self.outputs):
+            raise ValueError("输出通道设置必须对应已连接的输出。")
+        if any(not key.isidentifier() or key.startswith("_") for key in self.channel_metadata):
+            raise ValueError("输出通道 ID 必须是合法标识符。")
+        if len(self.outputs) > 8:
+            raise ValueError("最多支持八个输出通道。")
+        unknown_outputs = sorted(set(self.outputs) - allowed_outputs - set(self.channel_metadata))
         if unknown_outputs:
             raise ValueError(
                 "graph.outputs 包含不支持的输出：" + ", ".join(unknown_outputs)
@@ -188,6 +215,8 @@ class RegimeDefinitionV2(BaseModel):
         state_ids = [state.id for state in self.states]
         if len(state_ids) != len(set(state_ids)):
             raise ValueError("states.id 必须唯一")
+        if "unclassified" in state_ids:
+            raise ValueError("unclassified 保留给未识别样本，不能用作市场状态编号。")
         target_ids = [target.id for target in self.evaluation_targets]
         if len(target_ids) != len(set(target_ids)):
             raise ValueError("evaluation_targets.id 必须唯一")
@@ -304,6 +333,7 @@ def _parameter_diagnostics(node: RegimeGraphNodeV2, metadata: Mapping[str, Any])
             (expected == "integer" and (isinstance(value, bool) or not isinstance(value, int)))
             or (expected == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))))
             or (expected == "string" and not isinstance(value, str))
+            or (expected == "boolean" and not isinstance(value, bool))
             or (expected == "array" and not isinstance(value, list))
             or (expected == "object" and not isinstance(value, dict))
         )
@@ -442,8 +472,7 @@ def _parameter_diagnostics(node: RegimeGraphNodeV2, metadata: Mapping[str, Any])
 
 def _topological_order(definition: RegimeDefinitionV2) -> tuple[list[str], list[dict[str, Any]]]:
     nodes = {node.id: node for node in definition.graph.nodes}
-    indegree = {node_id: 0 for node_id in nodes}
-    consumers: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+    dependencies: list[tuple[str, str]] = []
     diagnostics: list[dict[str, Any]] = []
     edge_count = 0
     for node in definition.graph.nodes:
@@ -459,8 +488,7 @@ def _topological_order(definition: RegimeDefinitionV2) -> tuple[list[str], list[
                     }
                 )
                 continue
-            indegree[node.id] += 1
-            consumers[reference.node_id].append(node.id)
+            dependencies.append((reference.node_id, node.id))
     if edge_count > 256:
         diagnostics.append(
             {
@@ -470,16 +498,9 @@ def _topological_order(definition: RegimeDefinitionV2) -> tuple[list[str], list[
                 "severity": "error",
             }
         )
-    queue = deque(node_id for node_id, degree in indegree.items() if degree == 0)
-    order: list[str] = []
-    while queue:
-        node_id = queue.popleft()
-        order.append(node_id)
-        for consumer in consumers[node_id]:
-            indegree[consumer] -= 1
-            if indegree[consumer] == 0:
-                queue.append(consumer)
-    if len(order) != len(nodes):
+    topology = dependency_order(nodes, dependencies)
+    order = topology.order
+    if topology.cyclic:
         diagnostics.append(
             {
                 "code": "GRAPH_CYCLE",
@@ -618,6 +639,41 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                         }
                     )
 
+        if node.type in {"filter.kama", "model.trend_regime"}:
+            lower_name, upper_name, lower_default, upper_default = (
+                ("fast", "slow", 2, 126) if node.type == "filter.kama"
+                else ("flat_threshold", "trend_enter", 0.05, 0.1)
+            )
+            lower = node.parameters.get(lower_name, lower_default)
+            upper = node.parameters.get(upper_name, upper_default)
+            if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lower, upper)) and lower >= upper:
+                diagnostics.append({"code": "INVALID_TREND_PARAMETERS", "severity": "error",
+                                    "path": f"graph.nodes.{node.id}.parameters",
+                                    "message": "快速期数必须小于慢速期数。" if node.type == "filter.kama"
+                                    else "震荡斜率上限必须小于趋势进入门槛。"})
+        if node.type in {"model.trend_regime", "post.merge_short_regimes", "model.range_threshold"} and [state.role for state in definition.states] != ["positive", "neutral", "negative"]:
+            diagnostics.append({"code": "INVALID_MARKET_STATE_COUNT", "severity": "error",
+                                "path": "states", "message": "牛熊震荡算法要求按顺序配置正向、中性、负向三个状态。"})
+        if node.type.startswith("segment.") and node.type != "segment.between_pivots":
+            start_ref, end_ref = node.inputs.get("start"), node.inputs.get("end")
+            if start_ref and end_ref and (start_ref.node_id != end_ref.node_id or
+                    start_ref.port != "start" or end_ref.port != "end" or
+                    nodes.get(start_ref.node_id) is None or nodes[start_ref.node_id].type != "segment.between_pivots"):
+                diagnostics.append({"code": "SEGMENT_BOUNDARIES_MISMATCH", "severity": "error",
+                    "path": f"graph.nodes.{node.id}.inputs", "message": "起止边界必须来自同一个相邻峰谷分段节点，不能单独重采样或混接。"})
+        if node.type == "model.range_threshold" and not ({"upper_bound", "lower_bound"} & set(node.inputs)):
+            lower, upper = node.parameters.get("lower", -.03), node.parameters.get("upper", .03)
+            if isinstance(lower, (int, float)) and isinstance(upper, (int, float)) and lower >= upper:
+                diagnostics.append({"code": "INVALID_THRESHOLDS", "severity": "error", "path": f"graph.nodes.{node.id}.parameters",
+                                    "message": "下界必须小于上界。"})
+        if node.type == "model.peak_trough":
+            roles = [state.role for state in definition.states]
+            allowed = [["positive", "neutral", "negative"]]
+            if not node.parameters.get("sideways_enabled", False):
+                allowed.append(["positive", "negative"])
+            if roles not in allowed:
+                diagnostics.append({"code": "INVALID_PEAK_TROUGH_STATES", "severity": "error",
+                                    "path": "states", "message": "启用峰谷震荡识别时，须按牛市（正向）、震荡（中性）、熊市（负向）配置三个状态；关闭时兼容牛、熊两态。未分类不是震荡。"})
         if node.type == "model.threshold":
             lower_value = node.parameters.get("lower", -0.001)
             upper_value = node.parameters.get("upper", 0.001)
@@ -745,6 +801,12 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                             }
                         )
                         break
+        if (metadata.get("typed_operator_id") or metadata.get("indicator_reference")) and metadata.get("available") is not False and all(port["name"] in node.inputs for port in metadata["inputs"]):
+            try:
+                validate_typed_series_node(node, NODE_REGISTRY)
+            except (ValueError, KeyError, TypeError, ValidationError) as exc:
+                diagnostics.append({"code": "INVALID_SERIES_OPERATOR_ARGUMENT", "severity": "error",
+                                    "path": f"graph.nodes.{node.id}.parameters", "message": str(exc)})
 
     for output_name, reference in definition.graph.outputs.items():
         actual = inferred.get(reference.node_id, {}).get(reference.port)
@@ -755,7 +817,7 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
             "recognition_index": INDEX_SERIES,
             "effective_index": INDEX_SERIES,
             "reason_code": REASON_CODES,
-        }.get(output_name)
+        }.get(output_name, SERIES)
         if actual is None:
             diagnostics.append(
                 {
@@ -765,7 +827,7 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                     "severity": "error",
                 }
             )
-        elif expected is not None and actual != expected:
+        elif not definition.graph._node_preview and expected is not None and actual != expected:
             diagnostics.append(
                 {
                     "code": "GRAPH_OUTPUT_TYPE_MISMATCH",
@@ -800,7 +862,7 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
             }
         )
     model_types = {node.type for node in definition.graph.nodes if node.type.startswith("model.")}
-    required_states = 4 if "model.quadrant" in model_types else 3
+    required_states = 4 if "model.quadrant" in model_types else (3 if model_types - {"model.peak_trough"} else 2)
     if model_types and "model.external_optimized" not in model_types and len(definition.states) < required_states:
         diagnostics.append(
             {
@@ -836,8 +898,12 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                 diagnostics.append(
                     {
                         "code": "EXPLICIT_ALIGNMENT_REQUIRED",
+                        "node_id": node.id,
                         "path": f"graph.nodes.{node.id}.inputs",
-                        "message": "来自不同时间轴的输入必须先经过显式对齐节点，禁止隐式交集或补值。",
+                        "message": (
+                            f"“{node.label or metadata.get('label') or node.id}”的输入来自不同时间轴。"
+                            "请先按共同日期对齐，再计算同一天的数据；不会自动补值。"
+                        ),
                         "severity": "error",
                     }
                 )

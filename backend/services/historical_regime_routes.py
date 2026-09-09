@@ -76,6 +76,9 @@ class TAABacktestRequest(BaseModel):
     max_signal_age_days: int = Field(default=31, ge=1, le=3650)
 
 
+from historical_regimes.authoring import AuthoringRequest, resolve_authoring
+
+
 class RegimeGraphDefinitionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -86,7 +89,11 @@ class RegimeGraphDefinitionUpdateRequest(RegimeGraphDefinitionRequest):
     revision: int = Field(ge=1)
 
 
-class RegimeGraphPreviewRequest(RegimeGraphDefinitionRequest):
+class RegimeGraphPrepareRequest(RegimeGraphDefinitionRequest):
+    preview_target: Optional[dict[str, str]] = None
+
+
+class RegimeGraphPreviewRequest(RegimeGraphPrepareRequest):
     compile_token: str
     mode: Literal["realtime", "retrospective"] = "realtime"
     as_of: Optional[str] = None
@@ -194,14 +201,19 @@ def instantiate_regime_graph_template(template_id: str):
     return _call(regime_graph_v2_service.instantiate_template, template_id)
 
 
+@router.post("/api/historical-regimes/authoring/resolve")
+def resolve_regime_authoring(request: AuthoringRequest):
+    return _call(resolve_authoring, request)
+
+
 @router.post("/api/historical-regimes/infer")
 def infer_regime_graph(request: RegimeGraphDefinitionRequest):
     return _call(regime_graph_v2_service.infer, request.definition)
 
 
 @router.post("/api/historical-regimes/prepare")
-def prepare_regime_graph(request: RegimeGraphDefinitionRequest):
-    return _call(regime_graph_v2_service.prepare, request.definition)
+def prepare_regime_graph(request: RegimeGraphPrepareRequest):
+    return _call(regime_graph_v2_service.prepare, request.definition, preview_target=request.preview_target)
 
 
 @router.post(
@@ -216,6 +228,7 @@ def create_regime_graph_preview(request: RegimeGraphPreviewRequest):
         mode=request.mode,
         as_of=request.as_of,
         ttl_seconds=request.ttl_seconds,
+        preview_target=request.preview_target,
     )
 
 
@@ -227,6 +240,11 @@ def get_regime_graph_preview(preview_id: str):
 @router.delete("/api/historical-regimes/preview-runs/{preview_id}")
 def cancel_regime_graph_preview(preview_id: str):
     return _call(regime_graph_v2_service.cancel_preview, preview_id)
+
+
+@router.get("/api/historical-regimes/preview-runs/{preview_id}/overview")
+def get_regime_graph_preview_overview(preview_id: str):
+    return _call(regime_graph_v2_service.preview_overview, preview_id)
 
 
 @router.get("/api/historical-regimes/preview-runs/{preview_id}/series")
@@ -244,6 +262,19 @@ def get_regime_graph_preview_series(
         port=port,
         offset=offset,
         limit=limit,
+    )
+
+
+@router.get("/api/historical-regimes/preview-runs/{preview_id}/normalized-chart")
+def get_regime_graph_normalized_chart(
+    preview_id: str,
+    node_id: str,
+    port: str = "value",
+    base_index: int = Query(default=0, ge=0),
+):
+    return _call(
+        regime_graph_v2_service.normalized_preview_chart,
+        preview_id, node_id=node_id, port=port, base_index=base_index,
     )
 
 

@@ -7,7 +7,7 @@ import PortfolioCenterWorkspace, { type PortfolioCenterView } from './PortfolioC
 const renderWorkspace = (view: PortfolioCenterView) => render(<ActualPortfolioProvider><PortfolioCenterWorkspace view={view} /></ActualPortfolioProvider>)
 
 describe('PortfolioCenterWorkspace', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals() })
 
   it('登记簿可筛选真实组合且不请求后端', async () => {
     const fetchSpy = vi.fn()

@@ -48,7 +48,7 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "reduction",
         "linear_algebra",
         "statistics",
-        "portfolio",
+        "mask",
         "path",
     }
     assert "inverse" not in operators
@@ -73,8 +73,8 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "quantile",
         "skewness",
         "cumulative_max",
-        "linear_slope",
-        "regression_standard_error",
+        "linear_fit",
+        "fit_residual_sum_squares",
         "normal_ppf",
     } <= set(operators)
     assert "cumulative_maximum" not in operators
@@ -181,19 +181,19 @@ def test_typed_dag_nodes_include_type_operator_and_cost_annotations() -> None:
     assert graph["roots"] == {"result": plan.root_id}
     call_nodes = [node for node in graph["nodes"] if node["operator"]]
     assert {node["operator"]["id"] for node in call_nodes} == {
-        "portfolio_returns",
+        "matvec",
         "mean",
     }
     assert all("inferred_type" in node and "cost" in node for node in graph["nodes"])
     portfolio_node = next(
-        node for node in call_nodes if node["operator"]["id"] == "portfolio_returns"
+        node for node in call_nodes if node["operator"]["id"] == "matvec"
     )
     assert portfolio_node["arguments"] == [
-        {"name": "asset_returns", "input_node_id": portfolio_node["inputs"][0]},
-        {"name": "asset_weights", "input_node_id": portfolio_node["inputs"][1]},
+        {"name": "matrix", "input_node_id": portfolio_node["inputs"][0]},
+        {"name": "vector", "input_node_id": portfolio_node["inputs"][1]},
     ]
     assert portfolio_node["formula_fragment"] == (
-        "portfolio_returns(asset_returns, asset_weights)"
+        "matvec(asset_returns, asset_weights)"
     )
     assert graph["estimated_cost"]["node_count"] == len(graph["nodes"])
 

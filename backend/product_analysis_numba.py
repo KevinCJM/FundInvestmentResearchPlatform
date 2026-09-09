@@ -16,7 +16,7 @@ from numba import boolean, float64, int64, njit, types, uint8, uint64
 
 
 PRODUCT_ANALYSIS_ENGINE_VERSION = "product-analysis-njit-1.0.0"
-PRODUCT_ANALYSIS_KERNEL_VERSION = "product-chart-statistics-simulation-2"
+PRODUCT_ANALYSIS_KERNEL_VERSION = "product-scenario-statistics-simulation-3"
 
 _F1 = float64[::1]
 _F2 = float64[:, ::1]
@@ -28,6 +28,7 @@ _QQ_RESULT = types.Tuple((_F2, _F2))
 _SIM_RESULT = types.Tuple((_F2, _F2, _F1, _F1, _F1))
 _DENSITY_RESULT = types.Tuple((_F2, _F2, _F1))
 _RANDOM_RESULT = types.Tuple((uint64, float64))
+_REGIME_RESULT = types.Tuple((_F2, _F2, _F1, _I1, _I1))
 
 
 @njit(_F2(_F1, _I1), cache=False, nogil=True)
@@ -803,12 +804,13 @@ def parametric_monte_carlo_kernel(
 
 
 @njit(
-    _SIM_RESULT(_F1, float64, int64, int64, int64, float64, int64),
+    _SIM_RESULT(_F1, _I1, float64, int64, int64, int64, float64, int64),
     cache=False,
     nogil=True,
 )
 def stationary_block_bootstrap_kernel(
     returns_percent: np.ndarray,
+    segment_ids: np.ndarray,
     initial_nav: float,
     horizon_days: int,
     path_count: int,
@@ -816,25 +818,42 @@ def stationary_block_bootstrap_kernel(
     target_return_percent: float,
     average_block_length: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if returns_percent.size != segment_ids.size:
+        raise ValueError("bootstrap return and segment axes must match")
     valid_count = 0
     for value in returns_percent:
         if np.isfinite(value) and value > -100.0:
             valid_count += 1
     if valid_count < 20 or initial_nav <= 0.0 or horizon_days < 1 or path_count < 1:
         raise ValueError("bootstrap simulation requires valid parameters and 20 returns")
-    returns = np.empty(valid_count, dtype=np.float64)
+    valid_positions = np.empty(valid_count, dtype=np.int64)
     position = 0
-    for value in returns_percent:
-        if np.isfinite(value) and value > -100.0:
-            returns[position] = value / 100.0
+    for index in range(returns_percent.size):
+        if np.isfinite(returns_percent[index]) and returns_percent[index] > -100.0:
+            valid_positions[position] = index
             position += 1
     block_length = max(1, min(valid_count, average_block_length))
+    restart_probability = 1.0 / block_length
+    restart_cdf = np.empty(valid_count, dtype=np.float64)
+    restart_weight = 0.0
+    for position in range(valid_count):
+        index = valid_positions[position]
+        has_predecessor = (
+            position > 0
+            and valid_positions[position - 1] == index - 1
+            and segment_ids[index - 1] == segment_ids[index]
+        )
+        # At a boundary the next draw must restart. Uniform restart positions
+        # would then over-sample segment interiors. These incoming-mass deficits
+        # preserve a uniform marginal over all valid historical observations.
+        restart_weight += restart_probability if has_predecessor else 1.0
+        restart_cdf[position] = restart_weight
     paths = np.empty((path_count, horizon_days + 1), dtype=np.float64)
     max_drawdowns = np.empty(path_count, dtype=np.float64)
     state = np.uint64(seed if seed != 0 else 1)
     for path_index in range(path_count):
         state, first = _next_uniform(state)
-        source_index = min(valid_count - 1, int(math.floor(first * valid_count)))
+        source_index = valid_positions[min(valid_count - 1, int(math.floor(first * valid_count)))]
         nav = initial_nav
         peak = initial_nav
         worst = 0.0
@@ -842,15 +861,28 @@ def stationary_block_bootstrap_kernel(
         for day in range(1, horizon_days + 1):
             if day > 1:
                 state, decision = _next_uniform(state)
-                if decision >= 1.0 / block_length:
-                    source_index = (source_index + 1) % valid_count
+                next_index = source_index + 1
+                continues = (
+                    next_index < returns_percent.size
+                    and segment_ids[next_index] == segment_ids[source_index]
+                    and np.isfinite(returns_percent[next_index])
+                    and returns_percent[next_index] > -100.0
+                )
+                if decision >= restart_probability and continues:
+                    source_index = next_index
                 else:
                     state, choice = _next_uniform(state)
-                    source_index = min(
-                        valid_count - 1,
-                        int(math.floor(choice * valid_count)),
-                    )
-            nav *= 1.0 + returns[source_index]
+                    target_weight = choice * restart_weight
+                    lower = 0
+                    upper = valid_count - 1
+                    while lower < upper:
+                        middle = (lower + upper) // 2
+                        if target_weight < restart_cdf[middle]:
+                            upper = middle
+                        else:
+                            lower = middle + 1
+                    source_index = valid_positions[lower]
+            nav *= 1.0 + returns_percent[source_index] / 100.0
             if not np.isfinite(nav) or nav <= 0.0:
                 raise ValueError("non-finite bootstrap simulation path")
             if nav > peak:
@@ -1012,90 +1044,174 @@ def terminal_density_kernel(
 
 
 @njit(
-    _F2(_I1, _F1, _I1, _I1, _I1, int64),
+    _REGIME_RESULT(_I1, _F1, _I1, _I1, _I1, int64, int64, int64),
     cache=False,
     nogil=True,
 )
-def regime_performance_kernel(
+def regime_analysis_kernel(
     date_days: np.ndarray,
     close: np.ndarray,
-    segment_start_days: np.ndarray,
-    segment_end_days: np.ndarray,
-    segment_state_codes: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    state_codes: np.ndarray,
     state_count: int,
-) -> np.ndarray:
-    if date_days.size != close.size:
-        raise ValueError("regime dates and close arrays must have equal length")
-    if not (
-        segment_start_days.size == segment_end_days.size
-        and segment_start_days.size == segment_state_codes.size
-    ):
-        raise ValueError("regime segment arrays must have equal length")
-    output = np.full((state_count, 6), np.nan, dtype=np.float64)
-    state_by_row = np.full(date_days.size, -1, dtype=np.int64)
-    for segment_index in range(segment_start_days.size):
-        state_code = segment_state_codes[segment_index]
-        if state_code < 0 or state_code >= state_count:
-            continue
-        for row in range(date_days.size):
-            if segment_start_days[segment_index] <= date_days[row] <= segment_end_days[segment_index]:
-                state_by_row[row] = state_code
-    for state_code in range(state_count):
-        observation_count = 0
+    selected_state: int,
+    selected_segment: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Keep date positions and segment boundaries; never compound disjoint paths.
+
+    State lanes: observations, returns, segments, median length, eligible paths,
+    mean return, annual volatility, up-day ratio, median/worst segment return,
+    median/worst segment drawdown. All financial values are decimal returns.
+    Segment lanes: observations, returns, return, drawdown, status, first/last
+    row, valid prices. Status 0=complete, 1=short, 2=missing price.
+    """
+    if date_days.size != close.size or not (starts.size == ends.size == state_codes.size):
+        raise ValueError("regime input axes must match")
+    if state_count < 0 or selected_state >= state_count or selected_state < -1 or selected_segment < -1 or selected_segment >= starts.size:
+        raise ValueError("invalid selected regime state or segment")
+    for segment in range(starts.size):
+        if state_codes[segment] < 0 or state_codes[segment] >= state_count or starts[segment] > ends[segment]:
+            raise ValueError("invalid regime segment definition")
+    base_returns = daily_returns_percent_kernel(close)
+    by_row = np.full(close.size, -1, dtype=np.int64)
+    segment_values = np.full((starts.size, 8), np.nan, dtype=np.float64)
+    for segment in range(starts.size):
+        observations = 0
+        valid = 0
         return_count = 0
-        wealth = 1.0
-        return_sum = 0.0
-        return_square_sum = 0.0
-        positive_count = 0
-        worst_drawdown = np.nan
-        for row in range(date_days.size):
-            if state_by_row[row] == state_code:
-                observation_count += 1
-        for segment_index in range(segment_start_days.size):
-            if segment_state_codes[segment_index] != state_code:
+        invalid_return = False
+        first = -1
+        last = -1
+        peak = 0.0
+        worst = 0.0
+        for row in range(close.size):
+            if not (starts[segment] <= date_days[row] <= ends[segment]):
                 continue
-            previous = np.nan
-            peak = np.nan
-            segment_worst = 0.0
-            for row in range(date_days.size):
-                if not (
-                    segment_start_days[segment_index]
-                    <= date_days[row]
-                    <= segment_end_days[segment_index]
-                ):
-                    continue
-                current = close[row]
-                if not np.isfinite(current) or current <= 0.0:
-                    continue
-                if not np.isfinite(peak) or current > peak:
-                    peak = current
-                if np.isfinite(previous):
-                    value = current / previous - 1.0
-                    wealth *= 1.0 + value
-                    return_sum += value
-                    return_square_sum += value * value
+            if by_row[row] >= 0:
+                raise ValueError("historical regime segments overlap")
+            by_row[row] = segment
+            observations += 1
+            if first < 0:
+                first = row
+            last = row
+            value = close[row]
+            if not np.isfinite(value) or value <= 0.0:
+                continue
+            valid += 1
+            peak = max(peak, value)
+            worst = min(worst, value / peak - 1.0)
+            if row > first and np.isfinite(close[row - 1]) and close[row - 1] > 0.0:
+                change = base_returns[row - 1]
+                if np.isfinite(change) and change > -100.0:
                     return_count += 1
-                    if value > 0.0:
-                        positive_count += 1
-                drawdown = current / peak - 1.0
-                if drawdown < segment_worst:
-                    segment_worst = drawdown
-                previous = current
-            if not np.isfinite(worst_drawdown) or segment_worst < worst_drawdown:
-                worst_drawdown = segment_worst
-        output[state_code, 0] = observation_count
-        output[state_code, 1] = return_count
-        if return_count > 0:
-            output[state_code, 2] = wealth - 1.0
-            output[state_code, 4] = worst_drawdown
-            output[state_code, 5] = positive_count / return_count
-        if return_count > 1:
-            mean = return_sum / return_count
-            variance = (
-                return_square_sum - return_count * mean * mean
-            ) / (return_count - 1)
-            output[state_code, 3] = math.sqrt(max(0.0, variance)) * math.sqrt(252.0)
-    return output
+                else:
+                    invalid_return = True
+        segment_values[segment, 0] = observations
+        segment_values[segment, 1] = return_count
+        segment_values[segment, 5] = first
+        segment_values[segment, 6] = last
+        segment_values[segment, 7] = valid
+        status = 1
+        if observations != valid or invalid_return:
+            status = 2
+        elif observations >= 2:
+            change = close[last] / close[first] - 1.0
+            if np.isfinite(change) and change > -1.0:
+                status = 0
+                segment_values[segment, 2] = change
+                segment_values[segment, 3] = worst
+            else:
+                status = 2
+        segment_values[segment, 4] = status
+
+    selected_returns = np.full(max(0, close.size - 1), np.nan, dtype=np.float64)
+    return_segments = np.full(selected_returns.size, -1, dtype=np.int64)
+    selected_observations = 0
+    selected_count = 0
+    selected_segments = 0
+    selected_first = -1
+    selected_last = -1
+    for row in range(close.size):
+        segment = by_row[row]
+        include = selected_state < 0 and selected_segment < 0
+        if segment >= 0:
+            include = include or (
+                (selected_state < 0 or state_codes[segment] == selected_state)
+                and (selected_segment < 0 or segment == selected_segment)
+            )
+        if not include:
+            continue
+        selected_observations += 1
+        if selected_first < 0:
+            selected_first = row
+        selected_last = row
+        if row < 1 or not (np.isfinite(close[row]) and close[row] > 0.0
+                           and np.isfinite(close[row - 1]) and close[row - 1] > 0.0):
+            continue
+        if (selected_state >= 0 or selected_segment >= 0) and by_row[row - 1] != segment:
+            continue
+        change = base_returns[row - 1]
+        if not np.isfinite(change) or change <= -100.0:
+            continue
+        selected_returns[row - 1] = change
+        # Full-window sampling can cross states, but never a missing observation.
+        return_segments[row - 1] = segment if selected_state >= 0 or selected_segment >= 0 else 0
+        selected_count += 1
+    for segment in range(starts.size):
+        if segment_values[segment, 0] > 0 and (selected_state < 0 or state_codes[segment] == selected_state) and (selected_segment < 0 or segment == selected_segment):
+            selected_segments += 1
+    if state_count == 0 and selected_observations > 0:
+        selected_segments = 1
+
+    states = np.full((state_count, 12), np.nan, dtype=np.float64)
+    for state in range(state_count):
+        observations = 0
+        segment_count = 0
+        eligible_count = 0
+        returns = np.full(max(0, close.size - 1), np.nan, dtype=np.float64)
+        lengths = np.empty(starts.size, dtype=np.float64)
+        interval_returns = np.empty(starts.size, dtype=np.float64)
+        drawdowns = np.empty(starts.size, dtype=np.float64)
+        for segment in range(starts.size):
+            if state_codes[segment] != state or segment_values[segment, 0] == 0:
+                continue
+            observations += int(segment_values[segment, 0])
+            lengths[segment_count] = segment_values[segment, 0]
+            segment_count += 1
+            if segment_values[segment, 4] == 0:
+                interval_returns[eligible_count] = segment_values[segment, 2]
+                drawdowns[eligible_count] = segment_values[segment, 3]
+                eligible_count += 1
+        for row in range(1, close.size):
+            segment = by_row[row]
+            if segment < 0 or by_row[row - 1] != segment or state_codes[segment] != state:
+                continue
+            if np.isfinite(close[row]) and close[row] > 0 and np.isfinite(close[row - 1]) and close[row - 1] > 0:
+                change = base_returns[row - 1]
+                if np.isfinite(change) and change > -100.0:
+                    returns[row - 1] = change / 100.0
+        stats = return_statistics_kernel(returns)
+        states[state, 0] = observations
+        states[state, 1] = stats[6]
+        states[state, 2] = segment_count
+        states[state, 4] = eligible_count
+        states[state, 5] = stats[0]
+        states[state, 7] = stats[3]
+        if stats[6] >= 2:
+            states[state, 6] = stats[1] * math.sqrt(stats[6] / (stats[6] - 1.0)) * math.sqrt(252.0)
+        if segment_count > 0:
+            ordered_lengths = np.sort(lengths[:segment_count])
+            states[state, 3] = _linear_quantile(ordered_lengths, 0.5)
+        if eligible_count > 0:
+            ordered_returns = np.sort(interval_returns[:eligible_count])
+            ordered_drawdowns = np.sort(drawdowns[:eligible_count])
+            states[state, 8] = _linear_quantile(ordered_returns, 0.5)
+            states[state, 9] = ordered_returns[0]
+            states[state, 10] = _linear_quantile(ordered_drawdowns, 0.5)
+            states[state, 11] = ordered_drawdowns[0]
+    context = np.array([selected_observations, selected_count, selected_segments, selected_first, selected_last], dtype=np.int64)
+    return states, segment_values, selected_returns, return_segments, context
 
 
 _PRODUCTION_KERNELS = (
@@ -1119,7 +1235,7 @@ _PRODUCTION_KERNELS = (
     stationary_block_bootstrap_kernel,
     simulation_comparison_kernel,
     terminal_density_kernel,
-    regime_performance_kernel,
+    regime_analysis_kernel,
 )
 
 
@@ -1175,16 +1291,16 @@ def warm_product_analysis_numba_kernels() -> dict[str, object]:
     drawdowns = np.ascontiguousarray(np.zeros(2, dtype=np.float64))
     _summarize_simulation(paths, drawdowns, 1.0, 0.05)
     parametric = parametric_monte_carlo_kernel(returns, 1.0, 2, 3, 1, 5.0)
-    bootstrap = stationary_block_bootstrap_kernel(returns, 1.0, 2, 3, 2, 5.0, 5)
+    bootstrap = stationary_block_bootstrap_kernel(returns, np.zeros(returns.size, dtype=np.int64), 1.0, 2, 3, 2, 5.0, 5)
     simulation_comparison_kernel(parametric[3], bootstrap[3], 1.0)
     terminal_density_kernel(parametric[2], parametric[1], 21, 1.0)
-    regime_performance_kernel(
+    regime_analysis_kernel(
         dates,
         values,
         np.ascontiguousarray(np.array([0], dtype=np.int64)),
         np.ascontiguousarray(np.array([31], dtype=np.int64)),
         np.ascontiguousarray(np.array([0], dtype=np.int64)),
-        1,
+        1, -1, -1,
     )
     audit = validate_execution_audit(product_analysis_execution_audit())
     if audit["nopython"] is not True or audit["python_fallback"] != 0:
@@ -1203,7 +1319,7 @@ __all__ = [
     "normal_qq_kernel",
     "parametric_monte_carlo_kernel",
     "product_analysis_execution_audit",
-    "regime_performance_kernel",
+    "regime_analysis_kernel",
     "return_statistics_kernel",
     "simulation_comparison_kernel",
     "stationary_block_bootstrap_kernel",

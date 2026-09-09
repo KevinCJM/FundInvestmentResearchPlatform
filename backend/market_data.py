@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from backend.data_storage import guard_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,7 @@ class MarketDataManifestError(RuntimeError):
 
 
 def _normalise_base_dir(base_dir: Path | None = None) -> Path:
+    guard_path(base_dir or LEGACY_DATA_DIR)
     return (base_dir or LEGACY_DATA_DIR).expanduser().resolve()
 
 

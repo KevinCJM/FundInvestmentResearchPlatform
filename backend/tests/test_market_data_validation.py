@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import numpy as np
 import pandas as pd
@@ -151,6 +152,65 @@ def test_snapshot_source_fingerprint_must_match_validated_history(tmp_path: Path
     nav.to_parquet(snapshot / "fund_nav_df.parquet", index=False)
 
     with pytest.raises(SnapshotValidationError, match="源文件指纹不一致"):
+        validate_tushare_snapshot(snapshot)
+
+
+@pytest.mark.parametrize("failure", [None, "value", "missing_result", "error", "status", "metadata"])
+def test_configured_metric_gate_uses_recorded_version_and_uncached_values(tmp_path, monkeypatch, failure):
+    from backend.custom_indicators import service as indicator_service
+
+    snapshot = tmp_path / "snapshot"
+    _write_valid_snapshot(snapshot)
+    path = snapshot / "instrument_metrics_snapshot.parquet"
+    frame = pd.read_parquet(path)
+    frame["sharpe_1y"] = 0.25
+    frame["sharpe_1y__status"] = "ok"
+    frame.to_parquet(path, index=False)
+    item = {"field": "sharpe_1y", "indicator_id": "configured-sharpe", "indicator_revision": 7, "period": "1Y"}
+    metadata = {"items": [item], "configured_count": 1}
+    if failure == "metadata":
+        metadata["items"] = []
+    (snapshot / "instrument_metrics_snapshot.meta.json").write_text(json.dumps(metadata))
+    calls = []
+
+    class Evaluator:
+        def __init__(self, **kwargs):
+            assert kwargs == {"workspace_data_dir": tmp_path, "market_data_dir": snapshot}
+
+        def warm_snapshot_numba_plans(self, items):
+            assert items == [item]
+            calls.append("warm")
+
+        def evaluate(self, **kwargs):
+            assert calls == ["warm"]
+            assert kwargs["indicator_versions"] == {"configured-sharpe": 7}
+            assert kwargs["prefer_snapshot"] is False
+            assert kwargs["include_series"] is False
+            assert kwargs["period"] == "1Y"
+            calls.append("evaluate")
+            return {"results": [] if failure == "missing_result" else [
+                {"target": target, "indicator_id": "configured-sharpe", "status": "error" if failure == "error" else "warning" if failure == "status" else "ok", "value": 0.5 if failure == "value" else 0.25}
+                for target in kwargs["targets"]
+            ]}
+
+    monkeypatch.setattr(indicator_service, "CustomIndicatorService", Evaluator)
+    if failure:
+        with pytest.raises(SnapshotValidationError):
+            validate_tushare_snapshot(snapshot)
+    else:
+        report = validate_tushare_snapshot(snapshot)
+        assert report["datasets"]["analytics_snapshot"]["configured_metric_samples"] == {"sharpe_1y": 2}
+        assert pd.read_parquet(path)["sharpe_1y"].tolist() == [0.25, 0.25]
+
+
+def test_configured_snapshot_missing_metadata_is_not_treated_as_fixed_formula(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    _write_valid_snapshot(snapshot)
+    path = snapshot / "instrument_metrics_snapshot.parquet"
+    frame = pd.read_parquet(path)
+    frame["return_1y__status"] = "unavailable"
+    frame.to_parquet(path, index=False)
+    with pytest.raises(SnapshotValidationError, match="版本记录"):
         validate_tushare_snapshot(snapshot)
 
 

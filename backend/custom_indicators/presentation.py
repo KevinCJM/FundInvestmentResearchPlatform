@@ -94,6 +94,8 @@ def metric_presentation(definition: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "indicator_id": definition.get("id"),
+        "value_type": "date" if output_measure == "date" else "duration" if output_measure == "calendar_days" else "number",
+        "duration_unit": "calendar_day" if output_measure == "calendar_days" else None,
         "revision": definition.get("revision"),
         "name": str(definition.get("name") or "未命名指标"),
         "source": str(definition.get("source") or "inline"),

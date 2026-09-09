@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 try:
     from backend.backtest_numba import (
@@ -45,6 +46,18 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from market_data import resolve_market_data_file
 
 
+# The PIT package is imported bare-first, unlike the modules above. Startup
+# warms `pit.audit`'s dataset cache; reaching the same code through
+# `backend.pit.audit` would load a second copy with a cold cache and turn the
+# first strict-mode run into a full 37M-row rescan.
+try:
+    from pit.catalog import RUN_MODE_RESEARCH, RUN_MODE_STRICT, RUN_MODES
+    from pit.context import PitContextError, parse_as_of
+except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
+    from backend.pit.catalog import RUN_MODE_RESEARCH, RUN_MODE_STRICT, RUN_MODES
+    from backend.pit.context import PitContextError, parse_as_of
+
+
 ANNUAL_METRIC_NAMES = (
     "cumulative",
     "volatility",
@@ -75,8 +88,72 @@ def _code_nosfx(value: str) -> str:
     return normalized.split(".")[0] if "." in normalized else normalized
 
 
-def _load_adj_nav(data_dir: Path, codes: Iterable[str], names: Iterable[str]) -> pd.DataFrame:
-    """Read requested ETF/public-fund NAV rows from separate market datasets."""
+# The column that says when a NAV row became public. Filtering on `nav_date`
+# instead is look-ahead: 98% of rows in etf_daily_df are announced at least one
+# day after the value date, and the tail reaches 25 days.
+NAV_AVAILABILITY_FIELD = "ann_date"
+NAV_EVENT_FIELD = "date"
+_NAV_BASE_COLUMNS = ["ts_code", "name", NAV_EVENT_FIELD, "adj_nav"]
+
+
+@dataclass(frozen=True)
+class NavLoad:
+    """NAV rows plus the audit trail of what the point-in-time cut removed."""
+
+    frame: pd.DataFrame
+    lineage: Dict[str, object]
+
+
+def _read_nav_file(path: Path, requested_codes: list[str], requested_names: list[str]) -> tuple[pd.DataFrame, bool]:
+    """Read one NAV parquet, taking `ann_date` along when the file has it."""
+
+    # Read the footer only. Materialising the frame to inspect `.columns` would
+    # pull 30M+ rows off disk before the column projection and row filters ever
+    # apply, turning a sub-second load into eight seconds.
+    try:
+        available_columns = set(pq.read_schema(path).names)
+    except Exception:  # noqa: BLE001 - schema probe must never break the read
+        available_columns = set()
+    has_availability = NAV_AVAILABILITY_FIELD in available_columns
+    columns = list(_NAV_BASE_COLUMNS) + ([NAV_AVAILABILITY_FIELD] if has_availability else [])
+    try:
+        filters = []
+        if requested_codes:
+            filters.append([("ts_code", "in", requested_codes)])
+        if requested_names:
+            filters.append([("name", "in", requested_names)])
+        frame = pd.read_parquet(path, columns=columns, engine="pyarrow", filters=filters or None)
+    except Exception:  # noqa: BLE001 - fall back to a full read then mask
+        frame = pd.read_parquet(path, columns=columns)
+        if requested_codes or requested_names:
+            code_mask = frame["ts_code"].astype(str).isin(requested_codes) if requested_codes else False
+            name_mask = frame["name"].astype(str).isin(requested_names) if requested_names else False
+            frame = frame[code_mask | name_mask]
+    return frame, has_availability
+
+
+def load_adj_nav_pit(
+    data_dir: Path,
+    codes: Iterable[str],
+    names: Iterable[str],
+    *,
+    as_of: object = None,
+    run_mode: str = RUN_MODE_RESEARCH,
+) -> NavLoad:
+    """Read NAV rows that were publicly known on `as_of`.
+
+    `as_of=None` keeps the historical behaviour (everything on disk) but says so
+    in the lineage rather than pretending a cut happened.  In STRICT_PIT a file
+    without `ann_date`, or a row whose `ann_date` is missing, is refused instead
+    of silently falling back to the value date.
+    """
+
+    mode = str(run_mode or RUN_MODE_RESEARCH).strip().upper() or RUN_MODE_RESEARCH
+    if mode not in RUN_MODES:
+        raise PitContextError(f"不支持的运行模式：{run_mode}")
+    cutoff = parse_as_of(as_of)
+    if mode == RUN_MODE_STRICT and cutoff is None:
+        raise PitContextError("严格 PIT 模式必须指定研究日。")
 
     paths = [
         resolve_market_data_file("etf_daily_df.parquet", data_dir),
@@ -85,36 +162,113 @@ def _load_adj_nav(data_dir: Path, codes: Iterable[str], names: Iterable[str]) ->
     existing_paths = [path for path in paths if path.exists()]
     if not existing_paths:
         raise FileNotFoundError("data/etf_daily_df.parquet 与 data/fund_nav_df.parquet 均不存在")
-    columns = ["ts_code", "name", "date", "adj_nav"]
+
     requested_codes = [code for code in set(codes) if code]
     requested_names = [name for name in set(names) if name]
     frames: list[pd.DataFrame] = []
+    sources: list[dict[str, object]] = []
     for path in existing_paths:
-        try:
-            filters = []
-            if requested_codes:
-                filters.append([("ts_code", "in", requested_codes)])
-            if requested_names:
-                filters.append([("name", "in", requested_names)])
-            frame = pd.read_parquet(path, columns=columns, engine="pyarrow", filters=filters or None)
-        except Exception:
-            frame = pd.read_parquet(path, columns=columns)
-            if requested_codes or requested_names:
-                code_mask = frame["ts_code"].astype(str).isin(requested_codes) if requested_codes else False
-                name_mask = frame["name"].astype(str).isin(requested_names) if requested_names else False
-                frame = frame[code_mask | name_mask]
+        frame, has_availability = _read_nav_file(path, requested_codes, requested_names)
+        sources.append({"file": path.name, "has_ann_date": has_availability, "rows": int(len(frame))})
+        if mode == RUN_MODE_STRICT and not has_availability and not frame.empty:
+            raise PitContextError(
+                f"严格 PIT 模式要求净值数据带公告日：{path.name} 缺少 {NAV_AVAILABILITY_FIELD} 列。"
+            )
         if not frame.empty:
+            if not has_availability:
+                frame = frame.copy()
+                frame[NAV_AVAILABILITY_FIELD] = pd.NaT
             frames.append(frame)
+
+    lineage: Dict[str, object] = {
+        "as_of": cutoff.strftime("%Y-%m-%d") if cutoff is not None else None,
+        "as_of_applied": cutoff is not None,
+        "run_mode": mode,
+        "availability_field": NAV_AVAILABILITY_FIELD,
+        "sources": sources,
+        "rows_before_cut": 0,
+        "rows_after_cut": 0,
+        "rows_dropped_by_as_of": 0,
+        "rows_without_announcement": 0,
+        "announcement_fallback": False,
+        "warnings": [],
+    }
     if not frames:
-        return pd.DataFrame(columns=columns)
-    result = pd.concat(frames, ignore_index=True).drop_duplicates(
-        subset=["ts_code", "date"], keep="last"
+        return NavLoad(pd.DataFrame(columns=_NAV_BASE_COLUMNS), lineage)
+
+    result = pd.concat(frames, ignore_index=True)
+    result[NAV_EVENT_FIELD] = pd.to_datetime(result[NAV_EVENT_FIELD], errors="coerce")
+    announced = pd.to_datetime(result[NAV_AVAILABILITY_FIELD], errors="coerce")
+    if announced.isna().all() and result[NAV_AVAILABILITY_FIELD].notna().any():
+        announced = pd.to_datetime(result[NAV_AVAILABILITY_FIELD], errors="coerce", format="%Y%m%d")
+    result["available_date"] = announced.dt.normalize()
+    result = result.dropna(subset=[NAV_EVENT_FIELD, "adj_nav"])
+
+    missing = int(result["available_date"].isna().sum())
+    lineage["rows_before_cut"] = int(len(result))
+    lineage["rows_without_announcement"] = missing
+    if missing:
+        if mode == RUN_MODE_STRICT:
+            result = result[result["available_date"].notna()].copy()
+            lineage["warnings"].append(
+                f"严格 PIT 模式下丢弃 {missing} 行没有公告日的净值。"
+            )
+        else:
+            # Research mode keeps going, but the value date is an optimistic
+            # stand-in for the announcement date and the caller must be told.
+            lineage["announcement_fallback"] = True
+            lineage["warnings"].append(
+                f"{missing} 行净值缺少 {NAV_AVAILABILITY_FIELD}，已按净值日期近似可得时间；该部分不具备严格时点证明。"
+            )
+            result["available_date"] = result["available_date"].fillna(result[NAV_EVENT_FIELD])
+
+    if cutoff is not None:
+        before = int(len(result))
+        result = result[result["available_date"] <= cutoff].copy()
+        lineage["rows_dropped_by_as_of"] = before - int(len(result))
+
+    # Sorting by availability before de-duplicating keeps the latest revision
+    # that was actually knowable on as_of, not the latest one that exists today.
+    result = result.sort_values(["ts_code", NAV_EVENT_FIELD, "available_date"]).drop_duplicates(
+        subset=["ts_code", NAV_EVENT_FIELD], keep="last"
     )
-    for column in columns:
+    for column in _NAV_BASE_COLUMNS:
         if column not in result.columns:
             raise ValueError(f"parquet 缺少必要列：{column}")
-    result["date"] = pd.to_datetime(result["date"], errors="coerce")
-    return result.dropna(subset=["date", "adj_nav"]).sort_values("date")
+    lineage["rows_after_cut"] = int(len(result))
+    return NavLoad(result.sort_values(NAV_EVENT_FIELD), lineage)
+
+
+def _load_adj_nav(
+    data_dir: Path,
+    codes: Iterable[str],
+    names: Iterable[str],
+    *,
+    as_of: object = None,
+    run_mode: str = RUN_MODE_RESEARCH,
+) -> pd.DataFrame:
+    """Frame-only view of :func:`load_adj_nav_pit` for callers that ignore lineage."""
+
+    return load_adj_nav_pit(data_dir, codes, names, as_of=as_of, run_mode=run_mode).frame
+
+
+_LAST_NAV_LINEAGE: Dict[str, object] = {}
+
+
+def _remember_nav_lineage(lineage: Dict[str, object]) -> None:
+    _LAST_NAV_LINEAGE.clear()
+    _LAST_NAV_LINEAGE.update(lineage)
+
+
+def last_nav_lineage() -> Dict[str, object]:
+    """Audit trail of the most recent NAV load in this process.
+
+    ponytail: process-local, so it is only meaningful immediately after the call
+    that produced it. Thread NavLoad explicitly if a caller ever needs the
+    lineage of an older load.
+    """
+
+    return dict(_LAST_NAV_LINEAGE)
 
 
 def _returns_from_adj_nav(series: pd.Series) -> pd.Series:
@@ -213,10 +367,15 @@ def compute_classes_nav(
     data_dir: Path,
     classes: List[ClassSpec],
     start_date: pd.Timestamp,
+    *,
+    as_of: object = None,
+    run_mode: str = RUN_MODE_RESEARCH,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     requested_codes = [etf.code for item in classes for etf in item.etfs if etf.weight is not None]
     requested_names = [etf.name for item in classes for etf in item.etfs if etf.weight is not None]
-    data = _load_adj_nav(data_dir, requested_codes, requested_names)
+    loaded = load_adj_nav_pit(data_dir, requested_codes, requested_names, as_of=as_of, run_mode=run_mode)
+    data = loaded.frame
+    _remember_nav_lineage(loaded.lineage)
     class_returns = _class_returns(data, classes, start_date)
     if class_returns.empty:
         raise ValueError("没有可用的大类收益率：请检查权重或数据匹配。")
@@ -285,10 +444,19 @@ def compute_rolling_corr(
     window: int,
     target_code: str,
     target_name: str,
+    *,
+    as_of: object = None,
+    run_mode: str = RUN_MODE_RESEARCH,
 ) -> Tuple[pd.DatetimeIndex, Dict[str, np.ndarray], List[Dict[str, float]]]:
     if window <= 1:
         raise ValueError("window 必须 > 1")
-    data = _load_adj_nav(data_dir, [item.code for item in etfs], [item.name for item in etfs])
+    data = _load_adj_nav(
+        data_dir,
+        [item.code for item in etfs],
+        [item.name for item in etfs],
+        as_of=as_of,
+        run_mode=run_mode,
+    )
     returns = _returns_wide(data, start_date)
     columns = list(returns.columns.astype(str))
     target = _map_to_ts(data, columns, target_code, target_name)
@@ -318,6 +486,9 @@ def compute_rolling_corr_classes(
     start_date: pd.Timestamp,
     window: int,
     target_class_name: str,
+    *,
+    as_of: object = None,
+    run_mode: str = RUN_MODE_RESEARCH,
 ) -> Tuple[pd.DatetimeIndex, Dict[str, np.ndarray], List[Dict[str, float]]]:
     if window <= 1:
         raise ValueError("window 必须 > 1")
@@ -325,6 +496,8 @@ def compute_rolling_corr_classes(
         data_dir,
         [etf.code for item in classes for etf in item.etfs],
         [etf.name for item in classes for etf in item.etfs],
+        as_of=as_of,
+        run_mode=run_mode,
     )
     returns = _class_returns(data, classes, start_date)
     labels = list(returns.columns.astype(str))
@@ -420,11 +593,16 @@ def compute_class_consistency(
     data_dir: Path,
     classes: List[ClassSpec],
     start_date: pd.Timestamp,
+    *,
+    as_of: object = None,
+    run_mode: str = RUN_MODE_RESEARCH,
 ) -> List[Dict[str, float]]:
     data = _load_adj_nav(
         data_dir,
         [etf.code for item in classes for etf in item.etfs],
         [etf.name for item in classes for etf in item.etfs],
+        as_of=as_of,
+        run_mode=run_mode,
     )
     asset_returns = _returns_wide(data, start_date)
     available = list(asset_returns.columns.astype(str))

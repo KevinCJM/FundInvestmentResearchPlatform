@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import DataDownloadWorkspace from '../components/data-sources/DataDownloadWorkspace'
 import DataHealthRefreshPanel from '../components/dashboard/DataHealthRefreshPanel'
 import DataWorkspaceNav from '../components/data-sources/DataWorkspaceNav'
+import DataStoragePanel from '../components/data-sources/DataStoragePanel'
 
 export default function DataManagement() {
   const [legacyOpen, setLegacyOpen] = useState(false)
@@ -24,6 +25,7 @@ export default function DataManagement() {
           </Link>
         </div>
       </header>
+      <DataStoragePanel />
       <DataDownloadWorkspace />
       <details className="rounded-xl border border-slate-200 bg-white p-4" onToggle={event => setLegacyOpen(event.currentTarget.open)}>
         <summary className="cursor-pointer text-sm font-semibold">原 Tushare 全市场任务与旧快照维护</summary>

@@ -111,11 +111,11 @@ describe('productPools service', () => {
       name: '投前研究域',
       research_date: '2026-09-04',
       version_ids: ['pool-version-1'],
-    })).rejects.toMatchObject<ProductPoolApiError>({
+    })).rejects.toMatchObject({
       status: 422,
       code: 'PRODUCT_POOL_REVIEW_INCOMPLETE',
       field: 'members',
       message: '仍有产品未复核。',
-    })
+    } satisfies Partial<ProductPoolApiError>)
   })
 })

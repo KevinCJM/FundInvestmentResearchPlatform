@@ -271,12 +271,14 @@ const settings: StageDefinition = {
     { id: 'data-model', label: '系统数据模型', description: '查看外部数据需要映射的标准表与字段；系统内部结构在高级入口中查看。', path: '/settings/data-model', status: 'available' },
     { id: 'data-quality', label: '数据质量', description: '监控完整性、及时性、唯一性、产品映射、账户对账和异常处理状态。', path: '/settings/data-quality', status: 'partial' },
     { id: 'research-data-lab', label: '研究数据实验室', description: '搜索并检查指数、宏观、指标版本与上传序列，研究覆盖、缺失、PIT 和时序表现后加入计算图。', path: '/settings/research-data-lab', status: 'available' },
-    { id: 'pit-snapshots', label: 'PIT 时点快照', description: '管理历史时点数据切片、可用版本和数据血缘。', path: '/settings/pit-snapshots', status: 'prototype' },
+    { id: 'pit-snapshots', label: 'PIT 时点快照', description: '体检每张表的事件时间与可得时间、公告滞后与 PIT 等级，并对数据整体封版，供研究上下文引用。', path: '/settings/pit-snapshots', status: 'available' },
     { id: 'research-parameters', label: '研究口径与参数中心', description: '维护可复用、版本化的基准、无风险利率、数据处理和计算口径模板，供产品与组合研究引用。', path: '/settings/research-parameters', status: 'prototype' },
     { id: 'indicators-models', label: '指标与模型管理', description: '维护标量、矩阵及组合指标的定义、公式、范围和版本。', path: '/settings/indicators-models', status: 'partial' },
+    { id: 'factor-research', label: '因子研究中心', description: '构建和检验共享因子，区分比较基准、模型与数据来源，发布研究版本并接入产品池和投研证据。', path: '/settings/factor-research', status: 'available' },
     { id: 'scenario-algorithms', label: '情景算法中心', description: '用版本化 Regime Graph 编排数据、算子、模型和状态处理；情景模拟与压测保持独立入口。', path: '/settings/scenario-algorithms', status: 'available' },
     { id: 'backtest-center', label: '统一回测中心', description: '管理回测引擎、规则模板、运行任务和结果档案。', path: '/settings/backtest-center', status: 'prototype' },
     { id: 'system-parameters', label: '系统参数', description: '管理枚举字典、时区、精度、功能开关和运行环境等技术参数。', path: '/settings/system-parameters', status: 'prototype' },
+    { id: 'language-terminology', label: '语言与术语', description: '查看内置系统翻译，维护独立的业务术语与多语言覆盖。', path: '/settings/language-terminology', status: 'available' },
   ],
 }
 

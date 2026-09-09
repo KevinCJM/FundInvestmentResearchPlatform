@@ -11,7 +11,6 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from contextlib import ExitStack
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -28,7 +27,6 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 
 from cal_indicators.indicator_runtime import IndicatorRuntime
 from cal_indicators.builtin_batch_kernel import (
-    BUILTIN_METRIC_CODE,
     STATUS_DIVIDE_BY_ZERO,
     STATUS_DOMAIN_ERROR,
     STATUS_INSUFFICIENT_SAMPLE,
@@ -85,9 +83,7 @@ from compute_policy import NJIT_BACKEND, validate_execution_audit, validate_exec
 
 from .parallel_engine import (
     AdaptiveComputeEngine,
-    SharedArrayOwner,
     plan_scoring_execution_audit,
-    score_plan_matrix,
 )
 from .portfolio_repository import PortfolioRunRepository
 from .portfolio_numba import (
@@ -103,6 +99,8 @@ from .presentation import (
     ui_exposed,
 )
 from .periods import SUPPORTED_PERIODS, period_cache_reference, period_metadata
+from .drawdown_indicator import independent_drawdown_indicators
+from .formula_source import editable_formula_latex
 from .repository import (
     IndicatorRepository,
     PlanRepository,
@@ -121,16 +119,12 @@ from .rolling_scalar import (
     MAX_ROLLING_WINDOW_OBSERVATIONS,
     MIN_ROLLING_WINDOW_OBSERVATIONS,
     ROLLING_SCALAR_TRANSFORM_VERSION,
-    lift_scalar_expression,
-    scalar_definition_hash,
-    validate_scalar_rolling_source,
 )
 from .series_definitions import (
     TIME_SERIES_OUTPUT_CONTRACT,
     TIME_SERIES_RESULT_KIND,
     normalize_time_series_definition,
     series_output_measure_catalog,
-    rolling_scalar_time_series_definition,
     time_series_builtin_indicators,
 )
 from .series_service import (
@@ -524,6 +518,7 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         items
         + typed_indicators
         + time_series_builtin_indicators(timestamp, typed_indicators)
+        + independent_drawdown_indicators()
     )
 
 
@@ -665,6 +660,7 @@ def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
         {
             **common,
             "id": f"builtin-{item[0]}",
+            **({"catalog_status_override": "compatibility", "ui_exposed_override": False} if item[0] == "maximum-drawdown-v2" else {}),
             "name": item[1],
             "description": item[4],
             "expression": item[2],
@@ -785,6 +781,9 @@ def _resolved_built_in_indicators() -> list[dict[str, Any]]:
     return _built_in_indicators()
 
 
+from .plan_scoring import score_result_rows
+
+
 class CustomIndicatorService:
     def __init__(
         self,
@@ -867,6 +866,7 @@ class CustomIndicatorService:
         single_batch_count = 0
         evaluation_batch_count = 0
         time_series_count = 0
+        shared_groups: dict[tuple[str, ...], list[tuple[Any, dict[str, Any]]]] = {}
         for definition in self.indicators.list_all_versions():
             dsl_version = str(definition.get("dsl_version") or LEGACY_DSL_VERSION)
             context_kind = str(definition.get("context_kind") or "single_product")
@@ -926,10 +926,17 @@ class CustomIndicatorService:
                     )
                     persist_numba_batch_plan(compiled_batch, runtime_root)
                     single_batch_count += 1
+                    shared_groups.setdefault(physical_columns, []).append((plan, definition))
             except Exception:
                 failures.append(
                     f"{definition.get('id')}@{definition.get('revision')}"
                 )
+        for columns, entries in shared_groups.items():
+            try:
+                shared = compile_numba_batch_plan(tuple(plan for plan, _ in entries), tuple(definition for _, definition in entries), columns)
+                persist_numba_batch_plan(shared, runtime_root)
+            except Exception:
+                failures.append("shared-catalog:" + ",".join(columns))
         for saved_plan in self.plans.list():
             grouped: dict[
                 tuple[tuple[str, ...], str],
@@ -1409,6 +1416,14 @@ class CustomIndicatorService:
                 decorated["display_latex"] = None
         else:
             decorated["display_latex"] = decorated.get("expression")
+        # Editor source is reversible LaTeX, separate from both stored source
+        # and the abbreviated mathematical preview. Never rewrite revisions.
+        sources = [decorated, *(decorated.get("series_outputs") or [])]
+        for item in sources:
+            try:
+                item["editable_latex"] = editable_formula_latex(str(item.get("expression") or ""))
+            except (SyntaxError, ValueError, TypedDslError):
+                item["editable_latex"] = None
         decorated["indicator_type"] = indicator_type(decorated)
         decorated["category_id"] = decorated["indicator_type"]
         decorated["category_label"] = INDICATOR_TYPE_LABELS[decorated["indicator_type"]]
@@ -1490,10 +1505,10 @@ class CustomIndicatorService:
         # every engine period. The concrete period is selected only when running.
         periods = list(SUPPORTED_PERIODS)
         display_format = str(fields.get("display_format", "number"))
-        if display_format not in {"number", "percent"}:
+        if display_format not in {"number", "percent", "date"}:
             raise ValidationError("INVALID_DISPLAY_FORMAT", "不支持的显示格式。", field="display_format")
         direction = str(fields.get("direction", "higher_better"))
-        if direction not in {"higher_better", "lower_better"}:
+        if direction not in {"neutral", "higher_better", "lower_better"}:
             raise ValidationError("INVALID_DIRECTION", "不支持的优劣方向。", field="direction")
         requested_indicator_type = str(
             fields.get("indicator_type")
@@ -1925,6 +1940,7 @@ class CustomIndicatorService:
             "python_expression": inferred.get("python_expression"),
             "latex": inferred.get("latex"),
             "display_latex": inferred.get("display_latex"),
+            "editable_latex": inferred.get("editable_latex"),
             "math_notation_version": inferred.get("math_notation_version"),
             "dag": dag,
             "output_type": inferred["inferred_type"],
@@ -2014,6 +2030,8 @@ class CustomIndicatorService:
         }
 
     def validate(self, fields: dict[str, Any]) -> dict[str, Any]:
+        if str(fields.get("result_kind") or "scalar") not in {"scalar", "time_series"}:
+            return self._invalid_validation({"code": "INVALID_RESULT_KIND", "message": "一个标量指标只定义一个结果。", "field": "result_kind"})
         if str(fields.get("result_kind") or "scalar") == TIME_SERIES_RESULT_KIND:
             try:
                 self._verify_rolling_source_fields(fields)
@@ -2095,46 +2113,6 @@ class CustomIndicatorService:
             "dag": None,
         }
 
-    def _verify_rolling_source_contract(
-        self,
-        definition: dict[str, Any],
-    ) -> None:
-        metadata = definition.get("rolling_source")
-        if (
-            not isinstance(metadata, dict)
-            or bool(metadata.get("detached"))
-            or bool(definition.get("read_only"))
-        ):
-            return
-        indicator_id = str(metadata.get("indicator_id") or "")
-        revision = int(metadata.get("indicator_revision") or 0)
-        source = self._decorate_definition(
-            self.indicators.get(indicator_id, revision)
-        )
-        validate_scalar_rolling_source(source)
-        expected_hash = str(metadata.get("definition_hash") or "")
-        actual_hash = scalar_definition_hash(source)
-        if not expected_hash or expected_hash != actual_hash:
-            raise ValidationError(
-                "ROLLING_SOURCE_REVISION_MISMATCH",
-                "滚动指标绑定的源标量版本已不匹配，请重新生成滚动指标草稿。",
-                field="rolling_source",
-            )
-        lifted = lift_scalar_expression(
-            str(source.get("expression") or ""),
-            window_observations=metadata.get("window_observations"),
-            min_periods=metadata.get("min_periods"),
-        )
-        outputs = list(definition.get("series_outputs") or [])
-        if len(outputs) != 1 or str(outputs[0].get("expression") or "") != str(
-            lifted["expression"]
-        ):
-            raise ValidationError(
-                "ROLLING_SOURCE_FORMULA_MISMATCH",
-                "滚动公式已偏离锁定的源标量指标；请重新生成，或明确解除来源绑定后再编辑。",
-                field="series_outputs",
-            )
-
     def _compile_or_raise(self, fields: dict[str, Any]) -> dict[str, Any]:
         result = self.validate(fields)
         if not result["valid"]:
@@ -2169,6 +2147,14 @@ class CustomIndicatorService:
         definition["output_measure"] = str(
             validation.get("output_measure") or definition.get("output_measure") or "dimensionless"
         )
+        if definition["output_measure"] == "date":
+            definition.update(value_type="date", display_format="date", precision=0, unit="", direction="neutral")
+        elif definition["output_measure"] == "calendar_days":
+            definition.update(value_type="duration", duration_unit="calendar_day", display_format="number", precision=0, unit="天")
+        elif definition.get("display_format") == "date":
+            raise ValidationError("DATE_FORMAT_TYPE_MISMATCH", "只有日期算子的结果可以使用日期格式。", field="display_format")
+        else:
+            definition["value_type"] = "number"
         definition["numeric_kernel_version"] = str(
             validation.get("kernel_version") or NUMERIC_KERNEL_VERSION
         )
@@ -2336,11 +2322,25 @@ class CustomIndicatorService:
                         int(item["indicator_revision"]),
                     )
                 )
+                presentation = copy.deepcopy(definition.get("presentation") or {})
+                if definition.get("result_kind") == TIME_SERIES_RESULT_KIND:
+                    channel = next((value for value in definition.get("series_outputs", [])
+                                    if value["id"] == item.get("channel_id")), None)
+                    if channel is None or item.get("reducer") != "last_finite":
+                        raise ValidationError("SNAPSHOT_SERIES_CHANNEL_REQUIRED", "时序快照必须引用有效通道及末个有限值归约。")
+                    presentation.update(
+                        name=f"{definition['name']} · {channel['label']}",
+                        channel_id=channel["id"], reducer="last_finite",
+                        display_format=channel["display_format"], unit=channel["unit"],
+                        precision=channel["precision"], value_type="number",
+                        value_scale=100.0 if channel["display_format"] == "percent" else 1.0,
+                        output_measure=channel.get("resolved_output_measure") or channel.get("output_measure", "dimensionless"),
+                    )
                 resolved.update(
                     {
-                        "name": definition["name"],
+                        "name": presentation.get("name") or definition["name"],
                         "source": definition["source"],
-                        "presentation": definition.get("presentation"),
+                        "presentation": presentation,
                         "status": "ready",
                         "status_message": "将在数据刷新后预计算并写入产品快照。",
                     }
@@ -2587,7 +2587,7 @@ class CustomIndicatorService:
                     compiled_group,
                     self.workspace_data_dir / ".indicator_runtime",
                 )
-        return {"singletons": singleton_count, "batches": len(groups)}
+        return {"singletons": singleton_count, "batches": len(groups), "time_series": time_series_count}
 
     @staticmethod
     def _validate_targets(
@@ -2612,6 +2612,47 @@ class CustomIndicatorService:
                 field="targets",
             )
         return normalized
+
+    def prepare_evaluation(
+        self, *, indicator_ids: list[str], indicator_refs: Optional[list[dict[str, Any]]] = None,
+        inline_definition: Optional[dict[str, Any]] = None, compile_token: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Explicit preparation endpoint; no market I/O or metric evaluation.
+
+        Definitions remain independent. Only their compiler-owned execution
+        nodes are merged. Formal evaluate never specializes a new dispatcher.
+        """
+        references = indicator_refs or []
+        if references and (indicator_ids or inline_definition is not None):
+            raise ValidationError("INDICATOR_SOURCE_CONFLICT", "指标引用与其他来源不能同时提供。")
+        versions: dict[str, int] = {}
+        requested: dict[str, int | None] = {}
+        for item in references:
+            key = str(item["indicator_id"])
+            revision = int(item["indicator_revision"]) if item.get("indicator_revision") is not None else None
+            if key in requested and requested[key] != revision:
+                raise ValidationError("INDICATOR_VERSION_CONFLICT", "同一次计算中的指标必须使用一个明确版本。")
+            requested[key] = revision
+            if revision is not None:
+                versions[key] = revision
+        ids = [str(item["indicator_id"]) for item in references] if references else indicator_ids
+        definitions = self._resolve_evaluation_definitions(ids, inline_definition, versions, compile_token)
+        grouped: dict[tuple[str, ...], list[tuple[dict[str, Any], TypedIndicatorRuntime]]] = {}
+        for definition in definitions:
+            if definition.get("context_kind", "single_product") != "single_product":
+                raise ValidationError("CONTEXT_KIND_MISMATCH", "此准备入口仅支持单产品指标。")
+            runtime = self._warm_runtime(definition, "ALL")
+            dependencies = self._physical_dependency_signature(runtime.plan.context_requirements)
+            grouped.setdefault(dependencies, []).append((definition, runtime))
+        audits = []
+        for dependencies, entries in grouped.items():
+            columns = tuple(dict.fromkeys(["adjusted_nav", *[name for name in dependencies if name not in {"returns", "log_returns", "adjusted_nav"}]]))
+            compiled = compile_numba_batch_plan(tuple(runtime.plan for _, runtime in entries), tuple(item for item, _ in entries), columns)
+            persist_numba_batch_plan(compiled, self.workspace_data_dir / ".indicator_runtime")
+            audits.append(compiled.metadata())
+        return {"prepared": True, "plans": audits, "indicator_refs": [
+            {"indicator_id": item["id"], "indicator_revision": item["revision"]} for item in definitions if item.get("id")
+        ]}
 
     def _resolve_evaluation_definitions(
         self,
@@ -2822,6 +2863,8 @@ class CustomIndicatorService:
             "indicator_id": definition.get("id"),
             "indicator_revision": definition.get("revision"),
             "indicator_name": definition["name"],
+            "result_kind": "scalar",
+            "value_type": metric_presentation(definition)["value_type"],
             "target": {**target, "name": target_name},
             "period": period,
             "unit": definition.get("unit", ""),
@@ -2951,13 +2994,17 @@ class CustomIndicatorService:
                 if isinstance(row, pd.DataFrame):
                     row = row.iloc[-1]
                 raw_value = row.get(field)
-                value = (
-                    float(raw_value)
-                    if raw_value is not None
-                    and not pd.isna(raw_value)
-                    and np.isfinite(float(raw_value))
-                    else None
-                )
+                value = None
+                if raw_value is not None and not pd.isna(raw_value):
+                    try:
+                        if base["presentation"].get("value_type") == "date":
+                            # Date snapshot columns contain ISO dates, not numeric
+                            # epoch days to be interpreted by browser formatting.
+                            value = datetime.strptime(str(raw_value), "%Y-%m-%d").date().isoformat()
+                        elif np.isfinite(float(raw_value)):
+                            value = float(raw_value)
+                    except (TypeError, ValueError, OverflowError):
+                        value = None
                 raw_status = row.get(f"{field}__status")
                 status = (
                     ""
@@ -3986,7 +4033,7 @@ class CustomIndicatorService:
                 )
         record: dict[str, Any] = {
             **base,
-            "value": value,
+            "value": self._public_value(definition, value),
             "status": "ok" if value is not None and not warnings else "warning",
             "warnings": warnings,
             "window": self._window_payload(window),
@@ -4010,10 +4057,20 @@ class CustomIndicatorService:
         indicator_versions: Optional[dict[str, int]] = None,
         prefer_snapshot: bool = True,
         compile_token: Optional[str] = None,
+        indicator_refs: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         period = period.upper()
         if period not in SUPPORTED_PERIODS:
             raise ValidationError("INVALID_PERIOD", "不支持的评价周期。", field="period")
+        if indicator_refs:
+            if indicator_ids or inline_definition is not None:
+                raise ValidationError("INDICATOR_SOURCE_CONFLICT", "结果引用与整指标不能同时提交。")
+            ids = [str(item["indicator_id"]) for item in indicator_refs]
+            if len(set(ids)) != len(ids):
+                raise ValidationError("DUPLICATE_INDICATOR", "同一请求不能重复选择指标。")
+            versions = {str(item["indicator_id"]): int(item["indicator_revision"]) for item in indicator_refs if item.get("indicator_revision") is not None}
+            return self.evaluate(indicator_ids=ids, inline_definition=None, targets=targets, period=period,
+                                 as_of=as_of, include_series=include_series, indicator_versions=versions, prefer_snapshot=prefer_snapshot)
         definitions = self._resolve_evaluation_definitions(
             indicator_ids,
             inline_definition,
@@ -4057,6 +4114,17 @@ class CustomIndicatorService:
             if snapshot_result is not None:
                 return snapshot_result
 
+        generation_before = market_data_generation(self.market_data_dir)
+        request_cache_key = "independent-request:" + hashlib.sha256(repr((
+            tuple(self._definition_cache_key(item) for item in definitions), normalized_targets,
+            period, as_of, period_cache_reference(as_of), generation_before, include_series,
+        )).encode()).hexdigest()
+        cached_request = self.cache.get(request_cache_key)
+        if cached_request is not None:
+            cached_request["cache"] = {"hits": combinations, "misses": 0}
+            cached_request["execution"]["executed_batches"] = 0
+            cached_request["execution"]["result_cache_hit"] = True
+            return cached_request
         runtimes = {
             self._definition_cache_key(item): self._compile_runtime(item, period)
             for item in definitions
@@ -4226,7 +4294,6 @@ class CustomIndicatorService:
                 )
                 if (
                     fused is not None
-                    and fused[1] == STATUS_OK
                     and product_series is not None
                     and window is not None
                     and window_error is None
@@ -4282,11 +4349,14 @@ class CustomIndicatorService:
             + batch_execution_audits
             + [runtime_validation_execution_audit(), _service_numeric_execution_audit()]
         )
-        return {
+        response = {
             "results": results,
             "summary": {"total": len(results), **statuses},
             "cache": {"hits": hits, "misses": misses},
             "execution": {
+                "executed_batches": len(batch_execution_audits),
+                "result_cache_hit": False,
+                "shared_plans": batch_execution_audits,
                 **kernel_registry_status(),
                 **execution_audit,
                 "compile_cache_hits": len(runtimes),
@@ -4300,6 +4370,10 @@ class CustomIndicatorService:
                 "python_operator_calls": 0,
             },
         }
+        if generation_before != market_data_generation(self.market_data_dir):
+            raise ValidationError("DATA_GENERATION_CHANGED", "计算期间数据版本改变，请重新计算。")
+        self.cache.put(request_cache_key, response)
+        return response
 
     def evaluate_series(
         self,
@@ -5260,6 +5334,8 @@ class CustomIndicatorService:
                     int(requested_revision) if requested_revision is not None else None,
                 )
             )
+            if definition.get("output_measure") == "date" or definition.get("value_type") == "date":
+                raise ValidationError("DATE_NOT_SCORABLE", "日期指标只能展示或筛选，不能参与加权评分。", field="indicators")
             if definition.get("context_kind") != "single_product":
                 raise ValidationError(
                     "CONTEXT_KIND_MISMATCH",
@@ -5487,30 +5563,27 @@ class CustomIndicatorService:
     ) -> tuple[str, ...]:
         """Collapse runtime scalars onto their underlying physical data inputs."""
 
-        physical: list[str] = []
+        # The dates column is a view of the same physical NAV axis, not an
+        # extra data dependency. All NAV-derived metrics therefore share one
+        # execution partition, including rate, date and duration metrics.
+        physical: list[str] = ["adjusted_nav", "observation_dates"]
         for dependency in canonicalize_variables(dependencies):
             definition = get_variable(dependency)
-            if dependency in {"returns", "log_returns", "adjusted_nav"}:
-                physical.append(dependency)
-            elif definition is not None and definition.kind != "scalar":
+            if dependency in {"returns", "log_returns", "adjusted_nav", "observation_dates"}:
+                continue
+            if definition is not None and definition.kind != "scalar":
                 physical.append(dependency)
         return canonicalize_variables(physical)
 
     @staticmethod
-    def _fast_builtin_code(definition: dict[str, Any]) -> int | None:
-        direct = BUILTIN_METRIC_CODE.get(str(definition.get("id") or ""))
-        if direct is not None:
-            return direct
-        if not str(definition.get("dsl_version") or "").startswith("2."):
+    def _public_value(definition: dict[str, Any], value: float | None) -> float | str | None:
+        if value is None or not math.isfinite(float(value)):
             return None
-        expression = normalize_variable_latex(str(definition.get("expression") or ""))
-        for built_in in _built_in_indicators():
-            code = BUILTIN_METRIC_CODE.get(str(built_in.get("id") or ""))
-            if code is not None and normalize_variable_latex(
-                str(built_in.get("expression") or "")
-            ) == expression:
-                return code
-        return None
+        if definition.get("output_measure") == "date":
+            if float(value) != int(value):
+                raise ValidationError("INVALID_DATE_RESULT", "日期结果必须对应完整自然日。")
+            return str(np.datetime64(int(value), "D"))
+        return float(value)
 
     @classmethod
     def _precomputed_result(
@@ -5529,8 +5602,11 @@ class CustomIndicatorService:
             window=window,
         )
         warnings = [*window.warnings, *cls._partial_input_warnings(requirements)]
-        output_value: float | None = value if status_code == STATUS_OK else None
+        output_value = cls._public_value(definition, value) if status_code == STATUS_OK else None
         warning_by_status = {
+            7: {"code": "RESULT_UNAVAILABLE", "message": "当前结果不可得，未填零。"},
+            9: {"code": "NO_DRAWDOWN_EPISODE", "message": "窗口内没有回撤区间，相关日期和持续时间不可得。"},
+            10: {"code": "DRAWDOWN_NOT_RECOVERED", "message": "最后一次最大回撤尚未恢复，恢复日期及相应持续时间不可得。"},
             STATUS_INSUFFICIENT_SAMPLE: {
                 "code": "INSUFFICIENT_SAMPLE",
                 "message": "指标所需的有效样本不足。",
@@ -5571,267 +5647,6 @@ class CustomIndicatorService:
             "window": cls._window_payload(window),
             "input_requirements": requirements,
             "target_data": cls._target_data_payload(source),
-        }
-
-    def _run_fused_builtin_groups(
-        self,
-        *,
-        prepared: list[dict[str, Any]],
-        product_ids: list[str],
-        series_by_dependency: dict[
-            tuple[str, ...], dict[str, ProductVariableSeries]
-        ],
-        selected_windows: dict[
-            tuple[tuple[str, ...], str, str],
-            tuple[VariablePeriodWindow | None, ValidationError | None],
-        ],
-        thread_budget: int,
-    ) -> tuple[
-        dict[tuple[int, int], tuple[float, int]],
-        dict[str, Any],
-    ]:
-        """Execute supported scalar built-ins over shared arrays in workers."""
-
-        empty_meta = {
-            "metric_items": 0,
-            "worker_pids": [],
-            "shared_memory_bytes": 0,
-            "mmap_bytes": 0,
-            "parallel_tasks": 0,
-        }
-        # Production starts and warms the pool in FastAPI lifespan. Keeping this
-        # fallback makes CLI/tests deterministic and avoids compiling at request time.
-        if not self.compute_engine.status()["started"]:
-            return {}, empty_meta
-
-        grouped_entries: dict[
-            tuple[str, ...], dict[str, list[tuple[dict[str, Any], int]]]
-        ] = {}
-        for entry in prepared:
-            code = self._fast_builtin_code(entry["definition"])
-            if not entry["typed"] or code is None:
-                continue
-            grouped_entries.setdefault(entry["data_dependencies"], {}).setdefault(
-                str(entry["item"]["period"]), []
-            ).append((entry, code))
-        if not grouped_entries:
-            return {}, empty_meta
-
-        threshold = max(
-            1,
-            int(
-                os.getenv(
-                    "INDICATOR_SHM_THRESHOLD_BYTES",
-                    str(512 * 1024 * 1024),
-                )
-            ),
-        )
-        precomputed: dict[tuple[int, int], tuple[float, int]] = {}
-        task_specs: list[dict[str, Any]] = []
-        shared_bytes = 0
-        mmap_bytes = 0
-        fast_metric_items: set[int] = set()
-
-        with ExitStack() as stack:
-
-            def own(array: np.ndarray) -> SharedArrayOwner:
-                nonlocal shared_bytes, mmap_bytes
-                owner = stack.enter_context(
-                    SharedArrayOwner(
-                        array,
-                        self.compute_engine.runtime_dir,
-                        shm_threshold_bytes=threshold,
-                    )
-                )
-                if owner.descriptor.backend == "shm":
-                    shared_bytes += owner.descriptor.nbytes
-                else:
-                    mmap_bytes += owner.descriptor.nbytes
-                return owner
-
-            for dependencies, entries_by_period in grouped_entries.items():
-                sources = series_by_dependency[dependencies]
-                physical_columns = list(
-                    dict.fromkeys(
-                        [
-                            "adjusted_nav",
-                            *[
-                                name
-                                for name in dependencies
-                                if name
-                                not in {"returns", "log_returns", "adjusted_nav"}
-                            ],
-                        ]
-                    )
-                )
-                offsets = np.zeros(len(product_ids) + 1, dtype=np.int64)
-                for row_index, product_id in enumerate(product_ids):
-                    source = sources.get(product_id)
-                    offsets[row_index + 1] = offsets[row_index] + (
-                        len(source.frame) if source is not None else 0
-                    )
-                total_points = int(offsets[-1])
-                if total_points == 0:
-                    continue
-                packed_values = np.empty(
-                    (len(physical_columns), total_points), dtype=np.float64
-                )
-                for row_index, product_id in enumerate(product_ids):
-                    source = sources.get(product_id)
-                    start = int(offsets[row_index])
-                    end = int(offsets[row_index + 1])
-                    if source is None or start == end:
-                        continue
-                    for value_index, column in enumerate(physical_columns):
-                        if column not in source.frame.columns:
-                            packed_values[value_index, start:end] = np.nan
-                        else:
-                            packed_values[value_index, start:end] = source.frame[
-                                column
-                            ].to_numpy(dtype=np.float64, copy=False)
-                values_owner = own(np.ascontiguousarray(packed_values))
-
-                for period, period_entries in entries_by_period.items():
-                    starts = np.full(len(product_ids), -1, dtype=np.int64)
-                    ends = np.full(len(product_ids), -1, dtype=np.int64)
-                    observation_total = 0
-                    for row_index, product_id in enumerate(product_ids):
-                        window, error = selected_windows[
-                            (dependencies, period, product_id)
-                        ]
-                        if window is None or error is not None:
-                            continue
-                        local_start = int(window.frame.index[0])
-                        local_end = int(window.frame.index[-1]) + 1
-                        starts[row_index] = int(offsets[row_index]) + local_start
-                        ends[row_index] = int(offsets[row_index]) + local_end
-                        observation_total += max(0, local_end - local_start - 1)
-
-                    codes = np.ascontiguousarray(
-                        [code for _, code in period_entries], dtype=np.int64
-                    )
-                    primary = np.full(codes.size, -1, dtype=np.int64)
-                    secondary = np.full(codes.size, -1, dtype=np.int64)
-                    column_index = {
-                        name: index for index, name in enumerate(physical_columns)
-                    }
-                    for metric_index, code in enumerate(codes):
-                        if code in (30, 31):
-                            primary[metric_index] = column_index.get("volume", -1)
-                        elif code == 32:
-                            primary[metric_index] = column_index.get("market_high", -1)
-                        elif code == 33:
-                            primary[metric_index] = column_index.get("market_low", -1)
-                        elif code == 34:
-                            primary[metric_index] = column_index.get("market_high", -1)
-                            secondary[metric_index] = column_index.get("market_low", -1)
-                    risk_free = np.ascontiguousarray(
-                        [
-                            self._risk_free_context(entry["definition"])[
-                                "risk_free_rate_per_observation"
-                            ]
-                            for entry, _ in period_entries
-                        ],
-                        dtype=np.float64,
-                    )
-                    output_owner = own(
-                        np.full(
-                            (len(product_ids), len(period_entries)),
-                            np.nan,
-                            dtype=np.float64,
-                        )
-                    )
-                    status_owner = own(
-                        np.full(
-                            (len(product_ids), len(period_entries)),
-                            STATUS_INSUFFICIENT_SAMPLE,
-                            dtype=np.int16,
-                        )
-                    )
-                    task_specs.append(
-                        {
-                            "values": values_owner,
-                            "starts": own(np.ascontiguousarray(starts)),
-                            "ends": own(np.ascontiguousarray(ends)),
-                            "codes": own(codes),
-                            "primary": own(np.ascontiguousarray(primary)),
-                            "secondary": own(np.ascontiguousarray(secondary)),
-                            "risk_free": own(risk_free),
-                            "output": output_owner,
-                            "statuses": status_owner,
-                            "entries": period_entries,
-                            "observation_total": observation_total,
-                        }
-                    )
-                    fast_metric_items.update(
-                        int(entry["index"]) for entry, _ in period_entries
-                    )
-
-            if not task_specs:
-                return {}, {
-                    **empty_meta,
-                    "shared_memory_bytes": shared_bytes,
-                    "mmap_bytes": mmap_bytes,
-                }
-
-            use_inner_parallel = len(task_specs) == 1 and bool(
-                len(product_ids) >= 32
-                and task_specs[0]["observation_total"]
-                >= self.compute_engine.prange_min_elements
-                and thread_budget > 1
-            )
-
-            def submit_all() -> list[Any]:
-                return [
-                    self.compute_engine.submit_builtin_shared(
-                        values=task["values"].descriptor,
-                        starts=task["starts"].descriptor,
-                        ends=task["ends"].descriptor,
-                        codes=task["codes"].descriptor,
-                        primary_indices=task["primary"].descriptor,
-                        secondary_indices=task["secondary"].descriptor,
-                        risk_free=task["risk_free"].descriptor,
-                        output=task["output"].descriptor,
-                        statuses=task["statuses"].descriptor,
-                        parallel=use_inner_parallel,
-                        thread_budget=(thread_budget if use_inner_parallel else 1),
-                    )
-                    for task in task_specs
-                ]
-
-            futures = submit_all()
-            try:
-                outcomes = [self.compute_engine.wait(future) for future in futures]
-            except Exception:
-                self.compute_engine.restart()
-                outcomes = [
-                    self.compute_engine.wait(future) for future in submit_all()
-                ]
-            worker_pids = {int(outcome["worker_pid"]) for outcome in outcomes}
-            for task in task_specs:
-                output = np.asarray(task["output"].view())
-                statuses = np.asarray(task["statuses"].view())
-                for metric_position, (entry, _) in enumerate(task["entries"]):
-                    output_index = int(entry["index"])
-                    dependencies = entry["data_dependencies"]
-                    period = str(entry["item"]["period"])
-                    for row_index, product_id in enumerate(product_ids):
-                        window, error = selected_windows[
-                            (dependencies, period, product_id)
-                        ]
-                        if window is None or error is not None:
-                            continue
-                        precomputed[(output_index, row_index)] = (
-                            float(output[row_index, metric_position]),
-                            int(statuses[row_index, metric_position]),
-                        )
-
-        return precomputed, {
-            "metric_items": len(fast_metric_items),
-            "worker_pids": sorted(worker_pids),
-            "shared_memory_bytes": shared_bytes,
-            "mmap_bytes": mmap_bytes,
-            "parallel_tasks": int(use_inner_parallel),
         }
 
     def _run_fused_typed_groups(
@@ -5914,7 +5729,9 @@ class CustomIndicatorService:
                     if source is None or start == end:
                         continue
                     for value_index, column in enumerate(physical_columns):
-                        if column in source.frame.columns:
+                        if column == "observation_dates":
+                            packed_values[value_index, start:end] = source.frame["date"].to_numpy(dtype="datetime64[D]").astype(np.float64)
+                        elif column in source.frame.columns:
                             packed_values[value_index, start:end] = source.frame[
                                 column
                             ].to_numpy(dtype=np.float64, copy=False)
@@ -5978,28 +5795,11 @@ class CustomIndicatorService:
                                 }
                             ],
                         )
-                    # Arbitrary preview selections have combinatorial batch
-                    # shapes.  Reuse their startup-warmed singleton plans
-                    # instead of compiling a new fused dispatcher in a request.
-                    for entry in entries:
-                        singleton = get_cached_numba_batch_plan(
-                            (entry["runtime"].plan,),
-                            (entry["definition"],),
-                            physical_columns,
-                        )
-                        if singleton is None:
-                            raise ValidationError(
-                                "NJIT_BATCH_PLAN_NOT_WARMED",
-                                "指标批量计划未在显式编译阶段预热；运行已关闭，未回退到 Python。",
-                                field="indicator_revision",
-                                diagnostics=[
-                                    {
-                                        "indicator_id": entry["definition"].get("id"),
-                                        "indicator_revision": entry["definition"].get("revision"),
-                                    }
-                                ],
-                            )
-                        execution_groups.append(([entry], singleton))
+                    raise ValidationError(
+                        "NJIT_BATCH_PLAN_NOT_WARMED",
+                        "请先准备本次所选指标的共享计算计划；系统不会逐项重复执行或在计算时临时编译。",
+                        field="indicator_ids",
+                    )
 
                 packed_contiguous = np.ascontiguousarray(packed_values)
                 starts_contiguous = np.ascontiguousarray(starts)
@@ -6474,76 +6274,10 @@ class CustomIndicatorService:
         score_started = time.perf_counter()
         product_count = len(target_keys)
         metric_count = len(plan["indicators"])
-        raw_matrix = np.full((product_count, metric_count), np.nan, dtype=np.float64)
-        concrete_values: list[list[dict[str, Any]]] = []
-        for row_index, value_slots in enumerate(values_by_target):
-            row_values: list[dict[str, Any]] = []
-            for metric_index, value in enumerate(value_slots):
-                if value is None:
-                    raise RuntimeError("评价方案批量执行未填充完整的指标结果。")
-                row_values.append(value)
-                if value["value"] is not None:
-                    raw_matrix[row_index, metric_index] = float(value["value"])
-            concrete_values.append(row_values)
-
-        weights = np.asarray(
-            [float(item["weight"]) for item in plan["indicators"]],
-            dtype=np.float64,
-        )
-        lower_better = np.asarray(
-            [item["direction"] == "lower_better" for item in plan["indicators"]],
-            dtype=np.int8,
-        )
-        (
-            normalized,
-            contributions,
-            scores,
-            complete_mask,
-            ranks,
-            ranked_indices,
-            effective_weights,
-            total_weight,
-        ) = score_plan_matrix(raw_matrix, weights, lower_better)
+        rows, ranked_count, total_weight = score_result_rows(plan, values_by_target, target_names)
         parallel_scoring = False
-        for row_index, values in enumerate(concrete_values):
-            for metric_index, value in enumerate(values):
-                value["effective_weight"] = float(effective_weights[metric_index])
-                if complete_mask[row_index]:
-                    value["normalized_score"] = float(
-                        normalized[row_index, metric_index]
-                    )
-                    value["weighted_contribution"] = float(
-                        contributions[row_index, metric_index]
-                    )
         scoring_ms = (time.perf_counter() - score_started) * 1000.0
-
-        assembly_started = time.perf_counter()
-        rows: list[dict[str, Any]] = []
-        for row_index, target in enumerate(plan["targets"]):
-            values = concrete_values[row_index]
-            complete = bool(complete_mask[row_index])
-            rows.append(
-                {
-                    "rank": int(ranks[row_index]) if complete else None,
-                    "target": {**target, "name": target_names[row_index]},
-                    "score": round(float(scores[row_index]), 6) if complete else None,
-                    "status": "ranked" if complete else "excluded",
-                    "missing_indicators": [
-                        value["indicator_name"]
-                        for value in values
-                        if value["value"] is None
-                    ],
-                    "exclusion_reasons": [
-                        warning
-                        for value in values
-                        if value["value"] is None
-                        for warning in value.get("warnings", [])
-                    ],
-                    "values": values,
-                }
-            )
-        rows.sort(key=lambda row: (row["rank"] is None, row["rank"] or math.inf))
-        assembly_ms = (time.perf_counter() - assembly_started) * 1000.0
+        assembly_ms = 0.0  # Row assembly is included in the shared scoring stage.
         total_ms = (time.perf_counter() - started) * 1000.0
         execution_audit = self._combined_njit_audit(
             [
@@ -6557,8 +6291,8 @@ class CustomIndicatorService:
             "run_at": datetime.now(timezone.utc).isoformat(),
             "as_of": as_of,
             "rows": rows,
-            "ranked_count": int(ranked_indices.size),
-            "excluded_count": int(product_count - ranked_indices.size),
+            "ranked_count": ranked_count,
+            "excluded_count": product_count - ranked_count,
             "normalization": {
                 "method": "min_max_0_100",
                 "configured_weight_total": total_weight,
@@ -6644,63 +6378,6 @@ class CustomIndicatorService:
         page_size: int = 100,
     ) -> dict[str, Any]:
         return self.run_results.page(result_id, page=page, page_size=page_size)
-
-    @staticmethod
-    def _compare_shadow_results(
-        fast: dict[str, Any], compatibility: dict[str, Any]
-    ) -> dict[str, Any]:
-        fast_rows = {
-            (row["target"]["kind"], row["target"]["product_id"]): row
-            for row in fast.get("rows", [])
-        }
-        compatibility_rows = {
-            (row["target"]["kind"], row["target"]["product_id"]): row
-            for row in compatibility.get("rows", [])
-        }
-        mismatches = 0
-        max_absolute_error = 0.0
-        if fast_rows.keys() != compatibility_rows.keys():
-            mismatches += len(fast_rows.keys() ^ compatibility_rows.keys())
-        for key in fast_rows.keys() & compatibility_rows.keys():
-            fast_row = fast_rows[key]
-            compatibility_row = compatibility_rows[key]
-            if (
-                fast_row.get("rank") != compatibility_row.get("rank")
-                or fast_row.get("status") != compatibility_row.get("status")
-            ):
-                mismatches += 1
-            fast_values = fast_row.get("values", [])
-            compatibility_values = compatibility_row.get("values", [])
-            if len(fast_values) != len(compatibility_values):
-                mismatches += abs(len(fast_values) - len(compatibility_values))
-            for fast_value, compatibility_value in zip(
-                fast_values, compatibility_values, strict=False
-            ):
-                left = fast_value.get("value")
-                right = compatibility_value.get("value")
-                if left is None or right is None:
-                    if left is not right:
-                        mismatches += 1
-                else:
-                    error = abs(float(left) - float(right))
-                    max_absolute_error = max(max_absolute_error, error)
-                    if not math.isclose(
-                        float(left), float(right), rel_tol=1e-10, abs_tol=1e-12
-                    ):
-                        mismatches += 1
-                if fast_value.get("window") != compatibility_value.get("window"):
-                    mismatches += 1
-                if fast_value.get("status") != compatibility_value.get("status"):
-                    mismatches += 1
-        return {
-            "compared": True,
-            "equivalent": mismatches == 0,
-            "mismatch_count": mismatches,
-            "max_absolute_error": max_absolute_error,
-            "row_count_equal": len(fast_rows) == len(compatibility_rows),
-            "ranked_count_equal": fast.get("ranked_count")
-            == compatibility.get("ranked_count"),
-        }
 
     def run_plan(self, plan_id: str, as_of: Optional[str] = None) -> dict[str, Any]:
         plan = self.plans.get(plan_id)

@@ -8,10 +8,13 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictFloat, model_validator
 from starlette.background import BackgroundTask
 
 from custom_indicators.errors import IndicatorDomainError
+from custom_indicators.graph_contracts import EditorStateUpdate, GraphResolveRequest
+from custom_indicators.graph_service import IndicatorGraphService
+from custom_indicators.series_parameters import inspect_parameter_inputs, bind_parameter_input
 from custom_indicators.service import CustomIndicatorService, MAX_PLAN_TARGETS, SUPPORTED_PERIODS
 from cal_indicators.typed_operators import TYPED_DSL_VERSION
 
@@ -76,10 +79,10 @@ class SeriesParameterDefinition(BaseModel):
     id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     label: str = Field(min_length=1, max_length=80)
     type: Literal["integer", "number"]
-    default: float
-    minimum: float
-    maximum: float
-    step: float = Field(default=1.0, gt=0)
+    default: StrictFloat
+    minimum: StrictFloat
+    maximum: StrictFloat
+    step: StrictFloat = Field(default=1.0, gt=0)
     description: str = Field(default="", max_length=300)
 
 
@@ -91,7 +94,16 @@ class FixedSeriesParameter(BaseModel):
     source: str = Field(default="definition", max_length=80)
 
 
-class RollingSourceDefinition(BaseModel):
+class IndependentRequest(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def reject_retired_results(cls, values):
+        if isinstance(values, dict) and {"scalar_outputs", "output_id"}.intersection(values):
+            raise ValueError("请使用独立指标ID；旧多结果定义或子结果引用需要先迁移。")
+        return values
+
+
+class RollingSourceDefinition(IndependentRequest):
     """Version-locked scalar source for a generated rolling series.
 
     ``transform_version`` / ``definition_hash`` are the canonical public
@@ -123,16 +135,20 @@ class SeriesOutputDefinition(BaseModel):
     output_measure: str = Field(default="dimensionless", min_length=1, max_length=120)
 
 
-class IndicatorDraft(BaseModel):
+class ParameterContract(IndependentRequest):
+    parameter_contract_version: Optional[Literal["1.0"]] = None
+
+
+class IndicatorDraft(ParameterContract):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=500)
-    expression: str = Field(min_length=1, max_length=4000)
+    expression: str = Field(default="", max_length=4000)
     periods: Optional[list[str]] = None
     period_policy: Literal["all_supported"] = "all_supported"
     unit: str = Field(default="", max_length=20)
-    display_format: Literal["number", "percent"] = "number"
+    display_format: Literal["number", "percent", "date"] = "number"
     precision: int = Field(default=2, ge=0, le=8)
-    direction: Direction = "higher_better"
+    direction: Literal["neutral", "higher_better", "lower_better"] = "neutral"
     indicator_type: IndicatorType = "other"
     annual_risk_free_rate_percent: float = Field(default=0.0, ge=-100.0, le=100.0)
     dsl_version: str = TYPED_DSL_VERSION
@@ -163,42 +179,21 @@ class IndicatorUpdate(IndicatorDraft):
     revision: int = Field(ge=1)
 
 
-class ValidateRequest(BaseModel):
+class ValidateRequest(IndicatorDraft):
     name: str = Field(default="未保存指标", max_length=80)
-    description: str = Field(default="", max_length=500)
-    expression: str = Field(default="", max_length=4000)
-    periods: Optional[list[str]] = None
-    period_policy: Literal["all_supported"] = "all_supported"
-    unit: str = Field(default="", max_length=20)
-    display_format: Literal["number", "percent"] = "number"
-    precision: int = Field(default=2, ge=0, le=8)
-    direction: Direction = "higher_better"
-    indicator_type: IndicatorType = "other"
-    annual_risk_free_rate_percent: float = Field(default=0.0, ge=-100.0, le=100.0)
-    dsl_version: str = TYPED_DSL_VERSION
-    operator_registry_version: Optional[str] = None
-    numeric_kernel_version: Optional[str] = None
-    variable_registry_version: Optional[str] = None
-    data_contract_version: Optional[str] = None
-    context_schema_version: Optional[str] = None
-    context_kind: ContextKind = "single_product"
-    result_kind: Literal["scalar", "time_series"] = "scalar"
-    output_contract: Literal["scalar", "series_bundle"] = "scalar"
-    output_measure: Optional[str] = None
-    parameter_schema: list[SeriesParameterDefinition] = Field(default_factory=list, max_length=16)
-    fixed_parameters: list[FixedSeriesParameter] = Field(default_factory=list, max_length=16)
-    series_outputs: list[SeriesOutputDefinition] = Field(default_factory=list, max_length=8)
-    axis_anchor: Optional[str] = Field(default=None, max_length=80)
-    history_policy: Optional[Literal["lookback", "full_history"]] = None
-    lookback_parameter: Optional[str] = Field(default=None, max_length=80)
-    minimum_observations: int = Field(default=1, ge=1, le=20_000)
-    methodology: str = Field(default="", max_length=500)
-    data_basis: str = Field(default="", max_length=500)
-    rolling_source: Optional[RollingSourceDefinition] = None
-    rolling_transform: Any = None
 
 
-class DeriveRollingSeriesRequest(BaseModel):
+class ParameterInspectRequest(BaseModel):
+    definition: ValidateRequest
+
+
+class ParameterBindRequest(ParameterInspectRequest):
+    candidate_id: Optional[str] = Field(default=None, max_length=200)
+    parameter_id: Optional[str] = Field(default=None, max_length=64)
+    fixed_parameter_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class DeriveRollingSeriesRequest(IndependentRequest):
     indicator_id: str = Field(min_length=1, max_length=120)
     indicator_revision: int = Field(ge=1)
     window_observations: int = Field(ge=1, le=5_000)
@@ -206,7 +201,7 @@ class DeriveRollingSeriesRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=500)
 
 
-class RollingScalarDraftRequest(BaseModel):
+class RollingScalarDraftRequest(IndependentRequest):
     """Compatibility request for the canonical rolling-series derivation."""
 
     indicator_id: str = Field(min_length=1, max_length=120)
@@ -222,7 +217,7 @@ class ComposeArgument(BaseModel):
     value: str | float
 
 
-class ComposeRequest(BaseModel):
+class ComposeRequest(IndependentRequest):
     operator_id: Optional[str] = None
     template_id: Optional[str] = None
     indicator_id: Optional[str] = Field(default=None, min_length=1, max_length=120)
@@ -261,8 +256,21 @@ class AvailabilityRequest(BaseModel):
     as_of: Optional[str] = None
 
 
-class EvaluateRequest(BaseModel):
+class IndicatorReference(IndependentRequest):
+    indicator_id: str = Field(min_length=1, max_length=120)
+    indicator_revision: Optional[int] = Field(default=None, ge=1)
+
+
+class PrepareEvaluationRequest(IndependentRequest):
     indicator_ids: list[str] = Field(default_factory=list, max_length=10)
+    indicator_refs: list[IndicatorReference] = Field(default_factory=list, max_length=10)
+    inline_definition: Optional[IndicatorDraft] = None
+    compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
+
+
+class EvaluateRequest(IndependentRequest):
+    indicator_ids: list[str] = Field(default_factory=list, max_length=10)
+    indicator_refs: list[IndicatorReference] = Field(default_factory=list, max_length=10)
     inline_definition: Optional[IndicatorDraft] = None
     compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
     targets: list[EvaluationTarget] = Field(min_length=1, max_length=50)
@@ -276,7 +284,7 @@ class SeriesIndicatorInstance(BaseModel):
     indicator_revision: Optional[int] = Field(default=None, ge=1)
     inline_definition: Optional[IndicatorDraft] = None
     compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
-    parameters: dict[str, float] = Field(default_factory=dict)
+    parameters: dict[str, StrictFloat] = Field(default_factory=dict)
 
 
 class EvaluateSeriesRequest(BaseModel):
@@ -287,17 +295,17 @@ class EvaluateSeriesRequest(BaseModel):
     max_points: int = Field(default=5000, ge=1, le=5000)
 
 
-class ExportExcelRequest(BaseModel):
+class ExportExcelRequest(IndependentRequest):
     indicator_ids: list[str] = Field(default_factory=list, max_length=1)
     inline_definition: Optional[IndicatorDraft] = None
     compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
     targets: list[EvaluationTarget] = Field(min_length=1, max_length=10)
     period: str
     as_of: Optional[str] = None
-    parameters: dict[str, float] = Field(default_factory=dict)
+    parameters: dict[str, StrictFloat] = Field(default_factory=dict)
 
 
-class SnapshotIndicatorItem(BaseModel):
+class SnapshotIndicatorItem(IndependentRequest):
     indicator_id: str = Field(min_length=1, max_length=120)
     indicator_revision: int = Field(ge=1)
     period: str = Field(min_length=1, max_length=12)
@@ -310,14 +318,14 @@ class SnapshotIndicatorConfigUpdate(BaseModel):
     items: list[SnapshotIndicatorItem] = Field(default_factory=list, max_length=30)
 
 
-class EvaluatePortfolioRequest(BaseModel):
+class EvaluatePortfolioRequest(IndependentRequest):
     run_id: str = Field(min_length=1, max_length=100)
     indicator_ids: list[str] = Field(default_factory=list, max_length=10)
     inline_definition: Optional[IndicatorDraft] = None
     compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
 
 
-class PlanIndicatorInput(BaseModel):
+class PlanIndicatorInput(IndependentRequest):
     indicator_id: str = Field(min_length=1)
     indicator_revision: Optional[int] = Field(default=None, ge=1)
     period: str
@@ -388,6 +396,19 @@ def validate_custom_indicator(request: ValidateRequest):
     return _call(indicator_service.validate, request.model_dump())
 
 
+@router.post("/api/custom-indicators/parameters/inspect")
+def inspect_custom_indicator_parameters(request: ParameterInspectRequest):
+    return _call(inspect_parameter_inputs, request.definition.model_dump())
+
+
+@router.post("/api/custom-indicators/parameters/bind")
+def bind_custom_indicator_parameter(request: ParameterBindRequest):
+    definition = _call(bind_parameter_input, request.definition.model_dump(),
+                       candidate_id=request.candidate_id, parameter_id=request.parameter_id,
+                       fixed_parameter_id=request.fixed_parameter_id)
+    return {"definition": definition, **_call(inspect_parameter_inputs, definition)}
+
+
 @router.post("/api/custom-indicators/compose")
 def compose_custom_indicator(request: ComposeRequest):
     return _call(indicator_service.compose, request.model_dump())
@@ -396,6 +417,21 @@ def compose_custom_indicator(request: ComposeRequest):
 @router.post("/api/custom-indicators/infer")
 def infer_custom_indicator(request: InferRequest):
     return _call(indicator_service.infer, request.model_dump())
+
+
+@router.post("/api/custom-indicators/graph/resolve")
+def resolve_indicator_graph(request: GraphResolveRequest):
+    return _call(IndicatorGraphService(indicator_service).resolve, request)
+
+
+@router.get("/api/custom-indicators/{indicator_id}/editor-state")
+def get_indicator_editor_state(indicator_id: str, revision: int = Query(ge=1)):
+    return _call(IndicatorGraphService(indicator_service).read_state, indicator_id, revision)
+
+
+@router.put("/api/custom-indicators/{indicator_id}/editor-state")
+def put_indicator_editor_state(indicator_id: str, request: EditorStateUpdate, revision: int = Query(ge=1)):
+    return _call(IndicatorGraphService(indicator_service).save_state, indicator_id, revision, request)
 
 
 @router.post("/api/custom-indicators/derive-rolling-series")
@@ -436,12 +472,24 @@ def custom_indicator_availability(request: AvailabilityRequest):
     )
 
 
+@router.post("/api/custom-indicators/prepare")
+def prepare_custom_indicator_evaluation(request: PrepareEvaluationRequest):
+    return _call(
+        indicator_service.prepare_evaluation,
+        indicator_ids=request.indicator_ids,
+        indicator_refs=[item.model_dump() for item in request.indicator_refs] or None,
+        inline_definition=request.inline_definition.model_dump() if request.inline_definition else None,
+        compile_token=request.compile_token,
+    )
+
+
 @router.post("/api/custom-indicators/evaluate")
 def evaluate_custom_indicators(request: EvaluateRequest):
     inline = request.inline_definition.model_dump() if request.inline_definition else None
     return _call(
         indicator_service.evaluate,
         indicator_ids=request.indicator_ids,
+        indicator_refs=[item.model_dump() for item in request.indicator_refs] or None,
         inline_definition=inline,
         targets=[target.model_dump() for target in request.targets],
         period=request.period,
