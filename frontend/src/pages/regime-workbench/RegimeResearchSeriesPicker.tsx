@@ -168,8 +168,8 @@ function SeriesCatalogPicker({ node, schema, onPatchNode, children }: Props) {
       </>
     </section>
     {node.type === 'source.indicator' && <RegimeIndicatorSourceFields key={identity} node={node} series={current} onPatchNode={onPatchNode} />}
-    {node.type === 'source.etf' && <p className="text-xs leading-5 text-slate-500">可选择已下载的复权净值，或不复权、前复权、后复权市价。净值直接读取，不需要复权因子；切换字段自动匹配数据来源。复权数据仅用于事后分析。</p>}
-    {node.type === 'source.fund' && <p className="text-xs leading-5 text-slate-500">基金行情以净值展示；实时分析按公告日期使用数据。复权净值仅用于事后分析，累计净值不等同于分红再投资收益。</p>}
+    {node.type === 'source.etf' && <p className="text-xs leading-5 text-slate-500">复权净值与复权市价均可用于实时分析。净值按公告日期使用；前复权以截止范围内最后一日为基准。切换字段自动匹配来源，净值无需复权因子。</p>}
+    {node.type === 'source.fund' && <p className="text-xs leading-5 text-slate-500">基金净值（含复权净值）可用于实时分析，按公告日期使用已公布的数据。累计净值不等同于分红再投资收益。</p>}
     {node.type === 'source.etf'
       ? <fieldset disabled={!current} className="min-w-0 space-y-3">{children(current)}</fieldset>
       : children(current)}

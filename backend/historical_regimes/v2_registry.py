@@ -10,7 +10,7 @@ from computation_graph.series_operators import register_series_operators
 from research_series.product_sources import PRODUCT_SOURCES
 
 
-REGISTRY_VERSION = "regime-graph-nodes/2.11.0"
+REGISTRY_VERSION = "regime-graph-nodes/2.12.0"
 
 SERIES = "series<float64>"
 BOOL_SERIES = "series<bool>"

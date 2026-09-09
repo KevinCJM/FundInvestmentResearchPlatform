@@ -81,21 +81,25 @@ def test_fund_nav_uses_announcement_cutoff_and_first_release(market):
     assert latest.frame["value"].iloc[0] == 9.
     realtime = resolve_target(spec, "realtime", "2024-01-09", root)
     assert realtime.frame["value"].iloc[0] == 1.
-    with pytest.raises(ValidationError, match="复权净值"):
-        resolve_target({**spec, "field": "adj_nav"}, "realtime", None, root)
+    adjusted = resolve_target({**spec, "field": "adj_nav"}, "realtime", "2024-01-04", root)
+    assert adjusted.frame["value"].tolist() == [3., 3.1]
+    assert adjusted.snapshot["pit"]["realtime_supported"]
+    assert not adjusted.snapshot["pit"]["revision_history_guaranteed"]
     assert resolve_target({**spec, "field": "adj_nav"}, "retrospective", None, root).frame["value"].iloc[1] == 3.1
     profile = catalog.profile(series_id="fund:fund_nav:000001.OF", as_of="2024-01-04")
     assert profile["values"]["raw"] == [1., 1.1]
     assert profile["pit"]["available_at"] == ["2024-01-03", "2024-01-04"]
     assert profile["binding"]["node_type"] == "source.fund"
     assert profile["execution"]["python_fallback"] == 0
+    assert catalog.profile(series_id="fund:fund_nav:000001.OF", field="adj_nav", as_of="2024-01-04")["values"]["raw"] == [3., 3.1]
 
 
-def test_missing_release_dates_fail_realtime_and_fields_fail_closed(market):
+@pytest.mark.parametrize("field", ["unit_nav", "adj_nav"])
+def test_missing_release_dates_fail_realtime_and_fields_fail_closed(market, field):
     root, snap, _ = market
     path = snap / "fund_nav_df.parquet"
     frame = pd.read_parquet(path); frame.loc[0, "ann_date"] = None; frame.to_parquet(path)
-    spec = {"kind": "fund", "ts_code": "000001.OF"}
+    spec = {"kind": "fund", "ts_code": "000001.OF", "field": field}
     with pytest.raises(ValidationError, match="公告日期"):
         resolve_target(spec, "realtime", None, root)
     assert not resolve_target(spec, "retrospective", "2024-01-04", root).snapshot["pit"]["supported"]
@@ -223,11 +227,15 @@ def test_adjusted_etf_fields_require_published_factors_and_rebase_after_cutoff(m
     back = resolve_target({**spec, 'field': 'close_hfq'}, 'retrospective', None, root)
     np.testing.assert_allclose(back.frame['value'], [3., 6.6, np.nan, 14.4], equal_nan=True)
     for field in ['close_qfq', 'close_hfq']:
-        with pytest.raises(ValidationError, match='事后分析'):
-            resolve_target({**spec, 'field': field}, 'realtime', None, root)
+        live = resolve_target({**spec, 'field': field}, 'realtime', '2024-01-03', root)
+        np.testing.assert_allclose(live.frame['value'], [1.5, 3.3] if field.endswith('qfq') else [3., 6.6])
+        assert live.snapshot['pit']['realtime_supported']
+        assert not live.snapshot['adjustment']['revision_history_guaranteed']
     profile = catalog.profile(series_id='etf:fund_daily:510300.SH', field='close_qfq', end_date='2024-01-03', availability_mode='latest')
     assert profile['values']['raw'] == [1.5, 3.3]
     assert profile['binding_parameters']['adjustment_checksum'] == spec['adjustment_checksum']
+    live_profile = catalog.profile(series_id='etf:fund_daily:510300.SH', field='close_qfq', as_of='2024-01-03')
+    assert live_profile['values']['raw'] == [1.5, 3.3]
     factors.loc[1, 'adj_factor'] = np.nan
     factors.to_parquet(path)
     with pytest.raises(ValidationError, match='版本'):
@@ -273,7 +281,8 @@ def _add_etf_nav(root, snap, code="510300.SH", published=True):
     return path
 
 
-def test_etf_adjusted_nav_binds_existing_nav_file_without_price_factors(market, tmp_path):
+@pytest.mark.parametrize("mode", ["realtime", "retrospective"])
+def test_etf_adjusted_nav_binds_existing_nav_file_without_price_factors(market, tmp_path, mode):
     root, snap, catalog = market
     path = _add_etf_nav(root, snap)
     item = catalog.catalog(kind="etf", query="510300")["items"][0]
@@ -283,7 +292,7 @@ def test_etf_adjusted_nav_binds_existing_nav_file_without_price_factors(market, 
     assert binding["source_api"] == "fund_nav" and binding["source_file"] == path.name
     assert "adjustment_checksum" not in binding
     assert binding["file_checksum"] != item["binding_parameters"]["file_checksum"]
-    bundle = resolve_target({**binding, "kind": "etf"}, "retrospective", "2024-01-08", root)
+    bundle = resolve_target({**binding, "kind": "etf"}, mode, "2024-01-08", root)
     np.testing.assert_allclose(bundle.frame["value"], [10., 10.1, np.nan, 10.3], equal_nan=True)
     assert bundle.snapshot["file"] == path.name and not bundle.snapshot["pit"]["supported"]
     assert bundle.snapshot["pit"]["available_at_field"] == "ann_date"
@@ -292,8 +301,10 @@ def test_etf_adjusted_nav_binds_existing_nav_file_without_price_factors(market, 
     assert profile["values"]["raw"] == [10., 10.1]
     assert profile["binding_parameters"] == binding
     assert profile["execution"]["python_fallback"] == 0
-    with pytest.raises(ValidationError, match="事后分析"):
-        resolve_target({**binding, "kind": "etf"}, "realtime", None, root)
+    live = resolve_target({**binding, "kind": "etf"}, "realtime", "2024-01-09", root)
+    assert live.frame["value"].iloc[0] == 10.
+    assert live.snapshot["pit"]["realtime_supported"]
+    assert catalog.profile(series_id=item["id"], field="adj_nav", as_of="2024-01-04")["values"]["raw"] == [10., 10.1]
 
     raw = graph(parameters={"window": 2, "min_periods": 2})
     raw["graph"]["nodes"][0] = {"id": "price", "type": "source.etf", "parameters": binding}
@@ -301,7 +312,7 @@ def test_etf_adjusted_nav_binds_existing_nav_file_without_price_factors(market, 
     service = RegimeGraphV2Service(tmp_path / "workspace", root)
     target = {"node_id": "smooth", "port": "value"}
     plan = service.prepare(raw, preview_target=target)
-    result = service._execute_graph(None, node_preview_definition(raw, target), "retrospective", "2024-01-08", plan=plan)
+    result = service._execute_graph(None, node_preview_definition(raw, target), mode, "2024-01-08", plan=plan)
     np.testing.assert_allclose(result["node_outputs"]["smooth"]["value"].values, [np.nan, 10.05, np.nan, np.nan], equal_nan=True)
     assert result["result"]["diagnostics"]["python_fallback"] == 0
     assert result["result"]["diagnostics"]["request_time_compilation"] == 0
@@ -332,3 +343,52 @@ def test_etf_with_nav_only_is_selectable_without_exchange_prices(market):
     assert item["binding_parameters"]["source_api"] == "fund_nav"
     profile = catalog.profile(series_id=item["id"], field="adj_nav", availability_mode="latest", as_of="2024-01-04")
     assert profile["values"]["raw"] == [10., 10.1]
+
+
+@pytest.mark.parametrize('basis', ['qfq', 'hfq'])
+@pytest.mark.parametrize('field', ['open', 'close', 'high', 'low'])
+def test_realtime_adjusted_price_graph_uses_request_cutoff_and_frozen_cache(market, tmp_path, basis, field):
+    from historical_regimes.v2_contracts import parse_definition_v2
+    from research_series.product_sources import ADJUSTMENT_FILE
+    root, snap, catalog = market
+    path = snap / 'etf_daily_candle_df.parquet'
+    prices = pd.DataFrame({'ts_code': ['510300.SH'] * 8,
+                          'trade_date': pd.date_range('2024-01-02', periods=8).strftime('%Y%m%d'),
+                          'close': [3., 3.3, np.nan, 3.6, 3.4, 3.5, 3.3, 3.2],
+                          'open': [2.9, 3.2, 3.1, 3.5, 3.3, 3.4, 3.4, 3.3],
+                          'high': [3.2, 3.5, 3.7, 3.8, 3.6, 3.7, 3.6, 3.4],
+                          'low': [2.8, 3.1, 3.2, 3.4, 3.2, 3.2, 3.1, 3.]})
+    prices.to_parquet(path)
+    factor_path = snap / ADJUSTMENT_FILE
+    factors = np.array([1., 2., 2., 2., 2., 4., 4., 4.])
+    pd.DataFrame({'ts_code': ['510300.SH'] * 8, 'trade_date': prices.trade_date, 'adj_factor': factors}).to_parquet(factor_path)
+    manifest = json.loads((root / 'tushare_active.json').read_text())
+    manifest['files'][ADJUSTMENT_FILE] = factor_path.stat().st_size
+    (root / 'tushare_active.json').write_text(json.dumps(manifest))
+    item = catalog.catalog(kind='etf', query='510300')['items'][0]
+    binding = next(f['binding_parameters'] for f in item['fields'] if f['name'] == f'{field}_{basis}')
+    raw = graph(parameters={'window': 2, 'min_periods': 2})
+    raw['graph']['nodes'][0] = {'id': 'price', 'type': 'source.etf', 'parameters': binding}
+    raw['evaluation_targets'] = [{'id': 'evaluation', 'name': '复权评价', 'primary': True, 'source': {**binding, 'kind': 'etf'}}]
+    definition = parse_definition_v2(raw)
+    service = RegimeGraphV2Service(tmp_path / 'workspace', root)
+    plan = service.prepare(raw)
+    cache = {}
+    # Deliberately populate a later cutoff first: it must not set the earlier QFQ anchor.
+    for cutoff, size, anchor in [('2024-01-09', 8, 4.), ('2024-01-06', 5, 2.)]:
+        result = service._execute_graph(None, definition, 'realtime', cutoff, plan=plan, source_cache=cache)
+        expected = prices[field].to_numpy()[:size] * factors[:size] / (anchor if basis == 'qfq' else 1.)
+        source = result['node_outputs']['price']['value']
+        np.testing.assert_allclose(source.values, expected, equal_nan=True)
+        np.testing.assert_allclose(result['node_outputs']['smooth']['value'].values, pd.Series(expected).rolling(2).mean(), equal_nan=True)
+        assert pd.to_datetime(source.available).max() <= pd.Timestamp(cutoff)
+        evaluation = service._evaluation_values(definition, source, {'price': source}, 'realtime', cutoff, source_cache=cache)
+        np.testing.assert_allclose(evaluation[0], expected, equal_nan=True)
+        assert result['result']['diagnostics']['python_fallback'] == 0
+        assert result['result']['diagnostics']['request_time_compilation'] == 0
+    # Current analysis succeeds without claiming that today's snapshot proves historical PIT.
+    bundle = resolve_target({**binding, 'kind': 'etf'}, 'realtime', '2024-01-03', root)
+    governance = service._publication_governance(definition, 'realtime', 2, 1, {'price': bundle.snapshot}, {}, {}, {}, [])
+    assert governance['checks']['pit']['non_pit_source_ids'] == ['price']
+    assert 'research_display' in governance['publish_eligible_usages']
+    assert 'formal_backtest' not in governance['publish_eligible_usages']

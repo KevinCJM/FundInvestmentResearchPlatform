@@ -1393,10 +1393,8 @@ class ResearchSeriesService:
             except ProductSourceError as exc:
                 raise ResearchSeriesError(exc.code, exc.message, field="field") from exc
             pit = {**product_pit(kind, selected_field), "as_of": as_of}
-            if (kind == "etf" and selected_field in ETF_ADJUSTED_FIELDS) or selected_field == "adj_nav":
-                pit.update(supported=False, availability_status="retrospective_adjustment")
             if frame["availability_unknown"].any():
-                pit.update(supported=False, availability_status="unknown_retrospective_only")
+                pit.update(supported=False, realtime_supported=False, availability_status="unknown_retrospective_only")
             identity = {"name": code, "category": product["label"]}
             info = snapshot / product["info_file"]
             if product["info_file"] in manifest.get("files", {}) and info.is_file():

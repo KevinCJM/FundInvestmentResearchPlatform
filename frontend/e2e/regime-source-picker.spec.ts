@@ -3,7 +3,7 @@ import type { RegimeGraphDefinition } from '../src/services/regimeGraph'
 
 for (const [kind, label, code, name, queryText, api, defaultField, secondField, defaultLabel, secondLabel] of [
   ['index', '指数行情', '000300.SH', '沪深300指数', '沪深300', 'index_daily', 'close', 'open', '收盘点位', '开盘点位'],
-  ['etf', 'ETF行情', '510300.SH', '沪深300ETF', '沪深300', 'fund_daily', 'close', 'adj_nav', '收盘价（不复权）', '复权净值（仅事后分析）'],
+  ['etf', 'ETF行情', '510300.SH', '沪深300ETF', '沪深300', 'fund_daily', 'close', 'adj_nav', '收盘价（不复权）', '复权净值'],
   ['fund', '公募基金行情', '000001.OF', '华夏成长', '华夏', 'fund_nav', 'unit_nav', 'accum_nav', '单位净值', '累计净值'],
 ]) test(`${label}在画布与向导中可搜索且只配置一次`, async ({ page }, testInfo) => {
   const errors: string[] = []

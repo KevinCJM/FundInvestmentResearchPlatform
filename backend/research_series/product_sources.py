@@ -25,7 +25,7 @@ PRODUCT_SOURCES = {
         "filename": "etf_daily_candle_df.parquet", "info_file": "etf_info_df.parquet",
         "date_field": "trade_date", "available_at_field": "trade_date", "default_field": "close",
         "fields": {
-            "adj_nav": ("复权净值（仅事后分析）", "source_unit"),
+            "adj_nav": ("复权净值", "source_unit"),
             "close": ("收盘价（不复权）", "CNY"), "open": ("开盘价（不复权）", "CNY"),
             "high": ("最高价（不复权）", "CNY"), "low": ("最低价（不复权）", "CNY"),
             "pre_close": ("前收盘价", "CNY"), "change": ("涨跌额", "CNY"),
@@ -39,14 +39,14 @@ PRODUCT_SOURCES = {
         "date_field": "nav_date", "available_at_field": "ann_date", "default_field": "unit_nav",
         "fields": {
             "unit_nav": ("单位净值", "source_unit"), "accum_nav": ("累计净值", "source_unit"),
-            "adj_nav": ("复权净值（仅事后分析）", "source_unit"),
+            "adj_nav": ("复权净值", "source_unit"),
             "accum_div": ("累计分红", "source_unit"), "net_asset": ("净资产（元）", "CNY"),
             "total_netasset": ("合计净资产（元）", "CNY"),
         },
     },
 }
 PRODUCT_SOURCES['etf']['fields'].update({
-    name: (f"{dict(close='收盘价', open='开盘价', high='最高价', low='最低价')[field]}（{'前' if basis == 'qfq' else '后'}复权·事后）", 'CNY')
+    name: (f"{dict(close='收盘价', open='开盘价', high='最高价', low='最低价')[field]}（{'前' if basis == 'qfq' else '后'}复权）", 'CNY')
     for name, (field, basis) in ETF_ADJUSTED_FIELDS.items()
 })
 
@@ -129,10 +129,13 @@ def present_product_codes(path: Path) -> frozenset[str]:
 
 def product_pit(kind: str, field: str | None = None) -> dict[str, Any]:
     spec = product_source_spec(kind, field)
+    adjusted = field == "adj_nav" or (kind == "etf" and field in ETF_ADJUSTED_FIELDS)
     return {
-        "supported": True, "observation_field": spec["date_field"],
+        # Current analysis is allowed; this snapshot does not certify historical replay.
+        "supported": not adjusted, "realtime_supported": True,
+        "observation_field": spec["date_field"],
         "available_at_field": spec["available_at_field"],
-        "availability_status": "date_only_announcement" if spec["source_api"] == "fund_nav" else "date_only_market_close",
+        "availability_status": "available_as_of_unverified_history" if adjusted else "date_only_announcement" if spec["source_api"] == "fund_nav" else "date_only_market_close",
         "revision_history_guaranteed": False,
     }
 
@@ -147,11 +150,6 @@ def read_product_observations(root: Path, kind: str, parameters: Mapping[str, An
         raise ProductSourceError("PRODUCT_SOURCE_MISMATCH", "产品类型与行情来源不匹配，请重新选择产品。")
     field = str(parameters.get("field") or spec["default_field"])
     adjusted = kind == 'etf' and field in ETF_ADJUSTED_FIELDS
-    if adjusted and mode == 'realtime':
-        raise ProductSourceError('ADJUSTED_PRICE_REALTIME_BLOCKED', '当前复权因子没有历史发布版本保障，复权市价仅支持事后分析；实时分析请使用不复权价格。')
-    if field == "adj_nav" and mode == "realtime":
-        alternative = "不复权市价" if kind == "etf" else "单位净值"
-        raise ProductSourceError("ADJUSTED_NAV_REALTIME_BLOCKED", f"复权净值可能回改历史，仅支持事后分析；实时分析请选择{alternative}。")
     path = root / spec["filename"]
     if not path.is_file():
         raise ProductSourceError("PRODUCT_DATA_NOT_FOUND", "该产品行情尚未下载到所选快照。")
@@ -200,5 +198,5 @@ def read_product_observations(root: Path, kind: str, parameters: Mapping[str, An
             raise ProductSourceError('ADJUSTMENT_DATES_INVALID', '复权因子日期无效或重复，无法确定唯一日值。')
         raw = raw.merge(factors[['observation_date', 'adj_factor']], on='observation_date', how='left', validate='many_to_one')
         raw['adj_factor'] = pd.to_numeric(raw['adj_factor'], errors='coerce')
-        raw.attrs['adjustment'] = {'source_api': 'fund_adj', 'source_file': ADJUSTMENT_FILE, 'checksum': checksum, 'basis': ETF_ADJUSTED_FIELDS[field][1], 'retrospective_only': True, 'execution': research_series_numba_execution_audit()}
+        raw.attrs['adjustment'] = {'source_api': 'fund_adj', 'source_file': ADJUSTMENT_FILE, 'checksum': checksum, 'basis': ETF_ADJUSTED_FIELDS[field][1], 'revision_history_guaranteed': False, 'execution': research_series_numba_execution_audit()}
     return raw

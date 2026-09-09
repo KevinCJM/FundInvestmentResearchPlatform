@@ -22,7 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from historical_regimes.numba_kernels import relative_transform_kernel
 
 from custom_indicators.errors import NotFoundError, ValidationError
-from research_series.product_sources import PRODUCT_SOURCES, ProductSourceError, product_pit, read_product_observations, apply_product_adjustment, ETF_ADJUSTED_FIELDS, product_source_spec
+from research_series.product_sources import PRODUCT_SOURCES, ProductSourceError, product_pit, read_product_observations, apply_product_adjustment, product_source_spec
 
 
 INDEX_HISTORY_FILES = {
@@ -305,10 +305,8 @@ def _product_bundle(spec: dict[str, Any], mode: str, as_of: Optional[str], marke
     except ProductSourceError as exc:
         raise ValidationError(exc.code, exc.message, "target.field") from exc
     pit = product_pit(kind, field)
-    if (kind == "etf" and field in ETF_ADJUSTED_FIELDS) or field == "adj_nav":
-        pit.update(supported=False, availability_status="retrospective_adjustment")
     if frame["availability_unknown"].any():
-        pit.update(supported=False, availability_status="unknown_retrospective_only")
+        pit.update(supported=False, realtime_supported=False, availability_status="unknown_retrospective_only")
     snapshot = {
         **revision_meta, "kind": kind, "ts_code": str(spec["ts_code"]),
         **({"adjustment": raw.attrs["adjustment"]} if raw.attrs.get("adjustment") else {}),

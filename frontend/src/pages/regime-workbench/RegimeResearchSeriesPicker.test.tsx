@@ -146,16 +146,16 @@ it.each([
 
 it('ETF复权自动绑定因子版本，换到缺少因子的ETF后清除旧版本并禁用复权字段', async () => {
   const adjusted: ResearchSeriesCatalogItem = { ...csi300, id: 'etf:fund_daily:510300.SH', kind: 'etf', code: '510300.SH', name: '沪深300ETF', regime_node_type: 'source.etf',
-    fields: [{ name: 'close', label: '收盘价（不复权）' }, { name: 'close_hfq', label: '收盘价（后复权·事后）', available: true }],
+    fields: [{ name: 'close', label: '收盘价（不复权）' }, { name: 'close_hfq', label: '收盘价（后复权）', available: true }],
     binding_parameters: { ...csi300.binding_parameters, ts_code: '510300.SH', source_api: 'fund_daily', adjustment_checksum: 'factor-version' } }
   const missing = { ...adjusted, id: 'etf:fund_daily:510500.SH', code: '510500.SH', name: '另一只ETF',
-    fields: [{ name: 'close', label: '收盘价（不复权）' }, { name: 'close_hfq', label: '收盘价（后复权·事后）', available: false, unavailable_reason: '缺少复权因子' }],
+    fields: [{ name: 'close', label: '收盘价（不复权）' }, { name: 'close_hfq', label: '收盘价（后复权）', available: false, unavailable_reason: '缺少复权因子' }],
     binding_parameters: { ...csi300.binding_parameters, ts_code: '510500.SH', source_api: 'fund_daily' } }
   catalog.mockResolvedValue(page([adjusted, missing]))
   render(<Harness initial={{ ...blank, type: 'source.etf' }} sourceSchema={{ ...schema, id: 'source.etf', parameter_schema: { ...schema.parameter_schema, properties: { ...schema.parameter_schema?.properties, adjustment_checksum: { type: 'string' } } } }} />)
   await screen.findByRole('option', { name: '沪深300ETF · 510300.SH' })
   await userEvent.selectOptions(screen.getByLabelText('节点研究数据序列'), adjusted.id)
-  await screen.findByRole('option', { name: '收盘价（后复权·事后）' })
+  await screen.findByRole('option', { name: '收盘价（后复权）' })
   await userEvent.selectOptions(screen.getByLabelText('数值字段'), 'close_hfq')
   expect(nodeValue().parameters).toMatchObject({ field: 'close_hfq', adjustment_checksum: 'factor-version' })
   expect(screen.queryByRole('textbox', { name: 'adjustment_checksum' })).not.toBeInTheDocument()
@@ -169,7 +169,7 @@ it('同一ETF可切换复权净值和市价，自动绑定各自文件并保留�
   const priceBinding = { ...csi300.binding_parameters, ts_code: '510300.SH', source_api: 'fund_daily', source_file: 'etf_daily_candle_df.parquet', file_checksum: 'price-checksum', adjustment_checksum: 'factor-checksum', field: 'close' }
   const navBinding = { ...csi300.binding_parameters, ts_code: '510300.SH', source_api: 'fund_nav', source_file: 'etf_daily_df.parquet', file_checksum: 'nav-checksum', field: 'adj_nav' }
   const item: ResearchSeriesCatalogItem = { ...csi300, id: 'etf:fund_daily:510300.SH', kind: 'etf', name: '沪深300ETF', code: '510300.SH', regime_node_type: 'source.etf', binding_parameters: priceBinding,
-    fields: [{ name: 'close', label: '收盘价（不复权）', binding_parameters: priceBinding }, { name: 'adj_nav', label: '复权净值（仅事后分析）', binding_parameters: navBinding }] }
+    fields: [{ name: 'close', label: '收盘价（不复权）', binding_parameters: priceBinding }, { name: 'adj_nav', label: '复权净值', binding_parameters: navBinding }] }
   let resolveCatalog!: (value: ReturnType<typeof page>) => void
   catalog.mockImplementation(() => new Promise(resolve => { resolveCatalog = resolve }))
   render(<Harness initial={{ ...blank, type: 'source.etf', parameters: { ...priceBinding, start_date: '2020-01-01' } }} sourceSchema={{ ...schema, id: 'source.etf', parameter_schema: { properties: { field: { enum: ['close', 'adj_nav'] } } } }} />)

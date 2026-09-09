@@ -1759,7 +1759,6 @@ class RegimeGraphV2Service:
         # Retrospective/latest selection must happen after the requested
         # cutoff; selecting the final vintage first can erase the vintage that
         # was actually available at that historical date.
-        resolver_as_of = as_of if mode == "retrospective" else None
         for node in definition.graph.nodes:
             if (
                 node.id not in required
@@ -1767,6 +1766,11 @@ class RegimeGraphV2Service:
                 or node.type == "source.constant"
             ):
                 continue
+            # QFQ must be rebased before caching/slicing, at this request's cutoff.
+            resolver_as_of = as_of if mode == "retrospective" or (
+                node.type == "source.etf"
+                and ETF_ADJUSTED_FIELDS.get(node.parameters.get("field"), (None, None))[1] == "qfq"
+            ) else None
             cache_key = _canonical_source_cache_key(
                 _source_spec(node.type, node.parameters),
                 mode,
@@ -2572,10 +2576,13 @@ class RegimeGraphV2Service:
             values = left_align_float_kernel(output_axis.dates, source.dates, np.ascontiguousarray(source.values, dtype=np.float64))
             return values, None, first_source_id, {}
         cache = source_cache if source_cache is not None else {}
-        resolver_as_of = as_of if mode == "retrospective" else None
         outputs: dict[str, dict[str, Any]] = {}
         for target in definition.evaluation_targets:
             target_kind = str(target.source.get("kind") or "")
+            resolver_as_of = as_of if mode == "retrospective" or (
+                target_kind == "etf"
+                and ETF_ADJUSTED_FIELDS.get(target.source.get("field"), (None, None))[1] == "qfq"
+            ) else None
             cache_key = _canonical_source_cache_key(
                 target.source,
                 mode,
@@ -3811,6 +3818,7 @@ class RegimeGraphV2Service:
             if not isinstance(snapshot, Mapping)
             or snapshot.get("revision_policy") == "latest_vintage"
             or snapshot.get("availability_status") == "release_date_unknown"
+            or snapshot.get("pit", {}).get("supported") is False
         ]
         pit_passed = mode == "realtime" and not non_pit_sources and bool(snapshot_items)
 
