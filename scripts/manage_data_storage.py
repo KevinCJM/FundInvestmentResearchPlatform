@@ -12,13 +12,20 @@ from backend.storage_migration import StorageMigration
 
 def main():
     parser = argparse.ArgumentParser(description='数据存储：状态、启动前迁移、确认清理原副本')
-    parser.add_argument('command', choices=('startup', 'status', 'cleanup-backup', 'cancel-plan'))
+    parser.add_argument('command', choices=('startup', 'status', 'cleanup-backup', 'cancel-plan', 'attach'))
+    parser.add_argument('--path', help='attach：已有数据目录的绝对路径')
     parser.add_argument('--confirm', help='清理必须明确提供迁移 ID；删除不可恢复')
     args = parser.parse_args()
     manager = StorageManager(ROOT)
     migration = StorageMigration(manager, lambda message: print(message, flush=True))
     try:
-        if args.command == 'startup':
+        if args.command == 'attach':
+            checked = manager.probe_existing(args.path)
+            if args.confirm != checked['id']:
+                raise StorageError('STORAGE_CONFIRMATION_REQUIRED', f"接入将共用配置、记录和凭据，不复制数据。请提供 --confirm {checked['id']} 确认该数据目录。")
+            manager.save_attachment(args.path, manager.config()['revision'], args.confirm)
+            migration.startup()
+        elif args.command == 'startup':
             migration.startup()
         elif args.command == 'cleanup-backup':
             migration.cleanup_backup(args.confirm)

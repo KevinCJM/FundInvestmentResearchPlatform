@@ -163,8 +163,15 @@ def test_wrong_identity_fails_closed(setup):
 def test_remaining_space_stops_write_not_diagnostics(setup, monkeypatch):
     manager, target = setup
     activate(manager, target)
+    from backend.custom_indicators.repository import AtomicJsonStore
+    store = AtomicJsonStore(manager.logical / 'example.json')
+    store.write_unlocked({'items': []})
     monkeypatch.setattr(storage, 'RESERVE_BYTES', 10**18)
     assert manager.status()['online']
+    with store.locked():
+        assert store.read_unlocked() == {'items': []}
+        with pytest.raises(StorageError, match='剩余空间不足'):
+            store.write_unlocked({'items': ['blocked']})
     with pytest.raises(StorageError, match='剩余空间不足'):
         storage.guard_path(target / 'new-file', write=True)
 
@@ -345,3 +352,328 @@ def test_local_api_probe_save_cancel_and_remote_denial(setup, monkeypatch):
     monkeypatch.setattr(storage_routes, 'enabled', lambda: False)
     with TestClient(app) as client:
         assert client.post('/api/data-storage/probe', json={'path': str(target)}).status_code == 403
+
+
+def another_project(manager, name='another checkout'):
+    project = manager.project.parent / name
+    project.mkdir()
+    (project / 'data').mkdir()
+    return StorageManager(project)
+
+
+def attach(manager, target):
+    checked = manager.probe_existing(str(target))
+    manager.save_attachment(str(target), manager.config()['revision'], checked['id'])
+    return StorageMigration(manager, lambda *_: None).startup()
+
+
+def _storage_process(project, operation, connection):
+    """Real independent interpreters, not threads sharing a mocked singleton."""
+    from backend import data_storage
+    manager = data_storage.StorageManager(Path(project))
+    data_storage._manager = manager
+    try:
+        if operation in {'read', 'exclusive'}:
+            with manager.data_lease(shared=operation == 'read'):
+                connection.send('acquired')
+                if not connection.poll(15):
+                    raise TimeoutError('test parent did not release lease')
+                connection.recv()
+            connection.send('released')
+        elif operation == 'download':
+            from backend.services.refresh_runtime import InterProcessFileLock
+            lock = InterProcessFileLock(manager.logical / '.tushare_refresh.lock')
+            acquired = lock.acquire()
+            connection.send(acquired)
+            if acquired:
+                try:
+                    if not connection.poll(15):
+                        raise TimeoutError('test parent did not release downloader')
+                    connection.recv()
+                finally:
+                    lock.release()
+        elif operation == 'increment':
+            from backend.custom_indicators.repository import AtomicJsonStore
+            store = AtomicJsonStore(manager.logical / 'shared.json')
+            for _ in range(25):
+                with store.locked():
+                    payload = store.read_unlocked()
+                    payload['count'] = payload.get('count', 0) + 1
+                    store.write_unlocked(payload)
+            connection.send('done')
+    except Exception as exc:
+        connection.send(getattr(exc, 'code', type(exc).__name__))
+    finally:
+        connection.close()
+
+
+@pytest.fixture
+def storage_children():
+    import multiprocessing
+    context = multiprocessing.get_context('spawn')
+    children = []
+    def start(manager, operation):
+        parent, child = context.Pipe()
+        process = context.Process(target=_storage_process, args=(str(manager.project), operation, child))
+        process.start()
+        child.close()
+        children.append((process, parent))
+        return parent
+    yield start
+    for process, connection in children:
+        if process.is_alive():
+            try:
+                connection.send('release')
+            except (BrokenPipeError, EOFError):
+                pass
+        process.join(20)
+        if process.is_alive():
+            process.terminate()  # Only the exact test-owned child, never an external PID.
+            process.join(5)
+        assert process.exitcode == 0
+        connection.close()
+
+
+def received(connection):
+    assert connection.poll(15), 'child did not report within the test deadline'
+    return connection.recv()
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_two_projects_read_same_data_without_ownership_or_copy(setup, monkeypatch, legacy):
+    manager, target = setup
+    seed(manager)
+    activate(manager, target)
+    if legacy:
+        atomic_json(target / storage.MARKER, {'id': manager.config()['active']['id'], 'project': '/retired/checkout'})
+    marker = (target / storage.MARKER).read_bytes()
+    manifest = (target / 'tushare_active.json').read_bytes()
+    other = another_project(manager)
+    (other.logical / 'local-only.txt').write_text('preserve my data')
+    result = attach(other, target)
+    assert manager.guard() == other.guard() == target
+    assert manager.logical.samefile(other.logical)
+    assert (target / storage.MARKER).read_bytes() == marker
+    assert (target / 'tushare_active.json').read_bytes() == manifest
+    assert not (target / 'local-only.txt').exists()
+    assert (Path(result['active']['backup']) / 'local-only.txt').read_text() == 'preserve my data'
+    from backend.market_data import resolve_tushare_data_dir
+    for owner in (manager, other):
+        monkeypatch.setattr(storage, '_manager', owner)
+        assert resolve_tushare_data_dir(owner.logical, strict=True) == target / 'versions/one'
+    with pytest.raises(StorageError, match='不是迁移校验副本'):
+        StorageMigration(other).cleanup_backup(result['active']['id'])
+
+
+def test_cross_project_shared_reads_and_exclusive_storage_lease(setup, storage_children):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    attach(other, target)
+    with manager.data_lease():
+        reader = storage_children(other, 'read')
+        assert received(reader) == 'acquired'
+        assert received(storage_children(other, 'exclusive')) == 'STORAGE_BUSY'
+        reader.send('release')
+        assert received(reader) == 'released'
+    with manager.data_lease(shared=False):
+        assert received(storage_children(other, 'read')) == 'STORAGE_BUSY'
+
+
+def test_cross_project_download_lock_is_one_physical_lock(setup, storage_children):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    attach(other, target)
+    first = storage_children(manager, 'download')
+    assert received(first) is True
+    assert received(storage_children(other, 'download')) is False
+    first.send('release')
+
+
+def test_cross_project_json_transactions_do_not_lose_updates(setup, storage_children):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    attach(other, target)
+    writers = [storage_children(owner, 'increment') for owner in (manager, other)]
+    assert [received(writer) for writer in writers] == ['done', 'done']
+    assert json.loads((target / 'shared.json').read_text())['count'] == 50
+
+
+def test_shared_directory_unplug_rejects_read_write_and_lock_without_recreation(setup, monkeypatch):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    attach(other, target)
+    target.rename(target.with_name('disconnected'))
+    from backend.custom_indicators.repository import AtomicJsonStore
+    from backend.data_sources.store import SourceStore
+    for owner in (manager, other):
+        monkeypatch.setattr(storage, '_manager', owner)
+        assert not owner.status()['online']
+        store = AtomicJsonStore(owner.logical / 'nested/new.json')
+        for operation in (owner.guard, store.read_unlocked, lambda: store.write_unlocked({'items': []}),
+                          lambda: SourceStore(owner.logical)):
+            with pytest.raises(StorageError):
+                operation()
+        with pytest.raises(StorageError):
+            with owner.data_lease():
+                pytest.fail('disconnected data must not acquire a lease')
+    assert not target.exists()
+
+
+def test_legacy_configuration_and_inflight_migration_remain_usable(setup):
+    manager, target = setup
+    seed(manager)
+    manager.save_plan(str(target), 0)
+    config = manager.config()
+    del config['pending']['identity_version']
+    atomic_json(manager.config_path, config)
+    StorageMigration(manager, lambda *_: None).startup()
+    assert json.loads((target / storage.MARKER).read_text())['project'] == str(manager.project)
+    original_config = manager.config_path.read_bytes()
+    attach(another_project(manager), target)
+    assert manager.guard() == target
+    assert manager.config_path.read_bytes() == original_config
+
+
+@pytest.mark.parametrize('change', ['identity', 'unplug', 'version', 'copying'])
+def test_attach_revalidates_directory_before_switch(setup, change):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    original_id = manager.config()['active']['id']
+    other.save_attachment(str(target), 0, original_id)
+    if change == 'unplug':
+        target.rename(target.with_name('disconnected'))
+    else:
+        marker = json.loads((target / storage.MARKER).read_text())
+        marker.update({'identity': {'id': 'a' * 32}, 'version': {'schema_version': 999},
+                       'copying': {'state': 'copying'}}[change])
+        atomic_json(target / storage.MARKER, marker)
+    with pytest.raises(StorageError):
+        StorageMigration(other, lambda *_: None).startup()
+    assert not other.logical.is_symlink()
+    assert other.config()['active'] is None
+
+
+def test_attach_crash_after_local_backup_rename_is_recoverable(setup, monkeypatch):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    (other.logical / 'important.txt').write_text('keep')
+    other.save_attachment(str(target), 0, manager.config()['active']['id'])
+    original = Path.symlink_to
+    monkeypatch.setattr(Path, 'symlink_to', lambda *_args, **_kw: (_ for _ in ()).throw(OSError('crash')))
+    with pytest.raises(OSError):
+        StorageMigration(other, lambda *_: None).startup()
+    assert other.config()['pending']['phase'] == 'SWITCHING'
+    with pytest.raises(StorageError):
+        other.cancel_plan(other.config()['revision'])
+    monkeypatch.setattr(Path, 'symlink_to', original)
+    result = StorageMigration(other, lambda *_: None).startup()
+    assert other.guard() == target
+    assert (Path(result['active']['backup']) / 'important.txt').read_text() == 'keep'
+
+
+def test_attach_api_checks_confirmation_identity_revision_and_no_online_switch(setup, monkeypatch):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    from backend.services import storage_routes
+    monkeypatch.setattr(storage_routes, 'manager', other)
+    monkeypatch.setattr(storage_routes, 'enabled', lambda: True)
+    app = FastAPI()
+    app.include_router(storage_routes.router)
+    with TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1') as client:
+        checked = client.post('/api/data-storage/existing/probe', json={'path': str(target)})
+        assert checked.status_code == 200
+        payload = {'path': str(target), 'expected_revision': 0, 'expected_id': checked.json()['id']}
+        assert client.put('/api/data-storage/existing/plan', json=payload).status_code == 422
+        assert client.put('/api/data-storage/existing/plan', json={**payload, 'confirm': True, 'expected_id': 'bad'}).status_code == 409
+        assert client.put('/api/data-storage/existing/plan', json={**payload, 'confirm': True, 'expected_revision': 3}).status_code == 409
+        assert client.put('/api/data-storage/existing/plan', json={**payload, 'confirm': True}).status_code == 200
+        assert not other.logical.is_symlink()
+        with file_lease(other.control / 'service.lock', shared=True):
+            with pytest.raises(StorageError):
+                StorageMigration(other).startup()
+    with TestClient(app, client=('192.0.2.3', 1234), base_url='http://127.0.0.1') as client:
+        assert client.put('/api/data-storage/existing/plan', json={**payload, 'confirm': True}).status_code == 403
+
+
+def test_local_lifespan_holds_shared_data_lease(setup, monkeypatch):
+    from contextlib import asynccontextmanager
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    attach(other, target)
+    monkeypatch.setattr(storage, '_manager', manager)
+    @asynccontextmanager
+    async def lifespan(_app):
+        yield
+    app = FastAPI(lifespan=storage.storage_lifespan(lifespan))
+    with TestClient(app):
+        with other.data_lease():
+            assert other.guard() == target
+        with pytest.raises(StorageError, match='仍有服务'):
+            with other.data_lease(shared=False):
+                pytest.fail('the application must own a shared physical lease')
+    with other.data_lease(shared=False):
+        pass
+
+
+def test_cannot_attach_a_substituted_lock_file(setup):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    external = other.project / 'keep.txt'
+    external.write_text('unchanged')
+    (target / storage.USE_LOCK).unlink()
+    (target / storage.USE_LOCK).symlink_to(external)
+    with pytest.raises(OSError):
+        attach(other, target)
+    assert external.read_text() == 'unchanged'
+    assert not other.logical.is_symlink()
+
+
+@pytest.mark.parametrize('active', [[], {'id': 'bad'}, {'id': 'a' * 32, 'target': '/data', 'mount': '/', 'operation': []}])
+def test_malformed_active_config_is_diagnostic_not_an_uncaught_error(setup, active):
+    manager, _target = setup
+    atomic_json(manager.config_path, {'revision': 1, 'active': active, 'pending': None})
+    assert manager.status()['online'] is False
+    with pytest.raises(StorageError, match='配置格式'):
+        manager.guard()
+
+
+@pytest.mark.parametrize('busy_area', ['local-download', 'target-maintenance'])
+def test_attach_respects_local_downloader_and_shared_directory_maintenance(setup, busy_area):
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    other.save_attachment(str(target), 0, manager.config()['active']['id'])
+    path = other.logical / '.tushare_refresh.lock' if busy_area == 'local-download' else target / storage.USE_LOCK
+    with file_lease(path):
+        with pytest.raises(StorageError, match='仍有服务'):
+            StorageMigration(other, lambda *_: None).startup()
+    assert other.config()['pending']['phase'] == 'PLANNED'
+    assert other.logical.is_dir() and not other.logical.is_symlink()
+    assert StorageMigration(other, lambda *_: None).startup()['online']
+
+
+def test_attach_cli_requires_data_id_then_switches_without_download(setup, monkeypatch, capsys):
+    from scripts import manage_data_storage as cli
+    manager, target = setup
+    activate(manager, target)
+    other = another_project(manager)
+    identifier = manager.config()['active']['id']
+    monkeypatch.setattr(cli, 'ROOT', other.project)
+    arguments = ['manage_data_storage.py', 'attach', '--path', str(target)]
+    monkeypatch.setattr(cli.sys, 'argv', arguments)
+    assert cli.main() == 1
+    assert identifier in capsys.readouterr().err
+    assert other.config()['pending'] is None
+    monkeypatch.setattr(cli.sys, 'argv', [*arguments, '--confirm', identifier])
+    assert cli.main() == 0
+    assert other.guard() == target
+    assert 'SUCCESS' in capsys.readouterr().out

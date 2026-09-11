@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -14,6 +15,7 @@ from backend.data_sources.models import CenterError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MARKER = '.fund-storage-identity.json'
+USE_LOCK = '.fund-storage-use.lock'
 RESERVE_BYTES = 2 * 1024**3
 
 
@@ -57,9 +59,14 @@ def fsync_dir(path):
 
 
 @contextmanager
-def file_lease(path, *, shared=False):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with path.open('a+') as handle:
+def file_lease(path, *, shared=False, create_parent=True):
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Never follow a substituted lock file into another data area.
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a+') as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise StorageError('STORAGE_LOCK_INVALID', '存储锁不是普通文件。', 503)
         try:
             fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -78,6 +85,38 @@ def mount_anchor(path):
     return path
 
 
+def storage_identity(target):
+    """An identity describes the data, never the checkout using it.
+
+    Old markers are read without rewriting their project/audit information.
+    Version 2 marks unfinished copies unusable until verification completes.
+    """
+    value = read_json(target / MARKER)
+    if not isinstance(value.get('id'), str) or not re.fullmatch('[a-f0-9]{32}', value['id']):
+        raise StorageError('STORAGE_IDENTITY_CHANGED', '存储身份不一致，拒绝使用未知数据目录。', 503)
+    if 'schema_version' not in value:
+        if not isinstance(value.get('project'), str):
+            raise StorageError('STORAGE_CONFIG_INVALID', '旧存储标记格式无效。', 503)
+    elif type(value['schema_version']) is not int or value['schema_version'] != 2:
+        raise StorageError('STORAGE_FORMAT_UNSUPPORTED', '数据存储格式不兼容，请升级程序；不会自动改写数据。', 503)
+    elif value.get('state') != 'ready':
+        raise StorageError('STORAGE_SWITCH_PENDING', '数据目录尚未完成校验，暂不可接入。', 503)
+    return value
+
+
+def validate_target(target, anchor, identifier=None, *, write=False):
+    if (not target.is_absolute() or target.is_symlink() or not target.is_dir()
+            or target.resolve() != target or not anchor.is_dir()
+            or mount_anchor(target) != anchor):
+        raise StorageError('STORAGE_OFFLINE', '数据磁盘未挂载或目录入口已改变，请接回原磁盘；不会改写本机目录。', 503)
+    identity = storage_identity(target)
+    if identifier is not None and identity['id'] != identifier:
+        raise StorageError('STORAGE_IDENTITY_CHANGED', '存储身份不一致，拒绝使用同名但不同的数据目录。', 503)
+    if write and shutil.disk_usage(target).free < RESERVE_BYTES:
+        raise StorageError('STORAGE_LOW_SPACE', '数据磁盘剩余空间不足 2 GiB，已阻止继续写入；请先释放空间。', 503)
+    return identity
+
+
 class StorageManager:
     def __init__(self, project=PROJECT_ROOT):
         self.project = Path(project).resolve()
@@ -93,8 +132,27 @@ class StorageManager:
                 raise StorageError('STORAGE_UNMANAGED_LINK', 'data 是未登记的目录链接，请先核验存储配置，禁止自动写入。', 503)
             return {'revision': 0, 'active': None, 'pending': None}
         value = read_json(self.config_path)
-        if type(value.get('revision')) is not int or 'active' not in value or 'pending' not in value:
+        if (type(value.get('revision')) is not int or value['revision'] < 0
+                or 'active' not in value or 'pending' not in value):
             raise StorageError('STORAGE_CONFIG_INVALID', '存储配置格式无效。', 503)
+        for key in ('active', 'pending'):
+            record = value[key]
+            if record is None:
+                continue
+            if (not isinstance(record, dict) or not isinstance(record.get('id'), str)
+                    or not re.fullmatch('[a-f0-9]{32}', record['id'])
+                    or any(not isinstance(record.get(field), str)
+                           or not Path(record[field]).is_absolute() or '..' in Path(record[field]).parts
+                           for field in ('target', 'mount'))
+                    or record.get('operation') not in (None, 'attach')):
+                raise StorageError('STORAGE_CONFIG_INVALID', '存储配置格式无效。', 503)
+            if key == 'pending' and (record.get('phase') not in (
+                    'PLANNED', 'SCANNING', 'COPYING', 'VERIFYING', 'SWITCHING', 'LINKED')
+                    or record.get('identity_version') not in (None, 2)
+                    or (record.get('operation') == 'attach' and (
+                        not isinstance(record.get('storage_id'), str)
+                        or not re.fullmatch('[a-f0-9]{32}', record['storage_id'])))):
+                raise StorageError('STORAGE_CONFIG_INVALID', '待执行存储计划格式无效。', 503)
         return value
 
     def guard(self, *, write=False):
@@ -107,16 +165,58 @@ class StorageManager:
             return self.logical
         target = Path(active['target'])
         anchor = Path(active['mount'])
-        if (not self.logical.is_symlink() or self.logical.resolve() != target
-                or not target.is_dir() or target.is_symlink() or not anchor.is_dir()
-                or mount_anchor(target) != anchor):
+        if not self.logical.is_symlink() or self.logical.resolve() != target:
             raise StorageError('STORAGE_OFFLINE', '数据磁盘未挂载或目录入口已改变，请接回原磁盘；不会改写本机目录。', 503)
-        identity = read_json(target / MARKER)
-        if identity != {'id': active['id'], 'project': str(self.project)}:
-            raise StorageError('STORAGE_IDENTITY_CHANGED', '存储身份不一致，拒绝使用同名但不同的数据目录。', 503)
-        if write and shutil.disk_usage(target).free < RESERVE_BYTES:
-            raise StorageError('STORAGE_LOW_SPACE', '数据磁盘剩余空间不足 2 GiB，已阻止继续写入；请先释放空间。', 503)
+        validate_target(target, anchor, active['id'], write=write)
         return target
+
+    @contextmanager
+    def data_lease(self, *, shared=True):
+        """All checkouts coordinate through the same physical data directory."""
+        root = self.guard()
+        with file_lease(root / USE_LOCK, shared=shared,
+                        create_parent=not bool(self.config()['active'])):
+            self.guard()
+            yield
+
+    def probe_existing(self, text):
+        if not isinstance(text, str) or not text.strip() or '\x00' in text:
+            raise StorageError('STORAGE_PATH_INVALID', '请输入已有数据目录的绝对路径。', 422)
+        raw = Path(text.strip())
+        if not raw.is_absolute() or '..' in raw.parts or raw.is_symlink() or not raw.is_dir():
+            raise StorageError('STORAGE_PATH_INVALID', '请选择已挂载磁盘上的真实数据目录，不能使用相对路径或目录链接。', 422)
+        target = raw.resolve(strict=True)
+        if (target in {Path('/'), Path.home().resolve(), self.project}
+                or self.project in target.parents or target in self.project.parents):
+            raise StorageError('STORAGE_UNSAFE_PATH', '请选择项目外的专用数据目录。')
+        if raw.parts[1:2] == ('Volumes',) and not (Path('/Volumes') / raw.parts[2]).is_mount():
+            raise StorageError('STORAGE_VOLUME_NOT_MOUNTED', '指定的数据磁盘没有真正挂载。')
+        anchor = mount_anchor(target)
+        identity = validate_target(target, anchor)
+        usage = shutil.disk_usage(target)
+        return {'target': str(target), 'mount': str(anchor), 'id': identity['id'],
+                'free_bytes': usage.free, 'total_bytes': usage.total,
+                'message': '已有数据目录校验通过；接入只切换本项目入口，不复制、不下载、不修改目录归属。'}
+
+    def save_attachment(self, text, revision, expected_id):
+        self.config()  # Reject a substituted control directory before opening its lock.
+        with file_lease(self.control / 'config.lock'):
+            config = self.config()
+            if type(revision) is not int or revision != config['revision']:
+                raise StorageError('STORAGE_REVISION_CONFLICT', '存储配置已变化，请刷新后重新检查。')
+            if config['active'] or config['pending']:
+                raise StorageError('STORAGE_PLAN_EXISTS', '已有活动目录或待执行计划，不会覆盖现有连接。')
+            checked = self.probe_existing(text)
+            if checked['id'] != expected_id:
+                raise StorageError('STORAGE_IDENTITY_CHANGED', '检查后数据目录身份已变化，请重新检查。')
+            config.update(revision=revision + 1, pending={
+                'id': uuid.uuid4().hex, 'operation': 'attach', 'storage_id': checked['id'],
+                'target': checked['target'], 'mount': checked['mount'], 'phase': 'PLANNED',
+                'files': 0, 'bytes': 0,
+                'message': '接入计划已保存，重启前生效；本机原数据保留，不合并、不删除。',
+            })
+            atomic_json(self.config_path, config)
+            return self.status()
 
     def probe(self, text):
         if not isinstance(text, str) or not text.strip() or '\x00' in text:
@@ -171,6 +271,7 @@ class StorageManager:
                 'message': '目录能力检查通过；完整数据大小与容量将在离线迁移时再次核验。'}
 
     def save_plan(self, text, revision):
+        self.config()
         with file_lease(self.control / 'config.lock'):
             config = self.config()
             if type(revision) is not int or revision != config['revision']:
@@ -183,6 +284,7 @@ class StorageManager:
             identifier = uuid.uuid4().hex
             config.update(revision=revision + 1, pending={
                 'id': identifier, 'target': result['target'], 'mount': result['mount'],
+                'identity_version': 2,
                 'phase': 'PLANNED', 'files': 0, 'bytes': 0,
                 'message': '计划已保存。停止下载后重启服务，在启动前离线迁移。',
             })
@@ -190,6 +292,7 @@ class StorageManager:
             return self.status()
 
     def cancel_plan(self, revision):
+        self.config()
         with file_lease(self.control / 'config.lock'):
             config = self.config()
             if type(revision) is not int or revision != config['revision']:
@@ -241,8 +344,7 @@ def guard_path(path, *, write=False):
 def storage_lifespan(inner):
     @asynccontextmanager
     async def wrapped(app):
-        with file_lease(_manager.control / 'service.lock', shared=True):
-            _manager.guard()
+        with file_lease(_manager.control / 'service.lock', shared=True), _manager.data_lease():
             async with inner(app):
                 yield
     return wrapped

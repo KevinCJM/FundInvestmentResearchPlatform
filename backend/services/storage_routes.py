@@ -51,6 +51,23 @@ async def save(request: Request):
     return {**await invoke(manager.save_plan, payload.get('path'), payload.get('expected_revision')), 'editing_enabled': enabled()}
 
 
+@router.post('/existing/probe')
+async def probe_existing(request: Request):
+    local(request, write=True)
+    payload = await body(request)
+    return await invoke(manager.probe_existing, payload.get('path'))
+
+
+@router.put('/existing/plan')
+async def attach_existing(request: Request):
+    local(request, write=True)
+    payload = await body(request)
+    if payload.get('confirm') is not True:
+        raise HTTPException(422, detail={'code': 'STORAGE_CONFIRM_REQUIRED', 'message': '请确认共用整个数据区及其配置、记录和凭据。'})
+    return {**await invoke(manager.save_attachment, payload.get('path'), payload.get('expected_revision'),
+                           payload.get('expected_id')), 'editing_enabled': enabled()}
+
+
 @router.delete('/plan')
 async def cancel(request: Request):
     local(request, write=True)

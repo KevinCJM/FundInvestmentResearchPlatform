@@ -13,6 +13,8 @@ beforeEach(() => {
   vi.mocked(api.probeDataStorage).mockResolvedValue(probe)
   vi.mocked(api.planDataStorage).mockResolvedValue({ ...status, revision: 1, pending })
   vi.mocked(api.cancelStoragePlan).mockResolvedValue({ ...status, revision: 2 })
+  vi.mocked(api.probeExistingStorage).mockResolvedValue({ ...probe, id: 'shared-data-id' })
+  vi.mocked(api.planExistingStorage).mockResolvedValue({ ...status, revision: 1, pending: { ...pending, operation: 'attach', storage_id: 'shared-data-id' } })
 })
 async function open() {
   render(<DataStoragePanel />)
@@ -93,4 +95,53 @@ it('迁移阶段显示文件和字节进度，切换阶段不能取消', async (
   const progress = await screen.findByLabelText('存储迁移进度')
   expect(progress).toHaveAttribute('value', '1024')
   expect(screen.getByText('取消迁移计划（不删除数据）')).toBeDisabled()
+})
+
+it('接入已有目录先说明共享范围，再确认数据标识，不触发迁移', async () => {
+  await open()
+  fireEvent.change(screen.getByLabelText('存储操作方式'), { target: { value: 'attach' } })
+  fireEvent.change(screen.getByLabelText('目标绝对目录'), { target: { value: probe.target } })
+  expect(screen.getByText(/共用整个数据区，包括行情、配置、研究记录和本地凭据/)).toBeVisible()
+  fireEvent.click(screen.getByText('检查已有目录'))
+  await screen.findByText('数据标识：shared-data-id')
+  expect(screen.getByText('保存接入计划')).toBeDisabled()
+  fireEvent.click(screen.getByLabelText('确认共用已有数据目录'))
+  fireEvent.click(screen.getByText('保存接入计划'))
+  await screen.findByText('./start_services.sh restart')
+  expect(api.planExistingStorage).toHaveBeenCalledWith(probe.target, 0, 'shared-data-id')
+  expect(api.planDataStorage).not.toHaveBeenCalled()
+  expect(screen.getByText('取消接入计划（不删除数据）')).toBeVisible()
+})
+
+it('接入检查过期或操作方式改变后，不能沿用旧确认', async () => {
+  let resolve!: (value: api.ExistingStorageProbe) => void
+  vi.mocked(api.probeExistingStorage).mockImplementation(() => new Promise(r => { resolve = r }))
+  await open()
+  fireEvent.change(screen.getByLabelText('存储操作方式'), { target: { value: 'attach' } })
+  fireEvent.change(screen.getByLabelText('目标绝对目录'), { target: { value: probe.target } })
+  fireEvent.click(screen.getByText('检查已有目录'))
+  fireEvent.change(screen.getByLabelText('目标绝对目录'), { target: { value: '/Volumes/other/data' } })
+  await act(async () => resolve({ ...probe, id: 'stale-id' }))
+  expect(screen.queryByText('保存接入计划')).not.toBeInTheDocument()
+  expect(api.planExistingStorage).not.toHaveBeenCalled()
+})
+
+it('接入失败明确显示错误，不显示成功或删除本机副本入口', async () => {
+  vi.mocked(api.probeExistingStorage).mockRejectedValue(new Error('数据存储格式不兼容'))
+  await open()
+  fireEvent.change(screen.getByLabelText('存储操作方式'), { target: { value: 'attach' } })
+  fireEvent.change(screen.getByLabelText('目标绝对目录'), { target: { value: probe.target } })
+  fireEvent.click(screen.getByText('检查已有目录'))
+  expect(await screen.findByRole('alert')).toHaveTextContent('数据存储格式不兼容')
+  expect(screen.queryByText('保存接入计划')).not.toBeInTheDocument()
+})
+
+it('已接入目录的原本机数据仅显示保留位置，不误报已清理或提供迁移清理命令', async () => {
+  vi.mocked(api.getDataStorage).mockResolvedValue({ ...status, actual_path: probe.target, active: {
+    id: 'shared-id', operation: 'attach', target: probe.target, backup: '/project/.storage/backups/operation/data', backup_removed: false,
+  } })
+  render(<DataStoragePanel />)
+  expect(await screen.findByText(/本项目原数据另行保留，未合并/)).toBeVisible()
+  expect(screen.queryByText(/storage-cleanup/)).not.toBeInTheDocument()
+  expect(screen.queryByText('原本机副本已清理。')).not.toBeInTheDocument()
 })
