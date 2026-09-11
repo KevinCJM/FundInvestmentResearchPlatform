@@ -12,6 +12,102 @@
   },
   "modules": [
     {
+      "id": "branch_submission_workflow",
+      "name": "AI branch submission, review and merge protocol",
+      "path": "branch_submission_rules.md",
+      "kind": "submission_protocol",
+      "purpose": "Owns the documented AI submission procedure: development branches enter Dev, Dev enters main, independent AI review is mandatory without a human approval prerequisite, and merges require verified branch, review and quality gates. This module describes the agent protocol; it does not certify remote enforcement or an installed review service. The candidate GitHub Actions adapter validates authenticated Codex review evidence; production enforcement must be checked separately.",
+      "module_tags": [
+        "submission",
+        "branches",
+        "pull-request",
+        "ai-review",
+        "release",
+        "governance"
+      ],
+      "entry_files": [
+        "branch_submission_rules.md",
+        ".github/workflows/ai-review.yml",
+        "scripts/check_ai_review.py"
+      ],
+      "key_symbols": [
+        "evaluate",
+        "GitHub.collect",
+        "GitHub.context",
+        "GitHub.publish"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "branch_submission_rules.md"
+      ],
+      "then_check_files": [
+        "AGENTS.md",
+        "docs/ai_routing_evolution_policy.json",
+        "docs/github-ai-review-design.md",
+        "scripts/check_ai_review.py",
+        ".github/workflows/ai-review.yml"
+      ],
+      "upstream_dependencies": [
+        "ai_routing_files"
+      ],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [
+        "Live GitHub protection rules and required-check configuration",
+        "AI review service identity, credentials and remote check publication",
+        "External deployment environments and release status"
+      ],
+      "related_tests": [
+        "scripts/tests/test_ai_review.py",
+        ".github/workflows/ai-review-tests.yml"
+      ],
+      "related_configs": [
+        "AGENTS.md",
+        "docs/ai_routing_evolution_policy.json",
+        ".github/workflows/ai-review.yml",
+        ".github/workflows/ai-review-tests.yml"
+      ],
+      "risk_flags": [
+        "documented_policy_is_not_remote_enforcement",
+        "stale_head_or_base_review",
+        "unrelated_dirty_files_in_submission",
+        "human_approval_must_not_replace_ai_review"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "AI commit, push, PR review, merge and release decisions"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P02"
+      ],
+      "minimum_regression": [
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
+        "python3 scripts/tests/test_ai_review.py -v"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "candidate_ai_review_adapter",
+        "remote_enforcement_not_certified"
+      ],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "branch_submission_rules.md",
+          "AGENTS.md",
+          "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
+          "scripts/check_ai_review.py",
+          "scripts/tests/test_ai_review.py",
+          ".github/workflows/ai-review.yml",
+          "python3 scripts/tests/test_ai_review.py -v"
+        ],
+        "unsampled_paths": [
+          ".github/workflows/ai-review.yml"
+        ]
+      }
+    },
+    {
       "id": "tactical_allocation_workbench",
       "name": "SAA-linked tactical decision workbench",
       "path": "backend/tactical_allocation",
