@@ -3,8 +3,10 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ProductPoolSelection from './ProductPoolSelection'
+import { readAllocationDraft, readAllocationJourney, updateAllocationJourney, writeAllocationDraft } from '../app/allocationJourney'
 import {
   createInvestableUniverseSnapshot,
+  getInvestableUniverse,
   listProductPoolVersions,
 } from '../services/productPools'
 
@@ -17,6 +19,7 @@ vi.mock('../services/productPools', async () => {
   return {
     ...actual,
     createInvestableUniverseSnapshot: vi.fn(),
+    getInvestableUniverse: vi.fn(),
     listProductPoolVersions: vi.fn(),
   }
 })
@@ -43,15 +46,18 @@ function LocationProbe() {
 describe('ProductPoolSelection', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    localStorage.clear()
+    sessionStorage.clear()
     vi.mocked(listProductPoolVersions).mockResolvedValue({ items: [version], total: 1 })
     vi.mocked(createInvestableUniverseSnapshot).mockResolvedValue(universe)
+    vi.mocked(getInvestableUniverse).mockResolvedValue(universe)
   })
 
   it('选择有效版本并锁定不可变可投资域', async () => {
     render(<MemoryRouter><ProductPoolSelection /></MemoryRouter>)
 
     expect(await screen.findByText(/核心产品池 · V3/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('checkbox', { name: /核心产品池/ }))
     fireEvent.click(screen.getByRole('button', { name: '生成锁定快照' }))
 
     await waitFor(() => expect(createInvestableUniverseSnapshot).toHaveBeenCalledWith({
@@ -82,7 +88,7 @@ describe('ProductPoolSelection', () => {
     )
 
     expect(await screen.findByText(/核心产品池 · V3/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('checkbox', { name: /核心产品池/ }))
     fireEvent.click(screen.getByRole('button', { name: '生成锁定快照' }))
     await screen.findByText('可投资域快照已锁定')
     fireEvent.click(screen.getByRole('button', { name: label }))
@@ -113,4 +119,41 @@ describe('ProductPoolSelection', () => {
     expect(await screen.findByText(/评价数据截至 2026-08-31/)).toBeInTheDocument()
     expect(await screen.findByText(/晚于研究日 2020-01-01/)).toBeInTheDocument()
   })
+  it('从发布池进入时预选目标版本，并把其他历史版本按需收起', async () => {
+    vi.mocked(listProductPoolVersions).mockResolvedValue({ items: [version, { ...version, id: 'old-version', version: 2 }], total: 2 })
+    render(<MemoryRouter initialEntries={['/pre-investment/product-pool?version=version-1']}><ProductPoolSelection /></MemoryRouter>)
+    expect(await screen.findByRole('checkbox', { name: /核心产品池 · V3/ })).toBeChecked()
+    expect(screen.queryByRole('checkbox', { name: /核心产品池 · V2/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示历史发布版本' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /核心产品池 · V2/ }))
+    expect(screen.getByRole('checkbox', { name: /核心产品池 · V3/ })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /核心产品池 · V2/ })).toBeChecked()
+  })
+
+  it('从明确产品范围恢复真实名称和日期，不套用之前的选池草稿', async () => {
+    writeAllocationDraft('pool:resume', { name: '旧草稿', researchDate: '2020-01-01', selectedIds: ['old-version'], snapshotId: 'old-universe', selectionEdited: false })
+    updateAllocationJourney({ universeId: 'old-universe', name: '旧研究', researchDate: '2020-01-01', poolVersionIds: ['old-version'] })
+    render(<MemoryRouter initialEntries={['/pre-investment/product-pool?universe=universe-1']}><ProductPoolSelection /></MemoryRouter>)
+    expect(await screen.findByText('可投资域快照已锁定')).toBeInTheDocument()
+    expect(getInvestableUniverse).toHaveBeenCalledWith('universe-1')
+    expect(getInvestableUniverse).not.toHaveBeenCalledWith('old-universe')
+    expect(screen.getByLabelText(/研究日期/)).toHaveValue('2026-09-04')
+    expect(screen.getByDisplayValue('投前研究可投资域')).toBeInTheDocument()
+    expect(await screen.findByRole('checkbox', { name: /核心产品池 · V3/ })).toBeChecked()
+    expect(readAllocationJourney()).toEqual({ universeId: 'universe-1', name: '投前研究可投资域', researchDate: '2026-09-04', poolVersionIds: ['version-1'] })
+  })
+
+  it('基于已锁定范围生成新快照时切换到新身份，不把新快照存入原范围草稿', async () => {
+    const next = { ...universe, id: 'universe-2', name: '新的研究范围' }
+    vi.mocked(createInvestableUniverseSnapshot).mockResolvedValue(next)
+    vi.mocked(getInvestableUniverse).mockImplementation(async id => id === next.id ? next : universe)
+    render(<MemoryRouter initialEntries={['/pre-investment/product-pool?universe=universe-1']}><ProductPoolSelection /><LocationProbe /></MemoryRouter>)
+    await screen.findByText('可投资域快照已锁定')
+    fireEvent.change(screen.getByLabelText('研究名称'), { target: { value: next.name } })
+    fireEvent.click(screen.getByRole('button', { name: '生成锁定快照' }))
+    await waitFor(() => expect(screen.getByTestId('location-probe')).toHaveTextContent('?universe=universe-2'))
+    expect(readAllocationDraft<{ snapshotId: string }>('pool:universe:universe-1')?.snapshotId).toBe('universe-1')
+    expect(readAllocationDraft<{ snapshotId: string }>('pool:universe:universe-2')?.snapshotId).toBe('universe-2')
+  })
+
 })

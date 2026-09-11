@@ -77,6 +77,8 @@ async function mockApi(page: Page) {
     } })
     if (url.pathname === '/api/custom-indicators/compose') return route.fulfill({ json: {
       expression: 'mean(returns)',
+      python_expression: 'mean(returns)',
+      editable_latex: '\\operatorname{mean}\\left(\\mathbf{r}\\right)',
       latex: 'mean(returns)',
       display_latex: '\\overline{\\mathbf{r}}',
       inferred_type: 'scalar',
@@ -115,7 +117,7 @@ test('指标定义无周期选择，资源目录可键盘搜索', async ({ page 
   await dialog.getByRole('combobox', { name: '选择变量' }).press('Enter')
   await dialog.getByLabel('搜索选择变量').fill('普通收益')
   await dialog.getByLabel('搜索选择变量').press('Enter')
-  await expect(dialog.getByRole('heading', { name: '普通收益率序列' })).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: '复权净值普通收益率' })).toBeVisible()
   // 第一层 Esc 关闭仍获得焦点的资源下拉；第二层 Esc 关闭资源抽屉。
   await page.keyboard.press('Escape')
   await dialog.getByRole('button', { name: '关闭资源目录' }).focus()
@@ -152,7 +154,8 @@ test('在校验与预览中选择指标不会跳回定义页', async ({ page }, 
 
   await expect(page.getByRole('heading', { name: '校验与预览' })).toBeVisible()
   await expect(page.getByLabel('当前预览指标')).toContainText('我的平均收益指标')
-  await expect(page.getByRole('heading', { name: '层级计算 DAG' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '指标定义校验' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '层级计算 DAG' })).toHaveCount(0)
   if (testInfo.project.name === 'mobile-320') {
     await expect(page.getByRole('tab', { name: '预览' })).toHaveAttribute('aria-selected', 'true')
   } else {
@@ -189,6 +192,7 @@ test('已有指标通过统一入口编辑当前逻辑并另存为新指标', as
   await expect(builder).toBeVisible()
   await expect(builder.getByText('最终计算步骤：全元素算术平均值')).toBeVisible()
   await builder.getByRole('button', { name: '应用逻辑修改' }).click()
+  await expect(builder).toBeHidden()
 
   const createRequest = page.waitForRequest((request) => request.url().endsWith('/api/custom-indicators') && request.method() === 'POST')
   await page.getByRole('button', { name: '另存为新指标' }).click()
@@ -222,13 +226,15 @@ test('校验成功后可展示数组形式的数据规模且页面不白屏', as
   await expect(page.getByRole('region', { name: '公式计算说明' })).toHaveCount(0)
   await page.getByRole('button', { name: '查看完整计算说明' }).click()
   await expect(page.getByRole('region', { name: '公式计算说明' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '公式计算说明' })).toContainText('全元素算术平均值')
+  await expect(page.getByRole('region', { name: '公式计算说明' })).toContainText('复权净值普通收益率')
 
   if (testInfo.project.name === 'mobile-320') {
     await page.getByRole('tab', { name: '预览' }).click()
   } else {
     await page.getByRole('tablist', { name: '指标工作台' }).getByRole('tab', { name: /校验与预览/ }).click()
   }
-  await expect(page.getByRole('heading', { name: '层级计算 DAG' })).toBeVisible()
-  await expect(page.getByRole('article', { name: 'DAG 节点详情' })).toContainText('理论规模：单个数值')
-  await expect(page.getByRole('table', { name: 'DAG 节点、输入参数和输出类型数据表' })).toContainText('理论规模：随计算窗口变化的时间点数量')
+  await expect(page.getByRole('region', { name: '指标定义校验' })).toBeVisible()
+  await expect(page.getByLabel('当前预览指标')).toContainText('平均单期收益率')
+  await expect(page.getByRole('heading', { name: '层级计算 DAG' })).toHaveCount(0)
 })

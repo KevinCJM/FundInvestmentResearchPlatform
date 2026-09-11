@@ -51,6 +51,14 @@ def _write_catalog(root: Path) -> None:
 def test_coverage_snapshot_streams_history_and_query_uses_only_small_tables(
     monkeypatch, tmp_path: Path
 ) -> None:
+    # Coverage readiness is relative to today. Keep this fixture independent
+    # of the calendar so it does not silently become stale after ten days.
+    class SnapshotDate(index_data.date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 9, 1)
+
+    monkeypatch.setattr(index_data, "date", SnapshotDate)
     _write_catalog(tmp_path)
     pd.DataFrame(
         {

@@ -6,9 +6,9 @@ export const etlGraphSchemas: GraphNodeSchema[] = [
   ['map', '字段映射', 'raw_batch', 'mapped_batch', false],
   ['resolve', '多源取值', 'mapped_batch', 'resolved_table', true],
   ['snapshot', '指标快照计算', 'resolved_table', 'snapshot', true],
-  ['task', '数据集任务', 'workspace', 'workspace', false],
+  ['task', '数据集任务', 'workspace', 'workspace', true],
 ].map(([id, label, input, output, multiple]) => ({
   id: String(id), label: String(label), category_label: String(label),
-  inputs: [...(input ? [{ id: 'data', label: '数据输入', value_type: String(input), multiple: Boolean(multiple), required: id !== 'task' }] : []), { id: 'after', label: '等待完成', value_type: 'control', multiple: true }],
+  inputs: [...(input ? [{ id: 'data', label: '数据输入', value_type: String(input), multiple: Boolean(multiple), required: id !== 'task' }] : []), { id: 'after', label: '仅执行顺序', value_type: 'control', multiple: true }],
   outputs: [{ id: 'data', label: '数据输出', value_type: String(output) }, { id: 'done', label: '完成', value_type: 'control' }],
 }))

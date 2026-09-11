@@ -6,7 +6,9 @@ real data directory.
 
 from __future__ import annotations
 
+import json
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -391,18 +393,38 @@ def _client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return TestClient(app)
 
 
+def _await_audit(client, attempts: int = 100) -> dict:
+    """Poll the audit until the background scan has measured everything."""
+
+    for _ in range(attempts):
+        payload = client.get("/api/pit/audit").json()
+        if not payload["summary"]["pending"]:
+            return payload
+        time.sleep(0.05)
+    raise AssertionError("后台 PIT 扫描没有在预期时间内完成")
+
+
 def test_audit_route_reports_the_sheet_and_the_latest_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _nav_fixture(tmp_path, announcement_lag=2)
     client = _client(tmp_path, monkeypatch)
 
-    payload = client.get("/api/pit/audit").json()
-    assert payload["latest_release"] is None
+    # The first call answers from an empty memo and starts the scan behind the
+    # request: reading the clock columns of every declared file is minutes on
+    # cold storage, and a settings page that hangs for minutes is a broken page.
+    first = client.get("/api/pit/audit").json()
+    assert first["latest_release"] is None
+    assert first["summary"]["pending"] >= 1
+    assert first["scan"]["state"] == "running"
+    assert next(item for item in first["datasets"] if item["dataset_id"] == "etf_nav")["grade"] is None
+
+    payload = _await_audit(client)
     nav = next(item for item in payload["datasets"] if item["dataset_id"] == "etf_nav")
     assert nav["grade"] == "A"
     assert nav["lag"]["p50"] == pytest.approx(2.0)
     assert payload["summary"]["grade_a"] >= 1
+    assert payload["summary"]["pending"] == 0
 
     sealed = client.post("/api/pit/releases", json={"name": "基线", "note": "自审"})
     assert sealed.status_code == 200
@@ -709,17 +731,43 @@ def test_pit_off_header_is_distinguishable_from_saying_nothing(tmp_path: Path) -
     assert override.as_of is None
 
 
-def test_viewing_a_release_takes_its_as_of_and_keeps_the_strict_mode(tmp_path: Path) -> None:
-    """Switching vintage must not quietly relax a strict system口径."""
+def test_viewing_a_version_takes_that_version_whole(tmp_path: Path) -> None:
+    """A version is one口径: its day and its mode travel together.
+
+    The tab carries only the version id; repeating the day in a header is how
+    the two would drift apart.
+    """
+
+    _nav_fixture(tmp_path)
+    releases = DataReleaseRepository(tmp_path / "data_releases.json")
+    PitSettingsRepository(tmp_path).update(None, catalog.RUN_MODE_RESEARCH)
+    strict = releases.create(
+        tmp_path, "站在 01-10 的严格版", as_of="2024-01-10", run_mode=catalog.RUN_MODE_STRICT
+    )
+
+    override = context.parse_view_override(tmp_path, {"x-pit-release": strict["id"]})
+    assert override.data_release_id == strict["id"]
+    assert override.as_of == "2024-01-10"
+    assert override.run_mode == catalog.RUN_MODE_STRICT
+
+
+def test_a_version_that_states_no_mode_cannot_relax_a_strict_system(tmp_path: Path) -> None:
+    """Versions sealed before the mode moved into them say nothing about it."""
 
     _nav_fixture(tmp_path)
     releases = DataReleaseRepository(tmp_path / "data_releases.json")
     first = releases.create(tmp_path, "基线")
     PitSettingsRepository(tmp_path).update(first["id"], catalog.RUN_MODE_STRICT)
-    second = releases.create(tmp_path, "第二版")
+    legacy = releases.create(tmp_path, "第二版")
+    legacy.pop("run_mode")
+    store = tmp_path / "data_releases.json"
+    payload = json.loads(store.read_text(encoding="utf-8"))
+    for item in payload["releases"]:
+        if item["id"] == legacy["id"]:
+            item.pop("run_mode", None)
+    store.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    override = context.parse_view_override(tmp_path, {"x-pit-release": second["id"]})
-    assert override.data_release_id == second["id"]
+    override = context.parse_view_override(tmp_path, {"x-pit-release": legacy["id"]})
     assert override.as_of == "2024-01-17"
     assert override.run_mode == catalog.RUN_MODE_STRICT
 
@@ -779,3 +827,97 @@ def test_a_bad_view_header_fails_the_request_loudly(
 
     bad_mode = client.get("/probe", headers={"X-Pit-Run-Mode": "YOLO"})
     assert bad_mode.status_code == 400
+
+
+def test_a_version_carries_the_research_day_it_was_defined_with(tmp_path: Path) -> None:
+    """The one-concept model, end to end.
+
+    Seal a version that stands on 2024-01-10, apply it, and every request that
+    states nothing computes on that day — no second setting to remember.
+    """
+
+    _nav_fixture(tmp_path)
+    releases = DataReleaseRepository(tmp_path / "data_releases.json")
+    version = releases.create(tmp_path, "站在 01-10", as_of="2024-01-10")
+    described = PitSettingsRepository(tmp_path).update(version["id"], None)
+
+    assert described["effective"]["as_of"] == "2024-01-10"
+    assert described["effective"]["as_of_source"] == "release"
+    assert described["release"]["as_of"] == "2024-01-10"
+    # Nothing is stored beside the version; the version is the setting.
+    assert described["settings"]["as_of"] is None
+    assert described["settings"]["run_mode"] is None
+    assert context.resolve_request_context(tmp_path).as_of == "2024-01-10"
+
+
+def test_a_version_may_not_stand_later_than_its_data_reaches(tmp_path: Path) -> None:
+    _nav_fixture(tmp_path)
+    releases = DataReleaseRepository(tmp_path / "data_releases.json")
+    with pytest.raises(DataReleaseError, match="晚于这批数据的可得截止日"):
+        releases.create(tmp_path, "站在未来", as_of="2030-01-01")
+
+
+def test_a_strict_version_needs_a_day_at_seal_time(tmp_path: Path) -> None:
+    _nav_fixture(tmp_path)
+    releases = DataReleaseRepository(tmp_path / "data_releases.json")
+    with pytest.raises(DataReleaseError, match="严格 PIT 需要一个研究日"):
+        releases.create(tmp_path, "严格但没有日子", run_mode=catalog.RUN_MODE_STRICT)
+
+
+def test_a_version_can_be_edited_without_re_sealing_its_vintage(tmp_path: Path) -> None:
+    """Getting the research day wrong must not cost a re-seal.
+
+    The口径 half (name, note, day, mode) is the user's own choice; the evidence
+    half (tables and fingerprints) is what makes the version worth anything, so
+    it is left exactly as sealed.
+    """
+
+    _nav_fixture(tmp_path)
+    releases = DataReleaseRepository(tmp_path / "data_releases.json")
+    version = releases.create(tmp_path, "名字起错了")
+
+    edited = releases.update(
+        version["id"], name="站在 01-10", note="改过", as_of="2024-01-10", run_mode=catalog.RUN_MODE_STRICT
+    )
+    assert edited["name"] == "站在 01-10"
+    assert edited["as_of"] == "2024-01-10"
+    assert edited["run_mode"] == catalog.RUN_MODE_STRICT
+    assert edited["updated_at"]
+    # The vintage is untouched.
+    assert edited["release_fingerprint"] == version["release_fingerprint"]
+    assert edited["tables"] == version["tables"]
+
+    # Applying it now stands the platform on the edited day, with no second setting.
+    described = PitSettingsRepository(tmp_path).update(version["id"], None)
+    assert described["effective"]["as_of"] == "2024-01-10"
+    assert described["effective"]["run_mode"] == catalog.RUN_MODE_STRICT
+
+
+def test_an_edit_may_not_push_the_day_past_the_sealed_vintage(tmp_path: Path) -> None:
+    _nav_fixture(tmp_path)
+    releases = DataReleaseRepository(tmp_path / "data_releases.json")
+    version = releases.create(tmp_path, "基线")
+    with pytest.raises(DataReleaseError, match="晚于这个版本的可得截止日"):
+        releases.update(version["id"], name="基线", as_of="2030-01-01")
+
+
+def test_deleting_the_applied_version_is_refused_not_silently_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise every page quietly falls back to no PIT and nobody is told."""
+
+    _nav_fixture(tmp_path)
+    client = _client(tmp_path, monkeypatch)
+    version = client.post("/api/pit/releases", json={"name": "基线"}).json()
+    client.put("/api/pit/settings", json={"activeReleaseId": version["id"]})
+
+    refused = client.delete(f"/api/pit/releases/{version['id']}")
+    assert refused.status_code == 409
+    assert "正在被全平台使用" in refused.json()["detail"]
+    assert len(client.get("/api/pit/releases").json()["releases"]) == 1
+
+    # Switch off first, then it deletes.
+    client.put("/api/pit/settings", json={"activeReleaseId": None})
+    assert client.delete(f"/api/pit/releases/{version['id']}").status_code == 200
+    assert client.get("/api/pit/releases").json()["releases"] == []
+    assert client.delete(f"/api/pit/releases/{version['id']}").status_code == 404

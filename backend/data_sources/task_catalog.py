@@ -20,7 +20,7 @@ ACTION_APIS = {
     'index_domestic': ['index_daily'], 'index_industry': ['sw_daily', 'ci_daily'],
     'index_concept': ['ths_daily', 'dc_daily', 'tdx_daily'], 'index_global': ['index_global'],
     'index_futures': ['fut_index_daily'], 'index_valuation': ['index_dailybasic'],
-    'index_constituents': ['index_member_all', 'index_weight'], 'index_coverage': [],
+    'index_constituents': ['index_member_all', 'index_weight', 'ci_index_member', 'ths_member', 'dc_member', 'tdx_member'], 'index_coverage': [],
     'macro_cycle': ['cn_gdp', 'cn_cpi', 'cn_ppi', 'cn_pmi'], 'macro_money_credit': ['cn_m', 'sf_month'],
     'macro_rates': ['shibor', 'shibor_lpr', 'repo_daily'], 'macro_release_calendar': ['cn_schedule'],
 }
@@ -62,6 +62,10 @@ def task_specs() -> dict[str, dict]:
             'output_type': 'market_files_v1', 'network': bool(ACTION_APIS[action]),
             'description': '遍历该数据集全部适用标的，复用采集器的分页、日期分片和断点；未设置标的数量限制。' if ACTION_APIS[action] else '使用明确的前置工作区计算本地派生数据，不访问外部接口。',
         }
+        if action == 'macro_cycle':
+            tasks[identifier]['description'] = ('美林时钟增长与通胀输入：PMI、CPI、GDP、PPI。'
+                '每次核验完整历史快照并保留修订，运行日期不裁剪快照；'
+                '历史发布日期未知时，仅用于事后研究。')
     tasks['local.analytics_snapshot'] = {
         'id': 'local.analytics_snapshot', 'name': '指标分析快照', 'category': '本地计算',
         'transport': None, 'handler': 'analytics_snapshot', 'action': '', 'api_slots': [],

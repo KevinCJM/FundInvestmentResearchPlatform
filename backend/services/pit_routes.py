@@ -11,7 +11,7 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from pit.audit import audit_all, clear_cache
+from pit.audit import audit_all, clear_cache, start_scan
 from pit.catalog import GRADE_DESCRIPTIONS, GRADE_LABELS, RUN_MODES, STRICT_COVERAGE_FLOOR
 from pit.context import (
     PitContextError,
@@ -84,14 +84,26 @@ class PitViewOverrideMiddleware:
 class ReleaseCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     note: str = ""
+    # A version is the whole口径, so it is defined with the day it stands on.
+    asOf: Optional[str] = None
+    runMode: str = "RESEARCH"
+
+
+class ReleaseUpdateRequest(BaseModel):
+    """The口径 half of a version. Its fingerprints are not editable."""
+
+    name: str = Field(min_length=1, max_length=120)
+    note: str = ""
+    asOf: Optional[str] = None
+    runMode: str = "RESEARCH"
 
 
 class SettingsRequest(BaseModel):
     activeReleaseId: Optional[str] = None
-    # The research day is stated, not inferred from the release: "which day do I
-    # stand on" and "which copy of the files answers" are different questions.
+    # Both null when a version is applied: the version answers. They stay for a
+    # bare research day with nothing sealed yet.
     asOf: Optional[str] = None
-    runMode: str = "RESEARCH"
+    runMode: Optional[str] = None
     note: str = ""
 
 
@@ -117,11 +129,19 @@ def pit_meta() -> dict[str, Any]:
 
 @router.get("/audit")
 def pit_audit(refresh: bool = False) -> dict[str, Any]:
-    """Measured PIT capability of every declared dataset."""
+    """Measured PIT capability of every declared dataset.
+
+    Answers from what is already measured and starts the scan behind the
+    request. Reading the clock columns of every declared file is minutes on a
+    cold cache, and a settings page that hangs for minutes is a broken page —
+    the payload says which datasets are still pending so the client can poll.
+    """
 
     if refresh:
         clear_cache()
-    payload = audit_all(DATA_DIR)
+    payload = audit_all(DATA_DIR, scan=False)
+    if payload["summary"]["pending"]:
+        payload["scan"] = {**start_scan(DATA_DIR), "pending": payload["scan"]["pending"]}
     latest = _repository().latest()
     payload["latest_release"] = (
         {
@@ -183,7 +203,7 @@ def list_releases() -> dict[str, Any]:
 @router.post("/releases")
 def create_release(req: ReleaseCreateRequest):
     try:
-        return _repository().create(DATA_DIR, req.name, req.note)
+        return _repository().create(DATA_DIR, req.name, req.note, req.asOf, req.runMode)
     except DataReleaseError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -192,6 +212,41 @@ def create_release(req: ReleaseCreateRequest):
 def get_release(release_id: str):
     try:
         return _repository().get(release_id)
+    except DataReleaseError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@router.put("/releases/{release_id}")
+def update_release(release_id: str, req: ReleaseUpdateRequest):
+    """Fix a version's口径 without re-sealing its vintage."""
+
+    try:
+        return _repository().update(
+            release_id, name=req.name, note=req.note, as_of=req.asOf, run_mode=req.runMode
+        )
+    except DataReleaseError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@router.delete("/releases/{release_id}")
+def delete_release(release_id: str):
+    """Delete a version, unless the platform is standing on it right now.
+
+    Deleting the applied one would leave every page silently back on no-PIT,
+    so the switch is the user's to make first — this is a guard, not a nag.
+    """
+
+    try:
+        active = _settings().raw().get("active_release_id")
+        if str(active or "") == str(release_id or "").strip():
+            name = _repository().get(release_id)["name"]
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": f"版本「{name}」正在被全平台使用；请先切到别的版本或「不用 PIT」并应用，然后再删除。"
+                },
+            )
+        return {"deleted_id": _repository().delete(release_id)}
     except DataReleaseError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 

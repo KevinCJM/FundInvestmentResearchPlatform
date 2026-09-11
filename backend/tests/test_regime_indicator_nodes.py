@@ -15,7 +15,7 @@ from test_regime_series_builder import graph, execute
 
 def definition(id="test-bands", expression="rolling_mean(market_close, 3)", **extra):
     return dict(id=id, revision=1, name="测试指标", context_kind="single_product", result_kind="time_series",
-                dsl_version="2.2", parameter_schema=[], series_outputs=[{"id": "middle", "label": "中轨", "expression": expression},
+                dsl_version="2.4.0", operator_registry_version="2.4.0", parameter_schema=[], series_outputs=[{"id": "middle", "label": "中轨", "expression": expression},
                 {"id": "upper", "label": "上轨", "expression": f"({expression}) + 2"}], **extra)
 
 
@@ -98,7 +98,7 @@ def test_scalar_rolling_reuses_indicator_transformer(service):
                                pd.Series([10.,12.,11.,14.,13.,12.,16.,15.]).rolling(2).mean(), equal_nan=True)
 
 
-@pytest.mark.parametrize("expression", ["mean(market_close) + market_close", "lag(market_close, -1)", "market_close + periods_per_year"])
+@pytest.mark.parametrize("expression", ["mean(market_close) + market_close", "lag(market_close, -1)", "market_close + observation_count"])
 def test_noncausal_or_context_dependent_series_fail_closed(expression):
     meta = register([definition("test-invalid-" + expression, expression)])
     assert not meta["available"] and meta["unavailable_reason"]

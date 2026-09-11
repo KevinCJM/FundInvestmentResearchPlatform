@@ -109,9 +109,21 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 # `backend.pit.audit` would load a second copy with a cold cache and turn the
 # first strict-mode run into a full 37M-row rescan.
 try:
-    from pit.context import PitContextError, build_context, require_usable
+    from pit.context import (
+        PitContextError,
+        ResearchContext,
+        build_context,
+        require_usable,
+    )
+    from pit.frame import LATEST_ONLY, NOT_APPLICABLE, REPLAYED, read_pit
 except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
-    from backend.pit.context import PitContextError, build_context, require_usable
+    from backend.pit.context import (
+        PitContextError,
+        ResearchContext,
+        build_context,
+        require_usable,
+    )
+    from backend.pit.frame import LATEST_ONLY, NOT_APPLICABLE, REPLAYED, read_pit
 
 
 MIN_OBSERVATIONS = 60
@@ -267,30 +279,74 @@ def _lookup_max_weight(limits: dict[str, float], code: str) -> Optional[float]:
     return parsed if parsed is not None and 0.0 < parsed <= 1.0 else None
 
 
-def _load_instrument_metadata(data_dir: Path, codes: Iterable[str]) -> pd.DataFrame:
+METADATA_COLUMNS = (
+    "ts_code",
+    "code",
+    "name",
+    "instrument_type",
+    "fund_type",
+    "invest_type",
+    "benchmark",
+    "index_name",
+    "management",
+)
+
+
+def _load_instrument_metadata(
+    data_dir: Path, codes: Iterable[str], context: ResearchContext
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Contract metadata as it was knowable on the research day.
+
+    Read through :func:`pit.frame.read_pit` rather than off the latest-state
+    file, because this table is not decoration: ``rule`` classifies entirely on
+    it, ``blockBy`` blocks on it, and it names every class. A fund reclassified
+    from 债券型 to 混合型 in 2024 would otherwise be blocked as 混合型 in a 2018
+    run — the clusters themselves change, not just their labels.
+
+    `read_pit` replays the dimension snapshot log when one exists and reports
+    LATEST_ONLY when it does not, so hindsight can no longer pass as a cut.
+    """
+
     wanted = {str(code).strip() for code in codes if str(code).strip()}
     bare = {code.split(".")[0] for code in wanted}
-    columns = ["ts_code", "code", "name", "instrument_type", "fund_type", "invest_type", "benchmark", "index_name", "management"]
+    columns = list(METADATA_COLUMNS)
     frames: list[pd.DataFrame] = []
-    for filename in ("etf_info_df.parquet", "fund_info_df.parquet"):
-        path = resolve_market_data_file(filename, data_dir)
-        if not path.exists():
+    coverages: list[str] = []
+    warnings: list[str] = []
+    snapshots: dict[str, Optional[str]] = {}
+    for dataset_id in ("etf_info", "fund_info"):
+        read = read_pit(dataset_id, data_dir, context, columns=columns)
+        if not int(read.lineage.get("rows_before_cut") or 0):
+            # A table this deployment simply does not carry says nothing about
+            # coverage; counting it would flag every 场内-only install as
+            # latest-state on evidence it never had.
             continue
-        try:
-            frame = pd.read_parquet(path, columns=columns)
-        except Exception:
-            frame = pd.read_parquet(path)
-            frame = frame[[column for column in columns if column in frame.columns]]
-        if frame.empty:
+        coverages.append(str(read.lineage.get("coverage")))
+        warnings.extend(read.lineage.get("warnings") or [])
+        snapshots[dataset_id] = read.lineage.get("snapshot_used")
+        frame = read.frame
+        if frame.empty or "ts_code" not in frame.columns:
             continue
         ts_codes = frame["ts_code"].astype(str)
         mask = ts_codes.isin(wanted) | ts_codes.str.split(".").str[0].isin(bare)
         if "code" in frame.columns:
             mask = mask | frame["code"].astype(str).isin(bare)
         frames.append(frame[mask])
+    lineage: dict[str, Any] = {
+        # The weaker of the two decides: one replayed table beside one
+        # latest-state table is still a latest-state classification.
+        "coverage": LATEST_ONLY if LATEST_ONLY in coverages else (
+            REPLAYED if REPLAYED in coverages else NOT_APPLICABLE
+        ),
+        "snapshot_used": snapshots,
+        "warnings": warnings,
+    }
     if not frames:
-        return pd.DataFrame(columns=columns)
-    return pd.concat(frames, ignore_index=True).drop_duplicates(subset=["ts_code"], keep="first")
+        return pd.DataFrame(columns=columns), lineage
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=["ts_code"], keep="first"
+    )
+    return merged, lineage
 
 
 def _load_metric_features(data_dir: Path, codes: list[str]) -> pd.DataFrame:
@@ -310,12 +366,11 @@ def _load_metric_features(data_dir: Path, codes: list[str]) -> pd.DataFrame:
 
 
 def _resolve_products(
-    data_dir: Path,
+    metadata: pd.DataFrame,
     spec: AutoClassRequestSpec,
     nav_frame: pd.DataFrame,
     available: list[str],
 ) -> tuple[list[_Product], list[dict[str, str]]]:
-    metadata = _load_instrument_metadata(data_dir, spec.codes)
     by_ts: dict[str, dict[str, Any]] = {}
     by_bare: dict[str, dict[str, Any]] = {}
     for record in metadata.to_dict("records"):
@@ -651,7 +706,16 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
         context = build_context(spec.as_of, spec.run_mode, spec.data_release_id)
         # Classification names classes from the contract taxonomy, which lives in
         # a latest-state dimension table; strict mode must not let that pass.
-        require_usable(data_dir, context, ["etf_nav", "fund_nav", "etf_info"])
+        require_usable(data_dir, context, ["etf_nav", "fund_nav", "etf_info", "fund_info"])
+        if spec.features in {"metrics", "blend"} and context.as_of and context.strict:
+            # The indicator snapshot is one row per product, recomputed in place:
+            # no availability column, no snapshot log, nothing to cut on. Paired
+            # with a research day it is not a degraded read, it is look-ahead —
+            # 2026 的三年最大回撤拿去给 2018 年分类。Research mode warns instead.
+            raise PitContextError(
+                "严格 PIT 模式下不能使用「风险收益画像」特征："
+                f"指标快照只有当期一版，无法还原 {context.as_of} 当日的画像。"
+            )
     except PitContextError as exc:
         raise AutoClassError(str(exc)) from exc
     if spec.size_min < 1:
@@ -678,7 +742,15 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
     if wide.empty:
         raise AutoClassError("样本期内没有所有产品共同覆盖的交易日，请放宽开始日期或缩减产品")
     available = list(wide.columns.astype(str))
-    products, skipped = _resolve_products(data_dir, spec, nav_frame, available)
+    try:
+        # Strict mode refuses a latest-state contract table here rather than
+        # relabelling history; research mode warns further down.
+        metadata, taxonomy_lineage = _load_instrument_metadata(
+            data_dir, spec.codes, context
+        )
+    except PitContextError as exc:
+        raise AutoClassError(str(exc)) from exc
+    products, skipped = _resolve_products(metadata, spec, nav_frame, available)
     if len(products) < 2:
         raise AutoClassError("可用于分类的产品不足 2 个，请检查产品代码或样本期")
 
@@ -886,6 +958,20 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
     ]
 
     warnings: list[str] = list(pit_lineage.get("warnings") or [])
+    warnings.extend(taxonomy_lineage.get("warnings") or [])
+    if context.as_of and taxonomy_lineage["coverage"] == LATEST_ONLY:
+        # Named, not blocked: with no dimension history on disk yet, blocking
+        # would stop every historical classification in the platform on day one.
+        uses = "类名" if spec.block_by == "none" and spec.algorithm != "rule" else "分类结果"
+        warnings.append(
+            f"合同分类信息只有最新态（缺维表历史快照），研究日 {context.as_of} 的"
+            f"{uses}用的是今天的分类口径"
+        )
+    if context.as_of and spec.features in {"metrics", "blend"}:
+        warnings.append(
+            f"「{FEATURE_SETS[spec.features]}」取自当期指标快照，该快照没有历史版本；"
+            f"研究日 {context.as_of} 的聚类实际用的是今天的收益与回撤"
+        )
     if pit_lineage.get("as_of_applied") and pit_lineage.get("rows_dropped_by_as_of"):
         warnings.append(
             f"按研究日 {pit_lineage['as_of']} 的公告时点截断，剔除 "
@@ -972,7 +1058,7 @@ def run_auto_classification(data_dir: Path, spec: AutoClassRequestSpec) -> dict[
         "as_of": spec.as_of,
         "run_mode": spec.run_mode,
         "data_release_id": spec.data_release_id,
-        "pit": pit_lineage,
+        "pit": {**pit_lineage, "taxonomy": taxonomy_lineage},
         "block_by": spec.block_by,
         "k": clusters,
         "weight_mode": spec.weight_mode,

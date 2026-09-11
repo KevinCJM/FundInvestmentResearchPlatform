@@ -8,7 +8,7 @@ test('已有数据兼容与上传文件确认', async ({ page }, testInfo) => {
     frequency: { type: 'string', enum: ['daily', 'monthly'], enum_labels: ['日频', '月频'], default: 'daily' },
     ...(kind === 'inline' ? { rows: { type: 'array' }, inline_rows: { type: 'array' } } : kind === 'upload' ? { artifact_id: { type: 'string' }, checksum: { type: 'string' } } : { indicator_id: { type: 'string' }, product_kind: { type: 'string' }, product_id: { type: 'string' }, period: { type: 'string' } }),
   } } }))
-  const definition = { schema_version: '2.0', name: '数据源表单验证', graph: { nodes: Object.entries(names).map(([id, label]) => ({ id, label, type: `source.${id}`, parameters: {}, inputs: {} })), outputs: {} }, states: [], evaluation_targets: [], validation: {} }
+  const definition = { schema_version: '2.0', name: '数据源表单验证', graph: { nodes: Object.entries(names).map(([id, label]) => ({ id, label, type: `source.${id}`, parameters: id === 'inline' ? { frequency: 'daily', rows: [{ observation_date: '2024-01-02', available_at: '2024-01-02', value: 100 }, { observation_date: '2024-01-03', available_at: '2024-01-03', value: 101 }] } : {}, inputs: {} })), outputs: {} }, states: [], evaluation_targets: [], validation: {} }
   const indicator = { id: 'indicator:return@2', name: '年度收益率', kind: 'indicator', status: 'available', regime_node_type: 'source.indicator', product_kinds: ['fund'], periods: ['1Y'], indicator_version: { indicator_id: 'return', revision: 2 }, binding_parameters: { indicator_id: 'return', indicator_revision: 2, name: '年度收益率', period: '1Y', product_kind: '', product_id: '' } }
   const binding = { artifact_id: 'upload-sha256-test', checksum: 'sha256:test', name: '指数行情', frequency: 'monthly' }
   let saved = false

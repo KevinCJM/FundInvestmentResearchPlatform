@@ -76,7 +76,23 @@ type Props = {
   children: (series?: ResearchSeriesCatalogItem) => ReactNode
 }
 export default function RegimeResearchSeriesPicker(props: Props) {
-  if (props.node.type === 'source.inline') return <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">此已有定义保留原始数据。若要更换数据，请添加上传时序节点。</p>
+  if (props.node.type === 'source.inline') {
+    const hasRows = [props.node.parameters.rows, props.node.parameters.inline_rows].some(rows => Array.isArray(rows) && rows.length > 0)
+    if (hasRows) return <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">此已有定义保留原始数据。若要更换数据，请添加上传时序节点。</p>
+    const chooseSource = (type: string) => props.onPatchNode({
+      type, type_version: 1,
+      label: props.node.label || String(props.node.parameters.name || '数据源'),
+      parameters: { frequency: props.node.parameters.frequency || 'monthly' },
+    })
+    return <section className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+      <h4 className="text-sm font-semibold text-amber-950">尚未选择输入数据</h4>
+      <p className="mt-1 text-xs leading-5 text-amber-900">此模板节点只有占位名称，没有观测数据。选择数据后即可计算，现有连线会保留。</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" onClick={() => chooseSource('source.macro')} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white">选择宏观数据</button>
+        <button type="button" onClick={() => chooseSource('source.upload')} className="min-h-10 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700">上传时序</button>
+      </div>
+    </section>
+  }
   if (props.node.type === 'source.upload') return <>{props.children()}<RegimeUploadSeriesEditor node={props.node} onPatchNode={props.onPatchNode} /><SeriesCatalogPicker {...props} children={() => null} /></>
   return <SeriesCatalogPicker {...props} />
 }

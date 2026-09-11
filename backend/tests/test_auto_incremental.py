@@ -178,3 +178,241 @@ def test_collector_uses_frozen_window_even_after_backfill_advanced_latest(store,
     monkeypatch.setattr(script, 'latest_parquet_date', lambda *a: pytest.fail('must use frozen window'))
     script.save_latest_public_fund_nav(None, args.output_dir, None, args)
     assert captured[0]['start_date'] == '20240104'
+
+
+def completed_candidate(store):
+    from backend.data_sources.task_workspace import inventory
+    journal = EtlStore(store)
+    identifier = uuid.uuid4().hex
+    directory = store.root / 'etl_runs' / identifier
+    work = directory / 'work'; work.mkdir(parents=True)
+    pq.write_table(pa.table({'date': [date(2024, 1, 9)], 'adj_nav': [1.2]}), work / 'fund_nav_df.parquet')
+    artifact = inventory(journal, work, directory / 'workspace.json', ['fund_nav'], 'tushare')
+    records = [r for kind in ('source', 'interface') for r in store.list(kind)
+               if r['config'].get('source_id', r['config']['id']) == 'tushare']
+    run = {'run_id': identifier, 'request_hash': 'test', 'name': '已完成下载', 'status': 'SUCCEEDED',
+           'finished_at': '2024-01-10T00:00:00Z', 'definition': definition(),
+           'frozen': {'task_sources': {'tushare': {'records': records}}},
+           'steps': [{'status': 'SUCCEEDED', 'output': {'workspace': artifact}}]}
+    journal.save_run(run, create=True)
+    return run, work / 'fund_nav_df.parquet'
+
+
+def test_missing_baseline_offers_completed_download_but_never_selects_it(store):
+    run, file = completed_candidate(store)
+    (store.root / 'snapshot' / file.name).unlink()
+    checked = etl.validate(store, definition(), OPTIONS)
+    assert not checked['valid']
+    plan = checked['auto_plan']
+    assert plan['errors'][0]['code'] == 'AUTO_BASELINE_NOT_ACTIVE'
+    assert plan['errors'][0]['step_id'] == 'fund_nav'
+    assert plan['steps'][-1]['strategy'] == 'blocked'
+    assert plan['baseline_choices'][0]['run_id'] == run['run_id']
+    assert plan['supplemental_baseline']['run_id'] is None
+
+
+def test_selected_supplement_is_frozen_without_activating_or_overwriting(store):
+    run, file = completed_candidate(store)
+    manifest = (store.root / 'tushare_active.json').read_bytes()
+    active = store.root / 'snapshot' / file.name
+    # A newer active table always wins over the user's selected candidate.
+    automatic = auto.plan(store, etl.parse_definition(definition()), baseline_run_id=run['run_id'])
+    assert automatic['public']['steps'][-1]['latest_date'] == '2024-01-10'
+    assert automatic['baseline']['supplements'] == {}
+    active.unlink()
+    automatic = auto.plan(store, etl.parse_definition(definition()), baseline_run_id=run['run_id'])
+    assert automatic['public']['ready']
+    assert automatic['public']['steps'][-1]['latest_date'] == '2024-01-09'
+    assert automatic['public']['warnings']
+    target = store.root / 'frozen' / 'data'
+    auto.freeze_baseline(EtlStore(store), automatic, target)
+    assert (target / file.name).read_bytes() == file.read_bytes()
+    assert (store.root / 'tushare_active.json').read_bytes() == manifest
+    assert not active.exists()
+
+
+def test_supplement_checksum_is_enforced_even_with_unchanged_stat(store):
+    import os
+    run, file = completed_candidate(store)
+    (store.root / 'snapshot' / file.name).unlink()
+    automatic = auto.plan(store, etl.parse_definition(definition()), baseline_run_id=run['run_id'])
+    stat = file.stat()
+    raw = bytearray(file.read_bytes()); raw[10] ^= 1; file.write_bytes(raw)
+    os.utime(file, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    with pytest.raises(CenterError, match='校验和'):
+        auto.freeze_baseline(EtlStore(store), automatic, store.root / 'frozen' / 'data')
+    assert not (store.root / 'frozen' / 'data').exists()
+
+
+@pytest.mark.parametrize('invalid', ['failed', 'foreign', 'mapping', 'inventory', 'symlink'])
+def test_invalid_candidates_never_enable_download(store, invalid):
+    run, file = completed_candidate(store)
+    (store.root / 'snapshot' / file.name).unlink()
+    if invalid == 'failed': run['status'] = 'FAILED'
+    if invalid == 'foreign': run['frozen']['task_sources'] = {}
+    if invalid == 'mapping':
+        next(r for r in run['frozen']['task_sources']['tushare']['records'] if r['config']['id'] == 'tushare.fund_nav')['config']['mappings'] = []
+    if invalid == 'inventory': (store.root / run['steps'][0]['output']['workspace']['path']).write_text('{}')
+    if invalid == 'symlink':
+        file.rename(file.with_suffix('.other')); file.symlink_to(file.with_suffix('.other'))
+    EtlStore(store).save_run(run)
+    checked = etl.validate(store, definition(), {**OPTIONS, 'auto_baseline_run_id': run['run_id']})
+    assert not checked['valid']
+
+
+def test_empty_active_table_does_not_silently_use_candidate(store):
+    run, _ = completed_candidate(store)
+    pq.write_table(pa.table({'date': pa.array([], type=pa.date32())}), store.root / 'snapshot' / 'fund_nav_df.parquet')
+    checked = etl.validate(store, definition(), {**OPTIONS, 'auto_baseline_run_id': run['run_id']})
+    assert not checked['valid']
+    assert checked['auto_plan']['errors'][0]['code'] == 'AUTO_BASELINE_EMPTY'
+
+
+def test_exclusion_proposal_preserves_true_dependencies_but_not_order_only(store):
+    from backend.data_sources.auto_baseline import exclusion_proposal
+    from backend.data_sources.etl_dependencies import plan_dependencies
+    graph = plan_dependencies(etl.parse_definition(definition()))
+    # Explicit custom dependency must not be relaxed just because the registry
+    # does not require it; a pure ordering edge does not remove the next node.
+    graph.steps[1].inputs = [graph.steps[0].id]; graph.steps[1].after = []
+    graph.steps.append(EtlStep(id='independent', name='独立', kind='task', task_id='tushare.fund_company',
+                              source_id='tushare', after=['fund_nav']))
+    original = graph.model_dump(mode='json')
+    proposal = exclusion_proposal(graph, {'calendar'})
+    assert proposal['rebuild_dependencies'] is False
+    assert [s['id'] for s in proposal['definition']['steps']] == ['independent']
+    assert proposal['definition']['steps'][0]['after'] == []
+    assert graph.model_dump(mode='json') == original
+
+
+def test_plan_id_changes_with_selected_candidate_and_rejects_wrong_mode(store):
+    run, file = completed_candidate(store)
+    (store.root / 'snapshot' / file.name).unlink()
+    plain = etl.validate(store, definition(), OPTIONS)
+    selected = etl.validate(store, definition(), {**OPTIONS, 'auto_baseline_run_id': run['run_id']})
+    assert selected['valid']
+    assert selected['auto_plan']['plan_id'] != plain['auto_plan']['plan_id']
+    assert not etl.validate(store, definition(), {'mode': 'full', 'auto_baseline_run_id': run['run_id']})['valid']
+
+
+def test_explicit_acquisition_baseline_reuses_newer_file_without_publishing(store):
+    from backend.data_sources.etl_models import EtlRunOptions
+    from backend.data_sources.task_workspace import inventory
+    run, file = completed_candidate(store)
+    pq.write_table(pa.table({'date': [date(2024, 1, 12)], 'adj_nav': [1.3]}), file)
+    journal = EtlStore(store)
+    run['steps'][0]['output']['workspace'] = inventory(journal, file.parent, file.parent.parent/'workspace.json', ['fund_nav'], 'tushare')
+    journal.save_run(run)
+    original = (store.root / 'snapshot' / file.name).read_bytes()
+    options = EtlRunOptions(mode='auto_incremental', auto_baseline_scope='acquisition')
+    automatic = auto.plan(store, etl.parse_definition(definition()), baseline_run_id=run['run_id'], options=options)
+    assert automatic['public']['steps'][-1]['latest_date'] == '2024-01-12'
+    assert file.name not in automatic['baseline']['files']
+    target = store.root / 'frozen' / 'data'; auto.freeze_baseline(journal, automatic, target)
+    assert (target / file.name).read_bytes() == file.read_bytes()
+    assert (store.root / 'snapshot' / file.name).read_bytes() == original
+
+
+@pytest.mark.parametrize('case', ['valid', 'second_unknown', 'second_marker', 'second_corrupt', 'failed_dependency'])
+def test_sparse_automatic_recovery_preserves_success_and_checks_every_failed_workspace(store, monkeypatch, case):
+    import copy
+    from backend.data_sources.etl_dependencies import plan_dependencies
+    from backend.data_sources.etl_migration import stage_recovery
+    from backend.services.etl_recovery import _shape_reason
+    from backend.tests.test_etl_dataset_tasks import finish
+    graph = plan_dependencies(etl.parse_definition(definition()))
+    for identifier, task, previous in [('company', 'fund_company', 'fund_nav'),
+                                        ('benchmark', 'fund_benchmark', 'company'),
+                                        ('company2', 'fund_company', 'benchmark')]:
+        graph.steps.append(EtlStep(id=identifier, name=identifier, kind='task', task_id='tushare.' + task,
+                                  source_id='tushare', after=[previous]))
+    graph.steps.append(EtlStep(id='blocked', name='blocked', kind='task', task_id='tushare.fund_company',
+                              source_id='tushare', inputs=['fund_nav'], after=['company2']))
+    def worker(payload, check, lock):
+        if payload['task_id'] in {'tushare.fund_nav', 'tushare.fund_benchmark'}:
+            raise CenterError('OFFLINE', 'offline failure')
+        pq.write_table(pa.table({'code': ['A']}), Path(payload['directory']) / (payload['task_id'].split('.')[-1] + '.parquet'))
+        return {'received_rows': 1, 'warnings': 0}
+    monkeypatch.setattr(task_runtime, 'run_worker', worker)
+    checked = etl.validate(store, graph.model_dump(mode='json'), OPTIONS)
+    assert checked['valid'], checked
+    old = finish(store, etl.start(store, {'request_id': uuid.uuid4().hex, 'confirm': True,
+        'definition': graph.model_dump(mode='json'), 'options': OPTIONS, 'auto_plan_id': checked['auto_plan']['plan_id']}))
+    assert [s['status'] for s in old['steps']] == ['SUCCEEDED', 'SUCCEEDED', 'FAILED', 'SUCCEEDED', 'FAILED', 'SUCCEEDED', 'SKIPPED']
+    journal = EtlStore(store)
+    second = store.root / 'etl_runs' / old['run_id'] / 'benchmark'
+    if case == 'second_unknown': (second / 'work' / 'unknown.partial').write_bytes(b'preserve')
+    if case == 'second_marker': (second / 'work_input.json').write_text('{}')
+    if case == 'second_corrupt':
+        next((second / 'work').glob('*.parquet')).write_bytes(b'corrupt')
+    if case == 'failed_dependency':
+        old['definition']['steps'][3]['inputs'] = ['fund_nav']
+        journal.save_run(old)
+        assert _shape_reason(old)
+    else:
+        assert _shape_reason(old) is None
+    original = copy.deepcopy(journal.get_run(old['run_id']))
+    monkeypatch.setattr(etl, 'execution_fingerprint', lambda: 'new-sparse-code')
+    monkeypatch.setattr(auto, 'cutoff_date', lambda: date(2024, 1, 20))
+    if case != 'valid':
+        with pytest.raises(CenterError): stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    else:
+        new = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+        assert [s['status'] for s in new['steps']] == ['SUCCEEDED', 'SUCCEEDED', 'PENDING', 'SUCCEEDED', 'PENDING', 'SUCCEEDED', 'PENDING']
+        frozen = journal.get_run(new['run_id'])['frozen']
+        assert frozen['auto_plan'] == old['frozen']['auto_plan']
+        assert frozen['task_baseline'] == old['frozen']['task_baseline']
+        receipt = json.loads(journal.checked_path(new['recovery_receipt']).read_text())
+        assert [p['step_id'] for p in receipt['partials']] == ['fund_nav', 'benchmark']
+        calls = []
+        def repaired(payload, check, lock):
+            calls.append(payload['task_id'])
+            return {'received_rows': 0, 'warnings': 0}
+        monkeypatch.setattr(task_runtime, 'run_worker', repaired)
+        done = finish(store, etl.resume(store, new['run_id'], True))
+        assert done['status'] == 'SUCCEEDED', done.get('error')
+        assert calls == ['tushare.fund_nav', 'tushare.fund_benchmark', 'tushare.fund_company']
+    assert journal.get_run(old['run_id']) == original
+
+
+def test_automatic_graph_recovery_preserves_frozen_baseline_and_dates(store, monkeypatch):
+    import copy
+    from backend.data_sources.etl_dependencies import plan_dependencies
+    from backend.data_sources.etl_migration import stage_recovery
+    from backend.services.etl_recovery import _shape_reason
+    from backend.data_sources.etl_partial_recovery import _check_unhandled_partial
+    graph = plan_dependencies(etl.parse_definition(definition()))
+    def worker(payload, check, lock):
+        work = Path(payload['directory'])
+        if payload['task_id'] == 'tushare.fund_nav':
+            raise CenterError('OFFLINE', 'offline failure')
+        pq.write_table(pa.table({'code': ['A']}), work / (payload['task_id'].split('.')[-1] + '.parquet'))
+        return {'received_rows': 1, 'warnings': 0}
+    monkeypatch.setattr(task_runtime, 'run_worker', worker)
+    checked = etl.validate(store, graph.model_dump(mode='json'), OPTIONS)
+    old = etl.start(store, {'request_id': uuid.uuid4().hex, 'confirm': True, 'definition': graph.model_dump(mode='json'),
+                          'options': OPTIONS, 'auto_plan_id': checked['auto_plan']['plan_id']})
+    journal = EtlStore(store)
+    for _ in range(300):
+        old = journal.get_run(old['run_id'])
+        if old['status'] != 'RUNNING': break
+        time.sleep(.02)
+    assert old['status'] == 'FAILED'
+    original = copy.deepcopy(old)
+    assert _shape_reason(old) is None
+    _check_unhandled_partial(journal, old)
+    monkeypatch.setattr(etl, 'execution_fingerprint', lambda: 'new-code')
+    monkeypatch.setattr(auto, 'cutoff_date', lambda: date(2024, 1, 20))
+    recovered = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    new = journal.get_run(recovered['run_id'])
+    assert new['frozen']['auto_plan'] == old['frozen']['auto_plan']
+    assert new['frozen']['task_baseline'] == old['frozen']['task_baseline']
+    assert new['auto_plan']['cutoff_date'] == '2024-01-14'
+    assert journal.get_run(old['run_id']) == original
+    monkeypatch.setattr(task_runtime, 'run_worker', lambda payload, check, lock: {'received_rows': 0, 'warnings': 0})
+    etl.resume(store, new['run_id'], True)
+    for _ in range(300):
+        new = journal.get_run(new['run_id'])
+        if new['status'] != 'RUNNING': break
+        time.sleep(.02)
+    assert new['status'] == 'SUCCEEDED', new.get('error')

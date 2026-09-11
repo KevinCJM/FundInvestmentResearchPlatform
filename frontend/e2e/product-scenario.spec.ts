@@ -95,12 +95,21 @@ function simulation(request: AnalysisRequest, sampleCount: number) {
       residualSkewness: method.startsWith('fhs') ? -0.2 : null,
       residualExcessKurtosis: method.startsWith('fhs') ? 1.1 : null },
   })
+  const pathCount = request.simulation_path_count
+  const horizon = request.simulation_horizon
   const density = {
-    sampleSize: request.simulation_path_count,
-    points: [{ nav: 0.9, density: 1, estimatedCount: 20, simulatedReturn: -0.1 }, { nav: 1, density: 3, estimatedCount: 60, simulatedReturn: 0 }, { nav: 1.1, density: 2, estimatedCount: 40, simulatedReturn: 0.1 }],
-    histogram: [{ lowerNav: 0.9, upperNav: 1.1, density: 5, count: request.simulation_path_count, frequency: 1 }],
-    maxDensity: 5, modeNav: 1, minNav: 0.9, maxNav: 1.1, countAxisMax: request.simulation_path_count,
-    navAxisMin: 0.85, navAxisMax: 1.2, densityCountFactor: request.simulation_path_count * 0.2, histogramBinWidth: 0.2,
+    sampleSize: pathCount,
+    navAxisMin: 0.85,
+    navAxisMax: 1.2,
+  frames: [1, 2, 3, 4].map((step) => ({
+    day: Math.round((horizon * step) / 4),
+    navLow: 1 - 0.05 * step,
+    navHigh: 1 + 0.05 * step,
+    binWidth: (0.1 * step) / 4,
+    countAxisMax: pathCount,
+    curve: [1, 10, 25, 10, 1],
+    bins: [pathCount * 0.1, pathCount * 0.4, pathCount * 0.4, pathCount * 0.1],
+  })),
   }
   return { initialNav: 1, methods: [...methods],
     byMethod: Object.fromEntries(methods.map((method) => [method, make(method)])),

@@ -6,6 +6,11 @@ split the sample. Only intervals bounded by two retained turns receive a state.
 import numpy as np
 from numba import float64, int64, njit, types
 
+from .segment_numba import (
+    local_extrema_kernel, between_pivots_kernel, interval_statistic_kernel,
+    phase_direction_kernel, boundary_line_kernel,
+)
+
 F = float64[::1]
 I = int64[::1]
 RESULT = types.Tuple((I, F, I, I, F, F))
@@ -34,40 +39,26 @@ def _alternate_turns(prices, positions, kinds, count):
     return kept
 
 
-@njit(RESULT(F, int64, int64, int64, int64, int64, int64, float64), cache=True)
-def peak_trough_asymmetric_kernel(prices, left_window, right_window, min_phase, min_cycle,
-                                 head_window, tail_window, amplitude_exception):
+@njit(types.Tuple((F, F))(F, F, int64, int64, float64), cache=True)
+def ps_filter_pivots_kernel(prices, candidates, min_phase, min_cycle, amplitude_exception):
+    """Joint PS censoring; each changed pass removes a turn, so it terminates."""
     n = prices.size
-    states = np.full(n, -1, dtype=np.int64)
     pivots = np.zeros(n)
-    phase_start = np.full(n, -1, dtype=np.int64)
-    phase_end = np.full(n, -1, dtype=np.int64)
-    phase_return = np.full(n, np.nan)
-    boundary_line = np.full(n, np.nan)
+    pivot_prices = np.full(n, np.nan)
     positions, kinds = np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int64)
     start = 0
     while start < n:
-        if not np.isfinite(prices[start]) or prices[start] <= 0:
+        if not np.isfinite(prices[start]) or prices[start] <= 0 or not np.isfinite(candidates[start]):
             pivots[start] = np.nan
             start += 1
             continue
         stop = start + 1
-        while stop < n and np.isfinite(prices[stop]) and prices[stop] > 0:
+        while stop < n and np.isfinite(prices[stop]) and prices[stop] > 0 and np.isfinite(candidates[stop]):
             stop += 1
         count = 0
-        for t in range(start + left_window, stop - right_window):
-            if t - start < head_window or stop - 1 - t < tail_window:
-                continue
-            peak, trough = True, True
-            for j in range(t - left_window, t):
-                # Earliest member of an equal-price plateau wins.
-                peak = peak and prices[t] > prices[j]
-                trough = trough and prices[t] < prices[j]
-            for j in range(t + 1, t + right_window + 1):
-                peak = peak and prices[t] >= prices[j]
-                trough = trough and prices[t] <= prices[j]
-            if peak or trough:
-                positions[count], kinds[count] = t, 1 if peak else -1
+        for t in range(start, stop):
+            if candidates[t] == 1.0 or candidates[t] == -1.0:
+                positions[count], kinds[count] = t, int(candidates[t])
                 count += 1
         count = _alternate_turns(prices, positions, kinds, count)
         # Every changed pass removes at least one turn, so this loop is bounded.
@@ -124,17 +115,22 @@ def peak_trough_asymmetric_kernel(prices, left_window, right_window, min_phase, 
                 break
         for j in range(count):
             pivots[positions[j]] = kinds[j]
-        for j in range(count - 1):
-            left, right = positions[j], positions[j + 1]
-            code = 0 if kinds[j] == -1 else 1
-            move = prices[right] / prices[left] - 1.0
-            for t in range(left, right):
-                states[t] = code
-                phase_start[t], phase_end[t], phase_return[t] = left, right, move
-                boundary_line[t] = prices[left] + (prices[right] - prices[left]) * (t - left) / (right - left)
-            boundary_line[right] = prices[right]
+            pivot_prices[positions[j]] = prices[positions[j]]
         start = stop
-    return states, pivots, phase_start, phase_end, phase_return, boundary_line
+    return pivots, pivot_prices
+
+
+@njit(RESULT(F, int64, int64, int64, int64, int64, int64, float64), cache=True)
+def peak_trough_asymmetric_kernel(prices, left_window, right_window, min_phase, min_cycle,
+                                 head_window, tail_window, amplitude_exception):
+    """Saved-definition adapter: the same primitives as the editable PS graph."""
+    candidates, _ = local_extrema_kernel(prices, left_window, right_window, head_window, tail_window)
+    pivots, _ = ps_filter_pivots_kernel(prices, candidates, min_phase, min_cycle, amplitude_exception)
+    starts, ends = between_pivots_kernel(pivots)
+    states = phase_direction_kernel(pivots, starts, ends)
+    changes = interval_statistic_kernel(prices, starts, ends, np.int64(0), np.int64(1))
+    line = boundary_line_kernel(prices, starts, ends)
+    return states, pivots, starts, ends, changes, line
 
 
 @njit(RESULT(F, int64, int64, int64, int64, float64), cache=True)
@@ -247,6 +243,7 @@ def peak_trough_sideways_kernel(prices, states, phase_start, phase_end, enabled,
 
 
 PEAK_TROUGH_KERNELS = {
+    "ps_filter_pivots": ps_filter_pivots_kernel,
     "peak_trough": peak_trough_kernel,
     "peak_trough_asymmetric": peak_trough_asymmetric_kernel,
     "retrospective_dating_timing": retrospective_dating_timing_kernel,

@@ -21,6 +21,7 @@ from backend.product_analysis_numba import (  # noqa: E402
     daily_returns_percent_kernel,
     kdj_kernel,
     moving_average_kernel,
+    parametric_monte_carlo_kernel,
     product_analysis_execution_audit,
     return_statistics_kernel,
     warm_product_analysis_numba_kernels,
@@ -107,10 +108,9 @@ def test_5000_point_full_response_does_not_compile_new_signatures() -> None:
         response["simulation"]["byMethod"][method]["method"] == method
         for method in SIMULATION_METHODS
     )
-    assert sum(
-        item["count"]
-        for item in response["simulation"]["densities"]["parametric"]["histogram"]
-    ) == 200
+    frames = response["simulation"]["densities"]["parametric"]["frames"]
+    assert frames[-1]["day"] == len(response["simulation"]["byMethod"]["parametric"]["days"]) - 1
+    assert all(sum(frame["bins"]) == 200 for frame in frames)
     assert response["execution"]["python_fallback"] == 0
     assert response["technical"]["availability"] == {
         "ohlc": True,
@@ -546,7 +546,8 @@ def test_garch_filter_recovers_the_coefficients_it_was_generated_from() -> None:
     percent = _garch_series(3_000, 7, omega, alpha, beta)
     log_returns = np.ascontiguousarray(np.log1p(percent / 100.0))
 
-    residuals, parameters = _volatility_filter(log_returns, 1, 0.94)
+    one_history = np.zeros(log_returns.size, dtype=np.int64)
+    residuals, parameters = _volatility_filter(log_returns, one_history, 1, 0.94)
 
     assert parameters[2] == pytest.approx(alpha, abs=0.02)
     assert parameters[3] == pytest.approx(beta, abs=0.02)
@@ -558,7 +559,7 @@ def test_garch_filter_recovers_the_coefficients_it_was_generated_from() -> None:
 
     # EWMA is the same recursion with the coefficients handed to it, and its
     # persistence is exactly 1 — the property that makes it never mean-revert.
-    _, ewma = _volatility_filter(log_returns, 0, 0.94)
+    _, ewma = _volatility_filter(log_returns, one_history, 0, 0.94)
     assert ewma[1] == 0.0
     assert ewma[2] == pytest.approx(0.06)
     assert ewma[3] == pytest.approx(0.94)
@@ -588,7 +589,9 @@ def test_filtered_lanes_start_from_todays_volatility_and_the_others_do_not() -> 
     for name, tail in tails.items():
         percent = np.ascontiguousarray((np.exp(np.concatenate([shared, tail])) - 1.0) * 100.0)
         unconditional = parametric_monte_carlo_kernel(percent, 1.0, 63, 600, 5, 5.0, 1)
-        conditional = filtered_historical_simulation_kernel(percent, 1.0, 63, 600, 5, 5.0, 1, 0.94)
+        conditional = filtered_historical_simulation_kernel(
+            percent, np.zeros(percent.size, dtype=np.int64), 1.0, 63, 600, 5, 5.0, 1, 0.94
+        )
         day_one_band[name] = {
             "unconditional": float(unconditional[1][4, 1] - unconditional[1][0, 1]),
             "conditional": float(conditional[1][4, 1] - conditional[1][0, 1]),
@@ -648,8 +651,8 @@ def test_simulation_lanes_share_one_read_only_input() -> None:
         (parametric_monte_carlo_kernel, (percent, 1.0, 21, 40, 1, 5.0, 0)),
         (parametric_monte_carlo_kernel, (percent, 1.0, 21, 40, 1, 5.0, 1)),
         (stationary_block_bootstrap_kernel, (percent, segments, 1.0, 21, 40, 2, 5.0, 5)),
-        (filtered_historical_simulation_kernel, (percent, 1.0, 21, 40, 3, 5.0, 0, 0.94)),
-        (filtered_historical_simulation_kernel, (percent, 1.0, 21, 40, 4, 5.0, 1, 0.94)),
+        (filtered_historical_simulation_kernel, (percent, segments, 1.0, 21, 40, 3, 5.0, 0, 0.94)),
+        (filtered_historical_simulation_kernel, (percent, segments, 1.0, 21, 40, 4, 5.0, 1, 0.94)),
     )
     serial = [kernel(*arguments)[2] for kernel, arguments in calls]
     with ThreadPoolExecutor(max_workers=len(calls)) as pool:
@@ -687,28 +690,142 @@ def test_model_comparison_spreads_over_every_lane_that_ran() -> None:
         simulation_comparison_kernel(np.ascontiguousarray(summaries[:1]), 1.0)
 
 
-def test_terminal_density_axis_survives_one_runaway_path() -> None:
+def test_density_frame_range_survives_one_runaway_path() -> None:
     """A single compounding path must not make every other one invisible.
 
     The filtered lanes can produce it: EWMA's persistence is exactly 1, so its
     simulated variance random-walks and over 504 days one path in a thousand can
-    reach absurd multiples. The quantiles shrug that off — but the density
-    kernel's bandwidth floor was anchored on the mean, so the outlier dragged
-    the floor, and with it the chart's whole nav axis, into six figures.
+    reach absurd multiples. The quantiles shrug that off — but the frame's
+    bandwidth floor was anchored on the mean, so the outlier dragged the floor,
+    and with it the chart's whole nav axis, into six figures.
     """
 
-    from backend.product_analysis_numba import terminal_density_kernel
+    from backend.product_analysis_numba import _density_frame
 
-    terminal = np.ascontiguousarray(np.linspace(0.8, 1.3, 1_000))
-    percentiles = np.ascontiguousarray(np.tile(np.array([[0.85], [0.95], [1.0], [1.1], [1.25]]), (1, 3)))
+    values = np.ascontiguousarray(np.linspace(0.8, 1.3, 1_000))
+    clean = _density_frame(values, 252.0)
 
-    clean = terminal_density_kernel(terminal, percentiles, 81, 1.0)[2]
-
-    runaway = terminal.copy()
+    runaway = values.copy()
     runaway[-1] = 1.5e12
-    with_outlier = terminal_density_kernel(np.ascontiguousarray(np.sort(runaway)), percentiles, 81, 1.0)[2]
+    with_outlier = _density_frame(np.ascontiguousarray(np.sort(runaway)), 252.0)
 
-    # navAxisMin / navAxisMax are slots 5 and 6.
-    assert with_outlier[6] < 2.0
-    assert with_outlier[5] == pytest.approx(clean[5], abs=0.05)
-    assert with_outlier[6] == pytest.approx(clean[6], abs=0.05)
+    # navLow / navHigh are slots 1 and 2.
+    assert with_outlier[2] < 2.0
+    assert with_outlier[1] == pytest.approx(clean[1], abs=0.05)
+    assert with_outlier[2] == pytest.approx(clean[2], abs=0.05)
+
+
+def test_density_frames_narrow_as_the_horizon_shortens() -> None:
+    """The right-hand panel follows the zoom window, so each day owns a frame.
+
+    A distribution 12 days out must be far tighter than one 252 days out — that
+    is the entire reason the panel is worth wiring to the zoom at all.
+    """
+
+    from backend.product_analysis_numba import (
+        DENSITY_BIN_COUNT,
+        DENSITY_CURVE_POINTS,
+        DENSITY_FRAME_SLOTS,
+    )
+
+    returns = np.ascontiguousarray(
+        np.random.default_rng(7).normal(0.03, 1.2, 800).astype(np.float64)
+    )
+    frames = parametric_monte_carlo_kernel(returns, 1.0, 252, 400, 11, 5.0, 1)[5]
+
+    days = [int(row[0]) for row in frames]
+    assert days == sorted(days)
+    assert days[-1] == 252
+    assert days[0] >= 1
+
+    widths = [row[2] - row[1] for row in frames]
+    assert widths[0] < widths[-1] / 3.0
+    # Every path is accounted for in every frame, and the curve never dips
+    # below zero — a KDE that did would draw a negative path count.
+    bin_base = DENSITY_FRAME_SLOTS + DENSITY_CURVE_POINTS
+    for row in frames:
+        assert row[bin_base:].sum() == 400
+        assert row[bin_base:].size == DENSITY_BIN_COUNT
+        assert row[DENSITY_FRAME_SLOTS:bin_base].min() >= 0.0
+        assert row[4] >= row[DENSITY_FRAME_SLOTS:].max()
+
+
+def test_filtered_lanes_restart_their_variance_at_a_regime_boundary() -> None:
+    """A 情景筛选 hands the filter disjoint episodes, not one history.
+
+    Two bear stretches years apart arrive concatenated. Without a restart the
+    variance recursion carries the first stretch's volatility across the joint,
+    so the second stretch is standardised by a day that never preceded it — and
+    the fitted persistence is measured over a jump nobody experienced. The
+    boundary reset is invisible in the paths, which is why it needs its own
+    check: only the residual at the joint moves.
+    """
+
+    from backend.product_analysis_numba import (
+        _volatility_filter,
+        filtered_historical_simulation_kernel,
+    )
+
+    calm = _garch_series(300, 3, 2e-6, 0.05, 0.90)
+    storm = calm * 6.0
+    percent = np.ascontiguousarray(np.concatenate([storm, calm]))
+    log_returns = np.ascontiguousarray(np.log1p(percent / 100.0))
+    joined = np.zeros(percent.size, dtype=np.int64)
+    split = np.ascontiguousarray(np.concatenate([
+        np.zeros(storm.size, dtype=np.int64), np.ones(calm.size, dtype=np.int64),
+    ]))
+
+    without, _ = _volatility_filter(log_returns, joined, 0, 0.94)
+    within, _ = _volatility_filter(log_returns, split, 0, 0.94)
+
+    joint = storm.size
+    deviations = log_returns - log_returns.mean()
+    # Index 0 restarts from the unconditional variance by definition; after the
+    # fix so does the first day of the second segment, so the two residuals are
+    # standardised by the same number and their ratio is exactly the raw one.
+    expected = deviations[joint] / deviations[0]
+    assert within[joint] / within[0] == pytest.approx(expected, rel=1e-9)
+    assert without[joint] / without[0] != pytest.approx(expected, rel=1e-3)
+    # Days inside a segment are untouched apart from the shared unit rescale.
+    assert np.allclose(within[:joint] / within[0], without[:joint] / without[0])
+
+    # The axis check is the guard that keeps a caller from passing a stale
+    # segment array once the shapes drift apart.
+    with pytest.raises(ValueError):
+        filtered_historical_simulation_kernel(
+            percent, split[:-1].copy(), 1.0, 21, 40, 7, 5.0, 0, 0.94
+        )
+
+
+def test_service_hands_the_regime_segment_axis_to_the_filtered_lanes(monkeypatch) -> None:
+    """The two FHS lanes must receive the same axis the bootstrap already gets.
+
+    A missing segment array here fails silently — the lanes still return plausible
+    fans, only filtered through a volatility path that crosses years of history
+    the 情景筛选 excluded. That is why the wiring is asserted, not just the maths.
+    """
+
+    from backend.services import product_analysis as service
+
+    seen: list[np.ndarray] = []
+    real = service.filtered_historical_simulation_kernel
+
+    def capture(returns_percent, segment_ids, *rest):
+        seen.append(segment_ids.copy())
+        return real(returns_percent, segment_ids, *rest)
+
+    monkeypatch.setattr(service, "filtered_historical_simulation_kernel", capture)
+    points = _points(300)
+    regime = _regime_for(
+        points, [("bear", 0, 40), ("bull", 41, 200), ("bear", 201, 299)], state_id="bear"
+    )
+    build_product_analysis_response(
+        product_id="test", points=points, parameters=_parameters(regime=regime)
+    )
+
+    assert len(seen) == 2
+    for segment_ids in seen:
+        assert segment_ids.size == len(points) - 1
+        # Segments 0 and 2 are the selected bear episodes; -1 marks the rows the
+        # filter dropped, whose returns arrive as NaN and never reach the fit.
+        assert sorted(set(int(value) for value in segment_ids)) == [-1, 0, 2]

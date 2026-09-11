@@ -21,12 +21,13 @@ def tushare_all_data_workflow(store: SourceStore, source_id: str = 'tushare') ->
                              inputs=[previous] if previous else [], parameter_bindings=bindings,
                              mode='inherit'))
         previous = identifier
-    return EtlDefinition(name=source['config']['name'] + ' 全数据同步',
+    from .etl_dependencies import plan_dependencies
+    return plan_dependencies(EtlDefinition(name=source['config']['name'] + ' 全数据同步',
         description='覆盖项目已接入的全部数据集：基础信息、全部 ETF、公募基金、指数及宏观数据，最后计算私有指标快照。不是供应商全站所有 API。无需单产品代码；可自由增删任务、重排依赖及修改快照位置。标准映射候选需单独核验，不自动发布。',
         max_runtime_seconds=86400, steps=steps, parameters=[
             EtlParameter(id='start_date', label='历史开始日期', data_type='date', date_format='compact', default='2010-01-01'),
             EtlParameter(id='end_date', label='本次截止日期', data_type='date', date_format='compact', description='选择已完成披露的日期。全量和增量共用此流程。'),
-        ])
+        ]))
 
 
 def template_catalog(store: SourceStore) -> list[dict]:

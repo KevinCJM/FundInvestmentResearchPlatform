@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 from cal_indicators.typed_dsl import compose_typed_expression, ValueType
+from .causal_series import causal_violations
 
 
 def bind_series_expression(expression: ast.AST, symbols: dict[str, str], allowed_operators):
@@ -25,7 +26,7 @@ def bind_series_expression(expression: ast.AST, symbols: dict[str, str], allowed
         raise ValueError("时序公式至少需要一个输入序列。")
     plan = compose_typed_expression(source, variable_types={name: ValueType.series("T") for name in bindings.values()},
                                     output_contract="series", max_nodes=128, max_depth=20)
-    if any(node.operator_id is not None and node.operator_id not in allowed_operators for node in plan.nodes):
+    if causal_violations(plan, allowed_operators):
         raise ValueError("公式包含未开放或非因果算子。")
     if plan.output_type.dtype != "float64":
         raise ValueError("当前数值公式需返回数值时序；类别由分类算子生成。")

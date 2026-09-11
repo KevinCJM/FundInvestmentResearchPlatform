@@ -7,6 +7,8 @@ interface ResearchContextValue {
   settings: PitSettingsPayload | null
   /** This tab's temporary viewing choice, or null while it follows the system. */
   override: PitViewOverride | null
+  /** True only when this tab's口径 actually differs from the system default. */
+  temporary: boolean
   /** The release this tab is viewing when it overrides the system one. */
   overrideRelease: PitReleaseSummary | null
   /** True while no release is in effect — every row on disk is in play. */
@@ -97,23 +99,34 @@ export function ResearchContextProvider({ children }: { children: ReactNode }) {
 
     if (override?.off) {
       noPit = true
-      label = `临时口径 · ${NO_PIT_LABEL}`
+      label = NO_PIT_LABEL
       asOf = null
       runMode = 'RESEARCH'
     } else if (override && (overrideRelease || override.asOf)) {
       noPit = false
-      runMode = override.runMode
-      // A stated day wins over the one a release implies: the reader asked to
-      // stand somewhere, and the release only says how far it *could* answer.
-      asOf = override.asOf ?? overrideRelease?.available_through ?? null
+      // A version carries its own day and mode; a bare day is research mode.
+      runMode = override.runMode ?? overrideRelease?.run_mode ?? 'RESEARCH'
+      asOf = override.asOf ?? overrideRelease?.as_of ?? overrideRelease?.available_through ?? null
       const mode = runMode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'
       const vintage = overrideRelease?.name ?? '最新数据（未封版）'
-      label = `临时口径 · 站在 ${asOf} · ${vintage} · ${mode}`
+      label = `站在 ${asOf} · ${vintage} · ${mode}`
     }
+
+    // An override that resolves to the same口径 as the system default is not a
+    // deviation: picking the version already applied must not raise a warning.
+    const temporary =
+      Boolean(override) &&
+      (noPit !== (system?.no_pit ?? true) ||
+        asOf !== (system?.as_of ?? null) ||
+        runMode !== (system?.run_mode ?? 'RESEARCH') ||
+        (override?.off ? null : (overrideRelease?.id ?? null)) !==
+          (settings?.settings.active_release_id ?? null))
+    if (temporary) label = `临时口径 · ${label}`
 
     return {
       settings,
       override,
+      temporary,
       overrideRelease,
       noPit,
       label,
@@ -133,4 +146,14 @@ export function useResearchContext(): ResearchContextValue {
   const context = useContext(ResearchContextContext)
   if (!context) throw new Error('useResearchContext must be used inside ResearchContextProvider')
   return context
+}
+
+/**
+ * The研究日 alone, for pages that only label it.
+ *
+ * Unlike `useResearchContext` this tolerates no provider: a page that merely
+ * annotates its inputs should not fail to render outside the app shell.
+ */
+export function useResearchDay(): string | null {
+  return useContext(ResearchContextContext)?.asOf ?? null
 }

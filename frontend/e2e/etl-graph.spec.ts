@@ -61,6 +61,16 @@ test('same canvas connects, deletes, undoes and persists graph layout',async({pa
   }
   await expect(page.getByTestId('etl-graph-canvas')).toContainText('1 连线')
   await inspect(page,'2. 映射基金净值')
+  const dependency = page.getByLabel('与基金净值下载的依赖关系', { exact: true })
+  await dependency.selectOption('control')
+  await expect(dependency).toHaveValue('control')
+  await page.getByRole('button', { name: '校验流程', exact: true }).click()
+  await expect(page.getByText('流程校验通过；不代表已下载或已发布。')).toHaveCount(0)
+  await dependency.selectOption('data')
+  await expect(dependency).toHaveValue('data')
+  await expect(page.getByText(/不能用此选项绕过数据完整性检查/)).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+  await page.screenshot({ path: info.outputPath('etl-dependency-selector.png') })
   await page.getByRole('button',{name:'断开原始批次：基金净值下载'}).click()
   await expect(page.getByTestId('etl-graph-canvas')).toContainText('0 连线')
   await page.getByRole('button',{name:'撤销',exact:true}).click()
@@ -68,7 +78,7 @@ test('same canvas connects, deletes, undoes and persists graph layout',async({pa
   await page.getByRole('button',{name:'收起检查器'}).click()
   await inspect(page,'1. 基金净值下载')
   // Downstream cannot become a control prerequisite of the upstream.
-  await expect(page.getByLabel('添加等待完成',{exact:true}).locator('option[value="m"]')).toHaveAttribute('disabled', '')
+  await expect(page.getByLabel('添加仅执行顺序',{exact:true}).locator('option[value="m"]')).toHaveAttribute('disabled', '')
   await page.getByRole('button',{name:'收起检查器'}).click()
   if(desktop){
     const node=page.getByTestId('etl-graph-desktop-flow').locator('.react-flow__node[data-id="d"]')

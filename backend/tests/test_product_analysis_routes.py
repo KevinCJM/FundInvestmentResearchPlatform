@@ -115,7 +115,12 @@ def test_product_analysis_price_points_preserve_missing_physical_fields(monkeypa
     ]
 
 
-def test_instrument_timeseries_always_requests_missing_value_preservation(monkeypatch) -> None:
+def test_instrument_timeseries_always_requests_missing_value_preservation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("TUSHARE_DATA_DIR", raising=False)
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
     captured: dict[str, object] = {}
 
     def fake_load_price_points(
@@ -136,6 +141,7 @@ def test_instrument_timeseries_always_requests_missing_value_preservation(monkey
     monkeypatch.setattr(instrument_routes, "load_price_points", fake_load_price_points)
 
     assert instrument_routes._load_timeseries("fund", "000001.OF") == []
+    assert captured["data_dir"] == tmp_path
     assert captured["preserve_missing"] is True
 
 

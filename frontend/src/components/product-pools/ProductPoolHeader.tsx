@@ -99,17 +99,17 @@ export default function ProductPoolHeader({
   }
 
   return <>
-    <header className="rounded-2xl bg-slate-900 px-5 py-6 text-white sm:px-7">
-      <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+    <header className="rounded-2xl bg-slate-900 px-5 py-4 text-white sm:px-7">
+      <div className="flex min-w-0 flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div className="min-w-0">
           <p className="text-sm font-medium text-emerald-300">产品研究 · 准入管理</p>
           <h1 className="mt-1 text-2xl font-semibold">产品池构建</h1>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-300">
-            产品池直接关联多套评价方案；每套评价方案同时定义自己的产品分组。评价结果只作为证据，最终准入由人工复核决定。
+          <p className="mt-2 hidden max-w-4xl text-sm leading-6 text-slate-300 sm:block">
+            先复核产品，再发布版本并开展配置研究。规则与评价来源可在下方展开。
           </p>
         </div>
 
-        <div className="w-full rounded-xl bg-white/10 p-4 ring-1 ring-white/15 xl:w-[500px]">
+        <div className="min-w-0 w-full rounded-xl bg-white/10 p-4 ring-1 ring-white/15 xl:w-[500px]">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <label className="min-w-0 flex-1 text-xs font-medium text-slate-300">
               当前产品池
@@ -123,7 +123,7 @@ export default function ProductPoolHeader({
                 {pools.length === 0 && <option value="">尚未创建产品池</option>}
                 {pools.map((pool) => (
                   <option key={pool.id} value={pool.id}>
-                    {pool.name} · v{pool.revision} · {poolStateLabel[pool.state]}
+                    {pool.name} · {poolStateLabel[pool.state]}
                   </option>
                 ))}
               </select>
@@ -143,7 +143,7 @@ export default function ProductPoolHeader({
             {selectedPool && <>
               <span className="rounded-full bg-white/10 px-2.5 py-1 text-slate-200">{selectedPool.evaluation_plans.length} 套评价方案</span>
               <span className="rounded-full bg-white/10 px-2.5 py-1 text-slate-200">{selectedPool.members.length} 个候选</span>
-              <span className="rounded-full bg-white/10 px-2.5 py-1 text-slate-200">v{selectedPool.revision}</span>
+
               <span className={`rounded-full px-2.5 py-1 ${selectedPool.state === 'active' ? 'bg-emerald-400/20 text-emerald-200' : selectedPool.state === 'archived' ? 'bg-slate-500/40 text-slate-300' : 'bg-amber-300/15 text-amber-200'}`}>
                 {poolStateLabel[selectedPool.state]}
               </span>
@@ -154,7 +154,7 @@ export default function ProductPoolHeader({
     </header>
 
     {dialogOpen && <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[1px]"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[1px]"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) closeDialog()
       }}

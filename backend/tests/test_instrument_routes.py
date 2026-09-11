@@ -586,3 +586,90 @@ def test_instrument_json_helpers_drop_non_finite_values() -> None:
     assert instrument_routes._serialize(np.inf) is None
     assert instrument_routes._serialize(-np.inf) is None
     assert instrument_routes._safe_stat(pd.Series([1.0, np.inf]), "sum") == 1.0
+
+
+def _seed_research_series(data_dir: Path) -> None:
+    dates = pd.bdate_range("2014-12-24", periods=10)
+    pd.DataFrame(
+        [
+            {"ts_code": "510300.SH", "date": date, "adj_nav": 1.0 + index * 0.01}
+            for index, date in enumerate(dates)
+        ]
+    ).to_parquet(data_dir / "etf_daily_df.parquet", index=False)
+
+
+def test_product_research_series_stops_at_the_platform_research_day(monkeypatch, tmp_path: Path) -> None:
+    """The whole point: a 2014 research day must not read 2015 rows.
+
+    Regression guard for 产品研究 showing every row on disk while the header
+    badge claimed a research day — the page never asked for the口径, so the
+    cut has to live in the loader every panel shares.
+    """
+
+    from backend.pit.settings import PitSettingsRepository
+
+    _seed_research_series(tmp_path)
+    monkeypatch.setenv("TUSHARE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+
+    points, context, future = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    assert points[-1]["date"] == "2015-01-06"
+    assert context["asOf"] is None
+    # No research day means no "after", so 未来模拟 has nothing to look back at.
+    assert future == []
+
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-31")
+    cut, cut_context, cut_future = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    assert cut[-1]["date"] == "2014-12-31"
+    assert cut_context["asOf"] == "2014-12-31"
+    assert any("2014-12-31" in warning for warning in cut_context["warnings"])
+    # The rows after the研究日 come back in their own lane so 未来模拟 can be
+    # scored against them — and only there, never as research input.
+    assert [point["date"] for point in cut_future] == ["2015-01-01", "2015-01-02", "2015-01-05", "2015-01-06"]
+    assert not any(point["date"] in {item["date"] for item in cut} for point in cut_future)
+
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2010-01-01")
+    with pytest.raises(ValueError, match="2010-01-01"):
+        instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+
+
+def test_current_size_moves_with_the_research_day(monkeypatch, tmp_path: Path) -> None:
+    """规模 is computed (份额 × 单位净值), so it is not a "latest row" attribute.
+
+    The page header used to read the last row of the validated snapshot, which
+    has no `as_of` and therefore reported today's size under any research day.
+    """
+
+    from backend.pit.settings import PitSettingsRepository
+
+    dates = pd.bdate_range("2014-12-29", periods=4)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "510300.SH",
+                "date": date,
+                "total_share": 1000.0 + index * 10,
+                "nav": 2.0,
+                "total_size": (1000.0 + index * 10) * 2.0,
+            }
+            for index, date in enumerate(dates)
+        ]
+    ).to_parquet(tmp_path / "etf_share_size_df.parquet", index=False)
+    monkeypatch.setenv("TUSHARE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-31")
+    on_31 = instrument_routes._load_current_size("etf", "510300.SH")
+    assert on_31["current_size_as_of"] == "2014-12-31"
+    assert on_31["current_size"] == pytest.approx(2040.0)
+    assert on_31["current_size_source"] == "etf_share_size_pit"
+
+    # A day earlier is a different size, not the same number with a new label.
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-30")
+    on_30 = instrument_routes._load_current_size("etf", "510300.SH")
+    assert on_30["current_size_as_of"] == "2014-12-30"
+    assert on_30["current_size"] == pytest.approx(2020.0)
+
+    # Before the series begins there is nothing to report, and nothing invented.
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2010-01-01")
+    assert instrument_routes._load_current_size("etf", "510300.SH")["current_size"] is None

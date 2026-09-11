@@ -24,10 +24,16 @@ from trading_calendar import get_trading_days
 
 try:
     from pit.clock import visible_at
-    from pit.context import ResearchContext
+    from pit.context import PitContextError, ResearchContext
+    from pit.frame import LATEST_ONLY
+    from pit.guard import check_universe, universe_lineage
+    from product_pools.membership import universe_reference
 except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
     from backend.pit.clock import visible_at
-    from backend.pit.context import ResearchContext
+    from backend.pit.context import PitContextError, ResearchContext
+    from backend.pit.frame import LATEST_ONLY
+    from backend.pit.guard import check_universe, universe_lineage
+    from backend.product_pools.membership import universe_reference
 
 try:
     from backend.backtest_numba import (
@@ -453,6 +459,79 @@ class AllocationNav:
     lineage: Dict[str, Any] = field(default_factory=dict)
 
 
+def _allocation_universe_id(data_dir: Path, alloc_name: str) -> Optional[str]:
+    """Which locked pool this allocation's products were screened from.
+
+    Stamped into ``asset_alloc_info`` when the allocation was saved and, until
+    now, read back by nobody downstream: every guard judged ``series_as_of``
+    instead, which is the day the NAV was *computed*, not the day the candidate
+    products were *chosen*. Allocations saved before the column existed answer
+    None, which reads as "unknown" rather than as "clean".
+    """
+
+    path = data_dir / 'asset_alloc_info.parquet'
+    if not path.exists():
+        return None
+    try:
+        frame = pd.read_parquet(path, columns=['asset_alloc_name', 'universe_snapshot_id'])
+    except (ValueError, KeyError):  # saved before the provenance columns existed
+        return None
+    rows = frame.loc[frame['asset_alloc_name'] == alloc_name, 'universe_snapshot_id'].dropna()
+    return str(rows.iloc[0]) if not rows.empty else None
+
+
+def allocation_universe_lineage(
+    data_dir: Path,
+    lineage: Dict[str, Any],
+    context: Optional[ResearchContext],
+    *,
+    decision_dates: Optional[List[Any]] = None,
+) -> Dict[str, Any]:
+    """One verdict on the candidate set behind a saved allocation.
+
+    Two days have to clear the same bar, and only one of them ever did:
+
+    * ``series_as_of`` — the research day the class NAV was rebuilt under, plus
+      whether that series can be replayed at all;
+    * the research day of the **locked pool** the products were screened from,
+      which can sit years after the series without a single formula noticing,
+      because each formula is individually causal.
+
+    `decision_dates` is the rebalance sweep when there is one: a run decides on
+    its first rebalance, not on its end date. Strict mode refuses; research mode
+    returns the findings to be printed on the result.
+    """
+
+    if context is None:
+        return universe_lineage([], source='asset_nv')
+    series_as_of = lineage.get('series_as_of')
+    coverage = None if series_as_of else LATEST_ONLY
+    reference = universe_reference(data_dir, lineage.get('universe_snapshot_id'))
+    findings = check_universe(
+        context,
+        established_at=series_as_of,
+        coverage=coverage,
+        decision_dates=decision_dates,
+        label=f"配置「{lineage.get('alloc_name')}」的大类净值",
+    )
+    if reference['source']:
+        findings = findings + check_universe(
+            context,
+            established_at=reference['established_at'],
+            decision_dates=decision_dates,
+            label=reference['label'],
+        )
+    if findings and context.strict:
+        raise PitContextError('；'.join(item['message'] for item in findings))
+    return {
+        **universe_lineage(
+            findings, coverage=coverage, established_at=series_as_of, source='asset_nv'
+        ),
+        'snapshot_id': reference['id'],
+        'snapshot_established_at': reference['established_at'],
+    }
+
+
 def load_allocation_nav(
     data_dir: Path,
     alloc_name: str,
@@ -488,9 +567,11 @@ def load_allocation_nav(
         'hindsight_series': False,
         'rows_dropped_by_as_of': 0,
         'availability_available': False,
+        'universe_snapshot_id': _allocation_universe_id(data_dir, alloc_name),
         'warnings': [],
     }
     if df.empty:
+        lineage['universe'] = universe_lineage([], source='asset_nv')
         return AllocationNav(pd.DataFrame(), pd.Series(dtype='datetime64[ns]'), lineage)
 
     lineage['found'] = True
@@ -541,6 +622,15 @@ def load_allocation_nav(
     nav_wide.index = pd.to_datetime(nav_wide.index)
     if cutoff is not None and not lineage['availability_available']:
         nav_wide = nav_wide[nav_wide.index <= cutoff]
+    # Judged here rather than per endpoint: five SAA endpoints read through this
+    # one loader, and the four that never checked were the four that quietly
+    # differed from the fifth.
+    lineage['universe'] = allocation_universe_lineage(data_dir, lineage, context)
+    if len(nav_wide) >= 2:
+        from backend.fit_numba import returns_from_nav_kernel
+        from backend.research_input_checks import require_return_quality
+        values = np.ascontiguousarray(nav_wide.to_numpy(dtype=np.float64))
+        require_return_quality(returns_from_nav_kernel(values), nav_wide.index[1:].strftime('%Y-%m-%d').tolist(), list(nav_wide.columns))
     return AllocationNav(nav_wide, availability, lineage)
 
 

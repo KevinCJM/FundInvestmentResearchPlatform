@@ -19,7 +19,12 @@ from .variable_registry import get_variable
 
 
 ROLLING_SOURCE_KIND = "rolling_scalar"
-ROLLING_TRANSFORM_VERSION = "1.0.0"
+LEGACY_ROLLING_TRANSFORM_VERSION = "1.0.0"
+WINDOW_REDUCTION_TRANSFORM_VERSION = "2.0.0"
+ROLLING_TRANSFORM_VERSION = "3.0.0"
+SUPPORTED_ROLLING_TRANSFORM_VERSIONS = frozenset(
+    {LEGACY_ROLLING_TRANSFORM_VERSION, WINDOW_REDUCTION_TRANSFORM_VERSION, ROLLING_TRANSFORM_VERSION}
+)
 MIN_ROLLING_WINDOW = 1
 MAX_ROLLING_WINDOW = 5_000
 
@@ -174,8 +179,9 @@ def scalar_definition_hash(definition: Mapping[str, Any]) -> str:
 
 
 class _RollingScalarTransformer(ast.NodeTransformer):
-    def __init__(self, window: int) -> None:
+    def __init__(self, window: int, transform_version: str) -> None:
         self.window = window
+        self.transform_version = transform_version
         self.reductions: list[str] = []
         self.series_variables: list[str] = []
 
@@ -237,16 +243,28 @@ class _RollingScalarTransformer(ast.NodeTransformer):
                     )
                 values = self.visit(node.args[0])
                 ddof = self._literal_ddof(node.args[1] if len(node.args) == 2 else None)
-                rolling_std = ast.Call(
-                    func=ast.Name(id="rolling_std", ctx=ast.Load()),
-                    args=[values, ast.Constant(value=self.window), ddof],
-                    keywords=[],
-                )
-                replacement: ast.AST = rolling_std
-                if operator_id == "variance":
+                if self.transform_version == LEGACY_ROLLING_TRANSFORM_VERSION:
+                    rolling_std = ast.Call(
+                        func=ast.Name(id="rolling_std", ctx=ast.Load()),
+                        args=[values, ast.Constant(value=self.window), ddof],
+                        keywords=[],
+                    )
+                    replacement: ast.AST = rolling_std
+                    if operator_id == "variance":
+                        replacement = ast.Call(
+                            func=ast.Name(id="power", ctx=ast.Load()),
+                            args=[rolling_std, ast.Constant(value=2)],
+                            keywords=[],
+                        )
+                else:
+                    windowed = ast.Call(
+                        func=ast.Name(id="rolling_window", ctx=ast.Load()),
+                        args=[values, ast.Constant(value=self.window)],
+                        keywords=[],
+                    )
                     replacement = ast.Call(
-                        func=ast.Name(id="power", ctx=ast.Load()),
-                        args=[rolling_std, ast.Constant(value=2)],
+                        func=ast.Name(id=operator_id, ctx=ast.Load()),
+                        args=[windowed, ddof],
                         keywords=[],
                     )
             else:
@@ -257,16 +275,28 @@ class _RollingScalarTransformer(ast.NodeTransformer):
                         field="indicator_id",
                     )
                 values = self.visit(node.args[0])
-                rolling_operator = {
-                    "mean": "rolling_mean",
-                    "min_value": "rolling_min",
-                    "max_value": "rolling_max",
-                }[operator_id]
-                replacement = ast.Call(
-                    func=ast.Name(id=rolling_operator, ctx=ast.Load()),
-                    args=[values, ast.Constant(value=self.window)],
-                    keywords=[],
-                )
+                if self.transform_version == LEGACY_ROLLING_TRANSFORM_VERSION:
+                    rolling_operator = {
+                        "mean": "rolling_mean",
+                        "min_value": "rolling_min",
+                        "max_value": "rolling_max",
+                    }[operator_id]
+                    replacement = ast.Call(
+                        func=ast.Name(id=rolling_operator, ctx=ast.Load()),
+                        args=[values, ast.Constant(value=self.window)],
+                        keywords=[],
+                    )
+                else:
+                    windowed = ast.Call(
+                        func=ast.Name(id="rolling_window", ctx=ast.Load()),
+                        args=[values, ast.Constant(value=self.window)],
+                        keywords=[],
+                    )
+                    replacement = ast.Call(
+                        func=ast.Name(id=operator_id, ctx=ast.Load()),
+                        args=[windowed],
+                        keywords=[],
+                    )
             self.reductions.append(operator_id)
             return ast.copy_location(replacement, node)
 
@@ -296,8 +326,16 @@ class _RollingScalarTransformer(ast.NodeTransformer):
 def transform_scalar_expression(
     expression: str,
     window_observations: Any,
+    *,
+    transform_version: str = ROLLING_TRANSFORM_VERSION,
 ) -> RollingTransformResult:
     window = _validate_window(window_observations)
+    if transform_version not in SUPPORTED_ROLLING_TRANSFORM_VERSIONS:
+        raise ValidationError(
+            "ROLLING_TRANSFORM_VERSION_UNSUPPORTED",
+            "不支持的滚动转换协议版本。",
+            field="rolling_source.transform_version",
+        )
     try:
         parsed = ast.parse(str(expression or "").strip(), mode="eval")
     except SyntaxError as exc:
@@ -306,7 +344,23 @@ def transform_scalar_expression(
             "标量指标公式无法转换为滚动时序公式。",
             field="indicator_id",
         ) from exc
-    transformer = _RollingScalarTransformer(window)
+    if transform_version == ROLLING_TRANSFORM_VERSION:
+        from cal_indicators.typed_dsl import compose_typed_expression
+        from cal_indicators.typed_operators import get_typed_operator_registry, TYPED_DSL_VERSION
+        from cal_indicators.rolling_scope import analyze_interval
+        from .variable_registry import variable_types
+        try:
+            plan = compose_typed_expression(canonical_formula_source(expression),
+                variable_types=variable_types("single_product", TYPED_DSL_VERSION))
+            capability = analyze_interval(plan.nodes, plan.root_id, get_typed_operator_registry())
+        except TypedDslError as exc:
+            raise ValidationError(exc.code, exc.message, field="indicator_id") from exc
+        return RollingTransformResult(
+            expression=f"rolling_apply({plan.python_expression}, {window}, observation_dates, annual_risk_free_rate_decimal)",
+            series_variables=tuple(node.label for node in capability.variables if node.inferred_type.kind == "series" and node.label != "observation_dates"),
+            reductions=capability.aggregates,
+        )
+    transformer = _RollingScalarTransformer(window, transform_version)
     transformed = transformer.visit(parsed)
     ast.fix_missing_locations(transformed)
     if not transformer.reductions:
@@ -401,7 +455,7 @@ def normalize_rolling_source(raw: Any) -> dict[str, Any] | None:
             field="rolling_source.minimum_observations",
         )
     detached = bool(raw.get("detached", False))
-    if kind != ROLLING_SOURCE_KIND or transform_version != ROLLING_TRANSFORM_VERSION:
+    if kind != ROLLING_SOURCE_KIND or transform_version not in SUPPORTED_ROLLING_TRANSFORM_VERSIONS:
         raise ValidationError(
             "ROLLING_TRANSFORM_VERSION_UNSUPPORTED",
             "滚动来源使用了不支持的转换协议版本。",
@@ -433,6 +487,7 @@ def derive_rolling_series_definition(
     *,
     name: str | None = None,
     description: str | None = None,
+    transform_version: str = ROLLING_TRANSFORM_VERSION,
 ) -> dict[str, Any]:
     """Materialize a scalar definition as an ordinary typed series formula."""
 
@@ -474,6 +529,7 @@ def derive_rolling_series_definition(
     transformed = transform_scalar_expression(
         str(source_definition.get("expression") or ""),
         window,
+        transform_version=transform_version,
     )
     source_name = str(source_definition.get("name") or source_id)
     resolved_name = str(name or f"{window} 日滚动{source_name}").strip()
@@ -483,7 +539,7 @@ def derive_rolling_series_definition(
     ).strip()
     rolling_source = {
         "kind": ROLLING_SOURCE_KIND,
-        "transform_version": ROLLING_TRANSFORM_VERSION,
+        "transform_version": transform_version,
         "indicator_id": source_id,
         "indicator_revision": source_revision,
         "indicator_name": source_name[:80],
@@ -538,13 +594,14 @@ def derive_rolling_series_definition(
             source_definition.get("applicable_product_kinds") or ["etf", "fund"]
         ),
         "methodology": (
-            f"把来源标量公式中的 {', '.join(transformed.reductions)} 归约替换为"
-            f"固定 {window} 个观察值的滚动计算；其余算术与年化口径保持来源版本不变。"
+            f"每个右端时点对最近 {window} 个观察区间独立执行完整来源计算图；状态从窗口起点重置，缺失窗口不计算。"
+            if transform_version == ROLLING_TRANSFORM_VERSION else
+            f"把来源标量公式中的 {', '.join(transformed.reductions)} 归约替换为固定 {window} 个观察值的滚动计算；其余算术与年化口径保持来源版本不变。"
         ),
         "data_basis": "沿用来源指标的真实单产品数据口径；日期对齐，缺失不填充",
         "rolling_source": rolling_source,
         "rolling_transform": {
-            "version": ROLLING_TRANSFORM_VERSION,
+            "version": transform_version,
             "window_observations": window,
             "source_expression": str(source_definition.get("expression") or ""),
             "generated_expression": transformed.expression,
@@ -586,6 +643,7 @@ def verify_rolling_series_definition(
         source["window_observations"],
         name=str(definition.get("name") or ""),
         description=str(definition.get("description") or ""),
+        transform_version=source["transform_version"],
     )
     actual_outputs = definition.get("series_outputs") or []
     if len(actual_outputs) != 1:
@@ -628,7 +686,9 @@ __all__ = [
     "MAX_ROLLING_WINDOW",
     "MIN_ROLLING_WINDOW",
     "ROLLING_SOURCE_KIND",
+    "LEGACY_ROLLING_TRANSFORM_VERSION",
     "ROLLING_TRANSFORM_VERSION",
+    "SUPPORTED_ROLLING_TRANSFORM_VERSIONS",
     "RollingTransformResult",
     "derive_rolling_series_definition",
     "normalize_rolling_source",

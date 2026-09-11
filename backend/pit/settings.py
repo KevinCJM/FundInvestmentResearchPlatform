@@ -7,18 +7,18 @@ everywhere. Two consequences follow, and both are the point of this module.
 **It lives on the server.** Keeping it in each browser's `localStorage` means
 two analysts open the same page, see different numbers, and neither can tell.
 
-**The research day is its own knob.** It used to be derived from the applied
-release's `available_through`, which quietly made "which vintage" and "which day
-do I stand on" the same control — so a user who wanted to research as of
-2009-12-31 had nowhere to say it, and reached for the release name instead.
-They are orthogonal questions and now have orthogonal settings:
+**There is one PIT concept, and it is the version.** A release carries its own
+research day and run mode (see :mod:`pit.release`), so applying a version sets
+the whole口径 in one act — which is how people actually think about it: "I made
+a version that stands on 2014-12-31, now use it everywhere."
 
-* `as_of` — the day the platform pretends to stand on. Settable on its own.
-* `active_release_id` — which frozen copy of the files answers. Optional.
+The two fields here are the escape hatch, not the main road:
 
-A release still *implies* a research day when none is stated, so existing
-installs keep the口径 they had. The one constraint between them is one-way: the
-research day may not run past the last day the pinned vintage can answer for.
+* `as_of` — a bare research day, for looking at a date with no version sealed.
+* `run_mode` — likewise.
+
+Both are `None` once a version is applied, and when set they still win, so an
+install that pinned them before versions carried a day keeps its口径.
 
 Neither set means no PIT: every row on disk is fair game, exactly the pre-PIT
 behaviour, and results say so rather than pretending otherwise.
@@ -78,7 +78,7 @@ class PitSettingsStore:
             "schema_version": SCHEMA_VERSION,
             "active_release_id": None,
             "as_of": None,
-            "run_mode": RUN_MODE_RESEARCH,
+            "run_mode": None,
             "updated_at": None,
             "note": "",
         }
@@ -137,11 +137,14 @@ class PitSettingsRepository:
 
         available = self.releases.list_releases()
         stated_as_of = str(stored.get("as_of") or "").strip() or None
+        stated_mode = str(stored.get("run_mode") or "").strip().upper() or None
         derived_as_of = _release_as_of(release) if release else None
         as_of = stated_as_of or derived_as_of
         as_of_source = "explicit" if stated_as_of else ("release" if derived_as_of else None)
         no_pit = as_of is None and release is None
-        run_mode = str(stored.get("run_mode") or RUN_MODE_RESEARCH).upper()
+        # The version answers unless something was pinned here before versions
+        # carried a口径 of their own.
+        run_mode = stated_mode or (str(release.get("run_mode") or "").upper() if release else None)
         # Strict needs a day to enforce. Without one it is research mode wearing
         # a different label, which is worse than not offering it.
         if run_mode not in RUN_MODES or as_of is None:
@@ -151,7 +154,7 @@ class PitSettingsRepository:
             "settings": {
                 "active_release_id": release_id,
                 "as_of": stated_as_of,
-                "run_mode": str(stored.get("run_mode") or RUN_MODE_RESEARCH).upper(),
+                "run_mode": stated_mode,
                 "updated_at": stored.get("updated_at"),
                 "note": stored.get("note") or "",
             },
@@ -188,8 +191,9 @@ class PitSettingsRepository:
         as_of: Any = None,
     ) -> dict[str, Any]:
         wanted_release = str(active_release_id or "").strip() or None
-        wanted_mode = str(run_mode or RUN_MODE_RESEARCH).strip().upper() or RUN_MODE_RESEARCH
-        if wanted_mode not in RUN_MODES:
+        # None is meaningful: "follow whatever the applied version says".
+        wanted_mode = str(run_mode or "").strip().upper() or None
+        if wanted_mode is not None and wanted_mode not in RUN_MODES:
             raise PitContextError(f"不支持的运行模式：{run_mode}")
         parsed_as_of = parse_as_of(as_of)
         wanted_as_of = parsed_as_of.strftime("%Y-%m-%d") if parsed_as_of is not None else None
@@ -197,21 +201,23 @@ class PitSettingsRepository:
         effective_as_of = wanted_as_of
         if wanted_release is not None:
             release = self.releases.get(wanted_release)  # raises if unknown
-            release_end = _release_as_of(release)
-            if release_end is None:
+            ceiling = _release_available_through(release)
+            if ceiling is None:
                 raise PitContextError(
                     f"数据版本 {release['name']} 没有可得截止日，无法作为 PIT 口径应用。"
                 )
-            if wanted_as_of is not None and wanted_as_of > release_end:
-                # The one constraint between the two knobs, and it is one-way: a
-                # vintage cannot answer for days it does not contain.
+            if wanted_as_of is not None and wanted_as_of > ceiling:
+                # One-way: a vintage cannot answer for days it does not contain.
                 raise PitContextError(
-                    f"研究日 {wanted_as_of} 晚于数据版本「{release['name']}」的可得截止日 {release_end}；"
+                    f"研究日 {wanted_as_of} 晚于数据版本「{release['name']}」的可得截止日 {ceiling}；"
                     "请前移研究日，或改用更新的数据版本。"
                 )
-            effective_as_of = wanted_as_of or release_end
+            effective_as_of = wanted_as_of or _release_as_of(release)
+            effective_mode = wanted_mode or str(release.get("run_mode") or "").upper() or None
+        else:
+            effective_mode = wanted_mode
 
-        if wanted_mode == RUN_MODE_STRICT and effective_as_of is None:
+        if effective_mode == RUN_MODE_STRICT and effective_as_of is None:
             raise PitContextError("严格 PIT 需要一个研究日：请先填写「站在哪一天」。")
 
         with self.store.locked():
@@ -230,12 +236,23 @@ class PitSettingsRepository:
         return self.describe()
 
 
-def _release_as_of(release: dict[str, Any]) -> Optional[str]:
-    """A release's research day is the last date its A/B tables can answer for."""
+def _release_available_through(release: dict[str, Any]) -> Optional[str]:
+    """The ceiling: the last date this vintage's A/B tables can answer for."""
 
     summary = release.get("summary") or {}
     value = summary.get("available_through")
     return str(value) if value else None
+
+
+def _release_as_of(release: dict[str, Any]) -> Optional[str]:
+    """The day a version stands on — its own choice, else its ceiling.
+
+    Versions sealed before the day moved in here have no `as_of`, and for those
+    the ceiling is the honest reading: it is the口径 they were applied under.
+    """
+
+    stated = str(release.get("as_of") or "").strip()
+    return stated or _release_available_through(release)
 
 
 def release_as_of(data_dir: Path, release_id: str) -> Optional[str]:
@@ -250,6 +267,14 @@ def release_as_of(data_dir: Path, release_id: str) -> Optional[str]:
     return _release_as_of(repository.get(release_id))
 
 
+def release_run_mode(data_dir: Path, release_id: str) -> Optional[str]:
+    """The run mode a sealed version was defined with, if it states one."""
+
+    repository = DataReleaseRepository(data_dir / "data_releases.json")
+    value = str(repository.get(release_id).get("run_mode") or "").upper()
+    return value if value in RUN_MODES else None
+
+
 def _release_summary(release: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not release:
         return None
@@ -260,6 +285,8 @@ def _release_summary(release: Optional[dict[str, Any]]) -> Optional[dict[str, An
         "note": release.get("note") or "",
         "created_at": release.get("created_at"),
         "sequence": release.get("sequence"),
+        "as_of": _release_as_of(release),
+        "run_mode": str(release.get("run_mode") or "").upper() or None,
         "available_through": summary.get("available_through"),
         "grade_a": summary.get("grade_a"),
         "grade_b": summary.get("grade_b"),
@@ -290,4 +317,10 @@ def _effective_label(
     return f"站在 {as_of} · {vintage} · {mode}"
 
 
-__all__ = ["PIT_SETTINGS_STORE", "PitSettingsRepository", "PitSettingsStore", "release_as_of"]
+__all__ = [
+    "PIT_SETTINGS_STORE",
+    "PitSettingsRepository",
+    "PitSettingsStore",
+    "release_as_of",
+    "release_run_mode",
+]

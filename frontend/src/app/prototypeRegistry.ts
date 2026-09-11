@@ -181,13 +181,6 @@ export const prototypeConfigs: Record<string, PrototypeConfig> = {
       { label: '估算置信度', value: '0.81', hint: '净值回归示例' },
     ],
   }),
-  'product-backtest': product('产品与信号回测', '研究单产品持有、择时信号和评价逻辑的历史表现。', {
-    metrics: [
-      { label: '样本外收益', value: '7.31%', hint: '示例年化结果' },
-      { label: '信号胜率', value: '58.4%', hint: '示例统计' },
-      { label: '换手率', value: '1.8 倍', hint: '示例年度换手' },
-    ],
-  }),
   'product-pools': product('产品池构建', '依据准入条件、评价结论和研究标签形成可复用产品池。'),
   'pool-lifecycle': product('产品池版本与生命周期管理', '管理产品准入、观察、限制、替换、排除和版本发布。'),
 
@@ -203,10 +196,9 @@ export const prototypeConfigs: Record<string, PrototypeConfig> = {
   'product-allocation-timing': allocation('产品配置与择时', '在大类预算内研究具体基金权重、替代关系和产品级择时规则。', {
     links: [
       { label: '打开已有产品组合构建', description: '运行真实产品组合研究并生成不可变研究快照。', path: '/pre-investment/product-allocation-timing/construction' },
-      { label: '进入产品择时演示', description: '查看产品级信号、权重路径与替代关系的静态交互页面。', path: '/pre-investment/product-allocation-timing/timing' },
+      { label: '查看产品择时研究版本', description: '检验 ETF 入场与退出，并引用已冻结的研究结果；不自动调整权重。', path: '/pre-investment/product-allocation-timing/timing' },
     ],
   }),
-  'product-timing': allocation('产品择时研究', '研究同一大类内部具体产品的信号、替代顺序和动态权重路径。'),
   'portfolio-synthesis': allocation('目标组合合成与风险检查', '把 SAA、TAA 与产品配置合成为产品级目标组合，并检查风险预算、集中度和全部投资约束。', {
     tabs: ['组合总览', '权重穿透', '风险贡献', '约束检查', '结果记录'],
     metrics: [
@@ -283,8 +275,11 @@ export const prototypeConfigs: Record<string, PrototypeConfig> = {
   'return-attribution': post('收益归因', '展示配置、择时、产品选择、交互和执行偏差的归因结构。'),
   'risk-attribution': post('风险归因', '展示大类、产品、行业风格和风险因子的风险贡献结构。'),
   monitoring: post('持仓产品与管理人监控', '跟踪持仓产品业绩、风格漂移、规模、流动性和团队变化。'),
-  scenarios: post('情景分析与压力测试', '展示历史情景、自定义冲击和流动性压力下的组合研究结果。', {
-    links: [{ label: '打开已有历史情景工具', description: '在研究组合诊断中运行真实历史区间情景。', path: '/post-investment/research-diagnosis' }],
+  scenarios: post('情景分析与压力测试', '查看历史表现，或选择已发布情景测试明确保存的研究组合。实际账户持仓接入与流动性反馈尚未开放。', {
+    links: [
+      { label: '使用已发布情景做压测', description: '选择研究组合快照及已发布敏感度；不会把本页演示持仓当作真实账户。', path: '/settings/scenario-algorithms/apply?target_type=portfolio_run' },
+      { label: '打开已有历史情景工具', description: '在研究组合诊断中运行真实历史区间情景。', path: '/post-investment/research-diagnosis' },
+    ],
   }),
   conclusions: post('投后研究结论', '固化基于业绩、归因、监控和情景分析形成的可审计研究结论。'),
   reports: post('投资报告与归档', '展示报告版本、研究附件、数据截止日和归档记录。'),

@@ -74,7 +74,14 @@ def test_composer_returns_canonical_executable_source_not_latex() -> None:
     assert result["display_latex"] != result["expression"]
 
 
-def recompose_dag(client: TestClient, dag: dict, root_key: str) -> dict:
+def recompose_dag(
+    client: TestClient,
+    dag: dict,
+    root_key: str,
+    *,
+    dsl_version: str,
+    operator_registry_version: str,
+) -> dict:
     nodes = {str(node["id"]): node for node in dag["nodes"]}
     incoming: dict[str, list] = {}
     for edge in dag["edges"]:
@@ -89,7 +96,7 @@ def recompose_dag(client: TestClient, dag: dict, root_key: str) -> dict:
         arguments = []
         edges = sorted(incoming.get(key, []), key=lambda edge: edge.get("order", 0))
         operator = node.get("operator_id") or node.get("operator", {}).get("id") or node["label"]
-        parameter_names = get_typed_operator_registry()[operator].argument_names(len(edges))
+        parameter_names = get_typed_operator_registry(operator_registry_version)[operator].argument_names(len(edges))
         for index, edge in enumerate(edges):
             child = nodes[str(edge["source"])]
             if child["kind"] == "variable":
@@ -102,7 +109,7 @@ def recompose_dag(client: TestClient, dag: dict, root_key: str) -> dict:
         operator = node.get("operator_id") or node.get("operator", {}).get("id") or node["label"]
         response = client.post("/api/custom-indicators/compose", json={
             "context": "single_product", "operator_id": operator,
-            "dsl_version": "2.3.0", "operator_registry_version": "2.3.0",
+            "dsl_version": dsl_version, "operator_registry_version": operator_registry_version,
             "arguments": arguments,
         })
         assert response.status_code == 200, response.text
@@ -133,10 +140,22 @@ def test_catalog_compose_validate_roundtrip_all_channels(client: TestClient, ser
         assert channel["editable_latex"] == editable_formula_latex(channel["expression"])
     updated = copy.deepcopy(definition)
     if definition.get("result_kind", "scalar") == "scalar":
-        updated["expression"] = recompose_dag(client, initial["dag"], "result")[source_field]
+        updated["expression"] = recompose_dag(
+            client,
+            initial["dag"],
+            "result",
+            dsl_version=definition["dsl_version"],
+            operator_registry_version=definition["operator_registry_version"],
+        )[source_field]
     else:
         for channel in updated["series_outputs"]:
-            channel["expression"] = recompose_dag(client, initial["dag"], channel["id"])[source_field]
+            channel["expression"] = recompose_dag(
+                client,
+                initial["dag"],
+                channel["id"],
+                dsl_version=definition["dsl_version"],
+                operator_registry_version=definition["operator_registry_version"],
+            )[source_field]
         updated["expression"] = updated["series_outputs"][0]["expression"]
     if updated.get("result_kind", "scalar") == "scalar":
         assert canonical_formula_source(updated["expression"]) == canonical_formula_source(definition["expression"])
@@ -148,7 +167,13 @@ def test_catalog_compose_validate_roundtrip_all_channels(client: TestClient, ser
     assert checked["dependencies"] == initial["dependencies"]
     # A second pass must be exactly stable, not alternate between DSL/LaTeX.
     for root in checked["dag"]["roots"]:
-        again = recompose_dag(client, checked["dag"], root)
+        again = recompose_dag(
+            client,
+            checked["dag"],
+            root,
+            dsl_version=updated["dsl_version"],
+            operator_registry_version=updated["operator_registry_version"],
+        )
         expected = updated["expression"] if root == "result" else next(
             output["expression"] for output in updated["series_outputs"] if output["id"] == root
         )
@@ -167,10 +192,20 @@ def test_edited_fifteen_observation_sharpe_preserves_sample_std(client: TestClie
     draft = series_draft(service, expression)
     result = client.post("/api/custom-indicators/validate", json=draft).json()
     assert result["valid"], result["diagnostics"]
-    composed = recompose_dag(client, result["dag"], "value")
-    assert composed["expression"] == expression
+    composed = recompose_dag(
+        client,
+        result["dag"],
+        "value",
+        dsl_version=draft["dsl_version"],
+        operator_registry_version=draft["operator_registry_version"],
+    )
+    assert composed["expression"] == (
+        "(mean(rolling_window(returns, 15)) - risk_free_rate_per_observation) / "
+        "std(rolling_window(returns, 15), 1) * sqrt(periods_per_year)"
+    )
     assert r"s_{t,15}" in composed["display_latex"]
-    assert "rolling_std(returns, 15, 1)" in composed["expression"]
+    assert "rolling_mean" not in composed["expression"]
+    assert "rolling_std" not in composed["expression"]
 
 
 @pytest.mark.parametrize("expression", [

@@ -29,6 +29,19 @@ def opened(expression="rolling_mean(market_close, 20)"):
     return bind_parameter_input(value, candidate_id=candidate["id"])
 
 
+def test_current_authoring_owns_window_parameter_on_rolling_window_only():
+    value = draft("std(rolling_window(market_close, 20), 1)")
+    candidates = inspect_parameter_inputs(value)["candidates"]
+    assert [(item["operator_id"], item["argument"], item["value"]) for item in candidates] == [
+        ("rolling_window", "window", 20)
+    ]
+    opened_value = bind_parameter_input(value, candidate_id=candidates[0]["id"])
+    assert opened_value["series_outputs"][0]["expression"] == (
+        "std(rolling_window(market_close, window_1), 1)"
+    )
+    assert opened_value["parameter_schema"][0]["default"] == 20
+
+
 def test_position_aware_binding_shared_parameters_and_unbinding():
     value = draft("rolling_mean(market_close, 20) + rolling_mean(market_close, 20)")
     candidates = inspect_parameter_inputs(value)["candidates"]

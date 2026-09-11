@@ -8,9 +8,10 @@ from typing import Any
 from compute_policy import NJIT_BACKEND, THIRD_PARTY_BACKEND
 from computation_graph.series_operators import register_series_operators
 from research_series.product_sources import PRODUCT_SOURCES
+from .granular_registry import CONDITION, PHASE_CODES, granularity_metadata, register_granular_nodes
 
 
-REGISTRY_VERSION = "regime-graph-nodes/2.12.0"
+REGISTRY_VERSION = "regime-graph-nodes/2.14.0"
 
 SERIES = "series<float64>"
 BOOL_SERIES = "series<bool>"
@@ -25,6 +26,9 @@ REASON_CODES = "reason_codes<int64>"
 
 
 CATEGORY_LABELS = {
+    "annotation": "人工标注",
+    "condition": "条件判断",
+    "segmentation": "峰谷与区间",
     "indicator_calculation": "指标计算",
     "indicator": "指标通用算子",
     "source": "数据源",
@@ -65,6 +69,7 @@ PORT_LABELS = {
     "recognition_index": "识别时点",
     "effective_index": "生效时点",
     "reason_code": "判定原因",
+    "event_count": "同时事件数量",
 }
 
 PORT_TYPE_LABELS = {
@@ -151,6 +156,7 @@ PARAMETER_LABELS = {
     "floor": "最低置信度",
     "declaration": "隔离执行声明",
     "adapter_id": "管理员模型适配器",
+    "events": "历史事件区间",
 }
 
 PARAMETER_DESCRIPTIONS = {
@@ -168,6 +174,7 @@ PARAMETER_DESCRIPTIONS = {
     "mapping": "按模型分量顺序填写业务状态编号；-1 表示该分量暂不分类。",
     "floor": "置信度低于该值的观察点不输出明确状态。",
     "usage_intent": "研究定义本身不绑定用途；发布或被业务引用时再按目标场景执行门禁。",
+    "events": "由人类定义的历史事件区间；区间允许重叠，事件不属于互斥市场状态。",
 }
 
 ENUM_LABELS = {
@@ -268,7 +275,7 @@ def _numeric_node(
         "minimum_samples": 2 if category not in {"model", "rolling"} else 5,
         "cost_estimate": {"class": "linear", "expression": "O(T)", "unit": "observations"},
         "kernel_id": kernel_id,
-        "kernel_version": "typed-njit-v2.1" if node_id == "feature.formula" else "regime-graph-kernels/2.8.0",
+        "kernel_version": "typed-njit-v2.1" if node_id == "feature.formula" else "regime-graph-kernels/2.9.0",
         "model_version": "1" if category == "model" else None,
         "formula_language": (
             {
@@ -473,7 +480,12 @@ NODE_REGISTRY: dict[str, dict[str, Any]] = {
                 "ts_code": {"type": "string"},
                 "source_api": {"type": "string", "default": "index_daily"},
                 "field": {"type": "string", "default": "close"},
-                "frequency": {"type": "string", "default": "daily"},
+                "frequency": {
+                    "type": "string",
+                    "default": "daily",
+                    "title": "计算频率",
+                    "description": "日频直接使用原始观测；周/月/季/年频按日历周期取最后一个可得观测后再进入下游算法。若需要区间首值、均值或合计等其他口径，请显式使用“日历频率转换”算子。",
+                },
                 "start_date": {"type": "string", "format": "date"},
                 "end_date": {"type": "string", "format": "date"},
                 "name": {"type": "string"},
@@ -1055,6 +1067,48 @@ def register_segment_nodes(registry, numeric_node, port, parameter):
 
 register_segment_nodes(NODE_REGISTRY, _numeric_node, _port, _trend_parameter)
 register_series_operators(NODE_REGISTRY, _numeric_node, _port)
+register_granular_nodes(NODE_REGISTRY, _numeric_node, _port)
+_manual_events_node = _numeric_node(
+    "annotation.manual_events",
+    "人工历史事件区间",
+    "annotation",
+    [_port("value", SERIES)],
+    [_port("state", STATE_CODES), _port("event_count", SERIES)],
+    {
+        "type": "object",
+        "properties": {
+            "events": {
+                "type": "array",
+                "default": [],
+                "maxItems": 100,
+                "items": {"type": "object"},
+            }
+        },
+        "additionalProperties": False,
+    },
+    causal=False,
+)
+_manual_events_node.update(
+    description="按人类指定的日历起止日期标注历史事件；事件允许重叠。state 仅表示是否处于任一事件，事件名称与重叠关系保留在冻结事件列表中。",
+    kernel_id="manual_event_state",
+    kernel_dependencies=["manual_event_state", "manual_event_summary"],
+    knowledge_scope="full_input",
+    repaints=False,
+    supports_realtime=False,
+    minimum_samples=1,
+    cost_estimate={"class": "event_intervals", "expression": "O(T + E log T)", "unit": "observations"},
+    granularity={
+        "kind": "primitive",
+        "label": "领域基础能力",
+        "expandable": False,
+        "reason": "一个人工事件集合共同定义同一条多标签历史事件结果；继续拆成每个日期比较节点会破坏人类操作语义。",
+        "contract_version": 1,
+    },
+)
+NODE_REGISTRY["annotation.manual_events"] = _manual_events_node
+PORT_TYPE_LABELS.update({CONDITION: "条件（满足／不满足／未知）", PHASE_CODES: "完整波段方向（非市场状态）"})
+PORT_LABELS.update({"condition": "判断条件", "bound": "比较界线（可选）", "when_true": "满足时的状态（可选）",
+                    "when_false": "不满足时的状态（可选）"})
 NODE_REGISTRY["model.peak_trough"]["knowledge_scope"] = "full_input"
 PORT_TYPE_LABELS.update({PIVOTS: "峰谷事件序列", SEGMENT_START: "完整区间起点", SEGMENT_END: "完整区间终点"})
 PORT_LABELS.update({"start": "区间起点", "end": "区间终点", "pivot_price": "拐点价格",
@@ -1104,6 +1158,7 @@ def _decorate_parameter_schema(node: dict[str, Any]) -> None:
 def _catalog_item(node: dict[str, Any]) -> dict[str, Any]:
     item = copy.deepcopy(node)
     item.pop("_indicator_definition", None)
+    item.setdefault("granularity", granularity_metadata(item))
     if item["id"] in {"source.inline", "source.indicator", "source.relative"}:
         item["authoring_hidden"] = True
     category = str(item.get("category") or "")
@@ -1127,7 +1182,7 @@ def _catalog_item(node: dict[str, Any]) -> dict[str, Any]:
         "source.upload": "上传 CSV、Excel（.xlsx）或 JSON，或选择已上传的数据。确认列后保存为固定版本，可重复使用。",
         "source.etf": "按名称或代码选择 ETF，读取交易价格、成交量等字段。默认收盘价（不复权）。",
         "source.fund": "按名称或代码选择公募基金，读取单位净值、累计净值等字段。实时分析按公告日期使用数据。",
-        "source.index": "按名称或代码选择指数，再选择所需数值字段；代码与行情来源自动绑定。",
+        "source.index": "按名称或代码选择指数，再选择数值字段与计算频率。非日频会先按日历周期取最后一个可得观测，再把该频率序列交给下游算法。",
         "source.macro": "选择宏观数据序列和数值字段；数据集、序列代码与来源自动绑定。",
         "source.indicator": "选择一个指标版本及基金或 ETF，生成该对象的指标历史时序。指标版本和计算对象各选一次。",
         "source.constant": "在上游序列的每个日期输出同一个数值。基准时间轴只决定日期，不改变常量值。",
@@ -1137,6 +1192,8 @@ def _catalog_item(node: dict[str, Any]) -> dict[str, Any]:
     if item.get("id") in {"source.inline", "source.upload"}:
         item["parameter_schema"]["properties"]["frequency"]["enum"] = ["daily", "weekly", "monthly", "quarterly", "annual", "irregular"]
     _decorate_parameter_schema(item)
+    from .temporal_capability import temporal_contract
+    item["temporal_contract"] = temporal_contract(item["id"], item)
     return item
 
 
@@ -1145,7 +1202,7 @@ def node_catalog() -> dict[str, Any]:
         "schema_version": "2.0",
         "registry_version": REGISTRY_VERSION,
         "port_types": [
-            PIVOTS, SEGMENT_START, SEGMENT_END,
+            PIVOTS, SEGMENT_START, SEGMENT_END, CONDITION, PHASE_CODES,
             SERIES,
             BOOL_SERIES,
             MATRIX,

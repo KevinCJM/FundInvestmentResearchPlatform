@@ -25,15 +25,18 @@ MAX_RETURN_ROWS = 20000
 TAA_ENGINE_VERSION = "taa-njit-1.0.0"
 TAA_KERNEL_VERSION = "1.1.0"
 
+_READONLY_VECTOR = types.Array(float64, 1, "A", readonly=True)
+_READONLY_MATRIX = types.Array(float64, 2, "A", readonly=True)
+_READONLY_FLAGS = types.Array(uint8, 1, "A", readonly=True)
 
 _TAA_CORE_SIGNATURE = types.Tuple(
     (float64[:, ::1], float64[:, ::1], float64[:, ::1], float64[::1])
 )(
-    float64[:, ::1],
-    float64[:, ::1],
-    uint8[::1],
-    float64[:, ::1],
-    float64[::1],
+    _READONLY_MATRIX,
+    _READONLY_MATRIX,
+    _READONLY_FLAGS,
+    _READONLY_MATRIX,
+    _READONLY_VECTOR,
     float64,
     float64,
     float64,
@@ -66,9 +69,11 @@ def _taa_path_kernel(
     baseline_pretrade = base_weights.copy()
     taa_nav = 1.0
     baseline_nav = 1.0
+    delta = np.empty(asset_count, dtype=np.float64)
 
     for period in range(period_count):
-        delta = np.zeros(asset_count, dtype=np.float64)
+        for asset in range(asset_count):
+            delta[asset] = 0.0
         tilt_scale = 0.0
         if use_signal[period] == 1:
             for state in range(state_count):
@@ -175,7 +180,7 @@ def _taa_path_kernel(
     return path, contributions, state_summary, totals
 
 
-_PERFORMANCE_SIGNATURE = float64[::1](float64[::1], float64[::1], float64)
+_PERFORMANCE_SIGNATURE = float64[::1](_READONLY_VECTOR, _READONLY_VECTOR, float64)
 
 
 @njit(_PERFORMANCE_SIGNATURE, cache=True, nogil=True)
@@ -239,7 +244,7 @@ def _normalize_probability_kernel(values: np.ndarray) -> np.ndarray:
 
 
 _VECTOR_VALIDATION_SIGNATURE = types.Tuple((float64, types.int64))(
-    float64[::1],
+    _READONLY_VECTOR,
     float64,
     float64,
     float64,

@@ -6,7 +6,12 @@ from custom_indicators.errors import ValidationError
 from historical_regimes.node_preview import node_preview_definition
 from historical_regimes.v2_contracts import validate_definition_v2
 from historical_regimes.v2_numba import regime_graph_numba_status
-from test_historical_regime_v2 import client, classic_service, v2_service, _definition, _wait_for_preview
+import test_historical_regime_v2 as regime_fixtures
+from test_historical_regime_v2 import _definition, _wait_for_preview
+
+client = regime_fixtures.client
+classic_service = regime_fixtures.classic_service
+v2_service = regime_fixtures.v2_service
 
 
 def unfinished():
@@ -17,12 +22,12 @@ def unfinished():
     return definition
 
 
-def start(client, definition, node='source', port='value', mode='realtime', as_of=None):
+def start(client, definition, node='source', port='value', mode='realtime', as_of=None, comparisons=None):
     target = {'node_id': node, 'port': port}
-    prepared = client.post('/api/historical-regimes/prepare', json={'definition': definition, 'preview_target': target})
+    prepared = client.post('/api/historical-regimes/prepare', json={'definition': definition, 'preview_target': target, 'comparison_targets': comparisons or []})
     assert prepared.status_code == 200, prepared.text
     response = client.post('/api/historical-regimes/preview-runs', json={
-        'definition': definition, 'preview_target': target,
+        'definition': definition, 'preview_target': target, 'comparison_targets': comparisons or [],
         'compile_token': prepared.json()['compile_token'], 'mode': mode, 'as_of': as_of,
     })
     return response, prepared.json()
@@ -142,3 +147,86 @@ def test_upstream_catalog_marks_enum_outputs_unavailable_for_numeric_overlay(cli
     assert state['plottable'] is False
     assert state['unavailable_reason']
     assert next(item for item in result['upstream_outputs'] if item['node_id'] == 'source')['plottable'] is True
+
+
+def test_parallel_comparisons_share_one_run_and_do_not_execute_unselected_nodes(client, v2_service, monkeypatch):
+    from historical_regimes import v2_service as service_module
+    definition = unfinished()
+    definition['graph']['nodes'].extend([
+        {'id': 'recursive', 'type': 'indicator.recursive_smooth', 'label': '递归平滑',
+         'inputs': {'values': {'node_id': 'source', 'port': 'value'}}, 'parameters': {'periods': 3, 'initial': 100}},
+        {'id': 'ema', 'type': 'filter.ema', 'label': '单边EMA',
+         'inputs': {'value': {'node_id': 'source', 'port': 'value'}}, 'parameters': {'window': 3}},
+    ])
+    original = copy.deepcopy(definition)
+    calls, sources = [], []
+    execute, resolve = v2_service._execute_numeric_node, service_module.resolve_target
+    def tracked(node, *args, **kwargs):
+        calls.append(node.id)
+        return execute(node, *args, **kwargs)
+    def tracked_source(*args, **kwargs):
+        sources.append(args[0])
+        return resolve(*args, **kwargs)
+    monkeypatch.setattr(v2_service, '_execute_numeric_node', tracked)
+    monkeypatch.setattr(service_module, 'resolve_target', tracked_source)
+    comparisons = [{'node_id': 'ema', 'port': 'value'}]
+    response, _ = start(client, definition, 'recursive', as_of='2020-01-11', comparisons=comparisons)
+    job = _wait_for_preview(client, response.json()['id'])
+    assert job['status'] == 'completed', job
+    assert sorted(calls) == ['ema', 'recursive']
+    assert len(sources) == 1
+    assert job['result']['diagnostics']['required_node_ids'] == ['ema', 'recursive', 'source']
+    assert job['result']['diagnostics']['python_fallback'] == 0
+    assert job['result']['diagnostics']['request_time_compilation'] == 0
+    path = f"/api/historical-regimes/preview-runs/{job['id']}/series"
+    main = client.get(path).json()
+    other = client.get(path, params={'node_id': 'ema'}).json()
+    assert main['total'] == other['total'] == 10
+    assert main['comparison_targets'] == comparisons
+    assert [item['node_id'] for item in main['upstream_outputs']] == ['source']
+    assert next(item for item in main['overlay_outputs'] if item['node_id'] == 'ema')['relationship'] == 'other'
+    assert client.get(path, params={'node_id': 'unfinished'}).status_code == 404
+    normalized = client.get(path.replace('/series', '/normalized-chart'), params={'node_id': 'ema', 'port': 'value', 'base_index': 0})
+    assert normalized.status_code == 200, normalized.text
+    assert normalized.json()['values'][0] == 1
+    # The same prepared numerical implementations produce identical single-target results.
+    before = regime_graph_numba_status()['kernel_signatures']
+    for target, expected in [('recursive', main), ('ema', other)]:
+        response, _ = start(client, definition, target, as_of='2020-01-11')
+        single = _wait_for_preview(client, response.json()['id'])
+        assert single['status'] == 'completed', single
+        assert client.get(f"/api/historical-regimes/preview-runs/{single['id']}/series").json()['items'] == expected['items']
+    assert regime_graph_numba_status()['kernel_signatures'] == before
+    assert definition == original and v2_service.list_definitions() == []
+
+
+def test_comparison_targets_are_checked_bound_to_token_and_cannot_be_saved(client):
+    definition = unfinished()
+    target = {'node_id': 'source', 'port': 'value'}
+    comparison = {'node_id': 'smooth', 'port': 'value'}
+    def prepare(refs, **extra):
+        return client.post('/api/historical-regimes/prepare', json={'definition': definition, 'preview_target': target, 'comparison_targets': refs, **extra})
+    for invalid in [{'node_id': 'missing', 'port': 'value'}, {'node_id': 'smooth', 'port': 'missing'}, {'node_id': 'classifier', 'port': 'state'}, {'node_id': 'unfinished', 'port': 'confidence'}]:
+        assert prepare([invalid]).status_code == 422
+    assert prepare([comparison] * 8).status_code == 422
+    assert prepare([comparison], preview_target=None).status_code == 422
+    plan = prepare([comparison]).json()
+    other = client.post('/api/historical-regimes/preview-runs', json={'definition': definition, 'preview_target': target, 'compile_token': plan['compile_token']})
+    assert other.status_code == 422
+    unique = node_preview_definition(definition, target, [comparison, comparison, target])
+    assert list(unique.graph.outputs) == ['preview', 'comparison_1']
+    assert client.post('/api/historical-regimes/v2/definitions', json={'definition': unique.model_dump(mode='json')}).status_code == 422
+
+
+def test_realtime_comparison_rejects_retrospective_ancestors_even_with_numeric_output(client):
+    definition = unfinished()
+    definition['graph']['nodes'].extend([
+        {'id': 'lookahead', 'type': 'pivot.local_extrema', 'inputs': {'value': {'node_id': 'source', 'port': 'value'}}, 'parameters': {'left_window': 2, 'right_window': 2, 'head_window': 0, 'tail_window': 0}},
+        {'id': 'after', 'type': 'filter.ema', 'inputs': {'value': {'node_id': 'lookahead', 'port': 'pivot_price'}}, 'parameters': {'window': 3}},
+    ])
+    refs = [{'node_id': 'after', 'port': 'value'}]
+    response, _ = start(client, definition, comparisons=refs)
+    assert response.status_code == 422 and 'NON_CAUSAL_REALTIME_GRAPH' in response.text
+    response, _ = start(client, definition, mode='retrospective', comparisons=refs)
+    job = _wait_for_preview(client, response.json()['id'])
+    assert job['status'] == 'completed', job

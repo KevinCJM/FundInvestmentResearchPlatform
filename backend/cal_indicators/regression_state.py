@@ -134,13 +134,13 @@ def fit_operator_specs(version):
             OperatorSignature(("series<time>[T]",), "record", "OLS with intercept against the 0..n-1 observation axis"),
             OperatorSignature(("series<time>[T]", "series<time>[T]"), "record", "OLS with intercept on the same observation axis"),
         ), "执行一次带截距线性拟合，后续通过字段提取及基础数学构建独立指标。",
-        _infer_fit, _reference_fit, cost_model="regression", cost=lambda inputs, output: str(inputs[0].shape[0]),
+        _infer_fit, _reference_fit, cost_model="regression", cost=lambda inputs, output: str(inputs[0].shape[0]), interval_policy="resettable",
     )]
     for field in FIT_FIELDS:
         name = f"fit_{field}"
         specs.append(TypedOperatorSpec(
             name, version, "statistics", (OperatorSignature(("record",), "scalar", "read one fitted field; never fit again"),),
             "读取同一次线性拟合的一个统计字段，不重复拟合。", partial(_infer_projection, field=field),
-            FIT_PROJECTION_KERNELS[name], cost_model="constant",
+            FIT_PROJECTION_KERNELS[name], cost_model="constant", interval_policy="local",
         ))
     return tuple(specs)

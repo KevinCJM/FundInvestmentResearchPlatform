@@ -10,7 +10,7 @@ export type IndicatorDisplayFormat = 'number' | 'percent' | 'date'
 
 export type IndicatorDirection = 'higher_better' | 'lower_better' | 'neutral'
 export type EvaluationStatus = 'ok' | 'warning' | 'unavailable' | 'error'
-export type IndicatorShape = 'scalar' | 'series' | 'vector' | 'matrix' | 'mask' | 'tuple' | 'record' | 'unknown'
+export type IndicatorShape = 'scalar' | 'series' | 'vector' | 'matrix' | 'window' | 'mask' | 'tuple' | 'record' | 'unknown'
 export type IndicatorContextDomain = 'single_product' | 'portfolio'
 export type IndicatorResultKind = 'scalar' | 'time_series'
 export type IndicatorType = 'return' | 'risk' | 'risk_adjusted' | 'path' | 'market_liquidity' | 'technical' | 'other'
@@ -54,9 +54,9 @@ export interface FixedSeriesParameter {
 export interface RollingSourceDefinition {
   kind: 'rolling_scalar'
   /** Canonical rolling-transform protocol version. */
-  transform_version: '1.0.0'
+  transform_version: '1.0.0' | '2.0.0' | '3.0.0'
   /** Compatibility field accepted from older generated drafts. */
-  version?: '1.0.0'
+  version?: '1.0.0' | '2.0.0' | '3.0.0'
   indicator_id: string
   indicator_revision: number
   indicator_name: string
@@ -227,6 +227,12 @@ export interface IndicatorDraft {
     source_variables?: string[]
   } | null
   rolling_series_compatibility?: {
+    inputs?: string[]
+    reset_operators?: string[]
+    window_unit?: 'return_observations' | 'observations'
+    window_unit_label?: string
+    missing_policy?: string
+    state_policy?: string
     supported: boolean
     protocol_version: string
     rewritten_reductions?: string[]

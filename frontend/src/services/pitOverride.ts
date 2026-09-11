@@ -17,7 +17,8 @@ export interface PitViewOverride {
   releaseId: string | null
   /** Day to stand on for this tab only. Valid on its own, with no release. */
   asOf?: string | null
-  runMode: RunMode
+  /** Null means "whatever the viewed version says". */
+  runMode: RunMode | null
 }
 
 const STORAGE_KEY = 'pit.view.override'
@@ -44,7 +45,9 @@ function normalize(value: PitViewOverride | null): PitViewOverride | null {
     off: false,
     releaseId: value.releaseId ?? null,
     asOf: value.asOf ?? null,
-    runMode: value.runMode === 'STRICT_PIT' ? 'STRICT_PIT' : 'RESEARCH',
+    // Preserved as-is: a version-only override leaves this null so the version
+    // answers, while a bare day defaults to research mode server-side.
+    runMode: value.runMode === 'STRICT_PIT' ? 'STRICT_PIT' : value.runMode === 'RESEARCH' ? 'RESEARCH' : null,
   }
 }
 
@@ -76,7 +79,8 @@ export const pageReload = { run: () => window.location.reload() }
 export function pitOverrideHeaders(): Record<string, string> {
   if (!current) return {}
   if (current.off) return { 'X-Pit-Off': '1' }
-  const headers: Record<string, string> = { 'X-Pit-Run-Mode': current.runMode }
+  const headers: Record<string, string> = {}
+  if (current.runMode) headers['X-Pit-Run-Mode'] = current.runMode
   if (current.releaseId) headers['X-Pit-Release'] = current.releaseId
   if (current.asOf) headers['X-Pit-As-Of'] = current.asOf
   return headers

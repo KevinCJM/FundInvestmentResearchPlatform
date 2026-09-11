@@ -27,6 +27,10 @@ API_SPECS = {
     "etf_index": ("ETF 跟踪指数目录", "ETF_INDEX_FIELDS", 386),
     "index_classify": ("行业分类", "", 181),
     "index_member_all": ("行业成分", "", 335),
+    "ci_index_member": ("中信行业成分", "", 373),
+    "ths_member": ("同花顺板块成分", "", 261),
+    "dc_member": ("东方财富板块成分", "", 363),
+    "tdx_member": ("通达信板块成分", "", 377),
     "index_weight": ("指数权重", "", 96),
     "ths_index": ("同花顺指数目录", "", 259),
     "dc_index": ("东财指数目录", "", 362),
@@ -152,14 +156,14 @@ def default_interfaces() -> tuple[InterfaceConfig, ...]:
             from .preset_extensions import extra_columns
             columns = extra_columns(api)
         cap = int(LOCAL_CAPS.get(api, caps.get(api, 5000)))
-        policy = DownloadPolicy(requests_per_minute=45 if api == "stock_basic" else 240, min_interval_seconds=1.34 if api == "stock_basic" else 0.25, max_rows_per_request=cap, max_concurrency=16, max_runtime_seconds=86400)
+        policy = DownloadPolicy(requests_per_minute=45 if api == "stock_basic" else 180 if api == "ths_member" else 240, min_interval_seconds=1.34 if api == "stock_basic" else 0.34 if api == "ths_member" else 0.25, max_rows_per_request=cap, max_concurrency=16, max_runtime_seconds=86400)
         items.append(InterfaceConfig(
             id="tushare." + api, source_id="tushare", name=label, enabled=True,
             api_name=api, method="POST", response=ResponseFormat(format="json_columns", records_path="data.items", columns_path="data.fields"),
             source_fields=[SourceField(name=name, data_type=source_field_type(api, name)) for name in columns],
-            policy=policy, pagination=Pagination(mode="offset" if api in {"fund_basic", "fund_nav", "fund_manager"} else "none", page_size={"fund_basic": 15000, "fund_nav": 10000, "fund_manager": 5000}.get(api, min(cap, 1000))),
+            policy=policy, pagination=Pagination(mode="offset" if api in {"fund_basic", "fund_nav", "fund_manager", "fund_portfolio", "fund_adj", "index_member_all", "ci_index_member", "ths_member", "dc_member", "tdx_member", "index_weight"} else "none", page_size={"fund_basic": 15000, "fund_nav": 10000, "fund_manager": 5000}.get(api, min(cap, 1000)), max_pages=1000 if api == "fund_portfolio" else 100 if api == "index_weight" else 20),
             incremental_field=next((name for name in ("trade_date", "nav_date", "date", "month", "quarter") if name in columns), None),
             mappings=default_mappings(api, columns),
-            notes=f"官方文档 doc_id={doc}；配额为本地安全限制，并非供应商授权承诺；部分无文档行数上限的接口使用本地防截断阈值。预置不代表独立权限已开通。未映射字段完整保留于原始批次；身份或必填缺失时拒绝对应候选表，不伪造补值。标准候选尚不替代旧研究数据。",
+            notes=f"官方文档 doc_id={doc}；配额为本地安全限制，并非供应商授权承诺；部分无文档行数上限的接口使用本地防截断阈值。预置不代表独立权限已开通。未映射字段完整保留于原始批次；身份或必填缺失时拒绝对应候选表，不伪造补值。标准候选尚不替代旧研究数据。" + (" 此接口仅提供成分观测，没有真实纳入日；原始数据及研究成分文件可下载，但标准 index.membership 历史有效期映射保持告警，不用观测日或采集日冒充纳入日。" if api in {"ths_member", "dc_member", "tdx_member"} else ""),
         ))
     return tuple(items)

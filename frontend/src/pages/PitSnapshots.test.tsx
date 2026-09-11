@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PitSnapshots from './PitSnapshots'
 import PitBadge from '../components/PitBadge'
 import PitProvenance from '../components/PitProvenance'
+import PitDecisionNotice from '../components/PitDecisionNotice'
 import { ResearchContextProvider } from '../app/ResearchContext'
 import { getPitOverride, pageReload, setPitOverride } from '../services/pitOverride'
 
@@ -79,6 +80,8 @@ const RELEASE_SUMMARY = {
   note: '',
   created_at: '2026-09-07T02:00:00.000000+00:00',
   sequence: 1,
+  as_of: '2026-09-04',
+  run_mode: 'RESEARCH' as const,
   available_through: '2026-09-04',
   grade_a: 1,
   grade_b: 0,
@@ -89,7 +92,7 @@ const RELEASE_SUMMARY = {
 }
 
 const NO_PIT_SETTINGS = {
-  settings: { active_release_id: null, as_of: null, run_mode: 'RESEARCH' as const, updated_at: null, note: '' },
+  settings: { active_release_id: null, as_of: null, run_mode: null, updated_at: null, note: '' },
   effective: {
     as_of: null,
     as_of_source: null,
@@ -109,10 +112,12 @@ let releases: unknown[] = []
 let settings: any = NO_PIT_SETTINGS
 let sealedBody: any = null
 let appliedBody: any = null
+let editedBody: any = null
+let deletedId = ''
 
 function appliedSettings(runMode: 'RESEARCH' | 'STRICT_PIT') {
   return {
-    settings: { active_release_id: RELEASE_SUMMARY.id, as_of: null, run_mode: runMode, updated_at: '2026-09-07T03:00:00+00:00', note: '' },
+    settings: { active_release_id: RELEASE_SUMMARY.id, as_of: null, run_mode: null, updated_at: '2026-09-07T03:00:00+00:00', note: '' },
     effective: {
       as_of: '2026-09-04',
       as_of_source: 'release' as const,
@@ -122,9 +127,9 @@ function appliedSettings(runMode: 'RESEARCH' | 'STRICT_PIT') {
       no_pit: false,
       label: `站在 2026-09-04 · 2026Q3 基线 · ${runMode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'}`,
     },
-    release: RELEASE_SUMMARY,
+    release: { ...RELEASE_SUMMARY, run_mode: runMode },
     release_error: null,
-    available_releases: [RELEASE_SUMMARY],
+    available_releases: [{ ...RELEASE_SUMMARY, run_mode: runMode }],
     can_apply: true,
   }
 }
@@ -168,6 +173,8 @@ function stubFetch() {
         ...RELEASE_SUMMARY,
         name: sealedBody.name,
         note: sealedBody.note,
+        as_of: sealedBody.asOf,
+        run_mode: sealedBody.runMode,
         parent_release_id: null,
         immutable: true,
         tables: [{ dataset_id: 'etf_nav' }, { dataset_id: 'etf_info' }],
@@ -176,6 +183,32 @@ function stubFetch() {
       releases = [release]
       settings = { ...settings, available_releases: [RELEASE_SUMMARY], can_apply: true }
       return new Response(JSON.stringify(release), { status: 200 })
+    }
+    if (url.startsWith('/api/pit/releases/') && method === 'PUT') {
+      editedBody = JSON.parse(String(init?.body))
+      const current = releases[0] as any
+      const updated = {
+        ...current,
+        name: editedBody.name,
+        note: editedBody.note,
+        as_of: editedBody.asOf,
+        run_mode: editedBody.runMode,
+        updated_at: '2026-09-09T04:00:00+00:00',
+      }
+      releases = [updated]
+      return new Response(JSON.stringify(updated), { status: 200 })
+    }
+    if (url.startsWith('/api/pit/releases/') && method === 'DELETE') {
+      deletedId = url.split('/').pop() ?? ''
+      if (settings.settings?.active_release_id === deletedId) {
+        return new Response(
+          JSON.stringify({ detail: '版本「2026Q3 基线」正在被全平台使用；请先切到别的版本或「不用 PIT」并应用，然后再删除。' }),
+          { status: 409 },
+        )
+      }
+      releases = []
+      settings = { ...NO_PIT_SETTINGS, available_releases: [], can_apply: false }
+      return new Response(JSON.stringify({ deleted_id: deletedId }), { status: 200 })
     }
     if (url === '/api/pit/settings' && method === 'GET') {
       return new Response(JSON.stringify(settings), { status: 200 })
@@ -188,8 +221,12 @@ function stubFetch() {
           { status: 400 },
         )
       }
+      // A version answers for its own mode; the request no longer states one.
+      const chosen = (settings.available_releases ?? []).find(
+        (item: any) => item.id === appliedBody.activeReleaseId,
+      )
       settings = appliedBody.activeReleaseId
-        ? appliedSettings(appliedBody.runMode)
+        ? appliedSettings(appliedBody.runMode ?? chosen?.run_mode ?? 'RESEARCH')
         : { ...NO_PIT_SETTINGS, available_releases: [RELEASE_SUMMARY], can_apply: true }
       return new Response(JSON.stringify(settings), { status: 200 })
     }
@@ -215,6 +252,8 @@ beforeEach(() => {
   settings = NO_PIT_SETTINGS
   sealedBody = null
   appliedBody = null
+  editedBody = null
+  deletedId = ''
   reload.mockClear()
   setPitOverride(null)
   vi.stubGlobal('fetch', stubFetch())
@@ -258,59 +297,57 @@ describe('PIT 能力体检', () => {
 })
 
 describe('系统级 PIT 口径', () => {
-  it('lets a research day be set on its own, with nothing sealed', async () => {
+  it('用 PIT 的唯一入口是版本：没有版本就只有"不用 PIT"', async () => {
     const user = userEvent.setup()
     renderPage()
     const panel = await screen.findByTestId('pit-apply')
     expect(panel).toHaveTextContent('无 PIT 口径 · 使用全部磁盘数据')
-    // The whole point of the redesign: "stand on 2009-12-31" needs no release.
-    // The old page offered only a release picker, so this was unreachable.
+    // One concept, one control: there is no second platform-level date box to
+    // keep in sync with the version — the day lives inside the version.
+    expect(screen.queryByLabelText(/站在哪一天看/)).toBeNull()
+    expect(panel).toHaveTextContent('要用 PIT，先建一个版本')
+
+    await user.click(screen.getByRole('button', { name: /新建版本 \/ 管理（已有 0 个）/ }))
     expect(screen.getByLabelText(/站在哪一天看/)).not.toBeDisabled()
-    expect(screen.getByRole('button', { name: /严格 PIT/ })).toBeDisabled()
-
-    await user.type(screen.getByLabelText(/站在哪一天看/), '2009-12-31')
-    await waitFor(() => expect(screen.getByRole('button', { name: /严格 PIT/ })).not.toBeDisabled())
-    await user.click(screen.getByRole('button', { name: '应用到全平台' }))
-
-    await waitFor(() => expect(appliedBody).not.toBeNull())
-    expect(appliedBody).toEqual({
-      activeReleaseId: null,
-      asOf: '2009-12-31',
-      runMode: 'RESEARCH',
-      note: '',
-    })
   })
 
-  it('shows what standing on that day costs before it is applied', async () => {
+  it('shows what standing on that day costs while the version is being defined', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByTestId('pit-apply')
+    await user.click(screen.getByRole('button', { name: /新建版本 \/ 管理/ }))
 
     await user.type(screen.getByLabelText(/站在哪一天看/), '2009-12-31')
 
     const panel = screen.getByTestId('pit-apply')
+    // A count is what makes "stand on 2009-12-31" concrete, and it belongs
+    // beside the day being chosen rather than in the commit bar.
     await waitFor(() => expect(panel).toHaveTextContent('站在 2009-12-31'))
-    expect(panel).toHaveTextContent('届时可选基金')
+    expect(panel).toHaveTextContent('可选基金')
   })
 
-  it('applies a release platform-wide and reports the new 口径', async () => {
+  it('applies a version platform-wide,口径 and all', async () => {
     const user = userEvent.setup()
-    settings = { ...NO_PIT_SETTINGS, available_releases: [RELEASE_SUMMARY], can_apply: true }
-    releases = [{ ...RELEASE_SUMMARY, parent_release_id: null, immutable: true, tables: [], summary: SUMMARY }]
+    const strict = { ...RELEASE_SUMMARY, run_mode: 'STRICT_PIT' as const }
+    settings = { ...NO_PIT_SETTINGS, available_releases: [strict], can_apply: true }
+    releases = [{ ...strict, parent_release_id: null, immutable: true, tables: [], summary: SUMMARY }]
     renderPage()
 
-    const select = await screen.findByLabelText(/用哪一批数据/)
+    const select = await screen.findByLabelText(/用哪个 PIT 版本/)
     await waitFor(() => expect(select).not.toBeDisabled())
-    await user.selectOptions(select, RELEASE_SUMMARY.id)
-    await user.type(screen.getByLabelText(/站在哪一天看/), '2026-09-04')
-    await user.click(screen.getByRole('button', { name: /严格 PIT/ }))
+    // The option states the whole口径, so there is nothing else to set.
+    expect(within(select).getByRole('option', { name: /站在 2026-09-04 · 严格/ })).toBeInTheDocument()
+    // Applying is done where the version is: in its own row, next to 删除.
+    await user.click(screen.getByRole('button', { name: /新建版本 \/ 管理/ }))
     await user.click(screen.getByRole('button', { name: '应用到全平台' }))
 
     await waitFor(() => expect(appliedBody).not.toBeNull())
+    // Null day and null mode: "whatever the version says", so the platform
+    // setting can never drift from the version it names.
     expect(appliedBody).toEqual({
       activeReleaseId: RELEASE_SUMMARY.id,
-      asOf: '2026-09-04',
-      runMode: 'STRICT_PIT',
+      asOf: null,
+      runMode: null,
       note: '',
     })
     expect(await screen.findByText(/已应用 站在 2026-09-04 · 2026Q3 基线 · 严格 PIT，全平台按此口径展示/)).toBeInTheDocument()
@@ -321,36 +358,92 @@ describe('系统级 PIT 口径', () => {
     settings = appliedSettings('RESEARCH')
     renderPage()
 
-    const select = await screen.findByLabelText(/用哪一批数据/)
+    const select = await screen.findByLabelText(/用哪个 PIT 版本/)
     await waitFor(() => expect(select).toHaveValue(RELEASE_SUMMARY.id))
+    // The picker is the setting, not a draft: choosing applies.
     await user.selectOptions(select, '')
-    await user.click(screen.getByRole('button', { name: '应用到全平台' }))
 
     await waitFor(() => expect(appliedBody).not.toBeNull())
-    // Clearing both knobs must also drop strict mode, which needs a research day.
-    expect(appliedBody).toEqual({ activeReleaseId: null, asOf: null, runMode: 'RESEARCH', note: '' })
+    expect(appliedBody).toEqual({ activeReleaseId: null, asOf: null, runMode: null, note: '' })
     expect(await screen.findByText(/已切换为无 PIT 口径/)).toBeInTheDocument()
   })
 
-  it('seals a release without silently switching the platform 口径', async () => {
+  it('a new version is defined with the day it stands on, and is not applied for you', async () => {
     const user = userEvent.setup()
     renderPage()
     await screen.findByText('ETF / 场内基金净值')
 
-    expect(screen.getByText(/尚未封版/)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '封版' }))
+    await user.click(screen.getByRole('button', { name: /新建版本 \/ 管理（已有 0 个）/ }))
+    expect(screen.getByText(/还没有版本/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '创建版本' }))
     expect(await screen.findByText('请先填写数据版本名称')).toBeInTheDocument()
     expect(sealedBody).toBeNull()
 
-    await user.type(screen.getByLabelText('数据版本名称'), '2026Q3 基线')
-    await user.click(screen.getByRole('button', { name: '封版' }))
+    await user.type(screen.getByLabelText(/站在哪一天看/), '2014-12-31')
+    await user.type(screen.getByLabelText('数据版本名称'), '站在 2014 年末的投前基线')
+    await user.click(screen.getByRole('button', { name: /严格 PIT/ }))
+    await user.click(screen.getByRole('button', { name: '创建版本' }))
 
     await waitFor(() => expect(sealedBody).not.toBeNull())
-    expect(sealedBody.name).toBe('2026Q3 基线')
-    expect(await screen.findByText(/如需全平台按此口径展示，请在上方「应用口径」中点击应用/)).toBeInTheDocument()
-    // Sealing is not applying: the platform 口径 is untouched until asked.
+    // The day and the mode are part of the version, not of a separate setting.
+    expect(sealedBody).toEqual({
+      name: '站在 2014 年末的投前基线',
+      note: '',
+      asOf: '2014-12-31',
+      runMode: 'STRICT_PIT',
+    })
+    expect(await screen.findByText(/已建好版本「站在 2014 年末的投前基线」，站在 2014-12-31/)).toBeInTheDocument()
+    // Creating is not applying: the platform 口径 is untouched until asked.
     expect(appliedBody).toBeNull()
     expect(screen.getByTestId('pit-apply')).toHaveTextContent('无 PIT 口径')
+  })
+
+  it('一个版本的口径可以改，钉住的数据不跟着改', async () => {
+    const user = userEvent.setup()
+    settings = { ...NO_PIT_SETTINGS, available_releases: [RELEASE_SUMMARY], can_apply: true }
+    releases = [{ ...RELEASE_SUMMARY, parent_release_id: null, immutable: true, tables: [], summary: SUMMARY }]
+    renderPage()
+    await screen.findByTestId('pit-apply')
+    await user.click(screen.getByRole('button', { name: /新建版本 \/ 管理/ }))
+
+    // 编辑把这一行读进同一个表单，而不是弹一个第二处维护同样四个字段的对话框。
+    await user.click(screen.getByRole('button', { name: '编辑' }))
+    expect(screen.getByLabelText('数据版本名称')).toHaveValue('2026Q3 基线')
+    expect(screen.getByLabelText(/站在哪一天看/)).toHaveValue('2026-09-04')
+
+    await user.clear(screen.getByLabelText(/站在哪一天看/))
+    await user.type(screen.getByLabelText(/站在哪一天看/), '2014-12-31')
+    await user.click(screen.getByRole('button', { name: '保存修改' }))
+
+    await waitFor(() => expect(editedBody).not.toBeNull())
+    expect(editedBody).toEqual({
+      name: '2026Q3 基线',
+      note: '',
+      asOf: '2014-12-31',
+      runMode: 'RESEARCH',
+    })
+    expect(await screen.findByText(/已改好版本「2026Q3 基线」，现在站在 2014-12-31/)).toBeInTheDocument()
+    // 改口径不等于应用它。
+    expect(appliedBody).toBeNull()
+  })
+
+  it('正在被全平台使用的版本不给删除入口，而不是点了再被拒', async () => {
+    const user = userEvent.setup()
+    settings = appliedSettings('RESEARCH')
+    releases = [{ ...RELEASE_SUMMARY, parent_release_id: null, immutable: true, tables: [], summary: SUMMARY }]
+    renderPage()
+    await screen.findByTestId('pit-apply')
+    await user.click(screen.getByRole('button', { name: /新建版本 \/ 管理/ }))
+
+    // The backend refuses this delete with a 409 by design. A live button that
+    // can only ever fail is how that refusal gets reported as 「删除失败」.
+    const remove = screen.getByRole('button', { name: '删除' })
+    expect(remove).toBeDisabled()
+    // A disabled button never shows its title, so the reason has to be text.
+    expect(screen.getByText('全平台使用中')).toBeInTheDocument()
+    await user.click(remove)
+    expect(deletedId).toBe('')
   })
 
   it('surfaces a release that has gone missing instead of keeping a stale as_of', async () => {
@@ -379,15 +472,14 @@ describe('顶栏 PIT 标签', () => {
     settings = appliedSettings('STRICT_PIT')
     renderBadge()
     const badge = await screen.findByTestId('pit-badge')
-    expect(badge).toHaveTextContent('2026Q3 基线')
-    expect(badge).toHaveTextContent('2026-09-04')
-    expect(badge).toHaveTextContent('严格')
-    expect(badge).not.toHaveTextContent('临时')
+    // 一眼只回答「开着吗、用哪个口径」；日期与严格与否留给悬停和面板。
+    expect(badge).toHaveTextContent('PIT 打开：2026Q3 基线')
+    expect(badge).not.toHaveTextContent('!')
   })
 
-  it('says 无口径 when nothing is applied', async () => {
+  it('says PIT 关闭 when nothing is applied', async () => {
     renderBadge()
-    expect(await screen.findByTestId('pit-badge')).toHaveTextContent('无口径')
+    expect(await screen.findByTestId('pit-badge')).toHaveTextContent('PIT 关闭')
   })
 
   it('系统口径是默认而不是强制：本标签页可以临时换版本', async () => {
@@ -397,14 +489,16 @@ describe('顶栏 PIT 标签', () => {
 
     const switcher = screen.getByTestId('pit-switcher')
     expect(switcher).toHaveTextContent('系统默认：站在 2026-09-04 · 2026Q3 基线 · 研究模式')
-    await userEvent.click(within(switcher).getByRole('button', { name: '严格 PIT' }))
+    // One button per version: it carries its own day and mode, so there is no
+    // 研究模式/严格 pair to pick from here.
+    await userEvent.click(within(switcher).getByRole('button', { name: /2026Q3 基线/ }))
 
     // 只改这一个标签页，系统级设置不受影响。
     expect(getPitOverride()).toEqual({
       off: false,
       releaseId: RELEASE_SUMMARY.id,
       asOf: null,
-      runMode: 'STRICT_PIT',
+      runMode: null,
     })
     expect(appliedBody).toBeNull()
     expect(reload).toHaveBeenCalled()
@@ -437,13 +531,24 @@ describe('顶栏 PIT 标签', () => {
     expect(appliedBody).toBeNull()
   })
 
+  it('本页选的版本就是系统正在用的那个时，不算临时口径', async () => {
+    settings = appliedSettings('RESEARCH')
+    setPitOverride({ off: false, releaseId: RELEASE_SUMMARY.id, asOf: null, runMode: null })
+    renderBadge()
+    const badge = await screen.findByTestId('pit-badge')
+    // 口径一模一样却报「和系统默认不一致」，警告就变成了噪音。
+    expect(badge).toHaveTextContent('PIT 打开：2026Q3 基线')
+    expect(within(badge).queryByText(/与系统默认（.+）不一致/)).toBeNull()
+  })
+
   it('临时口径会被标记出来，并且可以一键跟随系统默认', async () => {
     settings = appliedSettings('RESEARCH')
     setPitOverride({ off: true, releaseId: null, asOf: null, runMode: 'RESEARCH' })
     renderBadge()
     const badge = await screen.findByTestId('pit-badge')
-    expect(badge).toHaveTextContent('临时')
-    expect(badge).toHaveTextContent('无口径')
+    // 和系统默认不一致时只挂一个感叹号，理由留在悬停提示里。
+    expect(within(badge).getByText(/与系统默认（.+）不一致/)).toBeInTheDocument()
+    expect(badge).toHaveTextContent('PIT 关闭')
 
     await userEvent.click(badge)
     await userEvent.click(screen.getByTestId('pit-follow-system'))
@@ -503,20 +608,98 @@ describe('结果口径脚注', () => {
     expect(screen.getByTestId('pit-provenance')).toHaveTextContent('42 行缺少公告日')
   })
 
+  it('prints the universe finding beside the口径 that carries it', () => {
+    render(
+      <MemoryRouter>
+        <PitProvenance
+          lineage={{
+            ...lineage,
+            universe: {
+              source: 'investable_universe_snapshot',
+              replayable: false,
+              established_at: '2026-09-04',
+              clean: false,
+              findings: [
+                {
+                  code: 'UNIVERSE_LOOKAHEAD',
+                  label: '可投资域「测试域」',
+                  message: '可投资域「测试域」是用截至 2026-09-04 的数据筛出来的，却被用于 2021-09-01 的决策——该决策带入了未来信息。',
+                },
+              ],
+            },
+          }}
+        />
+      </MemoryRouter>,
+    )
+    expect(screen.getByTestId('pit-universe-finding')).toHaveTextContent('带入了未来信息')
+  })
+
+  const allocationLineage = {
+    alloc_name: '股债分类',
+    as_of: '2024-02-20',
+    run_mode: 'RESEARCH' as const,
+    series_as_of: '2023-12-01',
+    series_variants: ['2023-12-01'],
+    hindsight_series: false,
+    rows_dropped_by_as_of: 0,
+    availability_available: true,
+    warnings: [],
+  }
+
+  it('回测口径要印出搭这套配置的产品池，以及它是哪天筛的', () => {
+    render(
+      <MemoryRouter>
+        <PitDecisionNotice
+          lineage={{
+            ...allocationLineage,
+            universe: {
+              source: 'asset_nv',
+              replayable: false,
+              established_at: '2023-12-01',
+              snapshot_id: 'universe-1',
+              snapshot_established_at: '2026-01-01',
+              clean: false,
+              findings: [
+                {
+                  code: 'UNIVERSE_LOOKAHEAD',
+                  label: '可投资域「2026筛出来的池子」',
+                  message: '可投资域「2026筛出来的池子」是用截至 2026-01-01 的数据筛出来的，却被用于 2024-02-20 的决策——该决策带入了未来信息。',
+                },
+              ],
+            },
+          }}
+        />
+      </MemoryRouter>,
+    )
+    const note = screen.getByTestId('pit-decision-notice')
+    expect(note).toHaveTextContent('产品域研究日 2026-01-01')
+    expect(screen.getByTestId('pit-universe-finding')).toHaveTextContent('带入了未来信息')
+  })
+
+  it('没记录产品池的配置要说"不知道"，不能看着跟干净的一样', () => {
+    render(<MemoryRouter><PitDecisionNotice lineage={allocationLineage} /></MemoryRouter>)
+    expect(screen.getByTestId('pit-decision-notice')).toHaveTextContent('未记录产品域')
+  })
+
   it('renders nothing when a result carries no lineage', () => {
     const { container } = render(<MemoryRouter><PitProvenance lineage={null} /></MemoryRouter>)
     expect(container.querySelector('[data-testid="pit-provenance"]')).toBeNull()
   })
-  it('把研究日的可选产品域和今天的表摆在一起', async () => {
+  it('产品域明细跟着"当前在用的那一天"走，全页只有一个日期框', async () => {
+    const user = userEvent.setup()
     renderPage()
+    await screen.findByTestId('pit-apply')
+
+    expect(screen.queryByTestId('pit-universe-panel')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '查看产品域明细' }))
 
     const panel = await screen.findByTestId('pit-universe-panel')
-    // Without a research day the panel shows today's table and says so; the
-    // contrast only becomes a number once a day is picked.
     expect(within(panel).getByText(/域仅最新态/)).toBeInTheDocument()
+    // The panel has no date input of its own to drift from the version's.
+    expect(within(panel).queryByLabelText('研究日')).toBeNull()
 
-    await userEvent.clear(within(panel).getByLabelText('研究日'))
-    await userEvent.type(within(panel).getByLabelText('研究日'), '2019-06-28')
+    await user.click(screen.getByRole('button', { name: /新建版本 \/ 管理/ }))
+    await user.type(screen.getByLabelText(/站在哪一天看/), '2019-06-28')
 
     await waitFor(() => expect(within(panel).getByText('224')).toBeInTheDocument())
     expect(within(panel).getByText('1,568')).toBeInTheDocument()

@@ -102,16 +102,16 @@ def interval_operator_specs(version):
         "last_drawdown_interval", version, "path",
         (OperatorSignature(("series<time>[L]",), "record", "last exact maximum; one interval"),),
         "在回撤序列中选择最后一次最大回撤；同深度取最后谷底，所有日期和时长引用同一区间。",
-        _infer_interval, last_drawdown_interval_kernel, cost_model="scan",
+        _infer_interval, last_drawdown_interval_kernel, cost_model="scan", interval_policy="resettable",
         cost=lambda inputs, output: str(inputs[0].shape[0]),
     )]
     for name, label in (("interval_start", "区间峰值位置"), ("interval_trough", "区间谷底位置"), ("interval_recovery", "区间恢复位置")):
         specs.append(TypedOperatorSpec(
             name, version, "path", (OperatorSignature(("record",), "scalar", "read one interval position"),),
-            label, _infer_field, INTERVAL_KERNELS[name], cost_model="constant",
+            label, _infer_field, INTERVAL_KERNELS[name], cost_model="constant", interval_policy="local",
         ))
     specs.append(TypedOperatorSpec(
         "days_between", version, "path", (OperatorSignature(("scalar", "scalar"), "scalar", "elapsed calendar days, not observations"),),
-        "结束日期减开始日期，返回自然日间隔；缺少任一日期不可计算。", _infer_days, days_between_kernel, cost_model="constant",
+        "结束日期减开始日期，返回自然日间隔；缺少任一日期不可计算。", _infer_days, days_between_kernel, cost_model="constant", interval_policy="local",
     ))
     return tuple(specs)

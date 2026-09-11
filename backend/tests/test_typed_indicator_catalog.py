@@ -17,9 +17,9 @@ from cal_indicators.typed_dsl import (
 def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
     catalog = get_typed_dsl_catalog()
 
-    assert catalog["dsl_version"] == "2.3.0"
-    assert catalog["compiler_version"] == "typed-numba-4"
-    assert catalog["operator_registry_version"] == "2.3.0"
+    assert catalog["dsl_version"] == "2.4.0"
+    assert catalog["compiler_version"] == "typed-numba-5"
+    assert catalog["operator_registry_version"] == "2.4.0"
     operators = {item["id"]: item for item in catalog["operators"]}
     assert {
         "add",
@@ -29,10 +29,7 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "correlation",
         "drawdown_series",
         "new_high_mask",
-        "rolling_mean",
-        "rolling_std",
-        "rolling_min",
-        "rolling_max",
+        "rolling_window",
         "recursive_smooth",
         "divide_or_default",
     } <= set(operators)
@@ -52,7 +49,9 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "path",
     }
     assert "inverse" not in operators
-    assert all(item["version"] == "2.3.0" for item in operators.values())
+    assert all(item["version"] == "2.4.0" for item in operators.values())
+    assert {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}.isdisjoint(operators)
+    assert operators["rolling_window"]["execution_lane"] == "compiler_fused_no_materialization"
     assert all(item["njit_supported"] is True for item in operators.values())
     assert all(item["kernel_version"] == "2.2.0" for item in operators.values())
     assert all(
@@ -79,6 +78,25 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
     } <= set(operators)
     assert "cumulative_maximum" not in operators
     assert "masked_sum" not in operators
+
+
+def test_frozen_23_catalog_preserves_historical_rolling_wrappers() -> None:
+    frozen = get_typed_operator_catalog("2.3.0")
+    operators = {item["id"]: item for item in frozen["operators"]}
+
+    assert frozen["dsl_version"] == "2.3.0"
+    assert frozen["compiler_version"] == "typed-numba-4"
+    assert frozen["operator_registry_version"] == "2.3.0"
+    assert {
+        "rolling_mean",
+        "rolling_std",
+        "rolling_min",
+        "rolling_max",
+        "recursive_smooth",
+        "divide_or_default",
+    } <= set(operators)
+    assert "rolling_window" not in operators
+    assert all(item["version"] == "2.3.0" for item in operators.values())
 
 
 def test_frozen_22_catalog_excludes_new_time_series_operators() -> None:

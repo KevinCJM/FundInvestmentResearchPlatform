@@ -24,6 +24,8 @@ from backend.services.refresh_runtime import InterProcessFileLock
 
 def hashes():
     names = ['T01_get_data.py', 'backend/data_sources/fund_events.py',
+             'backend/data_sources/fund_event_conflicts.py',
+             'backend/data_sources/event_coverage.py',
              'backend/data_sources/fund_event_merge.py',
              'backend/data_sources/runtime.py', 'backend/data_sources/quota.py',
              'backend/data_sources/task_worker.py', 'scripts/smoke_fund_events.py',
@@ -39,21 +41,34 @@ def main():
     parser.add_argument('--api', choices=['fund_portfolio', 'fund_div', 'fund_adj'], default='fund_portfolio')
     parser.add_argument('--max-requests', type=int, default=1, help='Default one; increase only with explicit user authorization.')
     parser.add_argument('--announcement-date')
+    parser.add_argument('--verify-market-pages', action='store_true', help='Explicit bounded full-day pagination test, including duplicate-page verification; temporary output only.')
+    parser.add_argument('--trade-date', help='Exercise bounded full-market ETF factor pages for one trading day.')
+    parser.add_argument('--test-offset-pagination', action='store_true', help='Test a private none-to-offset configuration; never save it.')
     parser.add_argument('--fund-code', help='Exercise the full-history range path for one fund.')
     parser.add_argument('--start-date')
     parser.add_argument('--end-date')
     parser.add_argument('--universe-file', type=Path, required=True)
     options = parser.parse_args()
-    if options.max_requests < 1 or options.max_requests > 100:
-        parser.error('Smoke request budget must be between 1 and 100.')
+    request_ceiling = 1000 if options.verify_market_pages else 100
+    if options.max_requests < 1 or options.max_requests > request_ceiling:
+        parser.error(f'Smoke request budget must be between 1 and {request_ceiling}.')
     if not options.confirm_network:
         parser.error('Explicit --confirm-network required; no request performed.')
     history = bool(options.fund_code)
+    factor_day = bool(options.trade_date)
+    if options.verify_market_pages and (options.api != 'fund_portfolio' or not options.announcement_date or history or factor_day):
+        parser.error('Market pagination verification requires fund_portfolio/announcement-date only.')
+    if factor_day and (options.api != 'fund_adj' or history or options.announcement_date or options.start_date or options.end_date):
+        parser.error('trade-date is only for ETF factor daily paging, without a fund/range.')
+    if options.test_offset_pagination and not factor_day:
+        parser.error('Temporary paging configuration is only allowed with fund_adj/trade-date.')
     if history and options.api == 'fund_div':
         parser.error('Dividend smoke uses a single announcement date.')
-    if options.api == 'fund_adj' and not history:
+    if options.api == 'fund_adj' and not history and not factor_day:
         parser.error('Factor smoke requires one fund-code/start-date/end-date.')
-    if history:
+    if factor_day:
+        start = end = options.trade_date
+    elif history:
         if options.announcement_date or not options.start_date or not options.end_date:
             parser.error('Range smoke requires fund-code/start-date/end-date, not announcement-date.')
         start, end = options.start_date, options.end_date
@@ -79,6 +94,12 @@ def main():
         # Reuse the actual account-wide quota store; no live batch capture or
         # snapshot writes. A private quota DB would bypass other account calls.
         client = ConfiguredTushareClient(read_credential(store, 'tushare'), root=store.root, capture=False)
+        if options.test_offset_pagination:
+            candidate = client.interfaces['fund_adj'].model_copy(deep=True)
+            if candidate.pagination.mode not in {'none', 'offset'}:
+                raise CenterError('SMOKE_CONFIGURATION', '只允许测试已核定的 offset 分页启用。')
+            candidate.pagination.mode = 'offset'
+            client.interfaces['fund_adj'] = candidate
         calls = 0
         original_call = client._call
         def counted_call(*args, **kwargs):
@@ -86,6 +107,8 @@ def main():
             if calls >= options.max_requests:
                 raise CenterError('SMOKE_BUDGET', '达到真实请求预算。')
             calls += 1
+            if options.verify_market_pages and calls % 25 == 0:
+                print(f'[SMOKE] 已执行 {calls}/{options.max_requests} 次临时分页验证请求。', file=sys.stderr, flush=True)
             return original_call(*args, **kwargs)
         client._call = counted_call
         with tempfile.TemporaryDirectory(prefix='fund-event-smoke-') as temporary:
@@ -97,17 +120,26 @@ def main():
                                       '--end-date', end, '--start-date', start,
                                       '--max-retries', '1', '--max-workers', '1',
                                       '--fund-event-max-requests', str(options.max_requests),
-                                      '--fund-event-max-runtime', '90'])
+                                      '--fund-event-max-runtime', '600' if options.verify_market_pages else '90'])
             args.limit = None  # Only one market-announcement request, no universe request.
             args.source_configuration_hash = client.configuration_hash
+            if factor_day:
+                args.latest = True
+                args.smoke = False
+                args.automatic_start_date = start
+                pd.DataFrame([{'exchange': 'SSE', 'cal_date': start, 'is_open': 1}]).to_parquet(output / 'trade_day_df.parquet')
+            if options.verify_market_pages:
+                args.latest, args.smoke = True, False
+                args.automatic_start_date = start
             download, filename = {
                 'fund_portfolio': (script.save_fund_portfolio, 'fund_portfolio_df.parquet'),
                 'fund_div': (script.save_fund_dividend, 'fund_dividend_df.parquet'),
                 'fund_adj': (script.save_fund_adjustment, 'fund_adj_factor_df.parquet'),
             }[options.api]
             info = {'etf_info' if options.api == 'fund_adj' else 'fund_info': universe}
+            policy = getattr(client, options.api).download_policy
             with contextlib.redirect_stdout(io.StringIO()):
-                download(client, output, script.RateLimiter(20), args, **info)
+                download(client, output, script.RateLimiter(policy.requests_per_minute if options.verify_market_pages else 20), args, **info)
             frame = pd.read_parquet(output / filename)
             if frame.empty:
                 raise CenterError('SMOKE_EMPTY_INCONCLUSIVE', '单次空响应不能证明在线下载正确。')
@@ -116,10 +148,20 @@ def main():
                 raise CenterError('SMOKE_LINEAGE', '单次响应时点或来源不符。')
             if history and not frame.ts_code.eq(options.fund_code).all():
                 raise CenterError('SMOKE_IDENTITY', '单基金响应身份不符。')
+            quality_file = output / 'fund_portfolio_df.parquet.quality.meta.json'
+            quality = json.loads(quality_file.read_text()) if quality_file.exists() else None
+            if quality:
+                from backend.data_sources.fund_event_conflicts import VALUES
+                quarantined = frame[frame.availability_status.eq('source_conflict')]
+                if len(quarantined) != quality['conflicting_keys'] or not quarantined[VALUES].isna().all().all():
+                    raise CenterError('SMOKE_QUARANTINE', '冲突隔离证据或空值占位未通过验证。')
             if hashes() != before:
                 raise CenterError('SMOKE_CODE_CHANGED', '测试期间计算链路代码改变，不能采纳验证结果。')
             print(json.dumps(dict(status='passed', api=options.api, requests=calls, rows=len(frame),
-                                  strategy='etf_price_factor_history' if options.api == 'fund_adj' else 'fund_announcement_history' if history else 'announcement',
+                                  strategy='etf_factor_date_pages' if factor_day else 'etf_price_factor_history' if options.api == 'fund_adj' else 'fund_announcement_history' if history else 'announcement',
+                                  test_offset_pagination=options.test_offset_pagination,
+                                  verified_market_pages=options.verify_market_pages,
+                                  data_quality=quality,
                                   start_date=start, end_date=end, fund_code=options.fund_code,
                                   returned_available_min=str(frame.available_at.min()),
                                   returned_available_max=str(frame.available_at.max()),

@@ -11,7 +11,9 @@ dataset can honestly answer questions about.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+import threading
 from typing import Any, Optional
 
 import numpy as np
@@ -54,6 +56,16 @@ LAG_BUCKETS: tuple[tuple[str, int, Optional[int]], ...] = (
 # polls; re-reading 3M date cells per poll is pure waste. Swap for a shared
 # cache only if this ever runs multi-process.
 _CACHE: dict[str, dict[str, Any]] = {}
+
+# The scan itself reads the two clock columns of every declared file. On a cold
+# cache over 30M+ NAV rows that is minutes, so it must never sit inside a request:
+# the page asks for whatever is already measured and is told what is still running.
+_SCAN_LOCK = threading.Lock()
+_SCAN: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "error": None}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _fingerprint(path: Path) -> str:
@@ -170,8 +182,15 @@ def _finish(
     return result
 
 
-def audit_dataset(data_dir: Path, declaration: DatasetPitDeclaration) -> dict[str, Any]:
-    """Open one dataset and report what it can prove about its own clocks."""
+def audit_dataset(
+    data_dir: Path, declaration: DatasetPitDeclaration, *, scan: bool = True
+) -> dict[str, Any]:
+    """Open one dataset and report what it can prove about its own clocks.
+
+    `scan=False` answers only from the memo and marks anything unmeasured
+    `pending` instead of reading it, which is what lets the page render at once
+    while the background scan catches up.
+    """
 
     base = {
         "dataset_id": declaration.dataset_id,
@@ -209,6 +228,23 @@ def audit_dataset(data_dir: Path, declaration: DatasetPitDeclaration) -> dict[st
     cached = _CACHE.get(declaration.dataset_id)
     if cached is not None and cached.get("fingerprint") == fingerprint and cached.get("history") == history:
         return dict(cached)
+    if not scan:
+        # Same shape, but honest about knowing nothing yet: reporting grade C for
+        # an unread file would look like a measured verdict.
+        return {
+            **base,
+            "history": history,
+            "pending": True,
+            "present": True,
+            "rows": 0,
+            "availability_coverage": None,
+            "event_range": {"start": None, "end": None},
+            "availability_range": {"start": None, "end": None},
+            "lag": _lag_profile(pd.Series(dtype=float)),
+            "grade": None,
+            "grade_label": "扫描中",
+            "fingerprint": fingerprint,
+        }
 
     wanted = [column for column in (declaration.event_field, declaration.availability_field) if column]
     if not wanted:
@@ -261,16 +297,17 @@ def _effective_available_end(item: dict[str, Any]) -> Optional[str]:
     return (pd.Timestamp(event_end) + pd.Timedelta(days=lag)).strftime("%Y-%m-%d")
 
 
-def audit_all(data_dir: Path) -> dict[str, Any]:
+def audit_all(data_dir: Path, *, scan: bool = True) -> dict[str, Any]:
     """Full PIT capability sheet plus the headline counters the page shows."""
 
-    datasets = [audit_dataset(data_dir, declaration) for declaration in DATASETS]
-    present = [item for item in datasets if item["present"]]
+    datasets = [audit_dataset(data_dir, declaration, scan=scan) for declaration in DATASETS]
+    present = [item for item in datasets if item["present"] and not item.get("pending")]
     for item in datasets:
         item["available_through"] = _effective_available_end(item)
     grades = {"A": 0, "B": 0, "C": 0}
     for item in present:
         grades[item["grade"]] = grades.get(item["grade"], 0) + 1
+    pending = [item["dataset_id"] for item in datasets if item.get("pending")]
     # Only A/B datasets bound a PIT run: the C-grade dimension tables carry a
     # publication date that says nothing about data currency, and letting one of
     # them set the floor would report the whole platform as a year stale.
@@ -284,7 +321,8 @@ def audit_all(data_dir: Path) -> dict[str, Any]:
         "summary": {
             "declared": len(datasets),
             "present": len(present),
-            "missing": len(datasets) - len(present),
+            "missing": len([item for item in datasets if not item["present"]]),
+            "pending": len(pending),
             "grade_a": grades["A"],
             "grade_b": grades["B"],
             "grade_c": grades["C"],
@@ -294,7 +332,43 @@ def audit_all(data_dir: Path) -> dict[str, Any]:
             "latest_dataset_end": max(available_ends) if available_ends else None,
             "available_through_basis": "grade_a_b",
         },
+        "scan": {**_SCAN, "pending": pending},
     }
+
+
+def start_scan(data_dir: Path) -> dict[str, Any]:
+    """Measure every declared dataset off the request thread.
+
+    Idempotent: a second call while one is running joins the running scan rather
+    than starting a rival one, because two threads reading the same 1GB files is
+    slower than one.
+    """
+
+    with _SCAN_LOCK:
+        if _SCAN["state"] == "running":
+            return dict(_SCAN)
+        _SCAN.update(
+            {"state": "running", "started_at": _utc_now(), "finished_at": None, "error": None}
+        )
+
+    def run() -> None:
+        try:
+            audit_all(data_dir, scan=True)
+        except Exception as exc:  # noqa: BLE001 - a failed scan must be reportable, not fatal
+            with _SCAN_LOCK:
+                _SCAN.update({"state": "failed", "finished_at": _utc_now(), "error": str(exc)})
+            return
+        with _SCAN_LOCK:
+            _SCAN.update({"state": "ready", "finished_at": _utc_now(), "error": None})
+
+    threading.Thread(target=run, name="pit-audit-scan", daemon=True).start()
+    with _SCAN_LOCK:
+        return dict(_SCAN)
+
+
+def scan_status() -> dict[str, Any]:
+    with _SCAN_LOCK:
+        return dict(_SCAN)
 
 
 def dataset_grade(data_dir: Path, dataset_id: str) -> Optional[str]:
@@ -308,6 +382,15 @@ def clear_cache() -> None:
     """Drop the memo; tests rewrite fixture files inside one mtime tick."""
 
     _CACHE.clear()
+    with _SCAN_LOCK:
+        _SCAN.update({"state": "idle", "started_at": None, "finished_at": None, "error": None})
 
 
-__all__ = ["audit_all", "audit_dataset", "clear_cache", "dataset_grade"]
+__all__ = [
+    "audit_all",
+    "audit_dataset",
+    "clear_cache",
+    "dataset_grade",
+    "scan_status",
+    "start_scan",
+]

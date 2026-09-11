@@ -4,6 +4,8 @@ import {
   GRADE_TONE,
   applyPitSettings,
   createDataRelease,
+  deleteDataRelease,
+  updateDataRelease,
   fetchDataReleases,
   fetchPitAudit,
   fetchPitSettings,
@@ -31,9 +33,12 @@ function Kpi({ label, value, tone }: { label: string; value: string; tone?: stri
   )
 }
 
-function GradeChip({ grade, label }: { grade: 'A' | 'B' | 'C'; label: string }) {
+function GradeChip({ grade, label }: { grade: 'A' | 'B' | 'C' | null; label: string }) {
+  // A pending dataset has no grade yet. Painting it C would read as a measured
+  // verdict on a file nobody has opened.
+  const tone = grade ? GRADE_TONE[grade] : 'border-slate-200 bg-slate-50 text-slate-500'
   return (
-    <span className={`inline-block rounded border px-1.5 py-0.5 text-[11px] font-semibold ${GRADE_TONE[grade]}`}>
+    <span className={`inline-block rounded border px-1.5 py-0.5 text-[11px] font-semibold ${tone}`}>
       {label}
     </span>
   )
@@ -54,16 +59,20 @@ const UNIVERSE_KINDS = [
  * the research day's is the survivorship bias every historical backtest on this
  * platform carries, and it is a number, not an opinion.
  */
-function UniversePanel({ defaultAsOf }: { defaultAsOf: string | null }) {
+/**
+ * What "standing on that day" costs, in products.
+ *
+ * It lives *inside* step ① and reads that step's date rather than carrying one
+ * of its own: two date boxes for the same concept on one page is the confusion
+ * this page exists to remove, and the earlier layout had exactly that.
+ */
+function UniversePanel({ asOf }: { asOf: string }) {
   const [kind, setKind] = useState('fund')
-  const [asOf, setAsOf] = useState(defaultAsOf ?? '')
   const [view, setView] = useState<PitUniverseView | null>(null)
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
     const controller = new AbortController()
-    setBusy(true)
     setError('')
     fetchPitUniverse({ kind, asOf: asOf || null, signal: controller.signal })
       .then(setView)
@@ -72,40 +81,30 @@ function UniversePanel({ defaultAsOf }: { defaultAsOf: string | null }) {
         setView(null)
         setError(exc.message)
       })
-      .finally(() => {
-        if (!controller.signal.aborted) setBusy(false)
-      })
     return () => controller.abort()
   }, [kind, asOf])
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-3" data-testid="pit-universe-panel">
+    <div className="mt-1.5 rounded border border-slate-200 bg-white p-2.5" data-testid="pit-universe-panel">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-900">站在某日的可选产品域</h3>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <select
-            className="rounded border border-slate-300 px-2 py-1"
-            value={kind}
-            onChange={(event) => setKind(event.target.value)}
-            aria-label="产品域"
-          >
-            {UNIVERSE_KINDS.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-          <input
-            type="date"
-            className="rounded border border-slate-300 px-2 py-1"
-            value={asOf}
-            onChange={(event) => setAsOf(event.target.value)}
-            aria-label="研究日"
-          />
-        </div>
+        <span className="text-xs font-medium text-slate-700">
+          {asOf ? `${asOf} 当天的可选产品域` : '当前可选产品域（未设研究日）'}
+        </span>
+        <select
+          className="rounded border border-slate-300 px-2 py-1 text-xs"
+          value={kind}
+          onChange={(event) => setKind(event.target.value)}
+          aria-label="产品域"
+        >
+          {UNIVERSE_KINDS.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
       </div>
       {error && <p className="mt-2 text-xs text-rose-700">{error}</p>}
-      {busy && !view && <p className="mt-2 text-xs text-slate-500">读取中…</p>}
+      {!view && !error && <p className="mt-2 text-xs text-slate-500">读取中…</p>}
       {view && (
         <div className="mt-2 space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -145,9 +144,10 @@ function UniversePanel({ defaultAsOf }: { defaultAsOf: string | null }) {
           ))}
         </div>
       )}
-    </section>
+    </div>
   )
 }
+
 
 function LagHistogram({ dataset }: { dataset: PitDatasetAudit }) {
   const buckets = dataset.lag.histogram
@@ -181,13 +181,21 @@ function LagHistogram({ dataset }: { dataset: PitDatasetAudit }) {
 }
 
 export default function PitSnapshots() {
-  const { refresh: refreshSystemContext, override, label: viewLabel, applyOverride } = useResearchContext()
+  const { refresh: refreshSystemContext, temporary, label: viewLabel, applyOverride } = useResearchContext()
   const [pitSettings, setPitSettings] = useState<PitSettingsPayload | null>(null)
   const [applying, setApplying] = useState(false)
   const [applyMessage, setApplyMessage] = useState('')
-  const [draftRelease, setDraftRelease] = useState('')
-  const [draftAsOf, setDraftAsOf] = useState('')
-  const [draftMode, setDraftMode] = useState<RunMode>('RESEARCH')
+  // Both disclosures sit inside the step whose subject they serve. Collapsed by
+  // default because the common path is "pick a version and apply".
+  const [showUniverse, setShowUniverse] = useState(false)
+  const [showReleases, setShowReleases] = useState(false)
+  // The new-version form. The research day is defined *here*, on the version,
+  // not as a second platform setting — one PIT concept, not two.
+  const [newAsOf, setNewAsOf] = useState('')
+  const [newMode, setNewMode] = useState<RunMode>('RESEARCH')
+  // One form for both jobs. A separate edit dialog would be a second place to
+  // keep the same four fields in step.
+  const [editingId, setEditingId] = useState('')
   const [audit, setAudit] = useState<PitAudit | null>(null)
   const [releases, setReleases] = useState<DataRelease[]>([])
   const [selectedId, setSelectedId] = useState('')
@@ -196,13 +204,18 @@ export default function PitSnapshots() {
   const [releaseName, setReleaseName] = useState('')
   const [releaseNote, setReleaseNote] = useState('')
   const [sealing, setSealing] = useState(false)
-  const [message, setMessage] = useState('')
+  // Refusals arrive here too — a 409 「正在被全平台使用」 or a 405 from a backend
+  // that predates the route — so the banner has to be able to look like a
+  // failure. Rendered in the same grey as a success it reads as "nothing
+  // happened", which is precisely how a rejected delete gets reported as a bug.
+  const [message, setMessage] = useState<{ text: string; bad?: boolean } | null>(null)
+  const failure = (reason: unknown) => ({
+    text: reason instanceof Error ? reason.message : String(reason),
+    bad: true,
+  })
 
   const adoptSettings = (payload: PitSettingsPayload) => {
     setPitSettings(payload)
-    setDraftRelease(payload.settings.active_release_id ?? '')
-    setDraftAsOf(payload.settings.as_of ?? '')
-    setDraftMode(payload.settings.run_mode)
   }
 
   const load = (refresh = false) => {
@@ -227,6 +240,17 @@ export default function PitSnapshots() {
     // Loaded once per visit: the audit is a file scan, not a live feed.
   }, [])
 
+  // The scan runs behind the request, so the page has to come back for the
+  // result. Polling only while something is pending keeps it off the idle path.
+  const scanning = audit?.scan?.state === 'running'
+  useEffect(() => {
+    if (!scanning) return undefined
+    const timer = window.setInterval(() => {
+      fetchPitAudit({}).then(setAudit).catch(() => undefined)
+    }, 4000)
+    return () => window.clearInterval(timer)
+  }, [scanning])
+
   const selected = useMemo(
     () => audit?.datasets.find((item) => item.dataset_id === selectedId) ?? null,
     [audit, selectedId],
@@ -244,42 +268,34 @@ export default function PitSnapshots() {
     return { visible: true, reason: `可得至 ${end}，覆盖研究日 ${asOf}` }
   }, [asOf, selected])
 
-  // The research day cannot run past the vintage that answers for it, so the
-  // ceiling comes from the selected release rather than from today.
-  const maxAsOf = useMemo(() => {
-    if (!draftRelease) return audit?.summary.available_through ?? null
-    return (
-      (pitSettings?.available_releases ?? []).find((item) => item.id === draftRelease)?.available_through ?? null
-    )
-  }, [audit, draftRelease, pitSettings])
+  const activeId = pitSettings?.settings.active_release_id ?? ''
 
-  const draftLabel = useMemo(() => {
-    const vintage =
-      (pitSettings?.available_releases ?? []).find((item) => item.id === draftRelease)?.name ?? '最新数据（未封版）'
-    const mode = draftAsOf && draftMode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'
-    if (!draftAsOf && !draftRelease) return '无 PIT 口径 · 使用全部磁盘数据'
-    if (!draftAsOf) return `${vintage} · ${mode}`
-    return `站在 ${draftAsOf} · ${vintage} · ${mode}`
-  }, [draftAsOf, draftMode, draftRelease, pitSettings])
+  // A new version pins today's files; an edited one still answers for the
+  // vintage it sealed, and that vintage did not grow because the disk did.
+  const maxAsOf = editingId
+    ? (releases.find((item) => item.id === editingId)?.summary.available_through ?? null)
+    : (audit?.summary.available_through ?? null)
 
-  // Prose cannot make "stand on 2009-12-31" concrete; a count can. This is the
-  // same replay the universe panel below runs, shown before the user commits.
+  // Whichever day is currently in play: the one being defined, else the one the
+  // selected version stands on. Prose cannot make "stand on 2009-12-31"
+  // concrete; a count can.
+  const previewAsOf = showReleases ? newAsOf : (asOf ?? '')
   const [universePreview, setUniversePreview] = useState<PitUniverseView | null>(null)
   useEffect(() => {
-    if (!draftAsOf) {
+    if (!previewAsOf) {
       setUniversePreview(null)
       return
     }
     const controller = new AbortController()
-    fetchPitUniverse({ kind: 'fund', asOf: draftAsOf, signal: controller.signal })
+    fetchPitUniverse({ kind: 'fund', asOf: previewAsOf, signal: controller.signal })
       .then(setUniversePreview)
       .catch(() => {
         if (!controller.signal.aborted) setUniversePreview(null)
       })
     return () => controller.abort()
-  }, [draftAsOf])
+  }, [previewAsOf])
 
-  const onApply = (releaseId: string | null, asOfValue: string | null, mode: RunMode) => {
+  const onApply = (releaseId: string | null, asOfValue: string | null, mode: RunMode | null) => {
     setApplying(true)
     setApplyMessage('')
     applyPitSettings({ activeReleaseId: releaseId, asOf: asOfValue, runMode: mode })
@@ -300,29 +316,72 @@ export default function PitSnapshots() {
       })
   }
 
+  const resetForm = () => {
+    setEditingId('')
+    setReleaseName('')
+    setReleaseNote('')
+    setNewAsOf('')
+    setNewMode('RESEARCH')
+  }
+
+  const startEdit = (release: DataRelease) => {
+    setEditingId(release.id)
+    setReleaseName(release.name)
+    setReleaseNote(release.note ?? '')
+    setNewAsOf(release.as_of ?? '')
+    setNewMode(release.run_mode === 'STRICT_PIT' ? 'STRICT_PIT' : 'RESEARCH')
+    setShowReleases(true)
+    setMessage(null)
+  }
+
   const onSeal = () => {
     const name = releaseName.trim()
     if (!name) {
-      setMessage('请先填写数据版本名称')
+      setMessage({ text: '请先填写数据版本名称', bad: true })
       return
     }
     setSealing(true)
-    setMessage('')
-    createDataRelease(name, releaseNote.trim())
+    setMessage(null)
+    const request = editingId
+      ? updateDataRelease(editingId, { name, note: releaseNote.trim(), asOf: newAsOf || null, runMode: newMode })
+      : createDataRelease({ name, note: releaseNote.trim(), asOf: newAsOf || null, runMode: newMode })
+    const wasEditing = Boolean(editingId)
+    request
       .then((release) => {
-        setReleases((current) => [release, ...current])
-        // Sealing records a vintage; applying it platform-wide is a separate,
-        // deliberate act — so preselect it but do not switch口径 behind the user.
-        setDraftRelease(release.id)
-        setReleaseName('')
-        setReleaseNote('')
-        setMessage(`已封版 ${release.name}（${release.id}）。如需全平台按此口径展示，请在上方「应用口径」中点击应用。`)
+        setReleases((current) =>
+          wasEditing
+            ? current.map((item) => (item.id === release.id ? release : item))
+            : [release, ...current],
+        )
+        // Creating or editing a version and switching the platform onto it are
+        // separate, deliberate acts — so leave the platform where it is.
+        resetForm()
+        // Refetch so the picker shows the version with its own口径.
+        fetchPitSettings().then(setPitSettings).catch(() => undefined)
+        setMessage({
+          text: wasEditing
+            ? `已改好版本「${release.name}」，现在站在 ${release.as_of ?? '数据最后一天'}。在下面的列表里点「应用到全平台」才会生效。`
+            : `已建好版本「${release.name}」，站在 ${release.as_of ?? '数据最后一天'}。在下面的列表里点「应用到全平台」才会生效。`,
+        })
         setSealing(false)
       })
       .catch((reason: unknown) => {
-        setMessage(reason instanceof Error ? reason.message : String(reason))
+        setMessage(failure(reason))
         setSealing(false)
       })
+  }
+
+  const onDelete = (release: DataRelease) => {
+    if (!window.confirm(`删除版本「${release.name}」？它钉住的数据指纹会一起消失，引用过它的结论将无法复现。`)) return
+    setMessage(null)
+    deleteDataRelease(release.id)
+      .then(() => {
+        setReleases((current) => current.filter((item) => item.id !== release.id))
+        if (editingId === release.id) resetForm()
+        fetchPitSettings().then(setPitSettings).catch(() => undefined)
+        setMessage({ text: `已删除版本「${release.name}」。` })
+      })
+      .catch((reason: unknown) => setMessage(failure(reason)))
   }
 
   const summary = audit?.summary
@@ -333,7 +392,7 @@ export default function PitSnapshots() {
         <div>
           <h2 className="text-lg font-semibold text-slate-900">PIT 时点快照</h2>
           <p className="mt-0.5 text-xs text-slate-600">
-            在这里决定全平台<strong>站在哪一天、用哪一批数据、有多严格</strong>。三者互相独立：研究日管"看到哪天为止"，数据版本管"读的是哪一次的历史"。设定后全平台默认按此展示；各功能页可在顶栏临时切换，只影响自己的标签页。
+            一个 PIT 版本 = <strong>站在哪一天 + 用哪一批数据 + 有多严格</strong>。选一个版本应用到全平台，所有页面都按它展示；各功能页可在顶栏临时换版本，只影响自己的标签页。
           </p>
         </div>
         <button
@@ -350,7 +409,7 @@ export default function PitSnapshots() {
 
       {/* Otherwise this page shows the system口径 while the rest of the tab shows
           something else, and the numbers look inexplicably inconsistent. */}
-      {override && (
+      {temporary && (
         <p
           className="flex flex-wrap items-center gap-2 rounded border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900"
           data-testid="pit-override-notice"
@@ -362,10 +421,10 @@ export default function PitSnapshots() {
         </p>
       )}
 
-      {/* Three questions in the order a person actually decides them: which day
-          am I standing on, which copy of the data answers, how strict. The old
-          layout offered only the middle one, so a user who wanted to research
-          "as of 2009-12-31" had nowhere to say it and typed it into a note. */}
+      {/* One concept: a version. It carries the day it stands on, the vintage
+          that answers, and how strict — so choosing a version sets the whole
+          口径 in one act. It used to be three steps, which meant a user could
+          name a version "2015前数据" and still be standing on today. */}
       <section
         className={`rounded-lg border ${
           pitSettings?.effective.no_pit ? 'border-amber-300 bg-amber-50' : 'border-emerald-300 bg-emerald-50'
@@ -391,141 +450,326 @@ export default function PitSnapshots() {
 
         <div className="space-y-3 px-3 py-3">
           <div>
-            <label className="text-xs font-semibold text-slate-800" htmlFor="pit-as-of">
-              ① 站在哪一天看？
+            <label className="text-xs font-semibold text-slate-800" htmlFor="pit-release">
+              用哪个 PIT 版本？
             </label>
             <p className="mt-0.5 text-[11px] leading-5 text-slate-600">
-              只使用该日<strong>当时已经公开</strong>的数据。之后才公布的净值、之后才上市的产品，一律不可见。
-              留空表示不设研究日，使用磁盘上的全部数据。
+              一个版本就是<strong>一整套口径</strong>：站在哪一天、用哪一批数据、有多严格。选定后全平台按它展示；
+              各功能页可在顶栏临时换版本，只影响自己的标签页。
             </p>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
-              <input
-                id="pit-as-of"
-                type="date"
-                className={`${NUM} w-44 rounded border border-slate-300 px-2 py-1 text-xs`}
-                value={draftAsOf}
-                max={maxAsOf ?? undefined}
-                onChange={(event) => setDraftAsOf(event.target.value)}
-              />
+              <select
+                id="pit-release"
+                className="w-96 rounded border border-slate-300 px-2 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-400"
+                value={activeId}
+                disabled={applying}
+                onChange={(event) => onApply(event.target.value || null, null, null)}
+              >
+                <option value="">不用 PIT · 使用全部磁盘数据</option>
+                {(pitSettings?.available_releases ?? []).map((release) => (
+                  <option key={release.id} value={release.id}>
+                    {release.name} · 站在 {release.as_of ?? '—'}
+                    {release.run_mode === 'STRICT_PIT' ? ' · 严格' : ''}
+                  </option>
+                ))}
+              </select>
+              {/* Choosing a version and creating one are the same subject, so the
+                  form lives inside this step rather than in a section of its own. */}
               <button
                 type="button"
-                className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-50"
-                onClick={() => setDraftAsOf(maxAsOf ?? '')}
+                className="text-[11px] text-slate-600 underline hover:no-underline"
+                aria-expanded={showReleases}
+                onClick={() => setShowReleases((value) => !value)}
               >
-                数据最新一天
+                {showReleases ? '收起版本管理' : `新建版本 / 管理（已有 ${releases.length} 个）`}
               </button>
-              <button
-                type="button"
-                className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-50"
-                onClick={() => setDraftAsOf('')}
-              >
-                不设研究日
-              </button>
-              {maxAsOf && draftAsOf > maxAsOf && (
-                <span className="text-[11px] text-rose-700">晚于所选数据版本的可得截止日 {maxAsOf}</span>
-              )}
             </div>
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-800" htmlFor="pit-release">
-              ② 用哪一批数据？
-            </label>
-            <p className="mt-0.5 text-[11px] leading-5 text-slate-600">
-              和研究日无关：研究日决定<strong>看到哪一天为止</strong>，数据版本决定<strong>读的是哪一次的历史</strong>——
-              供应商回溯修订过的净值，会让同一个研究日在上周和本周给出两个答案。封版把文件本身钉住。
-            </p>
-            <select
-              id="pit-release"
-              className="mt-1.5 w-80 rounded border border-slate-300 px-2 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-400"
-              value={draftRelease}
-              disabled={applying}
-              onChange={(event) => setDraftRelease(event.target.value)}
-            >
-              <option value="">最新数据（未封版）</option>
-              {(pitSettings?.available_releases ?? []).map((release) => (
-                <option key={release.id} value={release.id}>
-                  {release.name} · 可得至 {release.available_through ?? '—'}
-                </option>
-              ))}
-            </select>
-            {!pitSettings?.can_apply && (
+            {!pitSettings?.can_apply && !showReleases && (
               <p className="mt-1 text-[11px] text-slate-600">
-                还没有封过版。<strong>研究日单独就能用</strong>；封版是为了让结论在数据刷新后仍然可复现。
+                还没有任何版本。<strong>要用 PIT，先建一个版本</strong>，在里面写明站在哪一天。
               </p>
             )}
-          </div>
 
-          <div>
-            <span className="text-xs font-semibold text-slate-800">③ 严不严格？</span>
-            <div className="mt-1.5 flex flex-wrap gap-2">
-              {(['RESEARCH', 'STRICT_PIT'] as RunMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={`rounded border px-2.5 py-1.5 text-left text-[11px] leading-4 ${
-                    draftMode === mode
-                      ? 'border-slate-900 bg-white font-semibold text-slate-900'
-                      : 'border-slate-300 bg-white/60 text-slate-600 hover:bg-white'
-                  } disabled:opacity-40`}
-                  disabled={mode === 'STRICT_PIT' && !draftAsOf}
-                  onClick={() => setDraftMode(mode)}
-                >
-                  <span className="block">{mode === 'RESEARCH' ? '研究模式' : '严格 PIT'}</span>
-                  <span className="mt-0.5 block font-normal text-slate-500">
-                    {mode === 'RESEARCH'
-                      ? '缺公告日的数据按净值日近似，并在结果上标注'
-                      : '拿不出时点证明的数据直接拒绝使用'}
-                  </span>
-                </button>
-              ))}
-            </div>
-            {!draftAsOf && (
-              <p className="mt-1 text-[11px] text-slate-600">严格 PIT 需要先填 ① 研究日——没有截止日就没什么可执行。</p>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-black/10 bg-white/70 px-2.5 py-2">
-            <div className="min-w-0 text-[11px] leading-5 text-slate-700">
-              <span className="font-semibold">将要生效：</span>
-              <span className={NUM}>{draftLabel}</span>
-              {universePreview && draftAsOf && (
-                <span className="ml-2 text-slate-600">
-                  届时可选基金 <strong className={NUM}>{universePreview.member_count.toLocaleString()}</strong> 只
+            {/* The consequence of the day in play, printed right under it. */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] leading-5">
+              {previewAsOf && universePreview ? (
+                <span className="text-slate-700">
+                  站在 <strong className={NUM}>{previewAsOf}</strong>，可选基金{' '}
+                  <strong className={NUM}>{universePreview.member_count.toLocaleString()}</strong> 只
                   {universePreview.excluded_by_replay > 0 && (
                     <>
-                      ，比今天的表少 <strong className={NUM}>{universePreview.excluded_by_replay.toLocaleString()}</strong> 只
+                      ，比今天的表少{' '}
+                      <strong className={NUM}>{universePreview.excluded_by_replay.toLocaleString()}</strong> 只
                     </>
                   )}
                 </span>
+              ) : (
+                <span className="text-slate-500">选一个版本（或填一个研究日）后，这里会显示当天有多少产品可选。</span>
               )}
+              <button
+                type="button"
+                className="text-slate-600 underline hover:no-underline"
+                aria-expanded={showUniverse}
+                onClick={() => setShowUniverse((value) => !value)}
+              >
+                {showUniverse ? '收起产品域明细' : '查看产品域明细'}
+              </button>
             </div>
-            <button
-              type="button"
-              className="shrink-0 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
-              onClick={() => onApply(draftRelease || null, draftAsOf || null, draftAsOf ? draftMode : 'RESEARCH')}
-              disabled={applying}
-            >
-              {applying ? '应用中…' : '应用到全平台'}
-            </button>
+            {showUniverse && <UniversePanel asOf={previewAsOf} />}
+
+            {showReleases && (
+              <div className="mt-2 overflow-hidden rounded border border-slate-200 bg-white">
+                <div className="space-y-2.5 border-b border-slate-200 px-2.5 py-2.5">
+                  <p className="text-[11px] leading-5 text-slate-600">
+                    {editingId ? (
+                      <>
+                        正在<strong>修改</strong>下表中选中的版本：改的是它的口径（哪一天、多严格、名字），
+                        它钉住的数据指纹不变。
+                      </>
+                    ) : (
+                      <>
+                        新建一个版本：<strong>钉住当前磁盘上的数据</strong>，并写明站在哪一天、多严格。
+                      </>
+                    )}
+                  </p>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-800" htmlFor="pit-new-as-of">
+                      站在哪一天看？
+                    </label>
+                    <p className="mt-0.5 text-[11px] leading-5 text-slate-600">
+                      这个版本只使用该日<strong>当时已经公开</strong>的数据：之后才公布的净值、之后才上市的产品，一律不可见。
+                      留空表示站在这批数据的最后一天。
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <input
+                        id="pit-new-as-of"
+                        type="date"
+                        className={`${NUM} w-44 rounded border border-slate-300 px-2 py-1 text-xs`}
+                        value={newAsOf}
+                        max={maxAsOf ?? undefined}
+                        onChange={(event) => setNewAsOf(event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-50"
+                        onClick={() => setNewAsOf(maxAsOf ?? '')}
+                      >
+                        数据最新一天
+                      </button>
+                      {maxAsOf && newAsOf > maxAsOf && (
+                        <span className="text-[11px] text-rose-700">晚于当前数据的可得截止日 {maxAsOf}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="text-xs font-semibold text-slate-800">有多严格？</span>
+                    <div className="mt-1.5 flex flex-wrap gap-2">
+                      {(['RESEARCH', 'STRICT_PIT'] as RunMode[]).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={`rounded border px-2.5 py-1.5 text-left text-[11px] leading-4 ${
+                            newMode === mode
+                              ? 'border-slate-900 bg-white font-semibold text-slate-900'
+                              : 'border-slate-300 bg-white/60 text-slate-600 hover:bg-white'
+                          } disabled:opacity-40`}
+                          disabled={mode === 'STRICT_PIT' && !newAsOf}
+                          onClick={() => setNewMode(mode)}
+                        >
+                          <span className="block">{mode === 'RESEARCH' ? '研究模式' : '严格 PIT'}</span>
+                          <span className="mt-0.5 block font-normal text-slate-500">
+                            {mode === 'RESEARCH'
+                              ? '缺公告日的数据按净值日近似，并在结果上标注'
+                              : '拿不出时点证明的数据直接拒绝使用'}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    {!newAsOf && (
+                      <p className="mt-1 text-[11px] text-slate-600">严格 PIT 需要一个研究日——没有截止日就没什么可执行。</p>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="text-xs">
+                      <span className="mb-1 block font-medium text-slate-600">版本名称</span>
+                      <input
+                        className="w-52 rounded border border-slate-300 px-2 py-1 text-xs"
+                        value={releaseName}
+                        onChange={(event) => setReleaseName(event.target.value)}
+                        placeholder="例如 站在 2014 年末的投前基线"
+                        aria-label="数据版本名称"
+                      />
+                    </label>
+                    <label className="min-w-0 flex-1 text-xs">
+                      <span className="mb-1 block font-medium text-slate-600">备注</span>
+                      <input
+                        className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                        value={releaseNote}
+                        onChange={(event) => setReleaseNote(event.target.value)}
+                        placeholder="选填：这个版本用来回答什么问题"
+                        aria-label="数据版本备注"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="rounded bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-50"
+                      onClick={onSeal}
+                      disabled={sealing}
+                    >
+                      {sealing ? '保存中…' : editingId ? '保存修改' : '创建版本'}
+                    </button>
+                    {editingId && (
+                      <button
+                        type="button"
+                        className="rounded border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+                        onClick={resetForm}
+                      >
+                        取消
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {message && (
+                  <p
+                    className={`px-2.5 py-2 text-xs ${message.bad ? 'font-medium text-rose-700' : 'text-slate-700'}`}
+                    role={message.bad ? 'alert' : undefined}
+                  >
+                    {message.text}
+                  </p>
+                )}
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[820px] border-collapse text-xs">
+                    <thead className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-2.5 py-1.5 font-semibold">版本</th>
+                        <th className="px-2.5 py-1.5 font-semibold">站在哪一天</th>
+                        <th className="px-2.5 py-1.5 font-semibold">模式</th>
+                        <th className="px-2.5 py-1.5 font-semibold">创建时间</th>
+                        <th className="px-2.5 py-1.5 text-right font-semibold">表数</th>
+                        <th className="px-2.5 py-1.5 text-right font-semibold">总行数</th>
+                        <th className="px-2.5 py-1.5 font-semibold">指纹</th>
+                        <th className="px-2.5 py-1.5 text-right font-semibold">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {releases.length === 0 && (
+                        <tr>
+                          <td className="px-2.5 py-2.5 text-slate-500" colSpan={8}>
+                            还没有版本。建一个写明研究日的版本，之后每次数据刷新再建一个，就能回答“这个结论站在哪一天、用的是哪批数据”。
+                          </td>
+                        </tr>
+                      )}
+                      {releases.map((release) => {
+                        // Deleting the applied version is refused by design (409):
+                        // it would drop every page back to no-PIT. Offering the
+                        // button anyway is how that refusal gets reported as
+                        // 删除失败.
+                        const inUse = pitSettings?.settings.active_release_id === release.id
+                        return (
+                        <tr
+                          key={release.id}
+                          className={`border-t border-slate-100 hover:bg-slate-50 ${
+                            release.id === editingId ? 'bg-amber-50' : inUse ? 'bg-blue-50/60' : ''
+                          }`}
+                        >
+                          <td className="px-2.5 py-1.5">
+                            <span className="font-medium text-slate-900">{release.name}</span>
+                            <div className={`${NUM} text-[11px] text-slate-500`}>{release.id}</div>
+                            {release.note && <div className="text-[11px] text-slate-600">{release.note}</div>}
+                            {release.updated_at && (
+                              <div className={`${NUM} text-[11px] text-amber-700`}>口径已改于 {release.updated_at}</div>
+                            )}
+                          </td>
+                          <td className={`${NUM} px-2.5 py-1.5 font-medium text-slate-900`}>
+                            {release.as_of ?? release.summary.available_through ?? '—'}
+                            {!release.as_of && <span className="ml-1 text-[11px] font-normal text-slate-500">数据最后一天</span>}
+                          </td>
+                          <td className="px-2.5 py-1.5 text-slate-700">
+                            {release.run_mode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'}
+                          </td>
+                          <td className={`${NUM} px-2.5 py-1.5 text-slate-700`}>{release.created_at}</td>
+                          <td className={`${NUM} px-2.5 py-1.5 text-right text-slate-800`}>
+                            {release.tables.length}
+                          </td>
+                          <td className={`${NUM} px-2.5 py-1.5 text-right text-slate-800`}>
+                            {release.summary.total_rows.toLocaleString()}
+                          </td>
+                          <td className={`${NUM} px-2.5 py-1.5 text-slate-500`} title={release.release_fingerprint}>
+                            {release.release_fingerprint.slice(0, 12)}
+                          </td>
+                          <td className="px-2.5 py-1.5 text-right whitespace-nowrap">
+                            {inUse ? (
+                              // Says why 删除 next to it is dead: a disabled button's
+                              // title never renders, so the reason has to be visible.
+                              <span className="rounded bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-800">
+                                全平台使用中
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="rounded bg-slate-900 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                                disabled={applying}
+                                onClick={() => onApply(release.id, null, null)}
+                              >
+                                {applying ? '应用中…' : '应用到全平台'}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="ml-1.5 rounded border border-slate-200 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100"
+                              onClick={() => startEdit(release)}
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              disabled={inUse}
+                              className="ml-1.5 rounded border border-rose-200 px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400 disabled:hover:bg-transparent"
+                              onClick={() => onDelete(release)}
+                            >
+                              删除
+                            </button>
+                          </td>
+                        </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         {applyMessage && <p className="border-t border-black/5 px-3 py-2 text-xs text-slate-800">{applyMessage}</p>}
       </section>
 
-      <div className="grid grid-cols-2 divide-slate-200 overflow-hidden rounded-lg border border-slate-200 bg-white sm:grid-cols-3 lg:grid-cols-6">
+      {/* Second block: everything you read rather than set. Naming it is what
+          makes the page two things instead of five loose sections. */}
+      <div className="flex items-baseline gap-2 pt-1">
+        <h3 className="text-sm font-semibold text-slate-900">数据能力体检</h3>
+        <span className="text-[11px] text-slate-500">上面的口径能不能成立，取决于下面这些表能证明什么</span>
+      </div>
+
+      <div className="grid grid-cols-2 divide-slate-200 overflow-hidden rounded-lg border border-slate-200 bg-white sm:grid-cols-3 lg:grid-cols-5">
         <Kpi label="声明数据集" value={summary ? String(summary.declared) : '—'} />
         <Kpi label="A 级 严格" value={summary ? String(summary.grade_a) : '—'} tone="text-emerald-700" />
         <Kpi label="B 级 近似" value={summary ? String(summary.grade_b) : '—'} tone="text-amber-700" />
         <Kpi label="C 级 无 PIT" value={summary ? String(summary.grade_c) : '—'} tone="text-rose-700" />
         <Kpi label="A/B 数据可得至" value={summary?.available_through ?? '—'} />
-        <Kpi label="已封版本" value={String(releases.length)} />
       </div>
 
       <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
           <h3 className="text-sm font-semibold text-slate-900">数据集 PIT 能力</h3>
-          <span className="text-[11px] text-slate-500">点击一行查看滞后分布</span>
+          <span className="text-[11px] text-slate-500">
+            {scanning
+              ? `正在后台扫描 ${audit?.summary.pending ?? 0} 个数据集…扫完自动刷新`
+              : audit?.scan?.state === 'failed'
+                ? `扫描失败：${audit.scan.error ?? '未知原因'}`
+                : '点击一行查看滞后分布'}
+          </span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[980px] border-collapse text-xs">
@@ -568,7 +812,7 @@ export default function PitSnapshots() {
                   <td className={`${NUM} px-3 py-1.5 text-right text-slate-800`}>{formatLagDays(item.lag.p95)}</td>
                   <td className={`${NUM} px-3 py-1.5 text-slate-600`}>{item.available_through ?? '—'}</td>
                   <td className="px-3 py-1.5">
-                    <GradeChip grade={item.grade} label={item.grade} />
+                    <GradeChip grade={item.grade} label={item.grade ?? '扫描中'} />
                   </td>
                 </tr>
               ))}
@@ -576,8 +820,6 @@ export default function PitSnapshots() {
           </table>
         </div>
       </section>
-
-      <UniversePanel defaultAsOf={asOf} />
 
       {selected && (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -634,97 +876,6 @@ export default function PitSnapshots() {
           </section>
         </div>
       )}
-
-      <section className="rounded-lg border border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-3 py-2">
-          <h3 className="text-sm font-semibold text-slate-900">数据版本（封版）</h3>
-          <p className="mt-0.5 text-[11px] text-slate-600">
-            <strong>封版不是用来选日期的</strong>——要"只看某天为止"，请用上面的 ① 研究日。
-            封版解决的是另一件事：同一个研究日，上周与本周的底层数据可能已被供应商回溯修订，两次会跑出两个答案。封版把文件本身钉住。
-          </p>
-        </div>
-        <div className="flex flex-wrap items-end gap-2 border-b border-slate-200 px-3 py-2.5">
-          <label className="text-xs">
-            <span className="mb-1 block font-medium text-slate-600">版本名称</span>
-            <input
-              className="w-56 rounded border border-slate-300 px-2 py-1 text-xs"
-              value={releaseName}
-              onChange={(event) => setReleaseName(event.target.value)}
-              placeholder="例如 2026Q3 投前研究基线"
-              aria-label="数据版本名称"
-            />
-          </label>
-          <label className="min-w-0 flex-1 text-xs">
-            <span className="mb-1 block font-medium text-slate-600">备注</span>
-            <input
-              className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
-              value={releaseNote}
-              onChange={(event) => setReleaseNote(event.target.value)}
-              placeholder="选填：本次封版的用途或数据变更说明"
-              aria-label="数据版本备注"
-            />
-          </label>
-          <button
-            type="button"
-            className="rounded bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-600 disabled:opacity-50"
-            onClick={onSeal}
-            disabled={sealing}
-          >
-            {sealing ? '封版中…' : '封版'}
-          </button>
-        </div>
-        {message && <p className="px-3 py-2 text-xs text-slate-700">{message}</p>}
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] border-collapse text-xs">
-            <thead className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-3 py-2 font-semibold">版本</th>
-                <th className="px-3 py-2 font-semibold">封版时间</th>
-                <th className="px-3 py-2 text-right font-semibold">表数</th>
-                <th className="px-3 py-2 text-right font-semibold">总行数</th>
-                <th className="px-3 py-2 font-semibold">指纹</th>
-                <th className="px-3 py-2 font-semibold">父版本</th>
-              </tr>
-            </thead>
-            <tbody>
-              {releases.length === 0 && (
-                <tr>
-                  <td className="px-3 py-3 text-slate-500" colSpan={6}>
-                    尚未封版。先封一个基线版本，之后每次数据刷新再封一版，就能回答“这个结论用的是哪批数据”。
-                  </td>
-                </tr>
-              )}
-              {releases.map((release) => (
-                <tr
-                  key={release.id}
-                  className={`cursor-pointer border-t border-slate-100 hover:bg-slate-50 ${
-                    release.id === dataReleaseId ? 'bg-blue-50/60' : ''
-                  }`}
-                  onClick={() => setDraftRelease(release.id)}
-                  title="选中以便在上方「应用口径」中应用"
-                >
-                  <td className="px-3 py-1.5">
-                    <span className="font-medium text-slate-900">{release.name}</span>
-                    <div className={`${NUM} text-[11px] text-slate-500`}>{release.id}</div>
-                    {release.note && <div className="text-[11px] text-slate-600">{release.note}</div>}
-                  </td>
-                  <td className={`${NUM} px-3 py-1.5 text-slate-700`}>{release.created_at}</td>
-                  <td className={`${NUM} px-3 py-1.5 text-right text-slate-800`}>{release.tables.length}</td>
-                  <td className={`${NUM} px-3 py-1.5 text-right text-slate-800`}>
-                    {release.summary.total_rows.toLocaleString()}
-                  </td>
-                  <td className={`${NUM} px-3 py-1.5 text-slate-500`} title={release.release_fingerprint}>
-                    {release.release_fingerprint.slice(0, 12)}
-                  </td>
-                  <td className={`${NUM} px-3 py-1.5 text-slate-500`}>
-                    {release.parent_release_id ? release.parent_release_id.slice(-6) : '基线'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
     </div>
   )
 }

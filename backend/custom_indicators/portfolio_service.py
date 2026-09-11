@@ -424,6 +424,16 @@ class PortfolioResearchService:
             "universe_snapshot_id": universe_snapshot_id or None,
             "universe_snapshot": universe_reference,
         }
+        if definition.get("allocation_source") is not None:
+            from backend.tactical_allocation.portfolio_bridge import validate_allocation_source
+            from backend.custom_indicators.errors import IndicatorDomainError as TacticalDomainError
+            try:
+                normalized_definition["allocation_source"] = validate_allocation_source(
+                    definition["allocation_source"], normalized_components, strategy,
+                    universe_snapshot_id, self.workspace_data_dir,
+                )
+            except TacticalDomainError as exc:
+                raise ValidationError(exc.code, exc.message, exc.field) from exc
         return {
             "name": name,
             "description": description,

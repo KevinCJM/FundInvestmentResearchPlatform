@@ -14,6 +14,8 @@ import pandas as pd
 try:
     from backend.compute_policy import validate_execution_audit
     from backend.product_analysis_numba import (
+        DENSITY_CURVE_POINTS,
+        DENSITY_FRAME_SLOTS,
         bollinger_kernel,
         box_plot_kernel,
         distribution_interpretation_codes_kernel,
@@ -30,11 +32,12 @@ try:
         simulation_comparison_kernel,
         stationary_block_bootstrap_kernel,
         technical_input_availability_kernel,
-        terminal_density_kernel,
     )
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from compute_policy import validate_execution_audit
     from product_analysis_numba import (
+        DENSITY_CURVE_POINTS,
+        DENSITY_FRAME_SLOTS,
         bollinger_kernel,
         box_plot_kernel,
         distribution_interpretation_codes_kernel,
@@ -51,7 +54,6 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         simulation_comparison_kernel,
         stationary_block_bootstrap_kernel,
         technical_input_availability_kernel,
-        terminal_density_kernel,
     )
 
 
@@ -256,13 +258,13 @@ def _simulation_seed(product_id: str, payload: Mapping[str, object], lane: str) 
 
 
 def _simulation_payload(
-    result: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    result: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     *,
     method: str,
     method_label: str,
     horizon_days: int,
-) -> tuple[dict[str, object], tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    sample_paths, percentiles, terminal_values, summary, packed = result
+) -> tuple[dict[str, object], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    sample_paths, percentiles, terminal_values, summary, packed, frames = result
     assumption_values = packed[horizon_days + 1 :]
     status_code = _optional_float(assumption_values[8])
     status = (
@@ -325,49 +327,38 @@ def _simulation_payload(
         "terminal": terminal,
         "assumptions": assumptions,
     }
-    return payload, (terminal_values, percentiles, summary)
+    return payload, (terminal_values, percentiles, summary, frames)
 
 
 def _density_payload(
-    terminal_values: np.ndarray,
-    percentiles: np.ndarray,
+    frames: np.ndarray,
+    summary: np.ndarray,
+    sample_size: int,
 ) -> dict[str, object]:
-    points, histogram, summary = terminal_density_kernel(
-        terminal_values,
-        percentiles,
-        81,
-        1.0,
-    )
+    """Every checkpoint day's landing distribution, plus the shared NAV axis.
+
+    Counts only, on a grid the reader rebuilds from ``navLow``/``navHigh`` —
+    naming each point's NAV would multiply the payload by four for numbers the
+    client can compute exactly.
+    """
+    curve_base = DENSITY_FRAME_SLOTS
+    bin_base = DENSITY_FRAME_SLOTS + DENSITY_CURVE_POINTS
     return {
-        "sampleSize": int(summary[9]),
-        "points": [
+        "sampleSize": sample_size,
+        "navAxisMin": float(summary[12]),
+        "navAxisMax": float(summary[13]),
+        "frames": [
             {
-                "nav": float(row[0]),
-                "density": float(row[1]),
-                "estimatedCount": float(row[2]),
-                "simulatedReturn": float(row[3]),
+                "day": int(row[0]),
+                "navLow": float(row[1]),
+                "navHigh": float(row[2]),
+                "binWidth": float(row[3]),
+                "countAxisMax": int(row[4]),
+                "curve": [float(value) for value in row[curve_base:bin_base]],
+                "bins": [int(value) for value in row[bin_base:]],
             }
-            for row in points
+            for row in frames
         ],
-        "histogram": [
-            {
-                "lowerNav": float(row[0]),
-                "upperNav": float(row[1]),
-                "density": float(row[2]),
-                "count": int(row[3]),
-                "frequency": float(row[4]),
-            }
-            for row in histogram
-        ],
-        "maxDensity": float(summary[0]),
-        "modeNav": float(summary[1]),
-        "minNav": float(summary[2]),
-        "maxNav": float(summary[3]),
-        "countAxisMax": int(summary[4]),
-        "navAxisMin": float(summary[5]),
-        "navAxisMax": float(summary[6]),
-        "densityCountFactor": float(summary[7]),
-        "histogramBinWidth": float(summary[8]),
     }
 
 
@@ -658,12 +649,12 @@ def build_product_analysis_response(
                 int(parameters["bootstrap_block_length"]),
             )),
             ("fhs_ewma", filtered_historical_simulation_kernel, (
-                returns, 1.0, horizon, path_count,
+                returns, return_segments, 1.0, horizon, path_count,
                 _simulation_seed(product_id, parameters, "fhs_ewma"), target_return,
                 0, ewma_lambda,
             )),
             ("fhs_garch", filtered_historical_simulation_kernel, (
-                returns, 1.0, horizon, path_count,
+                returns, return_segments, 1.0, horizon, path_count,
                 _simulation_seed(product_id, parameters, "fhs_garch"), target_return,
                 1, ewma_lambda,
             )),
@@ -693,7 +684,7 @@ def build_product_analysis_response(
             "fhs_garch": "滤波历史模拟 · GARCH(1,1)",
         }
         payloads: dict[str, dict[str, object]] = {}
-        arrays: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        arrays: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
         for method in SIMULATION_METHODS:
             payloads[method], arrays[method] = _simulation_payload(
                 raw_results[method],
@@ -755,7 +746,9 @@ def build_product_analysis_response(
                 "message": message,
             },
             "densities": {
-                method: _density_payload(arrays[method][0], arrays[method][1])
+                method: _density_payload(
+                    arrays[method][3], arrays[method][2], len(arrays[method][0])
+                )
                 for method in SIMULATION_METHODS
             },
         }

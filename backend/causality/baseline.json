@@ -126,6 +126,11 @@
       "category": "basic",
       "note": ""
     },
+    "finite_mask": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": "逐项有限值判断只依赖同一时点的输入；不填充、不压缩时间轴。"
+    },
     "first": {
       "verdict": "causal",
       "category": "reduction",
@@ -451,6 +456,11 @@
       "category": "statistics",
       "note": ""
     },
+    "rolling_apply": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": "完整区间子图在右对齐窗口内独立执行，已用实际编译计划通过多类子图的尾部扰动验证。"
+    },
     "rolling_max": {
       "verdict": "causal",
       "category": "rolling",
@@ -460,6 +470,11 @@
       "verdict": "causal",
       "category": "rolling",
       "note": ""
+    },
+    "rolling_window": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": "逻辑滚动窗口只包含截至当前时点的历史观察值；执行层与下游归约融合，不物化 T×W 窗口矩阵。"
     },
     "rolling_min": {
       "verdict": "causal",

@@ -23,7 +23,7 @@ def _day(value):
     return value.date() if isinstance(value, datetime) else value
 
 
-def import_dividend_receipts(journal, parts, dest, step, progress=lambda _: None):
+def import_dividend_receipts(journal, parts, dest, step, progress=lambda _: None, *, query_dates=None):
     """Reuse exact announcement contracts; never infer completeness from files.
 
     This bridge accepts market-day COMPLETE/EMPTY receipts only. A SPLIT or
@@ -36,7 +36,7 @@ def import_dividend_receipts(journal, parts, dest, step, progress=lambda _: None
     universe = pd.read_parquet(universe_path, columns=['ts_code', 'found_date'])
     expected = dict(version=4, strategy='announcement', range_field='ann_date', api='fund_div',
                     fields=FUND_DIVIDEND_FIELDS, smoke=False,
-                    dates=pd.date_range(step.params['start_date'], step.params['end_date']).strftime('%Y%m%d').tolist(),
+                    dates=query_dates if query_dates is not None else pd.date_range(step.params['start_date'], step.params['end_date']).strftime('%Y%m%d').tolist(),
                     inceptions=fund_inceptions(universe))
     name = 'events_v4_' + hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()[:20]
     directories = sorted(parts.glob('events_v4_*'))
@@ -102,7 +102,7 @@ def import_dividend_receipts(journal, parts, dest, step, progress=lambda _: None
     return {'files': evidence, 'complete': complete, 'empty': empty}
 
 
-def import_history_receipts(journal, parts, dest, step, progress=lambda _: None):
+def import_history_receipts(journal, parts, dest, step, progress=lambda _: None, *, query_dates=None):
     """Pin the exact data contract; copy only checksummed, decoded evidence.
 
     Empty receipts require two successful responses. Split receipts prove no
@@ -117,9 +117,16 @@ def import_history_receipts(journal, parts, dest, step, progress=lambda _: None)
     universe_file = dest.parent / 'fund_info_df.parquet'
     _require(universe_file.is_file() and not universe_file.is_symlink(), '缺少冻结基金目录，不能复用区间分片。')
     universe = pd.read_parquet(universe_file, columns=['ts_code', 'found_date'])
-    expected = dict(version=4, strategy='fund_announcement_history', range_field='ann_date',
+    # The importer supports both actual v4 collector contracts, not a guessed
+    # full-history interpretation of automatic announcement-day runs.
+    _require(len(directories) == 1 and not directories[0].is_symlink()
+             and (directories[0] / 'contract.json').is_file()
+             and not (directories[0] / 'contract.json').is_symlink(), '区间合同路径无效。')
+    strategy = json.loads((directories[0] / 'contract.json').read_text()).get('strategy')
+    _require(strategy in {'announcement', 'fund_announcement_history'}, '未知基金披露查询合同。')
+    expected = dict(version=4, strategy=strategy, range_field='ann_date',
                     api='fund_portfolio', fields=FUND_PORTFOLIO_FIELDS, smoke=False,
-                    dates=pd.date_range(step.params['start_date'], step.params['end_date']).strftime('%Y%m%d').tolist(),
+                    dates=query_dates if query_dates is not None else pd.date_range(step.params['start_date'], step.params['end_date']).strftime('%Y%m%d').tolist(),
                     inceptions=fund_inceptions(universe))
     digest = hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()[:20]
     name = 'events_v4_' + digest
@@ -152,14 +159,19 @@ def import_history_receipts(journal, parts, dest, step, progress=lambda _: None)
         receipt_checksum = journal.artifact(receipt)['checksum']
         record = json.loads(receipt.read_text())
         match = re.fullmatch(r'(\d{8})-(\d{8})_([A-Za-z0-9][A-Za-z0-9._-]{0,63})', receipt.stem)
-        # Imported daily receipts are already represented by verified_day_imports.
-        if not match and re.fullmatch(r'\d{8}_market', receipt.stem):
+        daily = re.fullmatch(r'(\d{8})_(market|[A-Za-z0-9][A-Za-z0-9._-]{0,63})', receipt.stem)
+        if strategy == 'announcement' and daily:
+            start = end = daily[1]
+            code = None if daily[2] == 'market' else daily[2]
+        # Imported daily history receipts are represented by verified_day_imports.
+        elif not match and re.fullmatch(r'\d{8}_market', receipt.stem):
             continue
-        _require(match is not None, '区间回执名称无效。')
-        start, end, code = match.groups()
+        else:
+            _require(match is not None, '区间回执名称无效。')
+            start, end, code = match.groups()
         _require(step.params['start_date'] <= start <= end <= step.params['end_date']
-                 and code in expected['inceptions'] and record.get('code') == code
-                 and record.get('date') == start + '-' + end, '区间回执身份或范围不一致。')
+                 and (code in expected['inceptions'] or strategy == 'announcement' and code is None) and record.get('code') == code
+                 and record.get('date') == (start if strategy == 'announcement' else start + '-' + end), '区间回执身份或范围不一致。')
         left, right = datetime.strptime(start, '%Y%m%d').date(), datetime.strptime(end, '%Y%m%d').date()
         status = record.get('status')
         _require(status in {'COMPLETE', 'EMPTY', 'SPLIT'}, '未知区间回执状态。')
@@ -169,16 +181,40 @@ def import_history_receipts(journal, parts, dest, step, progress=lambda _: None)
             _require(journal.artifact(part)['checksum'] == record.get('sha256'), '区间数据校验和不一致。')
             parquet = pq.ParquetFile(part)
             required = set(FUND_PORTFOLIO_FIELDS) | {'available_at', 'source_api', 'observation_date', 'availability_status', 'ingested_at'}
-            _require(parquet.metadata.num_rows > 0 and parquet.metadata.num_rows == record.get('rows')
+            _require(parquet.metadata.num_rows >= 0 and parquet.metadata.num_rows == record.get('rows')
                      and required <= set(parquet.schema_arrow.names), '区间数据行数或字段不完整。')
+            conflict_keys = set()
+            conflict = record.get('conflict_evidence')
+            if conflict:
+                from .fund_event_conflicts import checked_part, KEYS
+                raw_conflicts = checked_part(source, conflict)
+                conflict_keys = set(raw_conflicts[KEYS].itertuples(index=False, name=None))
+                _require(all(k[0] in expected['inceptions'] and start <= k[1] <= end
+                             and (code is None or k[0] == code) for k in conflict_keys), '冲突证据超出冻结查询范围。')
+                origin = source / conflict['path']
+                destination = target / conflict['path']
+                destination.parent.mkdir(exist_ok=True)
+                clone_file(origin, destination)
+                after = journal.artifact(destination)
+                _require(after['checksum'] == conflict['sha256'], '冲突原始证据复制后校验失败。')
+                evidence.append({'source': journal.artifact(origin), 'imported': after})
+            observed_conflicts = set()
             for batch in parquet.iter_batches(batch_size=16384):
                 for row in batch.to_pylist():
                     ann, available, report = map(_day, (row['ann_date'], row['available_at'], row['end_date']))
+                    row_key = (row['ts_code'], ann.strftime('%Y%m%d'), report.strftime('%Y%m%d'), row['symbol']) if isinstance(ann, date) and isinstance(report, date) else None
+                    quarantined = row_key in conflict_keys
+                    if quarantined:
+                        from .fund_event_conflicts import VALUES
+                        _require(all(row.get(k) is None for k in VALUES), '冲突占位行必须留空，不能保留任意数值。')
+                        observed_conflicts.add(row_key)
                     _require(isinstance(ann, date) and left <= ann <= right and ann == available
                              and isinstance(report, date) and _day(row['observation_date']) == report
-                             and row['ts_code'] == code and isinstance(row['symbol'], str) and row['symbol'].strip()
-                             and row['source_api'] == 'fund_portfolio' and row['availability_status'] == 'announced_date'
+                             and (row['ts_code'] == code if code else row['ts_code'] in expected['inceptions']) and isinstance(row['symbol'], str) and row['symbol'].strip()
+                             and row['source_api'] == 'fund_portfolio'
+                             and row['availability_status'] == ('source_conflict' if quarantined else 'announced_date')
                              and row['ingested_at'] is not None, '区间数据业务键、来源或时点口径不一致。')
+            _require(observed_conflicts == conflict_keys, '冲突证据与数据占位行未一一对应。')
             copy_evidence(part, record['sha256'])
         elif status == 'EMPTY':
             _require(record.get('confirmations') == 2, '空区间未独立复核，不能复用。')

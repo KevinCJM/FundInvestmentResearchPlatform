@@ -52,7 +52,7 @@ def test_single_day_holdings_pages_are_complete_checkpointed_and_reusable(tmp_pa
     calls = []
     def fetch(**params):
         calls.append(params)
-        if not params.get('ts_code'):
+        if not params.get('ts_code') and 'offset' not in params:
             raise script.ResponseTruncatedError('market cap')
         assert params['ann_date'] == '20101026' and 'start_date' not in params
         offset = params['offset']
@@ -76,7 +76,7 @@ def test_invalid_pages_never_publish(tmp_path, case):
         if case == 'permission': raise CenterError('SOURCE_PERMISSION_OR_PARAMS', 'Denied')
         rows = [row(symbol=str(offset + i)) for i in range(2)]
         if case == 'repeat': rows = [row(symbol=str(i)) for i in range(2)]
-        if case == 'internal_duplicate': rows[1] = rows[0]
+        if case == 'internal_duplicate': rows[1] = {**rows[0], 'mkv': 99.0}
         if case == 'oversized': rows.append(row(symbol='extra'))
         if case == 'wrong_code': rows[0]['ts_code'] = 'other'
         if case == 'wrong_day': rows[0]['ann_date'] = '20101027'
@@ -100,6 +100,143 @@ def test_page_empty_is_rechecked_and_transient_empty_does_not_truncate(tmp_path)
     fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=4)
     assert len(run(tmp_path, fetch, latest=False)) == 4
     assert calls == [0, 2, 2, 4, 4]
+
+
+@pytest.mark.parametrize('missing', [None, float('nan')])
+def test_identical_rows_within_page_keep_raw_cursor_and_reuse_receipt(tmp_path, missing):
+    calls = []
+    rows = [row(symbol='A', stk_float_ratio=missing), row(symbol='A', stk_float_ratio=missing), row(symbol='B')]
+    def fetch(**params):
+        calls.append(params['offset'])
+        return pd.DataFrame(rows[params['offset']:params['offset'] + params['limit']])
+    fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=3)
+    fetch.download_policy = DownloadPolicy(max_rows_per_request=2)
+    assert run(tmp_path, fetch, latest=True).symbol.tolist() == ['A', 'B']
+    assert calls == [0, 2]  # Dedup leaves one row but the raw first page is full.
+    calls.clear()
+    assert run(tmp_path, fetch, latest=True).symbol.tolist() == ['A', 'B']
+    assert not calls
+
+
+@pytest.mark.parametrize('missing', [None, float('nan')])
+def test_identical_cross_page_rows_require_stable_full_pass(tmp_path, missing):
+    calls = []
+    rows = [row(symbol=s, stk_float_ratio=missing) for s in ['A', 'B', 'B', 'C', 'D']]
+    def fetch(**params):
+        calls.append(params['offset'])
+        return pd.DataFrame(rows[params['offset']:params['offset'] + params['limit']])
+    fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=4)
+    assert run(tmp_path, fetch, latest=True).symbol.tolist() == ['A', 'B', 'C', 'D']
+    assert calls == [0, 2, 4, 0, 2, 4]
+    calls.clear()
+    assert len(run(tmp_path, fetch, latest=True)) == 4
+    assert not calls
+
+
+@pytest.mark.parametrize('change', ['value', 'order', 'terminal', 'budget'])
+def test_cross_page_validation_failure_never_creates_complete_receipt(tmp_path, change):
+    calls = []
+    rows = [row(symbol=s) for s in ['A', 'B', 'B', 'C', 'D']]
+    def fetch(**params):
+        offset = params['offset']
+        calls.append(offset)
+        selected = [dict(r) for r in rows[offset:offset + params['limit']]]
+        if calls.count(offset) > 1:
+            if change == 'value' and offset == 0: selected[0]['mkv'] += 1e-14
+            if change == 'order' and offset == 0: selected.reverse()
+            if change == 'terminal' and offset == 4: selected = []
+        return pd.DataFrame(selected)
+    fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=4)
+    with pytest.raises(CenterError):
+        run(tmp_path, fetch, latest=True, fund_event_max_requests=3 if change == 'budget' else 20)
+    assert not (tmp_path / 'fund_portfolio_df.parquet').exists()
+    assert not list(tmp_path.rglob('*_market.json'))
+    assert len(calls) <= 7
+
+
+@pytest.mark.parametrize('latest', [True, False])
+@pytest.mark.parametrize('same_page', [True, False])
+def test_stable_conflicting_values_are_losslessly_quarantined(tmp_path, latest, same_page):
+    import json
+    from backend.data_sources.fund_event_conflicts import VALUES
+    calls = []
+    original = row(symbol='B', amount=38357., mkv=699019.63)
+    revised = row(symbol='B', amount=38000., mkv=692740.)
+    rows = [original, revised, row(symbol='C')] if same_page else [row(symbol='A'), original, revised, row(symbol='C'), row(symbol='D')]
+    def fetch(**params):
+        calls.append(params['offset'])
+        return pd.DataFrame(rows[params['offset']:params['offset'] + params['limit']])
+    fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=4)
+    result = run(tmp_path, fetch, latest=latest)
+    conflict = result.loc[result.symbol.eq('B')]
+    assert len(conflict) == 1 and conflict[VALUES].isna().all().all()
+    assert conflict.availability_status.eq('source_conflict').all()
+    assert result.loc[~result.symbol.eq('B')].availability_status.eq('announced_date').all()
+    assert calls == ([0, 2, 0, 2] if same_page else [0, 2, 4, 0, 2, 4])
+    evidence = pd.read_parquet(tmp_path / 'fund_portfolio_conflicts.parquet')
+    assert set(evidence.amount) == {38000., 38357.} and len(evidence) == 2
+    quality = json.loads((tmp_path / 'fund_portfolio_df.parquet.quality.meta.json').read_text())
+    assert quality['acquisition_complete'] and not quality['publishable']
+    assert quality['conflicting_keys'] == 1
+    calls.clear()
+    again = run(tmp_path, fetch, latest=latest)
+    assert not calls and again.loc[again.symbol.eq('B'), VALUES].isna().all().all()
+    assert len(pd.read_parquet(tmp_path / 'fund_portfolio_conflicts.parquet')) == 2
+
+
+@pytest.mark.parametrize('ambiguous_batch', [False, True])
+def test_incremental_revision_updates_old_value_without_misclassifying_batches(tmp_path, ambiguous_batch):
+    # The immutable old snapshot and a new request are different acquisitions.
+    old = script._prepare_fund_event_rows(
+        pd.DataFrame([row(amount=38357., mkv=699019.63), row(symbol='other', mkv=7.)]),
+        fields=script.FUND_PORTFOLIO_FIELDS, source_api='fund_portfolio', observation_column='end_date')
+    old['ingested_at'] = '2000-01-01T00:00:00+00:00'
+    snapshot = tmp_path / 'old_snapshot.parquet'
+    script.save_dataframe(old, snapshot, quiet=True)
+    original = snapshot.read_bytes()
+    work = tmp_path / 'new_acquisition'
+    work.mkdir()
+    (work / 'fund_portfolio_df.parquet').write_bytes(original)
+    incoming = [row(amount=38000., mkv=692740.)]
+    if ambiguous_batch:
+        incoming.append(row(amount=38357., mkv=699019.63))
+    def fetch(**params):
+        return pd.DataFrame(incoming)
+    result = run(work, fetch, latest=True)
+    current = result.loc[result.symbol.eq('600000.SH')].iloc[0]
+    assert len(result) == 2 and result.loc[result.symbol.eq('other'), 'mkv'].iloc[0] == 7.
+    assert snapshot.read_bytes() == original
+    assert pd.Timestamp(current.ingested_at) > pd.Timestamp('2000-01-01', tz='UTC')
+    if ambiguous_batch:
+        assert pd.isna(current.mkv) and pd.isna(current.amount)
+        assert current.availability_status == 'source_conflict'
+    else:
+        assert current.mkv == 692740. and current.amount == 38000.
+        assert current.availability_status == 'announced_date'
+        assert not (work / 'fund_portfolio_df.parquet.quality.meta.json').exists()
+
+
+def test_conflict_evidence_tampering_blocks_checkpoint_reuse(tmp_path):
+    rows = [row(mkv=2.), row(mkv=2. + 1e-14)]
+    def fetch(**params):
+        return pd.DataFrame(rows[params['offset']:params['offset'] + params['limit']])
+    fetch.pagination_config = Pagination(mode='offset', page_size=3, max_pages=2)
+    run(tmp_path, fetch, latest=True)
+    evidence = next(tmp_path.rglob('conflicts/*.parquet'))
+    evidence.write_bytes(b'corrupted')
+    with pytest.raises(CenterError, match='冲突'):
+        run(tmp_path, fetch, latest=True)
+
+
+def test_overlap_verification_confirms_empty_terminal_page(tmp_path):
+    calls = []
+    rows = [row(symbol=s) for s in ['A', 'B', 'B', 'C']]
+    def fetch(**params):
+        calls.append(params['offset'])
+        return pd.DataFrame(rows[params['offset']:params['offset'] + params['limit']])
+    fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=4)
+    assert len(run(tmp_path, fetch, latest=True)) == 3
+    assert calls == [0, 2, 4, 4, 0, 2, 4, 4]
 
 
 def test_old_single_day_split_is_requeried_using_enabled_pages(tmp_path):
@@ -142,6 +279,22 @@ def test_non_network_failures_are_not_retried(error):
         script.call_tushare_api(fetch, script.RateLimiter(10000), max_retries=3,
             backoff_sec=0, wait_on_rate_limit_sec=0, context='fund_portfolio A')
     assert calls == [1]
+
+
+@pytest.mark.parametrize('code', ['SOURCE_CONNECTION', 'SOURCE_DNS', 'SOURCE_TIMEOUT'])
+def test_network_outage_waits_for_recovery_without_extra_attempts(code):
+    from backend.data_sources.transport import TransientSourceError
+    calls, waits = [], []
+    def fetch():
+        calls.append(1)
+        raise TransientSourceError(code, '网络暂时中断', 502)
+    fetch.download_policy = DownloadPolicy(max_attempts=3, read_timeout_seconds=30)
+    with pytest.raises(CenterError):
+        script.call_tushare_api(fetch, script.RateLimiter(10000), max_retries=10,
+            backoff_sec=2, wait_on_rate_limit_sec=60, retry_jitter_sec=0,
+            context='ths_daily A', interrupt_wait=waits.append)
+    assert len(calls) == 3
+    assert waits == [30, 60]
 
 
 def arguments(path, **changes):
@@ -402,6 +555,11 @@ def test_worker_only_acknowledges_fully_resolved_market_caps(tmp_path, monkeypat
     from backend.data_sources.task_catalog import task_specs
     from backend.data_sources.task_worker import acquire
     store = SourceStore(tmp_path); store.seed()
+    # Exercise the still-supported unpaged cap-splitting contract explicitly.
+    from backend.data_sources.models import InterfaceConfig
+    record = store.get('interface', 'tushare.fund_portfolio')
+    config = InterfaceConfig.model_validate(record['config']); config.pagination.mode = 'none'
+    store.save(config, record['revision'])
     save_credential(store, 'tushare', 'offline-placeholder')
     records = [r for kind in ('source','interface') for r in store.list(kind)
                if r['config'].get('source_id', r['config']['id']) == 'tushare']

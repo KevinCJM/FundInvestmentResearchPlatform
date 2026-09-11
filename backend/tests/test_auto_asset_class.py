@@ -1431,3 +1431,211 @@ def test_a_block_with_two_real_styles_still_splits(tmp_path: Path) -> None:
     assert blocks["固收类"]["k"] == 1
     assert result["k"] == 3
     assert all(len(classes) == 1 for classes in _asset_classes(result))
+
+
+# --------------------------------------------------------------------------
+# Point-in-time: the contract table, the metrics snapshot and the universe
+# --------------------------------------------------------------------------
+
+def _write_taxonomy_history(
+    tmp_path: Path, codes: list[str], *, snapshots: tuple[tuple[str, str], ...]
+) -> None:
+    """Dated snapshots of the contract table, as the refresh appends them.
+
+    Each entry is (snapshot_date, the fund_type the BD funds carried that day),
+    so a replayed run can be caught classifying on the label of its own time
+    rather than on today's.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for snapshot_date, bond_type in snapshots:
+        for code in codes:
+            rows.append(
+                {
+                    "pit_snapshot_date": pd.Timestamp(snapshot_date),
+                    "ts_code": code,
+                    "code": code.split(".")[0],
+                    "name": f"{code[:2]} Fund",
+                    "instrument_type": "etf",
+                    "fund_type": {"EQ": "股票型", "BD": bond_type, "AU": "其他"}[code[:2]],
+                    "invest_type": {
+                        "EQ": "被动指数型",
+                        "BD": "被动指数型",
+                        "AU": "黄金现货合约",
+                    }[code[:2]],
+                    "benchmark": "",
+                    "index_name": "",
+                    "management": "Test AMC",
+                }
+            )
+    (tmp_path / "pit_dim").mkdir(exist_ok=True)
+    pd.DataFrame(rows).to_parquet(
+        tmp_path / "pit_dim" / "etf_info_df_history.parquet", index=False
+    )
+
+
+def _stamp_nav_announcements(tmp_path: Path) -> None:
+    """Give the fixture NAV a publication column so strict mode can get past it.
+
+    Strict PIT refuses NAV without `ann_date` before any classification runs, so
+    a test about the contract table has to clear that gate first.
+    """
+
+    path = tmp_path / "etf_daily_df.parquet"
+    frame = pd.read_parquet(path)
+    frame["ann_date"] = pd.to_datetime(frame["date"]) + pd.Timedelta(days=1)
+    frame.to_parquet(path, index=False)
+
+
+def test_rule_classification_replays_the_contract_table_of_the_research_day(
+    tmp_path: Path,
+) -> None:
+    """`rule` classifies entirely on the contract table, so replay must reach it.
+
+    The fixture's live table calls the BD funds 债券型 (固收类). In 2021 they were
+    filed as 股票型 (权益类), which is what the dated snapshot holds. A 2021 run
+    that reads today's table produces three classes; one that stands on 2021
+    produces two — the clusters change, not just their names.
+    """
+
+    codes = _write_fixture(tmp_path)
+    _write_taxonomy_history(
+        tmp_path, codes, snapshots=(("2021-03-01", "股票型"), ("2026-01-01", "债券型"))
+    )
+
+    replayed = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", algorithm="rule", as_of="2021-09-01"
+        ),
+    )
+    latest = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", algorithm="rule"
+        ),
+    )
+
+    assert {group["name"] for group in replayed["classes"]} == {"权益类", "商品类"}
+    assert {group["name"] for group in latest["classes"]} == {"权益类", "固收类", "商品类"}
+    # It is the research day that picks the snapshot, not the dataset: the same
+    # log answers 2021 with the 2021 labels and answers "no cut-off" with today's.
+    assert replayed["pit"]["taxonomy"]["snapshot_used"]["etf_info"] == "2021-03-01"
+    assert latest["pit"]["taxonomy"]["snapshot_used"]["etf_info"] == "2026-01-01"
+    assert replayed["pit"]["taxonomy"]["coverage"] == "REPLAYED"
+
+
+def test_research_mode_names_a_latest_state_contract_table(tmp_path: Path) -> None:
+    codes = _write_fixture(tmp_path)
+    result = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", k=3, as_of="2021-09-01"
+        ),
+    )
+    assert result["pit"]["taxonomy"]["coverage"] == "LATEST_ONLY"
+    assert any("合同分类信息只有最新态" in warning for warning in result["warnings"])
+
+
+def test_strict_mode_refuses_a_contract_history_that_starts_after_the_research_day(
+    tmp_path: Path,
+) -> None:
+    """The trap `require_usable` alone cannot catch.
+
+    Two snapshots on disk earn the table a grade of B, so the dataset gate lets
+    strict mode through — but neither snapshot is at or before the research day,
+    so there is nothing to replay and the read would fall back to today's
+    labels. Failing closed here is the whole point of reading through `read_pit`
+    instead of off the latest-state file.
+    """
+
+    codes = _write_fixture(tmp_path)
+    _stamp_nav_announcements(tmp_path)
+    _write_taxonomy_history(
+        tmp_path, codes, snapshots=(("2022-01-01", "股票型"), ("2026-01-01", "债券型"))
+    )
+    with pytest.raises(service.AutoClassError, match="严格 PIT 模式"):
+        service.run_auto_classification(
+            tmp_path,
+            service.AutoClassRequestSpec(
+                codes=codes,
+                start_date="2021-01-01",
+                algorithm="rule",
+                as_of="2021-09-01",
+                run_mode="STRICT_PIT",
+            ),
+        )
+
+
+def test_the_metrics_feature_lane_is_look_ahead_and_says_so(tmp_path: Path) -> None:
+    """The indicator snapshot has no clock at all — one row per product, in place.
+
+    Pairing it with a research day is not a degraded PIT read, it is 2026 的三年
+    最大回撤 deciding a 2021 classification. Strict refuses; research names it.
+    """
+
+    codes = _write_fixture(tmp_path)
+    _write_taxonomy_history(tmp_path, codes, snapshots=(("2021-03-01", "债券型"),))
+    spec = dict(codes=codes, start_date="2021-01-01", features="metrics", k=2)
+
+    with pytest.raises(service.AutoClassError, match="风险收益画像"):
+        service.run_auto_classification(
+            tmp_path,
+            service.AutoClassRequestSpec(
+                **spec, as_of="2021-09-01", run_mode="STRICT_PIT"
+            ),
+        )
+    recorded = service.run_auto_classification(
+        tmp_path, service.AutoClassRequestSpec(**spec, as_of="2021-09-01")
+    )
+    assert any("没有历史版本" in warning for warning in recorded["warnings"])
+    # A correlation run reads no snapshot, so it must not inherit the warning.
+    clean = service.run_auto_classification(
+        tmp_path,
+        service.AutoClassRequestSpec(
+            codes=codes, start_date="2021-01-01", k=2, as_of="2021-09-01"
+        ),
+    )
+    assert not any("没有历史版本" in warning for warning in clean["warnings"])
+
+
+def test_preview_judges_the_locked_universe_against_the_research_day(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A pool screened on 2026 numbers, replayed over 2021.
+
+    Every individual computation is perfectly causal, which is why this can only
+    be caught at the candidate set. Research mode records it on the result;
+    strict mode refuses the run.
+    """
+
+    codes = _write_fixture(tmp_path)
+    _write_taxonomy_history(tmp_path, codes, snapshots=(("2021-03-01", "债券型"),))
+    universe = _write_universe(tmp_path, codes)  # research_date 2026-09-04
+    monkeypatch.setattr(routes, "DATA_DIR", tmp_path)
+    request = dict(
+        universe_snapshot_id=universe["id"],
+        products=[routes.PoolProduct(code=code, kind="etf") for code in codes],
+        startDate="2021-01-01",
+        k=3,
+        sizeMin=2,
+        sizeMax=3,
+    )
+
+    recorded = routes.auto_class_preview(
+        routes.AutoClassPreviewRequest(**request, asOf="2021-09-01")
+    )
+    assert not isinstance(recorded, JSONResponse)
+    universe_pit = recorded["pit"]["universe"]
+    assert universe_pit["clean"] is False
+    assert universe_pit["established_at"] == "2026-09-04"
+    assert [item["code"] for item in universe_pit["findings"]] == ["UNIVERSE_LOOKAHEAD"]
+
+    refused = routes.auto_class_preview(
+        routes.AutoClassPreviewRequest(
+            **request, asOf="2021-09-01", runMode="STRICT_PIT"
+        )
+    )
+    assert isinstance(refused, JSONResponse)
+    assert refused.status_code == 400
+    assert "未来信息" in _json(refused)["detail"]

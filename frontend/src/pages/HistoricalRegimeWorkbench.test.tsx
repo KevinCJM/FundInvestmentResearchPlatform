@@ -78,7 +78,7 @@ const templateDefinition: RegimeGraphDefinition = {
 const ok = (body: unknown, status = 200) => ({ ok: true, status, json: async () => body } as Response)
 const settle = (milliseconds: number) => act(async () => { await new Promise((resolve) => window.setTimeout(resolve, milliseconds)) })
 
-function makeFetch(options?: { keepRunning?: boolean }) {
+function makeFetch(options?: { keepRunning?: boolean; failed?: boolean }) {
   let pollCount = 0
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
@@ -94,12 +94,15 @@ function makeFetch(options?: { keepRunning?: boolean }) {
     if (path.endsWith('/infer')) {
       const body = JSON.parse(String(init?.body))
       const nodes = body.definition.graph.nodes
-      return ok({ valid: nodes.length > 0, graph_hash: `hash-${nodes.length}`, errors: nodes.length ? [] : [{ message: '至少添加一个节点。' }], warnings: [], inferred: { nodes: Object.fromEntries(nodes.map((node: { id: string }) => [node.id, { causal: true, execution_backend: 'numba_njit_fixed_signature' }])), causal: true, realtime_eligible: true } })
+      const blocked = nodes.filter((n: { type: string }) => ['model.turning_point', 'model.peak_trough'].includes(n.type))
+      const temporal_capability = { policy_version: 'test/1', status: blocked.length ? 'retrospective_required' : 'conditional', label: blocked.length ? '仅事后研究' : '可按当时信息试算', mode: body.mode, verified: false, realtime_supported: !blocked.length, semantic_hindsight: false, may_repaint: Boolean(blocked.length), reasons: blocked.map((n: { id: string }) => ({ node_id: n.id, code: 'FULL_INPUT', message: '需要后续数据确认', path: [n.id + '.state'] })), outputs: {}, nodes: [], runtime_audit: 'not_run', note: '测试契约' }
+      return ok({ temporal_capability, valid: nodes.length > 0, graph_hash: `hash-${nodes.length}`, errors: nodes.length ? [] : [{ message: '至少添加一个节点。' }], warnings: [], inferred: { nodes: Object.fromEntries(nodes.map((node: { id: string }) => [node.id, { causal: true, execution_backend: 'numba_njit_fixed_signature' }])), causal: true, realtime_eligible: true } })
     }
     if (path.endsWith('/prepare')) return ok({ plan_id: 'PLAN-1', compile_token: 'TOKEN-1', graph_hash: 'hash-3', prepared_at: '2026-09-04', runtime_audit: fixedExecution })
     if (path.endsWith('/preview-runs') && init?.method === 'POST') return ok({ id: 'RUN-V2', status: 'queued', stage: 'queued', progress: 0.05 }, 202)
     if (path.endsWith('/preview-runs/RUN-V2') && init?.method === 'DELETE') return ok({ id: 'RUN-V2', status: 'cancelled', stage: 'cancelled', progress: 0.1 })
     if (path.endsWith('/preview-runs/RUN-V2')) {
+      if (options?.failed) return ok({ id: 'RUN-V2', status: 'failed', progress: 1, error: { code: 'MACRO_DATA_NOT_FOUND', message: '增长：制造业PMI数据未下载，请运行宏观增长、通胀与景气通用ETL。', field: 'graph.nodes.source-1.parameters' } })
       pollCount += 1
       if (options?.keepRunning || pollCount === 1) return ok({ id: 'RUN-V2', status: 'running', stage: '识别历史状态', progress: 0.55 })
       return ok({ id: 'RUN-V2', status: 'completed', stage: 'completed', progress: 1, execution: fixedExecution, result: { observations: 3 } })
@@ -122,6 +125,32 @@ describe('HistoricalRegimeWorkbench', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '运行识别', hidden: true })).toBeEnabled())
     return { user, fetchMock }
   }
+
+  it('异步识别失败在运行按钮旁显示原因，并能定位输入节点', async () => {
+    const { user } = await ready(makeFetch({ failed: true }))
+    await toPreview(user)
+    await user.click(screen.getByRole('button', { name: '运行识别' }))
+    const panel = screen.getByRole('region', { name: '情景校验与预览设置' })
+    await waitFor(() => expect(within(panel).getByRole('alert')).toHaveTextContent('制造业PMI数据未下载'))
+    expect(screen.queryByText('还没有完成的情景结果')).not.toBeInTheDocument()
+    expect(within(panel).getByLabelText('识别运行状态')).toHaveTextContent('本次识别失败')
+    await user.click(screen.getByRole('button', { name: '检查输入数据' }))
+    expect(screen.getByRole('dialog', { name: '节点参数' })).toBeInTheDocument()
+  })
+
+  it('遵循宏观模板推荐的事后模式，并允许显式切换实时', async () => {
+    const base = makeFetch()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/templates/v2')) return ok({ items: [{ id: 'bull-bear-v2', name: '美林时钟PMI与CPI', default_mode: 'retrospective' }] })
+      return base(input, init)
+    })
+    const { user } = await ready(fetchMock)
+    await user.click(screen.getByRole('button', { name: '选择算法：美林时钟PMI与CPI' }))
+    await toPreview(user)
+    expect(screen.getByRole('radio', { name: '事后研究' })).toHaveAttribute('aria-checked', 'true')
+    await user.click(screen.getByRole('radio', { name: '实时识别' }))
+    expect(screen.getByRole('radio', { name: '实时识别' })).toHaveAttribute('aria-checked', 'true')
+  })
 
   async function complete(user: ReturnType<typeof userEvent.setup>) {
     await toPreview(user)
@@ -180,7 +209,9 @@ describe('HistoricalRegimeWorkbench', () => {
     render(<StrictMode><HistoricalRegimeWorkbench /></StrictMode>)
     expect(await screen.findByDisplayValue('精确修订研究')).toBeInTheDocument()
     fireEvent.click(workspaceTab('校验与预览'))
-    fireEvent.click(screen.getByRole('button', { name: '版本与发布' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存情景' }))
+    await userEvent.click(screen.getByText('高级管理'))
+    await waitFor(() => expect(screen.getByText('与服务端版本一致')).toBeInTheDocument())
     expect(screen.getByText('与服务端版本一致')).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([path]) => String(path).includes('/v2/definitions/saved-query?revision=4'))).toBe(true)
   })
@@ -343,7 +374,8 @@ it('实时禁用事后节点，切换模式后恢复可选，已有事后节点�
   vi.stubGlobal('fetch', fetchMock)
   const user = userEvent.setup()
   const definition = structuredClone(templateDefinition)
-  definition.graph.nodes.push({ id: 'offline', type: 'model.turning_point', label: '峰谷区间', inputs: {}, parameters: {} })
+  definition.graph.nodes.push({ id: 'offline', type: 'model.turning_point', label: '峰谷区间', inputs: { score: { node_id: 'ema-1', port: 'value' } }, parameters: {} })
+  definition.graph.outputs = { state: { node_id: 'offline', port: 'state' } }
   render(<HistoricalRegimeWorkbench initialDefinition={definition} />)
   await screen.findByText(/实时识别已禁用事后分析算法/)
   await settle(340)
@@ -353,7 +385,7 @@ it('实时禁用事后节点，切换模式后恢复可选，已有事后节点�
   await user.click(screen.getByRole('button', { name: '关闭添加节点' }))
   await toPreview(user)
   await user.click(screen.getByRole('radio', { name: '事后研究' }))
-  expect(screen.getByRole('button', { name: '运行识别', hidden: true })).toBeEnabled()
+  await waitFor(() => expect(screen.getByRole('button', { name: '运行识别', hidden: true })).toBeEnabled())
   await user.click(workspaceTab('算法定义'))
   await user.click(screen.getByRole('button', { name: '添加节点' }))
   expect(screen.getByRole('button', { name: '添加峰谷区间' })).toBeEnabled()
@@ -425,5 +457,5 @@ it('峰谷模板自动进入事后模式，参数可编辑，切回实时后禁�
   await toPreview(user)
   await user.click(screen.getByRole('radio', { name: '实时识别' }))
   expect(screen.getByRole('button', { name: '运行识别', hidden: true })).toBeDisabled()
-  expect(screen.getByText(/实时识别已禁用事后分析算法/)).toBeInTheDocument()
+  expect(await screen.findByText(/实时识别已禁用事后分析算法/)).toBeInTheDocument()
 })

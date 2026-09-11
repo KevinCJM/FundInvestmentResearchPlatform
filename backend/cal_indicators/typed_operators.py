@@ -45,14 +45,18 @@ COMPAT_TYPED_COMPILER_VERSION = "typed-ast-2"
 PREVIOUS_TYPED_DSL_VERSION = "2.2.0"
 PREVIOUS_OPERATOR_REGISTRY_VERSION = "2.2.0"
 PREVIOUS_TYPED_COMPILER_VERSION = "typed-numba-3"
-TYPED_DSL_VERSION = "2.3.0"
-TYPED_COMPILER_VERSION = "typed-numba-4"
-TYPED_OPERATOR_REGISTRY_VERSION = "2.3.0"
+ROLLING_TYPED_DSL_VERSION = "2.3.0"
+ROLLING_OPERATOR_REGISTRY_VERSION = "2.3.0"
+ROLLING_TYPED_COMPILER_VERSION = "typed-numba-4"
+TYPED_DSL_VERSION = "2.4.0"
+TYPED_COMPILER_VERSION = "typed-numba-5"
+TYPED_OPERATOR_REGISTRY_VERSION = "2.4.0"
 SUPPORTED_TYPED_DSL_VERSIONS = frozenset(
     {
         LEGACY_TYPED_DSL_VERSION,
         COMPAT_TYPED_DSL_VERSION,
         PREVIOUS_TYPED_DSL_VERSION,
+        ROLLING_TYPED_DSL_VERSION,
         TYPED_DSL_VERSION,
     }
 )
@@ -61,6 +65,7 @@ SUPPORTED_OPERATOR_REGISTRY_VERSIONS = frozenset(
         LEGACY_OPERATOR_REGISTRY_VERSION,
         COMPAT_OPERATOR_REGISTRY_VERSION,
         PREVIOUS_OPERATOR_REGISTRY_VERSION,
+        ROLLING_OPERATOR_REGISTRY_VERSION,
         TYPED_OPERATOR_REGISTRY_VERSION,
     }
 )
@@ -68,7 +73,10 @@ from .operator_lowering import COMPOSITE_OPERATOR_IDS
 
 # Persisted formula spellings are accepted by the compiler, never offered as
 # opaque numeric operations in the authoring catalog.
-PUBLIC_OPERATOR_EXCLUSIONS = COMPOSITE_OPERATOR_IDS
+ROLLING_COMPAT_OPERATOR_IDS = frozenset(
+    {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}
+)
+PUBLIC_OPERATOR_EXCLUSIONS = COMPOSITE_OPERATOR_IDS | ROLLING_COMPAT_OPERATOR_IDS
 PRICE_SEMANTIC_DIMENSIONS = frozenset(
     {"adjusted_nav", "reported_nav", "raw_market_price"}
 )
@@ -86,6 +94,7 @@ V23_OPERATOR_IDS = frozenset(
         "divide_or_default",
     }
 )
+V24_OPERATOR_IDS = frozenset({"rolling_window"})
 ADDITIVE_RATE_DIMENSIONS = frozenset({"return_decimal", "rate_decimal"})
 LEGACY_OPERATOR_IDS = frozenset(
     {
@@ -182,6 +191,8 @@ class TypedOperatorSpec:
     cost: CostFunction | None = None
     aliases: tuple[str, ...] = ()
     latex_template: str = ""
+    # Unknown third-party semantics must not acquire rolling capability by shape alone.
+    interval_policy: str | None = None
 
     @property
     def arities(self) -> frozenset[int]:
@@ -226,6 +237,7 @@ class TypedOperatorSpec:
             "id": self.operator_id,
             "version": self.version,
             "category": self.category,
+            "interval_policy": self.interval_policy,
             "description": self.description,
             "signatures": [
                 {
@@ -247,6 +259,11 @@ class TypedOperatorSpec:
 
 
 _OPERATOR_ARGUMENT_NAMES: Mapping[tuple[str, int], tuple[str, ...]] = {
+    ("rolling_apply", 2): ("calculation", "window"),
+    ("rolling_apply", 3): ("calculation", "window", "min_periods"),
+    ("rolling_apply", 4): ("calculation", "window", "dates", "annual_rate"),
+    ("rolling_apply", 5): ("calculation", "window", "dates", "annual_rate", "min_periods"),
+    ("finite_mask", 1): ("values",),
     ("last_drawdown_interval", 1): ("drawdowns",),
     ("interval_start", 1): ("interval",),
     ("interval_trough", 1): ("interval",),
@@ -397,6 +414,8 @@ _OPERATOR_ARGUMENT_NAMES: Mapping[tuple[str, int], tuple[str, ...]] = {
     ("regression_standard_error", 2): ("x", "y"),
     ("lag", 2): ("values", "periods"),
     ("difference", 2): ("values", "periods"),
+    ("rolling_window", 2): ("values", "window"),
+    ("rolling_window", 3): ("values", "window", "min_periods"),
     ("rolling_mean", 2): ("values", "window"),
     ("rolling_mean", 3): ("values", "window", "min_periods"),
     ("rolling_std", 2): ("values", "window"),
@@ -679,6 +698,17 @@ def _reduce_all(inputs: tuple[ValueType, ...]) -> ValueType:
     )
 
 
+def _reduce_all_or_window(inputs: tuple[ValueType, ...]) -> ValueType:
+    value = inputs[0]
+    if value.kind == "window":
+        return ValueType.series(
+            value.shape[0],
+            semantic_dimension=value.semantic_dimension,
+            price_basis=value.price_basis,
+        )
+    return _reduce_all(inputs)
+
+
 def _dimensionless_reduction_type(inputs: tuple[ValueType, ...]) -> ValueType:
     _reduce_all(inputs)
     return ValueType.scalar(semantic_dimension="dimensionless")
@@ -796,6 +826,16 @@ def _rolling_type(inputs: tuple[ValueType, ...]) -> ValueType:
     return values
 
 
+def _rolling_window_type(inputs: tuple[ValueType, ...]) -> ValueType:
+    values = _rolling_type(inputs)
+    return ValueType.window(
+        values.shape[0],
+        "W",
+        semantic_dimension=values.semantic_dimension,
+        price_basis=values.price_basis,
+    )
+
+
 def _rolling_std_type(inputs: tuple[ValueType, ...]) -> ValueType:
     values = _rolling_type(inputs)
     if len(inputs) >= 3:
@@ -855,6 +895,23 @@ def _validated_positive_integer(value: Any, name: str, *, allow_zero: bool = Fal
     return int(number)
 
 
+@dataclass(frozen=True)
+class _RollingWindowReference:
+    """Test-only logical window reference; production never materializes it."""
+
+    values: np.ndarray
+    window: int
+    min_periods: int
+
+    def __array__(self, dtype: Any = None) -> np.ndarray:
+        output = np.full((self.values.size, self.window), np.nan, dtype=np.float64)
+        for index in range(self.values.size):
+            start = max(0, index - self.window + 1)
+            selected = self.values[start : index + 1]
+            output[index, self.window - selected.size :] = selected
+        return output.astype(dtype, copy=False) if dtype is not None else output
+
+
 def _rolling_reference(
     values: Any,
     window: Any,
@@ -879,17 +936,57 @@ def _rolling_reference(
         selected = selected[np.isfinite(selected)]
         if selected.size < minimum:
             continue
-        if mode == "mean":
+        if mode == "sum":
+            output[index] = float(np.sum(selected))
+        elif mode == "product":
+            output[index] = float(np.prod(selected))
+        elif mode == "mean":
             output[index] = float(np.mean(selected))
-        elif mode == "std":
+        elif mode in {"std", "variance"}:
             if selected.size <= degrees:
                 continue
-            output[index] = float(np.std(selected, ddof=degrees))
+            variance = float(np.var(selected, ddof=degrees))
+            output[index] = math.sqrt(variance) if mode == "std" else variance
         elif mode == "min":
             output[index] = float(np.min(selected))
         else:
             output[index] = float(np.max(selected))
     return output
+
+
+def _rolling_window(values: Any, window: Any, min_periods: Any | None = None) -> _RollingWindowReference:
+    array = np.asarray(values, dtype=np.float64)
+    width = _validated_positive_integer(window, "window")
+    minimum = width if min_periods is None else _validated_positive_integer(min_periods, "min_periods")
+    if minimum > width:
+        raise TypedDslError("INVALID_PARAMETER", "min_periods 不能大于 window。")
+    return _RollingWindowReference(array, width, minimum)
+
+
+def _window_reduction_reference(values: Any, mode: str) -> Any:
+    if not isinstance(values, _RollingWindowReference):
+        return None
+    return _rolling_reference(
+        values.values,
+        values.window,
+        values.min_periods,
+        mode=mode,
+    )
+
+
+def _reduce_mean_reference(values: Any) -> Any:
+    rolling = _window_reduction_reference(values, "mean")
+    return reduce_mean(values) if rolling is None else rolling
+
+
+def _reduce_min_reference(values: Any) -> Any:
+    rolling = _window_reduction_reference(values, "min")
+    return reduce_min(values) if rolling is None else rolling
+
+
+def _reduce_max_reference(values: Any) -> Any:
+    rolling = _window_reduction_reference(values, "max")
+    return reduce_max(values) if rolling is None else rolling
 
 
 def _rolling_mean(values: Any, window: Any, min_periods: Any | None = None) -> np.ndarray:
@@ -1201,8 +1298,8 @@ def _annualized_return_type(inputs: tuple[ValueType, ...]) -> ValueType:
 
 def _validate_variance_inputs(inputs: tuple[ValueType, ...]) -> ValueType:
     values = inputs[0]
-    if values.is_scalar or not values.is_numeric:
-        raise _type_error("variance/std", "series、vector 或 matrix", inputs)
+    if values.kind != "window" and (values.is_scalar or not values.is_numeric):
+        raise _type_error("variance/std", "series、vector、matrix 或滚动窗口", inputs)
     if len(inputs) == 2 and (
         not inputs[1].is_scalar
         or not inputs[1].is_numeric
@@ -1214,11 +1311,22 @@ def _validate_variance_inputs(inputs: tuple[ValueType, ...]) -> ValueType:
 
 def _variance_type(inputs: tuple[ValueType, ...]) -> ValueType:
     values = _validate_variance_inputs(inputs)
+    if values.kind == "window":
+        return ValueType.series(
+            values.shape[0],
+            semantic_dimension=f"squared:{values.semantic_dimension}",
+        )
     return ValueType.scalar(semantic_dimension=f"squared:{values.semantic_dimension}")
 
 
 def _std_type(inputs: tuple[ValueType, ...]) -> ValueType:
     values = _validate_variance_inputs(inputs)
+    if values.kind == "window":
+        return ValueType.series(
+            values.shape[0],
+            semantic_dimension=values.semantic_dimension,
+            price_basis=values.price_basis,
+        )
     return ValueType.scalar(
         semantic_dimension=values.semantic_dimension,
         price_basis=values.price_basis,
@@ -1657,12 +1765,28 @@ def _validated_ddof(ddof: Any, observation_count: int) -> int:
     return integer
 
 
-def _variance(values: Any, ddof: Any = 1.0) -> float:
+def _variance(values: Any, ddof: Any = 1.0) -> Any:
+    if isinstance(values, _RollingWindowReference):
+        return _rolling_reference(
+            values.values,
+            values.window,
+            values.min_periods,
+            mode="variance",
+            ddof=ddof,
+        )
     array = np.asarray(values, dtype=np.float64)
     return reduce_variance(array, _validated_ddof(ddof, array.size))
 
 
-def _std(values: Any, ddof: Any = 1.0) -> float:
+def _std(values: Any, ddof: Any = 1.0) -> Any:
+    if isinstance(values, _RollingWindowReference):
+        return _rolling_reference(
+            values.values,
+            values.window,
+            values.min_periods,
+            mode="std",
+            ddof=ddof,
+        )
     array = np.asarray(values, dtype=np.float64)
     return reduce_std(array, _validated_ddof(ddof, array.size))
 
@@ -1717,6 +1841,7 @@ def _spec(
     latex_template: str = "",
     cost_model: str = "elementwise",
     cost: CostFunction | None = None,
+    interval_policy: str = "local",
 ) -> TypedOperatorSpec:
     return TypedOperatorSpec(
         operator_id=operator_id,
@@ -1730,6 +1855,7 @@ def _spec(
         latex_template=latex_template,
         cost_model=cost_model,
         cost=cost,
+        interval_policy=interval_policy,
     )
 
 
@@ -1944,17 +2070,22 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
     for operator_id, function, aliases in (
         ("sum", reduce_sum, ("sequence_sum",)),
         ("product", reduce_product, ("prod", "sequence_prod")),
-        ("mean", reduce_mean, ("sequence_mean",)),
-        ("min_value", reduce_min, ("min",)),
-        ("max_value", reduce_max, ("max",)),
+        ("mean", _reduce_mean_reference, ("sequence_mean",)),
+        ("min_value", _reduce_min_reference, ("min",)),
+        ("max_value", _reduce_max_reference, ("max",)),
     ):
+        window_reducer = operator_id in {"mean", "min_value", "max_value"}
         specs.append(
             _spec(
                 operator_id,
                 "reduction",
                 (reduction,),
-                "将所有命名轴归约为标量。",
-                _reduce_all,
+                (
+                    "将普通数值张量归约为标量；滚动窗口输入按每个时点独立归约。"
+                    if window_reducer
+                    else "将所有命名轴归约为标量。"
+                ),
+                _reduce_all_or_window if window_reducer else _reduce_all,
                 function,
                 aliases=aliases,
                 latex_template=rf"\operatorname{{{operator_id}}}(x)",
@@ -2053,6 +2184,31 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
                 cost=_cost_input,
             )
         )
+    rolling_window_signatures = (
+        _signature(
+            (series_t, "scalar<count>"),
+            "window<time,window>[T,W]",
+            "logical causal windows; no materialized T×W production array",
+        ),
+        _signature(
+            (series_t, "scalar<count>", "scalar<count>"),
+            "window<time,window>[T,W]",
+            "logical causal windows with explicit minimum observations",
+        ),
+    )
+    specs.append(
+        _spec(
+            "rolling_window",
+            "rolling",
+            rolling_window_signatures,
+            "只定义截至当前时点的因果滚动观察窗口；统计量由后续普通归约算子决定。",
+            _rolling_window_type,
+            _rolling_window,
+            latex_template=r"\mathcal{W}_{w,m}(x)",
+            cost_model="logical_window",
+            cost=_cost_input,
+        )
+    )
     rolling_signatures = (
         _signature((series_t, "scalar<count>"), series_t, "preserve time axis"),
         _signature(
@@ -2123,6 +2279,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
             "按 ((n-1)×前值+当前值)/n 进行因果递归平滑。",
             _recursive_smooth_type,
             _recursive_smooth,
+            interval_policy="history_required",
             latex_template=r"\operatorname{recursive\_smooth}(x,n,x_0)",
             cost_model="scan",
             cost=_cost_input,
@@ -2667,7 +2824,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
     return tuple(specs)
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=5)
 def get_typed_operator_registry(
     version: str = TYPED_OPERATOR_REGISTRY_VERSION,
 ) -> Mapping[str, TypedOperatorSpec]:
@@ -2698,7 +2855,9 @@ def get_typed_operator_registry(
             COMPAT_OPERATOR_REGISTRY_VERSION,
         } and spec.operator_id in V22_OPERATOR_IDS:
             continue
-        if version != TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in V23_OPERATOR_IDS:
+        if version not in {ROLLING_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION} and spec.operator_id in V23_OPERATOR_IDS:
+            continue
+        if version != TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in V24_OPERATOR_IDS:
             continue
         if version == LEGACY_OPERATOR_REGISTRY_VERSION:
             if spec.operator_id not in LEGACY_OPERATOR_IDS:
@@ -2714,6 +2873,54 @@ def get_typed_operator_registry(
             spec = replace(spec, version=COMPAT_OPERATOR_REGISTRY_VERSION)
         elif version == PREVIOUS_OPERATOR_REGISTRY_VERSION:
             spec = replace(spec, version=PREVIOUS_OPERATOR_REGISTRY_VERSION)
+        elif version == ROLLING_OPERATOR_REGISTRY_VERSION:
+            spec = replace(spec, version=ROLLING_OPERATOR_REGISTRY_VERSION)
+        if version in {
+            COMPAT_OPERATOR_REGISTRY_VERSION,
+            PREVIOUS_OPERATOR_REGISTRY_VERSION,
+            ROLLING_OPERATOR_REGISTRY_VERSION,
+        } and spec.operator_id in {
+            "mean", "min_value", "max_value"
+        }:
+            historical_reducers = {
+                "mean": reduce_mean,
+                "min_value": reduce_min,
+                "max_value": reduce_max,
+            }
+            spec = replace(
+                spec,
+                infer=_reduce_all,
+                evaluate=historical_reducers[spec.operator_id],
+            )
+        elif version == TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in {
+            "mean", "min_value", "max_value"
+        }:
+            spec = replace(
+                spec,
+                signatures=spec.signatures + (
+                    _signature(
+                        ("window<time,window>[T,W]",),
+                        "series<time>[T]",
+                        "reduce each logical rolling window without materialization",
+                    ),
+                ),
+            )
+        elif version == TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in {"variance", "std"}:
+            spec = replace(
+                spec,
+                signatures=spec.signatures + (
+                    _signature(
+                        ("window<time,window>[T,W]",),
+                        "series<time>[T]",
+                        "reduce each logical rolling window with default ddof",
+                    ),
+                    _signature(
+                        ("window<time,window>[T,W]", "scalar<count>"),
+                        "series<time>[T]",
+                        "reduce each logical rolling window with explicit ddof",
+                    ),
+                ),
+            )
         registry[spec.operator_id] = spec
         for alias in spec.aliases:
             if alias in registry:
@@ -2724,6 +2931,10 @@ def get_typed_operator_registry(
     for spec in (*access_operator_specs(version), *fit_operator_specs(version)):
         registry[spec.operator_id] = spec
     if version == TYPED_OPERATOR_REGISTRY_VERSION:
+        from .rolling_scope import rolling_scope_spec
+        scope = rolling_scope_spec(version)
+        registry[scope.operator_id] = scope
+    if version in {ROLLING_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION}:
         from .drawdown_interval import interval_operator_specs
         for spec in interval_operator_specs(version):
             registry[spec.operator_id] = spec
@@ -2752,12 +2963,14 @@ def get_typed_operator_catalog(
             LEGACY_OPERATOR_REGISTRY_VERSION: LEGACY_TYPED_DSL_VERSION,
             COMPAT_OPERATOR_REGISTRY_VERSION: COMPAT_TYPED_DSL_VERSION,
             PREVIOUS_OPERATOR_REGISTRY_VERSION: PREVIOUS_TYPED_DSL_VERSION,
+            ROLLING_OPERATOR_REGISTRY_VERSION: ROLLING_TYPED_DSL_VERSION,
             TYPED_OPERATOR_REGISTRY_VERSION: TYPED_DSL_VERSION,
         }[version],
         "compiler_version": {
             LEGACY_OPERATOR_REGISTRY_VERSION: LEGACY_TYPED_COMPILER_VERSION,
             COMPAT_OPERATOR_REGISTRY_VERSION: COMPAT_TYPED_COMPILER_VERSION,
             PREVIOUS_OPERATOR_REGISTRY_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
+            ROLLING_OPERATOR_REGISTRY_VERSION: ROLLING_TYPED_COMPILER_VERSION,
             TYPED_OPERATOR_REGISTRY_VERSION: TYPED_COMPILER_VERSION,
         }[version],
         "operator_registry_version": version,

@@ -124,7 +124,7 @@ def parse_view_override(
     not an absent value.
     """
 
-    from .settings import PitSettingsRepository, release_as_of
+    from .settings import PitSettingsRepository, release_run_mode, release_as_of
 
     if str(headers.get("x-pit-off") or "").strip().lower() in VIEW_OFF_VALUES:
         return ResearchContext()
@@ -134,11 +134,14 @@ def parse_view_override(
     if not (release or mode or as_of):
         return None
     if release and not as_of:
-        # A release already knows the last day it can answer for; making the tab
-        # carry the date as well would let the two drift apart.
+        # A version carries its own research day; making the tab repeat it would
+        # only let the two drift apart.
         as_of = release_as_of(data_dir, release) or ""
         if not as_of:
             raise PitContextError(f"数据版本 {release} 没有可得截止日，无法作为查看口径。")
+    if not mode and release:
+        # Viewing a version means viewing it whole, mode included.
+        mode = release_run_mode(data_dir, release) or ""
     if not mode:
         # Never quietly relax a strict system口径 just because a tab switched
         # vintage and said nothing about the mode.

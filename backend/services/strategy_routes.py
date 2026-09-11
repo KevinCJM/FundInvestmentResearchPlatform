@@ -21,6 +21,7 @@ from strategy import (
     strategy_execution_audit,
 )
 from backtest_engine import (
+    allocation_universe_lineage,
     backtest_portfolio,
     ensure_valid_rebalance_window,
     gen_rebalance_dates,
@@ -29,7 +30,6 @@ from backtest_engine import (
 )
 from pit.clock import DecisionClock
 from pit.context import PitContextError, resolve_request_context
-from pit.guard import assert_no_universe_lookahead, universe_lineage
 from custom_indicators.errors import IndicatorDomainError
 from portfolio_regime import (
     PublishedRegimeBacktestReference,
@@ -67,7 +67,15 @@ def _load_alloc_nav(alloc_name: str):
         context = resolve_request_context(DATA_DIR)
     except PitContextError as exc:
         return None, None, JSONResponse(status_code=400, content={"detail": str(exc)})
-    loaded = load_allocation_nav(DATA_DIR, alloc_name, context)
+    from backend.research_input_checks import ResearchInputError
+    try:
+        loaded = load_allocation_nav(DATA_DIR, alloc_name, context)
+    except PitContextError as exc:
+        # The loader now judges the candidate set, so every endpoint behind it
+        # refuses on the same grounds instead of four of them not asking.
+        return None, context, JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ResearchInputError as exc:
+        return None, context, JSONResponse(status_code=422, content={"detail": exc.detail()})
     if loaded.nav_wide.empty:
         if loaded.lineage.get("found"):
             # The allocation exists; the research day is simply earlier than anything
@@ -277,7 +285,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
             )
         except ValueError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
-        return {"weights": weights, "execution": strategy_execution_audit()}
+        return {"weights": weights, "execution": strategy_execution_audit(), "pit": loaded.lineage}
 
     if req.strategy.type == 'risk_budget':
         budgets = [float(c.budget or 0.0) for c in req.strategy.classes]
@@ -289,7 +297,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
         if req.strategy.risk_metric in {"var", "es"} and req.strategy.confidence is not None:
             risk_cfg["confidence"] = float(req.strategy.confidence)
         weights = compute_risk_budget_weights(nav_fit, risk_cfg, budgets, window_len=None, window_mode=None)
-        return {"weights": weights, "execution": strategy_execution_audit()}
+        return {"weights": weights, "execution": strategy_execution_audit(), "pit": loaded.lineage}
 
     if req.strategy.type == 'target':
         risk_cfg = {"metric": req.strategy.risk_metric or "vol"}
@@ -333,7 +341,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
             target_return=req.strategy.target_return,
             target_risk=req.strategy.target_risk,
         )
-        return {"weights": weights, "execution": strategy_execution_audit()}
+        return {"weights": weights, "execution": strategy_execution_audit(), "pit": loaded.lineage}
 
     return JSONResponse(status_code=400, content={"detail": "未知策略类型"})
 
@@ -398,27 +406,15 @@ def api_backtest(req: BacktestRequest):
         {marker["date"] for markers in (res.get("markers") or {}).values() for marker in markers}
     )
     clock = DecisionClock.from_dates(decision_dates or nav_wide.index[:1], context)
-    coverage = None if loaded.lineage.get("series_as_of") else "LATEST_ONLY"
     try:
-        findings = assert_no_universe_lookahead(
-            context,
-            established_at=loaded.lineage.get("series_as_of"),
-            coverage=coverage,
-            decision_dates=clock.dates,
-            label=f"配置「{req.alloc_name}」的大类净值",
+        # The loader already judged this allocation standing on the研究日; the
+        # sweep stands on the first rebalance, which is earlier and stricter.
+        universe = allocation_universe_lineage(
+            DATA_DIR, loaded.lineage, context, decision_dates=clock.dates
         )
     except PitContextError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
-    res["pit"] = {
-        **loaded.lineage,
-        "decision_clock": clock.lineage(),
-        "universe": universe_lineage(
-            findings,
-            coverage=coverage,
-            established_at=loaded.lineage.get("series_as_of"),
-            source="asset_nv",
-        ),
-    }
+    res["pit"] = {**loaded.lineage, "decision_clock": clock.lineage(), "universe": universe}
     if req.historical_regime is not None:
         try:
             resolved_regime = regime_backtest_resolver.resolve(req.historical_regime)
@@ -633,4 +629,5 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         "weights": [r['weights'] for r in results],
         "cache_key": cache_key,
         "execution": strategy_execution_audit(),
+        "pit": loaded.lineage,
     }

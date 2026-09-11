@@ -24,6 +24,7 @@ from custom_indicators.formula_source import canonical_formula_source
 from custom_indicators.rolling_series import transform_scalar_expression
 from custom_indicators.series_parameters import resolve_parameter_values
 from custom_indicators.variable_registry import get_variable
+from computation_graph.causal_series import SYSTEM_CONTEXT_NAMES
 
 
 def is_typed_formula_node(node, registry):
@@ -65,7 +66,7 @@ def validate_typed_series_node(node, registry):
     from .formula import _compose_formula
     frame = pd.DataFrame({name: np.ones(2, dtype=np.float64) for name in node.inputs})
     for expression in typed_node_expressions(node, registry).values():
-        _compose_formula(expression, frame)
+        _compose_formula(expression, frame, definition=registry[node.type].get('_indicator_definition'))
 
 
 def register_indicator_nodes(service, registry):
@@ -121,6 +122,8 @@ def register_indicator_nodes(service, registry):
                 tree = ast.parse(expression, mode="eval")
                 functions = {id(call.func) for call in ast.walk(tree) if isinstance(call, ast.Call)}
                 for name in (item.id for item in ast.walk(tree) if isinstance(item, ast.Name) and id(item) not in functions):
+                    if name in SYSTEM_CONTEXT_NAMES:
+                        continue  # Bound by the server, never an editable data port.
                     variable = get_variable(name)
                     if variable is None or variable.kind != "series" or variable.axes not in {("T",), ("time",)}:
                         raise ValueError(f"该指标还需要 {variable.label if variable else name} 上下文，尚不能仅通过数值时序连接计算。")
@@ -129,7 +132,7 @@ def register_indicator_nodes(service, registry):
                 raise ValueError("指标计算需要 1 至 4 个数值时序输入；请先拆分更复杂的指标。")
             frame = pd.DataFrame({name: np.ones(2, dtype=np.float64) for name in inputs})
             for expression in expressions.values():
-                _compose_formula(expression, frame)
+                _compose_formula(expression, frame, definition=definition)
             metadata["inputs"] = list(inputs.values())
         except (ValueError, TypeError, KeyError, ValidationError, TypedDslError) as exc:
             metadata.update(available=False, status="unsupported_indicator_contract",

@@ -1,4 +1,4 @@
-"""Verified concept-history recovery, including derived per-code/merged files."""
+"""Verified concept/futures recovery, including derived per-code/merged files."""
 from __future__ import annotations
 
 import json
@@ -12,6 +12,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from .models import CenterError
+from .index_checkpoints import read_empty_evidence
 from .task_workspace import clone_file, read_inventory
 
 
@@ -63,7 +64,7 @@ def _derived_evidence(journal, parts, final, universe, chunks, segment_map, audi
     """Validate derived outputs, retain as audit, rebuild after empty rechecks.
 
     A merged file cannot establish that an old `no data` marker was independently
-    confirmed. Only nonempty leaf segments enter the new executable cache.
+    confirmed. Leaf segments and separately verified empty receipts own coverage.
     """
     import T01_get_data as script
 
@@ -112,13 +113,14 @@ def _derived_evidence(journal, parts, final, universe, chunks, segment_map, audi
     return evidence
 
 
-def import_concept_segments(journal, old, step, predecessor, target, producer, progress, frozen):
-    """Do not import unproven empty markers or discard unsupported partial APIs."""
+def import_index_segments(journal, old, step, predecessor, target, producer, progress, frozen):
+    """Import proven leaf coverage; archive old empties and reject unknown APIs."""
     import T01_get_data as script
     from .etl_migration import _parts_name
 
-    _require(step.task_id == 'tushare.index_concept' and not old['frozen'].get('task_baseline'),
-             '指数分片导入仅支持无基线的概念行情历史任务。')
+    _require(step.task_id in {'tushare.index_concept', 'tushare.index_futures'}
+             and not old['frozen'].get('task_baseline'),
+             '指数分片导入仅支持无基线的概念/期货行情历史任务。')
     work_root = journal.root / 'etl_runs' / old['run_id'] / step.id
     work = work_root / 'work'
     marker = work_root / 'work_input.json'
@@ -137,19 +139,25 @@ def import_concept_segments(journal, old, step, predecessor, target, producer, p
              and journal.artifact(catalog_path)['checksum'] == catalog_entry['checksum'],
              '原工作区指数目录与冻结前置目录不一致。')
     catalog = pq.read_table(journal.checked_path(catalog_entry), columns=['ts_code', 'quote_source_api']).to_pydict()
-    apis = ('ths_daily', 'dc_daily', 'tdx_daily')
+    futures = step.task_id == 'tushare.index_futures'
+    apis = ('fut_index_daily',) if futures else ('ths_daily', 'dc_daily', 'tdx_daily')
+    if futures:
+        frozen_codes = {str(code) for code, source in zip(catalog['ts_code'], catalog['quote_source_api'])
+                        if source == 'fut_index_daily'}
+        _require(frozen_codes == {code for code, _ in script.FUTURES_INDEX_UNIVERSE},
+                 '南华指数目录与当前执行代码范围不同，不能自动迁移。')
     names = {api: _parts_name(old['frozen']['task_sources'][step.source_id]['records'], step,
                               Path(script.INDEX_HISTORY_FILES[api]).stem) for api in apis}
     allowed = set(before['files']) | set(names.values()) | {script.INDEX_HISTORY_FILES[api] for api in apis}
     _require(all(p.name in allowed and not p.is_symlink() for p in work.iterdir()),
-             '概念行情已有其他输出或未知分片，不能静默丢弃后迁移。')
+             '指数行情已有其他输出或未知分片，不能静默丢弃后迁移。')
     for filename, entry in before['files'].items():
         path = work / filename
         _require(path.is_file() and journal.artifact(path)['checksum'] == entry['checksum'],
                  '原工作区前置文件与冻结清单不一致。')
     args = script.parse_args(['--start-date', step.params['start_date'], '--end-date', step.params['end_date']])
     chunks = set(script.iter_date_chunks(args.start_date, args.end_date, args.history_chunk_days))
-    result = {'copied': 0, 'empty_recheck': 0, 'rows': 0, 'missing_segments': 0, 'files': []}
+    result = {'copied': 0, 'empty_recheck': 0, 'confirmed_empty': 0, 'rows': 0, 'missing_segments': 0, 'files': []}
     for api in apis:
         universe = {str(code) for code, source in zip(catalog['ts_code'], catalog['quote_source_api']) if source == api}
         parts, final = work / names[api], work / script.INDEX_HISTORY_FILES[api]
@@ -159,7 +167,7 @@ def import_concept_segments(journal, old, step, predecessor, target, producer, p
         partial = _import_api(journal, step, target, frozen, progress, api, universe, chunks, parts, final)
         for key in result:
             result[key] += partial[key]
-    return {**result, 'format': 'verified_concept_segments_v2',
+    return {**result, 'format': 'verified_futures_segments_v1' if futures else 'verified_concept_segments_v2',
             'pit_boundary': '保持原文件及采集审计；历史行情不包含历史供应商修订时点证明。'}
 
 
@@ -175,7 +183,7 @@ def _import_api(journal, step, target, frozen, progress, api, universe, chunks, 
     dest.mkdir(parents=True)
     audit = target.parent / 'index_recovery_evidence' / api
     audit.mkdir(parents=True)
-    evidence, counts, seen = [], {'copied': 0, 'empty_recheck': 0, 'rows': 0}, set()
+    evidence, counts, seen = [], {'copied': 0, 'empty_recheck': 0, 'confirmed_empty': 0, 'rows': 0}, set()
     segment_map = {}
     for path in sorted(segments.iterdir()):
         match = re.fullmatch(r'([A-Za-z0-9_.-]+)__(\d{8})_(\d{8})\.(parquet|empty)', path.name)
@@ -187,10 +195,12 @@ def _import_api(journal, step, target, frozen, progress, api, universe, chunks, 
         segment_map.setdefault(code, {})[(start, end)] = path
         artifact = journal.artifact(path)
         if kind == 'empty':
-            _require(path.read_bytes() == b'no data\n', '旧指数空标记内容无效。')
-            item = _copy_evidence(journal, path, audit / path.name, artifact)
-            item['recheck_required'] = True
-            counts['empty_recheck'] += 1
+            proof = read_empty_evidence(path, api, code, start, end, parts.name)
+            # A policy-name change requires requerying; never relabel evidence.
+            reuse = proof is not None and dest.parent.name == parts.name
+            item = _copy_evidence(journal, path, (dest if reuse else audit) / path.name, artifact)
+            item['recheck_required'] = not reuse
+            counts['confirmed_empty' if reuse else 'empty_recheck'] += 1
         else:
             rows = _validate_segment(path, code, datetime.strptime(start, '%Y%m%d').date(), datetime.strptime(end, '%Y%m%d').date(), api)
             item = _copy_evidence(journal, path, dest / path.name, artifact)
@@ -199,7 +209,8 @@ def _import_api(journal, step, target, frozen, progress, api, universe, chunks, 
             counts['rows'] += rows
         evidence.append(item)
         if len(evidence) % 250 == 0:
-            progress(f'已核验 {len(evidence)} 个指数分片：复用 {counts["copied"]}，空结果待复核 {counts["empty_recheck"]}。')
+            progress(f'已核验 {len(evidence)} 个指数分片：复用 {counts["copied"]}，'
+                     f'已复核空区间 {counts["confirmed_empty"]}，空结果待复核 {counts["empty_recheck"]}。')
     derived = audit / 'derived'
     derived.mkdir()
     evidence.extend(_derived_evidence(journal, parts, final, universe, chunks, segment_map, derived, progress))

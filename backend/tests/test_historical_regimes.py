@@ -62,7 +62,7 @@ def test_meta_has_four_copyable_canonical_templates(service: HistoricalRegimeSer
     template_ids = {item["id"] for item in meta["templates"]}
     assert {"bull-bear-causal", "merrill-clock", "size-rotation", "growth-value-rotation"} <= template_ids
     assert "feature_catalog" in meta
-    assert meta["formula_language"]["allowlist_version"] == "typed-njit-causal-2"
+    assert meta["formula_language"]["allowlist_version"] == "typed-njit-causal-scope-3"
     assert meta["formula_language"]["njit_required"] is True
     assert meta["formula_language"]["python_fallback"] == 0
     assert {item["id"] for item in meta["formula_language"]["functions"]} >= {
@@ -385,7 +385,7 @@ def test_causal_formula_is_executed_and_audited(service: HistoricalRegimeService
     definition["features"]["formula"] = "difference(log(value), 1)"
     run = _run_prepared_formula(service, definition)
     audit = run["formula_diagnostics"]
-    assert audit["allowlist_version"] == "typed-njit-causal-2"
+    assert audit["allowlist_version"] == "typed-njit-causal-scope-3"
     assert audit["evaluator_version"] == TYPED_COMPILER_VERSION
     assert audit["referenced_columns"] == ["value"]
     assert audit["functions"] == ["difference", "log"]

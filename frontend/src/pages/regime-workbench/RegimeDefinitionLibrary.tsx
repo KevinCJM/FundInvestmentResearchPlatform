@@ -10,7 +10,7 @@ export default function RegimeDefinitionLibrary({ definitions, templates, schema
   const [mode, setMode] = useState('all')
   const matches = (name: string, description?: string) => `${name} ${description || ''}`.toLowerCase().includes(query.trim().toLowerCase())
   const builtins = source === 'custom' ? [] : templates.filter(item => matches(item.name, item.description) && (mode === 'all' || (item.default_mode || 'realtime') === mode))
-  const definitionMode = (item: RegimeGraphDefinition) => item.graph.nodes.some(node => { const schema = schemas.find(entry => (entry.id || entry.type) === node.type); return schema?.causal === false || schema?.repaints === true || schema?.supports_realtime === false }) ? 'retrospective' : 'realtime'
+  const definitionMode = (item: RegimeGraphDefinition) => item.default_mode === 'retrospective' || item.temporal_capability?.status === 'retrospective_required' ? 'retrospective' : item.temporal_capability?.realtime_supported ? 'realtime' : 'unknown'
   const custom = source === 'built_in' ? [] : definitions.filter(item => matches(item.name, item.description) && (mode === 'all' || definitionMode(item) === mode))
   const field = 'mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-100'
   return <section aria-label="情景算法库" className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">

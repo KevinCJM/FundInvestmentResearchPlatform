@@ -55,16 +55,18 @@ def test_scalar_roundtrip_and_shared_named_arguments(graph_service, expression):
         assert len({item["node_id"] for item in divide["arguments"].values()}) == 1
 
 
-def test_multiple_series_outputs_share_one_mean_and_explicit_window(graph_service):
+def test_multiple_series_outputs_share_one_window_and_one_mean(graph_service):
     first = assert_valid(formula(graph_service, {
         "average": "rolling_mean(market_close, 20)",
         "deviation": "market_close / rolling_mean(market_close, 20) - 1",
     }, result_kind="time_series"))
-    means = [node for node in first["graph"]["nodes"] if node.get("operator_id") == "rolling_mean"]
-    assert len(means) == 1
+    windows = [node for node in first["graph"]["nodes"] if node.get("operator_id") == "rolling_window"]
+    means = [node for node in first["graph"]["nodes"] if node.get("operator_id") == "mean"]
+    assert len(windows) == len(means) == 1
     by_id = {node["id"]: node for node in first["graph"]["nodes"]}
-    assert all(item["source"] == "node" for item in means[0]["arguments"].values())
-    assert any(by_id[item["node_id"]].get("value") == 20 for item in means[0]["arguments"].values())
+    assert all(item["source"] == "node" for item in windows[0]["arguments"].values())
+    assert any(by_id[item["node_id"]].get("value") == 20 for item in windows[0]["arguments"].values())
+    assert next(iter(means[0]["arguments"].values()))["node_id"] == windows[0]["id"]
     second = assert_valid(canvas(graph_service, first["graph"], result_kind="time_series"))
     assert first["definition_fingerprint"] == second["definition_fingerprint"]
 

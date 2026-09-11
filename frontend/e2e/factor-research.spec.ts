@@ -60,6 +60,7 @@ test('factor research saves, inspects, publishes and supplies workflow evidence'
   await expect(page.getByLabel('FF3 因子收益数据集')).toHaveValue('')
   await expect(page.getByRole('button', { name: '运行归因研究' })).toBeDisabled()
   await page.goto('/pre-investment/saa')
+  await page.getByText('参考：因子证据', { exact: true }).click()
   await page.getByText('因子研究证据', { exact: true }).click()
   await page.getByLabel('引用因子发布').selectOption('factor-release-test')
   await expect(page.getByLabel('投研因子证据')).toContainText('测试ETF0')

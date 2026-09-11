@@ -11,7 +11,7 @@ import math
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 
 import numpy as np
 
@@ -42,6 +42,8 @@ from .excel_export import (
 )
 from .presentation import metric_presentation
 from .series_parameters import parameter_hash
+from cal_indicators.rolling_scope import analyze_interval
+from cal_indicators.typed_operators import get_typed_operator_registry
 from .repository import IndicatorRepository
 from .runtime_context import (
     RUNTIME_SCALAR_CONTEXT_NAMES,
@@ -88,6 +90,8 @@ _WARMED_SERIES_PLANS: dict[
 
 
 _SERIES_FIXED_ARGUMENTS: dict[str, frozenset[str]] = {
+    "rolling_apply": frozenset({"window", "min_periods"}),
+    "rolling_window": frozenset({"window", "min_periods"}),
     "rolling_mean": frozenset({"window", "min_periods"}),
     "rolling_std": frozenset({"window", "ddof", "min_periods"}),
     "rolling_min": frozenset({"window", "min_periods"}),
@@ -116,7 +120,7 @@ def _array_context_names(
     return tuple(
         name
         for name, value_type in plan.context_requirements.items()
-        if name not in parameter_ids and value_type.rank > 0
+        if name not in parameter_ids and name != "observation_dates" and value_type.rank > 0
     )
 
 
@@ -157,6 +161,10 @@ def _build_series_runtime_context(
             context[name] = float(parameters[name])
             continue
         value_type = plan.context_requirements[name]
+        if name == "observation_dates":
+            # One boundary conversion; every interval reuses this numeric date axis.
+            context[name] = np.ascontiguousarray(frame["date"].to_numpy(dtype="datetime64[D]").astype(np.float64))
+            continue
         if value_type.rank == 0:
             if name not in RUNTIME_SCALAR_CONTEXT_NAMES or name not in scalar_values:
                 raise ValidationError(
@@ -207,7 +215,8 @@ def _validate_fixed_series_configuration(
     nodes = {int(node.node_id): node for node in plan.nodes}
     memo: dict[int, bool] = {}
     diagnostics: list[dict[str, Any]] = []
-    for node in plan.nodes:
+    from cal_indicators.rolling_scope import outside_nodes
+    for node in outside_nodes(plan.nodes, tuple(plan.roots.values())):
         fixed_names = _SERIES_FIXED_ARGUMENTS.get(str(node.operator_id or ""))
         if not fixed_names:
             continue
@@ -540,6 +549,22 @@ def _history_requirement(
         memo[node_id] = requirement
         return requirement
 
+    if node.operator_id == "rolling_apply":
+        window = int(_required_configuration_number(
+            plan=plan, node_by_id=node_by_id, node_id=int(node.inputs[1]),
+            fixed_parameters=_fixed_parameter_values(definition), memo=constant_memo,
+            operator_id="rolling_apply", parameter="window", integer=True, minimum=1, maximum=5000,
+        ))
+        minimum = int(_required_configuration_number(
+            plan=plan, node_by_id=node_by_id, node_id=int(node.inputs[4]),
+            fixed_parameters=_fixed_parameter_values(definition), memo=constant_memo,
+            operator_id="rolling_apply", parameter="min_periods", integer=True, minimum=1, maximum=window,
+        )) if len(node.inputs) == 5 else window
+        capability = analyze_interval(plan.nodes, node.inputs[0], get_typed_operator_registry(plan.operator_registry_version))
+        preceding = int(capability.needs_preceding_observation)
+        requirement = _HistoryRequirement(False, window + preceding, minimum)
+        memo[node_id] = requirement
+        return requirement
     children = [
         _history_requirement(
             plan,
@@ -988,6 +1013,15 @@ def _infer_series_history(
         if node_id in memo:
             return memo[node_id]
         node = nodes[node_id]
+        if node.operator_id == "rolling_apply":
+            window = _positive_integer_argument(node, "window", nodes, constants)
+            minimum = _positive_integer_argument(node, "min_periods", nodes, constants, default=window)
+            if minimum > window:
+                raise ValidationError("INVALID_MIN_PERIODS", "最少有效观察数不能大于窗口观察数。", field="min_periods")
+            capability = analyze_interval(plan.nodes, node.inputs[0], get_typed_operator_registry(plan.operator_registry_version))
+            result = (False, window + int(capability.needs_preceding_observation), minimum)
+            memo[node_id] = result
+            return result
         children = [visit(int(child)) for child in node.inputs]
         child_full = any(item[0] for item in children)
         child_lookback = max((item[1] for item in children), default=1)
@@ -995,7 +1029,7 @@ def _infer_series_history(
         operator_id = str(node.operator_id or "")
         if operator_id in full_history_operators:
             result = (True, 1, child_minimum)
-        elif operator_id in {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}:
+        elif operator_id in {"rolling_window", "rolling_mean", "rolling_std", "rolling_min", "rolling_max"}:
             window = _positive_integer_argument(node, "window", nodes, constants)
             default_minimum = window
             min_periods = _positive_integer_argument(
@@ -1061,7 +1095,7 @@ def _infer_series_value_ranges(
             upper = _literal_number_from_node(upper_id, nodes, constants) if upper_id is not None else None
             if lower is not None and upper is not None and lower <= upper:
                 result = (lower, upper, True)
-        elif operator_id in {"rolling_mean", "rolling_min", "rolling_max", "recursive_smooth"}:
+        elif operator_id in {"rolling_window", "rolling_mean", "rolling_min", "rolling_max", "recursive_smooth"}:
             values_id = _argument_node_id(node, "values")
             if values_id is not None:
                 result = visit(values_id)
@@ -1074,6 +1108,14 @@ def _infer_series_value_ranges(
                         result = (None, None, False)
         elif operator_id == "rolling_std":
             result = (0.0, None, False)
+        elif operator_id in {"mean", "min_value", "max_value"} and node.inputs:
+            source = nodes[int(node.inputs[0])]
+            if source.operator_id == "rolling_window":
+                result = visit(int(node.inputs[0]))
+        elif operator_id in {"std", "variance"} and node.inputs:
+            source = nodes[int(node.inputs[0])]
+            if source.operator_id == "rolling_window":
+                result = (0.0, None, False)
         elif operator_id in {"add", "subtract", "multiply"} and len(children) == 2:
             left, right = children
             if left[2] and right[2] and None not in left[:2] and None not in right[:2]:

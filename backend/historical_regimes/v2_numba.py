@@ -18,10 +18,13 @@ from compute_policy import NJIT_BACKEND, validate_execution_audit
 from .trend_numba import TREND_KERNELS
 from .peak_trough_numba import PEAK_TROUGH_KERNELS
 from .segment_numba import SEGMENT_KERNELS
+from .condition_numba import CONDITION_KERNELS, condition_compare_kernel, select_state_kernel
+from .manual_event_numba import MANUAL_EVENT_KERNELS
+from causality.temporal_numba import TEMPORAL_KERNELS
 from computation_graph.series_numba import causal_available_kernel, valid_series_output_kernel
 
 
-KERNEL_VERSION = "regime-graph-kernels/2.8.0"
+KERNEL_VERSION = "regime-graph-kernels/2.10.0"
 _F64 = float64[::1]
 _I64 = int64[::1]
 _F64_2D = float64[:, ::1]
@@ -29,7 +32,7 @@ _I64_2D = int64[:, ::1]
 _POSITION_SPLIT = types.Tuple((_I64, _I64))(_I64, _I64, int64)
 
 
-@njit(_F64(_F64, int64, int64), cache=True)
+@njit(_F64(types.Array(float64, 1, "A", readonly=True), int64, int64), cache=True)
 def unary_transform_kernel(values: np.ndarray, opcode: int, period: int) -> np.ndarray:
     size = values.shape[0]
     result = np.empty(size, dtype=np.float64)
@@ -174,19 +177,13 @@ def rolling_kernel(values: np.ndarray, window: int, opcode: int) -> np.ndarray:
 
 @njit(_I64(_F64, float64, float64), cache=True)
 def threshold_state_kernel(values: np.ndarray, upper: float, lower: float) -> np.ndarray:
-    size = values.shape[0]
-    states = np.empty(size, dtype=np.int64)
-    for index in range(size):
-        value = values[index]
-        if not np.isfinite(value):
-            states[index] = -1
-        elif value >= upper:
-            states[index] = 0
-        elif value <= lower:
-            states[index] = 2
-        else:
-            states[index] = 1
-    return states
+    """Saved-definition adapter to the same condition/state primitives."""
+    no_bound = np.empty(0, dtype=np.float64)
+    no_branch = np.empty(0, dtype=np.int64)
+    above = condition_compare_kernel(values, no_bound, upper, np.int64(45))
+    below = condition_compare_kernel(values, no_bound, lower, np.int64(43))
+    lower_state = select_state_kernel(below, no_branch, no_branch, np.int64(2), np.int64(1))
+    return select_state_kernel(above, no_branch, lower_state, np.int64(0), np.int64(-1))
 
 
 @njit(_I64(_F64, float64, float64, float64, float64), cache=True)
@@ -230,22 +227,14 @@ def quadrant_state_kernel(
     growth_threshold: float,
     inflation_threshold: float,
 ) -> np.ndarray:
-    size = growth.shape[0]
-    states = np.empty(size, dtype=np.int64)
-    for index in range(size):
-        growth_value = growth[index]
-        inflation_value = inflation[index]
-        if not np.isfinite(growth_value) or not np.isfinite(inflation_value):
-            states[index] = -1
-        elif growth_value >= growth_threshold and inflation_value < inflation_threshold:
-            states[index] = 0
-        elif growth_value >= growth_threshold and inflation_value >= inflation_threshold:
-            states[index] = 1
-        elif growth_value < growth_threshold and inflation_value >= inflation_threshold:
-            states[index] = 2
-        else:
-            states[index] = 3
-    return states
+    """Four-quadrant compatibility adapter, preserving boundary equality."""
+    no_bound = np.empty(0, dtype=np.float64)
+    no_branch = np.empty(0, dtype=np.int64)
+    growth_high = condition_compare_kernel(growth, no_bound, growth_threshold, np.int64(45))
+    inflation_high = condition_compare_kernel(inflation, no_bound, inflation_threshold, np.int64(45))
+    high_growth = select_state_kernel(inflation_high, no_branch, no_branch, np.int64(1), np.int64(0))
+    low_growth = select_state_kernel(inflation_high, no_branch, no_branch, np.int64(2), np.int64(3))
+    return select_state_kernel(growth_high, high_growth, low_growth, np.int64(-1), np.int64(-1))
 
 
 @njit(_I64(_I64, int64, int64), cache=True)
@@ -1120,6 +1109,9 @@ KERNELS: dict[str, CPUDispatcher] = {
     **TREND_KERNELS,
     **PEAK_TROUGH_KERNELS,
     **SEGMENT_KERNELS,
+    **CONDITION_KERNELS,
+    **MANUAL_EVENT_KERNELS,
+    **TEMPORAL_KERNELS,
     "unary_transform": unary_transform_kernel,
     "binary_math": binary_math_kernel,
     "ema": ema_kernel,

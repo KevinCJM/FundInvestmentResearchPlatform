@@ -179,6 +179,22 @@ def _call(dispatcher: CPUDispatcher, args: list[str], globals_map: dict[str, Any
     return f"{name}({', '.join(args)})"
 
 
+def _rolling_window_arguments(
+    window_node: "TypedDagNode",
+    *,
+    node_prefix: str,
+) -> tuple[str, str, str]:
+    by_name = {name: int(input_id) for name, input_id in window_node.arguments}
+    try:
+        values = f"{node_prefix}{by_name['values']}"
+        window = f"{node_prefix}{by_name['window']}"
+    except KeyError as exc:
+        raise ValueError("rolling_window node is missing required inputs") from exc
+    minimum_id = by_name.get("min_periods")
+    minimum = f"{node_prefix}{minimum_id}" if minimum_id is not None else window
+    return values, window, minimum
+
+
 def _operator_call(
     node: "TypedDagNode",
     input_nodes: tuple["TypedDagNode", ...],
@@ -197,6 +213,37 @@ def _operator_call(
         return _call(state_kernels[operator_id], args, globals_map)
     if operator_id == "linear_fit":
         return _call(linear_fit_time_kernel if len(args) == 1 else linear_fit_pair_kernel, args, globals_map)
+    if operator_id == "rolling_window":
+        # Logical authoring node only. It aliases the source series and never
+        # materializes a T×W matrix; the consuming reducer below is fused.
+        return args[0]
+
+    if input_nodes and input_nodes[0].operator_id == "rolling_window":
+        values, window, minimum = _rolling_window_arguments(
+            input_nodes[0], node_prefix=node_prefix
+        )
+        if operator_id == "mean":
+            return _call(kernels.rolling_mean_1d, [values, window, minimum], globals_map)
+        if operator_id == "min_value":
+            return _call(kernels.rolling_min_1d, [values, window, minimum], globals_map)
+        if operator_id == "max_value":
+            return _call(kernels.rolling_max_1d, [values, window, minimum], globals_map)
+        if operator_id in {"std", "variance"}:
+            degrees = args[1] if len(args) == 2 else "1.0"
+            dispatcher = (
+                kernels.rolling_std_1d
+                if operator_id == "std"
+                else kernels.rolling_variance_1d
+            )
+            return _call(
+                dispatcher,
+                [values, window, degrees, minimum],
+                globals_map,
+            )
+        raise ValueError(
+            f"operator {operator_id} cannot consume logical rolling_window"
+        )
+
     ranks = tuple(_rank(input_node) for input_node in input_nodes)
     output_rank = _rank(node)
 
@@ -354,6 +401,9 @@ def _plan_id(plan: "TypedExpressionPlan") -> str:
             plan.output_contract,
         )
     )
+    if any(node.operator_id == "rolling_apply" for node in plan.nodes):
+        from .rolling_scope import SCOPE_VERSION
+        payload += "|" + SCOPE_VERSION
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -373,6 +423,23 @@ def get_cached_numba_plan(
         return _PLAN_CACHE.get(plan_id)
 
 
+def _emit_nodes(plan, roots, context_positions, globals_map, *, series_mode=False):
+    from .rolling_scope import outside_nodes, scope_call
+    by_id = {node.node_id: node for node in plan.nodes}
+    lines = []
+    for node in outside_nodes(plan.nodes, roots):
+        if node.kind == "constant":
+            expression = repr(float(node.label))
+        elif node.kind == "variable":
+            expression = f"v{context_positions[node.label]}"
+        elif node.operator_id == "rolling_apply":
+            expression = scope_call(node, plan.nodes, plan.operator_registry_version, globals_map)
+        else:
+            expression = _operator_call(node, tuple(by_id[index] for index in node.inputs), globals_map, series_mode=series_mode)
+        lines.append(f"    n{node.node_id} = {expression}")
+    return lines
+
+
 def compile_numba_plan(plan: "TypedExpressionPlan") -> CompiledNumbaPlan:
     plan_id = _plan_id(plan)
     with _PLAN_CACHE_LOCK:
@@ -385,19 +452,9 @@ def compile_numba_plan(plan: "TypedExpressionPlan") -> CompiledNumbaPlan:
     context_positions = {name: index for index, name in enumerate(context_names)}
     globals_map: dict[str, Any] = {}
     lines = [f"def generated_plan({', '.join(f'v{index}' for index in range(len(context_names)))}):"]
-    nodes_by_id = {node.node_id: node for node in plan.nodes}
     failed_operator: str | None = None
     try:
-        for node in plan.nodes:
-            if node.kind == "constant":
-                expression = repr(float(node.label))
-            elif node.kind == "variable":
-                expression = f"v{context_positions[node.label]}"
-            else:
-                failed_operator = node.operator_id
-                input_nodes = tuple(nodes_by_id[input_id] for input_id in node.inputs)
-                expression = _operator_call(node, input_nodes, globals_map)
-            lines.append(f"    n{node.node_id} = {expression}")
+        lines.extend(_emit_nodes(plan, (plan.root_id,), context_positions, globals_map))
         lines.append(f"    return n{plan.root_id}")
         source = "\n".join(lines) + "\n"
         namespace: dict[str, Any] = dict(globals_map)
@@ -443,6 +500,9 @@ def _series_plan_id(plan: "TypedSeriesBundlePlan") -> str:
             ",".join(plan.roots),
         )
     )
+    if any(node.operator_id == "rolling_apply" for node in plan.nodes):
+        from .rolling_scope import SCOPE_VERSION
+        payload += "|" + SCOPE_VERSION
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -477,24 +537,9 @@ def compile_numba_series_plan(
     lines = [
         f"def generated_series_plan({', '.join(f'v{index}' for index in range(len(context_names)))}):"
     ]
-    nodes_by_id = {node.node_id: node for node in plan.nodes}
     failed_operator: str | None = None
     try:
-        for node in plan.nodes:
-            if node.kind == "constant":
-                expression = repr(float(node.label))
-            elif node.kind == "variable":
-                expression = f"v{context_positions[node.label]}"
-            else:
-                failed_operator = node.operator_id
-                input_nodes = tuple(nodes_by_id[input_id] for input_id in node.inputs)
-                expression = _operator_call(
-                    node,
-                    input_nodes,
-                    globals_map,
-                    series_mode=True,
-                )
-            lines.append(f"    n{node.node_id} = {expression}")
+        lines.extend(_emit_nodes(plan, tuple(plan.roots.values()), context_positions, globals_map, series_mode=True))
         root_values = ", ".join(f"n{plan.roots[name]}" for name in channel_names)
         if len(channel_names) == 1:
             root_values += ","

@@ -13,7 +13,9 @@ from backend.custom_indicators.errors import IndicatorDomainError
 from backend.factor_research import return_kernels as kernels
 from backend.factor_research.return_contracts import FF3SourceFields, ReturnDatasetFields
 from backend.services.factor_research_routes import build_router
-from backend.tests.test_factor_research_service import context  # noqa: F401 - pytest fixture
+from backend.tests import test_factor_research_service as factor_fixtures
+
+context = factor_fixtures.context
 
 PREFIX = "/api/factor-research"
 

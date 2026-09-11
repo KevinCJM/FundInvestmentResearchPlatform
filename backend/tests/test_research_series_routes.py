@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import hashlib
 import json
 import sys
@@ -28,14 +28,7 @@ from backend.research_series.service import (  # noqa: E402
 from backend.services import research_series_routes as routes  # noqa: E402
 
 
-_REGISTRY_SPEC = importlib.util.spec_from_file_location(
-    "_research_series_v2_registry_contract",
-    BACKEND_DIR / "historical_regimes" / "v2_registry.py",
-)
-assert _REGISTRY_SPEC is not None and _REGISTRY_SPEC.loader is not None
-_REGISTRY_MODULE = importlib.util.module_from_spec(_REGISTRY_SPEC)
-_REGISTRY_SPEC.loader.exec_module(_REGISTRY_MODULE)
-NODE_REGISTRY = _REGISTRY_MODULE.NODE_REGISTRY
+from historical_regimes.v2_registry import NODE_REGISTRY  # noqa: E402
 
 
 def _write_fixture(tmp_path: Path) -> ResearchSeriesService:
@@ -126,6 +119,8 @@ def _write_fixture(tmp_path: Path) -> ResearchSeriesService:
             "revision": [1] * 14,
             "vintage": ["v1"] * 14,
             "nt_val": macro_values,
+            "nt_yoy": [0.2] * 14,
+            "nt_mom": [-0.1] * 14,
         }
     )
     revised = macro.iloc[[-1]].copy()
@@ -229,6 +224,8 @@ def test_catalog_discovers_active_index_macro_indicator_and_upload(monkeypatch, 
         for item in macro_by_id["macro:macro_cn_cpi_df"]["fields"]
     }
     assert macro_fields["nt_val"] == "本期值"
+    assert macro_fields["nt_yoy"] == "全国同比（%）"
+    assert macro_fields["nt_mom"] == "全国环比（%）"
     assert macro_by_id["macro:macro_cn_gdp_df"]["status"] == "not_downloaded"
 
     indicator_payload = client.get(
@@ -628,6 +625,11 @@ def test_main_app_mounts_research_series_and_warms_njit_against_index_only_snaps
     main_app = importlib.import_module("app")
     app_routes = importlib.import_module("services.research_series_routes")
     monkeypatch.setattr(app_routes, "research_series_service", service)
+    from backend.data_sources import store as source_store_module
+
+    isolated_store = source_store_module.SourceStore(tmp_path / "source-center")
+    monkeypatch.setattr(source_store_module, "SourceStore", lambda: isolated_store)
+    monkeypatch.setattr(main_app, "DATA_DIR", service.data_dir)
 
     with TestClient(main_app.app) as client:
         index_payload = client.get(

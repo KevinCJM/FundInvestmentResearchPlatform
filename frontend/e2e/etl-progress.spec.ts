@@ -6,6 +6,51 @@ const root = fileURLToPath(new URL('../../', import.meta.url))
 const python = process.env.TEST_PYTHON || '/Users/chenjunming/Desktop/myenv_312/bin/python3.12'
 const catalog = JSON.parse(execFileSync(python, ['-c', 'import json,tempfile; from pathlib import Path; from backend.data_sources.store import SourceStore; from backend.data_sources.service import catalog; t=tempfile.TemporaryDirectory(); s=SourceStore(Path(t.name)); s.seed(); print(json.dumps(catalog(s),ensure_ascii=False)); t.cleanup()'], { cwd: root, encoding: 'utf8' }))
 
+test('one current task survives recovery while failure history stays collapsed', async ({ page }, info) => {
+  const now = new Date().toISOString()
+  const run = { run_id: 'latest', name: 'Tushare 全数据同步（恢复）（恢复）', status: 'FAILED', created_at: now, updated_at: now, attempt: 1, published: false,
+    recovered_from: 'old-34', steps: [{ id: 'members', name: '指数成分与权重', kind: 'task', status: 'FAILED', error: '当前失败待恢复' }],
+    history: { root_run_id: 'origin', display_name: 'Tushare 全数据同步', resume_count: 35,
+      records: Array.from({ length:35 }, (_, i) => ({ run_id:`old-${i}`, status:'FAILED', created_at:now, attempt:1, failed_step:'成分与权重', error:`旧失败 ${i}` })) } }
+  let resumes = 0
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url()), path = url.pathname
+    if (path === '/api/data-sources/catalog') return route.fulfill({ json: { ...catalog, editing_enabled: true } })
+    if (path === '/api/data-sources/etl/workflows') return route.fulfill({ json: [] })
+    if (path === '/api/data-sources/etl/runs') {
+      expect(url.searchParams.get('view')).toBe('current')
+      return route.fulfill({ json: [run] })
+    }
+    if (path === '/api/data-sources/etl/runs/latest/recovery') {
+      resumes += 1
+      run.history.records.unshift({ run_id:'latest', status:'FAILED', created_at:now, attempt:1, failed_step:'成分与权重', error:'当前失败待恢复' })
+      run.history.resume_count += 1
+      run.run_id = 'resumed'; run.recovered_from = 'latest'; run.status = 'RUNNING'
+      run.steps = [{ id:'members', name:'指数成分与权重', kind:'task', status:'RUNNING', error:'' }]
+      return route.fulfill({ status:202, json:{ id:'job', source_run_id:'latest', target_run_id:'resumed', status:'SUCCEEDED', phase:'已恢复', message:'恢复已启动', created_at:now, updated_at:now, logs:[] } })
+    }
+    return route.fulfill({ status:404, json:{} })
+  })
+  await page.goto('/settings/data-sources?downloadView=runs')
+  await expect(page.getByTestId('etl-task-card')).toHaveCount(1)
+  const card = page.getByTestId('etl-task-card')
+  await expect(card.locator(':scope > summary')).not.toContainText('（恢复）')
+  await expect(page.getByText('旧失败 34', { exact:true })).not.toBeVisible()
+  await card.getByText(/历史记录 · 已续跑/).click()
+  await expect(page.getByText('旧失败 0', { exact:true })).toBeVisible()
+  await card.getByText(/历史记录 · 已续跑/).click()
+  await card.getByRole('button', { name:'恢复下载', exact:true }).click()
+  await card.getByRole('button', { name:'确认继续', exact:true }).click()
+  await expect(card.getByRole('button', { name:'取消运行' })).toBeVisible()
+  expect(resumes).toBe(1)
+  await page.reload()
+  await expect(page.getByTestId('etl-task-card')).toHaveCount(1)
+  await expect(page.getByText('旧失败 0', { exact:true })).not.toBeVisible()
+  await expect(page.getByRole('heading', { name:'下载任务' })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+  await page.screenshot({ path:info.outputPath('etl-current-task.png'), fullPage:true })
+})
+
 test('cross-date warning permits explicit resume and survives refresh', async ({ page }, info) => {
   let resumeCalls = 0
   const timing = { timezone: 'Asia/Shanghai', first_date: '2026-09-07', last_date: '2026-09-07', cross_date: false,
@@ -69,20 +114,31 @@ test('running node updates progress and logs through polling, without losing ter
   })
   await page.goto('/settings/data-sources')
   await page.getByRole('button', { name: '运行记录与恢复', exact: true }).click()
-  await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '15')
-  await page.getByText('最近日志（2 条，已脱敏）').click()
-  await expect(page.getByRole('list', { name: '最近执行日志' })).toContainText('120/800')
-  await page.getByRole('progressbar').scrollIntoViewIfNeeded()
+  const current = page.getByRole('list', { name: '当前工作步骤' })
+  await expect(current.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '15')
+  await current.getByText('最近日志（2 条，已脱敏）').click()
+  await expect(current.getByRole('list', { name: '最近执行日志' })).toContainText('120/800')
+  const allToggle = page.getByText('查看全部步骤（共 3 个，已完成 1 个）')
+  await allToggle.click()
+  const all = page.getByRole('list', { name: '全部工作步骤' })
+  await expect(all.locator(':scope > li')).toHaveCount(3)
+  await expect(all.locator(':scope > li').nth(1)).toContainText('2. 公募基金季度股票持仓披露')
+  await expect(all.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '15')
+  await all.getByRole('progressbar').scrollIntoViewIfNeeded()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
   await page.screenshot({ path: info.outputPath('etl-progress.png'), fullPage: true })
   progress.completed = 240
-  await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '30', { timeout: 8000 })
+  await expect(current.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '30', { timeout: 8000 })
+  await expect(all.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '30', { timeout: 8000 })
   progress.phase = '合并与校验'; progress.message = '本地合并历史数据'; progress.completed = null; progress.total = null
-  await expect(page.getByText('本地合并历史数据')).toBeVisible({ timeout: 8000 })
-  await expect(page.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow')
-  await expect(page.getByRole('list', { name: '最近执行日志' })).toBeVisible()
+  await expect(current.getByText('本地合并历史数据')).toBeVisible({ timeout: 8000 })
+  await expect(all.getByText('本地合并历史数据')).toBeVisible({ timeout: 8000 })
+  await expect(current.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow')
+  await expect(all.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow')
+  await expect(current.getByRole('list', { name: '最近执行日志' })).toBeVisible()
   run.status = 'FAILED'; run.steps[1].status = 'FAILED'
-  await expect(page.getByText('最后执行进度')).toBeVisible({ timeout: 8000 })
+  await expect(current.getByText('最后执行进度')).toBeVisible({ timeout: 8000 })
+  await expect(all.getByText('最后执行进度')).toBeVisible({ timeout: 8000 })
   await expect(page.getByRole('progressbar')).toHaveCount(0)
   expect(errors).toEqual([])
 })

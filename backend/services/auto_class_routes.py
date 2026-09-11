@@ -27,6 +27,7 @@ from auto_asset_class import (
 from fund_taxonomy import TAXONOMY_LEVELS
 from pit.catalog import RUN_MODES
 from pit.context import PitContextError, resolve_request_context
+from pit.guard import assert_no_universe_lookahead, universe_lineage
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -137,6 +138,16 @@ def auto_class_preview(req: AutoClassPreviewRequest):
 
     try:
         context = resolve_request_context(DATA_DIR, req.asOf, req.runMode, req.dataReleaseId)
+        # The candidate set is the one look-ahead no per-formula check can see: a
+        # pool screened on 2026 numbers and replayed over 2018 is perfectly causal
+        # in every individual computation and wrong as a whole. The guard already
+        # lived in pit.guard and the snapshot's own research_date is resolved just
+        # above -- this is the wiring that was missing.
+        universe_findings = assert_no_universe_lookahead(
+            context,
+            established_at=universe_reference.get("research_date"),
+            label=f"可投资域「{universe_reference.get('name') or universe_reference.get('id')}」",
+        )
     except PitContextError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -165,6 +176,11 @@ def auto_class_preview(req: AutoClassPreviewRequest):
     try:
         result = run_auto_classification(DATA_DIR, spec)
         result["universe_snapshot"] = universe_reference
+        result["pit"]["universe"] = universe_lineage(
+            universe_findings,
+            established_at=universe_reference.get("research_date"),
+            source="investable_universe_snapshot",
+        )
         return result
     except AutoClassError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})

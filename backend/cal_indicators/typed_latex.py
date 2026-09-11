@@ -12,7 +12,7 @@ import math
 from collections.abc import Mapping, Sequence
 
 
-MATH_NOTATION_VERSION = "1.4.0"
+MATH_NOTATION_VERSION = "1.5.0"
 
 
 _CANONICAL_OPERATOR_ALIASES = {
@@ -210,6 +210,13 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         return rf"\left({first}_{{t-{second}}}\right)_t"
     if operator_id == "difference":
         return rf"\left(\Delta_{{{second}}}{first}_t\right)_t"
+    if operator_id == "rolling_window":
+        return rf"\mathcal{{W}}_{{t,{second}}}{_group(first)}"
+    if operator_id == "finite_mask":
+        return rf"\mathbf{{1}}_{{\operatorname{{finite}}\left({first}\right)}}"
+    if operator_id == "rolling_apply":
+        window = second if len(arguments) not in {3, 5} else f"{second};{arguments[-1]}"
+        return rf"\mathcal{{R}}_{{{window}}}\!\left[{first}\right]_t"
     if operator_id == "rolling_mean":
         # Window availability rules belong in the calculation explanation. The
         # headline formula uses one compact symbol for the complete operator.
@@ -371,8 +378,38 @@ class _MathematicalLatexRenderer(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> str:  # noqa: N802
         if not isinstance(node.func, ast.Name):
             return rf"\mathrm{{{escape_latex_text(ast.unparse(node))}}}"
+        operator_id = _CANONICAL_OPERATOR_ALIASES.get(node.func.id, node.func.id)
+        if (
+            operator_id in {"mean", "std", "variance", "min_value", "max_value"}
+            and node.args
+            and isinstance(node.args[0], ast.Call)
+            and isinstance(node.args[0].func, ast.Name)
+            and node.args[0].func.id == "rolling_window"
+            and len(node.args[0].args) >= 2
+        ):
+            window_call = node.args[0]
+            values = self.render(window_call.args[0])
+            window = self.render(window_call.args[1])
+            window_set = rf"\mathcal{{W}}_{{t,{window}}}"
+            if operator_id == "mean":
+                return rf"\mu_{{t,{window}}}{_group(values)}"
+            if operator_id in {"std", "variance"}:
+                ddof = self.render(node.args[1]) if len(node.args) > 1 else "1"
+                if operator_id == "variance":
+                    if ddof in {"1", "1.0"}:
+                        return rf"s^2_{{t,{window}}}{_group(values)}"
+                    if ddof in {"0", "0.0"}:
+                        return rf"\sigma^2_{{t,{window}}}{_group(values)}"
+                    return rf"\sigma^{{2,({ddof})}}_{{t,{window}}}{_group(values)}"
+                if ddof in {"1", "1.0"}:
+                    return rf"s_{{t,{window}}}{_group(values)}"
+                if ddof in {"0", "0.0"}:
+                    return rf"\sigma_{{t,{window}}}{_group(values)}"
+                return rf"\sigma_{{t,{window}}}^{{({ddof})}}{_group(values)}"
+            operation = "min" if operator_id == "min_value" else "max"
+            return rf"\{operation}_{{i\in {window_set}}} {_indexed(values, 'i')}"
         return render_operator_latex(
-            node.func.id,
+            operator_id,
             tuple(self.render(argument) for argument in node.args),
         )
 

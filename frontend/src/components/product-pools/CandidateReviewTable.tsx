@@ -1,3 +1,4 @@
+import { useAllocationDraft } from '../../app/allocationJourney'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   batchUpdateProductPoolMembers,
@@ -201,11 +202,17 @@ export default function CandidateReviewTable({
   onMessage,
   onError,
 }: CandidateReviewTableProps) {
+  const [compact, setCompact] = useState(() => window.innerWidth < 640)
+  useEffect(() => {
+    const update = () => setCompact(window.innerWidth < 640)
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [])
   const originalDrafts = useMemo(
     () => Object.fromEntries(pool.members.map((member) => [member.key, memberDraft(member)])),
     [pool.members],
   )
-  const [drafts, setDrafts] = useState<Record<string, MemberDraft>>(() => originalDrafts)
+  const [drafts, setDrafts] = useAllocationDraft<Record<string, MemberDraft>>(`pool-review:${pool.id}:${pool.revision}`, () => originalDrafts)
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set())
   const [query, setQuery] = useState('')
   const [selectedBasicFields, setSelectedBasicFields] = useState<string[]>(DEFAULT_BASIC_FIELDS)
@@ -475,10 +482,10 @@ export default function CandidateReviewTable({
     }
   }
 
-  return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+  return <section className="min-w-0 max-w-full rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h2 className="text-lg font-semibold text-slate-900">4. 候选产品人工复核</h2>
+        <h2 className="text-lg font-semibold text-slate-900">候选产品人工复核</h2>
         <p className="mt-1 text-sm text-slate-500">
           待复核 {pool.members.filter((item) => item.research_status === 'pending').length}
           {' · '}已准入 {pool.members.filter((item) => item.research_status === 'approved').length}
@@ -489,13 +496,13 @@ export default function CandidateReviewTable({
     </div>
 
     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex min-w-0 w-full flex-wrap items-center gap-2 sm:w-auto">
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           aria-label="搜索候选产品"
           placeholder="搜索产品名称或代码"
-          className="w-60 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          className="min-w-0 w-full sm:w-60 rounded-lg border border-slate-300 px-3 py-2 text-sm"
         />
         <span className="text-xs text-slate-500">显示 {visibleMembers.length} 条</span>
         {reviewLoading && <span className="text-xs text-slate-400">正在加载扩展字段…</span>}
@@ -521,7 +528,8 @@ export default function CandidateReviewTable({
       </details>
     </div>
 
-    <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+    <details open={!compact || selectedKeys.size > 0} className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+      <summary className="cursor-pointer text-sm font-semibold text-emerald-900 sm:hidden">批量复核 · 已选 {selectedKeys.size} 只</summary>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-semibold text-emerald-950">批量处理 · 已选 {selectedKeys.size}</div>
         <div className="flex items-center gap-3 text-xs">
@@ -529,7 +537,7 @@ export default function CandidateReviewTable({
           {selectedKeys.size > 0 && <button type="button" onClick={() => setSelectedKeys(new Set())} className="font-medium text-slate-600 hover:underline">清空选择</button>}
         </div>
       </div>
-      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-3 grid min-w-0 gap-2 md:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
         <select aria-label="批量研究结论" value={bulkResearchStatus} onChange={(event) => setBulkResearchStatus(event.target.value as '' | ProductPoolResearchStatus)} className="rounded-lg border border-emerald-200 bg-white px-2 py-2 text-sm"><option value="">研究结论：不修改</option>{Object.entries(researchStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
         <select aria-label="批量使用状态" value={bulkUsageStatus} onChange={(event) => setBulkUsageStatus(event.target.value as '' | ProductPoolUsageStatus)} className="rounded-lg border border-emerald-200 bg-white px-2 py-2 text-sm"><option value="">使用状态：不修改</option>{Object.entries(usageStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
         <input aria-label="批量最大权重" type="number" min="0.1" max="100" step="0.1" value={bulkMaxWeight} onChange={(event) => setBulkMaxWeight(event.target.value)} placeholder="最大权重（%），空白不修改" className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-sm" />
@@ -543,9 +551,31 @@ export default function CandidateReviewTable({
         <button type="button" disabled={busy || selectedKeys.size === 0} onClick={() => applyBulk(true)} className="rounded-lg bg-emerald-800 px-3 py-2 text-sm font-semibold text-white disabled:bg-emerald-300">应用并保存</button>
         <button type="button" disabled={busy || dirtyKeys.size === 0} onClick={() => void saveKeys(Array.from(dirtyKeys))} className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:bg-slate-400">保存全部修改（{dirtyKeys.size}）</button>
       </div>
-    </div>
+    </details>
 
-    <div data-testid="candidate-review-scroll" className="mt-4 max-h-[680px] overflow-auto rounded-xl border border-slate-200">
+    {compact && <div data-testid="candidate-review-cards" className="mt-4 space-y-3">{visibleMembers.map(member => {
+      const draft = drafts[member.key] ?? memberDraft(member)
+      const evidences = orderedEvidences(member, draft.primary_plan_id)
+      const row = reviewRows.get(member.key)
+      return <article key={member.key} className="min-w-0 rounded-xl border border-slate-200 p-3">
+        <label className="flex min-w-0 items-start gap-2"><input type="checkbox" checked={selectedKeys.has(member.key)} onChange={() => toggleSelected(member.key)} aria-label={`选择 ${member.name}`} className="mt-1" /><span className="min-w-0 text-sm font-semibold text-slate-900">{member.name}<span className="mt-1 block font-mono text-xs font-normal text-slate-500">{member.code} · {researchStatusLabels[draft.research_status]}{dirtyKeys.has(member.key) ? ' · 未保存' : ''}</span></span></label>
+        <details className="mt-3 text-sm"><summary className="cursor-pointer font-medium text-emerald-800">查看证据与复核</summary>
+          <div className="mt-3 space-y-3">
+            {evidences.map(evidence => <div key={evidence.plan_id} className="rounded bg-slate-50 p-2 text-xs"><b>{evidence.plan_name}</b><p className="mt-1">排名 {evidence.rank ?? '未排名'} · 得分 {evidence.score == null ? '不可用' : evidence.score.toFixed(3)} · 截至 {evidence.as_of || '未记录'}</p></div>)}
+            <dl className="grid grid-cols-2 gap-2 text-xs">{displayedBasicFields.map(field => <div key={field.field}><dt className="text-slate-500">{field.label}</dt><dd className="break-words">{formatReviewValue(row?.basic_values[field.field], field)}</dd></div>)}{displayedSnapshotFields.map(field => <div key={field.field}><dt className="text-slate-500">{field.label}</dt><dd>{formatReviewValue(row?.snapshot_values[field.field], field)}<span className="block text-slate-500">{row?.snapshot_statuses[field.field] && !['available', 'ok', 'ready'].includes(row.snapshot_statuses[field.field] ?? '') ? row.snapshot_statuses[field.field] : row?.snapshot_value_dates[field.field] || '日期未记录'}</span></dd></div>)}</dl>
+            <div className="grid grid-cols-2 gap-2"><label className="min-w-0 text-xs">研究结论<select aria-label={`${member.name} 研究结论`} value={draft.research_status} onChange={event => updateDraft(member.key, { research_status: event.target.value as ProductPoolResearchStatus })} className="mt-1 w-full rounded border p-2">{Object.entries(researchStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="min-w-0 text-xs">使用状态<select aria-label={`${member.name} 使用状态`} value={draft.usage_status} onChange={event => updateDraft(member.key, { usage_status: event.target.value as ProductPoolUsageStatus })} className="mt-1 w-full rounded border p-2">{Object.entries(usageStatusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
+            <label className="block text-xs">复核原因<textarea aria-label={`${member.name} 复核原因`} value={draft.reasons} onChange={event => updateDraft(member.key, { reasons: event.target.value })} rows={2} className="mt-1 w-full rounded border p-2" /></label>
+            <div className="grid grid-cols-2 gap-2">{(['max_weight', 'owner', 'review_due_date', 'substitute_group'] as const).map(field => {
+              const label = { max_weight: '最大权重（%）', owner: '负责人', review_due_date: '复审日期', substitute_group: '替代组' }[field]
+              return <label key={field} className="min-w-0 text-xs">{label}<input aria-label={`${member.name} ${label}`} type={field === 'review_due_date' ? 'date' : field === 'max_weight' ? 'number' : 'text'} value={draft[field]} onChange={event => updateDraft(member.key, { [field]: event.target.value })} className="mt-1 min-w-0 w-full rounded border p-2" /></label>
+            })}</div>
+            <button type="button" disabled={busy || !dirtyKeys.has(member.key)} onClick={() => void saveKeys([member.key])} className="w-full rounded-lg bg-slate-900 px-3 py-2 font-semibold text-white disabled:bg-slate-300">保存复核</button>
+          </div>
+        </details>
+      </article>
+    })}{!visibleMembers.length && <p className="p-4 text-sm text-slate-500">没有匹配的候选产品。</p>}</div>}
+
+    {!compact && <div data-testid="candidate-review-scroll" className="mt-4 min-w-0 max-w-full max-h-[680px] overflow-auto rounded-xl border border-slate-200">
       <table className="min-w-[1450px] w-full text-sm">
         <thead className="text-left text-xs text-slate-500">
           <tr>
@@ -612,6 +642,6 @@ export default function CandidateReviewTable({
         </tbody>
       </table>
       {visibleMembers.length === 0 && <p className="p-5 text-center text-sm text-slate-500">没有匹配的候选产品。</p>}
-    </div>
+    </div>}
   </section>
 }

@@ -7,9 +7,11 @@ import copy
 import math
 from typing import Any, Mapping
 
-from cal_indicators.typed_dsl import TypedDslError
+from cal_indicators.typed_dsl import TypedDslError, compose_typed_series_bundle
 from cal_indicators.typed_numba_kernels import NUMERIC_KERNEL_VERSION
 from cal_indicators.typed_operators import (
+    ROLLING_TYPED_DSL_VERSION,
+    ROLLING_OPERATOR_REGISTRY_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
 )
@@ -24,6 +26,9 @@ from .series_parameters import (
     validate_parameter_definition,
 )
 from .rolling_series import (
+    LEGACY_ROLLING_TRANSFORM_VERSION,
+    WINDOW_REDUCTION_TRANSFORM_VERSION,
+    ROLLING_TRANSFORM_VERSION,
     derive_rolling_series_definition,
     normalize_rolling_source,
 )
@@ -32,6 +37,7 @@ from .variable_registry import (
     DATA_CONTRACT_VERSION,
     VARIABLE_REGISTRY_VERSION,
     get_variable,
+    variable_types,
 )
 
 
@@ -346,11 +352,14 @@ def _common(
     data_basis: str = "ETF 未复权日 K 行情；按日期对齐，缺失保留为空，不前向填充",
     fixed_parameters: list[dict[str, Any]] | None = None,
     rolling_source: Mapping[str, Any] | None = None,
+    revision: int = 1,
+    dsl_version: str = TYPED_DSL_VERSION,
+    operator_registry_version: str = TYPED_OPERATOR_REGISTRY_VERSION,
 ) -> dict[str, Any]:
     primary = channels[0]
     return {
         "id": indicator_id,
-        "revision": 1,
+        "revision": revision,
         "source": "built_in",
         "read_only": True,
         "created_at": timestamp,
@@ -377,8 +386,8 @@ def _common(
         "annual_risk_free_rate_percent": float(annual_risk_free_rate_percent),
         "periods": list(SUPPORTED_PERIODS),
         "period_policy": "all_supported",
-        "dsl_version": TYPED_DSL_VERSION,
-        "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        "dsl_version": dsl_version,
+        "operator_registry_version": operator_registry_version,
         "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
         "variable_registry_version": VARIABLE_REGISTRY_VERSION,
         "data_contract_version": DATA_CONTRACT_VERSION,
@@ -395,7 +404,7 @@ def _common(
         "methodology": methodology,
         "data_basis": data_basis,
         "availability_status": "ready",
-        "formula_version": TYPED_DSL_VERSION,
+        "formula_version": dsl_version,
         "template_origin": None,
         "rolling_source": copy.deepcopy(rolling_source),
     }
@@ -548,6 +557,7 @@ def time_series_builtin_indicators(
         5,
         name="5 日滚动年化夏普比率",
         description="对每个时点最近 5 个有效收益观察值计算样本标准差口径的年化夏普比率。",
+        transform_version=LEGACY_ROLLING_TRANSFORM_VERSION,
     )
     rolling_sharpe.update(
         {
@@ -559,7 +569,109 @@ def time_series_builtin_indicators(
             "updated_at": timestamp,
         }
     )
-    return [price_ma, bollinger, volume_ma, kdj, rolling_sharpe]
+    legacy_items = [price_ma, bollinger, volume_ma, kdj, rolling_sharpe]
+    for item in legacy_items:
+        item.update(
+            {
+                "revision": 1,
+                "dsl_version": ROLLING_TYPED_DSL_VERSION,
+                "operator_registry_version": ROLLING_OPERATOR_REGISTRY_VERSION,
+                "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
+                "variable_registry_version": VARIABLE_REGISTRY_VERSION,
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "context_schema_version": CONTEXT_SCHEMA_VERSION,
+                "formula_version": ROLLING_TYPED_DSL_VERSION,
+            }
+        )
+
+    current_items: list[dict[str, Any]] = []
+    for legacy in legacy_items:
+        if legacy.get("rolling_source"):
+            current = derive_rolling_series_definition(
+                sharpe_source,
+                5,
+                name=str(legacy["name"]),
+                description=str(legacy["description"]),
+                transform_version=WINDOW_REDUCTION_TRANSFORM_VERSION,
+            )
+            current.update(
+                {
+                    "id": legacy["id"],
+                    "source": "built_in",
+                    "read_only": True,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+            )
+        else:
+            current = copy.deepcopy(legacy)
+            plan = compose_typed_series_bundle(
+                {
+                    str(output["id"]): str(output["expression"])
+                    for output in current.get("series_outputs") or []
+                },
+                variable_types=variable_types("single_product", TYPED_DSL_VERSION),
+                dsl_version=TYPED_DSL_VERSION,
+                operator_registry_version=TYPED_OPERATOR_REGISTRY_VERSION,
+            )
+            canonical = dict(plan.python_expressions)
+            for output in current.get("series_outputs") or []:
+                output["expression"] = canonical[str(output["id"])]
+            current["expression"] = current["series_outputs"][0]["expression"]
+        current.update(
+            {
+                "revision": 2,
+                "dsl_version": TYPED_DSL_VERSION,
+                "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+                "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
+                "variable_registry_version": VARIABLE_REGISTRY_VERSION,
+                "data_contract_version": DATA_CONTRACT_VERSION,
+                "context_schema_version": CONTEXT_SCHEMA_VERSION,
+                "formula_version": TYPED_DSL_VERSION,
+            }
+        )
+        current_items.append(current)
+    # Versioned definitions are replay contracts, not parallel numerical code.
+    # New selections use whole-interval scopes; v1/v2 remain immutable.
+    middle = "rolling_apply(mean(market_close), 20)"
+    deviation = "rolling_apply(std(market_close, 0), 20)"
+    lowest = "rolling_apply(min_where(market_low, finite_mask(market_low)), 9, 1)"
+    highest = "rolling_apply(max_where(market_high, finite_mask(market_high)), 9, 1)"
+    rsv = f"divide_or_default((market_close - {lowest}) * 100, {highest} - {lowest}, 50)"
+    k_value = f"recursive_smooth({rsv}, 3, 50)"
+    d_value = f"recursive_smooth({k_value}, 3, 50)"
+    scoped_formulas = {
+        "builtin-close-moving-average-series": {"ma": middle},
+        "builtin-bollinger-bands-series": {
+            "upper": f"{middle} + 2 * {deviation}", "middle": middle,
+            "lower": f"{middle} - 2 * {deviation}",
+        },
+        "builtin-volume-moving-average-series": {"volume_ma": "rolling_apply(mean(volume), 10)"},
+        "builtin-kdj-series": {"k": k_value, "d": d_value, "j": f"3 * ({k_value}) - 2 * ({d_value})"},
+    }
+    scoped_items = []
+    for previous in current_items:
+        current = copy.deepcopy(previous)
+        if previous.get("rolling_source"):
+            current.update(derive_rolling_series_definition(
+                sharpe_source, 5, name=previous["name"], description=previous["description"],
+                transform_version=ROLLING_TRANSFORM_VERSION,
+            ))
+        else:
+            plan = compose_typed_series_bundle(
+                scoped_formulas[previous["id"]],
+                variable_types=variable_types("single_product", TYPED_DSL_VERSION),
+                dsl_version=TYPED_DSL_VERSION, operator_registry_version=TYPED_OPERATOR_REGISTRY_VERSION,
+            )
+            canonical = dict(plan.python_expressions)
+            for output in current["series_outputs"]:
+                output["expression"] = canonical[output["id"]]
+            current["expression"] = current["series_outputs"][0]["expression"]
+            current["required_variables"] = list(plan.context_requirements)
+            current["methodology"] += " 区间统计由通用滚动计算执行；递推状态保持在作用域外。"
+        current["revision"] = 3
+        scoped_items.append(current)
+    return legacy_items + current_items + scoped_items
 
 def parameter_variable_types(definition: Mapping[str, Any]) -> dict[str, ValueType]:
     """Stable scalar types for explicitly declared algorithm parameters."""
@@ -976,10 +1088,14 @@ def normalize_time_series_definition(
         or defaults.get("operator_registry_version")
         or TYPED_OPERATOR_REGISTRY_VERSION
     )
-    if dsl_version != TYPED_DSL_VERSION or operator_registry_version != TYPED_OPERATOR_REGISTRY_VERSION:
+    supported_protocol_pairs = {
+        (ROLLING_TYPED_DSL_VERSION, ROLLING_OPERATOR_REGISTRY_VERSION),
+        (TYPED_DSL_VERSION, TYPED_OPERATOR_REGISTRY_VERSION),
+    }
+    if (dsl_version, operator_registry_version) not in supported_protocol_pairs:
         raise ValidationError(
             "SERIES_PROTOCOL_VERSION_MISMATCH",
-            "新建时序指标必须使用当前 typed DSL 与算子注册表版本。",
+            "时序指标必须使用受支持且严格配对的 typed DSL 与算子注册表版本。",
             field="dsl_version",
         )
     history_hint = str(fields.get("history_policy") or defaults.get("history_policy") or "lookback")

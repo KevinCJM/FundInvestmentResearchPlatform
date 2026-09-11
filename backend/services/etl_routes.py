@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 
 from .data_source_routes import body, get_store, invoke, revision
@@ -11,6 +12,7 @@ try:
     from backend.data_sources.etl_store import EtlStore, public_run
     from backend.data_sources.etl_executor import observe
     from backend.data_sources.etl_templates import tushare_fund_workflow, template_catalog
+    from backend.data_sources.etl_dependencies import plan_dependencies as plan_task_dependencies
     from backend.data_sources.task_catalog import task_catalog as registered_tasks
     from backend.data_sources.models import CenterError, ID_PATTERN
 except ModuleNotFoundError:
@@ -18,6 +20,7 @@ except ModuleNotFoundError:
     from data_sources.etl_store import EtlStore, public_run
     from data_sources.etl_executor import observe
     from data_sources.etl_templates import tushare_fund_workflow, template_catalog
+    from data_sources.etl_dependencies import plan_dependencies as plan_task_dependencies
     from data_sources.task_catalog import task_catalog as registered_tasks
     from data_sources.models import CenterError, ID_PATTERN
 
@@ -76,20 +79,48 @@ async def validate(request: Request):
     return await invoke(etl_service.validate, get_store(), payload.get("definition"), payload.get("options"))
 
 
+@router.post('/dependencies/plan')
+async def plan_dependencies(request: Request):
+    payload = await body(request)
+    def plan():
+        definition = plan_task_dependencies(etl_service.parse_definition(payload.get('definition')))
+        etl_service.inspect_plan(get_store(), definition)
+        return {'definition': definition.model_dump(mode='json'), 'published': False}
+    return await invoke(plan)
+
+
 @router.post("/runs")
 async def start(request: Request):
     return await invoke(etl_service.start, get_store(), await body(request))
 
 
 @router.get("/runs")
-async def runs():
+async def runs(view: Literal['all', 'current'] = 'all'):
     def load():
         store = get_store()
         journal = EtlStore(store)
-        items = [journal.interrupted(run) for run in journal.runs()]
-        successors = etl_recovery.successor_map(store)
+        if view == 'current':
+            from .etl_run_view import current_run_views, read_run_records
+            records = read_run_records(store)
+            groups = current_run_views(records)
+            items = [journal.interrupted(run) for run, _, _ in groups]
+        else:
+            groups = []
+            items = [journal.interrupted(run) for run in journal.runs()]
+        successors = etl_recovery.successor_map(store, records=records if view == 'current' else None)
         fingerprint = etl_service.execution_fingerprint() if any(run['status'] in {'FAILED', 'CANCELLED', 'INTERRUPTED'} for run in items) else None
-        return [_run_with_recovery(store, run, detail=False, fingerprint=fingerprint, successors=successors) for run in items]
+        values = [_run_with_recovery(store, run, detail=False, fingerprint=fingerprint, successors=successors) for run in items]
+        for value, (_, metadata, chain) in zip(values, groups):
+            value['history'] = metadata
+            # During migration the stopped successor may exist before resume;
+            # keep the original recovery job visible in the same card.
+            if value['status'] not in {'RUNNING', 'SUCCEEDED'}:
+                for ancestor in chain:
+                    job = etl_recovery.job_status(store, ancestor['run_id'])
+                    if job and job['status'] in etl_recovery.ACTIVE:
+                        value['recovery'] = {**value.get('recovery', {}), 'job': job}
+                        break
+        return values
     return await invoke(load)
 
 

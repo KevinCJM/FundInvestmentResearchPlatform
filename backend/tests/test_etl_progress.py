@@ -10,7 +10,10 @@ import pytest
 from backend.data_sources import etl_service as etl, task_runtime
 from backend.data_sources.models import CenterError
 from backend.data_sources.task_progress import TaskProgressLog, progress_monitor, progress_path
-from backend.tests.test_etl_dataset_tasks import store, small_plan, request, finish, fake_worker
+from backend.tests.test_etl_dataset_tasks import small_plan, request, finish, fake_worker
+from backend.tests import test_etl_dataset_tasks as dataset_fixtures
+
+store = dataset_fixtures.store
 
 
 def test_explicit_stage_progress_and_redaction_before_persistence(tmp_path):
@@ -61,6 +64,17 @@ def test_no_fake_percent(text):
     assert log.state['total'] is None
 
 
+def test_page_ceiling_is_not_task_total_and_coverage_counts_are_distinct():
+    log = TaskProgressLog()
+    log.write('[INFO] 全市场 公告日 20260831 分页 2/1000，本页 1000 行，已接收 2000 行。\n')
+    assert log.state['total'] is None
+    assert log.state['page_progress'] == {'scope': '全市场', 'date': '20260831', 'page': 2, 'limit': 1000}
+    log.write('[COVERAGE] 日期 2；复用 5；复核 1；检查点 3；请求 7。\n')
+    assert log.state['event_coverage']['reused_days'] == 5
+    assert log.state['event_coverage']['requests'] == 7
+    assert '新增行数' in log.state['message']
+
+
 def test_progress_path_cannot_escape_attempt(tmp_path):
     output = tmp_path / 'step' / 'work'
     assert progress_path({'progress_path': str(tmp_path / 'step/1/progress.json')}, output)
@@ -70,6 +84,21 @@ def test_progress_path_cannot_escape_attempt(tmp_path):
     (tmp_path / 'step/1/progress.json').symlink_to(tmp_path / 'outside')
     with pytest.raises(CenterError):
         progress_path({'progress_path': str(tmp_path / 'step/1/progress.json')}, output)
+
+
+def test_duplicate_page_verification_has_its_own_progress():
+    log = TaskProgressLog()
+    log.write('[INFO] 全市场 公告日 20260829 分页 8/1000，本页原始 10 行。\n')
+    log.write('[STAGE] 公告日 20260829 跨页重复稳定性复核：8 页，共享原请求预算。\n')
+    assert log.state['phase'] == '分页一致性复核'
+    assert log.state['total'] is None
+    log.write('[INFO] 公告日 20260829 页面复核 3/8。\n')
+    assert log.state['phase'] == '分页一致性复核'
+    assert (log.state['completed'], log.state['total'], log.state['unit']) == (3, 8, '页')
+    assert 'page_progress' not in log.state
+    log.write('[INFO] fund_portfolio 日期进度 11/16。\n')
+    assert log.state['phase'] == '下载分片'
+    assert (log.state['completed'], log.state['total'], log.state['unit']) == (11, 16, '项')
 
 
 def test_running_api_receives_progress_and_failure_keeps_last_logs(store, monkeypatch):

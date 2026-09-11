@@ -199,6 +199,65 @@ def test_real_adapter_invokes_existing_collector_without_limit(store, monkeypatc
     assert called[0][2].capture is True
 
 
+@pytest.mark.parametrize('failure', [None, 'permission', 'cap', 'wrong_date', 'wrong_code', 'missing_date'])
+def test_index_transport_split_through_real_worker_acceptance(store, monkeypatch, failure):
+    import T01_get_data as script
+    from backend.data_sources import runtime
+    from backend.data_sources.task_worker import acquire
+    monkeypatch.setattr(script, 'FUTURES_INDEX_UNIVERSE', [('A.NH', 'A')])
+    calls = []
+    def request(url, method, body, headers, policy):
+        params = body['params']; calls.append(dict(params))
+        if params['start_date'] != params['end_date'] or failure == 'cap':
+            items = [['A.NH', '20260901', 1.0]] * 2001
+        elif failure == 'permission':
+            return json.dumps({'code': -1, 'msg': 'no permission'})
+        else:
+            items = [['OTHER.NH' if failure == 'wrong_code' else 'A.NH',
+                      None if failure == 'missing_date' else '19990101' if failure == 'wrong_date'
+                      else params['start_date'], 1.0]]
+        return json.dumps({'code': 0, 'data': {'fields': ['ts_code', 'trade_date', 'close'], 'items': items}})
+    monkeypatch.setattr(runtime, 'request', request)
+    records = [r for kind in ('source', 'interface') for r in store.list(kind)
+               if r['config'].get('source_id', r['config']['id']) == 'tushare']
+    payload = dict(root=str(store.root), source_id='tushare', source_hash=fingerprint(records),
+                   params={'start_date': '20260901', 'end_date': '20260902'}, mode='full', has_baseline=False)
+    path = store.root / 'out' / 'index_futures_daily_df.parquet'
+    if failure:
+        with pytest.raises(CenterError):
+            acquire(payload, task_specs()['tushare.index_futures'], path.parent)
+        assert not path.exists()
+    else:
+        result = acquire(payload, task_specs()['tushare.index_futures'], path.parent)
+        assert len(calls) == 3 and result['batches'] == 2
+        assert pq.ParquetFile(path).metadata.num_rows == 2
+        calls.clear()
+        acquire(payload, task_specs()['tushare.index_futures'], path.parent)
+        assert not calls  # Complete disk checkpoints need no network replay.
+
+
+def test_partition_acknowledgement_cannot_hide_later_permission_failure(store, monkeypatch):
+    import T01_get_data as script
+    from backend.data_sources.runtime import ConfiguredTushareClient
+    from backend.data_sources.task_worker import acquire
+    calls = []
+    def call(self, interface, **params):
+        calls.append(params)
+        raise CenterError('SOURCE_ROW_CAP' if len(calls) == 1 else 'SOURCE_PERMISSION_OR_PARAMS', 'offline')
+    def operation(args, actions, *, client):
+        for _ in range(2):
+            try: client.fut_index_daily(ts_code='A.NH', start_date='20260901', end_date='20260902')
+            except CenterError: pass
+        client.acknowledge_partition('fut_index_daily', ts_code='A.NH', start_date='20260901', end_date='20260902')
+    monkeypatch.setattr(ConfiguredTushareClient, '_call', call)
+    monkeypatch.setattr(script, '_run_actions', operation)
+    records = [r for kind in ('source', 'interface') for r in store.list(kind)
+               if r['config'].get('source_id', r['config']['id']) == 'tushare']
+    with pytest.raises(CenterError, match='尚未成功'):
+        acquire(dict(root=str(store.root), source_id='tushare', source_hash=fingerprint(records),
+                     params={}, mode='full', has_baseline=False), task_specs()['tushare.index_futures'], store.root / 'out')
+
+
 def test_warning_mapping_is_not_hidden(store, monkeypatch):
     def worker(*args):
         result = fake_worker(*args)

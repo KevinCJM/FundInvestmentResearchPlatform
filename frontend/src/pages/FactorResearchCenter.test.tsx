@@ -64,8 +64,12 @@ describe('factor research workflow', () => {
     open()
     const user = userEvent.setup()
     await screen.findByLabelText('研究方案名称')
-    await user.click(screen.getByRole('tab', { name: '因子库' }))
-    await user.click(screen.getAllByRole('button', { name: '复制构建' })[0])
+    const library = screen.getByRole('tab', { name: '因子库' })
+    // The editor can render before the catalogue-loading action releases its
+    // busy state. Wait for an actionable tab rather than clicking a disabled one.
+    await waitFor(() => expect(library).toBeEnabled())
+    await user.click(library)
+    await user.click((await screen.findAllByRole('button', { name: '复制构建' }))[0])
     const name = screen.getByLabelText('因子名称')
     await user.clear(name); await user.type(name, '我的ETF动量')
     await user.click(screen.getByRole('button', { name: '保存因子' }))

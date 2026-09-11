@@ -95,12 +95,36 @@ def active_snapshot(root: Path) -> Path:
         raise CenterError('AUTO_SNAPSHOT_REQUIRED', '没有有效活跃快照，无法自动增量；请先初始化并激活数据快照。', 422) from exc
 
 
-def plan(store, definition, *, today_cutoff: date | None = None) -> dict:
+def plan(store, definition, *, today_cutoff: date | None = None, baseline_run_id: str | None = None, options=None) -> dict:
     from .task_catalog import get_task
+    from .auto_baseline import candidate_choices, exclusion_proposal, supplemental_files
+    from .etl_models import EtlRunOptions
+    from . import event_coverage
+    options = options or EtlRunOptions(mode='auto_incremental')
     end = today_cutoff or cutoff_date()
     root = store.root.resolve()
     snapshot = active_snapshot(root)
     files = {p.name: file_identity(p) for p in snapshot.glob('*.parquet') if p.is_file() and not p.is_symlink()}
+    wanted = {name: (column, get_task(s.task_id)['api_slots']) for s in definition.steps if s.kind == 'task'
+              for name, column in HISTORY.get(get_task(s.task_id)['action'], [])
+              if options.auto_baseline_scope == 'acquisition' or not (snapshot / name).exists() and not (snapshot / name).is_symlink()}
+    supplements = {}
+    if baseline_run_id:
+        from .etl_store import EtlStore
+        try:
+            supplements = supplemental_files(store, EtlStore(store).get_run(baseline_run_id), wanted, end)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise CenterError('AUTO_CANDIDATE_INVALID', '所选候选文件或日期无效，请重新选择基线；不会启动下载。', 422) from exc
+    choices = candidate_choices(store, wanted, end)
+    # Permit explicit use of a completed acquisition without publishing it.
+    # Never replace an existing baseline with an older candidate.
+    for name, entry in list(supplements.items()):
+        if name in files:
+            column = wanted[name][0]
+            if date_bounds(snapshot / name, column)[1] > _date(entry['latest_date']):
+                del supplements[name]
+            else:
+                del files[name]
     calendar = snapshot / 'trade_day_df.parquet'
     if calendar.name not in files:
         raise CenterError('AUTO_CALENDAR_REQUIRED', '活跃快照缺少交易日历，不能推断自动增量范围。', 422)
@@ -138,30 +162,69 @@ def plan(store, definition, *, today_cutoff: date | None = None) -> dict:
         item = {'id': step.id, 'name': step.name, 'strategy': 'refresh', 'latest_date': None,
                 'start_date': end.strftime('%Y%m%d'), 'end_date': end.strftime('%Y%m%d'),
                 'files': [], 'message': '基础信息整表刷新；不重取基金净值历史。'}
+        issue_start = len(issues)
         if not supported(action):
-            issues.append({'code': 'AUTO_UNSUPPORTED', 'message': f'{step.name} 尚无可靠的自动区间合同，请单独手动更新。'})
+            issues.append({'code': 'AUTO_UNSUPPORTED', 'message': f'{step.name} 暂不支持自动推断日期；请从本次流程排除，或单独选择手动更新。'})
         elif action in HISTORY:
             bounds = []
             for name, column in HISTORY[action]:
-                if name not in files:
-                    issues.append({'code': 'AUTO_BASELINE_REQUIRED', 'message': f'{step.name} 尚未初始化（{name}）；自动增量不会改成全量。'})
+                if name not in files and name not in supplements:
+                    available = any(any(f['name'] == name for f in c['files']) for c in choices)
+                    issues.append({'code': 'AUTO_BASELINE_NOT_ACTIVE' if available else 'AUTO_BASELINE_REQUIRED', 'file': name,
+                                   'message': (f'{step.name}（{name}）已有完成的下载，但未在活跃快照中启用；可选择已完成下载补足基线。'
+                                               if available else f'{step.name} 的活跃快照缺少 {name}；请先初始化，或从本次流程排除。不会自动转为全量。')})
                     continue
                 try:
-                    first, latest = date_bounds(snapshot / name, column)
+                    source = snapshot / name if name in files else root / supplements[name]['path']
+                    first, latest = date_bounds(source, column)
                     if latest > end:
                         raise CenterError('AUTO_FUTURE_BASELINE', f'{step.name} 最新日期晚于昨日，请检查快照日期。', 422)
                     previous = [d for d in days if d <= latest]
                     start = previous[-5] if len(previous) >= 5 else (previous[0] if previous else latest)
                     bounds.append((first, latest, start))
-                    item['files'].append({'name': name, 'latest_date': latest.isoformat()})
+                    item['files'].append({'name': name, 'latest_date': latest.isoformat(),
+                                          'baseline_run_id': supplements.get(name, {}).get('run_id')})
+                    if action in event_coverage.EVENT_FILES:
+                        import hashlib, json
+                        records = sorted(sources[step.source_id], key=lambda r: ('source' if 'transport' in r['config'] else 'interface', r['config']['id']))
+                        source_hash = hashlib.sha256(json.dumps([{'config': r['config'], 'revision': r['revision']} for r in records], sort_keys=True).encode()).hexdigest()
+                        coverage = event_coverage.load(source, source_hash)
+                        details = event_coverage.plan_dates(first, latest, end, coverage,
+                            revision_interval=options.event_revision_interval_days,
+                            revision_window=options.event_revision_window_days, purpose=options.event_update_purpose)
+                        item.update(details)
+                        ledger = event_coverage.sidecar(source)
+                        if ledger.exists():
+                            needed.add(ledger.name)
+                            if name in files:
+                                files[ledger.name] = file_identity(ledger)
+                            else:
+                                # The chosen candidate inventory must cover both bytes
+                                # and ledger; a stray adjacent JSON is not evidence.
+                                from .auto_baseline import candidate_inventory
+                                entry = candidate_inventory(store, EtlStore(store).get_run(baseline_run_id))['files'].get(ledger.name)
+                                if not entry:
+                                    raise CenterError('EVENT_COVERAGE_INVALID', '候选清单缺少查询覆盖凭据。')
+                                supplements[ledger.name] = {**entry, **file_identity(ledger), 'run_id': baseline_run_id}
                 except (ValueError, OSError, CenterError) as exc:
-                    issues.append({'code': getattr(exc, 'code', 'AUTO_DATE_INVALID'), 'message': getattr(exc, 'message', f'{name} 日期或文件无效。')})
+                    issues.append({'code': getattr(exc, 'code', 'AUTO_DATE_INVALID'), 'file': name,
+                                   'message': getattr(exc, 'message', f'{name} 日期或文件无效。')})
             if bounds:
                 first, latest, start = min(b[0] for b in bounds), min(b[1] for b in bounds), min(b[2] for b in bounds)
                 item.update(strategy='incremental', latest_date=latest.isoformat(), start_date=start.strftime('%Y%m%d'),
                             history_start=first.strftime('%Y%m%d'), message='回查最近 5 个交易日，补充新增日期；迟报数据以下次实际返回为准。')
                 if action in {'nav', 'fund_nav', 'candle'}:
                     item['message'] += ' 无历史代码单独补齐，已有代码不重拉全历史。'
+                if action in event_coverage.EVENT_FILES and 'query_dates' in item:
+                    item['start_date'] = item['query_dates'][0] if item['query_dates'] else end.strftime('%Y%m%d')
+                    item['message'] = (f'新增/缺少覆盖 {item["new_query_days"]} 天，修订复核 {item["revision_query_days"]} 天，'
+                                       f'复用已查区间 {item["reused_query_days"]} 天。按公告日查询，不按季度或净值交易日猜测。')
+                    if not item['coverage_known']:
+                        item['message'] += ' 旧数据没有查询覆盖凭据，仅从最新公告日开始；不代表更早历史已完整。'
+                    config = configs.get('tushare.fund_portfolio' if action == 'fund_portfolio' else 'tushare.fund_div', {})
+                    item['request_estimate'] = {'minimum': len(item['query_dates']),
+                        'page_ceiling': len(item['query_dates']) * config.get('pagination', {}).get('max_pages', 1),
+                        'note': '单轮分页安全上限，不含有界重试和空页复核；发现跨页重复时会完整复读该公告日。新增基金身份补历史单独显示。'}
                 if (end - start).days > 366:
                     issues.append({'code': 'AUTO_GAP_TOO_LARGE', 'message': f'{step.name} 缺口超过一年，请先分段手动补齐，避免自动任务意外长时间运行。'})
         elif action in DERIVED:
@@ -176,14 +239,24 @@ def plan(store, definition, *, today_cutoff: date | None = None) -> dict:
         if spec['parameters']:
             step.params = {'start_date': item['start_date'], 'end_date': item['end_date']}
         step.mode = 'inherit'
+        for issue in issues[issue_start:]:
+            issue['step_id'] = step.id
+        if len(issues) > issue_start:
+            item.update(strategy='blocked', message='未安排下载：请先处理该节点的拦截项。')
         steps.append(item)
     snapshot_id = snapshot.relative_to(root).as_posix()
     files = {name: identity for name, identity in files.items() if name in needed}
     public = {'snapshot': snapshot_id, 'cutoff_date': end.isoformat(), 'lookback_trade_days': 5,
-              'steps': steps, 'errors': issues, 'ready': not issues, 'published': False}
+              'steps': steps, 'errors': issues, 'ready': not issues, 'published': False,
+              'supplemental_baseline': {'run_id': baseline_run_id, 'files': list(supplements), 'scope': options.auto_baseline_scope},
+              'warnings': ([('使用已完成下载作为本次私有采集基线' if options.auto_baseline_scope == 'acquisition' else '仅用已完成下载补足缺失表') + '；不激活或覆盖研究快照。采集跨日期，使用前仍需核验修订与 PIT。'] if supplements else [])}
     public['plan_id'] = fingerprint({'plan': public, 'definition': definition.compiled().model_dump(mode='json'),
-                                    'files': files, 'sources': sources})
-    return {'public': public, 'definition': bound, 'baseline': {'snapshot': snapshot_id, 'files': files}}
+                                    'files': files, 'supplements': supplements, 'sources': sources})
+    # Discovery/proposals are advisory and cannot invalidate a confirmed plan
+    # merely because an unrelated task completed in the meantime.
+    public['baseline_choices'] = choices
+    public['exclusion_proposal'] = exclusion_proposal(definition, {e['step_id'] for e in issues})
+    return {'public': public, 'definition': bound, 'baseline': {'snapshot': snapshot_id, 'files': files, 'supplements': supplements}}
 
 
 def freeze_baseline(journal, automatic: dict, directory: Path) -> dict:
@@ -205,6 +278,23 @@ def freeze_baseline(journal, automatic: dict, directory: Path) -> dict:
             clone_file(source, target)
             if file_identity(source) != identity:
                 raise CenterError('AUTO_PLAN_CHANGED', '复制期间快照文件变化，拒绝启动。', 409)
+        for name, entry in baseline.get('supplements', {}).items():
+            from .auto_baseline import candidate_path
+            source = candidate_path(journal.root, entry)
+            if file_identity(source) != {k: entry[k] for k in ('size', 'mtime_ns')}:
+                raise CenterError('AUTO_PLAN_CHANGED', '补充基线或活跃快照已变化，请重新预览。', 409)
+            journal.checked_path(entry)
+            target = directory / name
+            created.append(target)
+            clone_file(source, target)
+            # Verify copied bytes, not just metadata, before any network task.
+            journal.checked_path({'path': target.relative_to(journal.root).as_posix(), 'checksum': entry['checksum']})
+        from .event_coverage import load as load_coverage
+        for name in ('fund_portfolio_df.parquet', 'fund_dividend_df.parquet'):
+            if (directory / name).exists():
+                load_coverage(directory / name, verify=True)
+        if active_snapshot(journal.root) != snapshot:
+            raise CenterError('AUTO_PLAN_CHANGED', '复制期间活跃快照切换，拒绝启动。', 409)
         return inventory(journal, directory, directory.parent / 'workspace.json', [], 'tushare')
     except Exception:
         # Only discard copies created by this failed initialization, never the

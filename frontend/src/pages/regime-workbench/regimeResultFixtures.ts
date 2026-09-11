@@ -185,7 +185,8 @@ export function resultFixture(runId = 'preview-A', count = 3000) {
   }
   const segments = intervals.filter(interval => interval.state_id !== 'unclassified')
   const overview: RegimeResultOverview = {
-    schema_version: '2.0', run_kind: 'preview', run_id: runId, definition_id: null, definition_revision: null,
+    schema_version: '2.0', result_kind: 'regime_states', manual_events: [], manual_event_summary: { event_count: 0, covered_observations: 0, overlap_observations: 0, max_concurrent_events: 0 },
+    run_kind: 'preview', run_id: runId, definition_id: null, definition_revision: null,
     definition_hash: runId + '-definition', graph_hash: runId + '-graph', mode: 'retrospective', as_of: null,
     data_snapshots: { prices: 'snapshot-1' }, frequency: 'D', calendar: 'SSE', time_basis: 'observation', complete: true,
     date_range: { start: rows[0]?.observation_date ?? null, end: rows[rows.length - 1]?.observation_date ?? null },

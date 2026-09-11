@@ -1,9 +1,25 @@
-"""Immutable data releases: which vintage of the data answered the question.
+"""A named, reusable PIT口径: which day you stand on, over which vintage.
 
-An `as_of` alone does not make research reproducible. Re-run the same `as_of`
-next month and the provider may have restated the rows underneath you. A release
-pins the files themselves, so "same as_of, same release" is a real guarantee and
-"same as_of, different release" is a visible difference rather than a mystery.
+A release is the *whole* setting, not half of it. It carries three things:
+
+* `as_of` — the day the platform stands on while this version is applied.
+* the table fingerprints — which vintage of the files answered.
+* `run_mode` — research or strict.
+
+The vintage half matters because an `as_of` alone does not make research
+reproducible: re-run the same day next month and the provider may have restated
+the rows underneath you. The research day is stored *here* rather than beside
+it, because "which day" and "which copy" were never two decisions a user wanted
+to make separately — they wanted one saved口径 they could name and re-apply.
+`as_of` may not run past what the vintage can answer for; unset means the last
+day it can.
+
+**What can be edited.** The口径 half — name, note, `as_of`, `run_mode` — is the
+user's own choice and is editable; getting the research day wrong and having to
+re-seal 1.5GB of fingerprints to fix a date is not integrity, it is friction.
+The evidence half — the table list and their fingerprints — is not editable,
+because a version whose vintage can be rewritten proves nothing. An edit stamps
+`updated_at` so a changed口径 is visible rather than silent.
 """
 
 from __future__ import annotations
@@ -25,6 +41,8 @@ except ImportError:  # pragma: no cover - Windows
     fcntl = None  # type: ignore[assignment]
 
 from .audit import audit_all
+from .catalog import RUN_MODE_RESEARCH, RUN_MODE_STRICT, RUN_MODES
+from .context import parse_as_of
 
 try:
     from backend.market_data import resolve_market_data_file
@@ -152,12 +170,92 @@ class DataReleaseRepository:
         releases = self.list_releases()
         return releases[0] if releases else None
 
-    def create(self, data_dir: Path, name: str, note: str = "") -> dict[str, Any]:
+    def update(
+        self,
+        release_id: str,
+        *,
+        name: str,
+        note: str = "",
+        as_of: Any = None,
+        run_mode: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Rewrite a version's口径. The vintage it pins is left alone.
+
+        `as_of` is checked against the ceiling recorded *in this release*, not
+        against today's files: the version answers for the vintage it sealed, and
+        that vintage did not grow because the disk did.
+        """
+
         label = str(name or "").strip()
         if not label:
             raise DataReleaseError("数据版本名称不能为空。")
         if len(label) > 120:
             raise DataReleaseError("数据版本名称不能超过 120 个字符。")
+        parsed = parse_as_of(as_of)
+        wanted_as_of = parsed.strftime("%Y-%m-%d") if parsed is not None else None
+        wanted_mode = str(run_mode or RUN_MODE_RESEARCH).strip().upper()
+        if wanted_mode not in RUN_MODES:
+            raise DataReleaseError(f"不支持的运行模式：{run_mode}")
+        if wanted_mode == RUN_MODE_STRICT and wanted_as_of is None:
+            raise DataReleaseError("严格 PIT 需要一个研究日：请填写「站在哪一天」。")
+
+        wanted = str(release_id or "").strip()
+        with self.store.locked():
+            payload = self.store.read_unlocked()
+            for release in payload["releases"]:
+                if release.get("id") != wanted:
+                    continue
+                ceiling = (release.get("summary") or {}).get("available_through")
+                if wanted_as_of is not None and ceiling and wanted_as_of > str(ceiling):
+                    raise DataReleaseError(
+                        f"研究日 {wanted_as_of} 晚于这个版本的可得截止日 {ceiling}；请前移研究日，或新建一个基于更新数据的版本。"
+                    )
+                release.update(
+                    {
+                        "name": label,
+                        "note": str(note or "").strip()[:500],
+                        "as_of": wanted_as_of,
+                        "run_mode": wanted_mode,
+                        "updated_at": _utc_now(),
+                    }
+                )
+                self.store.write_unlocked(payload)
+                return dict(release)
+        raise DataReleaseError(f"未找到数据版本 {wanted}。")
+
+    def delete(self, release_id: str) -> str:
+        """Drop a version. Callers guard against deleting one that is in use."""
+
+        wanted = str(release_id or "").strip()
+        with self.store.locked():
+            payload = self.store.read_unlocked()
+            remaining = [item for item in payload["releases"] if item.get("id") != wanted]
+            if len(remaining) == len(payload["releases"]):
+                raise DataReleaseError(f"未找到数据版本 {wanted}。")
+            payload["releases"] = remaining
+            self.store.write_unlocked(payload)
+        return wanted
+
+    def create(
+        self,
+        data_dir: Path,
+        name: str,
+        note: str = "",
+        as_of: Any = None,
+        run_mode: Optional[str] = None,
+    ) -> dict[str, Any]:
+        label = str(name or "").strip()
+        if not label:
+            raise DataReleaseError("数据版本名称不能为空。")
+        if len(label) > 120:
+            raise DataReleaseError("数据版本名称不能超过 120 个字符。")
+        parsed = parse_as_of(as_of)
+        wanted_as_of = parsed.strftime("%Y-%m-%d") if parsed is not None else None
+        wanted_mode = str(run_mode or RUN_MODE_RESEARCH).strip().upper()
+        if wanted_mode not in RUN_MODES:
+            raise DataReleaseError(f"不支持的运行模式：{run_mode}")
+        if wanted_mode == RUN_MODE_STRICT and wanted_as_of is None:
+            raise DataReleaseError("严格 PIT 需要一个研究日：请填写「站在哪一天」。")
 
         audit = audit_all(data_dir)
         tables: list[dict[str, Any]] = []
@@ -188,6 +286,13 @@ class DataReleaseRepository:
             )
         if not tables:
             raise DataReleaseError("没有任何可封版的数据集，请先完成数据下载。")
+        ceiling = audit["summary"].get("available_through")
+        if wanted_as_of is not None and ceiling and wanted_as_of > str(ceiling):
+            # One-way, and the only constraint between the two halves: a vintage
+            # cannot answer for days it does not contain.
+            raise DataReleaseError(
+                f"研究日 {wanted_as_of} 晚于这批数据的可得截止日 {ceiling}；请前移研究日。"
+            )
 
         with self.store.locked():
             payload = self.store.read_unlocked()
@@ -199,8 +304,13 @@ class DataReleaseRepository:
                 "sequence": next_sequence,
                 "name": label,
                 "note": str(note or "").strip()[:500],
+                "as_of": wanted_as_of,
+                "run_mode": wanted_mode,
                 "created_at": _utc_now(),
+                "updated_at": None,
                 "parent_release_id": parent,
+                # The tables below, not the口径 above: `update` rewrites the
+                # name/day/mode and never touches a fingerprint.
                 "immutable": True,
                 "tables": tables,
                 "summary": audit["summary"],

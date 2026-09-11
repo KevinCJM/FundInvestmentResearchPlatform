@@ -15,7 +15,116 @@ from backend.data_sources.etl_store import EtlStore
 from backend.data_sources.models import CenterError, InterfaceConfig
 from backend.data_sources.task_workspace import read_inventory
 from backend.services.refresh_runtime import InterProcessFileLock
-from backend.tests.test_etl_dataset_tasks import store, small_plan, request, finish, fake_worker
+from backend.tests.test_etl_dataset_tasks import small_plan, request, finish, fake_worker
+from backend.tests import test_etl_dataset_tasks as dataset_fixtures
+
+store = dataset_fixtures.store
+
+
+@pytest.mark.parametrize('case', ['valid', 'unknown', 'symlink', 'corrupt', 'marker', 'inherited'])
+@pytest.mark.parametrize('task', ['macro_cycle', 'macro_rates'])
+def test_macro_partial_files_are_audit_not_completed_queries(store, monkeypatch, case, task):
+    from pathlib import Path
+    definition = small_plan()
+    definition['steps'][1].update(id='macro', task_id='tushare.' + task)
+    names = (['macro_cn_gdp_df.parquet', 'macro_cn_cpi_df.parquet', 'macro_cn_ppi_df.parquet']
+             if task == 'macro_cycle' else ['macro_shibor_df.parquet', 'macro_lpr_df.parquet'])
+    def worker(payload, check, lock):
+        if payload['task_id'] != 'tushare.' + task:
+            return fake_worker(payload, check, lock)
+        work = Path(payload['directory'])
+        for name in names:
+            pq.write_table(pa.table({'value': [1]}), work / name)
+        if case == 'unknown': (work / 'unregistered.txt').write_text('preserve')
+        if case == 'symlink': (work / ('macro_cn_pmi_df.parquet' if task == 'macro_cycle' else 'macro_repo_daily_df.parquet')).symlink_to(work / 'missing')
+        if case == 'corrupt': (work / names[0]).write_bytes(b'broken parquet')
+        if case == 'marker': (work.parent / 'work_input.json').write_text('{}')
+        if case == 'inherited': (work / 'calendar.parquet').write_bytes(b'changed predecessor')
+        raise ValueError('offline macro failure')
+    monkeypatch.setattr(task_runtime, 'run_worker', worker)
+    old = finish(store, etl.start(store, request(definition)))
+    assert old['status'] == 'FAILED' and old['steps'][0]['status'] == 'SUCCEEDED'
+    original = copy.deepcopy(old)
+    monkeypatch.setattr(etl, 'execution_fingerprint', lambda: 'macro-current-code')
+    if case != 'valid':
+        with pytest.raises((CenterError, pa.ArrowInvalid)):
+            stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    else:
+        new = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+        journal = EtlStore(store)
+        receipt = json.loads(journal.checked_path(new['recovery_receipt']).read_text())
+        assert receipt['shards']['macro_partial_audit'] == len(names)
+        assert receipt['shards']['copied'] == 0
+        assert [s['status'] for s in new['steps']] == ['SUCCEEDED', 'PENDING']
+        work = store.root / 'etl_runs' / new['run_id'] / 'macro' / 'work'
+        assert all(not (work / name).exists() for name in names)
+        for entry in receipt['shards']['files']:
+            assert journal.checked_path(entry['source']).read_bytes() == journal.checked_path(entry['imported']).read_bytes()
+        monkeypatch.setattr(task_runtime, 'run_worker', fake_worker)
+        assert finish(store, etl.resume(store, new['run_id'], True))['status'] == 'SUCCEEDED'
+    assert EtlStore(store).get_run(old['run_id']) == original
+
+
+@pytest.mark.parametrize('case', ['valid', 'unrelated', 'missing', 'bad_quota', 'changed_params'])
+def test_constituent_registration_migration_preserves_completed_prefix(store, monkeypatch, case):
+    from backend.data_sources import task_catalog
+    from backend.data_sources.presets import default_interfaces
+    from backend.data_sources.etl_models import EtlDefinition
+    added = {'ci_index_member', 'ths_member', 'dc_member', 'tdx_member'}
+    with store.connection() as db:
+        for api in added:
+            db.execute('DELETE FROM source_config WHERE id=?', ('tushare.'+api,))
+            db.execute('DELETE FROM source_config_revision WHERE id=?', ('tushare.'+api,))
+    for api in ('index_member_all', 'index_weight'):
+        record = store.get('interface', 'tushare.'+api)
+        config = InterfaceConfig.model_validate(record['config'])
+        config.pagination.mode = 'none'
+        store.save(config, record['revision'])
+    current = copy.deepcopy(task_catalog.task_specs())
+    prior = copy.deepcopy(current)
+    prior['tushare.index_constituents']['api_slots'] = ['index_member_all', 'index_weight']
+    monkeypatch.setattr(task_catalog, 'task_specs', lambda: prior)
+    definition = EtlDefinition(name='Members recovery', steps=[
+        EtlStep(id=action, name=action, kind='task', task_id='tushare.'+action, source_id='tushare',
+                inputs=[previous] if previous else [], params={'start_date':'20260901','end_date':'20260904'})
+        for action, previous in [('calendar',None), ('index_catalog','calendar'), ('index_constituents','index_catalog')]
+    ])
+    def worker(payload, check, lock):
+        if payload['task_id'] == 'tushare.index_constituents':
+            raise CenterError('OFFLINE_MISSING_INTERFACE', 'missing')
+        return fake_worker(payload, check, lock)
+    monkeypatch.setattr(task_runtime, 'run_worker', worker)
+    # Start does not seed; ensure the deliberately old test source stays frozen.
+    old = finish(store, etl.start(store, request(definition.model_dump(mode='json'))))
+    original = copy.deepcopy(old)
+    assert old['status'] == 'FAILED' and len([s for s in old['steps'] if s['status']=='SUCCEEDED']) == 2
+    monkeypatch.setattr(task_catalog, 'task_specs', lambda: current)
+    for config in default_interfaces():
+        if config.api_name in added and not (case == 'missing' and config.api_name == 'ths_member'):
+            value = config.model_copy(deep=True)
+            if case == 'bad_quota' and value.api_name == 'ths_member': value.policy.requests_per_minute = 450
+            store.save(value, 0)
+    for api in ('index_member_all', 'index_weight'):
+        record = store.get('interface', 'tushare.'+api)
+        config = InterfaceConfig.model_validate(record['config'])
+        config.pagination.mode = 'offset'
+        if case == 'changed_params': config.params['is_new'] = 'N'
+        store.save(config, record['revision'])
+    if case == 'unrelated':
+        record = store.get('interface', 'tushare.cn_gdp')
+        config = InterfaceConfig.model_validate(record['config']); config.params['q'] = 'changed'
+        store.save(config, record['revision'])
+    monkeypatch.setattr(etl, 'execution_fingerprint', lambda:'new-execution')
+    if case != 'valid':
+        with pytest.raises(CenterError): stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    else:
+        new = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+        assert [s['status'] for s in new['steps']] == ['SUCCEEDED','SUCCEEDED','PENDING']
+        frozen = EtlStore(store).get_run(new['run_id'])['frozen']
+        assert len(frozen['constituent_interface_migration']['added_interfaces']) == 4
+        monkeypatch.setattr(task_runtime, 'run_worker', fake_worker)
+        assert finish(store, etl.resume(store, new['run_id'], True))['status'] == 'SUCCEEDED'
+    assert EtlStore(store).get_run(old['run_id']) == original
 
 
 @pytest.mark.parametrize('case', ['valid','unconfirmed','nonempty','wrong_suffix','symlink','tampered'])
@@ -78,6 +187,43 @@ def test_adjustment_scope_recovery_is_explicit_and_preserves_empty_audit(store, 
     assert journal.get_run(old['run_id'])==original
 
 
+@pytest.mark.parametrize('case', ['valid', 'page_size', 'rate', 'params'])
+def test_factor_pagination_activation_is_narrow_and_audited(store, monkeypatch, case):
+    from backend.data_sources.etl_models import EtlDefinition
+    record = store.get('interface', 'tushare.fund_adj')
+    config = InterfaceConfig.model_validate(record['config'])
+    config.pagination.mode = 'none'
+    store.save(config, record['revision'])
+    definition = EtlDefinition(name='factor', steps=[
+        EtlStep(id=action, name=action, kind='task', task_id='tushare.' + action, source_id='tushare',
+                inputs=[previous] if previous else [], params={'start_date': '20260901', 'end_date': '20260904'})
+        for action, previous in [('etf_info', None), ('calendar', 'etf_info'), ('fund_adjustment', 'calendar')]])
+    def worker(payload, check, lock):
+        if payload['task_id'] == 'tushare.fund_adjustment': raise CenterError('OFFLINE', 'paging required')
+        return fake_worker(payload, check, lock)
+    monkeypatch.setattr(task_runtime, 'run_worker', worker)
+    old = finish(store, etl.start(store, request(definition.model_dump(mode='json'))))
+    assert old['status'] == 'FAILED'
+    original = copy.deepcopy(old)
+    record = store.get('interface', 'tushare.fund_adj')
+    config = InterfaceConfig.model_validate(record['config'])
+    config.pagination.mode = 'offset'
+    if case == 'page_size': config.pagination.page_size = 500
+    if case == 'rate': config.policy.requests_per_minute = 450
+    if case == 'params': config.params['trade_date'] = '20260904'
+    store.save(config, record['revision'])
+    monkeypatch.setattr(etl, 'execution_fingerprint', lambda: 'new-factor-code')
+    if case != 'valid':
+        with pytest.raises(CenterError): stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    else:
+        new = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+        evidence = EtlStore(store).get_run(new['run_id'])['frozen']['pagination_policy_migration']
+        assert len(evidence) == 1 and evidence[0]['interface_id'] == 'tushare.fund_adj'
+        assert evidence[0]['before']['mode'] == 'none' and evidence[0]['after']['mode'] == 'offset'
+        assert [s['status'] for s in new['steps']] == ['SUCCEEDED', 'SUCCEEDED', 'PENDING']
+    assert EtlStore(store).get_run(old['run_id']) == original
+
+
 def old_run(store, monkeypatch):
     def worker(payload, check, lock):
         if payload['task_id'] == 'tushare.fund_company':
@@ -87,6 +233,39 @@ def old_run(store, monkeypatch):
     run = finish(store, etl.start(store, request(small_plan())))
     monkeypatch.setattr(etl, 'execution_fingerprint', lambda: 'new-execution')
     return run
+
+
+@pytest.mark.parametrize('case', ['valid', 'decrease', 'page_size', 'mode', 'params', 'fields', 'rate', 'other_interface'])
+def test_weight_budget_migration_only_allows_monotone_page_limit(store, monkeypatch, case):
+    from backend.data_sources.etl_migration import _verify_policy_changes
+    record = store.get('interface', 'tushare.index_weight')
+    config = InterfaceConfig.model_validate(record['config'])
+    config.pagination.max_pages = 20
+    store.save(config, record['revision'])
+    old = old_run(store, monkeypatch)
+    original = copy.deepcopy(old)
+    record = store.get('interface', 'tushare.index_weight')
+    config = InterfaceConfig.model_validate(record['config'])
+    config.pagination.max_pages = 10 if case == 'decrease' else 100
+    if case == 'page_size': config.pagination.page_size = 500
+    if case == 'mode': config.pagination.mode = 'none'
+    if case == 'params': config.params['trade_date'] = '20260904'
+    if case == 'fields': config.source_fields = config.source_fields[:-1]
+    if case == 'rate': config.policy.requests_per_minute = 450
+    store.save(config, record['revision'])
+    if case == 'other_interface':
+        other = store.get('interface', 'tushare.index_member_all')
+        changed = InterfaceConfig.model_validate(other['config'])
+        changed.pagination.max_pages = 100
+        store.save(changed, other['revision'])
+    journal = EtlStore(store)
+    if case == 'valid':
+        changes = _verify_policy_changes(journal, old, (), (), ('tushare.index_weight',))
+        assert len(changes) == 1 and changes[0]['after']['max_pages'] == 100
+    else:
+        with pytest.raises(CenterError):
+            _verify_policy_changes(journal, old, (), (), ('tushare.index_weight',))
+    assert journal.get_run(old['run_id']) == original
 
 
 def test_new_run_imports_prefix_and_keeps_original_unchanged(store, monkeypatch):
@@ -231,6 +410,9 @@ def test_changed_imported_history_receipt_blocks_resume(store, monkeypatch):
 
 @pytest.mark.parametrize('case', ['valid', 'not_accepted', 'row_cap', 'rate', 'page_size', 'cursor', 'wrong_api', 'params'])
 def test_only_explicit_holdings_pagination_enable_can_migrate(store, monkeypatch, case):
+    record = store.get('interface', 'tushare.fund_portfolio')
+    config = InterfaceConfig.model_validate(record['config']); config.pagination.mode = 'none'
+    store.save(config, record['revision'])
     old = old_run(store, monkeypatch)
     original = copy.deepcopy(old)
     identifier = 'tushare.fund_company' if case == 'wrong_api' else 'tushare.fund_portfolio'

@@ -15,11 +15,13 @@ import pyarrow.dataset as arrow_dataset
 try:
     from backend.instrument_analytics_numba import count_true_kernel
     from backend.market_data import resolve_tushare_data_dir
-    from backend.historical_regimes.numba_kernels import relative_transform_kernel
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
     from instrument_analytics_numba import count_true_kernel
     from market_data import resolve_tushare_data_dir
-    from historical_regimes.numba_kernels import relative_transform_kernel
+
+# Stay inside the importing package when Numba restores a cached environment.
+# Absolute sibling imports can re-enter a partially initialized second package.
+from .numba_kernels import relative_transform_kernel
 
 from custom_indicators.errors import NotFoundError, ValidationError
 from research_series.product_sources import PRODUCT_SOURCES, ProductSourceError, product_pit, read_product_observations, apply_product_adjustment, product_source_spec
@@ -91,6 +93,7 @@ def _normalise_observations(
         parsed_dates = parsed_dates.dt.tz_localize(None)
     frame["observation_date"] = parsed_dates.dt.normalize()
 
+    availability_evidence = "provided" if "available_at" in frame.columns else "assumed_observation_date"
     if "available_at" not in frame.columns:
         frame["available_at"] = frame["observation_date"]
     parsed_available = pd.to_datetime(frame["available_at"], errors="coerce")
@@ -153,6 +156,7 @@ def _normalise_observations(
             )
         ),
         "revision_policy": selected_revision_policy,
+        "availability_evidence": availability_evidence,
         "first_observation_date": selected["observation_date"].iloc[0].date().isoformat(),
         "last_observation_date": selected["observation_date"].iloc[-1].date().isoformat(),
         "latest_available_at": selected["available_at"].max().date().isoformat(),
@@ -275,6 +279,8 @@ def _index_bundle(
         "file": filename,
         "projection": columns,
         "filters": {code_column: ts_code},
+        "availability_contract": "date_only_market_close",
+        "time_resolution": "day",
         "fingerprint": hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True).encode()).hexdigest(),
         **revision_meta,
     }

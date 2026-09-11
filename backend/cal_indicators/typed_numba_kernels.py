@@ -124,7 +124,7 @@ CANONICAL_OPERATOR_IDS = (
     "active_returns", "last_drawdown_interval",
     "interval_start", "interval_trough", "interval_recovery", "value_at", "days_between",
     "require_positive", "require_nonnegative", "linear_fit", "fit_slope", "fit_intercept",
-    "fit_residual_sum_squares", "fit_total_sum_squares", "fit_observation_count",
+    "fit_residual_sum_squares", "fit_total_sum_squares", "fit_observation_count", "finite_mask",
 )
 
 
@@ -161,6 +161,11 @@ def binary_scalar(opcode: int, lhs: float, rhs: float) -> float:
 
 @njit(cache=True, nogil=True)
 def binary_1d(opcode: int, lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    # Validate throwing scalar operations before allocating: an exceptional
+    # nopython exit must not leak one result buffer per rolling window.
+    if opcode in (4, 5):
+        for index in range(lhs.size):
+            _binary_value(opcode, lhs[index], rhs[index])
     result = np.empty(lhs.size, dtype=np.float64)
     for index in range(lhs.size):
         result[index] = _binary_value(opcode, lhs[index], rhs[index])
@@ -169,6 +174,9 @@ def binary_1d(opcode: int, lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
 
 @njit(cache=True, nogil=True)
 def binary_1d_right_scalar(opcode: int, lhs: np.ndarray, rhs: float) -> np.ndarray:
+    if opcode in (4, 5):
+        for value in lhs:
+            _binary_value(opcode, value, rhs)
     result = np.empty(lhs.size, dtype=np.float64)
     for index in range(lhs.size):
         result[index] = _binary_value(opcode, lhs[index], rhs)
@@ -177,6 +185,9 @@ def binary_1d_right_scalar(opcode: int, lhs: np.ndarray, rhs: float) -> np.ndarr
 
 @njit(cache=True, nogil=True)
 def binary_1d_left_scalar(opcode: int, lhs: float, rhs: np.ndarray) -> np.ndarray:
+    if opcode in (4, 5):
+        for value in rhs:
+            _binary_value(opcode, lhs, value)
     result = np.empty(rhs.size, dtype=np.float64)
     for index in range(rhs.size):
         result[index] = _binary_value(opcode, lhs, rhs[index])
@@ -366,6 +377,9 @@ def unary_scalar(opcode: int, value: float) -> float:
 
 @njit(cache=True, nogil=True)
 def unary_1d(opcode: int, values: np.ndarray) -> np.ndarray:
+    if opcode not in (20, 21, 26, 27):
+        for value in values:
+            _unary_value(opcode, value)
     result = np.empty(values.size, dtype=np.float64)
     for index in range(values.size):
         result[index] = _unary_value(opcode, values[index])
@@ -684,7 +698,8 @@ def quantile_1d(values: np.ndarray, probability: float) -> float:
     _validate_nonempty(values.size)
     if probability <= 0.0 or probability >= 1.0:
         raise ValueError("INVALID_PARAMETER")
-    ordered = np.sort(values.copy())
+    ordered = values.copy()
+    ordered.sort()
     position = (ordered.size - 1) * probability
     lower = int(math.floor(position))
     upper = int(math.ceil(position))
@@ -729,15 +744,14 @@ def drawdown_series_1d(values: np.ndarray) -> np.ndarray:
     """Return signed drawdowns from the running peak of a positive level path."""
 
     _validate_nonempty(values.size)
+    for value in values:
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("DOMAIN_ERROR")
     result = np.empty(values.size, dtype=np.float64)
     running_peak = values[0]
-    if not math.isfinite(running_peak) or running_peak <= 0.0:
-        raise ValueError("DOMAIN_ERROR")
     result[0] = 0.0
     for index in range(1, values.size):
         value = values[index]
-        if not math.isfinite(value) or value <= 0.0:
-            raise ValueError("DOMAIN_ERROR")
         if value > running_peak:
             running_peak = value
         result[index] = value / running_peak - 1.0
@@ -749,15 +763,14 @@ def new_high_mask_1d(values: np.ndarray) -> np.ndarray:
     """Mark only strict new highs; equal plateaus do not count again."""
 
     _validate_nonempty(values.size)
+    for value in values:
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("DOMAIN_ERROR")
     result = np.zeros(values.size, dtype=np.uint8)
     running_peak = values[0]
-    if not math.isfinite(running_peak) or running_peak <= 0.0:
-        raise ValueError("DOMAIN_ERROR")
     result[0] = 1
     for index in range(1, values.size):
         value = values[index]
-        if not math.isfinite(value) or value <= 0.0:
-            raise ValueError("DOMAIN_ERROR")
         if value > running_peak:
             result[index] = 1
             running_peak = value
@@ -852,11 +865,12 @@ def rolling_mean_1d(
 
 
 @njit(cache=True, nogil=True)
-def rolling_std_1d(
+def _rolling_second_moment_1d(
     values: np.ndarray,
     window: float,
     ddof: float,
     min_periods: float,
+    take_sqrt: int,
 ) -> np.ndarray:
     width = _integer_parameter(window, False)
     degrees = _integer_parameter(ddof, True)
@@ -885,8 +899,29 @@ def rolling_std_1d(
         if centered_sum < 0.0 and centered_sum > -1e-12:
             centered_sum = 0.0
         if centered_sum >= 0.0:
-            result[index] = math.sqrt(centered_sum / (finite_count - degrees))
+            variance = centered_sum / (finite_count - degrees)
+            result[index] = math.sqrt(variance) if take_sqrt != 0 else variance
     return result
+
+
+@njit(cache=True, nogil=True)
+def rolling_std_1d(
+    values: np.ndarray,
+    window: float,
+    ddof: float,
+    min_periods: float,
+) -> np.ndarray:
+    return _rolling_second_moment_1d(values, window, ddof, min_periods, 1)
+
+
+@njit(cache=True, nogil=True)
+def rolling_variance_1d(
+    values: np.ndarray,
+    window: float,
+    ddof: float,
+    min_periods: float,
+) -> np.ndarray:
+    return _rolling_second_moment_1d(values, window, ddof, min_periods, 0)
 
 
 @njit(cache=True, nogil=True)
@@ -1434,7 +1469,7 @@ def get_numba_kernel_registry() -> dict[str, KernelSpec]:
                 "uint8 | uint8[::1] | uint8[:,::1]"
                 if operator_id in COMPARISON_OPCODES
                 or operator_id
-                in {"logical_and", "logical_or", "logical_not", "new_high_mask"}
+                in {"logical_and", "logical_or", "logical_not", "new_high_mask", "finite_mask"}
                 else "float64 | float64[::1] | float64[:,::1]"
             ),
             serial_kernels=_unique_dispatchers(_operator_dispatchers(operator_id)),
@@ -1525,6 +1560,7 @@ def warm_numba_kernel_registry() -> dict[str, Any]:
     _compile(difference_1d_parameter, ((f1, f8),))
     _compile(rolling_mean_1d, ((f1, f8, f8),))
     _compile(rolling_std_1d, ((f1, f8, f8, f8),))
+    _compile(rolling_variance_1d, ((f1, f8, f8, f8),))
     _compile(rolling_min_1d, ((f1, f8, f8),))
     _compile(rolling_max_1d, ((f1, f8, f8),))
     _compile(recursive_smooth_1d, ((f1, f8, f8),))
@@ -1577,7 +1613,36 @@ def kernel_registry_status(*, warmed: bool | None = None) -> dict[str, Any]:
 
 
 def kernel_catalog_entry(operator_id: str) -> dict[str, Any]:
-    from .operator_lowering import COMPOSITE_DEPENDENCIES
+    if operator_id == "rolling_apply":
+        return {"njit_supported": True, "kernel_version": NUMERIC_KERNEL_VERSION,
+                "execution_lane": "compiler_scoped_interval", "compiled_signatures": [],
+                "warmup_status": "formula_preparation_required", "status_contract": "interval_scalar_to_aligned_series",
+                "execution_scope": "deferred_interval_body", "materializes_windows": False}
+    from .operator_lowering import COMPOSITE_DEPENDENCIES, COMPILER_FUSED_OPERATOR_IDS
+    if operator_id in COMPILER_FUSED_OPERATOR_IDS:
+        dispatchers = (
+            rolling_mean_1d,
+            rolling_std_1d,
+            rolling_variance_1d,
+            rolling_min_1d,
+            rolling_max_1d,
+        )
+        signatures = sorted(
+            {
+                str(signature)
+                for dispatcher in dispatchers
+                for signature in dispatcher.signatures
+            }
+        )
+        return {
+            "njit_supported": True,
+            "kernel_version": NUMERIC_KERNEL_VERSION,
+            "execution_lane": "compiler_fused_no_materialization",
+            "compiled_signatures": signatures,
+            "warmup_status": "ready" if signatures else "pending",
+            "expanded_operators": ["mean", "std", "variance", "min_value", "max_value"],
+            "status_contract": "logical_window_fused_into_fixed_signature_reducer",
+        }
     if operator_id in COMPOSITE_DEPENDENCIES:
         # Historical catalogs describe a compiler expansion, not an installed
         # second kernel or proof that a composite formula is already prepared.
@@ -1596,7 +1661,7 @@ def kernel_catalog_entry(operator_id: str) -> dict[str, Any]:
 __all__ = [
     "CANONICAL_OPERATOR_IDS", "ENGINE_VERSION", "KernelSpec", "NUMERIC_KERNEL_VERSION",
     "drawdown_series_1d", "new_high_mask_1d", "rolling_mean_1d", "rolling_std_1d",
-    "rolling_min_1d", "rolling_max_1d", "recursive_smooth_1d", "divide_or_default_1d",
+    "rolling_variance_1d", "rolling_min_1d", "rolling_max_1d", "recursive_smooth_1d", "divide_or_default_1d",
     "series_safe_divide_1d", "series_safe_divide_1d_right_scalar",
     "series_safe_divide_1d_left_scalar", "series_safe_divide_2d",
     "series_safe_divide_2d_right_scalar", "series_safe_divide_2d_left_scalar",

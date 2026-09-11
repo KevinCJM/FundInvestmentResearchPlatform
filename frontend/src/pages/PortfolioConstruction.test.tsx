@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PortfolioConstruction from './PortfolioConstruction'
@@ -24,6 +24,8 @@ vi.mock('../services/historicalRegimes', () => ({ listHistoricalRegimeRuns: vi.f
 
 describe('PortfolioConstruction', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
     sessionStorage.clear()
     sessionStorage.setItem('portfolioResearchImport', JSON.stringify({
       name: '权益类产品配置',
@@ -76,5 +78,61 @@ describe('PortfolioConstruction', () => {
     expect(screen.queryByText(/INSUFFICIENT_SAMPLE/)).not.toBeInTheDocument()
     expect(screen.getByText('当前组合研究固定交易成本为 0，仅输出未扣费的毛收益。')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '进入持仓诊断' })).toHaveAttribute('href', '/post-investment/research-diagnosis?target=target-1&run=run-1')
+    fireEvent.change(screen.getByLabelText('研究名称'), { target: { value: '调整后的新假设' } })
+    await waitFor(() => expect(screen.queryByText('运行结果')).not.toBeInTheDocument())
   })
+
+  it('TAA 预算在产品配置中前置校验，刷新保留类内编辑且仍保留来源门禁', async () => {
+    const allocationSource = { kind: 'taa', decision_id: 'taa-1', baseline_id: 'saa-1', class_weights: { 权益类: .6, 固收类: .4 } }
+    sessionStorage.setItem('portfolioResearchImport', JSON.stringify({
+      name: 'TAA 股债配置', universe_snapshot_id: 'universe-1', method: 'manual', allocation_source: allocationSource,
+      constituents: [
+        { product_id: '510300.SH', kind: 'etf', name: '沪深300ETF', weight: 60, asset_class_id: 'equity', asset_class_name: '权益类' },
+        { product_id: '511010.SH', kind: 'etf', name: '国债ETF', weight: 40, asset_class_id: 'bond', asset_class_name: '固收类' },
+      ],
+    }))
+    vi.mocked(evaluateNumericControls).mockImplementation(async groups => ({
+      items: groups.map(group => {
+        const total = group.values.reduce((sum, value) => sum + value, 0)
+        const difference = total - (group.target ?? 1)
+        return { key: group.key, total, difference, within_tolerance: Math.abs(difference) <= .01, positive: total > 0, normalized_shares: [] }
+      }), execution: { execution_backend: 'numba_njit_fixed_signature', nopython: true, object_mode: 0, python_fallback: 0, request_time_compilation: 0 },
+    }))
+    const route = '/pre-investment/product-allocation-timing/construction?universe=universe-1&decision=taa-1'
+    const view = render(<MemoryRouter initialEntries={[route]}><PortfolioConstruction /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByRole('button', { name: '运行组合研究' })).not.toBeDisabled())
+    expect(screen.getByRole('radio', { name: /等权/ })).toBeDisabled()
+    expect(screen.getByRole('link', { name: '返回 TAA 查看或重新研究' })).toHaveAttribute('href', '/pre-investment/taa?decision=taa-1')
+    fireEvent.change(screen.getByLabelText('沪深300ETF 权重'), { target: { value: '70' } })
+    fireEvent.change(screen.getByLabelText('国债ETF 权重'), { target: { value: '30' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: '运行组合研究' })).toBeDisabled())
+    expect(screen.getByRole('status')).toHaveTextContent('符合上方 TAA 预算')
+    view.unmount()
+    render(<MemoryRouter initialEntries={[route]}><PortfolioConstruction /></MemoryRouter>)
+    expect(await screen.findByLabelText('沪深300ETF 权重')).toHaveValue(70)
+    fireEvent.change(screen.getByLabelText('沪深300ETF 权重'), { target: { value: '60' } })
+    fireEvent.change(screen.getByLabelText('国债ETF 权重'), { target: { value: '40' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: '运行组合研究' })).not.toBeDisabled())
+    fireEvent.click(screen.getByRole('button', { name: '运行组合研究' }))
+    await waitFor(() => expect(createResearchTarget).toHaveBeenCalledWith(expect.objectContaining({ definition: expect.objectContaining({ allocation_source: allocationSource, method: 'manual' }) })))
+  })
+
+
+  it('运行期间编辑输入，迟到的旧结果不能覆盖当前研究', async () => {
+    let resolveRun!: (result: any) => void
+    vi.mocked(runPortfolio).mockImplementation(() => new Promise(resolve => { resolveRun = resolve }))
+    render(<MemoryRouter initialEntries={['/pre-investment/product-allocation-timing/construction?universe=universe-1']}><PortfolioConstruction /></MemoryRouter>)
+    await screen.findByText(/可投资域：/)
+    fireEvent.change(screen.getByLabelText('从可投资域搜索产品'), { target: { value: '易方达' } })
+    await screen.findAllByRole('button', { name: '加入' })
+    fireEvent.click(screen.getAllByRole('button', { name: '加入' })[1])
+    fireEvent.click(screen.getByRole('button', { name: '运行组合研究' }))
+    await waitFor(() => expect(runPortfolio).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('研究名称'), { target: { value: '更新后的研究' } })
+    await act(async () => { resolveRun({ id: 'old-run', name: '旧结果', metrics: [], warnings: [] }) })
+    expect(await screen.findByRole('alert')).toHaveTextContent('研究输入已变化')
+    expect(screen.queryByText('运行结果')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('研究名称')).toHaveValue('更新后的研究')
+  })
+
 })

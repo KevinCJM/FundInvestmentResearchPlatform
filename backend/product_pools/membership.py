@@ -4,11 +4,87 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Iterable
+from pathlib import Path
+from typing import Any, Iterable, Optional
 
+from .constants import UNIVERSE_SNAPSHOT_STORE
 from .domain import member_eligibility, parse_date, product_key, today
-from .errors import ProductPoolValidationError
+from .errors import ProductPoolError, ProductPoolValidationError
 from .repository import InvestableUniverseRepository
+
+try:
+    from pit.context import ResearchContext
+    from pit.guard import assert_no_universe_lookahead, universe_lineage
+except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
+    from backend.pit.context import ResearchContext
+    from backend.pit.guard import assert_no_universe_lookahead, universe_lineage
+
+
+def universe_pit_lineage(
+    data_dir: Path, snapshot_id: Optional[str], context: ResearchContext
+) -> dict[str, Any]:
+    """What the locked universe behind a run can prove about its own timing.
+
+    Every construction path locks a universe snapshot that carries the day its
+    inputs were cut. Judging that day against the day being decided is the only
+    way to catch a pool screened on 2026 numbers and replayed over 2018 — no
+    per-formula probe can, because each formula is individually causal.
+
+    Strict mode raises; research mode hands the findings back to be recorded.
+    `snapshot_id=None` means the caller never said which pool it used, which is
+    itself worth printing rather than passing as clean.
+    """
+
+    reference = universe_reference(data_dir, snapshot_id)
+    findings = (
+        assert_no_universe_lookahead(
+            context,
+            established_at=reference["established_at"],
+            label=reference["label"],
+        )
+        if reference["source"]
+        else []
+    )
+    return universe_lineage(
+        findings,
+        established_at=reference["established_at"],
+        source=reference["source"],
+    )
+
+
+def universe_reference(
+    data_dir: Path, snapshot_id: Optional[str]
+) -> dict[str, Any]:
+    """A locked universe's identity and research day, looked up but not judged.
+
+    Split out of :func:`universe_pit_lineage` because a saved allocation carries
+    *two* claims about time — the day its class NAV was computed and the day its
+    products were screened — and they have to be weighed into one verdict. Two
+    separate lineage blocks would let a reader see a clean one and stop reading.
+    """
+
+    identifier = str(snapshot_id or "").strip()
+    if not identifier:
+        return {"id": None, "source": None, "established_at": None, "label": "可投资域"}
+    try:
+        snapshot = InvestableUniverseRepository(
+            data_dir / UNIVERSE_SNAPSHOT_STORE
+        ).get(identifier)
+    except ProductPoolError:
+        # A missing snapshot is the caller's problem to report, not a reason to
+        # claim the universe was checked.
+        return {
+            "id": identifier,
+            "source": "investable_universe_snapshot",
+            "established_at": None,
+            "label": f"可投资域「{identifier}」",
+        }
+    return {
+        "id": identifier,
+        "source": "investable_universe_snapshot",
+        "established_at": snapshot.get("research_date"),
+        "label": f"可投资域「{snapshot.get('name') or identifier}」",
+    }
 
 
 @dataclass(frozen=True)
@@ -204,4 +280,9 @@ class InvestableUniverseMembership:
         )
 
 
-__all__ = ["InvestableUniverseMembership", "UniverseMembershipResult"]
+__all__ = [
+    "InvestableUniverseMembership",
+    "UniverseMembershipResult",
+    "universe_pit_lineage",
+    "universe_reference",
+]

@@ -423,7 +423,7 @@ def test_crud_revision_conflict_and_delete_contract(monkeypatch, tmp_path: Path)
     created_response = client.post("/api/custom-indicators", json=_draft())
     assert created_response.status_code == 201
     created = created_response.json()
-    assert created["dsl_version"] == "2.3.0"
+    assert created["dsl_version"] == "2.4.0"
     assert created["numeric_kernel_version"] == "2.2.0"
     assert created["period_policy"] == "all_supported"
     assert created["periods"] == list(custom_indicator_routes.SUPPORTED_PERIODS)
@@ -651,3 +651,37 @@ def test_snapshot_indicator_config_routes(monkeypatch, tmp_path: Path) -> None:
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "REVISION_CONFLICT"
+
+
+def test_evaluate_inherits_the_platform_research_day(monkeypatch, tmp_path: Path) -> None:
+    """The wiring that was missing: the route never asked for the口径.
+
+    Every `/api/` request already carries the tab's PIT headers, but these
+    endpoints only read `as_of` from the page's own 截止日 box — so 产品研究
+    showed 2026 numbers while the badge claimed a historical research day.
+    """
+
+    from backend.pit.settings import PitSettingsRepository
+
+    client = _client(monkeypatch, tmp_path)
+    _write_etf_data(tmp_path)
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2026-02-02")
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        custom_indicator_routes.indicator_service,
+        "evaluate",
+        lambda **kwargs: seen.update(kwargs) or {"results": []},
+    )
+
+    body = {
+        "indicator_ids": ["indicator-x"],
+        "targets": [{"kind": "etf", "product_id": "510050.SH"}],
+        "period": "1W",
+    }
+    assert client.post("/api/custom-indicators/evaluate", json=body).status_code == 200
+    assert seen["as_of"] == "2026-02-02"
+
+    # A stated 截止日 is a per-run override and still wins: a backtest sweeping
+    # as_of must not be clamped to the platform day.
+    client.post("/api/custom-indicators/evaluate", json={**body, "as_of": "2026-01-15"})
+    assert seen["as_of"] == "2026-01-15"

@@ -15,7 +15,9 @@ from backend.factor_research.attribution import validate_attribution_size
 from backend.factor_research.contracts import AttributionFields
 from backend.custom_indicators.errors import IndicatorDomainError
 from backend.services.factor_research_routes import build_router
-from backend.tests.test_factor_research_service import context  # noqa: F401
+from backend.tests import test_factor_research_service as factor_fixtures
+
+context = factor_fixtures.context
 
 
 def sample(n=160):

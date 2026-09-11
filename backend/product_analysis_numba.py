@@ -16,12 +16,27 @@ from numba import boolean, float64, int64, njit, types, uint8, uint64
 
 
 PRODUCT_ANALYSIS_ENGINE_VERSION = "product-analysis-njit-1.0.0"
-PRODUCT_ANALYSIS_KERNEL_VERSION = "product-scenario-statistics-simulation-5"
+PRODUCT_ANALYSIS_KERNEL_VERSION = "product-scenario-statistics-simulation-7"
 
 # Every simulation lane packs the same assumption block behind the day vector so
 # one service-side reader can decode any of them. Slots a lane cannot fill are
 # NaN rather than absent, which keeps the layout a constant.
 SIMULATION_ASSUMPTION_SLOTS = 20
+
+# The chart's right-hand panel answers "where does the NAV land", and the day it
+# answers for follows the zoom window's right edge — so every day needs its own
+# cross-section, not just the last one. Shipping all 252 would triple the
+# response for a difference no eye can resolve, so days are strided down to
+# roughly this many checkpoints. The last day is always one of them: that frame
+# is the headline 期末 distribution every metric card already quotes.
+DENSITY_FRAME_TARGET = 48
+DENSITY_CURVE_POINTS = 41
+DENSITY_BIN_COUNT = 24
+# day, navLow, navHigh, binWidth, countAxisMax — then the curve, then the bins.
+# Counts only: the nav each entry sits at is a uniform grid the reader rebuilds
+# from navLow/navHigh, which is what keeps 240 frames a small payload.
+DENSITY_FRAME_SLOTS = 5
+DENSITY_FRAME_WIDTH = DENSITY_FRAME_SLOTS + DENSITY_CURVE_POINTS + DENSITY_BIN_COUNT
 
 _F1 = float64[::1]
 _F2 = float64[:, ::1]
@@ -30,8 +45,7 @@ _U1 = uint8[::1]
 
 _BOX_RESULT = types.Tuple((_F1, _F1))
 _QQ_RESULT = types.Tuple((_F2, _F2))
-_SIM_RESULT = types.Tuple((_F2, _F2, _F1, _F1, _F1))
-_DENSITY_RESULT = types.Tuple((_F2, _F2, _F1))
+_SIM_RESULT = types.Tuple((_F2, _F2, _F1, _F1, _F1, _F2))
 _RANDOM_RESULT = types.Tuple((uint64, float64))
 _REGIME_RESULT = types.Tuple((_F2, _F2, _F1, _I1, _I1))
 _REALIZED_RESULT = types.Tuple((_F1, _F1))
@@ -646,18 +660,109 @@ def _next_uniform(state: int) -> tuple[int, float]:
     return state, value
 
 
+@njit(_F1(_F1, float64), cache=False, nogil=True)
+def _density_frame(sorted_values: np.ndarray, day: float) -> np.ndarray:
+    """One day's landing distribution: a smooth curve and a histogram.
+
+    Takes the cross-section already sorted, because the caller sorts it anyway
+    to read that day's quantiles — the whole per-day panel therefore costs no
+    extra sort, only the kernel sum.
+    """
+    frame = np.zeros(DENSITY_FRAME_WIDTH, dtype=np.float64)
+    frame[0] = day
+    size = sorted_values.size
+    if size < 2:
+        return frame
+    total = 0.0
+    for value in sorted_values:
+        total += value
+    mean = total / size
+    variance_sum = 0.0
+    for value in sorted_values:
+        difference = value - mean
+        variance_sum += difference * difference
+    standard_deviation = math.sqrt(max(0.0, variance_sum / max(1, size - 1)))
+    interquartile_range = _linear_quantile(sorted_values, 0.75) - _linear_quantile(sorted_values, 0.25)
+    robust_scale = standard_deviation
+    alternate_scale = interquartile_range / 1.34
+    if robust_scale <= 0.0 or (alternate_scale > 0.0 and alternate_scale < robust_scale):
+        robust_scale = alternate_scale
+    # Anchored on the median, not the mean. `robust_scale` above already prefers
+    # the IQR when an outlier dominates, but this floor did not: one path that
+    # compounded to 1e12 — which the filtered lanes can produce, since EWMA's
+    # variance has no mean reversion — dragged the mean to 1e9 and set the
+    # floor, and with it the chart's whole nav axis, to six figures. The
+    # quantiles were fine; the axis made them invisible.
+    median_nav = _linear_quantile(sorted_values, 0.5)
+    minimum_bandwidth = max(abs(median_nav) * 0.0005, 1e-6)
+    bandwidth = max(minimum_bandwidth, 0.9 * robust_scale * size ** (-0.2))
+    nav_low = max(0.0, _linear_quantile(sorted_values, 0.01) - bandwidth * 2.0)
+    nav_high = max(
+        nav_low + minimum_bandwidth,
+        _linear_quantile(sorted_values, 0.99) + bandwidth * 2.0,
+    )
+    bin_width = (nav_high - nav_low) / DENSITY_BIN_COUNT
+    frame[1] = nav_low
+    frame[2] = nav_high
+    frame[3] = bin_width
+    # Counts, not densities: the panel's axis is "how many of my paths land
+    # here", which is the only version of this number a reader can sanity-check
+    # against the path budget they chose.
+    count_factor = size * bin_width
+    normalizer = size * bandwidth * math.sqrt(2.0 * math.pi)
+    highest = 1.0
+    for index in range(DENSITY_CURVE_POINTS):
+        nav = nav_low + (nav_high - nav_low) * index / (DENSITY_CURVE_POINTS - 1)
+        kernel_sum = 0.0
+        for value in sorted_values:
+            standardized = (nav - value) / bandwidth
+            kernel_sum += math.exp(-0.5 * standardized * standardized)
+        count = kernel_sum / normalizer * count_factor
+        frame[DENSITY_FRAME_SLOTS + index] = count
+        if count > highest:
+            highest = count
+    bin_base = DENSITY_FRAME_SLOTS + DENSITY_CURVE_POINTS
+    for value in sorted_values:
+        raw_index = int(math.floor((value - nav_low) / bin_width))
+        index = max(0, min(DENSITY_BIN_COUNT - 1, raw_index))
+        frame[bin_base + index] += 1.0
+    for index in range(DENSITY_BIN_COUNT):
+        if frame[bin_base + index] > highest:
+            highest = frame[bin_base + index]
+    frame[4] = math.ceil(highest * 1.08)
+    return frame
+
+
 @njit(_SIM_RESULT(_F2, _F1, float64, float64), cache=False, nogil=True)
 def _summarize_simulation(
     paths: np.ndarray,
     max_drawdowns: np.ndarray,
     initial_nav: float,
     target_return: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     path_count, day_count = paths.shape
     sample_count = min(12, path_count)
     sample_paths = np.ascontiguousarray(paths[:sample_count].copy())
     percentiles = np.empty((5, day_count), dtype=np.float64)
     probabilities = np.array([0.05, 0.25, 0.5, 0.75, 0.95])
+    # Counted back from the last day so the terminal frame is always exact; day
+    # 0 is excluded because every path starts on the same value, which is a
+    # spike carrying no information.
+    last_day = day_count - 1
+    stride = max(1, (last_day + DENSITY_FRAME_TARGET - 1) // DENSITY_FRAME_TARGET)
+    frame_row_of_day = np.full(day_count, -1, dtype=np.int64)
+    frame_count = 0
+    day = last_day
+    while day >= 1:
+        frame_count += 1
+        day -= stride
+    row = frame_count - 1
+    day = last_day
+    while day >= 1:
+        frame_row_of_day[day] = row
+        row -= 1
+        day -= stride
+    frames = np.zeros((max(1, frame_count), DENSITY_FRAME_WIDTH), dtype=np.float64)
     scratch = np.empty(path_count, dtype=np.float64)
     for day in range(day_count):
         for path in range(path_count):
@@ -665,6 +770,9 @@ def _summarize_simulation(
         scratch.sort()
         for index in range(probabilities.size):
             percentiles[index, day] = _linear_quantile(scratch, probabilities[index])
+        row = frame_row_of_day[day]
+        if row >= 0:
+            frames[row] = _density_frame(scratch, day)
     terminal = np.ascontiguousarray(paths[:, day_count - 1].copy())
     terminal.sort()
     terminal_returns = np.empty(path_count, dtype=np.float64)
@@ -687,6 +795,25 @@ def _summarize_simulation(
     drawdown_total = 0.0
     for value in max_drawdowns:
         drawdown_total += value
+    # One NAV axis for both panels, fixed for the whole run: the reader is
+    # comparing today's distribution against the fan it came from, and an axis
+    # that rescaled as the zoom window moved would make every frame look alike.
+    observed_minimum = percentiles[0, day_count - 1]
+    observed_maximum = percentiles[4, day_count - 1]
+    if frame_count > 0:
+        observed_minimum = frames[frame_count - 1, 1]
+        observed_maximum = frames[frame_count - 1, 2]
+    for band in (0, 4):
+        for value in percentiles[band]:
+            if value < observed_minimum:
+                observed_minimum = value
+            if value > observed_maximum:
+                observed_maximum = value
+    padding = max(
+        (observed_maximum - observed_minimum) * 0.04,
+        abs(observed_maximum) * 0.001,
+        0.0001,
+    )
     summary = np.array(
         [
             _linear_quantile(terminal, 0.05),
@@ -701,11 +828,13 @@ def _summarize_simulation(
             drawdown_total / path_count,
             _linear_quantile(terminal_returns, 0.05),
             _linear_quantile(terminal_returns, 0.5),
+            max(0.0, observed_minimum - padding),
+            observed_maximum + padding,
         ],
         dtype=np.float64,
     )
     days = np.arange(day_count, dtype=np.float64)
-    return sample_paths, percentiles, terminal, summary, days
+    return sample_paths, percentiles, terminal, summary, days, frames
 
 
 @njit(
@@ -798,7 +927,7 @@ def parametric_monte_carlo_kernel(
                 worst = drawdown
             paths[path_index, day] = nav
         max_drawdowns[path_index] = worst
-    sample, percentiles, terminal, summary, days = _summarize_simulation(
+    sample, percentiles, terminal, summary, days, frames = _summarize_simulation(
         paths,
         max_drawdowns,
         initial_nav,
@@ -825,7 +954,7 @@ def parametric_monte_carlo_kernel(
     packed = np.empty(days.size + assumptions.size, dtype=np.float64)
     packed[: days.size] = days
     packed[days.size :] = assumptions
-    return sample, percentiles, terminal, summary, packed
+    return sample, percentiles, terminal, summary, packed, frames
 
 
 @njit(
@@ -917,7 +1046,7 @@ def stationary_block_bootstrap_kernel(
                 worst = drawdown
             paths[path_index, day] = nav
         max_drawdowns[path_index] = worst
-    sample, percentiles, terminal, summary, days = _summarize_simulation(
+    sample, percentiles, terminal, summary, days, frames = _summarize_simulation(
         paths,
         max_drawdowns,
         initial_nav,
@@ -930,12 +1059,13 @@ def stationary_block_bootstrap_kernel(
     packed = np.empty(days.size + assumptions.size, dtype=np.float64)
     packed[: days.size] = days
     packed[days.size :] = assumptions
-    return sample, percentiles, terminal, summary, packed
+    return sample, percentiles, terminal, summary, packed, frames
 
 
-@njit(float64(_F1, float64, float64, float64, float64), cache=False, nogil=True)
+@njit(float64(_F1, _I1, float64, float64, float64, float64), cache=False, nogil=True)
 def _garch_quasi_likelihood(
     demeaned: np.ndarray,
+    segment_ids: np.ndarray,
     omega: float,
     alpha: float,
     beta: float,
@@ -951,7 +1081,12 @@ def _garch_quasi_likelihood(
 
     variance = start_variance
     total = 0.0
-    for value in demeaned:
+    for index in range(demeaned.size):
+        # Two情景区间 years apart are two histories, not one: carrying variance
+        # across the joint would fit persistence to a day that never followed.
+        if index > 0 and segment_ids[index] != segment_ids[index - 1]:
+            variance = start_variance
+        value = demeaned[index]
         if not np.isfinite(variance) or variance <= 0.0:
             return -np.inf
         total -= 0.5 * (math.log(variance) + value * value / variance)
@@ -961,9 +1096,10 @@ def _garch_quasi_likelihood(
     return total
 
 
-@njit(_FILTER_RESULT(_F1, int64, float64), cache=False, nogil=True)
+@njit(_FILTER_RESULT(_F1, _I1, int64, float64), cache=False, nogil=True)
 def _volatility_filter(
     log_returns: np.ndarray,
+    segment_ids: np.ndarray,
     filter_mode: int,
     ewma_lambda: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -979,6 +1115,8 @@ def _volatility_filter(
     count = log_returns.size
     if count < 20:
         raise ValueError("volatility filtering requires 20 valid returns")
+    if segment_ids.size != count:
+        raise ValueError("volatility filter return and segment axes must match")
     total = 0.0
     for value in log_returns:
         if not np.isfinite(value):
@@ -1020,6 +1158,7 @@ def _volatility_filter(
                     continue
                 score = _garch_quasi_likelihood(
                     demeaned,
+                    segment_ids,
                     unconditional * (1.0 - alpha_candidate - beta_candidate),
                     alpha_candidate,
                     beta_candidate,
@@ -1048,6 +1187,7 @@ def _volatility_filter(
                         continue
                     score = _garch_quasi_likelihood(
                         demeaned,
+                        segment_ids,
                         unconditional * (1.0 - alpha_candidate - beta_candidate),
                         alpha_candidate,
                         beta_candidate,
@@ -1075,6 +1215,10 @@ def _volatility_filter(
     residuals = np.empty(count, dtype=np.float64)
     variance = unconditional
     for index in range(count):
+        # Same restart the recursion already does at index 0, applied at every
+        # 情景区间 boundary: each segment is standardised by its own history only.
+        if index > 0 and segment_ids[index] != segment_ids[index - 1]:
+            variance = unconditional
         if variance < variance_floor:
             variance = variance_floor
         deviation = demeaned[index]
@@ -1118,12 +1262,13 @@ def _volatility_filter(
 
 
 @njit(
-    _SIM_RESULT(_F1, float64, int64, int64, int64, float64, int64, float64),
+    _SIM_RESULT(_F1, _I1, float64, int64, int64, int64, float64, int64, float64),
     cache=False,
     nogil=True,
 )
 def filtered_historical_simulation_kernel(
     returns_percent: np.ndarray,
+    segment_ids: np.ndarray,
     initial_nav: float,
     horizon_days: int,
     path_count: int,
@@ -1143,6 +1288,8 @@ def filtered_historical_simulation_kernel(
     at all.
     """
 
+    if returns_percent.size != segment_ids.size:
+        raise ValueError("filtered simulation return and segment axes must match")
     valid_count = 0
     for value in returns_percent:
         if np.isfinite(value) and value > -100.0:
@@ -1150,12 +1297,17 @@ def filtered_historical_simulation_kernel(
     if valid_count < 20 or initial_nav <= 0.0 or horizon_days < 1 or path_count < 1:
         raise ValueError("filtered simulation requires valid parameters and 20 returns")
     log_returns = np.empty(valid_count, dtype=np.float64)
+    valid_segments = np.empty(valid_count, dtype=np.int64)
     position = 0
-    for value in returns_percent:
+    for index in range(returns_percent.size):
+        value = returns_percent[index]
         if np.isfinite(value) and value > -100.0:
             log_returns[position] = math.log1p(value / 100.0)
+            valid_segments[position] = segment_ids[index]
             position += 1
-    residuals, parameters = _volatility_filter(log_returns, filter_mode, ewma_lambda)
+    residuals, parameters = _volatility_filter(
+        log_returns, valid_segments, filter_mode, ewma_lambda
+    )
     mean = parameters[0]
     omega = parameters[1]
     alpha = parameters[2]
@@ -1196,7 +1348,7 @@ def filtered_historical_simulation_kernel(
             if not np.isfinite(variance):
                 raise ValueError("non-finite filtered simulation variance")
         max_drawdowns[path_index] = worst
-    sample, percentiles, terminal, summary, days = _summarize_simulation(
+    sample, percentiles, terminal, summary, days, frames = _summarize_simulation(
         paths,
         max_drawdowns,
         initial_nav,
@@ -1221,7 +1373,7 @@ def filtered_historical_simulation_kernel(
     packed = np.empty(days.size + assumptions.size, dtype=np.float64)
     packed[: days.size] = days
     packed[days.size :] = assumptions
-    return sample, percentiles, terminal, summary, packed
+    return sample, percentiles, terminal, summary, packed, frames
 
 
 @njit(_REALIZED_RESULT(_F1, float64, _F2, _F1, float64), cache=False, nogil=True)
@@ -1378,125 +1530,6 @@ def simulation_comparison_kernel(
     largest = max(output[0], output[1], output[2], output[3])
     output[4] = 2.0 if largest >= 0.1 else (1.0 if largest >= 0.03 else 0.0)
     return output
-
-
-@njit(_DENSITY_RESULT(_F1, _F2, int64, float64), cache=False, nogil=True)
-def terminal_density_kernel(
-    terminal_values: np.ndarray,
-    percentiles: np.ndarray,
-    point_count: int,
-    initial_nav: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if not np.isfinite(initial_nav) or initial_nav <= 0.0:
-        raise ValueError("initial NAV must be positive")
-    sorted_values = terminal_values.copy()
-    sorted_values.sort()
-    if sorted_values.size < 2:
-        return (
-            np.empty((0, 4), dtype=np.float64),
-            np.empty((0, 5), dtype=np.float64),
-            np.empty(0, dtype=np.float64),
-        )
-    total = 0.0
-    for value in sorted_values:
-        total += value
-    mean = total / sorted_values.size
-    variance_sum = 0.0
-    for value in sorted_values:
-        difference = value - mean
-        variance_sum += difference * difference
-    standard_deviation = math.sqrt(max(0.0, variance_sum / max(1, sorted_values.size - 1)))
-    interquartile_range = _linear_quantile(sorted_values, 0.75) - _linear_quantile(sorted_values, 0.25)
-    robust_scale = standard_deviation
-    alternate_scale = interquartile_range / 1.34
-    if robust_scale <= 0.0 or (alternate_scale > 0.0 and alternate_scale < robust_scale):
-        robust_scale = alternate_scale
-    # Anchored on the median, not the mean. `robust_scale` above already prefers
-    # the IQR when an outlier dominates, but this floor did not: one path that
-    # compounded to 1e12 — which the filtered lanes can produce, since EWMA's
-    # variance has no mean reversion — dragged the mean to 1e9 and set the
-    # floor, and with it the chart's whole nav axis, to six figures. The
-    # quantiles were fine; the axis made them invisible.
-    median_nav = _linear_quantile(sorted_values, 0.5)
-    minimum_bandwidth = max(abs(median_nav) * 0.0005, 1e-6)
-    bandwidth = max(
-        minimum_bandwidth,
-        0.9 * robust_scale * sorted_values.size ** (-0.2),
-    )
-    minimum_nav = max(0.0, _linear_quantile(sorted_values, 0.01) - bandwidth * 2.0)
-    maximum_nav = max(
-        minimum_nav + minimum_bandwidth,
-        _linear_quantile(sorted_values, 0.99) + bandwidth * 2.0,
-    )
-    safe_point_count = max(21, min(161, point_count))
-    points = np.empty((safe_point_count, 4), dtype=np.float64)
-    normalizer = sorted_values.size * bandwidth * math.sqrt(2.0 * math.pi)
-    mode_index = 0
-    for index in range(safe_point_count):
-        nav = minimum_nav + (maximum_nav - minimum_nav) * index / (safe_point_count - 1)
-        kernel_sum = 0.0
-        for value in sorted_values:
-            standardized = (nav - value) / bandwidth
-            kernel_sum += math.exp(-0.5 * standardized * standardized)
-        density = kernel_sum / normalizer
-        points[index, 0] = nav
-        points[index, 1] = density
-        points[index, 3] = nav / initial_nav - 1.0
-        if index == 0 or density > points[mode_index, 1]:
-            mode_index = index
-    bin_count = max(8, min(28, int(round(math.sqrt(sorted_values.size)))))
-    bin_width = (maximum_nav - minimum_nav) / bin_count
-    histogram = np.zeros((bin_count, 5), dtype=np.float64)
-    for index in range(bin_count):
-        histogram[index, 0] = minimum_nav + index * bin_width
-        histogram[index, 1] = minimum_nav + (index + 1) * bin_width
-    for value in sorted_values:
-        raw_index = int(math.floor((value - minimum_nav) / bin_width))
-        index = max(0, min(bin_count - 1, raw_index))
-        histogram[index, 3] += 1.0
-    max_density = points[mode_index, 1]
-    density_count_factor = sorted_values.size * bin_width
-    maximum_count = 1.0
-    for index in range(points.shape[0]):
-        points[index, 2] = points[index, 1] * density_count_factor
-        if points[index, 2] > maximum_count:
-            maximum_count = points[index, 2]
-    for index in range(histogram.shape[0]):
-        histogram[index, 2] = histogram[index, 3] / density_count_factor
-        histogram[index, 4] = histogram[index, 3] / sorted_values.size
-        if histogram[index, 2] > max_density:
-            max_density = histogram[index, 2]
-        if histogram[index, 3] > maximum_count:
-            maximum_count = histogram[index, 3]
-    observed_minimum = minimum_nav
-    observed_maximum = maximum_nav
-    for row in (0, 4):
-        for value in percentiles[row]:
-            if value < observed_minimum:
-                observed_minimum = value
-            if value > observed_maximum:
-                observed_maximum = value
-    padding = max(
-        (observed_maximum - observed_minimum) * 0.04,
-        abs(observed_maximum) * 0.001,
-        0.0001,
-    )
-    summary = np.array(
-        [
-            max_density,
-            points[mode_index, 0],
-            minimum_nav,
-            maximum_nav,
-            math.ceil(maximum_count * 1.08),
-            max(0.0, observed_minimum - padding),
-            observed_maximum + padding,
-            density_count_factor,
-            bin_width,
-            sorted_values.size,
-        ],
-        dtype=np.float64,
-    )
-    return points, histogram, summary
 
 
 @njit(
@@ -1686,6 +1719,7 @@ _PRODUCTION_KERNELS = (
     _adjusted_distribution_shape,
     _calibrate_sinh_arcsinh,
     _next_uniform,
+    _density_frame,
     _summarize_simulation,
     parametric_monte_carlo_kernel,
     stationary_block_bootstrap_kernel,
@@ -1694,7 +1728,6 @@ _PRODUCTION_KERNELS = (
     filtered_historical_simulation_kernel,
     simulation_comparison_kernel,
     realized_path_comparison_kernel,
-    terminal_density_kernel,
     regime_analysis_kernel,
 )
 
@@ -1750,14 +1783,16 @@ def warm_product_analysis_numba_kernels() -> dict[str, object]:
     paths = np.ascontiguousarray(np.ones((2, 3), dtype=np.float64))
     drawdowns = np.ascontiguousarray(np.zeros(2, dtype=np.float64))
     _summarize_simulation(paths, drawdowns, 1.0, 0.05)
+    _density_frame(np.ascontiguousarray(np.array([0.98, 1.0, 1.02], dtype=np.float64)), 2.0)
     parametric = parametric_monte_carlo_kernel(returns, 1.0, 2, 3, 1, 5.0, 1)
     parametric_monte_carlo_kernel(returns, 1.0, 2, 3, 1, 5.0, 0)
     bootstrap = stationary_block_bootstrap_kernel(returns, np.zeros(returns.size, dtype=np.int64), 1.0, 2, 3, 2, 5.0, 5)
-    _garch_quasi_likelihood(log_returns, 1e-6, 0.05, 0.9, 1e-4)
-    _volatility_filter(log_returns, 0, 0.94)
-    _volatility_filter(log_returns, 1, 0.94)
-    filtered_historical_simulation_kernel(returns, 1.0, 2, 3, 3, 5.0, 0, 0.94)
-    filtered_historical_simulation_kernel(returns, 1.0, 2, 3, 4, 5.0, 1, 0.94)
+    segment_ids = np.zeros(returns.size, dtype=np.int64)
+    _garch_quasi_likelihood(log_returns, segment_ids, 1e-6, 0.05, 0.9, 1e-4)
+    _volatility_filter(log_returns, segment_ids, 0, 0.94)
+    _volatility_filter(log_returns, segment_ids, 1, 0.94)
+    filtered_historical_simulation_kernel(returns, segment_ids, 1.0, 2, 3, 3, 5.0, 0, 0.94)
+    filtered_historical_simulation_kernel(returns, segment_ids, 1.0, 2, 3, 4, 5.0, 1, 0.94)
     simulation_comparison_kernel(
         np.ascontiguousarray(np.vstack((parametric[3], bootstrap[3]))), 1.0
     )
@@ -1768,7 +1803,6 @@ def warm_product_analysis_numba_kernels() -> dict[str, object]:
         parametric[2],
         1.0,
     )
-    terminal_density_kernel(parametric[2], parametric[1], 21, 1.0)
     regime_analysis_kernel(
         dates,
         values,
@@ -1801,7 +1835,6 @@ __all__ = [
     "return_statistics_kernel",
     "simulation_comparison_kernel",
     "stationary_block_bootstrap_kernel",
-    "terminal_density_kernel",
     "technical_input_availability_kernel",
     "warm_product_analysis_numba_kernels",
 ]

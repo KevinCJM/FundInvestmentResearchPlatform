@@ -112,7 +112,9 @@ def test_production_chain_independent_thresholds_persistence_and_compiled_paths(
     raw = definition()
     parsed = parse_definition_v2(raw)
     assert inspect_definition_v2(parsed)['valid']
-    assert set(SEGMENT_KERNELS) <= set(_kernel_ids_for_definition(parsed))
+    required_kernels = set(_kernel_ids_for_definition(parsed))
+    assert {'local_extrema', 'between_pivots', 'interval_statistic', 'range_threshold'} <= required_kernels
+    assert not {'phase_direction', 'boundary_line'} & required_kernels
     before = {key: list(kernel.signatures) for key, kernel in SEGMENT_KERNELS.items()}
     service = RegimeGraphV2Service(tmp_path, tmp_path)
     result = service._execute_graph(None, parsed, 'retrospective', None)

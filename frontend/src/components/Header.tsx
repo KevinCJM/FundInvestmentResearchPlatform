@@ -25,7 +25,7 @@ export default function Header() {
   const inactiveStyle = 'text-gray-500 hover:bg-gray-700 hover:text-white';
 
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950 shadow" data-testid="site-header">
+    <header className="sticky top-0 z-[60] border-b border-slate-800 bg-slate-950 shadow" data-testid="site-header">
       <nav className="mx-auto max-w-[1600px] px-4 py-3 sm:px-6 lg:px-8" aria-label={s('navigation.main')}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <NavLink to="/" className="shrink-0 text-sm font-bold tracking-wide text-white" aria-label={s('app.home')}>{s('app.title')}</NavLink>

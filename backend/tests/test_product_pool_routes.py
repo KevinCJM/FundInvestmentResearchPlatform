@@ -288,3 +288,27 @@ def test_attach_rejects_a_stale_pool_revision(monkeypatch, tmp_path: Path) -> No
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "PRODUCT_POOL_REVISION_CONFLICT"
+
+
+def test_pool_plan_run_inherits_platform_pit_when_no_cutoff_given(monkeypatch) -> None:
+    """An empty 评价截止日 must read under the platform口径, not to disk's last row."""
+
+    from pit.context import build_context, reset_view_override, set_view_override
+
+    seen: list[str | None] = []
+
+    def record(plan_id: str, as_of: str | None = None) -> dict:
+        seen.append(as_of)
+        return {"plan_id": plan_id, "as_of": as_of, "rows": []}
+
+    monkeypatch.setattr(product_pool_routes.indicator_service, "run_plan", record)
+    gateway = product_pool_routes.IndicatorEvaluationGateway()
+    token = set_view_override(build_context("2015-06-30"))
+    try:
+        gateway.run_plan("plan-equity")
+        # A replay states its own research day, which must still win.
+        gateway.run_plan("plan-equity", "2020-12-31")
+    finally:
+        reset_view_override(token)
+
+    assert seen == ["2015-06-30", "2020-12-31"]

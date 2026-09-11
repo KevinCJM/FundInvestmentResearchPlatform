@@ -48,6 +48,13 @@ export default function PitProvenance({ lineage }: { lineage?: PitRunLineage | n
           其中 {lineage.rows_without_announcement.toLocaleString()} 行缺少公告日，已按净值日期近似；该部分不具备严格时点证明。
         </p>
       )}
+      {/* 产品域的时点问题不在任何一条公式里，只在候选集合里，所以印在口径旁边而不是
+          让读者自己去比对产品池的研究日期。 */}
+      {(lineage.universe?.findings ?? []).map((finding) => (
+        <p key={finding.code + finding.label} className="mt-1 text-rose-700" data-testid="pit-universe-finding">
+          {finding.message}
+        </p>
+      ))}
     </div>
   )
 }

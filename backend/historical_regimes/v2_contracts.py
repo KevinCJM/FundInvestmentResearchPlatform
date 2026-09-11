@@ -6,6 +6,8 @@ import hashlib
 import json
 import copy
 import math
+import re
+from datetime import date
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationInfo, ValidationError as PydanticValidationError, model_validator, model_serializer
@@ -90,8 +92,9 @@ class RegimeGraphV2(BaseModel):
         node_ids = [node.id for node in self.nodes]
         if len(node_ids) != len(set(node_ids)):
             raise ValueError("graph.nodes 中的节点 id 必须唯一")
-        if self._node_preview and set(self.outputs) != {"preview"}:
-            raise ValueError("节点预览必须且只能声明 preview 输出")
+        preview_outputs = {"preview", *(f"comparison_{index}" for index in range(1, 8))}
+        if self._node_preview and ("preview" not in self.outputs or set(self.outputs) - preview_outputs):
+            raise ValueError("节点预览须声明 preview 输出，可附带最多七个 comparison 输出")
         if not self._node_preview and "state" not in self.outputs:
             raise ValueError("graph.outputs 必须声明 state 根输出")
         allowed_outputs = {
@@ -103,7 +106,7 @@ class RegimeGraphV2(BaseModel):
             "reason_code",
         }
         if self._node_preview:
-            allowed_outputs.add("preview")
+            allowed_outputs.update(preview_outputs)
         if set(self.channel_metadata) - set(self.outputs):
             raise ValueError("输出通道设置必须对应已连接的输出。")
         if any(not key.isidentifier() or key.startswith("_") for key in self.channel_metadata):
@@ -204,11 +207,19 @@ class RegimeDefinitionV2(BaseModel):
     description: str = Field(default="", max_length=1000)
     template_id: str | None = Field(default=None, max_length=100)
     source_v1: dict[str, Any] | None = None
+    default_mode: Literal["realtime", "retrospective"] | None = None
     graph: RegimeGraphV2
     states: list[RegimeStateV2] = Field(min_length=2, max_length=12)
     evaluation_targets: list[EvaluationTargetV2] = Field(default_factory=list, max_length=20)
     validation: dict[str, Any] = Field(default_factory=dict)
     usage_intent: Literal["research_display", "product_research", "formal_backtest", "taa"] = "research_display"
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_mode(self, handler):
+        result = handler(self)
+        if self.default_mode is None:
+            result.pop("default_mode", None)
+        return result
 
     @model_validator(mode="after")
     def validate_identifiers(self) -> "RegimeDefinitionV2":
@@ -545,6 +556,70 @@ def definition_content_hash(definition: RegimeDefinitionV2) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+_MANUAL_EVENT_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_MANUAL_EVENT_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_MANUAL_EVENT_FIELDS = {"id", "label", "start_date", "end_date", "color", "description", "library_reference"}
+
+
+def _manual_event_diagnostics(node: RegimeGraphNodeV2, state_count: int) -> list[dict[str, Any]]:
+    events = node.parameters.get("events", [])
+    if not isinstance(events, list):
+        return []  # Generic parameter validation owns the top-level type error.
+    diagnostics: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, raw in enumerate(events):
+        path = f"graph.nodes.{node.id}.parameters.events.{index}"
+        if not isinstance(raw, dict):
+            diagnostics.append({"code": "INVALID_MANUAL_EVENT", "path": path,
+                                "message": "每个历史事件必须是对象。", "severity": "error"})
+            continue
+        unknown = sorted(set(raw) - _MANUAL_EVENT_FIELDS)
+        if unknown:
+            diagnostics.append({"code": "UNKNOWN_MANUAL_EVENT_FIELD", "path": path,
+                                "message": "历史事件包含不支持字段：" + ", ".join(unknown), "severity": "error"})
+        event_id = raw.get("id")
+        if not isinstance(event_id, str) or not _MANUAL_EVENT_ID.fullmatch(event_id):
+            diagnostics.append({"code": "INVALID_MANUAL_EVENT_ID", "path": f"{path}.id",
+                                "message": "事件 ID 必须以字母开头，仅包含字母、数字、下划线或短横线，且不超过 64 个字符。", "severity": "error"})
+        elif event_id in seen_ids:
+            diagnostics.append({"code": "DUPLICATE_MANUAL_EVENT_ID", "path": f"{path}.id",
+                                "message": f"事件 ID {event_id} 重复。", "severity": "error"})
+        else:
+            seen_ids.add(event_id)
+        label = raw.get("label")
+        if not isinstance(label, str) or not label.strip() or len(label) > 100:
+            diagnostics.append({"code": "INVALID_MANUAL_EVENT_LABEL", "path": f"{path}.label",
+                                "message": "事件名称不能为空且不能超过 100 个字符。", "severity": "error"})
+        parsed_dates: dict[str, date] = {}
+        for field_name, label_text in (("start_date", "开始日期"), ("end_date", "结束日期")):
+            value = raw.get(field_name)
+            try:
+                parsed = date.fromisoformat(value) if isinstance(value, str) else None
+            except ValueError:
+                parsed = None
+            if parsed is None or value != parsed.isoformat():
+                diagnostics.append({"code": "INVALID_MANUAL_EVENT_DATE", "path": f"{path}.{field_name}",
+                                    "message": f"{label_text}必须使用 YYYY-MM-DD。", "severity": "error"})
+            else:
+                parsed_dates[field_name] = parsed
+        if ("start_date" in parsed_dates and "end_date" in parsed_dates
+                and parsed_dates["start_date"] > parsed_dates["end_date"]):
+            diagnostics.append({"code": "MANUAL_EVENT_DATE_ORDER", "path": path,
+                                "message": "事件开始日期不能晚于结束日期。", "severity": "error"})
+        color = raw.get("color")
+        if not isinstance(color, str) or not _MANUAL_EVENT_COLOR.fullmatch(color):
+            diagnostics.append({"code": "INVALID_MANUAL_EVENT_COLOR", "path": f"{path}.color",
+                                "message": "事件颜色必须使用 #RRGGBB。", "severity": "error"})
+        description = raw.get("description", "")
+        if not isinstance(description, str) or len(description) > 500:
+            diagnostics.append({"code": "INVALID_MANUAL_EVENT_DESCRIPTION", "path": f"{path}.description",
+                                "message": "事件说明必须是文本且不能超过 500 个字符。", "severity": "error"})
+    if state_count != 2:
+        diagnostics.append({"code": "INVALID_MANUAL_EVENT_STATE_COUNT", "path": "states",
+                            "message": "人工历史事件节点的内部兼容输出固定使用“事件覆盖 / 事件外”两个状态。", "severity": "error"})
+    return diagnostics
+
+
 def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
     nodes = {node.id: node for node in definition.graph.nodes}
     diagnostics: list[dict[str, Any]] = []
@@ -566,6 +641,8 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
             )
             continue
         diagnostics.extend(_parameter_diagnostics(node, metadata))
+        if node.type == "annotation.manual_events":
+            diagnostics.extend(_manual_event_diagnostics(node, len(definition.states)))
         if int(node.type_version) != int(metadata["version"]):
             diagnostics.append(
                 {
@@ -654,7 +731,7 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
         if node.type in {"model.trend_regime", "post.merge_short_regimes", "model.range_threshold"} and [state.role for state in definition.states] != ["positive", "neutral", "negative"]:
             diagnostics.append({"code": "INVALID_MARKET_STATE_COUNT", "severity": "error",
                                 "path": "states", "message": "牛熊震荡算法要求按顺序配置正向、中性、负向三个状态。"})
-        if node.type.startswith("segment.") and node.type != "segment.between_pivots":
+        if (node.type.startswith("segment.") and node.type != "segment.between_pivots") or node.type == "post.peak_sideways":
             start_ref, end_ref = node.inputs.get("start"), node.inputs.get("end")
             if start_ref and end_ref and (start_ref.node_id != end_ref.node_id or
                     start_ref.port != "start" or end_ref.port != "end" or
@@ -666,7 +743,7 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
             if isinstance(lower, (int, float)) and isinstance(upper, (int, float)) and lower >= upper:
                 diagnostics.append({"code": "INVALID_THRESHOLDS", "severity": "error", "path": f"graph.nodes.{node.id}.parameters",
                                     "message": "下界必须小于上界。"})
-        if node.type == "model.peak_trough":
+        if node.type in {"model.peak_trough", "post.peak_sideways"}:
             roles = [state.role for state in definition.states]
             allowed = [["positive", "neutral", "negative"]]
             if not node.parameters.get("sideways_enabled", False):
@@ -674,6 +751,26 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
             if roles not in allowed:
                 diagnostics.append({"code": "INVALID_PEAK_TROUGH_STATES", "severity": "error",
                                     "path": "states", "message": "启用峰谷震荡识别时，须按牛市（正向）、震荡（中性）、熊市（负向）配置三个状态；关闭时兼容牛、熊两态。未分类不是震荡。"})
+        if node.type == "state.select":
+            for parameter_name, input_name, default in (("true_code", "when_true", 0), ("false_code", "when_false", 1)):
+                value = node.parameters.get(parameter_name, default)
+                if input_name not in node.inputs and isinstance(value, int) and not -1 <= value < len(definition.states):
+                    diagnostics.append({"code": "STATE_SELECTION_OUT_OF_RANGE", "severity": "error",
+                        "path": f"graph.nodes.{node.id}.parameters.{parameter_name}",
+                        "message": "请选择已定义的市场状态，或选择未分类（-1）。"})
+        if node.type in {"segment.phase_direction", "post.peak_sideways"}:
+            start_ref = node.inputs.get("start")
+            if start_ref and start_ref.node_id in nodes:
+                boundary = nodes[start_ref.node_id]
+                if node.type == "segment.phase_direction" and node.inputs.get("pivot") and node.inputs["pivot"] != boundary.inputs.get("pivot"):
+                    diagnostics.append({"code": "SEGMENT_PIVOTS_MISMATCH", "severity": "error",
+                        "path": f"graph.nodes.{node.id}.inputs.pivot", "message": "波段方向与区间边界必须使用同一组峰谷。"})
+                phase_ref = node.inputs.get("phase")
+                phase_node = nodes.get(phase_ref.node_id) if phase_ref else None
+                if phase_node and (phase_node.type != "segment.phase_direction" or
+                        phase_node.inputs.get("start") != start_ref or phase_node.inputs.get("end") != node.inputs.get("end")):
+                    diagnostics.append({"code": "SEGMENT_PHASE_MISMATCH", "severity": "error",
+                        "path": f"graph.nodes.{node.id}.inputs.phase", "message": "波段方向与震荡合并必须使用同一组区间边界。"})
         if node.type == "model.threshold":
             lower_value = node.parameters.get("lower", -0.001)
             upper_value = node.parameters.get("upper", 0.001)
@@ -1017,21 +1114,8 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
             continue
         required_node_ids.add(node_id)
         pending.extend(reference.node_id for reference in nodes[node_id].inputs.values())
-    noncausal_nodes = sorted(
-        node_id
-        for node_id in required_node_ids
-        if NODE_REGISTRY.get(nodes[node_id].type, {}).get("causal") is not True
-    )
-    repaint_nodes = sorted(
-        node_id
-        for node_id in required_node_ids
-        if NODE_REGISTRY.get(nodes[node_id].type, {}).get("repaints") is True
-    )
-    non_realtime_nodes = sorted(
-        node_id
-        for node_id in required_node_ids
-        if NODE_REGISTRY.get(nodes[node_id].type, {}).get("supports_realtime") is not True
-    )
+    from .temporal_capability import analyze_temporal, compatibility_projection
+    temporal = analyze_temporal(definition, NODE_REGISTRY)
 
     cost_units_by_class = {
         "io_bound": 1.0,
@@ -1117,14 +1201,8 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                 for node_id, root_ids in decision_roots.items()
             },
         },
-        "causality": {
-            "causal": not noncausal_nodes,
-            "repaints": bool(repaint_nodes),
-            "realtime_supported": not non_realtime_nodes,
-            "noncausal_node_ids": noncausal_nodes,
-            "repaint_node_ids": repaint_nodes,
-            "non_realtime_node_ids": non_realtime_nodes,
-        },
+        "causality": compatibility_projection(temporal),
+        "temporal_capability": temporal,
         "cost_estimate": {
             "model": "relative_linearized_cost_v1",
             "total_relative_units_per_observation": total_relative_units,

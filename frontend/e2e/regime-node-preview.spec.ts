@@ -45,6 +45,15 @@ test('未完成公式可从画布与向导预览单个指数', async ({ page }, 
   await preview.getByRole('button', { name: '预览节点数据' }).click()
   await expect(preview.getByText('已返回 3 / 3 条节点结果')).toBeVisible()
   await expect(preview.locator('canvas')).toHaveCount(1)
+  if (testInfo.project.name === 'desktop-1440') {
+    const viewport = page.viewportSize()!
+    await page.setViewportSize({ ...viewport, height: 1600 })
+    await expect.poll(async () => (await preview.getByRole('region', { name: '节点预览结果区' }).boundingBox())!.y + (await preview.getByRole('region', { name: '节点预览结果区' }).boundingBox())!.height).toBeGreaterThanOrEqual(1576)
+    await expect.poll(async () => (await preview.locator('canvas').boundingBox())!.height).toBeGreaterThan(700)
+    await preview.screenshot({ path: testInfo.outputPath('node-preview-fill-height.png') })
+    await page.setViewportSize(viewport)
+  }
+  await preview.getByText('查看节点数据（原值）', { exact: true }).click()
   const table = testInfo.project.name === 'mobile-320' ? preview.getByTestId('regime-result-mobile-list') : preview.getByRole('table')
   await expect(table.getByText('2026-09-07', { exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy()
@@ -53,9 +62,9 @@ test('未完成公式可从画布与向导预览单个指数', async ({ page }, 
   await expect(preview.getByText(/基准日 2010-01-04/)).toContainText('涨跌幅 20%')
   await preview.locator('canvas').scrollIntoViewIfNeeded()
   const box = (await preview.locator('canvas').boundingBox())!
-  await page.mouse.move(box.x + 61, box.y + 252)
+  await page.mouse.move(box.x + 61, box.y + box.height - 8)
   await page.mouse.down()
-  await page.mouse.move(box.x + box.width * 0.68, box.y + 252, { steps: 8 })
+  await page.mouse.move(box.x + box.width * 0.68, box.y + box.height - 8, { steps: 8 })
   await page.mouse.up()
   await expect.poll(() => normalizationBases[normalizationBases.length - 1]).toBeGreaterThan(0)
   await expect(preview.getByText(/基准日 2020-01-02|基准日 2026-09-07/)).toBeVisible()

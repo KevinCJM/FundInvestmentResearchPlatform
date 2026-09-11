@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { useAllocationDraft } from '../app/allocationJourney'
+import { useResearchDay } from '../app/ResearchContext'
 import CandidateReviewTable from '../components/product-pools/CandidateReviewTable'
 import ProductPoolHeader, { type CreateProductPoolInput } from '../components/product-pools/ProductPoolHeader'
 import {
@@ -32,7 +35,10 @@ function messageOf(reason: unknown, fallback: string) {
 export default function ProductPools() {
   const [pools, setPools] = useState<ProductPool[]>([])
   const [evaluationPlans, setEvaluationPlans] = useState<EvaluationPlan[]>([])
-  const [selectedPoolId, setSelectedPoolId] = useState('')
+  const [params] = useSearchParams()
+  const [poolDraft, setPoolDraft] = useAllocationDraft(`pool-manager:${params.get('pool') || 'resume'}`, { selectedPoolId: params.get('pool') || '' })
+  const selectedPoolId = poolDraft.selectedPoolId
+  const setSelectedPoolId = (value: string | ((current: string) => string)) => setPoolDraft(current => ({ selectedPoolId: typeof value === 'function' ? value(current.selectedPoolId) : value }))
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
@@ -90,7 +96,7 @@ export default function ProductPools() {
     }
   }
 
-  return <div className="mx-auto w-full max-w-[1680px] space-y-6 p-4 sm:p-6" aria-busy={loading || busy}>
+  return <div className="mx-auto min-w-0 w-full max-w-[1680px] space-y-6 p-4 sm:p-6" aria-busy={loading || busy}>
     <ProductPoolHeader
       pools={pools}
       selectedPool={selectedPool}
@@ -133,25 +139,26 @@ function PoolWorkspace({ pool, evaluationPlans, busy, setBusy, onPool, onMessage
   onMessage: (message: string) => void
   onError: (message: string) => void
 }) {
-  const [name, setName] = useState(pool.name)
-  const [description, setDescription] = useState(pool.description)
-  const [purpose, setPurpose] = useState(pool.purpose)
-  const [owner, setOwner] = useState(pool.owner)
+  const [name, setName] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:name`, pool.name)
+  const [description, setDescription] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:description`, pool.description)
+  const [purpose, setPurpose] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:purpose`, pool.purpose)
+  const [owner, setOwner] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:owner`, pool.owner)
 
-  const [planId, setPlanId] = useState('')
-  const [asOf, setAsOf] = useState('')
-  const [selectionMode, setSelectionMode] = useState<EvaluationPlanSelectionMode>('all_ranked')
-  const [selectionValue, setSelectionValue] = useState('10')
+  const [planId, setPlanId] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:planId`, '')
+  const [asOf, setAsOf] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:asOf`, '')
+  const platformAsOf = useResearchDay()
+  const [selectionMode, setSelectionMode] = useAllocationDraft<EvaluationPlanSelectionMode>(`pool-form:${pool.id}:${pool.revision}:selectionMode`, 'all_ranked')
+  const [selectionValue, setSelectionValue] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:selectionValue`, '10')
 
-  const [manualPlanId, setManualPlanId] = useState('')
-  const [manualKind, setManualKind] = useState<'etf' | 'fund'>('etf')
-  const [manualCode, setManualCode] = useState('')
-  const [manualName, setManualName] = useState('')
-  const [manualReason, setManualReason] = useState('')
+  const [manualPlanId, setManualPlanId] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:manualPlanId`, '')
+  const [manualKind, setManualKind] = useAllocationDraft<'etf' | 'fund'>(`pool-form:${pool.id}:${pool.revision}:manualKind`, 'etf')
+  const [manualCode, setManualCode] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:manualCode`, '')
+  const [manualName, setManualName] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:manualName`, '')
+  const [manualReason, setManualReason] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:manualReason`, '')
 
-  const [effectiveFrom, setEffectiveFrom] = useState(today())
-  const [effectiveTo, setEffectiveTo] = useState('')
-  const [publicationNote, setPublicationNote] = useState('')
+  const [effectiveFrom, setEffectiveFrom] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:effectiveFrom`, today())
+  const [effectiveTo, setEffectiveTo] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:effectiveTo`, '')
+  const [publicationNote, setPublicationNote] = useAllocationDraft(`pool-form:${pool.id}:${pool.revision}:publicationNote`, '')
 
   const attachedPlanIds = useMemo(
     () => new Set(pool.evaluation_plans.map((item) => item.plan_id)),
@@ -244,28 +251,46 @@ function PoolWorkspace({ pool, evaluationPlans, busy, setBusy, onPool, onMessage
     }
   }
 
-  return <div className="space-y-5">
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+  return <div className="min-w-0 space-y-5">
+    <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+      <div><h2 className="font-semibold text-emerald-950">本池产品与研究进度</h2><p className="mt-1 text-sm text-emerald-900">可用 {approvedCount} 只 · 待复核 {pendingCount} 只 · {pool.current_version_id ? '有已发布版本可用于研究' : '复核完成后发布，才能继续配置研究'}</p></div>
+      {pool.current_version_id && <Link to={`/pre-investment/product-pool?version=${encodeURIComponent(pool.current_version_id)}`} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white">使用已发布版本开展配置研究 →</Link>}
+    </section>
+    <CandidateReviewTable
+      pool={pool}
+      busy={busy}
+      setBusy={setBusy}
+      onPool={onPool}
+      onMessage={onMessage}
+      onError={onError}
+    />
+
+    <details open={pool.members.length === 0 ? true : undefined} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <summary className="cursor-pointer font-semibold text-slate-800">产品池规则与基本信息</summary>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 className="text-lg font-semibold text-slate-900">1. 产品池定义</h2><p className="mt-1 text-sm text-slate-500">修订 v{pool.revision} · {pool.current_version_id ? `当前发布版本 ${pool.current_version_id}` : '尚未发布'}</p></div>
+        <div><h2 className="text-lg font-semibold text-slate-900">产品池规则与基本信息</h2><p className="mt-1 text-sm text-slate-500">编辑修订 {pool.revision} · {pool.current_version_id ? '已发布版本保持不变' : '尚未发布'}</p></div>
         <button type="button" disabled={busy} onClick={() => void saveMetadata()} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">保存基本信息</button>
       </div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <label className="text-sm text-slate-700">名称<input value={name} onChange={(event) => setName(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
-        <label className="text-sm text-slate-700">负责人<input value={owner} onChange={(event) => setOwner(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
-        <label className="text-sm text-slate-700 sm:col-span-2">用途<input value={purpose} onChange={(event) => setPurpose(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
-        <label className="text-sm text-slate-700 sm:col-span-2">说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
+      <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 sm:grid-cols-2">
+        <label className="text-sm text-slate-700">名称<input value={name} onChange={(event) => setName(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
+        <label className="text-sm text-slate-700">负责人<input value={owner} onChange={(event) => setOwner(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
+        <label className="text-sm text-slate-700 sm:col-span-2">用途<input value={purpose} onChange={(event) => setPurpose(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
+        <label className="text-sm text-slate-700 sm:col-span-2">说明<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={2} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
       </div>
-    </section>
+    </details>
 
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 className="text-lg font-semibold text-slate-900">2. 关联评价方案</h2>
+    <details open={pool.members.length === 0 ? true : undefined} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <summary className="cursor-pointer font-semibold text-slate-800">评价方案与候选来源</summary>
+      <h2 className="text-lg font-semibold text-slate-900">评价方案与候选来源</h2>
       <p className="mt-1 text-sm text-slate-500">评价方案就是产品分组。关联时运行当前锁定版本，并保存运行结果编号作为入池证据。</p>
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_auto]">
-        <label className="text-xs text-slate-600">评价方案<select aria-label="待关联评价方案" value={planId} onChange={(event) => setPlanId(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"><option value="">请选择</option>{candidatePlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · v{plan.revision}{attachedPlanIds.has(plan.id) ? '（已关联，可重新运行）' : ''}</option>)}</select></label>
-        <label className="text-xs text-slate-600">评价截止日<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label>
-        <label className="text-xs text-slate-600">导入方式<select value={selectionMode} onChange={(event) => setSelectionMode(event.target.value as EvaluationPlanSelectionMode)} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm">{Object.entries(selectionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label className="text-xs text-slate-600">N / 百分比<input aria-label="N / 百分比" type={selectionMode === 'all_ranked' ? 'text' : 'number'} inputMode={selectionMode === 'all_ranked' ? undefined : 'decimal'} disabled={selectionMode === 'all_ranked'} value={selectionMode === 'all_ranked' ? '-' : selectionValue} onChange={(event) => setSelectionValue(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
+      <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_auto]">
+        <label className="text-xs text-slate-600">评价方案<select aria-label="待关联评价方案" value={planId} onChange={(event) => setPlanId(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"><option value="">请选择</option>{candidatePlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · v{plan.revision}{attachedPlanIds.has(plan.id) ? '（已关联，可重新运行）' : ''}</option>)}</select></label>
+        <label className="text-xs text-slate-600">评价截止日<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+          {/* 空着不等于「用全部数据」——它跟随平台研究日，和产品研究页同一个口径。 */}
+          <span className="mt-1 block text-[11px] text-slate-500">{asOf ? '仅本次运行生效' : platformAsOf ? `跟随平台研究日 ${platformAsOf}` : '磁盘全部数据'}</span>
+        </label>
+        <label className="text-xs text-slate-600">导入方式<select value={selectionMode} onChange={(event) => setSelectionMode(event.target.value as EvaluationPlanSelectionMode)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm">{Object.entries(selectionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="text-xs text-slate-600">N / 百分比<input aria-label="N / 百分比" type={selectionMode === 'all_ranked' ? 'text' : 'number'} inputMode={selectionMode === 'all_ranked' ? undefined : 'decimal'} disabled={selectionMode === 'all_ranked'} value={selectionMode === 'all_ranked' ? '-' : selectionValue} onChange={(event) => setSelectionValue(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
         <button type="button" disabled={busy || !planId} onClick={attachPlan} className="self-end rounded-lg bg-violet-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-violet-300">运行并关联</button>
       </div>
       <div className="mt-4 flex items-center justify-between gap-3">
@@ -280,36 +305,30 @@ function PoolWorkspace({ pool, evaluationPlans, busy, setBusy, onPool, onMessage
         </div>)}
         {pool.evaluation_plans.length === 0 && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">尚未关联评价方案。</p>}
       </div>
-    </section>
+    </details>
 
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 className="text-lg font-semibold text-slate-900">3. 人工补充例外产品</h2>
-      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_110px_150px_1fr_1.4fr_auto]">
-        <label className="text-xs text-slate-600">所属评价方案<select value={manualPlanId} onChange={(event) => { const id = event.target.value; setManualPlanId(id); const binding = pool.evaluation_plans.find((item) => item.plan_id === id); if (binding) setManualKind(binding.product_kind) }} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"><option value="">请选择</option>{pool.evaluation_plans.map((item) => <option key={item.plan_id} value={item.plan_id}>{item.plan_name}</option>)}</select></label>
-        <label className="text-xs text-slate-600">类型<select value={manualKind} onChange={(event) => setManualKind(event.target.value as 'etf' | 'fund')} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"><option value="etf">ETF</option><option value="fund">公募基金</option></select></label>
-        <label className="text-xs text-slate-600">产品代码<input value={manualCode} onChange={(event) => setManualCode(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label>
-        <label className="text-xs text-slate-600">产品名称<input value={manualName} onChange={(event) => setManualName(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label>
-        <label className="text-xs text-slate-600">例外原因<input value={manualReason} onChange={(event) => setManualReason(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label>
+    <details open={pool.members.length === 0 ? true : undefined} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <summary className="cursor-pointer font-semibold text-slate-800">人工补充例外产品</summary>
+      <h2 className="text-lg font-semibold text-slate-900">人工补充例外产品</h2>
+      <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 md:grid-cols-2 xl:grid-cols-[1fr_110px_150px_1fr_1.4fr_auto]">
+        <label className="text-xs text-slate-600">所属评价方案<select value={manualPlanId} onChange={(event) => { const id = event.target.value; setManualPlanId(id); const binding = pool.evaluation_plans.find((item) => item.plan_id === id); if (binding) setManualKind(binding.product_kind) }} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"><option value="">请选择</option>{pool.evaluation_plans.map((item) => <option key={item.plan_id} value={item.plan_id}>{item.plan_name}</option>)}</select></label>
+        <label className="text-xs text-slate-600">类型<select value={manualKind} onChange={(event) => setManualKind(event.target.value as 'etf' | 'fund')} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"><option value="etf">ETF</option><option value="fund">公募基金</option></select></label>
+        <label className="text-xs text-slate-600">产品代码<input value={manualCode} onChange={(event) => setManualCode(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label>
+        <label className="text-xs text-slate-600">产品名称<input value={manualName} onChange={(event) => setManualName(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label>
+        <label className="text-xs text-slate-600">例外原因<input value={manualReason} onChange={(event) => setManualReason(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" /></label>
         <button type="button" disabled={busy || pool.evaluation_plans.length === 0} onClick={addManual} className="self-end rounded-lg border border-slate-900 px-4 py-2 text-sm font-semibold text-slate-800 disabled:opacity-40">加入候选</button>
       </div>
-    </section>
+    </details>
 
-    <CandidateReviewTable
-      pool={pool}
-      busy={busy}
-      setBusy={setBusy}
-      onPool={onPool}
-      onMessage={onMessage}
-      onError={onError}
-    />
+
 
     <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
-      <h2 className="text-lg font-semibold text-emerald-950">5. 发布不可变版本</h2>
+      <h2 className="text-lg font-semibold text-emerald-950">复核完成，发布研究用版本</h2>
       <p className="mt-1 text-sm text-emerald-800">发布前必须处理全部待复核产品。历史版本不会被后续修改覆盖。</p>
-      <div className="mt-4 grid gap-3 md:grid-cols-[160px_160px_minmax(0,1fr)_auto]">
-        <label className="text-xs text-emerald-900">生效日<input type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className="mt-1 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm" /></label>
-        <label className="text-xs text-emerald-900">失效日（可选）<input type="date" value={effectiveTo} onChange={(event) => setEffectiveTo(event.target.value)} className="mt-1 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm" /></label>
-        <label className="text-xs text-emerald-900">发布说明<input value={publicationNote} onChange={(event) => setPublicationNote(event.target.value)} className="mt-1 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm" /></label>
+      <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 md:grid-cols-[160px_160px_minmax(0,1fr)_auto]">
+        <label className="text-xs text-emerald-900">生效日<input type="date" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm" /></label>
+        <label className="text-xs text-emerald-900">失效日（可选）<input type="date" value={effectiveTo} onChange={(event) => setEffectiveTo(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm" /></label>
+        <label className="text-xs text-emerald-900">发布说明<input value={publicationNote} onChange={(event) => setPublicationNote(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-emerald-300 bg-white px-3 py-2 text-sm" /></label>
         <button type="button" disabled={busy || pendingCount > 0 || approvedCount === 0} onClick={() => void publish()} className="self-end rounded-lg bg-emerald-800 px-5 py-2 text-sm font-semibold text-white disabled:bg-emerald-300">发布版本</button>
       </div>
     </section>

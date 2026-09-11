@@ -1,12 +1,17 @@
 import { useState } from 'react'
 import CalculationSteps from '../../components/computation-graph/CalculationSteps'
 import RegimeSeriesOutputs from './RegimeSeriesOutputs'
+import RegimeGranularityInfo from './RegimeGranularityInfo'
 import type { RegimeGraphDefinition, RegimeGraphConnection, RegimeGraphNode, RegimeGraphTemplate, RegimeNodeSchema } from '../../services/regimeGraph'
 import RegimeResearchSeriesPicker, { hasResearchSeriesPicker, isEditableSourceParameter, researchSourceParameterPatch, researchSeriesFieldOptions, researchSeriesPickerKey } from './RegimeResearchSeriesPicker'
 import { ConnectionEditor, ParameterInput, regimeNodeParameterValue, regimeParameterIsActive } from './RegimeNodeInspector'
+import RegimeManualEventEditor from './RegimeManualEventEditor'
 
 export interface RegimeGuidedEditorProps {
   builderOnly?: boolean
+  onExpandNode?: (id: string) => void
+  expanding?: boolean
+  expandDisabled?: boolean
   selectedNodeId?: string | null
   onSelectNode?: (id: string) => void
   active?: boolean
@@ -47,9 +52,12 @@ export default function RegimeGuidedEditor(props: RegimeGuidedEditorProps) {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-semibold text-slate-900">输入变量与计算步骤</h3><p className="mt-1 text-xs text-slate-500">选择一个步骤修改；共享输入只计算一次。</p></div><button type="button" onClick={props.onAddNode} className="min-h-10 rounded-lg border border-violet-200 px-3 text-xs font-semibold text-violet-700">添加数据、指标或算子</button></div>
       <CalculationSteps compact={props.builderOnly} steps={nodes.map(node => ({ id: node.id, label: node.label || props.schemas.find(item => (item.id || item.type) === node.type)?.label || node.id, kind: kind(node.type) }))} selectedId={active?.id || null} onSelect={id => { setSelectedId(id); props.onSelectNode?.(id) }}>
         {active ? <article className="rounded-xl bg-slate-50 p-4"><div className="flex items-start justify-between gap-3"><div><h4 className="text-sm font-semibold text-slate-900">{schema?.label || active.type}</h4><p className="mt-1 text-xs leading-5 text-slate-500">{schema?.description}</p></div><button type="button" onClick={() => props.onEditNode(active.id)} className="shrink-0 text-xs font-semibold text-violet-700">在画布定位</button></div>
+          <RegimeGranularityInfo schema={schema} onExpand={props.onExpandNode ? () => props.onExpandNode?.(active.id) : undefined} expanding={props.expanding} disabled={props.expandDisabled} />
           <label className="mt-4 block text-xs font-semibold text-slate-600">步骤名称<input aria-label="步骤名称" value={active.label || ''} onChange={event => props.onPatchNode(active.id, { label: event.target.value })} className="mt-1 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-2" /></label>
           {source ? <div className="mt-4 space-y-3"><p className="rounded-lg bg-sky-50 p-3 text-xs leading-5 text-sky-800">此变量提供计算所需的时间序列。数据绑定可单独调整，不改变下游计算关系。</p>{hasResearchSeriesPicker(active) ? <RegimeResearchSeriesPicker key={researchSeriesPickerKey(active)} node={active} schema={schema} onPatchNode={patch => props.onPatchNode(active.id, patch)}>{series => <div className="grid gap-3 sm:grid-cols-2">{entries.map(([name, parameter]) => <ParameterInput key={name} name={name} schema={parameter} value={regimeNodeParameterValue(active, name)} options={name === 'field' && researchSeriesFieldOptions(series).length ? researchSeriesFieldOptions(series) : undefined} onChange={value => props.onPatchNode(active.id, researchSourceParameterPatch(active, name, value, series))} />)}</div>}</RegimeResearchSeriesPicker> : <details><summary className="cursor-pointer text-sm font-semibold text-slate-700">数据绑定与字段设置</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{entries.map(([name, parameter]) => <ParameterInput key={name} name={name} schema={parameter} value={regimeNodeParameterValue(active, name)} onChange={value => props.onPatchNode(active.id, { parameters: { ...active.parameters, [name]: value } })} />)}</div><button type="button" onClick={props.onOpenDataLab} className="mt-3 min-h-10 text-xs font-semibold text-violet-700">从数据实验室选择序列</button></details>}</div> : <>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">{entries.map(([name, parameter]) => <ParameterInput key={name} name={name} schema={parameter} value={regimeNodeParameterValue(active, name)} onChange={value => props.onPatchNode(active.id, { parameters: { ...active.parameters, [name]: value } })} />)}</div>
+          {active.type === 'annotation.manual_events'
+            ? <div className="mt-4"><RegimeManualEventEditor value={active.parameters.events} onChange={events => props.onPatchNode(active.id, { parameters: { ...active.parameters, events } })} /></div>
+            : <div className="mt-4 grid gap-3 sm:grid-cols-2">{entries.map(([name, parameter]) => <ParameterInput key={name} name={name} states={props.definition.states} schema={parameter} value={regimeNodeParameterValue(active, name)} onChange={value => props.onPatchNode(active.id, { parameters: { ...active.parameters, [name]: value } })} />)}</div>}
           <div className="mt-4 grid gap-3 sm:grid-cols-2">{schema?.inputs?.map(port => <ConnectionEditor key={port.id} portId={port.id} label={port.label || port.id} connection={active.inputs[port.id]} node={active} nodes={nodes} schemas={props.schemas} onConnect={(name, reference) => { const inputs = { ...active.inputs }; if (reference) inputs[name] = reference; else delete inputs[name]; props.onPatchNode(active.id, { inputs }) }} />)}</div>
           </>}
           {props.onPreviewNode && <button type="button" onClick={() => props.onPreviewNode?.(active.id)} className="mt-4 mr-3 min-h-10 rounded-lg bg-violet-600 px-3 text-xs font-semibold text-white">预览此节点</button>}

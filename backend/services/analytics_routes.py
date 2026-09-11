@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
@@ -21,7 +21,9 @@ from fit import (
 )
 from optimizer import calculate_efficient_frontier_exploration, returns_from_nav_matrix
 from backtest_engine import load_allocation_nav
+from product_pools.membership import universe_pit_lineage
 from pit.context import PitContextError, resolve_request_context
+from backend.research_input_checks import ResearchInputError
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -44,6 +46,9 @@ class FitClassIn(BaseModel):
 class FitRequest(BaseModel):
     startDate: str
     classes: List[FitClassIn]
+    # Which locked pool the classes were built from. Optional so an older client
+    # still fits, but without it the run cannot say whose universe it used.
+    universe_snapshot_id: Optional[str] = None
 
 
 class FitResponse(BaseModel):
@@ -55,16 +60,25 @@ class FitResponse(BaseModel):
     consistency: List[dict]
     annual_metrics: dict
     execution: dict
+    # The口径 these numbers were computed under, carried on the result rather
+    # than left to the window frame around it.
+    pit: dict
 
 
 @router.post("/fit-classes", response_model=FitResponse)
 def fit_classes(req: FitRequest):
     try:
         start = pd.to_datetime(req.startDate)
-    except Exception:
-        raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
+        if pd.isna(start):
+            raise ValueError("missing date")
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail={
+            "field": "startDate", "message": "startDate 格式错误，应为 YYYY-MM-DD。"
+        }) from exc
     if not req.classes:
-        raise ValueError("classes 不能为空")
+        raise HTTPException(status_code=400, detail={
+            "field": "classes", "message": "classes 不能为空。"
+        })
     classes = [
         ClassSpec(
             id=c.id,
@@ -73,8 +87,23 @@ def fit_classes(req: FitRequest):
         )
         for c in req.classes
     ]
-    _pit = resolve_request_context(DATA_DIR)
-    NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
+    try:
+        _pit = resolve_request_context(DATA_DIR)
+        # Strict mode refuses a pool screened after the day being decided;
+        # research mode records the finding on the result.
+        universe = universe_pit_lineage(DATA_DIR, req.universe_snapshot_id, _pit)
+    except PitContextError as exc:
+        # A bare raise here would surface as a 500 with no reason attached, and
+        # the reason is the entire message.
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    try:
+        result = compute_classes_nav(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
+    except ResearchInputError as exc:
+        return JSONResponse(status_code=422, content={"detail": exc.detail()})
+    except (ValueError, PitContextError) as exc:
+        return JSONResponse(status_code=400, content={"detail": {"message": str(exc)}})
+    NAV, corr, metrics = result.nav, result.correlation, result.metrics
+    nav_lineage = result.lineage
     consistency_rows = compute_class_consistency(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
     performance = compute_nav_performance_payload(NAV)
 
@@ -128,6 +157,7 @@ def fit_classes(req: FitRequest):
         consistency=cons_out,
         annual_metrics=performance["annual_metrics"],
         execution=performance["execution"],
+        pit={**nav_lineage, "universe": universe},
     )
 
 
@@ -184,7 +214,15 @@ def post_efficient_frontier(req: FrontierRequest):
         _pit = resolve_request_context(DATA_DIR)
     except PitContextError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
-    loaded = load_allocation_nav(DATA_DIR, req.alloc_name, _pit)
+    try:
+        loaded = load_allocation_nav(DATA_DIR, req.alloc_name, _pit)
+    except PitContextError as exc:
+        # The frontier is where the weights are actually chosen, so it refuses on
+        # the same grounds as the backtest instead of quietly plotting a cloud
+        # built out of a pool that did not exist yet.
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ResearchInputError as exc:
+        return JSONResponse(status_code=422, content={"detail": exc.detail()})
     if loaded.nav_wide.empty:
         return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
     window = (loaded.nav_wide.index >= pd.to_datetime(req.start_date)) & (

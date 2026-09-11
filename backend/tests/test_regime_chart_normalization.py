@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 
 from historical_regimes.v2_numba import binary_math_kernel
-from test_historical_regime_v2 import client, classic_service, v2_service, _wait_for_preview
+import test_historical_regime_v2 as regime_fixtures
+from test_historical_regime_v2 import _wait_for_preview
+
+client = regime_fixtures.client
+classic_service = regime_fixtures.classic_service
+v2_service = regime_fixtures.v2_service
 from test_regime_node_preview import start, unfinished
 
 

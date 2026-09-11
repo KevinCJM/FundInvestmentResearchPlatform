@@ -13,7 +13,7 @@ from backend.custom_indicators.errors import IndicatorDomainError as FactorDomai
 from product_pools.errors import ProductPoolError
 from product_pools.repository import ProductPoolRepository
 from product_pools.service import ProductPoolService, version_data_as_of
-from services.custom_indicator_routes import indicator_service
+from services.custom_indicator_routes import indicator_service, pit_as_of
 from services.product_pool_review import ProductPoolReviewDataService
 from pit.context import PitContextError, resolve_request_context
 from pit.guard import check_universe, universe_lineage
@@ -69,6 +69,10 @@ class IndicatorEvaluationGateway:
         return indicator_service.get_plan(plan_id)
 
     def run_plan(self, plan_id: str, as_of: str | None = None) -> dict[str, Any]:
+        # An empty 评价截止日 means "the platform口径", not "read to the last row
+        # on disk": a pool screened under a 2015 研究日 must not be ranked on
+        # 2026 data. A stated date still wins, so replay can sweep it freely.
+        as_of = pit_as_of(as_of)
         if plan_id.startswith("factor-release-"):
             from services.factor_research_routes import factor_service
             return factor_service.evaluation_run(plan_id, as_of)

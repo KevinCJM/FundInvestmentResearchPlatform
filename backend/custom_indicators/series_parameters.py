@@ -25,6 +25,12 @@ PARAMETER_CONTRACT_VERSION = "1.0"
 _COUNT = {"type": "integer", "minimum": 1, "maximum": 20_000, "step": 1}
 _NUMBER = {"type": "number", "minimum": -1_000_000, "maximum": 1_000_000, "step": 0.01}
 PARAMETER_CAPABILITIES: dict[tuple[str, str], dict[str, Any]] = {
+    ("rolling_apply", "window"): {**_COUNT, "maximum": 5000, "label": "窗口期数"},
+    ("rolling_apply", "min_periods"): {**_COUNT, "maximum": 5000, "label": "最少有效观察数"},
+    # Current authoring owns window parameters on one dedicated primitive.
+    ("rolling_window", "window"): {**_COUNT, "label": "窗口期数"},
+    ("rolling_window", "min_periods"): {**_COUNT, "label": "最少有效观察数"},
+    # Historical 2.3 definitions remain editable/reproducible without rewriting.
     **{(op, "window"): {**_COUNT, "label": "窗口期数"}
        for op in ("rolling_mean", "rolling_std", "rolling_min", "rolling_max")},
     **{(op, "min_periods"): {**_COUNT, "label": "最少有效观察数"}
@@ -165,13 +171,21 @@ def validate_parameter_relations(definition: Mapping[str, Any], values: Mapping[
                          for name, node in zip(names, call.args)}
             op = call.func.id
             window = arguments.get("window")
-            if op.startswith("rolling_") and window is not None:
+            if op in {"rolling_window", "rolling_mean", "rolling_std", "rolling_min", "rolling_max"} and window is not None:
                 minimum = arguments.get("min_periods", window)
                 ddof = arguments.get("ddof", 0)
                 if minimum is not None and minimum > window:
                     raise _error("最少有效观察数不能大于窗口期数。")
-                if ddof is not None and ddof >= window:
+                if op == "rolling_std" and ddof is not None and ddof >= window:
                     raise _error("自由度修正必须小于窗口期数。")
+            if op in {"std", "variance"} and call.args and isinstance(call.args[0], ast.Call):
+                window_call = call.args[0]
+                if isinstance(window_call.func, ast.Name) and window_call.func.id == "rolling_window" and len(window_call.args) >= 2:
+                    rolling_width = values.get(window_call.args[1].id) if isinstance(window_call.args[1], ast.Name) else _literal(window_call.args[1])
+                    ddof_node = call.args[1] if len(call.args) >= 2 else None
+                    degrees = values.get(ddof_node.id) if isinstance(ddof_node, ast.Name) else _literal(ddof_node) if ddof_node is not None else 1
+                    if rolling_width is not None and degrees is not None and degrees >= rolling_width:
+                        raise _error("自由度修正必须小于窗口期数。")
             if op == "clip":
                 lower, upper = arguments.get("lower"), arguments.get("upper")
                 if lower is not None and upper is not None and lower > upper:

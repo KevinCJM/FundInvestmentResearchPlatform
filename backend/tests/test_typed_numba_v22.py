@@ -54,10 +54,16 @@ def test_current_registry_has_complete_fixed_signature_njit_coverage() -> None:
     }
     public = get_typed_operator_catalog()["operators"]
 
-    from cal_indicators.operator_lowering import COMPOSITE_OPERATOR_IDS
+    from cal_indicators.operator_lowering import (
+        COMPILER_FUSED_OPERATOR_IDS,
+        COMPOSITE_OPERATOR_IDS,
+        ROLLING_COMPAT_OPERATOR_IDS,
+    )
     assert len(set(CANONICAL_OPERATOR_IDS)) == len(CANONICAL_OPERATOR_IDS)
     assert {"linear_fit", "value_at", "fit_slope", "fit_intercept"} <= canonical
-    assert canonical == set(CANONICAL_OPERATOR_IDS) == set(registry)
+    assert set(CANONICAL_OPERATOR_IDS) == set(registry)
+    assert canonical == set(registry) | COMPILER_FUSED_OPERATOR_IDS
+    assert COMPILER_FUSED_OPERATOR_IDS == {"rolling_window", "rolling_apply"}
     assert {"sum", "std", "drawdown_series", "total_return"} <= frozen_v22
     assert {
         "rolling_mean",
@@ -67,7 +73,12 @@ def test_current_registry_has_complete_fixed_signature_njit_coverage() -> None:
         "recursive_smooth",
         "divide_or_default",
     }.isdisjoint(frozen_v22)
-    assert {item["id"] for item in public} == canonical - COMPOSITE_OPERATOR_IDS
+    assert {item["id"] for item in public} == (
+        canonical - COMPOSITE_OPERATOR_IDS - ROLLING_COMPAT_OPERATOR_IDS
+    )
+    rolling_window = next(item for item in public if item["id"] == "rolling_window")
+    assert rolling_window["execution_lane"] == "compiler_fused_no_materialization"
+    assert rolling_window["njit_supported"] is True
     assert "drawdown_analysis" not in frozen_v22
     assert status["operator_coverage"] == f"{len(registry)}/{len(registry)}"
     assert status["warmed"] is True

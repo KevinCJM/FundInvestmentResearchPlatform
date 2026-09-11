@@ -80,23 +80,19 @@ const makeSimulation = (method: SpecSimulationMethod, request: AnalysisRequest) 
   },
 })
 
-const makeDensity = (pathCount: number) => ({
+const makeDensity = (pathCount: number, horizon: number) => ({
   sampleSize: pathCount,
-  points: [
-    { nav: 0.9, density: 0.2, estimatedCount: 10, simulatedReturn: -0.1 },
-    { nav: 1, density: 0.5, estimatedCount: 25, simulatedReturn: 0 },
-    { nav: 1.1, density: 0.2, estimatedCount: 10, simulatedReturn: 0.1 },
-  ],
-  histogram: [{ lowerNav: 0.9, upperNav: 1.1, density: 1, count: pathCount, frequency: 1 }],
-  maxDensity: 1,
-  modeNav: 1,
-  minNav: 0.9,
-  maxNav: 1.1,
-  countAxisMax: pathCount,
   navAxisMin: 0.88,
   navAxisMax: 1.12,
-  densityCountFactor: pathCount * 0.2,
-  histogramBinWidth: 0.2,
+  frames: [1, 2, 3, 4].map((step) => ({
+    day: Math.round((horizon * step) / 4),
+    navLow: 1 - 0.05 * step,
+    navHigh: 1 + 0.05 * step,
+    binWidth: (0.1 * step) / 4,
+    countAxisMax: pathCount,
+    curve: [1, 10, 25, 10, 1],
+    bins: [pathCount * 0.1, pathCount * 0.4, pathCount * 0.4, pathCount * 0.1],
+  })),
 })
 
 const makeAnalysis = (request: AnalysisRequest) => {
@@ -167,7 +163,7 @@ const makeAnalysis = (request: AnalysisRequest) => {
         p05ReturnGap: 0.01, medianReturnGap: 0.01, lossProbabilityGap: 0.02,
         conditionalValueAtRiskGap: 0.01, level: 'low', message: '各模型结果接近。',
       },
-      densities: Object.fromEntries(SIMULATION_METHODS.map((method) => [method, makeDensity(request.simulation_path_count)])),
+      densities: Object.fromEntries(SIMULATION_METHODS.map((method) => [method, makeDensity(request.simulation_path_count, request.simulation_horizon)])),
     },
     regimeAnalysis: null,
     researchContext: {
@@ -295,7 +291,7 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   await expect(page.getByRole('dialog', { name: '累计收益率' })).toBeVisible()
   await expect(page.getByText('真实数据、严格窗口、缺失不填充')).toBeVisible()
   await expect(page.getByTestId('metric-formula-latex').locator('.katex')).toBeVisible()
-  await page.getByRole('button', { name: '关闭' }).click()
+  await page.getByRole('button', { name: '关闭', exact: true }).click()
   await page.getByRole('button', { name: '移除指标 累计收益率' }).click()
   await expect(page.getByText('1.83%')).not.toBeVisible()
   await expect(page.getByRole('button', { name: /选择研究指标/ })).toContainText('已选 0/8')
@@ -321,22 +317,27 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   await expect(page.getByRole('heading', { name: '未来虚拟净值模拟' })).toBeVisible()
   await expect(page.getByLabel('模拟未来区间')).toHaveValue('252')
   await expect(page.getByLabel('模拟路径数')).toHaveValue('500')
-  await expect(page.getByLabel('Bootstrap 平均区块长度')).toHaveValue('20')
+  // Model-specific inputs appear only after selecting that model; shared
+  // controls stay separate and changing tabs must not start a calculation.
+  await expect(page.getByLabel('Bootstrap 平均区块长度')).toHaveCount(0)
   await expect(page.getByLabel('目标期末收益率')).toHaveValue('5')
   const combinedMonteCarloChart = page.getByLabel('参数化蒙特卡洛（偏度/峰度校准）：路径与期末净值概率分布组合图')
   await expect(combinedMonteCarloChart).not.toBeVisible()
   await page.getByRole('button', { name: '运行模拟', exact: true }).click()
   await expect(combinedMonteCarloChart).toBeVisible()
   await expect(combinedMonteCarloChart.locator('canvas')).toHaveCount(1)
-  await expect(page.getByRole('heading', { name: '双模型结果对比' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /\d+ 个模型结果对比/ })).toBeVisible()
   await page.getByText('区块 Bootstrap', { exact: true }).click()
   await expect(page.getByRole('radio', { name: '区块 Bootstrap' })).toBeChecked()
+  await expect(page.getByLabel('Bootstrap 平均区块长度')).toHaveValue('20')
   await expect(page.getByLabel('历史区块 Bootstrap：路径与期末净值概率分布组合图')).toBeVisible()
   await page.getByLabel('模拟路径数').selectOption('200')
   await expect(page.getByLabel('历史区块 Bootstrap：路径与期末净值概率分布组合图')).not.toBeVisible()
   await page.getByLabel('模拟未来区间').selectOption('21')
+  const recalculation = page.waitForRequest(request => new URL(request.url()).pathname.endsWith('/analysis') && request.method() === 'POST' && request.postDataJSON().include_simulation === true)
   await page.getByRole('button', { name: '运行模拟', exact: true }).click()
-  await expect(page.getByText(/共计 200 条/)).toBeVisible()
+  expect((await recalculation).postDataJSON()).toMatchObject({ simulation_horizon: 21, simulation_path_count: 200 })
+  await expect(page.getByText(/200 条模拟路径当天的净值落点/)).toBeVisible()
   await page.getByLabel('分析样本区间').selectOption('1M')
   await expect(page.getByRole('button', { name: '运行模拟', exact: true })).toBeDisabled()
   await page.getByRole('tab', { name: '收益统计', exact: true }).click()

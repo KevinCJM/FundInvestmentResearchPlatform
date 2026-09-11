@@ -5,7 +5,7 @@ import { businessText, systemText } from '../../i18n/runtime'
 /** Presentation only. Never feed these labels back into graph bindings or DSL source. */
 const AXIS_LABELS: Record<string, string> = {
   time: '时间', asset: '资产', factor: '因子', scenario: '情景', group: '分组',
-  observation: '观察值', component: '分量', row: '行', column: '列',
+  observation: '观察值', window: '窗口内观察', component: '分量', row: '行', column: '列',
 }
 const PARAMETER_LABELS: Record<string, string> = {
   x: '输入值', a: '输入 A', b: '输入 B', left: '输入 A', right: '输入 B',
@@ -13,7 +13,7 @@ const PARAMETER_LABELS: Record<string, string> = {
   window: '窗口期数', ddof: '自由度修正', min_periods: '最少有效观察数',
   mask: '判断条件', condition: '判断条件', axis: '计算维度',
 }
-const TYPE_TOKEN = /\b(?:scalar|series|vector|matrix|mask|tensor|tuple|float64|bool|boolean|unknown)\b(?:\s*<[^>]*>)?(?:\s*\[[^\]]*\])?/gi
+const TYPE_TOKEN = /\b(?:scalar|series|vector|matrix|window|mask|tensor|tuple|float64|bool|boolean|unknown)\b(?:\s*<[^>]*>)?(?:\s*\[[^\]]*\])?/gi
 const typeText = (key: string, fallback: string) => businessText(`valueTypes.${key}`, fallback)
 
 function typeAxes(value: GraphValueType | string): string[] {
@@ -45,6 +45,7 @@ export function graphTypeLabel(value?: GraphValueType | string | null): string {
     case 'scalar': case 'float64': return typeText('scalar.numeric', '单个数值')
     case 'series': return typeText('series', '时间序列')
     case 'vector': return axes[0] === 'asset' ? typeText('assetVector', '资产向量') : typeText('vector', '一维数组')
+    case 'window': return typeText('rollingWindow', '滚动窗口集合（中间结果）')
     case 'matrix':
       if (axes[0] === 'time' && axes[1] === 'asset') return typeText('timeAsset', '时间—资产矩阵')
       if (axes[0] === 'asset' && axes[1] === 'time') return typeText('assetTime', '资产—时间矩阵')

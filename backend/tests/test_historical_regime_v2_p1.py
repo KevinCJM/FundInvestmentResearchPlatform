@@ -19,6 +19,7 @@ from historical_regimes.numba_kernels import (
     initialize_gaussian_means_kernel,
     markov_fit_kernel,
 )
+from historical_regimes.data import DataBundle
 from historical_regimes.v2_contracts import parse_definition_v2
 from historical_regimes.v2_numba import (
     KERNELS,
@@ -26,7 +27,8 @@ from historical_regimes.v2_numba import (
     calendar_resample_kernel,
     final_output_contract_kernel,
 )
-from historical_regimes.v2_service import PortValue, RegimeGraphV2Service
+import historical_regimes.v2_service as v2_service_module
+from historical_regimes.v2_service import PortValue, RegimeGraphV2Service, _definition_output_frequency
 from historical_regimes.v2_registry import NODE_REGISTRY
 from research_series.service import write_upload_artifact
 from services import historical_regime_routes
@@ -374,6 +376,89 @@ def test_calendar_resample_and_score_hysteresis_use_frozen_njit_signatures(
     after = {key: tuple(dispatcher.signatures) for key, dispatcher in KERNELS.items()}
     assert after == before
     assert all(dispatcher._can_compile is False for dispatcher in KERNELS.values())
+
+
+def test_index_source_frequency_is_applied_before_regime_execution(
+    service: RegimeGraphV2Service,
+    monkeypatch,
+) -> None:
+    rows = _rows(35)
+    frame = pd.DataFrame(rows)
+    frame["observation_date"] = pd.to_datetime(frame["observation_date"])
+    frame["available_at"] = pd.to_datetime(frame["available_at"])
+    raw_bundle = DataBundle(
+        frame=frame,
+        snapshot={
+            "kind": "index",
+            "fingerprint": "raw-index-fixture",
+            "selected_observations": len(frame),
+            "first_observation_date": frame["observation_date"].iloc[0].date().isoformat(),
+            "last_observation_date": frame["observation_date"].iloc[-1].date().isoformat(),
+            "latest_available_at": frame["available_at"].max().date().isoformat(),
+        },
+    )
+    monkeypatch.setattr(service, "_bound_source_root", lambda *_args, **_kwargs: service.market_data_dir)
+    monkeypatch.setattr(v2_service_module, "resolve_target", lambda *_args, **_kwargs: raw_bundle)
+
+    definition = _definition()
+    definition["graph"] = {
+        "nodes": [
+            {
+                "id": "source",
+                "type": "source.index",
+                "parameters": {
+                    "ts_code": "000300.SH",
+                    "source_api": "index_daily",
+                    "field": "close",
+                    "frequency": "weekly",
+                },
+            },
+            {
+                "id": "threshold",
+                "type": "model.threshold",
+                "parameters": {"upper": 101.0, "lower": 99.0},
+                "inputs": {"value": {"node_id": "source", "port": "value"}},
+            },
+        ],
+        "outputs": {"state": {"node_id": "threshold", "port": "state"}},
+        "exposed_node_ids": ["source"],
+    }
+    parsed = parse_definition_v2(definition)
+    result = service._execute_graph(None, parsed, "retrospective", None)
+
+    dates = np.ascontiguousarray(frame["observation_date"].to_numpy(dtype="datetime64[ns]").view(np.int64))
+    available = np.ascontiguousarray(frame["available_at"].to_numpy(dtype="datetime64[ns]").view(np.int64))
+    expected_values, expected_dates, _ = calendar_resample_kernel(
+        np.ascontiguousarray(frame["value"].to_numpy(dtype=np.float64)),
+        dates,
+        available,
+        np.int64(1),
+        np.int64(1),
+    )
+    assert result["result"]["frequency"] == "weekly"
+    assert result["result"]["row_count"] == len(expected_values) < len(frame)
+    np.testing.assert_array_equal(
+        np.array([pd.Timestamp(row["observation_date"]).value for row in result["series"]], dtype=np.int64),
+        expected_dates,
+    )
+    snapshot = result["result"]["data_snapshots"]["source"]
+    assert snapshot["raw_selected_observations"] == len(frame)
+    assert snapshot["selected_observations"] == len(expected_values)
+    assert snapshot["output_frequency"] == "weekly"
+    assert snapshot["frequency_sampling"] == "last_observation_per_calendar_bucket"
+
+
+def test_effective_frequency_follows_the_final_state_axis() -> None:
+    definition = _definition()
+    definition["graph"] = {
+        "nodes": [
+            {"id": "source", "type": "source.inline", "parameters": {"rows": _rows(), "frequency": "daily"}},
+            {"id": "weekly", "type": "align.resample", "parameters": {"frequency": "weekly", "aggregation": "last"}, "inputs": {"value": {"node_id": "source", "port": "value"}}},
+            {"id": "threshold", "type": "model.threshold", "parameters": {"upper": 0.0, "lower": -1.0}, "inputs": {"value": {"node_id": "weekly", "port": "value"}}},
+        ],
+        "outputs": {"state": {"node_id": "threshold", "port": "state"}},
+    }
+    assert _definition_output_frequency(parse_definition_v2(definition)) == "weekly"
 
 
 @pytest.mark.parametrize("observation_count", [5_000, 20_000])
@@ -1033,6 +1118,7 @@ def test_publish_records_full_gate_and_blocks_formal_retrospective(
         "stability",
         "data_coverage",
         "njit_call_graph",
+        "temporal_audit",
     }
     publication = service.publish(realtime["id"], "formal_backtest")
     assert publication["publication"]["gate"] == "comprehensive_formal_gate_passed"

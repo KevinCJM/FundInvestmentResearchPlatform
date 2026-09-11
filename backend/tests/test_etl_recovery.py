@@ -11,7 +11,10 @@ from backend.data_sources.etl_store import EtlStore
 from backend.data_sources.models import CenterError
 from backend.services import etl_routes
 from backend.services.refresh_runtime import InterProcessFileLock
-from backend.tests.test_etl_dataset_tasks import store, small_plan, request, finish, fake_worker
+from backend.tests.test_etl_dataset_tasks import small_plan, request, finish, fake_worker
+from backend.tests import test_etl_dataset_tasks as dataset_fixtures
+
+store = dataset_fixtures.store
 
 
 def interrupted_run(store, monkeypatch):

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -57,14 +56,14 @@ def job_status(store, identifier):
     return _public(read_small_json(_path(store, identifier)))
 
 
-def successor_map(store):
+def successor_map(store, records=None):
     """Use durable JSON metadata, including runs beyond the UI's 30 rows.
 
     The supported macOS SQLite build does not necessarily include JSON1.
     """
-    with store.connection() as db:
-        rows = db.execute('SELECT body FROM etl_run').fetchall()
-    records = [json.loads(row[0]) for row in rows]
+    if records is None:
+        from .etl_run_view import read_run_records
+        records = read_run_records(store)
     direct = {row['recovered_from']: {'run_id': row['run_id'], 'status': row['status'], 'name': row['name']}
               for row in sorted(records, key=lambda r: (r.get('created_at', ''), r['run_id'])) if row.get('recovered_from')}
     result = {}
@@ -78,19 +77,27 @@ def successor_map(store):
 
 
 def _shape_reason(run):
-    if run.get('options', {}).get('mode') == 'auto_incremental' or run.get('frozen', {}).get('task_baseline'):
-        return '自动增量或已有基线的跨版本迁移暂不支持；旧数据保留，不能跳过基线核验。'
+    automatic = run.get('options', {}).get('mode') == 'auto_incremental'
+    if automatic:
+        if (run.get('definition', {}).get('graph_version') != 1 or not run.get('frozen', {}).get('auto_plan')
+                or not run.get('frozen', {}).get('task_baseline', {}).get('workspace')):
+            return '自动增量缺少冻结计划或基线，无法安全恢复。'
+    elif run.get('frozen', {}).get('task_baseline'):
+        return '此旧基线合同尚无跨版本迁移规则。'
     prior, pending, count = None, False, 0
     definitions = run.get('definition', {}).get('steps', [])
     if len(definitions) != len(run['steps']):
         return '任务记录与定义不一致，需核验原任务。'
     for definition, step in zip(definitions, run['steps']):
         if (definition['id'] != step['id'] or definition['kind'] != 'task'
-                or definition.get('inputs', []) != ([prior] if prior else []) or definition.get('after')):
+                or not automatic and (definition.get('inputs', []) != ([prior] if prior else []) or definition.get('after'))):
             return '此计算图尚无可验证的跨版本迁移规则，不能直接复用数据。'
         if step['status'] == 'SUCCEEDED':
-            if pending:
+            if pending and not automatic:
                 return '已完成节点不是连续前缀，暂不能跨版本恢复。'
+            statuses = {s['id']: s['status'] for s in run['steps']}
+            if any(statuses.get(key) != 'SUCCEEDED' for key in definition.get('inputs', [])):
+                return '已完成节点的必需上游未完成，不能安全复用。'
             count += 1
         else:
             pending = True
@@ -112,57 +119,6 @@ def guard_successor(store, identifier):
         raise CenterError('ETL_RUN_SUPERSEDED', '此任务已有恢复后的后续任务，请查看后续任务，不能重复启动原任务。', 409)
 
 
-def _check_unhandled_partial(journal, old):
-    """Never let the CLI's generic zero-shard result discard unknown partial work."""
-    state = next(s for s in old['steps'] if s['status'] != 'SUCCEEDED')
-    definition = next(s for s in old['definition']['steps'] if s['id'] == state['id'])
-    if definition['task_id'] == 'tushare.index_concept':
-        return  # The concept importer validates the whole work directory.
-    directory = journal.root / 'etl_runs' / old['run_id'] / state['id']
-    marker, work = directory / 'work_input.json', directory / 'work'
-    if not marker.exists() and not work.exists():
-        return
-    from backend.data_sources.task_workspace import read_inventory
-    predecessor = next(s for s in old['steps'] if s['id'] == definition['inputs'][0])['output']['workspace']
-    expected = {'input': predecessor, 'task': etl.parse_definition(old['definition']).steps[len([s for s in old['steps'] if s['status'] == 'SUCCEEDED'])].model_dump(mode='json'),
-                'execution': old['frozen']['execution_fingerprint']}
-    if marker.is_symlink() or read_small_json(marker, 1048576) != expected or work.is_symlink() or not work.is_dir():
-        raise CenterError('ETL_MIGRATION_BLOCKED', '原工作区身份不一致，不能自动恢复。', 409)
-    files = read_inventory(journal, predecessor)['files']
-    allowed = set(files)
-    if definition['task_id'] in {'tushare.fund_portfolio', 'tushare.fund_dividend'}:
-        from backend.data_sources.etl_migration import _parts_name
-        from backend.data_sources.etl_models import EtlStep
-        name = _parts_name(old['frozen']['task_sources'][definition['source_id']]['records'],
-                           EtlStep.model_validate(definition), definition['task_id'].split('.')[-1] + '_df')
-        if (work / name).exists():
-            allowed.add(name)
-            _check_event_layout(work / name)
-    if {p.name for p in work.iterdir()} != allowed:
-        raise CenterError('ETL_PARTIAL_MIGRATION_UNSUPPORTED', '当前节点已有尚不支持迁移的部分文件；已下载数据保留，需增加对应校验规则，不能直接丢弃重下。', 409)
-    for name, artifact in files.items():
-        path = work / name
-        if path.is_symlink() or not path.is_file() or journal.artifact(path)['checksum'] != artifact['checksum']:
-            raise CenterError('ETL_ARTIFACT_CHANGED', '原工作区数据与前置清单不一致，停止恢复。', 409)
-
-
-def _check_event_layout(parts):
-    """Unreferenced files are not implicitly disposable migration inputs."""
-    def require(ok):
-        if not ok:
-            raise CenterError('ETL_PARTIAL_MIGRATION_UNSUPPORTED', '基金检查点含未支持的部分文件，需核验后才能迁移；原数据保留。', 409)
-    require(parts.is_dir() and not parts.is_symlink())
-    for item in parts.iterdir():
-        require(not item.is_symlink())
-        if item.is_file():
-            require(bool(re.fullmatch(r'\d{8}\.(parquet|empty)', item.name)))
-            continue
-        require(item.is_dir() and bool(re.fullmatch(r'events_v4_[a-f0-9]{20}', item.name)))
-        for evidence in item.iterdir():
-            require(evidence.is_file() and not evidence.is_symlink() and evidence.suffix in {'.json', '.parquet'})
-            if evidence.suffix == '.parquet':
-                receipt = read_small_json(evidence.with_suffix('.json'), 1048576)
-                require(bool(receipt and receipt.get('status') == 'COMPLETE'))
 
 
 def start(store, identifier, payload):
@@ -263,7 +219,6 @@ def execute(store, job):
             reason = _shape_reason(old)
             if reason:
                 raise CenterError('ETL_MIGRATION_BLOCKED', reason, 409)
-            _check_unhandled_partial(journal, old)
             update('正在校验并复用已完成文件，大文件可能耗时；可刷新页面查看状态。', phase='校验与迁移')
             staged = stage_recovery(store, job['source_run_id'], job['id'], confirm=True, progress=update)
             update(staged['message'], phase='启动下载', target_run_id=staged['run_id'])

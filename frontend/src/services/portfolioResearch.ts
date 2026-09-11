@@ -37,6 +37,7 @@ export interface PortfolioRunRequest {
   benchmark?: { kind: PortfolioProductKind; product_id: string; name?: string } | null
   objective?: 'max_sharpe' | 'min_volatility' | 'target_return' | null
   target_return?: number | null
+  allocation_source?: { kind: 'taa'; decision_id: string; baseline_id: string; class_weights: Record<string, number>; expires_on?: string }
 }
 
 export interface PortfolioSeriesPoint { date: string; value: number }
@@ -320,6 +321,7 @@ export async function listPortfolioIndicators() {
 }
 function targetDefinition(input: PortfolioRunRequest) {
   return {
+    allocation_source: input.allocation_source,
     universe_snapshot_id: input.universe_snapshot_id ?? undefined,
     components: input.constituents.map(({
       kind,

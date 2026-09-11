@@ -46,6 +46,7 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+**/.vitest/
 
 # Tooling metadata
 .gemini/
@@ -55,6 +56,7 @@ htmlcov/
 
 # Local visual QA artifacts
 /output/
+/.tmp_project_*/
 design-qa.md
 design-qa-*.png
 

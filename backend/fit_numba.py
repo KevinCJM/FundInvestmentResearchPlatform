@@ -396,6 +396,8 @@ def fit_numba_execution_audit() -> dict[str, object]:
 
 
 def warm_fit_numba_kernels() -> dict[str, object]:
+    from backend.research_input_checks import warm_research_input_checks
+    warm_research_input_checks()
     nav = np.ascontiguousarray(
         np.array([[1.0, 1.0], [1.01, 0.99], [1.02, 1.01]], dtype=np.float64)
     )

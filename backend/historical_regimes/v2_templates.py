@@ -88,6 +88,31 @@ TEMPLATES_V2: list[dict[str, Any]] = [
         },
     },
     {
+        "id": "manual-historical-events-v1", "name": "人工历史事件区间", "version": 1,
+        "tags": ["事后识别", "人工标注", "历史事件", "允许重叠"],
+        "default_mode": "retrospective",
+        "description": "由研究员手工定义历史事件的开始和结束日期；多个事件可重叠，仅用于事后研究。",
+        "definition": {
+            "schema_version": "2.0", "name": "人工历史事件区间", "template_id": "manual-historical-events-v1",
+            "description": "选择一条观察序列，并由人类维护可重叠的历史事件区间。事件不是互斥市场状态，也不是当时可交易信号。",
+            "graph": {
+                "nodes": [
+                    {"id": "market", "type": "source.index", "parameters": {"ts_code": "000300.SH", "name": "沪深300", "source_api": "index_daily", "field": "close", "frequency": "daily"}},
+                    {"id": "events", "type": "annotation.manual_events", "parameters": {"events": []}, "inputs": {"value": _ref("market")}},
+                ],
+                "outputs": {"state": _ref("events", "state")},
+                "exposed_node_ids": ["market", "events"],
+            },
+            "states": [
+                {"id": "event", "label": "事件覆盖", "role": "event", "color": "#7c3aed", "order": 1},
+                {"id": "normal", "label": "事件外", "role": "neutral", "color": "#cbd5e1", "order": 2},
+            ],
+            "evaluation_targets": [],
+            "validation": {"walk_forward": False, "folds": 4},
+            "usage_intent": "research_display",
+        },
+    },
+    {
         "id": "blank-three-state",
         "name": "从零搭建三状态模型",
         "description": "最小可运行图谱；替换数据源、算子、阈值或继续添加节点。",
@@ -225,16 +250,42 @@ TEMPLATES_V2.insert(1, _daily_peak_template())
 TEMPLATES_V2.append(_legacy_daily_peak_template())
 
 
+def _macro_clock_template() -> dict[str, Any]:
+    """New default bindings; historical template definitions remain immutable."""
+    item = copy.deepcopy(next(item for item in TEMPLATES_V2 if item["id"] == "merrill-clock-v2"))
+    item.update(id="merrill-clock-macro-v3", name="美林时钟 · PMI与CPI", version=3,
+                default_mode="retrospective", tags=["宏观周期", "月频", "事后研究"],
+                description="制造业PMI与CPI同比，按共同月份计算3期趋势，再分四象限并连续2期确认。缺少发布日期时使用事后研究。")
+    definition = item["definition"]
+    definition.update(template_id=item["id"], name=item["name"], description=item["description"])
+    for node_id, dataset, field, label in (
+        ("growth", "cn_pmi", "pmi010000", "增长：制造业PMI"),
+        ("inflation", "cn_cpi", "nt_yoy", "通胀：CPI同比"),
+    ):
+        node = next(node for node in definition["graph"]["nodes"] if node["id"] == node_id)
+        node.update(type="source.macro", label=label, parameters={"dataset": f"macro_{dataset}_df.parquet", "source_api": dataset, "field": field, "frequency": "monthly", "name": label})
+    definition["graph"]["outputs"].update(growth=_ref("clock_aligned", "left"), inflation=_ref("clock_aligned", "right"),
+                                          growth_trend=_ref("growth_trend"), inflation_trend=_ref("inflation_trend"))
+    definition["graph"]["channel_metadata"] = {key: {"label": label} for key, label in (
+        ("growth", "制造业PMI"), ("inflation", "CPI同比（%）"),
+        ("growth_trend", "增长趋势"), ("inflation_trend", "通胀趋势"))}
+    return item
+
+
+TEMPLATES_V2.append(_macro_clock_template())
+
+
 def _versioned_template(item: dict[str, Any]) -> dict[str, Any]:
     from .v2_registry import NODE_REGISTRY
     result = copy.deepcopy(item)
     result["version"] = int(item.get("version", 1))
-    causal = all(NODE_REGISTRY.get(node["type"], {}).get("supports_realtime") is True
-                 and NODE_REGISTRY.get(node["type"], {}).get("causal") is True
-                 and NODE_REGISTRY.get(node["type"], {}).get("repaints") is False
-                 for node in result["definition"]["graph"]["nodes"])
+    from .v2_contracts import parse_definition_v2
+    from .temporal_capability import analyze_temporal
+    temporal = analyze_temporal(parse_definition_v2(result["definition"]), NODE_REGISTRY)
+    causal = temporal["realtime_supported"]
+    result["temporal_capability"] = temporal
     result["supported_modes"] = ["realtime", "retrospective"] if causal else ["retrospective"]
-    result["default_mode"] = "realtime" if causal else "retrospective"
+    result["default_mode"] = item.get("default_mode", "realtime" if causal else "retrospective")
     encoded = json.dumps(
         result["definition"],
         ensure_ascii=False,
@@ -245,12 +296,42 @@ def _versioned_template(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _step_templates() -> list[dict[str, Any]]:
+    """New template identities; stored definitions and old hashes are untouched."""
+    from .composite_expansion import expand_composite
+    from .granular_registry import COMPOSITE_STEPS
+
+    items = []
+    for original in TEMPLATES_V2:
+        composites = [node for node in original["definition"]["graph"]["nodes"] if node["type"] in COMPOSITE_STEPS]
+        if not composites or "legacy" in original["id"]:
+            items.append(original)
+            continue
+        item = copy.deepcopy(original)
+        item.update(id=f"{original['id']}-steps-v1", name=f"{original['name']} · 分步", version=1)
+        if original["id"] == "merrill-clock-v2":
+            item["authoring_hidden"] = True
+        item["tags"] = [*item.get("tags", []), "可编辑计算步骤"]
+        for node in composites:
+            item["definition"] = expand_composite(item["definition"], node["id"], "retrospective")["definition"]
+        item["definition"]["template_id"] = item["id"]
+        items.append(item)
+        # Original IDs remain explicitly retrievable for compatibility, but
+        # new authoring recommends the independent expanded definition.
+        items.append({**original, "authoring_hidden": True})
+    return items
+
+
 def list_templates_v2() -> list[dict[str, Any]]:
-    return [_versioned_template(item) for item in TEMPLATES_V2]
+    return [_versioned_template(item) for item in _step_templates()]
 
 
 def get_template_v2(template_id: str) -> dict[str, Any] | None:
+    # Exact historical lookups never depend on expanding a newer template.
     for item in TEMPLATES_V2:
+        if item["id"] == template_id:
+            return _versioned_template(item)
+    for item in _step_templates():
         if item["id"] == template_id:
             return _versioned_template(item)
     return None

@@ -110,6 +110,8 @@ def fetch_with_retry(store: SourceStore, source: SourceConfig, interface: Interf
             return fetch_once(store, bounded, interface, params, sample=sample)
         except TransientSourceError as exc:
             delay = policy.backoff_seconds * 2**attempt
+            if exc.code in {'SOURCE_CONNECTION', 'SOURCE_DNS', 'SOURCE_TIMEOUT'}:
+                delay = max(delay, policy.read_timeout_seconds * 2**attempt)
             if exc.code in {"SOURCE_RATE_LIMIT", "SOURCE_RETRYABLE"}:
                 delay = max(delay, policy.rate_limit_wait_seconds, getattr(exc, "retry_after_seconds", 0))
             delay += random.uniform(0, 0.25)

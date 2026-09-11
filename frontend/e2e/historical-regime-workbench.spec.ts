@@ -58,6 +58,7 @@ test('历史情景工作台保留完整画板、按需配置并自动展示完�
   page.on('pageerror', error => errors.push(error.message))
   const { overview, rows } = resultFixture('RUN-E2E', 3000)
   overview.mode = 'realtime'
+  overview.frequency = 'daily'
   const requests: Array<{ offset: number; limit: number }> = []
   let runDefinition: typeof templateDefinition | undefined
   await page.route('**/api/**', async route => {
@@ -136,7 +137,7 @@ test('历史情景工作台保留完整画板、按需配置并自动展示完�
   await page.getByRole('button', { name: '运行识别', exact: true }).click()
   const result = page.getByLabel('完整历史情景结果')
   await expect(result).toBeVisible()
-  await expect(result).toContainText('共 3000 个观测日')
+  await expect(result).toContainText('共 3000 个日频观测')
   await expect(result.getByLabel('情景图例')).toContainText('牛市')
   await expect(result.getByLabel('情景图例')).toContainText('熊市')
   await expect(result.locator('canvas').first()).toBeVisible()
@@ -204,8 +205,9 @@ test('正式运行从版本抽屉打开冻结情景图，不混用当前草稿�
   await expect(page.getByLabel('研究名称')).toHaveValue(definition.name)
   await page.getByRole('button', { name: '前往校验与预览' }).click()
   await page.getByLabel('V2 截至日').fill('2026-09-05')
-  await page.getByRole('button', { name: '版本与发布', exact: true }).click()
-  const drawer = page.getByRole('dialog', { name: '版本与发布', exact: true })
+  await page.getByRole('button', { name: '保存情景', exact: true }).click()
+  const drawer = page.getByRole('dialog', { name: '保存情景', exact: true })
+  await drawer.getByText('高级管理', { exact: true }).click()
   await expect(drawer.getByRole('button', { name: /牛熊正式运行/ })).toBeVisible()
   await drawer.getByRole('button', { name: /牛熊正式运行/ }).click()
   await drawer.getByRole('button', { name: '查看完整情景结果', exact: true }).click()
@@ -222,4 +224,72 @@ test('正式运行从版本抽屉打开冻结情景图，不混用当前草稿�
   expect(detailReads).toBeGreaterThanOrEqual(2)
   expect(previewReads).toBe(0)
   expect(errors).toEqual([])
+})
+
+test('保存情景只需命名和一次确认，技术步骤自动完成', async ({ page }, testInfo) => {
+  const calls: string[] = []
+  let saved: Record<string, unknown> | null = null
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const method = route.request().method()
+    let value: unknown
+    if (path.endsWith('/nodes')) value = { items: schemas }
+    else if (path.endsWith('/templates/v2')) value = { items: [{ id: 'clock-save', name: '美林时钟', default_mode: 'retrospective', definition: templateDefinition }] }
+    else if (path.endsWith('/instantiate')) value = { definition: { ...templateDefinition, name: '美林时钟' } }
+    else if (path.endsWith('/v2/definitions') && method === 'POST') { calls.push('save'); saved = { ...route.request().postDataJSON().definition, id: 'clock', revision: 1 }; value = saved }
+    else if (path.endsWith('/v2/definitions')) value = { items: saved ? [saved] : [] }
+    else if (path.endsWith('/authoring/resolve')) value = { definition: route.request().postDataJSON().definition, diagnostics: [], formula_text: 'fixture', output_id: 'state' }
+    else if (path.endsWith('/infer')) value = { valid: true, errors: [], warnings: [] }
+    else if (path.endsWith('/prepare')) { calls.push('prepare'); value = { compile_token: 'warmed', runtime_audit: fixedExecution } }
+    else if (path.endsWith('/research-versions')) {
+      calls.push('enable')
+      expect(route.request().postDataJSON()).toEqual({ definition: { schema_version: '2.0', id: 'clock', revision: 1 }, compile_token: 'warmed', mode: 'retrospective', as_of: null })
+      value = { run_id: 'clock-result', definition_id: 'clock', revision: 1, name: '美林时钟', mode: 'retrospective',
+        series_summary: { first_observation_date: '2005-01-31', last_observation_date: '2026-07-31', row_count: 259 }, available_for: ['product_research', 'research_display'] }
+    } else return route.fulfill({ status: 404, json: { detail: 'offline fixture' } })
+    return route.fulfill({ json: value })
+  })
+  await page.goto('/settings/scenario-algorithms/workbench?template=clock-save')
+  await expect(page.getByLabel('研究名称')).toHaveValue('美林时钟')
+  await page.getByRole('button', { name: '前往校验与预览' }).click()
+  await page.getByRole('button', { name: '保存情景', exact: true }).click()
+  const panel = page.getByRole('dialog', { name: '保存情景', exact: true })
+  await expect(panel.getByLabel('情景名称')).toHaveValue('美林时钟')
+  await expect(panel.getByRole('button', { name: '显式预热计划' })).toHaveCount(0)
+  await panel.getByRole('button', { name: '保存并用于研究', exact: true }).click()
+  await expect(panel.getByText('美林时钟 · v1 已可选用')).toBeVisible()
+  expect(calls).toEqual(['save', 'prepare', 'enable'])
+  await expect(panel.getByRole('link', { name: '前往产品研究' })).toHaveAttribute('href', '/product-research/products')
+  expect(await panel.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+  await page.screenshot({ path: testInfo.outputPath('scenario-saved.png') })
+  await page.keyboard.press('Escape')
+  await expect(panel).toHaveCount(0)
+})
+
+test('运行失败直接在校验与预览中显示原因而非空结果', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    let value: unknown
+    if (path.endsWith('/nodes')) value = { items: schemas }
+    else if (path.endsWith('/templates/v2')) value = { items: [{ id: 'clock-test', name: '美林时钟测试', default_mode: 'retrospective' }] }
+    else if (path.endsWith('/templates/clock-test/instantiate')) value = { definition: templateDefinition }
+    else if (path.endsWith('/infer')) value = { valid: true, errors: [], warnings: [], graph_hash: 'clock-test' }
+    else if (path.endsWith('/authoring/resolve')) value = { valid: true, definition: templateDefinition, diagnostics: [], display_latex: {} }
+    else if (path.endsWith('/prepare')) value = { plan_id: 'clock', compile_token: 'clock', graph_hash: 'clock-test', runtime_audit: fixedExecution }
+    else if (path.endsWith('/preview-runs')) value = { id: 'clock-failed', status: 'queued', progress: .1 }
+    else if (path.endsWith('/preview-runs/clock-failed')) value = { id: 'clock-failed', status: 'failed', error: { code: 'MACRO_RELEASE_DATE_UNKNOWN', message: '增长：制造业PMI的发布日期未知，请使用事后研究。' } }
+    else value = { items: [] }
+    await route.fulfill({ json: value })
+  })
+  await page.goto('/settings/scenario-algorithms/workbench?template=clock-test')
+  await expect(page.getByLabel('研究名称')).toHaveValue(templateDefinition.name)
+  await page.getByRole('button', { name: '前往校验与预览' }).click()
+  await expect(page.getByRole('radio', { name: '事后研究', exact: true })).toHaveAttribute('aria-checked', 'true')
+  await page.getByRole('button', { name: '运行识别', exact: true }).click()
+  const panel = page.getByRole('region', { name: '情景校验与预览设置' })
+  await expect(panel.getByRole('alert')).toContainText('制造业PMI的发布日期未知')
+  await expect(panel.getByLabel('识别运行状态')).toContainText('本次识别失败')
+  await expect(page.getByText('还没有完成的情景结果')).toHaveCount(0)
+  await expect(panel.getByRole('button', { name: '检查输入数据' })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
 })

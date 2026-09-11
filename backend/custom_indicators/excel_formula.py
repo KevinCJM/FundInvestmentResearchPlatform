@@ -83,6 +83,7 @@ _NATIVE_EXCEL_FUNCTIONS = frozenset(
 )
 _SERIES_DSL_FUNCTION_NAMES = frozenset(
     {
+        "rolling_window",
         "rolling_mean",
         "rolling_std",
         "rolling_min",
@@ -100,6 +101,9 @@ _SERIES_OPERATOR_LABELS = {
     "power": "逐行乘方",
     "maximum": "逐行取较大值",
     "minimum": "逐行取较小值",
+    "rolling_apply": "滚动计算（每个窗口执行完整区间图）",
+    "finite_mask": "有限值判断",
+    "rolling_window": "滚动窗口",
     "rolling_mean": "移动平均",
     "rolling_std": "滚动标准差",
     "rolling_min": "滚动最小值",
@@ -250,6 +254,7 @@ _PATH_OPERATORS = frozenset({"drawdown_series", "new_high_mask"})
 _ROLLING_OPERATORS = frozenset(
     {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}
 )
+_WINDOW_REDUCERS = frozenset({"mean", "std", "variance", "min_value", "max_value"})
 _RECURSIVE_OPERATORS = frozenset({"recursive_smooth"})
 _SPECIAL_ELEMENTWISE = frozenset(
     {"clip", "where", "active_returns", "divide_or_default"}
@@ -268,10 +273,11 @@ EXCEL_SINGLE_PRODUCT_OPERATOR_IDS = frozenset(
     | _SEQUENCE_OPERATORS
     | _PATH_OPERATORS
     | _ROLLING_OPERATORS
+    | {"rolling_window"}
     | _RECURSIVE_OPERATORS
     | _SPECIAL_ELEMENTWISE
     | {
-        "max_consecutive_true", *STATE_OPERATORS, *SCALAR_OPERATORS,
+        "rolling_apply", "finite_mask", "max_consecutive_true", *STATE_OPERATORS, *SCALAR_OPERATORS,
     }
 )
 
@@ -1015,6 +1021,43 @@ class SingleProductExcelFormulaCompiler:
             f"IFERROR({calculation},{missing}))"
         )
 
+    def _window_reduction_formula(
+        self,
+        node: TypedDagNode,
+        index: int,
+    ) -> str:
+        window_node = self.node_by_id[int(node.inputs[0])]
+        if window_node.operator_id != "rolling_window":
+            raise RuntimeError("window reduction requires rolling_window input")
+        values = self.placements[int(window_node.inputs[0])]
+        window = self._integer_constant_input(window_node, 1, 1)
+        minimum = self._integer_constant_input(window_node, 2, window)
+        segment = self._rolling_segment_ref(values, window, index)
+        missing = '""' if self.transparent_series_export else "NA()"
+        operator_id = str(node.operator_id or "")
+        if operator_id in {"std", "variance"}:
+            ddof = self._integer_constant_input(node, 1, 1)
+            variance = f"DEVSQ({segment})/(COUNT({segment})-{ddof})"
+            if operator_id == "std" and ddof == 0:
+                calculation = f"STDEVP({segment})"
+            elif operator_id == "std" and ddof == 1:
+                calculation = f"STDEV({segment})"
+            else:
+                calculation = f"SQRT({variance})" if operator_id == "std" else variance
+            return (
+                f"=IF(OR(COUNT({segment})<{minimum},COUNT({segment})<={ddof}),"
+                f"{missing},IFERROR({calculation},{missing}))"
+            )
+        calculation = {
+            "mean": f"AVERAGE({segment})",
+            "min_value": f"MIN({segment})",
+            "max_value": f"MAX({segment})",
+        }[operator_id]
+        return (
+            f"=IF(COUNT({segment})<{minimum},{missing},"
+            f"IFERROR({calculation},{missing}))"
+        )
+
     def _recursive_formula(
         self,
         node: TypedDagNode,
@@ -1037,6 +1080,16 @@ class SingleProductExcelFormulaCompiler:
     ) -> str:
         operator_id = str(node.operator_id or "")
         inputs = self._input_placements(node)
+        if operator_id == "finite_mask":
+            return f"=ISNUMBER({self._element_ref(inputs[0], index)})"
+        if operator_id == "rolling_window":
+            return f"={self._element_ref(inputs[0], index)}"
+        if (
+            operator_id in _WINDOW_REDUCERS
+            and node.inputs
+            and self.node_by_id[int(node.inputs[0])].operator_id == "rolling_window"
+        ):
+            return self._window_reduction_formula(node, index)
         if operator_id in _ELEMENTWISE_UNARY | _ELEMENTWISE_BINARY | _SPECIAL_ELEMENTWISE | {
             "logical_and",
             "logical_or",
@@ -1285,6 +1338,10 @@ class SingleProductExcelFormulaCompiler:
             return formats.boolean
         return formats.number
 
+    def _input_formula(self, node: TypedDagNode) -> str | None:
+        """Optional window-local context formula, emitted in row order."""
+        return None
+
     def write_nodes(
         self,
         worksheet: Any,
@@ -1352,6 +1409,12 @@ class SingleProductExcelFormulaCompiler:
             if node.kind == "variable":
                 worksheet.write(placement.header_row, 0, "日期 / 序号", formats.header)
                 worksheet.write(placement.header_row, 1, "直接入参值", formats.header)
+                input_formula = self._input_formula(node)
+                if input_formula is not None:
+                    _assert_native_excel_formula(input_formula)
+                    worksheet.write(placement.data_start_row, 0, input_formula, formats.formula_text)
+                    worksheet.write_formula(placement.data_start_row, 1, input_formula, formats.number)
+                    continue
                 value = np.asarray(self.context[node.label])
                 values = [float(value)] if value.ndim == 0 else value.tolist()
                 value_format = self._input_value_format(placement, formats)
@@ -1414,8 +1477,11 @@ class SingleProductExcelFormulaCompiler:
                     formats.formula_text,
                 )
                 cached_value: Any = 0
-                if node.node_id == self.root_id and backend_value is not None:
-                    cached_value = float(backend_value)
+                if node.node_id == self.root_id:
+                    if backend_value is not None and math.isfinite(float(backend_value)):
+                        cached_value = float(backend_value)
+                    elif self.transparent_series_export:
+                        cached_value = ""
                 worksheet.write_formula(
                     placement.data_start_row,
                     1,

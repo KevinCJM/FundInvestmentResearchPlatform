@@ -5,7 +5,11 @@ builder validates the original arity/types before expanding trusted syntax.
 """
 from __future__ import annotations
 
-LOWERING_VERSION = "primitive-operators-1"
+LOWERING_VERSION = "primitive-operators-3-interval-rolling-1"
+ROLLING_COMPAT_OPERATOR_IDS = frozenset(
+    {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}
+)
+COMPILER_FUSED_OPERATOR_IDS = frozenset({"rolling_window", "rolling_apply"})
 COMPOSITE_OPERATOR_IDS = frozenset({
     "total_return", "annualized_return", "cumulative_return", "active_returns",
     "portfolio_returns", "quadratic_form", "linear_slope", "linear_intercept",
@@ -27,7 +31,31 @@ COMPOSITE_DEPENDENCIES = {
 }
 
 
-def expand_operator(operator_id: str, arguments: tuple[str, ...]) -> str | None:
+def expand_operator(
+    operator_id: str,
+    arguments: tuple[str, ...],
+    *,
+    operator_registry_version: str | None = None,
+) -> str | None:
+    # 2.3 keeps the original rolling spellings as an immutable historical
+    # contract. Current authoring accepts them only as syntax compatibility and
+    # lowers them to one logical window node plus an ordinary reduction.
+    if operator_id in ROLLING_COMPAT_OPERATOR_IDS:
+        if operator_registry_version != "2.4.0":
+            return None
+        args = tuple(f"({argument})" for argument in arguments)
+        first = args[0]
+        if operator_id == "rolling_std":
+            window = f"rolling_window({first}, {args[1]})" if len(args) < 4 else f"rolling_window({first}, {args[1]}, {args[3]})"
+            ddof = args[2] if len(args) >= 3 else "0"
+            return f"std({window}, {ddof})"
+        window = f"rolling_window({first}, {args[1]})" if len(args) < 3 else f"rolling_window({first}, {args[1]}, {args[2]})"
+        reducer = {
+            "rolling_mean": "mean",
+            "rolling_min": "min_value",
+            "rolling_max": "max_value",
+        }[operator_id]
+        return f"{reducer}({window})"
     if operator_id not in COMPOSITE_OPERATOR_IDS:
         return None
     args = tuple(f"({argument})" for argument in arguments)

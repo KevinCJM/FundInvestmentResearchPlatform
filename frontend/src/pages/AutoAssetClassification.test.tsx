@@ -400,7 +400,7 @@ describe('AutoAssetClassification', () => {
     expect(handoff.classes).toHaveLength(2)
     expect(handoff.classes[0]).toMatchObject({ name: '权益类', mode: 'custom' })
     expect(handoff.classes[0].etfs[0]).toMatchObject({ code: '510300.SH', weight: 100, instrument_type: 'etf' })
-    expect(screen.getByTestId('location-probe')).toHaveTextContent('/pre-investment/saa/asset-classes')
+    expect(await screen.findByTestId('location-probe')).toHaveTextContent('/pre-investment/saa/asset-classes')
     expect(handoff.universe_snapshot_id).toBe('universe-1')
   })
 

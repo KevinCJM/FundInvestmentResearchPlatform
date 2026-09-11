@@ -1241,7 +1241,7 @@ def test_preview_overview_rejects_expired_and_missing_results(
 
 
 @pytest.mark.parametrize("connected", [False, True])
-def test_realtime_rejects_retrospective_nodes_before_queueing(
+def test_realtime_gate_follows_connected_output_dependencies(
     client: TestClient, v2_service: RegimeGraphV2Service, connected: bool,
 ) -> None:
     definition = _definition()
@@ -1255,6 +1255,10 @@ def test_realtime_rejects_retrospective_nodes_before_queueing(
     prepared = v2_service.prepare(definition)
     payload = {"definition": definition, "compile_token": prepared["compile_token"], "mode": "realtime"}
     response = client.post("/api/historical-regimes/preview-runs", json=payload)
+    if not connected:
+        assert response.status_code == 202, response.text
+        assert _wait_for_preview(client, response.json()["id"])["status"] == "completed"
+        return
     assert response.status_code == 422, response.text
     assert "NON_CAUSAL_REALTIME_GRAPH" in response.text
     assert not v2_service._jobs
@@ -1274,7 +1278,7 @@ def test_realtime_rejects_retrospective_nodes_before_queueing(
 @pytest.mark.parametrize("metadata", [
     {"supports_realtime": False}, {"causal": False}, {"repaints": True}, {"supports_realtime": None},
 ])
-def test_realtime_gate_checks_all_causality_flags(
+def test_legacy_flags_are_not_independent_graph_verdicts(
     v2_service: RegimeGraphV2Service, monkeypatch: pytest.MonkeyPatch, metadata: dict,
 ) -> None:
     from custom_indicators.errors import ValidationError
@@ -1283,5 +1287,8 @@ def test_realtime_gate_checks_all_causality_flags(
     monkeypatch.setitem(v2_service_module.NODE_REGISTRY, "filter.ema", schema)
     with pytest.raises(ValidationError) as exc:
         v2_service.create_preview(_definition(), compile_token=None, mode="realtime")
-    assert exc.value.code == "NON_CAUSAL_REALTIME_GRAPH"
+    # Only the registered numerical contract participates in inference;
+    # old support/repaint UI flags are no longer three independent gates.
+    expected = "NON_CAUSAL_REALTIME_GRAPH" if metadata.get("causal") is False else "REGIME_GRAPH_PREPARE_REQUIRED"
+    assert exc.value.code == expected
     assert not v2_service._jobs

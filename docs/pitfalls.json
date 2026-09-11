@@ -3,6 +3,20 @@
   "scope_mode": "subtree_only",
   "pitfalls": [
     {
+      "id": "P20",
+      "title": "published_sensitivity_and_scenario_boundaries",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": ["conditional_model_misread_as_causal", "stale_data_refreshed_by_requested_asof", "silent_release_substitution", "unconfirmed_preview_persistence", "impact_persistence_without_publish", "incomplete_exposure_reweighting", "period_shock_double_counting", "negative_input_sign_loss"],
+      "symptoms": ["A scenario label or hardcoded beta is presented as a calibrated macro model.", "Opening a product page fits a model or reads complete training panels.", "A model/cashflow/scenario preview creates files before the user confirms publication.", "A product or portfolio stress calculation is persisted even though the workflow has no confirm-publish action.", "A past-data model becomes fresh merely by changing as_of to today.", "A negative shock is converted to a positive number while typing, or blank input becomes zero.", "Missing held assets disappear from portfolio P&L or new holdings are applied to an old result."],
+      "trigger_actions": ["edit risk-model or scenario-transmission research", "change preview, publication, artifact persistence or published-scenario application", "connect business pages to published exposure artifacts"],
+      "related_paths": ["backend/sensitivity/service.py", "backend/sensitivity/kernels.py", "backend/sensitivity/repository.py", "backend/scenario_stress/published.py", "frontend/src/components/risk-models/PublishedRiskPanel.tsx", "frontend/src/components/risk-models/ResearchUI.tsx", "frontend/src/pages/PublishedScenarioCenter.tsx"],
+      "affected_modules": ["published_risk_scenario_research"],
+      "blast_radius": ["model validation", "scenario economic interpretation", "portfolio stress P&L", "immutable research history"],
+      "check_before_edit": ["Keep statistical holdout validation distinct from identified causality or certified historical PIT. Event names never supply numerical coefficients.", "Unconfirmed model, cashflow, transmission and scenario previews are pure calculations: they must not call ArtifactRepository.save, create directories/locks, or persist frozen arrays. Only an explicit confirm-publish request may write research artifacts, after server-side recomputation/compilation matches the preview hash.", "Product and portfolio stress impacts are transient because that workflow has no confirm-publish action. Do not reintroduce impact caching/persistence or a normal saved-impact history without an explicit product decision and publication workflow; old persisted impact IDs are read-only compatibility only.", "Freeze definitions, input contracts, training outputs and publication times only on confirmed publication. Expiry uses actual joint-sample data_as_of; requested as_of does not refresh stale data. Collinear failed fits still have readable counts and blockers.", "Match variable ID, contract hash and frequency; risk-return percent display, bp, percentage-point and point changes are not interchangeable. Every path row is a period change, not an accumulated level.", "Use published coefficients or fixed-cashflow repricing, never manually editable betas or automatic training on consumption. Runtime reads only required mmap arrays; publication verifies complete artifacts. Cashflow repricing requires the parallel-yield semantic contract: a bp unit alone never licenses treating Shibor or policy rates as bond yield. Calendar coverage includes known closed days and is required only through the last complete analysis period.", "Use stored end holdings derived from last beginning weights and last returns. Reject every missing nonzero exposure, preserve buy-and-hold versus explicit zero-cost constant weighting, and reconcile contributions to terminal wealth. Portfolio comparisons pin the same scenario, exposure release, date, notional and holding policy; show both holdings dates and do not show a partial comparison when either request fails.", "Require explicit unchanged-other-factors consent. Deterministic conditional paths do not supply probabilities, VaR or ES.", "Keep pinned missing/retired/expired releases visible as unavailable; never silently replace them. Reject stale drafts and ignore late requests from another product.", "Retain incomplete signed input until it becomes a valid number; test negative, fractional, empty and external reset cases. Bound form containers so wide tables do not widen a mobile page.", "Guard the managed data disk before confirmed publication reads/writes; no mkdir fallback on offline storage. Historical immutable published results remain readable after retirement without recalculation. Explicit source-data import remains a persisted data operation and is not treated as an unconfirmed research preview."],
+      "safe_observation_methods": ["python3 -m pytest backend/tests/test_published_risk_models.py -q", "npm run test --prefix frontend -- --run PublishedRiskFlow.test.tsx ResearchUI.test.tsx riskModels.test.ts", "npm run test:e2e --prefix frontend -- --config=playwright.risk.config.ts --workers=1"]
+    },
+    {
       "id": "P19",
       "title": "factor_research_temporal_semantics_and_release_evidence",
       "severity": "high",
@@ -265,6 +279,7 @@
         "Preserve all mode as full history to the target date.",
         "Preserve rollingN as the latest data_len trading rows with a minimum of two rows.",
         "Keep first valid rebalance date aligned with markers and returned series.",
+        "Pass NAV, lineage and available_at as one request-owned result through fitting and allocation persistence. Never restore a process-global last-load getter; verify interleaved requests cannot advance another product's knowledge time.",
         "Run the window, rebalance, backtest, and strategy API tests."
       ],
       "safe_observation_methods": [
@@ -822,7 +837,7 @@
     },
     {
       "id": "P13",
-      "title": "typed_v22_axes_semantics_version_pairs_and_njit_kernels_are_context_bound",
+      "title": "typed_dsl_axes_semantics_version_pairs_and_njit_kernels_are_context_bound",
       "severity": "high",
       "confidence": "high",
       "risk_codes": [
@@ -838,7 +853,7 @@
         "operator_causality_baseline_drift"
       ],
       "symptoms": [
-        "A typed-v2.2 change edits or reinterprets persisted typed 2.0, typed 2.1, or legacy v1 indicator definitions in place.",
+        "A current typed-DSL change edits or reinterprets persisted typed 2.0/2.1/2.2/2.3 or legacy v1 indicator definitions in place.",
         "A time series, asset vector, or time-asset matrix is combined through implicit positional broadcasting.",
         "Values with incompatible semantic dimensions or price bases are accepted by additive/comparison operators, or a numeric tensor is accepted where a bool mask is required.",
         "Public operator parameters, mask shapes, or overload names drift from the versioned signatures consumed by the guided builder.",
@@ -851,7 +866,7 @@
       "trigger_actions": [
         "edit typed_types, typed_operators, typed_dsl, or typed_service",
         "edit variable_registry or public typed meta",
-        "add typed-v2.2 composition/inference routes or KernelSpec signatures",
+        "add or change typed-DSL composition/inference routes, logical intermediates, or KernelSpec signatures",
         "add portfolio custom indicator evaluation",
         "migrate legacy indicator definitions"
       ],
@@ -892,14 +907,15 @@
         "portfolio indicator availability"
       ],
       "check_before_edit": [
-        "Keep typed-v2.2, typed-v2.1, typed-v2.0, and persisted legacy v1 definitions separate; adapt execution plans without rewriting historical formulas.",
+        "Keep current typed DSL and persisted typed 2.3/2.2/2.1/2.0 plus legacy v1 definitions separate; adapt execution plans without rewriting historical formulas.",
         "Require exact nominal axes unless a documented operator explicitly supports scalar broadcast.",
         "Require compatible semantic dimensions and price bases for additive/comparison operations, and preserve bool-mask dtype and mask signatures through public metadata.",
         "Keep executable expression source separate from display_latex; render code identifiers only after escaping text and use canonical variable symbols with text-style subscripts.",
         "Pair each saved DSL version with its installed operator/variable/data/context versions; keep business indicator formulas out of the public pure-mathematics operator catalog.",
         "Validate context requirements before evaluation; portfolio formulas must run only against an immutable portfolio-run snapshot through evaluate-portfolio.",
-        "Require the current canonical operator set to equal the fixed-signature KernelSpec set (currently 117/117), keep the current public catalog at 107 user-selectable operators, require successful startup warmup, python_fallback=0, and python_operator_calls=0. Do not hard-code older registry counts in future checks.",
-        "When operators are added or retired, give state/date intermediates valid causality probe candidates and require zero missing/changed/stale baseline entries; do not accept UNKNOWN as causal.",
+        "Require every executable canonical operator to have fixed-signature KernelSpec coverage; compiler controls such as rolling_window and rolling_apply have explicit fusion/scope contracts rather than pretend standalone numeric kernels. Check registry set equality using declared compiler controls instead of hard-coded catalogue counts. Require completed preparation, python_fallback=0 and python_operator_calls=0.",
+        "When operators are added or retired, give state/date/window intermediates valid causality probes and require zero missing/changed/stale baseline entries; UNKNOWN is not causal. Audit rolling_apply using the complete deferred interval body, not a precomputed full-history scalar. Keep original state/knowledge-time provenance. Test each-window peak reset, return/level boundary offsets, local sample/day/risk-free context and input alignment; a scalar output alone does not prove eligibility. Stream Excel local-context formulas in row order and test exceptional NRT allocations through the actual parent dispatcher. Built-in migration must preserve all revision 1/2 definition hashes and KDJ partial-window min_periods=1: finite_mask plus conditional extrema belong inside the generic scope, recursive K/D state stays outside. Optional minimum counts use jointly finite aligned observations without compressing input positions; test Excel SUMPRODUCT/ISNUMBER and native conditional extrema against that same contract. Verify two shared scopes for BOLL and KDJ and report measured generic-versus-specialized runtime costs rather than assuming a speed improvement.",
+        "Across indicator, regime and timing centers, preserve exact saved protocol revisions and bind reserved system context from the proven shared date axis and locked definition. Reject user overrides of these bindings. Audit outer value uses separately from a deferred rolling body; allowing mean/std globally would reintroduce lookahead. Compare real arrays for all current built-ins and historical revisions, not only catalog availability.",
         "Run typed type, catalog, compiler, NJIT kernel, runtime, causality, and product-service tests together."
       ],
       "safe_observation_methods": [
@@ -1040,7 +1056,9 @@
       "Treat applicable_product_kinds as a catalog hint only; compile required_variables and report source, field, observation, coverage, or common-window blockers per product before calculation.",
       "Resolve inserted indicators by indicator_id plus revision on the server, require matching context and DSL/registry/data/schema versions, and expand to an independent scalar expression rather than a mutable runtime reference.",
       "Runtime-constant series parameters require explicit parameter_contract_version 1.0 and author-opened positions. Preserve older frozen-default contracts; merge and validate defaults plus overrides per instance, recompute lookback and output ranges, include effective values in cache/export provenance, and reuse the prewarmed NJIT signature. Canvas parameter nodes must roundtrip without becoming data variables or literals.",
-      "When lifting a scalar indicator into a rolling series, lock the source revision and definition hash, expand supported reductions at definition time, keep the window as a formula constant, and fail closed for unsupported window-level context or reductions.",
+      "When lifting a scalar indicator into a rolling series, lock the source revision and definition hash and execute the complete eligible scalar subgraph in each window. Preserve explicit runtime-parameter contracts; local sample/day/risk-free context belongs to that scope, never to the whole series.",
+        "Keep every existing anchor date even when its value is NaN/Inf. Derive returns on the uncompressed NAV axis, retain the leading unavailable return, and load a preceding observation only for bodies that require a level/date baseline. Verify displayed tails against the same dates from a full calculation.",
+        "Initial metadata/catalog responses must not overwrite edits made while loading. Only initialize untouched technical defaults; keep validation unavailable until the registry is loaded.",
       "Keep the headline formula semantic and compact: use symbols such as mu, sigma, s, windowed min/max, smoothing S, or drawdown D; keep min_periods, NaN branches and implementation recurrences in the detailed DAG explanation.",
         "Respect ann_date <= as_of for reported NAV fields and surface partial coverage instead of silently filling or claiming full availability.",
         "Require revision for every mutable update/delete and run plans against independent indicator IDs and locked revisions, never removed scalar child-result references. When save/readback changes draft source or metadata, invalidate old inline compile tokens before preview/export; equivalent LaTeX is not the same exact token payload.",

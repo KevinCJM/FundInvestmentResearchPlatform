@@ -3,6 +3,7 @@ import TimeSeriesIndicatorPanel from '../components/indicator-parameters/TimeSer
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
 import FactorEvidencePanel from '../components/FactorEvidencePanel';
+import PublishedRiskPanel from '../components/risk-models/PublishedRiskPanel';
 import ProductScenarioPanel from '../components/product-research/ProductScenarioPanel';
 import {
   evaluateCustomIndicators,
@@ -14,11 +15,11 @@ import {
   type IndicatorDefinition,
   type TimeSeriesIndicatorResult,
 } from '../services/customIndicators';
+import { latestProductResearchPublication, researchVersionChoices } from '../services/regimeResearchVersions';
 import {
   getHistoricalRegimeRun,
   listHistoricalRegimeRuns,
   type HistoricalRegimeRun,
-  type RegimePublication,
 } from '../services/historicalRegimes';
 import {
   MetricDefinitionDrawer,
@@ -42,6 +43,8 @@ import {
   SIMULATION_METHOD_ORDER,
   STATISTICS_PERIOD_OPTIONS,
   analyzeProduct,
+  navDensityCurve,
+  nearestNavDensityFrame,
   type DistributionInterpretation,
   type FuturePathSimulation,
   type ProductAnalysisResponse,
@@ -257,12 +260,6 @@ const normalizeDateKey = (value: string) => {
   const date = text.slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
 };
-
-const latestProductResearchPublication = (run: HistoricalRegimeRun): RegimePublication | undefined => (
-  (run.publications ?? [])
-    .filter((publication) => publication.usage === 'product_research' && publication.run_id === run.id)
-    .sort((left, right) => right.published_at.localeCompare(left.published_at))[0]
-);
 
 const buildRegimeMarkAreas = (run: HistoricalRegimeRun | undefined, dates: string[]): RegimeMarkArea[] => {
   if (!run || dates.length === 0) {
@@ -529,7 +526,19 @@ export default function ProductDetail() {
   const [fhsEwmaLambda, setFhsEwmaLambda] = useState(0.94);
   const [simulationTargetReturn, setSimulationTargetReturn] = useState(5);
   const [simulationRun, setSimulationRun] = useState(0);
-  const [activeTab, setActiveTab] = useState<'chart' | 'regime' | 'statistics' | 'simulation'>('chart');
+  /**
+   * Which day the right-hand distribution answers for — the zoom window's
+   * right edge, `null` while the whole horizon is shown.
+   *
+   * The window itself lives in a ref, not in state: the chart re-renders with
+   * `notMerge`, so making every drag frame a render would rebuild the slider
+   * under the user's cursor. Only a change of day is worth a render, and even
+   * that waits for the drag to settle.
+   */
+  const [densityDay, setDensityDay] = useState<number | null>(null);
+  const simulationZoomWindow = useRef<[number, number]>([0, 100]);
+  const densityDayTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [activeTab, setActiveTab] = useState<'chart' | 'regime' | 'statistics' | 'simulation' | 'risk'>('chart');
   const [analysisBasis, setAnalysisBasis] = useState<'adjusted_nav' | 'price'>('adjusted_nav');
   const [analysisSettingsOpen, setAnalysisSettingsOpen] = useState(false);
   const [selectedStateId, setSelectedStateId] = useState('');
@@ -537,6 +546,7 @@ export default function ProductDetail() {
   const [simulationRecord, setSimulationRecord] = useState<{ key: string; loading?: boolean; result?: ProductAnalysisResponse; error?: string } | null>(null);
   const simulationController = useRef<AbortController | null>(null);
   const simulationGeneration = useRef(0);
+  const [regimeRefresh, setRegimeRefresh] = useState(0);
   const [historicalRegimeRuns, setHistoricalRegimeRuns] = useState<HistoricalRegimeRun[]>([]);
   const [historicalRegimeLoading, setHistoricalRegimeLoading] = useState(true);
   const [historicalRegimeError, setHistoricalRegimeError] = useState<string | null>(null);
@@ -658,7 +668,7 @@ export default function ProductDetail() {
         }
       });
     return () => { active = false; };
-  }, []);
+  }, [regimeRefresh]);
 
   useEffect(() => {
     const summary = historicalRegimeRuns.find((run) => run.id === selectedHistoricalRegimeRunId);
@@ -752,14 +762,8 @@ export default function ProductDetail() {
       : '暂无可匹配的份额与单位净值';
 
   const productResearchRegimeRuns = useMemo(
-    () => historicalRegimeRuns
-      .filter((run) => run.immutable && Boolean(latestProductResearchPublication(run)))
-      .sort((left, right) => {
-        const leftPublishedAt = latestProductResearchPublication(left)?.published_at ?? '';
-        const rightPublishedAt = latestProductResearchPublication(right)?.published_at ?? '';
-        return rightPublishedAt.localeCompare(leftPublishedAt);
-      }),
-    [historicalRegimeRuns],
+    () => researchVersionChoices(historicalRegimeRuns, selectedHistoricalRegimeRunId),
+    [historicalRegimeRuns, selectedHistoricalRegimeRunId],
   );
   const selectedHistoricalRegimeRunSummary = useMemo(
     () => productResearchRegimeRuns.find((run) => run.id === selectedHistoricalRegimeRunId),
@@ -855,8 +859,31 @@ export default function ProductDetail() {
     simulationGeneration.current += 1;
     simulationController.current?.abort();
     setSimulationRecord(null);
+    // A new run means a new day axis, so the old zoom window and the day the
+    // right-hand panel was showing no longer refer to anything.
+    simulationZoomWindow.current = [0, 100];
+    setDensityDay(null);
     return () => { simulationController.current?.abort(); };
   }, [simulationKey]);
+  useEffect(() => () => {
+    if (densityDayTimer.current) clearTimeout(densityDayTimer.current);
+  }, []);
+  /**
+   * The zoom window's right edge picks the day the distribution is drawn for.
+   * Debounced rather than immediate: ECharts fires this continuously while the
+   * slider is dragged, and each render rebuilds the chart.
+   */
+  const handleSimulationZoom = (params: unknown) => {
+    const payload = params as { batch?: Array<{ start?: number; end?: number }>; start?: number; end?: number };
+    const range = payload?.batch?.[0] ?? payload;
+    const end = Number(range?.end);
+    if (!Number.isFinite(end)) return;
+    const start = Number(range?.start);
+    simulationZoomWindow.current = [Number.isFinite(start) ? start : 0, end];
+    const day = Math.round((end / 100) * simulationHorizon);
+    if (densityDayTimer.current) clearTimeout(densityDayTimer.current);
+    densityDayTimer.current = setTimeout(() => setDensityDay(day), 180);
+  };
   const runSimulation = async () => {
     simulationController.current?.abort();
     const controller = new AbortController();
@@ -1564,7 +1591,19 @@ export default function ProductDetail() {
   const simulationMethods = simulationAnalysis?.simulation?.methods ?? SIMULATION_METHOD_ORDER;
   const activeSimulation = simulationAnalysis?.simulation?.byMethod[simulationMethod] ?? null;
   const simulationComparison = simulationAnalysis?.simulation?.comparison ?? null;
-  const terminalNavDensity = simulationAnalysis?.simulation?.densities[simulationMethod] ?? null;
+  const navDensity = simulationAnalysis?.simulation?.densities[simulationMethod] ?? null;
+  /**
+   * The distribution the right-hand panel draws: the checkpoint day nearest
+   * the zoom window's right edge, or the horizon's own when nothing is zoomed.
+   * Frames are strided, so the day shown is named on the chart rather than
+   * assumed to be the day the reader dragged to.
+   */
+  const densityFrame = useMemo(() => {
+    const frames = navDensity?.frames ?? [];
+    if (frames.length === 0) return null;
+    if (densityDay === null) return frames[frames.length - 1];
+    return nearestNavDensityFrame(frames, densityDay);
+  }, [navDensity, densityDay]);
   const realized = simulationAnalysis?.simulation?.realized ?? null;
   const realizedStatus = simulationAnalysis?.simulation?.realizedStatus ?? 'off';
   const realizedScore = realized?.byMethod[simulationMethod] ?? null;
@@ -1588,7 +1627,7 @@ export default function ProductDetail() {
   }, [realized, simulationMethods]);
 
   const simulationOption = useMemo(() => {
-    if (!activeSimulation || !terminalNavDensity || simulationInitialNav === null) {
+    if (!activeSimulation || !navDensity || !densityFrame || simulationInitialNav === null) {
       return undefined;
     }
     const percentileSeries = [
@@ -1598,24 +1637,29 @@ export default function ProductDetail() {
       { name: '75% 分位', data: activeSimulation.percentiles.p75, color: '#0ea5e9', type: 'dashed', width: 1 },
       { name: '95% 分位', data: activeSimulation.percentiles.p95, color: '#10b981', type: 'dashed', width: 1.5 },
     ];
-    const densityCountPoints = terminalNavDensity.points.map((point) => ({
-      nav: point.nav,
-      count: point.estimatedCount,
-      simulatedReturn: point.simulatedReturn,
-    }));
-    const countAxisMax = terminalNavDensity.countAxisMax;
+    const densityCountPoints = navDensityCurve(densityFrame, simulationInitialNav);
+    const countAxisMax = densityFrame.countAxisMax;
+    const frameDay = densityFrame.day;
+    const densityTitle = frameDay >= activeSimulation.days[activeSimulation.days.length - 1]
+      ? '期末净值分布'
+      : `第 ${frameDay} 日净值分布`;
+    // Both reference lines belong to the day being drawn, not to the horizon:
+    // a median from day 252 laid over day 40's distribution would sit outside
+    // it and read as a model error.
+    const frameMedian = activeSimulation.percentiles.p50[frameDay] ?? activeSimulation.terminal.p50;
+    const frameRealizedNav = realized?.nav[frameDay] ?? null;
     // The realised path is exactly what may fall outside the simulated range,
     // and that case matters most — an axis fitted to the simulation alone would
     // clip the evidence out of sight.
     const realizedNavValues = (realized?.nav ?? []).filter((value): value is number => value !== null);
-    const navAxisMin = Math.min(terminalNavDensity.navAxisMin, ...realizedNavValues);
-    const navAxisMax = Math.max(terminalNavDensity.navAxisMax, ...realizedNavValues);
+    const navAxisMin = Math.min(navDensity.navAxisMin, ...realizedNavValues);
+    const navAxisMax = Math.max(navDensity.navAxisMax, ...realizedNavValues);
     return {
       animation: false,
       aria: {
         enabled: true,
         decal: { show: true },
-        description: `${activeSimulation.methodLabel}虚拟净值路径图，右侧叠加 ${terminalNavDensity.sampleSize} 条模拟期末净值的横向直方图与概率密度曲线。${realized ? `另叠加研究日 ${realized.asOf} 之后 ${realized.coveredDays} 个交易日的实际净值走势。` : ''}`,
+        description: `${activeSimulation.methodLabel}虚拟净值路径图，右侧叠加 ${navDensity.sampleSize} 条模拟路径在第 ${frameDay} 个未来交易日的净值横向直方图与概率密度曲线；拖动下方缩放条可切换到任意日期。${realized ? `另叠加研究日 ${realized.asOf} 之后 ${realized.coveredDays} 个交易日的实际净值走势。` : ''}`,
       },
       tooltip: {
         trigger: 'axis',
@@ -1631,7 +1675,7 @@ export default function ProductDetail() {
         left: '84%',
         top: 48,
         silent: true,
-        style: { text: '期末净值分布', fill: '#64748b', fontSize: 11, fontWeight: 600 },
+        style: { text: densityTitle, fill: '#64748b', fontSize: 11, fontWeight: 600 },
       }],
       grid: [
         { left: 52, right: '19%', bottom: 58, top: 58 },
@@ -1685,12 +1729,14 @@ export default function ProductDetail() {
           axisLine: { show: true, lineStyle: { color: '#cbd5e1' } },
         },
       ],
-      dataZoom: simulationHorizon > 126
-        ? [
-            { type: 'inside', xAxisIndex: 0, start: 0, end: 100 },
-            { xAxisIndex: 0, start: 0, end: 100, left: 52, right: '19%' },
-          ]
-        : [],
+      // Always present now: the slider is how the reader picks which day the
+      // right-hand distribution answers for, so hiding it on short horizons
+      // would hide the feature. Position comes from the ref so a re-render
+      // does not throw the window back to the full horizon.
+      dataZoom: [
+        { type: 'inside', xAxisIndex: 0, start: simulationZoomWindow.current[0], end: simulationZoomWindow.current[1] },
+        { xAxisIndex: 0, start: simulationZoomWindow.current[0], end: simulationZoomWindow.current[1], left: 52, right: '19%' },
+      ],
       series: [
         ...activeSimulation.samplePaths.map((path, index) => ({
           name: `样本路径 ${index + 1}`,
@@ -1720,7 +1766,7 @@ export default function ProductDetail() {
           yAxisIndex: 1,
           silent: true,
           z: 1,
-          data: [[countAxisMax, terminalNavDensity.minNav]],
+          data: [[countAxisMax, densityFrame.navLow]],
           renderItem: (_params: any, api: any) => {
             const curve = densityCountPoints.map((point) => api.coord([point.count, point.nav]));
             const baseline = densityCountPoints
@@ -1741,7 +1787,11 @@ export default function ProductDetail() {
           xAxisIndex: 1,
           yAxisIndex: 1,
           z: 2,
-          data: terminalNavDensity.histogram.map((bin) => [bin.count, bin.lowerNav, bin.upperNav]),
+          data: densityFrame.bins.map((count, index) => [
+            count,
+            densityFrame.navLow + index * densityFrame.binWidth,
+            densityFrame.navLow + (index + 1) * densityFrame.binWidth,
+          ]),
           renderItem: (_params: any, api: any) => {
             const lower = api.coord([0, api.value(1)]);
             const upper = api.coord([api.value(0), api.value(2)]);
@@ -1757,7 +1807,7 @@ export default function ProductDetail() {
             formatter: (params: any) => {
               const data = Array.isArray(params?.data) ? params.data : [];
               return [
-                '期末净值直方图',
+                densityTitle,
                 `${formatDecimal(Number(data[1]), 4)} ~ ${formatDecimal(Number(data[2]), 4)}`,
                 `路径数：${Number(data[0]) || 0}`,
               ].join('<br/>');
@@ -1781,8 +1831,8 @@ export default function ProductDetail() {
               const estimatedCount = Number(Array.isArray(params?.data) ? params.data[0] : Number.NaN);
               const simulatedReturn = Number(Array.isArray(params?.data) ? params.data[2] : Number.NaN);
               return [
-                '期末净值概率密度',
-                `期末净值：${formatDecimal(nav, 4)}`,
+                `${densityTitle} · 概率密度`,
+                `虚拟净值：${formatDecimal(nav, 4)}`,
                 `区间估算路径数：${Number.isFinite(estimatedCount) ? formatDecimal(estimatedCount, 1) : '--'}`,
                 `相对当前收益率：${Number.isFinite(simulatedReturn) ? formatRatioPercent(simulatedReturn) : '--'}`,
               ].join('<br/>');
@@ -1794,7 +1844,7 @@ export default function ProductDetail() {
           type: 'line',
           xAxisIndex: 1,
           yAxisIndex: 1,
-          data: [[0, activeSimulation.terminal.p50], [countAxisMax, activeSimulation.terminal.p50]],
+          data: [[0, frameMedian], [countAxisMax, frameMedian]],
           showSymbol: false,
           silent: true,
           lineStyle: { width: 1.5, type: 'dotted', color: '#7c3aed' },
@@ -1816,12 +1866,15 @@ export default function ProductDetail() {
             valueFormatter: (value: number | string) => formatDecimal(Number(value), 4),
           },
         }] : []),
-        ...(realized?.complete && realized.terminalNav !== null ? [{
-          name: '实际期末净值',
+        // Now drawn for any day the realised path reaches, not only a fully
+        // covered horizon: a partial path still has a position inside the
+        // distribution of the day it got to.
+        ...(frameRealizedNav !== null ? [{
+          name: '实际净值参考线',
           type: 'line',
           xAxisIndex: 1,
           yAxisIndex: 1,
-          data: [[0, realized.terminalNav], [countAxisMax, realized.terminalNav]],
+          data: [[0, frameRealizedNav], [countAxisMax, frameRealizedNav]],
           showSymbol: false,
           silent: true,
           lineStyle: { width: 2, color: REALIZED_COLOR },
@@ -1829,7 +1882,7 @@ export default function ProductDetail() {
         }] : []),
       ],
     };
-  }, [activeSimulation, realized, simulationHorizon, terminalNavDensity]);
+  }, [activeSimulation, densityFrame, navDensity, realized, simulationInitialNav]);
 
   const statisticsRange = useMemo(() => {
     if (dailyReturns.length === 0) {
@@ -1845,7 +1898,9 @@ export default function ProductDetail() {
   const tabs = [
     { id: 'chart', label: '走势与指标' }, { id: 'regime', label: '情景表现' },
     { id: 'statistics', label: '收益统计' }, { id: 'simulation', label: '未来模拟' },
+    { id: 'risk', label: '风险与压测' },
   ] as const;
+  useEffect(() => { if (searchParams.get('tab') === 'risk') setActiveTab('risk'); }, [searchParams]);
   const context = analysis?.researchContext;
   useEffect(() => { if (activeTab === 'chart') window.dispatchEvent(new Event('resize')); }, [activeTab]);
   const contextLabel = selectedStateId ? `${selectedState?.label ?? context?.stateLabel ?? '所选状态'}${selectedSegmentId ? ' · 单个连续区间' : ' · 全部连续区间'}` : '完整样本';
@@ -1880,10 +1935,11 @@ export default function ProductDetail() {
               <div className="min-w-0"><p className="text-xs font-semibold tracking-wide text-slate-400">单产品研究 · {productKind === 'fund' ? '公募基金' : 'ETF'}</p><h1 className="mt-1 break-words text-2xl font-semibold tracking-tight text-slate-900">{detail.name ?? '--'}</h1><div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500"><span className="font-medium text-slate-700">{tsCode}</span>{baseInfo['qdii_type'] && <span className="rounded bg-slate-100 px-2 py-0.5">{String(baseInfo['qdii_type'])}</span>}<span>{detail.management}</span><span>{detail.status}</span></div></div>
               <div className="flex gap-6 text-right"><div><p className="text-xs text-slate-500">当前规模</p><p className="mt-1 text-xl font-semibold tabular-nums text-slate-900">{formatIssueAmount(metrics.current_size)}</p></div><div><p className="text-xs text-slate-500">管理 / 托管费</p><p className="mt-2 text-sm font-medium tabular-nums text-slate-700">{formatPercent(metrics.m_fee)} / {formatPercent(metrics.c_fee)}</p></div></div>
             </div>
+            {productKind === 'etf' && <Link to={`/product-research/timing?product_id=${encodeURIComponent(String(tsCode || productId))}&kind=etf`} className="mt-4 inline-flex min-h-10 items-center rounded-lg border border-slate-200 px-3 text-sm font-medium text-sky-700 hover:bg-sky-50">研究这个 ETF 的买入与退出规则 →</Link>}
             <details className="mt-4 border-t border-slate-100 pt-3"><summary className="cursor-pointer text-xs font-medium text-slate-500">产品资料与规模口径</summary><div className="mt-3 grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-3"><span>管理人：{formatText(detail.management)}</span><span>托管人：{formatText(detail.custodian)}</span><span aria-label={`${inceptionDateLabel}：${inceptionDateText}`}>{inceptionDateLabel}：{inceptionDateText}</span>{endDate && <span aria-label={`${endDateLabel}：${endDateText}`}>{endDateLabel}：{endDateText}</span>}<span>发行规模：{formatIssueAmount(metrics.issue_amount)}</span><span className="sm:col-span-2">{currentSizeDescription}</span></div></details>
           </header>
-          <div role="tablist" aria-label="产品研究工作区" className="grid grid-cols-4 rounded-xl border border-slate-200 bg-slate-100/70 p-1">{tabs.map((tab, index) => <button key={tab.id} role="tab" id={`product-tab-${tab.id}`} aria-controls={`product-panel-${tab.id}`} aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => setActiveTab(tab.id)} onKeyDown={event => { const offset = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0; const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + offset + tabs.length) % tabs.length; if (offset || event.key === 'Home' || event.key === 'End') { event.preventDefault(); setActiveTab(tabs[next].id); document.getElementById(`product-tab-${tabs[next].id}`)?.focus(); } }} className={`min-h-11 whitespace-nowrap rounded-lg px-1 py-2 text-[11px] font-semibold transition sm:px-4 sm:text-sm ${activeTab === tab.id ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/70' : 'text-slate-500 hover:text-slate-800'}`}>{tab.label}</button>)}</div>
-          {activeTab !== 'chart' && <section aria-label="分析样本" className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-3 sm:px-4">
+          <div role="tablist" aria-label="产品研究工作区" className="grid grid-cols-2 sm:grid-cols-5 rounded-xl border border-slate-200 bg-slate-100/70 p-1">{tabs.map((tab, index) => <button key={tab.id} role="tab" id={`product-tab-${tab.id}`} aria-controls={`product-panel-${tab.id}`} aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => setActiveTab(tab.id)} onKeyDown={event => { const offset = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0; const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + offset + tabs.length) % tabs.length; if (offset || event.key === 'Home' || event.key === 'End') { event.preventDefault(); setActiveTab(tabs[next].id); document.getElementById(`product-tab-${tabs[next].id}`)?.focus(); } }} className={`min-h-11 whitespace-nowrap rounded-lg px-1 py-2 text-[11px] font-semibold transition sm:px-4 sm:text-sm ${activeTab === tab.id ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/70' : 'text-slate-500 hover:text-slate-800'}`}>{tab.label}</button>)}</div>
+          {activeTab !== 'chart' && activeTab !== 'risk' && <section aria-label="分析样本" className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-3 sm:px-4">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-600">
                 分析样本区间
@@ -1901,22 +1957,27 @@ export default function ProductDetail() {
               <p className="text-xs leading-5 text-slate-500">用于情景表现、收益统计与模拟取样。指标卡片保留各自的计算口径与周期。</p>
             </div>}
             {productResearchRegimeRuns.length > 0 && <div className="mt-3 grid min-w-0 gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2 xl:grid-cols-4">
-              <label className="min-w-0 text-xs text-slate-500 sm:col-span-2">情景方案<select aria-label="历史情景背景" value={selectedHistoricalRegimeRunId} onChange={event => changeRegime(event.target.value)} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">不使用情景 · 普通研究</option>{productResearchRegimeRuns.map(run => <option key={run.id} value={run.id}>{run.name} · v{run.definition_revision ?? latestProductResearchPublication(run)?.definition_revision ?? '—'} · {run.mode === 'realtime' ? '实时识别' : '事后识别'} · 发布 {formatDate(latestProductResearchPublication(run)?.published_at)} · 结果 {run.id.slice(-6)}</option>)}</select></label>
+              <label className="min-w-0 text-xs text-slate-500 sm:col-span-2">情景方案<select aria-label="历史情景背景" value={selectedHistoricalRegimeRunId} onChange={event => changeRegime(event.target.value)} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">不使用情景 · 普通研究</option>{productResearchRegimeRuns.map(run => <option key={run.id} value={run.id}>{run.name} · v{run.definition_revision ?? latestProductResearchPublication(run)?.definition_revision ?? '—'} · {run.mode === 'realtime' ? '实时识别' : '事后研究'}</option>)}</select></label>
+              <button type="button" disabled={historicalRegimeLoading} onClick={() => setRegimeRefresh(value => value + 1)} className="min-h-10 self-end justify-self-start rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 disabled:opacity-40">{historicalRegimeLoading ? '正在读取…' : '刷新情景'}</button>
               {selectedHistoricalRegimeRunId && <label className="min-w-0 text-xs text-slate-500">市场状态<select aria-label="市场状态" value={selectedStateId} onChange={event => selectState(event.target.value)} disabled={!selectedHistoricalRegimeRun} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">全部状态 · 保留完整样本</option>{selectedHistoricalRegimeRun?.states.map(state => <option key={state.id} value={state.id}>{state.label}</option>)}</select></label>}
               {selectedStateId && <label className="min-w-0 text-xs text-slate-500">连续区间<select aria-label="连续区间" value={selectedSegmentId} onChange={event => setSelectedSegmentId(event.target.value)} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">该状态的全部连续区间</option>{analysis?.regimeAnalysis?.segments.filter(segment => segment.stateId === selectedStateId).map(segment => <option key={segment.id} value={segment.id}>{segment.startDate} 至 {segment.endDate} · {segment.returnObservations} 个有效收益</option>)}</select></label>}
             </div>}
             {selectedHistoricalRegimeRunId && <div className="mt-2 flex flex-wrap items-start justify-between gap-2 text-xs leading-5 text-slate-500" aria-live="polite">
+              {selectedHistoricalRegimeRun && <p className="w-full">{selectedHistoricalRegimeRun.mode === 'retrospective' ? '事后研究 · 用于解释历史表现' : '实时识别 · 按本次保存的数据范围'} · 版本 v{selectedHistoricalRegimeRun.definition_revision} · {selectedHistoricalRegimeRun.series?.[0]?.observation_date || '—'} — {selectedHistoricalRegimeRun.series?.[selectedHistoricalRegimeRun.series.length - 1]?.observation_date || '—'}</p>}
               {historicalRegimeDetailLoading && <p role="status">正在读取所选情景的状态与区间…</p>}{historicalRegimeDetailError && <p role="status" className="text-rose-700">{historicalRegimeDetailError}</p>}
               {selectedHistoricalRegimeRun && <details data-testid="historical-regime-selection-meta" className="min-w-0 flex-1"><summary className="cursor-pointer">情景来源详情</summary><p className="mt-2">不可变运行 · 定义版本 v{selectedHistoricalRegimeRun.definition_revision ?? selectedHistoricalRegimePublication?.definition_revision} · {selectedHistoricalRegimeRun.mode === 'realtime' ? '实时模式：历史研究结果，可得性以版本证据为准。' : '事后识别：用完整历史样本解释，不代表当时已知。'} · 发布于 {formatDate(selectedHistoricalRegimePublication?.published_at)}</p><dl className="mt-2 space-y-1 break-all"><div>运行 {selectedHistoricalRegimeRun.id}</div><div>发布 {selectedHistoricalRegimePublication?.id}</div><div>内容指纹 {selectedHistoricalRegimeRun.content_hash ?? '未提供'}</div></dl></details>}
               <button type="button" onClick={() => changeRegime('')} className="shrink-0 font-medium text-sky-700 hover:underline">清除情景</button>
             </div>}
           </section>}
-          {(activeTab !== 'chart' || selectedHistoricalRegimeRunId) && <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-500" aria-live="polite">
+          {activeTab !== 'risk' && (activeTab !== 'chart' || selectedHistoricalRegimeRunId) && <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-500" aria-live="polite">
             <span data-testid="product-research-scope" className="font-medium text-slate-700">{activeTab === 'chart' && selectedHistoricalRegimeRun ? `${selectedHistoricalRegimeRun.name} · ` : ''}{contextLabel}{context ? ` · ${context.returnObservations} 个有效收益${context.scope === 'full' ? '' : ` · ${context.segmentCount} 段`}` : ''}</span>
             {context && <span>{context.startDate ?? '—'} — {context.endDate ?? '—'} · {context.basisLabel}</span>}
             {activeTab === 'chart' && <button type="button" onClick={() => setActiveTab('regime')} className="min-h-10 font-medium text-sky-700 hover:underline">调整情景</button>}
           </div>}
-          {analysisError && <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700"><strong>产品数值分析未完成</strong><p className="mt-1 text-xs">{analysisError}{productKind === 'etf' && analysisBasis === 'adjusted_nav' ? '；可检查复权净值数据，或在收益统计的“分析设置”中切换为交易价格。' : ''}</p></div>}
+          {activeTab !== 'risk' && analysisError && <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700"><strong>产品数值分析未完成</strong><p className="mt-1 text-xs">{analysisError}{productKind === 'etf' && analysisBasis === 'adjusted_nav' ? '；可检查复权净值数据，或在收益统计的“分析设置”中切换为交易价格。' : ''}</p></div>}
+          {activeTab === 'risk' && <section role="tabpanel" id="product-panel-risk" aria-labelledby="product-tab-risk">
+            <PublishedRiskPanel key={`${productKind}:${tsCode || productId}`} productKey={`${productKind}:${tsCode || productId}`} productName={detail.name ?? String(tsCode || productId)} />
+          </section>}
           <div hidden={activeTab !== 'chart'} role="tabpanel" id="product-panel-chart" aria-labelledby="product-tab-chart" className="min-w-0 space-y-5">
           <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -2085,11 +2146,12 @@ export default function ProductDetail() {
             {productId && <FactorEvidencePanel contextType="product_research" contextId={`${productKind}:${productId}`} productId={String(tsCode || productId)} />}
           </div>
           {activeTab === 'regime' && <div role="tabpanel" id="product-panel-regime" aria-labelledby="product-tab-regime">
-            {historicalRegimeLoading ? <p role="status" className="rounded-xl bg-white p-10 text-center text-sm text-slate-500">正在读取已发布的历史情景…</p>
+            {historicalRegimeLoading ? <p role="status" className="rounded-xl bg-white p-10 text-center text-sm text-slate-500">正在读取已保存的情景版本…</p>
               : historicalRegimeError ? <p role="status" className="rounded-xl bg-rose-50 p-6 text-sm text-rose-700">{historicalRegimeError}</p>
               : productResearchRegimeRuns.length === 0 ? <section className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-12 text-center">
                 <h2 className="text-lg font-semibold text-slate-900">暂无可用情景</h2>
-                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">在情景中心保存方案，并发布到产品研究后，即可比较不同市场状态下的产品表现。</p>
+                <button type="button" onClick={() => setRegimeRefresh(value => value + 1)} className="mt-2 min-h-10 px-3 text-sm font-medium text-sky-700">刷新情景</button>
+                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">在情景中心点击“保存情景”，即可在这里选择，并比较不同市场状态下的产品表现。</p>
                 <Link to="/settings/scenario-algorithms" className="mt-5 inline-flex min-h-10 items-center rounded-lg bg-sky-700 px-4 text-sm font-medium text-white hover:bg-sky-800">前往情景中心</Link>
               </section>
               : <ProductScenarioPanel analysis={analysis?.regimeAnalysis ?? null} selectedStateId={selectedStateId} selectedSegmentId={selectedSegmentId} loading={analysisLoading} onStateChange={selectState} onSegmentChange={selectSegment} onLocate={segment => { selectSegment(segment); setActiveTab('chart'); }} />}
@@ -2478,11 +2540,18 @@ export default function ProductDetail() {
                         aria-label={`${activeSimulation.methodLabel}：路径与期末净值概率分布组合图`}
                         className="mt-4 rounded-2xl bg-white p-3"
                       >
-                        <ReactECharts option={simulationOption} style={{ height: 360 }} notMerge lazyUpdate />
+                        <ReactECharts
+                          option={simulationOption}
+                          style={{ height: 360 }}
+                          notMerge
+                          lazyUpdate
+                          onEvents={{ datazoom: handleSimulationZoom }}
+                        />
                       </div>
                       <p className="mt-2 text-xs leading-5 text-slate-500">
-                        右侧约占图表六分之一：横向柱状图按期末净值区间展示实际路径数，共计 {terminalNavDensity?.sampleSize ?? 0} 条；紫色曲线为同一批模拟结果的平滑概率密度，并按区间路径数尺度对齐。
-                        {realized && `深色实线为研究日之后的实际净值走势（第 1 — ${realized.coveredDays} 个交易日）${realized.complete ? '；右侧同色横线标出实际期末净值在模拟分布中的位置。' : '。'}`}
+                        右侧分布画的是<strong className="font-semibold text-slate-700">第 {densityFrame?.day ?? simulationHorizon} 个未来交易日</strong>：{navDensity?.sampleSize ?? 0} 条模拟路径当天的净值落点，柱状图为区间路径数，紫色曲线为同一批结果的平滑概率密度，虚线为当天的模拟中位数。
+                        {' '}拖动图表下方的缩放条即可换成任意一天——分布越靠前越窄，因为路径还没来得及分开。
+                        {realized && `深色实线为研究日之后的实际净值走势（第 1 — ${realized.coveredDays} 个交易日）；右侧同色横线标出当天的实际净值在模拟分布中的位置。`}
                       </p>
                       {simulationComparison && simulationInitialNav !== null && (
                         <div data-testid="simulation-model-comparison" className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">

@@ -45,10 +45,27 @@ def _checksum(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _page_evidence(frame):
+    """Hash raw I/O records without rounding floats or treating NaN as a value."""
+    if frame.empty:
+        return hashlib.sha256(b'empty-page').digest(), {}
+    records = frame.astype(object).where(frame.notna(), None).to_dict('records')
+    digest, identities = hashlib.sha256(), {}
+    for record in records:
+        encoded = json.dumps(record, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()
+        digest.update(encoded + b'\n')
+        key = tuple(record[name] for name in ('ts_code', 'ann_date', 'end_date', 'symbol'))
+        signature = hashlib.sha256(encoded).digest()
+        identities.setdefault(key, set()).add(signature)
+    return digest.digest(), identities
+
+
 class FundEventDownload:
     def __init__(self, *, directory, dates, universe, api_name, fields, smoke,
                  max_requests=100_000, idle_timeout=180, max_runtime=86_400, strategy='announcement'):
         self.dates, self.api_name, self.fields, self.smoke = dates, api_name, fields, smoke
+        self.contract_strategy = strategy
+        self.market_paged = False
         self.inceptions = fund_inceptions(universe)
         if not self.inceptions:
             raise CenterError('FUND_EVENT_UNIVERSE', '基金目录为空，不能声明下载完整。')
@@ -69,7 +86,9 @@ class FundEventDownload:
         self.mutex = threading.Lock()
         self.started = self.activity = time.monotonic()
         self.calls = 0
+        self.reused = 0
         self.acknowledgements = []
+        self.conflicts = {}
         self.max_requests = 1 if smoke else max_requests
         self.idle_timeout, self.max_runtime = idle_timeout, max_runtime
 
@@ -110,6 +129,13 @@ class FundEventDownload:
         if record.get('status') == 'COMPLETE':
             if not part.is_file() or _checksum(part) != record.get('sha256'):
                 raise CenterError('FUND_EVENT_CHECKPOINT', '基金披露检查点校验失败，禁止当作成功跳过。')
+            if record.get('quality_status') == 'CONFLICTED' and not record.get('conflict_evidence'):
+                raise CenterError('FUND_EVENT_CHECKPOINT', '冲突检查点缺少原始证据。')
+            if record.get('conflict_evidence'):
+                from .fund_event_conflicts import checked_part, validate_placeholders
+                raw = checked_part(self.directory, record['conflict_evidence'])
+                validate_placeholders(part, raw)
+                self.conflicts[(date, code)] = record['conflict_evidence']
         elif record.get('status') == 'EMPTY':
             if record.get('confirmations', 0) < (1 if self.smoke else 2):
                 raise CenterError('FUND_EVENT_CHECKPOINT', '空响应未复核，禁止当作成功跳过。')
@@ -119,9 +145,36 @@ class FundEventDownload:
 
     def _record(self, date, code, status, **values):
         _, receipt = self._paths(date, code)
+        if status == 'COMPLETE' and (date, code) in self.conflicts:
+            values.update(quality_status='CONFLICTED', conflict_evidence=self.conflicts[(date, code)])
         atomic_write_json(receipt, dict(date=date, code=code, status=status, **values))
         with self.mutex:
             self.activity = time.monotonic()
+
+    def _prepare(self, frame, date, code, prepare):
+        if self.api_name != 'fund_portfolio' or frame.empty:
+            return prepare(frame)
+        from .fund_event_conflicts import segregate, write_part, STATUS
+        clean, evidence = segregate(frame)
+        mask = clean.pop('_source_conflict')
+        # Apply lineage before sorting/deduplication; never infer conflict rows
+        # from their position in a reordered frame.
+        clean['availability_status'] = mask.map({True: STATUS, False: 'announced_date'})
+        result = prepare(clean)
+        if not evidence.empty:
+            with self.mutex:
+                self.conflicts[(date, code)] = write_part(self.directory, date, code, evidence)
+            print(f'[WARN] {date} {code or "全市场"} 持仓冲突已隔离；保留全部原始值，标准值留空。')
+        return result
+
+    def _confirm_unpaged_conflicts(self, frame, fetch):
+        if self.api_name != 'fund_portfolio' or frame.empty:
+            return
+        signature, identities = _page_evidence(frame)
+        if any(len(values) > 1 for values in identities.values()):
+            other = fetch()
+            if _page_evidence(other)[0] != signature:
+                raise CenterError('FUND_EVENT_PAGINATION', '持仓冲突复核时供应商数据发生变化，不能声明采集完整。')
 
     def _validate(self, frame, date, code):
         if frame.empty:
@@ -146,6 +199,7 @@ class FundEventDownload:
         if cached is not None:
             with self.mutex:
                 self.activity = time.monotonic()
+                self.reused += 1
             return cached['status']
         if code is None and date in self.imports:
             return self._import_date(date, prepare, save)
@@ -164,8 +218,10 @@ class FundEventDownload:
         if frame.empty:
             self._record(date, code, 'EMPTY', confirmations=confirmations)
             return 'EMPTY'
+        if not self.market_paged:
+            self._confirm_unpaged_conflicts(frame, lambda: fetch(date, code))
         # An irrelevant nonempty market response is not an upstream empty result.
-        frame = prepare(frame[frame['ts_code'].astype(str).isin(self.inceptions)].copy())
+        frame = self._prepare(frame[frame['ts_code'].astype(str).isin(self.inceptions)].copy(), date, code, prepare)
         part, _ = self._paths(date, code)
         save(frame, part, quiet=True)
         self._record(date, code, 'COMPLETE', rows=len(frame), sha256=_checksum(part))
@@ -212,7 +268,7 @@ class FundEventDownload:
         try:
             status = self._request(date, None, fetch, prepare, save)
         except cap_error:
-            if self.smoke:
+            if self.smoke or self.market_paged:
                 raise
             self._record(date, None, 'SPLIT')
             status = 'SPLIT'
@@ -349,24 +405,22 @@ class FundEventDownload:
             raise CenterError('FUND_EVENT_RESPONSE',
                               f'{code} 公告区间 {start}—{end} 返回公告日期 '
                               f'{announcements.min()}—{announcements.max()}，拒绝越界分片。')
-        frame = prepare(frame)
+        if start != end or not self.market_paged:
+            self._confirm_unpaged_conflicts(frame, lambda: fetch(code, start, end))
+        frame = self._prepare(frame, key, code, prepare)
         path, _ = self._paths(key, code)
         save(frame, path, quiet=True)
         self._record(key, code, 'COMPLETE', rows=len(frame), sha256=_checksum(path))
         return [path]
 
-    def announcement_pages(self, code, date, fetch, *, page_size, max_pages):
-        """Sequential, bounded pages for one fund/day; no partial success.
-
-        The provider's offset/limit protocol is explicitly enabled in the saved
-        interface. Overlapping keys reveal replayed/unstable pages, not rows to
-        silently deduplicate. Empty pages require independent confirmation.
-        """
-        frames, seen = [], set()
-        for page in range(max_pages):
+    def announcement_pages(self, code, date, fetch, *, page_size, max_pages, confirm_first_empty=True):
+        """Bounded raw pages; duplicates/conflicts require a stable full reread."""
+        def read_page(page):
             self.check()
             frame = fetch(page * page_size, page_size)
-            if frame.empty:
+            # The outer request owns the first-page empty confirmation. Only
+            # terminal empty pages after data must be confirmed here as well.
+            if frame.empty and (page > 0 or confirm_first_empty) and not self.smoke:
                 self.pause(0.25)
                 frame = fetch(page * page_size, page_size)
             with self.mutex:
@@ -374,17 +428,41 @@ class FundEventDownload:
             self._validate(frame, date, code)
             if len(frame) > page_size:
                 raise CenterError('FUND_EVENT_PAGINATION', '供应商未遵守分页大小，拒绝残缺或重复结果。')
+            return frame
+
+        frames, seen, pages = [], {}, []
+        overlap_count = 0
+        for page in range(max_pages):
+            frame = read_page(page)
+            raw_count = len(frame)
+            signature, identities = _page_evidence(frame)
+            pages.append(signature)
             if not frame.empty:
-                keys = list(frame[['ts_code', 'ann_date', 'end_date', 'symbol']].itertuples(index=False, name=None))
-                unique = set(keys)
-                if len(unique) != len(keys) or seen.intersection(unique):
-                    raise CenterError('FUND_EVENT_PAGINATION', '持仓分页业务键重复或重叠，拒绝不稳定分页。')
-                seen.update(unique)
-                frames.append(frame)
-            print(f'[INFO] {code} 公告日 {date} 分页 {page + 1}/{max_pages}，'
-                  f'本页 {len(frame)} 行，已接收 {len(seen)} 行。')
-            if len(frame) < page_size:
-                return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=self.fields)
+                overlapping = identities.keys() & seen.keys()
+                if overlapping and len(overlapping) == len(identities):
+                    raise CenterError('FUND_EVENT_PAGINATION', f'公告日 {date} 第 {page + 1} 页无新业务键，疑似整页重放；未提交数据。')
+                overlap_count += len(overlapping) + sum(len(values) > 1 for values in identities.values())
+                if overlapping:
+                    print(f'[INFO] 公告日 {date} 第 {page + 1} 页有 {len(overlapping)} 个跨页业务键，取得末页后复核；数值冲突不会任意去重。')
+                for key, signatures in identities.items():
+                    seen.setdefault(key, set()).update(signatures)
+                frames.append(frame.drop_duplicates())
+                repeated = raw_count - len(frame.drop_duplicates())
+                if repeated:
+                    print(f'[INFO] 公告日 {date} 本页合并 {repeated} 条完全相同的供应商重复行。')
+            print(f'[INFO] {code or "全市场"} 公告日 {date} 分页 {page + 1}/{max_pages}，'
+                  f'本页原始 {raw_count} 行，已接收 {len(seen)} 个唯一业务键。')
+            # Never terminate using the deduplicated count.
+            if raw_count < page_size:
+                if overlap_count:
+                    print(f'[STAGE] 公告日 {date} 跨页重复稳定性复核：{len(pages)} 页，共享原请求预算。')
+                    for number, expected in enumerate(pages):
+                        actual, _ = _page_evidence(read_page(number))
+                        if actual != expected:
+                            raise CenterError('FUND_EVENT_PAGINATION', f'公告日 {date} 第 {number + 1} 页复核不一致，供应商数据或排序已变化；未提交数据。')
+                        print(f'[INFO] 公告日 {date} 页面复核 {number + 1}/{len(pages)}。')
+                    print(f'[INFO] 公告日 {date} 全部页面复核一致；相同记录合并，冲突记录保留并隔离。')
+                return pd.concat(frames, ignore_index=True).drop_duplicates() if frames else pd.DataFrame(columns=self.fields)
         raise CenterError('FUND_EVENT_PAGINATION', '持仓达到最大分页数但未取得末页，检查点保留；未提交残缺结果。')
 
     def run_history(self, *, fetch, prepare, save, cap_error, max_workers, sort_columns):

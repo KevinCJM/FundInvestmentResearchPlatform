@@ -111,8 +111,8 @@ const EMPTY_DRAFT: IndicatorDraft = {
   direction: 'higher_better',
   indicator_type: 'return',
   annual_risk_free_rate_percent: 1.5,
-  dsl_version: '2.3.0',
-  operator_registry_version: '2.3.0',
+  dsl_version: '2.4.0',
+  operator_registry_version: '2.4.0',
   numeric_kernel_version: '2.2.0',
   variable_registry_version: '2.1.0',
   context_schema_version: 'typed-context-v2',
@@ -255,6 +255,7 @@ function inferShape(variable: IndicatorVariable): IndicatorShape {
   if (['asset_returns', 'asset_log_returns', 'weight_path'].includes(variable.name)) return 'matrix'
   if (variable.name === 'asset_weights') return 'vector'
   if (/risk_free|periods_per_year/i.test(variable.name)) return 'scalar'
+  if (/window/i.test(variable.value_type)) return 'window'
   if (/matrix|covariance|square/i.test(variable.value_type)) return 'matrix'
   if (/series|returns|time/i.test(variable.value_type)) return 'series'
   if (/vector|array/i.test(variable.value_type)) return 'vector'
@@ -264,7 +265,7 @@ function inferShape(variable: IndicatorVariable): IndicatorShape {
 function acceptedShapes(parameter: IndicatorOperatorParameter): IndicatorShape[] {
   return parameter.allowed_shapes || (parameter.shape
     ? [parameter.shape]
-    : ['scalar', 'series', 'vector', 'matrix', 'mask', 'tuple', 'unknown'])
+    : ['scalar', 'series', 'vector', 'matrix', 'window', 'mask', 'tuple', 'unknown'])
 }
 
 function supportsVariableDomain(variable: IndicatorVariable, contextDomain: IndicatorContextDomain) {
@@ -674,7 +675,7 @@ function shapeLabel(shape: IndicatorShape, valueType = '') {
       : /mask<asset>/i.test(valueType)
         ? '资产布尔掩码'
         : '布尔掩码'
-  return ({ record: '计算中间结果（需提取字段）', scalar: '有限标量', series: '时间序列', vector: '资产向量', matrix: matrixLabel, mask: maskLabel, tuple: '结构化值（兼容）', unknown: '数据类型待推导' } as Record<IndicatorShape, string>)[shape]
+  return ({ record: '计算中间结果（需提取字段）', scalar: '有限标量', series: '时间序列', vector: '资产向量', matrix: matrixLabel, window: '滚动窗口集合（中间结果）', mask: maskLabel, tuple: '结构化值（兼容）', unknown: '数据类型待推导' } as Record<IndicatorShape, string>)[shape]
 }
 
 function valueTypeText(value: unknown) {
@@ -762,7 +763,7 @@ function dagNodeInferredType(node: IndicatorDagNode) {
 function dagNodeShape(node: IndicatorDagNode): IndicatorShape {
   if (node.shape) return node.shape
   const kind = dagNodeInferredType(node)?.kind
-  if (kind && ['scalar', 'series', 'vector', 'matrix', 'mask', 'tuple'].includes(kind)) return kind as IndicatorShape
+  if (kind && ['scalar', 'series', 'vector', 'matrix', 'window', 'mask', 'tuple'].includes(kind)) return kind as IndicatorShape
   if (node.kind === 'variable') return 'series'
   if (node.kind === 'constant') return 'scalar'
   return 'unknown'
@@ -788,8 +789,10 @@ function measureLabel(measure: string | undefined) {
 }
 
 const OPERATOR_DISPLAY_LABELS: Record<string, string> = {
-  rolling_mean: '滚动平均值',
-  rolling_std: '滚动标准差',
+  rolling_apply: '滚动计算',
+  rolling_window: '滚动窗口',
+  rolling_mean: '滚动平均值（历史兼容）',
+  rolling_std: '滚动标准差（历史兼容）',
   rolling_min: '滚动最小值',
   rolling_max: '滚动最大值',
   recursive_smooth: '递归平滑',
@@ -802,6 +805,8 @@ function operatorDisplayLabel(operatorId: string | undefined, fallback?: string)
 }
 
 const OPERATOR_PARAMETER_LABELS: Record<string, string[]> = {
+  rolling_apply: ['区间计算内容', '窗口期数', '观察日期（自动绑定）', '年度配置（自动绑定）'],
+  rolling_window: ['待处理数值', '窗口期数', '最少有效观察数'],
   rolling_mean: ['待处理数值', '窗口期数', '最少有效观察数'],
   rolling_std: ['待处理数值', '窗口期数', '自由度修正', '最少有效观察数'],
   rolling_min: ['待处理数值', '窗口期数', '最少有效观察数'],
@@ -1018,9 +1023,9 @@ function asDraft(indicator: IndicatorDefinition): IndicatorDraft {
 }
 
 const newSeriesOutput = (): SeriesOutputDefinition => ({
-  id: 'value',
-  label: '20 日指标序列',
-  expression: String.raw`\operatorname{rolling_mean}\left(\mathbf{c},20\right)`,
+  id: '',
+  label: '',
+  expression: '',
   unit: '',
   display_format: 'number',
   precision: 4,
@@ -1054,8 +1059,8 @@ function normalizeDraft(draft: IndicatorDraft): IndicatorDraft {
       annual_risk_free_rate_percent: Number.isFinite(draft.annual_risk_free_rate_percent)
         ? draft.annual_risk_free_rate_percent
         : 0,
-      dsl_version: draft.dsl_version || '2.3.0',
-      operator_registry_version: draft.operator_registry_version || '2.3.0',
+      dsl_version: draft.dsl_version || '2.4.0',
+      operator_registry_version: draft.operator_registry_version || '2.4.0',
       context_kind: 'single_product',
       result_kind: 'time_series',
       output_contract: 'series_bundle',
@@ -1085,8 +1090,8 @@ function normalizeDraft(draft: IndicatorDraft): IndicatorDraft {
     annual_risk_free_rate_percent: Number.isFinite(draft.annual_risk_free_rate_percent)
       ? draft.annual_risk_free_rate_percent
       : 0,
-    dsl_version: draft.dsl_version || '2.3.0',
-    operator_registry_version: draft.operator_registry_version || '2.3.0',
+    dsl_version: draft.dsl_version || '2.4.0',
+    operator_registry_version: draft.operator_registry_version || '2.4.0',
     context_kind: draft.context_kind || 'single_product',
     result_kind: 'scalar',
     output_contract: 'scalar',
@@ -1120,23 +1125,32 @@ function convertDraftResultKind(
     })
   }
   const output = newSeriesOutput()
-  return normalizeDraft({
+  const normalized = normalizeDraft({
     ...draftForCurrentRegistries(metadata, STUDIO_CONTEXT),
-    name: draft.name === '未命名指标' ? '未命名时序指标' : draft.name,
+    name: draft.name,
     description: draft.description,
     result_kind: 'time_series',
     output_contract: 'series_bundle',
     indicator_type: 'technical',
-    expression: output.expression,
+    expression: '',
     parameter_schema: [],
     series_outputs: [output],
-    axis_anchor: 'market_close',
-    history_policy: 'lookback',
-    history_inference_source: 'typed_dag',
+    axis_anchor: null,
+    history_policy: null,
+    history_inference_source: null,
     lookback_parameter: null,
-    lookback_observations: 20,
-    minimum_observations: 20,
+    lookback_observations: undefined,
+    minimum_observations: undefined,
   })
+  return {
+    ...normalized,
+    expression: '',
+    axis_anchor: null,
+    history_policy: null,
+    history_inference_source: null,
+    lookback_observations: undefined,
+    minimum_observations: undefined,
+  }
 }
 
 function draftForCurrentRegistries(
@@ -1224,8 +1238,8 @@ export default function IndicatorStudio() {
   const [snapshotSeriesChannel, setSnapshotSeriesChannel] = useState('')
   const [snapshotSaving, setSnapshotSaving] = useState(false)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
-  const [rollingSourceIndicatorId, setRollingSourceIndicatorId] = useState('builtin-annualized-sharpe-v2')
-  const [rollingWindowObservations, setRollingWindowObservations] = useState(5)
+  const [rollingSourceIndicatorId, setRollingSourceIndicatorId] = useState('')
+  const [rollingWindowObservations, setRollingWindowObservations] = useState<number | ''>('')
   const [rollingDeriving, setRollingDeriving] = useState(false)
   const [rollingDerivationError, setRollingDerivationError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1258,7 +1272,7 @@ export default function IndicatorStudio() {
   const currentExpression = hasNamedOutputs
     ? activeSeriesOutput?.expression ?? ''
     : draft.expression
-  const hasDefinitionFormula = !canvasPending && !parameterPending && (hasNamedOutputs
+  const hasDefinitionFormula = !loading && Boolean(meta) && !canvasPending && !parameterPending && (hasNamedOutputs
     ? seriesOutputs.length > 0 && seriesOutputs.every((item) => item.expression.trim())
     : Boolean(draft.expression.trim()))
   const periods = meta?.periods?.length ? meta.periods : FALLBACK_PERIODS
@@ -1319,7 +1333,7 @@ export default function IndicatorStudio() {
       (item.result_kind ?? 'scalar') === 'scalar'
       && (item.dsl_version ?? '').startsWith('2.')
       && (item.output_contract ?? 'scalar') === 'scalar'
-      && item.rolling_series_compatibility?.supported !== false
+      && item.rolling_series_compatibility?.supported === true
     ))
     .sort((left, right) => (
       left.id === 'builtin-annualized-sharpe-v2' ? -1
@@ -1330,7 +1344,9 @@ export default function IndicatorStudio() {
     (item) => item.id === rollingSourceIndicatorId,
   )
     ? rollingSourceIndicatorId
-    : rollingScalarIndicators[0]?.id ?? ''
+    : ''
+  const rollingSource = rollingScalarIndicators.find((item) => item.id === effectiveRollingSourceIndicatorId)
+  const rollingWindowValid = rollingWindowObservations !== '' && Number.isInteger(rollingWindowObservations) && rollingWindowObservations >= 1 && rollingWindowObservations <= 5000
   const normalizedIndicatorQuery = indicatorQuery.trim().toLowerCase()
   const visibleIndicators = contextIndicators.filter((item) => (
     (indicatorSourceFilter === 'all' || item.source === indicatorSourceFilter)
@@ -1436,10 +1452,18 @@ export default function IndicatorStudio() {
         setMeta(metadata)
         setIndicators(catalog.items)
         const initialDraft = draftForCurrentRegistries(metadata, 'single_product')
-        setDraft(initialDraft)
+        // The user may already be typing while the registry request is in
+        // flight. Initialize technical defaults, never replace their draft.
+        setDraft(current => {
+          const next = { ...current }
+          for (const key of ['dsl_version', 'operator_registry_version', 'numeric_kernel_version', 'variable_registry_version', 'context_schema_version', 'data_contract_version'] as const) {
+            if (current[key] === EMPTY_DRAFT[key]) next[key] = initialDraft[key]
+          }
+          return next
+        })
         setBaseline(JSON.stringify(normalizeDraft(initialDraft)))
         const availablePeriods = metadata.periods.map((item) => item.value)
-        if (!availablePeriods.includes(period)) setPeriod(availablePeriods[0] || '1Y')
+        setPeriod(current => availablePeriods.includes(current) ? current : availablePeriods[0] || '1Y')
       } catch (loadError) {
         if (active) setError(loadError)
       } finally {
@@ -1565,9 +1589,9 @@ export default function IndicatorStudio() {
       setRollingDerivationError('请选择一个可滚动转换的单产品标量指标。')
       return
     }
-    const windowObservations = Math.round(rollingWindowObservations)
-    if (!Number.isFinite(windowObservations) || windowObservations < 2 || windowObservations > 20_000) {
-      setRollingDerivationError('滚动观察数必须是 2 至 20000 的整数。')
+    const windowObservations = Number(rollingWindowObservations)
+    if (!rollingWindowValid) {
+      setRollingDerivationError('滚动观察数必须是 1 至 5000 的整数，不能四舍五入或留空。')
       return
     }
     if (isDirty && !window.confirm('滚动派生会替换当前未保存公式，是否继续？')) return
@@ -1708,7 +1732,7 @@ export default function IndicatorStudio() {
     setSeriesResults([])
     setEditorMode('guided')
     setMessage(resultKind === 'time_series'
-      ? '已切换为时序指标。窗口、倍数和平滑周期应作为固定常量写入公式；不同参数请保存为不同指标。'
+      ? '已切换为时序指标。请填写日期轴、输出通道和计算公式；支持的常数输入可按需开放为可变参数。'
       : '已切换为标量指标。请重新构建最终标量公式。')
   }
 
@@ -1734,8 +1758,8 @@ export default function IndicatorStudio() {
     while (existing.has(`channel_${index}`)) index += 1
     const item: SeriesOutputDefinition = {
       id: `channel_${index}`,
-      label: `输出通道 ${index}`,
-      expression: String.raw`\mathbf{c}`,
+      label: '',
+      expression: '',
       unit: '',
       display_format: 'number',
       precision: 4,
@@ -2054,6 +2078,7 @@ export default function IndicatorStudio() {
   }
 
   const validate = (): Promise<ValidationResponse | null> => {
+    if (loading || !meta) return Promise.resolve(null)
     if (parameterPending) { setMessage(s('indicatorParameters.pending')); return Promise.resolve(null) }
     if (canvasPendingRef.current) { setMessage('请先应用画布修改，再校验或预览指标。'); return Promise.resolve(null) }
     return validateDefinition(draft)
@@ -2437,21 +2462,25 @@ export default function IndicatorStudio() {
                 ? '时序指标返回一个或多个具名通道，可在不同研究页面展示并导出 Excel。算法参数锁定在指标版本中，不直接参与标量评价排名。'
                 : '标量指标用于跨产品展示、评价和排名；指标定义默认支持全部计算周期，周期只在预览或评价运行时选择。'}
             </div>
+            {!isTimeSeries && selectedIndicator && <p role="status" className="mt-3 text-xs leading-5 text-slate-600">{selectedIndicator.rolling_series_compatibility?.supported ? s('rollingScope.supported') : selectedIndicator.rolling_series_compatibility?.message || s('rollingScope.unknown')}</p>}
             {!isTimeSeries && selectedIndicator?.rolling_series_compatibility?.supported && <div className="mt-3 flex justify-end"><button type="button" onClick={() => { setRollingSourceIndicatorId(selectedIndicator.id); setRollingWindowObservations(5); setRollingDerivationError(null); changeResultKind('time_series') }} className="min-h-10 rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-50 focus:outline-none focus:ring-2 focus:ring-violet-300">生成滚动时序指标</button></div>}
             {isTimeSeries && <section aria-label="标量指标滚动派生" className="mt-4 rounded-xl border border-violet-200 bg-violet-50/50 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-sm font-semibold text-violet-950">从标量指标生成滚动时序指标</h3>
-                  <p className="mt-1 text-xs leading-5 text-violet-800">系统锁定标量指标版本，把其中的均值、样本标准差、方差、最小值或最大值改写为固定观察数的因果滚动公式。生成后仍使用普通 typed DSL、固定签名 NJIT 和原生 Excel 函数。</p>
+                  <h3 className="text-sm font-semibold text-violet-950">{s('rollingScope.title', {}, '滚动计算')}</h3>
+                  <p className="mt-1 text-xs leading-5 text-violet-800">{s('rollingScope.intro', {}, '选择一个区间指标，设置窗口，系统每天对最近一段数据重新计算。')}</p>
                 </div>
                 {draft.rolling_source && <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${draft.rolling_source.detached ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>{draft.rolling_source.detached ? '已脱离来源' : '来源已锁定'}</span>}
               </div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_auto] sm:items-end">
-                <label className="text-xs font-semibold text-slate-700">来源标量指标<select aria-label="滚动来源标量指标" value={effectiveRollingSourceIndicatorId} onChange={(event) => { setRollingSourceIndicatorId(event.target.value); setRollingDerivationError(null) }} className="mt-1 block min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">请选择标量指标</option>{rollingScalarIndicators.map((item) => <option key={`${item.id}@${item.revision}`} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label>
-                <label className="text-xs font-semibold text-slate-700">固定观察数<input aria-label="滚动观察数" type="number" min="2" max="20000" step="1" value={rollingWindowObservations} onChange={(event) => { setRollingWindowObservations(Number(event.target.value)); setRollingDerivationError(null) }} className="mt-1 block min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
-                <button type="button" onClick={() => void deriveFromScalarIndicator()} disabled={rollingDeriving || !effectiveRollingSourceIndicatorId} className="min-h-11 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{rollingDeriving ? '生成中…' : '生成滚动公式'}</button>
+              <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_10rem_auto] xl:items-end">
+                <SearchableCombobox label="滚动来源标量指标" value={effectiveRollingSourceIndicatorId} options={rollingScalarIndicators.map((item) => ({ value: item.id, label: `${item.name} · v${item.revision}`, description: item.description, keywords: `${item.name} ${item.description}` }))} placeholder="搜索区间指标名称" onChange={(value) => { setRollingSourceIndicatorId(value); setRollingDerivationError(null) }} />
+                <label className="text-xs font-semibold text-slate-700">{s('rollingScope.window', {}, '窗口观察数')}<input aria-label="滚动观察数" type="number" min="1" max="5000" step="1" aria-invalid={rollingWindowObservations !== '' && !rollingWindowValid} value={rollingWindowObservations} onChange={(event) => { setRollingWindowObservations(event.target.value === '' ? '' : Number(event.target.value)); setRollingDerivationError(null) }} className="mt-1 block min-h-11 w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
+                <button type="button" onClick={() => void deriveFromScalarIndicator()} disabled={rollingDeriving || !effectiveRollingSourceIndicatorId || !rollingWindowValid} className="min-h-11 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-violet-300">{rollingDeriving ? '生成中…' : '生成滚动公式'}</button>
               </div>
-              {draft.rolling_source && <div className="mt-3 rounded-lg border border-white bg-white/80 px-3 py-2 text-xs leading-5 text-slate-600">当前来源：{draft.rolling_source.indicator_name} v{draft.rolling_source.indicator_revision} · 固定 {draft.rolling_source.window_observations} 个观察值。{draft.rolling_source.detached ? '当前公式已被手工修改，保存后作为独立时序指标，不再保证与来源标量公式一致。' : '来源定义哈希、版本和生成公式已锁定。'}</div>}
+              {rollingSource && rollingWindowValid && <p className="mt-3 text-xs leading-5 text-violet-900">{s('rollingScope.summary', { name: rollingSource.name, window: rollingWindowObservations, unit: rollingSource.rolling_series_compatibility?.window_unit_label || '观察点' }, '对最近 {{window}} 个{{unit}}逐日计算“{{name}}”。')}</p>}
+              {rollingWindowObservations !== '' && !rollingWindowValid && <p role="alert" className="mt-2 text-xs text-rose-700">{s('rollingScope.invalidWindow', {}, '请输入 1 至 5000 的整数窗口。')}</p>}
+              <details className="mt-3 text-xs leading-5 text-slate-600"><summary className="cursor-pointer font-semibold">{s('rollingScope.rules', {}, '窗口规则与来源版本')}</summary><p className="mt-2">{s('rollingScope.ruleText', {}, '每个窗口独立执行完整计算图，峰值等状态从窗口起点重新建立。窗口不足或包含缺失数据时留空，不补零，不读取未来数据。')}</p><p>{s('rollingScope.parameters', {}, '生成后可在“计算参数”中开放窗口调整；在其他页面修改只影响本次计算。')}</p>
+              {draft.rolling_source && <p className="mt-2">当前来源：{draft.rolling_source.indicator_name} v{draft.rolling_source.indicator_revision}。{draft.rolling_source.detached ? '当前公式已被手工修改，不再保证与来源标量公式一致。' : '来源定义哈希、版本和生成公式已锁定。'}</p>}</details>
               {rollingDerivationError && <p role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{rollingDerivationError}</p>}
             </section>}
             {isTimeSeries && <TimeSeriesDefinitionFields draft={draft} variables={variables} validation={validation} onPatch={patchDraft} />}
@@ -2519,7 +2548,7 @@ export default function IndicatorStudio() {
             </div>)}
             {editorMode !== 'canvas' && <>
             {isTimeSeries && <IndicatorParameterEditor key={`${selectedId ?? 'new'}-${canvasSession}`} draft={draft} disabled={canvasPending || saving || validating} onPendingChange={setParameterPending} onPatch={patchDraft} />}
-            <button type="button" onClick={() => void validate()} disabled={validating || !hasDefinitionFormula} className="mt-3 w-full rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{validating ? '解析与校验中…' : isTimeSeries ? '解析并校验全部通道' : '解析并校验公式'}</button>
+            <button type="button" onClick={() => void validate()} disabled={loading || !meta || validating || !hasDefinitionFormula} className="mt-3 w-full rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm font-semibold text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-violet-300">{validating ? '解析与校验中…' : isTimeSeries ? '解析并校验全部通道' : '解析并校验公式'}</button>
             <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50/50 p-4"><p className="text-xs font-semibold uppercase tracking-wide text-violet-700">数学排版预览{isTimeSeries && activeSeriesOutput ? ` · ${activeSeriesOutput.label}` : ''}</p><div data-testid="formula-preview" className="mt-3 overflow-x-auto text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /></div>
             {displayedInference && <InferencePanel inference={displayedInference} resourceLabels={resourceLabels} />}
             {activeFormulaDag && <FormulaExplanationDisclosure dag={activeFormulaDag} variables={formulaVariables} operators={operatorItems} />}
@@ -2689,7 +2718,7 @@ function CatalogDrawer({ open, onClose, children }: { open: boolean; onClose: ()
     return () => { document.removeEventListener('keydown', trapFocus); previous?.focus() }
   }, [open])
   if (!open) return null
-  return <div className="fixed inset-0 z-40 flex justify-end bg-slate-950/40" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+  return <div className="fixed inset-0 z-[100] flex justify-end bg-slate-950/40" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="catalog-drawer-title" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }} className="flex h-full w-full flex-col bg-white shadow-2xl sm:max-w-2xl">
       <div className="flex items-start justify-between border-b border-slate-200 px-4 py-4 sm:px-5"><div><p className="text-xs font-semibold text-violet-700">公式构建资源</p><h2 id="catalog-drawer-title" className="mt-1 text-lg font-bold text-slate-900">变量、算子与已有指标</h2><p className="mt-1 text-xs text-slate-500">按资源类型、分类、条目逐级定位；已有指标会按所选版本展开为独立公式。</p></div><button ref={closeRef} type="button" onClick={onClose} aria-label="关闭资源目录" className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-300">关闭</button></div>
       <div className="min-h-0 flex-1 overflow-auto p-4 sm:p-5">{children}</div>
@@ -2812,7 +2841,7 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
 }
 
 function ShapeBadge({ shape, valueType }: { shape: IndicatorShape; valueType?: string }) {
-  const tone: Record<IndicatorShape, string> = { record: 'bg-sky-100 text-sky-800', scalar: 'bg-slate-100 text-slate-700', series: 'bg-sky-100 text-sky-800', vector: 'bg-cyan-100 text-cyan-800', matrix: 'bg-indigo-100 text-indigo-800', mask: 'bg-emerald-100 text-emerald-800', tuple: 'bg-amber-100 text-amber-800', unknown: 'bg-slate-100 text-slate-500' }
+  const tone: Record<IndicatorShape, string> = { window: 'bg-violet-100 text-violet-800', record: 'bg-sky-100 text-sky-800', scalar: 'bg-slate-100 text-slate-700', series: 'bg-sky-100 text-sky-800', vector: 'bg-cyan-100 text-cyan-800', matrix: 'bg-indigo-100 text-indigo-800', mask: 'bg-emerald-100 text-emerald-800', tuple: 'bg-amber-100 text-amber-800', unknown: 'bg-slate-100 text-slate-500' }
   return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${tone[shape]}`}>{shapeLabel(shape, valueType)}</span>
 }
 
@@ -2898,6 +2927,7 @@ function FormulaExplanation({ dag, variables, operators, compact = false }: { da
   const rootNode = nodeById.get(String(rootId))
   const wrapperClass = compact ? 'mt-4 rounded-xl border border-violet-100 bg-violet-50/30 p-3' : 'mt-4 rounded-xl border border-violet-200 bg-white p-4 shadow-sm'
   return <section className={wrapperClass} aria-label="公式计算说明">
+    {dag.nodes.some(node => dagNodeOperatorId(node) === 'rolling_apply') && <p className="mb-3 rounded-lg bg-violet-100 p-3 text-xs leading-5 text-violet-900">{systemText('rollingScope.graphHint')}</p>}
     <div><h3 className="font-semibold text-slate-900">公式计算说明</h3><p className="mt-1 text-xs leading-5 text-slate-500">数学符号、中文名称和计算步骤一一对应；先认变量，再认算子，最后按顺序理解完整计算。</p></div>
     <div className="mt-4">
       <h4 className="text-xs font-semibold text-slate-700">输入变量与符号</h4>
@@ -3029,7 +3059,7 @@ function ComposerDrawer({ composer, indicatorName, variables, operators, indicat
   if (!composer) return null
   const editingCurrentFormula = composer.origin === 'current_formula'
 
-  return <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+  return <div className="fixed inset-0 z-[100] flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="composer-title" onKeyDown={(event) => { if (event.key === 'Escape') onClose() }} className="flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
       <div className="flex items-start justify-between border-b border-slate-200 p-5"><div><p className="text-xs font-semibold text-violet-700">{editingCurrentFormula ? '当前指标计算逻辑' : '计算算子'}</p><h2 id="composer-title" className="mt-1 text-lg font-bold text-slate-900">{editingCurrentFormula ? `编辑“${indicatorName || '当前指标'}”的计算逻辑` : `配置 ${composer.node.item.label}`}</h2><p className="mt-1 text-sm text-slate-600">{editingCurrentFormula ? `最终计算步骤：${composer.node.item.label}。修改下方参数或嵌套步骤后应用到当前公式。` : composer.node.item.essence}</p></div><button ref={closeRef} type="button" onClick={onClose} className="rounded-md px-2 py-1 text-sm text-slate-500 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-300" aria-label="关闭参数配置">关闭</button></div>
       <div className="flex-1 space-y-4 overflow-auto p-5">
@@ -3066,7 +3096,7 @@ function TimeSeriesDefinitionFields({
   const fixedParameters = validation?.fixed_parameters ?? draft.fixed_parameters ?? []
   return <div className="mt-4 space-y-4">
     <div className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">这里只定义计算逻辑和时间轴。可在下方“计算参数”中开放窗口、平滑周期等输入；未开放的输入保持固定。图表位置由具体使用页面决定。</div>
-    <label className="block max-w-md text-sm font-medium text-slate-700">日期轴变量<select aria-label="日期轴变量" value={draft.axis_anchor ?? ''} onChange={(event) => onPatch({ axis_anchor: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100">{axisVariables.map((variable) => <option key={variable.name} value={variable.name}>{variable.label}</option>)}</select></label>
+    <label className="block max-w-md text-sm font-medium text-slate-700">日期轴变量<select aria-label="日期轴变量" value={draft.axis_anchor ?? ''} onChange={(event) => onPatch({ axis_anchor: event.target.value || null })} className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-100"><option value="">请选择日期轴变量</option>{axisVariables.map((variable) => <option key={variable.name} value={variable.name}>{variable.label}</option>)}</select></label>
     <section className="rounded-xl border border-slate-200 bg-slate-50 p-4" aria-label="自动推断的历史计算契约">
       <div><h3 className="text-sm font-semibold text-slate-800">历史计算契约</h3><p className="mt-1 text-xs text-slate-500">按默认参数从完整计算图自动推算；使用页面修改参数后，系统会重新计算历史需求。</p></div>
       <dl className="mt-3 grid gap-3 sm:grid-cols-3">

@@ -140,6 +140,15 @@ def test_each_tushare_preset_has_valid_mapping_and_a_wire_sample(api):
     assert validation["valid"], validation
     assert config.mappings, api
     row = sample_for(config)
+    if api in {"ths_member", "dc_member", "tdx_member"}:
+        # These wires do not provide an entry date. Mapping must stay incomplete
+        # instead of promoting observation/capture time to historical membership.
+        assert not validation["ready"]
+        table, errors = map_table([row], config.mappings[0], config.source_id, "fixture")
+        assert table.num_rows == 0 and errors
+        assert "effective_from" in errors[0]["message"]
+        assert "没有真实纳入日" in config.notes
+        return
     if api == "fund_manager":
         assert not validation["ready"]
         assert all(item["code"] == "IDENTITY_LOOKUP_REQUIRED" for item in validation["warnings"])
@@ -310,7 +319,7 @@ def test_seed_does_not_overwrite_user_config_and_revision_conflicts_fail(store):
 
 def test_configuration_and_sample_routes(client, store, monkeypatch):
     payload = client.get("/api/data-sources/catalog").json()
-    assert len(payload["interfaces"]) == 42
+    assert len(payload["interfaces"]) == 46
     assert {item['config']['id'] for item in payload['sources']} == {'tushare', 'akshare'}
     assert all(t["source_mappable"] for t in payload["targets"]["tables"])
     assert not any(t["table_id"].startswith("governance.") for t in payload["targets"]["tables"])
@@ -358,7 +367,8 @@ def test_read_only_disallows_changes_and_network(client, monkeypatch):
     assert client.get("/api/data-sources/catalog").status_code == 200
 
 
-def test_shared_quota_reserves_source_and_api_atomically(store):
+def test_shared_quota_reserves_source_and_api_atomically(store, monkeypatch):
+    monkeypatch.setattr('backend.data_sources.quota.time.monotonic', lambda:0.)
     quota = SharedQuota(store)
     policy = DownloadPolicy(requests_per_minute=2, max_rows_per_request=3, rows_per_minute=6, min_interval_seconds=0, max_concurrency=2)
     levels = [("source:s", policy), ("api:s:a", policy)]
@@ -378,6 +388,40 @@ def test_transport_blocks_private_and_mixed_dns(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, '', ('8.8.8.8', 443)), (2, 1, 6, '', ('10.0.0.1', 443))])
     with pytest.raises(CenterError):
         public_address("rebind.example", 443)
+
+
+def test_pmi_alias_candidate_has_new_identity_without_rewriting_raw_or_old_batch(store, monkeypatch):
+    import pyarrow.parquet as pq
+    from backend.data_sources import tushare_facts
+    rows = [{'MONTH': '202608', 'PMI010000': 49.5, 'CREATE_BY': 'vendor'}]
+    original = deepcopy(rows)
+    config = PRESETS['cn_pmi']
+    with monkeypatch.context() as previous:
+        previous.setattr(tushare_facts, 'RESPONSE_CONTRACT_VERSIONS', {})
+        old = capture_batch(store, config, rows, {}, 'same-configuration')
+    assert old['status'] == 'REJECTED'
+    current = capture_batch(store, config, rows, {}, 'same-configuration')
+    assert current['status'] == 'VALIDATED_CANDIDATE'
+    assert current['batch_id'] != old['batch_id']
+    assert current['batch_format_version'] == 3
+    assert current['response_contract'] == 'pmi-uppercase-v1'
+    assert current['raw_checksum'] == old['raw_checksum']
+    assert rows == original
+    directory = store.root / 'mapped_candidates' / 'tushare' / current['batch_id']
+    assert json.loads((directory / 'raw.json').read_text()) == original
+    result = pq.read_table(store.root / current['tables'][0]['artifact']).to_pylist()[0]
+    assert result['value'] == 49.5 and result['available_at'] is None
+    assert capture_batch(store, config, rows, {}, 'same-configuration') == current
+    assert {item['batch_id']: item for item in recent_batches(store)}[old['batch_id']] == old
+
+
+def test_pmi_alias_collision_cannot_produce_candidate(store):
+    with pytest.raises(CenterError) as error:
+        capture_batch(store, PRESETS['cn_pmi'], [{'MONTH': '202608', 'month': '202607'}], {}, 'collision')
+    assert error.value.code == 'SOURCE_FIELD_COLLISION'
+    assert not recent_batches(store)
+    assert not list((store.root / 'mapped_candidates').rglob('*.parquet'))
+    assert len(list((store.root / 'mapped_candidates').rglob('raw.json'))) == 1
 
 
 def test_candidates_are_idempotent_and_never_publish_active_data(store):
@@ -464,3 +508,16 @@ def test_non_transient_errors_are_not_retried(store, monkeypatch):
     with pytest.raises(CenterError):
         runtime.fetch_with_retry(store, default_source(), PRESETS["fund_daily"])
     assert calls == [True]
+
+
+def test_network_retry_uses_read_window_and_keeps_attempt_budget(store, monkeypatch):
+    calls, waits = [], []
+    def fail(*args, **kwargs):
+        calls.append(True)
+        raise TransientSourceError('SOURCE_CONNECTION', '网络暂时中断', 502)
+    monkeypatch.setattr(runtime, 'fetch_once', fail)
+    monkeypatch.setattr(runtime.time, 'sleep', waits.append)
+    monkeypatch.setattr(runtime.random, 'uniform', lambda *args: 0)
+    with pytest.raises(CenterError):
+        runtime.fetch_with_retry(store, default_source(), PRESETS['fund_daily'])
+    assert len(calls) == 3 and waits == [30, 60]

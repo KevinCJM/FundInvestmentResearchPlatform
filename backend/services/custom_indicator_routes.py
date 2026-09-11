@@ -17,6 +17,7 @@ from custom_indicators.graph_service import IndicatorGraphService
 from custom_indicators.series_parameters import inspect_parameter_inputs, bind_parameter_input
 from custom_indicators.service import CustomIndicatorService, MAX_PLAN_TARGETS, SUPPORTED_PERIODS
 from cal_indicators.typed_operators import TYPED_DSL_VERSION
+from pit.context import resolve_request_context
 
 
 class StableValidationRoute(APIRoute):
@@ -58,6 +59,22 @@ indicator_service = CustomIndicatorService()
 
 
 Direction = Literal["higher_better", "lower_better"]
+
+
+def pit_as_of(stated: Optional[str]) -> Optional[str]:
+    """The研究日 an indicator run actually computes under.
+
+    A stated 截止日 still wins — that box is the per-run override, and a
+    backtest sweeping `as_of` must not be clamped. Saying nothing now inherits
+    the platform口径 instead of quietly reading to the last row on disk, which
+    is what made 产品研究 show 2026 numbers under a 2014 research day.
+    """
+
+    # Read against the dir the market data itself comes from, so the口径 and
+    # the rows can never be from two different places.
+    return resolve_request_context(indicator_service.market_data_dir, stated).as_of
+
+
 InstrumentKind = Literal["etf", "fund"]
 ContextKind = Literal["single_product", "portfolio"]
 IndicatorType = Literal[
@@ -112,8 +129,8 @@ class RollingSourceDefinition(IndependentRequest):
     """
 
     kind: Literal["rolling_scalar"] = "rolling_scalar"
-    transform_version: Optional[Literal["1.0.0"]] = None
-    version: Optional[Literal["1.0.0"]] = None
+    transform_version: Optional[Literal["1.0.0", "2.0.0", "3.0.0"]] = None
+    version: Optional[Literal["1.0.0", "2.0.0", "3.0.0"]] = None
     indicator_id: str = Field(min_length=1, max_length=120)
     indicator_revision: int = Field(ge=1)
     indicator_name: str = Field(default="", max_length=80)
@@ -468,7 +485,7 @@ def custom_indicator_availability(request: AvailabilityRequest):
         targets=[target.model_dump() for target in request.targets] or None,
         variable_ids=request.variable_ids or None,
         period=request.period,
-        as_of=request.as_of,
+        as_of=pit_as_of(request.as_of),
     )
 
 
@@ -493,7 +510,7 @@ def evaluate_custom_indicators(request: EvaluateRequest):
         inline_definition=inline,
         targets=[target.model_dump() for target in request.targets],
         period=request.period,
-        as_of=request.as_of,
+        as_of=pit_as_of(request.as_of),
         include_series=request.include_series,
         compile_token=request.compile_token,
     )
@@ -516,7 +533,7 @@ def evaluate_custom_indicator_series(request: EvaluateSeriesRequest):
         ],
         target=request.target.model_dump(),
         period=request.period,
-        as_of=request.as_of,
+        as_of=pit_as_of(request.as_of),
         max_points=request.max_points,
     )
 
@@ -530,7 +547,7 @@ def export_custom_indicator_excel(request: ExportExcelRequest):
         inline_definition=inline,
         targets=[target.model_dump() for target in request.targets],
         period=request.period,
-        as_of=request.as_of,
+        as_of=pit_as_of(request.as_of),
         compile_token=request.compile_token,
         parameters=request.parameters,
     )
@@ -655,4 +672,4 @@ def delete_evaluation_plan(plan_id: str, revision: int = Query(ge=1)):
 
 @router.post("/api/evaluation-plans/{plan_id}/run")
 def run_evaluation_plan(plan_id: str, request: Optional[PlanRunRequest] = None):
-    return _call(indicator_service.run_plan, plan_id, request.as_of if request else None)
+    return _call(indicator_service.run_plan, plan_id, pit_as_of(request.as_of if request else None))

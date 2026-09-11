@@ -23,6 +23,8 @@ from cal_indicators.typed_operators import (
     LEGACY_TYPED_DSL_VERSION,
     PREVIOUS_OPERATOR_REGISTRY_VERSION,
     PREVIOUS_TYPED_DSL_VERSION,
+    ROLLING_OPERATOR_REGISTRY_VERSION,
+    ROLLING_TYPED_DSL_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
     get_typed_operator_registry,
@@ -122,6 +124,8 @@ VARIABLE_METADATA: dict[str, dict[str, Any]] = {
 
 
 OPERATOR_LABELS = {
+    "rolling_apply": ("滚动计算", "逐窗口独立执行区间标量计算图。默认要求完整有限窗口；可显式设置最少有效观察数，缺失处理由区间图声明。"),
+    "finite_mask": ("有限值判断", "判断每个观察是否为有限数值；NaN和正负无穷为假，真实0为真，不删除日期位置。"),
     "last_drawdown_interval": ("最后一次最大回撤区间", "选择最后一个最深谷底及其起点、恢复位置；只作为后续计算的中间区间。"),
     "interval_start": ("区间起点位置", "提取所选谷底前最后一个历史峰值的位置。"),
     "interval_trough": ("区间谷底位置", "提取最后一次最大回撤谷底的位置。"),
@@ -155,7 +159,8 @@ OPERATOR_LABELS = {
     "mean": ("全元素算术平均值", "计算时间序列、向量或矩阵全部元素的算术平均值并归约为标量。"),
     "variance": ("全元素方差", "计算时间序列、向量或矩阵全部元素的样本方差并归约为标量。"),
     "std": ("全元素标准差", "计算时间序列、向量或矩阵全部元素的样本标准差并归约为标量。"),
-    "rolling_mean": ("滚动平均值", "沿时间轴按固定窗口计算算术平均值，窗口不足时返回缺失值。"),
+    "rolling_window": ("滚动窗口", "只定义截至当前时点的最近观察窗口；后续再连接均值、标准差、方差或极值算子。"),
+    "rolling_mean": ("滚动平均值（兼容）", "历史公式兼容名称；新建公式使用“滚动窗口 → 平均值”。"),
     "rolling_std": ("滚动标准差", "沿时间轴按固定窗口计算标准差，可固定自由度修正和最少有效观察数。"),
     "rolling_min": ("滚动最小值", "沿时间轴按固定窗口取得最小值。"),
     "rolling_max": ("滚动最大值", "沿时间轴按固定窗口取得最大值。"),
@@ -247,6 +252,8 @@ OPERATOR_LABELS = {
 
 
 PARAMETER_NAMES: dict[str, tuple[str, ...]] = {
+    "rolling_apply": ("calculation", "window", "dates", "annual_rate", "min_periods"),
+    "finite_mask": ("values",),
     "add": ("A", "B"),
     "subtract": ("A", "B"),
     "multiply": ("A", "B"),
@@ -265,6 +272,7 @@ PARAMETER_NAMES: dict[str, tuple[str, ...]] = {
     "correlation": ("values",),
     "std": ("values", "ddof"),
     "variance": ("values", "ddof"),
+    "rolling_window": ("values", "window", "min_periods"),
     "rolling_mean": ("values", "window", "min_periods"),
     "rolling_std": ("values", "window", "ddof", "min_periods"),
     "rolling_min": ("values", "window", "min_periods"),
@@ -290,6 +298,7 @@ PARAMETER_NAMES: dict[str, tuple[str, ...]] = {
 
 
 _FIXED_CONSTANT_OPERATOR_PARAMETERS: dict[str, frozenset[str]] = {
+    "rolling_window": frozenset({"window", "min_periods"}),
     "rolling_mean": frozenset({"window", "min_periods"}),
     "rolling_std": frozenset({"window", "ddof", "min_periods"}),
     "rolling_min": frozenset({"window", "min_periods"}),
@@ -307,6 +316,9 @@ _FIXED_CONSTANT_OPERATOR_PARAMETERS: dict[str, frozenset[str]] = {
 }
 
 PARAMETER_LABELS = {
+    "calculation": "区间计算内容",
+    "dates": "观察日期（自动绑定）",
+    "annual_rate": "年度配置（自动绑定）",
     "default": "分母无效时的默认值",
     "initial": "递推初始值",
     "values": "输入值",
@@ -342,6 +354,22 @@ PARAMETER_LABELS = {
 
 
 _FIXED_CONSTANT_PARAMETER_POLICIES: dict[tuple[str, str], dict[str, Any]] = {
+    ("rolling_apply", "window"): {"source_policy": "fixed_constant", "constant_kind": "integer", "default": 20, "minimum": 1, "maximum": 5000},
+    ("rolling_apply", "min_periods"): {"source_policy": "fixed_constant", "constant_kind": "integer", "default": 1, "minimum": 1, "maximum": 5000},
+    ("rolling_window", "window"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_window", "min_periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
     ("rolling_mean", "window"): {
         "source_policy": "fixed_constant",
         "constant_kind": "integer",
@@ -733,12 +761,14 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
                 allowed_shapes = ["mask"]
             elif "numeric" in lowered:
                 allowed_shapes = ["scalar", "series", "vector", "matrix"]
+            elif "window<" in lowered:
+                allowed_shapes = ["window"]
             elif "same(first)" in lowered and result:
                 allowed_shapes = list(result[0]["allowed_shapes"])
             else:
                 allowed_shapes = [
                     shape
-                    for shape in ("scalar", "series", "vector", "matrix", "record")
+                    for shape in ("scalar", "series", "vector", "matrix", "window", "record")
                     if shape in lowered
                 ]
                 if not allowed_shapes and "same(" in lowered:
@@ -798,7 +828,7 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
     output = " | ".join(sorted({str(item.get("output")) for item in signatures}))
     output_shapes = [
         shape
-        for shape in ("mask", "scalar", "series", "vector", "matrix", "record")
+        for shape in ("mask", "scalar", "series", "vector", "matrix", "window", "record")
         if shape in output
     ]
     output_shape = (
@@ -850,6 +880,8 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
         "id": operator_id,
         **({"intermediate_kind": "linear_fit"} if operator_id == "linear_fit" else {"intermediate_kind": "drawdown_interval"} if operator_id == "last_drawdown_interval" else {}),
         "family": category_id,
+        "interval_policy": entry.get("interval_policy"),
+        "execution_scope": "interval_body" if operator_id == "rolling_apply" else None,
         "version": entry.get("version"),
         "label": label,
         "signature": " / ".join(
@@ -1304,7 +1336,11 @@ def compose_expression(request: dict[str, Any]) -> dict[str, Any]:
                 else (
                     PREVIOUS_OPERATOR_REGISTRY_VERSION
                     if dsl_version == PREVIOUS_TYPED_DSL_VERSION
-                    else TYPED_OPERATOR_REGISTRY_VERSION
+                    else (
+                        ROLLING_OPERATOR_REGISTRY_VERSION
+                        if dsl_version == ROLLING_TYPED_DSL_VERSION
+                        else TYPED_OPERATOR_REGISTRY_VERSION
+                    )
                 )
             )
         )

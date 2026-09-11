@@ -11,7 +11,7 @@ from pathlib import Path
 from .acquisition import fingerprint
 from .models import CenterError
 from .task_catalog import get_task
-from .task_workspace import inventory, materialize, read_inventory
+from .task_workspace import inventory, materialize, read_inventory, merge_inventories
 
 
 def freeze_tasks(store, definition, frozen, options):
@@ -37,9 +37,17 @@ def freeze_tasks(store, definition, frozen, options):
         rows = db.execute("SELECT body FROM etl_run WHERE json_extract(body,'$.frozen.task_baseline_key')=? AND json_extract(body,'$.status')='SUCCEEDED' ORDER BY updated_at DESC LIMIT 30", (frozen['task_baseline_key'],)).fetchall()
     for row in rows:
         previous = json.loads(row[0])
+        if any(s.get('output', {}).get('data_quality', {}).get('status') == 'CONFLICTED' for s in previous.get('steps', [])):
+            continue
         dates = [s['params'].get('end_date', '') for s in previous['definition']['steps'] if s['kind'] == 'task']
         if max(dates, default='') > cutoff:
             continue
+        if definition.graph_version == 1:
+            from .etl_store import EtlStore
+            workspaces = [s['output']['workspace'] for s in previous['steps'] if s['kind'] == 'task' and s['status'] == 'SUCCEEDED']
+            merge_inventories(EtlStore(store), workspaces)
+            frozen['task_baseline'] = {'run_id': previous['run_id'], 'workspaces': workspaces}
+            break
         output = next((s.get('output') for s in reversed(previous['steps']) if s['kind'] == 'task' and s['status'] == 'SUCCEEDED'), None)
         if output and output.get('workspace'):
             from .etl_store import EtlStore
@@ -96,20 +104,40 @@ def run_worker(payload, check, lock):
     return result['result']
 
 
+def task_input(journal, run, step, states, directory):
+    """Single input resolver shared by execution and verified recovery."""
+    frozen = run['frozen']
+    if run['definition'].get('graph_version') == 1:
+        artifacts = [states[key]['output']['workspace'] for key in step.inputs]
+        baseline = frozen.get('task_baseline') or {}
+        if baseline.get('workspace'):
+            artifacts.insert(0, baseline['workspace'])
+        artifacts = [*baseline.get('workspaces', []), *artifacts]
+        before = merge_inventories(journal, artifacts)
+        # Freeze the exact merged selection, including duplicate/conflict rules.
+        input_path = directory.parent / 'inputs.json'
+        if input_path.exists() and json.loads(input_path.read_text()) != before:
+            raise CenterError('ETL_WORKSPACE_CHANGED', '冻结的多输入工作区发生变化，拒绝覆盖旧输入。')
+        predecessor = journal.artifact(input_path) if input_path.exists() else journal.write_json(input_path, before)
+    elif step.inputs:
+        predecessor = states[step.inputs[0]]['output']['workspace']
+    else:
+        predecessor = (frozen.get('task_baseline') or {}).get('workspace')
+    return predecessor
+
+
 def execute_task(journal, run, step, states, directory, check, lock, timeout):
     from .etl_parameters import download_mode, parse_run_options
     spec = get_task(step.task_id)
     frozen = run['frozen']
     verify_sources(journal.sources, frozen)
-    if step.inputs:
-        predecessor = states[step.inputs[0]]['output']['workspace']
-    else:
-        predecessor = (frozen.get('task_baseline') or {}).get('workspace')
+    predecessor = task_input(journal, run, step, states, directory)
     # Incomplete task checkpoints are private and may be reused within this run.
     work = directory.parent / 'work'
     marker = directory.parent / 'work_input.json'
     identity = {'input': predecessor, 'task': step.model_dump(mode='json'), 'execution': frozen['execution_fingerprint']}
-    if marker.exists():
+    reuse_checkpoints = marker.exists()
+    if reuse_checkpoints:
         if json.loads(marker.read_text()) != identity:
             raise CenterError('ETL_WORKSPACE_CHANGED', '工作区的输入合同已改变，不能沿用检查点。')
         before = read_inventory(journal, predecessor) if predecessor else {'files': {}, 'capabilities': []}
@@ -125,7 +153,9 @@ def execute_task(journal, run, step, states, directory, check, lock, timeout):
                'task_id': step.task_id, 'source_id': step.source_id, 'params': step.params,
                'mode': mode, 'has_baseline': bool(frozen.get('task_baseline')),
                'source_hash': frozen.get('task_sources', {}).get(step.source_id, {}).get('hash'),
-               'resume': states[step.id]['attempt'] > 1, 'timeout': timeout,
+               # A verified migration has checkpoints on attempt 1 too.
+               # Eligibility comes from workspace identity, not retry count.
+               'resume': reuse_checkpoints, 'timeout': timeout,
                'config_dir': str((journal.root / 'etl_runs' / run['run_id'] / 'config').resolve())}
     if frozen.get('auto_plan'):
         payload['auto_step'] = next(item for item in frozen['auto_plan']['steps'] if item['id'] == step.id)
@@ -148,7 +178,8 @@ def execute_task(journal, run, step, states, directory, check, lock, timeout):
     states[step.id]['progress'].update(phase='校验输出文件', message='下载工作进程已结束，正在校验文件并生成候选清单。', completed=None, total=None)
     journal.save_run(run)
     capability = list(dict.fromkeys(before['capabilities'] + spec['provides']))
-    artifact = inventory(journal, work, directory / 'workspace.json', capability, step.source_id or before.get('source_id'))
+    artifact = inventory(journal, work, directory / 'workspace.json', capability, step.source_id or before.get('source_id'),
+                         before=before if run['definition'].get('graph_version') == 1 else None)
     return {**result, 'workspace': artifact, 'capabilities': capability, 'task_id': step.task_id,
             'rows': result.get('received_rows', result.get('rows', 0)), 'published': False,
             'baseline_run_id': (frozen.get('task_baseline') or {}).get('run_id'),

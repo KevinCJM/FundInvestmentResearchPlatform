@@ -1,4 +1,4 @@
-import type { RegimeSeriesPage, RegimeEvaluationResults, RegimeEvaluationConditionalMetric } from '../../services/regimeGraph'
+import type { RegimeSeriesPage, RegimeEvaluationResults, RegimeEvaluationConditionalMetric, TemporalCapability } from '../../services/regimeGraph'
 
 export interface RegimeResultState {
   id: string
@@ -6,6 +6,27 @@ export interface RegimeResultState {
   color: string
   order: number
   role?: string
+}
+
+export interface RegimeManualEventResult {
+  id: string
+  label: string
+  start_date: string
+  end_date: string
+  color: string
+  description?: string
+  covered_observations: number
+  first_observation_index: number | null
+  last_observation_index: number | null
+  first_observation_date: string | null
+  last_observation_date: string | null
+}
+
+export interface RegimeManualEventSummary {
+  event_count: number
+  covered_observations: number
+  overlap_observations: number
+  max_concurrent_events: number
 }
 
 export interface RegimeResultInterval {
@@ -28,7 +49,11 @@ interface ResultCapability {
 }
 
 export interface RegimeResultOverview {
+  temporal_capability?: TemporalCapability
   schema_version: string
+  result_kind: 'regime_states' | 'manual_events'
+  manual_events: RegimeManualEventResult[]
+  manual_event_summary: RegimeManualEventSummary
   run_kind: 'preview' | 'saved'
   run_id: string
   definition_id: string | null
@@ -129,6 +154,41 @@ function capability(value: unknown): ResultCapability {
   const source = record(value, '缺少展示能力信息')
   return { available: source.available === true, ...(typeof source.reason === 'string' ? { reason: source.reason } : {}) }
 }
+function manualEventResults(value: unknown, total: number): RegimeManualEventResult[] {
+  if (value == null) return []
+  const events = list(value, '人工事件结果格式错误').map((value): RegimeManualEventResult => {
+    const row = record(value, '人工事件格式错误')
+    const covered = count(row.covered_observations, '人工事件缺少覆盖观测数')
+    const first = row.first_observation_index == null ? null : count(row.first_observation_index, '人工事件首个观测序号错误')
+    const last = row.last_observation_index == null ? null : count(row.last_observation_index, '人工事件末个观测序号错误')
+    if (covered === 0 && (first != null || last != null)) return invalid('无覆盖的人工事件不应包含观测序号')
+    if (covered > 0 && (first == null || last == null || last < first || last >= total || covered !== last - first + 1)) return invalid('人工事件覆盖范围与观测数不一致')
+    const color = typeof row.color === 'string' && /^#[0-9a-f]{6}$/i.test(row.color) ? row.color : invalid('人工事件颜色格式错误')
+    return {
+      id: string(row.id, '人工事件缺少身份'), label: string(row.label, '人工事件缺少名称'),
+      start_date: string(row.start_date, '人工事件缺少开始日期'), end_date: string(row.end_date, '人工事件缺少结束日期'), color,
+      ...(typeof row.description === 'string' && row.description ? { description: row.description } : {}), covered_observations: covered,
+      first_observation_index: first, last_observation_index: last,
+      first_observation_date: optionalString(row.first_observation_date), last_observation_date: optionalString(row.last_observation_date),
+    }
+  })
+  if (new Set(events.map(event => event.id)).size !== events.length) return invalid('人工事件身份重复')
+  return events
+}
+
+function manualEventSummary(value: unknown, eventCount: number, total: number): RegimeManualEventSummary {
+  if (value == null) return { event_count: 0, covered_observations: 0, overlap_observations: 0, max_concurrent_events: 0 }
+  const row = record(value, '人工事件摘要格式错误')
+  const result = {
+    event_count: count(row.event_count, '人工事件摘要缺少事件数'),
+    covered_observations: count(row.covered_observations, '人工事件摘要缺少覆盖观测数'),
+    overlap_observations: count(row.overlap_observations, '人工事件摘要缺少重叠观测数'),
+    max_concurrent_events: count(row.max_concurrent_events, '人工事件摘要缺少最大同时事件数'),
+  }
+  if (result.event_count !== eventCount || result.covered_observations > total || result.overlap_observations > result.covered_observations || result.max_concurrent_events > eventCount) return invalid('人工事件摘要与事件列表不一致')
+  return result
+}
+
 function evaluationResults(value: unknown): RegimeEvaluationResults | undefined {
   if (value == null) return undefined
   return Object.fromEntries(Object.entries(record(value, '评估结果格式错误')).map(([id, value]) => {
@@ -169,6 +229,16 @@ function parseInterval(value: unknown, unknownInterval: boolean): RegimeResultIn
   }
 }
 
+function temporalReport(value: unknown, definitionHash: unknown, mode: unknown): TemporalCapability | undefined {
+  if (value == null) return undefined
+  const report = record(value, '时点审计格式错误')
+  if (!['conditional', 'retrospective_required', 'audit_unknown', 'realtime_verified'].includes(String(report.status)) ||
+      typeof report.policy_version !== 'string' || !Array.isArray(report.reasons) || !isRecord(report.outputs) || !Array.isArray(report.nodes)) return invalid('时点审计缺少必要信息')
+  if (report.verified === true && (report.definition_hash !== definitionHash || report.mode !== mode ||
+      report.numerical_verdict !== 'causal' || !isRecord(report.data_checks) || report.data_checks.passed !== true)) return invalid('时点审计证据与本次运行不一致')
+  return report as unknown as TemporalCapability
+}
+
 /** This boundary accepts server snapshots only; it never reads the editable graph. */
 export function adaptRegimeOverview(value: unknown, runId: string, runKind: 'preview' | 'saved'): RegimeResultOverview {
   const data = record(value, '缺少结果总览')
@@ -180,6 +250,10 @@ export function adaptRegimeOverview(value: unknown, runId: string, runKind: 'pre
   const unknown = count(summary.unknown, '缺少未分类数量')
   if (classified + unknown !== total || summary.denominator !== 'all_observations') return invalid('统计分母不一致')
   const stateCounts = Object.fromEntries(Object.entries(record(summary.state_counts, '缺少状态数量')).map(([id, n]) => [id, count(n, '状态数量错误')]))
+  const resultKind = data.result_kind === 'manual_events' ? 'manual_events' as const : 'regime_states' as const
+  const manualEvents = manualEventResults(data.manual_events, total)
+  const manualSummary = manualEventSummary(data.manual_event_summary, manualEvents.length, total)
+  if (resultKind === 'manual_events' && !manualEvents.length && manualSummary.event_count !== 0) return invalid('人工事件结果缺少事件列表')
   const states = list(data.states, '缺少冻结状态字典').map(value => {
     const state = record(value, '状态字典格式错误')
     return {
@@ -210,7 +284,9 @@ export function adaptRegimeOverview(value: unknown, runId: string, runKind: 'pre
   for (const interval of segments) intervalCounts[interval.state_id] = (intervalCounts[interval.state_id] ?? 0) + interval.observations
   if (states.some(state => (intervalCounts[state.id] ?? 0) !== (stateCounts[state.id] ?? 0)) || unknownIntervals.reduce((sum, interval) => sum + interval.observations, 0) !== unknown) return invalid('区间覆盖与统计摘要不一致')
   return {
-    schema_version: string(data.schema_version, '缺少结果版本'), run_kind: runKind, run_id: runId,
+    temporal_capability: temporalReport(data.temporal_capability, data.definition_hash, data.mode),
+    schema_version: string(data.schema_version, '缺少结果版本'), result_kind: resultKind, manual_events: manualEvents, manual_event_summary: manualSummary,
+    run_kind: runKind, run_id: runId,
     definition_id: optionalString(data.definition_id),
     definition_revision: (data.definition_revision ?? data.revision) == null ? null : count(data.definition_revision ?? data.revision, '定义修订号错误'),
     definition_hash: string(data.definition_hash, '缺少定义快照'),

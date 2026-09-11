@@ -1,6 +1,3 @@
-from pathlib import Path
-from typing import Dict, Any
-
 import json
 import sys
 from pathlib import Path
@@ -121,6 +118,46 @@ def test_compute_weights_respects_window_and_errors(monkeypatch, tmp_path):
     assert isinstance(resp_err, JSONResponse)
     assert resp_err.status_code == 400
     assert "样本不足" in _json_content(resp_err)['detail']
+
+
+def test_computed_weights_carry_the_verdict_on_the_pool_behind_them(monkeypatch, tmp_path):
+    """Weights are the deliverable, so the口径 has to travel on them.
+
+    A user reads the weights, adopts them, and never sees the backtest — which
+    was the only endpoint printing what candidate set they came out of.
+    """
+
+    from product_pools.repository import InvestableUniverseRepository
+    from pit.context import build_context
+
+    _write_asset_nv(tmp_path, days=6)
+    # Stamp the series with a research day of its own, so the only thing left
+    # for the guard to object to is the pool.
+    nav = pd.read_parquet(tmp_path / "asset_nv.parquet")
+    nav["as_of"] = "2023-12-01"
+    nav.to_parquet(tmp_path / "asset_nv.parquet", index=False)
+    _set_data_dir(tmp_path)
+    InvestableUniverseRepository(tmp_path / "product_pools.json").create(
+        {"id": "universe-1", "name": "事后筛的池子", "research_date": "2026-01-01", "members": []}
+    )
+    pd.DataFrame(
+        [{"asset_alloc_name": "demo", "asset_name": "ClassA", "etf_code": "A",
+          "etf_name": "a", "etf_weight": 100.0, "universe_snapshot_id": "universe-1"}]
+    ).to_parquet(tmp_path / "asset_alloc_info.parquet", index=False)
+    monkeypatch.setattr(routes, "resolve_request_context", lambda *_a, **_k: build_context("2024-01-05"))
+    monkeypatch.setattr(routes, "compute_target_weights", lambda nav, *a, **k: [0.5, 0.5])
+
+    resp = routes.api_compute_weights(routes.ComputeWeightsRequest(
+        alloc_name="demo",
+        strategy=routes.StrategySpec(
+            type="target",
+            classes=[routes.StrategyClassItem(name="ClassA"), routes.StrategyClassItem(name="ClassB")],
+            return_metric="cumulative", risk_metric="vol", target="min_risk",
+        ),
+    ))
+
+    assert [item["code"] for item in resp["pit"]["universe"]["findings"]] == ["UNIVERSE_LOOKAHEAD"]
+    assert "事后筛的池子" in resp["pit"]["universe"]["findings"][0]["message"]
 
 
 def test_compute_schedule_weights_trims_first_valid(monkeypatch, tmp_path):

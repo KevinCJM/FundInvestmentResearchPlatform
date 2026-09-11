@@ -96,7 +96,22 @@ class AtomicJsonStore:
 class IndicatorRepository:
     def __init__(self, path: Path, built_ins: list[dict[str, Any]]) -> None:
         self.store = AtomicJsonStore(path)
-        self.built_ins = {item["id"]: dict(item) for item in built_ins}
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in built_ins:
+            grouped.setdefault(str(item["id"]), []).append(dict(item))
+        self.built_ins: dict[str, dict[str, Any]] = {}
+        self.built_in_history: dict[str, dict[int, dict[str, Any]]] = {}
+        for indicator_id, versions in grouped.items():
+            by_revision = {int(item["revision"]): item for item in versions}
+            if len(by_revision) != len(versions):
+                raise ValueError(f"duplicate built-in revision: {indicator_id}")
+            current_revision = max(by_revision)
+            self.built_ins[indicator_id] = dict(by_revision[current_revision])
+            self.built_in_history[indicator_id] = {
+                revision: dict(item)
+                for revision, item in by_revision.items()
+                if revision != current_revision
+            }
 
     def list(self) -> list[dict[str, Any]]:
         with self.store.locked():
@@ -109,7 +124,14 @@ class IndicatorRepository:
 
         with self.store.locked():
             payload = self.store.read_unlocked()
-        versions = [dict(item) for item in self.built_ins.values()]
+        versions = [
+            dict(item)
+            for indicator_id in self.built_ins
+            for item in [
+                *self.built_in_history.get(indicator_id, {}).values(),
+                self.built_ins[indicator_id],
+            ]
+        ]
         for entry in payload["items"]:
             versions.extend(dict(item) for item in entry.get("history", []))
             versions.append(dict(entry["current"]))
@@ -118,9 +140,12 @@ class IndicatorRepository:
     def get(self, indicator_id: str, revision: Optional[int] = None) -> dict[str, Any]:
         built_in = self.built_ins.get(indicator_id)
         if built_in is not None:
-            if revision not in (None, int(built_in["revision"])):
-                raise NotFoundError("INDICATOR_VERSION_NOT_FOUND", "未找到指定的内置指标版本。")
-            return dict(built_in)
+            if revision in (None, int(built_in["revision"])):
+                return dict(built_in)
+            historical = self.built_in_history.get(indicator_id, {}).get(int(revision))
+            if historical is not None:
+                return dict(historical)
+            raise NotFoundError("INDICATOR_VERSION_NOT_FOUND", "未找到指定的内置指标版本。")
         with self.store.locked():
             payload = self.store.read_unlocked()
         for entry in payload["items"]:

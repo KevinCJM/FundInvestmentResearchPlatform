@@ -40,9 +40,25 @@ class TaskProgressLog(io.TextIOBase):
         now = utc_now()
         self.state.update(activity_at=now, message=text, sequence=self.state['sequence'] + 1)
         self.state['logs'] = (self.state['logs'] + [{'at': now, 'message': text}])[-20:]
+        coverage = re.fullmatch(r'\[COVERAGE\] 日期 (\d+)；复用 (\d+)；复核 (\d+)；检查点 (\d+)；请求 (\d+)。', text)
+        if coverage:
+            self.state['event_coverage'] = dict(zip(('queried_days', 'reused_days', 'revision_days', 'checkpoints', 'requests'), map(int, coverage.groups())))
+            self.state['message'] = '公告区间已校验并记录查询覆盖；返回行数不等于新增行数。'
+        page = re.search(r'(\S+) 公告日 (\d{8}) 分页 (\d+)/(\d+)', text)
+        if page:
+            self.state['page_progress'] = {'scope': page[1], 'date': page[2], 'page': int(page[3]), 'limit': int(page[4])}
+        fund = re.search(r'(\d{8}) 基金补抓 (\d+)/(\d+)', text)
+        if fund:
+            self.state['fund_progress'] = {'date': fund[1], 'completed': int(fund[2]), 'total': int(fund[3])}
         if text.startswith(('[STAGE]', '[DONE]', '[OK]')):
-            phase = '合并与校验' if '合并' in text else '本地处理' if text.startswith('[OK]') else '执行阶段'
+            phase = ('分页一致性复核' if '跨页重复稳定性复核' in text else
+                     '合并与校验' if '合并' in text else '本地处理' if text.startswith('[OK]') else '执行阶段')
             self.state.update(phase=phase, completed=None, total=None)
+        verification = re.search(r'公告日 (\d{8}) 页面复核 (\d+)/(\d+)', text)
+        if verification and 0 < int(verification[2]) <= int(verification[3]):
+            self.state.update(phase='分页一致性复核', completed=int(verification[2]),
+                              total=int(verification[3]), unit='页')
+            self.state.pop('page_progress', None)
         # Only explicit progress markers; never interpret dates, pages or retry
         # attempt fractions as a node's completion percentage.
         match = re.search(r'(?:进度|已处理历史行)\s*(\d+)/(\d+)', text)

@@ -1,4 +1,4 @@
-"""Offline THS checkpoint recovery through the normal guarded resume path."""
+"""Offline index checkpoint recovery through the normal guarded resume path."""
 import copy
 import json
 import uuid
@@ -15,20 +15,28 @@ from backend.data_sources.etl_store import EtlStore
 from backend.data_sources.models import CenterError
 from backend.data_sources.runtime import ConfiguredTushareClient
 from backend.data_sources.task_workspace import read_inventory
-from backend.tests.test_etl_dataset_tasks import store, small_plan, request as start_request, finish
+from backend.tests.test_etl_dataset_tasks import small_plan, request as start_request, finish
+from backend.tests import test_etl_dataset_tasks as dataset_fixtures
+
+store = dataset_fixtures.store
 
 
 @pytest.fixture
 def stopped_index(store, monkeypatch, request):
-    final_api = getattr(request, 'param', 'ths_daily')
-    apis = ['ths_daily', 'dc_daily', 'tdx_daily']
+    option = getattr(request, 'param', 'ths_daily')
+    proven = isinstance(option, dict) and option.get('proven', False)
+    final_api = option['api'] if isinstance(option, dict) else option
+    futures = final_api == 'fut_index_daily'
+    apis = ['fut_index_daily'] if futures else ['ths_daily', 'dc_daily', 'tdx_daily']
     apis = apis[:apis.index(final_api) + 1]
-    suffixes = {'ths_daily': 'TI', 'dc_daily': 'DC', 'tdx_daily': 'TDX'}
+    suffixes = {'ths_daily': 'TI', 'dc_daily': 'DC', 'tdx_daily': 'TDX', 'fut_index_daily': 'NH'}
+    if futures:
+        monkeypatch.setattr(script, 'FUTURES_INDEX_UNIVERSE', [(f'{code}.NH', code) for code in 'ABC'])
     specs = copy.deepcopy(task_catalog.task_specs())
     specs['tushare.calendar']['provides'].append('index_catalog')
     monkeypatch.setattr(task_catalog, 'task_specs', lambda: specs)
     plan = small_plan()
-    plan['steps'][1].update(task_id='tushare.index_concept')
+    plan['steps'][1].update(task_id='tushare.index_futures' if futures else 'tushare.index_concept')
     for step in plan['steps']:
         step['params'] = {'start_date': '20000101', 'end_date': '20100101'}
     calls, fail = [], [True]
@@ -65,8 +73,70 @@ def stopped_index(store, monkeypatch, request):
     calls.clear()
     monkeypatch.setattr(etl, 'execution_fingerprint', lambda: 'new-execution')
     work = store.root / 'etl_runs' / old['run_id'] / 'company' / 'work'
+    if not proven:
+        # Exercise the real old-format compatibility contract explicitly.
+        for marker in work.glob('.*_parts_*/segments/*.empty'):
+            script.mark_empty_checkpoint(marker)
     parts = next(work.glob('.*_parts_*'))
     return old, work, parts, calls
+
+
+@pytest.mark.parametrize('stopped_index', [{'api': 'ths_daily', 'proven': True},
+                                          {'api': 'dc_daily', 'proven': True},
+                                          {'api': 'fut_index_daily', 'proven': True}], indirect=True)
+def test_verified_empty_receipts_survive_migration_without_network_rechecks(store, stopped_index):
+    old, work, parts, calls = stopped_index
+    originals = {str(p.relative_to(work)): p.read_bytes() for p in work.rglob('*.empty')}
+    from backend.data_sources.etl_partial_recovery import _check_unhandled_partial
+    _check_unhandled_partial(EtlStore(store), old)
+    new = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    journal = EtlStore(store)
+    receipt = json.loads(journal.checked_path(journal.get_run(new['run_id'])['recovery_receipt']).read_text())
+    assert receipt['shards']['confirmed_empty'] >= 2
+    assert receipt['shards']['empty_recheck'] == 0
+    assert calls == []
+    done = finish(store, etl.resume(store, new['run_id'], True))
+    assert done['status'] == 'SUCCEEDED', done
+    assert len(calls) == 2 and all(c['ts_code'].startswith('C.') for c in calls)
+    assert {str(p.relative_to(work)): p.read_bytes() for p in work.rglob('*.empty')} == originals
+
+
+@pytest.mark.parametrize('stopped_index', [{'api': 'fut_index_daily', 'proven': True}], indirect=True)
+@pytest.mark.parametrize('case', ['universe', 'code', 'source', 'date', 'unknown_file', 'tampered_import'])
+def test_futures_recovery_rejects_changed_contract_or_artifacts(store, stopped_index, monkeypatch, case):
+    old, work, parts, calls = stopped_index
+    if case == 'universe':
+        monkeypatch.setattr(script, 'FUTURES_INDEX_UNIVERSE', [('A.NH', 'A')])
+    elif case == 'unknown_file':
+        (work / 'unknown.parquet').write_bytes(b'unknown')
+    elif case != 'tampered_import':
+        path = next((parts / 'segments').glob('*.parquet'))
+        frame = pd.read_parquet(path)
+        if case == 'code': frame['ts_code'] = 'OTHER.NH'
+        if case == 'source': frame['source_api'] = 'ths_daily'
+        if case == 'date': frame['trade_date'] = pd.Timestamp('1999-01-01')
+        frame.to_parquet(path)
+    if case == 'tampered_import':
+        new = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+        path = next((store.root / 'etl_runs' / new['run_id'] / 'company' / 'work').glob('.*_parts_*/segments/*.parquet'))
+        path.write_bytes(b'changed')
+        with pytest.raises(CenterError, match='校验和'):
+            etl.resume(store, new['run_id'], True)
+    else:
+        with pytest.raises(CenterError):
+            stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    assert not calls
+
+
+@pytest.mark.parametrize('stopped_index', [{'api': 'ths_daily', 'proven': True}], indirect=True)
+def test_empty_receipt_tampering_after_migration_blocks_resume(store, stopped_index):
+    old, work, parts, calls = stopped_index
+    new = stage_recovery(store, old['run_id'], uuid.uuid4().hex, confirm=True)
+    marker = next((store.root / 'etl_runs' / new['run_id'] / 'company' / 'work').glob('.*_parts_*/segments/*.empty'))
+    marker.write_bytes(b'no data\n')
+    with pytest.raises(CenterError, match='校验和'):
+        etl.resume(store, new['run_id'], True)
+    assert calls == []
 
 
 @pytest.mark.parametrize('tampered', [None, 'parquet', 'empty'])

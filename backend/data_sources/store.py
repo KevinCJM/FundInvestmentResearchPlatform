@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import random
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,6 +81,23 @@ class SourceStore:
         from .akshare_presets import akshare_interfaces, akshare_source
         configs = [("source", default_source()), ("source", akshare_source())]
         configs.extend(("interface", item) for item in (*default_interfaces(), *akshare_interfaces()))
+        # Catalog GETs call seed too. A current catalog must remain read-only:
+        # do not claim the downloader's writer lock merely to inspect defaults.
+        with self.connection() as db:
+            baseline = {(r[0], r[1]): r[2] for r in db.execute('SELECT kind,id,body FROM source_preset')}
+            present = {(r[0], r[1]) for r in db.execute('SELECT kind,id FROM source_config')}
+            retired = {(r[0], r[1]) for r in db.execute('SELECT DISTINCT kind,id FROM source_config_revision')}
+        required = False
+        for kind, config in configs:
+            identity = (kind, config.id)
+            encoded = json.dumps(config.model_dump(mode='json'), ensure_ascii=False, sort_keys=True)
+            parent_exists = kind == 'source' or ('source', config.source_id) in present
+            if baseline.get(identity) != encoded or (identity not in present and identity not in retired and parent_exists):
+                required = True
+                break
+        if not required:
+            return
+        # Defaults changed or first startup: recheck atomically under the lock.
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             for kind, config in configs:
@@ -96,7 +115,28 @@ class SourceStore:
                         db.execute("INSERT OR IGNORE INTO source_config_revision VALUES (?,?,?,?,?)", (kind, config.id, previous["revision"], previous["body"], previous["updated_at"]))
                     db.execute("INSERT OR REPLACE INTO source_config VALUES (?,?,?,?,?,?,?)", (kind, config.id, body.get("source_id", config.id), revision, 1, encoded, now))
                     db.execute("INSERT OR IGNORE INTO source_config_revision VALUES (?,?,?,?,?)", (kind, config.id, revision, encoded, now))
-                db.execute("INSERT OR REPLACE INTO source_preset VALUES (?,?,?)", (kind, config.id, encoded))
+                if baseline is None or baseline[0] != encoded:
+                    db.execute("INSERT OR REPLACE INTO source_preset VALUES (?,?,?)", (kind, config.id, encoded))
+
+    def database_operation(self, operation, *, check=None, max_attempts=3):
+        """Retry ONLY a rolled-back local DB transaction, never a supplier call.
+
+        Callbacks must contain SQLite work only. Each connection already bounds
+        lock waiting to 15s; three attempts tolerate short external-disk stalls.
+        Disk full, I/O, permission and contract errors remain fail-closed.
+        """
+        if max_attempts < 1:
+            raise ValueError('max_attempts must be positive')
+        for attempt in range(max_attempts):
+            if check is not None:
+                check()
+            try:
+                with self.connection() as db:
+                    return operation(db)
+            except CenterError as exc:
+                if exc.code != 'SOURCE_DB_BUSY' or attempt + 1 == max_attempts:
+                    raise
+                time.sleep(0.25 * 2 ** attempt + random.uniform(0, 0.25))
 
     @staticmethod
     def decode(row: sqlite3.Row) -> dict[str, Any]:

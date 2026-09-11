@@ -7,6 +7,7 @@ from cal_indicators.typed_dsl import (
     TypedExpressionParser,
     ValueType,
     compose_typed_expression,
+    compose_typed_series_bundle,
     infer_typed_expression,
 )
 
@@ -179,6 +180,48 @@ def test_formula_limits_cover_depth_and_unique_nodes() -> None:
         infer_typed_expression("((returns + 1) + 2)", max_nodes=3)
     assert node_error.value.code == "FORMULA_TOO_COMPLEX"
     assert node_error.value.details["dimension"] == "nodes"
+
+
+def test_rolling_window_is_a_non_publishable_logical_intermediate() -> None:
+    plan = infer_typed_expression("rolling_window(returns, 5)")
+    assert plan.output_type == ValueType.window(
+        semantic_dimension="return_decimal"
+    )
+
+    with pytest.raises(TypedDslError) as output_error:
+        compose_typed_series_bundle({"value": "rolling_window(returns, 5)"})
+    assert output_error.value.code == "OUTPUT_CONTRACT_MISMATCH"
+
+    with pytest.raises(TypedDslError) as arithmetic_error:
+        compose_typed_series_bundle(
+            {"value": "returns + rolling_window(returns, 5)"}
+        )
+    assert arithmetic_error.value.code == "TYPE_MISMATCH"
+
+
+def test_current_rolling_wrapper_spelling_lowers_to_window_plus_reducer_only() -> None:
+    current = compose_typed_series_bundle(
+        {"value": "rolling_std(returns, 5, 1)"},
+        dsl_version="2.4.0",
+        operator_registry_version="2.4.0",
+    )
+    current_operators = [node.operator_id for node in current.nodes if node.operator_id]
+    assert dict(current.python_expressions)["value"] == "std(rolling_window(returns, 5), 1)"
+    assert "rolling_window" in current_operators
+    assert "std" in current_operators
+    assert "rolling_std" not in current_operators
+
+    historical = compose_typed_series_bundle(
+        {"value": "rolling_std(returns, 5, 1)"},
+        dsl_version="2.3.0",
+        operator_registry_version="2.3.0",
+    )
+    historical_operators = [
+        node.operator_id for node in historical.nodes if node.operator_id
+    ]
+    assert dict(historical.python_expressions)["value"] == "rolling_std(returns, 5, 1)"
+    assert "rolling_std" in historical_operators
+    assert "rolling_window" not in historical_operators
 
 
 def test_shared_subexpression_is_reused_in_dag() -> None:

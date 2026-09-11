@@ -25,7 +25,7 @@ it('自动展开目录与日历依赖，不要求填写日期', async () => {
   await screen.findByText('基线快照：snapshot_1')
   const definition = vi.mocked(api.validateEtl).mock.calls[0][0]
   expect(definition.steps.map(s => s.task_id)).toEqual(['tushare.fund_info', 'tushare.calendar', 'tushare.fund_nav'])
-  expect(api.validateEtl).toHaveBeenCalledWith(definition, { mode: 'auto_incremental', parameters: {} })
+  expect(api.validateEtl).toHaveBeenCalledWith(definition, { mode: 'auto_incremental', parameters: {}, auto_baseline_run_id: null, auto_baseline_scope: 'acquisition' })
   expect(screen.getByText(/2026-08-28 至 2026-09-06/)).toBeInTheDocument()
 })
 
@@ -35,20 +35,34 @@ it('仅确认已预览计划才启动，并携带基线计划 ID', async () => {
   vi.mocked(api.runEtl).mockResolvedValue(result)
   render(<AutoIncrementalWorkspace catalog={catalog} canRun onStarted={started} />)
   fireEvent.click(screen.getByLabelText('场外公募基金净值'))
-  expect(screen.queryByText('确认计划并开始自动增量')).not.toBeInTheDocument()
+  expect(screen.getByText('确认计划并开始自动增量')).toBeDisabled()
   fireEvent.click(screen.getByText('分析快照并预览区间'))
-  fireEvent.click(await screen.findByText('确认计划并开始自动增量'))
-  await waitFor(() => expect(api.runEtl).toHaveBeenCalledWith(expect.anything(), expect.any(String), { mode: 'auto_incremental', parameters: {} }, 'frozen'))
+  await waitFor(() => expect(screen.getByText('确认计划并开始自动增量')).toBeEnabled())
+  fireEvent.click(screen.getByText('确认计划并开始自动增量'))
+  await waitFor(() => expect(api.runEtl).toHaveBeenCalledWith(expect.anything(), expect.any(String), { mode: 'auto_incremental', parameters: {}, auto_baseline_run_id: null, auto_baseline_scope: 'acquisition' }, 'frozen'))
   expect(started).toHaveBeenCalledWith(result)
+})
+
+it('修订策略改变后旧预览失效，禁止按旧计划直接启动', async () => {
+  vi.mocked(api.validateEtl).mockResolvedValue({ valid: true, errors: [], steps: [], auto_plan: plan })
+  render(<AutoIncrementalWorkspace catalog={catalog} canRun onStarted={vi.fn()} />)
+  fireEvent.click(screen.getByLabelText('场外公募基金净值'))
+  fireEvent.click(screen.getByText('分析快照并预览区间'))
+  await waitFor(() => expect(screen.getByText('确认计划并开始自动增量')).toBeEnabled())
+  fireEvent.click(screen.getByText('采集基线与披露修订策略'))
+  fireEvent.change(screen.getByLabelText('披露更新方式'), { target: { value: 'recheck' } })
+  expect(screen.getByText('确认计划并开始自动增量')).toBeDisabled()
+  fireEvent.click(screen.getByText('分析快照并预览区间'))
+  await waitFor(() => expect(api.validateEtl).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ event_update_purpose: 'recheck' })))
 })
 
 it('修改数据集立即清除过期计划，基线缺失不能启动', async () => {
   render(<AutoIncrementalWorkspace catalog={catalog} canRun onStarted={vi.fn()} />)
   fireEvent.click(screen.getByLabelText('场外公募基金净值'))
   fireEvent.click(screen.getByText('分析快照并预览区间'))
-  await screen.findByText('确认计划并开始自动增量')
+  await waitFor(() => expect(screen.getByText('确认计划并开始自动增量')).toBeEnabled())
   fireEvent.click(screen.getByLabelText('基金目录'))
-  expect(screen.queryByText('确认计划并开始自动增量')).not.toBeInTheDocument()
+  expect(screen.getByText('确认计划并开始自动增量')).toBeDisabled()
   vi.mocked(api.validateEtl).mockResolvedValue({ valid: false, errors: [{ code: 'BASE', message: '尚未初始化，不会改成全量' }], steps: [] })
   fireEvent.click(screen.getByText('分析快照并预览区间'))
   await screen.findByRole('alert')
@@ -68,4 +82,30 @@ it('ETL 自动模式隐藏运行日期，保留其他参数', () => {
   render(<EtlRunOptionsEditor definition={definition} value={{ mode: 'auto_incremental', parameters: {} }} onChange={vi.fn()} disabled={false} />)
   expect(screen.queryByLabelText('截止日')).not.toBeInTheDocument()
   expect(screen.getByLabelText('本次运行模式')).toHaveValue('auto_incremental')
+})
+
+it('已下载未启用的基线须明确选择并重新预览', async () => {
+  const candidate = 'a'.repeat(32)
+  vi.mocked(api.validateEtl).mockResolvedValue({ valid: false, errors: [], steps: [], auto_plan: {
+    ...plan, ready: false, baseline_choices: [{ run_id: candidate, name: '成功下载', finished_at: null,
+      files: [{ name: 'fund_nav_df.parquet', rows: 2, latest_date: '2026-09-03' }] }],
+  } })
+  render(<AutoIncrementalWorkspace catalog={catalog} canRun onStarted={vi.fn()} />)
+  fireEvent.click(screen.getByLabelText('场外公募基金净值'))
+  fireEvent.click(screen.getByText('分析快照并预览区间'))
+  fireEvent.change(await screen.findByLabelText('补足缺失基线'), { target: { value: candidate } })
+  expect(screen.getByText('确认计划并开始自动增量')).toBeDisabled()
+  expect(api.runEtl).not.toHaveBeenCalled()
+  vi.mocked(api.validateEtl).mockResolvedValue({ valid: true, errors: [], steps: [], auto_plan: plan })
+  fireEvent.click(screen.getByText('分析快照并预览区间'))
+  await waitFor(() => expect(screen.getByText('确认计划并开始自动增量')).toBeEnabled())
+  expect(api.validateEtl).toHaveBeenLastCalledWith(expect.anything(), { mode: 'auto_incremental', parameters: {}, auto_baseline_run_id: candidate, auto_baseline_scope: 'acquisition' })
+})
+
+it('新自动流程区分真实依赖与顺序依赖', () => {
+  const graph = autoDefinition(tasks, ['tushare.fund_nav'])
+  expect(graph.graph_version).toBe(1)
+  expect(graph.steps[1].inputs).toEqual([])
+  expect(graph.steps[1].after).toEqual(['auto_0'])
+  expect(graph.steps[2].inputs).toEqual(['auto_0', 'auto_1'])
 })

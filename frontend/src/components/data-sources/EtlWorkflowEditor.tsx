@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { SourceCatalog } from '../../services/dataSources'
-import { blankStep, stepLabels, type EtlDefinition, type EtlKind } from '../../services/etl'
+import { blankStep, stepLabels, planEtlDependencies, type EtlDefinition, type EtlKind } from '../../services/etl'
 import GraphCanvas from '../computation-graph/GraphCanvas'
 import { graphOrder, layoutGraph } from '../computation-graph/graph'
 import type { CanvasConnection, CanvasNodeChange } from '../computation-graph/types'
@@ -24,6 +24,7 @@ export default function EtlWorkflowEditor({ definition, catalog, onChange, readO
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
   const [viewKey, setViewKey] = useState(0)
+  const [planning, setPlanning] = useState(false)
   const locked = readOnly || !catalog.editing_enabled
   const schemas = catalog.graph_schemas ?? []
   const edges = useMemo(() => etlEdges(graph), [graph])
@@ -53,6 +54,16 @@ export default function EtlWorkflowEditor({ definition, catalog, onChange, readO
     commit(next)
   }
   const connect = (edge: CanvasConnection) => action(() => connectEtl(current.current, edge, schemas))
+  const planDependencies = async () => {
+    const original = current.current
+    setPlanning(true); setError('')
+    try {
+      const result = await planEtlDependencies(original)
+      if (current.current !== original) { setError('梳理期间流程已修改，请重新梳理；未覆盖你的编辑。'); return }
+      commit(result.definition)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : '依赖梳理失败。') }
+    finally { setPlanning(false) }
+  }
   const add = (kind: EtlKind) => {
     if (locked || graph.steps.length >= 40) return
     const step = blankStep(kind)
@@ -77,7 +88,8 @@ export default function EtlWorkflowEditor({ definition, catalog, onChange, readO
     <div className="flex flex-wrap gap-2"><button type="button" className={buttonClass} aria-expanded={libraryOpen} onClick={() => setLibraryOpen(v => !v)}>节点库</button><button type="button" className={buttonClass} disabled={locked || !canUndo} onClick={onUndo}>撤销</button><button type="button" className={buttonClass} disabled={locked || !canRedo} onClick={onRedo}>重做</button><button type="button" className={buttonClass} disabled={locked || !graph.steps.length} onClick={() => { commit({ ...graph, canvas: { version: 1, positions: layoutGraph(graph.steps.map(s => s.id), edges) } }); setViewKey(v => v + 1) }}>自动布局</button>{selected && !inspectorOpen ? <button type="button" className={buttonClass} onClick={() => setInspectorOpen(true)}>打开节点设置</button> : null}</div>
     {libraryOpen ? <section aria-label="ETL 节点库" className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3"><label className="text-xs">查找节点类型<input aria-label="查找节点类型" className={inputClass} value={query} onChange={e => setQuery(e.target.value)} placeholder="下载、映射、取值、快照、数据集" /></label><div className="flex flex-wrap gap-2">{schemas.filter(s => `${s.label} ${s.category_label}`.includes(query)).map(schema => <button type="button" className={buttonClass} key={schema.id} disabled={locked || graph.steps.length >= 40} onClick={() => add(schema.id as EtlKind)}>＋{schema.label}</button>)}</div>{!schemas.length ? <p role="alert" className="text-xs text-amber-900">节点合同未加载，请更新后端并重新加载页面。</p> : null}<p className="text-xs text-slate-500">先选择节点，再添加兼容节点时自动连接。其他依赖可拖线或在检查器中选择。</p></section> : null}
     {error ? <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p> : null}
-    <p className="text-xs leading-5 text-slate-500">实线传递数据，虚线控制先后。拖动位置不改变执行顺序；同层节点按原顺序执行，当前不并行下载。旧流程自动呈现为图，保存后记录布局。</p>
+    {graph.steps.length > 0 && graph.steps.every(s => s.kind === 'task') ? <div className="space-y-2 rounded-lg bg-indigo-50 p-3"><button type="button" className={buttonClass} disabled={locked || planning} onClick={planDependencies}>{planning ? '正在梳理依赖…' : '按数据需求重新梳理依赖'}</button><p className="text-xs text-slate-600">根据服务端任务合同替换当前草稿的连线：保留真实数据依赖，其余改为执行顺序。可撤销；不会修改历史运行或自动下载。</p></div> : null}
+    <p className="text-xs leading-5 text-slate-500">实线：必须依赖上游成功，失败则阻断。虚线：只等待上游结束，即使失败也继续。同层按顺序调度，节点内部仍可并发下载。取消、总超时或存储安全错误会停止整个流程。</p>
     <div className="relative min-w-0">
       <GraphCanvas key={viewKey} nodes={nodes} edges={edges} schemas={schemas} selectedNodeId={selected?.id ?? null}
         ariaLabel="ETL 可编辑计算图画布" testIds={testIds} readOnly={locked} portColor={portColor} minZoom={0.05}

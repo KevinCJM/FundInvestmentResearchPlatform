@@ -1,8 +1,8 @@
 import React, { useMemo, useState, useEffect } from 'react'
 import ReactECharts from 'echarts-for-react'
-import HorizontalMetricComparison, {
-  DEFAULT_METRIC_TABLE_HEIGHT,
-  PerformanceQuadrantChart,
+import {
+  AllocationMetricsReview,
+  type HorizontalMetricRow,
 } from '../components/HorizontalMetricComparison'
 import { buildAnnualMetricRows, type AnnualMetricsResult } from '../utils/performance'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
@@ -21,6 +21,10 @@ import {
   type FixedNjitExecutionAudit,
 } from '../utils/fixedNjitExecution'
 import { apiErrorMessage } from '../utils/apiError'
+import PitProvenance from '../components/PitProvenance'
+import type { PitRunLineage } from '../services/pit'
+import { useResearchDay } from '../app/ResearchContext'
+import { allocationJourneyPath, readAllocationJourney, updateAllocationJourney, useAllocationDraft } from '../app/allocationJourney'
 
 type WeightMode = 'custom' | 'equal' | 'risk'
 type RiskMetric = 'vol' | 'var' | 'es'
@@ -69,12 +73,34 @@ export default function AssetClassConstructionPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const [searchParams] = useSearchParams()
-  const universeId = searchParams.get('universe') ?? ''
+  const universeId = searchParams.get('universe') ?? readAllocationJourney().universeId ?? ''
+  const platformAsOf = useResearchDay()
+  const [draft, setDraft] = useAllocationDraft(`classes:${universeId || 'new'}`, () => ({
+    classes: [
+      { id: uid(), name: '权益类', mode: 'custom', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
+      { id: uid(), name: '固收类', mode: 'equal', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
+    ] as AssetClass[], startDate: '2020-01-01', allocName: '', savedName: '', rollWindow: 60, rollTargetClass: '',
+  }))
+  const classes = draft.classes
+  const duplicateProducts = useMemo(() => {
+    const owners = new Map<string, string>()
+    const conflicts: string[] = []
+    for (const assetClass of classes) for (const product of assetClass.etfs) {
+      const key = `${productKind(product)}:${product.code}`
+      const owner = owners.get(key)
+      if (owner) conflicts.push(`${product.name} 同时出现在 ${owner}、${assetClass.name}，请保留一个归属。`)
+      else owners.set(key, assetClass.name)
+    }
+    return conflicts
+  }, [classes])
+  const setClasses: React.Dispatch<React.SetStateAction<AssetClass[]>> = action => setDraft(current => ({ ...current, savedName: '', classes: typeof action === 'function' ? action(current.classes) : action }))
+  const [actionMessage, setActionMessage] = useState('')
+  const [actionError, setActionError] = useState('')
+  const [selectedProducts, setSelectedProducts] = useState<ETFItem[]>([])
   const productReturnState = useMemo(
     () => buildReturnNavigationState(location, '返回手动构建大类'),
     [location.hash, location.pathname, location.search],
   )
-  const [classes, setClasses] = useState<AssetClass[]>([])
   const [equalWeightCache, setEqualWeightCache] = useState<Record<number, number[]>>({})
   const [classControls, setClassControls] = useState<Record<string, NumericControlResult>>({})
   const [classControlError, setClassControlError] = useState('')
@@ -92,13 +118,18 @@ export default function AssetClassConstructionPage() {
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
   const [fitLoading, setFitLoading] = useState(false)
-  const [startDate, setStartDate] = useState<string>('2020-01-01')
-  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: Array<Array<number | null>>; corr_labels: string[]; metrics: { name: string; cumulative_return?: number | null; annual_return?: number | null; annual_vol?: number | null; sharpe?: number | null; var99?: number | null; es99?: number | null; max_drawdown?: number | null; calmar?: number | null }[]; consistency: { name: string; mean_corr?: number; pca_evr1?: number; max_te?: number }[]; annual_metrics: AnnualMetricsResult; execution: FixedNjitExecutionAudit }>(null)
+  const startDate = draft.startDate
+  const setStartDate = (value: string) => setDraft(current => ({ ...current, startDate: value }))
+  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: Array<Array<number | null>>; corr_labels: string[]; metrics: { name: string; cumulative_return?: number | null; annual_return?: number | null; annual_vol?: number | null; sharpe?: number | null; var99?: number | null; es99?: number | null; max_drawdown?: number | null; calmar?: number | null }[]; consistency: { name: string; mean_corr?: number; pca_evr1?: number; max_te?: number }[]; annual_metrics: AnnualMetricsResult; execution: FixedNjitExecutionAudit; pit?: PitRunLineage }>(null)
   const [rollLoading, setRollLoading] = useState(false)
   const [rollResult, setRollResult] = useState<null | { dates: string[]; series: Record<string, Array<number | null>>; metrics: { name: string; overall:number | null; mean:number | null; median:number | null; std:number | null; skew:number | null; kurtosis:number | null }[]; execution: FixedNjitExecutionAudit }>(null)
-  const [rollWindow, setRollWindow] = useState<number>(60)
+  const rollWindow = draft.rollWindow
+  const setRollWindow = (value: number) => setDraft(current => ({ ...current, rollWindow: value }))
   const classOptions = useMemo(()=> classes.map(c=> c.name), [classes])
-  const [rollTargetClass, setRollTargetClass] = useState<string>('')
+  const rollTargetClass = draft.rollTargetClass
+  const setRollTargetClass = (value: string) => setDraft(current => ({ ...current, rollTargetClass: value }))
+
+  useEffect(() => { setFitResult(null); setRollResult(null); setActionError('') }, [classes, startDate, universeId, platformAsOf])
 
   useEffect(() => {
     if (!universeId) {
@@ -108,9 +139,10 @@ export default function AssetClassConstructionPage() {
     }
     let active = true
     setUniverseLoading(true)
+    setUniverse(null)
     setUniverseError('')
     getInvestableUniverse(universeId)
-      .then((snapshot) => { if (active) setUniverse(snapshot) })
+      .then((snapshot) => { if (active) { setUniverse(snapshot); updateAllocationJourney({ name: snapshot.name, researchDate: snapshot.research_date, universeId: snapshot.id, poolVersionIds: snapshot.version_ids }) } })
       .catch((caught) => {
         if (active) {
           setUniverse(null)
@@ -178,13 +210,12 @@ export default function AssetClassConstructionPage() {
 
   const metricsSummary = useMemo(() => {
     if (!fitResult?.metrics || !Array.isArray(fitResult.metrics)) {
-      return { columns: [] as string[], rows: [] as any[] }
+      return { columns: [] as string[], rows: [] as HorizontalMetricRow[], annualRows: [] as HorizontalMetricRow[] }
     }
     const columns = fitResult.metrics.map(m => m.name)
     const cumulativeValues = fitResult.metrics.map(metric => Number(metric.cumulative_return ?? NaN))
     const cumulativePercentValues = cumulativeValues.map(v => Number.isFinite(v) ? v * 100 : NaN)
     const rows = [
-      { label: '累计收益率', values: cumulativeValues },
       { label: '累计收益率(%)', values: cumulativePercentValues },
       { label: '年化收益率(%)', values: fitResult.metrics.map(m => Number((m.annual_return ?? NaN) * 100)) },
       { label: '年化波动率(%)', values: fitResult.metrics.map(m => Number((m.annual_vol ?? NaN) * 100)) },
@@ -195,8 +226,7 @@ export default function AssetClassConstructionPage() {
       { label: '卡玛比率', values: fitResult.metrics.map(m => Number(m.calmar ?? NaN)) },
     ]
     const annualRows = buildAnnualMetricRows(columns, fitResult.annual_metrics)
-    const mergedRows = annualRows.length > 0 ? [...rows, ...annualRows] : rows
-    return { columns, rows: mergedRows }
+    return { columns, rows, annualRows }
   }, [fitResult])
 
   const metricColumns = metricsSummary.columns
@@ -205,7 +235,8 @@ export default function AssetClassConstructionPage() {
   // --- Save/Load States ---
   const [saveModal, setSaveModal] = useState(false)
   const [loadModal, setLoadModal] = useState(false)
-  const [allocName, setAllocName] = useState('')
+  const allocName = draft.allocName
+  const setAllocName = (value: string) => setDraft(current => ({ ...current, allocName: value }))
   const [allocList, setAllocList] = useState<string[]>([])
   const [allocSearch, setAllocSearch] = useState('')
 
@@ -231,22 +262,16 @@ export default function AssetClassConstructionPage() {
     updateClass(classId, (c) => ({ ...c, maxLeverage: clamp(val, 0, 100) }))
   }
 
-  function addETFToClass(classId: string, etf: { code: string; name: string }) {
-    updateClass(classId, (c) => {
-      const exists = c.etfs.some((x) => x.code === etf.code && x.name === etf.name)
-      const etfs = exists
-        ? c.etfs
-        : [
-            ...c.etfs,
-            {
-              ...etf,
-              weight: c.mode === 'custom' ? 0 : undefined,
-              riskContribution: c.mode === 'risk' ? 0 : undefined,
-              solved: false,
-            },
-          ]
-      return { ...c, etfs }
+  function addProductsToClass(classId: string, products: ETFItem[]) {
+    const occupied = products.find(product => classes.some(assetClass => assetClass.id !== classId && assetClass.etfs.some(item => productKind(item) === productKind(product) && item.code === product.code)))
+    if (occupied) { setActionError(`${occupied.name} 已属于其他大类。请先移出原大类，避免重复配置。`); return }
+    updateClass(classId, assetClass => {
+      const added = products.filter(product => !assetClass.etfs.some(item => productKind(item) === productKind(product) && item.code === product.code))
+      const single = assetClass.etfs.length === 0 && added.length === 1
+      return { ...assetClass, etfs: [...assetClass.etfs, ...added.map(product => ({ ...product, weight: assetClass.mode === 'custom' ? (single ? 100 : 0) : undefined, riskContribution: assetClass.mode === 'risk' ? (single ? 100 : 0) : undefined, solved: false }))] }
     })
+    setSelectedProducts([]); setSearchOpen({ open: false }); setSearchQuery('')
+    setActionMessage(products.length > 1 ? `已加入 ${products.length} 只产品。可选择等权重，或填写类内权重。` : '产品已加入；单产品大类的类内权重为 100%。')
   }
 
   function removeETF(classId: string, idx: number) {
@@ -310,6 +335,9 @@ export default function AssetClassConstructionPage() {
   }
 
   async function onFit() {
+    setActionError('')
+    if (duplicateProducts.length) { setActionError(duplicateProducts[0]); return }
+    if (platformAsOf && startDate > platformAsOf) { setActionError(`开始日期 ${startDate} 晚于平台知识截止 ${platformAsOf}。请调整日期或切换顶部数据口径；草稿会保留。`); return }
     // 校验参数
     if (!startDate) {
       alert('请选择开始日期')
@@ -348,14 +376,16 @@ export default function AssetClassConstructionPage() {
       const resp = await fetch('/api/fit-classes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startDate, classes: payloadClasses }),
+        body: JSON.stringify({ startDate, classes: payloadClasses, universe_snapshot_id: universe?.id ?? null }),
       })
-      if (!resp.ok) throw new Error(`后端错误 ${resp.status}`)
+      // 严格 PIT 模式下产品域前视会被后端判掉，理由只在 detail 里；
+      // 原来的 `后端错误 400` 把它吃掉了。
+      if (!resp.ok) throw new Error(apiErrorMessage(await resp.json().catch(() => null), `后端错误 ${resp.status}`))
       const data = await resp.json() as NonNullable<typeof fitResult>
       assertFixedNjitExecutionLanes(data.execution, '资产大类拟合')
       setFitResult(data)
     } catch (e: any) {
-      alert('拟合失败：' + (e?.message || e))
+      setActionError('拟合失败：' + (e?.message || e))
     } finally {
       setFitLoading(false)
     }
@@ -420,28 +450,18 @@ export default function AssetClassConstructionPage() {
     navigate(`/pre-investment/product-allocation-timing/construction?universe=${encodeURIComponent(universe.id)}`)
   }
 
-  // 大类名称由研究员维护，具体产品只能从已锁定可投资域中加入。
+  // Automatic construction is an explicit handoff, scoped to the same universe.
   useEffect(() => {
-    if (classes.length > 0) return
-    // Handoff from 自动构建大类: adopt the generated draft instead of the empty default.
     const imported = sessionStorage.getItem('autoClassificationImport')
-    if (imported) {
-      sessionStorage.removeItem('autoClassificationImport')
-      try {
-        const parsed = JSON.parse(imported)
-        if (Array.isArray(parsed?.classes) && parsed.classes.length > 0) {
-          setClasses(parsed.classes)
-          return
-        }
-      } catch {
-        // Fall through to the empty default pool.
+    if (!imported) return
+    try {
+      const parsed = JSON.parse(imported)
+      if (parsed.universe_snapshot_id === universeId && Array.isArray(parsed.classes) && parsed.classes.length) {
+        setClasses(parsed.classes)
+        sessionStorage.removeItem('autoClassificationImport')
       }
-    }
-    setClasses([
-      { id: uid(), name: '权益类', mode: 'custom', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
-      { id: uid(), name: '固收类', mode: 'equal', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
-    ])
-  }, [])
+    } catch { sessionStorage.removeItem('autoClassificationImport') }
+  }, [universeId])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -492,7 +512,8 @@ export default function AssetClassConstructionPage() {
   const busy = loading || fitLoading || rollLoading || universeLoading
 
   // --- Save/Load Handlers ---
-  async function handleSave() {
+  async function handleSave(continueToSaa = false) {
+    if (duplicateProducts.length) { setActionError(duplicateProducts[0]); setSaveModal(false); return }
     const name = allocName.trim()
     if (!name) {
       alert('配置名称不能为空')
@@ -518,16 +539,20 @@ export default function AssetClassConstructionPage() {
       const resp = await fetch('/api/save-allocation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ asset_alloc_name: name, classes: payloadClasses }),
+        body: JSON.stringify({ asset_alloc_name: name, classes: payloadClasses, universe_snapshot_id: universe?.id ?? null }),
       })
       const data = await resp.json()
       if (!resp.ok) throw new Error(apiErrorMessage(data, `错误 ${resp.status}`))
-      alert(`配置 “${name}” 保存成功！`)
+      setActionError('')
+      setActionMessage(`大类配置“${name}”已保存，可以继续长期配置。`)
+      setDraft(current => ({ ...current, savedName: name, allocName: name }))
+      updateAllocationJourney({ allocationName: name, universeId: universe?.id, baselineId: undefined, taaRunId: undefined })
       setSaveModal(false)
-      setAllocName('')
       setAllocList(p => Array.from(new Set([...p, name])).sort())
+      if (continueToSaa) navigate(allocationJourneyPath('saa', { ...readAllocationJourney(), allocationName: name, universeId }))
     } catch (e: any) {
-      alert('保存失败：' + (e.message || e))
+      setActionError('保存失败：' + (e.message || e))
+      setSaveModal(false)
     } finally {
       setLoading(false)
     }
@@ -540,7 +565,10 @@ export default function AssetClassConstructionPage() {
       const resp = await fetch(`/api/load-allocation?name=${encodeURIComponent(name)}`)
       const data = await resp.json()
       if (!resp.ok) throw new Error(apiErrorMessage(data, `错误 ${resp.status}`))
-      setClasses(data)
+      if (!Array.isArray(data)) throw new Error('保存的大类配置格式不正确')
+      setClasses(data.map(assetClass => ({ ...assetClass, mode: assetClass.mode || 'custom' })))
+      setAllocName(name)
+      setActionMessage(`已导入“${name}”。请核对产品是否属于当前范围，再保存。`)
       setLoadModal(false)
       setAllocSearch('')
     } catch (e: any) {
@@ -567,14 +595,18 @@ export default function AssetClassConstructionPage() {
 
 
   return (
-    <div className="mx-auto max-w-5xl p-6 relative">
+    <div className="mx-auto min-w-0 max-w-5xl p-2 sm:p-4 relative">
       {busy && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="rounded-xl bg-white px-6 py-4 shadow text-sm">正在计算，请稍候...</div>
         </div>
       )}
       <h1 className="text-2xl font-semibold">资产大类构建模块</h1>
-      <p className="text-sm text-gray-500 mt-1">基于已锁定产品池快照配置大类、类内代理产品与拟合权重。</p>
+      <p className="text-sm text-gray-500 mt-1">先把产品分入大类，再设置每个大类内部的产品比例。类内合计 100%；大类之间的比例在下一步 SAA 设置。</p>
+      <p className="mt-2 text-xs text-slate-500">输入自动保存在此浏览器。返回页面或切换 PIT 后可继续；计算结果需要按当前口径重算。</p>
+      {(actionMessage || actionError) && <div role={actionError ? 'alert' : 'status'} className={`mt-3 rounded-lg border p-3 text-sm ${actionError ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>{actionError || actionMessage}</div>}
+      {duplicateProducts.length > 0 && <div role="alert" className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">{duplicateProducts.map(message => <p key={message}>{message}</p>)}</div>}
+      {draft.savedName && <Link to={allocationJourneyPath('saa', { ...readAllocationJourney(), allocationName: draft.savedName, universeId })} className="mt-3 inline-block rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white">继续 SAA：{draft.savedName} →</Link>}
       {universe ? (
         <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
           已锁定可投资域：<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} 只可用产品 · 研究日期 {universe.research_date}
@@ -605,10 +637,10 @@ export default function AssetClassConstructionPage() {
               riskControl={classControls[`${ac.id}:risk`]}
               controlError={classControlError}
               on重命名={(name) => updateClass(ac.id, (c) => ({ ...c, name }))}
-              onModeChange={(mode) => updateClass(ac.id, (c) => ({ ...c, mode }))}
+              onModeChange={(mode) => updateClass(ac.id, (c) => ({ ...c, mode, etfs: mode === 'custom' && c.mode === 'equal' ? c.etfs.map((item, index) => ({ ...item, weight: equalWeightCache[c.etfs.length]?.[index] ?? item.weight })) : c.etfs }))}
               onRiskMetricChange={(metric) => updateClass(ac.id, (c) => ({ ...c, riskMetric: metric }))}
               on删除={() => deleteAssetClass(ac.id)}
-              onAddETF={() => universe ? setSearchOpen({ open: true, classId: ac.id }) : navigate('/pre-investment/product-pool')}
+              onAddETF={() => { setSelectedProducts([]); setPage(1); return universe ? setSearchOpen({ open: true, classId: ac.id }) : navigate('/pre-investment/product-pool') }}
               onRemoveETF={(idx) => removeETF(ac.id, idx)}
               onSetCustomWeight={(idx, v) => setCustomWeight(ac.id, idx, v)}
               onSetRiskContribution={(idx, v) => setRiskContribution(ac.id, idx, v)}
@@ -631,24 +663,25 @@ export default function AssetClassConstructionPage() {
         </div>
       </div>
 
-      <div className="mt-6 flex flex-wrap justify-center gap-3 text-center">
+      <div className="sticky bottom-0 z-20 mt-6 flex flex-wrap justify-center gap-3 rounded-xl border border-slate-200 bg-white/95 p-3 text-center shadow-sm">
+          <button type="button" onClick={onFit} disabled={busy} className="rounded-lg border border-blue-600 bg-white px-4 py-2 text-sm font-semibold text-blue-700">检查大类数据</button>
           <button 
             className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
             onClick={() => setSaveModal(true)} >
               保存当前大类配置
           </button>
-          <button
+          <details className="text-sm text-slate-600"><summary className="cursor-pointer px-3 py-2">其他研究用途</summary><button
             className="rounded-lg border border-emerald-700 bg-white px-6 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
             onClick={enterPortfolioResearch}
             disabled={!universe || !classes.some((assetClass) => assetClass.etfs.length > 0)}
           >
             保存为研究组合 / 进入组合指标
-          </button>
+          </button></details>
       </div>
 
       {/* Save Modal */}
       {saveModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
             <h3 className="text-lg font-semibold">保存大类配置</h3>
             <input
@@ -660,7 +693,8 @@ export default function AssetClassConstructionPage() {
             />
             <div className="mt-4 flex justify-end gap-3">
               <button className="rounded-lg bg-gray-100 px-4 py-2 text-sm hover:bg-gray-200" onClick={() => setSaveModal(false)}>取消</button>
-              <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700" onClick={handleSave}>保存</button>
+              <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700" onClick={() => void handleSave()}>保存</button>
+              <button className="rounded-lg bg-emerald-800 px-4 py-2 text-sm text-white" onClick={() => void handleSave(true)}>保存并继续 SAA</button>
             </div>
           </div>
         </div>
@@ -668,7 +702,7 @@ export default function AssetClassConstructionPage() {
 
       {/* Load Modal */}
       {loadModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">导入大类配置</h3>
@@ -698,7 +732,7 @@ export default function AssetClassConstructionPage() {
       )}
 
       {searchOpen.open && universe && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-xl">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">从可投资域添加产品</h3>
@@ -713,17 +747,20 @@ export default function AssetClassConstructionPage() {
             />
             <div className="mt-3 max-h-80 overflow-auto rounded-lg border border-gray-100">
               {searchResults.length === 0 && <div className="p-4 text-sm text-gray-500">无匹配结果</div>}
-              {searchResults.map((etf) => (
-                <button
+              {searchResults.map((etf) => {
+                const owner = classes.find(assetClass => assetClass.etfs.some(item => productKind(item) === productKind(etf) && item.code === etf.code))
+                const selected = selectedProducts.some(item => item.code === etf.code && productKind(item) === productKind(etf))
+                return <button
+                  type="button"
+                  aria-pressed={selected}
+                  disabled={Boolean(owner)}
                   key={etf.code + etf.name}
                   onClick={() => {
-                    if (searchOpen.classId) addETFToClass(searchOpen.classId, etf)
-                    setSearchQuery('')
-                    setSearchOpen({ open: false })
+                    setSelectedProducts(current => current.some(item => item.code === etf.code && productKind(item) === productKind(etf)) ? current.filter(item => item.code !== etf.code || productKind(item) !== productKind(etf)) : [...current, etf])
                   }}
-                  className="flex w-full items-center justify-between border-b px-4 py-2 text-left hover:bg-gray-50"
+                  className={`flex w-full min-w-0 items-center justify-between gap-2 border-b px-3 py-3 text-left disabled:opacity-50 ${selected ? 'bg-emerald-50' : 'hover:bg-gray-50'}`}
                 >
-                  <div className="flex-1 flex items-center gap-2">
+                  <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
                     <span className="font-mono text-sm">{etf.code}</span>
                     <span className="truncate px-2 text-sm text-gray-700">{etf.name}</span>
                     {etf.instrument_type && (
@@ -736,10 +773,11 @@ export default function AssetClassConstructionPage() {
                     <div className="truncate">评价方案：{etf.evaluation_plan_names?.join('、') || '—'}</div>
                     <div className="truncate">产品池：{etf.pool_names?.join('、') || '—'}</div>
                   </div>
-                  <span className="text-xs text-gray-400">添加</span>
+                  <span className="shrink-0 text-xs text-gray-500">{owner ? `已属于${owner.name}` : selected ? '已选' : '选择'}</span>
                 </button>
-              ))}
+              })}
             </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span className="text-sm text-slate-600">已选 {selectedProducts.length} 只；已有归属的产品不可重复加入。</span><button type="button" disabled={!selectedProducts.length} onClick={() => searchOpen.classId && addProductsToClass(searchOpen.classId, selectedProducts)} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">加入所选产品（{selectedProducts.length}）</button></div>
             {/* 分页与排序控制 */}
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -773,8 +811,8 @@ export default function AssetClassConstructionPage() {
         <SectionTitle title="大类收益率拟合" />
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-sm">
-            <label className="text-gray-700">选择开始日期</label>
-            <input type="date" className="border rounded px-2 py-1" value={startDate} onChange={(e)=>setStartDate(e.target.value)} />
+            <label htmlFor="class-start-date" className="text-gray-700">选择开始日期</label>
+            <input id="class-start-date" type="date" max={platformAsOf || undefined} className="border rounded px-2 py-1" value={startDate} onChange={(e)=>setStartDate(e.target.value)} />
           </div>
           <button className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700" onClick={onFit} disabled={busy}>
             拟合大类收益率
@@ -782,6 +820,8 @@ export default function AssetClassConstructionPage() {
         </div>
         {fitResult && (
           <div className="mt-4 space-y-6">
+            {/* 这些数字是按哪一天、哪个产品域算出来的——自动构建大类一直印着，手动这边没有。 */}
+            <PitProvenance lineage={fitResult.pit} />
             <div>
               {(() => {
                 const keys = Object.keys(fitResult.navs)
@@ -845,67 +885,53 @@ export default function AssetClassConstructionPage() {
                 }
               })()} />
             </div>
-            <div>
-              <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
-              <HorizontalMetricComparison
-                columns={metricColumns}
-                rows={metricRows}
-                height={DEFAULT_METRIC_TABLE_HEIGHT}
-              />
-              <div className="mt-4">
-                <h4 className="text-sm font-semibold mb-2 text-gray-700">收益风险象限图</h4>
-                <PerformanceQuadrantChart
-                  columns={metricColumns}
-                  rows={metricRows}
-                  defaultXAxis="年化波动率(%)"
-                  defaultYAxis="累计收益率(%)"
-                />
-              </div>
-            </div>
+            <AllocationMetricsReview
+              columns={metricColumns}
+              rows={metricRows}
+              annualRows={metricsSummary.annualRows}
+              detailedContent={Array.isArray(fitResult.consistency) && fitResult.consistency.length > 0 ? (
+                <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
+                  <h4 className="mb-3 text-sm font-semibold">同类资产一致性</h4>
+                  <div className="overflow-auto">
+                    <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
+                      <thead>
+                        <tr>
+                          <th className="border px-2 py-2">大类</th>
+                          <th className="border px-2 py-2">相关性均值</th>
+                          <th className="border px-2 py-2">主成分解释度(%)</th>
+                          <th className="border px-2 py-2">最大跟踪误差(%)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fitResult.consistency.map((r)=> {
+                          const meanCorr = r.mean_corr as number
+                          const pcaEvr1 = r.pca_evr1 as number
+                          const maxTe = r.max_te as number
+                          const meanCorrStyle = Number.isFinite(meanCorr) && meanCorr < 0.6 ? { backgroundColor: '#fee2e2' } : {}
+                          const pcaEvr1Style = Number.isFinite(pcaEvr1) && pcaEvr1 < 0.8 ? { backgroundColor: '#fee2e2' } : {}
+                          const maxTeStyle = Number.isFinite(maxTe) && maxTe * 100 > 5 ? { backgroundColor: '#fee2e2' } : {}
+
+                          return (
+                            <tr key={r.name}>
+                              <td className="border px-2 py-2">{r.name}</td>
+                              <td className="border px-2 py-2 text-right" style={meanCorrStyle}>{Number.isFinite(meanCorr) ? meanCorr.toFixed(3) : '-'}</td>
+                              <td className="border px-2 py-2 text-right" style={pcaEvr1Style}>{Number.isFinite(pcaEvr1) ? (pcaEvr1 * 100).toFixed(2) : '-'}</td>
+                              <td className="border px-2 py-2 text-right" style={maxTeStyle}>{Number.isFinite(maxTe) ? (maxTe * 100).toFixed(2) : '-'}</td>
+                            </tr>
+                          )
+                        })}</tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : undefined}
+            />
           </div>
         )}
       </div>
 
-      {/* 同类资产一致性 */}
-      {fitResult && Array.isArray(fitResult.consistency) && fitResult.consistency.length > 0 && (
-        <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
-          <SectionTitle title="同类资产一致性" />
-          <div className="overflow-auto">
-            <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
-              <thead>
-                <tr>
-                  <th className="border px-2 py-2">大类</th>
-                  <th className="border px-2 py-2">相关性均值</th>
-                  <th className="border px-2 py-2">主成分解释度(%)</th>
-                  <th className="border px-2 py-2">最大跟踪误差(%)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {fitResult.consistency.map((r)=> {
-                  const meanCorr = r.mean_corr as number
-                  const pcaEvr1 = r.pca_evr1 as number
-                  const maxTe = r.max_te as number
-                  const meanCorrStyle = Number.isFinite(meanCorr) && meanCorr < 0.6 ? { backgroundColor: '#fee2e2' } : {}
-                  const pcaEvr1Style = Number.isFinite(pcaEvr1) && pcaEvr1 < 0.8 ? { backgroundColor: '#fee2e2' } : {}
-                  const maxTeStyle = Number.isFinite(maxTe) && maxTe * 100 > 5 ? { backgroundColor: '#fee2e2' } : {}
-
-                  return (
-                    <tr key={r.name}>
-                      <td className="border px-2 py-2">{r.name}</td>
-                      <td className="border px-2 py-2 text-right" style={meanCorrStyle}>{Number.isFinite(meanCorr) ? meanCorr.toFixed(3) : '-'}</td>
-                      <td className="border px-2 py-2 text-right" style={pcaEvr1Style}>{Number.isFinite(pcaEvr1) ? (pcaEvr1 * 100).toFixed(2) : '-'}</td>
-                      <td className="border px-2 py-2 text-right" style={maxTeStyle}>{Number.isFinite(maxTe) ? (maxTe * 100).toFixed(2) : '-'}</td>
-                    </tr>
-                  )
-                })}</tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {/* 滚动相关性研究 */}
-      <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-4">
-        <SectionTitle title="滚动相关性研究" />
+      <details className="mt-6 rounded-2xl border border-gray-200 bg-white p-4">
+        <summary className="mb-3 cursor-pointer text-lg font-semibold">滚动相关性研究</summary>
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 text-sm">
             <label className="text-gray-700">滚动天数</label>
@@ -963,7 +989,7 @@ export default function AssetClassConstructionPage() {
             </div>
           </div>
         )}
-      </div>
+      </details>
     </div>
   )
 }
@@ -1115,19 +1141,19 @@ function AssetClassCard({
       </div>
 
       <div className="grid grid-cols-12 items-center gap-2 px-3 py-2 text-xs text-gray-500">
-        <div className="col-span-7">产品（ETF / 公募基金）</div>
-        <div className="col-span-3 text-right">{isRisk ? (showSolved ? '风险贡献（%） / 资金权重（%）' : '风险贡献（%）') : '权重（%）'}</div>
+        <div className="min-w-0 col-span-7">产品（ETF / 公募基金）</div>
+        <div className="min-w-0 col-span-3 text-right">{isRisk ? (showSolved ? '风险贡献（%） / 资金权重（%）' : '风险贡献（%）') : '类内权重（%）'}</div>
         <div className="col-span-2 text-right">操作</div>
       </div>
 
       <div className="divide-y">
         {ac.etfs.map((e, idx) => (
           <div key={idx} className="grid grid-cols-12 items-center gap-2 px-3 py-2">
-            <div className="col-span-7">
+            <div className="min-w-0 col-span-7">
               <div className="flex items-center gap-2">
                 <span className="w-5 text-xs text-gray-500">{idx + 1}.</span>
                 <div className="min-w-0 flex-1 truncate text-sm">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-2">
                     <span className="font-mono">{e.code}</span>
                     <Link
                       to={`/product-research/products/${encodeURIComponent(e.code)}?kind=${productKind(e)}`}
@@ -1138,12 +1164,12 @@ function AssetClassCard({
                       {e.name}
                     </Link>
                   </div>
-                  <div className="text-xs text-gray-500 mt-0.5">基金公司：{e.management || '—'} ｜ 成立日期：{e.found_date || '—'}</div>
+                  <p className="mt-1 truncate text-xs text-gray-500">{e.evaluation_plan_names?.join('、') || '来自已锁定产品范围'}</p>
                 </div>
               </div>
             </div>
 
-            <div className="col-span-3 text-right">
+            <div className="min-w-0 col-span-3 text-right">
               {ac.mode === 'custom' ? (
                 <div className="inline-flex items-center gap-2">
                   <input
@@ -1151,9 +1177,10 @@ function AssetClassCard({
                     min={0}
                     max={100}
                     step={0.01}
+                    aria-label={`${ac.name} ${e.name} 类内权重`}
                     value={e.weight ?? 0}
                     onChange={(ev) => onSetCustomWeight(idx, Number(ev.target.value))}
-                    className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm"
+                    className="w-16 sm:w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm"
                   />
                   <span className="text-sm text-gray-500">%</span>
                 </div>
@@ -1168,7 +1195,7 @@ function AssetClassCard({
                     step={0.01}
                     value={e.riskContribution ?? 0}
                     onChange={(ev) => onSetRiskContribution(idx, Number(ev.target.value))}
-                    className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm"
+                    className="w-16 sm:w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm"
                   />
                   <span className="text-sm text-gray-500">%</span>
                   {showSolved && <span className="text-xs text-gray-500">/ 资金权重 {(e.weight ?? 0).toFixed(2)}%</span>}
@@ -1199,12 +1226,12 @@ function AssetClassCard({
                 'rounded-md px-2 py-0.5 ' + (weightControl?.within_tolerance ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700')
               }
             >
-              权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}
+              类内权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}
             </span>
             {weightControl && !weightControl.within_tolerance && <span className="ml-2 text-yellow-700">（需等于 100%）</span>}
           </>
         ) : ac.mode === 'equal' ? (
-          <span className={`rounded-md px-2 py-0.5 ${weightControl?.within_tolerance ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}</span>
+          <span className={`rounded-md px-2 py-0.5 ${weightControl?.within_tolerance ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>类内权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}</span>
         ) : (
           <>
             <span
@@ -1216,7 +1243,7 @@ function AssetClassCard({
             </span>
             {riskControl && !riskControl.within_tolerance && <span className="ml-2 text-yellow-700">（需等于 100%）</span>}
             {showSolved && (
-              <span className="ml-3 rounded-md bg-blue-50 px-2 py-0.5 text-blue-700">资金权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}</span>
+              <span className="ml-3 rounded-md bg-blue-50 px-2 py-0.5 text-blue-700">资金类内权重合计： {weightControl ? `${weightControl.total.toFixed(2)}%` : controlError || 'NJIT 校验中…'}</span>
             )}
           </>
         )}

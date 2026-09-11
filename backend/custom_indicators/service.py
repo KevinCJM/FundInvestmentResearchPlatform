@@ -69,6 +69,8 @@ from cal_indicators.typed_operators import (
     COMPAT_TYPED_DSL_VERSION,
     PREVIOUS_OPERATOR_REGISTRY_VERSION,
     PREVIOUS_TYPED_DSL_VERSION,
+    ROLLING_OPERATOR_REGISTRY_VERSION,
+    ROLLING_TYPED_DSL_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
 )
@@ -100,6 +102,7 @@ from .presentation import (
 )
 from .periods import SUPPORTED_PERIODS, period_cache_reference, period_metadata
 from .drawdown_indicator import independent_drawdown_indicators
+from .scale_indicator import scale_indicators
 from .formula_source import editable_formula_latex
 from .repository import (
     IndicatorRepository,
@@ -172,6 +175,7 @@ LEGACY_TYPED_DSL_VERSION = "2.0.0"
 LEGACY_TYPED_OPERATOR_REGISTRY_VERSION = "2.0.0"
 COMPAT_TYPED_OPERATOR_REGISTRY_VERSION = COMPAT_OPERATOR_REGISTRY_VERSION
 PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION = PREVIOUS_OPERATOR_REGISTRY_VERSION
+ROLLING_TYPED_OPERATOR_REGISTRY_VERSION = ROLLING_OPERATOR_REGISTRY_VERSION
 NUMBA_V3_MIGRATION_MARKER = "typed-numba-3"
 MAX_FORMULA_LENGTH = 1000
 MAX_DAG_NODES = 128
@@ -519,6 +523,7 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         + typed_indicators
         + time_series_builtin_indicators(timestamp, typed_indicators)
         + independent_drawdown_indicators()
+        + scale_indicators()
     )
 
 
@@ -1075,6 +1080,8 @@ class CustomIndicatorService:
             return COMPAT_TYPED_OPERATOR_REGISTRY_VERSION
         if dsl_version == PREVIOUS_TYPED_DSL_VERSION:
             return PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION
+        if dsl_version == ROLLING_TYPED_DSL_VERSION:
+            return ROLLING_TYPED_OPERATOR_REGISTRY_VERSION
         return TYPED_OPERATOR_REGISTRY_VERSION
 
     @staticmethod
@@ -1386,6 +1393,7 @@ class CustomIndicatorService:
             is_modern = str(decorated["dsl_version"]) in {
                 COMPAT_TYPED_DSL_VERSION,
                 PREVIOUS_TYPED_DSL_VERSION,
+                ROLLING_TYPED_DSL_VERSION,
                 TYPED_DSL_VERSION,
             }
             decorated.setdefault(
@@ -1436,17 +1444,14 @@ class CustomIndicatorService:
             and str(decorated.get("dsl_version") or "").startswith("2.")
         ):
             try:
-                transformed = transform_scalar_expression(
-                    str(decorated.get("expression") or ""),
-                    2,
+                from cal_indicators.rolling_scope import interval_capability
+                from .formula_source import canonical_formula_source
+                decorated["rolling_series_compatibility"] = interval_capability(
+                    canonical_formula_source(str(decorated.get("expression") or "")),
+                    variable_types=variable_types("single_product", decorated["dsl_version"]),
+                    dsl_version=decorated["dsl_version"],
+                    operator_registry_version=decorated.get("operator_registry_version"),
                 )
-                decorated["rolling_series_compatibility"] = {
-                    "supported": True,
-                    "protocol_version": "1.0.0",
-                    "rewritten_reductions": list(
-                        dict.fromkeys(transformed.rewritten_reductions)
-                    ),
-                }
             except ValidationError as exc:
                 decorated["rolling_series_compatibility"] = {
                     "supported": False,
@@ -1541,6 +1546,7 @@ class CustomIndicatorService:
             LEGACY_TYPED_DSL_VERSION,
             COMPAT_TYPED_DSL_VERSION,
             PREVIOUS_TYPED_DSL_VERSION,
+            ROLLING_TYPED_DSL_VERSION,
             TYPED_DSL_VERSION,
         }:
             raise ValidationError(
@@ -1603,6 +1609,7 @@ class CustomIndicatorService:
         if dsl_version in {
             COMPAT_TYPED_DSL_VERSION,
             PREVIOUS_TYPED_DSL_VERSION,
+            ROLLING_TYPED_DSL_VERSION,
             TYPED_DSL_VERSION,
         }:
             supported_versions = {

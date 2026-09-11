@@ -109,6 +109,8 @@ interface ProductsResponse {
   snapshot_metric_fields?: SnapshotMetricField[];
   selected_snapshot_metrics?: string[];
   snapshot?: { status?: string | null; as_of?: string | null };
+  /** 概览 is allowed to screen on hindsight snapshot numbers — but must say so. */
+  pit?: { as_of?: string | null; snapshot_is_hindsight?: boolean; warnings?: string[] };
   sort_by: string;
   sort_dir: 'asc' | 'desc' | string;
   execution: FixedNjitExecutionAudit;
@@ -790,6 +792,16 @@ export default function ProductResearch() {
           onAdd={addCondition}
           onRemove={removeCondition}
         />
+        {/* The研究 surfaces recompute under the研究日; this screening table reads
+            the全历史 snapshot, so the difference has to be visible here. */}
+        {response?.pit?.snapshot_is_hindsight && (
+          <p
+            className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"
+            data-testid="product-research-snapshot-hindsight"
+          >
+            {response.pit.warnings?.[0]}
+          </p>
+        )}
         {activeFilterChips.length > 0 && (
           <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
             {activeFilterChips.map((chip) => (

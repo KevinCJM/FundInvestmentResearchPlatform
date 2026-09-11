@@ -48,32 +48,47 @@ const operators: IndicatorOperator[] = [
   { name: 'matvec', label: '矩阵向量乘', signature: 'matrix<time,asset> × vector<asset> → series<time>', latex_template: '\\operatorname{matvec}', return_type: 'series<time>', output_shape: 'series', domains: ['portfolio'], mathematical_essence: '矩阵与资产向量相乘。', semantic: '资产轴必须对齐。', category_id: 'linear_algebra', category_label: '线性代数', parameters: [{ name: 'matrix', label: '矩阵', allowed_shapes: ['matrix'] }, { name: 'vector', label: '向量', allowed_shapes: ['vector'] }] },
 ]
 
-const rollingMeanOperator: IndicatorOperator = {
-  name: 'rolling_mean',
-  label: '滚动平均值',
-  signature: 'rolling_mean(values, window) → series<time>',
-  latex_template: '\\operatorname{rolling\\_mean}(x,w)',
-  display_latex_template: '\\left(\\frac{1}{w}\\sum_{i=t-w+1}^{t}x_i\\right)_{t=1}^{T}',
-  return_type: 'series<time>',
-  output_shape: 'series',
-  mathematical_essence: '按固定窗口计算时间序列的滚动算术平均值。',
-  semantic: '保持时间轴不变，窗口未满时返回缺失值。',
+const rollingWindowOperator: IndicatorOperator = {
+  name: 'rolling_window',
+  label: '滚动窗口',
+  signature: 'rolling_window(values, window) → window<time,window>',
+  latex_template: '\\mathcal{W}_{t,w}(x)',
+  return_type: 'window<time,window>',
+  output_shape: 'window',
+  mathematical_essence: '只定义截至当前时点最近 W 个观察位置的因果窗口。',
+  semantic: '不计算统计量；后续连接平均值、标准差或极值。',
   category_id: 'rolling',
   category_label: '滚动与时序',
   domains: ['single_product'],
   parameters: [
     { name: 'values', label: '输入序列', allowed_shapes: ['series'] },
-    {
-      name: 'window',
-      label: '窗口期数',
-      allowed_shapes: ['scalar'],
-      source_policy: 'fixed_constant',
-      constant_kind: 'integer',
-      default: 20,
-      minimum: 1,
-      maximum: 20_000,
-    },
+    { name: 'window', label: '窗口期数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
   ],
+  parameter_sets: [
+    { arity: 2, parameters: [
+      { name: 'values', label: '输入序列', allowed_shapes: ['series'] },
+      { name: 'window', label: '窗口期数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
+    ] },
+    { arity: 3, parameters: [
+      { name: 'values', label: '输入序列', allowed_shapes: ['series'] },
+      { name: 'window', label: '窗口期数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
+      { name: 'min_periods', label: '最少有效观察数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
+    ] },
+  ],
+}
+
+const meanOperator: IndicatorOperator = {
+  name: 'mean', label: '平均值', signature: 'mean(values)', latex_template: '\\overline{x}',
+  return_type: 'scalar | series<time>', output_shape: 'unknown', mathematical_essence: '对输入中的数值取算术平均。',
+  semantic: '普通序列得到标量；滚动窗口集合逐时点得到时间序列。', category_id: 'reduction', category_label: '统计归约',
+  parameters: [{ name: 'values', label: '待处理数值', allowed_shapes: ['series', 'vector', 'matrix', 'window'] }],
+}
+
+const stdOperator: IndicatorOperator = {
+  name: 'std', label: '标准差', signature: 'std(values, ddof)', latex_template: '\\operatorname{Std}(x)',
+  return_type: 'scalar | series<time>', output_shape: 'unknown', mathematical_essence: '按指定自由度计算标准差。',
+  semantic: '普通序列得到标量；滚动窗口集合逐时点得到时间序列。', category_id: 'statistics', category_label: '统计归约',
+  parameters: [{ name: 'values', label: '待处理数值', allowed_shapes: ['series', 'vector', 'matrix', 'window'] }, { name: 'ddof', label: '自由度修正', allowed_shapes: ['scalar'], default: 1, optional: true }],
 }
 
 const meta: IndicatorMeta = {
@@ -154,7 +169,7 @@ const timeSeriesBuiltIn: IndicatorDefinition = {
   id: 'builtin-close-moving-average-series',
   name: '20 日收盘价均线',
   description: '对真实收盘价执行固定 20 个交易日窗口的简单移动平均。',
-  expression: 'rolling_mean(market_close, 20)',
+  expression: 'mean(rolling_window(market_close, 20))',
   result_kind: 'time_series',
   output_contract: 'series_bundle',
   output_measure: 'series_bundle',
@@ -166,8 +181,8 @@ const timeSeriesBuiltIn: IndicatorDefinition = {
   precision: 4,
   direction: 'higher_better',
   annual_risk_free_rate_percent: 0,
-  dsl_version: '2.3.0',
-  operator_registry_version: '2.3.0',
+  dsl_version: '2.4.0',
+  operator_registry_version: '2.4.0',
   variable_registry_version: '2.1.0',
   data_contract_version: 'tushare-eod-v2',
   context_schema_version: 'typed-context-v2',
@@ -176,7 +191,7 @@ const timeSeriesBuiltIn: IndicatorDefinition = {
   series_outputs: [{
     id: 'ma',
     label: '20 日收盘价均线',
-    expression: 'rolling_mean(market_close, 20)',
+    expression: 'mean(rolling_window(market_close, 20))',
     unit: '元',
     display_format: 'number',
     precision: 4,
@@ -206,7 +221,7 @@ const rollingSharpeTimeSeriesBuiltIn: IndicatorDefinition = {
   id: 'builtin-rolling-5d-annualized-sharpe-series',
   name: '5 日滚动年化夏普比率',
   description: '对每个时点最近 5 个有效收益观察值计算样本标准差口径的年化夏普比率。',
-  expression: '(rolling_mean(returns, 5) - risk_free_rate_per_observation) / rolling_std(returns, 5, 1) * sqrt(periods_per_year)',
+  expression: '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(periods_per_year)',
   indicator_type: 'risk_adjusted',
   category_id: 'risk_adjusted',
   category_label: '风险调整指标',
@@ -217,7 +232,7 @@ const rollingSharpeTimeSeriesBuiltIn: IndicatorDefinition = {
   series_outputs: [{
     id: 'value',
     label: '5 日滚动年化夏普比率',
-    expression: '(rolling_mean(returns, 5) - risk_free_rate_per_observation) / rolling_std(returns, 5, 1) * sqrt(periods_per_year)',
+    expression: '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(periods_per_year)',
     unit: '',
     display_format: 'number',
     precision: 3,
@@ -238,7 +253,7 @@ const rollingSharpeTimeSeriesBuiltIn: IndicatorDefinition = {
   required_variables: ['returns', 'risk_free_rate_per_observation', 'periods_per_year'],
   rolling_source: {
     kind: 'rolling_scalar',
-    transform_version: '1.0.0',
+    transform_version: '2.0.0',
     indicator_id: rollingSharpeSource.id,
     indicator_revision: rollingSharpeSource.revision,
     indicator_name: rollingSharpeSource.name,
@@ -249,10 +264,10 @@ const rollingSharpeTimeSeriesBuiltIn: IndicatorDefinition = {
     detached: false,
   },
   rolling_transform: {
-    version: '1.0.0',
+    version: '2.0.0',
     window_observations: 5,
     source_expression: rollingSharpeSource.expression,
-    generated_expression: '(rolling_mean(returns, 5) - risk_free_rate_per_observation) / rolling_std(returns, 5, 1) * sqrt(periods_per_year)',
+    generated_expression: '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(periods_per_year)',
     series_variables: ['returns'],
     reduction_mappings: ['mean', 'std'],
   },
@@ -264,17 +279,18 @@ const rollingSharpeSeriesDag = {
     { id: 'returns', label: 'returns', kind: 'variable', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\mathbf{r}' },
     { id: 'window', label: '5', kind: 'constant', value_type: 'scalar<count>', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: '5', formula_fragment: '5' },
     { id: 'ddof', label: '1', kind: 'constant', value_type: 'scalar<count>', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: '1', formula_fragment: '1' },
-    { id: 'mean', label: 'rolling_mean', operator_id: 'rolling_mean', kind: 'call', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\overline{r}_{t,5}' },
+    { id: 'rolling-window', label: 'rolling_window', operator_id: 'rolling_window', kind: 'call', value_type: 'window<time,window>', shape: 'window' as const, symbolic_shape: ['T', 'W'], latex_fragment: '\\mathcal{W}_{t,5}(\\mathbf r)' },
+    { id: 'mean', label: 'mean', operator_id: 'mean', kind: 'call', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\mu_{t,5}(\\mathbf r)' },
     { id: 'rf', label: 'risk_free_rate_per_observation', kind: 'variable', value_type: 'scalar<rate_decimal>', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: 'r_f' },
-    { id: 'std', label: 'rolling_std', operator_id: 'rolling_std', kind: 'call', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: 's_{t,5}' },
+    { id: 'std', label: 'std', operator_id: 'std', kind: 'call', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: 's_{t,5}' },
     { id: 'root', label: 'multiply', operator_id: 'multiply', kind: 'binary', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\frac{\\overline{r}_{t,5}-r_f}{s_{t,5}}\\sqrt{p_{\\mathrm{year}}}' },
   ],
   edges: [
-    { source: 'returns', target: 'mean', parameter: 'values', order: 0 },
-    { source: 'window', target: 'mean', parameter: 'window', order: 1 },
-    { source: 'returns', target: 'std', parameter: 'values', order: 0 },
-    { source: 'window', target: 'std', parameter: 'window', order: 1 },
-    { source: 'ddof', target: 'std', parameter: 'ddof', order: 2 },
+    { source: 'returns', target: 'rolling-window', parameter: 'values', order: 0 },
+    { source: 'window', target: 'rolling-window', parameter: 'window', order: 1 },
+    { source: 'rolling-window', target: 'mean', parameter: 'values', order: 0 },
+    { source: 'rolling-window', target: 'std', parameter: 'values', order: 0 },
+    { source: 'ddof', target: 'std', parameter: 'ddof', order: 1 },
     { source: 'mean', target: 'root', parameter: 'lhs', order: 0 },
     { source: 'std', target: 'root', parameter: 'rhs', order: 1 },
   ],
@@ -323,10 +339,34 @@ const timeSeriesDag = {
       latex_fragment: '20',
     },
     {
+      id: 'rolling-window',
+      label: 'rolling_window',
+      operator: { id: 'rolling_window', version: '2.4.0' },
+      operator_id: 'rolling_window',
+      kind: 'call',
+      inferred_type: {
+        kind: 'window',
+        display: 'window<time,window>',
+        shape: ['T', 'W'],
+        semantic_dimension: 'raw_market_price',
+        price_basis: 'raw_market',
+      },
+      value_type: 'window<time,window>',
+      shape: 'window' as const,
+      symbolic_shape: ['T', 'W'],
+      formula_fragment: 'rolling_window(market_close, 20)',
+      latex_fragment: '\\mathcal{W}_{t,20}(\\mathbf c)',
+      inputs: ['market-close', 'window'],
+      arguments: [
+        { name: 'values', input_node_id: 'market-close' },
+        { name: 'window', input_node_id: 'window' },
+      ],
+    },
+    {
       id: 'ma-root',
-      label: 'rolling_mean',
-      operator: { id: 'rolling_mean', version: '2.3.0' },
-      operator_id: 'rolling_mean',
+      label: 'mean',
+      operator: { id: 'mean', version: '2.4.0' },
+      operator_id: 'mean',
       kind: 'call',
       inferred_type: {
         kind: 'series',
@@ -338,18 +378,16 @@ const timeSeriesDag = {
       value_type: 'series<time>',
       shape: 'series' as const,
       symbolic_shape: ['T'],
-      formula_fragment: 'rolling_mean(market_close, 20)',
-      latex_fragment: '\\left(\\frac{1}{N_t}\\sum_{i=\\max(1,t-20+1)}^t c_i\\right)_{t=1}^T',
-      inputs: ['market-close', 'window'],
-      arguments: [
-        { name: 'values', input_node_id: 'market-close' },
-        { name: 'window', input_node_id: 'window' },
-      ],
+      formula_fragment: 'mean(rolling_window(market_close, 20))',
+      latex_fragment: '\\mu_{t,20}(\\mathbf c)',
+      inputs: ['rolling-window'],
+      arguments: [{ name: 'values', input_node_id: 'rolling-window' }],
     },
   ],
   edges: [
-    { source: 'market-close', target: 'ma-root', parameter: 'values', order: 0 },
-    { source: 'window', target: 'ma-root', parameter: 'window', order: 1 },
+    { source: 'market-close', target: 'rolling-window', parameter: 'values', order: 0 },
+    { source: 'window', target: 'rolling-window', parameter: 'window', order: 1 },
+    { source: 'rolling-window', target: 'ma-root', parameter: 'values', order: 0 },
   ],
   roots: { ma: 'ma-root' },
 }
@@ -459,7 +497,7 @@ describe('IndicatorStudio', () => {
         const body = JSON.parse(String(init?.body || '{}'))
         const source = catalog.find((item) => item.id === body.indicator_id) ?? rollingSharpeSource
         const window = Number(body.window_observations)
-        const expression = `(rolling_mean(returns, ${window}) - risk_free_rate_per_observation) / rolling_std(returns, ${window}, 1) * sqrt(252)`
+        const expression = `(mean(rolling_window(returns, ${window})) - risk_free_rate_per_observation) / std(rolling_window(returns, ${window}), 1) * sqrt(252)`
         const definition = {
           ...timeSeriesBuiltIn,
           name: `${window} 日滚动${source.name}`,
@@ -505,7 +543,7 @@ describe('IndicatorStudio', () => {
             minimum_observations: window,
             detached: false,
           },
-          rolling_transform: { version: '1.0.0', rewritten_reductions: ['mean', 'std'], source_variables: ['returns'] },
+          rolling_transform: { version: '2.0.0', rewritten_reductions: ['mean', 'std'], source_variables: ['returns'] },
         }
         return json({
           definition,
@@ -547,7 +585,7 @@ describe('IndicatorStudio', () => {
         const body = JSON.parse(String(init?.body || '{}'))
         if (body.result_kind === 'time_series') {
           const output = body.series_outputs?.[0]
-          if (output?.id === 'value' && String(output.expression).includes('rolling_mean(returns, 5)')) return json({
+          if (output?.id === 'value' && String(output.expression).includes('mean(rolling_window(returns, 5))')) return json({
             valid: true,
             diagnostics: [],
             dependencies: ['returns', 'risk_free_rate_per_observation', 'periods_per_year'],
@@ -563,7 +601,7 @@ describe('IndicatorStudio', () => {
                 expression: output.expression,
                 latex: output.expression,
                 display_latex: '\\frac{\\mu_{t,5}\\left(\\mathbf r\\right)-r_f}{s_{t,5}\\left(\\mathbf r\\right)}\\cdot\\sqrt{p_{\\mathrm{year}}}',
-                math_notation_version: '1.4.0',
+                math_notation_version: '1.5.0',
                 python_expression: output.expression,
                 inferred_type: 'series<time>',
                 shape: 'series',
@@ -601,11 +639,11 @@ describe('IndicatorStudio', () => {
             ma: {
               id: 'ma',
               label: '20 日收盘价均线',
-              expression: 'rolling_mean(market_close, 20)',
-              latex: 'rolling_mean(market_close, 20)',
+              expression: 'mean(rolling_window(market_close, 20))',
+              latex: 'mean(rolling_window(market_close, 20))',
               display_latex: '\\mu_{t,20}\\left(\\mathbf c\\right)',
-              math_notation_version: '1.4.0',
-              python_expression: 'rolling_mean(market_close, 20)',
+              math_notation_version: '1.5.0',
+              python_expression: 'mean(rolling_window(market_close, 20))',
               inferred_type: 'series<time>',
               shape: 'series',
               semantic_dimension: 'raw_market_price',
@@ -721,6 +759,51 @@ describe('IndicatorStudio', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('目录延迟返回时不会覆盖已经输入的新指标', async () => {
+    const fetchImplementation = vi.mocked(fetch).getMockImplementation()!
+    let complete!: () => void
+    const pending = new Promise<void>(resolve => { complete = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (...args: Parameters<typeof fetch>) => {
+      if (String(args[0]) === '/api/custom-indicators/meta') await pending
+      return fetchImplementation(...args)
+    }))
+    render(<MemoryRouter initialEntries={['/indicator-studio']}><IndicatorStudio /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: '新建指标' }))
+    fireEvent.change(screen.getByLabelText('名称', { exact: true }), { target: { value: '慢连接下的草稿' } })
+    fireEvent.click(screen.getByRole('tab', { name: '高级公式模式' }))
+    const input = document.getElementById('indicator-expression')!
+    fireEvent.change(input, { target: { value: 'mean(returns)' } })
+    expect(screen.getByRole('button', { name: '解析并校验公式' })).toBeDisabled()
+    for (const button of screen.getAllByRole('button', { name: '保存新指标' })) expect(button).toBeDisabled()
+    await act(async () => { complete(); await pending })
+    await screen.findByRole('button', { name: /收益波动率/ })
+    expect(screen.getByLabelText('名称', { exact: true })).toHaveValue('慢连接下的草稿')
+    expect(input).toHaveValue('mean(returns)')
+    expect(screen.getByRole('button', { name: '解析并校验公式' })).toBeEnabled()
+    expect(screen.getAllByRole('button', { name: '保存新指标' })[0]).toBeEnabled()
+  })
+
+  it('新建时序指标不预填业务定义', async () => {
+    const user = setupUser()
+    await renderStudio()
+
+    await user.click(screen.getByRole('button', { name: '新建指标' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: '结果类型' }), 'time_series')
+
+    expect(screen.getByLabelText('输出通道 1 ID')).toHaveValue('')
+    expect(screen.getByLabelText('输出通道 1 名称')).toHaveValue('')
+    expect(screen.getByLabelText('日期轴变量')).toHaveValue('')
+    expect(screen.getByLabelText('滚动来源标量指标')).toHaveValue('')
+    expect(screen.getByLabelText('滚动观察数')).toHaveValue(null)
+    expect(screen.getByText('请选择日期轴变量')).toBeInTheDocument()
+    expect(screen.queryByText('20 日指标序列')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
+    expect(screen.getByLabelText('“当前结果”公式源码（LaTeX）')).toHaveValue('')
+    expect(screen.getByRole('button', { name: '解析并校验全部通道' })).toBeDisabled()
+    expect(screen.getAllByRole('button', { name: '保存新指标' }).every((button) => button.hasAttribute('disabled'))).toBe(true)
   })
 
   it('解析与校验合并为资源按钮下方的单一操作', async () => {
@@ -839,8 +922,8 @@ describe('IndicatorStudio', () => {
     await user.click(screen.getByRole('button', { name: '生成滚动时序指标' }))
     const rollingPanel = screen.getByRole('region', { name: '标量指标滚动派生' })
     const sourceSelect = within(rollingPanel).getByLabelText('滚动来源标量指标')
-    expect(sourceSelect).toHaveValue('builtin-annualized-sharpe-v2')
-    expect(within(sourceSelect).getByRole('option', { name: '年化夏普比率 · v1' })).toBeInTheDocument()
+    expect(sourceSelect).toHaveTextContent('年化夏普比率 · v1')
+    expect(sourceSelect).toHaveAttribute('role', 'combobox')
     expect(within(rollingPanel).getByLabelText('滚动观察数')).toHaveValue(5)
 
     await user.click(within(rollingPanel).getByRole('button', { name: '生成滚动公式' }))
@@ -855,12 +938,43 @@ describe('IndicatorStudio', () => {
     })
 
     expect(screen.getByLabelText('名称')).toHaveValue('5 日滚动年化夏普比率')
-    expect(await screen.findByText(/来源定义哈希、版本和生成公式已锁定/)).toBeInTheDocument()
+    await user.click(screen.getByText('窗口规则与来源版本'))
+    expect(await screen.findByText(/来源定义哈希、版本和生成公式已锁定/)).toBeVisible()
     expect(screen.getByText(/已从“年化夏普比率”v1 生成 5 日滚动时序草稿/)).toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
     expect(screen.getByLabelText('“5 日滚动年化夏普比率”公式源码（LaTeX）')).toHaveValue(
-      '(rolling_mean(returns, 5) - risk_free_rate_per_observation) / rolling_std(returns, 5, 1) * sqrt(252)',
+      '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(252)',
     )
+  })
+
+  it('滚动窗口拒绝小数、空值和越界，不会替用户四舍五入', async () => {
+    const user = setupUser()
+    await renderStudio()
+    await user.click(screen.getByRole('button', { name: /年化夏普比率/ }))
+    await user.click(screen.getByRole('button', { name: '生成滚动时序指标' }))
+    const panel = screen.getByRole('region', { name: '标量指标滚动派生' })
+    const input = within(panel).getByLabelText('滚动观察数')
+    const generate = within(panel).getByRole('button', { name: '生成滚动公式' })
+    for (const value of ['', '2.5', '5001']) {
+      await user.clear(input)
+      if (value) await user.type(input, value)
+      expect(generate).toBeDisabled()
+    }
+    await user.clear(input)
+    await user.type(input, '20')
+    expect(generate).toBeEnabled()
+    expect(panel).toHaveTextContent('对最近 20 个观察点逐日计算')
+  })
+
+  it('滚动来源可搜索，只展示后端确认支持的区间指标', async () => {
+    const user = setupUser()
+    await renderStudio()
+    await user.click(screen.getByRole('button', { name: /年化夏普比率/ }))
+    await user.click(screen.getByRole('button', { name: '生成滚动时序指标' }))
+    await user.click(screen.getByRole('combobox', { name: '滚动来源标量指标' }))
+    await user.type(screen.getByLabelText('搜索滚动来源标量指标'), '夏普')
+    expect(screen.getByRole('option', { name: /年化夏普比率/ })).toBeVisible()
+    expect(screen.queryByRole('option', { name: /我的波动指标/ })).not.toBeInTheDocument()
   })
 
   it('5 日滚动年化夏普点击校验后展示数学 LaTeX', async () => {
@@ -889,9 +1003,10 @@ describe('IndicatorStudio', () => {
 
     await user.click(screen.getByRole('button', { name: '查看完整计算说明' }))
     const explanation = screen.getByRole('region', { name: '公式计算说明' })
-    expect(within(explanation).getByText('使用“滚动平均值”')).toBeInTheDocument()
-    expect(within(explanation).getByText('使用“滚动标准差”')).toBeInTheDocument()
-    expect(explanation).toHaveTextContent('自由度修正')
+    expect(within(explanation).getByText('使用“滚动窗口”')).toBeInTheDocument()
+    expect(explanation).toHaveTextContent('常量 1')
+    expect(explanation).not.toHaveTextContent('滚动平均值')
+    expect(explanation).not.toHaveTextContent('滚动标准差')
     expect(explanation).not.toHaveTextContent('rolling_mean')
     expect(explanation).not.toHaveTextContent('rolling_std')
   })
@@ -900,7 +1015,7 @@ describe('IndicatorStudio', () => {
     catalog = [...catalog, timeSeriesBuiltIn]
     activeMeta = {
       ...meta,
-      operators: [...operators, rollingMeanOperator],
+      operators: [...operators, rollingWindowOperator, meanOperator, stdOperator],
       indicator_types: meta.indicator_types,
     }
     const nativeUrl = URL
@@ -941,8 +1056,9 @@ describe('IndicatorStudio', () => {
 
     await user.click(screen.getByRole('button', { name: '查看完整计算说明' }))
     const explanation = screen.getByRole('region', { name: '公式计算说明' })
-    expect(within(explanation).getAllByText('滚动平均值').length).toBeGreaterThan(0)
+    expect(within(explanation).getAllByText('滚动窗口').length).toBeGreaterThan(0)
     expect(explanation).toHaveTextContent('窗口期数：常量 20')
+    expect(explanation).not.toHaveTextContent('滚动平均值')
     expect(within(explanation).queryByText(/运行参数/)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '浏览公式构建资源' }))
@@ -954,7 +1070,7 @@ describe('IndicatorStudio', () => {
 
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
     expect(screen.getByLabelText('“20 日收盘价均线”公式源码（LaTeX）')).toHaveValue(
-      'rolling_mean(market_close, 20)',
+      'mean(rolling_window(market_close, 20))',
     )
 
     await user.click(screen.getByRole('button', { name: '下载 Excel 计算逻辑' }))
@@ -972,7 +1088,7 @@ describe('IndicatorStudio', () => {
           history_policy: 'lookback',
           lookback_parameter: null,
           series_outputs: [{
-            expression: 'rolling_mean(market_close, 20)',
+            expression: 'mean(rolling_window(market_close, 20))',
             output_measure: 'auto',
           }],
         },
@@ -1216,8 +1332,8 @@ describe('IndicatorStudio', () => {
         indicator_id: reusableBuiltIn.id,
         indicator_revision: 1,
         context: 'single_product',
-        dsl_version: '2.3.0',
-        operator_registry_version: '2.3.0',
+        dsl_version: '2.4.0',
+        operator_registry_version: '2.4.0',
       })
     })
     expect(screen.getByText(/“累计收益率” v1 已按锁定版本展开为当前公式/)).toBeInTheDocument()

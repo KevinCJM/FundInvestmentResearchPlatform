@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { init, setPlatformAPI } from 'echarts'
 import { adaptRegimeFormalOverview, adaptRegimeOverview, adaptRegimeResult, loadCompleteRegimeSeries } from './regimeResultAdapter'
 import { buildRegimeProbabilityOption, buildRegimeTimelineOption } from './RegimeTimelineChart'
+import { buildManualEventLaneOption } from './RegimeManualEventResult'
 import { backendOverviewFixture, resultFixture } from './regimeResultFixtures'
 
 describe('完整情景结果契约与图层', () => {
@@ -45,6 +46,26 @@ describe('完整情景结果契约与图层', () => {
     expect(read.mock.calls.map(call => call[0])).toEqual([0, 5000])
     await expect(loadCompleteRegimeSeries(overview, async (offset, limit) => ({ run_id: 'large', items: [], total: rows.length, offset, limit }), new AbortController().signal)).rejects.toThrow('分页缺失')
     await expect(loadCompleteRegimeSeries(overview, async (offset, limit) => ({ run_id: 'large', items: rows.slice(0, 1), total: 5, offset, limit }), new AbortController().signal)).rejects.toThrow('数量发生变化')
+  })
+
+  it('人工事件允许区间重叠，并保留独立事件轨道与重叠摘要', () => {
+    const { overview, rows } = resultFixture('manual-events', 10)
+    overview.result_kind = 'manual_events'
+    overview.manual_events = [
+      { id: 'a', label: '事件 A', start_date: rows[2].observation_date, end_date: rows[5].observation_date, color: '#7c3aed', covered_observations: 4, first_observation_index: 2, last_observation_index: 5, first_observation_date: rows[2].observation_date, last_observation_date: rows[5].observation_date },
+      { id: 'b', label: '事件 B', start_date: rows[4].observation_date, end_date: rows[7].observation_date, color: '#dc2626', covered_observations: 4, first_observation_index: 4, last_observation_index: 7, first_observation_date: rows[4].observation_date, last_observation_date: rows[7].observation_date },
+    ]
+    overview.manual_event_summary = { event_count: 2, covered_observations: 6, overlap_observations: 2, max_concurrent_events: 2 }
+    const adapted = adaptRegimeOverview(overview, 'manual-events', 'preview')
+    expect(adapted.manual_events.map(event => [event.id, event.first_observation_index, event.last_observation_index])).toEqual([['a', 2, 5], ['b', 4, 7]])
+    expect(adapted.manual_event_summary).toEqual({ event_count: 2, covered_observations: 6, overlap_observations: 2, max_concurrent_events: 2 })
+    const result = adaptRegimeResult(adapted, rows)
+    const option = buildManualEventLaneOption(result)
+    expect(option.yAxis).toMatchObject({ data: ['事件 A', '事件 B'] })
+    expect(option.series).toMatchObject([
+      { data: [2, 4] },
+      { data: [{ value: 4, itemStyle: { color: '#7c3aed' } }, { value: 4, itemStyle: { color: '#dc2626' } }] },
+    ])
   })
 
   it('正式详情按实际overview/series适配，拒绝错run、局部series和重叠区间', () => {

@@ -19,6 +19,7 @@ export interface RegimeGraphPortSchema {
 }
 
 export interface RegimeParameterSchema {
+  state_code?: boolean
   deprecated?: boolean
   type?: 'number' | 'integer' | 'string' | 'boolean' | 'array' | 'object'
   title?: string
@@ -35,6 +36,15 @@ export interface RegimeParameterSchema {
 }
 
 export interface RegimeNodeSchema {
+  temporal_contract?: { rule: string; reason: string }
+  granularity?: {
+    kind: 'source' | 'indicator' | 'primitive' | 'composite' | 'coupled'
+    label: string
+    expandable: boolean
+    reason: string
+    steps?: string[]
+    contract_version: number
+  }
   authoring_hidden?: boolean
   indicator_reference?: { id: string; revision: number; definition_hash: string; result_kind: string }
   id: string
@@ -96,6 +106,16 @@ export interface RegimeGraphConnection {
   port: string
 }
 
+export interface ManualHistoricalEvent {
+  library_reference?: { event_id: string; revision: number; window_id: string; content_hash: string }
+  id: string
+  label: string
+  start_date: string
+  end_date: string
+  color: string
+  description?: string
+}
+
 export interface RegimeGraphNode {
   id: string
   type: string
@@ -126,6 +146,9 @@ export interface RegimeStateDefinition {
 }
 
 export interface RegimeGraphDefinition {
+  /** Read-only catalog presentation; never part of a saved definition. */
+  temporal_capability?: TemporalCapability
+  default_mode?: RegimeMode
   id?: string
   revision?: number
   template_id?: string
@@ -156,6 +179,8 @@ export interface RegimeGraphDefinition {
 }
 
 export interface RegimeGraphTemplate {
+  temporal_capability?: TemporalCapability
+  authoring_hidden?: boolean
   id: string
   name: string
   description?: string
@@ -174,7 +199,30 @@ export interface RegimeGraphIssue {
   severity?: 'error' | 'warning' | string
 }
 
+export interface TemporalCapability {
+  policy_version: string
+  status: 'conditional' | 'retrospective_required' | 'audit_unknown' | 'realtime_verified'
+  label: string
+  mode: string
+  verified: boolean
+  realtime_supported: boolean
+  semantic_hindsight: boolean
+  may_repaint: boolean
+  reasons: Array<{ node_id: string; code: string; message: string; path: string[] }>
+  outputs: Record<string, { status: string; reasons: Array<{ node_id: string; message: string; path: string[] }>; node_ids: string[] }>
+  nodes: Array<{ node_id: string; label: string; rule: string; description: string; warmup_sensitive?: boolean }>
+  numerical_verdict?: string
+  data_checks?: { passed: boolean; sources: Array<{ node_id: string; passed: boolean; evidence: string; message: string }> }
+  runtime_audit: string
+  findings?: Array<{ node_id: string; port: string; probe: string; message: string; decision_at?: string; first_mismatch_date?: string }>
+  errors?: string[]
+  coverage?: { executions: number; comparisons: number; cutoffs: number; ports: number; untested: unknown[] }
+  warmup?: { status: string; sensitive: boolean }
+  note: string
+}
+
 export interface RegimeGraphInference {
+  temporal_capability?: TemporalCapability
   valid: boolean
   graph_hash?: string
   definition_hash?: string
@@ -227,7 +275,7 @@ export interface RegimePreviewRun {
   message?: string
   created_at?: string
   expires_at?: string
-  error?: { code?: string; message: string } | string | null
+  error?: { code?: string; message: string; field?: string } | string | null
   result?: RegimePreviewResult | null
   execution?: unknown
   calculation_audits?: unknown
@@ -263,6 +311,7 @@ export interface RegimeEvaluationResult {
 export type RegimeEvaluationResults = Record<string, RegimeEvaluationResult>
 
 export interface RegimePreviewResult {
+  temporal_capability?: TemporalCapability
   schema_version?: string
   graph_hash?: string
   definition_hash?: string
@@ -297,7 +346,8 @@ export interface RegimeUpstreamOutput {
   port: string
   port_label: string
   value_type: string
-  distance: number
+  distance: number | null
+  relationship?: 'upstream' | 'same_node' | 'other'
   plottable: boolean
   unavailable_reason?: string | null
 }
@@ -306,6 +356,8 @@ export interface RegimeSeriesPage {
   run_id: string
   node_label?: string
   upstream_outputs?: RegimeUpstreamOutput[]
+  overlay_outputs?: RegimeUpstreamOutput[]
+  comparison_targets?: RegimeGraphConnection[]
   value_type?: string
   node_id?: string
   port?: string
@@ -482,8 +534,17 @@ function errorMessage(body: unknown, fallback: string) {
 
 function errorDiagnostics(body: unknown): RegimeGraphDiagnostic[] {
   const diagnostics = (body as { detail?: { diagnostics?: unknown } } | null)?.detail?.diagnostics
-  return Array.isArray(diagnostics) ? diagnostics.filter((item): item is RegimeGraphDiagnostic =>
-    item && typeof item.code === 'string' && typeof item.message === 'string') : []
+  return Array.isArray(diagnostics) ? diagnostics.filter((item): item is RegimeGraphDiagnostic & { field?: string } =>
+    item && typeof item.code === 'string' && typeof item.message === 'string').map(item => {
+      const path = item.path ?? item.field
+      const feature = path === 'comparison_targets' ? '多节点对比' : path === 'preview_target' ? '独立节点预览' : undefined
+      return {
+        ...item, path,
+        message: item.code === 'extra_forbidden' && feature
+          ? `当前后端版本不支持${feature}，请更新并重启后端服务后重试。`
+          : item.message,
+      }
+    }) : []
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -564,6 +625,7 @@ export function cloneRegimeGraphDefinition(definition: RegimeGraphDefinition): R
 
 export function definitionForRequest(definition: RegimeGraphDefinition): RegimeGraphDefinition {
   const cloned = cloneRegimeGraphDefinition(definition)
+  delete cloned.temporal_capability
   cloned.graph.nodes = cloned.graph.nodes.map(({ position: _position, ...node }) => node)
   cloned.graph.edges = cloned.graph.nodes.flatMap((node) => Object.entries(node.inputs).map(([port, source]) => ({ source: { ...source }, target: { node_id: node.id, port } })))
   return cloned
@@ -592,7 +654,7 @@ export async function getRegimeNodeCatalog(signal?: AbortSignal) {
 }
 
 export async function getRegimeGraphTemplates(signal?: AbortSignal) {
-  return listFrom<RegimeGraphTemplate>(await request<unknown>('/api/historical-regimes/templates/v2', { signal }))
+  return listFrom<RegimeGraphTemplate>(await request<unknown>('/api/historical-regimes/templates/v2', { signal })).filter(template => !template.authoring_hidden)
 }
 
 export async function instantiateRegimeTemplate(templateId: string, signal?: AbortSignal) {
@@ -672,7 +734,8 @@ export async function runRegimeBatchExperiment(input: {
 }
 
 export async function listRegimeGraphDefinitions(signal?: AbortSignal) {
-  return listFrom<RegimeGraphDefinition>(await request<unknown>('/api/historical-regimes/v2/definitions', { signal }))
+  const response = await request<{ items: RegimeGraphDefinition[]; temporal_capabilities?: Record<string, TemporalCapability> }>('/api/historical-regimes/v2/definitions', { signal })
+  return listFrom<RegimeGraphDefinition>(response).map(item => ({ ...item, ...(response.temporal_capabilities?.[item.id || ''] ? { temporal_capability: response.temporal_capabilities[item.id || ''] } : {}) }))
 }
 
 export async function getRegimeGraphDefinition(definitionId: string, revision?: number, signal?: AbortSignal) {
@@ -697,11 +760,27 @@ export async function updateRegimeGraphDefinition(definition: RegimeGraphDefinit
   })
 }
 
-export async function inferRegimeGraph(definition: RegimeGraphDefinition, signal?: AbortSignal) {
+export async function inferRegimeGraph(definition: RegimeGraphDefinition, signal?: AbortSignal, mode: RegimeMode = 'realtime') {
   return request<RegimeGraphInference>('/api/historical-regimes/infer', {
     method: 'POST',
-    body: JSON.stringify({ definition: definitionForRequest(definition) }),
+    body: JSON.stringify({ definition: definitionForRequest(definition), mode }),
     signal,
+  })
+}
+
+export interface RegimeCompositeExpansion {
+  contract_version: number
+  definition: RegimeGraphDefinition
+  replaced_node_id: string
+  inserted_node_ids: string[]
+  primary_node_id: string
+  output_map: Record<string, RegimeGraphConnection>
+  steps: string[]
+}
+
+export async function expandRegimeComposite(definition: RegimeGraphDefinition, nodeId: string, mode: RegimeMode, signal?: AbortSignal) {
+  return request<RegimeCompositeExpansion>('/api/historical-regimes/authoring/expand', {
+    method: 'POST', body: JSON.stringify({ definition: definitionForRequest(definition), node_id: nodeId, mode }), signal,
   })
 }
 
@@ -724,10 +803,10 @@ export async function resolveRegimeAuthoring(definition: RegimeGraphDefinition, 
   })
 }
 
-export async function prepareRegimeGraph(definition: RegimeGraphDefinition, signal?: AbortSignal, previewTarget?: RegimeGraphConnection) {
+export async function prepareRegimeGraph(definition: RegimeGraphDefinition, signal?: AbortSignal, previewTarget?: RegimeGraphConnection, comparisonTargets?: RegimeGraphConnection[]) {
   const response = await request<PreparedRegimeGraph>('/api/historical-regimes/prepare', {
     method: 'POST',
-    body: JSON.stringify({ definition: definitionForRequest(definition), preview_target: previewTarget }),
+    body: JSON.stringify({ definition: definitionForRequest(definition), preview_target: previewTarget, comparison_targets: comparisonTargets?.length ? comparisonTargets : undefined }),
     signal,
   })
   assertExecution(response.runtime_audit, '历史情景预热计划')
@@ -736,7 +815,7 @@ export async function prepareRegimeGraph(definition: RegimeGraphDefinition, sign
 
 export async function startRegimePreviewRun(
   definition: RegimeGraphDefinition,
-  options: { compileToken: string; mode: RegimeMode; asOf?: string; ttlSeconds?: number; previewTarget?: RegimeGraphConnection },
+  options: { compileToken: string; mode: RegimeMode; asOf?: string; ttlSeconds?: number; auditTemporal?: boolean; previewTarget?: RegimeGraphConnection; comparisonTargets?: RegimeGraphConnection[] },
   signal?: AbortSignal,
 ) {
   return request<RegimePreviewRun>('/api/historical-regimes/preview-runs', {
@@ -747,7 +826,9 @@ export async function startRegimePreviewRun(
       mode: options.mode,
       as_of: options.asOf || undefined,
       ttl_seconds: options.ttlSeconds,
+      audit_temporal: options.auditTemporal || undefined,
       preview_target: options.previewTarget,
+      comparison_targets: options.comparisonTargets?.length ? options.comparisonTargets : undefined,
     }),
     signal,
   })
@@ -852,6 +933,26 @@ export async function runSavedRegimeGraph(
 export async function listRegimeFormalRuns(definitionId?: string, signal?: AbortSignal) {
   const query = definitionId ? `?definition_id=${encodeURIComponent(definitionId)}` : ''
   return listFrom<RegimeFormalRun>(await request<unknown>(`/api/historical-regimes/runs${query}`, { signal }))
+}
+
+export interface RegimeResearchVersion {
+  run_id: string
+  publication_id: string
+  definition_id: string
+  revision: number
+  name: string
+  mode: RegimeMode
+  as_of: string | null
+  series_summary: { row_count: number; first_observation_date: string | null; last_observation_date: string | null }
+  available_for: string[]
+}
+
+export async function enableRegimeResearchVersion(definition: RegimeGraphDefinition, compileToken: string, mode: RegimeMode, asOf?: string) {
+  return request<RegimeResearchVersion>('/api/historical-regimes/research-versions', {
+    method: 'POST',
+    body: JSON.stringify({ definition: { schema_version: '2.0', id: definition.id, revision: definition.revision },
+      compile_token: compileToken, mode, as_of: asOf || null }),
+  })
 }
 
 export async function getRegimeFormalRun(runId: string, signal?: AbortSignal) {

@@ -92,11 +92,22 @@ def _write_market_data(root: Path, count: int = 80) -> pd.DataFrame:
     return frame.assign(adj_nav=adjusted_nav)
 
 
+def _warm_series(service: CustomIndicatorService) -> None:
+    # This suite exercises the real time-series preparation path, including
+    # every historical revision, not unrelated scalar/portfolio batch warmup.
+    from cal_indicators.typed_numba_kernels import warm_numba_kernel_registry
+    warm_numba_kernel_registry()
+    definitions = [item for item in service.indicators.list_all_versions()
+                   if item.get("result_kind") == "time_series"]
+    assert len(definitions) == 15
+    for definition in definitions:
+        service.series_service.warm(definition)
+
+
 def _service(tmp_path: Path) -> tuple[CustomIndicatorService, pd.DataFrame]:
     frame = _write_market_data(tmp_path)
     service = CustomIndicatorService(tmp_path, tmp_path)
-    status = service.warm_numba_plans()
-    assert status["time_series_plans"] == 5
+    _warm_series(service)
     return service, frame
 
 
@@ -143,13 +154,15 @@ def test_five_builtin_time_series_indicators_use_fixed_formulas_and_match_refere
         if item.get("result_kind") == "time_series"
     }
     assert all(not item.get("parameter_schema") for item in definitions.values())
-    assert definitions["builtin-close-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_mean(market_close, 20)"
-    assert definitions["builtin-volume-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_mean(volume, 10)"
+    assert definitions["builtin-close-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(market_close), 20, observation_dates, annual_risk_free_rate_decimal)"
+    assert definitions["builtin-volume-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(volume), 10, observation_dates, annual_risk_free_rate_decimal)"
     rolling_definition = definitions["builtin-rolling-5d-annualized-sharpe-series"]
     assert rolling_definition["series_outputs"][0]["expression"] == (
-        "(rolling_mean(returns, 5) - risk_free_rate_per_observation) / "
-        "rolling_std(returns, 5, 1) * sqrt(periods_per_year)"
+        "rolling_apply((mean(returns) - risk_free_rate_per_observation) / "
+        "std(returns, 1) * sqrt(periods_per_year), 5, observation_dates, annual_risk_free_rate_decimal)"
     )
+    assert rolling_definition["revision"] == 3
+    assert rolling_definition["rolling_source"]["transform_version"] == "3.0.0"
     assert rolling_definition["rolling_source"] == {
         **rolling_definition["rolling_source"],
         "kind": "rolling_scalar",
@@ -265,7 +278,7 @@ def test_rolling_sharpe_zero_volatility_is_missing_not_a_full_plan_failure(
     nav["adj_nav"] = 1.0
     nav.to_parquet(tmp_path / "etf_daily_df.parquet", index=False)
     service = CustomIndicatorService(tmp_path, tmp_path)
-    service.warm_numba_plans()
+    _warm_series(service)
     response = service.evaluate_series(
         indicator_instances=[
             _instance("builtin-rolling-5d-annualized-sharpe-series")
@@ -296,7 +309,7 @@ def test_rolling_sharpe_is_causal_and_does_not_use_future_nav(tmp_path: Path) ->
     outputs: list[np.ndarray] = []
     for data_dir in (left, right):
         service = CustomIndicatorService(data_dir, data_dir)
-        service.warm_numba_plans()
+        _warm_series(service)
         response = service.evaluate_series(
             indicator_instances=[
                 _instance("builtin-rolling-5d-annualized-sharpe-series")
@@ -323,8 +336,14 @@ def test_time_series_plan_shares_bollinger_subexpressions(tmp_path: Path) -> Non
         operator_registry_version=definition["operator_registry_version"],
     )
     operators = [node.operator_id for node in plan.nodes]
-    assert operators.count("rolling_mean") == 1
-    assert operators.count("rolling_std") == 1
+    # The two whole-interval scopes are shared across upper/middle/lower
+    # channels; neither mean nor standard deviation is computed three times.
+    assert operators.count("rolling_apply") == 2
+    assert "rolling_window" not in operators
+    assert operators.count("mean") == 1
+    assert operators.count("std") == 1
+    assert operators.count("rolling_mean") == 0
+    assert operators.count("rolling_std") == 0
     assert set(plan.roots) == {"upper", "middle", "lower"}
 
 
@@ -414,8 +433,8 @@ def test_validation_exposes_true_math_latex_measure_and_inferred_history(tmp_pat
         assert r"\mathrm{NaN}" not in latex
         assert item["resolved_output_measure"] == "raw_market_price"
         assert item["semantic_dimension"] == "raw_market_price"
-    assert r"\mu_{t,20}" in validation["output_inferences"]["middle"]["display_latex"]
-    assert r"\sigma_{t,20}" in validation["output_inferences"]["upper"]["display_latex"]
+    assert r"\mathcal{R}_{20}" in validation["output_inferences"]["middle"]["display_latex"]
+    assert r"\mathcal{R}_{20}" in validation["output_inferences"]["upper"]["display_latex"]
     assert all("latex_fragment" in node for node in validation["dag"]["nodes"])
     assert "chart_panel" not in definition
     assert "chart_panel" not in definition["presentation"]
@@ -461,7 +480,8 @@ def test_kdj_measure_inference_distinguishes_bounded_kd_from_unbounded_j(tmp_pat
     assert output["j"]["resolved_output_measure"] == "dimensionless"
     assert validation["history_policy"] == "full_history"
     assert r"\mathcal{S}_{3,50}" in output["k"]["display_latex"]
-    assert r"\mathcal{W}_{t,9}" in output["k"]["display_latex"]
+    assert r"\mathcal{R}_{9;1}" in output["k"]["display_latex"]
+    assert r"\operatorname{finite}" in output["k"]["display_latex"]
     assert r"\mathbin{\oslash}_{50}" in output["k"]["display_latex"]
     for item in output.values():
         assert r"\begin{cases}" not in item["display_latex"]
@@ -492,7 +512,8 @@ def test_time_series_excel_export_uses_raw_data_fixed_literals_and_formulas(tmp_
         ]
         texts = [str(cell.value) for row in calculation.iter_rows() for cell in row if cell.value is not None]
         assert any("AVERAGE(" in formula for formula in formulas)
-        assert any("STDEVP(" in formula for formula in formulas)
+        # The reused scalar std compiler writes sqrt(DEVSQ/(COUNT-ddof)).
+        assert any("SQRT(DEVSQ(" in formula and "-(0)" in formula for formula in formulas)
         assert any("直接入参 · 收盘价" in text for text in texts)
         assert any("原生 Excel 公式（可复制）" in text for text in texts)
         assert not any("直接入参 · window" in text for text in texts)
@@ -530,12 +551,12 @@ def test_all_builtin_time_series_indicators_export_formula_workbooks(tmp_path: P
     service, _frame = _service(tmp_path)
     cases = [
         ("builtin-close-moving-average-series", ("AVERAGE(",)),
-        ("builtin-bollinger-bands-series", ("AVERAGE(", "STDEVP(")),
+        ("builtin-bollinger-bands-series", ("AVERAGE(", "SQRT(DEVSQ(", "-(0)")),
         ("builtin-volume-moving-average-series", ("AVERAGE(",)),
-        ("builtin-kdj-series", ("MAX(", "MIN(", "ISNUMBER(")),
+        ("builtin-kdj-series", ("AGGREGATE(4,6,", "AGGREGATE(5,6,", "ISNUMBER(", "SUMPRODUCT(")),
         (
             "builtin-rolling-5d-annualized-sharpe-series",
-            ("AVERAGE(", "STDEV(", "SQRT("),
+            ("AVERAGE(", "SQRT(DEVSQ(", "-(1)"),
         ),
     ]
     for indicator_id, formula_tokens in cases:
@@ -558,11 +579,13 @@ def test_all_builtin_time_series_indicators_export_formula_workbooks(tmp_path: P
             assert formulas, indicator_id
             for token in formula_tokens:
                 assert token in joined, (indicator_id, token)
+            # Conditional min/max reuse the scalar compiler's native AGGREGATE
+            # functions 4/5 with option 6; SUMPRODUCT counts valid observations.
+            if indicator_id != "builtin-kdj-series":
+                assert "AGGREGATE(" not in joined
             assert not any(
                 token in joined
                 for token in (
-                    "AGGREGATE(",
-                    "SUMPRODUCT(",
                     "LOOKUP(",
                     "rolling_mean(",
                     "rolling_std(",
@@ -634,15 +657,13 @@ def test_scalar_indicator_can_be_lifted_to_fixed_rolling_time_series(
     assert definition["rolling_source"]["indicator_revision"] == 1
     assert definition["rolling_source"]["window_observations"] == 5
     expression = definition["series_outputs"][0]["expression"]
-    assert "rolling_mean(" in expression
-    assert "rolling_std(" in expression
-    assert "returns" in expression
-    assert "rolling_mean(returns, 5)" in expression
-    assert "rolling_std(returns, 5, 1)" in expression
-    assert ", 5, 5)" not in expression
-    assert ", 5, 1, 5)" not in expression
-    assert "mean(returns)" not in expression
-    assert "std(returns)" not in expression
+    assert expression.startswith("rolling_apply(")
+    assert "rolling_window(" not in expression
+    assert "rolling_mean(" not in expression
+    assert "rolling_std(" not in expression
+    assert "mean(returns)" in expression
+    assert "std(returns, 1)" in expression
+    assert definition["rolling_source"]["transform_version"] == "3.0.0"
 
 
 def test_rolling_scalar_source_hash_and_formula_are_locked(
@@ -684,17 +705,14 @@ def test_rolling_scalar_source_hash_and_formula_are_locked(
     assert formula_error.value.code == "ROLLING_SOURCE_FORMULA_MISMATCH"
 
 
-def test_unsupported_scalar_reduction_fails_closed_when_rolling(
+def test_product_reduction_uses_generic_rolling_without_a_dedicated_kernel(
     tmp_path: Path,
 ) -> None:
     service, _frame = _service(tmp_path)
-    with pytest.raises(ValidationError) as error:
-        service.build_rolling_scalar_draft(
-            "builtin-total-return-v2",
-            1,
-            5,
-        )
-    assert error.value.code == "ROLLING_SCALAR_OPERATOR_UNSUPPORTED"
+    derived = service.build_rolling_scalar_draft("builtin-total-return-v2", 1, 5)
+    assert derived["validation"]["valid"]
+    assert derived["definition"]["expression"].startswith("rolling_apply(")
+    assert "product(returns + 1)" in derived["definition"]["expression"]
 
 
 def test_five_day_rolling_annualized_sharpe_builtin_is_available_and_njit(
@@ -709,17 +727,24 @@ def test_five_day_rolling_annualized_sharpe_builtin_is_available_and_njit(
     assert definition["rolling_source"]["window_observations"] == 5
     assert definition["minimum_observations"] == 5
     expression = definition["series_outputs"][0]["expression"]
-    assert "rolling_mean(returns, 5)" in expression
-    assert "rolling_std(returns, 5, 1)" in expression
-    assert ", 5, 5)" not in expression
-    assert ", 5, 1, 5)" not in expression
+    assert expression.startswith("rolling_apply(")
+    assert "mean(returns)" in expression
+    assert "std(returns, 1)" in expression
+    assert "rolling_window(" not in expression
+    assert "rolling_mean(" not in expression
+    assert "rolling_std(" not in expression
     generated = service.build_rolling_scalar_draft(
         "builtin-annualized-sharpe-v2",
         1,
         5,
     )["definition"]
     generated_expression = generated["series_outputs"][0]["expression"]
+    # Current v3 uses the same whole-interval scope as newly derived metrics.
+    # Immutable v1/v2 contracts are covered by the migration regression.
     assert generated_expression == expression
+    assert generated_expression.startswith("rolling_apply(")
+    assert generated["rolling_source"]["transform_version"] == "3.0.0"
+    assert definition["rolling_source"]["transform_version"] == "3.0.0"
     assert generated["rolling_source"]["indicator_id"] == definition[
         "rolling_source"
     ]["indicator_id"]
@@ -820,7 +845,7 @@ def test_missing_ohlc_is_unavailable_and_never_filled(tmp_path: Path) -> None:
         tmp_path / "etf_daily_candle_df.parquet", index=False
     )
     service = CustomIndicatorService(tmp_path, tmp_path)
-    service.warm_numba_plans()
+    _warm_series(service)
     response = service.evaluate_series(
         indicator_instances=[_instance("builtin-kdj-series")],
         target={"kind": "etf", "product_id": "510300.SH"},
@@ -840,7 +865,7 @@ def test_output_measure_catalog_and_incompatible_override_are_fail_closed(tmp_pa
         "window_kind": "observations",
         "minimum_window_observations": 2,
         "maximum_window_observations": 5000,
-        "transform_version": "1.0.0",
+        "transform_version": "3.0.0",
         "draft_endpoint": "/api/custom-indicators/rolling-scalar-draft",
         "source_lock": "indicator_id+revision+definition_hash",
     }
@@ -893,15 +918,14 @@ def test_scalar_catalog_exposes_rolling_compatibility(tmp_path: Path) -> None:
     service = CustomIndicatorService(tmp_path, tmp_path)
     sharpe = service.get_indicator("builtin-annualized-sharpe-v2")
     drawdown = service.get_indicator("builtin-maximum-drawdown-v2")
-    assert sharpe["rolling_series_compatibility"] == {
-        "supported": True,
-        "protocol_version": "1.0.0",
-        "rewritten_reductions": ["mean", "std"],
-    }
-    assert drawdown["rolling_series_compatibility"]["supported"] is False
-    assert drawdown["rolling_series_compatibility"]["code"] == (
-        "ROLLING_SCALAR_OPERATOR_UNSUPPORTED"
-    )
+    from cal_indicators.rolling_scope import SCOPE_VERSION
+    capability = sharpe["rolling_series_compatibility"]
+    assert capability["supported"] is True
+    assert capability["protocol_version"] == SCOPE_VERSION
+    assert capability["rewritten_reductions"] == ["mean", "std"]
+    assert capability["missing_policy"] == "complete_finite_window"
+    assert drawdown["rolling_series_compatibility"]["supported"] is True
+    assert "drawdown_series" in drawdown["rolling_series_compatibility"]["reset_operators"]
 
 
 def test_every_catalogued_rolling_compatible_builtin_derives_successfully(
@@ -928,7 +952,12 @@ def test_every_catalogued_rolling_compatible_builtin_derives_successfully(
         )
         assert derived["validation"]["valid"], source["id"]
         assert derived["definition"]["rolling_source"]["indicator_id"] == source["id"]
-        assert derived["definition"]["lookback_observations"] == 20
+        # Window observations and physical input rows differ when a return
+        # interval also needs its preceding NAV/date (for example Calmar).
+        preceding = source["rolling_series_compatibility"]["preceding_observations"]
+        assert derived["definition"]["lookback_observations"] == 20 + preceding
+        assert derived["definition"]["rolling_source"]["window_observations"] == 20
+        assert derived["definition"]["minimum_observations"] == 20
 
 
 def test_scalar_indicator_can_be_derived_saved_and_evaluated_as_locked_rolling_series(
@@ -957,8 +986,8 @@ def test_scalar_indicator_can_be_derived_saved_and_evaluated_as_locked_rolling_s
         }
     ]
     assert definition["series_outputs"][0]["expression"] == (
-        "(rolling_mean(returns, 10) - risk_free_rate_per_observation) / "
-        "rolling_std(returns, 10, 1) * sqrt(periods_per_year)"
+        "rolling_apply((mean(returns) - risk_free_rate_per_observation) / "
+        "std(returns, 1) * sqrt(periods_per_year), 10, observation_dates, annual_risk_free_rate_decimal)"
     )
 
     saved = service.create_indicator(definition)
@@ -1021,17 +1050,18 @@ def test_rolling_source_formula_is_locked_until_explicitly_detached(
     assert valid["valid"] is True
 
 
-def test_unsupported_path_dependent_scalar_indicator_fails_closed(
+def test_history_required_scalar_indicator_fails_closed(
     tmp_path: Path,
 ) -> None:
     service, _frame = _service(tmp_path)
+    source = service.create_indicator({
+        "name": "需要窗口外平滑状态", "expression": "mean(recursive_smooth(market_close, 3, 50))",
+    })
     with pytest.raises(ValidationError) as error:
         service.derive_rolling_series(
-            indicator_id="builtin-maximum-drawdown-v2",
-            indicator_revision=1,
-            window_observations=20,
+            indicator_id=source["id"], indicator_revision=source["revision"], window_observations=20,
         )
-    assert error.value.code == "ROLLING_SCALAR_OPERATOR_UNSUPPORTED"
+    assert error.value.code == "ROLLING_INTERVAL_POLICY_REQUIRED"
 
 
 def test_custom_scalar_source_cannot_be_deleted_while_rolling_series_references_it(
@@ -1079,12 +1109,12 @@ def test_derive_rolling_series_route_returns_validated_locked_draft(
         "builtin-annualized-sharpe-v2"
     )
     assert payload["definition"]["series_outputs"][0]["expression"] == (
-        "(rolling_mean(returns, 5) - risk_free_rate_per_observation) / "
-        "rolling_std(returns, 5, 1) * sqrt(periods_per_year)"
+        "rolling_apply((mean(returns) - risk_free_rate_per_observation) / "
+        "std(returns, 1) * sqrt(periods_per_year), 5, observation_dates, annual_risk_free_rate_decimal)"
     )
     latex = payload["validation"]["output_inferences"]["value"]["display_latex"]
-    assert r"\mu_{t,5}" in latex
-    assert r"s_{t,5}" in latex
+    assert r"\mathcal{R}_{5}" in latex
+    assert r"\operatorname{Std}" in latex
     assert r"\sqrt{p_{\mathrm{year}}}" in latex
     assert r"\begin{cases}" not in latex
     assert r"\sum" not in latex

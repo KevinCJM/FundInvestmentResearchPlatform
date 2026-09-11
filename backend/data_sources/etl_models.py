@@ -23,6 +23,17 @@ class EtlParameter(StrictModel):
 class EtlRunOptions(StrictModel):
     mode: Literal["full", "incremental", "auto_incremental"] = "incremental"
     parameters: dict[str, str] = Field(default_factory=dict, max_length=30)
+    auto_baseline_run_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
+    auto_baseline_scope: Literal['missing_only', 'acquisition'] = 'missing_only'
+    event_update_purpose: Literal['update', 'recheck'] = 'update'
+    event_revision_interval_days: int = Field(default=7, ge=1, le=90)
+    event_revision_window_days: int = Field(default=90, ge=1, le=366)
+
+    @model_validator(mode='after')
+    def automatic_baseline_only(self):
+        if self.auto_baseline_run_id and self.mode != 'auto_incremental':
+            raise ValueError('补充基线只适用于自动增量')
+        return self
 
 
 class EtlStep(StrictModel):
@@ -92,8 +103,10 @@ class EtlDefinition(StrictModel):
                 raise ValueError(f"{step.name} 引用了未完成的前置步骤；请调整顺序或依赖。")
             expected = {"map": "download", "resolve": "map", "snapshot": "resolve"}.get(step.kind)
             if step.kind == "task":
-                if not step.task_id or len(step.inputs) > 1 or any(prior[key].kind != 'task' for key in step.inputs):
-                    raise ValueError('数据集任务须选择已登记任务，只能引用一个前置数据集工作区。')
+                if not step.task_id or any(prior[key].kind != 'task' for key in step.inputs):
+                    raise ValueError('数据集任务须选择已登记任务，只能引用前置数据集工作区。')
+                if self.graph_version is None and len(step.inputs) > 1:
+                    raise ValueError('多个工作区输入需要使用图流程版本。')
             elif step.kind == "download":
                 if step.inputs or not step.interface_id or not step.source_id or not step.interface_revision:
                     raise ValueError("下载步骤须选择已保存的数据源、接口和修订，不能引用数据输入。")

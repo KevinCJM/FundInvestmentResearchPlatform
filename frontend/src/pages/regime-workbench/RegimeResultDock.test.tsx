@@ -19,7 +19,7 @@ describe('RegimeResultDock node names', () => {
       { id: 'duration-schema', type_id: 'segment.duration', label: '区间长度', category: 'segment', inputs: [], outputs: [] },
     ]
     const onPreviewNode = vi.fn()
-    const props = { run: { id: 'PREVIEW-NAMES', status: 'completed' } as RegimePreviewRun, page: null, nodes, previewNodeId: '', loadingSeries: false, height: 420, collapsed: false, onPreviewNode, onLoadSeries: vi.fn(), onHeight: vi.fn(), onCollapsed: vi.fn() }
+    const props = { run: { id: 'PREVIEW-NAMES', status: 'completed' } as RegimePreviewRun, page: null, nodes, previewNodeId: '', loadingSeries: false, onPreviewNode, onLoadSeries: vi.fn() }
     const originalNodes = JSON.stringify(nodes)
     const { rerender } = render(<RegimeResultDock {...props} schemas={[]} />)
     expect(screen.getByRole('option', { name: 'extrema' })).toHaveValue('extrema')
@@ -64,7 +64,7 @@ describe('RegimeResultDock evaluation targets', () => {
       },
     }
 
-    render(<RegimeResultDock run={run} page={null} nodes={[]} schemas={[]} previewNodeId="" loadingSeries={false} height={420} collapsed={false} onPreviewNode={vi.fn()} onLoadSeries={vi.fn()} onHeight={vi.fn()} onCollapsed={vi.fn()} />)
+    render(<RegimeResultDock run={run} page={null} nodes={[]} schemas={[]} previewNodeId="" loadingSeries={false} onPreviewNode={vi.fn()} onLoadSeries={vi.fn()} />)
 
     expect(screen.getByRole('region', { name: '试算评价目标结果' })).toBeInTheDocument()
     expect(screen.getByText('沪深300全收益')).toBeInTheDocument()

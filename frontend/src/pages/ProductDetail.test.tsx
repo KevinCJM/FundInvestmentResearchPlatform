@@ -25,17 +25,19 @@ import type {
   RealizedFuturePath,
   RealizedMethodScore,
   SimulationMethod,
-  TerminalNavDensity,
+  NavDensity,
 } from '../services/productAnalysis'
 
 vi.mock('echarts-for-react', () => ({
-  default: ({ option }: {
+  default: ({ option, onEvents }: {
     option?: {
       grid?: unknown | Array<{ left?: string }>;
       xAxis?: { type?: string; name?: string } | Array<{ type?: string; name?: string }>;
       yAxis?: { type?: string; min?: number; max?: number } | Array<{ type?: string; min?: number; max?: number }>;
       series?: Array<{ name?: string; data?: unknown[]; markArea?: { data?: unknown[] } }>;
+      graphic?: Array<{ style?: { text?: string } }>;
     };
+    onEvents?: Record<string, (params: unknown) => void>;
   }) => {
     const xAxis = Array.isArray(option?.xAxis) ? option.xAxis[0] : option?.xAxis
     const yAxis = Array.isArray(option?.yAxis) ? option.yAxis[0] : option?.yAxis
@@ -49,8 +51,10 @@ vi.mock('echarts-for-react', () => ({
       const count = Array.isArray(item) ? Number(item[0]) : 0
       return sum + (Number.isFinite(count) ? count : 0)
     }, 0)
+    const densityTitle = (option?.graphic ?? [])[0]?.style?.text
     return <div
       data-testid="chart"
+      data-density-title={densityTitle}
       data-series={(option?.series ?? []).map((series) => series.name).filter(Boolean).join(',')}
       data-x-axis-type={xAxis?.type}
       data-y-axis-type={yAxis?.type}
@@ -63,7 +67,15 @@ vi.mock('echarts-for-react', () => ({
       data-y-axis-min={yAxis?.min === undefined ? undefined : String(yAxis.min)}
       data-y-axis-max={yAxis?.max === undefined ? undefined : String(yAxis.max)}
       data-realized-length={realizedPath ? String((realizedPath.data ?? []).length) : undefined}
-    />
+    >
+      {onEvents?.datazoom ? (
+        <button
+          type="button"
+          data-testid="drag-zoom-to-half"
+          onClick={() => onEvents.datazoom?.({ batch: [{ start: 0, end: 50 }] })}
+        />
+      ) : null}
+    </div>
   },
 }))
 vi.mock('../services/customIndicators', () => ({
@@ -242,23 +254,25 @@ const makeSimulation = (
   }
 }
 
-const makeDensity = (pathCount: number): TerminalNavDensity => ({
+/** Four strided frames, fanning out with the horizon like the kernel's do. */
+const makeDensity = (pathCount: number, horizon: number): NavDensity => ({
   sampleSize: pathCount,
-  points: [
-    { nav: 0.9, density: 0.2, estimatedCount: 10, simulatedReturn: -0.1 },
-    { nav: 1.0, density: 0.5, estimatedCount: 25, simulatedReturn: 0 },
-    { nav: 1.1, density: 0.2, estimatedCount: 10, simulatedReturn: 0.1 },
-  ],
-  histogram: [{ lowerNav: 0.9, upperNav: 1.1, density: 1, count: pathCount, frequency: 1 }],
-  maxDensity: 1,
-  modeNav: 1,
-  minNav: 0.9,
-  maxNav: 1.1,
-  countAxisMax: pathCount,
   navAxisMin: 0.88,
   navAxisMax: 1.12,
-  densityCountFactor: pathCount * 0.2,
-  histogramBinWidth: 0.2,
+  frames: [1, 2, 3, 4].map((step) => {
+    const halfWidth = 0.05 * step
+    const navLow = 1 - halfWidth
+    const navHigh = 1 + halfWidth
+    return {
+      day: Math.round((horizon * step) / 4),
+      navLow,
+      navHigh,
+      binWidth: (navHigh - navLow) / 4,
+      countAxisMax: pathCount,
+      curve: [1, 10, 25, 10, 1],
+      bins: [pathCount * 0.1, pathCount * 0.4, pathCount * 0.4, pathCount * 0.1],
+    }
+  }),
 })
 
 /** Opt-in realised future, so the默认 fixture keeps testing the PIT-off path. */
@@ -369,7 +383,7 @@ const makeAnalysisResponse = (request: ProductAnalysisRequest): ProductAnalysisR
       realized: realizedFuture,
       realizedStatus: realizedFuture ? (realizedFuture.complete ? 'complete' : 'partial') : 'off',
       comparison: { p05ReturnGap: 0.01, medianReturnGap: 0.01, lossProbabilityGap: 0.02, conditionalValueAtRiskGap: 0.01, level: 'low', message: '各模型结果接近。' },
-      densities: Object.fromEntries(methods.map((method) => [method, makeDensity(request.simulation_path_count)])) as Record<SimulationMethod, TerminalNavDensity>,
+      densities: Object.fromEntries(methods.map((method) => [method, makeDensity(request.simulation_path_count, request.simulation_horizon)])) as Record<SimulationMethod, NavDensity>,
     },
     simulationStatus: !request.include_simulation ? 'not_requested' : incomplete ? 'insufficient_sample' : 'complete',
     researchContext: {
@@ -570,7 +584,7 @@ describe('ProductDetail custom indicators', () => {
     expect(combinedChartRenderer).toHaveAttribute('data-simulation-start', '1')
     expect(combinedChartRenderer).toHaveAttribute('data-series', expect.stringContaining('期末净值直方图'))
     expect(combinedChartRenderer).toHaveAttribute('data-series', expect.stringContaining('期末净值概率密度'))
-    expect(screen.getByText(/共计 500 条/)).toBeInTheDocument()
+    expect(screen.getByText(/500 条模拟路径当天的净值落点/)).toBeInTheDocument()
     expect(screen.getByText('5 个模型结果对比')).toBeInTheDocument()
     expect(screen.getByRole('table', { name: '全部模拟模型的结果对比' })).toBeInTheDocument()
     expect(screen.getByText('95% CVaR（预期短缺）')).toBeInTheDocument()
@@ -580,7 +594,7 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.queryByTestId('monte-carlo-combined-chart')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '运行模拟' }))
     await waitFor(() => expect(screen.getByTestId('monte-carlo-combined-chart').querySelector('[data-testid="chart"]')).toHaveAttribute('data-terminal-histogram-total', '200'))
-    expect(screen.getByText(/共计 200 条/)).toBeInTheDocument()
+    expect(screen.getByText(/200 条模拟路径当天的净值落点/)).toBeInTheDocument()
     await user.click(screen.getByRole('radio', { name: '区块 Bootstrap' }))
     expect(screen.getByRole('radio', { name: '区块 Bootstrap' })).toBeChecked()
     expect(screen.getByTestId('monte-carlo-combined-chart')).toHaveAccessibleName('历史区块 Bootstrap：路径与期末净值概率分布组合图')
@@ -712,6 +726,26 @@ describe('ProductDetail custom indicators', () => {
     const renderer = chart.querySelector('[data-testid="chart"]')
     expect(Number(renderer?.getAttribute('data-y-axis-min'))).toBeCloseTo(0.61, 5)
     expect(Number(renderer?.getAttribute('data-y-axis-max'))).toBeCloseTo(1.12, 5)
+  })
+
+  it('缩放到区间中段时，右侧分布换成那一天的落点，而不是期末的', async () => {
+    const user = userEvent.setup()
+
+    const chart = await openSimulation(user)
+    const renderer = chart.querySelector('[data-testid="chart"]')
+
+    // Nothing zoomed: the panel answers for the horizon itself.
+    expect(renderer).toHaveAttribute('data-density-title', '期末净值分布')
+    expect(screen.getByText(/第 21 个未来交易日/)).toBeInTheDocument()
+
+    await user.click(within(chart).getByTestId('drag-zoom-to-half'))
+
+    // Half of 21 days is day 11, which the fixture has a frame for. Debounced,
+    // so the assertion has to wait for the drag to settle.
+    await waitFor(() => {
+      expect(chart.querySelector('[data-testid="chart"]')).toHaveAttribute('data-density-title', '第 11 日净值分布')
+    })
+    expect(screen.getByText(/第 11 个未来交易日/)).toBeInTheDocument()
   })
 
   it('每个模型的参数只出现在它自己的面板里，并且只发给后端一次', async () => {
@@ -923,6 +957,22 @@ describe('ProductDetail custom indicators', () => {
     expect(mainPriceChart).toHaveAttribute('data-regime-mark-area', '[]')
   })
 
+  it('保存新情景后可就地刷新并选用，选项不展示运行ID', async () => {
+    const user = userEvent.setup()
+    const run = makeHistoricalRegimeRun('run-clock', '美林时钟')
+    vi.mocked(listHistoricalRegimeRuns).mockResolvedValueOnce([]).mockResolvedValue([run])
+    vi.mocked(getHistoricalRegimeRun).mockResolvedValue(run)
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+    await user.click(await screen.findByRole('tab', { name: '情景表现' }))
+    await screen.findByRole('heading', { name: '暂无可用情景' })
+    await user.click(screen.getByRole('button', { name: '刷新情景' }))
+    const choice = await screen.findByRole('combobox', { name: '历史情景背景' })
+    expect(within(choice).getByRole('option', { name: /美林时钟/ })).not.toHaveTextContent('run-clock')
+    await user.selectOptions(choice, 'run-clock')
+    await waitFor(() => expect(analyzeProduct).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ regime: expect.objectContaining({ run_id: 'run-clock' }) }), expect.anything()))
+    expect(listHistoricalRegimeRuns).toHaveBeenCalledTimes(2)
+  })
+
   it('情景与单段联动研究条件，切换后忽略迟到的模拟响应', async () => {
     const user = userEvent.setup()
     const run = makeHistoricalRegimeRun('run-eligible', '沪深300牛熊震荡')
@@ -997,6 +1047,9 @@ describe('ProductDetail custom indicators', () => {
     expect(screen.getByRole('tab', { name: '情景表现' })).toHaveFocus()
     expect(screen.getByRole('tab', { name: '情景表现' })).toHaveAttribute('aria-selected', 'true')
     await user.keyboard('{End}')
+    expect(screen.getByRole('tab', { name: '风险与压测' })).toHaveFocus()
+    expect(screen.queryByLabelText('分析样本')).not.toBeInTheDocument()
+    await user.keyboard('{ArrowLeft}')
     expect(screen.getByRole('tab', { name: '未来模拟' })).toHaveFocus()
     expect(vi.mocked(analyzeProduct).mock.calls.every(([, , request]) => !request.include_simulation)).toBe(true)
   })

@@ -53,6 +53,11 @@ class FormulaPrepareRequest(BaseModel):
     as_of: Optional[str] = None
 
 
+class ResearchVersionRequest(RunRequest):
+    model_config = ConfigDict(extra="forbid")
+    compile_token: str = Field(min_length=1)
+
+
 class PublishRequest(BaseModel):
     usage: str | list[str]
     note: str = Field(default="", max_length=500)
@@ -77,6 +82,7 @@ class TAABacktestRequest(BaseModel):
 
 
 from historical_regimes.authoring import AuthoringRequest, resolve_authoring
+from historical_regimes.composite_expansion import ExpandCompositeRequest, expand_composite
 
 
 class RegimeGraphDefinitionRequest(BaseModel):
@@ -85,12 +91,17 @@ class RegimeGraphDefinitionRequest(BaseModel):
     definition: dict[str, Any]
 
 
+class RegimeGraphInferRequest(RegimeGraphDefinitionRequest):
+    mode: Literal["realtime", "retrospective"] = "realtime"
+
+
 class RegimeGraphDefinitionUpdateRequest(RegimeGraphDefinitionRequest):
     revision: int = Field(ge=1)
 
 
 class RegimeGraphPrepareRequest(RegimeGraphDefinitionRequest):
     preview_target: Optional[dict[str, str]] = None
+    comparison_targets: list[dict[str, str]] = Field(default_factory=list, max_length=7)
 
 
 class RegimeGraphPreviewRequest(RegimeGraphPrepareRequest):
@@ -98,6 +109,7 @@ class RegimeGraphPreviewRequest(RegimeGraphPrepareRequest):
     mode: Literal["realtime", "retrospective"] = "realtime"
     as_of: Optional[str] = None
     ttl_seconds: int = Field(default=1800, ge=1, le=86400)
+    audit_temporal: bool = False
 
 
 class RegimeGraphAssetCreateRequest(BaseModel):
@@ -146,6 +158,11 @@ def _call(method, *args, **kwargs):
         return method(*args, **kwargs)
     except IndicatorDomainError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
+
+
+from historical_regimes.event_routes import install_event_routes
+
+install_event_routes(router, lambda: regime_graph_v2_service, _call)
 
 
 def _raise_v1_read_only() -> None:
@@ -201,19 +218,25 @@ def instantiate_regime_graph_template(template_id: str):
     return _call(regime_graph_v2_service.instantiate_template, template_id)
 
 
+@router.post("/api/historical-regimes/authoring/expand")
+def expand_regime_composite(request: ExpandCompositeRequest):
+    return _call(expand_composite, request.definition, request.node_id, request.mode)
+
+
 @router.post("/api/historical-regimes/authoring/resolve")
 def resolve_regime_authoring(request: AuthoringRequest):
     return _call(resolve_authoring, request)
 
 
 @router.post("/api/historical-regimes/infer")
-def infer_regime_graph(request: RegimeGraphDefinitionRequest):
-    return _call(regime_graph_v2_service.infer, request.definition)
+def infer_regime_graph(request: RegimeGraphInferRequest):
+    return _call(regime_graph_v2_service.infer, request.definition, request.mode)
 
 
 @router.post("/api/historical-regimes/prepare")
 def prepare_regime_graph(request: RegimeGraphPrepareRequest):
-    return _call(regime_graph_v2_service.prepare, request.definition, preview_target=request.preview_target)
+    return _call(regime_graph_v2_service.prepare, request.definition, preview_target=request.preview_target,
+                 comparison_targets=request.comparison_targets)
 
 
 @router.post(
@@ -228,7 +251,9 @@ def create_regime_graph_preview(request: RegimeGraphPreviewRequest):
         mode=request.mode,
         as_of=request.as_of,
         ttl_seconds=request.ttl_seconds,
+        audit_temporal=request.audit_temporal,
         preview_target=request.preview_target,
+        comparison_targets=request.comparison_targets,
     )
 
 
@@ -280,7 +305,9 @@ def get_regime_graph_normalized_chart(
 
 @router.get("/api/historical-regimes/v2/definitions")
 def list_regime_graph_definitions():
-    return {"items": _call(regime_graph_v2_service.list_definitions)}
+    items = _call(regime_graph_v2_service.list_definitions)
+    reports = {item["id"]: _call(regime_graph_v2_service.infer, item, item.get("default_mode") or "realtime").get("temporal_capability") for item in items}
+    return {"items": items, "temporal_capabilities": reports}
 
 
 @router.post(
@@ -441,6 +468,12 @@ def prepare_historical_regime_formula(request: FormulaPrepareRequest):
         request.mode,
         request.as_of,
     )
+
+
+@router.post("/api/historical-regimes/research-versions")
+def enable_regime_research_version(request: ResearchVersionRequest):
+    return _call(regime_graph_v2_service.enable_research_version, request.definition,
+                 request.mode, request.as_of, request.compile_token)
 
 
 @router.get("/api/historical-regimes/runs")

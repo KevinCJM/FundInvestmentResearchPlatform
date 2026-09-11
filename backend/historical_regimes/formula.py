@@ -10,6 +10,7 @@ when broadcast into a point-in-time feature series.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,10 +32,15 @@ from cal_indicators.typed_numba_kernels import (
     NUMERIC_KERNEL_VERSION,
     kernel_catalog_entry,
 )
-from cal_indicators.typed_numba_plan import numba_plan_id
+from cal_indicators.typed_numba_plan import (
+    numba_plan_id, compile_numba_series_plan, get_cached_numba_series_plan,
+)
 from compute_policy import validate_execution_audit
 from custom_indicators.errors import ValidationError
 from computation_graph.series_runtime import compute_warmed_series
+from computation_graph.causal_series import (
+    SYSTEM_CONTEXT_NAMES, bind_series_context, causal_violations, series_variable_types,
+)
 
 from .numba_kernels import (
     execution_audit as historical_regime_execution_audit,
@@ -46,7 +52,7 @@ from .numba_kernels import (
 
 
 FORMULA_LANGUAGE_ID = "historical-regime-typed-causal-series"
-FORMULA_ALLOWLIST_VERSION = "typed-njit-causal-2"
+FORMULA_ALLOWLIST_VERSION = "typed-njit-causal-scope-3"
 FORMULA_EVALUATOR_VERSION = TYPED_COMPILER_VERSION
 MAX_EXPRESSION_LENGTH = 1000
 MAX_AST_NODES = 128
@@ -281,6 +287,8 @@ def _dag_depth(plan: TypedExpressionPlan) -> int:
 def _compose_formula(
     expression: str,
     frame: pd.DataFrame,
+    *,
+    definition: dict[str, Any] | None = None,
 ) -> tuple[TypedExpressionPlan, list[str]]:
     if not expression.strip():
         raise _formula_error("EMPTY_FORMULA", "自定义公式不能为空。")
@@ -289,22 +297,27 @@ def _compose_formula(
             "FORMULA_TOO_COMPLEX",
             f"公式长度不能超过 {MAX_EXPRESSION_LENGTH} 个字符。",
         )
-    variable_types = _numeric_variable_types(frame)
+    numeric_types = _numeric_variable_types(frame)
+    variable_types = series_variable_types(numeric_types, definition)
+    # A scalar reference is explicitly lifted by the current transform. A
+    # saved time-series reference retains its original DSL/registry contract.
+    series_definition = definition if definition and definition.get('result_kind') == 'time_series' else {}
     try:
         plan = compose_typed_expression(
             expression,
             variable_types=variable_types,
             output_contract="series",
-            dsl_version=TYPED_DSL_VERSION,
-            operator_registry_version=TYPED_OPERATOR_REGISTRY_VERSION,
+            dsl_version=series_definition.get('dsl_version', TYPED_DSL_VERSION),
+            operator_registry_version=series_definition.get('operator_registry_version', TYPED_OPERATOR_REGISTRY_VERSION),
             max_nodes=MAX_AST_NODES,
             max_depth=MAX_AST_DEPTH,
         )
     except TypedDslError as exc:
         raise _translate_typed_error(exc) from exc
 
-    dependencies = sorted(plan.context_requirements)
-    unavailable = [name for name in dependencies if name not in variable_types]
+    system_enabled = definition is not None or any(node.operator_id == 'rolling_apply' for node in plan.nodes)
+    dependencies = sorted(set(plan.context_requirements) - (SYSTEM_CONTEXT_NAMES if system_enabled else set()))
+    unavailable = [name for name in dependencies if name not in numeric_types]
     if unavailable:
         raise _formula_error(
             "FORMULA_VARIABLE_NOT_FOUND",
@@ -314,14 +327,7 @@ def _compose_formula(
                 "available_columns": sorted(variable_types),
             },
         )
-    non_causal = sorted(
-        {
-            str(node.operator_id)
-            for node in plan.nodes
-            if node.operator_id is not None
-            and node.operator_id not in CAUSAL_OPERATOR_IDS
-        }
-    )
+    non_causal = causal_violations(plan, CAUSAL_OPERATOR_IDS)
     if non_causal:
         raise _formula_error(
             "FORMULA_NON_CAUSAL_OPERATOR",
@@ -349,7 +355,7 @@ def _compose_formula(
     return plan, dependencies
 
 
-def _formula_compile_token(plan: TypedExpressionPlan) -> str:
+def _formula_compile_token(plan: TypedExpressionPlan, definition: dict[str, Any] | None = None) -> str:
     """Bind an explicit preparation result to one immutable typed DAG."""
 
     material = "|".join(
@@ -357,12 +363,66 @@ def _formula_compile_token(plan: TypedExpressionPlan) -> str:
             FORMULA_ALLOWLIST_VERSION,
             plan.expression_hash,
             numba_plan_id(plan),
+            json.dumps({key: definition.get(key) for key in ('id', 'revision', 'annual_risk_free_rate_percent')}, sort_keys=True) if definition else '',
         )
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def prepare_formula(expression: str, frame: pd.DataFrame) -> dict[str, Any]:
+def _aligned_series_bundle(plan):
+    from cal_indicators.typed_dsl import compose_typed_series_bundle
+    return compose_typed_series_bundle({'value': plan.python_expression},
+        variable_types=plan.context_requirements, dsl_version=plan.dsl_version,
+        operator_registry_version=plan.operator_registry_version,
+        max_nodes=MAX_AST_NODES, max_depth=MAX_AST_DEPTH)
+
+
+def _evaluate_aligned_formula(plan, frame, dependencies, definition, observation_dates):
+    """Exact indicator contracts use the full axis, including missing positions.
+
+    Historical free-form block-reset formulas retain their existing path below.
+    Both paths delegate all mathematical work to the same registered kernels.
+    """
+    from computation_graph.series_numba import series_validity_counts_kernel
+    bundle = _aligned_series_bundle(plan)
+    compiled = get_cached_numba_series_plan(bundle)
+    if compiled is None:
+        raise _formula_error('FORMULA_NJIT_PLAN_NOT_WARMED', '指标计划没有预热；运行时不会编译或回退。')
+    if not 0 < len(frame) <= MAX_TIME_OBSERVATIONS:
+        raise _formula_error('FORMULA_NUMERIC_INPUT_INVALID', '指标输入观察数超出允许范围。')
+    if observation_dates is None:
+        if isinstance(frame.index, pd.DatetimeIndex):
+            observation_dates = frame.index.to_numpy(dtype='datetime64[D]').astype(np.float64)
+        else:
+            raise _formula_error('FORMULA_DATE_CONTEXT_REQUIRED', '滚动指标需要真实观察日期，不能用位置伪造日期。')
+    # Only boundary conversion; float64 columns assembled with copy=False share
+    # their upstream owners. The node and rolling loops never rebuild a frame.
+    inputs = {name: np.ascontiguousarray(frame[name].to_numpy(dtype=np.float64, copy=False)) for name in dependencies}
+    try:
+        arguments = bind_series_context(compiled.context_names, inputs, observation_dates, definition)
+        output = compiled.compute(arguments)[0]
+    except (TypeError, ValueError, ZeroDivisionError, FloatingPointError, OverflowError) as exc:
+        raise _formula_error('FORMULA_NJIT_EXECUTION_FAILED', '指标计算失败，请核对窗口、日期和输入范围。',
+                             details={'reason': str(exc)}) from exc
+    if not isinstance(output, np.ndarray) or output.dtype != np.float64 or output.ndim != 1 or output.size != len(frame):
+        raise _formula_error('FORMULA_NJIT_OUTPUT_INVALID', '指标输出必须与上游日期轴对齐。')
+    count, infinite = series_validity_counts_kernel(output)
+    if infinite:
+        raise _formula_error('FORMULA_NJIT_OUTPUT_INVALID', '指标产生无穷值。')
+    if not count:
+        raise _formula_error('FORMULA_NO_VALID_OUTPUT', '指标尚未产生有效结果，请检查历史长度与输入数据。')
+    audit = compiled.metadata()
+    audit.update(language_id=FORMULA_LANGUAGE_ID, allowlist_version=FORMULA_ALLOWLIST_VERSION,
+        expression=plan.expression, normalized_expression=plan.python_expression,
+        referenced_columns=dependencies, is_causal=True, uses_future_data=False, repaints=False,
+        request_time_compilation=0, valid_output_observations=int(count),
+        missing_output_observations=int(output.size - count), input_policy='preserve_aligned_positions',
+        system_context='locked_indicator_definition_and_observation_axis')
+    audit['kernel_signatures']['series_validity_counts'] = [str(s) for s in series_validity_counts_kernel.signatures]
+    return FormulaResult(pd.Series(output, index=frame.index, copy=False), validate_execution_audit(audit))
+
+
+def prepare_formula(expression: str, frame: pd.DataFrame, *, definition: dict[str, Any] | None = None) -> dict[str, Any]:
     """Explicitly compile and freeze a formula before a numerical run.
 
     This is the only formula entry point allowed to create a Numba plan.  The
@@ -371,17 +431,17 @@ def prepare_formula(expression: str, frame: pd.DataFrame) -> dict[str, Any]:
     a calculation request.
     """
 
-    plan, dependencies = _compose_formula(expression, frame)
+    plan, dependencies = _compose_formula(expression, frame, definition=definition)
     try:
-        runtime = TypedIndicatorRuntime.from_plan(
-            plan,
-            max_time=MAX_TIME_OBSERVATIONS,
-        )
+        if definition is not None or any(node.operator_id == 'rolling_apply' for node in plan.nodes):
+            compiled = compile_numba_series_plan(_aligned_series_bundle(plan)).metadata()
+        else:
+            runtime = TypedIndicatorRuntime.from_plan(plan, max_time=MAX_TIME_OBSERVATIONS)
+            compiled = runtime.compiled_plan.metadata()
     except TypedDslError as exc:
         raise _translate_typed_error(exc) from exc
-    compiled = runtime.compiled_plan.metadata()
     return {
-        "compile_token": _formula_compile_token(plan),
+        "compile_token": _formula_compile_token(plan, definition),
         "compiled_plan_id": compiled["compiled_plan_id"],
         "compile_status": "compiled",
         "expression_hash": plan.expression_hash,
@@ -433,11 +493,13 @@ def evaluate_formula(
     frame: pd.DataFrame,
     *,
     compile_token: str | None = None,
+    definition: dict[str, Any] | None = None,
+    observation_dates: np.ndarray | None = None,
 ) -> FormulaResult:
     """Execute an explicitly prepared fixed-signature NJIT formula plan."""
 
-    plan, dependencies = _compose_formula(expression, frame)
-    expected_token = _formula_compile_token(plan)
+    plan, dependencies = _compose_formula(expression, frame, definition=definition)
+    expected_token = _formula_compile_token(plan, definition)
     if compile_token != expected_token:
         raise _formula_error(
             "FORMULA_COMPILE_TOKEN_REQUIRED",
@@ -445,6 +507,8 @@ def evaluate_formula(
             details={"compiled_plan_id": numba_plan_id(plan)},
         )
     _require_formula_numeric_runtime()
+    if definition is not None or any(node.operator_id == 'rolling_apply' for node in plan.nodes):
+        return _evaluate_aligned_formula(plan, frame, dependencies, definition, observation_dates)
     try:
         runtime = TypedIndicatorRuntime.from_warmed_plan(
             plan,
@@ -478,7 +542,7 @@ def evaluate_formula(
             for name, values in numeric.items()
         }
         try:
-            permits_warmup_missing = any(node.operator_id in {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"} for node in plan.nodes)
+            permits_warmup_missing = any(node.operator_id in {"rolling_window", "rolling_apply", "rolling_mean", "rolling_std", "rolling_min", "rolling_max"} for node in plan.nodes)
             result = np.asarray(compute_warmed_series(runtime, context) if permits_warmup_missing else runtime.compute(context), dtype=np.float64)
         except TypedDslError as exc:
             if exc.code == "INSUFFICIENT_SAMPLE":

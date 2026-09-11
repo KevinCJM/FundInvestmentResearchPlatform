@@ -49,12 +49,12 @@ def inspect_plan(store: SourceStore, definition: EtlDefinition, *, credentials: 
     for step in definition.execution_steps():
         if step.kind == 'task':
             from .task_catalog import inspect_task
-            available = outputs[step.inputs[0]] if step.inputs else set()
+            available = set().union(*(outputs[key] for key in step.inputs))
             tasks[step.id] = inspect_task(store, step, available, require_values=credentials)
-            origin = origins.get(step.inputs[0]) if step.inputs else None
-            if origin and step.source_id and origin != step.source_id:
+            source_ids = {origins[key] for key in step.inputs if origins.get(key)} | ({step.source_id} if step.source_id else set())
+            if len(source_ids) > 1:
                 raise CenterError('ETL_TASK_SOURCE_MIX', '数据集工作区不能混入不同来源；跨来源请使用标准映射与多源取值节点。')
-            origins[step.id] = step.source_id or origin
+            origins[step.id] = next(iter(source_ids), None)
             outputs[step.id] = available | set(tasks[step.id]['spec']['provides'])
         elif step.kind == "download":
             saved = store.get("interface", step.interface_id)
@@ -107,7 +107,7 @@ def validate(store: SourceStore, payload, options=None) -> dict:
             definition = bind_parameters(definition, parsed_options)
             if parsed_options.mode == 'auto_incremental':
                 from .auto_incremental import plan
-                automatic = plan(store, definition)
+                automatic = plan(store, definition, baseline_run_id=parsed_options.auto_baseline_run_id, options=parsed_options)
                 definition = automatic['definition']
         inspection = inspect_plan(store, definition)
         if automatic:
@@ -229,7 +229,7 @@ def start(store: SourceStore, payload: dict) -> dict:
         automatic = None
         if options.mode == 'auto_incremental':
             from .auto_incremental import plan, freeze_baseline
-            automatic = plan(store, definition)
+            automatic = plan(store, definition, baseline_run_id=options.auto_baseline_run_id, options=options)
             if not automatic['public']['ready']:
                 raise CenterError('AUTO_PLAN_BLOCKED', '；'.join(e['message'] for e in automatic['public']['errors']), 422)
             if payload.get('auto_plan_id') != automatic['public']['plan_id']:
@@ -310,12 +310,14 @@ def resume(store: SourceStore, identifier: str, confirm: bool) -> dict:
             journal.checked_path(receipt['original_run'])
             if receipt['target_execution'] != run['frozen']['execution_fingerprint']:
                 raise CenterError('ETL_MIGRATION_BLOCKED', '恢复清单的目标版本与运行不一致。', 409)
-            for shard in receipt['shards'].get('files', []):
-                journal.checked_path(shard['imported'])
-            for shard in receipt['shards'].get('history', {}).get('files', []):
-                journal.checked_path(shard['imported'])
-            if receipt['shards'].get('day_import_receipt'):
-                journal.checked_path(receipt['shards']['day_import_receipt'])
+            for partial in receipt.get('partials', [{'shards': receipt['shards']}]):
+                evidence = partial['shards']
+                for shard in evidence.get('files', []):
+                    journal.checked_path(shard['imported'])
+                for shard in evidence.get('history', {}).get('files', []):
+                    journal.checked_path(shard['imported'])
+                if evidence.get('day_import_receipt'):
+                    journal.checked_path(evidence['day_import_receipt'])
         for state in run["steps"]:
             if state["status"] == "SUCCEEDED":
                 for artifact in state.get("artifacts", []):
@@ -325,7 +327,8 @@ def resume(store: SourceStore, identifier: str, confirm: bool) -> dict:
         resumed_at = utc_now()
         record_resume(run, resumed_at)
         run.update(status="RUNNING", owner_pid=os.getpid(), owner_instance=OWNER, error=None, started_at=resumed_at, finished_at=None, attempt=run["attempt"] + 1)
-        run.pop('executor', None)
+        for key in ('executor', 'failure_summary', 'message', 'code'):
+            run.pop(key, None)
         journal.request_cancel(identifier, False)
         journal.save_run(run)
         return _launch(journal, run, lock)
@@ -399,83 +402,112 @@ def execute(journal: EtlStore, run: dict, lock) -> None:
             check()
             if run.get('executor') and execution_fingerprint() != run['frozen']['execution_fingerprint']:
                 raise CenterError('ETL_IMPLEMENTATION_CHANGED', '代码已更新，当前步骤完成后已停止推进；不能混用新旧执行版本。', 409)
-            current.update(status="RUNNING", started_at=utc_now(), attempt=current["attempt"] + 1)
-            # An attempt never inherits another attempt's counters or timestamps.
-            for key in ('rows', 'pages', 'finished_at', 'error', 'code', 'heartbeat_at'):
-                current.pop(key, None)
-            current['progress'] = {'phase': '准备执行', 'message': '正在校验输入和准备工作区。',
-                                   'completed': None, 'total': None, 'logs': []}
-            journal.save_run(run)
-            directory = journal.root / "etl_runs" / run["run_id"] / step.id / str(current["attempt"])
-            directory.mkdir(parents=True, exist_ok=True)
-            artifacts = []
-            if step.kind == 'task':
-                from .task_runtime import execute_task
-                remaining = max(1, int(definition.max_runtime_seconds - (time.monotonic() - started)))
-                output = execute_task(journal, run, step, states, directory, check, lock, remaining)
-                artifacts.append(output['workspace'])
-                current['mode'] = download_mode(step.mode, parse_run_options(run.get('options')))
-            elif step.kind == "download":
-                frozen = run["frozen"]["downloads"][step.id]
-                source = SourceConfig.model_validate(frozen["source"]["config"])
-                interface = InterfaceConfig.model_validate(frozen["effective_interface"])
-                # Resume must reuse the original mode/window, not a later checkpoint.
-                if "request_params" in frozen:
-                    params, key = dict(frozen["request_params"]), frozen["checkpoint"]
+            blocked = [key for key in step.inputs if states[key]["status"] != "SUCCEEDED"]
+            if blocked:
+                names = "、".join(states[key]["name"] for key in blocked)
+                current.update(status="SKIPPED", code="ETL_DEPENDENCY_FAILED", blocked_by=blocked,
+                               error=f"必需数据依赖未成功：{names}。仅执行顺序的上游失败不会阻断。", finished_at=utc_now())
+                journal.save_run(run)
+                continue
+            try:
+                current.update(status="RUNNING", started_at=utc_now(), attempt=current["attempt"] + 1)
+                # An attempt never inherits another attempt's counters or timestamps.
+                for key in ('rows', 'pages', 'finished_at', 'error', 'code', 'heartbeat_at', 'blocked_by', 'output', 'artifacts'):
+                    current.pop(key, None)
+                current['progress'] = {'phase': '准备执行', 'message': '正在校验输入和准备工作区。',
+                                       'completed': None, 'total': None, 'logs': []}
+                journal.save_run(run)
+                directory = journal.root / "etl_runs" / run["run_id"] / step.id / str(current["attempt"])
+                directory.mkdir(parents=True, exist_ok=True)
+                artifacts = []
+                if step.kind == 'task':
+                    from .task_runtime import execute_task
+                    remaining = max(1, int(definition.max_runtime_seconds - (time.monotonic() - started)))
+                    output = execute_task(journal, run, step, states, directory, check, lock, remaining)
+                    artifacts.append(output['workspace'])
+                    current['mode'] = download_mode(step.mode, parse_run_options(run.get('options')))
+                elif step.kind == "download":
+                    frozen = run["frozen"]["downloads"][step.id]
+                    source = SourceConfig.model_validate(frozen["source"]["config"])
+                    interface = InterfaceConfig.model_validate(frozen["effective_interface"])
+                    # Resume must reuse the original mode/window, not a later checkpoint.
+                    if "request_params" in frozen:
+                        params, key = dict(frozen["request_params"]), frozen["checkpoint"]
+                    else:
+                        params, key = incremental_params(journal.sources, source, interface, download_mode(step.mode, parse_run_options(run.get("options"))))
+                    current["mode"] = frozen.get("mode", download_mode(step.mode, parse_run_options(run.get("options"))))
+                    def progress(pages, count):
+                        captured_at = utc_now()
+                        window = current['progress'].setdefault('collection_window', {'first_at': captured_at})
+                        window['last_at'] = captured_at
+                        current.update(pages=pages, rows=count)
+                        current['progress'].update(phase='下载分页', message=f'已接收 {pages} 页数据。',
+                                                   batches=pages, received_rows=count, activity_at=utc_now())
+                        current['heartbeat_at'] = utc_now()
+                        journal.save_run(run)
+                    remaining = max(1, int(definition.max_runtime_seconds - (time.monotonic() - started)))
+                    bounded = source.model_copy(update={"policy": source.policy.model_copy(update={"max_runtime_seconds": min(remaining, source.policy.max_runtime_seconds)})})
+                    rows, pages = download_rows(journal.sources, bounded, interface, params, check=check, progress=progress)
+                    raw = journal.write_json(directory / "raw.json", rows)
+                    artifacts.append(raw)
+                    output = {"raw": raw, "rows": len(rows), "pages": pages, "params": params, "checkpoint": key, "download_step": step.id}
+                    current.update(output=output, artifacts=artifacts)
+                    if not rows and not step.allow_empty:
+                        raise CenterError("ETL_EMPTY_DATA", "来源返回空数据，流程已停止。请核对范围，或明确开启允许空结果。")
+                elif step.kind == "map":
+                    downloaded = states[step.inputs[0]]["output"]
+                    rows = json.loads(journal.checked_path(downloaded["raw"]).read_text())
+                    frozen = run["frozen"]["downloads"][downloaded["download_step"]]
+                    interface = InterfaceConfig.model_validate(frozen["effective_interface"])
+                    batch = capture_batch(journal.sources, interface, rows, {**downloaded["params"], "etl_capture": run["run_id"]}, fingerprint(frozen))
+                    output = {"batch": batch, "rows": batch["source_rows"]}
+                    for item in batch["tables"]:
+                        if item.get("artifact"):
+                            artifacts.append({"path": item["artifact"], "checksum": item["checksum"]})
+                    current.update(output=output, artifacts=artifacts)
+                    if batch["status"] == "REJECTED":
+                        raise CenterError("MAPPING_REJECTED", "映射未通过。原始数据已保留，后续取值和快照未执行。")
+                    advance_checkpoint(journal.sources, downloaded["checkpoint"], interface, rows)
+                elif step.kind == "resolve":
+                    ids = list(run["frozen"]["history"].get(step.id, []))
+                    for key in step.inputs:
+                        ids.append(states[key]["output"]["batch"]["batch_id"])
+                    policy = run["frozen"]["policy"]
+                    result = resolve_saved(journal.sources, step.table_id, policy["revision"], step.start_date, step.end_date, step.as_of, batch_ids=list(dict.fromkeys(ids)), frozen_policy=policy)
+                    output = {"resolution": result, "table_id": step.table_id, "rows": result["summary"]["selected_rows"]}
+                    artifacts.append({"path": result["artifact"], "checksum": result["checksum"]})
+                    current.update(output=output, artifacts=artifacts)
+                    if result["status"] == "NEEDS_REVIEW" or not output["rows"] and not step.allow_empty:
+                        raise CenterError("ETL_QUALITY_GATE", "多源取值存在冲突、阻断或无可用记录。后续步骤未执行，请查看取值明细。")
                 else:
-                    params, key = incremental_params(journal.sources, source, interface, download_mode(step.mode, parse_run_options(run.get("options"))))
-                current["mode"] = frozen.get("mode", download_mode(step.mode, parse_run_options(run.get("options"))))
-                def progress(pages, count):
-                    captured_at = utc_now()
-                    window = current['progress'].setdefault('collection_window', {'first_at': captured_at})
-                    window['last_at'] = captured_at
-                    current.update(pages=pages, rows=count)
-                    current['progress'].update(phase='下载分页', message=f'已接收 {pages} 页数据。',
-                                               batches=pages, received_rows=count, activity_at=utc_now())
-                    current['heartbeat_at'] = utc_now()
-                    journal.save_run(run)
-                remaining = max(1, int(definition.max_runtime_seconds - (time.monotonic() - started)))
-                bounded = source.model_copy(update={"policy": source.policy.model_copy(update={"max_runtime_seconds": min(remaining, source.policy.max_runtime_seconds)})})
-                rows, pages = download_rows(journal.sources, bounded, interface, params, check=check, progress=progress)
-                raw = journal.write_json(directory / "raw.json", rows)
-                artifacts.append(raw)
-                output = {"raw": raw, "rows": len(rows), "pages": pages, "params": params, "checkpoint": key, "download_step": step.id}
-                current.update(output=output, artifacts=artifacts)
-                if not rows and not step.allow_empty:
-                    raise CenterError("ETL_EMPTY_DATA", "来源返回空数据，流程已停止。请核对范围，或明确开启允许空结果。")
-            elif step.kind == "map":
-                downloaded = states[step.inputs[0]]["output"]
-                rows = json.loads(journal.checked_path(downloaded["raw"]).read_text())
-                frozen = run["frozen"]["downloads"][downloaded["download_step"]]
-                interface = InterfaceConfig.model_validate(frozen["effective_interface"])
-                batch = capture_batch(journal.sources, interface, rows, {**downloaded["params"], "etl_capture": run["run_id"]}, fingerprint(frozen))
-                output = {"batch": batch, "rows": batch["source_rows"]}
-                for item in batch["tables"]:
-                    if item.get("artifact"):
-                        artifacts.append({"path": item["artifact"], "checksum": item["checksum"]})
-                current.update(output=output, artifacts=artifacts)
-                if batch["status"] == "REJECTED":
-                    raise CenterError("MAPPING_REJECTED", "映射未通过。原始数据已保留，后续取值和快照未执行。")
-                advance_checkpoint(journal.sources, downloaded["checkpoint"], interface, rows)
-            elif step.kind == "resolve":
-                ids = list(run["frozen"]["history"].get(step.id, []))
-                for key in step.inputs:
-                    ids.append(states[key]["output"]["batch"]["batch_id"])
-                policy = run["frozen"]["policy"]
-                result = resolve_saved(journal.sources, step.table_id, policy["revision"], step.start_date, step.end_date, step.as_of, batch_ids=list(dict.fromkeys(ids)), frozen_policy=policy)
-                output = {"resolution": result, "table_id": step.table_id, "rows": result["summary"]["selected_rows"]}
-                artifacts.append({"path": result["artifact"], "checksum": result["checksum"]})
-                current.update(output=output, artifacts=artifacts)
-                if result["status"] == "NEEDS_REVIEW" or not output["rows"] and not step.allow_empty:
-                    raise CenterError("ETL_QUALITY_GATE", "多源取值存在冲突、阻断或无可用记录。后续步骤未执行，请查看取值明细。")
-            else:
-                inputs = {states[key]["output"]["table_id"]: journal.checked_path(states[key]["artifacts"][0]) for key in step.inputs}
-                output = _snapshot_process(journal, run, directory, inputs, check)
-                artifacts = [journal.artifact(p) for p in directory.iterdir() if p.is_file()]
-            check()
-            receipt = journal.write_json(directory / "result.json", output)
-            current.update(status="SUCCEEDED", output=output, artifacts=[*artifacts, receipt], rows=output.get("rows", 0), finished_at=utc_now(), error=None)
-            journal.save_run(run)
+                    inputs = {states[key]["output"]["table_id"]: journal.checked_path(states[key]["artifacts"][0]) for key in step.inputs}
+                    output = _snapshot_process(journal, run, directory, inputs, check)
+                    artifacts = [journal.artifact(p) for p in directory.iterdir() if p.is_file()]
+                check()
+                receipt = journal.write_json(directory / "result.json", output)
+                current.update(status="SUCCEEDED", output=output, artifacts=[*artifacts, receipt], rows=output.get("rows", 0), finished_at=utc_now(), error=None)
+                journal.save_run(run)
+            except Exception as exc:
+                code = exc.code if isinstance(exc, CenterError) else "ETL_STEP_FAILED"
+                message = exc.message if isinstance(exc, CenterError) else f"步骤执行失败（{type(exc).__name__}）；检查点保留。"
+                current.update(status="FAILED", code=code, error=message, finished_at=utc_now())
+                journal.save_run(run)
+                # Cancellation, deadlines and shared integrity failures stop the
+                # entire run. A dataset failure only blocks its data descendants.
+                global_codes = {"ETL_CANCELLED", "ETL_TIMEOUT", "ETL_IMPLEMENTATION_CHANGED",
+                                "ETL_CONFIG_CHANGED", "ETL_ARTIFACT_CHANGED",
+                                "ETL_WORKSPACE_CHANGED", "STORAGE_UNAVAILABLE",
+                                "SOURCE_DB_FULL", "SOURCE_DB_READONLY", "SOURCE_DB_IO"}
+                if definition.graph_version is None or code in global_codes or code.startswith('STORAGE_') or isinstance(exc, OSError):
+                    raise
+        failed = [s for s in run["steps"] if s["status"] != "SUCCEEDED"]
+        if failed:
+            failures = [s for s in failed if s["status"] == "FAILED"]
+            run.update(status="FAILED", code="ETL_PARTIAL_FAILURE",
+                       error=f"{len(failures)} 个节点失败，{len(failed) - len(failures)} 个节点因必需依赖未完成而阻断；其他独立节点已继续执行。检查点保留，未发布数据。",
+                       failure_summary=[{"id": s["id"], "name": s["name"], "code": s.get("code"),
+                                         "error": s.get("error")} for s in failed])
+            return
         warning_count = sum(s.get('output', {}).get('mapped_rejected_batches', 0) + s.get('output', {}).get('warnings', 0) for s in run['steps'])
         run.update(status='SUCCEEDED', warning_count=warning_count,
                    message=('流程采集完成，但有映射或数据告警，请检查步骤结果；不能标记标准数据就绪。' if warning_count else '流程完成，结果已保存为私有候选，尚未发布到正式研究。'))

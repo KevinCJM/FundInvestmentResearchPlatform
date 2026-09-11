@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import openpyxl
 import pandas as pd
@@ -59,6 +60,33 @@ def _all_formulas(path: Path) -> list[str]:
         workbook.close()
 
 
+def _assert_native_std_degrees(path: Path, expected: int) -> None:
+    """Verify the actual variance formula and its referenced ddof constant.
+
+    Generic scopes reuse a scalar DEVSQ/(COUNT-ddof) calculation, not a
+    dedicated STDEV/STDEVP spelling. Do not accept either spelling blindly.
+    """
+    pattern = re.compile(r'^=IF\(COUNT\(([^)]+)\)<=\(([^)]+)\),NA\(\),SQRT\(DEVSQ\(\1\)/\(COUNT\(\1\)-\(\2\)\)\)\)$')
+    found = 0
+    workbook = openpyxl.load_workbook(path, data_only=False)
+    try:
+        for sheet in workbook:
+            for row in sheet:
+                for cell in row:
+                    formula = cell.value
+                    if not isinstance(formula, str) or not formula.startswith('=') or 'DEVSQ(' not in formula:
+                        continue
+                    match = pattern.fullmatch(formula)
+                    assert match, (sheet.title, cell.coordinate, formula)
+                    reference = match.group(2).replace('$', '')
+                    value = float(reference) if reference.isdecimal() else sheet[reference].value
+                    assert value == expected, (reference, formula)
+                    found += 1
+        assert found > 1, 'Every complete window must contain a real scalar standard-deviation formula'
+    finally:
+        workbook.close()
+
+
 def test_time_series_validation_returns_math_latex_measure_and_named_root_dag(tmp_path: Path) -> None:
     service = _service(tmp_path)
     definition = service.get_indicator("builtin-bollinger-bands-series")
@@ -93,7 +121,7 @@ def test_time_series_excel_export_uses_raw_data_fixed_literals_and_formulas(tmp_
         finally:
             workbook.close()
         assert any("AVERAGE(" in formula for formula in formulas)
-        assert any("STDEVP(" in formula for formula in formulas)
+        _assert_native_std_degrees(artifact.path, 0)
         assert not any(
             token in formula
             for formula in formulas
@@ -133,7 +161,7 @@ def test_five_day_rolling_sharpe_excel_export_uses_native_formulas(
         formulas = _all_formulas(artifact.path)
         joined = "\n".join(formulas)
         assert "AVERAGE(" in joined
-        assert "STDEV(" in joined
+        _assert_native_std_degrees(artifact.path, 1)
         assert "SQRT(" in joined
         assert not any(
             token in joined
@@ -162,7 +190,10 @@ def test_kdj_excel_export_contains_rolling_and_recursive_formulas(tmp_path: Path
     try:
         formulas = _all_formulas(artifact.path)
         assert any("MAX(" in formula for formula in formulas)
-        assert any("MIN(" in formula for formula in formulas)
+        assert any('AGGREGATE(5,6,' in formula for formula in formulas)  # Masked minimum.
+        assert any('AGGREGATE(4,6,' in formula for formula in formulas)  # Masked maximum.
+        assert any('ISNUMBER(' in formula for formula in formulas)
+        assert any('SUMPRODUCT(' in formula and '>=1' in formula for formula in formulas)
         assert any("IF(ABS(" in formula for formula in formulas)
         assert any("/" in formula and "+" in formula for formula in formulas)
         assert not any(
@@ -170,8 +201,8 @@ def test_kdj_excel_export_contains_rolling_and_recursive_formulas(tmp_path: Path
             for formula in formulas
             for token in (
                 "LOOKUP(",
-                "AGGREGATE(",
-                "SUMPRODUCT(",
+                "rolling_apply(",
+                "finite_mask(",
                 "rolling_min(",
                 "rolling_max(",
                 "recursive_smooth(",

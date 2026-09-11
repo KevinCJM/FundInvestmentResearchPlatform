@@ -156,6 +156,10 @@ def build_result_overview(
     label = (primary_target or {}).get("name") or (display_node or {}).get("label") or display_source_id or "识别主对照走势"
     return {
         "schema_version": "2.0",
+        "result_kind": str(result.get("result_kind") or "regime_states"),
+        "manual_events": copy.deepcopy(result.get("manual_events") or []),
+        "manual_event_summary": copy.deepcopy(result.get("manual_event_summary") or {}),
+        "temporal_capability": copy.deepcopy(result.get("temporal_capability")),
         "run_kind": run_kind,
         "run_id": run_id,
         "definition_id": definition_id,

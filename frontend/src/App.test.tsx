@@ -85,6 +85,14 @@ describe('App', () => {
   let candidateAvailable = false;
   let tokenConfigured = true;
 
+  it('旧产品信号回测链接进入唯一的择时研究实现并保留产品上下文', async () => {
+    window.history.replaceState({}, '', '/product-research/product-backtest?product_id=510300.SH&kind=etf');
+    render(<App />);
+    await waitFor(() => expect(window.location.pathname).toBe('/product-research/timing'));
+    expect(window.location.search).toContain('product_id=510300.SH');
+    expect(screen.getByRole('heading', { name: '产品择时研究' })).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     window.history.replaceState({}, '', '/settings/data-sources');
     candidateAvailable = false;

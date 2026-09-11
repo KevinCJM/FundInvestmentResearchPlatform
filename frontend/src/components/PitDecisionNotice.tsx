@@ -12,7 +12,8 @@ import type { PitAllocationLineage } from '../services/pit'
 export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocationLineage | null }) {
   if (!lineage) return null
 
-  const clean = !lineage.hindsight_series && lineage.availability_available
+  const findings = lineage.universe?.findings ?? []
+  const clean = !lineage.hindsight_series && lineage.availability_available && findings.length === 0
   const badges: { text: string; tone: string }[] = [
     lineage.availability_available
       ? { text: '按公告时点切窗', tone: 'bg-emerald-100 text-emerald-800 border-emerald-200' }
@@ -23,6 +24,13 @@ export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocation
           text: `序列口径 ${lineage.series_as_of ?? '最新'}`,
           tone: 'bg-slate-100 text-slate-700 border-slate-200',
         },
+    // 产品池的研究日是配置的第二个时间声明，跟净值口径可以差好几年。
+    lineage.universe?.snapshot_established_at
+      ? {
+          text: `产品域研究日 ${lineage.universe.snapshot_established_at}`,
+          tone: 'bg-slate-100 text-slate-700 border-slate-200',
+        }
+      : { text: '未记录产品域', tone: 'bg-amber-100 text-amber-900 border-amber-200' },
   ]
 
   return (
@@ -53,6 +61,12 @@ export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocation
       {lineage.warnings.map((text) => (
         <p key={text} className="mt-1 text-rose-700">
           {text}
+        </p>
+      ))}
+      {/* 候选集合的前视不在任何一条公式里，后端一直算着也一直传着，这里以前没印。 */}
+      {findings.map((finding) => (
+        <p key={finding.code + finding.label} className="mt-1 text-rose-700" data-testid="pit-universe-finding">
+          {finding.message}
         </p>
       ))}
     </div>

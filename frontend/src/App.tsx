@@ -22,6 +22,8 @@ import HistoricalRegimeWorkbench from './pages/HistoricalRegimeWorkbench'
 import DataQuality from './pages/IndexData'
 import IndicatorStudio from './pages/IndicatorStudio'
 import FactorResearchCenter from './pages/FactorResearchCenter'
+import RiskModelCenter from './pages/RiskModelCenter'
+import RiskApplicationWorkspace from './pages/RiskApplicationWorkspace'
 import ManualConstruction from './pages/ManualConstruction'
 import PortfolioConstruction from './pages/PortfolioConstruction'
 import PortfolioCenterWorkspace from './pages/PortfolioCenterWorkspace'
@@ -42,6 +44,7 @@ import StageOverview from './pages/StageOverview'
 import ToolHubPage from './pages/ToolHubPage'
 import TradeAllocationWorkspace from './pages/TradeAllocationWorkspace'
 import TacticalAllocationWorkspace from './pages/TacticalAllocationWorkspace'
+import TimingResearch from './pages/TimingResearch'
 
 const prototypePage = (pageKey: string) => <PrototypeWorkspace key={pageKey} pageKey={pageKey} />
 
@@ -77,7 +80,8 @@ export default function App() {
               <Route path="holding-style" element={prototypePage('holding-style')} />
               <Route path="compare" element={<ProductCompare />} />
               <Route path="evaluation" element={<EvaluationPlan />} />
-              <Route path="product-backtest" element={prototypePage('product-backtest')} />
+              <Route path="timing" element={<TimingResearch mode="research" />} />
+              <Route path="product-backtest" element={<LegacyRedirect to="/product-research/timing" />} />
               <Route path="pools" element={<ProductPools />} />
               <Route path="pool-lifecycle" element={<ProductPoolLifecycle />} />
             </Route>
@@ -93,7 +97,7 @@ export default function App() {
               <Route path="taa" element={<TacticalAllocationWorkspace />} />
               <Route path="product-allocation-timing" element={prototypePage('product-allocation-timing')} />
               <Route path="product-allocation-timing/construction" element={<PortfolioConstruction />} />
-              <Route path="product-allocation-timing/timing" element={prototypePage('product-timing')} />
+              <Route path="product-allocation-timing/timing" element={<TimingResearch mode="application" />} />
               <Route path="portfolio-synthesis" element={prototypePage('portfolio-synthesis')} />
               <Route path="validation" element={prototypePage('validation')} />
               <Route path="approval" element={prototypePage('approval')} />
@@ -184,6 +188,9 @@ export default function App() {
               <Route path="research-parameters" element={prototypePage('research-parameters')} />
               <Route path="indicators-models" element={<IndicatorStudio />} />
               <Route path="factor-research" element={<FactorResearchCenter />} />
+              <Route path="risk-models" element={<RiskModelCenter />} />
+              <Route path="scenario-algorithms/apply" element={<RiskApplicationWorkspace />} />
+              <Route path="timing-algorithms" element={<TimingResearch mode="library" />} />
               <Route path="scenario-algorithms" element={<ScenarioCenters />} />
               <Route path="scenario-algorithms/workbench" element={<HistoricalRegimeWorkbench />} />
               <Route path="backtest-center" element={prototypePage('backtest-center')} />

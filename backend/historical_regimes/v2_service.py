@@ -27,6 +27,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as arrow_dataset
 import pyarrow.parquet as pq
+from custom_indicators.repository import AtomicJsonStore
 
 try:
     from backend.market_data import read_active_manifest, resolve_tushare_data_dir
@@ -166,6 +167,11 @@ from .trend_numba import (super_smoother_kernel, kama_kernel, trend_features_ker
 from .segment_numba import local_extrema_kernel, between_pivots_kernel, interval_statistic_kernel, range_threshold_kernel
 from .v2_registry import STATISTIC_IDS
 from .peak_trough_numba import peak_trough_asymmetric_kernel, peak_trough_sideways_kernel, retrospective_dating_timing_kernel
+from .granular_runtime import execute_granular_node
+from .event_library import EventLibraryService
+from .temporal_capability import analyze_temporal, compatibility_projection, executable_dependencies
+from .temporal_audit import audit_execution
+from .manual_event_numba import manual_event_state_kernel, manual_event_summary_kernel
 from .v2_migration import migrate_v1_definition
 from .v2_templates import get_template_v2, instantiate_template_v2, list_templates_v2
 from .node_preview import node_preview_definition, preview_output_context
@@ -217,7 +223,7 @@ def _macro_bundle(
     market_data_dir: Path,
 ) -> DataBundle:
     dataset_id = str(spec.get("dataset") or spec.get("series_id") or "").strip()
-    filename = MACRO_DATASETS.get(dataset_id)
+    filename = _expected_source_filename("source.macro", spec)
     if filename is None:
         raise ValidationError("UNSUPPORTED_MACRO_DATASET", "不支持的宏观数据集。", "parameters.dataset")
     field = str(spec.get("field") or "").strip()
@@ -245,10 +251,10 @@ def _macro_bundle(
             "parameters.available_at_field",
         )
     columns = [date_field, field]
-    for optional in (available_field, "availability_status", "revision", "vintage", "ts_code", "code"):
+    for optional in (available_field, "availability_status", "revision", "vintage", "ingested_at", "ts_code", "code"):
         if optional in names and optional not in columns:
             columns.append(optional)
-    code = str(spec.get("code") or "").strip()
+    code = str(spec.get("code") or spec.get("ts_code") or "").strip()
     code_field = next((candidate for candidate in ("ts_code", "code") if candidate in names), None)
     filter_expression = None
     if code:
@@ -270,6 +276,21 @@ def _macro_bundle(
     raw = raw.rename(columns={date_field: "observation_date", field: "value"})
     if available_field in raw.columns and available_field != "available_at":
         raw = raw.rename(columns={available_field: "available_at"})
+    availability = pd.to_datetime(raw.get("available_at", pd.Series(pd.NaT, index=raw.index)), errors="coerce", utc=True)
+    unknown_release = availability.isna()
+    if "availability_status" in raw:
+        unknown_release |= raw["availability_status"].eq("release_date_unknown")
+    if unknown_release.any() and mode == "realtime":
+        raise ValidationError("MACRO_RELEASE_DATE_UNKNOWN", "宏观数据发布日期未知，请切换到事后研究；实时识别需要可靠的发布日期。", "parameters.dataset")
+    if unknown_release.any():
+        # Research knowledge starts at acquisition, never at the economic period.
+        # The source file remains untouched; this is not a fabricated release date.
+        acquired = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns, UTC]")
+        for column in ("ingested_at", "vintage"):
+            if column in raw:
+                acquired = acquired.fillna(pd.to_datetime(raw[column], errors="coerce", utc=True))
+        acquired = acquired.fillna(pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC"))
+        raw["available_at"] = availability.where(~unknown_release, acquired)
     frame, revision_meta = _normalise_observations(
         raw,
         mode,
@@ -307,6 +328,8 @@ def _macro_bundle(
             "file": filename,
             "fingerprint": fingerprint,
             **revision_meta,
+            "release_dates_verified": not bool(unknown_release.any()),
+            "availability_basis": "snapshot_acquisition_for_unknown_releases" if unknown_release.any() else "published_release",
         },
     )
 
@@ -492,6 +515,143 @@ def _source_spec(node_type: str, parameters: Mapping[str, Any]) -> dict[str, Any
     return payload
 
 
+_CALENDAR_FREQUENCY_CODES = {"daily": 0, "weekly": 1, "monthly": 2, "quarterly": 3, "yearly": 4}
+_CALENDAR_AGGREGATION_CODES = {"first": 0, "last": 1, "mean": 2, "sum": 3}
+
+
+def _calendar_resample_arrays(
+    values: np.ndarray,
+    dates: np.ndarray,
+    available: np.ndarray,
+    frequency_name: str,
+    aggregation_name: str,
+    mode: str,
+    as_of: str | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if frequency_name not in _CALENDAR_FREQUENCY_CODES:
+        raise ValidationError("INVALID_RESAMPLE_FREQUENCY", "不支持的数据频率。", "frequency")
+    if aggregation_name not in _CALENDAR_AGGREGATION_CODES:
+        raise ValidationError("INVALID_RESAMPLE_AGGREGATION", "不支持的频率聚合方式。", "aggregation")
+    frequency_code = np.int64(_CALENDAR_FREQUENCY_CODES[frequency_name])
+    aggregation_code = np.int64(_CALENDAR_AGGREGATION_CODES[aggregation_name])
+    sampled_values, sampled_dates, sampled_available = calendar_resample_kernel(
+        np.ascontiguousarray(values, dtype=np.float64),
+        np.ascontiguousarray(dates, dtype=np.int64),
+        np.ascontiguousarray(available, dtype=np.int64),
+        frequency_code,
+        aggregation_code,
+    )
+    if (
+        mode == "realtime"
+        and frequency_name != "daily"
+        and aggregation_name in {"last", "mean", "sum"}
+        and sampled_values.shape[0] > 0
+    ):
+        cutoff_ns = np.int64(
+            _parse_date(as_of, "as_of").value
+            if as_of
+            else pd.Timestamp.now(tz="UTC").tz_localize(None).normalize().value
+        )
+        final_bucket = calendar_bucket_kernel(sampled_dates[-1], frequency_code)
+        cutoff_bucket = calendar_bucket_kernel(cutoff_ns, frequency_code)
+        if final_bucket == cutoff_bucket:
+            sampled_values = np.ascontiguousarray(sampled_values[:-1], dtype=np.float64)
+            sampled_dates = np.ascontiguousarray(sampled_dates[:-1], dtype=np.int64)
+            sampled_available = np.ascontiguousarray(sampled_available[:-1], dtype=np.int64)
+    return sampled_values, sampled_dates, sampled_available
+
+
+def _apply_source_frequency(
+    bundle: DataBundle,
+    frequency_name: str,
+    mode: str,
+    as_of: str | None,
+) -> DataBundle:
+    """Project a daily market source to the requested calendar sampling frequency.
+
+    Source-level frequency means "take the final available observation of each
+    calendar bucket". More complex first/mean/sum aggregation remains an
+    explicit align.resample graph node.
+    """
+    if frequency_name == "daily":
+        return bundle
+    frame = bundle.frame
+    values = np.ascontiguousarray(frame["value"].to_numpy(dtype=np.float64))
+    dates = np.ascontiguousarray(pd.to_datetime(frame["observation_date"]).to_numpy(dtype="datetime64[ns]").view(np.int64))
+    available = np.ascontiguousarray(pd.to_datetime(frame["available_at"]).to_numpy(dtype="datetime64[ns]").view(np.int64))
+    sampled_values, sampled_dates, sampled_available = _calendar_resample_arrays(
+        values, dates, available, frequency_name, "last", mode, as_of
+    )
+    sampled_frame = pd.DataFrame(
+        {
+            "observation_date": pd.to_datetime(sampled_dates),
+            "available_at": pd.to_datetime(sampled_available),
+            "value": sampled_values,
+        }
+    )
+    if sampled_frame.empty:
+        raise ValidationError("EMPTY_RESAMPLED_SOURCE", "所选频率下没有完整可用观测。", "frequency")
+    snapshot = copy.deepcopy(bundle.snapshot)
+    raw_count = int(snapshot.get("selected_observations") or len(frame))
+    source_fingerprint = str(snapshot.get("fingerprint") or "")
+    snapshot.update(
+        {
+            "native_frequency": "daily",
+            "output_frequency": frequency_name,
+            "frequency_sampling": "last_observation_per_calendar_bucket",
+            "raw_selected_observations": raw_count,
+            "selected_observations": int(len(sampled_frame)),
+            "first_observation_date": sampled_frame["observation_date"].iloc[0].date().isoformat(),
+            "last_observation_date": sampled_frame["observation_date"].iloc[-1].date().isoformat(),
+            "latest_available_at": sampled_frame["available_at"].max().date().isoformat(),
+            "fingerprint": _content_hash(
+                {
+                    "source_fingerprint": source_fingerprint,
+                    "frequency": frequency_name,
+                    "sampling": "last",
+                }
+            ),
+        }
+    )
+    return DataBundle(frame=sampled_frame, snapshot=snapshot)
+
+
+def _manual_event_arrays(parameters: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    events = parameters.get("events") or []
+    starts = np.empty(len(events), dtype=np.int64)
+    ends = np.empty(len(events), dtype=np.int64)
+    for index, event in enumerate(events):
+        starts[index] = np.int64(_parse_date(event["start_date"], f"events.{index}.start_date").normalize().value)
+        ends[index] = np.int64(_parse_date(event["end_date"], f"events.{index}.end_date").normalize().value)
+    return starts, ends
+
+
+def _definition_output_frequency(definition: RegimeDefinitionV2) -> str:
+    node_map = {node.id: node for node in definition.graph.nodes}
+    memo: dict[str, str] = {}
+
+    def node_frequency(node_id: str) -> str:
+        if node_id in memo:
+            return memo[node_id]
+        node = node_map[node_id]
+        if node.type == "align.resample":
+            result = str(node.parameters.get("frequency") or "weekly")
+        elif node.type.startswith("source.") and node.type != "source.constant":
+            result = str(node.parameters.get("frequency") or ("monthly" if node.type == "source.macro" else "daily"))
+        elif node.type == "source.constant" and "anchor" in node.inputs:
+            result = node_frequency(node.inputs["anchor"].node_id)
+        elif node.type == "align.pit_asof" and "anchor" in node.inputs:
+            result = node_frequency(node.inputs["anchor"].node_id)
+        else:
+            frequencies = {node_frequency(reference.node_id) for reference in node.inputs.values() if reference.node_id in node_map}
+            result = next(iter(frequencies)) if len(frequencies) == 1 else "irregular"
+        memo[node_id] = result
+        return result
+
+    state_reference = definition.graph.outputs.get("state")
+    return node_frequency(state_reference.node_id) if state_reference and state_reference.node_id in node_map else "irregular"
+
+
 def _canonical_source_cache_key(
     source: Mapping[str, Any],
     mode: str,
@@ -552,6 +712,10 @@ def _kernel_ids_for_definition(definition: RegimeDefinitionV2) -> list[str]:
         node_type = node.type
         if is_typed_formula_node(node, NODE_REGISTRY):
             kernel_ids.update({"maximum_int64", "causal_available", "valid_series_output"})
+        elif NODE_REGISTRY[node_type].get("kernel_dependencies"):
+            kernel_ids.update(NODE_REGISTRY[node_type]["kernel_dependencies"])
+        elif node_type == "source.index" and str(node.parameters.get("frequency") or "daily") != "daily":
+            kernel_ids.update({"calendar_bucket", "calendar_resample"})
         elif node_type == "source.constant":
             kernel_ids.add("constant_like")
         elif node_type == "align.strict_intersection":
@@ -586,20 +750,20 @@ def _kernel_ids_for_definition(definition: RegimeDefinitionV2) -> list[str]:
             if node_type == "model.range_threshold":
                 kernel_ids.update({"constant_like", "maximum_int64"})
         elif node_type == "model.peak_trough":
-            kernel_ids.update({"peak_trough", "peak_trough_asymmetric", "peak_trough_remove", "peak_trough_alternate", "peak_trough_sideways", "retrospective_dating_timing"})
+            kernel_ids.update({"peak_trough", "peak_trough_asymmetric", "peak_trough_remove", "peak_trough_alternate", "peak_trough_sideways", "retrospective_dating_timing", "ps_filter_pivots", "local_extrema", "between_pivots", "phase_direction", "interval_statistic", "boundary_line"})
         elif node_type in {"filter.super_smoother", "filter.kama", "feature.trend_metrics",
                            "model.trend_regime", "post.merge_short_regimes"}:
             kernel_ids.add(NODE_REGISTRY[node_type]["kernel_id"])
         elif node_type == "filter.kalman":
             kernel_ids.add("kalman_filter")
         elif node_type == "model.threshold":
-            kernel_ids.update({"threshold_state", "unary_transform", "state_confidence", "state_probabilities", "temporal_output"})
+            kernel_ids.update({"threshold_state", "condition_compare", "select_state", "unary_transform", "state_confidence", "state_probabilities", "temporal_output"})
         elif node_type == "model.hysteresis":
             kernel_ids.update({"hysteresis_state", "unary_transform", "state_confidence", "state_probabilities"})
         elif node_type == "post.hysteresis":
             kernel_ids.update({"hysteresis_state", "unary_transform", "state_confidence", "state_probabilities"})
         elif node_type == "model.quadrant":
-            kernel_ids.update({"quadrant_state", "binary_math", "state_confidence", "state_probabilities"})
+            kernel_ids.update({"quadrant_state", "condition_compare", "select_state", "binary_math", "state_confidence", "state_probabilities"})
         elif node_type in {"model.turning_point", "model.change_point"}:
             kernel_ids.update({"state_probabilities", "temporal_output"})
         elif node_type in {"model.hmm", "model.markov", "model.gmm"}:
@@ -670,6 +834,7 @@ class RegimeGraphV2Service:
         self.market_data_dir = market_data_dir or DEFAULT_DATA_DIR
         self.indicator_service = indicator_service
         register_indicator_nodes(indicator_service, NODE_REGISTRY)
+        self.event_library = EventLibraryService(self.workspace_data_dir)
         self.definitions = RegimeDefinitionRepository(
             self.workspace_data_dir / "historical_regime_v2_definitions.json"
         )
@@ -686,6 +851,8 @@ class RegimeGraphV2Service:
             self.workspace_data_dir / "historical_regime_v2_plan_manifests.json"
         )
         self.artifact_dir = self.workspace_data_dir / "historical_regime_v2_artifacts"
+        # Separate lock: avoid holding the run-store lock while run_saved writes it.
+        self._research_activation = AtomicJsonStore(self.workspace_data_dir / "historical_regime_research_activation.json")
         self._runtime_audit = warm_regime_graph_numba_kernels()
         self._overview_runtime = warm_result_overview_kernel()
         self._plans: dict[str, dict[str, Any]] = {}
@@ -930,7 +1097,7 @@ class RegimeGraphV2Service:
             "graph": copy.deepcopy(asset["graph"]),
         }
 
-    def infer(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def infer(self, payload: Mapping[str, Any], mode: str = "realtime") -> dict[str, Any]:
         try:
             definition = parse_definition_v2(payload)
         except IndicatorDomainError as exc:
@@ -968,7 +1135,9 @@ class RegimeGraphV2Service:
                 ],
                 "warnings": [],
             }
-        return {**inspect_definition_v2(definition), "result_kind": "time_series", "series_outputs": regime_series_outputs(definition)}
+        temporal = analyze_temporal(definition, NODE_REGISTRY, mode)
+        return {**inspect_definition_v2(definition), "causality": compatibility_projection(temporal),
+                "temporal_capability": temporal, "result_kind": "time_series", "series_outputs": regime_series_outputs(definition)}
 
     def _active_snapshot_binding(
         self,
@@ -1249,8 +1418,9 @@ class RegimeGraphV2Service:
                 continue
             frame = self._formula_frame(node)
             for port, expression in typed_node_expressions(node, NODE_REGISTRY).items():
-                entry = prepare_formula_plan(expression, frame)
-                plan, _ = _compose_formula(expression, frame)
+                indicator_definition = NODE_REGISTRY[node.type].get('_indicator_definition')
+                entry = prepare_formula_plan(expression, frame, definition=indicator_definition)
+                plan, _ = _compose_formula(expression, frame, definition=indicator_definition)
                 entry["typed_expression"] = plan.to_dict()
                 entry["node_id"] = node.id
                 entry["output_port"] = port
@@ -1383,6 +1553,7 @@ class RegimeGraphV2Service:
         )
 
     def create_definition(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        self.event_library.verify_definition(payload)
         definition = parse_definition_v2(self._freeze_source_versions(payload))
         validate_definition_v2(definition)
         fields = definition.model_dump(
@@ -1403,6 +1574,7 @@ class RegimeGraphV2Service:
         expected_revision: int,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
+        self.event_library.verify_definition(payload)
         definition = parse_definition_v2(self._freeze_source_versions(payload))
         validate_definition_v2(definition)
         fields = definition.model_dump(
@@ -1473,9 +1645,21 @@ class RegimeGraphV2Service:
         self.startup_prewarm = copy.deepcopy(result)
         return result
 
-    def prepare(self, payload: Mapping[str, Any], *, preview_target: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        definition = node_preview_definition(payload, preview_target) if preview_target is not None else parse_definition_v2(payload)
+    def prepare(self, payload: Mapping[str, Any], *, preview_target: Mapping[str, Any] | None = None,
+                comparison_targets: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+        if comparison_targets and preview_target is None:
+            raise ValidationError("INVALID_NODE_PREVIEW", "请先选择主预览节点。", "preview_target")
+        definition = node_preview_definition(payload, preview_target, comparison_targets) if preview_target is not None else parse_definition_v2(payload)
         inspection = validate_definition_v2(definition)
+        self.event_library.verify_definition(definition.model_dump(mode="json"))
+        required = set(inspection["dependencies"]["required_for_outputs"])
+        missing_inputs = [node for node in definition.graph.nodes if node.id in required and node.type == "source.inline"
+                          and not (node.parameters.get("rows") or node.parameters.get("inline_rows"))]
+        if missing_inputs:
+            diagnostics = [{"code": "SOURCE_INPUT_REQUIRED", "node_id": node.id, "path": f"graph.nodes.{node.id}.parameters",
+                            "message": f"{node.label or node.parameters.get('name') or node.id}尚未选择数据，请选择宏观序列或上传时序。"}
+                           for node in missing_inputs]
+            raise ValidationError("SOURCE_INPUT_REQUIRED", "请先配置输入数据。", diagnostics[0]["path"], diagnostics)
         unavailable_nodes = [
             node
             for node in definition.graph.nodes
@@ -1619,14 +1803,19 @@ class RegimeGraphV2Service:
         mode: str = "realtime",
         as_of: str | None = None,
         ttl_seconds: int = DEFAULT_PREVIEW_TTL_SECONDS,
+        audit_temporal: bool = False,
         preview_target: Mapping[str, Any] | None = None,
+        comparison_targets: list[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if mode not in {"realtime", "retrospective"}:
             raise ValidationError("INVALID_RUN_MODE", "mode 必须是 realtime 或 retrospective。", "mode")
         if ttl_seconds < 1 or ttl_seconds > 86400:
             raise ValidationError("INVALID_PREVIEW_TTL", "ttl_seconds 必须在 1 到 86400 之间。", "ttl_seconds")
         # Nested parameter rows must not share objects with the caller while queued.
-        definition = (node_preview_definition(payload, preview_target) if preview_target is not None else parse_definition_v2(payload)).model_copy(deep=True)
+        if comparison_targets and preview_target is None:
+            raise ValidationError("INVALID_NODE_PREVIEW", "请先选择主预览节点。", "preview_target")
+        definition = (node_preview_definition(payload, preview_target, comparison_targets) if preview_target is not None else parse_definition_v2(payload)).model_copy(deep=True)
+        self.event_library.verify_definition(definition.model_dump(mode="json"))
         self._validate_realtime_graph(definition, mode)
         plan = self._validate_plan(definition, compile_token)
         with self._lock:
@@ -1646,6 +1835,7 @@ class RegimeGraphV2Service:
                 "updated_at": _iso(now),
                 "expires_at": now + timedelta(seconds=ttl_seconds),
                 "ttl_seconds": ttl_seconds,
+                "audit_temporal": audit_temporal,
                 "mode": mode,
                 "as_of": as_of,
                 "plan_id": plan["plan_id"],
@@ -1709,6 +1899,12 @@ class RegimeGraphV2Service:
                 as_of,
                 plan=job["_plan"],
             )
+            if job.get("audit_temporal"):
+                self._update_job(job_id, stage="temporal_audit", progress=0.92, message="正在审计未来依赖、历史重绘与数据时点。")
+                execution["result"]["temporal_capability"] = audit_execution(
+                    self, definition, mode, as_of, job["_plan"], execution,
+                    cancel=lambda: self._check_cancelled(job),
+                )
             with self._lock:
                 job = self._jobs.get(job_id)
                 if job is None or job["status"] == "cancelled":
@@ -1781,8 +1977,14 @@ class RegimeGraphV2Service:
                 if node.type == "source.upload":
                     full_bundle = self._upload_bundle(node.parameters, mode, resolver_as_of)
                 elif node.type == "source.macro":
-                    data_root = self._bound_source_root(node.type, node.parameters)
-                    full_bundle = _macro_bundle(node.parameters, mode, resolver_as_of, data_root)
+                    try:
+                        data_root = self._bound_source_root(node.type, node.parameters)
+                        full_bundle = _macro_bundle(node.parameters, mode, resolver_as_of, data_root)
+                    except IndicatorDomainError as exc:
+                        name = node.label or str(node.parameters.get("name") or node.id)
+                        hint = " 请在数据下载工作台运行“宏观增长、通胀与景气”通用ETL任务，并选择包含这些数据的版本。" if exc.code in {"SOURCE_DATA_NOT_FOUND", "MACRO_DATA_NOT_FOUND", "TUSHARE_DATA_NOT_FOUND"} else ""
+                        raise ValidationError(exc.code, f"{name}：{exc.message}{hint}", f"graph.nodes.{node.id}.parameters",
+                                              diagnostics=[{"code": exc.code, "node_id": node.id, "message": f"{name}：{exc.message}{hint}"}]) from exc
                 else:
                     data_root = (
                         self._bound_source_root(node.type, node.parameters)
@@ -1806,6 +2008,13 @@ class RegimeGraphV2Service:
                 )
             else:
                 bundle = self._slice_cached_bundle(full_bundle, as_of)
+            if node.type == "source.index":
+                bundle = _apply_source_frequency(
+                    bundle,
+                    str(node.parameters.get("frequency") or "daily"),
+                    mode,
+                    as_of,
+                )
             if node.type == "source.indicator" and node.parameters.get("data_fingerprint"):
                 actual_fingerprint = str(bundle.snapshot.get("fingerprint") or "")
                 if actual_fingerprint != str(node.parameters["data_fingerprint"]):
@@ -2174,44 +2383,15 @@ class RegimeGraphV2Service:
                 return {"value": self._take_port(source, positions, dates, available)}
             frequency_name = str(parameters.get("frequency", "weekly"))
             aggregation_name = str(parameters.get("aggregation", "last"))
-            frequency_code = {
-                "daily": 0,
-                "weekly": 1,
-                "monthly": 2,
-                "quarterly": 3,
-                "yearly": 4,
-            }[frequency_name]
-            aggregation_code = {
-                "first": 0,
-                "last": 1,
-                "mean": 2,
-                "sum": 3,
-            }[aggregation_name]
-            values, dates, available = calendar_resample_kernel(
-                np.ascontiguousarray(source.values, dtype=np.float64),
-                np.ascontiguousarray(source.dates, dtype=np.int64),
-                np.ascontiguousarray(source.available, dtype=np.int64),
-                np.int64(frequency_code),
-                np.int64(aggregation_code),
+            values, dates, available = _calendar_resample_arrays(
+                source.values,
+                source.dates,
+                source.available,
+                frequency_name,
+                aggregation_name,
+                mode,
+                as_of,
             )
-            if (
-                mode == "realtime"
-                and frequency_name != "daily"
-                and aggregation_name in {"last", "mean", "sum"}
-                and values.shape[0] > 0
-            ):
-                cutoff_ns = np.int64(
-                    _parse_date(as_of, "as_of").value
-                    if as_of
-                    else pd.Timestamp.now(tz="UTC").tz_localize(None).normalize().value
-                )
-                final_bucket = calendar_bucket_kernel(dates[-1], np.int64(frequency_code))
-                cutoff_bucket = calendar_bucket_kernel(cutoff_ns, np.int64(frequency_code))
-                if final_bucket == cutoff_bucket:
-                    # A partial final calendar bucket would change when new points arrive.
-                    values = np.ascontiguousarray(values[:-1], dtype=np.float64)
-                    dates = np.ascontiguousarray(dates[:-1], dtype=np.int64)
-                    available = np.ascontiguousarray(available[:-1], dtype=np.int64)
             return {"value": PortValue(values, dates, available)}
         if node_type in {"align.cross_section", "feature.matrix"}:
             ports = [
@@ -2249,14 +2429,20 @@ class RegimeGraphV2Service:
                 for alias, port_name in aliases.items():
                     if str(alias).isidentifier() and str(port_name) in columns:
                         columns[str(alias)] = columns[str(port_name)]
-            frame = pd.DataFrame(columns)
+            frame = pd.DataFrame(columns, copy=False)
             results = {}
+            indicator_definition = NODE_REGISTRY[node_type].get('_indicator_definition')
+            # One date conversion for all output channels, using the real axis.
+            # Regime ports store epoch nanoseconds; Indicator scopes consume
+            # epoch days. Never reinterpret nanoseconds as elapsed days.
+            observation_dates = ports[0].dates.view('datetime64[ns]').astype('datetime64[D]').astype(np.float64)
             for output_port, expression in typed_node_expressions(node, NODE_REGISTRY).items():
                 key = formula_plan_key(node.id, output_port)
                 prepared = formula_plans.get(key)
                 if not isinstance(prepared, Mapping) or not prepared.get("compile_token"):
                     raise ValidationError("FORMULA_NJIT_PLAN_NOT_WARMED", "指标或公式节点没有可执行的预热计划。", f"graph.nodes.{node.id}")
-                formula_result = evaluate_formula(expression, frame, compile_token=str(prepared["compile_token"]))
+                formula_result = evaluate_formula(expression, frame, compile_token=str(prepared["compile_token"]),
+                    definition=indicator_definition, observation_dates=observation_dates)
                 results[output_port] = np.ascontiguousarray(formula_result.values.to_numpy(dtype=np.float64))
                 formula_audits[key] = copy.deepcopy(formula_result.audit)
             available = ports[0].available
@@ -2294,6 +2480,28 @@ class RegimeGraphV2Service:
             self._same_axis(left, right)
             opcode = {"math.add": 0, "math.subtract": 1, "math.multiply": 2, "math.divide": 3}[node_type]
             return {"value": self._port(binary_math_kernel(np.ascontiguousarray(left.values, dtype=np.float64), np.ascontiguousarray(right.values, dtype=np.float64), np.int64(opcode)), left)}
+        if node_type == "annotation.manual_events":
+            if mode != "retrospective":
+                raise ValidationError("NON_CAUSAL_REALTIME_GRAPH", "人工历史事件区间仅用于事后识别。", f"graph.nodes.{node.id}")
+            source = self._input(node_outputs, node.inputs["value"])
+            starts, ends = _manual_event_arrays(parameters)
+            states, event_count = manual_event_state_kernel(
+                np.ascontiguousarray(source.dates, dtype=np.int64), starts, ends
+            )
+            return {"state": self._port(states, source), "event_count": self._port(event_count, source)}
+        if NODE_REGISTRY[node_type].get("execution_handler") == "granular":
+            metadata = NODE_REGISTRY[node_type]
+            if mode == "realtime" and not metadata.get("supports_realtime"):
+                raise ValidationError("NON_CAUSAL_REALTIME_GRAPH", "该节点使用事后信息，不能用于实时识别。", f"graph.nodes.{node.id}")
+            ports = {name: self._input(node_outputs, reference) for name, reference in node.inputs.items()}
+            source = next(iter(ports.values()))
+            self._same_axis(*ports.values())
+            available = source.available
+            for value in ports.values():
+                if value.available is not available:
+                    available = maximum_int64_kernel(available, value.available)
+            outputs = execute_granular_node(node_type, parameters, {name: value.values for name, value in ports.items()}, state_count)
+            return {name: PortValue(values, source.dates, available) for name, values in outputs.items()}
         if node_type == "pivot.local_extrema":
             source = self._input(node_outputs, node.inputs["value"])
             pivots, prices = local_extrema_kernel(np.ascontiguousarray(source.values, dtype=np.float64),
@@ -2303,7 +2511,8 @@ class RegimeGraphV2Service:
         if node_type == "segment.between_pivots":
             source = self._input(node_outputs, node.inputs["pivot"])
             starts, ends = between_pivots_kernel(np.ascontiguousarray(source.values, dtype=np.float64))
-            return {"start": self._port(starts, source), "end": self._port(ends, source)}
+            start_port, end_port = self._port(starts, source), self._port(ends, source)
+            return {"start": start_port, "end": end_port, "start_index": start_port, "end_index": end_port}
         if node_type in STATISTIC_IDS:
             source, starts, ends = [self._input(node_outputs, node.inputs[name]) for name in ("value", "start", "end")]
             self._same_axis(source, starts, ends)
@@ -2651,18 +2860,14 @@ class RegimeGraphV2Service:
     def _validate_realtime_graph(definition: RegimeDefinitionV2, mode: str) -> None:
         if mode != "realtime":
             return
-        for node in definition.graph.nodes:
-            schema = NODE_REGISTRY.get(node.type, {})
-            if (
-                schema.get("supports_realtime") is not True
-                or schema.get("causal") is not True
-                or schema.get("repaints") is not False
-            ):
-                raise ValidationError(
-                    "NON_CAUSAL_REALTIME_GRAPH",
-                    "实时识别已禁用事后分析算法；请移除该节点，或切换到事后研究。",
-                    f"graph.nodes.{node.id}",
-                )
+        report = analyze_temporal(definition, NODE_REGISTRY, mode)
+        if not report["realtime_supported"]:
+            reasons = report["reasons"]
+            first = reasons[0] if reasons else {}
+            raise ValidationError(
+                "NON_CAUSAL_REALTIME_GRAPH", "当前输出不能用于实时识别：" + first.get("message", "时点能力尚未验证。"),
+                f"graph.nodes.{first['node_id']}" if first.get("node_id") else "graph.outputs", reasons,
+            )
 
     def _execute_graph(
         self,
@@ -2676,7 +2881,7 @@ class RegimeGraphV2Service:
         latent_training_as_of: str | None = None,
     ) -> dict[str, Any]:
         inspection = validate_definition_v2(definition)
-        required = _required_node_ids(definition)
+        required, skipped_debug_nodes = executable_dependencies(definition, NODE_REGISTRY, mode)
         if job_id is not None:
             with self._lock:
                 job = self._jobs[job_id]
@@ -2895,9 +3100,13 @@ class RegimeGraphV2Service:
             pending.extend(ref.node_id for ref in node_map[current].inputs.values())
         dating_nodes = [node_id for node_id in final_dependencies
                         if NODE_REGISTRY[node_map[node_id].type].get("knowledge_scope") == "full_input"]
-        retrospective_dating = bool(dating_nodes)
+        unknown_macro_releases = any(snapshot.get("release_dates_verified") is False for snapshot in snapshots.values())
+        retrospective_dating = bool(dating_nodes) or unknown_macro_releases
         dating_knowledge_at = None
         if retrospective_dating:
+            if unknown_macro_releases:
+                recognition_indices, effective_indices, dating_knowledge_at = retrospective_dating_timing_kernel(
+                    final_states, np.ascontiguousarray(state_port.available, dtype=np.int64))
             # Applies even when a custom graph omits or replaces temporal outputs.
             # A downstream slice must not erase knowledge used by the dating node.
             for node_id in sorted(dating_nodes):
@@ -2946,9 +3155,64 @@ class RegimeGraphV2Service:
             execution_source_cache,
         )
         state_definitions = definition.states
+        manual_event_result: dict[str, Any] | None = None
+        manual_event_nodes = [
+            node_map[node_id]
+            for node_id in final_dependencies
+            if node_map[node_id].type == "annotation.manual_events"
+        ]
+        if len(manual_event_nodes) > 1:
+            raise ValidationError(
+                "MULTIPLE_MANUAL_EVENT_ROOTS",
+                "一个最终结果只能引用一个人工历史事件集合；请把事件合并到同一个人工事件节点。",
+                "graph.outputs.state",
+            )
+        if manual_event_nodes:
+            manual_node = manual_event_nodes[0]
+            event_count_port = node_outputs[manual_node.id]["event_count"]
+            self._same_axis(state_port, event_count_port)
+            event_starts, event_ends = _manual_event_arrays(manual_node.parameters)
+            event_observations, first_indices, last_indices, event_summary = manual_event_summary_kernel(
+                np.ascontiguousarray(state_port.dates, dtype=np.int64),
+                np.ascontiguousarray(event_count_port.values, dtype=np.float64),
+                event_starts,
+                event_ends,
+            )
+            frozen_events: list[dict[str, Any]] = []
+            for event_index, event in enumerate(manual_node.parameters.get("events") or []):
+                first_index = int(first_indices[event_index])
+                last_index = int(last_indices[event_index])
+                frozen_events.append(
+                    {
+                        **copy.deepcopy(event),
+                        "covered_observations": int(event_observations[event_index]),
+                        "first_observation_index": first_index if first_index >= 0 else None,
+                        "last_observation_index": last_index if last_index >= 0 else None,
+                        "first_observation_date": (
+                            pd.Timestamp(int(state_port.dates[first_index]), unit="ns").date().isoformat()
+                            if first_index >= 0 else None
+                        ),
+                        "last_observation_date": (
+                            pd.Timestamp(int(state_port.dates[last_index]), unit="ns").date().isoformat()
+                            if last_index >= 0 else None
+                        ),
+                    }
+                )
+            manual_event_result = {
+                "events": frozen_events,
+                "summary": {
+                    "event_count": int(event_summary[3]),
+                    "covered_observations": int(event_summary[0]),
+                    "overlap_observations": int(event_summary[1]),
+                    "max_concurrent_events": int(event_summary[2]),
+                },
+                "event_count_port": event_count_port,
+            }
         # Only attach evidence from the final state's actual trend lineage.
         # Do not confuse an unrelated diagnostic model with the displayed state.
         evidence: dict[str, PortValue] = {}
+        if manual_event_result is not None:
+            evidence["event_count"] = manual_event_result["event_count_port"]
         evidence_node = node_map[state_ref.node_id]
         while evidence_node.type in {"post.confirmation", "post.merge_short_regimes"}:
             evidence_node = node_map[evidence_node.inputs["state"].node_id]
@@ -2956,6 +3220,22 @@ class RegimeGraphV2Service:
             evidence = {name: port for name, port in node_outputs[evidence_node.id].items() if name != "state"}
             self._same_axis(state_port, node_outputs[evidence_node.id]["state"])
             evidence["index_value"] = self._input(node_outputs, evidence_node.inputs["value"])
+        if evidence_node.type == "post.peak_sideways":
+            evidence = {name: port for name, port in node_outputs[evidence_node.id].items() if name != "state"}
+            segment_id = evidence_node.inputs["start"].node_id
+            pivot_ref = node_map[segment_id].inputs["pivot"]
+            evidence.update(index_value=self._input(node_outputs, evidence_node.inputs["value"]),
+                            phase_start_index=node_outputs[segment_id]["start"], phase_end_index=node_outputs[segment_id]["end"],
+                            pivot=self._input(node_outputs, pivot_ref))
+            for candidate_id in required:
+                candidate = node_map[candidate_id]
+                if candidate.type not in {"segment.change", "segment.boundary_line"}:
+                    continue
+                if (candidate.inputs.get("start") == evidence_node.inputs["start"]
+                        and candidate.inputs.get("end") == evidence_node.inputs["end"]
+                        and candidate.inputs.get("value") == evidence_node.inputs["value"]):
+                    evidence["phase_return" if candidate.type == "segment.change" else "boundary_line"] = node_outputs[candidate.id]["value"]
+            self._same_axis(state_port, *evidence.values())
         if evidence_node.type == "model.trend_regime":
             model_ports = node_outputs[evidence_node.id]
             self._same_axis(state_port, model_ports["state"])
@@ -3014,6 +3294,18 @@ class RegimeGraphV2Service:
                 effective_date = pd.Timestamp(effective_ns, unit="ns").date().isoformat()
             state_code = int(final_states[index])
             state = state_definitions[state_code] if 0 <= state_code < len(state_definitions) else None
+            if manual_event_result is not None:
+                simultaneous = int(manual_event_result["event_count_port"].values[index])
+                row_reasons = ([f"人工事后事件区间：该观测同时落入 {simultaneous} 个用户定义事件；仅用于历史研究。"]
+                               if simultaneous > 0 else ["人工事后事件区间：该观测不在用户定义事件内。"])
+            elif retrospective_dating:
+                row_reasons = (["事后峰谷定界：相邻小幅反向波段满足整段振幅、方向效率及最短长度约束，合并为震荡；不是当时的交易信号。"]
+                               if state is not None and state.role == "neutral" and "sideways_range" in evidence and np.isfinite(evidence["sideways_range"].values[index])
+                               else ["事后峰谷分段：依据独立区间统计与分类规则判断；不提供当时交易信号。"] if state is not None and interval_nodes
+                               else ["事后峰谷定界；依赖全样本筛选，不是当时的交易信号。"] if state is not None
+                               else ["未分类：未形成完整保留峰谷区间、处于首尾边界或存在无效数据。"])
+            else:
+                row_reasons = ["状态已识别"] if int(reason_codes[index]) == 0 else ["输入不足或状态被拒识"]
             series.append(
                 {
                     "index": index,
@@ -3042,11 +3334,7 @@ class RegimeGraphV2Service:
                     "score": None,
                     "features": {**{name: _safe_number(port.values[index]) for name, port in evidence.items()},
                                  **{f"channel:{name}": _safe_number(port.values[index]) for name, port in channel_values.items()}},
-                    "reasons": (["事后峰谷定界：相邻小幅反向波段满足整段振幅、方向效率及最短长度约束，合并为震荡；不是当时的交易信号。"]
-                                if state is not None and state.role == "neutral" and "sideways_range" in evidence and np.isfinite(evidence["sideways_range"].values[index])
-                                else ["事后峰谷分段：依据独立区间统计与分类规则判断；不提供当时交易信号。"] if state is not None and interval_nodes else ["事后峰谷定界；依赖全样本筛选，不是当时的交易信号。"] if state is not None else
-                                ["未分类：未形成完整保留峰谷区间、处于首尾边界或存在无效数据。"])
-                               if retrospective_dating else (["状态已识别"] if int(reason_codes[index]) == 0 else ["输入不足或状态被拒识"]),
+                    "reasons": row_reasons,
                     "revision": 1,
                     "vintage": None,
                     "is_final": not retrospective_dating,
@@ -3072,9 +3360,14 @@ class RegimeGraphV2Service:
             self._update_job(job_id, stage="finalizing", progress=0.9, message="正在生成诊断摘要。")
         result = {
             "schema_version": "2.0",
+            "result_kind": "manual_events" if manual_event_result is not None else "regime_states",
+            "manual_events": copy.deepcopy(manual_event_result["events"]) if manual_event_result is not None else [],
+            "manual_event_summary": copy.deepcopy(manual_event_result["summary"]) if manual_event_result is not None else {},
             "graph_hash": inspection["graph_hash"],
             "definition_hash": inspection["definition_hash"],
             "mode": mode,
+            "frequency": _definition_output_frequency(definition),
+            "temporal_capability": analyze_temporal(definition, NODE_REGISTRY, mode, snapshots),
             "row_count": int(state_port.dates.shape[0]),
             "display_source": display_source,
             "state_counts": {
@@ -3098,6 +3391,7 @@ class RegimeGraphV2Service:
             "diagnostics": {
                 "topological_order": inspection["topological_order"],
                 "required_node_ids": sorted(required),
+                "skipped_retrospective_debug_nodes": skipped_debug_nodes,
                 "alignment": "explicit_nodes_only",
                 "missing_value_policy": "preserve_nan_and_unclassified",
                 "execution_audit": copy.deepcopy(self._runtime_audit),
@@ -3262,6 +3556,7 @@ class RegimeGraphV2Service:
                 graph_hash=diagnostics.get("graph_hash") or hydrated.get("algorithm", {}).get("parameters", {}).get("graph_hash") or "",
                 mode=hydrated.get("mode") or "realtime",
                 as_of=hydrated.get("as_of"),
+                frequency=str(hydrated.get("frequency") or diagnostics.get("frequency") or _definition_output_frequency(parse_definition_v2(definition))),
                 data_snapshots=hydrated.get("data_snapshots"),
                 series_endpoint=f"/api/historical-regimes/runs/{hydrated['id']}",
                 series_artifact=hydrated.get("series_artifact"),
@@ -3337,54 +3632,41 @@ class RegimeGraphV2Service:
         definition: RegimeDefinitionV2,
         mode: str,
         series: list[dict[str, Any]],
+        temporal_report: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        required = _required_node_ids(definition)
-        noncausal = [
-            node.id
-            for node in definition.graph.nodes
-            if node.id in required and NODE_REGISTRY[node.type].get("causal") is not True
-        ]
-        if mode == "retrospective":
-            noncausal.extend(
-                node.id
-                for node in definition.graph.nodes
-                if node.id in required
-                and node.type in {"model.hmm", "model.markov", "model.gmm"}
-                and node.id not in noncausal
-            )
-        temporal_violations: list[int] = []
+        report = dict(temporal_report or analyze_temporal(definition, NODE_REGISTRY, mode))
+        violations = []
         for index, item in enumerate(series):
-            dates = [
-                pd.Timestamp(item["observation_date"]),
-                pd.Timestamp(item["data_available_at"]),
-                pd.Timestamp(item["recognized_at"]),
-            ]
+            dates = [pd.Timestamp(item[key]) for key in ("observation_date", "data_available_at", "recognized_at")]
             if item.get("effective_date"):
                 dates.append(pd.Timestamp(item["effective_date"]))
             if dates != sorted(dates):
-                temporal_violations.append(index)
-        causal = not noncausal and not temporal_violations
+                violations.append(index)
+        hindsight = report.get("semantic_hindsight", False)
+        future = report.get("numerical_verdict") == "leak" or report.get("may_repaint", False)
+        causal = report.get("realtime_supported") is True and not violations and not future and not hindsight
+        repaint = report.get("may_repaint", False) or any(
+            f.get("probe") == "prefix_replay" and f.get("verdict") == "leak" for f in report.get("findings", [])
+        )
+        verified = report.get("verified") is True and not violations
         eligible = ["research_display", "product_research"]
-        if mode == "realtime" and causal:
+        if mode == "realtime" and causal and verified:
             eligible.extend(["formal_backtest", "taa"])
-        blockers: list[str] = []
-        if noncausal:
-            blockers.append(f"图谱包含非因果节点: {', '.join(noncausal)}")
-        if temporal_violations:
+        blockers = [r["message"] for r in report.get("reasons", [])]
+        if violations:
             blockers.append("存在观测日、可得日、识别日、生效日倒序。")
         return {
-            "classification": "causal" if causal else "non_causal",
-            "is_causal": causal,
-            "uses_future_data": bool(noncausal),
-            "repaints": bool(noncausal),
-            "realtime_eligible": mode == "realtime" and causal,
-            "publish_eligible_usages": eligible,
-            "blockers": blockers,
-            "warnings": [],
+            "classification": "causal" if causal else "non_causal", "is_causal": causal,
+            "uses_future_data": bool(future or hindsight), "repaints": bool(repaint),
+            "realtime_eligible": mode == "realtime" and causal and verified,
+            "publish_eligible_usages": eligible, "blockers": blockers,
+            "warnings": list(report.get("errors", [])), "temporal_capability": report,
             "checks": [
-                {"id": "temporal_order", "passed": not temporal_violations, "violations": temporal_violations[:20]},
-                {"id": "future_data", "passed": not noncausal},
-                {"id": "historical_repaint", "passed": not noncausal},
+                {"id": "temporal_order", "passed": not violations, "violations": violations[:20]},
+                {"id": "future_data", "passed": not future},
+                {"id": "historical_repaint", "passed": not repaint},
+                {"id": "semantic_hindsight", "passed": not hindsight},
+                {"id": "temporal_audit", "passed": verified},
                 {"id": "last_point_not_executable", "passed": not bool(series[-1].get("executable")) if series else True},
             ],
         }
@@ -3912,8 +4194,10 @@ class RegimeGraphV2Service:
                 "minimum": min_coverage,
             },
             "njit_call_graph": audit_gate,
+            "temporal_audit": {"passed": (causality.get("temporal_capability") or {}).get("verified") is True},
         }
         formal_required = (
+            "temporal_audit",
             "pit",
             "causality",
             "no_repaint",
@@ -3998,12 +4282,7 @@ class RegimeGraphV2Service:
         series = execution["series"]
         series_artifact = self._persist_series(series)
         states = [item.model_dump(mode="json") for item in definition.states]
-        source_nodes = [
-            node
-            for node in definition.graph.nodes
-            if node.type.startswith("source.") and node.type != "source.constant"
-        ]
-        frequency = str(source_nodes[0].parameters.get("frequency") or "daily")
+        frequency = str(execution["result"].get("frequency") or _definition_output_frequency(definition))
         conditional = conditional_statistics(series, states, frequency)
         evaluation_outputs = execution.get("evaluation_outputs") or {}
         evaluation_artifact = None
@@ -4043,7 +4322,9 @@ class RegimeGraphV2Service:
                     "conditional_metrics": target_conditional,
                     "artifact": copy.deepcopy(artifact_entries.get(target_id)),
                 }
-        causality = self._causality_payload(definition, mode, series)
+        temporal_report = audit_execution(self, definition, mode, as_of, plan, execution)
+        execution["result"]["temporal_capability"] = temporal_report
+        causality = self._causality_payload(definition, mode, series, temporal_report)
         analytics_audit = analytics_execution_audit()
         graph_execution_audit = copy.deepcopy(self._runtime_audit)
         graph_execution_audit["executed_kernel_ids"] = list(plan.get("kernel_ids") or [])
@@ -4100,6 +4381,7 @@ class RegimeGraphV2Service:
             "name": definition.name,
             "mode": mode,
             "as_of": as_of,
+            "frequency": frequency,
             "definition": definition.model_dump(mode="json"),
             "states": states,
             "target": next(
@@ -4173,6 +4455,64 @@ class RegimeGraphV2Service:
         }
         run_payload["content_hash"] = _content_hash(run_payload)
         return self._hydrate_run(self.runs.create(_json_safe(run_payload)))
+
+    def enable_research_version(
+        self, reference: Mapping[str, Any], mode: str,
+        as_of: str | None = None, compile_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Enable one saved algorithm version for research using the formal runtime."""
+        if (not isinstance(reference, Mapping)
+                or set(reference) != {"schema_version", "id", "revision"}
+                or reference.get("schema_version") != "2.0"
+                or not reference.get("id") or not isinstance(reference.get("revision"), int)
+                or isinstance(reference.get("revision"), bool) or reference["revision"] < 1):
+            raise ValidationError("V2_RUN_REQUIRES_SAVED_REFERENCE", "请先保存情景算法，再生成研究结果。", "definition")
+        if mode not in {"realtime", "retrospective"}:
+            raise ValidationError("INVALID_RUN_MODE", "请选择实时识别或事后研究。", "mode")
+        definition = parse_definition_v2(self.definitions.get(reference["id"], reference["revision"]))
+        validate_definition_v2(definition)
+        self._validate_realtime_graph(definition, mode)
+        self._validate_plan(definition, compile_token)
+        with self._research_activation.locked():
+            existing = next((run for run in self.runs.list(reference["id"])
+                             if run.get("schema_version") == "2.0"
+                             and run.get("definition_revision") == reference["revision"]
+                             and run.get("mode") == mode and run.get("as_of") == as_of), None)
+            if existing is None:
+                run = self.run_saved(reference, mode, as_of, compile_token)
+                existing = self.runs.get(run["id"])
+            else:
+                # Hydration verifies persisted numerical audits and artifacts too.
+                run = self.get_run(existing["id"])
+            if (existing.get("immutable") is not True
+                    or _stored_run_snapshot_hash(existing) != existing.get("content_hash")
+                    or existing.get("definition_snapshot_hash") != definition_content_hash(definition)):
+                raise ValidationError("REGIME_RUN_SNAPSHOT_MISMATCH", "情景版本完整性校验失败，不能用于研究。", "definition")
+            if int((run.get("algorithm_diagnostics") or {}).get("classified_count") or 0) == 0:
+                raise ValidationError("RESEARCH_VERSION_EMPTY", "尚无有效情景区间，请检查输入数据、窗口和识别规则后重试。", "definition")
+            usages = {"research_display", "product_research"}
+            if not usages.issubset(set((run.get("governance") or {}).get("publish_eligible_usages") or [])):
+                raise ValidationError("REGIME_PUBLICATION_GATE_FAILED", "当前结果尚不满足情景研究条件。", "definition")
+            valid_publications = [item for item in existing.get("publications", [])
+                                  if item.get("run_id") == run["id"]
+                                  and item.get("definition_revision") == reference["revision"]
+                                  and item.get("run_content_hash") == run["content_hash"]]
+            missing = usages - {item.get("usage") for item in valid_publications}
+            if missing:
+                self.publish(run["id"], sorted(missing), "保存情景并用于研究")
+            updated = self.runs.get(run["id"])
+            publication = next(item for item in updated["publications"]
+                               if item.get("usage") == "product_research"
+                               and item.get("run_content_hash") == run["content_hash"]
+                               and item.get("run_id") == run["id"]
+                               and item.get("definition_revision") == reference["revision"])
+            return {
+                "run_id": run["id"], "publication_id": publication["id"],
+                "definition_id": reference["id"], "revision": reference["revision"],
+                "name": run["name"], "mode": mode, "as_of": as_of,
+                "series_summary": run.get("series_summary", {}),
+                "available_for": sorted(usages),
+            }
 
     def list_runs(self, definition_id: str | None = None) -> list[dict[str, Any]]:
         items = self.runs.list(definition_id)
@@ -4533,6 +4873,11 @@ class RegimeGraphV2Service:
         }
 
     def taa_backtest(self, run_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
+        run, gate = self.resolve_taa_run(run_id)
+        return execute_taa_backtest(run, dict(request), gate)
+
+    def resolve_taa_run(self, run_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Share the existing publication gate with tactical research consumers."""
         raw = self.runs.get(run_id)
         if str(raw.get("schema_version") or "") != "2.0":
             raise ValidationError("NOT_V2_REGIME_RUN", "该运行不是 v2 图谱运行。", "run_id")
@@ -4580,7 +4925,7 @@ class RegimeGraphV2Service:
             "publication_ids": sorted(str(item["id"]) for item in accepted),
             "run_content_hash": raw["content_hash"],
         }
-        return execute_taa_backtest(self._hydrate_run(raw), dict(request), gate)
+        return self._hydrate_run(raw), gate
 
     def compare(self, run_ids: list[str], reference_run_id: str | None = None) -> dict[str, Any]:
         unique_ids = list(dict.fromkeys(str(item) for item in run_ids))
@@ -4656,6 +5001,7 @@ class RegimeGraphV2Service:
                     graph_hash=job["graph_hash"],
                     mode=job["mode"],
                     as_of=job["as_of"],
+                    frequency=str(job["result"].get("frequency") or _definition_output_frequency(definition)),
                     data_snapshots=job["result"].get("data_snapshots"),
                     series_endpoint=f"/api/historical-regimes/preview-runs/{job_id}/series",
                     result=job["result"],
@@ -4765,7 +5111,7 @@ class RegimeGraphV2Service:
             else:
                 item["values"] = [_safe_number(part) for part in value]
             items.append(item)
-        context = preview_output_context(job["definition"], node_outputs, node_id)
+        context = preview_output_context(job["definition"], node_outputs, node_id, selected_port)
         metadata = NODE_REGISTRY[node_types[node_id]]
         port_type = next(item["type"] for item in metadata["outputs"] if item["name"] == selected_port)
         return {

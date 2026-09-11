@@ -1,3 +1,4 @@
+import { MemoryRouter } from 'react-router-dom'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -140,23 +141,27 @@ const reviewData = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorage.clear()
+  sessionStorage.clear()
   mocks.listProductPools.mockResolvedValue({ items: [researchedPool], total: 1 })
   mocks.listEvaluationPlans.mockResolvedValue({ items: [equityPlan, bondPlan], total: 2 })
   mocks.getProductPoolReviewData.mockResolvedValue(reviewData)
 })
 
 afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
   vi.restoreAllMocks()
 })
 
 describe('ProductPools', () => {
   it('uses evaluation plans directly as product groups', async () => {
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
     expect(await screen.findByRole('heading', { name: '产品池构建' })).toBeInTheDocument()
+    fireEvent.click(screen.getByText('评价方案与候选来源', { selector: 'summary' }))
     expect(await screen.findByRole('heading', { name: '权益 ETF 评价' })).toBeInTheDocument()
     expect(screen.getByText(/评价方案就是产品分组/)).toBeInTheDocument()
     expect(screen.getByText('沪深300ETF')).toBeInTheDocument()
-    expect(screen.getByText(/待复核 1/)).toBeInTheDocument()
+    expect(screen.getAllByText(/待复核 1/)[0]).toBeInTheDocument()
   })
 
   it('shows every evaluation plan as read-only evidence instead of a dropdown', async () => {
@@ -176,7 +181,7 @@ describe('ProductPools', () => {
     }
     mocks.listProductPools.mockResolvedValue({ items: [multiPlanPool], total: 1 })
 
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     const productName = await screen.findByText('沪深300ETF')
     const row = productName.closest('tr')
@@ -190,7 +195,7 @@ describe('ProductPools', () => {
   it('places product-pool navigation in the header and keeps the workspace full width', async () => {
     const user = userEvent.setup()
     mocks.listProductPools.mockResolvedValue({ items: [basePool, secondPool], total: 2 })
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     const selector = await screen.findByLabelText('当前产品池')
     expect(selector).toHaveValue('pool-1')
@@ -215,7 +220,7 @@ describe('ProductPools', () => {
     }
     mocks.listProductPools.mockResolvedValue({ items: [basePool], total: 1 })
     mocks.createProductPool.mockResolvedValue(createdPool)
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     await screen.findByLabelText('当前产品池')
     await user.click(screen.getByRole('button', { name: /新建产品池/ }))
@@ -238,7 +243,7 @@ describe('ProductPools', () => {
 
   it('shows a dash when all ranked products are selected', async () => {
     mocks.listProductPools.mockResolvedValue({ items: [basePool], total: 1 })
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     const amount = await screen.findByLabelText('N / 百分比')
     expect(amount).toHaveValue('-')
@@ -253,7 +258,7 @@ describe('ProductPools', () => {
     const user = userEvent.setup()
     mocks.listProductPools.mockResolvedValue({ items: [reviewPool], total: 1 })
 
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     const scroll = await screen.findByTestId('candidate-review-scroll')
     expect(scroll).toHaveClass('max-h-[680px]', 'overflow-auto')
@@ -297,7 +302,7 @@ describe('ProductPools', () => {
     mocks.listProductPools.mockResolvedValue({ items: [reviewPool], total: 1 })
     mocks.batchUpdateProductPoolMembers.mockResolvedValue(updatedPool)
 
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     await screen.findByTestId('candidate-review-scroll')
     await user.click(screen.getByLabelText('选择全部当前候选'))
@@ -333,7 +338,7 @@ describe('ProductPools', () => {
     mocks.listProductPools.mockResolvedValue({ items: [mixedPool], total: 1 })
     mocks.batchUpdateProductPoolMembers.mockResolvedValue(updatedPool)
 
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     await screen.findByTestId('candidate-review-scroll')
     await user.click(screen.getByLabelText('选择全部当前候选'))
@@ -353,7 +358,7 @@ describe('ProductPools', () => {
     const user = userEvent.setup()
     mocks.listProductPools.mockResolvedValue({ items: [reviewPool], total: 1 })
 
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     await screen.findByTestId('candidate-review-scroll')
     await user.click(screen.getByLabelText('选择全部当前候选'))
@@ -376,12 +381,13 @@ describe('ProductPools', () => {
       .mockResolvedValueOnce(afterBond)
     mocks.removeEvaluationPlan.mockResolvedValue(afterRemove)
 
-    render(<ProductPools />)
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
 
     const planSelector = await screen.findByLabelText('待关联评价方案')
     await waitFor(() => expect(planSelector).toHaveValue('plan-equity'))
     await user.click(screen.getByRole('button', { name: '运行并关联' }))
 
+    fireEvent.click(screen.getByText('评价方案与候选来源', { selector: 'summary' }))
     expect(await screen.findByRole('heading', { name: '权益 ETF 评价' })).toBeInTheDocument()
     expect(screen.queryByText('尚未关联评价方案。')).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText('待关联评价方案')).toHaveValue('plan-bond'))
@@ -399,4 +405,28 @@ describe('ProductPools', () => {
     expect(screen.getByRole('heading', { name: '固收基金评价' })).toBeInTheDocument()
     expect(mocks.removeEvaluationPlan).toHaveBeenCalledWith('pool-1', 'plan-equity', 3)
   })
+  it('手机显示可展开复核卡片，刷新后恢复未保存的复核输入', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+    const first = render(<MemoryRouter><ProductPools /></MemoryRouter>)
+    const cards = await screen.findByTestId('candidate-review-cards')
+    expect(screen.queryByTestId('candidate-review-scroll')).not.toBeInTheDocument()
+    fireEvent.click(within(cards).getByText('查看证据与复核'))
+    fireEvent.change(within(cards).getByLabelText('沪深300ETF 负责人'), { target: { value: '复核人甲' } })
+    first.unmount()
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
+    const restored = await screen.findByTestId('candidate-review-cards')
+    fireEvent.click(within(restored).getByText('查看证据与复核'))
+    expect(within(restored).getByLabelText('沪深300ETF 负责人')).toHaveValue('复核人甲')
+  })
+
+  it('已有池先展示复核，并提供已发布版本的直接研究入口', async () => {
+    mocks.listProductPools.mockResolvedValue({ items: [{ ...researchedPool, current_version_id: 'published-3', state: 'active' }], total: 1 })
+    render(<MemoryRouter><ProductPools /></MemoryRouter>)
+    expect(await screen.findByRole('link', { name: '使用已发布版本开展配置研究 →' })).toHaveAttribute('href', '/pre-investment/product-pool?version=published-3')
+    const review = screen.getByRole('heading', { name: '候选产品人工复核' })
+    const rules = screen.getByText('产品池规则与基本信息', { selector: 'summary' })
+    expect(review.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(rules.closest('details')).not.toHaveAttribute('open')
+  })
+
 })

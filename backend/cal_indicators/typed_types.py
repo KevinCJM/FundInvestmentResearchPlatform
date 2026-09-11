@@ -12,8 +12,8 @@ from typing import Any, Iterable, Mapping, TypeAlias
 
 
 Dimension: TypeAlias = str | int
-SUPPORTED_AXES = frozenset({"time", "asset"})
-SUPPORTED_KINDS = frozenset({"scalar", "series", "vector", "matrix", "record"})
+SUPPORTED_AXES = frozenset({"time", "asset", "window"})
+SUPPORTED_KINDS = frozenset({"scalar", "series", "vector", "matrix", "window", "record"})
 SUPPORTED_DTYPES = frozenset({"float64", "bool"})
 DEFAULT_SEMANTIC_DIMENSION = "dimensionless"
 MASK_SEMANTIC_DIMENSION = "mask"
@@ -133,6 +133,7 @@ class ValueType:
             "series": 1,
             "vector": 1,
             "matrix": 2,
+            "window": 2,
         }[self.kind]
         if len(self.axes) != expected_rank:
             raise ValueError(f"{self.kind} 必须是 {expected_rank} 维")
@@ -140,6 +141,8 @@ class ValueType:
             raise ValueError("series 必须使用 time 轴")
         if self.kind == "vector" and self.axes != ("asset",):
             raise ValueError("vector 必须使用 asset 轴")
+        if self.kind == "window" and self.axes != ("time", "window"):
+            raise ValueError("window 必须使用 time,window 轴")
 
     @classmethod
     def scalar(
@@ -212,6 +215,25 @@ class ValueType:
         )
 
     @classmethod
+    def window(
+        cls,
+        time_length: Dimension = "T",
+        window_length: Dimension = "W",
+        *,
+        semantic_dimension: str = DEFAULT_SEMANTIC_DIMENSION,
+        price_basis: str | None = None,
+    ) -> "ValueType":
+        """Logical causal rolling-window collection; never materialized in production."""
+
+        return cls(
+            "window",
+            ("time", "window"),
+            (time_length, window_length),
+            semantic_dimension=semantic_dimension,
+            price_basis=price_basis,
+        )
+
+    @classmethod
     def mask(
         cls,
         axes: tuple[str, ...] = (),
@@ -240,7 +262,8 @@ class ValueType:
 
     @property
     def is_numeric(self) -> bool:
-        return self.dtype == "float64" and self.kind != "record"
+        # ``window`` is a logical compiler state, not a materialized numeric tensor.
+        return self.dtype == "float64" and self.kind not in {"record", "window"}
 
     def with_semantics(
         self,
@@ -338,6 +361,8 @@ def user_type_label(value_type: ValueType) -> str:
         return "时间序列"
     if value_type.kind == "vector":
         return "资产向量"
+    if value_type.kind == "window":
+        return "滚动窗口集合（中间结果）"
     if value_type.axes == ("asset", "asset"):
         return "资产方阵"
     if set(value_type.axes) == {"time", "asset"}:
@@ -381,6 +406,15 @@ def type_from_axes(
         return ValueType.vector(
             shape_tuple[0],
             dtype=dtype,
+            semantic_dimension=semantic_dimension,
+            price_basis=price_basis,
+        )
+    if axes_tuple == ("time", "window"):
+        if dtype != "float64":
+            raise TypedDslError("TYPE_MISMATCH", "滚动窗口中间结果只支持 float64。")
+        return ValueType.window(
+            shape_tuple[0],
+            shape_tuple[1],
             semantic_dimension=semantic_dimension,
             price_basis=price_basis,
         )

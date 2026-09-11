@@ -28,6 +28,9 @@ from cal_indicators.typed_operators import (
     PREVIOUS_OPERATOR_REGISTRY_VERSION,
     PREVIOUS_TYPED_COMPILER_VERSION,
     PREVIOUS_TYPED_DSL_VERSION,
+    ROLLING_OPERATOR_REGISTRY_VERSION,
+    ROLLING_TYPED_COMPILER_VERSION,
+    ROLLING_TYPED_DSL_VERSION,
     SUPPORTED_TYPED_DSL_VERSIONS,
     TYPED_COMPILER_VERSION,
     TYPED_DSL_VERSION,
@@ -203,6 +206,8 @@ class VariableSpec:
 
 
 _VARIABLE_SPECS = (
+    VariableSpec("observation_dates", r"\mathbf{d}", ValueType.series("L", semantic_dimension="date"),
+                 "观察日期", "真实对齐的观察日期，数值日序号。", ("single_asset",), "date", "series_provider"),
     VariableSpec(
         "returns",
         r"\mathbf{r}",
@@ -667,6 +672,9 @@ class TypedDagNode:
             "inferred_type": self.inferred_type.to_dict(),
             "operator": operator,
             "formula_fragment": self.formula_fragment,
+            **({"execution_scope": {"kind": "rolling_interval", "body_root": self.inputs[0],
+                "state_policy": "reset_at_window_start", "input_binding": "window_views", "eager_body": False}}
+               if self.operator_id == "rolling_apply" else {}),
             "cost": {
                 "model": self.cost_model,
                 "expression": self.cost_expression,
@@ -832,7 +840,7 @@ class _TypedDagBuilder:
             }:
                 raise TypedDslError("STATE_FIELD_REQUIRED", "这是计算中间状态，请使用字段提取算子得到一个数值或位置。")
             if any(value.semantic_dimension == "date" for value in input_types) and spec.operator_id not in {
-                "value_at", "days_between",
+                "value_at", "days_between", "rolling_apply",
             }:
                 raise TypedDslError("DATE_OPERATOR_REQUIRED", "日期不能作为普通数值计算；请使用日期索引或日期差算子。")
             return spec.infer_output(input_types)
@@ -954,6 +962,12 @@ class _TypedDagBuilder:
                 raise TypedDslError(
                     "UNKNOWN_OPERATOR", f"未知函数或算子: {node.func.id}"
                 ) from exc
+            if spec.operator_id == "rolling_apply" and len(node.args) in {2, 3}:
+                # Preserve the original four-argument context contract. The
+                # optional minimum is last in the canonical five-argument form.
+                node = ast.Call(func=node.func, args=[*node.args[:2],
+                    ast.Name(id="observation_dates", ctx=ast.Load()),
+                    ast.Name(id="annual_risk_free_rate_decimal", ctx=ast.Load()), *node.args[2:]], keywords=[])
             input_ids = tuple(
                 self._build(argument, depth=depth + 1) for argument in node.args
             )
@@ -961,8 +975,20 @@ class _TypedDagBuilder:
                 self.nodes[input_id].inferred_type for input_id in input_ids
             )
             output_type = self._infer_operator(spec, input_types)
+            if spec.operator_id == "rolling_apply":
+                from .rolling_scope import analyze_interval
+                capability = analyze_interval(self.nodes, input_ids[0], self.registry)
+                numeric_inputs = [item for item in capability.variables if item.inferred_type.rank and item.inferred_type.semantic_dimension != "date"]
+                anchor = next((item for item in numeric_inputs if item.label in {"returns", "log_returns"}), numeric_inputs[0])
+                output_type = ValueType.series(anchor.inferred_type.shape[0],
+                    semantic_dimension=output_type.semantic_dimension, price_basis=output_type.price_basis)
+                if len(node.args) not in {4, 5} or not all(isinstance(arg, ast.Name) and arg.id == name for arg, name in zip(
+                    node.args[2:4], ("observation_dates", "annual_risk_free_rate_decimal")
+                )):
+                    raise TypedDslError("ROLLING_CONTEXT_BINDING_INVALID", "滚动日期和年度配置必须绑定到系统区间上下文，不能用计算结果替代。")
             if spec.version in {
                 PREVIOUS_OPERATOR_REGISTRY_VERSION,
+                ROLLING_OPERATOR_REGISTRY_VERSION,
                 TYPED_OPERATOR_REGISTRY_VERSION,
             }:
                 probability_index = {
@@ -986,6 +1012,8 @@ class _TypedDagBuilder:
                 integer_parameters: dict[str, tuple[tuple[int, int], ...]] = {
                     "lag": ((1, 0),),
                     "difference": ((1, 1),),
+                    "rolling_window": ((1, 1), (2, 1)),
+                    "rolling_apply": ((1, 1), (4, 1)),
                     "rolling_mean": ((1, 1), (2, 1)),
                     "rolling_min": ((1, 1), (2, 1)),
                     "rolling_max": ((1, 1), (2, 1)),
@@ -1001,7 +1029,7 @@ class _TypedDagBuilder:
                     parameter = _literal_number(argument_node)
                     runtime_scalar = False
                     if (
-                        spec.version == TYPED_OPERATOR_REGISTRY_VERSION
+                        spec.version in {ROLLING_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION}
                         and isinstance(argument_node, ast.Name)
                     ):
                         parameter_type = self.variable_types.get(argument_node.id)
@@ -1034,6 +1062,10 @@ class _TypedDagBuilder:
                                 "actual": ast.unparse(argument_node),
                             },
                         )
+                if spec.operator_id == "rolling_apply" and len(node.args) == 5:
+                    width, minimum = _literal_number(node.args[1]), _literal_number(node.args[4])
+                    if minimum is not None and (minimum > 5000 or (width is not None and minimum > width)):
+                        raise TypedDslError("INVALID_MIN_PERIODS", "最少有效观察数不能大于窗口观察数。", details={"parameter": "min_periods"})
                 if spec.operator_id in {"variance", "std"} and len(node.args) == 2:
                     ddof = _literal_number(node.args[1])
                     if ddof is None or not ddof.is_integer() or ddof < 0:
@@ -1049,7 +1081,11 @@ class _TypedDagBuilder:
                             },
                         )
             from .operator_lowering import expand_operator
-            expanded = expand_operator(spec.operator_id, tuple(self.nodes[index].formula_fragment for index in input_ids))
+            expanded = expand_operator(
+                spec.operator_id,
+                tuple(self.nodes[index].formula_fragment for index in input_ids),
+                operator_registry_version=spec.version,
+            )
             if expanded is not None:
                 root = self._build(ast.parse(expanded, mode="eval").body, depth=depth)
                 self.cache[cache_key] = root
@@ -1209,6 +1245,7 @@ def compose_typed_expression(
         LEGACY_TYPED_DSL_VERSION: LEGACY_OPERATOR_REGISTRY_VERSION,
         COMPAT_TYPED_DSL_VERSION: COMPAT_OPERATOR_REGISTRY_VERSION,
         PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_OPERATOR_REGISTRY_VERSION,
+        ROLLING_TYPED_DSL_VERSION: ROLLING_OPERATOR_REGISTRY_VERSION,
         TYPED_DSL_VERSION: TYPED_OPERATOR_REGISTRY_VERSION,
     }[dsl_version]
     if operator_registry_version is None:
@@ -1237,6 +1274,8 @@ def compose_typed_expression(
     root_id = builder.build(ast_root)
     output_type = builder.nodes[root_id].inferred_type
     _check_output_contract(output_type, output_contract)
+    if output_contract == "scalar" and any(node.operator_id == "rolling_apply" for node in builder.nodes):
+        raise TypedDslError("ROLLING_SERIES_DEFINITION_REQUIRED", "滚动计算生成时序指标，不能在标量定义中再次做全样本归约。")
 
     used_variables = {
         node.label: node.inferred_type
@@ -1266,6 +1305,7 @@ def compose_typed_expression(
             LEGACY_TYPED_DSL_VERSION: LEGACY_TYPED_COMPILER_VERSION,
             COMPAT_TYPED_DSL_VERSION: COMPAT_TYPED_COMPILER_VERSION,
             PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
+            ROLLING_TYPED_DSL_VERSION: ROLLING_TYPED_COMPILER_VERSION,
             TYPED_DSL_VERSION: TYPED_COMPILER_VERSION,
         }[dsl_version],
         operator_registry_version=operator_registry_version,
@@ -1315,6 +1355,7 @@ def compose_typed_series_bundle(
         LEGACY_TYPED_DSL_VERSION: LEGACY_OPERATOR_REGISTRY_VERSION,
         COMPAT_TYPED_DSL_VERSION: COMPAT_OPERATOR_REGISTRY_VERSION,
         PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_OPERATOR_REGISTRY_VERSION,
+        ROLLING_TYPED_DSL_VERSION: ROLLING_OPERATOR_REGISTRY_VERSION,
         TYPED_DSL_VERSION: TYPED_OPERATOR_REGISTRY_VERSION,
     }[dsl_version]
     if operator_registry_version is None:
@@ -1375,6 +1416,7 @@ def compose_typed_series_bundle(
         LEGACY_TYPED_DSL_VERSION: LEGACY_TYPED_COMPILER_VERSION,
         COMPAT_TYPED_DSL_VERSION: COMPAT_TYPED_COMPILER_VERSION,
         PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
+        ROLLING_TYPED_DSL_VERSION: ROLLING_TYPED_COMPILER_VERSION,
         TYPED_DSL_VERSION: TYPED_COMPILER_VERSION,
     }[dsl_version]
     canonical = repr(canonical_roots)

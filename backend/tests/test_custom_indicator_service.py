@@ -81,7 +81,7 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     assert meta["numeric_backend"]["policy"][
         "one_dimensional_reductions_and_scans"
     ] == "numba_njit_fixed_signature"
-    assert meta["math_notation_version"] == "1.4.0"
+    assert meta["math_notation_version"] == "1.5.0"
     measure_ids = {item["id"] for item in meta["series_output_measures"]}
     assert {"auto", "raw_market_price", "virtual_nav", "bounded_0_1", "oscillator_0_100"}.issubset(measure_ids)
 
@@ -115,19 +115,15 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     ]
     assert operators["mean_time"]["label"] == "时间轴算术平均值"
     assert operators["mean_asset"]["label"] == "资产轴算术平均值"
-    assert operators["rolling_mean"]["label"] == "滚动平均值"
-    assert operators["rolling_std"]["label"] == "滚动标准差"
-    assert operators["rolling_min"]["label"] == "滚动最小值"
-    assert operators["rolling_max"]["label"] == "滚动最大值"
+    assert operators["rolling_window"]["label"] == "滚动窗口"
+    assert operators["rolling_window"]["category_label"] == "滚动与时序"
+    assert {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}.isdisjoint(operators)
     assert operators["recursive_smooth"]["label"] == "递归平滑"
     assert operators["divide_or_default"]["label"] == "安全除法"
-    assert operators["rolling_mean"]["category_label"] == "滚动与时序"
-    assert operators["rolling_std"]["category_label"] == "滚动与时序"
-    assert operators["rolling_std"]["parameter_sets"][-1]["parameters"][2]["label"] == (
-        "自由度修正（ddof）"
-    )
-    assert operators["rolling_std"]["parameter_sets"][-1]["parameters"][3]["label"] == (
-        "最少有效观察数"
+    assert operators["rolling_window"]["parameters"][1]["label"] == "窗口期数"
+    assert any(
+        parameter_set["parameters"][0]["allowed_shapes"] == ["window"]
+        for parameter_set in operators["std"]["parameter_sets"]
     )
     assert operators["mean"]["parameters"][0]["label"] == "输入值"
     assert operators["mean"]["parameters"][0]["allowed_shapes"] == [
@@ -138,7 +134,7 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     assert operators["absolute"]["output_shape"] == "unknown"
     assert operators["absolute"]["return_type"].startswith("same(")
     rolling_window = next(
-        item for item in operators["rolling_mean"]["parameters"]
+        item for item in operators["rolling_window"]["parameters"]
         if item["name"] == "window"
     )
     assert rolling_window["source_policy"] == "fixed_constant"
@@ -1087,3 +1083,74 @@ def test_snapshot_indicator_config_locks_versions_and_protects_references(tmp_pa
     with pytest.raises(ConflictError) as referenced:
         service.delete_indicator(created["id"], created["revision"])
     assert referenced.value.code == "INDICATOR_IN_SNAPSHOT_CONFIG"
+
+
+def test_a_research_day_never_answers_from_the_hindsight_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """快照指标是用全部已下载数据算出来的，一旦研究日生效它就是错的答案。
+
+    The snapshot table has no `as_of` to honour, so both entry points — single
+    product evaluation and a saved evaluation plan — must recompute instead of
+    reading it. Without this the same page shows a 2014 research day beside a
+    number that used every row through today.
+    """
+
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    indicator = service.create_indicator(_draft(name="研究日不许读快照", periods=["1W"]))
+    monkeypatch.setattr(
+        service.snapshot_config,
+        "get",
+        lambda: {
+            "revision": 1,
+            "items": [
+                {
+                    "indicator_id": indicator["id"],
+                    "indicator_revision": indicator["revision"],
+                    "period": "1W",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_evaluate_from_snapshot",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a research day must be recomputed, never read from the全历史 snapshot"
+        ),
+    )
+
+    live = service.evaluate(
+        indicator_ids=[indicator["id"]],
+        inline_definition=None,
+        targets=[{"kind": "etf", "product_id": "510050.SH"}],
+        period="1W",
+        as_of="2026-02-02",
+    )
+    assert live["results"]
+
+    plan = service.create_plan(
+        {
+            "name": "研究日下的评价方案",
+            "description": "",
+            "product_kind": "etf",
+            "indicators": [
+                {
+                    "indicator_id": indicator["id"],
+                    "indicator_revision": indicator["revision"],
+                    "period": "1W",
+                    "weight": 100.0,
+                }
+            ],
+            "targets": [{"kind": "etf", "product_id": "510050.SH"}],
+            "missing_policy": "strict",
+        }
+    )
+    run = service.run_plan(plan["id"], "2026-02-02")
+    assert run["as_of"] == "2026-02-02"
+    # Nothing ranks, and that is the honest answer rather than a snapshot hit:
+    # this fixture's NAV table carries no announcement column, so no value can
+    # be proven to have been knowable on the research day.
+    assert run["rows"][0]["exclusion_reasons"][0]["code"] == "ANN_DATE_UNAVAILABLE"

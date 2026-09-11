@@ -98,14 +98,18 @@ describe('HistoricalRegimeDirectory', () => {
 })
 
 
-it('峰谷模板仅放入事后识别分组，并携带正确模式进入工作台', async () => {
+it('事后模板仅放入事后识别分组，并携带正确模式进入工作台', async () => {
   vi.stubGlobal('fetch', vi.fn(async input => String(input).endsWith('/templates/v2') ? ok({ items: [
     { id: 'peak-trough-ps-v2', name: '峰谷定界法', default_mode: 'retrospective', supported_modes: ['retrospective'] },
+    { id: 'manual-historical-events-v1', name: '人工历史事件区间', description: '人类定义可重叠历史事件', default_mode: 'retrospective', supported_modes: ['retrospective'] },
     { id: 'bull-bear-causal-v2', name: '指数牛熊震荡', default_mode: 'realtime' },
   ] }) : ok({ items: [] })))
   renderDirectory()
   await screen.findByRole('region', { name: '事后识别' })
   const offline = screen.getByRole('region', { name: '事后识别' })
   expect(within(offline).getByRole('link', { name: '使用模板：峰谷定界法' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?template=peak-trough-ps-v2&mode=retrospective')
-  expect(within(screen.getByRole('region', { name: '实时识别' })).queryByText('峰谷定界法')).not.toBeInTheDocument()
+  expect(within(offline).getByRole('link', { name: '使用模板：人工历史事件区间' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?template=manual-historical-events-v1&mode=retrospective')
+  const realtime = screen.getByRole('region', { name: '实时识别' })
+  expect(within(realtime).queryByText('峰谷定界法')).not.toBeInTheDocument()
+  expect(within(realtime).queryByText('人工历史事件区间')).not.toBeInTheDocument()
 })

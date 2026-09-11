@@ -90,12 +90,19 @@ def extra_mappings(api: str, columns: list[str]) -> list[DatasetMapping]:
             identity("scheme_id", "src", "TS_CLASSIFICATION"), identity("node_id", "index_code", "TS_CLASSIFICATION_NODE")], fields=[
             direct("scheme_version", "src"), direct("code", "industry_code"), direct("name", "industry_name"),
             direct("level", operation="enum", enum_map={"L1": 1, "L2": 2, "L3": 3, "1": 1, "2": 2, "3": 3}), fixed("sort_order", 0)])]
-    if api == "index_member_all":
+    if api in {"index_member_all", "ci_index_member"}:
         return [DatasetMapping(target_table="index.membership", identities=[
-            identity("index_instrument_id", "l3_code", "TS_SW_INDEX"), identity("member_key"), identity("member_instrument_id")], fields=[
+            identity("index_instrument_id", "l3_code", "TS_SW_INDEX" if api == "index_member_all" else "TS_CI_INDEX"), identity("member_key"), identity("member_instrument_id")], fields=[
             direct("member_external_code", "ts_code"), direct("member_name", "name"),
             direct("effective_from", "in_date", "date"), direct("effective_to", "out_date", "date"),
             direct("is_current", "is_new", "enum", enum_map={"Y": True, "N": False}), fixed("availability_status", "UNKNOWN")])]
+    if api in {"ths_member", "dc_member", "tdx_member"}:
+        namespace = {"ths_member": "TS_THS_INDEX", "dc_member": "TS_DC_INDEX", "tdx_member": "TS_TDX_INDEX"}[api]
+        return [DatasetMapping(target_table="index.membership", identities=[
+            identity("index_instrument_id", "ts_code", namespace), identity("member_key", "con_code"), identity("member_instrument_id", "con_code")], fields=[
+            direct("member_external_code", "con_code"), direct("member_name", "name" if api == "dc_member" else "con_name"),
+            # A dated membership observation is not a verified change/release date.
+            fixed("availability_status", "UNKNOWN")])]
     if api == "repo_daily":
         return [DatasetMapping(target_table="macro.observation", identities=[identity("series_id", "ts_code", "TS_REPO_RATE")], fields=[
             direct("observation_period_end", "trade_date", "date"), direct("value", "close", "scale", factor=0.01),

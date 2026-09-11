@@ -263,6 +263,64 @@ def test_rows_not_yet_published_are_cut_from_the_allocation(tmp_path) -> None:
     assert picked.nav_wide.index.max() <= pd.Timestamp("2024-01-05")
 
 
+def _lock_universe(tmp_path: Path, research_date: str, name: str) -> None:
+    """A saved allocation plus the pool its products were screened from."""
+
+    from backend.product_pools.repository import InvestableUniverseRepository
+
+    InvestableUniverseRepository(tmp_path / "product_pools.json").create(
+        {"id": "universe-1", "name": name, "research_date": research_date, "members": []}
+    )
+    pd.DataFrame(
+        [
+            {
+                "asset_alloc_name": "demo",
+                "asset_name": "ClassA",
+                "etf_code": "A",
+                "etf_name": "a",
+                "etf_weight": 100.0,
+                "universe_snapshot_id": "universe-1",
+            }
+        ]
+    ).to_parquet(tmp_path / "asset_alloc_info.parquet", index=False)
+
+
+def test_the_pool_behind_an_allocation_is_judged_not_only_its_nav(tmp_path) -> None:
+    # The series was rebuilt for 2023-12-01, so on its own it is clean. The pool
+    # its products were screened from was cut two years later, and until the
+    # loader read that column back nothing downstream could see the difference.
+    _write_alloc(tmp_path, lag_days=0, as_of="2023-12-01")
+    _lock_universe(tmp_path, "2026-01-01", "2026筛出来的池子")
+
+    loaded = engine.load_allocation_nav(tmp_path, "demo", build_context("2024-02-20"))
+    universe = loaded.lineage["universe"]
+
+    assert universe["established_at"] == "2023-12-01"
+    assert universe["snapshot_established_at"] == "2026-01-01"
+    assert [item["code"] for item in universe["findings"]] == [UNIVERSE_LOOKAHEAD]
+    assert "2026筛出来的池子" in universe["findings"][0]["message"]
+    with pytest.raises(PitContextError):
+        engine.load_allocation_nav(tmp_path, "demo", build_context("2024-02-20", "STRICT_PIT"))
+
+
+def test_a_pool_cut_before_the_decision_leaves_the_allocation_clean(tmp_path) -> None:
+    _write_alloc(tmp_path, lag_days=0, as_of="2023-12-01")
+    _lock_universe(tmp_path, "2023-11-01", "当时就定好的池子")
+
+    loaded = engine.load_allocation_nav(tmp_path, "demo", build_context("2024-02-20"))
+
+    assert loaded.lineage["universe"]["clean"] is True
+
+
+def test_an_allocation_naming_no_pool_says_unknown_rather_than_clean(tmp_path) -> None:
+    _write_alloc(tmp_path, lag_days=0, as_of="2023-12-01")
+
+    loaded = engine.load_allocation_nav(tmp_path, "demo", build_context("2024-02-20"))
+
+    assert loaded.lineage["universe_snapshot_id"] is None
+    assert loaded.lineage["universe"]["snapshot_established_at"] is None
+
+
 # --------------------------------------------------------------------------- #
 # L4 — the guard
 # --------------------------------------------------------------------------- #

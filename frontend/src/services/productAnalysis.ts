@@ -256,25 +256,52 @@ export interface SimulationComparison {
   message: string
 }
 
-export interface TerminalNavDensity {
-  sampleSize: number
-  points: Array<{ nav: number; density: number; estimatedCount: number; simulatedReturn: number }>
-  histogram: Array<{
-    lowerNav: number
-    upperNav: number
-    density: number
-    count: number
-    frequency: number
-  }>
-  maxDensity: number
-  modeNav: number
-  minNav: number
-  maxNav: number
+/**
+ * One day's landing distribution. `curve` and `bins` are path counts on
+ * uniform grids over [navLow, navHigh] — the NAV each entry sits at is
+ * derivable, and not naming it is what keeps ~40 frames per model affordable.
+ */
+export interface NavDensityFrame {
+  day: number
+  navLow: number
+  navHigh: number
+  binWidth: number
   countAxisMax: number
+  curve: number[]
+  bins: number[]
+}
+
+export interface NavDensity {
+  sampleSize: number
+  /** Shared by every frame and by the path chart, so frames stay comparable. */
   navAxisMin: number
   navAxisMax: number
-  densityCountFactor: number
-  histogramBinWidth: number
+  /** Ascending, strided; the last one is the horizon's own distribution. */
+  frames: NavDensityFrame[]
+}
+
+/** Evenly spaced NAV points of a frame's curve, paired with its path counts. */
+export function navDensityCurve(frame: NavDensityFrame, initialNav: number) {
+  const span = frame.navHigh - frame.navLow
+  const steps = Math.max(1, frame.curve.length - 1)
+  return frame.curve.map((count, index) => {
+    const nav = frame.navLow + (span * index) / steps
+    return { nav, count, simulatedReturn: nav / initialNav - 1 }
+  })
+}
+
+/** The frame whose day is closest to `day` — frames are strided, not daily. */
+export function nearestNavDensityFrame(frames: NavDensityFrame[], day: number): NavDensityFrame | null {
+  let best: NavDensityFrame | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const frame of frames) {
+    const distance = Math.abs(frame.day - day)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = frame
+    }
+  }
+  return best
 }
 
 export interface ProductRegimeState {
@@ -400,7 +427,7 @@ export interface ProductAnalysisResponse {
     methods: SimulationMethod[]
     byMethod: Record<SimulationMethod, FuturePathSimulation>
     comparison: SimulationComparison
-    densities: Record<SimulationMethod, TerminalNavDensity>
+    densities: Record<SimulationMethod, NavDensity>
   } | null
   regimeAnalysis: ProductRegimeAnalysis | null
   researchContext: ProductResearchContext

@@ -9,7 +9,7 @@ function stable(value: unknown): string {
 // UI freshness only. Never substitute this fingerprint for server hashes or compile tokens.
 export function regimeCalculationFingerprint(definition: RegimeGraphDefinition, mode: RegimeMode, asOf: string) {
   const payload = definitionForRequest(definition)
-  const { id: _id, revision: _revision, created_at: _created, updated_at: _updated, name: _name, description: _description, template_id: _template, evaluation_targets: _evaluation, ...calculation } = payload
+  const { id: _id, revision: _revision, created_at: _created, updated_at: _updated, name: _name, description: _description, template_id: _template, default_mode: _defaultMode, evaluation_targets: _evaluation, ...calculation } = payload
   const { channel_metadata: _channels, ...graph } = payload.graph
   return stable({
     ...calculation,

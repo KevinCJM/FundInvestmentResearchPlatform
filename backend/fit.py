@@ -7,6 +7,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+from backend.research_input_checks import ResearchInputError, require_return_quality
 
 try:
     from backend.backtest_numba import (
@@ -254,44 +255,15 @@ def _load_adj_nav(
     return load_adj_nav_pit(data_dir, codes, names, as_of=as_of, run_mode=run_mode).frame
 
 
-_LAST_NAV_LINEAGE: Dict[str, object] = {}
-_LAST_NAV_AVAILABILITY: Dict[str, pd.Series] = {}
+@dataclass(frozen=True)
+class ClassNavResult:
+    """Numerical outputs and their request-owned point-in-time provenance."""
 
-
-def _remember_nav_lineage(lineage: Dict[str, object]) -> None:
-    _LAST_NAV_LINEAGE.clear()
-    _LAST_NAV_LINEAGE.update(lineage)
-
-
-def _remember_nav_availability(rows: pd.DataFrame) -> None:
-    _LAST_NAV_AVAILABILITY["series"] = availability_from_rows(
-        rows, event_field=NAV_EVENT_FIELD, available_field="available_date"
-    )
-
-
-def last_nav_availability() -> pd.Series:
-    """When each observation day of the most recent load became knowable.
-
-    One date per day, taking the latest constituent: a class NAV for day d is
-    only computable once *every* fund in it has published day d. This is what
-    lets a rebalance on d use the window that existed on d rather than the one
-    that exists now.
-
-    ponytail: process-local, same contract as :func:`last_nav_lineage`.
-    """
-
-    return _LAST_NAV_AVAILABILITY.get("series", pd.Series(dtype="datetime64[ns]")).copy()
-
-
-def last_nav_lineage() -> Dict[str, object]:
-    """Audit trail of the most recent NAV load in this process.
-
-    ponytail: process-local, so it is only meaningful immediately after the call
-    that produced it. Thread NavLoad explicitly if a caller ever needs the
-    lineage of an older load.
-    """
-
-    return dict(_LAST_NAV_LINEAGE)
+    nav: pd.DataFrame
+    correlation: pd.DataFrame
+    metrics: pd.DataFrame
+    lineage: Dict[str, object]
+    available_at: pd.Series
 
 
 def _returns_from_adj_nav(series: pd.Series) -> pd.Series:
@@ -328,7 +300,9 @@ def _returns_wide(df: pd.DataFrame, start_date: pd.Timestamp) -> pd.DataFrame:
         np.ascontiguousarray(pivot.to_numpy(dtype=np.float64))
     )
     result = pd.DataFrame(values, index=pivot.index[1:], columns=pivot.columns)
-    return result.loc[result.index >= start_date].dropna(axis=0, how="any")
+    result = result.loc[result.index >= start_date].dropna(axis=0, how="any")
+    require_return_quality(result.to_numpy(dtype=np.float64), result.index.strftime("%Y-%m-%d").tolist(), list(result.columns))
+    return result
 
 
 def _map_to_ts(df: pd.DataFrame, available: list[str], code: str, name: str) -> Optional[str]:
@@ -393,28 +367,38 @@ def compute_classes_nav(
     *,
     as_of: object = None,
     run_mode: str = RUN_MODE_RESEARCH,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> ClassNavResult:
+    cutoff = parse_as_of(as_of)
+    if cutoff is not None and pd.Timestamp(start_date) >= cutoff:
+        raise ResearchInputError(
+            f"拟合开始日须早于当前研究日 {cutoff.strftime('%Y-%m-%d')}；请调整日期或明确切换 PIT 口径。",
+            code="ALLOCATION_DATE_RANGE")
     requested_codes = [etf.code for item in classes for etf in item.etfs if etf.weight is not None]
     requested_names = [etf.name for item in classes for etf in item.etfs if etf.weight is not None]
     loaded = load_adj_nav_pit(data_dir, requested_codes, requested_names, as_of=as_of, run_mode=run_mode)
     data = loaded.frame
-    _remember_nav_lineage(loaded.lineage)
-    _remember_nav_availability(data)
+    if data.empty:
+        raise ResearchInputError("当前产品和研究日没有可用净值，请检查 PIT 日期或更换产品。", code="ALLOCATION_NO_DATA")
+    available_at = availability_from_rows(
+        data, event_field=NAV_EVENT_FIELD, available_field="available_date"
+    )
     class_returns = _class_returns(data, classes, start_date)
     if class_returns.empty:
-        raise ValueError("没有可用的大类收益率：请检查权重或数据匹配。")
+        raise ResearchInputError("所选日期没有共同收益区间，请提前开始日或检查产品数据覆盖。", code="ALLOCATION_NO_COMMON_DATA")
     nav, corr, metrics = class_nav_corr_metrics_kernel(
         np.ascontiguousarray(class_returns.to_numpy(dtype=np.float64)), 252.0
     )
     labels = class_returns.columns
-    return (
-        pd.DataFrame(nav, index=class_returns.index, columns=labels),
-        pd.DataFrame(corr, index=labels, columns=labels),
-        pd.DataFrame(
+    return ClassNavResult(
+        nav=pd.DataFrame(nav, index=class_returns.index, columns=labels),
+        correlation=pd.DataFrame(corr, index=labels, columns=labels),
+        metrics=pd.DataFrame(
             metrics,
             index=labels,
             columns=["年化收益率", "年化波动率", "夏普比率", "99%VaR(日)", "99%ES(日)", "最大回撤", "卡玛比率"],
         ),
+        lineage=loaded.lineage,
+        available_at=available_at,
     )
 
 

@@ -31,6 +31,16 @@ it('已有内联数据仅保留读取，不再提供手工编辑入口', () => {
   expect(nodeValue().parameters).toEqual(parameters)
 })
 
+it.each(['选择宏观数据', '上传时序'])('美林时钟的空数据占位可通过%s替换，保留节点编号、名称和月频', async action => {
+  render(<Harness type="source.inline" parameters={{ rows: [], name: '增长指标', frequency: 'monthly' }} />)
+  expect(screen.getByText('尚未选择输入数据')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: action }))
+  expect(nodeValue()).toEqual({ id: 'source', type: action === '选择宏观数据' ? 'source.macro' : 'source.upload', type_version: 1, label: '我的数据', parameters: { frequency: 'monthly' }, inputs: {} })
+  expect(screen.queryByText('尚未选择输入数据')).not.toBeInTheDocument()
+  if (action === '选择宏观数据') expect(await screen.findByRole('searchbox')).toHaveAttribute('placeholder', expect.stringContaining('宏观'))
+  else expect(screen.getByLabelText('选择时序文件')).toBeInTheDocument()
+})
+
 it('宏观只选一次并清除上一个数据集代码、日期字段和快照', async () => {
   const item: api.ResearchSeriesCatalogItem = { id: 'macro:new', name: 'CPI', kind: 'macro', status: 'available', regime_node_type: 'source.macro', fields: [{ name: 'cpi', label: '居民消费价格' }], binding_parameters: { dataset: 'new.parquet', field: 'cpi', name: 'CPI', frequency: 'monthly' } }
   catalog.mockResolvedValue(page([item]))

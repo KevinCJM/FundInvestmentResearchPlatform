@@ -11,7 +11,9 @@ import type {
 import type { ResearchSeriesCatalogItem } from '../../services/researchSeries'
 import RegimeResearchSeriesPicker, { hasResearchSeriesPicker, isEditableSourceParameter, researchSourceParameterPatch, researchSeriesFieldOptions, researchSeriesPickerKey } from './RegimeResearchSeriesPicker'
 import RegimeHelpTip from './RegimeHelpTip'
+import RegimeGranularityInfo from './RegimeGranularityInfo'
 import RegimeStructuredParameter from './RegimeStructuredParameter'
+import RegimeManualEventEditor from './RegimeManualEventEditor'
 import { regimeConnectionIssue } from './regimeGraphEditing'
 import { regimeEnumLabel, regimeParameterHelp, regimeParameterLabel, regimePhaseLabel, regimePortLabel, regimeTypeLabel } from './regimeDisplay'
 
@@ -20,6 +22,8 @@ function parameterProperties(schema?: RegimeNodeSchema) {
 }
 
 export function regimeParameterIsActive(node: RegimeGraphNode | null, name: string) {
+  if (node?.type === 'condition.compare' && name === 'threshold') return !node.inputs.bound
+  if (node?.type === 'state.select') return name === 'true_code' ? !node.inputs.when_true : name === 'false_code' ? !node.inputs.when_false : true
   if (node?.type !== 'model.range_threshold') return true
   const bound = name === 'upper' ? 'upper_bound' : name === 'lower' ? 'lower_bound' : null
   return !bound || !node.inputs[bound]
@@ -48,12 +52,13 @@ function StructuredInput({ value, schema, onChange }: { value: unknown; schema: 
   return <div><textarea aria-label={schema.label || schema.title || '结构化参数'} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={commit} rows={4} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 font-mono text-xs focus:border-indigo-500 focus:outline-none" />{error ? <p role="alert" className="mt-1 text-[11px] text-rose-700">{error}</p> : null}</div>
 }
 
-export function ParameterInput({ name, schema, value, options, onChange }: { name: string; schema: RegimeParameterSchema; value: unknown; options?: Array<{ value: string; label: string; disabled?: boolean }>; onChange: (value: unknown) => void }) {
+export function ParameterInput({ name, schema, value, options, states, onChange }: { name: string; schema: RegimeParameterSchema; value: unknown; options?: Array<{ value: string; label: string; disabled?: boolean }>; states?: RegimeGraphDefinition['states']; onChange: (value: unknown) => void }) {
   const label = regimeParameterLabel(name, schema)
   const help = regimeParameterHelp(name, schema)
-  const choices: Array<{ value: string; label: string; disabled?: boolean }> | undefined = options || schema.enum?.map((option, index) => ({ value: String(option), label: regimeEnumLabel(option, schema, index) }))
+  const stateChoices = schema.state_code && states?.length ? [{ value: '-1', label: '未分类' }, ...states.map((state, index) => ({ value: String(index), label: state.label }))] : undefined
+  const choices: Array<{ value: string; label: string; disabled?: boolean }> | undefined = options || stateChoices || schema.enum?.map((option, index) => ({ value: String(option), label: regimeEnumLabel(option, schema, index) }))
   const heading = <>{label}<RegimeHelpTip label={`${label}说明`} text={help} /></>
-  if (choices?.length) return <label className="block text-xs font-bold text-slate-600">{heading}<select aria-label={label} value={String(value ?? schema.default ?? '')} onChange={(event) => { const index = schema.enum?.findIndex((item) => String(item) === event.target.value) ?? -1; onChange(index >= 0 ? schema.enum?.[index] : event.target.value) }} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-2 font-normal"><option value="">请选择</option>{choices.map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></label>
+  if (choices?.length) return <label className="block text-xs font-bold text-slate-600">{heading}<select aria-label={label} value={String(value ?? schema.default ?? '')} onChange={(event) => { const index = schema.enum?.findIndex((item) => String(item) === event.target.value) ?? -1; onChange(schema.state_code ? (event.target.value === '' ? null : Number(event.target.value)) : index >= 0 ? schema.enum?.[index] : event.target.value) }} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-2 font-normal"><option value="">请选择</option>{choices.map((option) => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></label>
   if (schema.type === 'boolean') return <label className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-bold text-slate-700"><input aria-label={label} type="checkbox" checked={Boolean(value ?? schema.default)} onChange={(event) => onChange(event.target.checked)} />{heading}</label>
   if (schema.type === 'array' || schema.type === 'object') { const current = value ?? schema.default ?? (schema.type === 'array' ? [] : {}); return <div className="block space-y-2 text-xs font-bold text-slate-600"><p>{heading}</p><RegimeStructuredParameter label={label} value={current} onChange={onChange} /><details><summary className="cursor-pointer text-[11px] font-semibold text-slate-500">高级：编辑完整 JSON</summary><StructuredInput value={current} schema={{ ...schema, label }} onChange={onChange} /></details></div> }
   if (schema.type === 'number' || schema.type === 'integer') return <label className="block text-xs font-bold text-slate-600">{heading}<input aria-label={label} type="number" value={value === null ? '' : typeof value === 'number' ? value : Number(schema.default ?? 0)} min={schema.minimum} max={schema.maximum} step={schema.step ?? (schema.type === 'integer' ? 1 : 'any')} onChange={(event) => onChange(event.target.value === '' ? null : Number(event.target.value))} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 px-2 font-normal" /></label>
@@ -120,9 +125,13 @@ export interface RegimeNodeInspectorProps {
   onConnect: (port: string, connection: RegimeGraphConnection | null) => void
   onSetOutput: (slot: typeof OUTPUT_SLOTS[number][0], port: string | null) => void
   onRemove: () => void
+  states?: RegimeGraphDefinition['states']
+  onExpand?: () => void
+  expanding?: boolean
+  expandDisabled?: boolean
 }
 
-export default function RegimeNodeInspector({ node, schema, nodes, schemas, outputs, inference, preparedPlan, onPatchNode, onConnect, onSetOutput, onRemove }: RegimeNodeInspectorProps) {
+export default function RegimeNodeInspector({ node, schema, nodes, schemas, outputs, inference, preparedPlan, onPatchNode, onConnect, onSetOutput, onRemove, states, onExpand, expanding, expandDisabled }: RegimeNodeInspectorProps) {
   const [selectedDagNode, setSelectedDagNode] = useState<string>('')
   const properties = parameterProperties(schema)
   const required = new Set(schema?.parameter_schema?.required ?? [])
@@ -140,10 +149,13 @@ export default function RegimeNodeInspector({ node, schema, nodes, schemas, outp
   const dagEdges = formulaPlan?.typed_expression?.edges ?? []
   useEffect(() => { setSelectedDagNode('') }, [node?.id, formulaPlan?.expression_hash])
   if (!node) return <aside className="grid min-h-[420px] place-items-center rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center"><div><p className="text-sm font-bold text-slate-800">节点检查器 <RegimeHelpTip label="节点检查器说明" text="选择画布中的任一节点后，可在这里挑选数据、调整参数、连接上游并查看该节点的计算约束。" /></p><p className="mt-2 text-xs leading-5 text-slate-500">选择画布节点后，可按服务端说明编辑参数、连接输入并指定图输出。</p></div></aside>
-  const renderParameters = (series?: ResearchSeriesCatalogItem) => (<section><h4 className="text-xs font-bold text-slate-800">{hasResearchSeriesPicker(node) ? '数据设置' : '参数'} <RegimeHelpTip label="节点参数说明" text="这些参数直接决定该节点的计算方式。调整后旧试算会标记为过期，需要重新试算。" /></h4><div className="mt-2 space-y-3">{parameterEntries.length ? parameterEntries.map(([name, parameter]) => name === schema?.formula_language?.expression_parameter ? <FormulaInput key={name} label={`${regimeParameterLabel(name, parameter)}${required.has(name) ? ' *' : ''}`} value={regimeNodeParameterValue(node, name)} variables={schema.formula_language?.variables || schema.inputs.map((port) => port.id)} onChange={(value) => onPatchNode(researchSourceParameterPatch(node, name, value, series))} /> : <ParameterInput key={name} name={name} schema={{ ...parameter, label: `${regimeParameterLabel(name, parameter)}${required.has(name) ? ' *' : ''}` }} value={regimeNodeParameterValue(node, name)} options={name === 'field' && researchSeriesFieldOptions(series).length ? researchSeriesFieldOptions(series) : undefined} onChange={(value) => onPatchNode(researchSourceParameterPatch(node, name, value, series))} />) : <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">该节点没有可编辑参数。</p>}</div></section>)
+  const renderParameters = (series?: ResearchSeriesCatalogItem) => node.type === 'annotation.manual_events'
+    ? <RegimeManualEventEditor value={node.parameters.events} onChange={events => onPatchNode({ parameters: { ...node.parameters, events } })} />
+    : (<section><h4 className="text-xs font-bold text-slate-800">{hasResearchSeriesPicker(node) ? '数据设置' : '参数'} <RegimeHelpTip label="节点参数说明" text="这些参数直接决定该节点的计算方式。调整后旧试算会标记为过期，需要重新试算。" /></h4><div className="mt-2 space-y-3">{parameterEntries.length ? parameterEntries.map(([name, parameter]) => name === schema?.formula_language?.expression_parameter ? <FormulaInput key={name} label={`${regimeParameterLabel(name, parameter)}${required.has(name) ? ' *' : ''}`} value={regimeNodeParameterValue(node, name)} variables={schema.formula_language?.variables || schema.inputs.map((port) => port.id)} onChange={(value) => onPatchNode(researchSourceParameterPatch(node, name, value, series))} /> : <ParameterInput key={name} name={name} states={states} schema={{ ...parameter, label: `${regimeParameterLabel(name, parameter)}${required.has(name) ? ' *' : ''}` }} value={regimeNodeParameterValue(node, name)} options={name === 'field' && researchSeriesFieldOptions(series).length ? researchSeriesFieldOptions(series) : undefined} onChange={(value) => onPatchNode(researchSourceParameterPatch(node, name, value, series))} />) : <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">该节点没有可编辑参数。</p>}</div></section>)
   return (
     <aside className="min-h-[420px] space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="节点动态检查器">
       <div className="flex items-start justify-between gap-2"><div><p className="text-[10px] font-bold tracking-wider text-indigo-600">{schema?.category_label || '计算节点'}</p><h3 className="mt-1 text-base font-bold text-slate-950">{schema?.label || '未命名节点'}</h3><p className="mt-1 text-[11px] leading-5 text-slate-500">{schema?.description || '该节点的计算说明由服务端节点目录提供。'}</p></div><button type="button" onClick={onRemove} className="min-h-9 shrink-0 whitespace-nowrap rounded-lg px-2 text-xs font-bold text-rose-600 hover:bg-rose-50">删除</button></div>
+      <RegimeGranularityInfo schema={schema} onExpand={onExpand} expanding={expanding} disabled={expandDisabled} />
       <label className="block text-xs font-bold text-slate-600">节点名称<RegimeHelpTip label="节点名称说明" text="仅改变画布上的显示名称，不会改变节点算法、输入数据或计算结果。" /><input aria-label="节点名称" value={node.label || ''} placeholder={schema?.label || '请输入节点名称'} onChange={(event) => onPatchNode({ label: event.target.value })} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 px-2 font-normal" /></label>
       {schema?.indicator_reference && <p className="rounded-xl bg-indigo-50 p-3 text-xs leading-5 text-indigo-900">指标中心 · 第 {schema.indicator_reference.revision} 版。连接下方所需输入即可计算，输出时间轴来自上游数据。{schema.indicator_reference.result_kind === 'scalar' ? '该单值指标按滚动窗口逐期计算。' : `提供 ${schema.outputs.length} 个输出，可分别连接下游。`}</p>}
       {hasResearchSeriesPicker(node) && <RegimeResearchSeriesPicker key={researchSeriesPickerKey(node)} node={node} schema={schema} onPatchNode={onPatchNode}>{renderParameters}</RegimeResearchSeriesPicker>}

@@ -45,7 +45,9 @@ def _request() -> app_module.SolveRequest:
     )
 
 
-def test_risk_budget_route_returns_only_audited_njit_weights(monkeypatch) -> None:
+def test_risk_budget_route_returns_only_audited_njit_weights(monkeypatch, tmp_path: Path) -> None:
+    # Exercise real PIT resolution without opening the operator's data directory.
+    monkeypatch.setattr(app_module, "DATA_DIR", tmp_path)
     monkeypatch.setattr(app_module, "_load_adj_nav", lambda *_args, **_kwargs: _market_frame())
 
     response = app_module.solve(_request())
@@ -57,7 +59,8 @@ def test_risk_budget_route_returns_only_audited_njit_weights(monkeypatch) -> Non
     assert response.execution["python_fallback"] == 0
 
 
-def test_risk_budget_route_never_falls_back_for_missing_product(monkeypatch) -> None:
+def test_risk_budget_route_never_falls_back_for_missing_product(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app_module, "DATA_DIR", tmp_path)
     monkeypatch.setattr(
         app_module,
         "_load_adj_nav",

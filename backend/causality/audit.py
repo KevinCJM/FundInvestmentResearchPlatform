@@ -188,6 +188,9 @@ def audit_operator(
     *,
     input_length: int,
 ) -> OperatorFinding:
+    if spec.operator_id == "rolling_apply":
+        from .rolling_scope import audit_scope_operator
+        return audit_scope_operator(spec, input_length)
     cases: list[OperatorCase] = []
     warmup_detail = ""
     # 搜索合法取值时会撞上 power/log 的定义域，NumPy 的 RuntimeWarning 在这里
@@ -352,9 +355,19 @@ def _probe_plan(
     panel: SyntheticPanel,
     decision_dates: Sequence[int] | None,
 ) -> ProbeOutcome:
+    if any(node.operator_id == "rolling_apply" for node in plan.nodes):
+        from .rolling_scope import probe_scoped_plan
+        return probe_scoped_plan(plan, panel, decision_dates)
     names, offsets = _time_variables(plan.context_requirements)
     if not names:
         return ProbeOutcome(Verdict.CAUSAL, "公式不引用任何时间序列变量")
+    # rolling_window is a logical typed intermediate. Production deliberately
+    # fuses it with the downstream reducer instead of materializing T×W data,
+    # so it cannot be executed as an independently published runtime root.
+    # Its operator-level tail probe is audited separately; expression audit
+    # still checks every executable upstream/downstream time node for leakage.
+    if plan.output_type.kind == "window":
+        return ProbeOutcome(Verdict.CAUSAL, "逻辑滚动窗口只包含截至当前时点的历史观察值")
     try:
         runtime = TypedIndicatorRuntime.from_plan(plan)
     except TypedDslError as exc:
@@ -399,8 +412,10 @@ def audit_expression(
     by_id = {node.node_id: node for node in plan.nodes}
     root = by_id[plan.root_id]
 
+    from cal_indicators.rolling_scope import outside_nodes
+    execution_nodes = outside_nodes(plan.nodes, (plan.root_id,))
     window_consuming: list[str] = []
-    for node in plan.nodes:
+    for node in execution_nodes:
         if node.operator_id is None:
             continue
         inputs_have_time = any("time" in by_id[i].inferred_type.axes for i in node.inputs)
@@ -413,7 +428,7 @@ def audit_expression(
     # 带时间轴的中间节点逐个体检。根是标量时，这是唯一决定性的证据来源:
     # ``mean(...)`` 本身永远「合法」，问题藏在它里面那个读了未来的子表达式。
     audited = 0
-    for node in plan.nodes:
+    for node in execution_nodes:
         if node.node_id != plan.root_id:
             if node.operator_id is None or "time" not in node.inferred_type.axes:
                 continue

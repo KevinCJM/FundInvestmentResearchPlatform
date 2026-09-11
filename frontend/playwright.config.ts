@@ -1,4 +1,12 @@
 import { defineConfig, devices } from '@playwright/test'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Fixture servers import both backend.* and backend-root packages. Resolve
+// from this config, not the shell's cwd or an unrelated developer PYTHONPATH.
+const projectRoot = fileURLToPath(new URL('../', import.meta.url))
+process.env.PYTHONPATH = [projectRoot, path.join(projectRoot, 'backend'), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+if (process.env.INDICATOR_TEST_PYTHON) process.env.PYTHON = process.env.INDICATOR_TEST_PYTHON
 
 // The desktop host may expose a SOCKS-only ALL_PROXY for other tools. Node's
 // web-server readiness probe only accepts HTTP proxies, and local E2E traffic

@@ -8,12 +8,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.services import etl_recovery as recovery, etl_routes
+from backend.data_sources import etl_partial_recovery as partial_recovery
 from backend.services.refresh_runtime import InterProcessFileLock
 from backend.data_sources import etl_service as etl, task_runtime
 from backend.data_sources.etl_store import EtlStore
-from backend.tests.test_etl_dataset_tasks import store, fake_worker, finish
+from backend.tests.test_etl_dataset_tasks import fake_worker, finish
 from backend.tests.test_etl_migration import old_run
-from backend.tests.test_etl_executor import api, eventually
+from backend.tests.test_etl_executor import eventually
+from backend.tests import test_etl_dataset_tasks as dataset_fixtures, test_etl_executor as executor_fixtures
+
+store = dataset_fixtures.store
+api = executor_fixtures.api
 
 
 @pytest.fixture
@@ -92,7 +97,7 @@ def test_recovery_failures_surface_after_click_preserve_original(store, monkeypa
     elif case == 'version_race':
         monkeypatch.setattr(etl, 'execution_fingerprint', lambda: 'third-execution')
     else:
-        monkeypatch.setattr(recovery, '_check_unhandled_partial', lambda *a: (_ for _ in ()).throw(RuntimeError('secret-token-value')))
+        monkeypatch.setattr(partial_recovery, '_check_unhandled_partial', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('secret-token-value')))
     try:
         recovery.execute(store, job)
         status = recovery.job_status(store, old['run_id'])
@@ -111,7 +116,7 @@ def test_same_version_unsupported_migration_shape_does_not_block_normal_resume(s
     old = old_run(store, monkeypatch)
     monkeypatch.setattr(etl, 'execution_fingerprint', lambda: old['frozen']['execution_fingerprint'])
     monkeypatch.setattr(recovery, '_shape_reason', lambda *a: pytest.fail('same-version needs no migration'))
-    monkeypatch.setattr(recovery, '_check_unhandled_partial', lambda *a: pytest.fail('same-version checkpoint contract unchanged'))
+    monkeypatch.setattr(partial_recovery, '_check_unhandled_partial', lambda *a, **kw: pytest.fail('same-version checkpoint contract unchanged'))
     monkeypatch.setattr(task_runtime, 'run_worker', fake_worker)
     job, _ = queued(store, monkeypatch, client, old)
     recovery.execute(store, job)
@@ -168,24 +173,32 @@ def test_jobs_global_gate_rejects_another_request(store, monkeypatch, client):
         gate.release()
 
 
-@pytest.mark.parametrize('case', ['valid', 'orphan_parquet', 'unknown_directory', 'old_protocol', 'temporary', 'symlink'])
+@pytest.mark.parametrize('case', ['valid', 'valid_import', 'valid_prior_audit', 'orphan_parquet', 'unknown_directory', 'old_protocol', 'temporary', 'symlink', 'bad_import', 'bad_audit'])
 def test_event_recovery_never_silently_discards_unknown_partial_files(tmp_path, case):
     from backend.data_sources.models import CenterError
     parts = tmp_path / 'parts'; parts.mkdir()
     events = parts / ('events_v4_' + 'a' * 20); events.mkdir()
     (events / 'contract.json').write_text('{}')
-    if case == 'valid':
+    if case in {'valid', 'valid_import', 'valid_prior_audit'}:
+        if case == 'valid_import': (parts / 'verified_day_imports.json').write_text('{"version":1,"producer":"old-code","days":{}}')
+        if case == 'valid_prior_audit':
+            audit = events / 'requery_evidence'; audit.mkdir()
+            (audit / '20260901_market.json').write_text('{"status":"SPLIT","date":"20260901","code":null}')
         (events / '20260901_market.json').write_text('{"status":"COMPLETE"}')
         (events / '20260901_market.parquet').write_bytes(b'validated by dedicated importer later')
-        recovery._check_event_layout(parts)
+        partial_recovery._check_event_layout(parts)
         return
     if case == 'orphan_parquet': (events / 'orphan.parquet').write_bytes(b'preserve')
     if case == 'unknown_directory': (events / 'pending_pages').mkdir()
     if case == 'old_protocol': (parts / 'events_v3_old').mkdir()
     if case == 'temporary': (parts / 'download.tmp').write_bytes(b'preserve')
     if case == 'symlink': (parts / '20260901.parquet').symlink_to(events / 'contract.json')
+    if case == 'bad_import': (parts / 'verified_day_imports.json').write_text('{"version":1,"producer":"old","days":{"20260901":{"sha256":"bad","rows":1}}}')
+    if case == 'bad_audit':
+        audit = events / 'requery_evidence'; audit.mkdir()
+        (audit / '20260901_market.json').write_text('{"status":"COMPLETE","date":"20260901","code":null}')
     with pytest.raises(CenterError, match='原数据保留'):
-        recovery._check_event_layout(parts)
+        partial_recovery._check_event_layout(parts)
 
 
 def test_real_detached_recovery_survives_api_exit_and_resumes_with_no_redownload(api, monkeypatch):

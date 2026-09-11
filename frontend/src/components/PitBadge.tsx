@@ -13,18 +13,17 @@ import type { RunMode } from '../services/pit'
  * header's row rather than adding a band to every page.
  */
 export default function PitBadge() {
-  const { settings, override, overrideRelease, noPit, label, asOf, runMode, loading, applyOverride } =
+  const { settings, override, temporary, overrideRelease, noPit, label, asOf, runMode, loading, applyOverride } =
     useResearchContext()
   const [open, setOpen] = useState(false)
   const [draftDay, setDraftDay] = useState(override?.asOf ?? '')
   if (loading && !settings) return null
 
-  const temporary = Boolean(override)
-  const name = temporary
-    ? override?.off
-      ? '无口径'
-      : (overrideRelease?.name ?? '最新数据')
-    : (settings?.release?.name ?? '最新数据')
+  // The badge answers one question — on or off, and if on, which口径. The day,
+  // the mode and the system default are one click away in the popover.
+  const name = override && !override.off
+    ? (overrideRelease?.name ?? asOf ?? '最新数据')
+    : (settings?.release?.name ?? asOf ?? '最新数据')
   const strict = runMode === 'STRICT_PIT'
   const tone = temporary
     ? 'border-sky-400/60 bg-sky-400/10 text-sky-200'
@@ -35,22 +34,31 @@ export default function PitBadge() {
         : 'border-emerald-400/60 bg-emerald-400/10 text-emerald-200'
 
   const releases = settings?.available_releases ?? []
-  const view = (releaseId: string, mode: RunMode) =>
-    applyOverride({ off: false, releaseId, asOf: null, runMode: mode })
+  // A version carries its own day and mode, so viewing one needs nothing else.
+  const view = (releaseId: string) =>
+    applyOverride({ off: false, releaseId, asOf: null, runMode: null })
 
   return (
     <div className="relative shrink-0">
       <button
         type="button"
         className={`flex shrink-0 items-center gap-1.5 rounded border px-2 py-1 text-xs font-medium tabular-nums ${tone}`}
-        title={`${label}；点击切换本页查看口径`}
+        title={`${label}${strict ? '（严格 PIT）' : ''}；点击切换本页查看口径`}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         data-testid="pit-badge"
       >
-        <span className="opacity-70">PIT</span>
-        {temporary && <span className="opacity-70">临时</span>}
-        {noPit ? <span>无口径</span> : <><span>{name}</span><span className="opacity-70">{asOf}</span>{strict && <span>严格</span>}</>}
+        <span>{noPit ? 'PIT 关闭' : `PIT 打开：${name}`}</span>
+        {temporary && (
+          <span className="group relative flex items-center" title="">
+            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold leading-none text-white">
+              !
+            </span>
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-1.5 hidden w-64 rounded border border-slate-200 bg-white p-2 text-left text-[11px] font-normal leading-4 text-slate-700 shadow-lg group-hover:block">
+              本页正在临时查看的口径与系统默认（{settings?.effective.label ?? '无 PIT 口径'}）不一致，只影响这个标签页；点开可跟随系统默认。
+            </span>
+          </span>
+        )}
       </button>
 
       {open && (
@@ -110,38 +118,25 @@ export default function PitBadge() {
               </div>
 
               {releases.map((release) => (
-                <div key={release.id} className="rounded border border-slate-200 px-2 py-1.5">
-                  <div className="flex items-baseline justify-between gap-2">
+                <button
+                  key={release.id}
+                  type="button"
+                  className={`w-full rounded border px-2 py-1.5 text-left ${
+                    override && !override.off && override.releaseId === release.id
+                      ? 'border-sky-300 bg-sky-50 text-sky-900'
+                      : 'border-slate-200 hover:bg-slate-50'
+                  } disabled:opacity-40`}
+                  disabled={!release.available_through}
+                  onClick={() => view(release.id)}
+                >
+                  <span className="flex items-baseline justify-between gap-2">
                     <span className="font-medium text-slate-900">{release.name}</span>
-                    <span className="tabular-nums text-slate-500">{release.available_through ?? '无可得截止日'}</span>
-                  </div>
-                  <div className="mt-1 flex gap-2">
-                    <button
-                      type="button"
-                      className={`rounded border px-2 py-0.5 ${
-                        override && !override.off && override.releaseId === release.id && override.runMode === 'RESEARCH'
-                          ? 'border-sky-300 bg-sky-50 text-sky-900'
-                          : 'border-slate-200 hover:bg-slate-50'
-                      }`}
-                      disabled={!release.available_through}
-                      onClick={() => view(release.id, 'RESEARCH')}
-                    >
-                      研究模式
-                    </button>
-                    <button
-                      type="button"
-                      className={`rounded border px-2 py-0.5 ${
-                        override && !override.off && override.releaseId === release.id && override.runMode === 'STRICT_PIT'
-                          ? 'border-sky-300 bg-sky-50 text-sky-900'
-                          : 'border-slate-200 hover:bg-slate-50'
-                      }`}
-                      disabled={!release.available_through}
-                      onClick={() => view(release.id, 'STRICT_PIT')}
-                    >
-                      严格 PIT
-                    </button>
-                  </div>
-                </div>
+                    <span className="tabular-nums text-slate-500">站在 {release.as_of ?? '—'}</span>
+                  </span>
+                  <span className="mt-0.5 block font-normal text-slate-500">
+                    {release.run_mode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'}
+                  </span>
+                </button>
               ))}
 
               <button

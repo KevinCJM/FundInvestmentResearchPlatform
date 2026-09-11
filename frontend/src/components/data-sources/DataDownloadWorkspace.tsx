@@ -43,7 +43,7 @@ export default function DataDownloadWorkspace() {
   const draft = timeline.present
   const setDraft = (definition: EtlDefinition) => dispatchDraft({ type: 'reset', definition })
   const [saved, setSaved] = useState<EtlWorkflow | null>(null)
-  const [validation, setValidation] = useState<EtlValidation | null>(null)
+  const [validationRecord, setValidationRecord] = useState<{ key: string; value: EtlValidation } | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -72,7 +72,12 @@ export default function DataDownloadWorkspace() {
       const generation = runGeneration.current
       try {
         const value = await listEtlRuns()
-        if (focusedRun && !value.some(run => run.run_id === focusedRun)) value.push(await getEtlRun(focusedRun))
+        if (focusedRun && !value.some(run => run.run_id === focusedRun || run.history?.records.some(entry => entry.run_id === focusedRun))) {
+          const detail = await getEtlRun(focusedRun)
+          const successor = detail.recovery?.successor?.run_id
+          if (successor && value.some(run => run.run_id === successor)) setFocusedRun(successor)
+          else value.push(detail)
+        }
         if (!cancelled && generation === runGeneration.current) { setRuns(value); setStatusReady(true) }
       }
       catch { if (!cancelled) setStatusReady(false) }
@@ -111,6 +116,21 @@ export default function DataDownloadWorkspace() {
   }, [catalog, selectedRecords, mode, downloadParams, history, snapshot, emptyAllowed])
   const canSnapshot = ['master.instrument', 'market.nav_daily'].every(table => selectedRecords.some(i => i.config.mappings.some(m => m.enabled && m.target_table === table)))
   const executing = runs.some(r => r.status === 'RUNNING' || ['QUEUED', 'RUNNING'].includes(r.recovery?.job?.status ?? ''))
+  const validationKey = JSON.stringify({ view, definition: view === 'quick' ? plan : draft, options: view === 'quick' ? { mode, parameters: {} } : runOptions })
+  const currentValidationKey = useRef(validationKey); currentValidationKey.current = validationKey
+  const validation = validationRecord?.key === validationKey ? validationRecord.value : null
+  const setValidation = (value: EtlValidation | null) => setValidationRecord(value ? { key: currentValidationKey.current, value } : null)
+  const inspect = async (definition: EtlDefinition, options: EtlRunOptions) => {
+    const key = currentValidationKey.current
+    setValidation(null)
+    const result = await validateEtl(definition, options)
+    if (key !== currentValidationKey.current) return null
+    setValidation(result); return result
+  }
+  const gateReason = busy ? '正在校验或提交，请稍候。' : !statusReady ? '尚未取得可靠任务状态。'
+    : executing ? '已有下载或恢复任务执行中。' : !catalog?.editing_enabled ? '当前环境只读。'
+    : validation?.valid === false ? '校验未通过：请处理下方拦截项后重新校验。'
+    : view === 'workflow' && runOptions.mode === 'auto_incremental' && !validation?.auto_plan?.ready ? '请先分析自动增量区间，校验通过后才能启动。' : ''
   const changeDraft = (value: EtlDefinition) => { dispatchDraft({ type: 'edit', definition: value }); setValidation(null); setNotice('') }
   const perform = async (operation: () => Promise<void>) => {
     if (submitting.current) return
@@ -152,8 +172,8 @@ export default function DataDownloadWorkspace() {
     if (options.mode === 'auto_incremental' && !validation?.auto_plan?.ready) {
       setError('请先点击“分析自动增量区间”，查看快照和实际下载范围。'); return
     }
-    const checked = await validateEtl(definition, options)
-    setValidation(checked)
+    const checked = await inspect(definition, options)
+    if (!checked) { setNotice('配置已修改，旧校验结果已失效，请重新校验。'); return }
     if (!checked.valid) return
     if (options.mode === 'auto_incremental' && checked.auto_plan?.plan_id !== validation?.auto_plan?.plan_id) {
       setNotice('数据快照或运行范围已变化，请查看更新后的计划再确认。'); return
@@ -161,9 +181,15 @@ export default function DataDownloadWorkspace() {
     if (!window.confirm(`运行“${definition.name}”？\n本次模式：${runModeLabels[options.mode]}。\n${definition.steps.length} 个步骤，按校验后的依赖顺序执行。\n${checked.auto_plan ? `基线：${checked.auto_plan.snapshot}；请求截止：${checked.auto_plan.cutoff_date}。\n` : ''}下载将消耗来源配额；结果为候选，不覆盖正式研究数据。`)) return
     const key = JSON.stringify({ definition, options })
     if (pending.current?.key !== key) pending.current = { key, id: crypto.randomUUID() }
-    const result = checked.auto_plan
-      ? await runEtl(definition, pending.current!.id, options, checked.auto_plan.plan_id)
-      : await runEtl(definition, pending.current!.id, options)
+    let result: EtlRun
+    try {
+      result = checked.auto_plan
+        ? await runEtl(definition, pending.current!.id, options, checked.auto_plan.plan_id)
+        : await runEtl(definition, pending.current!.id, options)
+    } catch (reason) {
+      setValidation({ valid: false, errors: [{ code: 'START_RECHECK_REQUIRED', message: '启动未确认成功，请检查错误与运行记录后重新校验，避免重复提交。' }], steps: [] })
+      throw reason
+    }
     pending.current = null
     setRuns(current => [result, ...current.filter(r => r.run_id !== result.run_id)])
     setView('runs'); setNotice('任务已提交。关闭页面不会取消下载；再次打开可查看进度。')
@@ -176,11 +202,24 @@ export default function DataDownloadWorkspace() {
     const result = await saveEtlWorkflow(identifier, stored, copy ? 0 : saved?.revision ?? 0)
     setSaved(result); setDraft(result.definition); setWorkflows(await listEtlWorkflows()); setNotice('流程已保存，可反复执行；保存不会启动下载。')
   })
-  if (!catalog) return <section className="rounded-xl border border-slate-200 bg-white p-5">{error ? <p role="alert">{error}<button className={buttonClass} onClick={() => setRetry(v => v + 1)}>重新加载</button></p> : <p role="status">正在读取数据源与 ETL 流程…</p>}</section>
+  const runHistory = <EtlRunHistory runs={runs} focusedRun={focusedRun} onShowRun={setFocusedRun} connected={statusReady} busy={busy || !catalog?.editing_enabled} onCancel={id => runAction(id, cancelEtl)} onResume={recover} onReuse={run => void perform(async () => {
+    if (dirty && !window.confirm('替换当前未保存的流程草稿？')) return
+    const detail = await getEtlRun(run.run_id)
+    if (!detail.definition) throw new Error('历史运行缺少流程定义。')
+    setDraft(detail.template_definition ?? detail.definition); setRunOptions(detail.options ?? { mode: 'incremental', parameters: {} }); setSaved(null); setView('workflow'); setValidation(null)
+  })} />
+  if (!catalog) return <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">{error ? <p role="alert">{error}<button className={buttonClass} onClick={() => setRetry(v => v + 1)}>重新加载</button></p> : <p role="status">正在读取数据源与 ETL 流程…</p>}{statusReady || runs.length ? <><p className="text-xs text-slate-500">任务进度独立读取；来源配置加载完成前仅可查看，不能操作下载。</p>{runHistory}</> : null}</section>
   return <form ref={form} noValidate onSubmit={e => e.preventDefault()} className="min-w-0 space-y-5">
     <nav className="flex flex-wrap gap-2" aria-label="下载工作方式">{(['auto', 'quick', 'workflow', 'runs'] as const).map(key => <button type="button" key={key} aria-pressed={view === key} className={view === key ? primaryClass : buttonClass} onClick={() => { setView(key); setValidation(null); setError('') }}>{({ auto: '自动增量（无需日期）', quick: '按数据源下载', workflow: 'ETL 任务编排', runs: '运行记录与恢复' })[key]}</button>)}</nav>
-    {view === 'auto' ? <AutoIncrementalWorkspace catalog={catalog} canRun={!busy && statusReady && !executing && catalog.editing_enabled} onStarted={result => { setRuns(value => [result, ...value.filter(r => r.run_id !== result.run_id)]); setView('runs'); setNotice('自动增量已提交，运行记录保留了实际区间和基线快照。') }} /> : null}
-    {validation?.auto_plan ? <AutoPlanSummary plan={validation.auto_plan} /> : null}
+    {view === 'auto' ? <AutoIncrementalWorkspace catalog={catalog} canRun={!busy && statusReady && !executing && catalog.editing_enabled} onEditPlan={(definition, options) => {
+      if (dirty && !window.confirm('用可增量步骤替换当前未保存的编排草稿？')) return
+      setDraft(definition); setRunOptions(options); setSaved(null); setView('workflow'); setValidation(null)
+      setNotice('已生成只含可增量步骤的新草稿，未修改原流程。请重新分析区间，通过后可保存。')
+    }} onStarted={result => { setRuns(value => [result, ...value.filter(r => r.run_id !== result.run_id)]); setView('runs'); setNotice('自动增量已提交，运行记录保留了实际区间和基线快照。') }} /> : null}
+    {validation?.auto_plan ? <AutoPlanSummary plan={validation.auto_plan} busy={busy} onBaseline={id => {
+      setRunOptions(value => ({ ...value, auto_baseline_run_id: id || null })); setValidation(null)
+      setNotice('补充基线已选择，请重新分析自动增量区间。不会覆盖或激活现有快照。')
+    }} onExclude={definition => { changeDraft(definition); setNotice('已更新草稿：仅保留可增量步骤。请重新分析区间，通过后可保存为独立流程。') }} /> : null}
     {error ? <p role="alert" className="rounded-xl bg-rose-50 p-4 text-sm text-rose-800">{error}</p> : null}
     {notice ? <p role="status" className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-900">{notice}</p> : null}
     {!statusReady ? <p role="status" className="text-sm text-amber-900">尚未取得可靠任务状态，暂不允许启动。<button type="button" className={buttonClass} onClick={() => setRetry(v => v + 1)}>重新检查</button></p> : null}
@@ -206,7 +245,7 @@ export default function DataDownloadWorkspace() {
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={snapshot && canSnapshot} disabled={!canSnapshot} onChange={e => setSnapshot(e.target.checked)} />最后计算指标快照</label>
       {!canSnapshot ? <p className="text-xs text-slate-500">指标快照需要产品信息和基金净值。跨来源组合或不同计算位置，请使用 ETL 编排。</p> : null}
       {plan.steps.length ? <div className="rounded-lg bg-slate-50 p-3"><p className="text-sm font-semibold">执行清单</p><ol className="mt-2 space-y-1 text-xs text-slate-600">{plan.steps.map((s, i) => <li key={s.id}>{i + 1}. {stepLabels[s.kind]}：{s.name}</li>)}</ol></div> : null}
-      <div className="flex flex-wrap gap-2"><button type="button" className={primaryClass} disabled={busy || !statusReady || executing || !catalog.editing_enabled || !source?.config.enabled || !selectedRecords.length} onClick={() => launch(plan)}>确认并开始下载</button><button type="button" className={buttonClass} disabled={!selectedRecords.length} onClick={() => { if (dirty && !window.confirm('替换当前尚未保存的流程草稿？')) return; setDraft(plan); setRunOptions({ mode, parameters: {} }); setSaved(null); setView('workflow'); setValidation(null) }}>转为 ETL 流程编辑</button></div>
+      <div className="flex flex-wrap gap-2"><button type="button" className={primaryClass} aria-describedby="download-gate" disabled={Boolean(gateReason) || !source?.config.enabled || !selectedRecords.length} onClick={() => launch(plan)}>确认并开始下载</button><button type="button" className={buttonClass} disabled={busy || !selectedRecords.length} onClick={() => void perform(async () => { await inspect(plan, { mode, parameters: {} }) })}>校验下载配置</button><button type="button" className={buttonClass} disabled={!selectedRecords.length} onClick={() => { if (dirty && !window.confirm('替换当前尚未保存的流程草稿？')) return; setDraft(plan); setRunOptions({ mode, parameters: {} }); setSaved(null); setView('workflow'); setValidation(null) }}>转为 ETL 流程编辑</button></div>
     </section> : null}
     {view === 'workflow' ? <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
       <div className="flex flex-wrap items-end gap-3"><label className="min-w-0 flex-1 text-sm font-semibold">已保存流程<select aria-label="已保存流程" className={inputClass} value={saved?.id ?? ''} onChange={e => { if (dirty && !window.confirm('放弃当前未保存修改并切换流程？')) return; const item = workflows.find(w => w.id === e.target.value); setSaved(item ?? null); setDraft(item?.definition ?? emptyDefinition()); setRunOptions({ mode: 'incremental', parameters: {} }); setValidation(null) }}><option value="">新流程草稿</option>{workflows.map(w => <option key={w.id} value={w.id}>{w.definition.name} · v{w.revision}</option>)}</select></label><button type="button" className={buttonClass} onClick={() => { if (!dirty || window.confirm('放弃当前草稿并新建流程？')) { setDraft(emptyDefinition()); setSaved(null); setValidation(null) } }}>新建流程</button></div>
@@ -216,16 +255,11 @@ export default function DataDownloadWorkspace() {
         setDraft(definition); setSaved(null); setRunOptions({ mode: 'incremental', parameters: {} }); setValidation(null)
       }} />
       <EtlWorkflowEditor key={saved?.id ?? 'draft'} definition={draft} catalog={catalog} onChange={changeDraft} readOnly={busy || !catalog.editing_enabled} canUndo={timeline.past.length > 0} canRedo={timeline.future.length > 0} onUndo={() => { dispatchDraft({ type: 'undo' }); setValidation(null) }} onRedo={() => { dispatchDraft({ type: 'redo' }); setValidation(null) }} />
-      <div className="flex flex-wrap gap-2"><button type="button" className={buttonClass} disabled={busy || !draft.steps.length} onClick={() => void perform(async () => setValidation(await validateEtl(draft, runOptions)))}>{runOptions.mode === 'auto_incremental' ? '分析自动增量区间' : '校验流程'}</button><button type="button" className={buttonClass} disabled={busy || !catalog.editing_enabled || !draft.steps.length} onClick={() => save(false)}>保存流程</button>{saved ? <><button type="button" className={buttonClass} disabled={busy || !catalog.editing_enabled} onClick={() => save(true)}>另存为新流程</button><button type="button" className={buttonClass} disabled={busy || !catalog.editing_enabled} onClick={() => { if (window.confirm('删除此流程？历史运行结果会保留。')) void perform(async () => { await deleteEtlWorkflow(saved.id, saved.revision); setWorkflows(await listEtlWorkflows()); setSaved(null); setDraft(emptyDefinition()) }) }}>删除流程</button></> : null}<button type="button" className={primaryClass} disabled={busy || !statusReady || executing || !catalog.editing_enabled || !draft.steps.length} onClick={() => launch(draft)}>确认并运行流程</button></div>
+      <div className="flex flex-wrap gap-2"><button type="button" className={buttonClass} disabled={busy || !draft.steps.length} onClick={() => void perform(async () => { await inspect(draft, runOptions) })}>{runOptions.mode === 'auto_incremental' ? '分析自动增量区间' : '校验流程'}</button><button type="button" className={buttonClass} disabled={busy || !catalog.editing_enabled || !draft.steps.length} onClick={() => save(false)}>保存流程</button>{saved ? <><button type="button" className={buttonClass} disabled={busy || !catalog.editing_enabled} onClick={() => save(true)}>另存为新流程</button><button type="button" className={buttonClass} disabled={busy || !catalog.editing_enabled} onClick={() => { if (window.confirm('删除此流程？历史运行结果会保留。')) void perform(async () => { await deleteEtlWorkflow(saved.id, saved.revision); setWorkflows(await listEtlWorkflows()); setSaved(null); setDraft(emptyDefinition()) }) }}>删除流程</button></> : null}<button type="button" className={primaryClass} aria-describedby="download-gate" disabled={Boolean(gateReason) || !draft.steps.length} onClick={() => launch(draft)}>确认并运行流程</button></div>
+      {runOptions.mode === 'auto_incremental' && runOptions.auto_baseline_run_id ? <p className="text-xs text-slate-600">已选择完成下载补足缺失基线；仅作用于本次运行。<button type="button" className={buttonClass} disabled={busy} onClick={() => { setRunOptions(value => ({ ...value, auto_baseline_run_id: null })); setValidation(null) }}>改为仅使用活跃快照</button></p> : null}
     </section> : null}
-    {validation ? <section role={validation.valid ? 'status' : 'alert'} className={`rounded-xl p-4 text-sm ${validation.valid ? 'bg-emerald-50 text-emerald-900' : 'bg-rose-50 text-rose-800'}`}><strong>{validation.valid ? '流程校验通过；不代表已下载或已发布。' : '流程需要调整'}</strong>{validation.errors.map((e, i) => <p key={i} className="mt-2">{e.message}</p>)}</section> : null}
-    {view === 'runs' ? <EtlRunHistory runs={runs} focusedRun={focusedRun} onShowRun={setFocusedRun} connected={statusReady} busy={busy || !catalog.editing_enabled} onCancel={id => runAction(id, cancelEtl)} onResume={recover} onReuse={run => void perform(async () => {
-      if (dirty && !window.confirm('替换当前未保存的流程草稿？')) return
-      const response = await fetch(`/api/data-sources/etl/runs/${run.run_id}`)
-      if (!response.ok) throw new Error('无法读取历史流程。')
-      const detail = await response.json() as EtlRun
-      if (!detail.definition) throw new Error('历史运行缺少流程定义。')
-      setDraft(detail.template_definition ?? detail.definition); setRunOptions(detail.options ?? { mode: 'incremental', parameters: {} }); setSaved(null); setView('workflow'); setValidation(null)
-    })} /> : null}
+    {view === 'quick' || view === 'workflow' ? <p id="download-gate" role="status" className="text-sm text-slate-600">{gateReason || '可以提交；启动时将再次核验配置与任务锁。'}</p> : null}
+    {validation && !validation.auto_plan ? <section role={validation.valid ? 'status' : 'alert'} className={`rounded-xl p-4 text-sm ${validation.valid ? 'bg-emerald-50 text-emerald-900' : 'bg-rose-50 text-rose-800'}`}><strong>{validation.valid ? '流程校验通过；不代表已下载或已发布。' : '未启动：流程需要调整'}</strong>{validation.errors.map((e, i) => <p key={i} className="mt-2">{e.message}</p>)}</section> : null}
+    {view === 'runs' ? runHistory : null}
   </form>
 }

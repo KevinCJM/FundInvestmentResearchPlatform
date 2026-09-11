@@ -31,7 +31,9 @@ export interface PitDatasetAudit {
   event_range: { start: string | null; end: string | null }
   availability_range: { start: string | null; end: string | null }
   lag: PitLagProfile
-  grade: PitGrade
+  /** Null while this dataset is still pending measurement. */
+  grade: PitGrade | null
+  pending?: boolean
   grade_label: string
   fingerprint: string | null
   available_through: string | null
@@ -41,6 +43,8 @@ export interface PitAuditSummary {
   declared: number
   present: number
   missing: number
+  /** Declared files not measured yet; the scan runs behind the request. */
+  pending?: number
   grade_a: number
   grade_b: number
   grade_c: number
@@ -50,10 +54,19 @@ export interface PitAuditSummary {
   available_through_basis?: string
 }
 
+export interface PitAuditScan {
+  state: 'idle' | 'running' | 'ready' | 'failed'
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+  pending: string[]
+}
+
 export interface PitAudit {
   datasets: PitDatasetAudit[]
   summary: PitAuditSummary
   latest_release: { id: string; name: string; created_at: string; release_fingerprint: string } | null
+  scan?: PitAuditScan
 }
 
 export interface DataReleaseTable {
@@ -73,6 +86,11 @@ export interface DataRelease {
   id: string
   name: string
   note: string
+  /** Stamped when the口径 was edited; null on a version never edited. */
+  updated_at?: string | null
+  /** The day this version stands on. Null on versions sealed before it moved in. */
+  as_of: string | null
+  run_mode: RunMode | null
   created_at: string
   parent_release_id: string | null
   immutable: boolean
@@ -108,11 +126,42 @@ export function fetchDataReleases(signal?: AbortSignal): Promise<{ releases: Dat
   return request<{ releases: DataRelease[] }>('/api/pit/releases', { signal }, '读取数据版本失败')
 }
 
-export function createDataRelease(name: string, note = ''): Promise<DataRelease> {
+/** Sealing a version defines a whole口径: the day, the vintage and the mode. */
+export function createDataRelease(
+  input: { name: string; note?: string; asOf: string | null; runMode: RunMode },
+): Promise<DataRelease> {
   return request<DataRelease>(
     '/api/pit/releases',
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, note }) },
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: input.name, note: input.note ?? '', asOf: input.asOf, runMode: input.runMode }),
+    },
     '封版失败',
+  )
+}
+
+/** Fix a version's口径. Its table fingerprints are not editable. */
+export function updateDataRelease(
+  id: string,
+  input: { name: string; note?: string; asOf: string | null; runMode: RunMode },
+): Promise<DataRelease> {
+  return request<DataRelease>(
+    `/api/pit/releases/${encodeURIComponent(id)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: input.name, note: input.note ?? '', asOf: input.asOf, runMode: input.runMode }),
+    },
+    '修改数据版本失败',
+  )
+}
+
+export function deleteDataRelease(id: string): Promise<{ deleted_id: string }> {
+  return request<{ deleted_id: string }>(
+    `/api/pit/releases/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+    '删除数据版本失败',
   )
 }
 
@@ -158,6 +207,9 @@ export interface PitReleaseSummary {
   note: string
   created_at: string
   sequence: number | null
+  /** The day this version stands on — its own choice, else its ceiling. */
+  as_of: string | null
+  run_mode: RunMode | null
   available_through: string | null
   grade_a: number | null
   grade_b: number | null
@@ -182,8 +234,9 @@ export interface PitEffectiveContext {
 export interface PitSettingsPayload {
   settings: {
     active_release_id: string | null
+    /** Both null once a version is applied: the version is the setting. */
     as_of: string | null
-    run_mode: RunMode
+    run_mode: RunMode | null
     updated_at: string | null
     note: string
   }
@@ -199,7 +252,7 @@ export function fetchPitSettings(signal?: AbortSignal): Promise<PitSettingsPaylo
 }
 
 export function applyPitSettings(
-  input: { activeReleaseId: string | null; asOf: string | null; runMode: RunMode; note?: string },
+  input: { activeReleaseId: string | null; asOf: string | null; runMode: RunMode | null; note?: string },
   signal?: AbortSignal,
 ): Promise<PitSettingsPayload> {
   return request<PitSettingsPayload>(
@@ -215,6 +268,23 @@ export function applyPitSettings(
 }
 
 /** Audit trail a run returns about the point-in-time cut it actually applied. */
+/**
+ * What the candidate set behind a run could prove about its own timing.
+ *
+ * A pool screened on today's numbers and replayed over 2018 is causal in every
+ * individual formula and wrong as a whole, so the finding travels with the
+ * result rather than being recomputed by whoever reads it.
+ */
+export interface PitUniverseLineage {
+  source: string | null
+  coverage?: string | null
+  replayable: boolean
+  established_at: string | null
+  history_begins_at?: string | null
+  clean: boolean
+  findings: Array<{ code: string; label: string; message: string }>
+}
+
 export interface PitRunLineage {
   as_of: string | null
   as_of_applied: boolean
@@ -226,6 +296,7 @@ export interface PitRunLineage {
   rows_without_announcement: number
   announcement_fallback: boolean
   warnings: string[]
+  universe?: PitUniverseLineage | null
 }
 
 /**
@@ -244,6 +315,20 @@ export interface PitAllocationLineage {
   rows_dropped_by_as_of: number
   availability_available: boolean
   warnings: string[]
+  universe?: PitAllocationUniverse | null
+}
+
+/**
+ * A saved allocation makes two claims about time, not one.
+ *
+ * `established_at` is the day its class NAV was *computed*;
+ * `snapshot_established_at` is the day the locked pool its products were
+ * *screened* from was cut. The second can sit years after the first without any
+ * formula noticing, so it is judged and shown separately.
+ */
+export interface PitAllocationUniverse extends PitUniverseLineage {
+  snapshot_id?: string | null
+  snapshot_established_at?: string | null
 }
 
 /** How firmly the candidate set behind a result could be established. */

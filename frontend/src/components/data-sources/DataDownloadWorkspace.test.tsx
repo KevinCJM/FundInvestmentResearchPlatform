@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import DataDownloadWorkspace from './DataDownloadWorkspace'
@@ -12,10 +12,19 @@ vi.mock('../../services/etl', async importOriginal => ({ ...await importOriginal
 const record = (source: string, api: string, name: string, table: string) => ({ revision: 1, builtin: true, updated_at:'', request_fields:[{name:'symbol',label:'产品代码（symbol）',data_type:'text'},{name:'start_date',label:'开始日期',data_type:'date'},{name:'end_date',label:'结束日期',data_type:'date'}], validation:{ready:true,valid:true}, config:{ id:`${source}.${api}`, source_id:source, name, api_name:api, enabled:true, params:{symbol:'510300'}, source_fields:[{name:'symbol',description:'代码'}], start_param:'start_date', end_param:'end_date', mappings:[{enabled:true,target_table:table}] } })
 const catalog = { graph_schemas: etlGraphSchemas, editing_enabled:true, sources:[{config:{id:'tushare',name:'Tushare',enabled:true,transport:'tushare',auth_mode:'none'},credential_configured:true,credential_required:true},{config:{id:'akshare',name:'AKShare',enabled:true,transport:'akshare',auth_mode:'none'}}], interfaces:[record('tushare','fund_daily','ETF 日行情','market.quote_daily'),record('akshare','etf_daily','AK ETF 行情','market.quote_daily'),record('akshare','fund_nav','公募基金净值','market.nav_daily')], targets:{ categories:[{category_id:'market',label:'行情与净值'}], tables:[{table_id:'market.quote_daily',label:'日行情',category_id:'market',source_mappable:true},{table_id:'market.nav_daily',label:'净值',category_id:'market',source_mappable:true}] } } as unknown as SourceCatalog
 const success = {run_id:'abc',name:'运行',status:'RUNNING',created_at:'2026-01-01',updated_at:'2026-01-01',steps:[],attempt:1,published:false} as etlApi.EtlRun
+const animationFrames = new Set<number>()
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+  // These workflow tests use an unzoomed canvas; jsdom has no DOMMatrix API.
+  vi.stubGlobal('DOMMatrixReadOnly', class { readonly m22 = 1 })
+  const schedule = window.requestAnimationFrame.bind(window)
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+    const id = schedule(time => { animationFrames.delete(id); callback(time) })
+    animationFrames.add(id)
+    return id
+  })
   vi.mocked(sourceApi.fetchSourceCatalog).mockResolvedValue(catalog)
   vi.mocked(etlApi.listEtlWorkflows).mockResolvedValue([])
   vi.mocked(etlApi.listEtlRuns).mockResolvedValue([])
@@ -23,10 +32,55 @@ beforeEach(() => {
   vi.mocked(etlApi.runEtl).mockResolvedValue(success)
   vi.spyOn(window,'confirm').mockReturnValue(true)
 })
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => {
+  cleanup()
+  animationFrames.forEach(id => window.cancelAnimationFrame(id))
+  animationFrames.clear()
+  vi.restoreAllMocks(); vi.unstubAllGlobals()
+})
 const load = async () => {render(<MemoryRouter><DataDownloadWorkspace /></MemoryRouter>); await screen.findByRole('heading',{name:'选择数据源与下载内容'}); await waitFor(() => expect(etlApi.listEtlRuns).toHaveBeenCalled())}
 
 describe('多源下载与 ETL', () => {
+  it('自动模式先置灰，校验失败仍置灰，通过后才能运行', async () => {
+    const definition = etlApi.quickPlan([catalog.interfaces[0]], 'incremental', {}, false)
+    vi.mocked(etlApi.listEtlWorkflows).mockResolvedValue([{ id: 'flow', revision: 1, definition, updated_at: '' }])
+    await load()
+    fireEvent.click(screen.getByRole('button', { name: 'ETL 任务编排' }))
+    fireEvent.change(screen.getByLabelText('已保存流程'), { target: { value: 'flow' } })
+    // Let the loaded graph complete its browser frame before checking workflow actions.
+    await act(async () => { await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve())) })
+    fireEvent.change(screen.getByLabelText('本次运行模式'), { target: { value: 'auto_incremental' } })
+    const start = screen.getByRole('button', { name: '确认并运行流程' })
+    expect(start).toBeDisabled()
+    vi.mocked(etlApi.validateEtl).mockResolvedValue({ valid: false, errors: [{ code: 'EMPTY', message: '没有基线' }], steps: [] })
+    fireEvent.click(screen.getByRole('button', { name: '分析自动增量区间' }))
+    await screen.findByText('没有基线')
+    expect(start).toBeDisabled()
+    vi.mocked(etlApi.validateEtl).mockResolvedValue({ valid: true, errors: [], steps: [], auto_plan: {
+      plan_id: 'ok', snapshot: 'active', cutoff_date: '2026-09-09', lookback_trade_days: 5, ready: true, errors: [], steps: [] } })
+    fireEvent.click(screen.getByRole('button', { name: '分析自动增量区间' }))
+    await waitFor(() => expect(start).toBeEnabled())
+    expect(etlApi.runEtl).not.toHaveBeenCalled()
+  })
+  it('校验返回期间用户修改配置，旧结果不能启用或启动新流程', async () => {
+    await load(); fireEvent.click(screen.getByLabelText('ETF 日行情'))
+    let finish!: (value: etlApi.EtlValidation) => void
+    vi.mocked(etlApi.validateEtl).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    fireEvent.click(screen.getByRole('button', { name: '确认并开始下载' }))
+    await waitFor(() => expect(etlApi.validateEtl).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('下载模式'), { target: { value: 'full' } })
+    finish({ valid: true, errors: [], steps: [] })
+    await screen.findByText('配置已修改，旧校验结果已失效，请重新校验。')
+    expect(etlApi.runEtl).not.toHaveBeenCalled()
+  })
+  it('来源目录失败不遮挡独立任务状态，未知编辑权限时不允许操作', async () => {
+    vi.mocked(sourceApi.fetchSourceCatalog).mockRejectedValue(new Error('目录暂不可用'))
+    vi.mocked(etlApi.listEtlRuns).mockResolvedValue([success])
+    render(<MemoryRouter><DataDownloadWorkspace /></MemoryRouter>)
+    expect(await screen.findByRole('heading', { name:'下载任务' })).toBeInTheDocument()
+    expect(screen.getByText(/任务进度独立读取/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name:'取消运行' })).toBeDisabled()
+  })
   it('切换来源只显示该来源数据，保留既有默认参数', async () => {
     await load()
     expect(screen.getByLabelText('ETF 日行情')).toBeInTheDocument()
@@ -47,7 +101,7 @@ describe('多源下载与 ETL', () => {
     expect(definition.steps.map(s=>s.kind)).toEqual(['download','map','resolve'])
     expect(definition.steps[0]).toMatchObject({source_id:'tushare',mode:'inherit',params:{symbol:'510300',start_date:'20240101'}})
     expect(options).toEqual({mode:'full', parameters:{}})
-    expect(screen.getByRole('heading',{name:'运行记录与恢复'})).toBeInTheDocument()
+    expect(screen.getByRole('heading',{name:'下载任务'})).toBeInTheDocument()
   })
   it('下载转为公共画布，新增节点可撤销重做并保存布局',async()=>{
     await load(); fireEvent.click(screen.getByLabelText('ETF 日行情'))
@@ -73,6 +127,10 @@ describe('多源下载与 ETL', () => {
     fireEvent.click(screen.getByRole('button',{name:'确认并开始下载'}))
     expect(await screen.findByText('接口需要更新')).toBeInTheDocument()
     expect(etlApi.runEtl).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: '确认并开始下载' })).toBeDisabled()
+    vi.mocked(etlApi.validateEtl).mockResolvedValue({ valid: true, errors: [], steps: [] })
+    fireEvent.click(screen.getByRole('button', { name: '校验下载配置' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '确认并开始下载' })).toBeEnabled())
   })
   it('只读环境禁止保存和运行但可查看',async()=>{
     vi.mocked(sourceApi.fetchSourceCatalog).mockResolvedValue({...catalog,editing_enabled:false})

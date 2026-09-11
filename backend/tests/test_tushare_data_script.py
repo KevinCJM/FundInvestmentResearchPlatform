@@ -344,6 +344,33 @@ def test_save_dataframe_is_atomic_when_parquet_write_fails(monkeypatch, tmp_path
     assert list(tmp_path.glob(".data.parquet.*.tmp")) == []
 
 
+def test_adjustment_incremental_consumes_all_pages(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import T01_get_data as script
+    from backend.data_sources.models import DownloadPolicy, Pagination
+    codes = ['510000.SH', '510001.SH', '510002.SH']
+    universe = pd.DataFrame({'ts_code': codes, 'name': codes})
+    args = script.parse_args(['--latest', '--start-date', '20260904', '--end-date', '20260904',
+                              '--max-workers', '1', '--max-retries', '1', '--output-dir', str(tmp_path)])
+    monkeypatch.setattr(script, 'load_open_trade_dates', lambda *a, **kw: ['20260904'])
+    calls = []
+
+    def fetch(**params):
+        calls.append(params)
+        rows = [{'ts_code': code, 'trade_date': '20260904', 'adj_factor': 1.5} for code in codes]
+        offset = params.get('offset', 0)
+        return pd.DataFrame(rows[offset:offset + params.get('limit', 2)])
+
+    fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=4)
+    fetch.download_policy = DownloadPolicy(max_rows_per_request=2)
+    script.save_fund_adjustment(SimpleNamespace(fund_adj=fetch), tmp_path,
+                               script.RateLimiter(100000), args, etf_info=universe)
+    result = pd.read_parquet(tmp_path / 'fund_adj_factor_df.parquet')
+    assert result.ts_code.tolist() == codes
+    assert all('offset' in p and p.get('limit') == 2 for p in calls)
+    assert len(calls) <= 4
+
+
 def test_fetch_latest_dates_uses_one_request_per_date_and_filters_universe() -> None:
     module = _load_data_script()
     calls = []
@@ -1583,6 +1610,54 @@ def test_index_capped_range_is_bisected_before_results_are_accepted() -> None:
     assert result["trade_date"].dtype.kind == "M"
 
 
+@pytest.mark.parametrize('kind', ['transport_cap', 'configured_cap', 'confirmation_cap'])
+def test_index_date_split_handles_configured_transport_limits(kind):
+    module = _load_data_script()
+    from backend.data_sources.models import CenterError, DownloadPolicy
+    calls = []
+
+    def fetch(**kwargs):
+        start, end = kwargs['start_date'], kwargs['end_date']
+        calls.append((start, end))
+        if start != end:
+            if kind == 'confirmation_cap' and len(calls) == 1:
+                return pd.DataFrame()
+            if kind != 'configured_cap':
+                raise CenterError('SOURCE_ROW_CAP', 'bounded response rejected')
+            return pd.DataFrame([{'ts_code': 'A.NH', 'trade_date': start, 'close': 1.0}] * 2)
+        return pd.DataFrame([{'ts_code': 'A.NH', 'trade_date': start, 'close': 1.0}])
+
+    fetch.download_policy = DownloadPolicy(max_rows_per_request=2)
+    args = module.parse_args(['--max-retries', '1'])
+    pro = types.SimpleNamespace(fut_index_daily=fetch)
+    result = module.fetch_index_date_window(pro=pro, api_name='fut_index_daily',
+        limiter=module.RateLimiter(100000), args=args, code='A.NH',
+        start_date='20260901', end_date='20260902')
+    assert calls == [('20260901', '20260902')] * (2 if kind == 'confirmation_cap' else 1) + [
+        ('20260901', '20260901'), ('20260902', '20260902')]
+    assert result.trade_date.dt.strftime('%Y%m%d').tolist() == ['20260901', '20260902']
+
+
+@pytest.mark.parametrize('kind', ['single_day', 'children_empty', 'permission'])
+def test_index_split_fails_closed_without_retry_or_empty_success(kind):
+    module = _load_data_script()
+    from backend.data_sources.models import CenterError
+    calls = []
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        if kind == 'permission':
+            raise CenterError('SOURCE_PERMISSION_OR_PARAMS', 'no permission')
+        if kind == 'single_day' or kwargs['start_date'] != kwargs['end_date']:
+            raise CenterError('SOURCE_ROW_CAP', 'bounded response rejected')
+        return pd.DataFrame()
+    args = module.parse_args(['--max-retries', '3'])
+    with pytest.raises((module.ResponseTruncatedError, CenterError)):
+        module.fetch_index_date_window(pro=types.SimpleNamespace(fut_index_daily=fetch),
+            api_name='fut_index_daily', limiter=module.RateLimiter(100000), args=args,
+            code='A.NH', start_date='20260901', end_date='20260901' if kind == 'single_day' else '20260902')
+    assert len(calls) == (5 if kind == 'children_empty' else 1)
+
+
 def test_etf_share_size_capped_range_is_bisected_and_keeps_formula_inputs() -> None:
     module = _load_data_script()
     calls: list[tuple[str, str]] = []
@@ -1723,7 +1798,7 @@ def test_latest_index_weight_reads_only_recent_monthly_window(tmp_path: Path) ->
     weights = pd.read_parquet(tmp_path / "index_weights_df.parquet")
     assert len(weight_calls) == 1
     assert weight_calls[0][0] == "000300.SH"
-    assert weight_calls[0][1] == "20260504"
+    assert weight_calls[0][1] == "20260801"  # Latest month suffices; older data cannot change the latest day.
     assert weight_calls[0][2] == "20260831"
     assert weights.iloc[0]["trade_date"] == pd.Timestamp("2026-08-01")
 
@@ -1771,8 +1846,10 @@ def test_index_weight_resume_reuses_member_and_per_code_checkpoints(
         max_workers=2, resume=True,
     )
 
-    with pytest.raises(RuntimeError, match="成功检查点"):
+    from backend.data_sources.models import CenterError
+    with pytest.raises(CenterError, match="成功检查点") as failed:
         module.save_index_constituents(object(), tmp_path, module.RateLimiter(10_000), args)
+    assert failed.value.code == 'INDEX_WEIGHT_INCOMPLETE'
 
     checkpoint_dir = module.history_checkpoint_dir(tmp_path / "index_weights_df.parquet", args)
     assert (checkpoint_dir / "000300.SH.parquet").exists()
@@ -1852,7 +1929,7 @@ def test_index_constituents_and_weights_fetch_code_tasks_concurrently(
                     }]
                 )
             code = kwargs["ts_code"]
-            return pd.DataFrame([{"con_code": "600000.SH", "con_name": code}])
+            return pd.DataFrame([{"ts_code": code, "con_code": "600000.SH", "con_name": code}])
         finally:
             with concurrency_lock:
                 active_calls -= 1
@@ -2021,6 +2098,66 @@ def test_index_history_writes_typed_empty_file_when_catalog_has_no_source(
     result = pd.read_parquet(tmp_path / "index_ci_daily_df.parquet")
     assert result.empty
     assert result.columns.tolist() == ["source_api", "ts_code", "trade_date"]
+
+
+def test_macro_cycle_downloads_merrill_inputs_and_preserves_unknown_release_dates(tmp_path):
+    from backend.data_sources.task_catalog import get_task
+    module = _load_data_script()
+    samples = {
+        'cn_gdp': {'quarter': '2025Q1', 'gdp': 300000.0, 'gdp_yoy': 5.1},
+        'cn_cpi': {'month': '202503', 'nt_val': 99.9, 'nt_yoy': -0.1, 'nt_mom': -0.4},
+        'cn_ppi': {'month': '202503', 'ppi_yoy': -2.5, 'ppi_mom': -0.4},
+        'cn_pmi': {'MONTH': '202503', 'PMI010000': 50.5, 'PMI010400': 52.6},
+    }
+    calls = []
+
+    class Provider:
+        def __getattr__(self, api):
+            def fetch(**params):
+                calls.append((api, params))
+                return pd.DataFrame([samples[api]])
+            return fetch
+
+    args = types.SimpleNamespace(max_retries=1, backoff_sec=0, wait_on_rate_limit_sec=0, retry_jitter_sec=0)
+    module.save_macro_cycle(Provider(), tmp_path, module.RateLimiter(10000), args)
+    assert [api for api, _ in calls] == get_task('tushare.macro_cycle')['api_slots']
+    for api, field in [('cn_gdp', 'gdp_yoy'), ('cn_cpi', 'nt_yoy'), ('cn_ppi', 'ppi_yoy'), ('cn_pmi', 'pmi010000')]:
+        result = pd.read_parquet(tmp_path / module.MACRO_TABLE_SPECS[api][0])
+        assert len(result) == 1
+        assert result[field].iloc[0] == samples[api].get(field, samples[api].get(field.upper()))
+        assert result['observation_date'].iloc[0] == pd.Timestamp('2025-03-31')
+        assert result['available_at'].isna().all()
+        assert result['availability_status'].tolist() == ['release_date_unknown']
+        assert result['source_api'].tolist() == [api]
+        assert result['vintage'].notna().all()
+
+
+def test_pmi_uppercase_wire_fields_preserve_values_and_unknown_availability(tmp_path):
+    module = _load_data_script()
+    raw = pd.DataFrame([{'MONTH': '202608', 'PMI010000': 49.5, 'CREATE_BY': 'vendor'}])
+    original = raw.copy(deep=True)
+    prepared = module._prepare_macro_rows(raw, api_name='cn_pmi', observation_column='month')
+    pd.testing.assert_frame_equal(raw, original)
+    assert prepared['month'].tolist() == ['202608']
+    assert prepared['pmi010000'].tolist() == [49.5]
+    assert prepared['CREATE_BY'].tolist() == ['vendor']
+    assert prepared['available_at'].isna().all()
+    assert prepared['availability_status'].tolist() == ['release_date_unknown']
+    path = tmp_path / 'macro_cn_pmi_df.parquet'
+    module.merge_vintage_rows(prepared, path, natural_key=['observation_date'])
+    assert pd.read_parquet(path)['pmi010000'].tolist() == [49.5]
+
+
+@pytest.mark.parametrize('columns,api,code', [
+    ({'MONTH': '202608', 'month': '202607'}, 'cn_pmi', 'SOURCE_FIELD_COLLISION'),
+    ({'MONTH': '202608'}, 'cn_cpi', 'MACRO_OBSERVATION_MISSING'),
+    ({'Month': '202608'}, 'cn_pmi', 'MACRO_OBSERVATION_MISSING'),
+])
+def test_macro_aliases_fail_closed_for_ambiguous_or_unknown_fields(columns, api, code):
+    module = _load_data_script()
+    with pytest.raises(module.CenterError) as error:
+        module._prepare_macro_rows(pd.DataFrame([columns]), api_name=api, observation_column='month')
+    assert error.value.code == code
 
 
 def test_macro_vintage_history_only_appends_real_revisions(tmp_path: Path) -> None:

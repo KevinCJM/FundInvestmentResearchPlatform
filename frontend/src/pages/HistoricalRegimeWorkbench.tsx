@@ -1,4 +1,6 @@
+import RegimeTemporalPanel from './regime-workbench/RegimeTemporalPanel'
 import ResourceLibrary from './regime-workbench/RegimeResourceLibrary'
+import useRegimeCompositeExpansion from './regime-workbench/useRegimeCompositeExpansion'
 import RegimeDefinitionLibrary from './regime-workbench/RegimeDefinitionLibrary'
 import RegimeGuidedFormulaPanel from './regime-workbench/RegimeGuidedFormulaPanel'
 import RegimeMathPreview from './regime-workbench/RegimeMathPreview'
@@ -20,6 +22,7 @@ import RegimeNodeInspector from './regime-workbench/RegimeNodeInspector'
 import RegimeResultDock from './regime-workbench/RegimeResultDock'
 import RegimeNodePreviewPanel from './regime-workbench/RegimeNodePreviewPanel'
 import RegimeLifecyclePanel from './regime-workbench/RegimeLifecyclePanel'
+import RegimeSavePanel from './regime-workbench/RegimeSavePanel'
 import RegimeValidationPanel from './regime-workbench/RegimeValidationPanel'
 import RegimeGraphAssetsPanel from './regime-workbench/RegimeGraphAssetsPanel'
 import RegimeExperimentPanel from './regime-workbench/RegimeExperimentPanel'
@@ -38,6 +41,7 @@ import {
   instantiateRegimeTemplate,
   listRegimeGraphDefinitions,
   prepareRegimeGraph,
+  RegimeGraphApiError,
   startRegimePreviewRun,
   updateRegimeGraphDefinition,
   type RegimeGraphConnection,
@@ -134,6 +138,8 @@ function VersionBar({
 }
 
 function realtimeNodeBlocked(schema: RegimeNodeSchema | undefined) {
+  if (schema?.temporal_contract) return ['manual_hindsight', 'full_input', 'future_confirmation', 'unknown'].includes(schema.temporal_contract.rule)
+  // Compatibility for older catalogs; actual graph decisions come from infer.
   return schema?.supports_realtime !== true || schema.causal !== true || schema.repaints !== false
 }
 
@@ -176,14 +182,13 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
   const [seriesPage, setSeriesPage] = useState<RegimeSeriesPage | null>(null)
   const [previewNodeId, setPreviewNodeId] = useState('')
   const [loadingSeries, setLoadingSeries] = useState(false)
-  const [resultHeight, setResultHeight] = useState(360)
-  const [resultCollapsed, setResultCollapsed] = useState(false)
   const [view, setView] = useState<'build' | 'result' | 'experiments'>('build')
   const [viewedRunId, setViewedRunId] = useState('')
   const [displayedResult, setDisplayedResult] = useState<{ id: string; kind: 'preview' | 'formal' } | null>(null)
   const [editorMode, setEditorMode] = useState<'guided' | 'canvas' | 'formula'>('canvas')
   const [formulaPending, setFormulaPending] = useState(false)
   const [formulaBusy, setFormulaBusy] = useState(false)
+  const [savingResearch, setSavingResearch] = useState(false)
   const [drawer, setDrawer] = useState<'library' | 'inspector' | 'states' | 'versions' | 'issues' | 'assets' | 'builder' | 'legacy' | 'node-preview' | null>(null)
   const [focused, setFocused] = useState(false)
   const [libraryCollapsed, setLibraryCollapsed] = useState(false)
@@ -226,8 +231,12 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
   const viewingFormal = view === 'result' && displayedResult?.kind === 'formal'
   const running = Boolean(run && ['queued', 'preparing', 'running'].includes(run.status))
   const valid = Boolean(inference?.valid && inferenceStatus === 'ready' && !formulaPending && !formulaBusy)
-  const realtimeBlockedNodes = mode === 'realtime' ? definition.graph.nodes.filter((node) => realtimeNodeBlocked(schemas.find((schema) => schemaId(schema) === node.type || schema.type === node.type))) : []
-  const canRun = valid && !loadingCatalog && !realtimeBlockedNodes.length
+  const temporal = inference?.temporal_capability
+  const realtimeBlockedNodes = mode === 'realtime' && temporal && !temporal.realtime_supported ? definition.graph.nodes.filter(node => temporal.reasons.some(r => r.node_id === node.id)) : []
+  const canRun = valid && !loadingCatalog && (mode !== 'realtime' || !temporal || temporal.realtime_supported)
+  const manualEventNode = definition.graph.nodes.find(node => node.type === 'annotation.manual_events')
+  const manualEventMode = Boolean(manualEventNode)
+  const manualEventCount = Array.isArray(manualEventNode?.parameters.events) ? manualEventNode.parameters.events.length : 0
   const selectableSchemas = mode === 'realtime' ? schemas.map((schema) => realtimeNodeBlocked(schema) ? { ...schema, available: false, unavailable_reason: REALTIME_RESTRICTION } : schema) : schemas
 
   const edges = useMemo(() => edgesFrom(definition.graph.nodes), [definition.graph.nodes])
@@ -274,7 +283,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
         .then((next) => {
           if (controller.signal.aborted) return
           dispatch({ type: 'reset', definition: next })
-          setMode(next.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
+          setMode((next.default_mode || templates.find(item => item.id === next.template_id)?.default_mode) === 'retrospective' || next.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
           setSelectedDefinitionId(next.id || routeDefinitionId)
           setSelectedDefinitionRevision(next.revision || revision)
           setSelectedTemplate('')
@@ -295,7 +304,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
         if (controller.signal.aborted) return
         const draft = { ...next, id: undefined, revision: undefined, template_id: next.template_id || routeTemplateId }
         dispatch({ type: 'reset', definition: draft })
-        setMode(routeQuery.get('mode') === 'retrospective' || draft.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
+        setMode(routeQuery.get('mode') === 'retrospective' || (routeQuery.get('mode') !== 'realtime' && templates.find(item => item.id === routeTemplateId)?.default_mode === 'retrospective') || draft.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
         setSelectedDefinitionId(''); setSelectedDefinitionRevision(1)
         setSelectedTemplate(routeTemplateId)
         setSelectedNodeId(draft.graph.nodes[0]?.id ?? null)
@@ -315,7 +324,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
     const controller = new AbortController()
     setInferenceStatus('checking')
     const timer = window.setTimeout(() => {
-      void inferRegimeGraph(definition, controller.signal)
+      void inferRegimeGraph(definition, controller.signal, mode)
         .then((response) => {
           if (requestId !== inferenceRequest.current) return
           setInference(response)
@@ -327,7 +336,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
         })
     }, 300)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [apiSignature])
+  }, [apiSignature, mode])
 
   useEffect(() => () => {
     runAbort.current?.abort(); runRequest.current += 1
@@ -383,7 +392,14 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
     if (JSON.stringify(definitionForRequest(next)) !== apiSignature) setPreparedPlan(null)
   }
 
+  const { expand, expanding } = useRegimeCompositeExpansion({
+    definition, mode, blocked: formulaPending || formulaBusy, onChange: editDefinition,
+    onError: setError, onNotice: setNotice,
+    onSelected: id => { setSelectedNodeId(id); setSelectedGraphNodeIds([id]); setDrawer(editorMode === 'guided' ? 'builder' : 'inspector') },
+  })
+
   const addNode = (schema: RegimeNodeSchema, parameterOverrides: Record<string, unknown> = {}, label?: string) => {
+    if (expanding || formulaPending || formulaBusy) return
     if (mode === 'realtime' && realtimeNodeBlocked(schema)) { setError(REALTIME_RESTRICTION); return }
     if (schema.available === false || (schema.status && schema.status !== 'available')) { setError(schema.unavailable_reason || `节点 ${schema.label} 当前不可用。`); return }
     const type = schemaId(schema)
@@ -396,7 +412,9 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
     const inputs = firstInput && previous && firstOutput && !regimeConnectionIssue([...definition.graph.nodes, { id, type, parameters: {}, inputs: {} }], schemas, { source: previous.id, sourcePort: firstOutput.id, target: id, targetPort: firstInput.id }) ? { [firstInput.id]: { node_id: previous.id, port: firstOutput.id } } : {}
     const typeVersion = schema.type_version ?? schema.version
     const node: RegimeGraphNode = { id, type, ...(typeVersion != null ? { type_version: typeVersion } : {}), label, parameters: { ...defaultParameters(schema), ...parameterOverrides }, inputs, position: { x: definition.graph.nodes.length * 240, y: 0 } }
-    editDefinition({ ...definition, graph: { ...definition.graph, nodes: [...definition.graph.nodes, node], exposed_node_ids: [...(definition.graph.exposed_node_ids || []), node.id] } })
+    const next = { ...definition, graph: { ...definition.graph, nodes: [...definition.graph.nodes, node], exposed_node_ids: [...(definition.graph.exposed_node_ids || []), node.id] } }
+    if (schema.granularity?.expandable) { void expand(next, id); return }
+    editDefinition(next)
     if (editorMode === 'guided') { setSelectedNodeId(id); setDrawer('builder') } else selectNode(id)
   }
 
@@ -486,7 +504,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
       if (request !== definitionLoadRequest.current) return
       if (startingSignature !== latestApiSignature.current) { setNotice('当前草稿已修改，未覆盖你的编辑。'); return }
       setSelectedTemplate(templateId); setSelectedDefinitionId(''); setSelectedDefinitionRevision(1); setMobileLibrary(false)
-      setMode(next.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
+      setMode(templates.find(item => item.id === templateId)?.default_mode === 'retrospective' || next.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
       dispatch({ type: 'reset', definition: next }); setSelectedNodeId(next.graph.nodes[0]?.id ?? null); clearRunDisplay(); setSavedDefinitionSignature('')
       setSelectedGraphNodeIds(next.graph.nodes[0]?.id ? [next.graph.nodes[0].id] : [])
       setDrawer(null)
@@ -518,7 +536,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
       if (request !== definitionLoadRequest.current) return
       if (startingSignature !== latestApiSignature.current) { setNotice('当前草稿已修改，未覆盖你的编辑。'); return }
       setSelectedDefinitionId(id); setSelectedDefinitionRevision(next.revision || revision); setSelectedTemplate(''); setMobileLibrary(false)
-      setMode(next.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
+      setMode((next.default_mode || templates.find(item => item.id === next.template_id)?.default_mode) === 'retrospective' || next.graph.nodes.some(node => realtimeNodeBlocked(schemas.find(schema => schemaId(schema) === node.type))) ? 'retrospective' : 'realtime')
       dispatch({ type: 'reset', definition: next })
       setSelectedNodeId(next.graph.nodes[0]?.id ?? null)
       setSelectedGraphNodeIds(next.graph.nodes[0]?.id ? [next.graph.nodes[0].id] : [])
@@ -559,6 +577,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
       if (controller.signal.aborted || requestId !== runRequest.current) return
       setRun(next)
       if (['completed', 'failed', 'cancelled'].includes(next.status)) {
+        if (next.status === 'failed') setError(typeof next.error === 'string' ? next.error : next.error?.message || next.message || '识别失败，请检查数据和规则。')
         if (next.status === 'completed') {
           setNotice('识别完成。可查看情景走势、完整区间及判断依据。')
           if (!keepEditing.current) { setDisplayedResult({ id: next.id, kind: 'preview' }); setView('result'); setDrawer(null) }
@@ -569,7 +588,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
     }
   }
 
-  const runPreview = async () => {
+  const runPreview = async (auditTemporal = false) => {
     if (!canRun) return
     const snapshot = cloneRegimeGraphDefinition(definition)
     const snapshotApiSignature = apiSignature
@@ -589,13 +608,13 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
       if (controller.signal.aborted || requestId !== runRequest.current) return
       if (latestApiSignature.current === snapshotApiSignature && latestRunContext.current === `${snapshotApiSignature}:${snapshotMode}:${snapshotAsOf}`) setPreparedPlan(prepared)
       setRun({ id: '', status: 'preparing', stage: '提交试算任务', progress: 0.05, message: '固定签名计划已验证。' })
-      const started = await startRegimePreviewRun(snapshot, { compileToken: prepared.compile_token, mode: snapshotMode, asOf: snapshotAsOf || undefined, ttlSeconds: 1800 }, controller.signal)
+      const started = await startRegimePreviewRun(snapshot, { compileToken: prepared.compile_token, mode: snapshotMode, asOf: snapshotAsOf || undefined, ttlSeconds: 1800, auditTemporal }, controller.signal)
       if (controller.signal.aborted || requestId !== runRequest.current) return
       setRun(started)
       await pollRun(started.id, requestId, controller)
     } catch (reason) {
       if (controller.signal.aborted || requestId !== runRequest.current) return
-      setRun((current) => ({ id: current?.id || '', status: 'failed', stage: 'failed', progress: current?.progress ?? 0, error: { message: errorText(reason, '历史情景试算失败。') } }))
+      setRun((current) => ({ id: current?.id || '', status: 'failed', stage: 'failed', progress: current?.progress ?? 0, error: { message: errorText(reason, '历史情景试算失败。'), field: reason instanceof RegimeGraphApiError ? reason.diagnostics.find(item => item.path?.startsWith('graph.nodes.'))?.path : undefined } }))
       setError(errorText(reason, '历史情景试算失败。'))
     }
   }
@@ -675,7 +694,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
           {onExit && <button type="button" onClick={onExit} className="min-h-10 rounded-lg border border-white/25 px-4 text-sm font-semibold">返回</button>}
           <button type="button" disabled={formulaPending || formulaBusy || loadingDefinition || loadingTemplate} onClick={createBlank} className="min-h-10 rounded-lg border border-white/25 px-4 text-sm font-semibold hover:bg-white/10 disabled:opacity-40">新建情景算法</button>
           {definition.id && <button type="button" disabled={!valid || savingDefinition} onClick={() => void saveDefinition(true)} className="min-h-10 rounded-lg border border-violet-300/70 px-4 text-sm font-semibold text-violet-100 disabled:opacity-40">另存为新算法</button>}
-          <button type="button" aria-label="保存" disabled={!valid || savingDefinition || loadingDefinition || loadingTemplate} onClick={() => void saveDefinition(false)} className="min-h-10 rounded-lg bg-violet-400 px-4 text-sm font-semibold text-slate-950 hover:bg-violet-300 disabled:opacity-40">{savingDefinition ? '保存中…' : definition.id ? '保存修改' : selectedTemplate ? '复制为新算法' : '保存新算法'}</button>
+          <button type="button" aria-label="保存" disabled={!valid || savingDefinition || loadingDefinition || loadingTemplate} onClick={() => setDrawer('versions')} className="min-h-10 rounded-lg bg-violet-400 px-4 text-sm font-semibold text-slate-950 hover:bg-violet-300 disabled:opacity-40">保存情景</button>
         </div>
       </header>}
       <div className="mb-4 grid grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-white p-1 md:hidden" role="tablist" aria-label="情景中心区域">
@@ -683,7 +702,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
         <button type="button" role="tab" aria-selected={!mobileLibrary && view === 'build'} onClick={() => changeView('build')} className={`min-h-11 rounded-lg text-sm font-semibold ${!mobileLibrary && view === 'build' ? 'bg-violet-600 text-white' : 'text-slate-600'}`}>算法定义</button>
         <button type="button" role="tab" aria-selected={!mobileLibrary && view !== 'build'} onClick={() => changeView('result')} className={`min-h-11 rounded-lg text-sm font-semibold ${!mobileLibrary && view !== 'build' ? 'bg-violet-600 text-white' : 'text-slate-600'}`}>校验与预览</button>
       </div>
-      {error && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</p>}
+      {error && view === 'build' && <p role="alert" className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</p>}
       {!focused && <div className="mb-3 hidden md:block"><button type="button" onClick={() => setLibraryCollapsed(value => !value)} aria-expanded={!libraryCollapsed} className="min-h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600">{libraryCollapsed ? '展开算法库' : '收起算法库'}</button></div>}
       <div className={`grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 md:items-start ${focused || libraryCollapsed ? 'md:grid-cols-1' : 'md:grid-cols-[minmax(240px,300px)_minmax(0,1fr)]'}`}>
         <aside className={`${mobileLibrary ? 'block' : 'hidden'} min-w-0 md:sticky md:top-5 md:self-start ${focused || libraryCollapsed ? 'md:hidden' : 'md:block'}`}>
@@ -700,26 +719,30 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
                 <h2 className="font-semibold text-slate-900">算法定义</h2><p className="mt-1 text-xs text-slate-500">{definition.id ? `工作区算法 · 当前版本 ${definition.revision}` : selectedTemplate ? '内置算法：保存时将创建工作区副本。' : '未保存草稿'}</p>
                 <div className="mt-5 grid gap-4 sm:grid-cols-3">
                   <label className="text-sm font-medium text-slate-700">名称<input aria-label="研究名称" value={definition.name} maxLength={80} onChange={event => editDefinition({ ...definition, name: event.target.value })} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
-                  <label className="text-sm font-medium text-slate-700">结果类型<input aria-label="结果类型" readOnly value="时序" className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" /></label>
-                  <label className="text-sm font-medium text-slate-700">主输出值类型<input aria-label="主输出值类型" readOnly value="有限枚举值" className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" /></label>
+                  <label className="text-sm font-medium text-slate-700">结果类型<input aria-label="结果类型" readOnly value={manualEventMode ? '历史事件区间' : '时序'} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" /></label>
+                  <label className="text-sm font-medium text-slate-700">主输出值类型<input aria-label="主输出值类型" readOnly value={manualEventMode ? '多标签区间（允许重叠）' : '有限枚举值'} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" /></label>
                   <label className="text-sm font-medium text-slate-700 sm:col-span-3">说明<textarea aria-label="算法说明" value={definition.description || ''} maxLength={500} rows={2} onChange={event => editDefinition({ ...definition, description: event.target.value })} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-100" /></label>
                 </div>
-                <p className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">每个时点输出一个市场状态，也可附加数值通道。这里定义计算逻辑；市场色带、区间和图表在预览中展示。</p>
-                <div className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs sm:grid-cols-3" aria-label="情景时序输出契约"><div><span className="text-slate-500">日期轴</span><p className="mt-1 font-semibold text-slate-800">随主输出的观测日期对齐</p></div><div><span className="text-slate-500">枚举值域</span><p className="mt-1 font-semibold text-slate-800">{definition.states.length} 个状态</p></div><div><span className="text-slate-500">缺失值</span><p className="mt-1 font-semibold text-slate-800">未识别，保留为空</p></div></div>
+                <p className="mt-4 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">{manualEventMode ? '由人类定义历史事件的日历区间；同一日期可以同时属于多个事件。事件只用于事后研究，不按优先级互相覆盖。' : '每个时点输出一个市场状态，也可附加数值通道。这里定义计算逻辑；市场色带、区间和图表在预览中展示。'}</p>
+                <div className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs sm:grid-cols-3" aria-label="情景时序输出契约"><div><span className="text-slate-500">日期轴</span><p className="mt-1 font-semibold text-slate-800">随观察序列的观测日期对齐</p></div><div><span className="text-slate-500">{manualEventMode ? '事件定义' : '枚举值域'}</span><p className="mt-1 font-semibold text-slate-800">{manualEventMode ? `${manualEventCount} 个事件 · 允许重叠` : `${definition.states.length} 个状态`}</p></div><div><span className="text-slate-500">{manualEventMode ? '边界口径' : '缺失值'}</span><p className="mt-1 font-semibold text-slate-800">{manualEventMode ? '日历日期闭区间' : '未识别，保留为空'}</p></div></div>
               </div>
             </details>}
             <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold text-slate-900">算法公式</h2><p className="mt-1 text-xs leading-5 text-slate-500">画布、构建向导和高级公式共用同一份定义。选择适合你的方式编辑。</p></div><button type="button" onClick={() => setDrawer('issues')} className={`min-h-10 rounded-lg px-3 text-xs font-semibold ${valid ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}>{inferenceStatus === 'checking' ? '检查中…' : valid ? `检查通过${issueCount(inference) ? ` · ${issueCount(inference)} 条提示` : ''}` : '查看待修复问题'}</button></div>
-              {editorMode !== 'canvas' && drawer !== 'states' && <div className="mt-4"><RegimeSeriesOutputs definition={definition} schemas={schemas} onChange={editDefinition} activeId={activeOutputId} onSelectOutput={setActiveOutputId} /></div>}
+              {editorMode !== 'canvas' && drawer !== 'states' && (manualEventMode
+                ? <p className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs leading-5 text-violet-900">人工事件结果由“人工历史事件区间”节点统一输出；事件名称、日期和重叠关系在该节点中编辑，无需配置互斥状态输出。</p>
+                : <div className="mt-4"><RegimeSeriesOutputs definition={definition} schemas={schemas} onChange={editDefinition} activeId={activeOutputId} onSelectOutput={setActiveOutputId} /></div>)}
               <div className="mt-4 inline-flex flex-wrap rounded-lg border border-slate-200 bg-slate-50 p-1" role="tablist" aria-label="公式编辑方式">
                 {([['canvas', '画布构建'], ['guided', '构建向导'], ['formula', '高级公式']] as const).map(([id, label]) => <button type="button" key={id} role="tab" aria-selected={editorMode === id} onClick={() => changeEditorMode(id)} className={`min-h-10 rounded-md px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-violet-300 ${editorMode === id ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-600'}`}>{label}</button>)}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="计算定义编辑历史">
+                <button type="button" disabled={!timeline.past.length || formulaPending || formulaBusy} onClick={() => { if (running) keepEditing.current = true; dispatch({ type: 'undo' }) }} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm disabled:opacity-30">撤销</button>
+                <button type="button" disabled={!timeline.future.length || formulaPending || formulaBusy} onClick={() => { if (running) keepEditing.current = true; dispatch({ type: 'redo' }) }} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm disabled:opacity-30">重做</button>
               </div>
               <div style={{ display: editorMode === 'canvas' ? 'block' : 'none' }} className="mt-4 min-w-0">
                 <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3">
                   <button type="button" disabled={formulaPending || formulaBusy} onClick={() => setDrawer('library')} className="min-h-10 rounded-lg bg-violet-600 px-3 text-sm font-semibold text-white">添加节点</button>
-                  <button type="button" disabled={formulaPending || formulaBusy} onClick={() => setDrawer('states')} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700">输出通道</button>
-                  <button type="button" disabled={!timeline.past.length || formulaPending || formulaBusy} onClick={() => { if (running) keepEditing.current = true; dispatch({ type: 'undo' }) }} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm disabled:opacity-30">撤销</button>
-                  <button type="button" disabled={!timeline.future.length || formulaPending || formulaBusy} onClick={() => { if (running) keepEditing.current = true; dispatch({ type: 'redo' }) }} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm disabled:opacity-30">重做</button>
+                  {!manualEventMode ? <button type="button" disabled={formulaPending || formulaBusy} onClick={() => setDrawer('states')} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700">输出通道</button> : null}
                   <button type="button" disabled={formulaPending || formulaBusy} onClick={() => setDrawer('assets')} className="min-h-10 px-2 text-xs font-semibold text-slate-600">复用资源</button>
                   <button type="button" disabled={!selectedNode || formulaPending || formulaBusy} onClick={() => setDrawer('node-preview')} className="min-h-10 rounded-lg border border-violet-200 px-3 text-xs font-semibold text-violet-700 disabled:opacity-40">预览所选节点</button>
                   <button type="button" disabled={!run?.id || run.status !== 'completed'} onClick={() => setNodePreviewOpen(value => !value)} className="min-h-10 px-2 text-xs font-semibold text-slate-600 disabled:opacity-40">节点调试</button>
@@ -730,37 +753,45 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition }:
               {editorMode !== 'formula' && <RegimeMathPreview definition={definition} mode={mode} outputId={activeOutputId} />}
               {editorMode === 'guided' && <RegimeGuidedFormulaPanel definition={definition} schemas={schemas} outputId={activeOutputId} onBuild={openBuilder} onResources={() => setDrawer('library')} />}
           {editorMode === 'formula' ? <div className="min-h-0 min-w-0 flex-1 overflow-auto"><RegimeFormulaEditor definition={definition} mode={mode} schemas={schemas} outputId={activeOutputId} onPending={setFormulaPending} onBusy={setFormulaBusy} onApply={(next) => { if (running) keepEditing.current = true; dispatch({ type: 'edit', definition: cloneRegimeGraphDefinition(next) }); setPreparedPlan(null); setNotice('公式已应用，画布和构建向导已同步。') }} /></div> : null}
-              {nodePreviewOpen ? <div className="max-h-[45%] shrink-0 overflow-auto border-t border-slate-200 bg-white"><div className="flex items-center justify-between px-3 py-2"><p className="text-xs text-slate-500">中间节点调试 · 仅展示所选运行快照的局部数据</p><button type="button" onClick={() => setNodePreviewOpen(false)} className="text-xs font-bold text-slate-600">关闭节点调试</button></div><RegimeResultDock run={run} page={seriesPage} nodes={runDefinition?.graph.nodes || []} schemas={schemas} previewNodeId={previewNodeId} loadingSeries={loadingSeries} height={resultHeight} collapsed={resultCollapsed} onPreviewNode={setPreviewNodeId} onLoadSeries={() => void loadSeries()} onHeight={setResultHeight} onCollapsed={setResultCollapsed} /></div> : null}
+              {nodePreviewOpen ? <div className="max-h-[45%] shrink-0 overflow-auto border-t border-slate-200 bg-white"><div className="flex items-center justify-between px-3 py-2"><p className="text-xs text-slate-500">中间节点调试 · 仅展示所选运行快照的局部数据</p><button type="button" onClick={() => setNodePreviewOpen(false)} className="text-xs font-bold text-slate-600">关闭节点调试</button></div><RegimeResultDock run={run} page={seriesPage} nodes={runDefinition?.graph.nodes || []} schemas={schemas} previewNodeId={previewNodeId} loadingSeries={loadingSeries} onPreviewNode={setPreviewNodeId} onLoadSeries={() => void loadSeries()} /></div> : null}
               <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4"><span className="text-xs text-slate-500">{definitionDirty ? '未保存改动' : `已保存 v${definition.revision}`}</span><button type="button" disabled={formulaPending || formulaBusy} onClick={() => changeView('result')} className="min-h-10 rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white disabled:opacity-40">前往校验与预览</button></div>
             </div>
           </section>
           <section style={{ display: view !== 'build' ? 'block' : 'none' }} aria-label="情景校验与预览设置" className="mb-5 space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs leading-5 text-slate-500">选择识别方式和截至日。结果保留运行时的定义与数据快照。</p></div><button type="button" disabled={formulaPending || formulaBusy} onClick={() => setDrawer('versions')} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700">版本与发布</button></div>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs leading-5 text-slate-500">选择识别方式和截至日。结果保留运行时的定义与数据快照。</p></div><button type="button" disabled={formulaPending || formulaBusy} onClick={() => setDrawer('versions')} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700">保存情景</button></div>
             <div className="flex flex-wrap items-end gap-4">
               <fieldset><legend className="mb-2 text-xs font-semibold text-slate-600">识别方式</legend><div role="radiogroup" aria-label="V2 识别模式" className="flex rounded-lg border border-slate-200 bg-slate-50 p-1"><button type="button" role="radio" aria-checked={mode === 'realtime'} onClick={() => { if (running) keepEditing.current = true; setMode('realtime') }} className={`min-h-10 rounded-md px-3 text-sm font-semibold ${mode === 'realtime' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500'}`}>实时识别</button><button type="button" role="radio" aria-checked={mode === 'retrospective'} onClick={() => { if (running) keepEditing.current = true; setMode('retrospective') }} className={`min-h-10 rounded-md px-3 text-sm font-semibold ${mode === 'retrospective' ? 'bg-white text-amber-800 shadow-sm' : 'text-slate-500'}`}>事后研究</button></div></fieldset>
               <label className="text-xs font-semibold text-slate-600">截至日<input aria-label="V2 截至日" type="date" value={asOf} onChange={event => { if (running) keepEditing.current = true; setAsOf(event.target.value) }} className="mt-2 block min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
               <button type="button" disabled={!canRun || running} onClick={() => void runPreview()} className="min-h-11 rounded-lg bg-violet-600 px-5 text-sm font-semibold text-white disabled:opacity-40">{running ? '识别中…' : '运行识别'}</button>
               <button type="button" onClick={() => setDrawer('issues')} className="min-h-11 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700">校验定义</button>
             </div>
+            {error && view !== 'build' && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</p>}
+            <RegimeTemporalPanel report={run?.result?.temporal_capability && !runStale ? run.result.temporal_capability : temporal} stale={runStale && Boolean(run?.result?.temporal_capability?.verified)} busy={running} disabled={!canRun} onAudit={() => void runPreview(true)} onNode={id => { setView('build'); selectNode(id) }} />
+            {!canRun && !running && <InferenceIssues inference={inference} status={inferenceStatus} onNode={id => { setView('build'); selectNode(id) }} />}
+            {run && <div role="status" aria-label="识别运行状态" className="space-y-2 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+              <strong>{running ? '正在识别' : run.status === 'failed' ? '本次识别失败' : run.status === 'cancelled' ? '识别已取消' : '识别完成'}</strong>
+              {running && <><p>{run.message || run.stage} · {Math.round((run.progress || 0) * 100)}%</p><progress aria-label="识别进度" max={1} value={run.progress || 0} className="w-full" /><button type="button" onClick={() => void cancelRun()} className="min-h-10 text-rose-700">取消本次识别</button></>}
+              {run.status === 'failed' && <button type="button" onClick={() => { changeView('build'); const field = typeof run.error === 'object' ? run.error?.field : undefined; const node = definition.graph.nodes.find(item => field?.startsWith(`graph.nodes.${item.id}.`)); if (node) selectNode(node.id) }} className="min-h-10 font-semibold text-violet-700">检查输入数据</button>}
+            </div>}
             <div className="flex flex-wrap gap-3 border-t border-slate-100 pt-3 text-xs"><button type="button" aria-pressed={view === 'result'} onClick={() => changeView('result')} className="min-h-10 font-semibold text-violet-700">识别结果</button><button type="button" aria-pressed={view === 'experiments'} onClick={() => changeView('experiments')} className="min-h-10 font-semibold text-violet-700">实验对比</button><button type="button" onClick={() => setDataLabOpen(true)} className="min-h-10 font-semibold text-slate-600">数据实验室</button></div>
           </section>
           {!loadingCatalog && realtimeBlockedNodes.length > 0 ? <p role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{REALTIME_RESTRICTION} 涉及：{realtimeBlockedNodes.map((node) => node.label || schemas.find((schema) => schemaId(schema) === node.type)?.label || node.type).join('、')}</p> : null}
       {viewingFormal ? <p className="shrink-0 border-b border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-900">正在查看正式运行的冻结版本；其模式、截至日和修订以结果详情为准。</p> : runStale ? <p role="status" className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">结果与当前配置不同（结果已过期）。当前查看的仍是原运行快照；请重新运行识别以更新结果。</p> : presentationChanged ? <p className="shrink-0 border-b border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-900">展示信息已修改；历史结果仍使用运行时的名称和颜色。</p> : null}
       {evaluationChanged && !viewingFormal ? <p role="status" className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">评估对象已修改；当前结果仍使用原评估快照，分类结果保持不变。</p> : null}
-          <section style={{ display: view === 'result' ? 'block' : 'none' }} className="min-h-0 min-w-0 flex-1 overflow-auto p-3" aria-label="情景结果视图">{displayedResult && (view === 'result' || viewedRunId === `${displayedResult.kind}:${displayedResult.id}`) ? <RegimeResultView runId={displayedResult.id} runKind={displayedResult.kind} stale={displayedResult.kind === 'preview' && runStale} /> : <div className="grid h-full min-h-48 place-items-center text-center"><div><h2 className="text-base font-bold text-slate-800">{running ? '正在识别历史情景' : '还没有完成的情景结果'}</h2><p className="mt-2 text-xs text-slate-500">{running ? '你可以继续编辑。完成后，点击“查看结果”打开本次运行。' : '在构建视图选择数据和规则，然后运行识别。'}</p><button type="button" onClick={() => changeView('build')} className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white">返回构建</button></div></div>}</section>
+          <section style={{ display: view === 'result' ? 'block' : 'none' }} className="min-h-0 min-w-0 flex-1 overflow-auto p-3" aria-label="情景结果视图">{displayedResult && (view === 'result' || viewedRunId === `${displayedResult.kind}:${displayedResult.id}`) ? <RegimeResultView runId={displayedResult.id} runKind={displayedResult.kind} stale={displayedResult.kind === 'preview' && runStale} /> : !run && <div className="grid h-full min-h-48 place-items-center text-center"><div><h2 className="text-base font-bold text-slate-800">还没有完成的情景结果</h2><p className="mt-2 text-xs text-slate-500">在构建视图选择数据和规则，然后运行识别。</p><button type="button" onClick={() => changeView('build')} className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white">返回构建</button></div></div>}</section>
           <section style={{ display: view === 'experiments' ? 'block' : 'none' }} className="min-h-0 min-w-0 flex-1 space-y-4 overflow-auto p-3" aria-label="情景实验对比视图"><RegimeValidationPanel definition={definition} onChange={editDefinition} /><RegimeExperimentPanel definition={definition} schemas={schemas} dirty={definitionDirty} valid={canRun} mode={mode} asOf={asOf} preparedPlan={preparedPlan} onPrepared={setPreparedPlan} onError={setError} onNotice={setNotice} /></section>
         </main>
       </div>
-      {drawer ? <RegimeWorkbenchDrawer title={{ library: '添加节点', inspector: '节点参数', states: '输出通道', versions: '版本与发布', issues: '检查问题', assets: '复用资源', builder: '公式构建向导', 'node-preview': '节点预览', legacy: '历史版本与旧版迁移目录' }[drawer]} side="right" wide={['versions', 'assets', 'builder', 'legacy', 'states', 'node-preview'].includes(drawer)} onClose={() => setDrawer(null)}>
+      {drawer ? <RegimeWorkbenchDrawer title={{ library: '添加节点', inspector: '节点参数', states: '输出通道', versions: '保存情景', issues: '检查问题', assets: '复用资源', builder: '公式构建向导', 'node-preview': '节点预览', legacy: '历史版本与旧版迁移目录' }[drawer]} side="right" wide={['versions', 'assets', 'builder', 'legacy', 'states', 'node-preview'].includes(drawer)} onClose={() => { if (!savingResearch) setDrawer(null) }} closeDisabled={savingResearch}>
           {drawer === 'node-preview' ? <RegimeNodePreviewPanel definition={definition} schemas={schemas} initialNodeId={selectedNodeId} initialMode={mode} initialAsOf={asOf} onChange={editDefinition} /> : null}
           {drawer === 'legacy' ? <HistoricalRegimeDirectory /> : null}
-          {drawer === 'builder' ? <RegimeGuidedEditor builderOnly onPreviewNode={id => { setSelectedNodeId(id); setDrawer('node-preview') }} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} active={editorMode === 'guided' && view === 'build'} onChange={editDefinition} definition={definition} schemas={schemas} templates={templates} selectedTemplate={selectedTemplate} loadingTemplate={loadingTemplate} onTemplate={setSelectedTemplate} onLoadTemplate={() => void loadTemplate()} onBlank={createBlank} onPatchNode={(id, patch) => editDefinition({ ...definition, graph: { ...definition.graph, nodes: definition.graph.nodes.map((node) => node.id === id ? { ...node, ...patch } : node) } })} onAddNode={() => setDrawer('library')} onRemoveNode={(id) => handleCanvasChanges([{ type: 'remove', id }])} onSetState={(reference) => editDefinition({ ...definition, graph: { ...definition.graph, outputs: { ...definition.graph.outputs, state: reference || undefined } } })} onEditNode={(id) => { changeEditorMode('canvas'); selectNode(id) }} onOpenStates={() => setDrawer('states')} onOpenDataLab={() => setDataLabOpen(true)} onRun={() => void runPreview()} canRun={canRun && !running} /> : null}
-          {drawer === 'library' ? <ResourceLibrary schemas={selectableSchemas} onAdd={addNode} onOpenDataLab={() => setDataLabOpen(true)} /> : null}
-          {drawer === 'inspector' ? <><button type="button" disabled={!selectedNode || formulaPending || formulaBusy} onClick={() => setDrawer('node-preview')} className="min-h-10 w-full rounded-lg bg-violet-600 px-3 text-sm font-semibold text-white disabled:opacity-40">预览此节点</button><RegimeNodeInspector node={selectedNode} schema={selectedSchema} nodes={definition.graph.nodes} schemas={schemas} outputs={definition.graph.outputs} inference={inference} preparedPlan={preparedPlan} onPatchNode={patchSelectedNode} onConnect={connectSelectedNode} onSetOutput={setSelectedOutput} onRemove={() => { if (selectedNode) handleCanvasChanges([{ type: 'remove', id: selectedNode.id }]); setDrawer(null) }} />{run?.status === 'completed' && runDefinition?.graph.nodes.some((node) => node.id === selectedNodeId) ? <button type="button" onClick={() => { setPreviewNodeId(selectedNodeId || ''); setNodePreviewOpen(true); setDrawer(null) }} className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700">查看此节点的运行结果</button> : null}</> : null}
-          {drawer === 'states' ? <RegimeSeriesOutputs definition={definition} schemas={schemas} onChange={editDefinition} activeId={activeOutputId} onSelectOutput={setActiveOutputId} /> : null}
+          {drawer === 'builder' ? <RegimeGuidedEditor builderOnly onExpandNode={id => { void expand(definition, id) }} expanding={expanding} expandDisabled={formulaPending || formulaBusy || (mode === 'realtime' && realtimeNodeBlocked(selectedSchema))} onPreviewNode={id => { setSelectedNodeId(id); setDrawer('node-preview') }} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} active={editorMode === 'guided' && view === 'build'} onChange={editDefinition} definition={definition} schemas={schemas} templates={templates} selectedTemplate={selectedTemplate} loadingTemplate={loadingTemplate} onTemplate={setSelectedTemplate} onLoadTemplate={() => void loadTemplate()} onBlank={createBlank} onPatchNode={(id, patch) => editDefinition({ ...definition, graph: { ...definition.graph, nodes: definition.graph.nodes.map((node) => node.id === id ? { ...node, ...patch } : node) } })} onAddNode={() => setDrawer('library')} onRemoveNode={(id) => handleCanvasChanges([{ type: 'remove', id }])} onSetState={(reference) => editDefinition({ ...definition, graph: { ...definition.graph, outputs: { ...definition.graph.outputs, state: reference || undefined } } })} onEditNode={(id) => { changeEditorMode('canvas'); selectNode(id) }} onOpenStates={() => setDrawer('states')} onOpenDataLab={() => setDataLabOpen(true)} onRun={() => void runPreview()} canRun={canRun && !running} /> : null}
+          {drawer === 'library' ? <ResourceLibrary schemas={selectableSchemas} onAdd={addNode} onOpenDataLab={() => setDataLabOpen(true)} busy={expanding} /> : null}
+          {drawer === 'inspector' ? <><button type="button" disabled={!selectedNode || formulaPending || formulaBusy} onClick={() => setDrawer('node-preview')} className="min-h-10 w-full rounded-lg bg-violet-600 px-3 text-sm font-semibold text-white disabled:opacity-40">预览此节点</button><RegimeNodeInspector states={definition.states} expanding={expanding} expandDisabled={formulaPending || formulaBusy || (mode === 'realtime' && realtimeNodeBlocked(selectedSchema))} onExpand={() => { if (selectedNode) void expand(definition, selectedNode.id) }} node={selectedNode} schema={selectedSchema} nodes={definition.graph.nodes} schemas={schemas} outputs={definition.graph.outputs} inference={inference} preparedPlan={preparedPlan} onPatchNode={patchSelectedNode} onConnect={connectSelectedNode} onSetOutput={setSelectedOutput} onRemove={() => { if (selectedNode) handleCanvasChanges([{ type: 'remove', id: selectedNode.id }]); setDrawer(null) }} />{run?.status === 'completed' && runDefinition?.graph.nodes.some((node) => node.id === selectedNodeId) ? <button type="button" onClick={() => { setPreviewNodeId(selectedNodeId || ''); setNodePreviewOpen(true); setDrawer(null) }} className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700">查看此节点的运行结果</button> : null}</> : null}
+          {drawer === 'states' ? (manualEventMode ? <p className="rounded-xl bg-violet-50 p-4 text-sm text-violet-900">人工历史事件使用多标签区间，不配置互斥状态输出。请在“人工历史事件区间”节点中维护事件。</p> : <RegimeSeriesOutputs definition={definition} schemas={schemas} onChange={editDefinition} activeId={activeOutputId} onSelectOutput={setActiveOutputId} />) : null}
           {drawer === 'issues' ? <InferenceIssues inference={inference} status={inferenceStatus} onNode={(id) => { setView('build'); setEditorMode('canvas'); selectNode(id) }} /> : null}
           {drawer === 'assets' ? <RegimeGraphAssetsPanel definition={definition} selectedNodeIds={selectedGraphNodeIds} valid={valid} onLoadDefinition={loadAssetDefinition} onInsertGraph={insertAssetGraph} onError={setError} onNotice={setNotice} /> : null}
-          {drawer === 'versions' ? <><VersionBar definitions={savedDefinitions} selectedId={selectedDefinitionId} selectedRevision={selectedDefinitionRevision} current={definition} dirty={definitionDirty} valid={valid} busy={savingDefinition || loadingDefinition || running} onSelect={selectSavedDefinition} onRevision={setSelectedDefinitionRevision} onLoad={() => void loadSavedDefinition()} onSave={() => void saveDefinition(false)} onSaveAs={() => void saveDefinition(true)} /><button type="button" onClick={exportDefinition} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700">导出定义</button><RegimeLifecyclePanel definition={definition} dirty={definitionDirty} valid={canRun} mode={mode} asOf={asOf} onError={setError} onNotice={setNotice} onViewResult={(id) => { if (running) keepEditing.current = true; setDisplayedResult({ id, kind: 'formal' }); setView('result'); setDrawer(null) }} /></> : null}
+          {drawer === 'versions' ? <RegimeSavePanel definition={definition} dirty={definitionDirty} valid={canRun} mode={mode} asOf={asOf} onBusy={setSavingResearch} onSaved={saved => { dispatch({ type: 'reset', definition: saved }); setSavedDefinitionSignature(JSON.stringify(definitionForRequest(saved))); setSelectedDefinitionId(saved.id || ''); setSelectedDefinitionRevision(saved.revision || 1); setSavedDefinitions(current => [saved, ...current.filter(item => item.id !== saved.id)]); setPreparedPlan(null) }} onViewResult={id => { setDisplayedResult({ id, kind: 'formal' }); setView('result'); setDrawer(null) }}><VersionBar definitions={savedDefinitions} selectedId={selectedDefinitionId} selectedRevision={selectedDefinitionRevision} current={definition} dirty={definitionDirty} valid={valid} busy={savingDefinition || loadingDefinition || running} onSelect={selectSavedDefinition} onRevision={setSelectedDefinitionRevision} onLoad={() => void loadSavedDefinition()} onSave={() => void saveDefinition(false)} onSaveAs={() => void saveDefinition(true)} /><button type="button" onClick={exportDefinition} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700">导出定义</button><RegimeLifecyclePanel definition={definition} dirty={definitionDirty} valid={canRun} mode={mode} asOf={asOf} onError={setError} onNotice={setNotice} onViewResult={(id) => { if (running) keepEditing.current = true; setDisplayedResult({ id, kind: 'formal' }); setView('result'); setDrawer(null) }} /></RegimeSavePanel> : null}
         </RegimeWorkbenchDrawer> : null}
         {dataLabOpen ? <div className="fixed inset-0 z-[120] min-w-0 overflow-auto bg-slate-50"><ResearchDataLab embedded boundSeriesIds={boundSeriesIds} onBindSeries={bindSeries} onClose={() => setDataLabOpen(false)} /></div> : null}
       {running || notice || loadingCatalog || loadingDefinition ? <footer role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-200 bg-white px-3 py-2 text-xs text-slate-600"><span className="min-w-0 flex-1">{loadingCatalog ? '正在加载模板与可用节点…' : loadingDefinition ? '正在加载方案…' : running ? `${run?.stage || '正在识别'} · ${Math.round((run?.progress || 0) * 100)}%` : notice}</span>{running ? <button type="button" onClick={() => void cancelRun()} className="font-bold text-rose-700">取消识别</button> : null}{run?.status === 'completed' && view !== 'result' ? <button type="button" onClick={() => { if (run?.id) setDisplayedResult({ id: run.id, kind: 'preview' }); changeView('result') }} className="font-bold text-indigo-700">查看结果</button> : null}{notice && !running ? <button type="button" aria-label="关闭状态提示" onClick={() => setNotice('')} className="px-2 font-bold text-slate-500">关闭</button> : null}</footer> : null}

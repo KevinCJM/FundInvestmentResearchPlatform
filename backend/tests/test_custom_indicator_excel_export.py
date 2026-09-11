@@ -70,6 +70,12 @@ def _write_etf_data(data_dir: Path) -> None:
         data_dir / "etf_daily_candle_df.parquet",
         index=False,
     )
+    # The current variable catalogue also exposes disclosed ETF share/size.
+    pd.DataFrame({"ts_code": "510050.SH", "date": dates,
+                  "total_share": 1000.0 + np.arange(len(dates)),
+                  "total_size": 1500.0 + np.arange(len(dates))}).to_parquet(
+        data_dir / "etf_share_size_df.parquet", index=False,
+    )
 
 
 def _inline_draft(name: str, expression: str) -> dict[str, object]:
@@ -133,6 +139,7 @@ def _compiler(expression: str) -> tuple[SingleProductExcelFormulaCompiler, objec
 
 
 _OPERATOR_EXPRESSIONS = {
+    "finite_mask": "count_true(finite_mask(returns))",
     "absolute": "absolute(-1.0)",
     "add": "mean(add(returns, returns))",
     "clip": "mean(clip(returns, -0.5, 0.5))",
@@ -213,15 +220,20 @@ _OPERATOR_EXPRESSIONS = {
     "quantile": "quantile(returns, 0.5)",
     "root_mean_square": "root_mean_square(returns)",
     "skewness": "skewness(returns)",
-    "rolling_mean": "mean(rolling_mean(returns, 3.0, 2.0))",
-    "rolling_std": "mean(rolling_std(returns, 3.0, 0.0, 2.0))",
-    "rolling_min": "mean(rolling_min(returns, 3.0, 2.0))",
-    "rolling_max": "mean(rolling_max(returns, 3.0, 2.0))",
+    "rolling_window": "mean(mean(rolling_window(returns, 3.0, 2.0)))",
     "recursive_smooth": "mean(recursive_smooth(returns, 3.0, 0.0))",
     "divide_or_default": "mean(divide_or_default(returns, returns, 0.0))",
 }
 
+_SCOPED_OPERATOR_EXPRESSIONS = {
+    "rolling_apply": "rolling_apply(mean(adjusted_nav), 3)",
+}
+
 _COMPAT_OPERATOR_EXPRESSIONS = {
+    "rolling_mean": "mean(rolling_mean(returns, 3.0, 2.0))",
+    "rolling_std": "mean(rolling_std(returns, 3.0, 0.0, 2.0))",
+    "rolling_min": "mean(rolling_min(returns, 3.0, 2.0))",
+    "rolling_max": "mean(rolling_max(returns, 3.0, 2.0))",
     "linear_intercept": "linear_intercept(returns)",
     "linear_r_squared": "linear_r_squared(returns)",
     "linear_slope": "linear_slope(returns)",
@@ -239,7 +251,7 @@ def test_excel_registry_covers_every_current_single_product_operator() -> None:
         for item in typed_product_meta()["operators"]
         if "single_product" in item.get("domains", [])
     }
-    assert public == set(_OPERATOR_EXPRESSIONS)
+    assert public == set(_OPERATOR_EXPRESSIONS) | set(_SCOPED_OPERATOR_EXPRESSIONS)
     assert public.issubset(EXCEL_SINGLE_PRODUCT_OPERATOR_IDS)
 
 
@@ -262,6 +274,23 @@ def test_every_current_operator_generates_an_excel_formula(
     assert "P01_NODE_" not in formula
     assert "P01_RESULT" not in formula
     assert placement.rows >= 1
+
+
+@pytest.mark.parametrize("expression", _SCOPED_OPERATOR_EXPRESSIONS.values())
+def test_control_scope_generates_native_excel_from_its_interval_body(expression) -> None:
+    from cal_indicators.typed_dsl import compose_typed_series_bundle
+    from custom_indicators.excel_rolling_scope import ScopedSeriesExcelFormulaCompiler
+    plan = compose_typed_series_bundle({"value": expression}, variable_types=variable_types("single_product"))
+    dates = tuple(pd.bdate_range("2026-01-02", periods=6))
+    compiler = ScopedSeriesExcelFormulaCompiler(
+        plan=plan, context={"adjusted_nav": np.arange(1., 7.),
+                           "observation_dates": np.arange(6.) + 20000.,
+                           "annual_risk_free_rate_decimal": 0.0},
+        dates_by_variable={"adjusted_nav": dates}, sheet_name="S01_SCOPE", prefix="S01",
+    )
+    assert "IFERROR(" in compiler.channel_formula("value", 3)
+    assert len(compiler.scope_windows) == 4
+    assert any("AVERAGE(" in item.result_formula() for item in compiler.scope_windows.values())
 
 
 def test_visible_result_formula_uses_explicit_excel_range() -> None:
@@ -349,7 +378,7 @@ def test_service_exports_every_current_single_product_variable(
                 )
             assert f"P01_VAR_{variable_id}" not in workbook_xml
             assert "P01_RESULT" not in workbook_xml
-            assert "<f>" in worksheet_xml
+            assert "<f>" in worksheet_xml, variable_id
         finally:
             artifact.cleanup()
 

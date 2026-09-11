@@ -53,15 +53,17 @@ def acquire(payload: dict, spec: dict, output: Path) -> dict:
                     failures.add(key)
                     if isinstance(exc, CenterError) and exc.code == 'SOURCE_ROW_CAP':
                         capped.add(key)
+                    else:
+                        capped.discard(key)
                 raise
             with mutex:
                 failures.discard(key)
                 capped.discard(key)
             return result
         def acknowledge_partition(self, api_name, **params):
-            # Used only after all replacement fund-event shards validate. Never
+            # Used only after all replacement event/index shards validate. Never
             # suppress permission/network errors or unresolved/truncated leaves.
-            if api_name not in {'fund_portfolio', 'fund_div'}:
+            if api_name not in {'fund_portfolio', 'fund_div', 'shibor', 'shibor_lpr', 'repo_daily', *script.INDEX_HISTORY_FILES}:
                 return
             key = fingerprint([self.interfaces[api_name].id, params])
             with mutex:
@@ -88,6 +90,8 @@ def acquire(payload: dict, spec: dict, output: Path) -> dict:
     args.latest = payload['mode'] in {'incremental', 'auto_incremental'} and payload.get('has_baseline', False)
     if automatic:
         args.automatic_start_date = automatic['start_date']
+        if 'query_dates' in automatic:
+            args.automatic_event_plan = automatic
         args.max_latest_days = 370  # Planner fails closed for gaps beyond one year.
     args.resume = payload.get('resume', False)
     args.source_configuration_hash = client.configuration_hash
@@ -113,6 +117,10 @@ def acquire(payload: dict, spec: dict, output: Path) -> dict:
         raise CenterError('ETL_DATASET_INCOMPLETE', f'有 {len(failures)} 个请求尚未成功，当前节点未完成；请检查权限和接口状态后从检查点继续。')
     stats.update(log_tail=log.tail.replace(token, '[REDACTED]'), warnings=log.warnings,
                  mode='auto_incremental' if automatic else 'incremental' if args.latest else 'full', unrestricted_universe=True)
+    quality = output / 'fund_portfolio_df.parquet.quality.meta.json'
+    if quality.exists():
+        stats['data_quality'] = json.loads(quality.read_text())
+        stats['warnings'] = max(1, stats['warnings'])
     return stats
 
 

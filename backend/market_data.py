@@ -107,6 +107,8 @@ def validate_snapshot_directory(
     """Validate the minimum file contract before activation."""
 
     snapshot = snapshot_dir.expanduser().resolve()
+    if list(snapshot.glob('*.quality.meta.json')):
+        raise MarketDataManifestError('快照包含未解决的供应商数据质量隔离清单，拒绝激活；请先核验冲突。')
     missing = [name for name in required_files if not (snapshot / name).is_file()]
     if missing:
         raise MarketDataManifestError(f"Tushare 快照缺少必要文件: {', '.join(missing)}")

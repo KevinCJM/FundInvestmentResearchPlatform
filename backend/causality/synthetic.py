@@ -149,6 +149,7 @@ def synthetic_panel(
     turnover_amount = volume * close
 
     variables: dict[str, Any] = {
+        "observation_dates": np.arange(periods + 1, dtype=np.float64) + 20_000.0,
         "returns": returns,
         "log_returns": log_returns,
         "asset_returns": asset_returns,

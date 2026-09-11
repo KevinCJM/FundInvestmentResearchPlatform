@@ -9,6 +9,10 @@ EXTRA_COLUMNS = {
     "trade_cal": "exchange cal_date is_open pretrade_date",
     "index_weight": "index_code con_code trade_date weight",
     "index_member_all": "l1_code l1_name l2_code l2_name l3_code l3_name ts_code name in_date out_date is_new",
+    "ci_index_member": "l1_code l1_name l2_code l2_name l3_code l3_name ts_code name in_date out_date is_new",
+    "ths_member": "ts_code con_code con_name",
+    "dc_member": "trade_date ts_code con_code name",
+    "tdx_member": "ts_code trade_date con_code con_name",
     "index_classify": "index_code industry_name parent_code level industry_code is_pub src",
     "index_dailybasic": "ts_code trade_date total_mv float_mv total_share float_share free_share turnover_rate turnover_rate_f pe pe_ttm pb",
     "cn_schedule": "month publish_date title issuing_org data_api",
@@ -34,6 +38,27 @@ EXTRA_COLUMNS = {
     "shibor_lpr": "date 1y 5y",
 }
 
+# The observed cn_pmi wire response uses uppercase, unlike doc 325. Only
+# registered fields are aliases; unknown vendor metadata remains untouched.
+RESPONSE_CONTRACT_VERSIONS = {'cn_pmi': 'pmi-uppercase-v1'}
+
+
+def response_column_aliases(api: str, columns) -> dict[str, str]:
+    if api not in RESPONSE_CONTRACT_VERSIONS:
+        return {}
+    from .models import CenterError
+    uppercase = {name.upper(): name for name in EXTRA_COLUMNS[api].split()}
+    aliases, targets = {}, set()
+    for column in columns:
+        target = uppercase.get(column, column)
+        if target in targets:
+            raise CenterError('SOURCE_FIELD_COLLISION', '响应存在重复字段或大小写别名冲突，拒绝覆盖数据。')
+        targets.add(target)
+        if target != column:
+            aliases[column] = target
+    return aliases
+
+
 # Non-interchangeable code spaces must not merge accidentally.
 NAMESPACES = {
     "sw_daily": "TS_SW_INDEX", "ci_daily": "TS_CI_INDEX",
@@ -55,10 +80,13 @@ QUOTE_UNITS = {
 # Undocumented caps remain local safeguards, not vendor entitlement assertions.
 LOCAL_CAPS = {"fund_nav": 15000, "stock_basic": 6000, "trade_cal": 15000,
               "index_basic": 15000, "etf_index": 5000, "fund_company": 5000,
-              "index_member_all": 2000}
+              "index_member_all": 2000, "ci_index_member": 5000,
+              "ths_member": 5000, "dc_member": 5000, "tdx_member": 3000}
 
 
 def source_field_type(api: str, name: str) -> str:
+    if name == "con_name":
+        return "string"
     if name.endswith("date") or name == "date":
         return "date"
     if name in {"quarter", "month", "ts_code", "exchange", "index_code", "con_code", "name", "level", "is_new", "src", "parent_code", "industry_code", "industry_name", "l1_code", "l2_code", "l3_code", "l1_name", "l2_name", "l3_name", "type", "idx_type", "title", "issuing_org", "data_api", "repo_maturity", "leading", "leading_code"}:

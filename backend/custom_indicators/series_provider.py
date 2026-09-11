@@ -584,6 +584,8 @@ def _source_path(kind: Literal["etf", "fund"], dataset: str, data_dir: Path) -> 
         return data_dir / ("etf_daily_df.parquet" if kind == "etf" else "fund_nav_df.parquet")
     if dataset == "candle" and kind == "etf":
         return data_dir / "etf_daily_candle_df.parquet"
+    if dataset == "share" and kind == "etf":
+        return data_dir / "etf_share_size_df.parquet"
     return None
 
 
@@ -1741,7 +1743,10 @@ def load_product_chart_series(
             merged[anchor_physical], errors="coerce"
         ).replace([np.inf, -np.inf], np.nan)
         merged[anchor_physical] = anchor_values
-        merged = merged.dropna(subset=["date", anchor_physical])
+        # The date axis belongs to observations, not their numerical validity.
+        # Dropping an invalid anchor would bridge data gaps in both rolling
+        # windows and derived returns. Keep NaN positions for the NJIT contract.
+        merged = merged.dropna(subset=["date"])
         for dataset, frame in source_frames.items():
             if dataset == anchor_dataset or frame.empty:
                 continue
@@ -1823,8 +1828,8 @@ def load_product_chart_series(
                 }
             )
 
-        if str(axis_anchor) in derived_backing:
-            merged = merged.dropna(subset=[str(axis_anchor)]).reset_index(drop=True)
+        # A return anchor shares its backing NAV's dates, including the first
+        # undefined return. Never drop that baseline or internal missing rows.
 
     for derived_name, backing_name in derived_backing.items():
         if derived_name in requested and backing_name in unavailable:

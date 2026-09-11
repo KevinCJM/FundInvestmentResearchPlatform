@@ -680,17 +680,19 @@ def build_series_indicator_excel_workbook(
         if not evidence.context:
             compilers.append(None)
             continue
-        compilers.append(
-            SeriesBundleExcelFormulaCompiler(
-                plan=plan,
-                context=evidence.context,
-                dates_by_variable=evidence.dates_by_variable,
-                sheet_name=calculation_sheet,
-                prefix=f"S{index:02d}",
-                first_block_row=12,
+        compiler_type = SeriesBundleExcelFormulaCompiler
+        if any(node.operator_id == "rolling_apply" for node in plan.nodes):
+            from .excel_rolling_scope import ScopedSeriesExcelFormulaCompiler
+            compiler_type = ScopedSeriesExcelFormulaCompiler
+        try:
+            compilers.append(compiler_type(
+                plan=plan, context=evidence.context, dates_by_variable=evidence.dates_by_variable,
+                sheet_name=calculation_sheet, prefix=f"S{index:02d}", first_block_row=12,
                 runtime_parameters=parameters,
-            )
-        )
+            ))
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
 
     formula_cells = sum(
         compiler.estimated_formula_cells

@@ -25,7 +25,18 @@ export default function EtlNodeInspector({ step, definition, catalog, schemas, o
           const connections = edges.filter(edge => edge.targetPort === port.id)
           return <div key={port.id} className="space-y-2 rounded-lg border border-slate-200 p-3">
             <p className="text-xs font-bold">{port.label}{port.required ? '（必需）' : '（可选）'}</p>
-            {connections.map(edge => <div key={edge.id} className="flex items-start justify-between gap-2 text-xs"><span>{definition.steps.find(s => s.id === edge.source)?.name ?? edge.source}</span><button type="button" className="shrink-0 text-rose-700 underline" aria-label={`断开${port.label}：${definition.steps.find(s => s.id === edge.source)?.name ?? edge.source}`} onClick={() => onDisconnect(edge.id)}>断开</button></div>)}
+            {connections.map(edge => {
+              const name = definition.steps.find(s => s.id === edge.source)?.name ?? edge.source
+              const dataPort = schema?.inputs.find(p => p.id === 'data')
+              const dataAllowed = Boolean(dataPort && (dataPort.multiple || !step.inputs.some(id => id !== edge.source)) && schemas.find(s => s.id === definition.steps.find(s => s.id === edge.source)?.kind)?.outputs.find(p => p.id === 'data')?.value_type === dataPort.value_type)
+              return <div key={edge.id} className="space-y-2 text-xs"><div className="flex items-start justify-between gap-2"><span>{name}</span><button type="button" className="shrink-0 text-rose-700 underline" aria-label={`断开${port.label}：${name}`} onClick={() => onDisconnect(edge.id)}>断开</button></div>
+                <label className="block">依赖关系<select aria-label={`与${name}的依赖关系`} className={inputClass} value={edge.kind} onChange={event => {
+                  const inputs = step.inputs.filter(id => id !== edge.source), after = (step.after ?? []).filter(id => id !== edge.source)
+                  if (event.target.value === 'data') inputs.push(edge.source); else after.push(edge.source)
+                  onPatch({ ...step, inputs, after })
+                }}><option value="data" disabled={!dataAllowed}>必须依赖其数据（失败时阻断）</option><option value="control">仅执行顺序（失败后仍继续）</option></select></label>
+              </div>
+            })}
             {port.required && !connections.length ? <p className="text-xs text-amber-800">尚未连接，运行前需要补齐。</p> : null}
             <label className="block text-xs">添加{port.label}<select aria-label={`添加${port.label}`} className={inputClass} value="" disabled={!port.multiple && connections.length > 0} onChange={e => { if (e.target.value) onConnect({ source: e.target.value, sourcePort: port.id === 'after' ? 'done' : 'data', target: step.id, targetPort: port.id }) }}>
               <option value="">选择上游节点</option>
@@ -37,7 +48,7 @@ export default function EtlNodeInspector({ step, definition, catalog, schemas, o
             </select></label>
           </div>
         })}
-        <p className="text-xs leading-5 text-slate-500">实线传递数据；虚线只等待上游完成。先后依赖不能代替必需的数据输入。</p>
+        <p className="text-xs leading-5 text-slate-500">仅执行顺序不会读取上游输出。改为顺序后如缺少必需数据，运行前校验会明确提示；不能用此选项绕过数据完整性检查。</p>
       </section>
       {step.kind === 'resolve' ? <>
         <label className="block text-xs font-semibold">取值业务表<select className={inputClass} value={step.table_id ?? ''} onChange={e => onPatch({ ...step, table_id: e.target.value })}><option value="">请选择</option>{catalog.targets.categories.map(category => <optgroup key={category.category_id} label={category.label}>{catalog.targets.tables.filter(t => t.source_mappable && t.category_id === category.category_id).map(t => <option key={t.table_id} value={t.table_id}>{t.label}</option>)}</optgroup>)}</select></label>

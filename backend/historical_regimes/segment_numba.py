@@ -134,7 +134,44 @@ def range_threshold_kernel(values, upper, lower):
     return states, invalid
 
 
+@njit(I(F, I, I), cache=True)
+def phase_direction_kernel(pivots, starts, ends):
+    """Complete-wave direction: 0 trough-to-peak, 1 peak-to-trough, -1 missing."""
+    result = np.full(pivots.size, -1, dtype=np.int64)
+    for t in range(pivots.size):
+        left, right = starts[t], ends[t]
+        if 0 <= left <= t < right < pivots.size:
+            if pivots[left] == -1.0 and pivots[right] == 1.0:
+                result[t] = 0
+            elif pivots[left] == 1.0 and pivots[right] == -1.0:
+                result[t] = 1
+    return result
+
+
+@njit(F(F, I, I), cache=True)
+def boundary_line_kernel(prices, starts, ends):
+    """Interpolate complete boundaries, including the terminal boundary price."""
+    result = np.full(prices.size, np.nan)
+    t = 0
+    while t < prices.size:
+        left, right = starts[t], ends[t]
+        if left != t or right <= left or right >= prices.size:
+            t += 1
+            continue
+        valid = np.isfinite(prices[left]) and np.isfinite(prices[right])
+        for j in range(left, right):
+            valid = valid and starts[j] == left and ends[j] == right
+        if valid:
+            for j in range(left, right):
+                result[j] = prices[left] + (prices[right] - prices[left]) * (j - left) / (right - left)
+            result[right] = prices[right]
+        t = right
+    return result
+
+
 SEGMENT_KERNELS = {
+    "phase_direction": phase_direction_kernel,
+    "boundary_line": boundary_line_kernel,
     "local_extrema": local_extrema_kernel,
     "between_pivots": between_pivots_kernel,
     "interval_statistic": interval_statistic_kernel,

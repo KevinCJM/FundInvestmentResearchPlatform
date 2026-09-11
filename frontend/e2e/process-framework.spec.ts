@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { taaBaseline, taaCatalog, taaPreflight } from '../src/test/tacticalAllocationFixtures'
 
 test('流程首页在当前视口完整展示且不存在水平溢出', async ({ page }) => {
   await page.goto('/')
@@ -38,14 +39,31 @@ test('静态 Booking 页统一业务录入与复式记账', async ({ page }) => 
 })
 
 test('TAA 节点提供可运行工作台而不是静态职责说明', async ({ page }) => {
-  await page.route('**/api/historical-regimes/runs', (route) => route.fulfill({ json: { items: [] } }))
-  await page.goto('/pre-investment/taa')
+  const writes: string[] = []
+  const preflights: string[] = []
+  await page.route('**/api/**', route => {
+    const request = route.request(), path = new URL(request.url()).pathname
+    // Opening the workbench may check inputs, but must not calculate or persist a decision.
+    if (request.method() === 'POST' && path === '/api/tactical-allocation/preflight') {
+      preflights.push(path)
+      return route.fulfill({ json: taaPreflight })
+    }
+    if (request.method() !== 'GET') writes.push(path)
+    if (path === '/api/tactical-allocation/catalog') return route.fulfill({ json: taaCatalog })
+    if (path === '/api/tactical-allocation/baselines/SAA-1') return route.fulfill({ json: taaBaseline })
+    if (path === '/api/historical-regimes/runs') return route.fulfill({ json: { items: [] } })
+    return route.fulfill({ status: 404, json: { detail: 'Offline process navigation fixture' } })
+  })
+  await page.goto('/pre-investment/taa?baseline=SAA-1')
 
-  await expect(page.getByRole('heading', { name: '战术资产配置工作台' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '历史情景信号源' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'SAA 基准权重' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '各情景相对偏移' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '运行 TAA 回测' })).toBeDisabled()
+  await expect(page.getByRole('heading', { name: '本次准备怎么配？' })).toBeVisible()
+  for (const name of ['观点与规则', '回测与选优', '情景模拟', '版本与审计']) {
+    await expect(page.getByRole('tab', { name, exact: true })).toBeVisible()
+  }
+  await expect(page.getByRole('radio', { name: /研究员观点/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: '计算并比较方案' })).toBeEnabled()
+  expect(preflights.length).toBeGreaterThan(0)
+  expect(writes).toEqual([])
   await expect(page.getByTestId('non-interactive-blueprint')).toHaveCount(0)
   await expect(page.getByRole('button', { name: /下单|委托提交|撤单/ })).toHaveCount(0)
 })
@@ -84,17 +102,17 @@ test('组合方案展示区分回测与实盘，并展示算法和情景入口',
 
   await expect(page.getByRole('heading', { name: '组合画像与适用范围' })).toBeVisible()
   await expect(page.getByText(/虚线左侧为历史回测，右侧为实盘跟踪示例/)).toBeVisible()
-  const trigger = page.getByRole('button', { name: '组合方案展示中心阶段导航' })
+  const trigger = page.getByRole('button', { name: '方案展示阶段导航' })
   await expect(trigger).toHaveAttribute('aria-expanded', 'false')
-  await expect(page.getByLabel('组合方案展示中心子页面导航')).toHaveCount(0)
+  await expect(page.getByLabel('方案展示子页面导航')).toHaveCount(0)
   if ((page.viewportSize()?.width ?? 0) >= 1024) {
-    const workspaceBox = await page.getByLabel('组合方案展示中心工作区').boundingBox()
+    const workspaceBox = await page.getByLabel('方案展示工作区').boundingBox()
     expect(workspaceBox).not.toBeNull()
     expect(workspaceBox!.width).toBeGreaterThan((page.viewportSize()?.width ?? 0) * 0.8)
   }
 
   await trigger.click()
-  const navigation = page.getByLabel('组合方案展示中心子页面导航')
+  const navigation = page.getByLabel('方案展示子页面导航')
   await expect(trigger).toHaveAttribute('aria-expanded', 'true')
   await expect(navigation.getByRole('link', { name: /周期与情景模拟/ })).toBeVisible()
   await expect(navigation.getByRole('link', { name: /配置与算法说明/ })).toBeVisible()
