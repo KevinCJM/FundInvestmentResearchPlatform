@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -53,6 +54,49 @@ def test_portfolio_drift_and_attribution_accounting_identity():
     assert nav.shape == drawdown.shape == portfolio_returns.shape
     assert metrics.shape == (7,)
     assert diagnosis[0].shape == (2, 2)
+
+
+@pytest.mark.parametrize("values, expected_drawdown", [
+    ([-.1, .05], [-.1, -.055]),
+    ([-.1, -.1], [-.1, -.19]),
+    ([-.1], [-.1]),
+    ([0.], [0.]),
+    ([.1], [0.]),
+    ([.1, -.1], [0., -.1]),
+    ([-.2, .25, -.1], [-.2, 0., -.1]),
+    ([-.1, .2, -.05], [-.1, 0., -.05]),
+])
+def test_summary_drawdown_includes_initial_wealth_without_changing_nav_axis(values, expected_drawdown):
+    returns = np.array(values, dtype=np.float64)
+    before = returns.copy()
+    signatures = tuple(portfolio_summary_kernel.signatures)
+    nav, drawdown, metrics = portfolio_summary_kernel(returns, 252., 0.)
+
+    expected_nav = np.cumprod(1. + returns)
+    reference_peaks = np.maximum.accumulate(np.r_[1., expected_nav])[1:]
+    np.testing.assert_allclose(nav, expected_nav)
+    np.testing.assert_allclose(drawdown, expected_drawdown, atol=1e-15)
+    np.testing.assert_allclose(drawdown, expected_nav / reference_peaks - 1., atol=1e-15)
+    assert metrics[4] == pytest.approx(-min(expected_drawdown))
+    assert metrics[0] == pytest.approx(expected_nav[-1] - 1.)
+    assert nav.shape == drawdown.shape == returns.shape
+    np.testing.assert_array_equal(returns, before)
+    assert tuple(portfolio_summary_kernel.signatures) == signatures
+    assert len(portfolio_summary_kernel.nopython_signatures) == len(signatures) == 1
+
+
+def test_strict_nav_backtest_summary_retains_first_observed_loss():
+    source_nav = np.array([[1.], [.9], [.945]])
+    returns = strict_returns_kernel(source_nav)
+    schedule = np.array([[1.], [0.]])
+    mask = np.array([1, 0], dtype=np.uint8)
+    path, _, _, status = portfolio_drift_backtest_kernel(returns, schedule, mask)
+    nav, drawdown, metrics = portfolio_summary_kernel(path, 252., 0.)
+    assert status == 0
+    np.testing.assert_allclose(path, [-.1, .05])
+    np.testing.assert_allclose(nav, [.9, .945])
+    np.testing.assert_allclose(drawdown, [-.1, -.055])
+    assert metrics[4] == pytest.approx(.1)
 
 
 def test_manual_weight_validation_is_njit_and_never_normalizes() -> None:

@@ -1,5 +1,5 @@
 """Explicit local capabilities and immutable factor templates."""
-ENGINE_VERSION = "factor-research-njit-2.0.0"
+ENGINE_VERSION = "factor-research-njit-2.0.1"
 OPERATORS = {"momentum": 0, "volatility": 1, "drawdown": 2, "reversal": 3}
 BUILTINS = [
     {"id": "factor-momentum-126-21", "revision": 1, "name": "中期动量（跳过短期）",

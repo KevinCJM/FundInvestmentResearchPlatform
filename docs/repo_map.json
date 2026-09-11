@@ -487,6 +487,7 @@
         "backend/app.py",
         "backend/run.py",
         "start_services.sh",
+        "scripts/service_process.py",
         "backend/services/business_numeric_routes.py"
       ],
       "key_symbols": [
@@ -543,6 +544,7 @@
         "backend/tests/conftest.py",
         "backend/tests/test_business_numeric_numba.py",
         "backend/tests/test_pit_startup.py",
+        "backend/tests/test_start_services.py",
         "backend/tests/test_pit_workflow.py",
         "backend/tests/test_strategy_api.py",
         "backend/tests/test_analytics_routes.py",
@@ -557,6 +559,7 @@
         "cors_allowlist_requires_deployment_review",
         "frontend_dist_optional",
         "request_pit_override_must_not_mutate_system_settings",
+        "service_ownership_must_precede_listener_adoption_or_process_group_signals",
         "editable_pit_conventions_are_not_historical_vintage_certification"
       ],
       "edit_risk": "high",
@@ -568,11 +571,14 @@
       "pitfall_ids": [
         "P03",
         "P05",
-        "P07"
+        "P07",
+        "P11"
       ],
       "minimum_regression": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/run.py",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_pit_startup.py backend/tests/test_pit_workflow.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_start_services.py -q",
+        "bash -n start_services.sh",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
         "python3 -m pytest backend/tests/test_pit_decision_clock.py -q"
       ],
@@ -2423,7 +2429,8 @@
         "frontend/tailwind.config.js",
         "frontend/postcss.config.js",
         "frontend/src/test/setup.ts",
-        "frontend/src/utils/fixedNjitExecution.ts"
+        "frontend/src/utils/fixedNjitExecution.ts",
+        "frontend/dev/sourceWriteGuard.ts"
       ],
       "key_symbols": [
         "App",
@@ -2468,6 +2475,9 @@
         "frontend/src/App.test.tsx",
         "frontend/src/utils/fixedNjitExecution.test.ts",
         "frontend/src/utils/returnNavigation.test.ts",
+        "frontend/src/app/ResearchContext.test.tsx",
+        "frontend/dev/sourceWriteGuard.test.ts",
+        "frontend/e2e/data-governance-errors.spec.ts",
         "frontend/src/pages/PitSnapshots.test.tsx"
       ],
       "related_configs": [
@@ -3756,6 +3766,7 @@
       "related_tests": [
         "backend/tests/test_akshare_adapter.py",
         "backend/tests/test_data_source_center.py",
+        "backend/tests/test_data_source_security.py",
         "backend/tests/test_etl_snapshot.py",
         "backend/tests/test_etl_run_options.py",
         "backend/tests/test_auto_incremental.py",

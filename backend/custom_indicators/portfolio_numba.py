@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 
 
 PORTFOLIO_ENGINE_VERSION = "portfolio-research-njit-1.0.0"
-PORTFOLIO_KERNEL_VERSION = "path-attribution-risk-2"
+PORTFOLIO_KERNEL_VERSION = "path-attribution-risk-3"
 
 _F1 = float64[::1]
 _F2 = float64[:, ::1]
@@ -201,7 +201,9 @@ def portfolio_summary_kernel(
     nav = np.empty(count, dtype=np.float64)
     drawdown = np.empty(count, dtype=np.float64)
     cumulative = 1.0
-    peak = 0.0
+    # Returns start after the initial investment at NAV 1. Keep that high-water
+    # mark even when the first reported NAV is below it; do not add a data row.
+    peak = 1.0
     max_drawdown = 0.0
     total = 0.0
     for idx in range(count):
@@ -209,7 +211,7 @@ def portfolio_summary_kernel(
         cumulative *= 1.0 + value
         nav[idx] = cumulative
         total += value
-        if idx == 0 or cumulative > peak:
+        if cumulative > peak:
             peak = cumulative
         drawdown[idx] = cumulative / peak - 1.0 if peak != 0.0 else 0.0
         if drawdown[idx] < max_drawdown:

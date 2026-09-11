@@ -247,8 +247,15 @@ export interface PitSettingsPayload {
   can_apply: boolean
 }
 
-export function fetchPitSettings(signal?: AbortSignal): Promise<PitSettingsPayload> {
-  return request<PitSettingsPayload>('/api/pit/settings', { signal }, '读取 PIT 系统设置失败')
+export async function fetchPitSettings(signal?: AbortSignal): Promise<PitSettingsPayload> {
+  const payload = await request<PitSettingsPayload>('/api/pit/settings', { signal }, '读取 PIT 系统设置失败')
+  if (!payload?.settings || !payload.effective || typeof payload.effective.no_pit !== 'boolean'
+    || !['RESEARCH', 'STRICT_PIT'].includes(payload.effective.run_mode)
+    || (payload.effective.as_of !== null && typeof payload.effective.as_of !== 'string')
+    || typeof payload.effective.label !== 'string' || !Array.isArray(payload.available_releases)) {
+    throw new Error('PIT 系统设置响应不完整，无法确认当前口径')
+  }
+  return payload
 }
 
 export function applyPitSettings(

@@ -163,7 +163,8 @@ def test_auto_preview_api_is_read_only_and_redacted(store, monkeypatch):
     from backend.services import etl_routes
     app = FastAPI(); app.include_router(etl_routes.router)
     monkeypatch.setattr(etl_routes, 'get_store', lambda: store)
-    response = TestClient(app).post('/api/data-sources/etl/validate', json={'definition': definition(), 'options': OPTIONS})
+    response = TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1').post(
+        '/api/data-sources/etl/validate', json={'definition': definition(), 'options': OPTIONS})
     assert response.status_code == 200 and response.json()['valid']
     assert 'offline-fixture' not in response.text
     assert not (store.root / 'etl_runs').exists()

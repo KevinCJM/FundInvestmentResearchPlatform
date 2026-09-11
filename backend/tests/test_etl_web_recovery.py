@@ -26,7 +26,7 @@ def client(store, monkeypatch):
     monkeypatch.setattr(etl_routes, 'get_store', lambda: store)
     monkeypatch.setattr(recovery, 'process_birth', lambda pid: 'offline-birth')
     app = FastAPI(); app.include_router(etl_routes.router)
-    return TestClient(app)
+    return TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1')
 
 
 def queued(store, monkeypatch, client, old):

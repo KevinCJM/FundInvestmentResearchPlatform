@@ -8,9 +8,9 @@ BACKEND_DIR="$PROJECT_ROOT/backend"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 
 PYTHON_BIN="${PYTHON_BIN:-/Users/chenjunming/Desktop/myenv_312/bin/python3.12}"
-BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
-FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
+FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 BACKEND_RELOAD="${BACKEND_RELOAD:-0}"
 STARTUP_WAIT_SECONDS="${STARTUP_WAIT_SECONDS:-20}"
@@ -28,6 +28,7 @@ BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 BACKEND_LOG_FILE="$RUN_DIR/backend.log"
 FRONTEND_LOG_FILE="$RUN_DIR/frontend.log"
+PROCESS_HELPER="$PROJECT_ROOT/scripts/service_process.py"
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1 || [[ -x "$1" ]]
@@ -43,8 +44,8 @@ read_pid_from_file() {
     return 1
   fi
   local pid
-  pid="$(tr -dc '0-9' < "$pid_file" | tr -d '\n')"
-  if [[ -n "${pid:-}" ]]; then
+  pid="$(<"$pid_file")"
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
     echo "$pid"
     return 0
   fi
@@ -113,6 +114,10 @@ wait_for_backend_health() {
     fi
 
     if is_port_listening "$BACKEND_PORT"; then
+      if ! service_is_owned backend "$BACKEND_PORT"; then
+        echo "[失败] 监听进程不属于当前后端服务。"
+        return 1
+      fi
       if backend_is_ready; then
         return 0
       fi
@@ -142,24 +147,11 @@ show_log_tail() {
 }
 
 launch_detached() {
-  # nohup 仅忽略 SIGHUP，仍会继承启动终端的进程组；独立 session 才能脱离其生命周期。
-  "$PYTHON_BIN" - "$@" <<'PY'
-import signal
-import subprocess
-import sys
+  "$PYTHON_BIN" "$PROCESS_HELPER" launch "$@"
+}
 
-signal.signal(signal.SIGHUP, signal.SIG_IGN)
-with open(sys.argv[1], "ab", buffering=0) as log:
-    process = subprocess.Popen(
-        sys.argv[2:],
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-        close_fds=True,
-    )
-print(process.pid)
-PY
+service_is_owned() {
+  "$PYTHON_BIN" "$PROCESS_HELPER" check "$@"
 }
 
 start_uvicorn() {
@@ -168,41 +160,31 @@ start_uvicorn() {
     "$PYTHON_BIN" -m uvicorn app:app
     --host "$BACKEND_HOST"
     --port "$BACKEND_PORT"
+    --no-proxy-headers
   )
   if [[ "$use_reload" == "1" ]]; then
     args+=(--reload)
   fi
   local pid
-  pid="$(launch_detached "$BACKEND_LOG_FILE" "${args[@]}")" || return 1
-  echo "$pid" >"$BACKEND_PID_FILE"
+  pid="$(launch_detached backend "$BACKEND_LOG_FILE" "${args[@]}")" || return 1
   echo "$pid"
 }
 
 stop_process_by_pid_file() {
   local pid_file="$1"
-  local pid
-  pid="$(read_pid_from_file "$pid_file" || true)"
-  if [[ -n "${pid:-}" ]] && is_pid_running "$pid"; then
-    kill -TERM "$pid" 2>/dev/null || true
-  fi
-}
-
-stop_ports_if_busy() {
-  local port="$1"
-  if is_port_listening "$port"; then
-    local stop_pids
-    # The listener can exit after the first check; under pipefail this is normal,
-    # not a reason to abort restart before printing a result or starting again.
-    stop_pids="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tail -n +2 | awk '{print $2}' || true)"
-    for pid in $stop_pids; do
-      kill -TERM "$pid" 2>/dev/null || true
-    done
-    sleep 1
-  fi
+  case "$pid_file" in
+    "$BACKEND_PID_FILE") "$PYTHON_BIN" "$PROCESS_HELPER" stop backend ;;
+    "$FRONTEND_PID_FILE") "$PYTHON_BIN" "$PROCESS_HELPER" stop frontend ;;
+    *) echo "[服务保护] 未知 PID 文件，拒绝停止。"; return 1 ;;
+  esac
 }
 
 start_backend() {
   if is_port_listening "$BACKEND_PORT"; then
+    if ! service_is_owned backend "$BACKEND_PORT"; then
+      echo "[失败] :${BACKEND_PORT} 被未验证归属的进程占用；不会接管或停止它。"
+      return 1
+    fi
     if ! backend_is_ready; then
       echo "[失败] :${BACKEND_PORT} 已被占用，但后端健康检查未通过。"
       return 1
@@ -230,10 +212,10 @@ start_backend() {
     local start_pid
     if [[ "$attempt" == "reload" ]]; then
       echo "[启动中] 正在启动后端（热重载模式）……"
-      start_pid="$(start_uvicorn "1")"
+      start_pid="$(start_uvicorn "1")" || return 1
     else
       echo "[启动中] 正在启动后端（普通模式）……"
-      start_pid="$(start_uvicorn "0")"
+      start_pid="$(start_uvicorn "0")" || return 1
     fi
 
     if wait_for_backend_health "$start_pid"; then
@@ -243,20 +225,21 @@ start_backend() {
 
     echo "[失败] 后端启动未完成（${attempt}），最近日志如下："
     show_log_tail "$BACKEND_LOG_FILE"
-    stop_process_by_pid_file "$BACKEND_PID_FILE"
-    rm -f "$BACKEND_PID_FILE"
-    stop_ports_if_busy "$BACKEND_PORT"
+    stop_process_by_pid_file "$BACKEND_PID_FILE" || return 1
     sleep 1
   done
 
   echo "[失败] 后端未能在 :$BACKEND_PORT 就绪。"
   show_log_tail "$BACKEND_LOG_FILE"
-  rm -f "$BACKEND_PID_FILE"
   return 1
 }
 
 start_frontend() {
   if is_port_listening "$FRONTEND_PORT"; then
+    if ! service_is_owned frontend "$FRONTEND_PORT"; then
+      echo "[失败] :${FRONTEND_PORT} 被未验证归属的进程占用；不会接管或停止它。"
+      return 1
+    fi
     if ! frontend_is_ready; then
       echo "[失败] :${FRONTEND_PORT} 已被占用，但前端页面或 API 转发检查未通过。"
       return 1
@@ -274,17 +257,17 @@ start_frontend() {
   echo > "$FRONTEND_LOG_FILE"
   cd "$FRONTEND_DIR"
   local pid
-  pid="$(launch_detached "$FRONTEND_LOG_FILE" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort)" || return 1
-  echo "$pid" > "$FRONTEND_PID_FILE"
+  pid="$(launch_detached frontend "$FRONTEND_LOG_FILE" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" --strictPort)" || return 1
   if ! wait_for_port "$FRONTEND_PORT" "$(read_pid_from_file "$FRONTEND_PID_FILE")"; then
     echo "[失败] 前端未能在 :$FRONTEND_PORT 就绪。"
     show_log_tail "$FRONTEND_LOG_FILE"
-    rm -f "$FRONTEND_PID_FILE"
+    stop_process_by_pid_file "$FRONTEND_PID_FILE" || return 1
     return 1
   fi
-  if ! frontend_is_ready; then
+  if ! service_is_owned frontend "$FRONTEND_PORT" || ! frontend_is_ready; then
     echo "[失败] 前端已监听，但页面或 API 转发检查未通过。"
     show_log_tail "$FRONTEND_LOG_FILE"
+    stop_process_by_pid_file "$FRONTEND_PID_FILE" || return 1
     return 1
   fi
   echo "[就绪] 前端启动成功，页面及 API 转发正常（PID=$(cat "$FRONTEND_PID_FILE")）。"
@@ -292,13 +275,13 @@ start_frontend() {
 
 status_services() {
   local ready=0
-  if backend_is_ready; then
+  if service_is_owned backend "$BACKEND_PORT" && backend_is_ready; then
     echo "[就绪] 后端正常，Numba 与 worker 预热完成。"
   else
     echo "[未就绪] 后端未运行或仍在预热。"
     ready=1
   fi
-  if frontend_is_ready; then
+  if service_is_owned frontend "$FRONTEND_PORT" && frontend_is_ready; then
     echo "[就绪] 前端正常，页面及 API 转发可访问。"
   else
     echo "[未就绪] 前端页面或 API 转发不可用。"
@@ -335,19 +318,23 @@ start_services() {
 }
 
 stop_services() {
-  stop_process_by_pid_file "$BACKEND_PID_FILE"
-  stop_process_by_pid_file "$FRONTEND_PID_FILE"
-  stop_ports_if_busy "$BACKEND_PORT"
-  stop_ports_if_busy "$FRONTEND_PORT"
-  for pid_file in "$BACKEND_PID_FILE" "$FRONTEND_PID_FILE"; do
-    rm -f "$pid_file"
-  done
-  echo "[停止] 已向前后端发送停止信号。"
+  local failed=0
+  stop_process_by_pid_file "$BACKEND_PID_FILE" || failed=1
+  stop_process_by_pid_file "$FRONTEND_PID_FILE" || failed=1
+  if is_port_listening "$BACKEND_PORT" || is_port_listening "$FRONTEND_PORT"; then
+    echo "[停止阻止] 端口仍被占用；不会按端口停止未知进程。"
+    failed=1
+  fi
+  if [[ "$failed" != "0" ]]; then
+    echo "[停止失败] 请核验进程归属后重试；不会继续自动重启。"
+    return 1
+  fi
+  echo "[停止] 本项目已记录的前后端服务均已停止。"
   echo "[任务保留] 不终止独立 ETL 执行器；如需停止下载，请在网页运行记录中取消任务。"
 }
 
 restart_services() {
-  stop_services
+  stop_services || return 1
   sleep 1
   start_services
 }

@@ -131,7 +131,7 @@ def test_dependency_plan_endpoint_validates_without_saving_or_starting(store, mo
     from backend.services import etl_routes
     monkeypatch.setattr(etl_routes, 'get_store', lambda: store)
     app = FastAPI(); app.include_router(etl_routes.router)
-    client = TestClient(app)
+    client = TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1')
     path = '/api/data-sources/etl/dependencies/plan'
     definition = small_plan()
     response = client.post(path, json={'definition':definition})

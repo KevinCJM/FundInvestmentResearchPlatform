@@ -1,7 +1,8 @@
-"""Bounded, same-origin source-center API; never echo credentials or input errors."""
+"""Bounded, local-only source-center writes; never echo credentials or input errors."""
 from __future__ import annotations
 import json
 import os
+from ipaddress import ip_address
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
@@ -53,6 +54,20 @@ def require_same_origin(request: Request) -> None:
 
 
 async def body(request: Request) -> dict:
+    # Origin is CSRF protection, not authentication. CLI clients can omit it.
+    # Only the socket peer is trusted; forwarded headers never grant access.
+    try:
+        peer = ip_address(request.client.host) if request.client else None
+        if peer is not None and peer.version == 6 and peer.ipv4_mapped is not None:
+            peer = peer.ipv4_mapped
+        peer_is_local = peer is not None and peer.is_loopback
+    except ValueError:
+        peer_is_local = False
+    if not peer_is_local or request.url.hostname not in {'localhost', '127.0.0.1', '::1'}:
+        raise HTTPException(403, detail={
+            'code': 'SOURCE_LOCAL_ONLY',
+            'message': '数据源配置和任务操作仅允许后端本机访问，请使用 localhost 或 127.0.0.1。',
+        })
     require_same_origin(request)
     chunks, size = [], 0
     async for chunk in request.stream():

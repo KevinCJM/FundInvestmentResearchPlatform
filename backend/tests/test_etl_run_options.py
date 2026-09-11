@@ -167,7 +167,7 @@ def test_matching_history_does_not_import_other_product(store, monkeypatch):
 def test_template_endpoint_only_returns_draft_then_normal_save(store, monkeypatch):
     monkeypatch.setattr(etl_routes, "get_store", lambda: store)
     app = FastAPI(); app.include_router(etl_routes.router)
-    client = TestClient(app); base = "/api/data-sources/etl"
+    client = TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1'); base = "/api/data-sources/etl"
     draft = client.get(base + "/templates/tushare-funds")
     assert draft.status_code == 200, draft.text
     assert client.get(base + "/workflows").json() == []

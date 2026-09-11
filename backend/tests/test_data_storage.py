@@ -306,16 +306,23 @@ def test_corrupt_config_fails_closed(setup):
 
 
 def test_restart_tolerates_listener_exiting_between_checks():
+    import re
     import subprocess
     script = (Path(__file__).resolve().parents[2] / 'start_services.sh').read_text()
-    function = 'stop_ports_if_busy() {' + script.split('stop_ports_if_busy() {', 1)[1].split('\nstart_backend()', 1)[0]
+    function = '\n'.join(re.search(rf'^{name}\(\) \{{\n.*?^\}}', script, re.M | re.S).group()
+                         for name in ('stop_services', 'restart_services'))
     harness = ('set -euo pipefail\n' + function + '\n'
-               'is_port_listening() { return 0; }\n'
-               'lsof() { return 1; }\n'
+               'BACKEND_PID_FILE=backend.pid; FRONTEND_PID_FILE=frontend.pid\n'
+               'BACKEND_PORT=8000; FRONTEND_PORT=5173\n'
+               'stop_process_by_pid_file() { :; }\n'
+               'is_port_listening() { return 1; }\n'
+               'kill() { echo unexpected-kill; return 1; }\n'
                'sleep() { :; }\n'
-               'stop_ports_if_busy 8000\nprintf "restart-continues"\n')
+               'start_services() { printf "restart-continues"; }\n'
+               'restart_services\n')
     result = subprocess.run(['bash', '-c', harness], capture_output=True, text=True)
-    assert result.returncode == 0 and result.stdout == 'restart-continues'
+    assert result.returncode == 0 and result.stdout.endswith('restart-continues')
+    assert 'unexpected-kill' not in result.stdout
 
 
 def test_local_api_probe_save_cancel_and_remote_denial(setup, monkeypatch):

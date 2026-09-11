@@ -7,16 +7,16 @@ interface ResearchContextValue {
   settings: PitSettingsPayload | null
   /** This tab's temporary viewing choice, or null while it follows the system. */
   override: PitViewOverride | null
-  /** True only when this tab's口径 actually differs from the system default. */
+  /** An explicit tab override, unless confirmed identical to the system. */
   temporary: boolean
   /** The release this tab is viewing when it overrides the system one. */
   overrideRelease: PitReleaseSummary | null
-  /** True while no release is in effect — every row on disk is in play. */
-  noPit: boolean
+  /** Null means the current口径 is unknown, not that PIT is off. */
+  noPit: boolean | null
   /** One short string a result footnote can print verbatim. */
   label: string
   asOf: string | null
-  runMode: RunMode
+  runMode: RunMode | null
   loading: boolean
   error: string
   /** Change this tab's viewing口径; null restores the system default. */
@@ -58,8 +58,8 @@ export function ResearchContextProvider({ children }: { children: ReactNode }) {
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return
-        // Losing the badge is a nuisance; blocking the page would be worse, and
-        // the backend already falls back to no-PIT on its own.
+        // A failed settings read says nothing about the server's active口径.
+        // Do not present a previous response as the current setting.
         setSettings(null)
         setError(reason instanceof Error ? reason.message : String(reason))
         setLoading(false)
@@ -91,23 +91,23 @@ export function ResearchContextProvider({ children }: { children: ReactNode }) {
   }, [override, settings])
 
   const value = useMemo<ResearchContextValue>(() => {
-    const system = settings?.effective
-    let noPit = system?.no_pit ?? true
-    let label = system?.label ?? NO_PIT_LABEL
+    const system = !loading && !error ? settings?.effective : undefined
+    let noPit: boolean | null = system?.no_pit ?? null
+    let label = system?.label ?? 'PIT 口径未知'
     let asOf = system?.as_of ?? null
-    let runMode: RunMode = system?.run_mode ?? 'RESEARCH'
+    let runMode: RunMode | null = system?.run_mode ?? null
 
     if (override?.off) {
       noPit = true
       label = NO_PIT_LABEL
       asOf = null
       runMode = 'RESEARCH'
-    } else if (override && (overrideRelease || override.asOf)) {
+    } else if (override && ((!loading && !error && overrideRelease) || (!override.releaseId && override.asOf))) {
       noPit = false
-      // A version carries its own day and mode; a bare day is research mode.
-      runMode = override.runMode ?? overrideRelease?.run_mode ?? 'RESEARCH'
+      // Match the server: omitted mode inherits the version, then the system.
+      runMode = override.runMode ?? overrideRelease?.run_mode ?? system?.run_mode ?? null
       asOf = override.asOf ?? overrideRelease?.as_of ?? overrideRelease?.available_through ?? null
-      const mode = runMode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'
+      const mode = runMode === null ? '运行模式未知' : runMode === 'STRICT_PIT' ? '严格 PIT' : '研究模式'
       const vintage = overrideRelease?.name ?? '最新数据（未封版）'
       label = `站在 ${asOf} · ${vintage} · ${mode}`
     }
@@ -116,9 +116,9 @@ export function ResearchContextProvider({ children }: { children: ReactNode }) {
     // deviation: picking the version already applied must not raise a warning.
     const temporary =
       Boolean(override) &&
-      (noPit !== (system?.no_pit ?? true) ||
-        asOf !== (system?.as_of ?? null) ||
-        runMode !== (system?.run_mode ?? 'RESEARCH') ||
+      (!system || noPit !== system.no_pit ||
+        asOf !== system.as_of ||
+        runMode !== system.run_mode ||
         (override?.off ? null : (overrideRelease?.id ?? null)) !==
           (settings?.settings.active_release_id ?? null))
     if (temporary) label = `临时口径 · ${label}`
@@ -154,6 +154,9 @@ export function useResearchContext(): ResearchContextValue {
  * Unlike `useResearchContext` this tolerates no provider: a page that merely
  * annotates its inputs should not fail to render outside the app shell.
  */
-export function useResearchDay(): string | null {
-  return useContext(ResearchContextContext)?.asOf ?? null
+export function useResearchDay(): string | null | undefined {
+  const context = useContext(ResearchContextContext)
+  // Undefined means unknown; null means a confirmed view without a cutoff.
+  if (!context || context.noPit === null || context.runMode === null) return undefined
+  return context.asOf
 }

@@ -251,7 +251,8 @@ def test_missing_owner_is_marked_interrupted_and_resumes(store, monkeypatch):
 def test_routes_same_origin_readonly_and_real_plan_run(store, monkeypatch):
     monkeypatch.setattr(etl_routes, 'get_store', lambda: store)
     monkeypatch.setattr(acquisition, 'fetch_with_retry', nav_fetch)
-    app=FastAPI(); app.include_router(etl_routes.router); client=TestClient(app)
+    app=FastAPI(); app.include_router(etl_routes.router)
+    client=TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1')
     path='/api/data-sources/etl'
     assert client.get(path+'/workflows').status_code == 200
     assert client.post(path+'/validate', json={'definition':plan(store)}).json()['valid']

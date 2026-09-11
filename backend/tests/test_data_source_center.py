@@ -124,7 +124,7 @@ def client(monkeypatch, store):
     monkeypatch.setattr(routes, "get_store", lambda: store)
     app = FastAPI()
     app.include_router(routes.router)
-    return TestClient(app)
+    return TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1')
 
 
 def sample_for(config):

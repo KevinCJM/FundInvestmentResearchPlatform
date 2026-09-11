@@ -91,7 +91,8 @@ async def plan_dependencies(request: Request):
 
 @router.post("/runs")
 async def start(request: Request):
-    return await invoke(etl_service.start, get_store(), await body(request))
+    payload = await body(request)
+    return await invoke(etl_service.start, get_store(), payload)
 
 
 @router.get("/runs")
@@ -160,7 +161,8 @@ async def resume(identifier: str, request: Request):
 
 @router.post('/runs/{identifier}/recovery', status_code=202)
 async def recover(identifier: str, request: Request):
-    return await invoke(etl_recovery.start, get_store(), identifier, await body(request))
+    payload = await body(request)
+    return await invoke(etl_recovery.start, get_store(), identifier, payload)
 
 
 @router.get('/runs/{identifier}/recovery')

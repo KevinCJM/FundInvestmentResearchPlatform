@@ -2104,6 +2104,8 @@ export default function ProductDetail() {
                       <span className="mt-1 block text-xs font-normal text-slate-500">
                         {researchAsOf
                           ? '仅本页生效，覆盖平台研究日。'
+                          : platformAsOf === undefined
+                            ? '平台 PIT 口径尚未确认；未填时仍由服务端确定口径。'
                           : platformAsOf
                             ? `未填则跟随平台研究日 ${platformAsOf}。`
                             : '未填则使用磁盘上的全部数据。'}

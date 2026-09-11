@@ -20,7 +20,7 @@ def client(tmp_path, monkeypatch):
     store = SourceStore(tmp_path); store.seed()
     monkeypatch.setattr(routes, 'get_store', lambda: store)
     app = FastAPI(); app.include_router(routes.router)
-    return TestClient(app), store
+    return TestClient(app, client=('127.0.0.1', 1234), base_url='http://127.0.0.1'), store
 
 
 def test_config_revision_and_readonly_boundary(client, monkeypatch):

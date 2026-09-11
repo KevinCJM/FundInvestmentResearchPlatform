@@ -793,10 +793,30 @@ def _load_product_research_points(
     date_column = next((name for name in ("date", "nav_date", "trade_date") if name in frame.columns), None)
     if frame.empty or date_column is None or column not in frame.columns:
         raise ValueError(f"该产品没有可用的{label}数据；请选择已有数据的研究口径。")
+    context = resolve_request_context(DATA_DIR)
+    as_of = context.as_of
+    strict_nav = kind == "fund" and context.strict
+    if strict_nav:
+        if not as_of:
+            raise ValueError("严格 PIT 基金分析必须指定研究日。")
+        if "ann_date" not in frame.columns:
+            raise ValueError("严格 PIT 基金分析缺少公告日期，不能确认净值当时可得。")
+        frame = frame.copy()
+        frame[date_column] = _date_values(frame[date_column])
+        frame["ann_date"] = _date_values(frame["ann_date"])
+        historical = frame[date_column] <= pd.Timestamp(as_of)
+        invalid_ann = frame["ann_date"].isna() | (frame["ann_date"] < frame[date_column])
+        if (historical & invalid_ann).any():
+            raise ValueError("严格 PIT 基金分析的公告日期缺失或无效，不能确认净值当时可得。")
+        # Filter before deduplication so a late revision cannot replace the
+        # version actually knowable at the cutoff. Future NAV dates stay in a
+        # separate evaluation lane and never become research input.
+        frame = frame[~historical | (frame["ann_date"] <= pd.Timestamp(as_of))]
+        frame = frame.sort_values([date_column, "ann_date"], kind="stable")
     frame = frame[[date_column, column]].rename(columns={date_column: "date", column: "close"}).copy()
     frame["date"] = _date_values(frame["date"])
     frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
-    frame = frame.dropna(subset=["date"]).sort_values("date").drop_duplicates("date", keep="last")
+    frame = frame.dropna(subset=["date"]).sort_values("date", kind="stable").drop_duplicates("date", keep="last")
     if frame.empty:
         raise ValueError(f"{label}没有有效日期。")
     warnings = []
@@ -814,27 +834,30 @@ def _load_product_research_points(
             warnings.append("缺少可用交易日历，不能判定整行缺失；统计使用相邻已记录观察值。")
     else:
         warnings.append("净值按已披露日期排列；未提供产品对应市场日历，无法识别整行漏报或保证严格日频。")
-    if basis == "adjusted_nav":
+    if strict_nav:
+        warnings.append("严格 PIT 已按公告日期过滤净值；净值所属日期仅作为观察轴，不代表完整历史修订版本认证。")
+    elif basis == "adjusted_nav":
         warnings.append("按净值所属日期进行历史研究，未按公告日期还原当时可得信息。")
     warnings.append("年化波动按每年252个收益观察值折算；非日频净值应谨慎解释。")
     points = [
         {"date": row.date.strftime("%Y-%m-%d"), "close": float(row.close) if pd.notna(row.close) else None}
         for row in frame.itertuples(index=False)
     ]
-    as_of = _pit_as_of()
     research = _pit_cut(points, as_of)
     if not research:
         raise ValueError(f"研究日 {as_of} 及之前没有该产品的{label}数据；请前移研究日或关闭 PIT 口径查看。")
     # The rows after the研究日 are returned in a lane of their own so no caller
     # can mistake them for research input: they exist only to let 未来模拟 be
     # scored against what actually happened.
-    future = points[len(research):] if as_of else []
+    future = [point for point in points if point["date"] > as_of] if as_of else []
     if as_of:
         warnings.append(f"已按研究日 {as_of} 截断，之后的数据不参与计算。")
     return research, {
         "observationFrequency": frequency,
         "warnings": warnings,
         "asOf": as_of,
+        "runMode": context.run_mode,
+        "availabilityBasis": "announcement_date" if strict_nav else "observation_date",
     }, future
 
 
@@ -1414,10 +1437,12 @@ def instrument_product_analysis(
     if record is None:
         raise HTTPException(status_code=404, detail=f"未找到编号为 {product_id} 的产品")
     ts_code = str(record.get("ts_code") or product_id)
-    points = _load_timeseries(kind, ts_code)
     try:
         parameters = request.model_dump()
         research_points, source_context, future_points = _load_product_research_points(kind, ts_code, request.analysis_basis)
+        # Fund technical panels must use the same announcement-filtered lane as
+        # return statistics; loading the generic chart here would leak late NAVs.
+        points = research_points if kind == "fund" and source_context.get("runMode") == "STRICT_PIT" else _load_timeseries(kind, ts_code)
         regime_lineage = None
         if request.regime is not None:
             regime_input, regime_lineage = _resolve_product_regime_reference(

@@ -293,6 +293,87 @@ def test_research_loader_cannot_read_unpublished_physical_snapshot_file(tmp_path
         instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
 
 
+def _fund_pit_fixture(tmp_path, monkeypatch, rows, *, mode="STRICT_PIT"):
+    from pit.context import ResearchContext
+
+    monkeypatch.delenv("TUSHARE_DATA_DIR", raising=False)
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_routes, "resolve_request_context", lambda _: ResearchContext(
+        as_of="2025-01-11", run_mode=mode,
+    ))
+    frame = pd.DataFrame(rows)
+    frame["ts_code"] = "000001.OF"
+    frame.to_parquet(tmp_path / "fund_nav_df.parquet")
+
+
+def test_strict_fund_research_filters_announcements_before_revision_dedup(tmp_path, monkeypatch):
+    _fund_pit_fixture(tmp_path, monkeypatch, {
+        "nav_date": [20250108, 20250108, 20250109, 20250110, 20250113],
+        "ann_date": [20250109, 20250112, 20250111, 20250112, 20250114],
+        "adj_nav": [1.0, 99.0, 1.1, 88.0, 1.2],
+    })
+    points, context, future = instrument_routes._load_product_research_points(
+        "fund", "000001.OF", "adjusted_nav",
+    )
+    assert points == [{"date": "2025-01-08", "close": 1.0}, {"date": "2025-01-09", "close": 1.1}]
+    assert future == [{"date": "2025-01-13", "close": 1.2}]
+    assert context["availabilityBasis"] == "announcement_date"
+    assert context["runMode"] == "STRICT_PIT"
+    assert not any("未按公告日期" in warning for warning in context["warnings"])
+
+
+@pytest.mark.parametrize("announcements", [None, [None], ["invalid"], [20250101]])
+def test_strict_fund_analysis_rejects_unknown_or_invalid_announcements(tmp_path, monkeypatch, announcements):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    rows = {"nav_date": [20250110], "adj_nav": [1.0]}
+    if announcements is not None:
+        rows["ann_date"] = announcements
+    _fund_pit_fixture(tmp_path, monkeypatch, rows)
+    monkeypatch.setattr(instrument_routes, "_load_instruments", lambda _: pd.DataFrame([{"ts_code": "000001.OF"}]))
+    monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda *_: pytest.fail("unfiltered chart must not load"))
+    app = FastAPI()
+    app.include_router(instrument_routes.router)
+    with TestClient(app) as client:
+        response = client.post("/api/instruments/products/000001.OF/analysis?kind=fund", json={})
+    assert response.status_code == 422
+    assert "公告日期" in response.json()["detail"]
+
+
+def test_strict_fund_analysis_all_panels_share_filtered_research_input(tmp_path, monkeypatch):
+    _fund_pit_fixture(tmp_path, monkeypatch, {
+        "nav_date": [20250108, 20250109, 20250110, 20250113],
+        "ann_date": [20250109, 20250110, 20250112, 20250114],
+        "adj_nav": [1.0, 1.1, 88.0, 1.2],
+    })
+    monkeypatch.setattr(instrument_routes, "_load_instruments", lambda _: pd.DataFrame([{"ts_code": "000001.OF"}]))
+    monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda *_: pytest.fail("unfiltered chart must not load"))
+    captured = {}
+    original = instrument_routes.build_product_analysis_response
+
+    def capture(**kwargs):
+        captured.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(instrument_routes, "build_product_analysis_response", capture)
+    response = instrument_routes.instrument_product_analysis("000001.OF", instrument_routes.ProductAnalysisRequest(), "fund")
+    assert captured["points"] is captured["research_points"]
+    assert [point["close"] for point in captured["points"]] == [1.0, 1.1]
+    assert [point["date"] for point in captured["future_points"]] == ["2025-01-13"]
+    assert response["returnStatistics"]["sampleSize"] == 1
+    assert response["returnStatistics"]["mean"] == pytest.approx(10.0)
+    assert response["execution"]["python_fallback"] == 0
+
+
+def test_research_mode_retains_explicit_hindsight_warning_without_announcement_metadata(tmp_path, monkeypatch):
+    _fund_pit_fixture(tmp_path, monkeypatch, {"nav_date": [20250110, 20250113], "adj_nav": [1.0, 1.2]}, mode="RESEARCH")
+    points, context, future = instrument_routes._load_product_research_points("fund", "000001.OF", "adjusted_nav")
+    assert points == [{"date": "2025-01-10", "close": 1.0}]
+    assert future == [{"date": "2025-01-13", "close": 1.2}]
+    assert any("未按公告日期" in warning for warning in context["warnings"])
+
+
 @pytest.mark.parametrize("selection", [{"state_id": "absent"}, {"segment_id": "segment-99"}, {"state_id": "bull", "segment_id": "segment-0"}])
 def test_route_rejects_invalid_published_state_or_segment(tmp_path, monkeypatch, selection):
     from fastapi import HTTPException

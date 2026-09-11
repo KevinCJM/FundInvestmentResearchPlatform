@@ -130,7 +130,7 @@ export default function ProductPoolSelection() {
         <label className="text-sm text-slate-700">研究名称<input value={name} onChange={(event) => setName(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
         <button type="button" disabled={creating || selectedIds.length === 0} onClick={() => void createSnapshot()} className="rounded-lg bg-emerald-800 px-5 py-2 text-sm font-semibold text-white disabled:bg-emerald-300">生成锁定快照</button>
       </div>
-      <p className="mt-3 text-xs text-slate-500">{platformAsOf ? `平台知识截止 ${platformAsOf}；本页日期用于筛选版本生效范围，不等于历史时点认证。` : '平台使用全部磁盘数据；产品池研究日只定义范围，历史可得性仍须单独验证。'}</p>
+      <p className="mt-3 text-xs text-slate-500">{platformAsOf === undefined ? '平台 PIT 口径尚未确认；本页研究日只定义产品范围，实际计算口径以服务端结果为准。' : platformAsOf ? `平台知识截止 ${platformAsOf}；本页日期用于筛选版本生效范围，不等于历史时点认证。` : '平台使用全部磁盘数据；产品池研究日只定义范围，历史可得性仍须单独验证。'}</p>
       {platformAsOf && researchDate > platformAsOf && <p role="alert" className="mt-2 text-sm text-amber-800">产品范围研究日晚于平台知识截止。后续计算受平台口径限制，请先统一日期。</p>}
     </section>
 

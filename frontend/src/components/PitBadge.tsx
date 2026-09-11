@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useResearchContext } from '../app/ResearchContext'
-import type { RunMode } from '../services/pit'
 
 /**
  *口径 indicator and per-tab口径 switch, in the existing header row.
@@ -13,11 +12,14 @@ import type { RunMode } from '../services/pit'
  * header's row rather than adding a band to every page.
  */
 export default function PitBadge() {
-  const { settings, override, temporary, overrideRelease, noPit, label, asOf, runMode, loading, applyOverride } =
+  const { settings, override, temporary, overrideRelease, noPit, label, asOf, runMode, loading, error, refresh, applyOverride } =
     useResearchContext()
   const [open, setOpen] = useState(false)
   const [draftDay, setDraftDay] = useState(override?.asOf ?? '')
-  if (loading && !settings) return null
+  // Retain the initial loading placeholder; a failed read must remain visible.
+  if (loading && !settings && !error && !override) return null
+  const unknown = noPit === null || runMode === null
+  const systemLabel = loading ? '正在读取' : error ? '未知（读取失败）' : settings?.effective.label ?? '未知'
 
   // The badge answers one question — on or off, and if on, which口径. The day,
   // the mode and the system default are one click away in the popover.
@@ -25,7 +27,9 @@ export default function PitBadge() {
     ? (overrideRelease?.name ?? asOf ?? '最新数据')
     : (settings?.release?.name ?? asOf ?? '最新数据')
   const strict = runMode === 'STRICT_PIT'
-  const tone = temporary
+  const tone = unknown
+    ? 'border-amber-400/60 bg-amber-400/10 text-amber-200'
+    : temporary
     ? 'border-sky-400/60 bg-sky-400/10 text-sky-200'
     : noPit
       ? 'border-slate-600 text-slate-300'
@@ -48,14 +52,14 @@ export default function PitBadge() {
         onClick={() => setOpen((value) => !value)}
         data-testid="pit-badge"
       >
-        <span>{noPit ? 'PIT 关闭' : `PIT 打开：${name}`}</span>
+        <span>{unknown ? 'PIT 口径未知' : noPit ? 'PIT 关闭' : `PIT 打开：${name}`}</span>
         {temporary && (
           <span className="group relative flex items-center" title="">
             <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold leading-none text-white">
               !
             </span>
             <span className="pointer-events-none absolute right-0 top-full z-50 mt-1.5 hidden w-64 rounded border border-slate-200 bg-white p-2 text-left text-[11px] font-normal leading-4 text-slate-700 shadow-lg group-hover:block">
-              本页正在临时查看的口径与系统默认（{settings?.effective.label ?? '无 PIT 口径'}）不一致，只影响这个标签页；点开可跟随系统默认。
+              {loading || error ? '本页已指定临时口径；系统默认尚未确认，不能判断两者是否一致。' : `本页正在临时查看的口径与系统默认（${systemLabel}）不一致，只影响这个标签页；点开可跟随系统默认。`}
             </span>
           </span>
         )}
@@ -70,13 +74,17 @@ export default function PitBadge() {
             onClick={() => setOpen(false)}
           />
           <div
-            className="absolute right-0 z-50 mt-2 w-80 rounded border border-slate-200 bg-white p-3 text-left text-xs text-slate-700 shadow-lg"
+            className="absolute left-0 z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] rounded border border-slate-200 bg-white p-3 text-left text-xs text-slate-700 shadow-lg xl:left-auto xl:right-0"
             data-testid="pit-switcher"
           >
             <p className="font-semibold text-slate-900">本页查看口径</p>
             <p className="mt-1 text-slate-500">
-              系统默认：{settings?.effective.label ?? '无 PIT 口径'}。此处的切换只影响你自己的这个标签页，不改变平台设置。
+              系统默认：{systemLabel}。此处的切换只影响你自己的这个标签页，不改变平台设置。
             </p>
+            {error && <div role="alert" className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">
+              <p>PIT 设置读取失败：{error}。未确认系统口径，请重试；实际结果以服务端返回的口径为准。</p>
+              <button type="button" onClick={refresh} disabled={loading} className="mt-2 rounded border border-amber-300 px-2 py-1 font-semibold disabled:opacity-50">{loading ? '正在重试…' : '重试读取 PIT 口径'}</button>
+            </div>}
 
             <div className="mt-2 space-y-1">
               <button

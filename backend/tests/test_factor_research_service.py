@@ -99,6 +99,55 @@ def test_revision_locks_purging_and_input_snapshot(context):
     assert again["latest_scores"] == run["latest_scores"]
 
 
+def test_missing_forward_labels_preserve_saved_groups_and_existing_runs(context, monkeypatch):
+    from backend.factor_research import numba_kernels as kernels
+    service, fields, _ = context
+    study = service.save_study(fields)
+    original = service.run_study(study["id"], 1)
+    original_path = service.artifacts.root / f"{original['id']}.json"
+    original_bytes = original_path.read_bytes()
+    label_kernel = kernels.labels_kernel
+
+    def sparse_labels(*args):
+        labels = label_kernel(*args)
+        labels[::2, 1] = np.nan
+        return labels
+
+    monkeypatch.setattr(kernels, "labels_kernel", sparse_labels)
+    result = service.run_study(study["id"], 1)
+    checked = 0
+    for period in result["periods"]:
+        scores = pd.Series(period["scores"], dtype=float)
+        labels = np.array(period["forward_returns"], dtype=float)
+        ranks = scores.rank(method="average")
+        finite = np.isfinite(scores.to_numpy())
+        expected = np.full(fields["quantiles"], np.nan)
+        if finite.sum() >= 3:
+            groups = np.minimum(fields["quantiles"] - 1,
+                                np.floor((ranks - 1) * fields["quantiles"] / finite.sum()))
+            for group in range(fields["quantiles"]):
+                observed = labels[(groups == group).to_numpy() & np.isfinite(labels)]
+                if observed.size:
+                    expected[group] = observed.mean()
+            checked += 1
+        np.testing.assert_allclose(np.array(period["group_returns"], dtype=float), expected, equal_nan=True)
+    assert checked >= 3
+    for sample in ("in_sample", "out_of_sample"):
+        for group, summary in enumerate(result["summaries"][sample]["group_returns"]):
+            observed = [period["group_returns"][group] for period in result["periods"]
+                        if period["sample"] == sample and period["group_returns"][group] is not None]
+            assert summary["observations"] == len(observed)
+            assert summary["mean"] == (pytest.approx(np.mean(observed)) if observed else None)
+    assert result["id"] != original["id"]
+    assert result["latest_scores"] == original["latest_scores"]
+    assert result["curves"] == original["curves"]
+    assert original_path.read_bytes() == original_bytes
+    assert service.artifacts.get(original["id"]) == original
+    assert service.artifacts.get(result["id"]) == result
+    assert result["engine_version"] == "factor-research-njit-2.0.1"
+    assert result["execution"]["engine_version"] == result["engine_version"]
+
+
 def test_missing_ann_date_is_never_silently_backfilled(context):
     service, fields, market = context
     frame = pd.read_parquet(market / "etf_daily_df.parquet").drop(columns="ann_date")

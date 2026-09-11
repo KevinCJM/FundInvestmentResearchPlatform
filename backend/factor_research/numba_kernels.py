@@ -193,19 +193,25 @@ def diagnostics_kernel(normalized, scores, labels, quantiles):
     rank_ic = np.full((ds, factors + 1), np.nan)
     groups = np.full((ds, quantiles), np.nan)
     counts = np.zeros((ds, factors + 1))
+    # Reuse two owned cross-sectional buffers. Pairwise label filtering must
+    # never mutate signal-day scores or change the subsequent group assignment.
+    x = np.empty(assets)
+    y = np.empty(assets)
     for d in range(ds):
         for f in range(factors + 1):
-            x = np.ascontiguousarray(scores[d] if f == factors else normalized[d, :, f])
-            y = labels[d].copy()
             for a in range(assets):
-                if not np.isfinite(x[a]) or not np.isfinite(y[a]):
+                value = scores[d, a] if f == factors else normalized[d, a, f]
+                label = labels[d, a]
+                if not np.isfinite(value) or not np.isfinite(label):
                     x[a] = np.nan
                     y[a] = np.nan
                 else:
+                    x[a] = value
+                    y[a] = label
                     counts[d, f] += 1
             ic[d, f] = correlation_kernel(x, y)
             rank_ic[d, f] = correlation_kernel(ranks_kernel(x), ranks_kernel(y))
-        ranks = ranks_kernel(scores[d].copy())
+        ranks = ranks_kernel(scores[d])
         finite = 0
         for a in range(assets):
             finite += np.isfinite(scores[d, a])

@@ -178,5 +178,53 @@ describe('DataQuality', () => {
 
     expect(await screen.findByText('深度数据质量统计未提供有效的固定签名 NJIT 执行证明')).toBeInTheDocument();
     expect(screen.queryByText('产品键无重复')).not.toBeInTheDocument();
+    for (const label of ['受影响产品', '净值突变']) {
+      const card = within(screen.getByRole('region', { name: '数据质量概览' })).getByText(label).closest('article')!;
+      expect(within(card).getByText('未检查')).toBeInTheDocument();
+      expect(within(card).queryByText('通过')).not.toBeInTheDocument();
+    }
+  });
+
+  it('质量接口失败显示未检查，重新检查成功后真实零值可以通过', async () => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    let failed = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === '/api/data/quality'
+      ? { ok: !failed, status: failed ? 503 : 200, json: async () => ({ ...qualityPayload, status: 'healthy', issues: [],
+        summary: { ...qualityPayload.summary, checks_total: 4, checks_passed: 4, checks_warning: 0, affected_products: 0, nav_anomaly_products: 0, nav_anomaly_events: 0 },
+        checks: qualityPayload.checks.map(check => ({ ...check, status: 'passed' })),
+      }) } as Response : originalFetch(input, init));
+    render(<MemoryRouter><DataQuality /></MemoryRouter>);
+    await screen.findByText('深度质量检查结果暂不可用。');
+    const overview = screen.getByRole('region', { name: '数据质量概览' });
+    for (const label of ['受影响产品', '净值突变']) {
+      const card = within(overview).getByText(label).closest('article')!;
+      expect(within(card).getByText('--')).toBeInTheDocument();
+      expect(within(card).getByText('未检查')).toBeInTheDocument();
+    }
+    failed = false;
+    await userEvent.click(within(screen.getByRole('heading', { name: '数据质量监控与治理' }).closest('header')!).getByRole('button', { name: '重新检查' }));
+    await waitFor(() => expect(screen.queryByText('深度质量检查结果暂不可用。')).not.toBeInTheDocument());
+    for (const label of ['受影响产品', '净值突变']) {
+      const card = within(overview).getByText(label).closest('article')!;
+      expect(within(card).getByText('0')).toBeInTheDocument();
+      expect(within(card).getByText('通过')).toBeInTheDocument();
+    }
+  });
+
+  it.each(['unavailable', 'missing', 'passed-in-unavailable-report'] as const)('汇总零值但净值规则 %s 不能通过', async (ruleState) => {
+    const originalFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => String(input) === '/api/data/quality'
+      ? { ok: true, json: async () => ({ ...qualityPayload, status: 'unavailable', issues: [],
+        summary: { ...qualityPayload.summary, affected_products: 0, nav_anomaly_products: 0, checks_total: 4, checks_passed: 4, checks_unavailable: ruleState === 'passed-in-unavailable-report' ? 0 : 1 },
+        checks: ruleState === 'missing' ? [] : qualityPayload.checks.map(check => ({ ...check, status: ruleState === 'passed-in-unavailable-report' ? 'passed' : 'unavailable' })),
+      }) } as Response : originalFetch(input, init));
+    render(<MemoryRouter><DataQuality /></MemoryRouter>);
+    await screen.findByText('部分指数缺少行情覆盖');
+    for (const label of ['受影响产品', '净值突变']) {
+      const card = within(screen.getByRole('region', { name: '数据质量概览' })).getByText(label).closest('article')!;
+      expect(within(card).getByText('未检查')).toBeInTheDocument();
+      expect(within(card).getByText('--')).toBeInTheDocument();
+    }
+    expect(screen.queryByText('已接入规则全部通过')).not.toBeInTheDocument();
   });
 });

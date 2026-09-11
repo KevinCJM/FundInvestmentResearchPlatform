@@ -898,4 +898,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    uvicorn.run("app:app", host="0.0.0.0", port=args.port, reload=True)
+    uvicorn.run("app:app", host="127.0.0.1", port=args.port, reload=True, proxy_headers=False)

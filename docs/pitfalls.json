@@ -64,6 +64,7 @@
         "Keep performance benchmark, characteristic definitions and same-market/currency factor-return datasets separate; do not default US FF3 returns to China research.",
         "Use active canonical real data, exact QDII metadata semantics (非QDII is domestic), stable SSE dates and announcement lag; current snapshots do not prove full historical revision PIT.",
         "Purge training labels crossing the holdout boundary; never compress/fill missing NAV or preselect using future data availability; daily drift and both-sided turnover determine NAV costs.",
+        "Diagnostics must not mutate normalized factors, scores or labels: ascontiguousarray can alias a contiguous input. Pairwise IC filtering uses two owned asset-length work buffers reused across dates/factors; quantile assignments use unchanged signal-day scores even when future labels are missing. Version corrected results without rewriting prior run artifacts.",
         "Check reference parity and actual NJIT dispatcher calls with fixed signatures, no Python fallback and startup readiness.",
         "Run/release evidence is immutable; scheduled, expired, retired or stale releases cannot feed candidates; imports remain pending manual review.",
         "Compare scoring context and factor snapshots for drift, allowing end date/revision changes; changed definitions, weights, universe or normalization are not comparable.",
@@ -457,6 +458,7 @@
       "check_before_edit": [
         "Run full Vitest and Vite build after modifying routes, payloads, or dependencies.",
         "Compare each changed fetch payload with the backend request model or query parameters.",
+        "A failed PIT-settings read leaves the system convention unknown, not RESEARCH/no-PIT; preserve explicit tab choices separately and offer retry. Missing quality summaries or unavailable rules cannot become zero affected products or a green pass. Only completed checks justify a zero-result success.",
         "Keep chart data available as text/table and use browser checks at 320px, 768px, and 1440px when available."
       ],
       "safe_observation_methods": [
@@ -687,6 +689,8 @@
         "Keep production refresh disabled unless the deployment protects the endpoint.",
         "Keep CLI, Web, and local snapshot rebuild on the same non-blocking filesystem lock; preserve inherited child ownership and persisted heartbeat/state.",
         "ETL API restart reconnects the detached executor by run/attempt/nonce and OS process birth. Close the launcher FD without LOCK_UN; a shared open-file-description unlock would also unlock the live child. Missing heartbeats or old progress sidecars never prove success, permit duplicate work, or justify rewriting the frozen execution fingerprint.",
+        "Service restart must verify the recorded project, command, cwd, OS process birth and independent session before signalling its group. A bare PID or listening port is not ownership; unknown listeners and legacy live PID-only files fail closed. Preserve detached ETL sessions and test with isolated self-created processes only.",
+        "Source-center mutations require a loopback connection as well as Origin/Sec-Fetch validation; an absent or forged matching Origin is not authentication. Forwarded headers and an allowed-origin setting never grant a remote client write authority.",
         "Cross-date ETL collection is a non-blocking recovery warning, separate from execution/lock/artifact blockers. Preserve attempt collection windows and migration origins; use batch receipts when present, label old execution windows as estimates, and never substitute collection time for available_at or certify PIT from same-day collection. Local-only resume must not imply another supplier download.",
         "Current fund contract inception does not bound predecessor history: local 000264/000595 holdings predate their 2013/2014 contracts. Observed fund_portfolio start/end filter ann_date (000011.OF, 20150826-20210301, observed 2026-09-08), despite doc 121 saying report period. Partition by fund/announcement range and validate every announcement without silently filtering rows; preserve reports older than the range and both split halves. events_v4 freezes range_field=ann_date and isolates v3 receipts. Never discard history solely by found_date/type/liquidation. Checkpoint each leaf, confirm empties, cancel quota waits, and acknowledge caps only after replacement shards validate. Old empty markers are not proof; old nonempty day shards need a verified migration receipt.",
         "Do not wrap exhausted typed transport errors into RuntimeError: the worker intentionally hides arbitrary exception text. Preserve safe source error codes and bounded attempt context, never raw credentials/URLs; disk, programming and contract errors are not retryable network failures. Cross-version holdings recovery must verify current events_v4 contract, every nonempty shard checksum/page/row/identity/PIT field and two-confirmation empty receipts before cloning. Keep source receipts and collection times immutable, revalidate copied evidence on resume, and never treat SPLIT as complete coverage or import v3 under v4.",
@@ -828,6 +832,7 @@
         "Keep request paths on cached info tables, parquet metadata, and instrument_metrics_snapshot; stream full history only in the local builder or validator.",
         "Count each (instrument_type, ts_code) share class independently, keep ETF list_date and fund found_date series separate, and never combine issue_amount across kinds.",
         "Use adj_nav for common performance, require the product to cover the complete selected interval, reject adjusted-NAV discontinuities using unit_nav or accum_nav as a reference, and preserve quality failures as null or ranking exclusion.",
+        "STRICT_PIT fund product analysis filters ann_date at the cutoff before same-NAV-date revision deduplication and shares that filtered input across all panels. Missing, invalid or pre-NAV announcement dates on historical rows fail closed; later NAV dates remain evaluation-only. RESEARCH may retain explicit hindsight warnings; current ann_date filtering does not certify complete historical vintages.",
         "Return complete, partial, or unavailable per available section so one missing kind or snapshot does not erase the other kind's structure data."
       ],
       "safe_observation_methods": [
@@ -971,6 +976,7 @@
       "check_before_edit": [
         "Use adjusted NAV on strict_intersection only; reject other alignment modes and do not ffill, zero-fill, or silently reweight.",
         "Persist decision_date and effective_date, and apply a decision only on the next common data day.",
+        "Portfolio return paths begin after investing initial wealth 1. Drawdown peaks include that initial capital even if the first return is negative; preserve the existing output date/NAV axis and bump the kernel version rather than rewriting frozen runs.",
         "Keep run snapshots append-only and reject target deletion while a snapshot references it.",
         "Keep product rankings and portfolio research targets separate; normalize warning.message and weight paths in the frontend client."
       ],

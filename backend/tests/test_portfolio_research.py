@@ -212,6 +212,27 @@ def test_strict_intersection_adjusted_nav_and_next_day_weight_contract(tmp_path:
     assert refreshed["data_fingerprints"] != run["data_fingerprints"]
 
 
+def test_snapshot_drawdown_keeps_initial_capital_and_frozen_run(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    dates = pd.bdate_range("2025-01-02", periods=3)
+    pd.DataFrame([
+        {"ts_code": code, "date": day, "adj_nav": level}
+        for code in ("510001.SH", "510002.SH")
+        for day, level in zip(dates, (1., .9, .945))
+    ]).to_parquet(tmp_path / "etf_daily_df.parquet", index=False)
+    target = service.create_target({"name": "首期亏损", "definition": _definition()})
+    run = service.run_target(target["id"])
+    np.testing.assert_allclose(run["portfolio_nav"], [.9, .945])
+    np.testing.assert_allclose(run["drawdown"], [-.1, -.055])
+    assert run["summary"]["max_drawdown"] == pytest.approx(.1)
+    assert run["dates"] == dates[1:].strftime("%Y-%m-%d").tolist()
+    assert run["execution"]["kernel_version"] == "path-attribution-risk-3"
+    again = service.run_target(target["id"])
+    assert again["id"] != run["id"] and again["cache"]["hit"]
+    assert again["drawdown"] == run["drawdown"]
+    assert service.get_run(run["id"]) == run
+
+
 def test_investable_universe_is_validated_frozen_and_enforces_member_limits(tmp_path: Path) -> None:
     service = _service(tmp_path)
     universe = _create_universe(service, first_max_weight=0.4, second_max_weight=0.8)

@@ -17,7 +17,7 @@ export interface PitViewOverride {
   releaseId: string | null
   /** Day to stand on for this tab only. Valid on its own, with no release. */
   asOf?: string | null
-  /** Null means "whatever the viewed version says". */
+  /** Null inherits the viewed version's mode, then the system mode. */
   runMode: RunMode | null
 }
 
@@ -46,7 +46,7 @@ function normalize(value: PitViewOverride | null): PitViewOverride | null {
     releaseId: value.releaseId ?? null,
     asOf: value.asOf ?? null,
     // Preserved as-is: a version-only override leaves this null so the version
-    // answers, while a bare day defaults to research mode server-side.
+    // answers, while a bare day inherits the system mode server-side.
     runMode: value.runMode === 'STRICT_PIT' ? 'STRICT_PIT' : value.runMode === 'RESEARCH' ? 'RESEARCH' : null,
   }
 }
