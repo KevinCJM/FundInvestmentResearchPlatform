@@ -10,6 +10,7 @@ PR 更新 / Codex 摘要评论变化 / main、Dev 更新 / 手动重检 / 定时
 - `scripts/check_ai_review.py` 使用 GitHub CLI 与只读 `GITHUB_TOKEN` 收集证据；写检查使用单独的 GitHub App 安装 token。不调用模型 API，不读取项目正式数据，不需要 OpenAI API Key。
 - `.github/workflows/ai-review-tests.yml` 在普通 PR 的隔离、只读 job 中测试候选校验器和路由。它不持有 `checks:write`，不能自行发布通过结果。
 - `scripts/tests/test_ai_review.py` 使用纯本地夹具验证放行/阻断逻辑。
+- 路由中的 Python 回归命令统一经 `python3` 从当前环境解析，移除只在开发者 Mac 存在的解释器绝对路径。执行业务回归前仍须按 AGENTS.md 激活推荐虚拟环境；CI 的路由校验只验证引用和命令契约，不代表执行全部业务测试。
 
 ## 信任和版本
 
