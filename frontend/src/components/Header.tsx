@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+import { recordRecentVisit } from '../homepage/history';
 import PitBadge from './PitBadge';
 import { availableLanguages, chooseLocale, useI18n } from '../i18n/runtime';
 import { routeTranslationKey, type Locale } from '../i18n/catalogs';
@@ -20,9 +21,14 @@ const navItems = [
 export default function Header() {
   const { s, locale } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
+  const { pathname } = useLocation();
+  useEffect(() => { recordRecentVisit(pathname); setMenuOpen(false); }, [pathname]);
   const baseStyle = 'whitespace-nowrap px-3 py-2 rounded-md text-sm font-medium';
   const activeStyle = 'bg-gray-900 text-white';
   const inactiveStyle = 'text-gray-500 hover:bg-gray-700 hover:text-white';
+
+  // The landing page owns its light navigation; workspaces keep the existing shell.
+  if (pathname === '/') return null;
 
   return (
     <header className="sticky top-0 z-[60] border-b border-slate-800 bg-slate-950 shadow" data-testid="site-header">

@@ -65,7 +65,8 @@ test('PIT 设置失败显示未知并可重试恢复严格模式，不推断关�
     if (new URL(route.request().url()).pathname === '/api/pit/settings' && !unavailable) return route.fulfill({ json: strictSettings })
     return route.fulfill({ status: 503, json: { detail: '离线故障注入：PIT 设置暂不可读' } })
   })
-  await page.goto('/')
+  // PIT belongs to research workspaces; the landing page has no data context.
+  await page.goto('/product-research')
   if (page.viewportSize()!.width < 1280) await page.locator('button[aria-controls="mobile-navigation"]').click()
   const badge = page.locator('[data-testid="pit-badge"]:visible')
   await expect(badge).toHaveText('PIT 口径未知')

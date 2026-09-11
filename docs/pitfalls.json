@@ -407,7 +407,8 @@
       "symptoms": [
         "Frontend pages have many direct fetch calls whose payloads must match backend route models.",
         "Vitest can cover state and API flows while ECharts, KaTeX, responsive layout, and keyboard focus still require browser acceptance.",
-        "A route or mobile navigation change can create duplicate or inaccessible links."
+        "A route or mobile navigation change can create duplicate or inaccessible links.",
+        "Root ProcessHome uses the single existing router and shared localization; recent visits store allowlisted module IDs only. Keep landing CSS scoped and preserve workspace PIT badges. Verify dialog focus in StrictMode and a real browser. Process navigation tests use the data-free business_numeric_app fixture, not the real backend."
       ],
       "trigger_actions": [
         "edit frontend pages",

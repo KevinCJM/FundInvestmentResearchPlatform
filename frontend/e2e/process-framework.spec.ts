@@ -1,19 +1,59 @@
 import { expect, test } from '@playwright/test'
 import { taaBaseline, taaCatalog, taaPreflight } from '../src/test/tacticalAllocationFixtures'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { createServer } from 'node:net'
+import path from 'node:path'
+
+let numericApi: ChildProcess | undefined
+let numericRoot = ''
+test.beforeAll(async ({ request }) => {
+  test.setTimeout(120_000)
+  const socket = createServer()
+  await new Promise<void>((resolve, reject) => { socket.once('error', reject); socket.listen(0, '127.0.0.1', resolve) })
+  const address = socket.address()
+  if (!address || typeof address === 'string') throw new Error('No isolated fixture port')
+  await new Promise<void>(resolve => socket.close(() => resolve()))
+  numericRoot = `http://127.0.0.1:${address.port}`
+  let logs = ''
+  numericApi = spawn(process.env.INDICATOR_TEST_PYTHON || 'python3', ['-m', 'uvicorn', 'business_numeric_app:app', '--app-dir', 'tests', '--host', '127.0.0.1', '--port', String(address.port)], {
+    cwd: path.resolve(process.cwd(), '../backend'), env: { ...process.env, ALL_PROXY: '', HTTP_PROXY: '', HTTPS_PROXY: '', NO_PROXY: '127.0.0.1,localhost' }, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  numericApi.stdout?.on('data', chunk => { logs = (logs + String(chunk)).slice(-6000) })
+  numericApi.stderr?.on('data', chunk => { logs = (logs + String(chunk)).slice(-6000) })
+  numericApi.on('error', error => { logs += error.message })
+  await expect.poll(async () => {
+    if (numericApi?.exitCode != null) throw new Error(logs)
+    try { return (await request.get(`${numericRoot}/ready`, { timeout: 1000 })).ok() } catch { return false }
+  }, { timeout: 100_000 }).toBe(true)
+})
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'wait' }) })
+test.afterAll(async () => {
+  if (!numericApi || numericApi.exitCode !== null) return
+  const stopped = new Promise<void>(resolve => numericApi?.once('exit', () => resolve()))
+  numericApi.kill('SIGTERM')
+  await Promise.race([stopped, new Promise<void>(resolve => setTimeout(resolve, 5000))])
+  if (numericApi.exitCode === null) numericApi.kill('SIGKILL')
+})
+
+test.beforeEach(async ({ page }) => {
+  // Navigation regressions never proxy requests to a developer's real backend.
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url())
+    if (url.pathname.startsWith('/api/business-numeric/')) {
+      const response = await route.fetch({ url: `${numericRoot}${url.pathname}`, timeout: 15_000 })
+      await route.fulfill({ response })
+    } else await route.fulfill({ status: 404, json: { detail: 'Offline navigation fixture' } })
+  })
+})
 
 test('流程首页在当前视口完整展示且不存在水平溢出', async ({ page }) => {
   await page.goto('/')
 
-  await expect(page.getByRole('heading', { name: '公募基金量化投研流程' })).toBeVisible()
-  await expect(page.getByLabel('反馈与迭代回流至产品研究')).toBeVisible()
-  await expect(page.getByRole('heading', { name: '基金会计与管理人账务' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '完整的投研流程' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '核心能力' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '完整的投研流程' }).getByRole('link')).toHaveCount(5)
   await expect(page.getByText(/个节点/)).toHaveCount(0)
-  await expect(page.getByRole('heading', { name: '组合中心 · 真实组合库' })).toBeVisible()
-  const portfolioSolutionsBox = await page.getByRole('link', { name: /组合方案展示中心/ }).boundingBox()
-  const settingsBox = await page.getByRole('link', { name: /设置 · 公共能力/ }).boundingBox()
-  expect(portfolioSolutionsBox).not.toBeNull()
-  expect(settingsBox).not.toBeNull()
-  expect(settingsBox!.y).toBeGreaterThan(portfolioSolutionsBox!.y + portfolioSolutionsBox!.height)
+  await expect(page.getByRole('navigation', { name: '页脚导航' }).getByRole('link', { name: '设置' })).toHaveAttribute('href', '/settings')
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 })
 

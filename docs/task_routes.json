@@ -586,6 +586,9 @@
       "id": "R50",
       "task_type": "frontend_app_navigation_vite_or_shared_ui",
       "match_keywords": [
+        "homepage",
+        "首页",
+        "ProcessHome",
         "frontend",
         "React",
         "Vite",
