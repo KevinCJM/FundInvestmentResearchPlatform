@@ -28,6 +28,7 @@
   "commit_scope_guard": {
     "routing_only_allowed_globs": [
       "AGENTS.md",
+      "branch_submission_rules.md",
       "docs/ai_routing_evolution_policy.json",
       "docs/repo_map.json",
       "docs/task_routes.json",

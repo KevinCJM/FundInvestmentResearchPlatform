@@ -1,0 +1,58 @@
+name: Codex review gate
+on:
+  pull_request_target:
+    branches: [main, Dev]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
+  issue_comment:
+    types: [created, edited, deleted]
+  push:
+    branches: [main, Dev]
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: codex-review-gate
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: >-
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/Dev') &&
+      (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ai-review-publisher
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+      checks: read
+    steps:
+      - name: Read the trusted workflow version only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/check_ai_review.py
+          sparse-checkout-cone-mode: false
+      - name: Create a repository-scoped check publishing token
+        id: publisher
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.AI_REVIEW_APP_ID }}
+          private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: FundInvestmentResearchPlatform
+          permission-checks: write
+      - name: Validate and publish ai-review on each PR HEAD
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AI_REVIEW_CHECKS_TOKEN: ${{ steps.publisher.outputs.token }}
+          AI_REVIEW_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
+        shell: bash
+        run: |
+          # Every event scans all PRs, so replacement of a pending concurrency
+          # run cannot lose a base-update revalidation for another PR.
+          python3 scripts/check_ai_review.py --publish
