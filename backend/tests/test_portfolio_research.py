@@ -88,6 +88,63 @@ def _service(tmp_path: Path) -> PortfolioResearchService:
     return PortfolioResearchService(tmp_path, tmp_path)
 
 
+def _create_universe(
+    service: PortfolioResearchService,
+    *,
+    first_max_weight: float = 0.7,
+    second_max_weight: float = 0.7,
+) -> dict:
+    return service.investable_universes.create(
+        {
+            "name": "测试可投资域",
+            "research_date": "2025-01-02",
+            "version_refs": [
+                {
+                    "pool_id": "pool-1",
+                    "pool_name": "核心池",
+                    "version_id": "pool-version-1",
+                    "version_number": 1,
+                    "effective_date": "2025-01-02",
+                    "data_as_of": "2025-01-02",
+                    "content_hash": "pool-hash",
+                }
+            ],
+            "members": [
+                {
+                    "kind": "etf",
+                    "product_id": "510001",
+                    "name": "测试 ETF A",
+                    "research_status": "approved",
+                    "usage_status": "normal",
+                    "max_weight": first_max_weight,
+                    "eligible": True,
+                    "eligibility_reasons": [],
+                    "warnings": [],
+                },
+                {
+                    "kind": "etf",
+                    "product_id": "510002",
+                    "name": "测试 ETF B",
+                    "research_status": "approved",
+                    "usage_status": "normal",
+                    "max_weight": second_max_weight,
+                    "eligible": True,
+                    "eligibility_reasons": [],
+                    "warnings": [],
+                },
+            ],
+            "summary": {
+                "pool_count": 1,
+                "member_count": 2,
+                "eligible_count": 2,
+                "restricted_count": 0,
+                "watch_count": 0,
+            },
+            "content_hash": "universe-content-hash",
+        }
+    )
+
+
 def test_target_repository_versions_restart_and_reference_protection(tmp_path: Path) -> None:
     service = _service(tmp_path)
     created = service.create_target({"name": "组合 A", "definition": _definition()})
@@ -153,6 +210,69 @@ def test_strict_intersection_adjusted_nav_and_next_day_weight_contract(tmp_path:
     refreshed = service.run_target(target["id"])
     assert refreshed["cache"]["hit"] is False
     assert refreshed["data_fingerprints"] != run["data_fingerprints"]
+
+
+def test_snapshot_drawdown_keeps_initial_capital_and_frozen_run(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    dates = pd.bdate_range("2025-01-02", periods=3)
+    pd.DataFrame([
+        {"ts_code": code, "date": day, "adj_nav": level}
+        for code in ("510001.SH", "510002.SH")
+        for day, level in zip(dates, (1., .9, .945))
+    ]).to_parquet(tmp_path / "etf_daily_df.parquet", index=False)
+    target = service.create_target({"name": "首期亏损", "definition": _definition()})
+    run = service.run_target(target["id"])
+    np.testing.assert_allclose(run["portfolio_nav"], [.9, .945])
+    np.testing.assert_allclose(run["drawdown"], [-.1, -.055])
+    assert run["summary"]["max_drawdown"] == pytest.approx(.1)
+    assert run["dates"] == dates[1:].strftime("%Y-%m-%d").tolist()
+    assert run["execution"]["kernel_version"] == "path-attribution-risk-3"
+    again = service.run_target(target["id"])
+    assert again["id"] != run["id"] and again["cache"]["hit"]
+    assert again["drawdown"] == run["drawdown"]
+    assert service.get_run(run["id"]) == run
+
+
+def test_investable_universe_is_validated_frozen_and_enforces_member_limits(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    universe = _create_universe(service, first_max_weight=0.4, second_max_weight=0.8)
+    definition = _definition({"type": "manual", "weights": [0.4, 0.6]})
+    definition["universe_snapshot_id"] = universe["id"]
+    definition["components"][0]["asset_class_id"] = "equity"
+    definition["components"][0]["asset_class_name"] = "权益类"
+    definition["components"][1]["asset_class_id"] = "equity"
+    definition["components"][1]["asset_class_name"] = "权益类"
+
+    target = service.create_target({"name": "产品池约束组合", "definition": definition})
+    assert target["definition"]["universe_snapshot"]["content_hash"] == "universe-content-hash"
+    assert target["definition"]["components"][0]["asset_class_name"] == "权益类"
+    assert target["definition"]["constraints"]["single_limits"]["510001"]["hi"] == 0.4
+
+    run = service.run_target(target["id"])
+    assert run["target_definition"]["universe_snapshot_id"] == universe["id"]
+    assert run["target_definition"]["universe_snapshot"]["version_refs"][0]["version_id"] == "pool-version-1"
+
+    violating = _definition({"type": "equal_weight"})
+    violating["universe_snapshot_id"] = universe["id"]
+    violating_target = service.create_target({"name": "超限组合", "definition": violating})
+    with pytest.raises(ValidationError) as error:
+        service.run_target(violating_target["id"])
+    assert error.value.code == "PRODUCT_WEIGHT_LIMIT_EXCEEDED"
+    assert error.value.diagnostics[0]["product_id"] == "510001.SH"
+
+
+def test_investable_universe_rejects_out_of_scope_or_ineligible_component(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    universe = _create_universe(service)
+    definition = _definition()
+    definition["universe_snapshot_id"] = universe["id"]
+    definition["components"][1]["product_id"] = "510999"
+
+    with pytest.raises(ValidationError) as error:
+        service.create_target({"name": "越界产品", "definition": definition})
+
+    assert error.value.code == "COMPONENT_OUTSIDE_INVESTABLE_UNIVERSE"
+    assert error.value.diagnostics[0]["reason"] == "not_in_universe"
 
 
 def test_manual_weights_are_never_silently_normalized(tmp_path: Path) -> None:
@@ -255,14 +375,23 @@ def test_routes_crud_run_diagnose_scenario_and_export(monkeypatch, tmp_path: Pat
     run_response = client.post(f"/api/research-targets/{target['id']}/run", json={})
     assert run_response.status_code == 201
     run = run_response.json()
+    assert run["execution"]["execution_backend"] == "numba_njit_fixed_signature"
+    assert run["execution"]["request_time_compilation"] == 0
+    assert run["execution"]["object_mode"] == 0
     assert client.get("/api/research-targets").json()["items"][0]["id"] == target["id"]
     listing = client.get("/api/portfolio-runs").json()["items"]
     assert listing[0]["id"] == run["id"]
     assert "asset_returns" not in listing[0]
+    assert listing[0]["execution"]["request_time_compilation"] == 0
+
+    retrieved = client.get(f"/api/portfolio-runs/{run['id']}")
+    assert retrieved.status_code == 200
+    assert retrieved.json()["execution"]["object_mode"] == 0
 
     diagnosis = client.post(f"/api/portfolio-runs/{run['id']}/diagnose", json={})
     assert diagnosis.status_code == 200
     assert diagnosis.json()["components"]
+    assert diagnosis.json()["execution"]["request_time_compilation"] == 0
     scenario = client.post(
         f"/api/portfolio-runs/{run['id']}/scenario",
         json={"name": "测试情景", "start_date": "2025-02-01", "end_date": "2025-04-01"},
@@ -270,6 +399,7 @@ def test_routes_crud_run_diagnose_scenario_and_export(monkeypatch, tmp_path: Pat
     assert scenario.status_code == 200
     assert scenario.json()["name"] == "测试情景"
     assert scenario.json()["metrics"]
+    assert scenario.json()["execution"]["object_mode"] == 0
     exported_csv = client.get(f"/api/portfolio-runs/{run['id']}/export?format=csv&table=correlation")
     exported_zip = client.get(
         f"/api/portfolio-runs/{run['id']}/export"

@@ -1,31 +1,38 @@
 import React, { useState } from 'react';
 import { NavLink } from 'react-router-dom';
+import PitBadge from './PitBadge';
+import { availableLanguages, chooseLocale, useI18n } from '../i18n/runtime';
+import { routeTranslationKey, type Locale } from '../i18n/catalogs';
 
 const navItems = [
-  { path: '/', label: '全景驾驶舱' },
-  { path: '/research', label: '产品研究' },
-  { path: '/evaluation-plan', label: '评价方案' },
-  { path: '/indicator-studio', label: '指标中心' },
-  { path: '/manual-construction', label: '手动构建大类' },
-  { path: '/auto-classification', label: '自动构建大类' },
-  { path: '/class-allocation', label: '大类资产配置' },
-  { path: '/portfolio-construction', label: '产品组合构建' },
-  { path: '/holding-diagnosis', label: '持仓诊断' },
+  { path: '/', label: '首页' },
+  { path: '/product-research', label: '产品研究' },
+  { path: '/pre-investment', label: '投前决策' },
+  { path: '/portfolio-center', label: '组合中心' },
+  { path: '/investment-execution', label: '投中执行' },
+  { path: '/fund-accounting', label: '基金会计' },
+  { path: '/post-investment', label: '投后管理' },
+  { path: '/feedback', label: '反馈与迭代' },
+  { path: '/portfolio-solutions', label: '方案展示' },
+  { path: '/settings', label: '设置' },
 ];
 
 export default function Header() {
+  const { s, locale } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
-  const baseStyle = 'whitespace-nowrap px-4 py-2 rounded-md text-sm font-medium';
+  const baseStyle = 'whitespace-nowrap px-3 py-2 rounded-md text-sm font-medium';
   const activeStyle = 'bg-gray-900 text-white';
   const inactiveStyle = 'text-gray-500 hover:bg-gray-700 hover:text-white';
 
   return (
-    <header className="sticky top-0 z-30 bg-gray-900 shadow" data-testid="site-header">
-      <nav className="mx-auto max-w-7xl px-4 py-3 sm:px-6" aria-label="主导航">
-        <div className="flex items-center justify-between gap-3">
-          <NavLink to="/" className="shrink-0 text-sm font-bold tracking-wide text-white" aria-label="基金研究平台主页">基金研究平台</NavLink>
-          <button type="button" className="rounded-md border border-gray-600 px-3 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-violet-300 lg:hidden" aria-expanded={menuOpen} aria-controls="mobile-navigation" onClick={() => setMenuOpen((open) => !open)}>菜单</button>
-          <div className="hidden items-center space-x-1 lg:flex">
+    <header className="sticky top-0 z-[60] border-b border-slate-800 bg-slate-950 shadow" data-testid="site-header">
+      <nav className="mx-auto max-w-[1600px] px-4 py-3 sm:px-6 lg:px-8" aria-label={s('navigation.main')}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <NavLink to="/" className="shrink-0 text-sm font-bold tracking-wide text-white" aria-label={s('app.home')}>{s('app.title')}</NavLink>
+          <label className="shrink-0"><span className="sr-only">{s('i18n.language')}</span><select aria-label={s('i18n.language')} value={locale} onChange={event => void chooseLocale(event.target.value as Locale)} className="min-h-10 max-w-[100px] rounded-md border border-slate-600 bg-slate-900 px-2 text-xs text-white">{availableLanguages().filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.id === 'zh-CN' ? '中文' : item.label}</option>)}</select></label>
+          <button type="button" className="rounded-md border border-slate-600 px-3 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-sky-300 xl:hidden" aria-expanded={menuOpen} aria-controls="mobile-navigation" onClick={() => setMenuOpen((open) => !open)}>{s('navigation.menu')}</button>
+          <div className="hidden items-center space-x-1 xl:flex">
+          <PitBadge />
           {navItems.map((item) => (
             <NavLink
               key={item.label}
@@ -33,14 +40,15 @@ export default function Header() {
               end={item.path === '/'} // `end` 仅用于根路径，避免前缀匹配
               className={({ isActive }) => `${baseStyle} ${isActive ? activeStyle : inactiveStyle}`}
             >
-              {item.label}
+              {s(routeTranslationKey(item.path), {}, item.label)}
             </NavLink>
           ))}
           </div>
         </div>
-        {menuOpen && <div id="mobile-navigation" className="mt-3 grid gap-1 border-t border-gray-700 pt-3 lg:hidden">
+        {menuOpen && <div id="mobile-navigation" className="mt-3 grid gap-1 border-t border-slate-700 pt-3 xl:hidden">
+          <div className="pb-1"><PitBadge /></div>
           {navItems.map((item) => (
-            <NavLink key={item.label} to={item.path} end={item.path === '/'} onClick={() => setMenuOpen(false)} className={({ isActive }) => `${baseStyle} text-left ${isActive ? activeStyle : inactiveStyle}`}>{item.label}</NavLink>
+            <NavLink key={item.label} to={item.path} end={item.path === '/'} onClick={() => setMenuOpen(false)} className={({ isActive }) => `${baseStyle} text-left ${isActive ? activeStyle : inactiveStyle}`}>{s(routeTranslationKey(item.path), {}, item.label)}</NavLink>
           ))}
         </div>}
       </nav>

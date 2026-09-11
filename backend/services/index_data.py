@@ -9,12 +9,33 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as parquet
 
 try:
+    from backend.compute_policy import validate_execution_audit
+    from backend.instrument_analytics_numba import (
+        count_true_kernel,
+        coverage_ratio_kernel,
+        encoded_category_counts_kernel,
+        encoded_unique_count_kernel,
+        instrument_analytics_numba_execution_audit,
+        int_range_count_kernel,
+        numeric_sort_order_kernel,
+    )
     from backend.market_data import resolve_tushare_data_dir
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from compute_policy import validate_execution_audit
+    from instrument_analytics_numba import (
+        count_true_kernel,
+        coverage_ratio_kernel,
+        encoded_category_counts_kernel,
+        encoded_unique_count_kernel,
+        instrument_analytics_numba_execution_audit,
+        int_range_count_kernel,
+        numeric_sort_order_kernel,
+    )
     from market_data import resolve_tushare_data_dir
 
 
@@ -126,6 +147,42 @@ def _normalise_date(value: Any) -> pd.Timestamp | None:
     return None if pd.isna(parsed) else pd.Timestamp(parsed).normalize()
 
 
+def _category_codes(series: pd.Series) -> tuple[list[str], np.ndarray]:
+    """Map source labels in Python; all counts and ordering remain in NJIT."""
+
+    labels: list[str] = []
+    code_by_label: dict[str, int] = {}
+    codes = np.full(len(series), -1, dtype=np.int64)
+    for position, raw_value in enumerate(series.tolist()):
+        label = "未知" if pd.isna(raw_value) else str(raw_value).strip() or "未知"
+        code = code_by_label.get(label)
+        if code is None:
+            code = len(labels)
+            code_by_label[label] = code
+            labels.append(label)
+        codes[position] = code
+    return labels, np.ascontiguousarray(codes)
+
+
+def _source_rows(series: pd.Series) -> tuple[list[dict[str, Any]], int]:
+    labels, codes = _category_codes(series)
+    counts = encoded_category_counts_kernel(codes, len(labels))
+    order = numeric_sort_order_kernel(
+        np.ascontiguousarray(counts.astype(np.float64)),
+        np.arange(len(labels), dtype=np.int64),
+        np.uint8(0),
+    )
+    rows = [
+        {"source_api": labels[index], "count": int(counts[index])}
+        for index in order
+    ]
+    return rows, int(encoded_unique_count_kernel(codes))
+
+
+def _execution_audit() -> dict[str, object]:
+    return validate_execution_audit(instrument_analytics_numba_execution_audit())
+
+
 def _calendar_open_dates(data_dir: Path) -> pd.DatetimeIndex:
     path = data_dir / "trade_day_df.parquet"
     if not path.exists():
@@ -191,7 +248,13 @@ def build_index_coverage_snapshot(data_dir: Path) -> dict[str, Any]:
         for observed_source, code, earliest, latest, rows in stats.values():
             expected = None
             if observed_source in {"index_daily", "sw_daily", "ci_daily", "ths_daily", "dc_daily", "tdx_daily", "index_dailybasic"} and len(open_dates):
-                expected = int(((open_dates >= earliest) & (open_dates <= latest)).sum())
+                expected = int(
+                    int_range_count_kernel(
+                        np.ascontiguousarray(open_dates.asi8, dtype=np.int64),
+                        int(earliest.value),
+                        int(latest.value),
+                    )
+                )
             records.append(
                 {
                     "source_api": observed_source,
@@ -200,7 +263,11 @@ def build_index_coverage_snapshot(data_dir: Path) -> dict[str, Any]:
                     "latest_date": latest,
                     "rows": rows,
                     "stale_days": max(int((today - latest.normalize()).days), 0),
-                    "domestic_trade_day_coverage": min(rows / expected, 1.0) if expected else None,
+                    "domestic_trade_day_coverage": (
+                        float(coverage_ratio_kernel(rows, expected))
+                        if expected
+                        else None
+                    ),
                     "source_file": filename,
                     "source_fingerprint": _fingerprint(path),
                 }
@@ -240,7 +307,13 @@ def validate_index_snapshot(data_dir: Path, scopes: Iterable[str] | None) -> dic
         raise IndexDataValidationError(f"index_catalog_df.parquet 缺少列: {sorted(absent)}")
     if catalog[["source_api", "ts_code"]].isna().any(axis=None):
         raise IndexDataValidationError("指数目录包含空主键。")
-    duplicates = int(catalog.duplicated(["source_api", "ts_code"]).sum())
+    duplicates = int(
+        count_true_kernel(
+            np.ascontiguousarray(
+                catalog.duplicated(["source_api", "ts_code"]).to_numpy(dtype=np.uint8)
+            )
+        )
+    )
     if duplicates:
         raise IndexDataValidationError(f"指数目录包含 {duplicates} 个重复主键。")
     datasets: dict[str, Any] = {
@@ -408,13 +481,29 @@ def index_summary(data_dir: Path | None = None) -> dict[str, Any]:
     if frame.empty:
         return {
             "schema_version": 1, "status": "unavailable", "catalog_count": 0,
-            "source_count": 0, "covered_count": 0, "latest_date": None,
+            "source_count": 0, "covered_count": 0, "coverage_rate": None,
+            "latest_date": None,
             "missing_count": 0, "stale_count": 0, "sources": [], "datasets": [],
+            "execution": _execution_audit(),
         }
     latest = pd.to_datetime(frame.get("latest_date"), errors="coerce").max()
-    sources = (
-        frame.groupby("source_api", dropna=False).size().sort_values(ascending=False).rename("count").reset_index()
+    sources, source_count = _source_rows(frame["source_api"])
+    catalog_count = int(len(frame))
+    ready_count = int(
+        count_true_kernel(
+            np.ascontiguousarray(
+                frame["coverage_status"].eq("ready").to_numpy(dtype=np.uint8)
+            )
+        )
     )
+    covered_count = int(
+        count_true_kernel(
+            np.ascontiguousarray(
+                frame["coverage_status"].ne("missing").to_numpy(dtype=np.uint8)
+            )
+        )
+    )
+    coverage_rate = float(coverage_ratio_kernel(covered_count, catalog_count))
     datasets: list[dict[str, Any]] = []
     root = resolve_tushare_data_dir(data_dir)
     for key, (filename, date_column, scope) in INDEX_DATASET_SPECS.items():
@@ -436,15 +525,29 @@ def index_summary(data_dir: Path | None = None) -> dict[str, Any]:
         )
     return {
         "schema_version": 1,
-        "status": "complete" if frame["coverage_status"].eq("ready").all() else "partial",
-        "catalog_count": int(len(frame)),
-        "source_count": int(frame["source_api"].nunique()),
-        "covered_count": int(frame["coverage_status"].ne("missing").sum()),
+        "status": "complete" if ready_count == catalog_count else "partial",
+        "catalog_count": catalog_count,
+        "source_count": source_count,
+        "covered_count": covered_count,
+        "coverage_rate": coverage_rate,
         "latest_date": None if pd.isna(latest) else latest.strftime("%Y-%m-%d"),
-        "missing_count": int(frame["coverage_status"].eq("missing").sum()),
-        "stale_count": int(frame["coverage_status"].eq("stale").sum()),
-        "sources": _records(sources),
+        "missing_count": int(
+            count_true_kernel(
+                np.ascontiguousarray(
+                    frame["coverage_status"].eq("missing").to_numpy(dtype=np.uint8)
+                )
+            )
+        ),
+        "stale_count": int(
+            count_true_kernel(
+                np.ascontiguousarray(
+                    frame["coverage_status"].eq("stale").to_numpy(dtype=np.uint8)
+                )
+            )
+        ),
+        "sources": sources,
         "datasets": datasets,
+        "execution": _execution_audit(),
     }
 
 

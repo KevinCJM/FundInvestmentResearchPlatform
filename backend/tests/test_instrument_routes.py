@@ -127,6 +127,10 @@ def test_product_query_keeps_fund_universe_separate(monkeypatch, tmp_path: Path)
     assert "current_size" not in response["items"][0]
     assert response["items"][0]["snapshot_values"] == {}
     assert response["summary"]["universe_total"] == 1
+    assert response["summary"]["active_count"] == 1
+    assert response["summary"]["active_rate"] == pytest.approx(1.0)
+    assert response["execution"]["backend"] == "numba_njit_fixed_signature"
+    assert response["execution"]["request_time_compilation"] == 0
 
 
 def _write_product_filter_fixture(data_dir: Path) -> None:
@@ -349,6 +353,32 @@ def test_product_query_defaults_to_ten_items(monkeypatch, tmp_path: Path) -> Non
     assert response.json()["page_size"] == 10
 
 
+@pytest.mark.parametrize("kind", ["etf", "fund"])
+def test_product_query_exposes_and_filters_legacy_qdii_classification(
+    monkeypatch, tmp_path: Path, kind: str
+) -> None:
+    _write_info_files(tmp_path)
+    path = tmp_path / ("etf_info_df.parquet" if kind == "etf" else "fund_info_df.parquet")
+    frame = pd.read_parquet(path)
+    frame.loc[:, "name"] = frame["name"].astype(str) + "(QDII)"
+    frame.to_parquet(path, index=False)
+    client = _product_filter_client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/api/instruments/products",
+        params=[("kind", kind), ("qdii_type", "QDII")],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["qdii_type"] == "QDII"
+    assert payload["items"][0]["qdii_source"] == "legacy_info.name_marker"
+    assert payload["available_filters"]["qdii_type"] == [
+        {"value": "QDII", "label": "QDII", "count": 1}
+    ]
+
+
 def test_product_query_uses_founding_date_for_public_funds(monkeypatch, tmp_path: Path) -> None:
     _write_product_filter_fixture(tmp_path)
     client = _product_filter_client(monkeypatch, tmp_path)
@@ -427,7 +457,11 @@ def test_public_fund_detail_uses_real_nav_timeseries(monkeypatch, tmp_path: Path
     assert response["base_info"]["found_date"] == "2020-01-01"
     assert response["base_info"]["due_date"] == "2030-12-31"
     assert [point["close"] for point in response["timeseries"]] == [2.0, 2.1]
-    assert response["timeseries"][0]["volume"] == 0
+    assert {
+        field: response["timeseries"][0][field]
+        for field in ("open", "high", "low", "volume")
+    } == {"open": None, "high": None, "low": None, "volume": None}
+    assert response["execution"]["python_fallback"] == 0
 
 
 def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypatch, tmp_path: Path) -> None:
@@ -486,7 +520,11 @@ def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypa
     assert response["base_info"]["list_date"] == "2020-01-02"
     assert response["base_info"]["delist_date"] == "2026-12-31"
     assert [point["close"] for point in response["timeseries"]] == [3.0, 3.2]
-    assert response["timeseries"][0]["volume"] == 0
+    assert {
+        field: response["timeseries"][0][field]
+        for field in ("open", "high", "low", "volume")
+    } == {"open": None, "high": None, "low": None, "volume": None}
+    assert response["execution"]["python_fallback"] == 0
     assert response["metrics"]["current_size"] == 800_000.0
     assert response["metrics"]["current_size_as_of"] == "2026-08-28"
     assert response["metrics"]["current_size_source"] == "instrument_metrics_snapshot"
@@ -548,3 +586,90 @@ def test_instrument_json_helpers_drop_non_finite_values() -> None:
     assert instrument_routes._serialize(np.inf) is None
     assert instrument_routes._serialize(-np.inf) is None
     assert instrument_routes._safe_stat(pd.Series([1.0, np.inf]), "sum") == 1.0
+
+
+def _seed_research_series(data_dir: Path) -> None:
+    dates = pd.bdate_range("2014-12-24", periods=10)
+    pd.DataFrame(
+        [
+            {"ts_code": "510300.SH", "date": date, "adj_nav": 1.0 + index * 0.01}
+            for index, date in enumerate(dates)
+        ]
+    ).to_parquet(data_dir / "etf_daily_df.parquet", index=False)
+
+
+def test_product_research_series_stops_at_the_platform_research_day(monkeypatch, tmp_path: Path) -> None:
+    """The whole point: a 2014 research day must not read 2015 rows.
+
+    Regression guard for 产品研究 showing every row on disk while the header
+    badge claimed a research day — the page never asked for the口径, so the
+    cut has to live in the loader every panel shares.
+    """
+
+    from backend.pit.settings import PitSettingsRepository
+
+    _seed_research_series(tmp_path)
+    monkeypatch.setenv("TUSHARE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+
+    points, context, future = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    assert points[-1]["date"] == "2015-01-06"
+    assert context["asOf"] is None
+    # No research day means no "after", so 未来模拟 has nothing to look back at.
+    assert future == []
+
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-31")
+    cut, cut_context, cut_future = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    assert cut[-1]["date"] == "2014-12-31"
+    assert cut_context["asOf"] == "2014-12-31"
+    assert any("2014-12-31" in warning for warning in cut_context["warnings"])
+    # The rows after the研究日 come back in their own lane so 未来模拟 can be
+    # scored against them — and only there, never as research input.
+    assert [point["date"] for point in cut_future] == ["2015-01-01", "2015-01-02", "2015-01-05", "2015-01-06"]
+    assert not any(point["date"] in {item["date"] for item in cut} for point in cut_future)
+
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2010-01-01")
+    with pytest.raises(ValueError, match="2010-01-01"):
+        instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+
+
+def test_current_size_moves_with_the_research_day(monkeypatch, tmp_path: Path) -> None:
+    """规模 is computed (份额 × 单位净值), so it is not a "latest row" attribute.
+
+    The page header used to read the last row of the validated snapshot, which
+    has no `as_of` and therefore reported today's size under any research day.
+    """
+
+    from backend.pit.settings import PitSettingsRepository
+
+    dates = pd.bdate_range("2014-12-29", periods=4)
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "510300.SH",
+                "date": date,
+                "total_share": 1000.0 + index * 10,
+                "nav": 2.0,
+                "total_size": (1000.0 + index * 10) * 2.0,
+            }
+            for index, date in enumerate(dates)
+        ]
+    ).to_parquet(tmp_path / "etf_share_size_df.parquet", index=False)
+    monkeypatch.setenv("TUSHARE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-31")
+    on_31 = instrument_routes._load_current_size("etf", "510300.SH")
+    assert on_31["current_size_as_of"] == "2014-12-31"
+    assert on_31["current_size"] == pytest.approx(2040.0)
+    assert on_31["current_size_source"] == "etf_share_size_pit"
+
+    # A day earlier is a different size, not the same number with a new label.
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-30")
+    on_30 = instrument_routes._load_current_size("etf", "510300.SH")
+    assert on_30["current_size_as_of"] == "2014-12-30"
+    assert on_30["current_size"] == pytest.approx(2020.0)
+
+    # Before the series begins there is nothing to report, and nothing invented.
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2010-01-01")
+    assert instrument_routes._load_current_size("etf", "510300.SH")["current_size"] is None

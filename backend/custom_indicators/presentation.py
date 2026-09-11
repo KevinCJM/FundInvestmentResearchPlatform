@@ -11,6 +11,7 @@ INDICATOR_TYPE_LABELS = {
     "risk_adjusted": "收益风险性价比指标",
     "path": "路径与回撤指标",
     "market_liquidity": "行情与流动性指标",
+    "technical": "技术与时序指标",
     "other": "其他指标",
 }
 
@@ -93,6 +94,8 @@ def metric_presentation(definition: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "indicator_id": definition.get("id"),
+        "value_type": "date" if output_measure == "date" else "duration" if output_measure == "calendar_days" else "number",
+        "duration_unit": "calendar_day" if output_measure == "calendar_days" else None,
         "revision": definition.get("revision"),
         "name": str(definition.get("name") or "未命名指标"),
         "source": str(definition.get("source") or "inline"),
@@ -100,6 +103,7 @@ def metric_presentation(definition: dict[str, Any]) -> dict[str, Any]:
         "category": category,
         "category_label": category_label,
         "context_kind": str(definition.get("context_kind") or "single_product"),
+        "result_kind": str(definition.get("result_kind") or "scalar"),
         "catalog_status": status,
         "display_format": display_format,
         "precision": int(definition.get("precision", 2)),
@@ -125,5 +129,14 @@ def metric_presentation(definition: dict[str, Any]) -> dict[str, Any]:
         "minimum_observations": int(definition.get("minimum_observations", 1)),
         "applicable_product_kinds": list(
             definition.get("applicable_product_kinds") or ["etf", "fund"]
+        ),
+        "axis_anchor": definition.get("axis_anchor"),
+        "parameter_schema": list(definition.get("parameter_schema") or []),
+        "fixed_parameters": list(definition.get("fixed_parameters") or []),
+        "series_outputs": list(definition.get("series_outputs") or []),
+        "history_policy": definition.get("history_policy"),
+        "history_inference_source": definition.get("history_inference_source"),
+        "lookback_observations": int(
+            definition.get("lookback_observations") or 1
         ),
     }

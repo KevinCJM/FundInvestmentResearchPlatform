@@ -16,7 +16,7 @@ from typing import Any, Iterator
 
 import numba
 import numpy as np
-from numba import boolean, float64, int8, njit, prange
+from numba import boolean, float64, int8, int64, njit, prange, types
 
 from cal_indicators.typed_numeric_backend import warm_typed_numeric_backend
 from cal_indicators.builtin_batch_kernel import (
@@ -25,6 +25,7 @@ from cal_indicators.builtin_batch_kernel import (
     warm_builtin_batch_kernels,
 )
 from custom_indicators.errors import IndicatorDomainError
+from compute_policy import NJIT_BACKEND, validate_execution_audit
 
 
 PARALLEL_ENGINE_VERSION = "indicator-parallel-2"
@@ -32,6 +33,159 @@ DEFAULT_QUEUE_WAIT_SECONDS = 1.0
 DEFAULT_HARD_TIMEOUT_SECONDS = 600.0
 DEFAULT_PRANGE_MIN_ELEMENTS = 300_000
 DEFAULT_SHM_THRESHOLD_BYTES = 512 * 1024 * 1024
+
+
+_PLAN_SCORE_RESULT = types.Tuple(
+    (
+        float64[:, ::1],
+        float64[:, ::1],
+        float64[::1],
+        boolean[::1],
+        int64[::1],
+        int64[::1],
+        float64[::1],
+        float64,
+    )
+)
+
+
+@njit(
+    _PLAN_SCORE_RESULT(float64[:, ::1], float64[::1], int8[::1]),
+    cache=True,
+    nogil=True,
+)
+def _score_plan_matrix_kernel(
+    raw_values: np.ndarray,
+    configured_weights: np.ndarray,
+    lower_better: np.ndarray,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    float,
+]:
+    rows, columns = raw_values.shape
+    if configured_weights.size != columns or lower_better.size != columns:
+        raise ValueError("plan score shape mismatch")
+    effective_weights = np.empty(columns, dtype=np.float64)
+    total_weight = 0.0
+    for column in range(columns):
+        weight = configured_weights[column]
+        if not np.isfinite(weight) or weight < 0.0:
+            raise ValueError("plan score weights must be finite and non-negative")
+        total_weight += weight
+    if total_weight <= 0.0:
+        raise ValueError("plan score weight total must be positive")
+    for column in range(columns):
+        effective_weights[column] = configured_weights[column] / total_weight
+
+    complete_mask = np.ones(rows, dtype=np.bool_)
+    complete_count = 0
+    for row in range(rows):
+        for column in range(columns):
+            if not np.isfinite(raw_values[row, column]):
+                complete_mask[row] = False
+                break
+        if complete_mask[row]:
+            complete_count += 1
+
+    lower = np.full(columns, np.nan, dtype=np.float64)
+    upper = np.full(columns, np.nan, dtype=np.float64)
+    initialized = False
+    for row in range(rows):
+        if not complete_mask[row]:
+            continue
+        if not initialized:
+            for column in range(columns):
+                lower[column] = raw_values[row, column]
+                upper[column] = raw_values[row, column]
+            initialized = True
+            continue
+        for column in range(columns):
+            value = raw_values[row, column]
+            if value < lower[column]:
+                lower[column] = value
+            if value > upper[column]:
+                upper[column] = value
+
+    normalized = np.full((rows, columns), np.nan, dtype=np.float64)
+    contributions = np.full((rows, columns), np.nan, dtype=np.float64)
+    scores = np.full(rows, np.nan, dtype=np.float64)
+    ranked_indices = np.empty(complete_count, dtype=np.int64)
+    next_ranked = 0
+    for row in range(rows):
+        if not complete_mask[row]:
+            continue
+        score = 0.0
+        for column in range(columns):
+            span = upper[column] - lower[column]
+            component = (
+                50.0
+                if span == 0.0
+                else (raw_values[row, column] - lower[column]) / span * 100.0
+            )
+            if lower_better[column] != 0:
+                component = 100.0 - component
+            contribution = component * effective_weights[column]
+            normalized[row, column] = component
+            contributions[row, column] = contribution
+            score += contribution
+        scores[row] = score
+        ranked_indices[next_ranked] = row
+        next_ranked += 1
+
+    # Stable descending merge sort: equal scores retain the original target
+    # order, matching the public ranking contract without a Python sort.
+    scratch = np.empty(complete_count, dtype=np.int64)
+    width = 1
+    while width < complete_count:
+        left = 0
+        while left < complete_count:
+            middle = min(left + width, complete_count)
+            right = min(left + 2 * width, complete_count)
+            first = left
+            second = middle
+            output = left
+            while first < middle and second < right:
+                left_index = ranked_indices[first]
+                right_index = ranked_indices[second]
+                if scores[left_index] >= scores[right_index]:
+                    scratch[output] = left_index
+                    first += 1
+                else:
+                    scratch[output] = right_index
+                    second += 1
+                output += 1
+            while first < middle:
+                scratch[output] = ranked_indices[first]
+                first += 1
+                output += 1
+            while second < right:
+                scratch[output] = ranked_indices[second]
+                second += 1
+                output += 1
+            left = right
+        for index in range(complete_count):
+            ranked_indices[index] = scratch[index]
+        width *= 2
+
+    ranks = np.zeros(rows, dtype=np.int64)
+    for index in range(complete_count):
+        ranks[ranked_indices[index]] = index + 1
+    return (
+        normalized,
+        contributions,
+        scores,
+        complete_mask,
+        ranks,
+        ranked_indices,
+        effective_weights,
+        total_weight,
+    )
 
 
 @njit(
@@ -122,6 +276,51 @@ def warm_parallel_numeric_backend() -> None:
     upper = np.ascontiguousarray([2.0, 2.0], dtype=np.float64)
     _score_matrix_serial(sample, weights, directions, complete, lower, upper)
     _score_matrix_parallel(sample, weights, directions, complete, lower, upper)
+    _score_plan_matrix_kernel(sample, weights, directions)
+
+
+def plan_scoring_kernel_signatures() -> dict[str, list[str]]:
+    return {
+        _score_plan_matrix_kernel.py_func.__name__: [
+            str(signature) for signature in _score_plan_matrix_kernel.signatures
+        ]
+    }
+
+
+def plan_scoring_execution_audit() -> dict[str, Any]:
+    signatures = plan_scoring_kernel_signatures()
+    return validate_execution_audit(
+        {
+            "execution_backend": NJIT_BACKEND,
+            "nopython": bool(_score_plan_matrix_kernel.nopython_signatures),
+            "kernel_signatures": signatures,
+            "python_fallback": 0,
+            "python_operator_calls": 0,
+        }
+    )
+
+
+def score_plan_matrix(
+    raw_values: np.ndarray,
+    configured_weights: np.ndarray,
+    lower_better: np.ndarray,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    float,
+]:
+    """Run completeness, normalization, contributions and ranking in NJIT."""
+
+    return _score_plan_matrix_kernel(
+        np.ascontiguousarray(raw_values, dtype=np.float64),
+        np.ascontiguousarray(configured_weights, dtype=np.float64),
+        np.ascontiguousarray(lower_better, dtype=np.int8),
+    )
 
 
 def score_matrix(
@@ -658,6 +857,9 @@ __all__ = [
     "SharedArrayDescriptor",
     "SharedArrayOwner",
     "attach_shared_array",
+    "plan_scoring_kernel_signatures",
+    "plan_scoring_execution_audit",
+    "score_plan_matrix",
     "score_matrix",
     "warm_parallel_numeric_backend",
 ]

@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import nullcontext
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,12 +32,25 @@ import tushare as ts
 
 from backend.services.refresh_runtime import InterProcessFileLock, atomic_write_json, read_json_object
 from config import read_tushare_token, require_tushare_token
+from backend.data_sources.legacy_bridge import (
+    configuration_fingerprint, create_client, page_size as configured_page_size,
+)
+from backend.data_sources.models import CenterError, DownloadPolicy
+from backend.data_sources.transport import TransientSourceError
+from backend.data_sources.fund_events import FundEventDownload
+from backend.data_sources.index_checkpoints import read_empty_evidence, write_empty_evidence
+from backend.pit.catalog import SNAPSHOT_FIELD as PIT_SNAPSHOT_FIELD
 
 
 DEFAULT_START_DATE = "20100101"
 TODAY = pd.Timestamp.today().strftime("%Y%m%d")
 API_ROW_LIMITS = {
     "fund_basic": 15000,
+    "fund_manager": 5000,
+    "fund_portfolio": 2000,
+    "fund_div": 5000,
+    "fund_adj": 2000,
+    "mkt_idx_bmk": 500,
     "etf_basic": 5000,
     "fund_daily": 5000,
     "etf_share_size": 5000,
@@ -54,6 +68,16 @@ API_ROW_LIMITS = {
     "fut_index_daily": 2000,
     "index_dailybasic": 3000,
     "index_weight": 1000,
+    "cn_gdp": 10000,
+    "cn_cpi": 5000,
+    "cn_ppi": 5000,
+    "cn_pmi": 2000,
+    "cn_m": 5000,
+    "sf_month": 2000,
+    "cn_schedule": 3000,
+    "shibor": 2000,
+    "shibor_lpr": 4000,
+    "repo_daily": 2000,
 }
 DEFAULT_FUND_NAV_PAGE_SIZE = 10000
 DEFAULT_INCREMENTAL_BATCH_DAYS = 20
@@ -65,7 +89,7 @@ CLI_HEARTBEAT_INTERVAL_SECONDS = 15.0
 
 
 class ResponseTruncatedError(RuntimeError):
-    """Raised when an API response reaches its documented single-call cap."""
+    """Raised at a configured or conservative single-call truncation guard."""
 
 FUND_BASIC_FIELDS = [
     "ts_code",
@@ -170,6 +194,74 @@ FUND_COMPANY_FIELDS = [
     "credit_code",
 ]
 
+FUND_MANAGER_FIELDS = [
+    "ts_code",
+    "ann_date",
+    "name",
+    "gender",
+    "birth_year",
+    "edu",
+    "nationality",
+    "begin_date",
+    "end_date",
+    "resume",
+]
+
+FUND_PORTFOLIO_FIELDS = [
+    "ts_code",
+    "ann_date",
+    "end_date",
+    "symbol",
+    "mkv",
+    "amount",
+    "stk_mkv_ratio",
+    "stk_float_ratio",
+]
+
+FUND_DIVIDEND_FIELDS = [
+    "ts_code",
+    "ann_date",
+    "imp_anndate",
+    "base_date",
+    "div_proc",
+    "record_date",
+    "ex_date",
+    "pay_date",
+    "earpay_date",
+    "net_ex_date",
+    "div_cash",
+    "base_unit",
+    "ear_distr",
+    "ear_amount",
+    "account_date",
+    "base_year",
+]
+
+FUND_ADJUSTMENT_FIELDS = ["ts_code", "trade_date", "adj_factor"]
+FUND_BENCHMARK_FIELDS = [
+    "ts_code",
+    "symbol",
+    "name",
+    "fullname",
+    "bmk_level",
+    "bmk_type",
+    "bmk_src",
+    "idx_type",
+]
+
+MACRO_TABLE_SPECS = {
+    "cn_gdp": ("macro_cn_gdp_df.parquet", "quarter"),
+    "cn_cpi": ("macro_cn_cpi_df.parquet", "month"),
+    "cn_ppi": ("macro_cn_ppi_df.parquet", "month"),
+    "cn_pmi": ("macro_cn_pmi_df.parquet", "month"),
+    "cn_m": ("macro_cn_money_df.parquet", "month"),
+    "sf_month": ("macro_cn_social_financing_df.parquet", "month"),
+    "shibor": ("macro_shibor_df.parquet", "date"),
+    "shibor_lpr": ("macro_lpr_df.parquet", "date"),
+    "repo_daily": ("macro_repo_daily_df.parquet", "trade_date"),
+    "cn_schedule": ("macro_cn_schedule_df.parquet", "publish_date"),
+}
+
 STOCK_BASIC_FIELDS = [
     "ts_code",
     "symbol",
@@ -230,6 +322,12 @@ ACTION_LABELS = {
     "etf_share": "ETF 份额与单位净值",
     "candle": "ETF 交易行情",
     "fund_nav": "场外公募基金净值",
+    "fund_manager": "公募基金经理履历",
+    "fund_scale": "公募基金资产规模",
+    "fund_portfolio": "公募基金季度股票持仓披露",
+    "fund_dividend": "公募基金分红",
+    "fund_adjustment": "ETF 复权因子",
+    "fund_benchmark": "公募基金业绩基准库",
     "stock_basic": "股票目录",
     "index_info": "指数基础信息",
     "etf_index": "ETF 指数目录",
@@ -242,6 +340,10 @@ ACTION_LABELS = {
     "index_valuation": "指数估值",
     "index_constituents": "指数成分与权重",
     "index_coverage": "指数覆盖快照",
+    "macro_cycle": "宏观增长、通胀与景气",
+    "macro_money_credit": "宏观货币与社会融资",
+    "macro_rates": "宏观利率与回购行情",
+    "macro_release_calendar": "宏观数据发布日历",
 }
 ACTION_EXECUTION_ORDER = tuple(ACTION_LABELS)
 INDEX_HISTORY_FILES = {
@@ -350,6 +452,8 @@ ETF_INFO_COLUMNS = [
     "fund_type",
     "type",
     "invest_type",
+    "qdii_type",
+    "qdii_source",
     "market",
     "market_code",
     "status",
@@ -375,6 +479,8 @@ ETF_INFO_COLUMNS = [
 
 
 def ensure_output_dir(path: Path) -> None:
+    from backend.data_storage import guard_path
+    guard_path(path, write=True)
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -494,26 +600,43 @@ def call_tushare_api(
     api_name: Optional[str] = None,
     retry_jitter_sec: float = 0.25,
     allow_capped_response: bool = False,
+    request_guard: Callable[[], None] | None = None,
+    interrupt_wait: Callable[[float], None] | None = None,
     **kwargs: Any,
 ) -> pd.DataFrame:
+    policy = getattr(func, "download_policy", None)
+    if isinstance(policy, DownloadPolicy):
+        max_retries = min(max_retries, policy.max_attempts)
+        backoff_sec = max(backoff_sec, policy.backoff_seconds)
+        wait_on_rate_limit_sec = max(wait_on_rate_limit_sec, policy.rate_limit_wait_seconds)
     last_err: Optional[Exception] = None
     delay = backoff_sec
     for attempt in range(1, max_retries + 1):
+        # Cancellation/budget errors are orchestration, never retryable I/O.
+        if request_guard is not None:
+            request_guard()
         try:
             limiter.acquire()
             df = func(**kwargs)
             if df is None:
                 return pd.DataFrame()
             if not allow_capped_response:
+                if isinstance(policy, DownloadPolicy) and len(df) >= policy.max_rows_per_request:
+                    raise ResponseTruncatedError(f"{context} 达到配置行数上限，需要继续分片。")
                 ensure_response_not_truncated(df, api_name or context.split(" ", 1)[0], context)
             return df
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, CenterError) and exc.code == "SOURCE_ROW_CAP":
+                raise ResponseTruncatedError(f"{context} 超过配置行数上限，需要继续分片。") from exc
             if isinstance(exc, ResponseTruncatedError):
+                raise
+            if isinstance(exc, CenterError) and not isinstance(exc, TransientSourceError):
                 raise
             last_err = exc
             msg = str(exc).lower()
             is_rate_limit = (
-                "rate limit" in msg
+                isinstance(exc, TransientSourceError) and exc.code in {"SOURCE_RATE_LIMIT", "SOURCE_RETRYABLE"}
+                or "rate limit" in msg
                 or "每分钟最多" in str(exc)
                 or "doc_id=108" in msg
                 or "访问频次" in str(exc)
@@ -523,17 +646,31 @@ def call_tushare_api(
                 marker in msg for marker in ("permission", "no privilege", "not authorized")
             ) or any(marker in str(exc) for marker in ("权限不足", "无权限", "积分不足"))
             if is_permission_error:
-                raise PermissionError(f"{context} 权限不足: {exc}") from exc
+                raise CenterError("SOURCE_PERMISSION_OR_PARAMS", f"{context} 权限不足，请核验账户权限。", 502) from exc
+            if not (isinstance(exc, (TransientSourceError, ConnectionError, TimeoutError)) or is_rate_limit):
+                # Programming, disk and data-contract errors are not network retries.
+                raise
             if attempt >= max_retries:
                 break
             base_wait = max(wait_on_rate_limit_sec, delay) if is_rate_limit else delay
+            if isinstance(policy, DownloadPolicy) and isinstance(exc, TransientSourceError) and exc.code in {
+                'SOURCE_CONNECTION', 'SOURCE_DNS', 'SOURCE_TIMEOUT',
+            }:
+                # Give a temporary outage a full configured read window to
+                # recover; still use the same bounded attempts/shared quota.
+                base_wait = max(base_wait, policy.read_timeout_seconds * 2 ** (attempt - 1))
+            base_wait = max(base_wait, getattr(exc, "retry_after_seconds", 0.0))
             jitter = random.uniform(0.0, max(retry_jitter_sec, 0.0))
             wait = base_wait + jitter
-            reason = "触发限流" if is_rate_limit else "请求异常"
-            print(f"[INFO] {context} {reason}，等待 {wait:.2f}s 后进行第 {attempt + 1}/{max_retries} 次尝试。")
-            time.sleep(wait)
+            reason = ("触发限流" if is_rate_limit else "请求异常") + f"（{getattr(exc, 'code', type(exc).__name__)}）"
+            print(f"[INFO] {context} {reason}，等待 {wait:.2f}s 后进行第 {attempt + 1}/{max_retries} 次尝试。", flush=True)
+            (interrupt_wait or time.sleep)(wait)
             delay *= 2
-    raise RuntimeError(f"{context} 请求失败: {last_err}") from last_err
+    code = last_err.code if isinstance(last_err, TransientSourceError) else "SOURCE_RATE_LIMIT" if is_rate_limit else "SOURCE_CONNECTION"
+    detail = last_err.message if isinstance(last_err, TransientSourceError) else "限流或连接异常。"
+    # Preserve the safe transport category through the worker JSON boundary;
+    # raw exception text may contain credentials/URLs and must not be exposed.
+    raise CenterError(code, f"{context} 请求失败，已尝试 {max_retries} 次：{detail} 检查点保留，可在数据源恢复后继续。", 502) from last_err
 
 
 def _empty_response_retry_delay(args: argparse.Namespace, attempt: int) -> float:
@@ -582,7 +719,7 @@ def fetch_fund_basic(
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for status in ("L", "I", "D"):
-        page_size = API_ROW_LIMITS["fund_basic"]
+        page_size = configured_page_size(pro, "fund_basic", API_ROW_LIMITS["fund_basic"])
         max_pages = getattr(args, "max_fund_basic_pages", 20)
         seen_codes: set[str] = set()
         offset = 0
@@ -706,6 +843,24 @@ def build_etf_info_df(fund_df: pd.DataFrame, etf_df: Optional[pd.DataFrame] = No
     out["type"] = working.get("type")
     out["invest_type"] = working.get("invest_type")
 
+    names = working.get("name")
+    if names is None:
+        names = pd.Series([None] * len(working), index=working.index)
+    name_qdii = names.astype("string").str.contains("QDII", case=False, na=False)
+    etf_type = working.get("etf_type")
+    if etf_type is None:
+        etf_type = pd.Series([None] * len(working), index=working.index, dtype="string")
+    else:
+        etf_type = etf_type.astype("string")
+    etf_type_present = etf_type.str.strip().ne("").fillna(False)
+    etf_type_qdii = etf_type.str.contains("QDII", case=False, na=False)
+    out["qdii_type"] = "待确认"
+    out.loc[etf_type_present & ~etf_type_qdii, "qdii_type"] = "非QDII"
+    out.loc[etf_type_qdii | name_qdii, "qdii_type"] = "QDII"
+    out["qdii_source"] = "unavailable"
+    out.loc[name_qdii, "qdii_source"] = "fund_basic.name_marker"
+    out.loc[etf_type_present, "qdii_source"] = "etf_basic.etf_type"
+
     code_suffix = working["ts_code"].astype(str).str.split(".", regex=False).str[-1]
     market_code = working.get("exchange")
     if market_code is None:
@@ -791,6 +946,9 @@ def build_public_fund_info_df(fund_df: pd.DataFrame) -> pd.DataFrame:
     out["instrument_type"] = "fund"
     out["market_code"] = "O"
     out["market"] = "场外"
+    name_qdii = out["name"].astype("string").str.contains("QDII", case=False, na=False)
+    out["qdii_type"] = name_qdii.map({True: "QDII", False: "非QDII"})
+    out["qdii_source"] = "fund_basic.name_marker"
     status_labels = {"L": "存续", "I": "发行中", "D": "到期/终止"}
     out["status"] = out["status_code"].map(status_labels).fillna(out["status"])
     return out
@@ -807,12 +965,69 @@ def filter_fund_basic_to_etfs(fund_df: pd.DataFrame, etf_df: pd.DataFrame) -> pd
     return fund_df[fund_df["ts_code"].astype(str).isin(etf_codes)].copy()
 
 
+def append_dimension_snapshot(
+    df: pd.DataFrame,
+    path: Path,
+    *,
+    snapshot_date: Optional[pd.Timestamp] = None,
+) -> Optional[Path]:
+    """Append the whole table under a dated stamp so its past state stays replayable.
+
+    An overwrite-only dimension table loses yesterday's state on every refresh,
+    and that is exactly what makes a historical product universe unrecoverable:
+    a fund delisted in 2020 is simply not in today's file, so a 2018 backtest
+    silently picks only survivors.
+
+    Whole-table append is the lazy version of SCD-2 — larger on disk, but it
+    needs no diffing or interval maintenance, and it is the raw material a
+    proper valid_from/valid_to table can be rebuilt from later. Identical
+    consecutive states are skipped, so the log grows on change days only.
+    """
+
+    stamp = pd.Timestamp(snapshot_date or pd.Timestamp.today()).normalize()
+    target = path.parent / "pit_dim" / f"{path.stem}_history.parquet"
+    incoming = df.copy()
+    incoming[PIT_SNAPSHOT_FIELD] = stamp
+
+    previous = pd.DataFrame()
+    if target.exists():
+        try:
+            previous = pd.read_parquet(target)
+        except Exception as exc:  # noqa: BLE001 - a broken log must not fail the refresh
+            print(f"[WARN] 读取维表历史失败 {target}: {exc}；本次重建。")
+            previous = pd.DataFrame()
+
+    if not previous.empty and PIT_SNAPSHOT_FIELD in previous.columns:
+        stamps = pd.to_datetime(previous[PIT_SNAPSHOT_FIELD], errors="coerce")
+        latest = stamps.max()
+        if pd.notna(latest):
+            newest = previous[stamps.eq(latest)].drop(columns=[PIT_SNAPSHOT_FIELD])
+            candidate = df.reset_index(drop=True)
+            if latest != stamp and len(newest) == len(candidate):
+                aligned = newest.reset_index(drop=True)[list(candidate.columns)] if set(
+                    candidate.columns
+                ) <= set(newest.columns) else None
+                if aligned is not None and aligned.equals(candidate):
+                    print(f"[OK] 维表历史 {target.name} 与 {latest.date()} 快照一致，跳过。")
+                    return target
+        # Re-running the same day replaces that day rather than doubling it.
+        previous = previous[stamps.ne(stamp)]
+
+    combined = pd.concat([previous, incoming], ignore_index=True) if not previous.empty else incoming
+    save_dataframe(combined, target, quiet=True)
+    print(
+        f"[OK] 维表历史 {target}，新增 {stamp.date()} 快照 {len(df)} 行（累计 {len(combined)} 行）。"
+    )
+    return target
+
+
 def save_dataframe(
     df: pd.DataFrame,
     path: Path,
     *,
     excel_path: Optional[Path] = None,
     quiet: bool = False,
+    history: bool = False,
 ) -> None:
     ensure_output_dir(path.parent)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -831,12 +1046,19 @@ def save_dataframe(
             print(f"[OK] 保存 {excel_path}，{len(df)} 行。")
         except Exception as exc:  # noqa: BLE001
             print(f"[WARN] Excel 写入失败 {excel_path}: {exc}")
+    if history:
+        try:
+            append_dimension_snapshot(df, path)
+        except Exception as exc:  # noqa: BLE001 - never fail a refresh over the audit log
+            print(f"[WARN] 维表历史快照失败 {path.name}: {exc}")
 
 
 def history_checkpoint_dir(out_path: Path, args: argparse.Namespace) -> Path:
     """Keep restartable shards isolated by dataset and requested date range."""
 
-    return out_path.parent / f".{out_path.stem}_parts_{args.start_date}_{args.end_date}"
+    configuration_hash = str(getattr(args, "source_configuration_hash", "") or "")
+    suffix = "_" + hashlib.sha256(configuration_hash.encode()).hexdigest()[:16] if configuration_hash else ""
+    return out_path.parent / f".{out_path.stem}_parts_{args.start_date}_{args.end_date}{suffix}"
 
 
 def history_checkpoint_paths(checkpoint_dir: Path, ts_code: str) -> tuple[Path, Path]:
@@ -1225,6 +1447,10 @@ def _align_arrow_table(table: pa.Table, schema: pa.Schema) -> pa.Table:
     return pa.Table.from_arrays(arrays, schema=schema)
 
 
+INCREMENTAL_MERGE_PROGRESS_ROWS = 1_000_000
+INCREMENTAL_MERGE_PROGRESS_SECONDS = 15.0
+
+
 def append_incremental_rows(
     new_df: pd.DataFrame,
     existing_path: Path,
@@ -1374,6 +1600,10 @@ def append_incremental_rows(
     incoming_group_index = 0
     active_existing_key: Optional[str] = None
     active_existing_parts: list[pa.Table] = []
+    processed_existing_rows = 0
+    next_progress_row = INCREMENTAL_MERGE_PROGRESS_ROWS
+    last_progress_at = time.monotonic()
+    total_existing_rows = int(source.metadata.num_rows)
     try:
         writer = parquet.ParquetWriter(temporary_path, output_schema, compression="snappy")
 
@@ -1448,6 +1678,24 @@ def append_incremental_rows(
 
         for batch in source.iter_batches(batch_size=16_384, use_threads=False):
             table = pa.Table.from_batches([batch])
+            processed_existing_rows += table.num_rows
+            now = time.monotonic()
+            if (
+                processed_existing_rows >= next_progress_row
+                or now - last_progress_at >= INCREMENTAL_MERGE_PROGRESS_SECONDS
+            ):
+                progress = (
+                    processed_existing_rows / total_existing_rows * 100.0
+                    if total_existing_rows > 0
+                    else 100.0
+                )
+                print(
+                    f"[INFO] {existing_path.name} 流式归并进度 "
+                    f"{processed_existing_rows}/{total_existing_rows}（{progress:.1f}%）。",
+                    flush=True,
+                )
+                next_progress_row = processed_existing_rows + INCREMENTAL_MERGE_PROGRESS_ROWS
+                last_progress_at = now
             keys = [normalise_key(value) for value in table.column(primary_column).to_pylist()]
             run_start = 0
             for index in range(1, len(keys) + 1):
@@ -1591,10 +1839,16 @@ def fetch_latest_dates(
     market: Optional[str] = None,
     universe_label: str = "ETF",
     page_size: Optional[int] = None,
+    max_pages: Optional[int] = None,
+    strict_pages: bool = False,
+    validate_page: Optional[Callable[[pd.DataFrame, str], pd.DataFrame]] = None,
     allow_terminal_empty: bool = True,
 ) -> list[pd.DataFrame]:
     if not dates:
         return []
+    page_budget = max_pages if max_pages is not None else getattr(args, "max_fund_nav_pages", 20)
+    if page_size is not None and (page_size < 1 or page_budget < 1):
+        raise ValueError('分页大小与最大页数必须为正整数。')
 
     def fetch_one_date(index: int, date_value: str) -> Optional[pd.DataFrame]:
         base_params: dict[str, Any] = {date_param: date_value, "fields": fields_arg(fields)}
@@ -1603,8 +1857,7 @@ def fetch_latest_dates(
         pages: list[pd.DataFrame] = []
         seen_keys: set[str] = set()
         offset = 0
-        max_pages = getattr(args, "max_fund_nav_pages", 20)
-        for page in range(max_pages if page_size else 1):
+        for page in range(page_budget if page_size else 1):
             params = dict(base_params)
             if page_size:
                 params.update({"offset": offset, "limit": page_size})
@@ -1627,18 +1880,27 @@ def fetch_latest_dates(
             )
             if frame.empty:
                 break
+            if validate_page:
+                frame = validate_page(frame, date_value)
             if page_size:
+                if strict_pages:
+                    if (len(frame) > page_size or not {'ts_code', date_param} <= set(frame.columns)
+                            or frame[['ts_code', date_param]].isna().any().any()
+                            or not frame[date_param].astype(str).eq(date_value).all()):
+                        raise CenterError('SOURCE_PAGINATION_INVALID', '分页行数、标识或日期不符合请求合同；未提交结果。')
                 keys = set(frame["ts_code"].dropna().astype(str)) if "ts_code" in frame.columns else set()
+                if strict_pages and (len(keys) != len(frame) or seen_keys.intersection(keys)):
+                    raise CenterError('SOURCE_PAGINATION_INVALID', '分页业务键重复或跨页重叠；未提交结果。')
                 if page > 0 and keys and keys.issubset(seen_keys):
                     raise RuntimeError(f"{api_name} {date_value} 分页未向前推进，停止以避免无限循环。")
                 seen_keys.update(keys)
                 print(f"[INFO] {api_name} {date_value} 分页 {page + 1}，offset={offset}，{len(frame)} 行。")
                 offset += len(frame)
             pages.append(frame)
-            if not page_size:
+            if not page_size or (strict_pages and len(frame) < page_size):
                 break
         else:
-            raise RuntimeError(f"{api_name} {date_value} 达到最大分页数 {max_pages}，本批次停止。")
+            raise CenterError('SOURCE_PAGINATION_LIMIT', f"{api_name} {date_value} 达到最大分页数 {page_budget}，本批次停止。")
         frame = pd.concat(pages, ignore_index=True) if pages else pd.DataFrame()
         if frame.empty:
             if allow_terminal_empty and index == len(dates) - 1:
@@ -1730,7 +1992,7 @@ def save_latest_nav(
 ) -> None:
     out_path = output_dir / "etf_daily_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
-    start_date = incremental_start_date(
+    start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
         output_dir,
         latest_parquet_date(out_path, "date"),
         lookback_days=lookback_days,
@@ -1939,7 +2201,7 @@ def save_latest_etf_share_size(
     out_path = output_dir / "etf_share_size_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
     if out_path.exists():
-        start_date = incremental_start_date(
+        start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
             output_dir,
             latest_parquet_date(out_path, "date"),
             lookback_days=lookback_days,
@@ -1996,7 +2258,7 @@ def save_latest_candles(
 ) -> None:
     out_path = output_dir / "etf_daily_candle_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
-    start_date = incremental_start_date(
+    start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
         output_dir,
         latest_parquet_date(out_path, "date"),
         lookback_days=lookback_days,
@@ -2054,7 +2316,7 @@ def save_etf_info(pro: Any, output_dir: Path, limiter: RateLimiter, args: argpar
     df = build_etf_info_df(fund_df, etf_df)
     if df.empty:
         raise RuntimeError("未获取到 ETF 产品信息。")
-    save_dataframe(df, output_dir / "etf_info_df.parquet", excel_path=output_dir / "etf_info_df.xlsx")
+    save_dataframe(df, output_dir / "etf_info_df.parquet", excel_path=output_dir / "etf_info_df.xlsx", history=True)
     return df
 
 
@@ -2076,7 +2338,15 @@ def save_public_fund_info(
     df = build_public_fund_info_df(fund_df)
     if df.empty:
         raise RuntimeError("未获取到场外公募基金信息。")
-    save_dataframe(df, output_dir / "fund_info_df.parquet", excel_path=output_dir / "fund_info_df.xlsx")
+    # history=True as for etf_info_df: without a dated snapshot log the whole
+    # 场外基金域 is unrecoverable — a fund liquidated in 2020 is simply absent
+    # from today's table, so every historical run silently picks survivors.
+    save_dataframe(
+        df,
+        output_dir / "fund_info_df.parquet",
+        excel_path=output_dir / "fund_info_df.xlsx",
+        history=True,
+    )
     return df
 
 
@@ -2293,7 +2563,7 @@ def save_latest_public_fund_nav(
 ) -> None:
     out_path = output_dir / "fund_nav_df.parquet"
     lookback_days = getattr(args, "incremental_lookback_days", 5)
-    start_date = incremental_start_date(
+    start_date = getattr(args, 'automatic_start_date', None) or incremental_start_date(
         output_dir,
         latest_parquet_date(out_path, "date"),
         lookback_days=lookback_days,
@@ -2519,7 +2789,7 @@ def save_stock_basic(pro: Any, output_dir: Path, limiter: RateLimiter, args: arg
     )
     if args.limit:
         df = df.head(args.limit)
-    save_dataframe(df, output_dir / "stock_basic.parquet", excel_path=output_dir / "stock_basic.xlsx")
+    save_dataframe(df, output_dir / "stock_basic.parquet", excel_path=output_dir / "stock_basic.xlsx", history=True)
 
 
 def _looks_like_permission_error(exc: Exception) -> bool:
@@ -2786,21 +3056,49 @@ def fetch_index_date_window(
     kwargs: dict[str, Any] = {"start_date": start_date, "end_date": end_date}
     if code:
         kwargs["ts_code"] = code
-    frame = _call_index_api(
-        pro, api_name, limiter, args,
-        allow_capped_response=True,
-        context=f"{api_name} {code or 'all'} {start_date}-{end_date}",
-        **kwargs,
-    )
-    limit = API_ROW_LIMITS.get(api_name)
-    if limit is not None and len(frame) >= limit:
+    policy = getattr(getattr(pro, api_name, None), 'download_policy', None)
+    limits = [API_ROW_LIMITS[api_name]] if api_name in API_ROW_LIMITS else []
+    if isinstance(policy, DownloadPolicy):
+        limits.append(policy.max_rows_per_request)
+    limit = min(limits) if limits else None
+    capped = False
+    try:
+        started = datetime.now(timezone.utc).isoformat()
+        frame = _call_index_api(
+            pro, api_name, limiter, args,
+            allow_capped_response=True,
+            context=f"{api_name} {code or 'all'} {start_date}-{end_date}",
+            **kwargs,
+        )
+        if frame.empty:
+            first = {'id': uuid.uuid4().hex, 'started_at': started,
+                     'finished_at': datetime.now(timezone.utc).isoformat(), 'rows': 0}
+            started = datetime.now(timezone.utc).isoformat()
+            frame = _call_index_api(
+                pro, api_name, limiter, args, allow_capped_response=True,
+                context=f"{api_name} {code or 'all'} {start_date}-{end_date} 空响应独立复核",
+                **kwargs,
+            )
+            if frame.empty:
+                frame.attrs['empty_confirmations'] = [first, {
+                    'id': uuid.uuid4().hex, 'started_at': started,
+                    'finished_at': datetime.now(timezone.utc).isoformat(), 'rows': 0,
+                }]
+        capped = limit is not None and len(frame) >= limit
+    except ResponseTruncatedError:
+        # The transport can reject an oversized response before returning rows.
+        # Split it just like a capped frame; never bypass its memory/row guards.
+        capped = True
+    if capped:
         start = pd.to_datetime(start_date, format="%Y%m%d")
         end = pd.to_datetime(end_date, format="%Y%m%d")
         if start >= end:
             raise ResponseTruncatedError(
-                f"{api_name} {code or 'all'} 单日返回 {len(frame)} 行，达到上限 {limit}。"
+                f"{api_name} {code or 'all'} {start_date} 单日响应仍触及行数上限，无法继续按日期拆分。"
             )
         middle = start + (end - start) // 2
+        print(f"[INFO] {api_name} {code or 'all'} {start_date}-{end_date} "
+              f"触及行数上限，拆分于 {middle:%Y%m%d}。", flush=True)
         left = fetch_index_date_window(
             pro=pro, api_name=api_name, limiter=limiter, args=args, code=code,
             start_date=start.strftime("%Y%m%d"), end_date=middle.strftime("%Y%m%d"),
@@ -2810,8 +3108,22 @@ def fetch_index_date_window(
             pro=pro, api_name=api_name, limiter=limiter, args=args, code=code,
             start_date=right_start, end_date=end.strftime("%Y%m%d"),
         )
+        if left.empty and right.empty:
+            raise CenterError('INDEX_SPLIT_INCONSISTENT', '父区间触及上限但子区间均为空，不能认定完整。')
         frame = pd.concat([left, right], ignore_index=True)
-    return _normalise_index_history(frame, api_name, code)
+    result = _normalise_index_history(frame, api_name, code)
+    if (len(result) != len(frame) or (not result.empty and (
+            not result['trade_date'].between(pd.Timestamp(start_date), pd.Timestamp(end_date)).all()
+            or (code is not None and not result['ts_code'].eq(code).all())
+            or result.duplicated(['source_api', 'ts_code', 'trade_date']).any()))):
+        raise CenterError('INDEX_RESPONSE_INVALID', '指数响应存在无效日期、越界代码/日期或重复业务键。')
+    if capped:
+        # Resolve only this capped parent after every replacement leaf validates.
+        # Dynamic API attributes must never be mistaken for local callbacks.
+        acknowledge = getattr(type(pro), 'acknowledge_partition', None)
+        if acknowledge is not None:
+            acknowledge(pro, api_name, **kwargs)
+    return result
 
 
 def _index_universe(output_dir: Path, api_name: str, args: argparse.Namespace) -> pd.DataFrame:
@@ -2836,6 +3148,8 @@ def _index_incremental_start(
     path: Path,
     args: argparse.Namespace,
 ) -> str:
+    if getattr(args, 'automatic_start_date', None):
+        return args.automatic_start_date
     if not path.exists():
         return args.start_date
     latest = latest_parquet_date(path, "trade_date")
@@ -2929,11 +3243,17 @@ def save_index_full_history_with_segment_checkpoints(
         code_empty[code] = empty_path
         if part_path.exists() or empty_path.exists():
             continue
-        missing_chunks = [
-            chunk
-            for chunk in chunks
-            if not any(path.exists() for path in segment_paths(code, *chunk))
-        ]
+        missing_chunks = []
+        for chunk in chunks:
+            part, empty = segment_paths(code, *chunk)
+            if part.exists() and empty.exists():
+                raise CenterError('INDEX_CHECKPOINT_CONFLICT', '指数分片同时存在数据与空标记。')
+            if part.exists():
+                continue
+            if empty.exists():
+                read_empty_evidence(empty, api_name, code, *chunk, checkpoint_dir.name)
+                continue  # Plain old markers remain same-version compatible.
+            missing_chunks.append(chunk)
         pending.append((code, str(name_value), missing_chunks))
 
     def fetch_code(code: str, missing_chunks: list[tuple[str, str]]):
@@ -2961,7 +3281,8 @@ def save_index_full_history_with_segment_checkpoints(
             for chunk_start, chunk_end, frame in completed:
                 part_path, empty_path = segment_paths(code, chunk_start, chunk_end)
                 if frame.empty:
-                    mark_empty_checkpoint(empty_path)
+                    write_empty_evidence(empty_path, api_name, code, chunk_start, chunk_end,
+                                         checkpoint_dir.name, frame.attrs.get('empty_confirmations'))
                 else:
                     save_dataframe(
                         frame.drop_duplicates(["source_api", "ts_code", "trade_date"])
@@ -2970,15 +3291,25 @@ def save_index_full_history_with_segment_checkpoints(
                         quiet=True,
                     )
             if error is not None:
-                errors.append(code)
-                print(f"[WARN] {api_name} {code} 分段失败，已保留成功日期段: {error}")
+                safe_codes = {'SOURCE_CONNECTION', 'SOURCE_TIMEOUT', 'SOURCE_DNS', 'SOURCE_RETRYABLE',
+                              'SOURCE_TRANSIENT', 'SOURCE_REJECTED', 'SOURCE_ROW_CAP',
+                              'SOURCE_DB_BUSY', 'SOURCE_DB_READONLY', 'SOURCE_DB_FULL', 'SOURCE_DB_IO',
+                              'SOURCE_DB_OPEN', 'SOURCE_DB_OPERATIONAL', 'SOURCE_RESPONSE_INVALID',
+                              'SOURCE_CERTIFICATE_INVALID', 'SOURCE_RESPONSE_TOO_LARGE'}
+                safe_codes.update({'INDEX_SPLIT_INCONSISTENT', 'INDEX_RESPONSE_INVALID'})
+                reason = ('INDEX_RESPONSE_TRUNCATED' if isinstance(error, ResponseTruncatedError)
+                          else error.code if isinstance(error, CenterError) and error.code in safe_codes
+                          else 'INDEX_SHARD_ERROR')
+                errors.append(f'{code}({reason})')
+                print(f"[WARN] {api_name} {code} 分段失败（{reason}），已保留成功日期段。", flush=True)
             processed += 1
             if processed % 50 == 0 or processed == len(pending):
                 print(f"[INFO] {api_name} 分段进度 {processed}/{len(pending)}，异常 {len(errors)}。")
     if errors:
-        raise RuntimeError(
-            f"{api_name} 有 {len(errors)} 个代码的日期段失败；重启仅重试缺失日期段: "
-            f"{', '.join(errors[:10])}"
+        raise CenterError(
+            'INDEX_HISTORY_INCOMPLETE',
+            f"{api_name} 有 {len(errors)} 个代码的日期段失败；成功分片保留，恢复后只补缺失区间："
+            f"{', '.join(errors[:10])}", 503,
         )
 
     for code in universe["ts_code"].astype(str):
@@ -3122,6 +3453,14 @@ def save_index_history_scope(
 def _normalise_member_frame(frame: pd.DataFrame, api_name: str, index_code: Optional[str]) -> pd.DataFrame:
     if frame.empty:
         return frame
+    if api_name in {"index_member_all", "ci_index_member"} and "l3_code" in frame:
+        # Vendor ts_code is the STOCK, not an industry code. Preserve all levels.
+        return pd.concat([
+            _normalise_member_frame(frame.assign(index_code=frame[level], con_code=frame["ts_code"])
+                                    .drop(columns=["l1_code", "l2_code", "l3_code"], errors="ignore"),
+                                    api_name, None)
+            for level in ("l1_code", "l2_code", "l3_code") if level in frame
+        ], ignore_index=True).drop_duplicates()
     result = pd.DataFrame(
         {
             "source_api": api_name,
@@ -3142,10 +3481,146 @@ def _normalise_member_frame(frame: pd.DataFrame, api_name: str, index_code: Opti
     return result.dropna(subset=["index_code"])
 
 
+def validate_constituent_frame(frame, api_name, params, seen):
+    """Validate wire identities and dates for download and verified migration."""
+    if frame.empty:
+        return
+    hierarchical = api_name in {"index_member_all", "ci_index_member"}
+    member = "ts_code" if hierarchical and "l3_code" in frame else "con_code"
+    index = "l3_code" if hierarchical and "l3_code" in frame else "index_code" if "index_code" in frame else "ts_code"
+    keys = [index, member, *[k for k in ("in_date", "out_date", "trade_date") if k in frame]]
+    if not {index, member} <= set(frame) or frame[[index, member]].isna().any().any():
+        raise CenterError('CONSTITUENT_RESPONSE_INVALID', f"{api_name}: CONSTITUENT_RESPONSE_INVALID 缺少成分身份。")
+    if frame[index].astype(str).str.strip().eq("").any() or frame[member].astype(str).str.strip().eq("").any():
+        raise CenterError('CONSTITUENT_RESPONSE_INVALID', f"{api_name}: CONSTITUENT_RESPONSE_INVALID 空代码。")
+    expected = params.get("index_code") or (params.get("ts_code") if not hierarchical else None)
+    if expected and not frame[index].eq(expected).all():
+        raise CenterError('CONSTITUENT_RESPONSE_INVALID', f"{api_name}: CONSTITUENT_RESPONSE_INVALID 返回其他指数。")
+    if api_name in {"index_weight", "dc_member", "tdx_member"}:
+        dates = pd.to_datetime(frame.get("trade_date"), errors="coerce")
+        start = params.get("trade_date", params.get("start_date"))
+        end = params.get("trade_date", params.get("end_date"))
+        if dates is None or dates.isna().any() or not dates.between(pd.Timestamp(start), pd.Timestamp(end)).all():
+            raise CenterError('CONSTITUENT_RESPONSE_INVALID', f"{api_name}: CONSTITUENT_RESPONSE_INVALID 返回日期不在请求区间。")
+    for key in frame[keys].fillna("").astype(str).itertuples(index=False, name=None):
+        if key in seen:
+            raise CenterError('CONSTITUENT_PAGINATION_INVALID', f"{api_name}: CONSTITUENT_PAGINATION_INVALID 分页重复或漂移。")
+        seen.add(key)
+
+
+def fetch_constituent_pages(pro, api_name, limiter, args, **params):
+    """Verified native offset protocol (six endpoints smoke-tested 2026-09-09).
+
+    A full page is never completion. Duplicate keys, ignored limits and invalid
+    identities fail closed; empty pages require an independent second request.
+    """
+    interfaces = getattr(pro, "interfaces", {})
+    config = interfaces.get(api_name) if isinstance(interfaces, dict) else None
+    size = min(1000, API_ROW_LIMITS.get(api_name, 1000))
+    max_pages = 1000
+    if config is not None:
+        if config.pagination.mode != "offset":
+            raise CenterError('CONSTITUENT_PAGINATION_REQUIRED', f"{api_name}: CONSTITUENT_PAGINATION_REQUIRED 请启用已验证的 offset 分页。")
+        size = min(size, config.pagination.page_size, config.policy.max_rows_per_request,
+                   pro.source.policy.max_rows_per_request)
+        max_pages = min(max_pages, config.pagination.max_pages)
+    frames, seen = [], set()
+    for page in range(max_pages):
+        kwargs = {**params, "limit": size, "offset": page * size}
+        frame = _call_index_api(pro, api_name, limiter, args, allow_capped_response=True, **kwargs)
+        if frame.empty:
+            frame = _call_index_api(pro, api_name, limiter, args, allow_capped_response=True, **kwargs)
+        if len(frame) > size:
+            raise CenterError('CONSTITUENT_PAGINATION_INVALID', f"{api_name}: CONSTITUENT_PAGINATION_INVALID 返回超过请求页大小。")
+        if not frame.empty:
+            validate_constituent_frame(frame, api_name, params, seen)
+            frames.append(frame)
+        if len(frame) < size:
+            return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        if (page + 1) % 10 == 0:
+            print(f"[INFO] {api_name} 成分分页已接收 {page + 1} 页，继续检查下一页。")
+    raise CenterError('CONSTITUENT_PAGE_LIMIT', f"{api_name}: CONSTITUENT_PAGE_LIMIT 分页未完成，保留已有检查点。")
+
+
+def cached_constituent_request(pro, api_name, limiter, args, directory, **params):
+    """Only a complete, checksummed query can be resumed (including double-empty)."""
+    identity = {"version": 1, "api": api_name, "params": params}
+    name = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    path, receipt = directory / (name + ".parquet"), directory / (name + ".json")
+    if getattr(args, "resume", False) and receipt.exists():
+        meta = read_json_object(receipt)
+        if path.is_symlink() or receipt.is_symlink() or not meta or meta.get("request") != identity or not path.is_file():
+            raise CenterError('CONSTITUENT_CHECKPOINT_INVALID', f"CONSTITUENT_CHECKPOINT_INVALID 检查点合同不一致。")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != meta.get("sha256"):
+            raise CenterError('CONSTITUENT_CHECKPOINT_INVALID', f"CONSTITUENT_CHECKPOINT_INVALID 检查点校验和不一致。")
+        frame = pd.read_parquet(path)
+        if len(frame) != meta.get("rows"):
+            raise CenterError('CONSTITUENT_CHECKPOINT_INVALID', f"CONSTITUENT_CHECKPOINT_INVALID 检查点行数不一致。")
+        return frame
+    try:
+        frame = fetch_constituent_pages(pro, api_name, limiter, args, **params)
+    except CenterError as exc:
+        if api_name != 'index_weight' or exc.code != 'CONSTITUENT_PAGE_LIMIT':
+            raise
+        start, end = pd.Timestamp(params['start_date']), pd.Timestamp(params['end_date'])
+        if start >= end:
+            raise CenterError('INDEX_WEIGHT_DAY_PAGE_LIMIT',
+                              f"index_weight {params['index_code']} {start:%Y%m%d} 单日分页仍未完成，请核定分页预算；不能当作网络故障反复重试。") from None
+        middle = start + (end - start) // 2
+        print(f"[INFO] index_weight {params['index_code']} {start:%Y%m%d}—{end:%Y%m%d} 达到分页预算，拆分于 {middle:%Y%m%d}。", flush=True)
+        left = cached_constituent_request(pro, api_name, limiter, args, directory,
+                                         **{**params, 'end_date': middle.strftime('%Y%m%d')})
+        right = cached_constituent_request(pro, api_name, limiter, args, directory,
+                                          **{**params, 'start_date': (middle + pd.Timedelta(days=1)).strftime('%Y%m%d')})
+        if left.empty and right.empty:
+            raise CenterError('INDEX_WEIGHT_SPLIT_INCONSISTENT', '父区间有完整数据页，但两个子区间均为空；拒绝标记完整。')
+        frame = pd.concat([left, right], ignore_index=True)
+        validate_constituent_frame(frame, api_name, params, set())
+    ensure_output_dir(directory)
+    save_dataframe(frame, path, quiet=True)
+    atomic_write_json(receipt, {"request": identity, "rows": len(frame),
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                      "collected_at": datetime.now(timezone.utc).isoformat()})
+    return frame
+
+
+def latest_index_weight(pro, limiter, args, directory, code):
+    """Same latest-within-120-days contract, newest month first, no blind replay."""
+    end = pd.Timestamp(args.end_date)
+    lower = max(pd.Timestamp(args.start_date), end - pd.Timedelta(days=119))
+    while end >= lower:
+        start = max(lower, end.replace(day=1))
+        frame = cached_constituent_request(pro, 'index_weight', limiter, args, directory,
+                                          index_code=code, start_date=start.strftime('%Y%m%d'),
+                                          end_date=end.strftime('%Y%m%d'))
+        if not frame.empty:
+            return frame  # A complete newer month proves older months cannot win.
+        end = start - pd.Timedelta(days=1)
+    return pd.DataFrame()
+
+
 def save_index_constituents(
     pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
 ) -> None:
+    interfaces = getattr(pro, 'interfaces', None)
+    if isinstance(interfaces, dict):
+        required = {'index_member_all', 'ci_index_member', 'ths_member', 'dc_member', 'tdx_member', 'index_weight'}
+        missing = sorted(required - set(interfaces))
+        if missing:
+            raise CenterError('API_NOT_CONFIGURED', f"成分与权重接口配置缺失：{', '.join(missing)}。未发起批量请求，请补齐配置后恢复。")
     catalog = pd.read_parquet(output_dir / "index_catalog_df.parquet")
+    # Current memberships: dated providers use the last frozen SSE open day;
+    # THS/SW/CI are current observations, never fabricated historical PIT data.
+    dated_day = args.end_date
+    calendar_path = output_dir / "trade_day_df.parquet"
+    if calendar_path.exists():
+        calendar = pd.read_parquet(calendar_path)
+        days = pd.to_datetime(calendar.loc[calendar["exchange"].eq("SSE") & calendar["is_open"].eq(1), "cal_date"])
+        days = days[days.le(pd.Timestamp(args.end_date))]
+        if days.empty:
+            raise RuntimeError("成分查询缺少截止日之前的有效交易日。")
+        dated_day = days.max().strftime("%Y%m%d")
+    member_parts = history_checkpoint_dir(output_dir / "index_members_queries.parquet", args)
     members_path = output_dir / "index_members_df.parquet"
     member_stage_marker = output_dir / ".tushare_stage_index_constituents_members.json"
     resume_key = _action_resume_key(args)
@@ -3170,8 +3645,10 @@ def save_index_constituents(
 
         def fetch_member(api_name: str, code: Optional[str]):
             kwargs = {"ts_code": code} if code else {}
+            if api_name in {"dc_member", "tdx_member"}:
+                kwargs["trade_date"] = dated_day
             try:
-                return api_name, code, _call_index_api(pro, api_name, limiter, args, **kwargs), None
+                return api_name, code, cached_constituent_request(pro, api_name, limiter, args, member_parts, **kwargs), None
             except Exception as exc:  # noqa: BLE001
                 return api_name, code, pd.DataFrame(), exc
 
@@ -3180,6 +3657,7 @@ def save_index_constituents(
             max(len(member_requests), 1),
         )
         member_failures = 0
+        failure_examples = []
         with ThreadPoolExecutor(max_workers=member_worker_count) as executor:
             futures = {
                 executor.submit(fetch_member, api_name, code): (api_name, code)
@@ -3192,7 +3670,10 @@ def save_index_constituents(
                 if error is not None:
                     member_failures += 1
                     suffix = f" {code}" if code else ""
-                    print(f"[WARN] {api_name}{suffix} 获取失败: {error}")
+                    error_code = error.code if isinstance(error, CenterError) else type(error).__name__
+                    if len(failure_examples) < 8:
+                        failure_examples.append(f"{api_name}{suffix}（{error_code}）")
+                    print(f"[WARN] {api_name}{suffix} 获取失败: {error_code}")
                 elif not frame.empty:
                     member_frames.append(_normalise_member_frame(frame, api_name, code))
                 processed += 1
@@ -3201,6 +3682,10 @@ def save_index_constituents(
                         f"[INFO] 指数成分进度 {processed}/{len(member_requests)}，"
                         f"workers={member_worker_count}，异常 {member_failures}。"
                     )
+        if member_failures:
+            raise CenterError('CONSTITUENT_INCOMPLETE',
+                              f"{member_failures} 个成分请求失败：{'、'.join(failure_examples)}。"
+                              "成功查询检查点保留；恢复后只补未完成查询，不输出部分结果。")
         valid_member_frames = [item for item in member_frames if not item.empty]
         members = (
             pd.concat(valid_member_frames, ignore_index=True)
@@ -3215,7 +3700,7 @@ def save_index_constituents(
         if members.empty:
             raise RuntimeError("未获得任何指数成分数据。")
         members = members.drop_duplicates(
-            ["source_api", "index_code", "con_code"], keep="last"
+            ["source_api", "index_code", "con_code", "in_date", "out_date", "trade_date"], keep="last"
         )
         save_dataframe(members, members_path)
         atomic_write_json(
@@ -3242,25 +3727,8 @@ def save_index_constituents(
     ensure_output_dir(weight_checkpoint_dir)
 
     def fetch_latest_weight(code: str):
-        window_end = pd.Timestamp(args.end_date)
-        window_start = max(pd.Timestamp(args.start_date), window_end - pd.Timedelta(days=119))
-        # index_weight 是月度数据。当前规模只需要最新可用权重；若最近
-        # 120 天无披露则记为无数据，不能为数千个不支持的指数回溯十余年。
         try:
-            frame = _call_index_api(
-                pro,
-                "index_weight",
-                limiter,
-                args,
-                allow_capped_response=True,
-                context=(
-                    f"index_weight {code} "
-                    f"{window_start.strftime('%Y%m%d')}-{window_end.strftime('%Y%m%d')}"
-                ),
-                index_code=code,
-                start_date=window_start.strftime("%Y%m%d"),
-                end_date=window_end.strftime("%Y%m%d"),
-            )
+            frame = latest_index_weight(pro, limiter, args, weight_checkpoint_dir / 'queries', code)
         except Exception as exc:  # noqa: BLE001
             return code, pd.DataFrame(), exc
         return code, frame, None
@@ -3280,6 +3748,7 @@ def save_index_constituents(
         max(len(pending_codes), 1),
     )
     weight_failures = 0
+    weight_failure_examples = []
     with ThreadPoolExecutor(max_workers=weight_worker_count) as executor:
         futures = {
             executor.submit(fetch_latest_weight, str(code)): str(code)
@@ -3293,7 +3762,10 @@ def save_index_constituents(
             code, frame, error = future.result()
             if error is not None:
                 weight_failures += 1
-                print(f"[WARN] index_weight {code} 获取失败: {error}")
+                error_code = error.code if isinstance(error, CenterError) else type(error).__name__
+                if len(weight_failure_examples) < 10:
+                    weight_failure_examples.append(f'{code}（{error_code}）')
+                print(f"[WARN] index_weight {code} 获取失败: {error_code}")
             else:
                 normalised = _normalise_member_frame(frame, "index_weight", code)
                 if not normalised.empty and normalised["trade_date"].notna().any():
@@ -3317,8 +3789,8 @@ def save_index_constituents(
                     f"workers={weight_worker_count}，异常 {weight_failures}。"
                 )
     if weight_failures:
-        raise RuntimeError(
-            f"index_weight 有 {weight_failures} 个代码失败；已保留成功检查点，续跑只重试失败项。"
+        raise CenterError('INDEX_WEIGHT_INCOMPLETE',
+            f"index_weight 有 {weight_failures} 个代码失败：{'、'.join(weight_failure_examples)}。已保留成功检查点，续跑只重试失败项。"
         )
     incomplete_codes = [
         code for code, paths in code_paths.items() if not any(path.exists() for path in paths)
@@ -3385,7 +3857,7 @@ def save_index_basic(pro: Any, output_dir: Path, limiter: RateLimiter, args: arg
         .drop_duplicates(subset=["ts_code"])
         .sort_values("ts_code")
     )
-    save_dataframe(out, output_dir / "index_info.parquet")
+    save_dataframe(out, output_dir / "index_info.parquet", history=True)
 
 
 def save_etf_index(pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace) -> None:
@@ -3400,7 +3872,7 @@ def save_etf_index(pro: Any, output_dir: Path, limiter: RateLimiter, args: argpa
     )
     if args.limit:
         df = df.head(args.limit)
-    save_dataframe(df, output_dir / "etf_index.parquet")
+    save_dataframe(df, output_dir / "etf_index.parquet", history=True)
 
 
 def save_fund_company(pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace) -> None:
@@ -3423,13 +3895,904 @@ def save_fund_company(pro: Any, output_dir: Path, limiter: RateLimiter, args: ar
     save_dataframe(df, output_dir / "fund_company_df.parquet")
 
 
-def parse_args() -> argparse.Namespace:
+def _ingestion_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _period_end(value: Any) -> pd.Timestamp | None:
+    """Normalise Tushare day/month/quarter labels to an observation-period end."""
+
+    text = safe_text(value)
+    if text is None:
+        return None
+    compact = text.upper().replace("-", "").replace(" ", "")
+    quarter = re.fullmatch(r"(\d{4})Q([1-4])", compact)
+    if quarter:
+        month = int(quarter.group(2)) * 3
+        return pd.Timestamp(int(quarter.group(1)), month, 1) + pd.offsets.MonthEnd(0)
+    if re.fullmatch(r"\d{6}", compact):
+        parsed = pd.to_datetime(compact, format="%Y%m", errors="coerce")
+        return None if pd.isna(parsed) else pd.Timestamp(parsed) + pd.offsets.MonthEnd(0)
+    parsed = _parse_date_scalar(compact)
+    return parsed
+
+
+def _period_end_series(values: pd.Series) -> pd.Series:
+    return pd.to_datetime(values.map(_period_end), errors="coerce")
+
+
+def _with_source_lineage(
+    frame: pd.DataFrame,
+    *,
+    source_api: str,
+    observation_column: str,
+    available_column: str | None,
+    availability_status: str,
+) -> pd.DataFrame:
+    out = frame.copy()
+    if observation_column not in out.columns:
+        raise ValueError(f"{source_api} 缺少观测期字段 {observation_column}。")
+    out["observation_date"] = _period_end_series(out[observation_column])
+    if available_column and available_column in out.columns:
+        out["available_at"] = _period_end_series(out[available_column])
+    else:
+        out["available_at"] = pd.NaT
+    out["availability_status"] = availability_status
+    out["source_api"] = source_api
+    out["ingested_at"] = _ingestion_timestamp()
+    return out
+
+
+def _comparable_value(value: Any) -> Any:
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return pd.Timestamp(value).isoformat()
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def merge_vintage_rows(
+    incoming: pd.DataFrame,
+    out_path: Path,
+    *,
+    natural_key: list[str],
+) -> int:
+    """Append only new or revised source observations and retain prior vintages."""
+
+    if incoming.empty:
+        print(f"[INFO] {out_path.name} 本次未返回记录，保留现有版本。")
+        return 0
+    missing = sorted(set(natural_key) - set(incoming.columns))
+    if missing:
+        raise ValueError(f"{out_path.name} 缺少版本键: {', '.join(missing)}。")
+    current_fetch = incoming.drop_duplicates(subset=natural_key, keep="last").copy()
+    existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame()
+    if not existing.empty:
+        for column in natural_key:
+            if column not in existing.columns:
+                raise ValueError(f"{out_path.name} 旧版本缺少版本键 {column}。")
+        if "revision" not in existing.columns:
+            existing["revision"] = 1
+        if "vintage" not in existing.columns:
+            existing["vintage"] = existing.get("ingested_at", "legacy")
+        latest = (
+            existing.sort_values([*natural_key, "revision"], kind="mergesort")
+            .drop_duplicates(subset=natural_key, keep="last")
+            .set_index(natural_key, drop=False)
+        )
+    else:
+        latest = pd.DataFrame()
+
+    metadata_columns = {"revision", "vintage", "ingested_at"}
+    compare_columns = [column for column in current_fetch.columns if column not in metadata_columns]
+    additions: list[dict[str, Any]] = []
+    vintage = _ingestion_timestamp()
+    for record in current_fetch.to_dict(orient="records"):
+        key = tuple(record[column] for column in natural_key)
+        lookup_key: Any = key[0] if len(key) == 1 else key
+        previous: pd.Series | None = None
+        if not latest.empty and lookup_key in latest.index:
+            selected = latest.loc[lookup_key]
+            previous = selected.iloc[-1] if isinstance(selected, pd.DataFrame) else selected
+        unchanged = previous is not None and all(
+            _comparable_value(record.get(column)) == _comparable_value(previous.get(column))
+            for column in compare_columns
+        )
+        if unchanged:
+            continue
+        record["revision"] = 1 if previous is None else int(previous.get("revision", 1)) + 1
+        record["vintage"] = vintage
+        record["ingested_at"] = vintage
+        additions.append(record)
+    if not additions:
+        print(f"[OK] {out_path.name} 源数据无变化，保留现有版本。")
+        return len(existing)
+    merged = pd.concat([existing, pd.DataFrame(additions)], ignore_index=True, sort=False)
+    merged = merged.sort_values([*natural_key, "revision"], kind="mergesort").reset_index(drop=True)
+    save_dataframe(merged, out_path)
+    return len(merged)
+
+
+def save_fund_manager(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    fund_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    page_size = configured_page_size(pro, "fund_manager", API_ROW_LIMITS["fund_manager"])
+    frames: list[pd.DataFrame] = []
+    seen: set[tuple[str, str, str]] = set()
+    offset = 0
+    max_pages = getattr(args, "max_fund_manager_pages", 20)
+    for page in range(max_pages):
+        frame = call_tushare_api(
+            pro.fund_manager,
+            limiter,
+            max_retries=args.max_retries,
+            backoff_sec=args.backoff_sec,
+            wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+            retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+            context=f"fund_manager offset={offset}",
+            api_name="fund_manager",
+            allow_capped_response=True,
+            offset=offset,
+            limit=page_size,
+            fields=fields_arg(FUND_MANAGER_FIELDS),
+        )
+        if frame.empty:
+            break
+        keys = {
+            (str(row.get("ts_code")), str(row.get("name")), str(row.get("begin_date")))
+            for row in frame.to_dict(orient="records")
+        }
+        if page and keys and keys.issubset(seen):
+            raise RuntimeError("fund_manager 分页未向前推进，停止以避免无限循环。")
+        seen.update(keys)
+        frames.append(frame)
+        offset += len(frame)
+        if args.smoke or len(frame) < page_size:
+            break
+    else:
+        raise RuntimeError(f"fund_manager 达到最大分页数 {max_pages}，拒绝保存不完整结果。")
+    if not frames:
+        raise RuntimeError("未获取到公募基金经理数据。")
+    frame = pd.concat(frames, ignore_index=True)
+    allowed = set(universe["ts_code"].dropna().astype(str))
+    frame = frame[frame["ts_code"].astype(str).isin(allowed)].copy()
+    for column in ("ann_date", "begin_date", "end_date"):
+        if column in frame.columns:
+            frame[column] = date_series(frame[column])
+    frame = _with_source_lineage(
+        frame,
+        source_api="fund_manager",
+        observation_column="begin_date",
+        available_column="ann_date",
+        availability_status="announced_date",
+    )
+    frame = frame.drop_duplicates(
+        subset=["ts_code", "name", "begin_date"], keep="last"
+    ).sort_values(["ts_code", "begin_date", "name"], kind="mergesort")
+    save_dataframe(frame.reset_index(drop=True), output_dir / "fund_manager_df.parquet")
+
+
+def save_fund_scale(output_dir: Path) -> None:
+    """Materialise fund asset-size observations already carried by fund_nav."""
+
+    source = output_dir / "fund_nav_df.parquet"
+    if not source.exists():
+        raise FileNotFoundError("缺少 fund_nav_df.parquet，无法生成公募基金资产规模。")
+    available = set(parquet.ParquetFile(source).schema.names)
+    columns = [
+        column
+        for column in ("ts_code", "name", "date", "ann_date", "unit_nav", "net_asset", "total_netasset")
+        if column in available
+    ]
+    required = {"ts_code", "date", "net_asset", "total_netasset"}
+    if not required.issubset(columns):
+        raise ValueError(f"fund_nav_df.parquet 缺少规模字段: {sorted(required - set(columns))}")
+    frame = pd.read_parquet(source, columns=columns)
+    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["ann_date"] = pd.to_datetime(frame.get("ann_date"), errors="coerce")
+    frame = frame[
+        pd.to_numeric(frame["net_asset"], errors="coerce").notna()
+        | pd.to_numeric(frame["total_netasset"], errors="coerce").notna()
+    ].copy()
+    frame["observation_date"] = frame["date"]
+    frame["available_at"] = frame["ann_date"]
+    frame["availability_status"] = "announced_date"
+    frame["source_api"] = "fund_nav"
+    frame["ingested_at"] = _ingestion_timestamp()
+    frame = frame.sort_values(["ts_code", "date"], kind="mergesort").reset_index(drop=True)
+    save_dataframe(frame, output_dir / "fund_scale_df.parquet")
+
+
+def _event_dates(args: argparse.Namespace, out_path: Path) -> list[str]:
+    if args.smoke:
+        return [args.end_date]
+    if getattr(args, 'automatic_start_date', None):
+        start = pd.to_datetime(args.automatic_start_date, format='%Y%m%d')
+    elif args.latest:
+        if out_path.exists() and parquet.ParquetFile(out_path).metadata.num_rows:
+            latest = latest_parquet_date(out_path, "available_at")
+            start = max(
+                pd.to_datetime(args.start_date, format="%Y%m%d"),
+                latest - pd.Timedelta(days=max(getattr(args, "incremental_lookback_days", 5) - 1, 0)),
+            )
+        else:
+            start = pd.to_datetime(args.end_date, format="%Y%m%d") - pd.Timedelta(
+                days=args.max_latest_days - 1
+            )
+    else:
+        start = pd.to_datetime(args.start_date, format="%Y%m%d")
+    end = pd.to_datetime(args.end_date, format="%Y%m%d")
+    if start > end:
+        return []
+    dates = pd.date_range(start, end, freq="D").strftime("%Y%m%d").tolist()
+    if args.latest and len(dates) > args.max_latest_days + args.incremental_lookback_days:
+        raise ValueError(f"{out_path.name} 待更新 {len(dates)} 个自然日，超过增量安全上限。")
+    return dates
+
+
+def _consolidate_ordered_parts(part_paths: list[Path], out_path: Path) -> int:
+    if not part_paths:
+        return 0
+    output_schema: pa.Schema | None = None
+    for path in part_paths:
+        schema = parquet.ParquetFile(path).schema_arrow.remove_metadata()
+        # Empty/all-null shards carry Arrow null fields. Promote only null to
+        # the later concrete type; incompatible concrete types must still fail.
+        output_schema = schema if output_schema is None else pa.unify_schemas([output_schema, schema])
+    assert output_schema is not None
+    ensure_output_dir(out_path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{out_path.name}.", suffix=".tmp", dir=out_path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    writer: parquet.ParquetWriter | None = None
+    rows = 0
+    try:
+        writer = parquet.ParquetWriter(temporary_path, output_schema, compression="snappy")
+        for path in part_paths:
+            for batch in parquet.ParquetFile(path).iter_batches(batch_size=16_384, use_threads=False):
+                table = _align_arrow_table(pa.Table.from_batches([batch]), output_schema)
+                writer.write_table(table)
+                rows += table.num_rows
+        writer.close()
+        writer = None
+        if parquet.ParquetFile(temporary_path).metadata.num_rows != rows:
+            raise RuntimeError(f"{out_path.name} 合并行数校验失败。")
+        os.replace(temporary_path, out_path)
+    finally:
+        if writer is not None:
+            writer.close()
+        temporary_path.unlink(missing_ok=True)
+    print(f"[OK] 合并 {out_path}，{rows} 行，来源日期分片 {len(part_paths)} 个。")
+    return rows
+
+
+def _prepare_fund_event_rows(
+    frame: pd.DataFrame,
+    *,
+    fields: list[str],
+    source_api: str,
+    observation_column: str,
+) -> pd.DataFrame:
+    out = frame.copy()
+    for column in fields:
+        if column not in out.columns:
+            out[column] = pd.NA
+    date_columns = [
+        column for column in fields
+        if column.endswith("date") or column in {"imp_anndate", "earpay_date", "net_ex_date"}
+    ]
+    numeric_columns = {
+        "mkv", "amount", "stk_mkv_ratio", "stk_float_ratio",
+        "div_cash", "base_unit", "ear_distr", "ear_amount",
+    }
+    for column in date_columns:
+        out[column] = date_series(out[column].astype("string"))
+    for column in fields:
+        if column in date_columns:
+            continue
+        if column in numeric_columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce").astype("float64")
+        else:
+            out[column] = out[column].astype("string")
+    conflict_mask = out.get('availability_status', pd.Series('', index=out.index)).eq('source_conflict')
+    out = _with_source_lineage(
+        out,
+        source_api=source_api,
+        observation_column=observation_column,
+        available_column="ann_date",
+        availability_status="announced_date",
+    )
+    out.loc[conflict_mask, 'availability_status'] = 'source_conflict'
+    return out
+
+
+def _save_fund_event_dataset(
+    *,
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    universe: pd.DataFrame,
+    api_name: str,
+    fields: list[str],
+    filename: str,
+    observation_column: str,
+    duplicate_subset: list[str],
+    sort_columns: list[str],
+) -> None:
+    out_path = output_dir / filename
+    dates = _event_dates(args, out_path)
+    from backend.data_sources import event_coverage
+    coverage = event_coverage.load(out_path, getattr(args, 'source_configuration_hash', ''), verify=True) if out_path.exists() else None
+    automatic = getattr(args, 'automatic_event_plan', None)
+    scope_backfill = getattr(args, '_event_scope_backfill', False)
+    scope_recheck_dates = []
+    if automatic and not scope_backfill:
+        if coverage:
+            from backend.data_sources.fund_events import fund_inceptions
+            missing_codes = set(fund_inceptions(universe)) - set(coverage['universe'])
+            if missing_codes and api_name != 'fund_portfolio':
+                # fund_div has no verified single-fund announcement-range
+                # contract. Recheck its bounded market dates, never invent one.
+                scope_recheck_dates = [day.replace('-', '') for day in coverage['days']]
+                print(f'[STAGE] 分红基金目录变化，重新核验 {len(scope_recheck_dates)} 个已覆盖公告日。')
+            if missing_codes and api_name == 'fund_portfolio':
+                # New identities are backfilled independently; current-contract
+                # inception is not a valid cutoff for predecessor history.
+                from copy import copy
+                missing = copy(args)
+                missing._event_scope_backfill = True
+                missing.automatic_start_date = automatic['history_start']
+                missing.start_date = automatic['history_start']
+                print(f'[STAGE] 新增 {len(missing_codes)} 个基金身份，单独补齐公告历史，不重取已有基金。')
+                _save_fund_event_dataset(pro=pro, output_dir=output_dir, limiter=limiter, args=missing,
+                    universe=universe[universe.ts_code.isin(missing_codes)], api_name=api_name,
+                    fields=fields, filename=filename, observation_column=observation_column,
+                    duplicate_subset=duplicate_subset, sort_columns=sort_columns)
+                coverage['universe'] = sorted(fund_inceptions(universe))
+        dates = sorted(set(automatic.get('query_dates', dates)) | set(scope_recheck_dates))
+    api_func = getattr(pro, api_name)
+    policy = getattr(api_func, 'download_policy', None)
+    pagination = getattr(api_func, 'pagination_config', None)
+    paged_holdings = api_name == 'fund_portfolio' and getattr(pagination, 'mode', 'none') == 'offset'
+    by_fund_history = (api_name == 'fund_portfolio' and not args.latest or scope_backfill) and not args.smoke
+    session = FundEventDownload(
+        directory=history_checkpoint_dir(out_path, args), dates=dates, universe=universe,
+        api_name=api_name, fields=fields, smoke=args.smoke,
+        strategy='fund_announcement_history' if by_fund_history else 'announcement',
+        max_requests=getattr(args, 'fund_event_max_requests', 100_000),
+        idle_timeout=getattr(args, 'fund_event_idle_timeout', 180),
+        max_runtime=min(getattr(args, 'fund_event_max_runtime', 86_400),
+                        policy.max_runtime_seconds if isinstance(policy, DownloadPolicy) else 86_400),
+    )
+    def record_coverage():
+        if api_name == 'fund_portfolio':
+            from backend.data_sources.fund_event_conflicts import finish
+            finish(out_path, session)
+        if not args.smoke and not scope_backfill:
+            event_coverage.commit(out_path, session, getattr(args, 'source_configuration_hash', ''), coverage)
+            print(f'[COVERAGE] 日期 {len(dates)}；复用 {int((automatic or {}).get("reused_query_days", 0))}；'
+                  f'复核 {int((automatic or {}).get("revision_query_days", 0))}；检查点 {session.reused}；请求 {session.calls}。')
+
+    session.market_paged = paged_holdings
+
+    if not dates:
+        print('[INFO] 已核验查询覆盖仍有效，本次无需重复请求；最新公告日不等于查询截止日。')
+        record_coverage()
+        return
+
+    def fetch(date_value: str, code: str | None) -> pd.DataFrame:
+        if paged_holdings:
+            return fetch_pages(code, date_value)
+        params = {"ann_date": date_value, "fields": fields_arg(fields)}
+        if code:
+            params['ts_code'] = code
+        return invoke(params, f'{api_name} {code or "全市场"} ann_date={date_value}')
+
+    def fetch_history(code: str, start: str, end: str) -> pd.DataFrame:
+        if start == end and paged_holdings:
+            return fetch_pages(code, start)
+        return invoke(dict(ts_code=code, start_date=start, end_date=end, fields=fields_arg(fields)),
+                      f'{api_name} {code} 公告区间={start}—{end}')
+
+    def fetch_pages(code, date):
+        def page(offset, limit):
+            params = dict(ann_date=date, fields=fields_arg(fields), offset=offset, limit=limit)
+            if code:
+                params['ts_code'] = code
+            return invoke(params,
+                          f'{api_name} {code} ann_date={date} offset={offset}', paged=True)
+        return session.announcement_pages(code, date, page, page_size=pagination.page_size,
+                                          max_pages=pagination.max_pages, confirm_first_empty=False)
+
+    def invoke(params, context, *, paged=False):
+        def guarded_api(**kwargs):
+            session.check()  # Recheck after the outer shared limiter wait.
+            return api_func(**kwargs)
+        guarded_api.download_policy = policy
+        return call_tushare_api(
+            guarded_api, limiter, max_retries=1 if args.smoke else args.max_retries,
+            backoff_sec=args.backoff_sec, wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+            retry_jitter_sec=getattr(args, 'retry_jitter_sec', 0.25),
+            context=context, api_name=api_name, allow_capped_response=paged,
+            request_guard=session.before_request, interrupt_wait=session.pause, **params,
+        )
+
+    def prepare(frame: pd.DataFrame) -> pd.DataFrame:
+        prepared = frame if 'available_at' in frame.columns else _prepare_fund_event_rows(
+            frame, fields=fields, source_api=api_name, observation_column=observation_column)
+        return (
+            prepared.drop_duplicates(subset=duplicate_subset, keep="last")
+            .sort_values(sort_columns, kind="mergesort")
+            .reset_index(drop=True)
+        )
+
+    workers = min(args.max_workers, len(session.inceptions) if by_fund_history else len(dates),
+                  policy.max_concurrency if isinstance(policy, DownloadPolicy) else args.max_workers)
+    guard = getattr(type(pro), 'request_guard', None)
+    with guard(pro, session.check) if guard else nullcontext():
+        if by_fund_history:
+            parts = session.run_history(fetch=fetch_history, prepare=prepare, save=save_dataframe,
+                                        cap_error=ResponseTruncatedError, max_workers=workers,
+                                        sort_columns=sort_columns)
+        else:
+            parts = session.run(fetch=fetch, prepare=prepare, save=save_dataframe,
+                                cap_error=ResponseTruncatedError, max_workers=workers)
+    # Only the fully validated collector may resolve a capped broad request.
+    # Ordinary errors remain tracked; dynamic Tushare methods are not callbacks.
+    acknowledge = getattr(type(pro), 'acknowledge_partition', None)
+    if acknowledge is not None:
+        requests = session.acknowledgements if by_fund_history else [{'ann_date': date} for date in dates]
+        for params in requests:
+            acknowledge(pro, api_name, **params, fields=fields_arg(fields))
+    print(f'[STAGE] {api_name} 合并与校验；下载分片完成不等于数据集已完成。')
+    if not parts:
+        if args.latest and out_path.exists():
+            print(f"[INFO] {api_name} 本次没有新增记录，保留现有文件。")
+            record_coverage()
+            return
+        empty = _prepare_fund_event_rows(
+            pd.DataFrame(columns=fields),
+            fields=fields,
+            source_api=api_name,
+            observation_column=observation_column,
+        )
+        save_dataframe(empty, out_path)
+        record_coverage()
+        return
+    if args.latest:
+        incoming = pd.concat((pd.read_parquet(path) for path in parts), ignore_index=True)
+        append_incremental_rows(
+            incoming,
+            out_path,
+            subset=duplicate_subset,
+            sort_cols=sort_columns,
+            date_column="available_at",
+        )
+    else:
+        _consolidate_ordered_parts(parts, out_path)
+    record_coverage()
+
+
+def save_fund_portfolio(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    fund_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    _save_fund_event_dataset(
+        pro=pro,
+        output_dir=output_dir,
+        limiter=limiter,
+        args=args,
+        universe=universe,
+        api_name="fund_portfolio",
+        fields=FUND_PORTFOLIO_FIELDS,
+        filename="fund_portfolio_df.parquet",
+        observation_column="end_date",
+        duplicate_subset=["available_at", "ts_code", "end_date", "symbol"],
+        sort_columns=["available_at", "ts_code", "end_date", "symbol"],
+    )
+
+
+def save_fund_dividend(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    fund_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_public_fund_universe(pro, output_dir, limiter, args, fund_info)
+    _save_fund_event_dataset(
+        pro=pro,
+        output_dir=output_dir,
+        limiter=limiter,
+        args=args,
+        universe=universe,
+        api_name="fund_div",
+        fields=FUND_DIVIDEND_FIELDS,
+        filename="fund_dividend_df.parquet",
+        observation_column="ex_date",
+        duplicate_subset=["available_at", "ts_code", "ex_date", "pay_date"],
+        sort_columns=["available_at", "ts_code", "ex_date", "pay_date"],
+    )
+
+
+def _prepare_fund_adjustment_rows(frame, start, end, *, code=None):
+    """Validate provider identity/dates before serializing price factors."""
+    required = set(FUND_ADJUSTMENT_FIELDS)
+    if not required <= set(frame.columns) or frame[list(required)].isna().any().any():
+        raise ValueError('fund_adj 响应缺少代码、日期或复权因子。')
+    out = frame.copy()
+    dates = date_series(out['trade_date'])
+    codes = out['ts_code'].astype('string')
+    factors = pd.to_numeric(out['adj_factor'], errors='coerce')
+    if (not codes.str.fullmatch(r'\d{6}\.(SH|SZ)', na=False).all()
+            or (code is not None and not codes.eq(code).all())
+            or dates.isna().any() or not dates.between(pd.Timestamp(start), pd.Timestamp(end)).all()
+            or out.duplicated(['ts_code', 'trade_date']).any()
+            or not factors.between(0, float('inf'), inclusive='neither').all()):
+        raise ValueError('fund_adj 返回的基金身份、日期、唯一键或复权因子不合法。')
+    out['adj_factor'] = factors.astype('float64')
+    out['date'] = dates
+    out['observation_date'] = dates
+    out['available_at'] = dates
+    out['availability_status'] = 'date_only'
+    out['source_api'] = 'fund_adj'
+    out['ingested_at'] = _ingestion_timestamp()
+    return out
+
+
+def fetch_fund_adjustment(
+    pro: Any,
+    code: str,
+    name: str,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+) -> Optional[pd.DataFrame]:
+    if not re.fullmatch(r'\d{6}\.(SH|SZ)', code):
+        raise ValueError('fund_adj 仅请求当前 ETF 目录中的交易所代码，不请求场外 .OF 代码。')
+    chunks = (
+        [(args.end_date, args.end_date)]
+        if args.smoke
+        else list(
+            iter_date_chunks(
+                args.start_date,
+                args.end_date,
+                min(getattr(args, "history_chunk_days", 1200), 1200),
+            )
+        )
+    )
+    def fetch_chunk(start, end):
+        frame = call_tushare_api(
+            pro.fund_adj,
+            limiter,
+            max_retries=args.max_retries,
+            backoff_sec=args.backoff_sec,
+            wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+            retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+            context=f"fund_adj {code} {start}-{end}",
+            api_name="fund_adj",
+            ts_code=code,
+            start_date=start,
+            end_date=end,
+            fields=fields_arg(FUND_ADJUSTMENT_FIELDS),
+        )
+        return _prepare_fund_adjustment_rows(frame, start, end, code=code) if frame is not None and not frame.empty else frame
+
+    frames = _fetch_history_chunks_with_empty_retry(
+        chunks, fetch_chunk,
+        args=args,
+        context=f"fund_adj {code}",
+    )
+    if not frames:
+        return None
+    frame = pd.concat(frames, ignore_index=True)
+    frame["name"] = name
+    return frame.sort_values("date").reset_index(drop=True)
+
+
+def save_fund_adjustment(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    etf_info: Optional[pd.DataFrame] = None,
+) -> None:
+    universe = load_or_create_etf_universe(pro, output_dir, limiter, args, etf_info)
+    if universe.empty or not universe['ts_code'].astype('string').str.fullmatch(r'\d{6}\.(SH|SZ)', na=False).all():
+        raise ValueError('ETF 复权因子需要有效的交易所 ETF 目录。')
+    out_path = output_dir / "fund_adj_factor_df.parquet"
+    if args.latest:
+        has_baseline = bool(
+            out_path.exists() and parquet.ParquetFile(out_path).metadata.num_rows
+        )
+        if has_baseline:
+            start = getattr(args, 'automatic_start_date', None) or incremental_start_date(
+                output_dir,
+                latest_parquet_date(out_path, "date"),
+                lookback_days=args.incremental_lookback_days,
+            )
+        else:
+            start = (
+                pd.to_datetime(args.end_date, format="%Y%m%d")
+                - pd.Timedelta(days=args.max_latest_days * 2)
+            ).strftime("%Y%m%d")
+        dates = load_open_trade_dates(
+            output_dir,
+            start_date=start,
+            end_date=args.end_date,
+            max_days=(
+                args.max_latest_days + args.incremental_lookback_days
+                if has_baseline
+                else args.max_latest_days * 2
+            ),
+        )
+        operation = pro.fund_adj
+        pagination = getattr(operation, 'pagination_config', None)
+        if pagination is not None and pagination.mode != 'offset':
+            raise CenterError('SOURCE_PAGINATION_REQUIRED', 'ETF 复权因子增量需要先配置 offset/limit 分页。')
+        policy = getattr(operation, 'download_policy', None)
+        cap = min(API_ROW_LIMITS['fund_adj'], policy.max_rows_per_request) if isinstance(policy, DownloadPolicy) else API_ROW_LIMITS['fund_adj']
+        frames = fetch_latest_dates(
+            api_func=operation,
+            api_name="fund_adj",
+            date_param="trade_date",
+            dates=dates,
+            fields=FUND_ADJUSTMENT_FIELDS,
+            universe=universe,
+            limiter=limiter,
+            args=args,
+            universe_label="ETF",
+            page_size=min(pagination.page_size if pagination else 1000, cap),
+            max_pages=pagination.max_pages if pagination else 20,
+            strict_pages=True,
+            validate_page=lambda frame, day: _prepare_fund_adjustment_rows(frame, day, day),
+        )
+        if frames:
+            incoming = _prepare_fund_adjustment_rows(pd.concat(frames, ignore_index=True), start, args.end_date)
+            append_incremental_rows(
+                incoming,
+                out_path,
+                subset=["ts_code", "date"],
+                sort_cols=["ts_code", "date"],
+                date_column="date",
+            )
+        return
+    save_full_history_with_checkpoints(
+        universe=universe,
+        out_path=out_path,
+        label="ETF 复权因子",
+        fetcher=lambda code, name: fetch_fund_adjustment(pro, code, name, limiter, args),
+        duplicate_subset=["ts_code", "date"],
+        sort_cols=["ts_code", "date"],
+        args=args,
+    )
+
+
+def save_fund_benchmark(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    frame = call_tushare_api(
+        pro.mkt_idx_bmk,
+        limiter,
+        max_retries=args.max_retries,
+        backoff_sec=args.backoff_sec,
+        wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+        retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+        context="mkt_idx_bmk",
+        api_name="mkt_idx_bmk",
+        fields=fields_arg(FUND_BENCHMARK_FIELDS),
+    )
+    if frame.empty:
+        raise RuntimeError("未获取到公募基金业绩基准库。")
+    frame["source_api"] = "mkt_idx_bmk"
+    frame["ingested_at"] = _ingestion_timestamp()
+    save_dataframe(
+        frame.drop_duplicates(subset=["ts_code"]).sort_values("ts_code").reset_index(drop=True),
+        output_dir / "fund_benchmark_df.parquet",
+    )
+
+
+def _prepare_macro_rows(
+    frame: pd.DataFrame,
+    *,
+    api_name: str,
+    observation_column: str,
+    contemporaneous: bool = False,
+) -> pd.DataFrame:
+    from backend.data_sources.tushare_facts import response_column_aliases
+    frame = frame.rename(columns=response_column_aliases(api_name, frame.columns))
+    if observation_column not in frame:
+        raise CenterError('MACRO_OBSERVATION_MISSING', f'{api_name} 缺少已登记的观测期字段。')
+    return _with_source_lineage(
+        frame,
+        source_api=api_name,
+        observation_column=observation_column,
+        available_column=observation_column if contemporaneous else None,
+        availability_status="date_only" if contemporaneous else "release_date_unknown",
+    ).dropna(subset=["observation_date"])
+
+
+def _save_macro_snapshot_table(
+    pro: Any,
+    output_dir: Path,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    api_name: str,
+) -> None:
+    filename, observation_column = MACRO_TABLE_SPECS[api_name]
+    frame = call_tushare_api(
+        getattr(pro, api_name),
+        limiter,
+        max_retries=args.max_retries,
+        backoff_sec=args.backoff_sec,
+        wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+        retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+        context=api_name,
+        api_name=api_name,
+    )
+    if frame.empty:
+        raise RuntimeError(f"{api_name} 未返回宏观数据。")
+    prepared = _prepare_macro_rows(
+        frame,
+        api_name=api_name,
+        observation_column=observation_column,
+    )
+    merge_vintage_rows(prepared, output_dir / filename, natural_key=["observation_date"])
+
+
+def save_macro_cycle(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    for api_name in ("cn_gdp", "cn_cpi", "cn_ppi", "cn_pmi"):
+        _save_macro_snapshot_table(pro, output_dir, limiter, args, api_name)
+
+
+def save_macro_money_credit(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    for api_name in ("cn_m", "sf_month"):
+        _save_macro_snapshot_table(pro, output_dir, limiter, args, api_name)
+
+
+def _macro_range_start(args: argparse.Namespace, out_path: Path) -> str:
+    if getattr(args, 'automatic_start_date', None):
+        return args.automatic_start_date
+    if args.smoke:
+        return args.end_date
+    if not args.latest or not out_path.exists():
+        return args.start_date
+    latest = latest_parquet_date(out_path, "observation_date")
+    return (latest - pd.Timedelta(days=args.incremental_lookback_days - 1)).strftime("%Y%m%d")
+
+
+def _fetch_macro_range(
+    pro: Any,
+    limiter: RateLimiter,
+    args: argparse.Namespace,
+    *,
+    api_name: str,
+    start_date: str,
+    end_date: str,
+    chunk_days: int,
+    output_dir: Path,
+) -> pd.DataFrame:
+    from backend.data_sources.macro_ranges import MacroRangeDownload
+    operation = getattr(pro, api_name)
+    policy = getattr(operation, 'download_policy', None)
+    cap = min(API_ROW_LIMITS[api_name], policy.max_rows_per_request) if isinstance(policy, DownloadPolicy) else API_ROW_LIMITS[api_name]
+    directory = history_checkpoint_dir(output_dir / MACRO_TABLE_SPECS[api_name][0], args)
+    if directory.exists() and not getattr(args, 'resume', False):
+        raise CenterError('MACRO_RESUME_REQUIRED', '该宏观区间已有检查点，请使用 --resume 或新的输出目录；不会覆盖原记录。')
+    session = MacroRangeDownload(directory, api=api_name,
+                                 configuration=getattr(args, 'source_configuration_hash', ''), row_limit=cap,
+                                 max_requests=1 if args.smoke else 100_000)
+    def fetch(start, end):
+        return call_tushare_api(operation, limiter, max_retries=1 if args.smoke else args.max_retries,
+                               backoff_sec=args.backoff_sec, wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+                               retry_jitter_sec=getattr(args, 'retry_jitter_sec', 0.25),
+                               context=f'{api_name} {start}-{end}', api_name=api_name,
+                               request_guard=session.before_request, start_date=start, end_date=end)
+    def prepare(frame, collected_at):
+        prepared = _prepare_macro_rows(frame, api_name=api_name,
+                                       observation_column=MACRO_TABLE_SPECS[api_name][1], contemporaneous=True)
+        prepared['ingested_at'] = collected_at
+        return prepared
+    def acknowledge(start, end):
+        callback = getattr(type(pro), 'acknowledge_partition', None)
+        if callback:
+            callback(pro, api_name, start_date=start, end_date=end)
+    frames: list[pd.DataFrame] = []
+    for start, end in iter_date_chunks(start_date, end_date, chunk_days):
+        frames.extend(session.collect(start, end, fetch=fetch, cap_error=ResponseTruncatedError,
+                                      save=save_dataframe, prepare=prepare, acknowledge=acknowledge))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def save_macro_rates(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    for api_name, chunk_days, natural_key in (
+        ("shibor", 1800, ["observation_date"]),
+        ("shibor_lpr", 3500, ["observation_date"]),
+        ("repo_daily", 90, ["ts_code", "observation_date"]),
+    ):
+        filename, _ = MACRO_TABLE_SPECS[api_name]
+        out_path = output_dir / filename
+        frame = _fetch_macro_range(
+            pro,
+            limiter,
+            args,
+            api_name=api_name,
+            start_date=_macro_range_start(args, out_path),
+            end_date=args.end_date,
+            chunk_days=chunk_days,
+            output_dir=output_dir,
+        )
+        if frame.empty:
+            if args.latest and out_path.exists():
+                print(f"[INFO] {api_name} 本次没有新增记录，保留现有文件。")
+                continue
+            raise RuntimeError(f"{api_name} 未返回利率数据。")
+        merge_vintage_rows(frame, out_path, natural_key=natural_key)
+
+
+def save_macro_release_calendar(
+    pro: Any, output_dir: Path, limiter: RateLimiter, args: argparse.Namespace
+) -> None:
+    frame = call_tushare_api(
+        pro.cn_schedule,
+        limiter,
+        max_retries=args.max_retries,
+        backoff_sec=args.backoff_sec,
+        wait_on_rate_limit_sec=args.wait_on_rate_limit_sec,
+        retry_jitter_sec=getattr(args, "retry_jitter_sec", 0.25),
+        context="cn_schedule",
+        api_name="cn_schedule",
+    )
+    if frame.empty:
+        raise RuntimeError("cn_schedule 未返回宏观发布日历。")
+    prepared = _prepare_macro_rows(
+        frame,
+        api_name="cn_schedule",
+        observation_column="publish_date",
+        contemporaneous=True,
+    )
+    merge_vintage_rows(
+        prepared,
+        output_dir / MACRO_TABLE_SPECS["cn_schedule"][0],
+        natural_key=["observation_date", "title", "data_api"],
+    )
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch platform data from Tushare only.")
     parser.add_argument("--output-dir", type=Path, default=None, help="输出目录；默认 data，smoke 默认临时目录。")
     parser.add_argument("--start-date", default=DEFAULT_START_DATE, help="开始日期 YYYYMMDD。")
     parser.add_argument("--end-date", default=TODAY, help="结束日期 YYYYMMDD。")
     parser.add_argument("--max-workers", type=int, default=16, help="Tushare 下载线程池并发数。")
     parser.add_argument("--max-retries", type=int, default=3, help="单次接口最大重试次数。")
+    parser.add_argument('--fund-event-max-requests', type=int, default=100_000,
+                        help='持仓/分红每次执行的请求预算（含重试/空响应复核），触及后保留检查点并停止。')
+    parser.add_argument('--fund-event-idle-timeout', type=int, default=180,
+                        help='持仓/分红没有响应或有效检查点的最长秒数。')
+    parser.add_argument('--fund-event-max-runtime', type=int, default=86_400,
+                        help='持仓/分红下载最大秒数，不能放宽接口配置时限。')
     parser.add_argument(
         "--empty-response-retries",
         type=int,
@@ -3469,6 +4832,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_FUND_NAV_PAGE_SIZE,
         help="场外 fund_nav 按日期增量的分页大小，默认 10000。",
+    )
+    parser.add_argument(
+        "--max-fund-manager-pages",
+        type=int,
+        default=20,
+        help="fund_manager 最大分页数，默认 20。",
     )
     parser.add_argument("--limit", type=int, default=None, help="限制处理标的数量，便于验证。")
     parser.add_argument("--smoke", action="store_true", help="小样本验证，默认写临时目录且限制 2 个标的。")
@@ -3517,6 +4886,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--etf-index", action="store_true", help="更新 data/etf_index.parquet。")
     parser.add_argument("--fund-info", action="store_true", help="更新场外公募基金 data/fund_info_df.parquet。")
     parser.add_argument("--fund-nav", action="store_true", help="更新场外公募基金 data/fund_nav_df.parquet。")
+    parser.add_argument("--fund-manager", action="store_true", help="更新公募基金经理履历。")
+    parser.add_argument("--fund-scale", action="store_true", help="从 fund_nav 生成公募基金资产规模。")
+    parser.add_argument("--fund-portfolio", action="store_true", help="更新公募基金季报股票持仓披露。")
+    parser.add_argument("--fund-dividend", action="store_true", help="更新公募基金分红记录。")
+    parser.add_argument("--fund-adjustment", action="store_true", help="更新公募基金复权因子。")
+    parser.add_argument("--fund-benchmark", action="store_true", help="更新公募基金业绩基准库。")
     parser.add_argument("--fund-company", action="store_true", help="更新 data/fund_company_df.parquet。")
     parser.add_argument("--index-catalog", action="store_true", help="更新指数原始目录与统一目录。")
     parser.add_argument("--index-domestic", action="store_true", help="更新境内指数日线。")
@@ -3526,8 +4901,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index-futures", action="store_true", help="更新商品期货指数日线。")
     parser.add_argument("--index-valuation", action="store_true", help="更新指数估值数据。")
     parser.add_argument("--index-constituents", action="store_true", help="更新指数成分与最新权重。")
+    parser.add_argument("--macro-cycle", action="store_true", help="更新 GDP、CPI、PPI 与 PMI。")
+    parser.add_argument("--macro-money-credit", action="store_true", help="更新货币供应量与社会融资。")
+    parser.add_argument("--macro-rates", action="store_true", help="更新 Shibor、LPR 与回购行情。")
+    parser.add_argument("--macro-release-calendar", action="store_true", help="更新中国宏观数据发布日历。")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args.output_dir_explicit = args.output_dir is not None
     args.start_date = normalize_yyyymmdd(args.start_date, default=DEFAULT_START_DATE)
     args.end_date = normalize_yyyymmdd(args.end_date, default=TODAY)
@@ -3543,6 +4922,9 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-latest-days 必须大于 0。")
     if args.max_workers < 1:
         parser.error("--max-workers 必须大于 0。")
+    for name in ('fund_event_max_requests', 'fund_event_idle_timeout', 'fund_event_max_runtime'):
+        if getattr(args, name) < 1:
+            parser.error(f'--{name.replace("_", "-")} 必须大于 0。')
     if args.empty_response_retries < 0:
         parser.error("--empty-response-retries 不能小于 0。")
     if args.incremental_batch_days < 1:
@@ -3563,6 +4945,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-fund-nav-pages 必须大于 0。")
     if args.fund_nav_page_size < 1:
         parser.error("--fund-nav-page-size 必须大于 0。")
+    if args.max_fund_manager_pages < 1:
+        parser.error("--max-fund-manager-pages 必须大于 0。")
     if args.smoke:
         args.limit = args.limit or 2
         args.max_workers = min(args.max_workers, 2)
@@ -3588,8 +4972,18 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
             "etf_share",
             "candle",
             "fund_nav",
+            "fund_manager",
+            "fund_scale",
+            "fund_portfolio",
+            "fund_dividend",
+            "fund_adjustment",
+            "fund_benchmark",
             *INDEX_SCOPE_ACTIONS.values(),
             "index_coverage",
+            "macro_cycle",
+            "macro_money_credit",
+            "macro_rates",
+            "macro_release_calendar",
         ]
     actions = []
     if args.all or args.etf_info:
@@ -3612,6 +5006,20 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
         actions.append("fund_info")
     if args.all or args.fund_nav:
         actions.append("fund_nav")
+    for option, action in (
+        ("fund_manager", "fund_manager"),
+        ("fund_scale", "fund_scale"),
+        ("fund_portfolio", "fund_portfolio"),
+        ("fund_dividend", "fund_dividend"),
+        ("fund_adjustment", "fund_adjustment"),
+        ("fund_benchmark", "fund_benchmark"),
+        ("macro_cycle", "macro_cycle"),
+        ("macro_money_credit", "macro_money_credit"),
+        ("macro_rates", "macro_rates"),
+        ("macro_release_calendar", "macro_release_calendar"),
+    ):
+        if args.all or bool(getattr(args, option, False)):
+            actions.append(action)
     if args.all or args.fund_company:
         actions.append("fund_company")
     for scope, action in INDEX_SCOPE_ACTIONS.items():
@@ -3633,6 +5041,7 @@ def _action_resume_key(args: argparse.Namespace) -> str:
         "history_chunk_days": getattr(args, "history_chunk_days", None),
         "missing_only": bool(getattr(args, "missing_only", False)),
         "latest": bool(getattr(args, "latest", False)),
+        "source_configuration_hash": getattr(args, "source_configuration_hash", None),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:20]
@@ -3682,7 +5091,7 @@ def _run_action_once(
     return result
 
 
-def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
+def _run_actions(args: argparse.Namespace, actions: list[str], *, client: Any = None) -> None:
     if args.latest:
         unsupported = set(actions) - {
             "etf_info",
@@ -3696,14 +5105,25 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
             "etf_share",
             "candle",
             "fund_nav",
+            "fund_manager",
+            "fund_scale",
+            "fund_portfolio",
+            "fund_dividend",
+            "fund_adjustment",
+            "fund_benchmark",
+            "macro_cycle",
+            "macro_money_credit",
+            "macro_rates",
+            "macro_release_calendar",
             *INDEX_ACTIONS,
         }
         if unsupported:
             raise ValueError(f"--latest 不支持这些任务: {', '.join(sorted(unsupported))}")
 
     ensure_output_dir(args.output_dir)
-    token = require_tushare_token()
-    pro = ts.pro_api(token)
+    # A registered ETL adapter supplies the same configured client while keeping
+    # credentials and outputs inside its controlled acquisition boundary.
+    pro = client if client is not None else create_client(require_tushare_token(), args)
     limiter = RateLimiter(args.max_calls_per_minute, min_interval_sec=args.min_call_interval_sec)
 
     print(f"[INFO] 输出目录: {args.output_dir.resolve()}")
@@ -3792,6 +5212,33 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
             if args.latest
             else save_public_fund_nav(pro, args.output_dir, limiter, args, fund_info),
         )
+    if "fund_manager" in actions:
+        run_action(
+            "fund_manager",
+            lambda: save_fund_manager(pro, args.output_dir, limiter, args, fund_info),
+        )
+    if "fund_scale" in actions:
+        run_action("fund_scale", lambda: save_fund_scale(args.output_dir))
+    if "fund_portfolio" in actions:
+        run_action(
+            "fund_portfolio",
+            lambda: save_fund_portfolio(pro, args.output_dir, limiter, args, fund_info),
+        )
+    if "fund_dividend" in actions:
+        run_action(
+            "fund_dividend",
+            lambda: save_fund_dividend(pro, args.output_dir, limiter, args, fund_info),
+        )
+    if "fund_adjustment" in actions:
+        run_action(
+            "fund_adjustment",
+            lambda: save_fund_adjustment(pro, args.output_dir, limiter, args, etf_info),
+        )
+    if "fund_benchmark" in actions:
+        run_action(
+            "fund_benchmark",
+            lambda: save_fund_benchmark(pro, args.output_dir, limiter, args),
+        )
     if "stock_basic" in actions:
         run_action(
             "stock_basic", lambda: save_stock_basic(pro, args.output_dir, limiter, args)
@@ -3828,6 +5275,24 @@ def _run_actions(args: argparse.Namespace, actions: list[str]) -> None:
         run_action(
             "index_coverage", lambda: save_index_coverage(args.output_dir)
         )
+    if "macro_cycle" in actions:
+        run_action(
+            "macro_cycle", lambda: save_macro_cycle(pro, args.output_dir, limiter, args)
+        )
+    if "macro_money_credit" in actions:
+        run_action(
+            "macro_money_credit",
+            lambda: save_macro_money_credit(pro, args.output_dir, limiter, args),
+        )
+    if "macro_rates" in actions:
+        run_action(
+            "macro_rates", lambda: save_macro_rates(pro, args.output_dir, limiter, args)
+        )
+    if "macro_release_calendar" in actions:
+        run_action(
+            "macro_release_calendar",
+            lambda: save_macro_release_calendar(pro, args.output_dir, limiter, args),
+        )
 
 
 def _modules_for_actions(actions: list[str]) -> list[str]:
@@ -3837,10 +5302,15 @@ def _modules_for_actions(actions: list[str]) -> list[str]:
         modules.append("base")
     if selected & {"etf_info", "nav", "etf_share", "candle", "etf_index"}:
         modules.append("etf")
-    if selected & {"fund_info", "fund_nav"}:
+    if selected & {
+        "fund_info", "fund_nav", "fund_manager", "fund_scale", "fund_portfolio",
+        "fund_dividend", "fund_adjustment", "fund_benchmark",
+    }:
         modules.append("fund")
     if selected & INDEX_ACTIONS:
         modules.append("index")
+    if selected & {"macro_cycle", "macro_money_credit", "macro_rates", "macro_release_calendar"}:
+        modules.append("macro")
     return modules
 
 
@@ -3873,15 +5343,35 @@ def _module_scopes_for_actions(actions: list[str]) -> dict[str, list[str]]:
     ]
     fund = [
         scope
-        for scope, action in (("info", "fund_info"), ("nav", "fund_nav"))
+        for scope, action in (
+            ("info", "fund_info"),
+            ("nav", "fund_nav"),
+            ("manager", "fund_manager"),
+            ("scale", "fund_scale"),
+            ("portfolio", "fund_portfolio"),
+            ("dividend", "fund_dividend"),
+            ("adjustment", "fund_adjustment"),
+            ("benchmark", "fund_benchmark"),
+        )
         if action in selected
     ]
     index = _index_scopes_for_actions(actions)
+    macro = [
+        scope
+        for scope, action in (
+            ("cycle", "macro_cycle"),
+            ("money_credit", "macro_money_credit"),
+            ("rates", "macro_rates"),
+            ("release_calendar", "macro_release_calendar"),
+        )
+        if action in selected
+    ]
     for module, selected_scopes in (
         ("base", base),
         ("etf", etf),
         ("fund", fund),
         ("index", index),
+        ("macro", macro),
     ):
         if selected_scopes:
             scopes[module] = selected_scopes
@@ -3933,6 +5423,7 @@ def _stop_cli_heartbeat(stop_event: threading.Event, thread: threading.Thread) -
 def _cli_request_fingerprint(args: argparse.Namespace, actions: list[str]) -> str:
     payload = {
         "actions": actions,
+        "source_configuration_hash": configuration_fingerprint(),
         "start_date": getattr(args, "start_date", None),
         "end_date": getattr(args, "end_date", None),
         "history_chunk_days": getattr(args, "history_chunk_days", None),

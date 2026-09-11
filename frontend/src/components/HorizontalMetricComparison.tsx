@@ -166,6 +166,34 @@ export default function HorizontalMetricComparison({
   );
 }
 
+/** Explicit presentation used by allocation research; other tables keep their full-row default. */
+export function AllocationMetricsReview({
+  columns,
+  rows,
+  annualRows = [],
+  detailedContent,
+}: Pick<HorizontalMetricComparisonProps, 'columns' | 'rows'> & { annualRows?: HorizontalMetricRow[]; detailedContent?: React.ReactNode }) {
+  const [annualOpen, setAnnualOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  return <div className="space-y-3">
+    <section aria-label="核心指标对比">
+      <h3 className="mb-2 text-sm font-semibold">核心指标对比 · {rows.length} 项</h3>
+      <HorizontalMetricComparison columns={columns} rows={rows} />
+    </section>
+    {annualRows.length > 0 && <details open={annualOpen} onToggle={event => setAnnualOpen(event.currentTarget.open)} className="rounded-xl border border-slate-200 bg-white p-3">
+      <summary className="cursor-pointer text-sm font-semibold text-slate-700">年度指标明细</summary>
+      {annualOpen && <section aria-label="年度指标明细" className="mt-3"><HorizontalMetricComparison columns={columns} rows={annualRows} /></section>}
+    </details>}
+    <details open={detailOpen} onToggle={event => setDetailOpen(event.currentTarget.open)} className="rounded-xl border border-slate-200 bg-white p-3">
+      <summary className="cursor-pointer text-sm font-semibold text-slate-700">{detailedContent ? '详细研究：收益风险象限与同类一致性' : '详细研究：收益风险象限'}</summary>
+      {detailOpen && <div className="mt-3 space-y-4">
+        <section aria-label="收益风险象限图"><h4 className="mb-2 text-sm font-semibold">收益风险象限图</h4><PerformanceQuadrantChart columns={columns} rows={rows} /></section>
+        {detailedContent}
+      </div>}
+    </details>
+  </div>;
+}
+
 interface PerformanceQuadrantChartProps {
   columns: string[];
   rows: HorizontalMetricRow[];

@@ -5,12 +5,25 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
-from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr, compute_rolling_corr_classes, compute_class_consistency
-from optimizer import calculate_efficient_frontier_exploration
+from fit import (
+    ClassSpec,
+    ETFSpec,
+    compute_class_consistency,
+    compute_classes_nav,
+    compute_nav_performance_payload,
+    compute_rolling_corr,
+    compute_rolling_corr_classes,
+    serialize_rolling_correlation_payload,
+)
+from optimizer import calculate_efficient_frontier_exploration, returns_from_nav_matrix
+from backtest_engine import load_allocation_nav
+from product_pools.membership import universe_pit_lineage
+from pit.context import PitContextError, resolve_request_context
+from backend.research_input_checks import ResearchInputError
 
 
 DATA_DIR = (Path(__file__).resolve().parents[2] / "data").resolve()
@@ -33,25 +46,39 @@ class FitClassIn(BaseModel):
 class FitRequest(BaseModel):
     startDate: str
     classes: List[FitClassIn]
+    # Which locked pool the classes were built from. Optional so an older client
+    # still fits, but without it the run cannot say whose universe it used.
+    universe_snapshot_id: Optional[str] = None
 
 
 class FitResponse(BaseModel):
     dates: List[str]
     navs: dict
-    corr: List[List[float]]
+    corr: List[List[Optional[float]]]
     corr_labels: List[str]
     metrics: List[dict]
     consistency: List[dict]
+    annual_metrics: dict
+    execution: dict
+    # The口径 these numbers were computed under, carried on the result rather
+    # than left to the window frame around it.
+    pit: dict
 
 
 @router.post("/fit-classes", response_model=FitResponse)
 def fit_classes(req: FitRequest):
     try:
         start = pd.to_datetime(req.startDate)
-    except Exception:
-        raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
+        if pd.isna(start):
+            raise ValueError("missing date")
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail={
+            "field": "startDate", "message": "startDate 格式错误，应为 YYYY-MM-DD。"
+        }) from exc
     if not req.classes:
-        raise ValueError("classes 不能为空")
+        raise HTTPException(status_code=400, detail={
+            "field": "classes", "message": "classes 不能为空。"
+        })
     classes = [
         ClassSpec(
             id=c.id,
@@ -60,8 +87,25 @@ def fit_classes(req: FitRequest):
         )
         for c in req.classes
     ]
-    NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
-    consistency_rows = compute_class_consistency(DATA_DIR, classes, start)
+    try:
+        _pit = resolve_request_context(DATA_DIR)
+        # Strict mode refuses a pool screened after the day being decided;
+        # research mode records the finding on the result.
+        universe = universe_pit_lineage(DATA_DIR, req.universe_snapshot_id, _pit)
+    except PitContextError as exc:
+        # A bare raise here would surface as a 500 with no reason attached, and
+        # the reason is the entire message.
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    try:
+        result = compute_classes_nav(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
+    except ResearchInputError as exc:
+        return JSONResponse(status_code=422, content={"detail": exc.detail()})
+    except (ValueError, PitContextError) as exc:
+        return JSONResponse(status_code=400, content={"detail": {"message": str(exc)}})
+    NAV, corr, metrics = result.nav, result.correlation, result.metrics
+    nav_lineage = result.lineage
+    consistency_rows = compute_class_consistency(DATA_DIR, classes, start, as_of=_pit.as_of, run_mode=_pit.run_mode)
+    performance = compute_nav_performance_payload(NAV)
 
     def finite_or_none(x: float):
         try:
@@ -82,11 +126,12 @@ def fit_classes(req: FitRequest):
     dates = [d.strftime("%Y-%m-%d") for d in NAV.index]
     navs = {col: [finite_or_none(float(x)) for x in NAV[col].tolist()] for col in NAV.columns}
     corr_labels = list(corr.columns)
-    corr_vals = [[finite_or_none(float(v)) or 0.0 for v in row] for row in corr.values.tolist()]
+    corr_vals = [[finite_or_none(float(v)) for v in row] for row in corr.values.tolist()]
     metrics_out = []
     for name, row in metrics.iterrows():
         metrics_out.append({
             "name": str(name),
+            "cumulative_return": performance["cumulative_returns"].get(str(name)),
             "annual_return": finite_or_none(row.get("年化收益率", None)),
             "annual_vol": finite_or_none(row.get("年化波动率", None)),
             "sharpe": finite_or_none(row.get("夏普比率", None)),
@@ -103,7 +148,17 @@ def fit_classes(req: FitRequest):
             "pca_evr1": None if not isinstance(row.get("pca_evr1"), (int,float)) or not (row.get("pca_evr1") == row.get("pca_evr1")) else float(row.get("pca_evr1")),
             "max_te": None if not isinstance(row.get("max_te"), (int,float)) or not (row.get("max_te") == row.get("max_te")) else float(row.get("max_te")),
         })
-    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out, consistency=cons_out)
+    return FitResponse(
+        dates=dates,
+        navs=navs,
+        corr=corr_vals,
+        corr_labels=corr_labels,
+        metrics=metrics_out,
+        consistency=cons_out,
+        annual_metrics=performance["annual_metrics"],
+        execution=performance["execution"],
+        pit={**nav_lineage, "universe": universe},
+    )
 
 
 class RollingRequest(BaseModel):
@@ -118,6 +173,7 @@ class RollingResponse(BaseModel):
     dates: List[str]
     series: dict
     metrics: List[dict]
+    execution: dict
 
 
 @router.post("/rolling-corr", response_model=RollingResponse)
@@ -127,20 +183,13 @@ def rolling_corr(req: RollingRequest):
     except Exception:
         raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
     etfs = [ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in req.etfs]
-    idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName)
-    dates = [d.strftime("%Y-%m-%d") for d in idx]
-    safe_series = {k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for k, v in series_map.items()}
-    for m in metrics:
-        for k in list(m.keys()):
-            if k == 'name':
-                continue
-            v = m[k]
-            try:
-                if not (isinstance(v, (int, float)) and v == v and abs(v) != float('inf')):
-                    m[k] = 0.0
-            except Exception:
-                m[k] = 0.0
-    return RollingResponse(dates=dates, series=safe_series, metrics=metrics)
+    _pit = resolve_request_context(DATA_DIR)
+    idx, series_map, metrics = compute_rolling_corr(
+        DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName, as_of=_pit.as_of, run_mode=_pit.run_mode
+    )
+    return RollingResponse(
+        **serialize_rolling_correlation_payload(idx, series_map, metrics)
+    )
 
 
 class FrontierRequest(BaseModel):
@@ -161,21 +210,42 @@ def post_efficient_frontier(req: FrontierRequest):
     nv_path = DATA_DIR / "asset_nv.parquet"
     if not nv_path.exists():
         return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
-    df = pd.read_parquet(nv_path)
-    alloc_df = df[df["asset_alloc_name"] == req.alloc_name].copy()
-    if alloc_df.empty:
+    try:
+        _pit = resolve_request_context(DATA_DIR)
+    except PitContextError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    try:
+        loaded = load_allocation_nav(DATA_DIR, req.alloc_name, _pit)
+    except PitContextError as exc:
+        # The frontier is where the weights are actually chosen, so it refuses on
+        # the same grounds as the backtest instead of quietly plotting a cloud
+        # built out of a pool that did not exist yet.
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ResearchInputError as exc:
+        return JSONResponse(status_code=422, content={"detail": exc.detail()})
+    if loaded.nav_wide.empty:
         return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
-    alloc_df['date'] = pd.to_datetime(alloc_df['date'])
-    mask = (alloc_df['date'] >= pd.to_datetime(req.start_date)) & (alloc_df['date'] <= pd.to_datetime(req.end_date))
-    alloc_df = alloc_df.loc[mask]
-    if alloc_df.empty:
+    window = (loaded.nav_wide.index >= pd.to_datetime(req.start_date)) & (
+        loaded.nav_wide.index <= pd.to_datetime(req.end_date)
+    )
+    nav_wide = loaded.nav_wide.loc[window].dropna(axis=0, how='any')
+    if nav_wide.empty:
         return JSONResponse(status_code=400, content={"detail": "在选定日期区间内没有数据"})
-    nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    if len(nav_wide.index) < 2:
+        return JSONResponse(status_code=400, content={"detail": "完整交集净值样本不足，无法计算有效前沿"})
     return_type = req.return_metric.get('type', 'simple')
-    if return_type == 'log':
-        returns_df = np.log(nav_wide / nav_wide.shift(1)).dropna()
-    else:
-        returns_df = nav_wide.pct_change().dropna()
+    try:
+        return_values = returns_from_nav_matrix(
+            nav_wide.to_numpy(dtype=np.float64),
+            return_type=return_type,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    returns_df = pd.DataFrame(
+        return_values,
+        index=nav_wide.index[1:],
+        columns=nav_wide.columns,
+    )
 
     # constraints mapping
     asset_names = list(nav_wide.columns)
@@ -247,5 +317,8 @@ def post_efficient_frontier(req: FrontierRequest):
         "frontier": sorted([p for p in results.get("frontier", []) if is_finite_point(p)], key=lambda o: extract_value(o)[0]),
         "max_sharpe": results.get("max_sharpe") if is_finite_point(results.get("max_sharpe")) else None,
         "min_variance": results.get("min_variance") if is_finite_point(results.get("min_variance")) else None,
+        "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
+        "execution": results.get("execution"),
+        "pit": loaded.lineage,
     }
     return clean_results

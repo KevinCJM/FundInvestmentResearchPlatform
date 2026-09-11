@@ -61,9 +61,12 @@ def test_run_actions_passes_frontend_token_directly_without_writing_tushare_home
         "ts",
         types.SimpleNamespace(
             set_token=reject_persistent_token,
-            pro_api=lambda token: calls.append(token) or object(),
+            pro_api=reject_persistent_token,
         ),
     )
+    # The configured adapter replaces SDK I/O; keep the credential contract
+    # explicit without creating a real workspace SQLite database in tests.
+    monkeypatch.setattr(module, "create_client", lambda token, args: calls.append(token) or object())
     args = types.SimpleNamespace(
         latest=False,
         output_dir=tmp_path,
@@ -112,7 +115,7 @@ def test_build_etf_info_df_uses_tushare_schema_and_project_units() -> None:
                 "list_status": "L",
                 "mgr_name": "华夏基金管理有限公司",
                 "custod_name": "中国工商银行",
-                "etf_type": "宽基ETF",
+                "etf_type": "境内",
             }
         ]
     )
@@ -134,6 +137,23 @@ def test_build_etf_info_df_uses_tushare_schema_and_project_units() -> None:
     assert str(row["list_date"].date()) == "2004-02-23"
     assert row["management"] == "华夏基金"
     assert row["custodian"] == "中国银行"
+    assert row["qdii_type"] == "非QDII"
+    assert row["qdii_source"] == "etf_basic.etf_type"
+
+
+def test_build_etf_info_df_preserves_tushare_qdii_channel() -> None:
+    module = _load_data_script()
+    fund_df = pd.DataFrame(
+        [{"ts_code": "513100.SH", "name": "国泰纳斯达克100ETF(QDII)", "fund_type": "股票型"}]
+    )
+    etf_df = pd.DataFrame(
+        [{"ts_code": "513100.SH", "exchange": "SH", "list_status": "L", "etf_type": "QDII"}]
+    )
+
+    row = module.build_etf_info_df(fund_df, etf_df).iloc[0]
+
+    assert row["qdii_type"] == "QDII"
+    assert row["qdii_source"] == "etf_basic.etf_type"
 
 
 def test_build_etf_info_df_falls_back_to_code_suffix_without_etf_basic() -> None:
@@ -162,6 +182,8 @@ def test_build_etf_info_df_falls_back_to_code_suffix_without_etf_basic() -> None
     assert row["market"] == "深交所"
     assert row["status"] == "上市交易"
     assert row["issue_amount"] == 320000.0
+    assert row["qdii_type"] == "待确认"
+    assert row["qdii_source"] == "unavailable"
 
 
 def test_build_public_fund_info_keeps_off_exchange_domain_separate() -> None:
@@ -187,6 +209,35 @@ def test_build_public_fund_info_keeps_off_exchange_domain_separate() -> None:
     assert row["market_code"] == "O"
     assert row["market"] == "场外"
     assert row["status"] == "存续"
+    assert row["qdii_type"] == "非QDII"
+    assert row["qdii_source"] == "fund_basic.name_marker"
+
+
+def test_build_public_fund_info_derives_qdii_only_from_explicit_name_marker() -> None:
+    module = _load_data_script()
+    fund_df = pd.DataFrame(
+        [
+            {
+                "ts_code": "000834.OF",
+                "name": "大成纳斯达克100ETF联接(QDII)-A",
+                "fund_type": "股票型",
+                "status": "L",
+                "market": "O",
+            },
+            {
+                "ts_code": "000835.OF",
+                "name": "港股通精选基金",
+                "fund_type": "股票型",
+                "status": "L",
+                "market": "O",
+            },
+        ]
+    )
+
+    out = module.build_public_fund_info_df(fund_df).set_index("ts_code")
+
+    assert out.loc["000834.OF", "qdii_type"] == "QDII"
+    assert out.loc["000835.OF", "qdii_type"] == "非QDII"
 
 
 def test_adjusted_nav_normalization_preserves_rows_and_nulls_unusable_values() -> None:
@@ -291,6 +342,33 @@ def test_save_dataframe_is_atomic_when_parquet_write_fails(monkeypatch, tmp_path
 
     assert pd.read_parquet(path).to_dict("records") == [{"value": 1}]
     assert list(tmp_path.glob(".data.parquet.*.tmp")) == []
+
+
+def test_adjustment_incremental_consumes_all_pages(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import T01_get_data as script
+    from backend.data_sources.models import DownloadPolicy, Pagination
+    codes = ['510000.SH', '510001.SH', '510002.SH']
+    universe = pd.DataFrame({'ts_code': codes, 'name': codes})
+    args = script.parse_args(['--latest', '--start-date', '20260904', '--end-date', '20260904',
+                              '--max-workers', '1', '--max-retries', '1', '--output-dir', str(tmp_path)])
+    monkeypatch.setattr(script, 'load_open_trade_dates', lambda *a, **kw: ['20260904'])
+    calls = []
+
+    def fetch(**params):
+        calls.append(params)
+        rows = [{'ts_code': code, 'trade_date': '20260904', 'adj_factor': 1.5} for code in codes]
+        offset = params.get('offset', 0)
+        return pd.DataFrame(rows[offset:offset + params.get('limit', 2)])
+
+    fetch.pagination_config = Pagination(mode='offset', page_size=2, max_pages=4)
+    fetch.download_policy = DownloadPolicy(max_rows_per_request=2)
+    script.save_fund_adjustment(SimpleNamespace(fund_adj=fetch), tmp_path,
+                               script.RateLimiter(100000), args, etf_info=universe)
+    result = pd.read_parquet(tmp_path / 'fund_adj_factor_df.parquet')
+    assert result.ts_code.tolist() == codes
+    assert all('offset' in p and p.get('limit') == 2 for p in calls)
+    assert len(calls) <= 4
 
 
 def test_fetch_latest_dates_uses_one_request_per_date_and_filters_universe() -> None:
@@ -1067,6 +1145,37 @@ def test_incremental_rows_stream_merge_preserves_code_contiguity(monkeypatch, tm
     assert out.duplicated(["ts_code", "date"]).sum() == 0
 
 
+def test_incremental_stream_merge_emits_progress_while_copying_large_baseline(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    module = _load_data_script()
+    path = tmp_path / "index_daily_df.parquet"
+    pd.DataFrame(
+        [
+            {"source_api": "index_daily", "ts_code": "000001.SH", "trade_date": pd.Timestamp("2026-08-27"), "close": 1.0},
+            {"source_api": "index_daily", "ts_code": "000001.SH", "trade_date": pd.Timestamp("2026-08-28"), "close": 1.1},
+            {"source_api": "index_daily", "ts_code": "000002.SH", "trade_date": pd.Timestamp("2026-08-28"), "close": 2.0},
+        ]
+    ).to_parquet(path, index=False, row_group_size=1)
+    monkeypatch.setattr(module, "INCREMENTAL_MERGE_PROGRESS_ROWS", 1)
+    monkeypatch.setattr(module, "INCREMENTAL_MERGE_PROGRESS_SECONDS", 3600.0)
+
+    merged_rows = module.append_incremental_rows(
+        pd.DataFrame(
+            [{"source_api": "index_daily", "ts_code": "000003.SH", "trade_date": pd.Timestamp("2026-08-29"), "close": 3.0}]
+        ),
+        path,
+        subset=["source_api", "ts_code", "trade_date"],
+        sort_cols=["ts_code", "trade_date"],
+        date_column="trade_date",
+    )
+
+    assert merged_rows == 4
+    output = capsys.readouterr().out
+    assert "index_daily_df.parquet 流式归并进度" in output
+    assert "3/3（100.0%）" in output
+
+
 def test_incremental_rows_copy_untouched_instruments_without_pandas_merge(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1345,6 +1454,7 @@ def test_missing_only_consolidation_rejects_duplicate_code_without_replacing_bas
 
 def test_manual_cli_lock_persists_redacted_failure_and_releases(monkeypatch, tmp_path: Path) -> None:
     module = _load_data_script()
+    monkeypatch.setattr(module, 'configuration_fingerprint', lambda: 'offline-config')
     lock_path = tmp_path / ".refresh.lock"
     state_path = tmp_path / ".refresh.json"
     args = types.SimpleNamespace(latest=True, output_dir=tmp_path)
@@ -1395,6 +1505,7 @@ def test_manual_cli_rejects_duplicate_before_running(monkeypatch, tmp_path: Path
 
 def test_manual_cli_persists_heartbeat_and_local_snapshot(monkeypatch, tmp_path: Path) -> None:
     module = _load_data_script()
+    monkeypatch.setattr(module, 'configuration_fingerprint', lambda: 'offline-config')
     lock_path = tmp_path / ".refresh.lock"
     state_path = tmp_path / ".refresh.json"
     args = types.SimpleNamespace(latest=False, output_dir=tmp_path)
@@ -1422,6 +1533,7 @@ def test_manual_cli_persists_heartbeat_and_local_snapshot(monkeypatch, tmp_path:
 
 def test_manual_cli_snapshot_failure_does_not_mark_fetch_failed(monkeypatch, tmp_path: Path) -> None:
     module = _load_data_script()
+    monkeypatch.setattr(module, 'configuration_fingerprint', lambda: 'offline-config')
     state_path = tmp_path / ".refresh.json"
     args = types.SimpleNamespace(latest=False, output_dir=tmp_path)
     monkeypatch.setattr(module, "GLOBAL_REFRESH_LOCK_PATH", tmp_path / ".refresh.lock")
@@ -1443,6 +1555,29 @@ def test_manual_cli_snapshot_failure_does_not_mark_fetch_failed(monkeypatch, tmp
     assert persisted["analytics_snapshot"]["status"] == "failed"
     assert persisted["warnings"][0]["code"] == "ANALYTICS_REBUILD_FAILED"
     assert "无需重新拉取数据" in persisted["message"]
+
+
+@pytest.mark.parametrize('second', ['empty', 'data', 'error'])
+def test_index_empty_response_requires_independent_confirmation(monkeypatch, second):
+    module = _load_data_script()
+    calls = []
+    def query(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1 or second == 'empty':
+            return pd.DataFrame()
+        if second == 'error':
+            raise RuntimeError('offline confirmation failure')
+        return pd.DataFrame([{'ts_code': 'A.TI', 'trade_date': '20260904', 'close': 1.0}])
+    monkeypatch.setattr(module, '_call_index_api', query)
+    def invoke():
+        return module.fetch_index_date_window(pro=object(), api_name='ths_daily', limiter=object(),
+            args=object(), code='A.TI', start_date='20260904', end_date='20260904')
+    if second == 'error':
+        with pytest.raises(RuntimeError): invoke()
+    else:
+        assert len(invoke()) == (1 if second == 'data' else 0)
+    assert len(calls) == 2
+    assert '独立复核' in calls[1]['context']
 
 
 def test_index_capped_range_is_bisected_before_results_are_accepted() -> None:
@@ -1473,6 +1608,54 @@ def test_index_capped_range_is_bisected_before_results_are_accepted() -> None:
     assert calls == [("20260830", "20260831"), ("20260830", "20260830"), ("20260831", "20260831")]
     assert len(result) == 2
     assert result["trade_date"].dtype.kind == "M"
+
+
+@pytest.mark.parametrize('kind', ['transport_cap', 'configured_cap', 'confirmation_cap'])
+def test_index_date_split_handles_configured_transport_limits(kind):
+    module = _load_data_script()
+    from backend.data_sources.models import CenterError, DownloadPolicy
+    calls = []
+
+    def fetch(**kwargs):
+        start, end = kwargs['start_date'], kwargs['end_date']
+        calls.append((start, end))
+        if start != end:
+            if kind == 'confirmation_cap' and len(calls) == 1:
+                return pd.DataFrame()
+            if kind != 'configured_cap':
+                raise CenterError('SOURCE_ROW_CAP', 'bounded response rejected')
+            return pd.DataFrame([{'ts_code': 'A.NH', 'trade_date': start, 'close': 1.0}] * 2)
+        return pd.DataFrame([{'ts_code': 'A.NH', 'trade_date': start, 'close': 1.0}])
+
+    fetch.download_policy = DownloadPolicy(max_rows_per_request=2)
+    args = module.parse_args(['--max-retries', '1'])
+    pro = types.SimpleNamespace(fut_index_daily=fetch)
+    result = module.fetch_index_date_window(pro=pro, api_name='fut_index_daily',
+        limiter=module.RateLimiter(100000), args=args, code='A.NH',
+        start_date='20260901', end_date='20260902')
+    assert calls == [('20260901', '20260902')] * (2 if kind == 'confirmation_cap' else 1) + [
+        ('20260901', '20260901'), ('20260902', '20260902')]
+    assert result.trade_date.dt.strftime('%Y%m%d').tolist() == ['20260901', '20260902']
+
+
+@pytest.mark.parametrize('kind', ['single_day', 'children_empty', 'permission'])
+def test_index_split_fails_closed_without_retry_or_empty_success(kind):
+    module = _load_data_script()
+    from backend.data_sources.models import CenterError
+    calls = []
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        if kind == 'permission':
+            raise CenterError('SOURCE_PERMISSION_OR_PARAMS', 'no permission')
+        if kind == 'single_day' or kwargs['start_date'] != kwargs['end_date']:
+            raise CenterError('SOURCE_ROW_CAP', 'bounded response rejected')
+        return pd.DataFrame()
+    args = module.parse_args(['--max-retries', '3'])
+    with pytest.raises((module.ResponseTruncatedError, CenterError)):
+        module.fetch_index_date_window(pro=types.SimpleNamespace(fut_index_daily=fetch),
+            api_name='fut_index_daily', limiter=module.RateLimiter(100000), args=args,
+            code='A.NH', start_date='20260901', end_date='20260901' if kind == 'single_day' else '20260902')
+    assert len(calls) == (5 if kind == 'children_empty' else 1)
 
 
 def test_etf_share_size_capped_range_is_bisected_and_keeps_formula_inputs() -> None:
@@ -1615,7 +1798,7 @@ def test_latest_index_weight_reads_only_recent_monthly_window(tmp_path: Path) ->
     weights = pd.read_parquet(tmp_path / "index_weights_df.parquet")
     assert len(weight_calls) == 1
     assert weight_calls[0][0] == "000300.SH"
-    assert weight_calls[0][1] == "20260504"
+    assert weight_calls[0][1] == "20260801"  # Latest month suffices; older data cannot change the latest day.
     assert weight_calls[0][2] == "20260831"
     assert weights.iloc[0]["trade_date"] == pd.Timestamp("2026-08-01")
 
@@ -1663,8 +1846,10 @@ def test_index_weight_resume_reuses_member_and_per_code_checkpoints(
         max_workers=2, resume=True,
     )
 
-    with pytest.raises(RuntimeError, match="成功检查点"):
+    from backend.data_sources.models import CenterError
+    with pytest.raises(CenterError, match="成功检查点") as failed:
         module.save_index_constituents(object(), tmp_path, module.RateLimiter(10_000), args)
+    assert failed.value.code == 'INDEX_WEIGHT_INCOMPLETE'
 
     checkpoint_dir = module.history_checkpoint_dir(tmp_path / "index_weights_df.parquet", args)
     assert (checkpoint_dir / "000300.SH.parquet").exists()
@@ -1744,7 +1929,7 @@ def test_index_constituents_and_weights_fetch_code_tasks_concurrently(
                     }]
                 )
             code = kwargs["ts_code"]
-            return pd.DataFrame([{"con_code": "600000.SH", "con_name": code}])
+            return pd.DataFrame([{"ts_code": code, "con_code": "600000.SH", "con_name": code}])
         finally:
             with concurrency_lock:
                 active_calls -= 1
@@ -1847,7 +2032,8 @@ def test_index_full_history_resumes_only_missing_date_segments(tmp_path: Path) -
                 [{"ts_code": "000300.SH", "trade_date": kwargs["start_date"], "close": 1.0}]
             )
 
-    with pytest.raises(RuntimeError, match="日期段失败"):
+    from backend.data_sources.models import CenterError
+    with pytest.raises(CenterError, match="日期段失败") as failed:
         module.save_index_full_history_with_segment_checkpoints(
             universe=universe,
             out_path=out_path,
@@ -1858,6 +2044,9 @@ def test_index_full_history_resumes_only_missing_date_segments(tmp_path: Path) -
             args=args,
         )
     assert first_calls == ["20260830", "20260831"]
+    assert failed.value.code == 'INDEX_HISTORY_INCOMPLETE'
+    assert 'INDEX_SHARD_ERROR' in failed.value.message
+    assert 'temporary' not in failed.value.message
 
     resumed_calls: list[str] = []
 
@@ -1909,3 +2098,254 @@ def test_index_history_writes_typed_empty_file_when_catalog_has_no_source(
     result = pd.read_parquet(tmp_path / "index_ci_daily_df.parquet")
     assert result.empty
     assert result.columns.tolist() == ["source_api", "ts_code", "trade_date"]
+
+
+def test_macro_cycle_downloads_merrill_inputs_and_preserves_unknown_release_dates(tmp_path):
+    from backend.data_sources.task_catalog import get_task
+    module = _load_data_script()
+    samples = {
+        'cn_gdp': {'quarter': '2025Q1', 'gdp': 300000.0, 'gdp_yoy': 5.1},
+        'cn_cpi': {'month': '202503', 'nt_val': 99.9, 'nt_yoy': -0.1, 'nt_mom': -0.4},
+        'cn_ppi': {'month': '202503', 'ppi_yoy': -2.5, 'ppi_mom': -0.4},
+        'cn_pmi': {'MONTH': '202503', 'PMI010000': 50.5, 'PMI010400': 52.6},
+    }
+    calls = []
+
+    class Provider:
+        def __getattr__(self, api):
+            def fetch(**params):
+                calls.append((api, params))
+                return pd.DataFrame([samples[api]])
+            return fetch
+
+    args = types.SimpleNamespace(max_retries=1, backoff_sec=0, wait_on_rate_limit_sec=0, retry_jitter_sec=0)
+    module.save_macro_cycle(Provider(), tmp_path, module.RateLimiter(10000), args)
+    assert [api for api, _ in calls] == get_task('tushare.macro_cycle')['api_slots']
+    for api, field in [('cn_gdp', 'gdp_yoy'), ('cn_cpi', 'nt_yoy'), ('cn_ppi', 'ppi_yoy'), ('cn_pmi', 'pmi010000')]:
+        result = pd.read_parquet(tmp_path / module.MACRO_TABLE_SPECS[api][0])
+        assert len(result) == 1
+        assert result[field].iloc[0] == samples[api].get(field, samples[api].get(field.upper()))
+        assert result['observation_date'].iloc[0] == pd.Timestamp('2025-03-31')
+        assert result['available_at'].isna().all()
+        assert result['availability_status'].tolist() == ['release_date_unknown']
+        assert result['source_api'].tolist() == [api]
+        assert result['vintage'].notna().all()
+
+
+def test_pmi_uppercase_wire_fields_preserve_values_and_unknown_availability(tmp_path):
+    module = _load_data_script()
+    raw = pd.DataFrame([{'MONTH': '202608', 'PMI010000': 49.5, 'CREATE_BY': 'vendor'}])
+    original = raw.copy(deep=True)
+    prepared = module._prepare_macro_rows(raw, api_name='cn_pmi', observation_column='month')
+    pd.testing.assert_frame_equal(raw, original)
+    assert prepared['month'].tolist() == ['202608']
+    assert prepared['pmi010000'].tolist() == [49.5]
+    assert prepared['CREATE_BY'].tolist() == ['vendor']
+    assert prepared['available_at'].isna().all()
+    assert prepared['availability_status'].tolist() == ['release_date_unknown']
+    path = tmp_path / 'macro_cn_pmi_df.parquet'
+    module.merge_vintage_rows(prepared, path, natural_key=['observation_date'])
+    assert pd.read_parquet(path)['pmi010000'].tolist() == [49.5]
+
+
+@pytest.mark.parametrize('columns,api,code', [
+    ({'MONTH': '202608', 'month': '202607'}, 'cn_pmi', 'SOURCE_FIELD_COLLISION'),
+    ({'MONTH': '202608'}, 'cn_cpi', 'MACRO_OBSERVATION_MISSING'),
+    ({'Month': '202608'}, 'cn_pmi', 'MACRO_OBSERVATION_MISSING'),
+])
+def test_macro_aliases_fail_closed_for_ambiguous_or_unknown_fields(columns, api, code):
+    module = _load_data_script()
+    with pytest.raises(module.CenterError) as error:
+        module._prepare_macro_rows(pd.DataFrame([columns]), api_name=api, observation_column='month')
+    assert error.value.code == code
+
+
+def test_macro_vintage_history_only_appends_real_revisions(tmp_path: Path) -> None:
+    module = _load_data_script()
+    path = tmp_path / "macro_cn_cpi_df.parquet"
+
+    first = module._prepare_macro_rows(
+        pd.DataFrame([{"month": "202608", "nt_yoy": 1.2}]),
+        api_name="cn_cpi",
+        observation_column="month",
+    )
+    module.merge_vintage_rows(first, path, natural_key=["observation_date"])
+    module.merge_vintage_rows(first, path, natural_key=["observation_date"])
+
+    revised = module._prepare_macro_rows(
+        pd.DataFrame([{"month": "202608", "nt_yoy": 1.3}]),
+        api_name="cn_cpi",
+        observation_column="month",
+    )
+    module.merge_vintage_rows(revised, path, natural_key=["observation_date"])
+
+    result = pd.read_parquet(path).sort_values("revision")
+    assert result["revision"].tolist() == [1, 2]
+    assert result["nt_yoy"].tolist() == [1.2, 1.3]
+    assert result["availability_status"].tolist() == [
+        "release_date_unknown",
+        "release_date_unknown",
+    ]
+    assert result["available_at"].isna().all()
+
+
+def test_fund_scale_is_derived_from_nav_assets_without_network(tmp_path: Path) -> None:
+    module = _load_data_script()
+    pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.OF",
+                "name": "示例基金",
+                "date": pd.Timestamp("2026-08-31"),
+                "ann_date": "20260901",
+                "unit_nav": 1.25,
+                "net_asset": 125_000_000.0,
+                "total_netasset": 500_000_000.0,
+            }
+        ]
+    ).to_parquet(tmp_path / "fund_nav_df.parquet", index=False)
+
+    module.save_fund_scale(tmp_path)
+
+    result = pd.read_parquet(tmp_path / "fund_scale_df.parquet")
+    assert result.loc[0, "net_asset"] == 125_000_000.0
+    assert result.loc[0, "total_netasset"] == 500_000_000.0
+    assert result.loc[0, "source_api"] == "fund_nav"
+    assert result.loc[0, "available_at"] == pd.Timestamp("2026-09-01")
+
+
+def test_fund_event_smoke_uses_one_announcement_request_and_keeps_lineage(
+    tmp_path: Path,
+) -> None:
+    module = _load_data_script()
+    calls: list[dict[str, object]] = []
+
+    class Pro:
+        @staticmethod
+        def fund_div(**kwargs):
+            calls.append(kwargs)
+            return pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.OF",
+                        "ann_date": "20260903",
+                        "ex_date": "20260905",
+                        "pay_date": "20260907",
+                        "div_cash": 0.1,
+                    }
+                ]
+            )
+
+    args = types.SimpleNamespace(
+        smoke=True,
+        latest=False,
+        start_date="20100101",
+        end_date="20260903",
+        history_chunk_days=3650,
+        max_workers=2,
+        max_retries=1,
+        backoff_sec=0,
+        wait_on_rate_limit_sec=0,
+        retry_jitter_sec=0,
+        incremental_lookback_days=5,
+        max_latest_days=120,
+    )
+    universe = pd.DataFrame([{"ts_code": "000001.OF", "name": "示例基金"}])
+
+    module._save_fund_event_dataset(
+        pro=Pro(),
+        output_dir=tmp_path,
+        limiter=module.RateLimiter(10_000),
+        args=args,
+        universe=universe,
+        api_name="fund_div",
+        fields=module.FUND_DIVIDEND_FIELDS,
+        filename="fund_dividend_df.parquet",
+        observation_column="ex_date",
+        duplicate_subset=["available_at", "ts_code", "ex_date", "pay_date"],
+        sort_columns=["available_at", "ts_code", "ex_date", "pay_date"],
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["ann_date"] == "20260903"
+    result = pd.read_parquet(tmp_path / "fund_dividend_df.parquet")
+    assert result.loc[0, "observation_date"] == pd.Timestamp("2026-09-05")
+    assert result.loc[0, "available_at"] == pd.Timestamp("2026-09-03")
+
+
+def test_tushare_download_document_tracks_executable_contract() -> None:
+    module = _load_data_script()
+    from backend.services.data_refresh import DATASET_SPECS, MODULE_SCOPE_FLAGS
+
+    document_path = ROOT / "TushareDownload.md"
+    document = document_path.read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    missing_actions = [
+        action for action in module.ACTION_LABELS if f"`{action}`" not in document
+    ]
+    missing_files = [
+        filename
+        for filename, _date_column in DATASET_SPECS.values()
+        if f"`{filename}`" not in document
+    ]
+    missing_flags = [
+        flag
+        for scopes in MODULE_SCOPE_FLAGS.values()
+        for flag in scopes.values()
+        if f"`{flag}`" not in document
+    ]
+
+    assert not missing_actions, f"TushareDownload.md 缺少动作: {missing_actions}"
+    assert not missing_files, f"TushareDownload.md 缺少输出文件: {missing_files}"
+    assert not missing_flags, f"TushareDownload.md 缺少 CLI 参数: {missing_flags}"
+    assert "代码已支持但未下载" in document
+    assert "本地派生" in document
+    assert "TushareDownload.md" in agents
+
+
+@pytest.mark.parametrize('latest', [False, True])
+def test_adjustment_uses_etf_directory_not_off_exchange_funds(tmp_path, monkeypatch, latest):
+    module = _load_data_script()
+    pd.DataFrame([{'ts_code':'510300.SH', 'name':'ETF'}]).to_parquet(tmp_path / 'etf_info_df.parquet')
+    pd.DataFrame([{'ts_code':'000001.OF', 'name':'场外'}]).to_parquet(tmp_path / 'fund_info_df.parquet')
+    calls = []
+    def fetch(**params):
+        calls.append(params)
+        assert params.get('ts_code', '510300.SH') == '510300.SH'
+        return pd.DataFrame([{'ts_code':'510300.SH', 'trade_date':'20260904', 'adj_factor':1.5}])
+    args = module.parse_args(['--start-date','20260904','--end-date','20260904','--max-workers','1',
+                              '--max-retries','1','--output-dir',str(tmp_path)] + (['--latest'] if latest else []))
+    monkeypatch.setattr(module, 'load_open_trade_dates', lambda *a, **kw: ['20260904'])
+    module.save_fund_adjustment(types.SimpleNamespace(fund_adj=fetch), tmp_path, module.RateLimiter(100000), args)
+    result = pd.read_parquet(tmp_path / 'fund_adj_factor_df.parquet')
+    assert len(calls) == 1 and result.ts_code.tolist() == ['510300.SH']
+    assert result.adj_factor.tolist() == [1.5] and result.source_api.tolist() == ['fund_adj']
+    assert result.available_at.iloc[0] == pd.Timestamp('20260904')
+
+
+@pytest.mark.parametrize('case', ['off_exchange','different_code','wrong_date','invalid_date','duplicate','negative','nan','infinite','missing'])
+def test_adjustment_invalid_responses_fail_closed(case):
+    module = _load_data_script()
+    row = {'ts_code':'510300.SH', 'trade_date':'20260904', 'adj_factor':1.}
+    if case == 'off_exchange': row['ts_code'] = '000001.OF'
+    if case == 'different_code': row['ts_code'] = '513500.SH'
+    if case == 'wrong_date': row['trade_date'] = '20260903'
+    if case == 'invalid_date': row['trade_date'] = 'not-a-date'
+    if case == 'negative': row['adj_factor'] = -1.
+    if case == 'nan': row['adj_factor'] = float('nan')
+    if case == 'infinite': row['adj_factor'] = float('inf')
+    if case == 'missing': del row['adj_factor']
+    with pytest.raises(ValueError):
+        module._prepare_fund_adjustment_rows(pd.DataFrame([row] * (2 if case == 'duplicate' else 1)),
+                                             '20260904','20260904',code='510300.SH')
+
+
+def test_adjustment_rejects_off_exchange_before_request(tmp_path):
+    module = _load_data_script()
+    args = module.parse_args(['--start-date','20260904','--end-date','20260904'])
+    def unexpected(**params):
+        pytest.fail('Invalid off-exchange code must not consume quota')
+    with pytest.raises(ValueError):
+        module.fetch_fund_adjustment(types.SimpleNamespace(fund_adj=unexpected), '000001.OF', '场外',
+                                      module.RateLimiter(100000), args)

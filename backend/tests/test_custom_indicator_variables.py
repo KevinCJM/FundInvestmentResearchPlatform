@@ -117,7 +117,7 @@ def test_period_policy_and_exact_scalar_builtin_catalog(tmp_path: Path) -> None:
     for definition in (omitted, empty):
         assert definition["period_policy"] == "all_supported"
         assert definition["periods"] == list(SUPPORTED_PERIODS)
-        assert definition["dsl_version"] == "2.2.0"
+        assert definition["dsl_version"] == "2.4.0"
         assert definition["numeric_kernel_version"] == "2.2.0"
         assert definition["required_variables"] == ["returns"]
 
@@ -132,7 +132,7 @@ def test_period_policy_and_exact_scalar_builtin_catalog(tmp_path: Path) -> None:
     portfolio_builtins = [
         item for item in typed_builtins if item.get("context_kind") == "portfolio"
     ]
-    assert len(product_builtins) == 35
+    assert len(product_builtins) == 34  # native drawdown analysis uses the current multi-output contract
     assert len(portfolio_builtins) == 2
     assert sum(item["applicable_product_kinds"] == ["etf"] for item in product_builtins) == 5
     for definition in typed_builtins:
@@ -190,6 +190,18 @@ def test_fast_window_uses_same_calendar_and_lifetime_boundaries() -> None:
 def test_variable_catalog_exposes_product_contract_fields() -> None:
     catalog = {item["id"]: item for item in variable_catalog("single_product")}
 
+    assert catalog["returns"]["label"] == "复权净值普通收益率"
+    assert catalog["log_returns"]["label"] == "复权净值对数收益率"
+    assert "相邻复权净值" in catalog["returns"]["description"]
+    assert "相邻复权净值" in catalog["log_returns"]["description"]
+    assert {
+        catalog[variable_id]["label"]
+        for variable_id in ("market_open", "market_high", "market_low", "market_close")
+    } == {"开盘价", "最高价", "最低价", "收盘价"}
+    assert all(
+        catalog[variable_id]["category_label"] == "净值与价格"
+        for variable_id in ("market_open", "market_high", "market_low", "market_close")
+    )
     assert catalog["price_change"]["type"]["semantic_dimension"] == "raw_market_price"
     assert catalog["market_close"]["type"]["semantic_dimension"] == "raw_market_price"
     assert catalog["previous_close"]["type"]["semantic_dimension"] == "raw_market_price"
@@ -237,8 +249,10 @@ def test_meta_exposes_versioned_operator_contract(tmp_path: Path) -> None:
     } <= clip.keys()
     assert operators["count_true"]["parameters"][0]["allowed_shapes"] == ["mask"]
     assert operators["where"]["parameters"][0]["allowed_shapes"] == ["mask"]
-    assert [item["name"] for item in operators["linear_slope"]["parameters"]] == ["values"]
-    assert {item["arity"] for item in operators["linear_slope"]["parameter_sets"]} == {1, 2}
+    assert "linear_slope" not in operators
+    assert [item["name"] for item in operators["linear_fit"]["parameters"]] == ["values"]
+    assert {item["arity"] for item in operators["linear_fit"]["parameter_sets"]} == {1, 2}
+    assert [item["name"] for item in operators["fit_slope"]["parameters"]] == ["fit"]
     assert [item["name"] for item in operators["covariance"]["parameters"]] == ["asset_returns"]
 
 
@@ -304,6 +318,7 @@ def test_variable_availability_route_reports_partial_fields(
 def test_typed_evaluation_uses_requested_market_variable(tmp_path: Path) -> None:
     _write_variable_data(tmp_path)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
 
     response = service.evaluate(
         indicator_ids=["builtin-average-volume-v2"],
@@ -332,6 +347,7 @@ def test_historical_as_of_requires_nav_announcement_date(tmp_path: Path) -> None
     nav = pd.read_parquet(nav_path).drop(columns=["ann_date"])
     nav.to_parquet(nav_path, index=False)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
 
     response = service.evaluate(
         indicator_ids=["builtin-total-return-v2"],

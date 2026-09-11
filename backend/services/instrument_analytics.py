@@ -22,6 +22,31 @@ import pandas as pd
 import pyarrow.parquet as parquet
 
 try:
+    from backend.compute_policy import validate_execution_audit
+    from backend.instrument_analytics_numba import (
+        aggregate_count_rows_kernel,
+        candle_metrics_kernel,
+        count_true_kernel,
+        coverage_ratio_kernel,
+        encoded_category_counts_kernel,
+        encoded_unique_count_kernel,
+        fee_bucket_counts_kernel,
+        finite_mask_kernel,
+        finite_mean_kernel,
+        finite_sum_count_kernel,
+        fresh_date_mask_kernel,
+        instrument_analytics_numba_execution_audit,
+        latest_share_metrics_kernel,
+        nav_metrics_kernel,
+        numeric_stat_kernel,
+        positive_finite_mask_kernel,
+        positive_pair_mask_kernel,
+        ranking_order_kernel,
+        numeric_sort_order_kernel,
+        stale_days_kernel,
+        status_counts_kernel,
+        yearly_event_aggregation_kernel,
+    )
     from backend.market_data import resolve_tushare_data_dir
     from backend.series_quality import (
         PeriodWindowQuality,
@@ -30,6 +55,31 @@ try:
         load_sse_open_dates,
     )
 except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from compute_policy import validate_execution_audit
+    from instrument_analytics_numba import (
+        aggregate_count_rows_kernel,
+        candle_metrics_kernel,
+        count_true_kernel,
+        coverage_ratio_kernel,
+        encoded_category_counts_kernel,
+        encoded_unique_count_kernel,
+        fee_bucket_counts_kernel,
+        finite_mask_kernel,
+        finite_mean_kernel,
+        finite_sum_count_kernel,
+        fresh_date_mask_kernel,
+        instrument_analytics_numba_execution_audit,
+        latest_share_metrics_kernel,
+        nav_metrics_kernel,
+        numeric_stat_kernel,
+        positive_finite_mask_kernel,
+        positive_pair_mask_kernel,
+        ranking_order_kernel,
+        numeric_sort_order_kernel,
+        stale_days_kernel,
+        status_counts_kernel,
+        yearly_event_aggregation_kernel,
+    )
     from market_data import resolve_tushare_data_dir
     from series_quality import (
         PeriodWindowQuality,
@@ -201,6 +251,45 @@ METRIC_HORIZONS = {
     "max_drawdown_3y": "3y",
     "calmar_3y": "3y",
 }
+
+
+def _execution_audit() -> dict[str, Any]:
+    return validate_execution_audit(instrument_analytics_numba_execution_audit())
+
+
+def instrument_analytics_execution_audit() -> dict[str, Any]:
+    """Public immutable audit shared by unified and compatibility routes."""
+
+    return _execution_audit()
+
+
+def _numeric_array(
+    series: Optional[pd.Series],
+    *,
+    length: int = 0,
+) -> np.ndarray:
+    if series is None:
+        return np.full(length, np.nan, dtype=np.float64)
+    return np.array(
+        pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64),
+        dtype=np.float64,
+        copy=True,
+        order="C",
+    )
+
+
+def _date_day_array(series: pd.Series | pd.DatetimeIndex) -> np.ndarray:
+    parsed = pd.DatetimeIndex(pd.to_datetime(series, errors="coerce"))
+    return np.array(
+        parsed.to_numpy(dtype="datetime64[D]").view(np.int64),
+        dtype=np.int64,
+        copy=True,
+        order="C",
+    )
+
+
+def _optional_float(value: float) -> Optional[float]:
+    return float(value) if np.isfinite(value) else None
 
 
 def _snapshot_indicator_metadata(data_dir: Path) -> dict[str, Any] | None:
@@ -403,6 +492,51 @@ def _normalised_text(series: pd.Series) -> pd.Series:
     )
 
 
+def _category_codes(series: pd.Series) -> tuple[list[str], np.ndarray]:
+    """Map text fields to stable integer codes; counting remains in NJIT."""
+
+    labels: list[str] = []
+    code_by_label: dict[str, int] = {}
+    codes = np.full(len(series), -1, dtype=np.int64)
+    for position, raw_value in enumerate(series.tolist()):
+        if pd.isna(raw_value):
+            continue
+        label = str(raw_value)
+        code = code_by_label.get(label)
+        if code is None:
+            code = len(labels)
+            code_by_label[label] = code
+            labels.append(label)
+        codes[position] = code
+    return labels, np.ascontiguousarray(codes)
+
+
+def _category_count_rows(
+    series: pd.Series,
+    *,
+    alphabetical_ties: bool = False,
+) -> list[tuple[str, int]]:
+    labels, codes = _category_codes(series)
+    if not labels:
+        return []
+    counts = encoded_category_counts_kernel(codes, len(labels))
+    stable_rank = np.arange(len(labels), dtype=np.int64)
+    if alphabetical_ties:
+        for rank, index in enumerate(sorted(range(len(labels)), key=labels.__getitem__)):
+            stable_rank[index] = rank
+    order = numeric_sort_order_kernel(
+        np.ascontiguousarray(counts.astype(np.float64)),
+        stable_rank,
+        np.uint8(0),
+    )
+    return [(labels[index], int(counts[index])) for index in order]
+
+
+def _category_unique_count(series: pd.Series) -> int:
+    _, codes = _category_codes(series)
+    return int(encoded_unique_count_kernel(codes))
+
+
 def _apply_filters(frame: pd.DataFrame, filters: Optional[Mapping[str, Iterable[str]]]) -> pd.DataFrame:
     working = frame
     applied = False
@@ -419,8 +553,10 @@ def _apply_filters(frame: pd.DataFrame, filters: Optional[Mapping[str, Iterable[
 def _distribution(frame: pd.DataFrame, column: str) -> list[dict[str, Any]]:
     if frame.empty or column not in frame.columns:
         return []
-    counts = _normalised_text(frame[column]).value_counts()
-    return [{"name": str(name), "value": int(count)} for name, count in counts.items()]
+    return [
+        {"name": name, "value": count}
+        for name, count in _category_count_rows(_normalised_text(frame[column]))
+    ]
 
 
 def _fee_distribution(frame: pd.DataFrame, column: str) -> list[dict[str, Any]]:
@@ -428,16 +564,13 @@ def _fee_distribution(frame: pd.DataFrame, column: str) -> list[dict[str, Any]]:
 
     if frame.empty or column not in frame.columns:
         return []
-    values = pd.to_numeric(frame[column], errors="coerce")
-    labels = pd.Series("未披露", index=frame.index, dtype=object)
-    finite = values.notna() & np.isfinite(values)
-    labels.loc[finite & values.le(0.25)] = "≤0.25%"
-    labels.loc[finite & values.gt(0.25) & values.le(0.50)] = "0.25%–0.50%"
-    labels.loc[finite & values.gt(0.50) & values.le(1.00)] = "0.50%–1.00%"
-    labels.loc[finite & values.gt(1.00)] = ">1.00%"
     order = ("≤0.25%", "0.25%–0.50%", "0.50%–1.00%", ">1.00%", "未披露")
-    counts = labels.value_counts()
-    return [{"name": label, "value": int(counts[label])} for label in order if label in counts]
+    counts = fee_bucket_counts_kernel(_numeric_array(frame[column]))
+    return [
+        {"name": label, "value": int(counts[index])}
+        for index, label in enumerate(order)
+        if counts[index] > 0
+    ]
 
 
 def _filter_options(frame: pd.DataFrame, column: str) -> list[dict[str, Any]]:
@@ -451,13 +584,18 @@ def _combined_filter_options(
     frames: Iterable[pd.DataFrame],
     column: str,
 ) -> list[dict[str, Any]]:
-    totals: dict[str, int] = {}
+    values: list[pd.Series] = []
     for frame in frames:
-        for item in _distribution(frame, column):
-            totals[item["name"]] = totals.get(item["name"], 0) + int(item["value"])
+        if not frame.empty and column in frame.columns:
+            values.append(_normalised_text(frame[column]))
+    if not values:
+        return []
     return [
         {"value": name, "label": name, "count": count}
-        for name, count in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+        for name, count in _category_count_rows(
+            pd.concat(values, ignore_index=True),
+            alphabetical_ties=True,
+        )
     ]
 
 
@@ -485,15 +623,36 @@ def _status_masks(frame: pd.DataFrame, kind: SingleInstrumentKind) -> dict[str, 
 def _safe_sum(series: Optional[pd.Series]) -> Optional[float]:
     if series is None:
         return None
-    values = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    return None if values.empty else float(values.sum())
+    total, count = finite_sum_count_kernel(_numeric_array(series))
+    return float(total) if count else None
 
 
 def _safe_max_date(series: Optional[pd.Series]) -> Optional[str]:
     if series is None:
         return None
-    values = pd.to_datetime(series, errors="coerce").dropna()
-    return None if values.empty else values.max().strftime("%Y-%m-%d")
+    dates = pd.to_datetime(series, errors="coerce")
+    valid = np.array(
+        dates.notna().to_numpy(dtype=np.uint8),
+        dtype=np.uint8,
+        copy=True,
+        order="C",
+    )
+    valid_count = int(count_true_kernel(valid))
+    if valid_count == 0:
+        return None
+    positions = np.arange(len(dates), dtype=np.int64)[valid.astype(bool)]
+    values = np.ascontiguousarray(
+        dates.iloc[positions]
+        .to_numpy(dtype="datetime64[ns]")
+        .astype(np.int64)
+        .astype(np.float64)
+    )
+    order = numeric_sort_order_kernel(
+        values,
+        np.arange(valid_count, dtype=np.int64),
+        np.uint8(0),
+    )
+    return dates.iloc[int(positions[int(order[0])])].strftime("%Y-%m-%d")
 
 
 def _segment_summary(
@@ -503,6 +662,10 @@ def _segment_summary(
 ) -> dict[str, Any]:
     masks = _status_masks(frame, kind)
     code_count = int(len(frame))
+    encoded_status = np.full(code_count, 3, dtype=np.int64)
+    for code, name in enumerate(("active", "issuing", "inactive")):
+        encoded_status[np.asarray(masks[name], dtype=bool)] = code
+    status_counts = status_counts_kernel(np.ascontiguousarray(encoded_status))
     codes = set(frame["ts_code"].astype(str)) if "ts_code" in frame.columns else set()
     snapshot_columns = [
         column
@@ -522,15 +685,29 @@ def _segment_summary(
         if not snapshot.empty
         else snapshot
     )
-    covered = int(snap["ts_code"].nunique()) if not snap.empty else 0
-    issue_values = pd.to_numeric(frame.get("issue_amount"), errors="coerce") if "issue_amount" in frame else pd.Series(dtype=float)
+    covered = _category_unique_count(snap["ts_code"]) if not snap.empty else 0
+    issue_values = (
+        _numeric_array(frame["issue_amount"])
+        if "issue_amount" in frame
+        else np.empty(0, dtype=np.float64)
+    )
+    issue_total, issue_count = finite_sum_count_kernel(issue_values)
     index_covered = (
-        int(_normalised_text(frame["index_code"]).ne("未知").sum())
+        int(
+            count_true_kernel(
+                np.array(
+                    _normalised_text(frame["index_code"]).ne("未知").to_numpy(dtype=np.uint8),
+                    dtype=np.uint8,
+                    copy=True,
+                    order="C",
+                )
+            )
+        )
         if kind == "etf" and "index_code" in frame
         else None
     )
     liquidity_covered = (
-        int(pd.to_numeric(snap.get("amount_avg_20d"), errors="coerce").notna().sum())
+        int(count_true_kernel(finite_mask_kernel(_numeric_array(snap.get("amount_avg_20d")))))
         if kind == "etf" and not snap.empty and "amount_avg_20d" in snap
         else (0 if kind == "etf" else None)
     )
@@ -539,18 +716,31 @@ def _segment_summary(
         purchase = pd.to_datetime(frame.get("purc_startdate"), errors="coerce")
         redemption = pd.to_datetime(frame.get("redm_startdate"), errors="coerce")
         if isinstance(purchase, pd.Series) and isinstance(redemption, pd.Series):
-            purchase_redemption_covered = int((purchase.notna() & redemption.notna()).sum())
+            purchase_redemption_covered = int(
+                count_true_kernel(
+                    np.array(
+                        (purchase.notna() & redemption.notna()).to_numpy(dtype=np.uint8),
+                        dtype=np.uint8,
+                        copy=True,
+                        order="C",
+                    )
+                )
+            )
         else:
             purchase_redemption_covered = 0
     return {
         "share_code_count": code_count,
-        "active_count": int(masks["active"].sum()),
-        "issuing_count": int(masks["issuing"].sum()),
-        "inactive_count": int(masks["inactive"].sum()),
-        "unknown_status_count": int(masks["unknown"].sum()),
-        "unique_managements": int(frame["management"].nunique(dropna=True)) if "management" in frame else 0,
+        "active_count": int(status_counts[0]),
+        "issuing_count": int(status_counts[1]),
+        "inactive_count": int(status_counts[2]),
+        "unknown_status_count": int(status_counts[3]),
+        "unique_managements": (
+            _category_unique_count(frame["management"])
+            if "management" in frame
+            else 0
+        ),
         "nav_covered_count": covered,
-        "nav_coverage_rate": (covered / code_count) if code_count else None,
+        "nav_coverage_rate": _optional_float(coverage_ratio_kernel(covered, code_count)),
         "latest_nav_date": _safe_max_date(snap.get("latest_date")) if not snap.empty else None,
         "latest_candle_date": (
             _safe_max_date(snap.get("latest_candle_date"))
@@ -558,43 +748,72 @@ def _segment_summary(
             else None
         ),
         "index_covered_count": index_covered,
-        "index_coverage_rate": (index_covered / code_count) if index_covered is not None and code_count else None,
+        "index_coverage_rate": (
+            _optional_float(coverage_ratio_kernel(index_covered, code_count))
+            if index_covered is not None
+            else None
+        ),
         "liquidity_covered_count": liquidity_covered,
         "liquidity_coverage_rate": (
-            liquidity_covered / code_count
-            if liquidity_covered is not None and code_count
+            _optional_float(coverage_ratio_kernel(liquidity_covered, code_count))
+            if liquidity_covered is not None
             else None
         ),
         "purchase_redemption_covered_count": purchase_redemption_covered,
         "purchase_redemption_coverage_rate": (
-            purchase_redemption_covered / code_count
-            if purchase_redemption_covered is not None and code_count
+            _optional_float(coverage_ratio_kernel(purchase_redemption_covered, code_count))
+            if purchase_redemption_covered is not None
             else None
         ),
-        "issue_amount_total": _safe_sum(issue_values),
-        "issue_amount_coverage_rate": (int(issue_values.notna().sum()) / code_count) if code_count else None,
+        "issue_amount_total": float(issue_total) if issue_count else None,
+        "issue_amount_coverage_rate": _optional_float(
+            coverage_ratio_kernel(issue_count, code_count)
+        ),
     }
 
 
 def _combined_summary(segments: Mapping[str, dict[str, Any]], frames: Iterable[pd.DataFrame]) -> dict[str, Any]:
     segment_summaries = [segment["summary"] for segment in segments.values()]
-    code_count = sum(int(summary["share_code_count"]) for summary in segment_summaries)
-    covered = sum(int(summary["nav_covered_count"]) for summary in segment_summaries)
-    management_values: set[str] = set()
+    count_rows = np.ascontiguousarray(
+        np.array(
+            [
+                [
+                    int(summary["share_code_count"]),
+                    int(summary["active_count"]),
+                    int(summary["issuing_count"]),
+                    int(summary["inactive_count"]),
+                    int(summary["unknown_status_count"]),
+                    int(summary["nav_covered_count"]),
+                ]
+                for summary in segment_summaries
+            ],
+            dtype=np.int64,
+        )
+    )
+    totals = aggregate_count_rows_kernel(count_rows)
+    code_count = int(totals[0])
+    covered = int(totals[5])
+    management_values: list[pd.Series] = []
     for frame in frames:
         if "management" in frame.columns:
-            management_values.update(_normalised_text(frame["management"]).loc[lambda value: value.ne("未知")])
+            normalized = _normalised_text(frame["management"])
+            management_values.append(normalized[normalized.ne("未知")])
+    unique_managements = (
+        _category_unique_count(pd.concat(management_values, ignore_index=True))
+        if management_values
+        else 0
+    )
     # Deliberately omit issue_amount_total: ETF and fund share-class issuance
     # amounts are not a safe cross-kind AUM or market-size aggregate.
     return {
         "share_code_count": code_count,
-        "active_count": sum(int(summary["active_count"]) for summary in segment_summaries),
-        "issuing_count": sum(int(summary["issuing_count"]) for summary in segment_summaries),
-        "inactive_count": sum(int(summary["inactive_count"]) for summary in segment_summaries),
-        "unknown_status_count": sum(int(summary["unknown_status_count"]) for summary in segment_summaries),
-        "unique_managements": len(management_values),
+        "active_count": int(totals[1]),
+        "issuing_count": int(totals[2]),
+        "inactive_count": int(totals[3]),
+        "unknown_status_count": int(totals[4]),
+        "unique_managements": unique_managements,
         "nav_covered_count": covered,
-        "nav_coverage_rate": (covered / code_count) if code_count else None,
+        "nav_coverage_rate": _optional_float(coverage_ratio_kernel(covered, code_count)),
     }
 
 
@@ -605,25 +824,36 @@ def _event_trend(frame: pd.DataFrame, kind: SingleInstrumentKind) -> dict[str, A
         return {"date_field": date_field, "label": label, "points": []}
     dates = pd.to_datetime(frame[date_field], errors="coerce")
     valid = dates.notna()
-    if not valid.any():
+    valid_flags = np.array(
+        valid.to_numpy(dtype=np.uint8),
+        dtype=np.uint8,
+        copy=True,
+        order="C",
+    )
+    if count_true_kernel(valid_flags) == 0:
         return {"date_field": date_field, "label": label, "points": []}
-    years = dates.loc[valid].dt.year
-    counts = years.value_counts().sort_index()
-    issue = (
-        pd.to_numeric(frame.loc[valid, "issue_amount"], errors="coerce")
-        .replace([np.inf, -np.inf], np.nan)
-        .groupby(years)
-        .sum(min_count=1)
+    years = np.array(
+        dates.loc[valid].dt.year.to_numpy(dtype=np.int64),
+        dtype=np.int64,
+        copy=True,
+        order="C",
+    )
+    issue_amounts = (
+        _numeric_array(frame.loc[valid, "issue_amount"])
         if "issue_amount" in frame.columns
-        else pd.Series(dtype=float)
+        else np.full(years.size, np.nan, dtype=np.float64)
+    )
+    output_years, counts, totals, has_total = yearly_event_aggregation_kernel(
+        years,
+        issue_amounts,
     )
     points = [
         {
-            "year": int(year),
-            "count": int(count),
-            "total_issue_amount": None if issue.empty or pd.isna(issue.get(year)) else float(issue.get(year)),
+            "year": int(output_years[index]),
+            "count": int(counts[index]),
+            "total_issue_amount": float(totals[index]) if has_total[index] else None,
         }
-        for year, count in counts.items()
+        for index in range(output_years.size)
     ]
     return {"date_field": date_field, "label": label, "points": points}
 
@@ -639,15 +869,27 @@ def _latest_products(
         return []
     dates = pd.to_datetime(frame[date_field], errors="coerce")
     valid = dates.notna()
-    if not valid.any():
+    valid_flags = np.array(
+        valid.to_numpy(dtype=np.uint8),
+        dtype=np.uint8,
+        copy=True,
+        order="C",
+    )
+    valid_count = int(count_true_kernel(valid_flags))
+    if valid_count == 0:
         return []
-    ordering = pd.DataFrame(
-        {
-            date_field: dates.loc[valid],
-            "ts_code": frame.loc[valid, "ts_code"].astype(str),
-        },
-        index=frame.index[valid],
-    ).sort_values([date_field, "ts_code"], ascending=[False, True], kind="mergesort")
+    positions = np.arange(len(frame), dtype=np.int64)[valid_flags.astype(bool)]
+    date_values = np.ascontiguousarray(
+        dates.iloc[positions]
+        .to_numpy(dtype="datetime64[ns]")
+        .astype(np.int64)
+        .astype(np.float64)
+    )
+    codes = frame.iloc[positions]["ts_code"].astype(str).tolist()
+    code_rank = np.empty(valid_count, dtype=np.int64)
+    for rank, index in enumerate(sorted(range(valid_count), key=codes.__getitem__)):
+        code_rank[index] = rank
+    order = numeric_sort_order_kernel(date_values, code_rank, np.uint8(0))
     fields = (
         "ts_code",
         "name",
@@ -678,8 +920,8 @@ def _latest_products(
             field: (_json_date(row.get(field)) if field in date_fields else _json_scalar(row.get(field)))
             for field in fields
         }
-        for index in ordering.head(limit).index
-        for row in (frame.loc[index],)
+        for position in order[:limit]
+        for row in (frame.iloc[int(positions[int(position)])],)
     ]
 
 
@@ -754,16 +996,11 @@ def _kind_snapshot_state(
     }
 
 
-def load_product_filter_snapshot(
+def _product_metric_snapshot_projection(
+    snapshot: pd.DataFrame,
     kind: SingleInstrumentKind,
     data_dir: Path,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Return the validated small metric snapshot used by product filters."""
-
-    snapshot = _load_snapshot(data_dir)
-    state = _kind_snapshot_state(data_dir, snapshot, kind)
-    if state["status"] != "ready" or snapshot.empty:
-        return snapshot.iloc[0:0], state
+) -> pd.DataFrame:
     metric_fields = sorted(snapshot_ranking_metrics(data_dir))
     metric_context_fields = [
         f"{field}__{suffix}"
@@ -790,12 +1027,45 @@ def load_product_filter_snapshot(
         ))
         if column in snapshot.columns
     ]
-    selected = snapshot.loc[snapshot["instrument_type"].eq(kind), columns].copy()
+    return snapshot.loc[snapshot["instrument_type"].eq(kind), columns].copy()
+
+
+def load_product_filter_snapshot(
+    kind: SingleInstrumentKind,
+    data_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Return the validated small metric snapshot used by product filters."""
+
+    snapshot = _load_snapshot(data_dir)
+    state = _kind_snapshot_state(data_dir, snapshot, kind)
+    if state["status"] != "ready" or snapshot.empty:
+        return snapshot.iloc[0:0], state
+    selected = _product_metric_snapshot_projection(snapshot, kind, data_dir)
     if state.get("metric_availability", {}).get("current_size") != "ready":
         for column in ("current_size", "current_size_as_of", "current_share", "current_unit_nav"):
             if column in selected.columns:
                 selected[column] = pd.NA
     return selected, state
+
+
+def load_product_review_snapshot(
+    kind: SingleInstrumentKind,
+    data_dir: Path,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Return review evidence even when the derived snapshot is stale.
+
+    Product filters remain fail-closed and refuse stale derivatives. Candidate
+    review is different: the snapshot value is useful historical evidence as
+    long as its stale state and effective date are shown explicitly. Returning
+    the stored value prevents a source-fingerprint mismatch from erasing every
+    metric in the review table while preserving freshness diagnostics.
+    """
+
+    snapshot = _load_snapshot(data_dir)
+    state = _kind_snapshot_state(data_dir, snapshot, kind)
+    if snapshot.empty:
+        return snapshot, state
+    return _product_metric_snapshot_projection(snapshot, kind, data_dir), state
 
 
 def _snapshot_metadata(
@@ -815,7 +1085,20 @@ def _snapshot_metadata(
     stat = path.stat()
     requested = tuple(kinds)
     relevant_mask = snapshot["instrument_type"].isin(requested) if not snapshot.empty else None
-    relevant_rows = int(relevant_mask.sum()) if relevant_mask is not None else 0
+    relevant_rows = (
+        int(
+            count_true_kernel(
+                np.array(
+                    relevant_mask.to_numpy(dtype=np.uint8),
+                    dtype=np.uint8,
+                    copy=True,
+                    order="C",
+                )
+            )
+        )
+        if relevant_mask is not None
+        else 0
+    )
     relevant_as_of = (
         snapshot.loc[relevant_mask, "as_of"]
         if relevant_mask is not None and "as_of" in snapshot.columns
@@ -837,6 +1120,226 @@ def _status_for_availability(availability: Iterable[str]) -> str:
     if any(state == "ready" for state in states):
         return "partial"
     return "unavailable"
+
+
+def _legacy_numeric_stat(
+    frame: pd.DataFrame,
+    column: str,
+    operation: int,
+) -> Optional[float]:
+    """Evaluate a legacy scalar through the shared fixed-signature kernel."""
+
+    if frame.empty or column not in frame.columns:
+        return None
+    return _optional_float(numeric_stat_kernel(_numeric_array(frame[column]), operation))
+
+
+def _legacy_group_rows(
+    frame: pd.DataFrame,
+    category_column: str,
+    value_specs: Mapping[str, tuple[str, int]],
+    *,
+    label_key: str,
+    sort_key: str,
+    limit: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Group labels in Python while keeping counts and statistics in NJIT.
+
+    Text-to-code mapping and row selection are orchestration. Category counts,
+    finite-only sums/means and numerical ordering all execute in the eagerly
+    compiled instrument analytics kernels.
+    """
+
+    if frame.empty or category_column not in frame.columns:
+        return []
+    labels, codes = _category_codes(_normalised_text(frame[category_column]))
+    if not labels:
+        return []
+    counts = encoded_category_counts_kernel(codes, len(labels))
+    rows: list[dict[str, Any]] = []
+    for category_index, label in enumerate(labels):
+        selected = codes == category_index
+        row: dict[str, Any] = {label_key: label, "count": int(counts[category_index])}
+        for output_name, (value_column, operation) in value_specs.items():
+            if value_column not in frame.columns:
+                row[output_name] = None
+                continue
+            values = _numeric_array(frame[value_column])
+            row[output_name] = _optional_float(
+                numeric_stat_kernel(
+                    np.ascontiguousarray(values[selected]),
+                    operation,
+                )
+            )
+        rows.append(row)
+
+    if sort_key == "count":
+        sort_values = np.ascontiguousarray(counts.astype(np.float64))
+    else:
+        sort_values = np.ascontiguousarray(
+            np.array(
+                [
+                    float(row[sort_key])
+                    if row.get(sort_key) is not None
+                    else np.nan
+                    for row in rows
+                ],
+                dtype=np.float64,
+            )
+        )
+    order = numeric_sort_order_kernel(
+        sort_values,
+        np.arange(len(rows), dtype=np.int64),
+        np.uint8(0),
+    )
+    ordered = [rows[int(index)] for index in order]
+    return ordered if limit is None else ordered[:limit]
+
+
+def _legacy_top_issue_amount(
+    frame: pd.DataFrame,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    if frame.empty or "issue_amount" not in frame.columns:
+        return []
+    values = _numeric_array(frame["issue_amount"])
+    order = ranking_order_kernel(
+        values,
+        np.arange(len(frame), dtype=np.int64),
+        np.uint8(0),
+    )
+    fields = ("ts_code", "name", "issue_amount", "list_date", "market")
+    result: list[dict[str, Any]] = []
+    for position in order[:limit]:
+        row = frame.iloc[int(position)]
+        item = {
+            field: (
+                _json_date(row.get(field))
+                if field == "list_date"
+                else _json_scalar(row.get(field))
+            )
+            for field in fields
+            if field in frame.columns
+        }
+        result.append(item)
+    return result
+
+
+def build_legacy_etf_analytics_response(
+    *,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    info_files: Optional[Mapping[str, Path]] = None,
+) -> Optional[dict[str, Any]]:
+    """Project unified ETF analytics onto the legacy response contract."""
+
+    frame = _load_info("etf", data_dir, info_files)
+    if frame.empty:
+        return None
+    unified = build_analytics_response(
+        kind="etf",
+        data_dir=data_dir,
+        info_files=info_files,
+    )
+    segment = unified["segments"]["etf"]
+    summary = segment["summary"]
+    management_summary = _legacy_group_rows(
+        frame,
+        "management",
+        {"total_issue_amount": ("issue_amount", 1)},
+        label_key="name",
+        sort_key="count",
+        limit=10,
+    )
+    market_issue_summary = _legacy_group_rows(
+        frame,
+        "market",
+        {"total_issue_amount": ("issue_amount", 1)},
+        label_key="market",
+        sort_key="total_issue_amount",
+    )
+    fee_by_fund_type = _legacy_group_rows(
+        frame,
+        "fund_type",
+        {
+            "avg_m_fee": ("m_fee", 0),
+            "avg_c_fee": ("c_fee", 0),
+        },
+        label_key="fund_type",
+        sort_key=("avg_m_fee" if "m_fee" in frame.columns else "avg_c_fee"),
+    )
+    for row in fee_by_fund_type:
+        row.pop("count", None)
+    return {
+        "execution": unified["execution"],
+        "summary": {
+            "total_count": summary["share_code_count"],
+            "active_count": summary["active_count"],
+            "unique_managements": summary["unique_managements"],
+            "total_issue_amount": summary["issue_amount_total"],
+            "avg_m_fee": _legacy_numeric_stat(frame, "m_fee", 0),
+            "avg_c_fee": _legacy_numeric_stat(frame, "c_fee", 0),
+            "avg_exp_return": _legacy_numeric_stat(frame, "exp_return", 0),
+            "avg_duration_year": _legacy_numeric_stat(frame, "duration_year", 0),
+        },
+        "top_management": management_summary,
+        "organization_type_distribution": segment["distributions"]["type"]
+        if "type" in segment["distributions"]
+        else _distribution(frame, "type"),
+        "fund_type_distribution": segment["distributions"]["fund_type"],
+        "invest_type_distribution": segment["distributions"]["invest_type"],
+        "market_distribution": segment["distributions"]["market"],
+        "market_issue_summary": market_issue_summary,
+        "status_breakdown": segment["distributions"]["status"],
+        "list_trend": segment["event_trend"]["points"],
+        "list_trend_filters": {
+            column: _distribution(frame, column)
+            for column in ("type", "invest_type", "fund_type", "management")
+        },
+        "fee_by_fund_type": fee_by_fund_type,
+        "top_issue_amount": _legacy_top_issue_amount(frame),
+        "recent_listings": _latest_products(frame, "etf", limit=10),
+    }
+
+
+def build_legacy_etf_trend_response(
+    *,
+    dimension: str = "all",
+    values: Optional[Iterable[str]] = None,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    info_files: Optional[Mapping[str, Path]] = None,
+) -> Optional[dict[str, Any]]:
+    """Return the legacy trend shape with NJIT aggregation and ordering."""
+
+    frame = _load_info("etf", data_dir, info_files)
+    if frame.empty:
+        return None
+    selected_dimension = (dimension or "all").lower()
+    column = {
+        "all": None,
+        "type": "type",
+        "invest_type": "invest_type",
+        "fund_type": "fund_type",
+        "management": "management",
+    }.get(selected_dimension)
+    applied_values = _clean_filter_values(values)
+    working = frame
+    if column and applied_values:
+        candidates = {value.casefold() for value in applied_values}
+        working = working[
+            _normalised_text(working[column]).str.casefold().isin(candidates)
+        ]
+    elif column:
+        working = working.iloc[0:0]
+    return {
+        "execution": _execution_audit(),
+        "dimension": selected_dimension,
+        "values": applied_values,
+        "list_trend": _event_trend(working, "etf")["points"],
+        "filters": {
+            name: _distribution(frame, name)
+            for name in ("type", "invest_type", "fund_type", "management")
+        },
+    }
 
 
 def build_analytics_response(
@@ -955,6 +1458,7 @@ def build_analytics_response(
     )
     return {
         "schema_version": 1,
+        "execution": _execution_audit(),
         "kind": kind,
         "status": response_status,
         "as_of": snapshot_meta["as_of"],
@@ -1019,6 +1523,7 @@ def build_trend_response(
             )
     return {
         "schema_version": 1,
+        "execution": _execution_audit(),
         "kind": kind,
         "status": _status_for_availability(availability),
         "date_semantic": {
@@ -1074,10 +1579,11 @@ def build_rankings_response(
         snapshot = snapshot.iloc[0:0]
     if not snapshot.empty and "latest_date" in snapshot.columns:
         parsed_latest = pd.to_datetime(snapshot["latest_date"], errors="coerce")
-        segment_latest = parsed_latest.max()
-        if pd.notna(segment_latest):
-            snapshot["_stale_days"] = (segment_latest - parsed_latest).dt.days
-            snapshot = snapshot[snapshot["_stale_days"].fillna(8).le(7)]
+        date_days = _date_day_array(parsed_latest)
+        stale_days = stale_days_kernel(date_days)
+        snapshot["_stale_days"] = stale_days
+        fresh_mask = fresh_date_mask_kernel(date_days, 7)
+        snapshot = snapshot[fresh_mask.astype(bool)]
     warnings: list[dict[str, str]] = []
     if info.empty:
         warnings.append({"code": f"{kind.upper()}_INFO_MISSING", "message": "产品基础信息不可用。", "kind": kind})
@@ -1147,13 +1653,18 @@ def build_rankings_response(
             working["_metric_observation_count"] = working[metric_observation_column]
         else:
             working["_metric_observation_count"] = working.get("observation_count")
-        working["value"] = pd.to_numeric(working[metric], errors="coerce")
-        working = working.replace([np.inf, -np.inf], np.nan).dropna(subset=["value"])
-        working = working.sort_values(
-            ["value", "ts_code"],
-            ascending=[sort_dir == "asc", True],
-            kind="mergesort",
+        values = _numeric_array(working[metric])
+        codes = working["ts_code"].astype(str).tolist()
+        code_rank = np.empty(len(codes), dtype=np.int64)
+        for rank, row_index in enumerate(sorted(range(len(codes)), key=codes.__getitem__)):
+            code_rank[row_index] = rank
+        ranking_order = ranking_order_kernel(
+            values,
+            np.ascontiguousarray(code_rank),
+            np.uint8(1 if sort_dir == "asc" else 0),
         )
+        working = working.iloc[ranking_order].copy()
+        working["value"] = values[ranking_order]
     total = int(len(working))
     start = (page - 1) * page_size
     page_frame = working.iloc[start : start + page_size]
@@ -1178,6 +1689,7 @@ def build_rankings_response(
     snapshot_meta = _snapshot_metadata(data_dir, snapshot, (kind,))
     return {
         "schema_version": 1,
+        "execution": _execution_audit(),
         "kind": kind,
         "status": status,
         "metric": metric,
@@ -1303,10 +1815,9 @@ def _complete_metric_window(
 def _window_return(frame: pd.DataFrame, quality: PeriodWindowQuality) -> Optional[float]:
     if not quality.complete or len(frame) < 2:
         return None
-    first_value = float(frame.iloc[0]["adj_nav"])
-    latest_value = float(frame.iloc[-1]["adj_nav"])
-    result = latest_value / first_value - 1 if first_value > 0 else np.nan
-    return float(result) if np.isfinite(result) else None
+    values = _numeric_array(frame["adj_nav"])
+    empty = np.empty(0, dtype=np.float64)
+    return _optional_float(nav_metrics_kernel(values, empty, empty, empty, 0)[0])
 
 
 def _compute_nav_record(
@@ -1318,14 +1829,16 @@ def _compute_nav_record(
     include_legacy_metrics: bool = True,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     working = frame.copy()
-    working["adj_nav"] = pd.to_numeric(working.get("adj_nav"), errors="coerce")
+    working["date"] = pd.to_datetime(working.get("date"), errors="coerce")
+    working = working.dropna(subset=["date"])
+    adjusted = _numeric_array(working.get("adj_nav"), length=len(working))
+    valid_adjusted = positive_finite_mask_kernel(adjusted)
+    working = working.loc[valid_adjusted.astype(bool)].copy()
+    working["adj_nav"] = adjusted[valid_adjusted.astype(bool)]
     for reference_column in ("unit_nav", "accum_nav"):
         if reference_column in working.columns:
-            working[reference_column] = pd.to_numeric(
-                working[reference_column], errors="coerce"
-            )
-    working = working.replace([np.inf, -np.inf], np.nan).dropna(subset=["date", "adj_nav"])
-    working = working[working["adj_nav"] > 0].sort_values("date").drop_duplicates(subset=["date"], keep="last")
+            working[reference_column] = _numeric_array(working[reference_column])
+    working = working.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     if working.empty:
         return {}, {}
     latest = working.iloc[-1]
@@ -1343,32 +1856,27 @@ def _compute_nav_record(
             anomaly_dates=anomaly_dates,
         )
 
-    annual_volatility: Optional[float] = None
-    sharpe: Optional[float] = None
-    max_drawdown: Optional[float] = None
-    calmar: Optional[float] = None
+    metric_values = np.full(8, np.nan, dtype=np.float64)
     if include_legacy_metrics:
-        one_year = windows["1y"] if qualities["1y"].complete else working.iloc[0:0]
-        three_year = windows["3y"] if qualities["3y"].complete else working.iloc[0:0]
-        returns = one_year["adj_nav"].pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan).dropna()
-        if len(returns) >= 60:
-            daily_std = float(returns.std(ddof=1))
-            if np.isfinite(daily_std):
-                annual_volatility = daily_std * np.sqrt(252.0)
-                if daily_std > 1e-12:
-                    sharpe = float(returns.mean() / daily_std * np.sqrt(252.0))
-        navs = three_year["adj_nav"].to_numpy(dtype=float)
-        if len(navs) - 1 >= 180:
-            peaks = np.maximum.accumulate(navs)
-            drawdowns = navs / peaks - 1.0
-            max_drawdown = float(drawdowns.min())
-        if len(three_year) >= 2 and max_drawdown is not None and abs(max_drawdown) > 1e-12:
-            elapsed_days = max((three_year.iloc[-1]["date"] - three_year.iloc[0]["date"]).days, 1)
-            annualized = (float(three_year.iloc[-1]["adj_nav"]) / float(three_year.iloc[0]["adj_nav"])) ** (
-                365.25 / elapsed_days
-            ) - 1.0
-            if np.isfinite(annualized):
-                calmar = float(annualized / abs(max_drawdown))
+        metric_windows = [
+            _numeric_array(windows[label]["adj_nav"])
+            if qualities[label].complete
+            else np.empty(0, dtype=np.float64)
+            for label in ("1m", "3m", "1y", "3y")
+        ]
+        three_year = windows["3y"]
+        elapsed_days = (
+            max(int((three_year.iloc[-1]["date"] - three_year.iloc[0]["date"]).days), 1)
+            if qualities["3y"].complete and len(three_year) >= 2
+            else 0
+        )
+        metric_values = nav_metrics_kernel(
+            metric_windows[0],
+            metric_windows[1],
+            metric_windows[2],
+            metric_windows[3],
+            elapsed_days,
+        )
     record: dict[str, Any] = {
         "instrument_type": kind,
         "ts_code": code,
@@ -1390,59 +1898,64 @@ def _compute_nav_record(
         },
         "adj_nav_anomaly_count": int(len(anomaly_dates)),
         "latest_adj_nav": latest_value,
-        "return_1m": _window_return(windows["1m"], qualities["1m"]) if include_legacy_metrics else None,
-        "return_3m": _window_return(windows["3m"], qualities["3m"]) if include_legacy_metrics else None,
-        "return_1y": _window_return(windows["1y"], qualities["1y"]) if include_legacy_metrics else None,
-        "return_3y": _window_return(windows["3y"], qualities["3y"]) if include_legacy_metrics else None,
-        "annual_volatility_1y": annual_volatility,
-        "max_drawdown_3y": max_drawdown,
-        "sharpe_1y": sharpe,
-        "calmar_3y": calmar,
+        "return_1m": _optional_float(metric_values[0]),
+        "return_3m": _optional_float(metric_values[1]),
+        "return_1y": _optional_float(metric_values[2]),
+        "return_3y": _optional_float(metric_values[3]),
+        "annual_volatility_1y": _optional_float(metric_values[4]),
+        "max_drawdown_3y": _optional_float(metric_values[5]),
+        "sharpe_1y": _optional_float(metric_values[6]),
+        "calmar_3y": _optional_float(metric_values[7]),
         "stale_days": 0,
         "nav_source_fingerprint": fingerprint,
     }
     unit_nav_tail: dict[str, float] = {}
     if kind == "etf" and "unit_nav" in working.columns:
-        unit_values = pd.to_numeric(working["unit_nav"], errors="coerce")
-        unit_frame = working.assign(_unit_nav=unit_values).dropna(subset=["_unit_nav"]).tail(31)
+        unit_values = _numeric_array(working["unit_nav"])
+        unit_mask = positive_finite_mask_kernel(unit_values)
+        unit_frame = working.loc[unit_mask.astype(bool)].assign(
+            _unit_nav=unit_values[unit_mask.astype(bool)]
+        ).tail(31)
         unit_nav_tail = {
             pd.Timestamp(date).strftime("%Y-%m-%d"): float(unit_nav)
             for date, unit_nav in zip(unit_frame["date"], unit_frame["_unit_nav"])
-            if float(unit_nav) > 0
         }
     return record, unit_nav_tail
 
 
 def _compute_candle_record(frame: pd.DataFrame, unit_nav_tail: Mapping[str, float], fingerprint: str) -> dict[str, Any]:
     working = frame.copy()
-    for column in ("close", "amount", "vol"):
-        if column in working.columns:
-            working[column] = pd.to_numeric(working[column], errors="coerce")
-    working = working.replace([np.inf, -np.inf], np.nan).dropna(subset=["date", "close"])
-    working = working[working["close"] > 0].sort_values("date").drop_duplicates(subset=["date"], keep="last")
+    working["date"] = pd.to_datetime(working.get("date"), errors="coerce")
+    working = working.dropna(subset=["date"])
+    close = _numeric_array(working.get("close"), length=len(working))
+    valid_close = positive_finite_mask_kernel(close)
+    working = working.loc[valid_close.astype(bool)].copy()
+    working["close"] = close[valid_close.astype(bool)]
+    working = working.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     if working.empty:
         return {}
-    latest = working.iloc[-1]
-    tail = working.tail(20)
-    common = working.assign(_date_key=working["date"].dt.strftime("%Y-%m-%d"))
-    common = common[common["_date_key"].isin(unit_nav_tail)]
-    premium: Optional[float] = None
-    premium_date: Optional[pd.Timestamp] = None
-    latest_unit_nav: Optional[float] = None
-    if not common.empty:
-        common_row = common.iloc[-1]
-        latest_unit_nav = float(unit_nav_tail[str(common_row["_date_key"])])
-        premium_value = float(common_row["close"]) / latest_unit_nav - 1.0
-        premium = float(premium_value) if np.isfinite(premium_value) else None
-        premium_date = pd.Timestamp(common_row["date"])
+    date_keys = working["date"].dt.strftime("%Y-%m-%d").tolist()
+    unit_by_row = np.ascontiguousarray(
+        np.array([unit_nav_tail.get(key, np.nan) for key in date_keys], dtype=np.float64)
+    )
+    metrics, common_index = candle_metrics_kernel(
+        _numeric_array(working["close"]),
+        _numeric_array(working.get("amount"), length=len(working)),
+        _numeric_array(working.get("vol"), length=len(working)),
+        unit_by_row,
+    )
     return {
-        "latest_close": float(latest["close"]),
-        "latest_candle_date": pd.Timestamp(latest["date"]),
-        "latest_unit_nav": latest_unit_nav,
-        "premium_discount_latest": premium,
-        "premium_discount_date": premium_date,
-        "amount_avg_20d": _finite_mean(tail.get("amount"), required_count=20),
-        "volume_avg_20d": _finite_mean(tail.get("vol"), required_count=20),
+        "latest_close": _optional_float(metrics[0]),
+        "latest_candle_date": pd.Timestamp(working.iloc[-1]["date"]),
+        "latest_unit_nav": _optional_float(metrics[1]),
+        "premium_discount_latest": _optional_float(metrics[2]),
+        "premium_discount_date": (
+            pd.Timestamp(working.iloc[common_index]["date"])
+            if common_index >= 0
+            else None
+        ),
+        "amount_avg_20d": _optional_float(metrics[3]),
+        "volume_avg_20d": _optional_float(metrics[4]),
         "candle_source_fingerprint": fingerprint,
     }
 
@@ -1451,27 +1964,28 @@ def _compute_share_record(frame: pd.DataFrame, fingerprint: str) -> dict[str, An
     """Calculate the latest ETF size in 万元 from 万份 × 元/份."""
 
     working = frame.copy()
-    for column in ("total_share", "nav"):
-        working[column] = pd.to_numeric(working.get(column), errors="coerce")
-    working = working.replace([np.inf, -np.inf], np.nan).dropna(
-        subset=["date", "total_share", "nav"]
-    )
-    working = working[
-        working["total_share"].gt(0) & working["nav"].gt(0)
-    ].sort_values("date").drop_duplicates(subset=["date"], keep="last")
+    working["date"] = pd.to_datetime(working.get("date"), errors="coerce")
+    working = working.dropna(subset=["date"])
+    total_share = _numeric_array(working.get("total_share"), length=len(working))
+    unit_nav = _numeric_array(working.get("nav"), length=len(working))
+    valid_pair = positive_pair_mask_kernel(total_share, unit_nav)
+    working = working.loc[valid_pair.astype(bool)].copy()
+    working["total_share"] = total_share[valid_pair.astype(bool)]
+    working["nav"] = unit_nav[valid_pair.astype(bool)]
+    working = working.sort_values("date").drop_duplicates(subset=["date"], keep="last")
     if working.empty:
         return {}
-    latest = working.iloc[-1]
-    current_share = float(latest["total_share"])
-    current_unit_nav = float(latest["nav"])
-    current_size = current_share * current_unit_nav
-    if not np.isfinite(current_size):
+    metrics = latest_share_metrics_kernel(
+        _numeric_array(working["total_share"]),
+        _numeric_array(working["nav"]),
+    )
+    if not np.isfinite(metrics[2]):
         return {}
     return {
-        "current_size": float(current_size),
-        "current_size_as_of": pd.Timestamp(latest["date"]),
-        "current_share": current_share,
-        "current_unit_nav": current_unit_nav,
+        "current_size": float(metrics[2]),
+        "current_size_as_of": pd.Timestamp(working.iloc[-1]["date"]),
+        "current_share": float(metrics[0]),
+        "current_unit_nav": float(metrics[1]),
         "share_source_fingerprint": fingerprint,
     }
 
@@ -1479,10 +1993,8 @@ def _compute_share_record(frame: pd.DataFrame, fingerprint: str) -> dict[str, An
 def _finite_mean(series: Optional[pd.Series], *, required_count: int | None = None) -> Optional[float]:
     if series is None:
         return None
-    values = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    if required_count is not None and len(values) < required_count:
-        return None
-    return None if values.empty else float(values.mean())
+    result = finite_mean_kernel(_numeric_array(series), required_count or 1)
+    return _optional_float(result)
 
 
 def _atomic_write_snapshot(frame: pd.DataFrame, output_path: Path) -> None:
@@ -1525,126 +2037,19 @@ def _configured_snapshot_values(
 
     try:
         from backend.custom_indicators.service import CustomIndicatorService
-        from backend.custom_indicators.series_provider import market_data_generation
+        from backend.custom_indicators.snapshot_execution import configured_snapshot_values
     except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
         from custom_indicators.service import CustomIndicatorService
-        from custom_indicators.series_provider import market_data_generation
+        from custom_indicators.snapshot_execution import configured_snapshot_values
 
     service = CustomIndicatorService(
         workspace_data_dir=workspace_data_dir,
         market_data_dir=market_data_dir,
     )
-    config = service.get_snapshot_config()
-    configured = [item for item in config.get("items", []) if item.get("status") == "ready"]
-    service.warm_snapshot_numba_plans(configured)
-    result = output.copy()
-    for item in configured:
-        field = str(item["field"])
-        result[field] = np.nan
-        result[f"{field}__status"] = "unavailable"
-        result[f"{field}__observation_count"] = 0
-        for suffix in ("start_date", "end_date", "effective_as_of", "warning_code", "warning_message"):
-            result[f"{field}__{suffix}"] = None
-
-    targets = [
-        {"kind": str(row.instrument_type), "product_id": str(row.ts_code)}
-        for row in result[["instrument_type", "ts_code"]].itertuples(index=False)
-    ]
-    row_indexes = {
-        (str(row.instrument_type), str(row.ts_code)): row.Index
-        for row in result[["instrument_type", "ts_code"]].itertuples()
-    }
-    status_counts = {"ok": 0, "warning": 0, "unavailable": 0, "error": 0}
-    failures: list[dict[str, str]] = []
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for item in configured:
-        groups.setdefault(str(item["period"]), []).append(item)
-
-    for period, period_items in groups.items():
-        for metric_start in range(0, len(period_items), 10):
-            metric_batch = period_items[metric_start : metric_start + 10]
-            indicator_ids = [str(item["indicator_id"]) for item in metric_batch]
-            versions = {
-                str(item["indicator_id"]): int(item["indicator_revision"])
-                for item in metric_batch
-            }
-            fields = {str(item["indicator_id"]): str(item["field"]) for item in metric_batch}
-            for target_start in range(0, len(targets), 50):
-                target_batch = targets[target_start : target_start + 50]
-                response = service.evaluate(
-                    indicator_ids=indicator_ids,
-                    indicator_versions=versions,
-                    inline_definition=None,
-                    targets=target_batch,
-                    period=period,
-                    include_series=False,
-                    prefer_snapshot=False,
-                )
-                for item in response.get("results", []):
-                    status = str(item.get("status") or "error")
-                    status_counts[status if status in status_counts else "error"] += 1
-                    value = item.get("value")
-                    target = item.get("target") or {}
-                    field = fields.get(str(item.get("indicator_id")))
-                    if not field:
-                        continue
-                    row_index = row_indexes.get(
-                        (str(target.get("kind")), str(target.get("product_id")))
-                    )
-                    if row_index is None:
-                        continue
-                    result.at[row_index, f"{field}__status"] = status
-                    window = item.get("window") or {}
-                    result.at[row_index, f"{field}__observation_count"] = int(
-                        window.get("observation_count") or 0
-                    )
-                    for suffix in ("start_date", "end_date", "effective_as_of"):
-                        result.at[row_index, f"{field}__{suffix}"] = window.get(suffix)
-                    warnings = item.get("warnings") or []
-                    if warnings:
-                        result.at[row_index, f"{field}__warning_code"] = warnings[0].get("code")
-                        result.at[row_index, f"{field}__warning_message"] = warnings[0].get("message")
-                    if value is not None and np.isfinite(float(value)):
-                        result.at[row_index, field] = float(value)
-
-    metadata_items = [
-        {
-            "field": item["field"],
-            "indicator_id": item["indicator_id"],
-            "indicator_revision": item["indicator_revision"],
-            "period": item["period"],
-            "name": item.get("name"),
-            "source": item.get("source"),
-            "presentation": item.get("presentation"),
-        }
-        for item in configured
-    ]
-    missing_definitions = [
-        {
-            "indicator_id": str(item.get("indicator_id")),
-            "message": str(item.get("status_message") or "指标版本不存在。"),
-        }
-        for item in config.get("items", [])
-        if item.get("status") != "ready"
-    ]
-    failures.extend(missing_definitions)
-    return result, {
-        "schema_version": 1,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "data_generation": market_data_generation(market_data_dir),
-        "config_revision": config.get("revision"),
-        "configured_count": len(configured),
-        "items": metadata_items,
-        "status_counts": status_counts,
-        "failures": failures,
-        "legacy_columns": [
-            "amount_avg_20d",
-            "volume_avg_20d",
-            "premium_discount_latest",
-            "current_size",
-        ],
-        "legacy_note": "这些列是兼容属性；新增快照指标只能从指标中心配置。",
-    }
+    try:
+        return configured_snapshot_values(output, service)
+    finally:
+        service.close_compute_engine()
 
 
 def rebuild_analytics_snapshot(
@@ -1725,11 +2130,11 @@ def rebuild_analytics_snapshot(
     output["latest_date"] = pd.to_datetime(output["latest_date"], errors="coerce")
     for kind in ("etf", "fund"):
         mask = output["instrument_type"].eq(kind)
-        segment_latest = output.loc[mask, "latest_date"].max()
-        if pd.notna(segment_latest):
-            output.loc[mask, "stale_days"] = (
-                segment_latest - output.loc[mask, "latest_date"]
-            ).dt.days.clip(lower=0)
+        kind_dates = output.loc[mask, "latest_date"]
+        if not kind_dates.empty:
+            output.loc[mask, "stale_days"] = stale_days_kernel(
+                _date_day_array(kind_dates)
+            )
     configured_metadata: dict[str, Any] | None = None
     if workspace_data_dir is not None:
         output, configured_metadata = _configured_snapshot_values(
@@ -1746,10 +2151,21 @@ def rebuild_analytics_snapshot(
         )
     _read_small_parquet_cached.cache_clear()
     by_kind = {
-        kind: int((output["instrument_type"] == kind).sum()) for kind in ("etf", "fund")
+        kind: int(
+            count_true_kernel(
+                np.array(
+                    output["instrument_type"].eq(kind).to_numpy(dtype=np.uint8),
+                    dtype=np.uint8,
+                    copy=True,
+                    order="C",
+                )
+            )
+        )
+        for kind in ("etf", "fund")
     }
     return {
         "path": str(output_path),
+        "execution": _execution_audit(),
         "rows": int(len(output)),
         "by_kind": by_kind,
         "as_of": _safe_max_date(output.get("as_of")),

@@ -1,4 +1,4 @@
-"""Typed indicator DSL v2 compiler, inference graph and NumPy runtime.
+"""Typed indicator DSL v2 compiler, inference graph and fixed-signature NJIT runtime.
 
 This module is intentionally parallel to ``indicator_runtime.py``.  Existing
 saved indicators continue to use the legacy scalar-only v1 runtime, while new
@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from numba import float64, njit, uint8
 
 from cal_indicators.typed_operators import (
     COMPAT_OPERATOR_REGISTRY_VERSION,
@@ -24,6 +25,12 @@ from cal_indicators.typed_operators import (
     LEGACY_OPERATOR_REGISTRY_VERSION,
     LEGACY_TYPED_COMPILER_VERSION,
     LEGACY_TYPED_DSL_VERSION,
+    PREVIOUS_OPERATOR_REGISTRY_VERSION,
+    PREVIOUS_TYPED_COMPILER_VERSION,
+    PREVIOUS_TYPED_DSL_VERSION,
+    ROLLING_OPERATOR_REGISTRY_VERSION,
+    ROLLING_TYPED_COMPILER_VERSION,
+    ROLLING_TYPED_DSL_VERSION,
     SUPPORTED_TYPED_DSL_VERSIONS,
     TYPED_COMPILER_VERSION,
     TYPED_DSL_VERSION,
@@ -32,7 +39,13 @@ from cal_indicators.typed_operators import (
     get_typed_operator_catalog,
     get_typed_operator_registry,
 )
-from cal_indicators.typed_numba_plan import NumbaPlanCompileError, compile_numba_plan
+from cal_indicators.typed_numba_plan import (
+    CompiledNumbaPlan,
+    NumbaPlanCompileError,
+    compile_numba_plan,
+    get_cached_numba_plan,
+    numba_plan_id,
+)
 from cal_indicators.typed_types import (
     ASSET_VECTOR,
     SCALAR,
@@ -43,6 +56,7 @@ from cal_indicators.typed_types import (
     TypedDslError,
     user_type_label,
 )
+from compute_policy import NJIT_BACKEND, validate_execution_audit
 
 
 DEFAULT_MAX_NODES = 128
@@ -51,6 +65,111 @@ DEFAULT_MAX_TIME = 5_000
 DEFAULT_MAX_ASSETS = 50
 DEFAULT_MAX_RUNTIME_COST = 200_000_000
 DEFAULT_MAX_LIVE_ELEMENTS = 8_000_000
+
+
+_F1 = float64[::1]
+_F2 = float64[:, ::1]
+_U1 = uint8[::1]
+_U2 = uint8[:, ::1]
+
+
+@njit(uint8(float64), cache=False, nogil=True)
+def _finite_scalar_kernel(value: float) -> int:
+    return 1 if math.isfinite(value) else 0
+
+
+@njit(uint8(_F1), cache=False, nogil=True)
+def _finite_1d_kernel(values: np.ndarray) -> int:
+    for value in values:
+        if not math.isfinite(value):
+            return 0
+    return 1
+
+
+@njit(uint8(_F2), cache=False, nogil=True)
+def _finite_2d_kernel(values: np.ndarray) -> int:
+    for row in range(values.shape[0]):
+        for column in range(values.shape[1]):
+            if not math.isfinite(values[row, column]):
+                return 0
+    return 1
+
+
+@njit(uint8(_U1), cache=False, nogil=True)
+def _binary_mask_1d_kernel(values: np.ndarray) -> int:
+    for value in values:
+        if value > 1:
+            return 0
+    return 1
+
+
+@njit(uint8(_U2), cache=False, nogil=True)
+def _binary_mask_2d_kernel(values: np.ndarray) -> int:
+    for row in range(values.shape[0]):
+        for column in range(values.shape[1]):
+            if values[row, column] > 1:
+                return 0
+    return 1
+
+
+@njit(uint8(_F1, float64), cache=False, nogil=True)
+def _weight_vector_sum_kernel(values: np.ndarray, tolerance: float) -> int:
+    total = 0.0
+    for value in values:
+        total += value
+    return 1 if abs(total - 1.0) <= tolerance else 0
+
+
+@njit(uint8(_F2, float64), cache=False, nogil=True)
+def _weight_path_sum_kernel(values: np.ndarray, tolerance: float) -> int:
+    for row in range(values.shape[0]):
+        total = 0.0
+        for column in range(values.shape[1]):
+            total += values[row, column]
+        if abs(total - 1.0) > tolerance:
+            return 0
+    return 1
+
+
+def runtime_validation_kernel_signatures() -> dict[str, list[str]]:
+    """Fixed signatures used by the Python input-contract boundary."""
+
+    dispatchers = (
+        _finite_scalar_kernel,
+        _finite_1d_kernel,
+        _finite_2d_kernel,
+        _binary_mask_1d_kernel,
+        _binary_mask_2d_kernel,
+        _weight_vector_sum_kernel,
+        _weight_path_sum_kernel,
+    )
+    return {
+        dispatcher.py_func.__name__: [
+            str(signature) for signature in dispatcher.signatures
+        ]
+        for dispatcher in dispatchers
+    }
+
+
+def runtime_validation_execution_audit() -> dict[str, Any]:
+    dispatchers = (
+        _finite_scalar_kernel,
+        _finite_1d_kernel,
+        _finite_2d_kernel,
+        _binary_mask_1d_kernel,
+        _binary_mask_2d_kernel,
+        _weight_vector_sum_kernel,
+        _weight_path_sum_kernel,
+    )
+    return validate_execution_audit(
+        {
+            "execution_backend": NJIT_BACKEND,
+            "nopython": all(bool(dispatcher.nopython_signatures) for dispatcher in dispatchers),
+            "kernel_signatures": runtime_validation_kernel_signatures(),
+            "python_fallback": 0,
+            "python_operator_calls": 0,
+        }
+    )
 
 
 def _literal_number(node: ast.AST) -> float | None:
@@ -87,6 +206,8 @@ class VariableSpec:
 
 
 _VARIABLE_SPECS = (
+    VariableSpec("observation_dates", r"\mathbf{d}", ValueType.series("L", semantic_dimension="date"),
+                 "观察日期", "真实对齐的观察日期，数值日序号。", ("single_asset",), "date", "series_provider"),
     VariableSpec(
         "returns",
         r"\mathbf{r}",
@@ -551,6 +672,9 @@ class TypedDagNode:
             "inferred_type": self.inferred_type.to_dict(),
             "operator": operator,
             "formula_fragment": self.formula_fragment,
+            **({"execution_scope": {"kind": "rolling_interval", "body_root": self.inputs[0],
+                "state_policy": "reset_at_window_start", "input_binding": "window_views", "eager_body": False}}
+               if self.operator_id == "rolling_apply" else {}),
             "cost": {
                 "model": self.cost_model,
                 "expression": self.cost_expression,
@@ -625,6 +749,57 @@ def _normalize_variable_types(
     return normalized
 
 
+@dataclass(frozen=True)
+class TypedSeriesBundlePlan:
+    """One shared typed DAG with multiple named time-series roots."""
+
+    expressions: tuple[tuple[str, str], ...]
+    python_expressions: tuple[tuple[str, str], ...]
+    expression_hash: str
+    dsl_version: str
+    compiler_version: str
+    operator_registry_version: str
+    nodes: tuple[TypedDagNode, ...]
+    roots: Mapping[str, int]
+    output_types: Mapping[str, ValueType]
+    context_requirements: Mapping[str, ValueType]
+    estimated_cost: Mapping[str, Any]
+
+    def graph_payload(self) -> dict[str, Any]:
+        return {
+            "nodes": [node.to_dict() for node in self.nodes],
+            "edges": [
+                {"source": input_id, "target": node.node_id}
+                for node in self.nodes
+                for input_id in node.inputs
+            ],
+            "roots": dict(self.roots),
+            "output_types": {
+                name: value_type.to_dict()
+                for name, value_type in self.output_types.items()
+            },
+            "context_requirements": {
+                name: value_type.to_dict()
+                for name, value_type in self.context_requirements.items()
+            },
+            "estimated_cost": dict(self.estimated_cost),
+            "compiler_version": self.compiler_version,
+            "operator_registry_version": self.operator_registry_version,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "expressions": dict(self.expressions),
+            "python_expressions": dict(self.python_expressions),
+            "expression_hash": self.expression_hash,
+            "dsl_version": self.dsl_version,
+            "compiler_version": self.compiler_version,
+            "operator_registry_version": self.operator_registry_version,
+            "output_contract": getattr(self, "output_contract", "series_bundle"),
+            **self.graph_payload(),
+        }
+
+
 class _TypedDagBuilder:
     _binary_operators: Mapping[type[ast.operator], str] = {
         ast.Add: "add",
@@ -648,6 +823,7 @@ class _TypedDagBuilder:
         self.max_depth = max_depth
         self.nodes: list[TypedDagNode] = []
         self.cache: dict[str, int] = {}
+        self.structural_cache: dict[tuple[Any, ...], int] = {}
 
     def build(self, root: ast.AST) -> int:
         return self._build(root, depth=1)
@@ -658,6 +834,15 @@ class _TypedDagBuilder:
         input_types: tuple[ValueType, ...],
     ) -> ValueType:
         try:
+            if any(value.kind == "record" for value in input_types) and spec.operator_id not in {
+                "interval_start", "interval_trough", "interval_recovery",
+                "fit_slope", "fit_intercept", "fit_residual_sum_squares", "fit_total_sum_squares", "fit_observation_count",
+            }:
+                raise TypedDslError("STATE_FIELD_REQUIRED", "这是计算中间状态，请使用字段提取算子得到一个数值或位置。")
+            if any(value.semantic_dimension == "date" for value in input_types) and spec.operator_id not in {
+                "value_at", "days_between", "rolling_apply",
+            }:
+                raise TypedDslError("DATE_OPERATOR_REQUIRED", "日期不能作为普通数值计算；请使用日期索引或日期差算子。")
             return spec.infer_output(input_types)
         except TypedDslError as exc:
             if exc.node_id is None:
@@ -689,7 +874,10 @@ class _TypedDagBuilder:
         if isinstance(node, ast.Constant):
             if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
                 raise TypedDslError("INVALID_LITERAL", "仅允许有限数值常量。")
-            value = float(node.value)
+            try:
+                value = float(node.value)
+            except (OverflowError, TypeError, ValueError) as exc:
+                raise TypedDslError("INVALID_LITERAL", "仅允许有限数值常量。") from exc
             if not math.isfinite(value):
                 raise TypedDslError("INVALID_LITERAL", "仅允许有限数值常量。")
             return self._append(
@@ -720,6 +908,9 @@ class _TypedDagBuilder:
                 formula_fragment=ast.unparse(node),
                 raw=cache_key,
             )
+
+        if isinstance(node, ast.Attribute):
+            raise TypedDslError("ILLEGAL_AST", "不允许直接访问属性；请使用白名单字段提取算子。")
 
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
             input_id = self._build(node.operand, depth=depth + 1)
@@ -771,6 +962,12 @@ class _TypedDagBuilder:
                 raise TypedDslError(
                     "UNKNOWN_OPERATOR", f"未知函数或算子: {node.func.id}"
                 ) from exc
+            if spec.operator_id == "rolling_apply" and len(node.args) in {2, 3}:
+                # Preserve the original four-argument context contract. The
+                # optional minimum is last in the canonical five-argument form.
+                node = ast.Call(func=node.func, args=[*node.args[:2],
+                    ast.Name(id="observation_dates", ctx=ast.Load()),
+                    ast.Name(id="annual_risk_free_rate_decimal", ctx=ast.Load()), *node.args[2:]], keywords=[])
             input_ids = tuple(
                 self._build(argument, depth=depth + 1) for argument in node.args
             )
@@ -778,7 +975,22 @@ class _TypedDagBuilder:
                 self.nodes[input_id].inferred_type for input_id in input_ids
             )
             output_type = self._infer_operator(spec, input_types)
-            if spec.version == TYPED_OPERATOR_REGISTRY_VERSION:
+            if spec.operator_id == "rolling_apply":
+                from .rolling_scope import analyze_interval
+                capability = analyze_interval(self.nodes, input_ids[0], self.registry)
+                numeric_inputs = [item for item in capability.variables if item.inferred_type.rank and item.inferred_type.semantic_dimension != "date"]
+                anchor = next((item for item in numeric_inputs if item.label in {"returns", "log_returns"}), numeric_inputs[0])
+                output_type = ValueType.series(anchor.inferred_type.shape[0],
+                    semantic_dimension=output_type.semantic_dimension, price_basis=output_type.price_basis)
+                if len(node.args) not in {4, 5} or not all(isinstance(arg, ast.Name) and arg.id == name for arg, name in zip(
+                    node.args[2:4], ("observation_dates", "annual_risk_free_rate_decimal")
+                )):
+                    raise TypedDslError("ROLLING_CONTEXT_BINDING_INVALID", "滚动日期和年度配置必须绑定到系统区间上下文，不能用计算结果替代。")
+            if spec.version in {
+                PREVIOUS_OPERATOR_REGISTRY_VERSION,
+                ROLLING_OPERATOR_REGISTRY_VERSION,
+                TYPED_OPERATOR_REGISTRY_VERSION,
+            }:
                 probability_index = {
                     "quantile": 1,
                     "quantile_where": 2,
@@ -797,22 +1009,63 @@ class _TypedDagBuilder:
                                 "actual": ast.unparse(node.args[probability_index]),
                             },
                         )
-                if spec.operator_id in {"lag", "difference"} and len(node.args) == 2:
-                    periods = _literal_number(node.args[1])
-                    minimum = 0 if spec.operator_id == "lag" else 1
-                    if periods is None or not periods.is_integer() or periods < minimum:
+                integer_parameters: dict[str, tuple[tuple[int, int], ...]] = {
+                    "lag": ((1, 0),),
+                    "difference": ((1, 1),),
+                    "rolling_window": ((1, 1), (2, 1)),
+                    "rolling_apply": ((1, 1), (4, 1)),
+                    "rolling_mean": ((1, 1), (2, 1)),
+                    "rolling_min": ((1, 1), (2, 1)),
+                    "rolling_max": ((1, 1), (2, 1)),
+                    "rolling_std": ((1, 1), (2, 0), (3, 1)),
+                    "recursive_smooth": ((1, 1),),
+                }
+                for parameter_index, minimum in integer_parameters.get(
+                    spec.operator_id, ()
+                ):
+                    if len(node.args) <= parameter_index:
+                        continue
+                    argument_node = node.args[parameter_index]
+                    parameter = _literal_number(argument_node)
+                    runtime_scalar = False
+                    if (
+                        spec.version in {ROLLING_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION}
+                        and isinstance(argument_node, ast.Name)
+                    ):
+                        parameter_type = self.variable_types.get(argument_node.id)
+                        runtime_scalar = bool(
+                            parameter_type is not None
+                            and parameter_type.is_scalar
+                            and parameter_type.is_numeric
+                            and parameter_type.semantic_dimension
+                            in {"count", "dimensionless"}
+                        )
+                    if not runtime_scalar and (
+                        parameter is None
+                        or not parameter.is_integer()
+                        or parameter < minimum
+                    ):
                         comparator = "非负" if minimum == 0 else "正"
+                        parameter_name = spec.argument_names(len(node.args))[
+                            parameter_index
+                        ]
                         raise TypedDslError(
                             "INVALID_PARAMETER",
-                            f"{spec.operator_id} 的 periods 必须是{comparator}整数常数。",
+                            f"{spec.operator_id} 的 {parameter_name} 必须是{comparator}整数常数或已声明标量参数。",
                             node_id=len(self.nodes),
                             details={
                                 "operator": spec.operator_id,
-                                "parameter": "periods",
-                                "expected": f"{comparator} integer constant",
-                                "actual": ast.unparse(node.args[1]),
+                                "parameter": parameter_name,
+                                "expected": (
+                                    f"{comparator} integer constant or declared scalar parameter"
+                                ),
+                                "actual": ast.unparse(argument_node),
                             },
                         )
+                if spec.operator_id == "rolling_apply" and len(node.args) == 5:
+                    width, minimum = _literal_number(node.args[1]), _literal_number(node.args[4])
+                    if minimum is not None and (minimum > 5000 or (width is not None and minimum > width)):
+                        raise TypedDslError("INVALID_MIN_PERIODS", "最少有效观察数不能大于窗口观察数。", details={"parameter": "min_periods"})
                 if spec.operator_id in {"variance", "std"} and len(node.args) == 2:
                     ddof = _literal_number(node.args[1])
                     if ddof is None or not ddof.is_integer() or ddof < 0:
@@ -827,14 +1080,19 @@ class _TypedDagBuilder:
                                 "actual": ast.unparse(node.args[1]),
                             },
                         )
+            from .operator_lowering import expand_operator
+            expanded = expand_operator(
+                spec.operator_id,
+                tuple(self.nodes[index].formula_fragment for index in input_ids),
+                operator_registry_version=spec.version,
+            )
+            if expanded is not None:
+                root = self._build(ast.parse(expanded, mode="eval").body, depth=depth)
+                self.cache[cache_key] = root
+                return root
             return self._append_operator(
-                "call",
-                spec,
-                input_ids,
-                input_types,
-                output_type,
-                ast.unparse(node),
-                cache_key,
+                "call", spec, input_ids, input_types, output_type,
+                ast.unparse(node), cache_key,
             )
 
         raise TypedDslError(
@@ -853,6 +1111,17 @@ class _TypedDagBuilder:
         formula_fragment: str,
         raw: str,
     ) -> int:
+        # Parent source uses canonical children too, so a nested historical
+        # spelling cannot survive invisibly behind the visible primitive DAG.
+        fragment = ast.parse(formula_fragment, mode="eval").body
+        children = [ast.parse(self.nodes[index].formula_fragment, mode="eval").body for index in input_ids]
+        if isinstance(fragment, ast.Call):
+            fragment = ast.Call(func=ast.Name(id=spec.operator_id, ctx=ast.Load()), args=children, keywords=[])
+        elif isinstance(fragment, ast.BinOp):
+            fragment.left, fragment.right = children
+        elif isinstance(fragment, ast.UnaryOp):
+            fragment.operand = children[0]
+        formula_fragment = ast.unparse(fragment)
         return self._append(
             kind=kind,
             label=spec.operator_id,
@@ -878,6 +1147,13 @@ class _TypedDagBuilder:
         formula_fragment: str,
         raw: str,
     ) -> int:
+        binding = float(label).hex() if kind == "constant" else label if kind == "variable" else ""
+        structural_key = ("operator" if spec else kind, spec.operator_id if spec else None,
+                          spec.version if spec else None, inferred_type, inputs, binding)
+        if structural_key in self.structural_cache:
+            node_id = self.structural_cache[structural_key]
+            self.cache[raw] = node_id
+            return node_id
         if len(self.nodes) >= self.max_nodes:
             raise TypedDslError(
                 "FORMULA_TOO_COMPLEX",
@@ -904,6 +1180,7 @@ class _TypedDagBuilder:
             )
         )
         self.cache[raw] = node_id
+        self.structural_cache[structural_key] = node_id
         return node_id
 
 
@@ -939,7 +1216,7 @@ def _check_output_contract(output_type: ValueType, output_contract: str) -> None
         raise TypedDslError(
             "OUTPUT_CONTRACT_MISMATCH",
             f"指标最终结果必须是{expected_label}，当前公式输出为{user_type_label(output_type)}。"
-            "请继续使用求和、平均值、标准差等归约算子，将结果转换为单个数值。"
+            + ("请使用字段提取算子从中间状态得到单个结果。" if output_type.kind == "record" else "请继续使用求和、平均值、标准差等归约算子，将结果转换为单个数值。")
             if output_contract == "scalar"
             else f"输出数据要求为{expected_label}，当前公式输出为{user_type_label(output_type)}。",
             details={"contract": output_contract, "actual": output_type.to_dict()},
@@ -967,6 +1244,8 @@ def compose_typed_expression(
     expected_registry_version = {
         LEGACY_TYPED_DSL_VERSION: LEGACY_OPERATOR_REGISTRY_VERSION,
         COMPAT_TYPED_DSL_VERSION: COMPAT_OPERATOR_REGISTRY_VERSION,
+        PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_OPERATOR_REGISTRY_VERSION,
+        ROLLING_TYPED_DSL_VERSION: ROLLING_OPERATOR_REGISTRY_VERSION,
         TYPED_DSL_VERSION: TYPED_OPERATOR_REGISTRY_VERSION,
     }[dsl_version]
     if operator_registry_version is None:
@@ -995,6 +1274,8 @@ def compose_typed_expression(
     root_id = builder.build(ast_root)
     output_type = builder.nodes[root_id].inferred_type
     _check_output_contract(output_type, output_contract)
+    if output_contract == "scalar" and any(node.operator_id == "rolling_apply" for node in builder.nodes):
+        raise TypedDslError("ROLLING_SERIES_DEFINITION_REQUIRED", "滚动计算生成时序指标，不能在标量定义中再次做全样本归约。")
 
     used_variables = {
         node.label: node.inferred_type
@@ -1009,7 +1290,10 @@ def compose_typed_expression(
         "symbolic": "+".join(costs) if costs else "0",
         "node_count": len(builder.nodes),
     }
-    canonical_expression = ast.dump(ast_root, include_attributes=False)
+    compiled_source = builder.nodes[root_id].formula_fragment
+    canonical_expression = ast.dump(ast.parse(compiled_source, mode="eval").body, include_attributes=False)
+    if canonical_expression != ast.dump(ast_root, include_attributes=False):
+        python_expression = compiled_source
     return TypedExpressionPlan(
         expression=expression,
         python_expression=python_expression,
@@ -1020,6 +1304,8 @@ def compose_typed_expression(
         compiler_version={
             LEGACY_TYPED_DSL_VERSION: LEGACY_TYPED_COMPILER_VERSION,
             COMPAT_TYPED_DSL_VERSION: COMPAT_TYPED_COMPILER_VERSION,
+            PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
+            ROLLING_TYPED_DSL_VERSION: ROLLING_TYPED_COMPILER_VERSION,
             TYPED_DSL_VERSION: TYPED_COMPILER_VERSION,
         }[dsl_version],
         operator_registry_version=operator_registry_version,
@@ -1029,6 +1315,128 @@ def compose_typed_expression(
         output_contract=output_contract,
         context_requirements=used_variables,
         estimated_cost=estimated_cost,
+    )
+
+
+def compose_typed_series_bundle(
+    expressions: Mapping[str, str],
+    *,
+    variable_types: Mapping[str, ValueType | Mapping[str, Any]] | None = None,
+    dsl_version: str = TYPED_DSL_VERSION,
+    operator_registry_version: str | None = None,
+    max_nodes: int = DEFAULT_MAX_NODES,
+    max_depth: int = DEFAULT_MAX_DEPTH,
+) -> TypedSeriesBundlePlan:
+    """Compile homogeneous named outputs; expression semantics remain unchanged."""
+
+    normalized_items = tuple(
+        (str(name).strip(), str(expression).strip())
+        for name, expression in expressions.items()
+    )
+    if not normalized_items:
+        raise TypedDslError("EMPTY_EXPRESSION", "时序指标至少需要一个输出通道。")
+    names = [name for name, _ in normalized_items]
+    if any(not name or not name.isidentifier() for name in names):
+        raise TypedDslError(
+            "INVALID_OUTPUT_NAME",
+            "时序输出通道 ID 必须是合法标识符。",
+        )
+    if len(set(names)) != len(names):
+        raise TypedDslError("DUPLICATE_OUTPUT_NAME", "时序输出通道 ID 不能重复。")
+    if any(not expression for _, expression in normalized_items):
+        raise TypedDslError("EMPTY_EXPRESSION", "时序输出公式不能为空。")
+    if dsl_version not in SUPPORTED_TYPED_DSL_VERSIONS:
+        raise TypedDslError(
+            "UNSUPPORTED_DSL_VERSION",
+            f"不支持 typed DSL 版本 {dsl_version}。",
+            details={"available_versions": sorted(SUPPORTED_TYPED_DSL_VERSIONS)},
+        )
+    expected_registry_version = {
+        LEGACY_TYPED_DSL_VERSION: LEGACY_OPERATOR_REGISTRY_VERSION,
+        COMPAT_TYPED_DSL_VERSION: COMPAT_OPERATOR_REGISTRY_VERSION,
+        PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_OPERATOR_REGISTRY_VERSION,
+        ROLLING_TYPED_DSL_VERSION: ROLLING_OPERATOR_REGISTRY_VERSION,
+        TYPED_DSL_VERSION: TYPED_OPERATOR_REGISTRY_VERSION,
+    }[dsl_version]
+    if operator_registry_version is None:
+        operator_registry_version = expected_registry_version
+    elif operator_registry_version != expected_registry_version:
+        raise TypedDslError(
+            "OPERATOR_VERSION_MISMATCH",
+            f"DSL {dsl_version} 必须使用算子注册表 {expected_registry_version}。",
+            details={
+                "expected": expected_registry_version,
+                "actual": operator_registry_version,
+            },
+        )
+
+    variables = _normalize_variable_types(variable_types)
+    registry = get_typed_operator_registry(operator_registry_version)
+    parser = TypedExpressionParser(tuple(variables))
+    builder = _TypedDagBuilder(
+        variables,
+        registry,
+        max_nodes=max_nodes,
+        max_depth=max_depth,
+    )
+    roots: dict[str, int] = {}
+    python_expressions: list[tuple[str, str]] = []
+    canonical_roots: list[tuple[str, str]] = []
+    for name, expression in normalized_items:
+        python_expression, ast_root = parser.parse(expression)
+        root_id = builder.build(ast_root)
+        output_type = builder.nodes[root_id].inferred_type
+        try:
+            _check_output_contract(output_type, "series")
+        except TypedDslError as exc:
+            exc.details["output_id"] = name
+            raise
+        roots[name] = root_id
+        compiled_source = builder.nodes[root_id].formula_fragment
+        if ast.dump(ast.parse(compiled_source, mode="eval").body, include_attributes=False) != ast.dump(ast_root, include_attributes=False):
+            python_expression = compiled_source
+        python_expressions.append((name, python_expression))
+        canonical_roots.append(
+            (name, ast.dump(ast.parse(python_expression, mode="eval").body, include_attributes=False))
+        )
+
+    output_types = {
+        name: builder.nodes[root_id].inferred_type
+        for name, root_id in roots.items()
+    }
+    used_variables = {
+        node.label: node.inferred_type
+        for node in builder.nodes
+        if node.kind == "variable"
+    }
+    costs = [
+        node.cost_expression for node in builder.nodes if node.cost_expression != "0"
+    ]
+    compiler_version = {
+        LEGACY_TYPED_DSL_VERSION: LEGACY_TYPED_COMPILER_VERSION,
+        COMPAT_TYPED_DSL_VERSION: COMPAT_TYPED_COMPILER_VERSION,
+        PREVIOUS_TYPED_DSL_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
+        ROLLING_TYPED_DSL_VERSION: ROLLING_TYPED_COMPILER_VERSION,
+        TYPED_DSL_VERSION: TYPED_COMPILER_VERSION,
+    }[dsl_version]
+    canonical = repr(canonical_roots)
+    return TypedSeriesBundlePlan(
+        expressions=normalized_items,
+        python_expressions=tuple(python_expressions),
+        expression_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        dsl_version=dsl_version,
+        compiler_version=compiler_version,
+        operator_registry_version=operator_registry_version,
+        nodes=tuple(builder.nodes),
+        roots=MappingProxyType(roots),
+        output_types=MappingProxyType(output_types),
+        context_requirements=MappingProxyType(used_variables),
+        estimated_cost={
+            "unit": "primitive_ops",
+            "symbolic": "+".join(costs) if costs else "0",
+            "node_count": len(builder.nodes),
+            "root_count": len(roots),
+        },
     )
 
 
@@ -1082,6 +1490,7 @@ class TypedIndicatorRuntime:
         max_assets: int = DEFAULT_MAX_ASSETS,
         max_runtime_cost: int = DEFAULT_MAX_RUNTIME_COST,
         max_live_elements: int = DEFAULT_MAX_LIVE_ELEMENTS,
+        _compiled_plan: CompiledNumbaPlan | None = None,
     ) -> None:
         self.plan = plan
         self.registry = get_typed_operator_registry(plan.operator_registry_version)
@@ -1090,17 +1499,30 @@ class TypedIndicatorRuntime:
         self.max_runtime_cost = max_runtime_cost
         self.max_live_elements = max_live_elements
         self.last_trace: tuple[dict[str, Any], ...] = ()
-        try:
-            self.compiled_plan = compile_numba_plan(plan)
-        except NumbaPlanCompileError as exc:
-            raise TypedDslError(
-                "NJIT_PLAN_COMPILE_FAILED",
-                "公式无法编译为 NJIT 计算计划。",
-                details={
-                    "compiled_plan_id": exc.plan_id,
-                    "operator": exc.operator_id,
-                },
-            ) from exc
+        if _compiled_plan is not None:
+            expected_plan_id = numba_plan_id(plan)
+            if _compiled_plan.plan_id != expected_plan_id:
+                raise TypedDslError(
+                    "NJIT_PLAN_ID_MISMATCH",
+                    "已预热 NJIT 计划与当前 typed DAG 不一致。",
+                    details={
+                        "expected_compiled_plan_id": expected_plan_id,
+                        "actual_compiled_plan_id": _compiled_plan.plan_id,
+                    },
+                )
+            self.compiled_plan = _compiled_plan
+        else:
+            try:
+                self.compiled_plan = compile_numba_plan(plan)
+            except NumbaPlanCompileError as exc:
+                raise TypedDslError(
+                    "NJIT_PLAN_COMPILE_FAILED",
+                    "公式无法编译为 NJIT 计算计划。",
+                    details={
+                        "compiled_plan_id": exc.plan_id,
+                        "operator": exc.operator_id,
+                    },
+                ) from exc
 
     @classmethod
     def from_expression(
@@ -1134,7 +1556,23 @@ class TypedIndicatorRuntime:
     ) -> "TypedIndicatorRuntime":
         return cls(plan, **kwargs)
 
-    def compute(self, context: Mapping[str, Any]) -> Any:
+    @classmethod
+    def from_warmed_plan(
+        cls, plan: TypedExpressionPlan, **kwargs: Any
+    ) -> "TypedIndicatorRuntime":
+        """Bind an immutable plan cache entry without compiling a signature."""
+
+        compiled = get_cached_numba_plan(plan)
+        if compiled is None:
+            raise TypedDslError(
+                "NJIT_PLAN_NOT_WARMED",
+                "当前公式没有已预热的固定签名 NJIT 计划。",
+                details={"compiled_plan_id": numba_plan_id(plan)},
+            )
+        return cls(plan, _compiled_plan=compiled, **kwargs)
+
+    def prepare_context(self, context: Mapping[str, Any]) -> tuple[tuple[Any, ...], dict[str, int], list[dict[str, Any]]]:
+        """Validate inputs and budget without executing numerical formula nodes."""
         bindings: dict[str, int] = {}
         self.last_trace = ()
         variable_nodes = {
@@ -1160,15 +1598,15 @@ class TypedIndicatorRuntime:
                 allow_bind=True,
                 internal_mask=True,
             )
-            if name == "asset_weights" and not np.isclose(
-                float(np.sum(value)), 1.0, rtol=0.0, atol=1e-8
-            ):
+            if name == "asset_weights" and _weight_vector_sum_kernel(
+                value, 1e-8
+            ) != 1:
                 raise TypedDslError(
                     "WEIGHT_SUM_INVALID", "asset_weights 必须合计为 1。", node_id=node.node_id
                 )
-            if name == "weight_path" and not np.allclose(
-                np.sum(value, axis=1), 1.0, rtol=0.0, atol=1e-8
-            ):
+            if name == "weight_path" and _weight_path_sum_kernel(
+                value, 1e-8
+            ) != 1:
                 raise TypedDslError(
                     "WEIGHT_SUM_INVALID",
                     "weight_path 每个时间点的资产权重必须合计为 1。",
@@ -1193,9 +1631,13 @@ class TypedIndicatorRuntime:
                 node_id=self.plan.root_id,
                 details={"live_elements": live_elements},
             )
+        return tuple(arguments), bindings, trace
+
+    def compute(self, context: Mapping[str, Any]) -> Any:
+        arguments, bindings, trace = self.prepare_context(context)
         try:
-            result = self.compiled_plan.compute(tuple(arguments))
-        except (ValueError, ZeroDivisionError, FloatingPointError) as exc:
+            result = self.compiled_plan.compute(arguments)
+        except (TypeError, ValueError, ZeroDivisionError, FloatingPointError) as exc:
             code = str(exc).strip()
             stable_codes = {
                 "DIVIDE_BY_ZERO",
@@ -1205,8 +1647,14 @@ class TypedIndicatorRuntime:
                 "NON_FINITE_RESULT",
                 "SINGULAR_MATRIX",
             }
+            if isinstance(exc, TypeError):
+                code = "NJIT_SIGNATURE_MISMATCH"
             if code not in stable_codes:
-                code = "OPERATOR_EXECUTION_FAILED"
+                code = (
+                    "NJIT_SIGNATURE_MISMATCH"
+                    if code == "NJIT_SIGNATURE_MISMATCH"
+                    else "OPERATOR_EXECUTION_FAILED"
+                )
             raise TypedDslError(
                 code,
                 "NJIT 计算计划执行失败。",
@@ -1229,11 +1677,19 @@ class TypedIndicatorRuntime:
         return float(result)
 
     def trace_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "nodes": [dict(item) for item in self.last_trace],
             "total_runtime_cost": sum(item["runtime_cost"] for item in self.last_trace),
             **self.compiled_plan.metadata(),
         }
+        payload["runtime_validation_kernel_signatures"] = (
+            runtime_validation_kernel_signatures()
+        )
+        payload["kernel_signatures"] = {
+            **payload.get("kernel_signatures", {}),
+            **payload["runtime_validation_kernel_signatures"],
+        }
+        return validate_execution_audit(payload)
 
     def _build_compiled_trace(self, bindings: Mapping[str, int]) -> list[dict[str, Any]]:
         trace: list[dict[str, Any]] = []
@@ -1255,6 +1711,8 @@ class TypedIndicatorRuntime:
                     shape.append(bindings[dynamic.group(1)])
                 else:
                     shape.append(1)
+            if node.inferred_type.kind == "record":
+                shape = [len(node.inferred_type.fields)]
             shapes[node.node_id] = tuple(shape)
             node_cost = 0
             if node.operator_id is not None:
@@ -1289,7 +1747,19 @@ class TypedIndicatorRuntime:
         raw_array = np.asarray(value)
         if expected.is_mask:
             is_boolean = np.issubdtype(raw_array.dtype, np.bool_)
-            is_uint8_mask = raw_array.dtype == np.uint8 and np.all((raw_array == 0) | (raw_array == 1))
+            if raw_array.dtype == np.uint8:
+                mask_candidate = np.ascontiguousarray(raw_array, dtype=np.uint8)
+                if not mask_candidate.flags.writeable:
+                    mask_candidate = mask_candidate.copy()
+                is_uint8_mask = (
+                    _binary_mask_1d_kernel(mask_candidate) == 1
+                    if mask_candidate.ndim == 1
+                    else _binary_mask_2d_kernel(mask_candidate) == 1
+                    if mask_candidate.ndim == 2
+                    else bool(mask_candidate.ndim == 0 and int(mask_candidate) <= 1)
+                )
+            else:
+                is_uint8_mask = False
             if not is_boolean and not is_uint8_mask:
                 raise TypedDslError(
                     "RUNTIME_TYPE_MISMATCH",
@@ -1315,9 +1785,22 @@ class TypedIndicatorRuntime:
                     "actual_shape": list(array.shape),
                 },
             )
-        if expected.is_numeric and not np.all(np.isfinite(array)):
-            code = "NON_FINITE_INPUT" if allow_bind else "NON_FINITE_RESULT"
-            raise TypedDslError(code, f"{label} 包含 NaN 或 Inf。", node_id=node_id)
+        if expected.is_numeric:
+            if array.ndim == 0:
+                finite = _finite_scalar_kernel(float(array)) == 1
+            else:
+                numeric_array = np.ascontiguousarray(array, dtype=np.float64)
+                if not numeric_array.flags.writeable:
+                    numeric_array = numeric_array.copy()
+                finite = (
+                    _finite_1d_kernel(numeric_array) == 1
+                    if numeric_array.ndim == 1
+                    else _finite_2d_kernel(numeric_array) == 1
+                )
+                array = numeric_array
+            if not finite:
+                code = "NON_FINITE_INPUT" if allow_bind else "NON_FINITE_RESULT"
+                raise TypedDslError(code, f"{label} 包含 NaN 或 Inf。", node_id=node_id)
         for axis, expected_dimension, actual_dimension in zip(
             expected.axes,
             expected.shape,
@@ -1409,7 +1892,10 @@ class TypedIndicatorRuntime:
         dtype = np.uint8 if expected.is_mask and internal_mask else (
             np.bool_ if expected.is_mask else np.float64
         )
-        return np.ascontiguousarray(array, dtype=dtype)
+        contiguous = np.ascontiguousarray(array, dtype=dtype)
+        if not contiguous.flags.writeable:
+            contiguous = contiguous.copy()
+        return contiguous
 
 
 def evaluate_typed_expression(
@@ -1444,15 +1930,19 @@ __all__ = [
     "TypedDslError",
     "TypedExpressionParser",
     "TypedExpressionPlan",
+    "TypedSeriesBundlePlan",
     "TypedIndicatorRuntime",
     "ValueType",
     "catalog",
     "compose",
     "compose_typed_expression",
+    "compose_typed_series_bundle",
     "evaluate_typed_expression",
     "get_typed_dsl_catalog",
     "get_typed_operator_catalog",
     "get_typed_variable_catalog",
     "infer",
     "infer_typed_expression",
+    "runtime_validation_execution_audit",
+    "runtime_validation_kernel_signatures",
 ]

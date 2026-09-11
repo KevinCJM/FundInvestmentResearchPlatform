@@ -29,7 +29,10 @@ from cal_indicators.typed_numba_kernels import (
     warm_numba_kernel_registry,
 )
 from cal_indicators.typed_numba_plan import (
+    _risk_free_scalars,
+    _risk_free_scalars_kernel,
     compile_numba_batch_plan,
+    compile_numba_plan,
     get_cached_numba_batch_plan,
 )
 from cal_indicators.typed_operators import (
@@ -40,19 +43,44 @@ from custom_indicators.variable_registry import variable_catalog
 from custom_indicators.service import CustomIndicatorService
 
 
-def test_v22_registry_has_complete_fixed_signature_njit_coverage() -> None:
+def test_current_registry_has_complete_fixed_signature_njit_coverage() -> None:
     status = warm_numba_kernel_registry()
     registry = get_numba_kernel_registry()
     canonical = {
+        spec.operator_id for spec in get_typed_operator_registry().values()
+    }
+    frozen_v22 = {
         spec.operator_id for spec in get_typed_operator_registry("2.2.0").values()
     }
-    public = get_typed_operator_catalog("2.2.0")["operators"]
+    public = get_typed_operator_catalog()["operators"]
 
-    assert len(CANONICAL_OPERATOR_IDS) == 97
-    assert len(set(CANONICAL_OPERATOR_IDS)) == 97
-    assert canonical == set(CANONICAL_OPERATOR_IDS) == set(registry)
-    assert len(public) == 92
-    assert status["operator_coverage"] == "97/97"
+    from cal_indicators.operator_lowering import (
+        COMPILER_FUSED_OPERATOR_IDS,
+        COMPOSITE_OPERATOR_IDS,
+        ROLLING_COMPAT_OPERATOR_IDS,
+    )
+    assert len(set(CANONICAL_OPERATOR_IDS)) == len(CANONICAL_OPERATOR_IDS)
+    assert {"linear_fit", "value_at", "fit_slope", "fit_intercept"} <= canonical
+    assert set(CANONICAL_OPERATOR_IDS) == set(registry)
+    assert canonical == set(registry) | COMPILER_FUSED_OPERATOR_IDS
+    assert COMPILER_FUSED_OPERATOR_IDS == {"rolling_window", "rolling_apply"}
+    assert {"sum", "std", "drawdown_series", "total_return"} <= frozen_v22
+    assert {
+        "rolling_mean",
+        "rolling_std",
+        "rolling_min",
+        "rolling_max",
+        "recursive_smooth",
+        "divide_or_default",
+    }.isdisjoint(frozen_v22)
+    assert {item["id"] for item in public} == (
+        canonical - COMPOSITE_OPERATOR_IDS - ROLLING_COMPAT_OPERATOR_IDS
+    )
+    rolling_window = next(item for item in public if item["id"] == "rolling_window")
+    assert rolling_window["execution_lane"] == "compiler_fused_no_materialization"
+    assert rolling_window["njit_supported"] is True
+    assert "drawdown_analysis" not in frozen_v22
+    assert status["operator_coverage"] == f"{len(registry)}/{len(registry)}"
     assert status["warmed"] is True
     assert status["python_fallback"] == 0
     assert status["python_operator_calls"] == 0
@@ -66,7 +94,8 @@ def test_v22_registry_has_complete_fixed_signature_njit_coverage() -> None:
 def test_all_context_variables_are_numeric_float64_contracts() -> None:
     variables = variable_catalog()
 
-    assert len(variables) == 29
+    assert len({variable["id"] for variable in variables}) == len(variables)
+    assert next(variable for variable in variables if variable["id"] == "observation_dates")["semantic"] == "date"
     assert any(variable["id"] == "portfolio_returns" for variable in variables)
     assert all(variable["dtype"] == "float64" for variable in variables)
     assert all(
@@ -171,6 +200,32 @@ def test_fused_batch_plan_matches_single_formula_njit_runtime(parallel: bool) ->
             )
     assert batch.serial_dispatcher.signatures
     assert batch.parallel_dispatcher.signatures
+    assert batch.metadata()["execution_backend"] == "numba_njit_fixed_signature"
+    assert batch.metadata()["nopython"] is True
+    assert batch.metadata()["python_fallback"] == 0
+
+
+def test_warmed_runtime_never_adds_a_request_signature() -> None:
+    plan = compose_typed_expression("mean(returns)")
+    compiled = compile_numba_plan(plan)
+    runtime = TypedIndicatorRuntime.from_warmed_plan(plan)
+    before = tuple(compiled.dispatcher.signatures)
+
+    first = runtime.compute(
+        {"returns": np.ascontiguousarray([0.01, -0.02, 0.03], dtype=np.float64)}
+    )
+    second = runtime.compute(
+        {"returns": np.asarray([0.02, 0.01, -0.01], dtype=np.float64)}
+    )
+
+    assert first == pytest.approx(0.02 / 3.0)
+    assert second == pytest.approx(0.02 / 3.0)
+    assert tuple(compiled.dispatcher.signatures) == before
+    audit = runtime.trace_payload()
+    assert audit["execution_backend"] == "numba_njit_fixed_signature"
+    assert audit["nopython"] is True
+    assert audit["python_fallback"] == 0
+    assert all(audit["kernel_signatures"].values())
 
 
 def test_runtime_does_not_call_python_operator_registry() -> None:
@@ -186,7 +241,8 @@ def test_runtime_does_not_call_python_operator_registry() -> None:
     assert value == pytest.approx((0.01 - 0.02 + 0.03) / 3.0)
     assert runtime.trace_payload()["python_operator_calls"] == 0
     assert runtime.trace_payload()["python_fallback"] == 0
-    assert kernel_registry_status()["operator_coverage"] == "97/97"
+    count = len(CANONICAL_OPERATOR_IDS)
+    assert kernel_registry_status()["operator_coverage"] == f"{count}/{count}"
 
 
 def test_batch_plan_cache_lookup_never_compiles_on_miss() -> None:
@@ -197,6 +253,42 @@ def test_batch_plan_cache_lookup_never_compiles_on_miss() -> None:
     assert get_cached_numba_batch_plan((plan,), definitions, columns) is None
     compiled = compile_numba_batch_plan((plan,), definitions, columns)
     assert get_cached_numba_batch_plan((plan,), definitions, columns) is compiled
+
+
+@pytest.mark.parametrize(
+    "annual_percent",
+    (-100.0, -2.5, 0.0, 1.5, 12.3456789, 100.0),
+)
+def test_risk_free_scalars_use_one_fixed_nopython_signature_without_growth(
+    annual_percent: float,
+) -> None:
+    before = tuple(_risk_free_scalars_kernel.nopython_signatures)
+
+    annual, per_observation = _risk_free_scalars(
+        {"annual_risk_free_rate_percent": annual_percent}
+    )
+
+    expected_annual = annual_percent / 100.0
+    expected_per_observation = max(0.0, 1.0 + expected_annual) ** (1.0 / 252.0) - 1.0
+    assert annual == pytest.approx(expected_annual)
+    assert per_observation == pytest.approx(expected_per_observation)
+    assert len(before) == 1
+    assert tuple(_risk_free_scalars_kernel.nopython_signatures) == before
+
+
+def test_batch_plan_audit_includes_risk_free_conversion_kernel() -> None:
+    plan = compose_typed_expression("annual_risk_free_rate_decimal")
+    compiled = compile_numba_batch_plan(
+        (plan,),
+        ({"annual_risk_free_rate_percent": 1.5},),
+        ("adjusted_nav",),
+    )
+
+    signatures = compiled.metadata()["kernel_signatures"]
+    assert len(signatures["risk_free_scalars"]) == 1
+    assert signatures["risk_free_scalars"] == [
+        str(signature) for signature in _risk_free_scalars_kernel.nopython_signatures
+    ]
 
 
 def test_numba_v3_migration_archives_plans_once_and_clears_run_cache(

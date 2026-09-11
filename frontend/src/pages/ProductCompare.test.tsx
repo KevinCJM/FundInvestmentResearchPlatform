@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProductCompare from './ProductCompare'
 import { evaluateCustomIndicators, getCustomIndicatorMeta, listCustomIndicators } from '../services/customIndicators'
-import type { IndicatorDefinition } from '../services/customIndicators'
+import type { IndicatorDefinition, MetricPresentation } from '../services/customIndicators'
 
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }))
 vi.mock('../services/customIndicators', () => ({
@@ -23,6 +23,16 @@ const annualIndicator: IndicatorDefinition = {
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 }
 
+const annualPresentation: MetricPresentation = {
+  indicator_id: annualIndicator.id, revision: annualIndicator.revision,
+  name: annualIndicator.name, source: annualIndicator.source,
+  category: 'return', category_label: '收益', context_kind: 'single_product', catalog_status: 'current',
+  display_format: 'percent', precision: 2, unit: '%', notation: 'standard', value_scale: 100,
+  output_measure: 'return_decimal', direction: 'higher_better', description: annualIndicator.description,
+  methodology: '区间净值收益', data_basis: '复权净值', minimum_observations: 2,
+  applicable_product_kinds: ['etf', 'fund'],
+}
+
 const monthlyIndicator: IndicatorDefinition = {
   ...annualIndicator, id: 'monthly-volatility', name: '月度波动率', periods: ['1M'], display_format: 'number', unit: '', precision: 4,
 }
@@ -37,21 +47,80 @@ function productResponse(id: string, name: string) {
   }
 }
 
+function compareResponse(id: string) {
+  const metrics = {
+    cumulativeReturn: 6.67,
+    annualizedReturn: 18.5,
+    volatility: 12.3,
+    maxDrawdown: -4.2,
+    returnToFee: 11.12,
+    totalFee: 0.6,
+    sharpeRatio: 1.5,
+    calmarRatio: 4.4,
+  }
+  const normalized_nav = [
+    { date: '2026-01-02', value: 1 },
+    { date: '2026-01-05', value: 1.0333 },
+    { date: '2026-01-06', value: 1.0667 },
+  ]
+  const drawdown = normalized_nav.map((point) => ({ date: point.date, value: 0 }))
+  const rolling_volatility = normalized_nav.map((point, index) => ({
+    date: point.date,
+    value: index < 2 ? null : 12.3,
+  }))
+  const range = {
+    window: { start_date: '2026-01-02', end_date: '2026-01-06', observation_count: 3 },
+    metrics,
+    normalized_nav,
+    drawdown,
+    rolling_volatility,
+  }
+  return {
+    schema_version: 1,
+    product_id: id,
+    ranges: { performance: range, risk: range, efficiency: range },
+    execution: {
+      backend: 'numba_njit_fixed_signature',
+      execution_backend: 'numba_njit_fixed_signature',
+      engine: 'instrument-analytics-njit-1.0.0',
+      kernel_version: 'instrument-statistics-quality-3',
+      kernel_coverage: '31/31',
+      kernel_signatures: { product_compare_analysis_kernel: ['fixed-signature'] },
+      kernel_fingerprint: 'compare-fingerprint',
+      nopython: true,
+      object_mode: 0,
+      njit_required: true,
+      python_fallback: 0,
+      request_time_compilation: 0,
+    },
+  }
+}
+
+function productFetch(input: RequestInfo | URL) {
+  const url = String(input)
+  const id = url.includes('510300.SH') ? '510300.SH' : '159915.SZ'
+  if (url.includes('/compare-analysis')) {
+    return Promise.resolve({ ok: true, json: async () => compareResponse(id) })
+  }
+  return Promise.resolve({
+    ok: true,
+    json: async () => productResponse(id, id === '510300.SH' ? '沪深300ETF' : '创业板ETF'),
+  })
+}
+
 describe('ProductCompare custom indicators', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const id = String(input).includes('510300.SH') ? '510300.SH' : '159915.SZ'
-      return Promise.resolve({ ok: true, json: async () => productResponse(id, id === '510300.SH' ? '沪深300ETF' : '创业板ETF') })
-    }))
+    vi.stubGlobal('fetch', vi.fn(productFetch))
     vi.mocked(listCustomIndicators).mockResolvedValue({ items: [annualIndicator, monthlyIndicator], total: 2 })
     vi.mocked(getCustomIndicatorMeta).mockResolvedValue({ periods: [{ value: '1M', label: '近 1 月', description: '运行周期' }, { value: '1Y', label: '近 1 年', description: '运行周期' }] } as any)
     vi.mocked(evaluateCustomIndicators).mockResolvedValue({
       results: [
-        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' }, period: '1Y', value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' } },
-        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, target: { kind: 'etf', product_id: '159915.SZ', name: '创业板ETF' }, period: '1Y', value: null, status: 'warning', warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '样本不足' }], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: '2026-01-06', observation_count: 10, data_latest_date: '2026-01-06' } },
+        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' }, period: '1Y', value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' } },
+        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '159915.SZ', name: '创业板ETF' }, period: '1Y', value: null, status: 'warning', warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '样本不足' }], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: '2026-01-06', observation_count: 10, data_latest_date: '2026-01-06' } },
       ], summary: { total: 2, ok: 1, warning: 1, error: 0 }, cache: { hits: 0, misses: 2 },
+      execution: compareResponse('510300.SH').execution,
     })
   })
 
@@ -80,6 +149,24 @@ describe('ProductCompare custom indicators', () => {
       period: '1Y',
       as_of: undefined,
     }))
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      '/api/instruments/products/510300.SH/compare-analysis?kind=etf',
+      expect.objectContaining({ method: 'POST', signal: expect.anything() }),
+    ))
+    const analysisCall = vi.mocked(fetch).mock.calls.find(([input]) =>
+      String(input).includes('/510300.SH/compare-analysis'),
+    )
+    expect(JSON.parse(String(analysisCall?.[1]?.body))).toEqual({
+      ranges: {
+        performance: { start_date: '2026-01-02', end_date: '2026-01-06' },
+        risk: { start_date: '2026-01-02', end_date: '2026-01-06' },
+        efficiency: { start_date: '2026-01-02', end_date: '2026-01-06' },
+      },
+      rolling_window_days: 2,
+      management_fee: 0.5,
+      custody_fee: 0.1,
+    })
+    expect(await screen.findByText(/Numba NJIT · 31\/31/)).toBeInTheDocument()
   })
 
   it('不同指标可独立选择计算区间并按区间拆分引擎请求', async () => {
@@ -120,6 +207,9 @@ describe('ProductCompare custom indicators', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       const id = url.includes('024011.OF') ? '024011.OF' : '159393.SZ'
+      if (url.includes('/compare-analysis')) {
+        return Promise.resolve({ ok: true, json: async () => compareResponse(id) })
+      }
       return Promise.resolve({ ok: true, json: async () => productResponse(id, id) })
     }))
 

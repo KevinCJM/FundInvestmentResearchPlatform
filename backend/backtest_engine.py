@@ -13,6 +13,7 @@ python backend/backtest_engine.py payload.json
 """
 
 import json
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -21,11 +22,56 @@ from pathlib import Path
 
 from trading_calendar import get_trading_days
 
+try:
+    from pit.clock import visible_at
+    from pit.context import PitContextError, ResearchContext
+    from pit.frame import LATEST_ONLY
+    from pit.guard import check_universe, universe_lineage
+    from product_pools.membership import universe_reference
+except ModuleNotFoundError:  # pragma: no cover - imported as a backend.* module
+    from backend.pit.clock import visible_at
+    from backend.pit.context import PitContextError, ResearchContext
+    from backend.pit.frame import LATEST_ONLY
+    from backend.pit.guard import check_universe, universe_lineage
+    from backend.product_pools.membership import universe_reference
 
-def slice_fit_data(nav: pd.DataFrame, up_to: pd.Timestamp, window_mode: Optional[str], data_len: Optional[int]) -> pd.DataFrame:
-    """Return fitting window ending at ``up_to`` according to window_mode/data_len."""
+try:
+    from backend.backtest_numba import (
+        backtest_numba_execution_audit,
+        annual_metrics_kernel,
+        cumulative_returns_kernel,
+        portfolio_metrics_kernel,
+        portfolio_segment_path_kernel,
+        uniform_weights_kernel,
+    )
+except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from backtest_numba import (
+        backtest_numba_execution_audit,
+        annual_metrics_kernel,
+        cumulative_returns_kernel,
+        portfolio_metrics_kernel,
+        portfolio_segment_path_kernel,
+        uniform_weights_kernel,
+    )
 
-    win = nav.loc[:up_to]
+
+def slice_fit_data(
+    nav: pd.DataFrame,
+    up_to: pd.Timestamp,
+    window_mode: Optional[str],
+    data_len: Optional[int],
+    available_at: Optional[pd.Series] = None,
+) -> pd.DataFrame:
+    """Return fitting window ending at ``up_to`` according to window_mode/data_len.
+
+    ``available_at`` moves the cut from event time to decision time. Without it
+    the window ends at the last NAV *dated* on or before ``up_to`` — including
+    prints not published until days later, which no live process could have
+    fitted on. With it the window is what a desk standing on ``up_to`` actually
+    had. Omitted, behaviour is unchanged.
+    """
+
+    win = visible_at(nav, up_to, available_at)
     mode = (window_mode or 'all').lower()
     if mode != 'rollingn':
         return win
@@ -37,6 +83,7 @@ def ensure_valid_rebalance_window(
     nav: pd.DataFrame,
     candidate_dates: List[pd.Timestamp],
     model: Optional[Dict[str, Any]] = None,
+    available_at: Optional[pd.Series] = None,
 ) -> Tuple[List[pd.Timestamp], pd.Timestamp]:
     """Return valid rebalance dates and the first viable rebalance timestamp."""
 
@@ -51,7 +98,7 @@ def ensure_valid_rebalance_window(
     for d in candidate_dates:
         if d not in nav_sorted.index:
             continue
-        sub = nav_sorted.loc[:d]
+        sub = visible_at(nav_sorted, d, available_at)
         if window_mode == 'rollingn':
             if len(sub) < required:
                 continue
@@ -85,11 +132,6 @@ def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError('Expect DatetimeIndex for NAV/returns frame')
     return df.sort_index()
-
-
-def _to_returns(nav_wide: pd.DataFrame) -> pd.DataFrame:
-    nav_wide = _ensure_datetime_index(nav_wide)
-    return nav_wide.pct_change().dropna()
 
 
 def gen_rebalance_dates(
@@ -162,9 +204,15 @@ def backtest_portfolio(
     nav_wide: pd.DataFrame,
     strategies: List[Dict[str, Any]],
     start_date: Optional[str] = None,
+    available_at: Optional[pd.Series] = None,
 ) -> Dict[str, Any]:
     """Backtest portfolios.
     Strategy item: { name, weights: [..], rebalance?: {enabled, mode, which, N, unit, fixedInterval}}
+
+    ``available_at`` is the decision clock: one publication date per observation
+    day. Supplied, every refit at a rebalance date sees only what had been
+    published by then, so results differ from the event-time run — that
+    difference is the look-ahead the old path was earning.
     """
     nav_wide = _ensure_datetime_index(nav_wide)
     if start_date:
@@ -175,7 +223,7 @@ def backtest_portfolio(
         model = s.get('model') or {}
         data_len = model.get('data_len', None)
         window_mode = model.get('window_mode') or 'all'
-        nav_fit = slice_fit_data(nav, up_to, window_mode, data_len)
+        nav_fit = slice_fit_data(nav, up_to, window_mode, data_len, available_at)
         stype = s.get('type')
         if stype == 'risk_budget':
             # collect budgets from classes
@@ -233,7 +281,6 @@ def backtest_portfolio(
 
     def _static_or_rebalanced(nav: pd.DataFrame, s: Dict[str, Any]):
         base_weights = np.asarray(s.get('weights') or [], dtype=float)
-        base_weights = base_weights / max(1e-12, base_weights.sum())
         rb = s.get('rebalance') or {}
         rebal_dates: List[pd.Timestamp] = []
         if rb.get('enabled'):
@@ -245,58 +292,36 @@ def backtest_portfolio(
             rebal_dates = gen_rebalance_dates(nav.index, mode, N=N, which=which, unit=unit, fixed_interval=fixed_interval)
         recalc = bool(rb.get('recalc', False))
         markers: List[Dict[str, Any]] = []
-        nav_values = nav.to_numpy(dtype=np.float64)
+        nav_values = np.ascontiguousarray(nav.to_numpy(dtype=np.float64))
         raw_precomputed = s.get('precomputed_weights') or {}
         precomputed_lookup: Dict[pd.Timestamp, np.ndarray] = {}
         for key, value in raw_precomputed.items():
             ts = key if isinstance(key, pd.Timestamp) else pd.to_datetime(key)
             precomputed_lookup[ts] = np.asarray(value, dtype=float)
         if not rebal_dates:
-            # no rebalance: static weights (vectorised)
-            start_row = nav_values[0]
-            valid_mask = np.isfinite(start_row) & (start_row != 0.0)
-            if not np.any(valid_mask):
-                series = pd.Series(np.zeros(len(nav_values), dtype=float), index=nav.index, dtype=float)
-                return series, []
-            weights_full = base_weights.copy()
-            weights_full[~valid_mask] = 0.0
-            total = weights_full.sum()
-            if total <= 0:
-                series = pd.Series(np.zeros(len(nav_values), dtype=float), index=nav.index, dtype=float)
-                return series, []
-            weights_full /= total
-            ratios = np.divide(
-                nav_values[:, valid_mask],
-                start_row[valid_mask],
-                out=np.zeros((nav_values.shape[0], valid_mask.sum()), dtype=np.float64),
-                where=start_row[valid_mask] != 0.0
+            if nav_values.shape[0] == 0:
+                return pd.Series(dtype=float, index=nav.index), []
+            if base_weights.size != nav_values.shape[1]:
+                raise ValueError('策略权重数量必须与资产数量一致。')
+            series_np, _ = portfolio_segment_path_kernel(
+                nav_values,
+                np.ascontiguousarray(base_weights, dtype=np.float64),
+                0,
+                nav_values.shape[0] - 1,
+                1.0,
+                0.0,
             )
-            ratios = np.nan_to_num(ratios, nan=0.0, posinf=0.0, neginf=0.0)
-            series_np = ratios @ weights_full[valid_mask]
             series = pd.Series(series_np, index=nav.index, dtype=float)
             return series, []
         # ensure the first valid date has enough samples
         rset = sorted([d for d in rebal_dates if d in nav.index])
         if not rset:
             raise ValueError('未找到可用的调仓日期。')
-        rset, first_idx = ensure_valid_rebalance_window(nav, rset, s.get('model'))
+        rset, first_idx = ensure_valid_rebalance_window(nav, rset, s.get('model'), available_at)
         full_nav = nav.sort_index()
         nav = full_nav.loc[first_idx:]
-        base_weights = base_weights / max(1e-12, base_weights.sum())
-        nav_values_trim = nav.to_numpy(dtype=np.float64)
+        nav_values_trim = np.ascontiguousarray(nav.to_numpy(dtype=np.float64))
         index_lookup = {ts: idx for idx, ts in enumerate(nav.index)}
-
-        def prepare_weights(weight_vec: np.ndarray, base_row: np.ndarray) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
-            mask = np.isfinite(base_row) & (base_row != 0.0)
-            if not np.any(mask):
-                return mask, None, None
-            weights_full = weight_vec.astype(np.float64).copy()
-            weights_full[~mask] = 0.0
-            total = weights_full.sum()
-            if total <= 0:
-                return mask, None, None
-            weights_full /= total
-            return mask, weights_full, weights_full[mask]
 
         series_np = np.full(nav_values_trim.shape[0], np.nan, dtype=np.float64)
         current_val = 1.0
@@ -308,28 +333,20 @@ def backtest_portfolio(
             if recalc:
                 w_calc = precomputed_lookup.get(d0)
                 if w_calc is None:
-                    history = full_nav.loc[:d0]
+                    history = visible_at(full_nav, d0, available_at)
                     w_calc = _compute_model_weights(history, s, d0)
-                if w_calc is not None and np.isfinite(w_calc).all() and w_calc.sum() > 0:
-                    w_seg = (w_calc / w_calc.sum())
-            mask, weights_full, weights_compact = prepare_weights(w_seg, nav_values_trim[start_idx])
+                if w_calc is not None:
+                    w_seg = w_calc
             seg_index = slice(start_idx, end_idx + 1)
-            if weights_full is None or weights_compact is None:
-                segment_path = np.full(end_idx - start_idx + 1, current_val, dtype=np.float64)
-                marker_weights = [0.0 for _ in range(len(base_weights))]
-            else:
-                segment_nav = nav_values_trim[seg_index][:, mask]
-                base_row = nav_values_trim[start_idx, mask]
-                ratios = np.divide(
-                    segment_nav,
-                    base_row,
-                    out=np.zeros_like(segment_nav),
-                    where=base_row != 0.0
-                )
-                ratios = np.nan_to_num(ratios, nan=0.0, posinf=0.0, neginf=0.0)
-                rel_path = ratios @ weights_compact
-                segment_path = rel_path * current_val
-                marker_weights = [float(x) for x in weights_full]
+            segment_path, weights_full = portfolio_segment_path_kernel(
+                nav_values_trim,
+                np.ascontiguousarray(w_seg, dtype=np.float64),
+                start_idx,
+                end_idx,
+                current_val,
+                current_val,
+            )
+            marker_weights = [float(x) for x in weights_full]
             series_np[seg_index] = segment_path
             markers.append({
                 'date': d0.date().isoformat(),
@@ -351,7 +368,7 @@ def backtest_portfolio(
             w_arr = [float(name_to_weight.get(col, 0.0) or 0.0) for col in nav_wide.columns]
             s['weights'] = w_arr
         if not s.get('weights'):
-            s['weights'] = [1.0 / max(1, nav_wide.shape[1]) for _ in nav_wide.columns]
+            s['weights'] = uniform_weights_kernel(nav_wide.shape[1]).tolist()
         series, markers = _static_or_rebalanced(nav_wide, s)
         series_full = series.reindex(idx)
         series_out[name] = [None if pd.isna(x) else float(x) for x in series_full]
@@ -362,46 +379,60 @@ def backtest_portfolio(
 
     metrics_rows: List[Dict[str, Optional[float]]] = []
     ann_factor = 252.0
-    for name, values in series_out.items():
-        nav_series = pd.Series(values, index=idx, dtype=float).dropna()
-        if nav_series.empty or len(nav_series) < 2:
-            metrics_rows.append({
-                "name": name,
-                "annual_return": None,
-                "annual_vol": None,
-                "sharpe": None,
-                "var99": None,
-                "es99": None,
-                "max_drawdown": None,
-                "calmar": None,
-            })
-            continue
-        returns = nav_series.pct_change().dropna()
-        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
-        mean_ann = returns.mean() * ann_factor if not returns.empty else float("nan")
-        vol_ann = returns.std(ddof=1) * np.sqrt(ann_factor) if len(returns) > 1 else float("nan")
-        sharpe = mean_ann / vol_ann if np.isfinite(mean_ann) and np.isfinite(vol_ann) and vol_ann != 0 else float("nan")
-        if not returns.empty:
-            q01 = returns.quantile(0.01)
-            var99 = -float(q01)
-            tail = returns[returns <= q01]
-            es99 = -float(tail.mean()) if len(tail) > 0 else float("nan")
-        else:
-            var99 = float("nan")
-            es99 = float("nan")
-        roll_max = nav_series.cummax()
-        drawdown = nav_series.divide(roll_max, axis=0) - 1.0
-        max_dd = float(drawdown.min()) if not drawdown.empty else float("nan")
-        calmar = mean_ann / abs(max_dd) if np.isfinite(mean_ann) and np.isfinite(max_dd) and max_dd != 0 else float("nan")
+    strategy_names = list(series_out)
+    nav_columns = [
+        np.asarray(
+            [np.nan if value is None else value for value in series_out[name]],
+            dtype=np.float64,
+        )
+        for name in strategy_names
+    ]
+    nav_matrix = np.ascontiguousarray(
+        np.column_stack(nav_columns)
+        if nav_columns
+        else np.empty((len(idx), 0), dtype=np.float64)
+    )
+    cumulative_values = cumulative_returns_kernel(nav_matrix)
+    annual_years, annual_values = annual_metrics_kernel(
+        nav_matrix,
+        np.ascontiguousarray(idx.year.to_numpy(dtype=np.int64)),
+        ann_factor,
+    )
+    annual_metric_names = (
+        "cumulative",
+        "volatility",
+        "annualReturn",
+        "annualVolatility",
+        "sharpe",
+        "maxDrawdown",
+        "calmar",
+    )
+    annual_payload: Dict[str, Any] = {
+        "years": [int(year) for year in annual_years],
+        "series": {},
+    }
+    for strategy_index, name in enumerate(strategy_names):
+        annual_payload["series"][name] = {}
+        for year_index, year in enumerate(annual_years):
+            base = strategy_index * len(annual_metric_names)
+            annual_payload["series"][name][str(int(year))] = {
+                metric_name: _safe_float(annual_values[year_index, base + metric_index])
+                for metric_index, metric_name in enumerate(annual_metric_names)
+            }
+
+    for strategy_index, name in enumerate(strategy_names):
+        nav_array = nav_matrix[:, strategy_index]
+        metric_values = portfolio_metrics_kernel(nav_array, ann_factor)
         metrics_rows.append({
             "name": name,
-            "annual_return": _safe_float(mean_ann),
-            "annual_vol": _safe_float(vol_ann),
-            "sharpe": _safe_float(sharpe),
-            "var99": _safe_float(var99),
-            "es99": _safe_float(es99),
-            "max_drawdown": _safe_float(max_dd),
-            "calmar": _safe_float(calmar),
+            "cumulative_return": _safe_float(cumulative_values[strategy_index]),
+            "annual_return": _safe_float(metric_values[0]),
+            "annual_vol": _safe_float(metric_values[1]),
+            "sharpe": _safe_float(metric_values[2]),
+            "var99": _safe_float(metric_values[3]),
+            "es99": _safe_float(metric_values[4]),
+            "max_drawdown": _safe_float(metric_values[5]),
+            "calmar": _safe_float(metric_values[6]),
         })
 
     return {
@@ -410,23 +441,221 @@ def backtest_portfolio(
         "markers": marker_out,
         "asset_names": list(nav_wide.columns),
         "metrics": metrics_rows,
+        "annual_metrics": annual_payload,
+        "execution": backtest_numba_execution_audit(),
     }
 
 
-def load_nav_wide_from_parquet(data_dir: Path, alloc_name: str) -> pd.DataFrame:
-    p = data_dir / 'asset_nv.parquet'
-    df = pd.read_parquet(p)
-    df = df[df['asset_alloc_name'] == alloc_name]
+ASSET_NV_AS_OF_FIELD = 'as_of'
+ASSET_NV_AVAILABLE_FIELD = 'available_at'
+
+
+@dataclass(frozen=True)
+class AllocationNav:
+    """A saved allocation's class NAV, read under one research口径."""
+
+    nav_wide: pd.DataFrame
+    available_at: pd.Series
+    lineage: Dict[str, Any] = field(default_factory=dict)
+
+
+def _allocation_universe_id(data_dir: Path, alloc_name: str) -> Optional[str]:
+    """Which locked pool this allocation's products were screened from.
+
+    Stamped into ``asset_alloc_info`` when the allocation was saved and, until
+    now, read back by nobody downstream: every guard judged ``series_as_of``
+    instead, which is the day the NAV was *computed*, not the day the candidate
+    products were *chosen*. Allocations saved before the column existed answer
+    None, which reads as "unknown" rather than as "clean".
+    """
+
+    path = data_dir / 'asset_alloc_info.parquet'
+    if not path.exists():
+        return None
+    try:
+        frame = pd.read_parquet(path, columns=['asset_alloc_name', 'universe_snapshot_id'])
+    except (ValueError, KeyError):  # saved before the provenance columns existed
+        return None
+    rows = frame.loc[frame['asset_alloc_name'] == alloc_name, 'universe_snapshot_id'].dropna()
+    return str(rows.iloc[0]) if not rows.empty else None
+
+
+def allocation_universe_lineage(
+    data_dir: Path,
+    lineage: Dict[str, Any],
+    context: Optional[ResearchContext],
+    *,
+    decision_dates: Optional[List[Any]] = None,
+) -> Dict[str, Any]:
+    """One verdict on the candidate set behind a saved allocation.
+
+    Two days have to clear the same bar, and only one of them ever did:
+
+    * ``series_as_of`` — the research day the class NAV was rebuilt under, plus
+      whether that series can be replayed at all;
+    * the research day of the **locked pool** the products were screened from,
+      which can sit years after the series without a single formula noticing,
+      because each formula is individually causal.
+
+    `decision_dates` is the rebalance sweep when there is one: a run decides on
+    its first rebalance, not on its end date. Strict mode refuses; research mode
+    returns the findings to be printed on the result.
+    """
+
+    if context is None:
+        return universe_lineage([], source='asset_nv')
+    series_as_of = lineage.get('series_as_of')
+    coverage = None if series_as_of else LATEST_ONLY
+    reference = universe_reference(data_dir, lineage.get('universe_snapshot_id'))
+    findings = check_universe(
+        context,
+        established_at=series_as_of,
+        coverage=coverage,
+        decision_dates=decision_dates,
+        label=f"配置「{lineage.get('alloc_name')}」的大类净值",
+    )
+    if reference['source']:
+        findings = findings + check_universe(
+            context,
+            established_at=reference['established_at'],
+            decision_dates=decision_dates,
+            label=reference['label'],
+        )
+    if findings and context.strict:
+        raise PitContextError('；'.join(item['message'] for item in findings))
+    return {
+        **universe_lineage(
+            findings, coverage=coverage, established_at=series_as_of, source='asset_nv'
+        ),
+        'snapshot_id': reference['id'],
+        'snapshot_established_at': reference['established_at'],
+    }
+
+
+def load_allocation_nav(
+    data_dir: Path,
+    alloc_name: str,
+    context: Optional[ResearchContext] = None,
+) -> AllocationNav:
+    """Read a saved allocation's class NAV as it stood on the research day.
+
+    ``asset_nv`` is not a market print: the row dated 2018 was *computed*
+    whenever someone pressed save, out of whatever data was on disk then. Two
+    clocks therefore matter and both are stored on the row —
+
+    * ``as_of``: the research day the whole series was built under. Picking the
+      newest series at or before the research day is what stops a NAV assembled
+      in 2026, from a 2026 fund universe, from answering a 2018 question. A row
+      with no ``as_of`` was built with full hindsight, and is labelled as such.
+    * ``available_at``: when each observation day became publicly knowable, which
+      the caller feeds back in as the backtest's decision clock.
+
+    Legacy files carry neither column. They still load — that is the whole
+    installed base — and the lineage says the result has no time-point proof.
+    """
+
+    path = data_dir / 'asset_nv.parquet'
+    df = pd.read_parquet(path)
+    df = df[df['asset_alloc_name'] == alloc_name].copy()
+    lineage: Dict[str, Any] = {
+        'alloc_name': alloc_name,
+        'found': False,
+        'as_of': getattr(context, 'as_of', None),
+        'run_mode': getattr(context, 'run_mode', None),
+        'series_as_of': None,
+        'series_variants': [],
+        'hindsight_series': False,
+        'rows_dropped_by_as_of': 0,
+        'availability_available': False,
+        'universe_snapshot_id': _allocation_universe_id(data_dir, alloc_name),
+        'warnings': [],
+    }
+    if df.empty:
+        lineage['universe'] = universe_lineage([], source='asset_nv')
+        return AllocationNav(pd.DataFrame(), pd.Series(dtype='datetime64[ns]'), lineage)
+
+    lineage['found'] = True
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    cutoff = pd.Timestamp(context.as_of) if getattr(context, 'as_of', None) else None
+
+    if ASSET_NV_AS_OF_FIELD in df.columns:
+        stamps = df[ASSET_NV_AS_OF_FIELD].astype('string').fillna('')
+        lineage['series_variants'] = sorted({value for value in stamps.unique() if value})
+        eligible = stamps if cutoff is None else stamps[(stamps == '') | (stamps <= context.as_of)]
+        dated = sorted({value for value in eligible.unique() if value})
+        chosen = dated[-1] if dated else ''
+        df = df[stamps.reindex(df.index) == chosen]
+        lineage['series_as_of'] = chosen or None
+        lineage['hindsight_series'] = not chosen and cutoff is not None
+    else:
+        lineage['hindsight_series'] = cutoff is not None
+
+    if lineage['hindsight_series']:
+        lineage['warnings'].append(
+            f"该配置的大类净值没有按 {context.as_of} 重算过，用的是全历史口径序列；"
+            "其中的产品与权重带有当时不可知的信息。"
+        )
+
+    availability = pd.Series(dtype='datetime64[ns]')
+    if ASSET_NV_AVAILABLE_FIELD in df.columns:
+        stamps = pd.to_datetime(df[ASSET_NV_AVAILABLE_FIELD], errors='coerce')
+        if stamps.notna().any():
+            lineage['availability_available'] = True
+            if cutoff is not None:
+                before = int(len(df))
+                df = df[stamps.isna() | (stamps <= cutoff)]
+                lineage['rows_dropped_by_as_of'] = before - int(len(df))
+                stamps = stamps.reindex(df.index)
+            availability = (
+                pd.DataFrame({'date': df['date'], 'a': stamps})
+                .dropna(subset=['date'])
+                .groupby('date')['a']
+                .max()
+                .sort_index()
+            )
+    elif cutoff is not None:
+        lineage['warnings'].append(
+            '大类净值缺少可得时间列，回测按净值日期而非公告日期切窗；请重新保存该配置以补齐。'
+        )
+
     nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
     nav_wide.index = pd.to_datetime(nav_wide.index)
-    return nav_wide
+    if cutoff is not None and not lineage['availability_available']:
+        nav_wide = nav_wide[nav_wide.index <= cutoff]
+    # Judged here rather than per endpoint: five SAA endpoints read through this
+    # one loader, and the four that never checked were the four that quietly
+    # differed from the fifth.
+    lineage['universe'] = allocation_universe_lineage(data_dir, lineage, context)
+    if len(nav_wide) >= 2:
+        from backend.fit_numba import returns_from_nav_kernel
+        from backend.research_input_checks import require_return_quality
+        values = np.ascontiguousarray(nav_wide.to_numpy(dtype=np.float64))
+        require_return_quality(returns_from_nav_kernel(values), nav_wide.index[1:].strftime('%Y-%m-%d').tolist(), list(nav_wide.columns))
+    return AllocationNav(nav_wide, availability, lineage)
 
 
-def run_from_payload(payload: Dict[str, Any], data_dir: Optional[Path] = None) -> Dict[str, Any]:
+def load_nav_wide_from_parquet(data_dir: Path, alloc_name: str) -> pd.DataFrame:
+    """Frame-only view of :func:`load_allocation_nav` for callers that ignore lineage."""
+
+    return load_allocation_nav(data_dir, alloc_name).nav_wide
+
+
+def run_from_payload(
+    payload: Dict[str, Any],
+    data_dir: Optional[Path] = None,
+    context: Optional[ResearchContext] = None,
+) -> Dict[str, Any]:
     data_dir = data_dir or Path(__file__).resolve().parents[1] / 'data'
     alloc = payload['alloc_name']
-    nav_wide = load_nav_wide_from_parquet(Path(data_dir), alloc)
-    return backtest_portfolio(nav_wide, payload['strategies'], start_date=payload.get('start_date'))
+    loaded = load_allocation_nav(Path(data_dir), alloc, context)
+    result = backtest_portfolio(
+        loaded.nav_wide,
+        payload['strategies'],
+        start_date=payload.get('start_date'),
+        available_at=loaded.available_at,
+    )
+    result['pit'] = loaded.lineage
+    return result
 
 from strategy import compute_risk_budget_weights, compute_target_weights
 
@@ -479,7 +708,7 @@ if __name__ == '__main__':
         print('[ERROR] 该配置无资产列。')
         sys.exit(2)
     # 等权权重
-    w = np.full(n, 1.0 / n).tolist()
+    w = uniform_weights_kernel(n).tolist()
 
     test_payloads = [
         {

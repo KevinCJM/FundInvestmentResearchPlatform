@@ -20,6 +20,7 @@ from backend.custom_indicators.series_provider import (  # noqa: E402
     ProductSeries,
     select_period_window,
 )
+from backend.series_quality import finite_coverage, series_quality_execution_audit  # noqa: E402
 
 
 def _product_series(frame: pd.DataFrame) -> ProductSeries:
@@ -29,6 +30,19 @@ def _product_series(frame: pd.DataFrame) -> ProductSeries:
         fingerprint="fixture",
         data_latest_date=frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
     )
+
+
+def test_finite_coverage_uses_the_shared_fixed_signature_njit_lane() -> None:
+    count, ratio = finite_coverage(
+        pd.Series([1.0, np.nan, np.inf, 2.0], dtype=np.float64)
+    )
+
+    assert count == 2
+    assert ratio == pytest.approx(0.5)
+    audit = series_quality_execution_audit()
+    assert audit["backend"] == "numba_njit_fixed_signature"
+    assert audit["nopython"] is True
+    assert audit["python_fallback"] == 0
 
 
 def test_period_window_requires_dense_full_interval() -> None:

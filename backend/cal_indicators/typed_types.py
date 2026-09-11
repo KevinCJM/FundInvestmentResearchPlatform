@@ -12,8 +12,8 @@ from typing import Any, Iterable, Mapping, TypeAlias
 
 
 Dimension: TypeAlias = str | int
-SUPPORTED_AXES = frozenset({"time", "asset"})
-SUPPORTED_KINDS = frozenset({"scalar", "series", "vector", "matrix"})
+SUPPORTED_AXES = frozenset({"time", "asset", "window"})
+SUPPORTED_KINDS = frozenset({"scalar", "series", "vector", "matrix", "window", "record"})
 SUPPORTED_DTYPES = frozenset({"float64", "bool"})
 DEFAULT_SEMANTIC_DIMENSION = "dimensionless"
 MASK_SEMANTIC_DIMENSION = "mask"
@@ -29,6 +29,7 @@ SUPPORTED_SEMANTIC_DIMENSIONS = frozenset(
         "currency_amount",
         "count",
         "calendar_days",
+        "date",
         MASK_SEMANTIC_DIMENSION,
     }
 )
@@ -95,6 +96,7 @@ class ValueType:
     dtype: str = "float64"
     semantic_dimension: str = field(default=DEFAULT_SEMANTIC_DIMENSION, compare=False)
     price_basis: str | None = field(default=None, compare=False)
+    fields: tuple[tuple[str, "ValueType"], ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind not in SUPPORTED_KINDS:
@@ -117,11 +119,21 @@ class ValueType:
             raise ValueError(f"仅支持命名轴: {sorted(SUPPORTED_AXES)}")
         if any(isinstance(dim, int) and dim <= 0 for dim in self.shape):
             raise ValueError("具体 shape 维度必须为正整数")
+        if self.kind == "record":
+            names = [name for name, _ in self.fields]
+            if not names or len(names) != len(set(names)) or any(not name.isidentifier() or name.startswith('_') for name in names):
+                raise ValueError("结构化中间状态需要唯一字段名")
+            if any(not value.is_scalar or not value.is_numeric for _, value in self.fields):
+                raise ValueError("当前结构化中间状态仅支持数值标量字段")
+        elif self.fields:
+            raise ValueError("只有 record 可以声明结构化中间状态字段")
         expected_rank = {
+            "record": 0,
             "scalar": 0,
             "series": 1,
             "vector": 1,
             "matrix": 2,
+            "window": 2,
         }[self.kind]
         if len(self.axes) != expected_rank:
             raise ValueError(f"{self.kind} 必须是 {expected_rank} 维")
@@ -129,6 +141,8 @@ class ValueType:
             raise ValueError("series 必须使用 time 轴")
         if self.kind == "vector" and self.axes != ("asset",):
             raise ValueError("vector 必须使用 asset 轴")
+        if self.kind == "window" and self.axes != ("time", "window"):
+            raise ValueError("window 必须使用 time,window 轴")
 
     @classmethod
     def scalar(
@@ -201,6 +215,25 @@ class ValueType:
         )
 
     @classmethod
+    def window(
+        cls,
+        time_length: Dimension = "T",
+        window_length: Dimension = "W",
+        *,
+        semantic_dimension: str = DEFAULT_SEMANTIC_DIMENSION,
+        price_basis: str | None = None,
+    ) -> "ValueType":
+        """Logical causal rolling-window collection; never materialized in production."""
+
+        return cls(
+            "window",
+            ("time", "window"),
+            (time_length, window_length),
+            semantic_dimension=semantic_dimension,
+            price_basis=price_basis,
+        )
+
+    @classmethod
     def mask(
         cls,
         axes: tuple[str, ...] = (),
@@ -229,7 +262,8 @@ class ValueType:
 
     @property
     def is_numeric(self) -> bool:
-        return self.dtype == "float64"
+        # ``window`` is a logical compiler state, not a materialized numeric tensor.
+        return self.dtype == "float64" and self.kind not in {"record", "window"}
 
     def with_semantics(
         self,
@@ -257,6 +291,7 @@ class ValueType:
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
+            **({"fields": {name: value.to_dict() for name, value in self.fields}} if self.kind == "record" else {}),
             "dtype": self.dtype,
             "axes": list(self.axes),
             "shape": list(self.shape),
@@ -271,6 +306,7 @@ class ValueType:
         dtype = str(payload.get("dtype", "float64"))
         return cls(
             kind=str(payload["kind"]),
+            fields=tuple((str(name), cls.from_dict(value)) for name, value in payload.get("fields", {}).items()),
             dtype=dtype,
             axes=tuple(str(axis) for axis in payload.get("axes", [])),
             shape=tuple(payload.get("shape", [])),
@@ -290,6 +326,8 @@ class ValueType:
         )
 
     def __str__(self) -> str:
+        if self.kind == "record":
+            return "record{" + ", ".join(name for name, _ in self.fields) + "}"
         if self.is_scalar:
             return "mask" if self.is_mask else "scalar"
         axes = ",".join(self.axes)
@@ -306,6 +344,9 @@ def user_type_label(value_type: ValueType) -> str:
     to understand nominal-axis syntax such as ``series<time>[T]``.
     """
 
+    if value_type.kind == "record":
+        fields = tuple(name for name, _ in value_type.fields)
+        return "线性拟合中间结果（需提取字段）" if fields and fields[0] == "slope" else "回撤区间（需提取位置）"
     if value_type.is_mask:
         if value_type.axes == ("time",):
             return "时间序列布尔掩码"
@@ -320,6 +361,8 @@ def user_type_label(value_type: ValueType) -> str:
         return "时间序列"
     if value_type.kind == "vector":
         return "资产向量"
+    if value_type.kind == "window":
+        return "滚动窗口集合（中间结果）"
     if value_type.axes == ("asset", "asset"):
         return "资产方阵"
     if set(value_type.axes) == {"time", "asset"}:
@@ -363,6 +406,15 @@ def type_from_axes(
         return ValueType.vector(
             shape_tuple[0],
             dtype=dtype,
+            semantic_dimension=semantic_dimension,
+            price_basis=price_basis,
+        )
+    if axes_tuple == ("time", "window"):
+        if dtype != "float64":
+            raise TypedDslError("TYPE_MISMATCH", "滚动窗口中间结果只支持 float64。")
+        return ValueType.window(
+            shape_tuple[0],
+            shape_tuple[1],
             semantic_dimension=semantic_dimension,
             price_basis=price_basis,
         )

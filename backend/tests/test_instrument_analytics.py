@@ -300,6 +300,33 @@ def test_changed_nav_source_marks_snapshot_stale_without_reading_history(tmp_pat
     assert ranking["items"] == []
 
 
+def test_product_review_preserves_stale_snapshot_values_while_filters_fail_closed(tmp_path: Path) -> None:
+    _write_info_files(tmp_path)
+    _write_snapshot(tmp_path)
+    fund_path = tmp_path / "fund_nav_df.parquet"
+    changed = pd.read_parquet(fund_path)
+    changed.loc[len(changed)] = {
+        "ts_code": "000001.OF",
+        "date": pd.Timestamp("2026-09-01"),
+        "adj_nav": 1.01,
+    }
+    changed.to_parquet(fund_path, index=False)
+
+    filter_frame, filter_state = instrument_analytics.load_product_filter_snapshot(
+        "fund", tmp_path
+    )
+    review_frame, review_state = instrument_analytics.load_product_review_snapshot(
+        "fund", tmp_path
+    )
+
+    assert filter_state["status"] == "stale"
+    assert filter_frame.empty
+    assert review_state["status"] == "stale"
+    assert review_frame.loc[
+        review_frame["ts_code"].eq("000001.OF"), "return_1y"
+    ].iloc[0] == pytest.approx(0.12)
+
+
 def test_kind_specific_as_of_does_not_leak_etf_date_into_fund(tmp_path: Path) -> None:
     info_files = _write_info_files(tmp_path)
     _write_snapshot(tmp_path)

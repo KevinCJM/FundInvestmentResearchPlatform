@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { systemText } from '../i18n/runtime'
 import { useSearchParams } from 'react-router-dom'
 import EvaluationProductSelector from '../components/evaluation/EvaluationProductSelector'
 import {
@@ -21,6 +22,7 @@ import {
 } from '../services/customIndicators'
 import { indicatorPeriodOptionLabel } from '../utils/indicatorPeriods'
 import { formatIndicatorDiagnostic } from '../utils/indicatorDiagnostics'
+import { evaluateNumericControls, type NumericControlResult } from '../services/businessNumeric'
 import {
   MetricSelector,
   MetricStatus,
@@ -32,6 +34,7 @@ import {
 type IndicatorEntry = {
   id: string
   indicatorId: string
+  indicatorRevision?: number
   period: string
   weight: number
   direction: IndicatorDirection
@@ -45,6 +48,7 @@ const emptyProductSelection = (): EvaluationProductSelection => ({
   filters: {
     fund_type: [],
     invest_type: [],
+    qdii_type: [],
     market: [],
     status: [],
     management: [],
@@ -87,12 +91,30 @@ export default function EvaluationPlanPage() {
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [runResult, setRunResult] = useState<EvaluationPlanRunResponse | null>(null)
+  const [weightControl, setWeightControl] = useState<NumericControlResult | null>(null)
+  const [weightControlError, setWeightControlError] = useState('')
 
   const selectedPlan = plans.find((plan) => plan.id === selectedPlanId) ?? null
   const selectedTargets = useMemo(() => Object.values(selectedTargetItems), [selectedTargetItems])
-  const totalWeight = entries.reduce((total, entry) => total + entry.weight, 0)
   const defaultPeriod = runtimePeriods.includes('1Y') ? '1Y' : runtimePeriods[0] ?? '1Y'
   const kindLabel = productKind === 'etf' ? 'ETF' : '场外公募基金'
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setWeightControl(null)
+    setWeightControlError('')
+    evaluateNumericControls([{
+      key: 'evaluation-indicator-weights',
+      values: entries.map((entry) => entry.weight),
+      target: 100,
+      tolerance: 0.000001,
+    }], controller.signal)
+      .then((response) => setWeightControl(response.items[0] ?? null))
+      .catch((reason) => {
+        if ((reason as DOMException)?.name !== 'AbortError') setWeightControlError('NJIT 权重校验暂不可用')
+      })
+    return () => controller.abort()
+  }, [entries])
 
   useEffect(() => {
     let active = true
@@ -176,7 +198,7 @@ export default function EvaluationPlanPage() {
     product_kind: productKind,
     indicators: entries.map((entry) => ({
       indicator_id: entry.indicatorId,
-      indicator_revision: indicators.find((item) => item.id === entry.indicatorId)?.revision ?? 1,
+      indicator_revision: entry.indicatorRevision ?? indicators.find((item) => item.id === entry.indicatorId)?.revision ?? 1,
       period: entry.period,
       weight: entry.weight,
       direction: entry.direction,
@@ -188,9 +210,11 @@ export default function EvaluationPlanPage() {
   const validateDraft = () => {
     if (!name.trim()) return '请填写评价方案名称。'
     if (entries.length === 0) return '请至少选择一个指标。'
+    if (entries.some(entry => entry.direction === 'neutral')) return '部分结果默认仅展示，请为参与评分的结果明确选择越高越好或越低越好。'
     if (selectedTargets.length === 0) return `请至少选择一个${kindLabel}产品。`
     if (selectedTargets.some((item) => item.instrument_type && item.instrument_type !== productKind)) return '评价方案中存在其他品类产品，请重新选择。'
-    if (totalWeight <= 0) return '指标权重合计必须大于 0。'
+    if (!weightControl) return weightControlError || '指标权重正在由 NJIT 内核校验，请稍候。'
+    if (!weightControl.positive) return '指标权重合计必须大于 0。'
     const keys = entries.map((entry) => entryKey(entry, indicators.find((indicator) => indicator.id === entry.indicatorId)?.revision ?? 1))
     if (new Set(keys).size !== keys.length) return '同一指标、版本和周期不能重复配置。'
     const incompatible = entries.find((entry) => disabledReasons[entry.indicatorId])
@@ -234,6 +258,7 @@ export default function EvaluationPlanPage() {
     setEntries(plan.indicators.map((entry) => ({
       id: crypto.randomUUID(),
       indicatorId: entry.indicator_id,
+      indicatorRevision: entry.indicator_revision,
       period: entry.period,
       weight: entry.weight,
       direction: entry.direction,
@@ -307,14 +332,14 @@ export default function EvaluationPlanPage() {
         onError={setError}
       />
 
-      <IndicatorConfiguration productKind={productKind} indicators={indicators} selectableIndicators={selectableIndicators} disabledReasons={disabledReasons} entries={entries} runtimePeriods={runtimePeriods} selectedMetricIds={selectedMetricIds} totalWeight={totalWeight} onSelectedMetricsChange={updateSelectedMetrics} onEntryChange={updateEntry} onEntriesChange={setEntries} />
+      <IndicatorConfiguration productKind={productKind} indicators={indicators} selectableIndicators={selectableIndicators} disabledReasons={disabledReasons} entries={entries} runtimePeriods={runtimePeriods} selectedMetricIds={selectedMetricIds} weightControl={weightControl} weightControlError={weightControlError} onSelectedMetricsChange={updateSelectedMetrics} onEntryChange={updateEntry} onEntriesChange={setEntries} />
 
       <RunResultSection runResult={runResult} />
     </>}
   </div>
 }
 
-function IndicatorConfiguration({ productKind, indicators, selectableIndicators, disabledReasons, entries, runtimePeriods, selectedMetricIds, totalWeight, onSelectedMetricsChange, onEntryChange, onEntriesChange }: {
+function IndicatorConfiguration({ productKind, indicators, selectableIndicators, disabledReasons, entries, runtimePeriods, selectedMetricIds, weightControl, weightControlError, onSelectedMetricsChange, onEntryChange, onEntriesChange }: {
   productKind: ProductKind
   indicators: IndicatorDefinition[]
   selectableIndicators: IndicatorDefinition[]
@@ -322,18 +347,19 @@ function IndicatorConfiguration({ productKind, indicators, selectableIndicators,
   entries: IndicatorEntry[]
   runtimePeriods: string[]
   selectedMetricIds: string[]
-  totalWeight: number
+  weightControl: NumericControlResult | null
+  weightControlError: string
   onSelectedMetricsChange: (ids: string[]) => void
   onEntryChange: (id: string, update: Partial<IndicatorEntry>) => void
   onEntriesChange: React.Dispatch<React.SetStateAction<IndicatorEntry[]>>
 }) {
   const kindLabel = productKind === 'etf' ? 'ETF' : '场外公募基金'
   return <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
-    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><h2 className="text-xl font-semibold text-slate-900">2. 配置{kindLabel}研究指标</h2><p className="mt-1 text-sm text-slate-500">指标目录只展示适用于当前品类的定义；输入权重运行时归一化为 100%，保存时锁定版本。</p></div><div className="flex items-center gap-3"><span className="rounded-full bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700">输入合计 {totalWeight}</span><MetricSelector indicators={selectableIndicators} selectedIds={selectedMetricIds} onChange={onSelectedMetricsChange} maxSelected={10} disabledReasons={disabledReasons} /></div></div>
-    <div className="mt-4 overflow-auto"><table className="min-w-[980px] w-full text-sm"><caption className="sr-only">{kindLabel}评价指标配置</caption><thead className="bg-slate-50 text-left text-slate-500"><tr><th scope="col" className="px-3 py-3">指标定义</th><th scope="col" className="px-3 py-3">方向</th><th scope="col" className="px-3 py-3">周期</th><th scope="col" className="px-3 py-3">输入权重</th><th scope="col" className="px-3 py-3">有效占比</th><th scope="col" className="px-3 py-3">操作</th></tr></thead><tbody>{entries.map((entry) => {
+    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><h2 className="text-xl font-semibold text-slate-900">2. 配置{kindLabel}研究指标</h2><p className="mt-1 text-sm text-slate-500">指标目录只展示适用于当前品类的定义；输入权重运行时归一化为 100%，保存时锁定版本。</p></div><div className="flex items-center gap-3"><span className="rounded-full bg-violet-50 px-3 py-1 text-sm font-semibold text-violet-700">输入合计 {weightControl ? weightControl.total.toFixed(2) : weightControlError || '计算中…'}</span><MetricSelector indicators={selectableIndicators} selectedIds={selectedMetricIds} onChange={onSelectedMetricsChange} maxSelected={10} disabledReasons={disabledReasons} /></div></div>
+    <div className="mt-4 overflow-auto"><table className="min-w-[980px] w-full text-sm"><caption className="sr-only">{kindLabel}评价指标配置</caption><thead className="bg-slate-50 text-left text-slate-500"><tr><th scope="col" className="px-3 py-3">指标定义</th><th scope="col" className="px-3 py-3">方向</th><th scope="col" className="px-3 py-3">周期</th><th scope="col" className="px-3 py-3">输入权重</th><th scope="col" className="px-3 py-3">有效占比</th><th scope="col" className="px-3 py-3">操作</th></tr></thead><tbody>{entries.map((entry, entryIndex) => {
       const definition = indicators.find((item) => item.id === entry.indicatorId)
       const overridden = definition && entry.direction !== definition.direction
-      return <tr key={entry.id} className="border-t border-slate-100"><td className="px-3 py-3"><p className="font-medium text-slate-800">{definition ? indicatorOptionLabel(definition) : entry.indicatorId}</p><p className="mt-1 text-xs text-slate-500">{definition?.presentation?.category_label ?? definition?.category_label ?? '未分类'} · {definition?.unit || '无单位'} · 最少 {definition?.minimum_observations ?? 1} 个观察值</p>{disabledReasons[entry.indicatorId] && <p className="mt-1 text-xs text-rose-600">{disabledReasons[entry.indicatorId]}</p>}</td><td className="px-3 py-3"><select value={entry.direction} onChange={(event) => onEntryChange(entry.id, { direction: event.target.value as IndicatorDirection })} className="min-h-11 rounded border border-slate-200 px-2"><option value="higher_better">数值高优先</option><option value="lower_better">数值低优先</option></select>{overridden && <p className="mt-1 text-xs text-amber-700">已覆盖指标默认方向</p>}</td><td className="px-3 py-3"><select value={entry.period} onChange={(event) => onEntryChange(entry.id, { period: event.target.value })} className="min-h-11 rounded border border-slate-200 px-2">{runtimePeriods.map((period) => <option key={period} value={period}>{indicatorPeriodOptionLabel(period)}</option>)}</select></td><td className="px-3 py-3"><input aria-label={`${definition?.name ?? '指标'}权重`} type="number" min="0" value={entry.weight} onChange={(event) => onEntryChange(entry.id, { weight: Number(event.target.value) || 0 })} className="min-h-11 w-24 rounded border border-slate-200 px-2 text-right" /></td><td className="px-3 py-3 font-medium text-violet-700">{totalWeight > 0 ? `${(entry.weight / totalWeight * 100).toFixed(1)}%` : '—'}</td><td className="px-3 py-3"><div className="flex gap-2"><button type="button" onClick={() => onEntriesChange((current) => [...current, { ...entry, id: crypto.randomUUID(), period: runtimePeriods.find((period) => !current.some((item) => item.indicatorId === entry.indicatorId && item.period === period)) ?? entry.period }])} className="text-violet-700 hover:underline">复制周期</button><button type="button" onClick={() => onEntriesChange((current) => current.filter((item) => item.id !== entry.id))} className="text-rose-600 hover:underline">删除</button></div></td></tr>
+      return <tr key={entry.id} className="border-t border-slate-100"><td className="px-3 py-3"><p className="font-medium text-slate-800">{definition ? indicatorOptionLabel(definition) : entry.indicatorId}</p><p className="mt-1 text-xs text-slate-500">{definition?.presentation?.category_label ?? definition?.category_label ?? '未分类'} · {definition?.unit || '无单位'} · 最少 {definition?.minimum_observations ?? 1} 个观察值</p>{disabledReasons[entry.indicatorId] && <p className="mt-1 text-xs text-rose-600">{disabledReasons[entry.indicatorId]}</p>}</td><td className="px-3 py-3"><select value={entry.direction} onChange={(event) => onEntryChange(entry.id, { direction: event.target.value as IndicatorDirection })} className="min-h-11 rounded border border-slate-200 px-2"><option value="neutral" disabled>{systemText('scalarResult.chooseDirection', {}, '请选择评分方向')}</option><option value="higher_better">数值高优先</option><option value="lower_better">数值低优先</option></select>{overridden && <p className="mt-1 text-xs text-amber-700">已覆盖指标默认方向</p>}</td><td className="px-3 py-3"><select value={entry.period} onChange={(event) => onEntryChange(entry.id, { period: event.target.value })} className="min-h-11 rounded border border-slate-200 px-2">{runtimePeriods.map((period) => <option key={period} value={period}>{indicatorPeriodOptionLabel(period)}</option>)}</select></td><td className="px-3 py-3"><input aria-label={`${definition?.name ?? '指标'}权重`} type="number" min="0" value={entry.weight} onChange={(event) => onEntryChange(entry.id, { weight: Number(event.target.value) || 0 })} className="min-h-11 w-24 rounded border border-slate-200 px-2 text-right" /></td><td className="px-3 py-3 font-medium text-violet-700">{weightControl?.positive && weightControl.normalized_shares[entryIndex] !== undefined ? `${(weightControl.normalized_shares[entryIndex] * 100).toFixed(1)}%` : '—'}</td><td className="px-3 py-3"><div className="flex gap-2"><button type="button" onClick={() => onEntriesChange((current) => [...current, { ...entry, id: crypto.randomUUID(), period: runtimePeriods.find((period) => !current.some((item) => item.indicatorId === entry.indicatorId && item.period === period)) ?? entry.period }])} className="text-violet-700 hover:underline">复制周期</button><button type="button" onClick={() => onEntriesChange((current) => current.filter((item) => item.id !== entry.id))} className="text-rose-600 hover:underline">删除</button></div></td></tr>
     })}</tbody></table></div>
   </section>
 }

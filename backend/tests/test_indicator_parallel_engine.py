@@ -160,6 +160,9 @@ def test_all_35_fused_builtins_match_typed_runtime(tmp_path: Path) -> None:
         statuses,
     )
     service = CustomIndicatorService(tmp_path, tmp_path)
+    # This test owns its explicit compile phase and must not depend on tests
+    # executed earlier having populated the process-wide warm cache.
+    service.warm_numba_plans()
     elapsed_days = float(nav.size - 1)
     for index, definition in enumerate(definitions):
         runtime = service._compile_runtime(definition, "1Y")

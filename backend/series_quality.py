@@ -11,6 +11,29 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as parquet
 
+try:
+    from backend.instrument_analytics_numba import (
+        NAT_DAY,
+        adjusted_nav_anomaly_mask_kernel,
+        count_true_kernel,
+        coverage_ratio_kernel,
+        finite_mask_kernel,
+        instrument_analytics_numba_execution_audit,
+        period_window_quality_kernel,
+        warm_instrument_analytics_numba_kernels,
+    )
+except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
+    from instrument_analytics_numba import (
+        NAT_DAY,
+        adjusted_nav_anomaly_mask_kernel,
+        count_true_kernel,
+        coverage_ratio_kernel,
+        finite_mask_kernel,
+        instrument_analytics_numba_execution_audit,
+        period_window_quality_kernel,
+        warm_instrument_analytics_numba_kernels,
+    )
+
 
 WINDOW_START_TOLERANCE_DAYS = 10
 MIN_OPEN_DAY_COVERAGE = 0.90
@@ -20,6 +43,51 @@ MAX_CONSECUTIVE_MISSING_FALLBACK_DAYS = 10
 ADJ_NAV_DISLOCATION_THRESHOLD = 0.20
 REFERENCE_NAV_STABLE_THRESHOLD = 0.10
 EXTREME_ADJ_NAV_RETURN_THRESHOLD = 1.0
+
+_QUALITY_REASON_BY_CODE = {
+    0: None,
+    1: "insufficient_span",
+    2: "start_anchor_too_old",
+    3: "adjusted_nav_anomaly",
+    4: "insufficient_observations",
+    5: "insufficient_density",
+    6: "internal_gap",
+}
+
+
+def _float64_array(values: pd.Series) -> np.ndarray:
+    return np.array(
+        pd.to_numeric(values, errors="coerce").to_numpy(dtype=np.float64),
+        dtype=np.float64,
+        copy=True,
+        order="C",
+    )
+
+
+def _date_days(values: pd.DatetimeIndex | pd.Series) -> np.ndarray:
+    if isinstance(values, pd.Series):
+        parsed = pd.DatetimeIndex(values)
+    else:
+        parsed = pd.DatetimeIndex(values)
+    return np.array(
+        parsed.to_numpy(dtype="datetime64[D]").view(np.int64),
+        dtype=np.int64,
+        copy=True,
+        order="C",
+    )
+
+
+def finite_coverage(values: pd.Series | np.ndarray) -> tuple[int, float]:
+    """Count finite observations and their coverage through the warmed NJIT lane."""
+
+    array = np.ascontiguousarray(
+        pd.to_numeric(values, errors="coerce"),
+        dtype=np.float64,
+    )
+    mask = finite_mask_kernel(array)
+    count = int(count_true_kernel(mask))
+    ratio = float(coverage_ratio_kernel(count, int(array.size)))
+    return count, 0.0 if not np.isfinite(ratio) else ratio
 
 
 @dataclass(frozen=True)
@@ -104,42 +172,36 @@ def adjusted_nav_anomaly_dates(
         return pd.DatetimeIndex([])
     working = frame.copy()
     working[date_column] = pd.to_datetime(working[date_column], errors="coerce")
-    working[value_column] = pd.to_numeric(working[value_column], errors="coerce")
     working = (
-        working.replace([np.inf, -np.inf], np.nan)
-        .dropna(subset=[date_column, value_column])
+        working.dropna(subset=[date_column])
         .sort_values(date_column)
         .drop_duplicates(subset=[date_column], keep="last")
     )
-    working = working[working[value_column] > 0]
     if len(working) < 2:
         return pd.DatetimeIndex([])
-    adjusted_return = working[value_column].pct_change(fill_method=None)
-    reference_stable = pd.Series(False, index=working.index)
-    for column in ("accum_nav", "unit_nav"):
-        if column not in working.columns:
-            continue
-        reference = pd.to_numeric(working[column], errors="coerce").where(lambda values: values > 0)
-        reference_return = reference.pct_change(fill_method=None)
-        reference_stable |= reference_return.notna() & reference_return.abs().le(
-            REFERENCE_NAV_STABLE_THRESHOLD
-        )
-    suspicious = (
-        adjusted_return.abs().gt(ADJ_NAV_DISLOCATION_THRESHOLD) & reference_stable
-    ) | adjusted_return.abs().gt(EXTREME_ADJ_NAV_RETURN_THRESHOLD)
-    return pd.DatetimeIndex(working.loc[suspicious.fillna(False), date_column].dt.normalize())
-
-
-def _longest_missing_run(expected: pd.DatetimeIndex, observed: set[pd.Timestamp]) -> int:
-    longest = 0
-    current = 0
-    for date in expected:
-        if pd.Timestamp(date).normalize() in observed:
-            current = 0
-        else:
-            current += 1
-            longest = max(longest, current)
-    return longest
+    adjusted = _float64_array(working[value_column])
+    missing_reference = np.full(adjusted.size, np.nan, dtype=np.float64)
+    accumulated = (
+        _float64_array(working["accum_nav"])
+        if "accum_nav" in working.columns
+        else missing_reference
+    )
+    unit = (
+        _float64_array(working["unit_nav"])
+        if "unit_nav" in working.columns
+        else missing_reference
+    )
+    suspicious = adjusted_nav_anomaly_mask_kernel(
+        adjusted,
+        accumulated,
+        unit,
+        ADJ_NAV_DISLOCATION_THRESHOLD,
+        REFERENCE_NAV_STABLE_THRESHOLD,
+        EXTREME_ADJ_NAV_RETURN_THRESHOLD,
+    )
+    return pd.DatetimeIndex(
+        working.loc[suspicious.astype(bool), date_column].dt.normalize()
+    )
 
 
 def assess_period_window(
@@ -157,32 +219,12 @@ def assess_period_window(
     clean_dates = pd.DatetimeIndex(pd.to_datetime(list(dates), errors="coerce")).dropna()
     clean_dates = clean_dates.normalize().drop_duplicates().sort_values()
     clean_dates = clean_dates[clean_dates <= effective]
-    anchors = clean_dates[clean_dates <= target]
-    if anchors.empty:
-        return PeriodWindowQuality(False, "insufficient_span", target, effective, None, 0, 0, None, 0, 0)
-    anchor = pd.Timestamp(anchors[-1]).normalize()
-    selected_dates = clean_dates[clean_dates >= anchor]
-    observation_count = int(len(selected_dates))
-    if (target - anchor).days > WINDOW_START_TOLERANCE_DAYS:
-        return PeriodWindowQuality(
-            False,
-            "start_anchor_too_old",
-            target,
-            effective,
-            anchor,
-            observation_count,
-            0,
-            None,
-            0,
-            0,
-        )
-
     calendar = pd.DatetimeIndex(open_dates if open_dates is not None else []).dropna()
     calendar = calendar.normalize().drop_duplicates().sort_values()
     has_full_calendar = bool(
         len(calendar)
-        and calendar.min() <= target
-        and calendar.max() >= effective
+        and calendar[0] <= target
+        and calendar[-1] >= effective
     )
     if has_full_calendar:
         expected = calendar[(calendar >= target) & (calendar <= effective)]
@@ -193,30 +235,38 @@ def assess_period_window(
         required_coverage = FALLBACK_BUSINESS_DAY_COVERAGE
         max_missing_allowed = MAX_CONSECUTIVE_MISSING_FALLBACK_DAYS
 
-    observed = {pd.Timestamp(date).normalize() for date in selected_dates}
-    present_count = sum(pd.Timestamp(date).normalize() in observed for date in expected)
-    expected_count = int(len(expected))
-    coverage_ratio = (
-        min(float(present_count) / expected_count, 1.0) if expected_count else None
-    )
-    max_missing = _longest_missing_run(expected, observed) if expected_count else 0
     anomaly_values = [] if anomaly_dates is None else list(anomaly_dates)
     anomalies = pd.DatetimeIndex(
         pd.to_datetime(anomaly_values, errors="coerce")
     ).dropna().normalize()
-    anomaly_count = int(((anomalies > anchor) & (anomalies <= effective)).sum())
-
-    reason: Optional[str] = None
-    if anomaly_count:
-        reason = "adjusted_nav_anomaly"
-    elif observation_count < 2:
-        reason = "insufficient_observations"
-    elif coverage_ratio is not None and coverage_ratio < required_coverage:
-        reason = "insufficient_density"
-    elif max_missing > max_missing_allowed:
-        reason = "internal_gap"
+    (
+        complete,
+        reason_code,
+        anchor_day,
+        observation_count,
+        expected_count,
+        coverage_value,
+        max_missing,
+        anomaly_count,
+    ) = period_window_quality_kernel(
+        _date_days(clean_dates),
+        int(target.to_datetime64().astype("datetime64[D]").astype(np.int64)),
+        int(effective.to_datetime64().astype("datetime64[D]").astype(np.int64)),
+        _date_days(expected),
+        _date_days(anomalies),
+        WINDOW_START_TOLERANCE_DAYS,
+        float(required_coverage),
+        max_missing_allowed,
+    )
+    anchor = (
+        None
+        if anchor_day == NAT_DAY
+        else pd.Timestamp(int(anchor_day), unit="D").normalize()
+    )
+    coverage_ratio = None if not np.isfinite(coverage_value) else float(coverage_value)
+    reason = _QUALITY_REASON_BY_CODE[int(reason_code)]
     return PeriodWindowQuality(
-        complete=reason is None,
+        complete=bool(complete),
         reason=reason,
         target_date=target,
         effective_date=effective,
@@ -227,3 +277,13 @@ def assess_period_window(
         max_consecutive_missing=max_missing,
         anomaly_count=anomaly_count,
     )
+
+
+def series_quality_execution_audit() -> dict[str, object]:
+    """Return the shared fixed-signature execution proof for this call graph."""
+
+    return instrument_analytics_numba_execution_audit()
+
+
+def warm_series_quality_numba_kernels() -> dict[str, object]:
+    return warm_instrument_analytics_numba_kernels()

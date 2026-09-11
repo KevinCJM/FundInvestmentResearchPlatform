@@ -12,6 +12,10 @@ venv/
 
 # Local runtime cruft
 *.log
+.run/
+.storage/
+# The managed data alias itself is local configuration, not source code.
+/data
 
 # Data notebooks / reports
 report_paper/
@@ -34,6 +38,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/playwright-report/
 frontend/test-results/
+frontend/factor-live-results/
 
 # Test coverage
 .coverage
@@ -41,6 +46,7 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+**/.vitest/
 
 # Tooling metadata
 .gemini/
@@ -49,6 +55,8 @@ htmlcov/
 .codegraph/
 
 # Local visual QA artifacts
+/output/
+/.tmp_project_*/
 design-qa.md
 design-qa-*.png
 
@@ -59,3 +67,6 @@ design-qa-*.png
 
 # Local-only helpers
 local_test.py
+.numba_cache/
+tmp_schema_probe.txt
+docs/.ai-hermes-user-memory/

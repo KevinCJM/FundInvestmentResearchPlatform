@@ -12,7 +12,7 @@ import math
 from collections.abc import Mapping, Sequence
 
 
-MATH_NOTATION_VERSION = "1.2.0"
+MATH_NOTATION_VERSION = "1.5.0"
 
 
 _CANONICAL_OPERATOR_ALIASES = {
@@ -103,11 +103,12 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
     first = _argument(arguments, 0, "x")
     second = _argument(arguments, 1, "y")
     third = _argument(arguments, 2, "z")
+    fourth = _argument(arguments, 3, "m")
 
     binary = {
         "add": rf"{_group(first)}+{_group(second)}",
         "subtract": rf"{_group(first)}-{_group(second)}",
-        "multiply": rf"{_group(first)}\odot{_group(second)}",
+        "multiply": rf"{_group(first)}\cdot{_group(second)}",
         "divide": rf"\frac{{{first}}}{{{second}}}",
         "power": rf"{_group(first)}^{{{second}}}",
         "minimum": rf"\min\left({first},{second}\right)",
@@ -127,6 +128,8 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         "solve": rf"{_group(first)}\backslash{_group(second)}",
         "quadratic_form": rf"{_group(first)}^{{\mathsf T}}{_group(second)}{_group(first)}",
         "active_returns": rf"{_group(first)}-{_group(second)}",
+        "value_at": _indexed(first, second),
+        "days_between": rf"{_group(second)}-{_group(first)}",
     }
     if operator_id in binary:
         return binary[operator_id]
@@ -153,6 +156,18 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         "cumulative_max": rf"\left(\max_{{1\le i\le t}} {_indexed(first, 'i')}\right)_{{t=1}}^{{T}}",
         "cumulative_min": rf"\left(\min_{{1\le i\le t}} {_indexed(first, 'i')}\right)_{{t=1}}^{{T}}",
         "drawdown_series": rf"\mathcal{{D}}{_group(first)}",
+        "last_drawdown_interval": rf"\mathcal{{I}}^{{*}}_{{\mathrm{{last}}}}{_group(first)}",
+        "linear_fit": rf"\mathcal{{F}}_{{\mathrm{{OLS}}}}\left({','.join(arguments)}\right)",
+        "fit_slope": rf"\widehat{{\beta}}{_group(first)}",
+        "fit_intercept": rf"\widehat{{\alpha}}{_group(first)}",
+        "fit_residual_sum_squares": rf"\mathrm{{SSE}}{_group(first)}",
+        "fit_total_sum_squares": rf"\mathrm{{SST}}{_group(first)}",
+        "fit_observation_count": rf"n{_group(first)}",
+        "require_positive": rf"\underbrace{{{first}}}_{{>0}}",
+        "require_nonnegative": rf"\underbrace{{{first}}}_{{\ge 0}}",
+        "interval_start": rf"p{_group(first)}",
+        "interval_trough": rf"\tau{_group(first)}",
+        "interval_recovery": rf"\rho{_group(first)}",
         "new_high_mask": rf"\mathcal{{H}}_{{\mathrm{{new}}}}{_group(first)}",
         "first": _indexed(first, "1"),
         "last": _indexed(first, "T"),
@@ -162,8 +177,8 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         "excess_kurtosis": rf"\gamma_2{_group(first)}",
         "mean_absolute_deviation": rf"\operatorname{{MAD}}{_group(first)}",
         "root_mean_square": rf"\operatorname{{RMS}}{_group(first)}",
-        "argmin": rf"\operatorname*{{arg\,min}}_i {first}_i",
-        "argmax": rf"\operatorname*{{arg\,max}}_i {first}_i",
+        "argmin": rf"\operatorname*{{arg\,min}}_i {_indexed(first, 'i')}",
+        "argmax": rf"\operatorname*{{arg\,max}}_i {_indexed(first, 'i')}",
         "linear_slope": rf"\widehat{{\beta}}_1{_group(first)}",
         "linear_intercept": rf"\widehat{{\beta}}_0{_group(first)}",
         "linear_r_squared": rf"R^2{_group(first)}",
@@ -171,8 +186,8 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         "transpose": rf"{_group(first)}^{{\mathsf T}}",
         "diag": rf"\operatorname{{diag}}{_group(first)}",
         "trace": rf"\operatorname{{tr}}{_group(first)}",
-        "covariance": rf"\operatorname{{Cov}}{_group(first)}",
-        "correlation": rf"\operatorname{{Corr}}{_group(first)}",
+        "covariance": rf"\operatorname{{Cov}}\left({','.join(arguments)}\right)",
+        "correlation": rf"\operatorname{{Corr}}\left({','.join(arguments)}\right)",
         "portfolio_returns": rf"{_group(first)}{_group(second)}",
         "total_return": rf"\prod_i\left(1+{first}_i\right)-1",
     }
@@ -195,6 +210,35 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         return rf"\left({first}_{{t-{second}}}\right)_t"
     if operator_id == "difference":
         return rf"\left(\Delta_{{{second}}}{first}_t\right)_t"
+    if operator_id == "rolling_window":
+        return rf"\mathcal{{W}}_{{t,{second}}}{_group(first)}"
+    if operator_id == "finite_mask":
+        return rf"\mathbf{{1}}_{{\operatorname{{finite}}\left({first}\right)}}"
+    if operator_id == "rolling_apply":
+        window = second if len(arguments) not in {3, 5} else f"{second};{arguments[-1]}"
+        return rf"\mathcal{{R}}_{{{window}}}\!\left[{first}\right]_t"
+    if operator_id == "rolling_mean":
+        # Window availability rules belong in the calculation explanation. The
+        # headline formula uses one compact symbol for the complete operator.
+        return rf"\mu_{{t,{second}}}{_group(first)}"
+    if operator_id == "rolling_std":
+        window = second
+        ddof = arguments[2] if len(arguments) > 2 else "0"
+        if ddof in {"1", "1.0"}:
+            return rf"s_{{t,{window}}}{_group(first)}"
+        if ddof in {"0", "0.0"}:
+            return rf"\sigma_{{t,{window}}}{_group(first)}"
+        return rf"\sigma_{{t,{window}}}^{{({ddof})}}{_group(first)}"
+    if operator_id == "rolling_min":
+        window_set = rf"\mathcal{{W}}_{{t,{second}}}"
+        return rf"\min_{{i\in {window_set}}} {_indexed(first, 'i')}"
+    if operator_id == "rolling_max":
+        window_set = rf"\mathcal{{W}}_{{t,{second}}}"
+        return rf"\max_{{i\in {window_set}}} {_indexed(first, 'i')}"
+    if operator_id == "recursive_smooth":
+        return rf"\mathcal{{S}}_{{{second},{third}}}{_group(first)}_{{t}}"
+    if operator_id == "divide_or_default":
+        return rf"{_group(first)}\mathbin{{\oslash}}_{{{third}}}{_group(second)}"
     if operator_id == "quantile":
         return rf"Q_{{{second}}}{_group(first)}"
     if operator_id == "count_true":
@@ -243,11 +287,42 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
 
 
 class _MathematicalLatexRenderer(ast.NodeVisitor):
+    _PRECEDENCE = {
+        ast.Add: 10,
+        ast.Sub: 10,
+        ast.Mult: 20,
+        ast.Div: 20,
+        ast.Pow: 30,
+    }
+
     def __init__(self, variable_latex: Mapping[str, str]) -> None:
         self.variable_latex = variable_latex
 
     def render(self, node: ast.AST) -> str:
         return self.visit(node)
+
+    @classmethod
+    def _node_precedence(cls, node: ast.AST) -> int:
+        if isinstance(node, ast.BinOp):
+            return cls._PRECEDENCE.get(type(node.op), 0)
+        if isinstance(node, ast.UnaryOp):
+            return 40
+        return 50
+
+    def _render_operand(
+        self,
+        node: ast.AST,
+        parent_precedence: int,
+        *,
+        group_on_equal: bool = False,
+    ) -> str:
+        rendered = self.render(node)
+        precedence = self._node_precedence(node)
+        if precedence < parent_precedence or (
+            group_on_equal and precedence == parent_precedence
+        ):
+            return _group(rendered)
+        return rendered
 
     def visit_Constant(self, node: ast.Constant) -> str:  # noqa: N802
         if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
@@ -265,29 +340,76 @@ class _MathematicalLatexRenderer(ast.NodeVisitor):
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> str:  # noqa: N802
         if isinstance(node.op, ast.USub):
-            return render_operator_latex("negate", (self.render(node.operand),))
+            operand = self._render_operand(node.operand, 40)
+            return rf"-{operand}"
+        if isinstance(node.op, ast.UAdd):
+            return self._render_operand(node.operand, 40)
         return self.generic_visit(node)  # type: ignore[return-value]
 
     def visit_BinOp(self, node: ast.BinOp) -> str:  # noqa: N802
-        operator_id = {
-            ast.Add: "add",
-            ast.Sub: "subtract",
-            ast.Mult: "multiply",
-            ast.Div: "divide",
-            ast.Pow: "power",
-        }.get(type(node.op))
-        if operator_id is None:
+        precedence = self._PRECEDENCE.get(type(node.op))
+        if precedence is None:
             return rf"\mathrm{{{escape_latex_text(ast.unparse(node))}}}"
-        return render_operator_latex(
-            operator_id,
-            (self.render(node.left), self.render(node.right)),
+        if isinstance(node.op, ast.Add):
+            return (
+                f"{self._render_operand(node.left, precedence)}+"
+                f"{self._render_operand(node.right, precedence)}"
+            )
+        if isinstance(node.op, ast.Sub):
+            return (
+                f"{self._render_operand(node.left, precedence)}-"
+                f"{self._render_operand(node.right, precedence, group_on_equal=True)}"
+            )
+        if isinstance(node.op, ast.Mult):
+            return (
+                f"{self._render_operand(node.left, precedence)}"
+                rf"\cdot{self._render_operand(node.right, precedence)}"
+            )
+        if isinstance(node.op, ast.Div):
+            return rf"\frac{{{self.render(node.left)}}}{{{self.render(node.right)}}}"
+        return (
+            rf"{self._render_operand(node.left, precedence, group_on_equal=True)}"
+            rf"^{{{self.render(node.right)}}}"
         )
+
+    def visit_Attribute(self, node: ast.Attribute) -> str:  # noqa: N802
+        return rf"\left({self.visit(node.value)}\right)_{{\mathrm{{{escape_latex_text(node.attr)}}}}}"
 
     def visit_Call(self, node: ast.Call) -> str:  # noqa: N802
         if not isinstance(node.func, ast.Name):
             return rf"\mathrm{{{escape_latex_text(ast.unparse(node))}}}"
+        operator_id = _CANONICAL_OPERATOR_ALIASES.get(node.func.id, node.func.id)
+        if (
+            operator_id in {"mean", "std", "variance", "min_value", "max_value"}
+            and node.args
+            and isinstance(node.args[0], ast.Call)
+            and isinstance(node.args[0].func, ast.Name)
+            and node.args[0].func.id == "rolling_window"
+            and len(node.args[0].args) >= 2
+        ):
+            window_call = node.args[0]
+            values = self.render(window_call.args[0])
+            window = self.render(window_call.args[1])
+            window_set = rf"\mathcal{{W}}_{{t,{window}}}"
+            if operator_id == "mean":
+                return rf"\mu_{{t,{window}}}{_group(values)}"
+            if operator_id in {"std", "variance"}:
+                ddof = self.render(node.args[1]) if len(node.args) > 1 else "1"
+                if operator_id == "variance":
+                    if ddof in {"1", "1.0"}:
+                        return rf"s^2_{{t,{window}}}{_group(values)}"
+                    if ddof in {"0", "0.0"}:
+                        return rf"\sigma^2_{{t,{window}}}{_group(values)}"
+                    return rf"\sigma^{{2,({ddof})}}_{{t,{window}}}{_group(values)}"
+                if ddof in {"1", "1.0"}:
+                    return rf"s_{{t,{window}}}{_group(values)}"
+                if ddof in {"0", "0.0"}:
+                    return rf"\sigma_{{t,{window}}}{_group(values)}"
+                return rf"\sigma_{{t,{window}}}^{{({ddof})}}{_group(values)}"
+            operation = "min" if operator_id == "min_value" else "max"
+            return rf"\{operation}_{{i\in {window_set}}} {_indexed(values, 'i')}"
         return render_operator_latex(
-            node.func.id,
+            operator_id,
             tuple(self.render(argument) for argument in node.args),
         )
 

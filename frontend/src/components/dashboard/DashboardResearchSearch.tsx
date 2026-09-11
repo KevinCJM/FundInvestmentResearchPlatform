@@ -16,7 +16,7 @@ export default function DashboardResearchSearch({ scope }: DashboardResearchSear
     if (keyword) {
       params.set('q', keyword);
     }
-    navigate(`/research?${params.toString()}`);
+    navigate(`/product-research/products?${params.toString()}`);
   };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {

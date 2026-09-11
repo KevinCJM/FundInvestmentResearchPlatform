@@ -7,10 +7,11 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from custom_indicators.errors import IndicatorDomainError
 from custom_indicators.portfolio_service import PortfolioResearchService
+from portfolio_regime import PublishedRegimeBacktestReference
 from services.custom_indicator_routes import StableValidationRoute
 
 
@@ -31,8 +32,14 @@ class ResearchTargetUpdate(ResearchTargetDraft):
 
 
 class RunRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     as_of: Optional[str] = None
     start_date: Optional[str] = None
+    historical_regime: Optional[PublishedRegimeBacktestReference] = Field(
+        default=None,
+        validation_alias=AliasChoices("historical_regime", "regime"),
+    )
 
 
 class DiagnoseRequest(BaseModel):
@@ -89,6 +96,7 @@ def run_research_target(target_id: str, request: Optional[RunRequest] = None):
         target_id,
         as_of=body.as_of,
         start_date=body.start_date,
+        historical_regime=body.historical_regime,
     )
 
 

@@ -14,8 +14,10 @@ import {
   runEvaluationPlan,
   updateEvaluationPlan,
   type EvaluationPlanDraft,
+  type IndicatorDefinition,
   type ProductKind,
 } from '../services/customIndicators'
+import { evaluateNumericControls } from '../services/businessNumeric'
 
 vi.mock('../services/customIndicators', () => ({
   indicatorPeriodLabel: (period: string) => period,
@@ -30,15 +32,16 @@ vi.mock('../services/customIndicators', () => ({
   deleteEvaluationPlan: vi.fn(),
   runEvaluationPlan: vi.fn(),
 }))
+vi.mock('../services/businessNumeric', () => ({ evaluateNumericControls: vi.fn() }))
 
-const indicator = {
+const indicator: IndicatorDefinition = {
   id: 'annual-return', revision: 3, source: 'custom', read_only: false,
   name: '年化收益率', description: '真实净值计算的年化收益率', expression: 'annualized_return(r)',
   periods: ['1Y'], unit: '%', display_format: 'percent', precision: 2,
   direction: 'higher_better', annual_risk_free_rate_percent: 1.5,
   context_kind: 'single_product', applicable_product_kinds: ['etf', 'fund'], catalog_status: 'current', ui_exposed: true,
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
-} as const
+}
 
 const presentation = {
   indicator_id: indicator.id, revision: indicator.revision, name: indicator.name, source: indicator.source,
@@ -74,6 +77,17 @@ const productResponse = (kind: ProductKind) => ({
 
 describe('EvaluationPlan', () => {
   beforeEach(() => {
+    vi.mocked(evaluateNumericControls).mockResolvedValue({
+      items: [{ key: 'evaluation-indicator-weights', total: 100, difference: 0, within_tolerance: true, positive: true, normalized_shares: [1] }],
+      execution: {
+        execution_backend: 'numba_njit_fixed_signature',
+        nopython: true,
+        object_mode: 0,
+        python_fallback: 0,
+        request_time_compilation: 0,
+        kernel_signatures: { numeric_control_kernel: ['fixed'] },
+      },
+    })
     vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'entry-id') })
     vi.mocked(listCustomIndicators).mockResolvedValue({ items: [indicator], total: 1 })
     vi.mocked(getCustomIndicatorMeta).mockResolvedValue({ periods: [{ value: '1Y', label: '近 1 年', description: '运行周期' }] } as any)
@@ -220,6 +234,7 @@ describe('EvaluationPlan', () => {
         filters: {
           fund_type: ['股票型'],
           invest_type: [],
+          qdii_type: [],
           market: [],
           status: [],
           management: [],

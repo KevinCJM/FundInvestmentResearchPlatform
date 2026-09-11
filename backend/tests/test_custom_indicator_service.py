@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from cal_indicators.indicator_runtime import IndicatorRuntime
+from cal_indicators.typed_dsl import TypedDslError
 from custom_indicators.errors import ConflictError, ValidationError
 from custom_indicators.service import CustomIndicatorService
 
@@ -73,12 +75,15 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
         "risk_adjusted",
         "path",
         "market_liquidity",
+        "technical",
         "other",
     }
     assert meta["numeric_backend"]["policy"][
         "one_dimensional_reductions_and_scans"
     ] == "numba_njit_fixed_signature"
-    assert meta["math_notation_version"] == "1.2.0"
+    assert meta["math_notation_version"] == "1.5.0"
+    measure_ids = {item["id"] for item in meta["series_output_measures"]}
+    assert {"auto", "raw_market_price", "virtual_nav", "bounded_0_1", "oscillator_0_100"}.issubset(measure_ids)
 
     operator_names = {item["name"] for item in meta["operators"]}
     assert {"add", "multiply", "product", "dot", "matmul"}.issubset(operator_names)
@@ -89,6 +94,8 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     assert "formula_fragments" not in meta
     assert "indicator_templates" not in meta
     operators = {item["name"]: item for item in meta["operators"]}
+    assert all(item["label"] != item["name"] for item in meta["operators"])
+    assert all("_" not in item["label"] for item in meta["operators"])
     assert operators["mean"]["label"] == "全元素算术平均值"
     assert operators["mean"]["execution_backend"] == "numba_njit_fixed_signature"
     assert operators["matmul"]["execution_backend"] == "numba_njit_fixed_signature"
@@ -108,6 +115,16 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     ]
     assert operators["mean_time"]["label"] == "时间轴算术平均值"
     assert operators["mean_asset"]["label"] == "资产轴算术平均值"
+    assert operators["rolling_window"]["label"] == "滚动窗口"
+    assert operators["rolling_window"]["category_label"] == "滚动与时序"
+    assert {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}.isdisjoint(operators)
+    assert operators["recursive_smooth"]["label"] == "递归平滑"
+    assert operators["divide_or_default"]["label"] == "安全除法"
+    assert operators["rolling_window"]["parameters"][1]["label"] == "窗口期数"
+    assert any(
+        parameter_set["parameters"][0]["allowed_shapes"] == ["window"]
+        for parameter_set in operators["std"]["parameter_sets"]
+    )
     assert operators["mean"]["parameters"][0]["label"] == "输入值"
     assert operators["mean"]["parameters"][0]["allowed_shapes"] == [
         "series",
@@ -116,6 +133,12 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     ]
     assert operators["absolute"]["output_shape"] == "unknown"
     assert operators["absolute"]["return_type"].startswith("same(")
+    rolling_window = next(
+        item for item in operators["rolling_window"]["parameters"]
+        if item["name"] == "window"
+    )
+    assert rolling_window["source_policy"] == "fixed_constant"
+    assert rolling_window["constant_kind"] == "integer"
     assert operators["covariance"]["output_shape"] == "unknown"
     assert operators["diag"]["output_shape"] == "unknown"
     assert operators["dot"]["parameters"][1]["allowed_shapes"] == [
@@ -170,6 +193,7 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
 
 def test_portfolio_indicators_use_realized_daily_weight_path(tmp_path: Path) -> None:
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
     asset_returns = np.asarray(
         [[0.10, 0.00], [0.00, 0.10], [0.05, -0.02]], dtype=np.float64
     )
@@ -373,6 +397,7 @@ def test_historical_definition_loads_as_legacy_without_rewriting_file(tmp_path: 
 def test_real_etf_and_fund_evaluation_has_fixed_week_window_and_cache(tmp_path: Path) -> None:
     _write_market_data(tmp_path)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
     request = {
         "indicator_ids": ["builtin-cumulative-return"],
         "inline_definition": None,
@@ -392,11 +417,45 @@ def test_real_etf_and_fund_evaluation_has_fixed_week_window_and_cache(tmp_path: 
     assert all(item["window"]["observation_count"] == 5 for item in first["results"])
     assert {item["target"]["name"] for item in first["results"]} == {"上证50ETF", "华夏成长"}
     assert second["cache"] == {"hits": 2, "misses": 0}
+    assert first["execution"]["execution_backend"] == "numba_njit_fixed_signature"
+    assert first["execution"]["nopython"] is True
+    assert first["execution"]["python_fallback"] == 0
+    assert first["execution"]["compile_cache_misses"] == 0
+    assert all(first["execution"]["kernel_signatures"].values())
+
+
+def test_legacy_definition_runtime_never_uses_python_oracle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
+
+    def _forbidden_python_compute(*_args, **_kwargs):
+        raise AssertionError("production evaluation used the legacy Python oracle")
+
+    monkeypatch.setattr(IndicatorRuntime, "compute_period", _forbidden_python_compute)
+    result = service.evaluate(
+        indicator_ids=["builtin-cumulative-return"],
+        inline_definition=None,
+        targets=[{"kind": "etf", "product_id": "510050.SH"}],
+        period="1W",
+        include_series=True,
+    )
+
+    assert result["summary"] == {"total": 1, "ok": 1, "warning": 0, "error": 0}
+    assert result["execution"]["execution_backend"] == "numba_njit_fixed_signature"
+    assert result["execution"]["nopython"] is True
+    assert result["execution"]["python_fallback"] == 0
+    assert result["execution"]["compile_cache_misses"] == 0
+    assert all(result["execution"]["kernel_signatures"].values())
 
 
 def test_natural_month_window_includes_anchor_and_uses_effective_as_of(tmp_path: Path) -> None:
     _write_market_data(tmp_path)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
 
     result = service.evaluate(
         indicator_ids=["builtin-cumulative-return"],
@@ -416,10 +475,19 @@ def test_natural_month_window_includes_anchor_and_uses_effective_as_of(tmp_path:
 def test_non_finite_formula_result_is_null_with_explicit_warning(tmp_path: Path) -> None:
     _write_market_data(tmp_path)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    draft = _draft(
+        name="除零指标",
+        expression="1/0",
+        periods=["1W"],
+        dsl_version="2.2.0",
+    )
+    validation = service.validate(draft)
+    assert validation["valid"] is True
 
     result = service.evaluate(
         indicator_ids=[],
-        inline_definition=_draft(name="除零指标", expression="1/0", periods=["1W"]),
+        inline_definition=draft,
+        compile_token=validation["compile_token"],
         targets=[{"kind": "etf", "product_id": "510050.SH"}],
         period="1W",
     )["results"][0]
@@ -429,9 +497,235 @@ def test_non_finite_formula_result_is_null_with_explicit_warning(tmp_path: Path)
     assert result["warnings"][-1]["code"] == "DIVIDE_BY_ZERO"
 
 
+def test_inline_evaluation_requires_matching_explicit_compile_token(
+    tmp_path: Path,
+) -> None:
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    first = _draft(
+        name="未保存均值",
+        expression=r"\operatorname{mean}(\mathbf{r})",
+        dsl_version="2.2.0",
+    )
+    second = _draft(
+        name="未保存波动率",
+        expression=r"\operatorname{std}(\mathbf{r},1)",
+        dsl_version="2.2.0",
+    )
+
+    with pytest.raises(ValidationError) as missing:
+        service.evaluate(
+            indicator_ids=[],
+            inline_definition=first,
+            targets=[{"kind": "etf", "product_id": "510050.SH"}],
+            period="1W",
+        )
+    assert missing.value.code == "INLINE_DEFINITION_NOT_COMPILED"
+
+    first_validation = service.validate(first)
+    second_validation = service.validate(second)
+    assert first_validation["valid"] is True
+    assert second_validation["valid"] is True
+    with pytest.raises(ValidationError) as mismatch:
+        service.evaluate(
+            indicator_ids=[],
+            inline_definition=second,
+            compile_token=first_validation["compile_token"],
+            targets=[{"kind": "etf", "product_id": "510050.SH"}],
+            period="1W",
+        )
+    assert mismatch.value.code == "INLINE_COMPILE_TOKEN_MISMATCH"
+
+
+def test_saved_evaluation_batch_cache_miss_fails_closed_without_compiling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    created = service.create_indicator(
+        _draft(name="仅预热后运行", expression=r"\operatorname{mean}(\mathbf{r})")
+    )
+
+    monkeypatch.setattr(
+        "custom_indicators.service.get_cached_numba_batch_plan",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def reject_request_compile(*_args, **_kwargs):
+        raise AssertionError("request attempted NJIT compilation")
+
+    monkeypatch.setattr(
+        "custom_indicators.service.compile_numba_batch_plan",
+        reject_request_compile,
+    )
+    with pytest.raises(ValidationError) as failure:
+        service.evaluate(
+            indicator_ids=[created["id"]],
+            inline_definition=None,
+            targets=[{"kind": "etf", "product_id": "510050.SH"}],
+            period="1W",
+        )
+    assert failure.value.code == "NJIT_BATCH_PLAN_NOT_WARMED"
+
+
+def test_saved_evaluation_plan_cache_miss_fails_closed_without_compiling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    created = service.create_indicator(
+        _draft(name="immutable 计划", expression=r"\operatorname{mean}(\mathbf{r})")
+    )
+
+    def missing_plan(*_args, **_kwargs):
+        raise TypedDslError("TYPED_PLAN_NOT_WARMED", "test cache miss")
+
+    def reject_request_compile(*_args, **_kwargs):
+        raise AssertionError("request attempted NJIT compilation")
+
+    monkeypatch.setattr(
+        "custom_indicators.service._get_warmed_typed_plan",
+        missing_plan,
+    )
+    monkeypatch.setattr(
+        "custom_indicators.service.compile_numba_plan",
+        reject_request_compile,
+    )
+    with pytest.raises(ValidationError) as failure:
+        service.evaluate(
+            indicator_ids=[created["id"]],
+            inline_definition=None,
+            targets=[{"kind": "etf", "product_id": "510050.SH"}],
+            period="1W",
+        )
+    assert failure.value.code == "NJIT_PLAN_NOT_WARMED"
+
+
+def test_run_plan_requires_its_saved_warmed_batch_without_compiling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    created = service.create_indicator(
+        _draft(name="方案固定计划", expression=r"\operatorname{mean}(\mathbf{r})")
+    )
+    plan = service.create_plan(
+        {
+            "name": "固定签名方案",
+            "description": "",
+            "product_kind": "etf",
+            "indicators": [
+                {
+                    "indicator_id": created["id"],
+                    "indicator_revision": created["revision"],
+                    "period": "1W",
+                    "weight": 100.0,
+                }
+            ],
+            "targets": [{"kind": "etf", "product_id": "510050.SH"}],
+            "missing_policy": "strict",
+        }
+    )
+    assert plan["compiled_batches"]
+    for compiled_batch in plan["compiled_batches"]:
+        persisted = (
+            tmp_path
+            / ".indicator_runtime"
+            / "generated_batches"
+            / compiled_batch["compiled_plan_id"]
+        )
+        assert (persisted / "serial.py").is_file()
+        assert (persisted / "parallel.py").is_file()
+        assert (persisted / "plan.json").is_file()
+    monkeypatch.setattr(
+        "custom_indicators.service.get_cached_numba_batch_plan",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def reject_request_compile(*_args, **_kwargs):
+        raise AssertionError("run_plan attempted NJIT compilation")
+
+    monkeypatch.setattr(
+        "custom_indicators.service.compile_numba_batch_plan",
+        reject_request_compile,
+    )
+    with pytest.raises(ValidationError) as failure:
+        service.run_plan(plan["id"])
+    assert failure.value.code == "NJIT_BATCH_PLAN_NOT_WARMED"
+
+
+def test_partial_snapshot_coverage_does_not_split_saved_fused_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    first = service.create_indicator(
+        _draft(name="快照部分命中A", expression=r"\operatorname{mean}(\mathbf{r})", periods=["1W"])
+    )
+    second = service.create_indicator(
+        _draft(name="快照部分命中B", expression=r"\operatorname{std}(\mathbf{r},1)", periods=["1W"])
+    )
+    plan = service.create_plan(
+        {
+            "name": "部分快照不能拆融合计划",
+            "description": "",
+            "product_kind": "etf",
+            "indicators": [
+                {
+                    "indicator_id": first["id"],
+                    "indicator_revision": first["revision"],
+                    "period": "1W",
+                    "weight": 50.0,
+                },
+                {
+                    "indicator_id": second["id"],
+                    "indicator_revision": second["revision"],
+                    "period": "1W",
+                    "weight": 50.0,
+                },
+            ],
+            "targets": [{"kind": "etf", "product_id": "510050.SH"}],
+            "missing_policy": "strict",
+        }
+    )
+    monkeypatch.setattr(
+        service.snapshot_config,
+        "get",
+        lambda: {
+            "items": [
+                {
+                    "indicator_id": first["id"],
+                    "indicator_revision": first["revision"],
+                    "period": "1W",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_evaluate_from_snapshot",
+        lambda *_args, **_kwargs: pytest.fail(
+            "partial snapshot coverage must not execute a partial fused group"
+        ),
+    )
+
+    run = service.run_plan(plan["id"])
+
+    assert run["ranked_count"] == 1
+    assert run["execution"]["compiled_plan_ids"] == [
+        plan["compiled_batches"][0]["compiled_plan_id"]
+    ]
+    assert run["execution"]["python_fallback"] == 0
+
+
 def test_insufficient_sample_and_missing_data_return_null_with_warning(tmp_path: Path) -> None:
     _write_market_data(tmp_path, periods=4)
     service = CustomIndicatorService(tmp_path, tmp_path)
+    service.warm_numba_plans()
 
     result = service.evaluate(
         indicator_ids=["builtin-cumulative-return"],
@@ -563,6 +857,7 @@ def test_plan_product_kinds_and_catalog_are_isolated(tmp_path: Path) -> None:
         "filters": {
             "fund_type": [],
             "invest_type": [],
+            "qdii_type": [],
             "market": [],
             "status": [],
             "management": [],
@@ -709,35 +1004,6 @@ def test_plan_rejects_duplicate_locked_indicator_period(tmp_path: Path) -> None:
     assert exc_info.value.code == "DUPLICATE_PLAN_INDICATOR"
 
 
-def test_shadow_comparison_checks_values_windows_and_ranks() -> None:
-    row = {
-        "rank": 1,
-        "status": "ranked",
-        "target": {"kind": "etf", "product_id": "510050.SH"},
-        "values": [
-            {
-                "value": 0.123,
-                "status": "ok",
-                "window": {"start_date": "2025-01-01", "end_date": "2026-01-01"},
-            }
-        ],
-    }
-    equivalent = CustomIndicatorService._compare_shadow_results(
-        {"rows": [row], "ranked_count": 1},
-        {"rows": [copy.deepcopy(row)], "ranked_count": 1},
-    )
-    changed = copy.deepcopy(row)
-    changed["values"][0]["value"] = 0.2
-    mismatch = CustomIndicatorService._compare_shadow_results(
-        {"rows": [row], "ranked_count": 1},
-        {"rows": [changed], "ranked_count": 1},
-    )
-
-    assert equivalent["equivalent"] is True
-    assert mismatch["equivalent"] is False
-    assert mismatch["mismatch_count"] == 1
-
-
 def test_large_result_contract_returns_first_page_and_result_id(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -817,3 +1083,74 @@ def test_snapshot_indicator_config_locks_versions_and_protects_references(tmp_pa
     with pytest.raises(ConflictError) as referenced:
         service.delete_indicator(created["id"], created["revision"])
     assert referenced.value.code == "INDICATOR_IN_SNAPSHOT_CONFIG"
+
+
+def test_a_research_day_never_answers_from_the_hindsight_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """快照指标是用全部已下载数据算出来的，一旦研究日生效它就是错的答案。
+
+    The snapshot table has no `as_of` to honour, so both entry points — single
+    product evaluation and a saved evaluation plan — must recompute instead of
+    reading it. Without this the same page shows a 2014 research day beside a
+    number that used every row through today.
+    """
+
+    _write_market_data(tmp_path)
+    service = CustomIndicatorService(tmp_path, tmp_path)
+    indicator = service.create_indicator(_draft(name="研究日不许读快照", periods=["1W"]))
+    monkeypatch.setattr(
+        service.snapshot_config,
+        "get",
+        lambda: {
+            "revision": 1,
+            "items": [
+                {
+                    "indicator_id": indicator["id"],
+                    "indicator_revision": indicator["revision"],
+                    "period": "1W",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_evaluate_from_snapshot",
+        lambda *_args, **_kwargs: pytest.fail(
+            "a research day must be recomputed, never read from the全历史 snapshot"
+        ),
+    )
+
+    live = service.evaluate(
+        indicator_ids=[indicator["id"]],
+        inline_definition=None,
+        targets=[{"kind": "etf", "product_id": "510050.SH"}],
+        period="1W",
+        as_of="2026-02-02",
+    )
+    assert live["results"]
+
+    plan = service.create_plan(
+        {
+            "name": "研究日下的评价方案",
+            "description": "",
+            "product_kind": "etf",
+            "indicators": [
+                {
+                    "indicator_id": indicator["id"],
+                    "indicator_revision": indicator["revision"],
+                    "period": "1W",
+                    "weight": 100.0,
+                }
+            ],
+            "targets": [{"kind": "etf", "product_id": "510050.SH"}],
+            "missing_policy": "strict",
+        }
+    )
+    run = service.run_plan(plan["id"], "2026-02-02")
+    assert run["as_of"] == "2026-02-02"
+    # Nothing ranks, and that is the honest answer rather than a snapshot hit:
+    # this fixture's NAV table carries no announcement column, so no value can
+    # be proven to have been knowable on the research day.
+    assert run["rows"][0]["exclusion_reasons"][0]["code"] == "ANN_DATE_UNAVAILABLE"

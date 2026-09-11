@@ -8,6 +8,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any, Optional, TextIO
+from backend.data_storage import guard_path
 
 try:  # pragma: no cover - unavailable only on Windows
     import fcntl
@@ -34,6 +35,7 @@ class InterProcessFileLock:
         return self._handle.fileno()
 
     def acquire(self, *, owner: str = "") -> bool:
+        guard_path(self.path, write=True)
         if self._handle is not None:
             return True
         if fcntl is None:  # pragma: no cover
@@ -69,6 +71,21 @@ class InterProcessFileLock:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
 
+    def close_inherited_copy(self) -> None:
+        """Transfer ownership to a child without unlocking its shared flock."""
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            handle.close()
+
+    @classmethod
+    def from_inherited_fd(cls, path: Path, descriptor: int) -> "InterProcessFileLock":
+        """Adopt a descriptor passed by our launcher, never reacquire a new lock."""
+        lock = cls(path)
+        if os.fstat(descriptor).st_ino != path.stat().st_ino or os.fstat(descriptor).st_dev != path.stat().st_dev:
+            raise RuntimeError("继承的任务锁与工作区不一致。")
+        lock._handle = os.fdopen(descriptor, 'a+', encoding='utf-8')
+        return lock
+
     def __enter__(self) -> "InterProcessFileLock":
         if not self.acquire():
             raise RuntimeError("已有数据刷新进程持有全局锁。")
@@ -81,6 +98,7 @@ class InterProcessFileLock:
 def is_file_lock_held(path: Path) -> bool:
     """Return whether another open file description currently owns the lock."""
 
+    guard_path(path)
     if fcntl is None:  # pragma: no cover
         return Path(path).exists()
     path = Path(path)
@@ -103,6 +121,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Durably replace a small JSON state file without exposing partial writes."""
 
     path = Path(path)
+    guard_path(path, write=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",

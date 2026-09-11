@@ -9,6 +9,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backtest_engine import backtest_portfolio
+from backtest_numba import (
+    portfolio_metrics_kernel,
+    portfolio_segment_path_kernel,
+    warm_backtest_numba_kernels,
+)
 
 
 def _make_nav(days: int = 12) -> pd.DataFrame:
@@ -32,6 +37,9 @@ def test_static_strategy_has_no_markers_and_dates_align():
     assert 'static' in res['series']
     assert len(res['markers']['static']) == 0
     assert len(res['dates']) == len(res['series']['static'])
+    assert res['metrics'][0]['cumulative_return'] is not None
+    assert res['annual_metrics']['years'] == [2024]
+    assert '2024' in res['annual_metrics']['series']['static']
 
 
 def test_rebalanced_strategy_markers_match_dates():
@@ -53,3 +61,52 @@ def test_rebalanced_strategy_markers_match_dates():
         assert marker['date'] in dates
         idx = dates.index(marker['date'])
         assert np.isclose(series[idx], marker['value'], atol=1e-8)
+
+
+def test_backtest_reports_fixed_signature_nopython_execution():
+    result = backtest_portfolio(
+        _make_nav(),
+        [{'name': 'audit', 'type': 'fixed', 'weights': [0.5, 0.5]}],
+    )
+
+    execution = result['execution']
+    assert execution['backend'] == 'numba_njit_fixed_signature'
+    assert execution['execution_backend'] == 'numba_njit_fixed_signature'
+    assert execution['nopython'] is True
+    assert execution['object_mode'] == 0
+    assert execution['python_fallback'] == 0
+    assert execution['request_time_compilation'] == 0
+    assert all(execution['kernel_signatures'].values())
+    assert portfolio_segment_path_kernel.nopython_signatures
+    assert portfolio_metrics_kernel.nopython_signatures
+
+
+def test_backtest_large_path_does_not_add_request_time_signatures():
+    warm = warm_backtest_numba_kernels()
+    signatures_before = (
+        tuple(portfolio_segment_path_kernel.signatures),
+        tuple(portfolio_metrics_kernel.signatures),
+    )
+    days = 5_000
+    idx = pd.date_range('2000-01-01', periods=days, freq='D')
+    nav = pd.DataFrame(
+        {
+            'A': np.exp(np.linspace(0.0, 0.7, days)),
+            'B': np.exp(np.linspace(0.0, 0.4, days)),
+            'C': np.exp(np.linspace(0.0, -0.1, days)),
+        },
+        index=idx,
+    )
+
+    result = backtest_portfolio(
+        nav,
+        [{'name': 'large', 'type': 'fixed', 'weights': [0.4, 0.4, 0.2]}],
+    )
+
+    assert len(result['series']['large']) == days
+    assert result['series']['large'][0] == 1.0
+    assert warm['python_fallback'] == 0
+    assert signatures_before == (
+        tuple(portfolio_segment_path_kernel.signatures),
+        tuple(portfolio_metrics_kernel.signatures),
+    )

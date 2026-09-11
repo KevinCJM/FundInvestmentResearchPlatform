@@ -1,5 +1,14 @@
 import { expect, test, type Page } from '@playwright/test'
 
+const fixedExecution = {
+  execution_backend: 'numba_njit_fixed_signature',
+  nopython: true,
+  object_mode: 0,
+  python_fallback: 0,
+  request_time_compilation: 0,
+  kernel_signatures: { dashboard_kernel: ['fixed'] },
+}
+
 const summary = {
   share_code_count: 120,
   active_count: 100,
@@ -83,27 +92,13 @@ function analytics(kind: 'all' | 'etf' | 'fund') {
     },
     metric_definitions: { return_1y: { label: '近1年收益率', unit: 'ratio', source: 'adj_nav' } },
     units: { return_1y: 'ratio' },
+    execution: fixedExecution,
   }
 }
 
 async function mockDashboardApi(page: Page) {
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
-    if (url.pathname === '/api/data/refresh/status') {
-      return route.fulfill({ json: {
-        source: 'tushare', enabled: true, full_refresh_enabled: true,
-        available_modules: ['base', 'etf', 'fund'], token_configured: true,
-        job: { status: 'idle', message: '尚未启动更新' },
-        datasets: {
-          etf_info: { file: 'etf_info_df.parquet', exists: true, status: 'ready', rows: 120 },
-          etf_nav: { file: 'etf_daily_df.parquet', exists: true, status: 'ready', rows: 1200, latest_date: '2026-08-31' },
-          etf_candle: { file: 'etf_daily_candle_df.parquet', exists: true, status: 'ready', rows: 1200, latest_date: '2026-08-31' },
-          fund_info: { file: 'fund_info_df.parquet', exists: true, status: 'ready', rows: 120 },
-          fund_nav: { file: 'fund_nav_df.parquet', exists: true, status: 'ready', rows: 1300, latest_date: '2026-08-31' },
-          instrument_metrics: { file: 'instrument_metrics_snapshot.parquet', exists: true, status: 'ready', rows: 220, latest_date: '2026-08-31' },
-        },
-      } })
-    }
     if (url.pathname === '/api/instruments/analytics') {
       return route.fulfill({ json: analytics((url.searchParams.get('kind') ?? 'all') as 'all' | 'etf' | 'fund') })
     }
@@ -112,7 +107,7 @@ async function mockDashboardApi(page: Page) {
       const series = kind === 'all'
         ? { etf: segment('etf').event_trend, fund: segment('fund').event_trend }
         : { [kind]: segment(kind).event_trend }
-      return route.fulfill({ json: { schema_version: 1, kind, status: 'complete', series, available_values: [], data_quality: { warnings: [] } } })
+      return route.fulfill({ json: { schema_version: 1, kind, status: 'complete', series, available_values: [], data_quality: { warnings: [] }, execution: fixedExecution } })
     }
     if (url.pathname === '/api/instruments/analytics/rankings') {
       const kind = (url.searchParams.get('kind') ?? 'etf') as 'etf' | 'fund'
@@ -127,6 +122,7 @@ async function mockDashboardApi(page: Page) {
           metrics: { annual_volatility_1y: 0.18, max_drawdown_3y: -0.15, sharpe_1y: 0.7 },
         }],
         data_quality: { warnings: [] },
+        execution: fixedExecution,
       } })
     }
     return route.fulfill({ status: 404, json: {} })
@@ -135,7 +131,7 @@ async function mockDashboardApi(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await mockDashboardApi(page)
-  await page.goto('/?kind=all')
+  await page.goto('/product-research/panorama?kind=all')
   await expect(page.getByRole('heading', { name: 'ETF市场镜头' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '场外公募基金市场镜头' })).toBeVisible()
 })
@@ -173,17 +169,12 @@ test('三档布局无页面水平溢出且 KPI 响应式排列', async ({ page }
   }
 })
 
-test('范围页签支持方向键，数据抽屉支持 Escape 与焦点返回', async ({ page }) => {
+test('范围页签支持方向键且驾驶舱不展示数据下载模块', async ({ page }) => {
   const allTab = page.getByRole('tab', { name: '全市场' })
   await allTab.focus()
   await allTab.press('ArrowRight')
   await expect(page).toHaveURL(/kind=etf/)
   await expect(page.getByRole('tab', { name: 'ETF' })).toHaveAttribute('aria-selected', 'true')
 
-  const drawerButton = page.getByRole('button', { name: /数据管理：查看明细并拉取最新数据/ })
-  await drawerButton.click()
-  await expect(drawerButton).toHaveAttribute('aria-expanded', 'true')
-  await page.keyboard.press('Escape')
-  await expect(drawerButton).toHaveAttribute('aria-expanded', 'false')
-  await expect(drawerButton).toBeFocused()
+  await expect(page.getByRole('button', { name: /数据管理：查看明细并拉取最新数据/ })).toHaveCount(0)
 })

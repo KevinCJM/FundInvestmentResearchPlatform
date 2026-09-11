@@ -210,25 +210,31 @@ def _series(
 
 
 _VARIABLES = (
+    VariableDefinition(
+        "observation_dates", "净值观察日期", r"\mathbf{d}", "series", ("time",), ("L",),
+        "date", None, "day", "与当前净值窗口逐项对齐的真实日期；不是观察序号。",
+        ("single_product",), ("etf", "fund"), "当前净值窗口的日期轴",
+        transform="aligned_window_dates",
+    ),
     _series(
         "returns",
-        "普通收益率",
+        "复权净值普通收益率",
         r"\mathbf{r}",
         "return_decimal",
         "adjusted_nav",
         "decimal",
-        "由相邻复权净值计算的普通收益率序列。",
+        "由相邻复权净值计算的普通收益率序列，即 adjusted_nav[t] / adjusted_nav[t-1] - 1。",
         transform="adjusted_nav[t] / adjusted_nav[t-1] - 1",
         shape="T",
     ),
     _series(
         "log_returns",
-        "对数收益率",
+        "复权净值对数收益率",
         r"\mathbf{\ell}",
         "return_decimal",
         "adjusted_nav",
         "decimal",
-        "由相邻复权净值计算的对数收益率序列。",
+        "由相邻复权净值计算的对数收益率序列，即 log(adjusted_nav[t] / adjusted_nav[t-1])。",
         transform="log(adjusted_nav[t] / adjusted_nav[t-1])",
         shape="T",
     ),
@@ -368,6 +374,33 @@ _VARIABLES = (
         dataset="candle",
         field="amount",
         aliases=("amount",),
+    ),
+    _series(
+        "total_share",
+        "总份额",
+        r"\mathbf{s}",
+        "count",
+        None,
+        "source_unit",
+        "ETF 总份额（万份）；只在披露当日生效，不向前回填。",
+        products=("etf",),
+        dataset="share",
+        field="total_share",
+        conditional=True,
+    ),
+    _series(
+        "fund_size",
+        "规模",
+        r"\mathbf{S}",
+        "currency_amount",
+        None,
+        "source_unit",
+        "ETF 规模（万元）＝同排份额 × 单位净值，由数据源直接给出，不跨数据集再乘一次。",
+        products=("etf",),
+        dataset="share",
+        field="total_size",
+        aliases=("total_size",),
+        conditional=True,
     ),
     _series(
         "unit_nav",
@@ -543,6 +576,7 @@ VARIABLE_ALIASES = {
 # Parse persisted formulas that predate the canonical text-style subscripts.
 # These are input aliases only; catalog output always uses the forms above.
 LEGACY_VARIABLE_LATEX = {
+    r"r_{f}": "risk_free_rate_per_observation",
     r"\mathbf{p}_{adj}": "adjusted_nav",
     r"\mathbf{c}_{prev}": "previous_close",
     r"\mathbf{r}_{quote}": "price_return",
@@ -640,7 +674,12 @@ def normalize_variable_latex(expression: str) -> str:
     for latex, variable_id in sorted(
         latex_aliases.items(), key=lambda item: len(item[0]), reverse=True
     ):
-        normalized = normalized.replace(latex, variable_id)
+        if latex.isidentifier():
+            # Plain symbols such as r_f must not rewrite parts of unknown
+            # identifiers (r_future / custom_r_f), hiding a real input error.
+            normalized = re.sub(rf"\b{re.escape(latex)}\b", variable_id, normalized)
+        else:
+            normalized = normalized.replace(latex, variable_id)
     return normalized
 
 

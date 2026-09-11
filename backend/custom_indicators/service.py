@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import math
 import os
 import threading
 import time
 from collections import OrderedDict
-from contextlib import ExitStack
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -27,7 +27,6 @@ except ModuleNotFoundError:  # pragma: no cover - backend/ direct execution
 
 from cal_indicators.indicator_runtime import IndicatorRuntime
 from cal_indicators.builtin_batch_kernel import (
-    BUILTIN_METRIC_CODE,
     STATUS_DIVIDE_BY_ZERO,
     STATUS_DOMAIN_ERROR,
     STATUS_INSUFFICIENT_SAMPLE,
@@ -41,6 +40,7 @@ from cal_indicators.typed_dsl import (
     TypedExpressionPlan,
     TypedIndicatorRuntime,
     compose_typed_expression,
+    runtime_validation_execution_audit,
 )
 from cal_indicators.typed_latex import (
     MATH_NOTATION_VERSION,
@@ -57,20 +57,42 @@ from cal_indicators.typed_numba_plan import (
     NumbaPlanCompileError,
     compile_numba_batch_plan,
     compile_numba_plan,
+    get_cached_numba_plan,
     get_cached_numba_batch_plan,
+    numba_plan_id,
+    persist_numba_batch_plan,
     persist_numba_plan,
     plan_cache_status,
 )
 from cal_indicators.typed_operators import (
     COMPAT_OPERATOR_REGISTRY_VERSION,
     COMPAT_TYPED_DSL_VERSION,
+    PREVIOUS_OPERATOR_REGISTRY_VERSION,
+    PREVIOUS_TYPED_DSL_VERSION,
+    ROLLING_OPERATOR_REGISTRY_VERSION,
+    ROLLING_TYPED_DSL_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
 )
 
 from .errors import ConflictError, IndicatorDomainError, ValidationError
-from .parallel_engine import AdaptiveComputeEngine, SharedArrayOwner, score_matrix
+from .excel_export import (
+    ExcelExportArtifact,
+    ExcelTargetEvidence,
+    build_indicator_excel_workbook,
+)
+from compute_policy import NJIT_BACKEND, validate_execution_audit, validate_execution_graph
+
+from .parallel_engine import (
+    AdaptiveComputeEngine,
+    plan_scoring_execution_audit,
+)
 from .portfolio_repository import PortfolioRunRepository
+from .portfolio_numba import (
+    finite_series_close_kernel,
+    portfolio_context_kernel,
+    portfolio_numba_execution_audit,
+)
 from .presentation import (
     INDICATOR_TYPE_LABELS,
     catalog_status,
@@ -79,6 +101,9 @@ from .presentation import (
     ui_exposed,
 )
 from .periods import SUPPORTED_PERIODS, period_cache_reference, period_metadata
+from .drawdown_indicator import independent_drawdown_indicators
+from .scale_indicator import scale_indicators
+from .formula_source import editable_formula_latex
 from .repository import (
     IndicatorRepository,
     PlanRepository,
@@ -86,13 +111,35 @@ from .repository import (
 )
 from .snapshot_config import MAX_SNAPSHOT_INDICATORS, normalized_snapshot_item
 from .run_result_repository import EvaluationRunResultRepository
+from .rolling_series import (
+    derive_rolling_series_definition,
+    normalize_rolling_source,
+    transform_scalar_expression,
+    verify_rolling_series_definition,
+)
+from .runtime_context import risk_free_context_kernel as _risk_free_context_kernel
+from .rolling_scalar import (
+    MAX_ROLLING_WINDOW_OBSERVATIONS,
+    MIN_ROLLING_WINDOW_OBSERVATIONS,
+    ROLLING_SCALAR_TRANSFORM_VERSION,
+)
+from .series_definitions import (
+    TIME_SERIES_OUTPUT_CONTRACT,
+    TIME_SERIES_RESULT_KIND,
+    normalize_time_series_definition,
+    series_output_measure_catalog,
+    time_series_builtin_indicators,
+)
+from .series_service import (
+    TimeSeriesIndicatorService,
+    apply_series_compiled_contract,
+)
 from .series_provider import (
     DEFAULT_DATA_DIR,
     PeriodWindow,
     ProductSeries,
     ProductVariableSeries,
     VariablePeriodWindow,
-    load_adjusted_product_series,
     load_product_series,
     load_product_variable_series,
     load_product_variable_series_batch,
@@ -102,7 +149,12 @@ from .series_provider import (
     select_variable_window,
     select_variable_window_fast,
 )
-from .typed_service import compose_expression, infer_expression, typed_product_meta
+from .typed_service import (
+    compose_expression,
+    infer_expression,
+    parameter_composition_context,
+    typed_product_meta,
+)
 from .variable_registry import (
     CONTEXT_SCHEMA_VERSION,
     DATA_CONTRACT_VERSION,
@@ -122,6 +174,8 @@ LEGACY_OPERATOR_REGISTRY_VERSION = "legacy-v1"
 LEGACY_TYPED_DSL_VERSION = "2.0.0"
 LEGACY_TYPED_OPERATOR_REGISTRY_VERSION = "2.0.0"
 COMPAT_TYPED_OPERATOR_REGISTRY_VERSION = COMPAT_OPERATOR_REGISTRY_VERSION
+PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION = PREVIOUS_OPERATOR_REGISTRY_VERSION
+ROLLING_TYPED_OPERATOR_REGISTRY_VERSION = ROLLING_OPERATOR_REGISTRY_VERSION
 NUMBA_V3_MIGRATION_MARKER = "typed-numba-3"
 MAX_FORMULA_LENGTH = 1000
 MAX_DAG_NODES = 128
@@ -132,17 +186,51 @@ MAX_COMBINATIONS = 500
 MAX_PLAN_TARGETS = 50_000
 MAX_ROLLING_COMBINATIONS = 10
 MAX_SERIES_OBSERVATIONS = 5000
-MAX_ROLLING_POINTS = 500
+MAX_ROLLING_POINTS = 5000
 _WINDOW_NOT_SELECTED = object()
 PLAN_PRODUCT_FILTER_KEYS = (
     "fund_type",
     "invest_type",
+    "qdii_type",
     "market",
     "status",
     "management",
     "custodian",
 )
 PLAN_PRODUCT_CONDITION_OPERATORS = {"gte", "lte", "gt", "lt", "eq"}
+
+_TYPED_PLAN_LOCK = threading.RLock()
+_WARMED_TYPED_PLANS: dict[
+    tuple[str, str, str, str], TypedExpressionPlan
+] = {}
+
+
+@numba.njit(numba.int8(numba.float64), cache=True, nogil=True)
+def _finite_result_kernel(value: float) -> int:
+    return 1 if math.isfinite(value) else 0
+
+
+def _service_numeric_kernel_signatures() -> dict[str, list[str]]:
+    dispatchers = (_risk_free_context_kernel, _finite_result_kernel)
+    return {
+        dispatcher.py_func.__name__: [
+            str(signature) for signature in dispatcher.signatures
+        ]
+        for dispatcher in dispatchers
+    }
+
+
+def _service_numeric_execution_audit() -> dict[str, Any]:
+    dispatchers = (_risk_free_context_kernel, _finite_result_kernel)
+    return validate_execution_audit(
+        {
+            "execution_backend": NJIT_BACKEND,
+            "nopython": all(bool(dispatcher.nopython_signatures) for dispatcher in dispatchers),
+            "kernel_signatures": _service_numeric_kernel_signatures(),
+            "python_fallback": 0,
+            "python_operator_calls": 0,
+        }
+    )
 
 
 def _empty_plan_product_selection() -> dict[str, Any]:
@@ -163,7 +251,7 @@ def _compile_typed_plan(
 ) -> TypedExpressionPlan:
     """Cache immutable typed plans; each request still gets its own trace runtime."""
 
-    return compose_typed_expression(
+    plan = compose_typed_expression(
         expression,
         variable_types=variable_types(context_kind, dsl_version),  # type: ignore[arg-type]
         output_contract="scalar",
@@ -172,6 +260,34 @@ def _compile_typed_plan(
         max_nodes=MAX_DAG_NODES,
         max_depth=MAX_DAG_DEPTH,
     )
+    key = (expression, context_kind, dsl_version, operator_registry_version)
+    with _TYPED_PLAN_LOCK:
+        _WARMED_TYPED_PLANS[key] = plan
+    return plan
+
+
+def _get_warmed_typed_plan(
+    expression: str,
+    context_kind: str,
+    dsl_version: str,
+    operator_registry_version: str,
+) -> TypedExpressionPlan:
+    """Resolve an immutable typed AST without parsing/compiling on a run path."""
+
+    key = (expression, context_kind, dsl_version, operator_registry_version)
+    with _TYPED_PLAN_LOCK:
+        plan = _WARMED_TYPED_PLANS.get(key)
+    if plan is None:
+        raise TypedDslError(
+            "TYPED_PLAN_NOT_WARMED",
+            "指标 AST/DAG 尚未在显式编译阶段预热；运行已关闭。",
+            details={
+                "context_kind": context_kind,
+                "dsl_version": dsl_version,
+                "operator_registry_version": operator_registry_version,
+            },
+        )
+    return plan
 
 
 @lru_cache(maxsize=1024)
@@ -235,8 +351,8 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         "annual_risk_free_rate_percent": 1.5,
         "created_at": timestamp,
         "updated_at": timestamp,
-        "dsl_version": TYPED_DSL_VERSION,
-        "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        "dsl_version": PREVIOUS_TYPED_DSL_VERSION,
+        "operator_registry_version": PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION,
         "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
         "variable_registry_version": VARIABLE_REGISTRY_VERSION,
         "data_contract_version": DATA_CONTRACT_VERSION,
@@ -247,7 +363,7 @@ def _built_in_indicators() -> list[dict[str, Any]]:
         "required_variables": ["portfolio_returns"],
         "applicable_product_kinds": ["portfolio"],
         "availability_status": "ready",
-        "formula_version": TYPED_DSL_VERSION,
+        "formula_version": PREVIOUS_TYPED_DSL_VERSION,
         "data_basis": "运行快照中的真实底层产品收益、每日生效权重与严格共同日期",
         "semantic_differences": [
             "组合历史收益使用每日生效权重，不将期末权重回填至历史",
@@ -401,7 +517,14 @@ def _built_in_indicators() -> list[dict[str, Any]]:
             "template_origin": None,
         },
     ]
-    return items + _typed_builtin_indicators(timestamp)
+    typed_indicators = _typed_builtin_indicators(timestamp)
+    return (
+        items
+        + typed_indicators
+        + time_series_builtin_indicators(timestamp, typed_indicators)
+        + independent_drawdown_indicators()
+        + scale_indicators()
+    )
 
 
 def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
@@ -421,8 +544,8 @@ def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
         "annual_risk_free_rate_percent": 1.5,
         "created_at": timestamp,
         "updated_at": timestamp,
-        "dsl_version": TYPED_DSL_VERSION,
-        "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        "dsl_version": PREVIOUS_TYPED_DSL_VERSION,
+        "operator_registry_version": PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION,
         "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
         "variable_registry_version": VARIABLE_REGISTRY_VERSION,
         "data_contract_version": DATA_CONTRACT_VERSION,
@@ -542,12 +665,13 @@ def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
         {
             **common,
             "id": f"builtin-{item[0]}",
+            **({"catalog_status_override": "compatibility", "ui_exposed_override": False} if item[0] == "maximum-drawdown-v2" else {}),
             "name": item[1],
             "description": item[4],
             "expression": item[2],
             "required_variables": item[3],
             "methodology": item[4],
-            "formula_version": TYPED_DSL_VERSION,
+            "formula_version": PREVIOUS_TYPED_DSL_VERSION,
             "minimum_observations": minimum_observations.get(item[0], 1),
             "data_basis": "真实数据、严格窗口、缺失不填充",
             "metrics_factory_reference": "MetricsFactory 区间标量指标审计；公式已独立复核",
@@ -656,6 +780,15 @@ class BoundedObjectTTLCache:
             return {"entries": len(self._items), "bytes": self._bytes}
 
 
+def _resolved_built_in_indicators() -> list[dict[str, Any]]:
+    """Return one canonical definition for every built-in indicator ID."""
+
+    return _built_in_indicators()
+
+
+from .plan_scoring import score_result_rows
+
+
 class CustomIndicatorService:
     def __init__(
         self,
@@ -668,7 +801,7 @@ class CustomIndicatorService:
         self.market_data_dir = market_data_dir or DEFAULT_DATA_DIR
         self.indicators = IndicatorRepository(
             self.workspace_data_dir / "custom_indicators.json",
-            _built_in_indicators(),
+            _resolved_built_in_indicators(),
         )
         self.plans = PlanRepository(self.workspace_data_dir / "evaluation_plans.json")
         self.snapshot_config = SnapshotIndicatorConfigRepository(
@@ -692,11 +825,18 @@ class CustomIndicatorService:
         self.compute_engine = AdaptiveComputeEngine(
             self.workspace_data_dir / ".indicator_runtime"
         )
+        self.series_service = TimeSeriesIndicatorService(
+            repository=self.indicators,
+            runtime_root=self.workspace_data_dir / ".indicator_runtime",
+            market_data_dir=self.market_data_dir,
+            cache=self.cache,
+        )
         self._startup_warmup: dict[str, Any] = {
             "complete": False,
             "indicator_plans": 0,
             "single_metric_batch_plans": 0,
             "evaluation_batch_plans": 0,
+            "time_series_plans": 0,
         }
         self.run_results = EvaluationRunResultRepository(
             self.workspace_data_dir / ".evaluation_run_cache",
@@ -730,10 +870,16 @@ class CustomIndicatorService:
         indicator_plan_count = 0
         single_batch_count = 0
         evaluation_batch_count = 0
-        for definition in self.indicators.list():
+        time_series_count = 0
+        shared_groups: dict[tuple[str, ...], list[tuple[Any, dict[str, Any]]]] = {}
+        for definition in self.indicators.list_all_versions():
             dsl_version = str(definition.get("dsl_version") or LEGACY_DSL_VERSION)
             context_kind = str(definition.get("context_kind") or "single_product")
             try:
+                if definition.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+                    self.series_service.warm(definition)
+                    time_series_count += 1
+                    continue
                 adapted_dsl_version = (
                     dsl_version
                     if dsl_version.startswith("2.")
@@ -778,16 +924,24 @@ class CustomIndicatorService:
                             ]
                         )
                     )
-                    compile_numba_batch_plan(
+                    compiled_batch = compile_numba_batch_plan(
                         (plan,),
                         (definition,),
                         physical_columns,
                     )
+                    persist_numba_batch_plan(compiled_batch, runtime_root)
                     single_batch_count += 1
+                    shared_groups.setdefault(physical_columns, []).append((plan, definition))
             except Exception:
                 failures.append(
                     f"{definition.get('id')}@{definition.get('revision')}"
                 )
+        for columns, entries in shared_groups.items():
+            try:
+                shared = compile_numba_batch_plan(tuple(plan for plan, _ in entries), tuple(definition for _, definition in entries), columns)
+                persist_numba_batch_plan(shared, runtime_root)
+            except Exception:
+                failures.append("shared-catalog:" + ",".join(columns))
         for saved_plan in self.plans.list():
             grouped: dict[
                 tuple[tuple[str, ...], str],
@@ -799,7 +953,7 @@ class CustomIndicatorService:
                         str(item["indicator_id"]),
                         int(item["indicator_revision"]),
                     )
-                    runtime = self._compile_runtime(
+                    runtime = self._warm_runtime(
                         definition, str(item["period"])
                     )
                     if not isinstance(runtime, TypedIndicatorRuntime):
@@ -828,11 +982,12 @@ class CustomIndicatorService:
                             ]
                         )
                     )
-                    compile_numba_batch_plan(
+                    compiled_batch = compile_numba_batch_plan(
                         tuple(runtime.plan for _, runtime in entries),
                         tuple(definition for definition, _ in entries),
                         physical_columns,
                     )
+                    persist_numba_batch_plan(compiled_batch, runtime_root)
                     evaluation_batch_count += 1
             except Exception:
                 failures.append(
@@ -847,6 +1002,59 @@ class CustomIndicatorService:
             "indicator_plans": indicator_plan_count,
             "single_metric_batch_plans": single_batch_count,
             "evaluation_batch_plans": evaluation_batch_count,
+            "time_series_plans": time_series_count,
+        }
+
+    def warm_indicator_revision(
+        self,
+        indicator_id: str,
+        revision: int,
+    ) -> dict[str, Any]:
+        """Explicitly warm one immutable typed revision outside a run request."""
+
+        definition = self.indicators.get(indicator_id, revision)
+        dsl_version = str(definition.get("dsl_version") or LEGACY_DSL_VERSION)
+        if not dsl_version.startswith("2."):
+            raise ValidationError(
+                "INDICATOR_NJIT_REQUIRED",
+                "历史情景识别只允许执行 typed DSL 的 NJIT 指标版本。",
+                field="indicator_revision",
+            )
+        context_kind = str(definition.get("context_kind") or "single_product")
+        if context_kind != "single_product":
+            raise ValidationError(
+                "INDICATOR_CONTEXT_UNSUPPORTED",
+                "历史情景识别的指标数据源只支持单产品指标。",
+                field="indicator_id",
+            )
+        registry_version = str(
+            definition.get("operator_registry_version")
+            or self._typed_registry_for_dsl(dsl_version)
+        )
+        try:
+            plan = _compile_typed_plan(
+                normalize_variable_latex(str(definition.get("expression") or "")),
+                context_kind,
+                dsl_version,
+                registry_version,
+            )
+            compiled = compile_numba_plan(plan)
+            persist_numba_plan(
+                compiled,
+                self.workspace_data_dir / ".indicator_runtime",
+            )
+        except (NumbaPlanCompileError, TypedDslError) as exc:
+            raise ValidationError(
+                "INDICATOR_NJIT_WARMUP_FAILED",
+                "指标版本无法预热为固定签名 NJIT 计划。",
+                field="indicator_revision",
+            ) from exc
+        return {
+            "indicator_id": indicator_id,
+            "indicator_revision": int(revision),
+            "definition_hash": self._indicator_definition_hash(definition),
+            "njit_required": True,
+            **compiled.metadata(),
         }
 
     def start_compute_engine(self) -> None:
@@ -870,7 +1078,98 @@ class CustomIndicatorService:
             return LEGACY_TYPED_OPERATOR_REGISTRY_VERSION
         if dsl_version == COMPAT_TYPED_DSL_VERSION:
             return COMPAT_TYPED_OPERATOR_REGISTRY_VERSION
+        if dsl_version == PREVIOUS_TYPED_DSL_VERSION:
+            return PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION
+        if dsl_version == ROLLING_TYPED_DSL_VERSION:
+            return ROLLING_TYPED_OPERATOR_REGISTRY_VERSION
         return TYPED_OPERATOR_REGISTRY_VERSION
+
+    @staticmethod
+    def _indicator_definition_hash(definition: dict[str, Any]) -> str:
+        payload = json.dumps(
+            definition,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _inline_compile_token(
+        definition: dict[str, Any],
+        *,
+        compiled_plan_id: str,
+        compiled_batch_plan_id: str | None,
+    ) -> str:
+        """Bind an unsaved draft to the exact plans warmed by validation."""
+
+        numerical_contract = {
+            "expression": normalize_variable_latex(
+                str(definition.get("expression") or "")
+            ),
+            "annual_risk_free_rate_percent": float(
+                definition.get("annual_risk_free_rate_percent") or 0.0
+            ),
+            "dsl_version": definition.get("dsl_version"),
+            "operator_registry_version": definition.get(
+                "operator_registry_version"
+            ),
+            "numeric_kernel_version": definition.get("numeric_kernel_version"),
+            "variable_registry_version": definition.get(
+                "variable_registry_version"
+            ),
+            "data_contract_version": definition.get("data_contract_version"),
+            "context_schema_version": definition.get("context_schema_version"),
+            "context_kind": definition.get("context_kind"),
+            "output_contract": definition.get("output_contract"),
+            "required_variables": list(
+                canonicalize_variables(definition.get("required_variables") or [])
+            ),
+            "compiled_plan_id": compiled_plan_id,
+            "compiled_batch_plan_id": compiled_batch_plan_id,
+            "token_version": "inline-njit-compile-token-v1",
+        }
+        serialized = json.dumps(
+            numerical_contract,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()
+
+    @staticmethod
+    def _combined_njit_audit(
+        audits: Iterable[dict[str, Any]],
+        *,
+        additional_signatures: Optional[dict[str, list[str]]] = None,
+    ) -> dict[str, Any]:
+        """Prove every executed numerical lane and expose one fixed-signature audit."""
+
+        verified = validate_execution_graph(*tuple(audits))
+        signatures: dict[str, list[str]] = {}
+        for audit_index, audit in enumerate(verified):
+            plan_id = str(audit.get("compiled_plan_id") or audit_index)[:16]
+            groups = audit.get("kernel_signatures") or audit.get(
+                "compiled_signatures"
+            )
+            if not isinstance(groups, dict):
+                continue
+            for name, values in groups.items():
+                signatures[f"{plan_id}:{name}"] = [str(value) for value in values]
+        for name, values in (additional_signatures or {}).items():
+            signatures[f"service:{name}"] = [str(value) for value in values]
+        combined = validate_execution_audit(
+            {
+                "execution_backend": NJIT_BACKEND,
+                "nopython": all(item.get("nopython") is True for item in verified),
+                "kernel_signatures": signatures,
+                "python_fallback": 0,
+                "python_operator_calls": 0,
+            }
+        )
+        combined["verified_lanes"] = len(verified)
+        return combined
 
     def _apply_numba_v3_migration(self) -> dict[str, Any]:
         migration = self.plans.archive_and_reset(
@@ -944,11 +1243,6 @@ class CustomIndicatorService:
             },
         ]
         periods = period_metadata()
-        legacy_templates = [
-            self._draft_from_definition(item)
-            for item in _built_in_indicators()
-            if item.get("dsl_version") == LEGACY_DSL_VERSION
-        ]
         typed = typed_product_meta()
         return {
             "engine_version": ENGINE_VERSION,
@@ -981,10 +1275,24 @@ class CustomIndicatorService:
                 "max_size": 512,
                 "entries": _compile_typed_plan.cache_info().currsize,
             },
+            "indicator_result_kinds": [
+                {"id": "scalar", "label": "标量指标"},
+                {"id": TIME_SERIES_RESULT_KIND, "label": "时序指标"},
+            ],
             "indicator_types": [
                 {"id": type_id, "label": label}
                 for type_id, label in INDICATOR_TYPE_LABELS.items()
             ],
+            "series_output_measures": series_output_measure_catalog(),
+            "rolling_scalar": {
+                "supported": True,
+                "window_kind": "observations",
+                "minimum_window_observations": MIN_ROLLING_WINDOW_OBSERVATIONS,
+                "maximum_window_observations": MAX_ROLLING_WINDOW_OBSERVATIONS,
+                "transform_version": ROLLING_SCALAR_TRANSFORM_VERSION,
+                "draft_endpoint": "/api/custom-indicators/rolling-scalar-draft",
+                "source_lock": "indicator_id+revision+definition_hash",
+            },
             # Compatibility alias for existing clients. These are business
             # indicator types, not mathematical operator categories.
             "indicator_categories": [
@@ -1012,6 +1320,9 @@ class CustomIndicatorService:
                 "rolling_combinations": MAX_ROLLING_COMBINATIONS,
                 "series_observations": MAX_SERIES_OBSERVATIONS,
                 "rolling_points": MAX_ROLLING_POINTS,
+                "time_series_instances": 10,
+                "time_series_channels": 8,
+                "time_series_parameters": 16,
                 **typed["limits"],
             },
         }
@@ -1037,6 +1348,25 @@ class CustomIndicatorService:
     def _decorate_definition(definition: dict[str, Any]) -> dict[str, Any]:
         """Expose legacy protocol defaults without mutating persisted history."""
         decorated = copy.deepcopy(definition)
+        # Chart placement is owned by each consuming view, not by calculation definitions.
+        decorated.pop("chart_panel", None)
+        if decorated.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            identity = {
+                key: copy.deepcopy(decorated.get(key))
+                for key in (
+                    "id", "revision", "source", "read_only", "created_at", "updated_at"
+                )
+                if key in decorated
+            }
+            try:
+                decorated = {
+                    **decorated,
+                    **normalize_time_series_definition(decorated, decorated),
+                    **identity,
+                }
+            except ValidationError:
+                # Historical invalid definitions remain inspectable; execution still fails closed.
+                pass
         # Period is a runtime evaluation parameter, not a definition capability.
         # Historical records may contain a subset; expose the effective all-period
         # contract without rewriting the persisted version history.
@@ -1045,12 +1375,25 @@ class CustomIndicatorService:
         decorated.setdefault("dsl_version", LEGACY_DSL_VERSION)
         decorated.setdefault("operator_registry_version", LEGACY_OPERATOR_REGISTRY_VERSION)
         decorated.setdefault("context_kind", "single_product")
-        decorated.setdefault("output_contract", "scalar")
-        decorated.setdefault("output_measure", "dimensionless")
+        decorated.setdefault("result_kind", "scalar")
+        decorated.setdefault(
+            "output_contract",
+            TIME_SERIES_OUTPUT_CONTRACT
+            if decorated["result_kind"] == TIME_SERIES_RESULT_KIND
+            else "scalar",
+        )
+        decorated.setdefault(
+            "output_measure",
+            "series_bundle"
+            if decorated["result_kind"] == TIME_SERIES_RESULT_KIND
+            else "dimensionless",
+        )
         decorated.setdefault("template_origin", None)
         if str(decorated["dsl_version"]).startswith("2."):
             is_modern = str(decorated["dsl_version"]) in {
                 COMPAT_TYPED_DSL_VERSION,
+                PREVIOUS_TYPED_DSL_VERSION,
+                ROLLING_TYPED_DSL_VERSION,
                 TYPED_DSL_VERSION,
             }
             decorated.setdefault(
@@ -1081,12 +1424,48 @@ class CustomIndicatorService:
                 decorated["display_latex"] = None
         else:
             decorated["display_latex"] = decorated.get("expression")
+        # Editor source is reversible LaTeX, separate from both stored source
+        # and the abbreviated mathematical preview. Never rewrite revisions.
+        sources = [decorated, *(decorated.get("series_outputs") or [])]
+        for item in sources:
+            try:
+                item["editable_latex"] = editable_formula_latex(str(item.get("expression") or ""))
+            except (SyntaxError, ValueError, TypedDslError):
+                item["editable_latex"] = None
         decorated["indicator_type"] = indicator_type(decorated)
         decorated["category_id"] = decorated["indicator_type"]
         decorated["category_label"] = INDICATOR_TYPE_LABELS[decorated["indicator_type"]]
         decorated["catalog_status"] = catalog_status(decorated)
         decorated["ui_exposed"] = ui_exposed(decorated)
         decorated["presentation"] = metric_presentation(decorated)
+        if (
+            decorated.get("result_kind", "scalar") == "scalar"
+            and decorated.get("context_kind", "single_product") == "single_product"
+            and str(decorated.get("dsl_version") or "").startswith("2.")
+        ):
+            try:
+                from cal_indicators.rolling_scope import interval_capability
+                from .formula_source import canonical_formula_source
+                decorated["rolling_series_compatibility"] = interval_capability(
+                    canonical_formula_source(str(decorated.get("expression") or "")),
+                    variable_types=variable_types("single_product", decorated["dsl_version"]),
+                    dsl_version=decorated["dsl_version"],
+                    operator_registry_version=decorated.get("operator_registry_version"),
+                )
+            except ValidationError as exc:
+                decorated["rolling_series_compatibility"] = {
+                    "supported": False,
+                    "protocol_version": "1.0.0",
+                    "code": exc.code,
+                    "message": exc.message,
+                }
+        else:
+            decorated["rolling_series_compatibility"] = {
+                "supported": False,
+                "protocol_version": "1.0.0",
+                "code": "ROLLING_SOURCE_CONTEXT_UNSUPPORTED",
+                "message": "仅支持单产品 typed DSL 标量指标。",
+            }
         return decorated
 
     @staticmethod
@@ -1099,6 +1478,19 @@ class CustomIndicatorService:
         protocol_defaults: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         protocol_defaults = protocol_defaults or {}
+        result_kind = str(
+            fields.get("result_kind")
+            or protocol_defaults.get("result_kind")
+            or "scalar"
+        )
+        if result_kind == TIME_SERIES_RESULT_KIND:
+            return normalize_time_series_definition(fields, protocol_defaults)
+        if result_kind != "scalar":
+            raise ValidationError(
+                "INVALID_RESULT_KIND",
+                "指标结果类型必须为 scalar 或 time_series。",
+                field="result_kind",
+            )
         name = str(fields.get("name", "")).strip()
         if not name or len(name) > 80:
             raise ValidationError("INVALID_NAME", "指标名称长度应为 1 至 80 个字符。", field="name")
@@ -1118,10 +1510,10 @@ class CustomIndicatorService:
         # every engine period. The concrete period is selected only when running.
         periods = list(SUPPORTED_PERIODS)
         display_format = str(fields.get("display_format", "number"))
-        if display_format not in {"number", "percent"}:
+        if display_format not in {"number", "percent", "date"}:
             raise ValidationError("INVALID_DISPLAY_FORMAT", "不支持的显示格式。", field="display_format")
         direction = str(fields.get("direction", "higher_better"))
-        if direction not in {"higher_better", "lower_better"}:
+        if direction not in {"neutral", "higher_better", "lower_better"}:
             raise ValidationError("INVALID_DIRECTION", "不支持的优劣方向。", field="direction")
         requested_indicator_type = str(
             fields.get("indicator_type")
@@ -1153,6 +1545,8 @@ class CustomIndicatorService:
             LEGACY_DSL_VERSION,
             LEGACY_TYPED_DSL_VERSION,
             COMPAT_TYPED_DSL_VERSION,
+            PREVIOUS_TYPED_DSL_VERSION,
+            ROLLING_TYPED_DSL_VERSION,
             TYPED_DSL_VERSION,
         }:
             raise ValidationError(
@@ -1212,7 +1606,12 @@ class CustomIndicatorService:
             "data_contract_version": None,
             "context_schema_version": None,
         }
-        if dsl_version in {COMPAT_TYPED_DSL_VERSION, TYPED_DSL_VERSION}:
+        if dsl_version in {
+            COMPAT_TYPED_DSL_VERSION,
+            PREVIOUS_TYPED_DSL_VERSION,
+            ROLLING_TYPED_DSL_VERSION,
+            TYPED_DSL_VERSION,
+        }:
             supported_versions = {
                 "variable_registry_version": VARIABLE_REGISTRY_VERSION,
                 "data_contract_version": DATA_CONTRACT_VERSION,
@@ -1290,6 +1689,7 @@ class CustomIndicatorService:
                 NUMERIC_KERNEL_VERSION if dsl_version.startswith("2.") else None
             ),
             "context_kind": context_kind,
+            "result_kind": "scalar",
             "output_contract": output_contract,
             # The compiler is the authority. This placeholder is replaced by
             # ``_apply_compiled_contract`` before a definition is persisted.
@@ -1407,17 +1807,26 @@ class CustomIndicatorService:
                 f"公式表达式不能超过 {MAX_FORMULA_LENGTH} 个字符。",
                 field="expression",
             )
-        return infer_expression(
+        (
+            parameter_schema,
+            parameter_types,
+            parameter_latex_symbols,
+            _parameter_semantics,
+        ) = parameter_composition_context(fields.get("parameter_schema") or [])
+        result = infer_expression(
             expression,
             context_kind,  # type: ignore[arg-type]
             scalar_required=False,
             dsl_version=dsl_version,
             operator_registry_version=registry_version,
+            additional_variable_types=parameter_types,
+            additional_latex_symbols=parameter_latex_symbols,
         )
+        result["parameter_schema"] = parameter_schema
+        return result
 
     def _validate_typed(self, fields: dict[str, Any]) -> dict[str, Any]:
         expression = str(fields.get("expression", "")).strip()
-        periods = list(SUPPORTED_PERIODS)
         context_kind = str(fields.get("context_kind") or "single_product")
         dsl_version = str(fields.get("dsl_version") or TYPED_DSL_VERSION)
         registry_version = str(
@@ -1453,14 +1862,17 @@ class CustomIndicatorService:
             }
 
         compiled_batch = None
-        if context_kind == "single_product":
-            try:
-                plan = _compile_typed_plan(
-                    normalize_variable_latex(expression),
-                    context_kind,
-                    dsl_version,
-                    registry_version,
-                )
+        try:
+            plan = _compile_typed_plan(
+                normalize_variable_latex(expression),
+                context_kind,
+                dsl_version,
+                registry_version,
+            )
+            compiled = compile_numba_plan(plan)
+            runtime_root = self.workspace_data_dir / ".indicator_runtime"
+            persist_numba_plan(compiled, runtime_root)
+            if context_kind == "single_product":
                 dependencies = self._physical_dependency_signature(
                     plan.context_requirements
                 )
@@ -1486,14 +1898,15 @@ class CustomIndicatorService:
                     (fields,),
                     physical_columns,
                 )
-            except (NumbaPlanCompileError, TypeError, ValueError) as exc:
-                return self._invalid_validation(
-                    {
-                        "code": "NJIT_BATCH_COMPILE_FAILED",
-                        "message": "指标公式无法编译为批量 NJIT 计算计划。",
-                        "field": "expression",
-                    }
-                )
+                persist_numba_batch_plan(compiled_batch, runtime_root)
+        except (NumbaPlanCompileError, TypeError, ValueError):
+            return self._invalid_validation(
+                {
+                    "code": "NJIT_BATCH_COMPILE_FAILED",
+                    "message": "指标公式无法编译为固定签名 NJIT 计算计划。",
+                    "field": "expression",
+                }
+            )
 
         dag = copy.deepcopy(inferred["dag"])
         root_id = dag.get("roots", {}).get("result")
@@ -1509,6 +1922,24 @@ class CustomIndicatorService:
             node["shape"] = value_type.get("kind")
             node["axes"] = value_type.get("axes", [])
             node["symbolic_shape"] = value_type.get("shape", [])
+        compile_contract = {
+            "dependencies": inferred["dependencies"],
+            "output_measure": output_measure,
+            "kernel_version": inferred.get("kernel_version"),
+            "compiled_plan_id": compiled.plan_id,
+            "compiled_batch_plan_id": (
+                compiled_batch.plan_id if compiled_batch is not None else None
+            ),
+        }
+        token_definition = self._normalize_definition(fields)
+        self._apply_compiled_contract(token_definition, compile_contract)
+        compile_token = self._inline_compile_token(
+            token_definition,
+            compiled_plan_id=compiled.plan_id,
+            compiled_batch_plan_id=(
+                compiled_batch.plan_id if compiled_batch is not None else None
+            ),
+        )
         return {
             "valid": True,
             "diagnostics": [],
@@ -1516,6 +1947,7 @@ class CustomIndicatorService:
             "python_expression": inferred.get("python_expression"),
             "latex": inferred.get("latex"),
             "display_latex": inferred.get("display_latex"),
+            "editable_latex": inferred.get("editable_latex"),
             "math_notation_version": inferred.get("math_notation_version"),
             "dag": dag,
             "output_type": inferred["inferred_type"],
@@ -1537,11 +1969,89 @@ class CustomIndicatorService:
             "kernel_version": inferred.get("kernel_version"),
             "engine_version": inferred.get("engine_version"),
             "required_workspace_bytes": inferred.get("required_workspace_bytes", 0),
+            "compile_token": compile_token,
+            "compile_token_scope": "current_process_warm_cache",
+            "execution": compiled.metadata(),
+            "batch_execution": (
+                compiled_batch.metadata() if compiled_batch is not None else None
+            ),
             "python_fallback": 0,
             "python_operator_calls": 0,
         }
 
+    def _verify_rolling_source_fields(
+        self,
+        fields: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        source = normalize_rolling_source(fields.get("rolling_source"))
+        if source is None or source.get("detached"):
+            return source
+        try:
+            source_definition = self._decorate_definition(
+                self.indicators.get(
+                    str(source["indicator_id"]),
+                    int(source["indicator_revision"]),
+                )
+            )
+        except IndicatorDomainError as exc:
+            raise ValidationError(
+                "ROLLING_SOURCE_NOT_FOUND",
+                "未找到滚动时序指标锁定的标量来源版本。",
+                field="rolling_source",
+            ) from exc
+        return verify_rolling_series_definition(fields, source_definition)
+
+    def derive_rolling_series(
+        self,
+        *,
+        indicator_id: str,
+        indicator_revision: int,
+        window_observations: int,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Materialize one locked scalar revision as a validated series draft."""
+
+        source = self._decorate_definition(
+            self.indicators.get(indicator_id, int(indicator_revision))
+        )
+        draft = derive_rolling_series_definition(
+            source,
+            window_observations,
+            name=name,
+            description=description,
+        )
+        normalized = self._normalize_definition(draft)
+        self._verify_rolling_source_fields(normalized)
+        validation = self._compile_or_raise(normalized)
+        self._apply_compiled_contract(normalized, validation)
+        return {
+            "definition": normalized,
+            "validation": validation,
+            "source": {
+                "indicator_id": source["id"],
+                "indicator_revision": int(source["revision"]),
+                "indicator_name": source["name"],
+                "window_observations": int(window_observations),
+            },
+        }
+
     def validate(self, fields: dict[str, Any]) -> dict[str, Any]:
+        if str(fields.get("result_kind") or "scalar") not in {"scalar", "time_series"}:
+            return self._invalid_validation({"code": "INVALID_RESULT_KIND", "message": "一个标量指标只定义一个结果。", "field": "result_kind"})
+        if str(fields.get("result_kind") or "scalar") == TIME_SERIES_RESULT_KIND:
+            try:
+                self._verify_rolling_source_fields(fields)
+            except ValidationError as exc:
+                return self._invalid_validation(
+                    {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "field": exc.field or "rolling_source",
+                    }
+                )
+            _definition, validation = self.series_service.validate(fields)
+            return validation
         if str(fields.get("dsl_version") or LEGACY_DSL_VERSION).startswith("2."):
             return self._validate_typed(fields)
         expression = str(fields.get("expression", "")).strip()
@@ -1626,6 +2136,9 @@ class CustomIndicatorService:
     def _apply_compiled_contract(
         definition: dict[str, Any], validation: dict[str, Any]
     ) -> None:
+        if definition.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            apply_series_compiled_contract(definition, validation)
+            return
         dependencies = list(canonicalize_variables(validation.get("dependencies") or []))
         definition["required_variables"] = dependencies
         applicable = {"etf", "fund"}
@@ -1641,6 +2154,14 @@ class CustomIndicatorService:
         definition["output_measure"] = str(
             validation.get("output_measure") or definition.get("output_measure") or "dimensionless"
         )
+        if definition["output_measure"] == "date":
+            definition.update(value_type="date", display_format="date", precision=0, unit="", direction="neutral")
+        elif definition["output_measure"] == "calendar_days":
+            definition.update(value_type="duration", duration_unit="calendar_day", display_format="number", precision=0, unit="天")
+        elif definition.get("display_format") == "date":
+            raise ValidationError("DATE_FORMAT_TYPE_MISMATCH", "只有日期算子的结果可以使用日期格式。", field="display_format")
+        else:
+            definition["value_type"] = "number"
         definition["numeric_kernel_version"] = str(
             validation.get("kernel_version") or NUMERIC_KERNEL_VERSION
         )
@@ -1687,13 +2208,50 @@ class CustomIndicatorService:
             ]
         return {"items": items, "total": len(items)}
 
-    def get_indicator(self, indicator_id: str) -> dict[str, Any]:
-        return self._decorate_definition(self.indicators.get(indicator_id))
+    def get_indicator(
+        self,
+        indicator_id: str,
+        revision: Optional[int] = None,
+    ) -> dict[str, Any]:
+        return self._decorate_definition(
+            self.indicators.get(indicator_id, revision)
+        )
+
+    def build_rolling_scalar_draft(
+        self,
+        indicator_id: str,
+        revision: int | None,
+        window_observations: int,
+        min_periods: int | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Compatibility wrapper around the canonical rolling-series builder."""
+
+        window = int(window_observations)
+        if min_periods is not None and int(min_periods) != window:
+            raise ValidationError(
+                "ROLLING_PARTIAL_WINDOW_UNSUPPORTED",
+                "标量滚动派生当前要求完整窗口；最少有效观察数必须等于窗口观察数。",
+                field="min_periods",
+            )
+        derived = self.derive_rolling_series(
+            indicator_id=indicator_id,
+            indicator_revision=int(revision) if revision is not None else 1,
+            window_observations=window,
+            name=name,
+        )
+        source = dict(derived.get("source") or {})
+        source["name"] = str(source.get("indicator_name") or "")
+        return {**derived, "source": source}
 
     def create_indicator(self, fields: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize_definition(fields)
         validation = self._compile_or_raise(normalized)
         self._apply_compiled_contract(normalized, validation)
+        if normalized.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            self.series_service.warm(normalized)
+        elif normalized.get("context_kind") == "single_product":
+            self._warm_single_product_definition(normalized)
         created = self.indicators.create(normalized)
         self.cache.clear()
         self.plan_cache.clear()
@@ -1704,6 +2262,10 @@ class CustomIndicatorService:
         normalized = self._normalize_definition(fields, current)
         validation = self._compile_or_raise(normalized)
         self._apply_compiled_contract(normalized, validation)
+        if normalized.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+            self.series_service.warm(normalized)
+        elif normalized.get("context_kind") == "single_product":
+            self._warm_single_product_definition(normalized)
         updated = self.indicators.update(indicator_id, revision, normalized)
         self.cache.clear()
         self.plan_cache.clear()
@@ -1727,6 +2289,30 @@ class CustomIndicatorService:
                 "INDICATOR_IN_SNAPSHOT_CONFIG",
                 "该指标已配置为快照指标，请先从快照加速配置中移除。",
             )
+        rolling_dependents: list[str] = []
+        seen_rolling_dependents: set[str] = set()
+        for candidate in self.indicators.list_all_versions():
+            if candidate.get("id") == indicator_id:
+                continue
+            rolling_source = normalize_rolling_source(candidate.get("rolling_source"))
+            if (
+                rolling_source is not None
+                and not rolling_source.get("detached")
+                and rolling_source.get("indicator_id") == indicator_id
+            ):
+                label = (
+                    f"{candidate.get('name') or candidate.get('id')}"
+                    f" v{candidate.get('revision')}"
+                )
+                if label not in seen_rolling_dependents:
+                    seen_rolling_dependents.add(label)
+                    rolling_dependents.append(label)
+        if rolling_dependents:
+            raise ConflictError(
+                "INDICATOR_IN_ROLLING_SERIES",
+                "该标量指标正在被滚动时序指标引用，请先删除或解除来源关联："
+                + "、".join(rolling_dependents[:5]),
+            )
         self.indicators.delete(indicator_id, revision)
         self.cache.clear()
         self.plan_cache.clear()
@@ -1743,11 +2329,25 @@ class CustomIndicatorService:
                         int(item["indicator_revision"]),
                     )
                 )
+                presentation = copy.deepcopy(definition.get("presentation") or {})
+                if definition.get("result_kind") == TIME_SERIES_RESULT_KIND:
+                    channel = next((value for value in definition.get("series_outputs", [])
+                                    if value["id"] == item.get("channel_id")), None)
+                    if channel is None or item.get("reducer") != "last_finite":
+                        raise ValidationError("SNAPSHOT_SERIES_CHANNEL_REQUIRED", "时序快照必须引用有效通道及末个有限值归约。")
+                    presentation.update(
+                        name=f"{definition['name']} · {channel['label']}",
+                        channel_id=channel["id"], reducer="last_finite",
+                        display_format=channel["display_format"], unit=channel["unit"],
+                        precision=channel["precision"], value_type="number",
+                        value_scale=100.0 if channel["display_format"] == "percent" else 1.0,
+                        output_measure=channel.get("resolved_output_measure") or channel.get("output_measure", "dimensionless"),
+                    )
                 resolved.update(
                     {
-                        "name": definition["name"],
+                        "name": presentation.get("name") or definition["name"],
                         "source": definition["source"],
-                        "presentation": definition.get("presentation"),
+                        "presentation": presentation,
                         "status": "ready",
                         "status_message": "将在数据刷新后预计算并写入产品快照。",
                     }
@@ -1807,10 +2407,12 @@ class CustomIndicatorService:
                 str(item.get("indicator_id")),
                 int(item.get("indicator_revision") or 0),
                 str(item.get("period") or "").upper(),
+                str(item.get("channel_id") or ""),
+                str(item.get("reducer") or ""),
             ): str(item.get("field") or "")
             for item in self.snapshot_config.get().get("items", [])
         }
-        seen_keys: set[tuple[str, int, str]] = set()
+        seen_keys: set[tuple[str, int, str, str, str]] = set()
         seen_fields: set[str] = set()
         revisions_by_indicator: dict[str, int] = {}
         for index, raw in enumerate(items):
@@ -1818,6 +2420,8 @@ class CustomIndicatorService:
                 str(raw.get("indicator_id") or "").strip(),
                 int(raw.get("indicator_revision") or 0),
                 str(raw.get("period") or "").strip().upper(),
+                str(raw.get("channel_id") or "").strip(),
+                str(raw.get("reducer") or "").strip(),
             )
             item = normalized_snapshot_item(
                 {**raw, "field": raw.get("field") or current_fields.get(raw_key)}
@@ -1838,11 +2442,13 @@ class CustomIndicatorService:
                 item["indicator_id"],
                 int(item["indicator_revision"]),
                 item["period"],
+                str(item.get("channel_id") or ""),
+                str(item.get("reducer") or ""),
             )
             if key in seen_keys:
                 raise ValidationError(
                     "DUPLICATE_SNAPSHOT_INDICATOR",
-                    "同一指标版本和周期不能重复配置。",
+                    "同一指标版本、周期、通道和归约方式不能重复配置。",
                     field=f"items.{index}",
                 )
             previous_revision = revisions_by_indicator.get(item["indicator_id"])
@@ -1864,16 +2470,43 @@ class CustomIndicatorService:
             if definition.get("context_kind", "single_product") != "single_product":
                 raise ValidationError(
                     "SNAPSHOT_CONTEXT_MISMATCH",
-                    "只有单产品标量指标可以配置为产品快照。",
+                    "只有单产品指标可以配置为产品快照。",
                     field=f"items.{index}.indicator_id",
                 )
-            if definition.get("output_contract", "scalar") != "scalar":
-                raise ValidationError(
-                    "SNAPSHOT_OUTPUT_MISMATCH",
-                    "快照指标的最终结果必须是单个数值。",
-                    field=f"items.{index}.indicator_id",
-                )
-            self._compile_runtime(definition, item["period"])
+            result_kind = str(definition.get("result_kind") or "scalar")
+            if result_kind == TIME_SERIES_RESULT_KIND:
+                channel_id = str(item.get("channel_id") or "")
+                channel_ids = {
+                    str(output.get("id") or "")
+                    for output in definition.get("series_outputs") or []
+                }
+                if not channel_id or channel_id not in channel_ids:
+                    raise ValidationError(
+                        "SNAPSHOT_SERIES_CHANNEL_REQUIRED",
+                        "时序指标快照必须选择一个有效输出通道。",
+                        field=f"items.{index}.channel_id",
+                    )
+                if item.get("reducer") != "last_finite":
+                    raise ValidationError(
+                        "SNAPSHOT_SERIES_REDUCER_REQUIRED",
+                        "时序指标快照当前只支持末个有限值归约。",
+                        field=f"items.{index}.reducer",
+                    )
+                self.series_service.warm(definition)
+            else:
+                if definition.get("output_contract", "scalar") != "scalar":
+                    raise ValidationError(
+                        "SNAPSHOT_OUTPUT_MISMATCH",
+                        "标量快照指标的最终结果必须是单个数值。",
+                        field=f"items.{index}.indicator_id",
+                    )
+                if item.get("channel_id") or item.get("reducer"):
+                    raise ValidationError(
+                        "SNAPSHOT_SCALAR_CHANNEL_NOT_ALLOWED",
+                        "标量指标快照不能指定时序通道或归约方式。",
+                        field=f"items.{index}.channel_id",
+                    )
+                self._warm_runtime(definition, item["period"])
             normalized.append(item)
             seen_keys.add(key)
             seen_fields.add(item["field"])
@@ -1894,11 +2527,16 @@ class CustomIndicatorService:
             list[tuple[dict[str, Any], TypedIndicatorRuntime]],
         ] = {}
         singleton_count = 0
+        time_series_count = 0
         for item in selected:
             definition = self.indicators.get(
                 str(item["indicator_id"]), int(item["indicator_revision"])
             )
-            runtime = self._compile_runtime(definition, str(item["period"]))
+            if definition.get("result_kind", "scalar") == TIME_SERIES_RESULT_KIND:
+                self.series_service.warm(definition)
+                time_series_count += 1
+                continue
+            runtime = self._warm_runtime(definition, str(item["period"]))
             if not isinstance(runtime, TypedIndicatorRuntime):
                 raise ValidationError(
                     "NJIT_RUNTIME_REQUIRED",
@@ -1919,10 +2557,14 @@ class CustomIndicatorService:
                     ]
                 )
             )
-            compile_numba_batch_plan(
+            compiled_singleton = compile_numba_batch_plan(
                 (runtime.plan,),
                 (definition,),
                 physical_columns,
+            )
+            persist_numba_batch_plan(
+                compiled_singleton,
+                self.workspace_data_dir / ".indicator_runtime",
             )
             singleton_count += 1
             groups.setdefault((dependencies, str(item["period"])), []).append(
@@ -1943,12 +2585,16 @@ class CustomIndicatorService:
             )
             for start in range(0, len(entries), MAX_INDICATORS):
                 batch = entries[start : start + MAX_INDICATORS]
-                compile_numba_batch_plan(
+                compiled_group = compile_numba_batch_plan(
                     tuple(runtime.plan for _, runtime in batch),
                     tuple(definition for definition, _ in batch),
                     physical_columns,
                 )
-        return {"singletons": singleton_count, "batches": len(groups)}
+                persist_numba_batch_plan(
+                    compiled_group,
+                    self.workspace_data_dir / ".indicator_runtime",
+                )
+        return {"singletons": singleton_count, "batches": len(groups), "time_series": time_series_count}
 
     @staticmethod
     def _validate_targets(
@@ -1974,11 +2620,53 @@ class CustomIndicatorService:
             )
         return normalized
 
+    def prepare_evaluation(
+        self, *, indicator_ids: list[str], indicator_refs: Optional[list[dict[str, Any]]] = None,
+        inline_definition: Optional[dict[str, Any]] = None, compile_token: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Explicit preparation endpoint; no market I/O or metric evaluation.
+
+        Definitions remain independent. Only their compiler-owned execution
+        nodes are merged. Formal evaluate never specializes a new dispatcher.
+        """
+        references = indicator_refs or []
+        if references and (indicator_ids or inline_definition is not None):
+            raise ValidationError("INDICATOR_SOURCE_CONFLICT", "指标引用与其他来源不能同时提供。")
+        versions: dict[str, int] = {}
+        requested: dict[str, int | None] = {}
+        for item in references:
+            key = str(item["indicator_id"])
+            revision = int(item["indicator_revision"]) if item.get("indicator_revision") is not None else None
+            if key in requested and requested[key] != revision:
+                raise ValidationError("INDICATOR_VERSION_CONFLICT", "同一次计算中的指标必须使用一个明确版本。")
+            requested[key] = revision
+            if revision is not None:
+                versions[key] = revision
+        ids = [str(item["indicator_id"]) for item in references] if references else indicator_ids
+        definitions = self._resolve_evaluation_definitions(ids, inline_definition, versions, compile_token)
+        grouped: dict[tuple[str, ...], list[tuple[dict[str, Any], TypedIndicatorRuntime]]] = {}
+        for definition in definitions:
+            if definition.get("context_kind", "single_product") != "single_product":
+                raise ValidationError("CONTEXT_KIND_MISMATCH", "此准备入口仅支持单产品指标。")
+            runtime = self._warm_runtime(definition, "ALL")
+            dependencies = self._physical_dependency_signature(runtime.plan.context_requirements)
+            grouped.setdefault(dependencies, []).append((definition, runtime))
+        audits = []
+        for dependencies, entries in grouped.items():
+            columns = tuple(dict.fromkeys(["adjusted_nav", *[name for name in dependencies if name not in {"returns", "log_returns", "adjusted_nav"}]]))
+            compiled = compile_numba_batch_plan(tuple(runtime.plan for _, runtime in entries), tuple(item for item, _ in entries), columns)
+            persist_numba_batch_plan(compiled, self.workspace_data_dir / ".indicator_runtime")
+            audits.append(compiled.metadata())
+        return {"prepared": True, "plans": audits, "indicator_refs": [
+            {"indicator_id": item["id"], "indicator_revision": item["revision"]} for item in definitions if item.get("id")
+        ]}
+
     def _resolve_evaluation_definitions(
         self,
         indicator_ids: list[str],
         inline_definition: Optional[dict[str, Any]],
         indicator_versions: Optional[dict[str, int]] = None,
+        compile_token: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         if bool(indicator_ids) == bool(inline_definition):
             raise ValidationError(
@@ -1987,8 +2675,106 @@ class CustomIndicatorService:
             )
         if inline_definition is not None:
             normalized = self._normalize_definition(inline_definition)
-            validation = self._compile_or_raise(normalized)
+            if normalized.get("result_kind", "scalar") != "scalar":
+                raise ValidationError(
+                    "INDICATOR_RESULT_KIND_MISMATCH",
+                    "时序指标必须使用 evaluate-series 接口。",
+                    field="inline_definition.result_kind",
+                )
+            if not self._is_typed_definition(normalized):
+                raise ValidationError(
+                    "INLINE_DEFINITION_NJIT_REQUIRED",
+                    "未保存指标只允许运行已显式编译的 typed NJIT 公式；请迁移公式或先保存版本。",
+                    field="inline_definition.dsl_version",
+                )
+            if not compile_token:
+                raise ValidationError(
+                    "INLINE_DEFINITION_NOT_COMPILED",
+                    "未保存指标必须先显式校验编译，并携带返回的 compile_token；也可以先保存指标版本再运行。",
+                    field="compile_token",
+                )
+            context_kind = str(normalized.get("context_kind") or "single_product")
+            dsl_version = str(normalized.get("dsl_version") or TYPED_DSL_VERSION)
+            registry_version = str(
+                normalized.get("operator_registry_version")
+                or self._typed_registry_for_dsl(dsl_version)
+            )
+            try:
+                plan = _get_warmed_typed_plan(
+                    normalize_variable_latex(normalized["expression"]),
+                    context_kind,
+                    dsl_version,
+                    registry_version,
+                )
+            except TypedDslError as exc:
+                raise ValidationError(
+                    "INLINE_DEFINITION_NOT_WARMED",
+                    "未保存指标的 AST/DAG 不在当前进程预热缓存中；请重新校验编译。",
+                    field="compile_token",
+                    diagnostics=[exc.to_dict()],
+                ) from exc
+            compiled = get_cached_numba_plan(plan)
+            if compiled is None:
+                raise ValidationError(
+                    "INLINE_DEFINITION_NOT_WARMED",
+                    "未保存指标的固定签名 NJIT 计划不在当前进程预热缓存中；请重新校验编译。",
+                    field="compile_token",
+                    diagnostics=[{"compiled_plan_id": numba_plan_id(plan)}],
+                )
+            compiled_batch = None
+            if context_kind == "single_product":
+                dependencies = self._physical_dependency_signature(
+                    plan.context_requirements
+                )
+                physical_columns = tuple(
+                    dict.fromkeys(
+                        [
+                            "adjusted_nav",
+                            *[
+                                name
+                                for name in dependencies
+                                if name
+                                not in {
+                                    "returns",
+                                    "log_returns",
+                                    "adjusted_nav",
+                                }
+                            ],
+                        ]
+                    )
+                )
+                compiled_batch = get_cached_numba_batch_plan(
+                    (plan,), (normalized,), physical_columns
+                )
+                if compiled_batch is None:
+                    raise ValidationError(
+                        "INLINE_BATCH_PLAN_NOT_WARMED",
+                        "未保存指标的批量 NJIT 计划不在当前进程预热缓存中；请重新校验编译。",
+                        field="compile_token",
+                    )
+            validation = {
+                "dependencies": list(plan.context_requirements),
+                "output_measure": plan.output_type.semantic_dimension,
+                "kernel_version": NUMERIC_KERNEL_VERSION,
+                "compiled_plan_id": compiled.plan_id,
+                "compiled_batch_plan_id": (
+                    compiled_batch.plan_id if compiled_batch is not None else None
+                ),
+            }
             self._apply_compiled_contract(normalized, validation)
+            expected_token = self._inline_compile_token(
+                normalized,
+                compiled_plan_id=compiled.plan_id,
+                compiled_batch_plan_id=(
+                    compiled_batch.plan_id if compiled_batch is not None else None
+                ),
+            )
+            if not hmac.compare_digest(str(compile_token), expected_token):
+                raise ValidationError(
+                    "INLINE_COMPILE_TOKEN_MISMATCH",
+                    "compile_token 与当前未保存公式或已预热计划不匹配；请重新校验编译。",
+                    field="compile_token",
+                )
             return [{**normalized, "id": None, "revision": None, "source": "inline"}]
         unique_ids = list(dict.fromkeys(indicator_ids))
         if not unique_ids or len(unique_ids) > MAX_INDICATORS:
@@ -1998,10 +2784,24 @@ class CustomIndicatorService:
                 field="indicator_ids",
             )
         versions = indicator_versions or {}
-        return [
-            self._decorate_definition(self.indicators.get(indicator_id, versions.get(indicator_id)))
+        definitions = [
+            self._decorate_definition(
+                self.indicators.get(indicator_id, versions.get(indicator_id))
+            )
             for indicator_id in unique_ids
         ]
+        series_names = [
+            str(item.get("name") or item.get("id"))
+            for item in definitions
+            if item.get("result_kind", "scalar") != "scalar"
+        ]
+        if series_names:
+            raise ValidationError(
+                "INDICATOR_RESULT_KIND_MISMATCH",
+                f"以下时序指标不能进入标量计算或排名：{'、'.join(series_names)}。",
+                field="indicator_ids",
+            )
+        return definitions
 
     @staticmethod
     def _definition_cache_key(definition: dict[str, Any]) -> str:
@@ -2070,6 +2870,8 @@ class CustomIndicatorService:
             "indicator_id": definition.get("id"),
             "indicator_revision": definition.get("revision"),
             "indicator_name": definition["name"],
+            "result_kind": "scalar",
+            "value_type": metric_presentation(definition)["value_type"],
             "target": {**target, "name": target_name},
             "period": period,
             "unit": definition.get("unit", ""),
@@ -2199,13 +3001,17 @@ class CustomIndicatorService:
                 if isinstance(row, pd.DataFrame):
                     row = row.iloc[-1]
                 raw_value = row.get(field)
-                value = (
-                    float(raw_value)
-                    if raw_value is not None
-                    and not pd.isna(raw_value)
-                    and np.isfinite(float(raw_value))
-                    else None
-                )
+                value = None
+                if raw_value is not None and not pd.isna(raw_value):
+                    try:
+                        if base["presentation"].get("value_type") == "date":
+                            # Date snapshot columns contain ISO dates, not numeric
+                            # epoch days to be interpreted by browser formatting.
+                            value = datetime.strptime(str(raw_value), "%Y-%m-%d").date().isoformat()
+                        elif np.isfinite(float(raw_value)):
+                            value = float(raw_value)
+                    except (TypeError, ValueError, OverflowError):
+                        value = None
                 raw_status = row.get(f"{field}__status")
                 status = (
                     ""
@@ -2522,7 +3328,9 @@ class CustomIndicatorService:
         self,
         definition: dict[str, Any],
         period: str,
-    ) -> IndicatorRuntime | TypedIndicatorRuntime:
+    ) -> TypedIndicatorRuntime:
+        """Resolve an already-warmed runtime; never compile on a run path."""
+
         if self._is_typed_definition(definition):
             if definition.get("context_kind") != "single_product":
                 raise ValidationError(
@@ -2539,16 +3347,23 @@ class CustomIndicatorService:
                         "operator_registry_version", TYPED_OPERATOR_REGISTRY_VERSION
                     )
                 )
-                plan = _compile_typed_plan(
+                plan = _get_warmed_typed_plan(
                     normalize_variable_latex(definition["expression"]),
                     "single_product",
                     dsl_version,
                     registry_version,
                 )
-                return TypedIndicatorRuntime.from_plan(plan)
+                return TypedIndicatorRuntime.from_warmed_plan(plan)
             except TypedDslError as exc:
                 diagnostic = exc.to_dict()
                 diagnostic["field"] = "expression"
+                if exc.code in {"TYPED_PLAN_NOT_WARMED", "NJIT_PLAN_NOT_WARMED"}:
+                    raise ValidationError(
+                        "NJIT_PLAN_NOT_WARMED",
+                        "指标版本没有已预热的 immutable AST/DAG 与固定签名 NJIT 计划；运行已关闭，未回退到 Python。",
+                        field="indicator_revision",
+                        diagnostics=[diagnostic],
+                    ) from exc
                 raise ValidationError(
                     exc.code,
                     exc.message,
@@ -2556,16 +3371,23 @@ class CustomIndicatorService:
                     diagnostics=[diagnostic],
                 ) from exc
         try:
-            plan = _compile_typed_plan(
+            plan = _get_warmed_typed_plan(
                 normalize_variable_latex(definition["expression"]),
                 "single_product",
                 LEGACY_TYPED_DSL_VERSION,
                 LEGACY_TYPED_OPERATOR_REGISTRY_VERSION,
             )
-            return TypedIndicatorRuntime.from_plan(plan)
+            return TypedIndicatorRuntime.from_warmed_plan(plan)
         except TypedDslError as exc:
             diagnostic = exc.to_dict()
             diagnostic["field"] = "expression"
+            if exc.code in {"TYPED_PLAN_NOT_WARMED", "NJIT_PLAN_NOT_WARMED"}:
+                raise ValidationError(
+                    "NJIT_PLAN_NOT_WARMED",
+                    "指标版本没有已预热的固定签名 NJIT 计划；运行已关闭，未回退到 Python。",
+                    field="indicator_revision",
+                    diagnostics=[diagnostic],
+                ) from exc
             raise ValidationError(
                 "LEGACY_NJIT_ADAPTER_UNSUPPORTED",
                 "该兼容指标无法转换为 NJIT 计划，请复制并迁移公式。",
@@ -2573,30 +3395,135 @@ class CustomIndicatorService:
                 diagnostics=[diagnostic],
             ) from exc
 
+    def _warm_runtime(
+        self,
+        definition: dict[str, Any],
+        period: str,
+    ) -> TypedIndicatorRuntime:
+        """Explicit compile-phase helper used by validate/create/update/startup."""
+
+        context_kind = str(definition.get("context_kind") or "single_product")
+        dsl_version = str(definition.get("dsl_version") or LEGACY_DSL_VERSION)
+        if context_kind != "single_product":
+            raise ValidationError(
+                "CONTEXT_KIND_MISMATCH",
+                "组合指标必须使用组合运行快照。",
+                field="context_kind",
+            )
+        adapted_dsl = (
+            dsl_version if dsl_version.startswith("2.") else LEGACY_TYPED_DSL_VERSION
+        )
+        registry_version = str(
+            (
+                definition.get("operator_registry_version")
+                or self._typed_registry_for_dsl(adapted_dsl)
+            )
+            if dsl_version.startswith("2.")
+            else LEGACY_TYPED_OPERATOR_REGISTRY_VERSION
+        )
+        try:
+            plan = _compile_typed_plan(
+                normalize_variable_latex(str(definition.get("expression") or "")),
+                "single_product",
+                adapted_dsl,
+                registry_version,
+            )
+            compiled = compile_numba_plan(plan)
+            persist_numba_plan(
+                compiled,
+                self.workspace_data_dir / ".indicator_runtime",
+            )
+            return TypedIndicatorRuntime.from_warmed_plan(plan)
+        except (NumbaPlanCompileError, TypedDslError) as exc:
+            diagnostic = (
+                exc.to_dict()
+                if isinstance(exc, TypedDslError)
+                else {
+                    "code": "NJIT_PLAN_COMPILE_FAILED",
+                    "compiled_plan_id": exc.plan_id,
+                    "operator": exc.operator_id,
+                }
+            )
+            raise ValidationError(
+                "NJIT_PLAN_COMPILE_FAILED",
+                "指标公式无法编译为固定签名 NJIT 计划。",
+                field="expression",
+                diagnostics=[diagnostic],
+            ) from exc
+
+    def _warm_single_product_definition(
+        self,
+        definition: dict[str, Any],
+    ) -> TypedIndicatorRuntime:
+        """Compile and persist the single and singleton-batch immutable plans."""
+
+        runtime = self._warm_runtime(definition, "ALL")
+        dependencies = self._physical_dependency_signature(
+            runtime.plan.context_requirements
+        )
+        physical_columns = tuple(
+            dict.fromkeys(
+                [
+                    "adjusted_nav",
+                    *[
+                        name
+                        for name in dependencies
+                        if name not in {"returns", "log_returns", "adjusted_nav"}
+                    ],
+                ]
+            )
+        )
+        try:
+            compiled_batch = compile_numba_batch_plan(
+                (runtime.plan,), (definition,), physical_columns
+            )
+            persist_numba_batch_plan(
+                compiled_batch,
+                self.workspace_data_dir / ".indicator_runtime",
+            )
+        except (NumbaPlanCompileError, TypeError, ValueError) as exc:
+            raise ValidationError(
+                "NJIT_BATCH_COMPILE_FAILED",
+                "指标公式无法编译为固定签名 NJIT 批量计划。",
+                field="expression",
+            ) from exc
+        self._apply_compiled_contract(
+            definition,
+            {
+                "dependencies": list(runtime.plan.context_requirements),
+                "output_measure": runtime.plan.output_type.semantic_dimension,
+                "kernel_version": NUMERIC_KERNEL_VERSION,
+                "compiled_plan_id": runtime.compiled_plan.plan_id,
+                "compiled_batch_plan_id": compiled_batch.plan_id,
+            },
+        )
+        return runtime
+
     @staticmethod
     def _risk_free_context(
         definition: dict[str, Any], elapsed_days: float | None = None
     ) -> dict[str, float]:
-        annual = float(definition.get("annual_risk_free_rate_percent", 0.0)) / 100.0
-        per_period = math.pow(max(0.0, 1.0 + annual), 1.0 / 252.0) - 1.0
-        elapsed = max(0.0, float(elapsed_days or 0.0))
-        window_return = math.pow(max(0.0, 1.0 + annual), elapsed / 365.0) - 1.0
+        annual, per_period, legacy_per_period, window_return, periods_per_year = (
+            _risk_free_context_kernel(
+                float(definition.get("annual_risk_free_rate_percent", 0.0)),
+                float(elapsed_days or 0.0),
+            )
+        )
         return {
             "annual_risk_free_rate_decimal": annual,
             "risk_free_rate_per_observation": per_period,
             # Runtime-only alias for locked legacy definitions. New catalog
             # entries and formulas use risk_free_rate_per_observation.
-            "risk_free_rate_per_period": per_period,
+            "risk_free_rate_per_period": legacy_per_period,
             "risk_free_return_window": window_return,
-            "periods_per_year": 252.0,
+            "periods_per_year": periods_per_year,
         }
 
     @classmethod
     def _evaluate_runtime(
         cls,
-        runtime: IndicatorRuntime | TypedIndicatorRuntime,
+        runtime: TypedIndicatorRuntime,
         definition: dict[str, Any],
-        period: str,
         window: PeriodWindow,
     ) -> Optional[float]:
         elapsed_days = float(
@@ -2611,18 +3538,15 @@ class CustomIndicatorService:
             }
         context.update(cls._risk_free_context(definition, elapsed_days))
         with np.errstate(all="ignore"):
-            if isinstance(runtime, TypedIndicatorRuntime):
-                raw = runtime.compute(context)
-            else:
-                raw = runtime.compute_period(period, context)[definition["name"]]
+            raw = runtime.compute(context)
         if isinstance(raw, (bool, np.bool_)) or not np.isscalar(raw):
             return None
         value = float(raw)
-        return value if math.isfinite(value) else None
+        return value if _finite_result_kernel(value) == 1 else None
 
     def _rolling_series(
         self,
-        runtime: IndicatorRuntime | TypedIndicatorRuntime,
+        runtime: TypedIndicatorRuntime,
         definition: dict[str, Any],
         product_series: ProductSeries | ProductVariableSeries,
         period: str,
@@ -2654,7 +3578,7 @@ class CustomIndicatorService:
                         date_token,
                         max_observations=MAX_SERIES_OBSERVATIONS,
                     )
-                value = self._evaluate_runtime(runtime, definition, period, window)
+                value = self._evaluate_runtime(runtime, definition, window)
             except (
                 IndicatorDomainError,
                 FloatingPointError,
@@ -2668,10 +3592,328 @@ class CustomIndicatorService:
                 points.append({"date": date_token, "value": value})
         return points
 
+    def evaluate_historical_series(
+        self,
+        *,
+        indicator_id: str,
+        indicator_revision: int,
+        product_kind: str,
+        product_id: str,
+        period: str,
+        as_of: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        max_points: int = MAX_ROLLING_POINTS,
+    ) -> dict[str, Any]:
+        """Build a point-in-time series from one exact, already-warmed revision.
+
+        This path is intentionally separate from interactive ``evaluate``:
+        historical regime runs may compose and validate the typed AST/DAG, but
+        they may not compile an NJIT dispatcher or adapt a legacy definition.
+        """
+
+        period = str(period or "").strip().upper()
+        if period not in SUPPORTED_PERIODS:
+            raise ValidationError(
+                "INVALID_PERIOD",
+                "不支持的指标评价周期。",
+                field="target.period",
+            )
+        if product_kind not in {"etf", "fund"} or not str(product_id).strip():
+            raise ValidationError(
+                "INVALID_TARGET",
+                "指标数据源的产品类型或产品编号无效。",
+                field="target.product_id",
+            )
+        try:
+            normalized_revision = int(indicator_revision)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "INVALID_INDICATOR_REVISION",
+                "指标版本必须是正整数。",
+                field="target.indicator_revision",
+            ) from exc
+        if isinstance(indicator_revision, bool) or normalized_revision < 1:
+            raise ValidationError(
+                "INVALID_INDICATOR_REVISION",
+                "指标版本必须是正整数。",
+                field="target.indicator_revision",
+            )
+        try:
+            normalized_max_points = int(max_points)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "INVALID_SERIES_LIMIT",
+                f"指标历史序列点数必须在 1 至 {MAX_ROLLING_POINTS} 之间。",
+                field="max_points",
+            ) from exc
+        if isinstance(max_points, bool) or not 1 <= normalized_max_points <= MAX_ROLLING_POINTS:
+            raise ValidationError(
+                "INVALID_SERIES_LIMIT",
+                f"指标历史序列点数必须在 1 至 {MAX_ROLLING_POINTS} 之间。",
+                field="max_points",
+            )
+
+        raw_definition = self.indicators.get(
+            str(indicator_id),
+            normalized_revision,
+        )
+        definition = self._decorate_definition(raw_definition)
+        dsl_version = str(definition.get("dsl_version") or LEGACY_DSL_VERSION)
+        if not dsl_version.startswith("2."):
+            raise ValidationError(
+                "INDICATOR_NJIT_REQUIRED",
+                "该指标是 legacy/Python 兼容定义，不能作为历史情景数据源；请保存为 typed NJIT 版本。",
+                field="target.indicator_id",
+            )
+        if str(definition.get("context_kind") or "single_product") != "single_product":
+            raise ValidationError(
+                "INDICATOR_CONTEXT_UNSUPPORTED",
+                "组合指标不能作为单产品历史情景序列。",
+                field="target.indicator_id",
+            )
+        if product_kind not in set(definition.get("applicable_product_kinds") or []):
+            raise ValidationError(
+                "INDICATOR_PRODUCT_KIND_UNSUPPORTED",
+                "该指标版本不适用于所选产品类型。",
+                field="target.product_kind",
+            )
+
+        registry_version = str(
+            definition.get("operator_registry_version")
+            or self._typed_registry_for_dsl(dsl_version)
+        )
+        try:
+            plan = _get_warmed_typed_plan(
+                normalize_variable_latex(str(definition.get("expression") or "")),
+                "single_product",
+                dsl_version,
+                registry_version,
+            )
+        except TypedDslError as exc:
+            if exc.code == "TYPED_PLAN_NOT_WARMED":
+                raise ValidationError(
+                    "INDICATOR_REVISION_NOT_WARMED",
+                    "该指标版本的 immutable AST/DAG 尚未完成启动预热。",
+                    field="target.indicator_revision",
+                    diagnostics=[exc.to_dict()],
+                ) from exc
+            raise ValidationError(
+                "INDICATOR_TYPED_PLAN_INVALID",
+                "指标版本无法还原为受支持的 typed AST/DAG。",
+                field="target.indicator_id",
+                diagnostics=[exc.to_dict()],
+            ) from exc
+        compiled = get_cached_numba_plan(plan)
+        if compiled is None:
+            raise ValidationError(
+                "INDICATOR_REVISION_NOT_WARMED",
+                "该指标版本尚未完成 NJIT 预热；请执行显式预热或重启服务完成全版本预热。",
+                field="target.indicator_revision",
+                diagnostics=[
+                    {
+                        "indicator_id": str(indicator_id),
+                        "indicator_revision": int(indicator_revision),
+                        "compiled_plan_id": numba_plan_id(plan),
+                    }
+                ],
+            )
+        compiled_meta = compiled.metadata()
+        if (
+            compiled_meta.get("compile_status") != "compiled"
+            or compiled_meta.get("python_fallback") != 0
+            or compiled_meta.get("python_operator_calls") != 0
+        ):
+            raise ValidationError(
+                "INDICATOR_NJIT_CONTRACT_MISMATCH",
+                "指标版本没有满足纯 NJIT 执行契约。",
+                field="target.indicator_id",
+            )
+
+        runtime = TypedIndicatorRuntime.from_warmed_plan(plan)
+        dependencies = canonicalize_variables(runtime.plan.context_requirements)
+        physical_dependencies = self._physical_dependency_signature(dependencies)
+        source = load_product_variable_series(
+            product_kind,  # type: ignore[arg-type]
+            str(product_id),
+            physical_dependencies,
+            self.market_data_dir,
+            as_of,
+        )
+        if source is None or source.frame.empty:
+            details = [
+                {"variable": name, **item}
+                for name, item in (getattr(source, "unavailable_variables", {}) or {}).items()
+            ]
+            raise ValidationError(
+                "INDICATOR_SOURCE_DATA_UNAVAILABLE",
+                "所选产品没有满足指标依赖与可得日约束的历史数据。",
+                field="target.product_id",
+                diagnostics=details or None,
+            )
+
+        # A historical point must not consume a NAV before its announcement.
+        # Lift each observation to the latest physical availability date, then
+        # evaluate only that causal sequence. Quote-only inputs retain date.
+        availability_columns = [
+            name
+            for name in source.frame.columns
+            if name.startswith("_available_date_")
+        ]
+        if availability_columns:
+            causal_frame = source.frame.copy()
+            availability = causal_frame[["date", *availability_columns]].max(
+                axis=1
+            )
+            causal_frame["date"] = pd.to_datetime(
+                availability,
+                errors="coerce",
+            )
+            causal_frame = (
+                causal_frame.dropna(subset=["date"])
+                .sort_values("date")
+                .drop_duplicates(subset=["date"], keep="last")
+                .reset_index(drop=True)
+            )
+            source.frame = causal_frame
+
+        date_frame = source.frame[["date"]].copy()
+        for field_name, field_value in (
+            ("start_date", start_date),
+            ("end_date", end_date),
+            ("as_of", as_of),
+        ):
+            if not field_value:
+                continue
+            try:
+                cutoff = pd.Timestamp(field_value).normalize()
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    "INVALID_DATE",
+                    f"{field_name} 必须是有效日期。",
+                    field=f"target.{field_name}",
+                ) from exc
+            if field_name == "start_date":
+                date_frame = date_frame.loc[date_frame["date"] >= cutoff]
+            else:
+                date_frame = date_frame.loc[date_frame["date"] <= cutoff]
+        if date_frame.empty:
+            raise ValidationError(
+                "EMPTY_DATE_RANGE",
+                "所选日期区间没有指标可计算日期。",
+                field="target",
+            )
+        date_frame = date_frame.tail(normalized_max_points)
+        prepared_index = prepare_variable_window_index(source)
+        points: list[dict[str, Any]] = []
+        latest_trace: dict[str, Any] | None = None
+        for point_date in date_frame["date"]:
+            date_token = pd.Timestamp(point_date).strftime("%Y-%m-%d")
+            value: float | None = None
+            reason_code: str | None = None
+            reason: str | None = None
+            try:
+                window = select_variable_window_fast(
+                    source,
+                    period,
+                    date_token,
+                    max_observations=MAX_SERIES_OBSERVATIONS,
+                    index=prepared_index,
+                )
+                value = self._evaluate_runtime(runtime, definition, window)
+                if value is None:
+                    reason_code = "NON_FINITE_RESULT"
+                    reason = "指标在该期没有有限结果，保留为缺失值。"
+                else:
+                    latest_trace = runtime.trace_payload()
+            except (IndicatorDomainError, TypedDslError) as exc:
+                reason_code = str(getattr(exc, "code", "INDICATOR_POINT_UNAVAILABLE"))
+                reason = str(getattr(exc, "message", "指标在该期不可计算。"))
+            except (FloatingPointError, OverflowError, TypeError, ValueError, ZeroDivisionError):
+                reason_code = "INDICATOR_POINT_UNAVAILABLE"
+                reason = "指标在该期不可计算，缺失值未替换为 0。"
+            points.append(
+                {
+                    "date": date_token,
+                    "observation_date": date_token,
+                    "available_at": date_token,
+                    "value": value,
+                    "status": "ok" if value is not None else "unavailable",
+                    "reason_code": reason_code,
+                    "reason": reason,
+                }
+            )
+
+        graph = copy.deepcopy(plan.graph_payload())
+        definition_hash = self._indicator_definition_hash(raw_definition)
+        series_hash = hashlib.sha256(
+            json.dumps(
+                [{"date": item["date"], "value": item["value"]} for item in points],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        execution_audit = {
+            "njit_required": True,
+            "execution_backend": "numba_njit_fixed_signature",
+            **compiled_meta,
+            "runtime_trace": latest_trace,
+        }
+        snapshot = {
+            "kind": "indicator",
+            "indicator_id": str(indicator_id),
+            "indicator_revision": int(indicator_revision),
+            "indicator_name": definition.get("name"),
+            "indicator_definition_hash": definition_hash,
+            "product_kind": product_kind,
+            "product_id": str(product_id),
+            "period": period,
+            "typed_ast": {
+                "nodes": copy.deepcopy(graph.get("nodes") or []),
+                "edges": copy.deepcopy(graph.get("edges") or []),
+                "root": plan.root_id,
+                "expression_hash": plan.expression_hash,
+                "compiler_version": plan.compiler_version,
+            },
+            "dag": graph,
+            "plan": execution_audit,
+            "protocol_versions": {
+                "dsl": plan.dsl_version,
+                "operator_registry": plan.operator_registry_version,
+                "variable_registry": definition.get("variable_registry_version"),
+                "data_contract": definition.get("data_contract_version"),
+                "context_schema": definition.get("context_schema_version"),
+                "numeric_kernel": compiled_meta.get("kernel_version"),
+                "engine": compiled_meta.get("engine_version"),
+            },
+            "product_data": {
+                "fingerprint": source.fingerprint,
+                "file_fingerprints": copy.deepcopy(source.fingerprints),
+                "lineage": copy.deepcopy(source.lineage),
+                "coverage": copy.deepcopy(source.coverage),
+            },
+            "series_hash": series_hash,
+            "series_observations": len(points),
+            "series_limit": MAX_ROLLING_POINTS,
+            "missing_policy": "preserve_null",
+            "availability_policy": "available_at_equals_evaluation_date",
+        }
+        return {
+            "definition": definition,
+            "series": points,
+            "snapshot": snapshot,
+            "audit": {
+                "typed_ast": copy.deepcopy(snapshot["typed_ast"]),
+                "dag": copy.deepcopy(graph),
+                "plan": copy.deepcopy(execution_audit),
+            },
+        }
+
     def _evaluate_one(
         self,
         definition: dict[str, Any],
-        runtime: IndicatorRuntime | TypedIndicatorRuntime,
+        runtime: TypedIndicatorRuntime,
         target: dict[str, str],
         product_series: Optional[ProductSeries | ProductVariableSeries],
         period: str,
@@ -2767,7 +4009,7 @@ class CustomIndicatorService:
             window = preselected_window
         runtime_warning: Optional[dict[str, Any]] = None
         try:
-            value = self._evaluate_runtime(runtime, definition, period, window)
+            value = self._evaluate_runtime(runtime, definition, window)
         except TypedDslError as exc:
             value = None
             runtime_warning = exc.to_dict()
@@ -2798,7 +4040,7 @@ class CustomIndicatorService:
                 )
         record: dict[str, Any] = {
             **base,
-            "value": value,
+            "value": self._public_value(definition, value),
             "status": "ok" if value is not None and not warnings else "warning",
             "warnings": warnings,
             "window": self._window_payload(window),
@@ -2807,8 +4049,7 @@ class CustomIndicatorService:
         }
         if include_series:
             record["series"] = self._rolling_series(runtime, definition, product_series, period, as_of)
-        if isinstance(runtime, TypedIndicatorRuntime):
-            record["runtime_trace"] = runtime.trace_payload()
+        record["runtime_trace"] = runtime.trace_payload()
         return record
 
     def evaluate(
@@ -2822,14 +4063,26 @@ class CustomIndicatorService:
         include_series: bool = False,
         indicator_versions: Optional[dict[str, int]] = None,
         prefer_snapshot: bool = True,
+        compile_token: Optional[str] = None,
+        indicator_refs: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         period = period.upper()
         if period not in SUPPORTED_PERIODS:
             raise ValidationError("INVALID_PERIOD", "不支持的评价周期。", field="period")
+        if indicator_refs:
+            if indicator_ids or inline_definition is not None:
+                raise ValidationError("INDICATOR_SOURCE_CONFLICT", "结果引用与整指标不能同时提交。")
+            ids = [str(item["indicator_id"]) for item in indicator_refs]
+            if len(set(ids)) != len(ids):
+                raise ValidationError("DUPLICATE_INDICATOR", "同一请求不能重复选择指标。")
+            versions = {str(item["indicator_id"]): int(item["indicator_revision"]) for item in indicator_refs if item.get("indicator_revision") is not None}
+            return self.evaluate(indicator_ids=ids, inline_definition=None, targets=targets, period=period,
+                                 as_of=as_of, include_series=include_series, indicator_versions=versions, prefer_snapshot=prefer_snapshot)
         definitions = self._resolve_evaluation_definitions(
             indicator_ids,
             inline_definition,
             indicator_versions=indicator_versions,
+            compile_token=compile_token,
         )
         normalized_targets = self._validate_targets(targets)
         combinations = len(definitions) * len(normalized_targets)
@@ -2868,6 +4121,17 @@ class CustomIndicatorService:
             if snapshot_result is not None:
                 return snapshot_result
 
+        generation_before = market_data_generation(self.market_data_dir)
+        request_cache_key = "independent-request:" + hashlib.sha256(repr((
+            tuple(self._definition_cache_key(item) for item in definitions), normalized_targets,
+            period, as_of, period_cache_reference(as_of), generation_before, include_series,
+        )).encode()).hexdigest()
+        cached_request = self.cache.get(request_cache_key)
+        if cached_request is not None:
+            cached_request["cache"] = {"hits": combinations, "misses": 0}
+            cached_request["execution"]["executed_batches"] = 0
+            cached_request["execution"]["result_cache_hit"] = True
+            return cached_request
         runtimes = {
             self._definition_cache_key(item): self._compile_runtime(item, period)
             for item in definitions
@@ -2918,6 +4182,7 @@ class CustomIndicatorService:
         ] = {}
         batch_values: dict[tuple[int, str, str], tuple[float, int]] = {}
         batch_plan_ids: list[str] = []
+        batch_execution_audits: list[dict[str, Any]] = []
         parallel_tasks = 0
         for kind in sorted({target["kind"] for target in normalized_targets}):
             kind_targets = [
@@ -2976,6 +4241,7 @@ class CustomIndicatorService:
                 thread_budget=max(1, min(self.compute_engine.worker_count, os.cpu_count() or 1)),
             )
             batch_plan_ids.extend(batch_meta.get("compiled_plan_ids", []))
+            batch_execution_audits.extend(batch_meta.get("execution_audits", []))
             parallel_tasks += int(batch_meta.get("parallel_tasks", 0))
             for (definition_index, row_index), outcome in computed.items():
                 batch_values[
@@ -3035,7 +4301,6 @@ class CustomIndicatorService:
                 )
                 if (
                     fused is not None
-                    and fused[1] == STATUS_OK
                     and product_series is not None
                     and window is not None
                     and window_error is None
@@ -3083,14 +4348,27 @@ class CustomIndicatorService:
         unavailable_count = sum(item["status"] == "unavailable" for item in results)
         if unavailable_count:
             statuses["unavailable"] = unavailable_count
-        return {
+        execution_audit = self._combined_njit_audit(
+            [
+                runtime.compiled_plan.metadata()
+                for runtime in runtimes.values()
+            ]
+            + batch_execution_audits
+            + [runtime_validation_execution_audit(), _service_numeric_execution_audit()]
+        )
+        response = {
             "results": results,
             "summary": {"total": len(results), **statuses},
             "cache": {"hits": hits, "misses": misses},
             "execution": {
+                "executed_batches": len(batch_execution_audits),
+                "result_cache_hit": False,
+                "shared_plans": batch_execution_audits,
                 **kernel_registry_status(),
-                "compile_cache_hits": _compile_typed_plan.cache_info().hits,
-                "compile_cache_misses": _compile_typed_plan.cache_info().misses,
+                **execution_audit,
+                "compile_cache_hits": len(runtimes),
+                "compile_cache_misses": 0,
+                "ast_plan_cache_hits": len(runtimes),
                 "kernel_cache_hits": 0,
                 "kernel_cache_misses": 0,
                 "compiled_plan_ids": list(dict.fromkeys(batch_plan_ids)),
@@ -3099,6 +4377,228 @@ class CustomIndicatorService:
                 "python_operator_calls": 0,
             },
         }
+        if generation_before != market_data_generation(self.market_data_dir):
+            raise ValidationError("DATA_GENERATION_CHANGED", "计算期间数据版本改变，请重新计算。")
+        self.cache.put(request_cache_key, response)
+        return response
+
+    def evaluate_series(
+        self,
+        *,
+        indicator_instances: list[dict[str, Any]],
+        target: dict[str, Any],
+        period: str,
+        as_of: Optional[str] = None,
+        max_points: int = MAX_ROLLING_POINTS,
+    ) -> dict[str, Any]:
+        """Run named multi-channel time-series indicators outside ranking flows."""
+
+        return self.series_service.evaluate(
+            indicator_instances=indicator_instances,
+            target=target,
+            period=period,
+            as_of=as_of,
+            max_points=max_points,
+        )
+
+    @staticmethod
+    def _excel_dates_by_variable(
+        window: VariablePeriodWindow,
+        context: dict[str, Any],
+    ) -> dict[str, list[pd.Timestamp]]:
+        """Align each direct one-dimensional runtime input with its actual dates."""
+
+        frame_dates = list(pd.DatetimeIndex(window.frame["date"]))
+        dates_by_variable: dict[str, list[pd.Timestamp]] = {}
+        for variable_id, raw_value in context.items():
+            value = np.asarray(raw_value)
+            if value.ndim != 1 or value.size <= 0 or value.size > len(frame_dates):
+                continue
+            # Returns/log-returns are one row shorter than their boundary-inclusive
+            # NAV window. Other direct series normally consume the full window.
+            dates_by_variable[variable_id] = frame_dates[-int(value.size) :]
+        return dates_by_variable
+
+    def export_excel(
+        self,
+        *,
+        indicator_ids: list[str],
+        inline_definition: Optional[dict[str, Any]],
+        targets: list[dict[str, Any]],
+        period: str,
+        as_of: Optional[str] = None,
+        compile_token: Optional[str] = None,
+        parameters: Optional[Mapping[str, Any]] = None,
+    ) -> ExcelExportArtifact:
+        """Export exact direct inputs and formula-driven scalar or series calculations."""
+
+        period = str(period or "").upper()
+        if period not in SUPPORTED_PERIODS:
+            raise ValidationError(
+                "INVALID_PERIOD",
+                "不支持的评价周期。",
+                field="period",
+            )
+        if bool(indicator_ids) == bool(inline_definition):
+            raise ValidationError(
+                "INDICATOR_SOURCE_CONFLICT",
+                "indicator_ids 与 inline_definition 必须且只能提供一种。",
+            )
+        series_definition: dict[str, Any] | None = None
+        if inline_definition is not None and str(
+            inline_definition.get("result_kind") or "scalar"
+        ) == TIME_SERIES_RESULT_KIND:
+            series_definition = inline_definition
+        elif len(indicator_ids) == 1:
+            candidate = self.indicators.get(indicator_ids[0])
+            if str(candidate.get("result_kind") or "scalar") == TIME_SERIES_RESULT_KIND:
+                series_definition = candidate
+        if series_definition is not None:
+            instance: dict[str, Any]
+            if inline_definition is not None:
+                instance = {
+                    "inline_definition": inline_definition,
+                    "compile_token": compile_token,
+                    "parameters": dict(parameters or {}),
+                }
+            else:
+                instance = {
+                    "indicator_id": series_definition.get("id"),
+                    "indicator_revision": series_definition.get("revision"),
+                    "parameters": dict(parameters or {}),
+                }
+            return self.series_service.export_excel(
+                indicator_instance=instance,
+                targets=self._validate_targets(targets, max_targets=10),
+                period=period,
+                as_of=as_of,
+                output_dir=self.workspace_data_dir / ".indicator_exports",
+            )
+        definitions = self._resolve_evaluation_definitions(
+            indicator_ids,
+            inline_definition,
+            compile_token=compile_token,
+        )
+        if len(definitions) != 1:
+            raise ValidationError(
+                "EXCEL_EXPORT_SINGLE_INDICATOR_REQUIRED",
+                "每个 Excel 工作簿只能导出一个指标。",
+                field="indicator_ids",
+            )
+        definition = definitions[0]
+        if definition.get("context_kind", "single_product") != "single_product":
+            raise ValidationError(
+                "EXCEL_EXPORT_CONTEXT_UNSUPPORTED",
+                "当前 Excel 导出仅支持指标中心的单产品指标。",
+                field="indicator_ids",
+            )
+        if not self._is_typed_definition(definition):
+            raise ValidationError(
+                "EXCEL_EXPORT_TYPED_INDICATOR_REQUIRED",
+                "Excel 计算逻辑只支持 typed 指标；请先复制或迁移兼容指标。",
+                field="indicator_ids",
+            )
+        runtime = self._compile_runtime(definition, period)
+        if not isinstance(runtime, TypedIndicatorRuntime):
+            raise ValidationError(
+                "EXCEL_EXPORT_NJIT_REQUIRED",
+                "Excel 导出要求指标已有固定签名 NJIT 计划。",
+                field="indicator_ids",
+            )
+
+        normalized_targets = self._validate_targets(targets, max_targets=10)
+        generation_before = market_data_generation(self.market_data_dir)
+        dependencies = canonicalize_variables(runtime.plan.context_requirements)
+        data_dependencies = self._physical_dependency_signature(dependencies)
+        source_groups: dict[str, dict[str, ProductVariableSeries]] = {}
+        for kind in sorted({target["kind"] for target in normalized_targets}):
+            product_ids = [
+                target["product_id"]
+                for target in normalized_targets
+                if target["kind"] == kind
+            ]
+            source_groups[kind] = load_product_variable_series_batch(
+                kind,  # type: ignore[arg-type]
+                product_ids,
+                data_dependencies,
+                self.market_data_dir,
+                as_of,
+            )
+
+        evidence: list[ExcelTargetEvidence] = []
+        for target in normalized_targets:
+            source = source_groups.get(target["kind"], {}).get(target["product_id"])
+            window: VariablePeriodWindow | None = None
+            window_error: ValidationError | None = None
+            if source is not None:
+                try:
+                    window = select_variable_window_fast(
+                        source,
+                        period,
+                        as_of,
+                        max_observations=MAX_SERIES_OBSERVATIONS,
+                        index=prepare_variable_window_index(source),
+                    )
+                except ValidationError as exc:
+                    window_error = exc
+            record = self._evaluate_one(
+                definition,
+                runtime,
+                target,
+                source,
+                period,
+                as_of,
+                False,
+                preselected_window=(
+                    window if window is not None else _WINDOW_NOT_SELECTED
+                ),
+                preselection_error=window_error,
+            )
+            direct_context: dict[str, Any] = {}
+            dates_by_variable: dict[str, list[pd.Timestamp]] = {}
+            if window is not None:
+                elapsed_days = float(
+                    (window.frame.iloc[-1]["date"] - window.frame.iloc[0]["date"]).days
+                )
+                complete_context = dict(window.context)
+                complete_context.update(self._risk_free_context(definition, elapsed_days))
+                for variable_id in runtime.compiled_plan.context_names:
+                    if variable_id not in complete_context:
+                        raise ValidationError(
+                            "EXCEL_EXPORT_INPUT_MISSING",
+                            f"Excel 导出缺少公式直接入参 {variable_id}。",
+                            field="expression",
+                        )
+                    direct_context[variable_id] = complete_context[variable_id]
+                dates_by_variable = self._excel_dates_by_variable(
+                    window,
+                    direct_context,
+                )
+            evidence.append(
+                ExcelTargetEvidence(
+                    target=dict(target),
+                    name=str(record.get("target", {}).get("name") or target["product_id"]),
+                    result=record,
+                    context=direct_context,
+                    dates_by_variable=dates_by_variable,
+                )
+            )
+
+        generation_after = market_data_generation(self.market_data_dir)
+        if generation_after != generation_before:
+            raise ValidationError(
+                "EXCEL_EXPORT_DATA_CHANGED",
+                "生成 Excel 期间市场数据版本发生变化，请重新下载。",
+            )
+        return build_indicator_excel_workbook(
+            output_dir=self.workspace_data_dir / ".indicator_exports",
+            definition=definition,
+            plan=runtime.plan,
+            targets=evidence,
+            period=period,
+            as_of=as_of,
+            data_generation=generation_before,
+        )
 
     @staticmethod
     def _portfolio_window(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -3123,17 +4623,17 @@ class CustomIndicatorService:
             raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的收益矩阵无效。")
         if weight_path.shape != asset_returns.shape:
             raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的权重路径与收益矩阵不一致。")
-        if not np.all(np.isfinite(asset_returns)) or not np.all(np.isfinite(weight_path)):
-            raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照包含非有限收益或权重。")
-        if not np.allclose(np.sum(weight_path, axis=1), 1.0, rtol=0.0, atol=1e-8):
+        derived_portfolio_returns, asset_log_returns, context_status = portfolio_context_kernel(
+            np.ascontiguousarray(asset_returns),
+            np.ascontiguousarray(weight_path),
+            1e-8,
+        )
+        if context_status == 1:
+            raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的收益与权重形状无效。")
+        if context_status == 2:
+            raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照包含非有限收益、权重或非法收益。")
+        if context_status == 3:
             raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的每日生效权重合计必须为 1。")
-
-        # daily_weights stores the beginning-of-day weights that are effective
-        # for the matching asset_returns row.  This is the realized portfolio
-        # path: after each return, holdings drift with market value until the
-        # next scheduled rebalance.  A terminal weight vector must never be
-        # applied retrospectively to the full history.
-        derived_portfolio_returns = np.sum(weight_path * asset_returns, axis=1)
         stored_returns = snapshot.get("portfolio_returns")
         if stored_returns is None:
             portfolio_returns = derived_portfolio_returns
@@ -3141,19 +4641,19 @@ class CustomIndicatorService:
             portfolio_returns = np.asarray(stored_returns, dtype=np.float64)
             if portfolio_returns.shape != (asset_returns.shape[0],):
                 raise ValidationError("SNAPSHOT_DATA_INVALID", "组合运行快照中的组合收益序列长度无效。")
-            if not np.all(np.isfinite(portfolio_returns)) or not np.allclose(
-                portfolio_returns,
-                derived_portfolio_returns,
-                rtol=1e-10,
-                atol=1e-12,
-            ):
+            if finite_series_close_kernel(
+                np.ascontiguousarray(portfolio_returns),
+                np.ascontiguousarray(derived_portfolio_returns),
+                1e-10,
+                1e-12,
+            ) != 1:
                 raise ValidationError(
                     "SNAPSHOT_DATA_INVALID",
                     "组合收益序列与每日生效权重及底层产品收益不一致。",
                 )
         context: dict[str, Any] = {
             "asset_returns": asset_returns,
-            "asset_log_returns": np.log1p(asset_returns),
+            "asset_log_returns": asset_log_returns,
             "portfolio_returns": np.ascontiguousarray(portfolio_returns),
             "asset_weights": weight_path[-1],
             "weight_path": weight_path,
@@ -3181,12 +4681,14 @@ class CustomIndicatorService:
         run_id: str,
         indicator_ids: list[str],
         inline_definition: Optional[dict[str, Any]],
+        compile_token: Optional[str] = None,
     ) -> dict[str, Any]:
         snapshot = self.portfolio_runs.get(run_id)
         return self.evaluate_portfolio_snapshot(
             indicator_ids,
             snapshot,
             inline_definition=inline_definition,
+            compile_token=compile_token,
         )
 
     def evaluate_portfolio_snapshot(
@@ -3194,8 +4696,13 @@ class CustomIndicatorService:
         indicator_ids: list[str],
         snapshot: dict[str, Any],
         inline_definition: Optional[dict[str, Any]] = None,
+        compile_token: Optional[str] = None,
     ) -> dict[str, Any]:
-        definitions = self._resolve_evaluation_definitions(indicator_ids, inline_definition)
+        definitions = self._resolve_evaluation_definitions(
+            indicator_ids,
+            inline_definition,
+            compile_token=compile_token,
+        )
         run_id = str(snapshot.get("id") or "unsaved-run")
         window = self._portfolio_window(snapshot)
         target = {
@@ -3204,6 +4711,7 @@ class CustomIndicatorService:
             "name": str(snapshot.get("target_name") or run_id),
         }
         results: list[dict[str, Any]] = []
+        portfolio_execution_audits: list[dict[str, Any]] = []
         hits = 0
         misses = 0
         for definition in definitions:
@@ -3234,6 +4742,29 @@ class CustomIndicatorService:
                 )
                 misses += 1
                 continue
+
+            dsl_version = str(definition.get("dsl_version", TYPED_DSL_VERSION))
+            registry_version = str(
+                definition.get(
+                    "operator_registry_version", TYPED_OPERATOR_REGISTRY_VERSION
+                )
+            )
+            try:
+                plan = _get_warmed_typed_plan(
+                    normalize_variable_latex(definition["expression"]),
+                    "portfolio",
+                    dsl_version,
+                    registry_version,
+                )
+                runtime = TypedIndicatorRuntime.from_warmed_plan(plan)
+            except TypedDslError as exc:
+                raise ValidationError(
+                    "NJIT_PLAN_NOT_WARMED",
+                    "组合指标版本没有已预热的固定签名 NJIT 计划；运行已关闭，未回退到 Python。",
+                    field="indicator_revision",
+                    diagnostics=[exc.to_dict()],
+                ) from exc
+            portfolio_execution_audits.append(runtime.compiled_plan.metadata())
 
             definition_key = self._definition_cache_key(definition)
             snapshot_portfolio_returns = snapshot.get("portfolio_returns")
@@ -3266,37 +4797,22 @@ class CustomIndicatorService:
                 hits += 1
                 continue
             warnings = [copy.deepcopy(item) for item in (snapshot.get("warnings") or [])]
+            if {"asset_returns", "asset_weights"}.issubset(plan.context_requirements):
+                warnings.append(
+                    {
+                        "code": "STATIC_WEIGHT_HISTORY_ASSUMPTION",
+                        "message": (
+                            "该兼容公式会把期末权重应用于整段历史收益，仅适合当前截面估算；"
+                            "历史组合表现应使用组合实际收益率序列。"
+                        ),
+                    }
+                )
             try:
-                dsl_version = str(
-                    definition.get("dsl_version", TYPED_DSL_VERSION)
-                )
-                registry_version = str(
-                    definition.get(
-                        "operator_registry_version", TYPED_OPERATOR_REGISTRY_VERSION
-                    )
-                )
-                plan = _compile_typed_plan(
-                    normalize_variable_latex(definition["expression"]),
-                    "portfolio",
-                    dsl_version,
-                    registry_version,
-                )
-                if {"asset_returns", "asset_weights"}.issubset(plan.context_requirements):
-                    warnings.append(
-                        {
-                            "code": "STATIC_WEIGHT_HISTORY_ASSUMPTION",
-                            "message": (
-                                "该兼容公式会把期末权重应用于整段历史收益，仅适合当前截面估算；"
-                                "历史组合表现应使用组合实际收益率序列。"
-                            ),
-                        }
-                    )
-                runtime = TypedIndicatorRuntime.from_plan(plan)
                 context = self._portfolio_context(snapshot, definition)
                 with np.errstate(all="ignore"):
                     raw = runtime.compute(context)
                 value = float(raw) if np.isscalar(raw) and not isinstance(raw, (bool, np.bool_)) else None
-                if value is None or not math.isfinite(value):
+                if value is None or _finite_result_kernel(value) != 1:
                     value = None
                     warnings.append(
                         {"code": "NON_FINITE_RESULT", "message": "组合指标计算结果不是有限标量。"}
@@ -3335,12 +4851,29 @@ class CustomIndicatorService:
         unavailable_count = sum(item["status"] == "unavailable" for item in results)
         if unavailable_count:
             statuses["unavailable"] = unavailable_count
-        return {
+        response = {
             "run_id": run_id,
             "results": results,
             "summary": {"total": len(results), **statuses},
             "cache": {"hits": hits, "misses": misses},
         }
+        if portfolio_execution_audits:
+            response["execution"] = {
+                **kernel_registry_status(),
+                **self._combined_njit_audit(
+                    [
+                        *portfolio_execution_audits,
+                        portfolio_numba_execution_audit(),
+                        runtime_validation_execution_audit(),
+                        _service_numeric_execution_audit(),
+                    ],
+                ),
+                "compile_cache_hits": len(portfolio_execution_audits),
+                "compile_cache_misses": 0,
+                "python_fallback": 0,
+                "python_operator_calls": 0,
+            }
+        return response
 
     def availability(
         self,
@@ -3808,6 +5341,8 @@ class CustomIndicatorService:
                     int(requested_revision) if requested_revision is not None else None,
                 )
             )
+            if definition.get("output_measure") == "date" or definition.get("value_type") == "date":
+                raise ValidationError("DATE_NOT_SCORABLE", "日期指标只能展示或筛选，不能参与加权评分。", field="indicators")
             if definition.get("context_kind") != "single_product":
                 raise ValidationError(
                     "CONTEXT_KIND_MISMATCH",
@@ -3837,7 +5372,7 @@ class CustomIndicatorService:
                     field="indicators",
                 )
             indicator_keys.add(indicator_key)
-            runtime = self._compile_runtime(definition, period)
+            runtime = self._warm_runtime(definition, period)
             if not isinstance(runtime, TypedIndicatorRuntime):
                 raise ValidationError(
                     "PLAN_REQUIRES_NJIT_INDICATOR",
@@ -3891,6 +5426,10 @@ class CustomIndicatorService:
                     tuple(entry[1] for entry in entries),
                     physical_columns,
                 )
+                persist_numba_batch_plan(
+                    compiled,
+                    self.workspace_data_dir / ".indicator_runtime",
+                )
                 compiled_batches.append(
                     {
                         "compiled_plan_id": compiled.plan_id,
@@ -3931,119 +5470,6 @@ class CustomIndicatorService:
     def delete_plan(self, plan_id: str, revision: int) -> None:
         self.plans.delete(plan_id, revision)
         self.plan_cache.clear()
-
-    def _run_plan_compat(self, plan_id: str, as_of: Optional[str] = None) -> dict[str, Any]:
-        plan = self.plans.get(plan_id)
-        target_keys = [(target["kind"], target["product_id"]) for target in plan["targets"]]
-        values_by_target: dict[tuple[str, str], list[dict[str, Any]]] = {key: [] for key in target_keys}
-        target_names: dict[tuple[str, str], str] = {key: key[1] for key in target_keys}
-        for item in plan["indicators"]:
-            definition = self.indicators.get(item["indicator_id"], int(item["indicator_revision"]))
-            for start in range(0, len(plan["targets"]), MAX_TARGETS):
-                response = self.evaluate(
-                    indicator_ids=[item["indicator_id"]],
-                    inline_definition=None,
-                    targets=plan["targets"][start : start + MAX_TARGETS],
-                    period=item["period"],
-                    as_of=as_of,
-                    include_series=False,
-                    indicator_versions={item["indicator_id"]: int(item["indicator_revision"])},
-                )
-                for result in response["results"]:
-                    key = (result["target"]["kind"], result["target"]["product_id"])
-                    target_names[key] = result["target"]["name"]
-                    values_by_target[key].append(
-                        {
-                            "indicator_id": item["indicator_id"],
-                            "indicator_revision": int(item["indicator_revision"]),
-                            "indicator_name": definition["name"],
-                            "period": item["period"],
-                            "value": result["value"],
-                            "status": result["status"],
-                            "warnings": result["warnings"],
-                            "window": copy.deepcopy(result.get("window")),
-                            "input_requirements": copy.deepcopy(
-                                result.get("input_requirements")
-                            ),
-                            "target_data": copy.deepcopy(result.get("target_data")),
-                            "presentation": copy.deepcopy(result.get("presentation")),
-                            "direction": item["direction"],
-                            "definition_direction": definition.get("direction"),
-                            "direction_overridden": item["direction"] != definition.get("direction"),
-                            "configured_weight": float(item["weight"]),
-                            "effective_weight": None,
-                            "normalized_score": None,
-                            "weighted_contribution": None,
-                        }
-                    )
-
-        complete_keys = [
-            key
-            for key, values in values_by_target.items()
-            if len(values) == len(plan["indicators"]) and all(value["value"] is not None for value in values)
-        ]
-        normalized_scores: dict[tuple[str, str], float] = {key: 0.0 for key in complete_keys}
-        total_weight = sum(float(item["weight"]) for item in plan["indicators"])
-        for index, item in enumerate(plan["indicators"]):
-            effective_weight = float(item["weight"]) / total_weight
-            for values in values_by_target.values():
-                if index < len(values):
-                    values[index]["effective_weight"] = effective_weight
-            raw_values = [float(values_by_target[key][index]["value"]) for key in complete_keys]
-            if not raw_values:
-                continue
-            lower = min(raw_values)
-            upper = max(raw_values)
-            for key, raw_value in zip(complete_keys, raw_values):
-                component = 50.0 if upper == lower else (raw_value - lower) / (upper - lower) * 100.0
-                if item["direction"] == "lower_better":
-                    component = 100.0 - component
-                contribution = component * effective_weight
-                values_by_target[key][index]["normalized_score"] = component
-                values_by_target[key][index]["weighted_contribution"] = contribution
-                normalized_scores[key] += contribution
-
-        ranked_keys = sorted(complete_keys, key=lambda key: normalized_scores[key], reverse=True)
-        ranks = {key: index + 1 for index, key in enumerate(ranked_keys)}
-        rows: list[dict[str, Any]] = []
-        for target in plan["targets"]:
-            key = (target["kind"], target["product_id"])
-            complete = key in ranks
-            values = values_by_target[key]
-            rows.append(
-                {
-                    "rank": ranks.get(key),
-                    "target": {**target, "name": target_names[key]},
-                    "score": round(normalized_scores[key], 6) if complete else None,
-                    "status": "ranked" if complete else "excluded",
-                    "missing_indicators": [
-                        value["indicator_name"] for value in values if value["value"] is None
-                    ],
-                    "exclusion_reasons": [
-                        warning
-                        for value in values
-                        if value["value"] is None
-                        for warning in value.get("warnings", [])
-                    ],
-                    "values": values,
-                }
-            )
-        rows.sort(key=lambda row: (row["rank"] is None, row["rank"] or math.inf))
-        return {
-            "plan_id": plan_id,
-            "plan_revision": int(plan["revision"]),
-            "run_at": datetime.now(timezone.utc).isoformat(),
-            "as_of": as_of,
-            "rows": rows,
-            "ranked_count": len(ranked_keys),
-            "excluded_count": len(rows) - len(ranked_keys),
-            "normalization": {
-                "method": "min_max_0_100",
-                "configured_weight_total": total_weight,
-                "effective_weight_total": 1.0,
-                "missing_policy": "strict",
-            },
-        }
 
     @staticmethod
     def _plan_value_payload(
@@ -4144,30 +5570,27 @@ class CustomIndicatorService:
     ) -> tuple[str, ...]:
         """Collapse runtime scalars onto their underlying physical data inputs."""
 
-        physical: list[str] = []
+        # The dates column is a view of the same physical NAV axis, not an
+        # extra data dependency. All NAV-derived metrics therefore share one
+        # execution partition, including rate, date and duration metrics.
+        physical: list[str] = ["adjusted_nav", "observation_dates"]
         for dependency in canonicalize_variables(dependencies):
             definition = get_variable(dependency)
-            if dependency in {"returns", "log_returns", "adjusted_nav"}:
-                physical.append(dependency)
-            elif definition is not None and definition.kind != "scalar":
+            if dependency in {"returns", "log_returns", "adjusted_nav", "observation_dates"}:
+                continue
+            if definition is not None and definition.kind != "scalar":
                 physical.append(dependency)
         return canonicalize_variables(physical)
 
     @staticmethod
-    def _fast_builtin_code(definition: dict[str, Any]) -> int | None:
-        direct = BUILTIN_METRIC_CODE.get(str(definition.get("id") or ""))
-        if direct is not None:
-            return direct
-        if not str(definition.get("dsl_version") or "").startswith("2."):
+    def _public_value(definition: dict[str, Any], value: float | None) -> float | str | None:
+        if value is None or not math.isfinite(float(value)):
             return None
-        expression = normalize_variable_latex(str(definition.get("expression") or ""))
-        for built_in in _built_in_indicators():
-            code = BUILTIN_METRIC_CODE.get(str(built_in.get("id") or ""))
-            if code is not None and normalize_variable_latex(
-                str(built_in.get("expression") or "")
-            ) == expression:
-                return code
-        return None
+        if definition.get("output_measure") == "date":
+            if float(value) != int(value):
+                raise ValidationError("INVALID_DATE_RESULT", "日期结果必须对应完整自然日。")
+            return str(np.datetime64(int(value), "D"))
+        return float(value)
 
     @classmethod
     def _precomputed_result(
@@ -4186,8 +5609,11 @@ class CustomIndicatorService:
             window=window,
         )
         warnings = [*window.warnings, *cls._partial_input_warnings(requirements)]
-        output_value: float | None = value if status_code == STATUS_OK else None
+        output_value = cls._public_value(definition, value) if status_code == STATUS_OK else None
         warning_by_status = {
+            7: {"code": "RESULT_UNAVAILABLE", "message": "当前结果不可得，未填零。"},
+            9: {"code": "NO_DRAWDOWN_EPISODE", "message": "窗口内没有回撤区间，相关日期和持续时间不可得。"},
+            10: {"code": "DRAWDOWN_NOT_RECOVERED", "message": "最后一次最大回撤尚未恢复，恢复日期及相应持续时间不可得。"},
             STATUS_INSUFFICIENT_SAMPLE: {
                 "code": "INSUFFICIENT_SAMPLE",
                 "message": "指标所需的有效样本不足。",
@@ -4230,267 +5656,6 @@ class CustomIndicatorService:
             "target_data": cls._target_data_payload(source),
         }
 
-    def _run_fused_builtin_groups(
-        self,
-        *,
-        prepared: list[dict[str, Any]],
-        product_ids: list[str],
-        series_by_dependency: dict[
-            tuple[str, ...], dict[str, ProductVariableSeries]
-        ],
-        selected_windows: dict[
-            tuple[tuple[str, ...], str, str],
-            tuple[VariablePeriodWindow | None, ValidationError | None],
-        ],
-        thread_budget: int,
-    ) -> tuple[
-        dict[tuple[int, int], tuple[float, int]],
-        dict[str, Any],
-    ]:
-        """Execute supported scalar built-ins over shared arrays in workers."""
-
-        empty_meta = {
-            "metric_items": 0,
-            "worker_pids": [],
-            "shared_memory_bytes": 0,
-            "mmap_bytes": 0,
-            "parallel_tasks": 0,
-        }
-        # Production starts and warms the pool in FastAPI lifespan. Keeping this
-        # fallback makes CLI/tests deterministic and avoids compiling at request time.
-        if not self.compute_engine.status()["started"]:
-            return {}, empty_meta
-
-        grouped_entries: dict[
-            tuple[str, ...], dict[str, list[tuple[dict[str, Any], int]]]
-        ] = {}
-        for entry in prepared:
-            code = self._fast_builtin_code(entry["definition"])
-            if not entry["typed"] or code is None:
-                continue
-            grouped_entries.setdefault(entry["data_dependencies"], {}).setdefault(
-                str(entry["item"]["period"]), []
-            ).append((entry, code))
-        if not grouped_entries:
-            return {}, empty_meta
-
-        threshold = max(
-            1,
-            int(
-                os.getenv(
-                    "INDICATOR_SHM_THRESHOLD_BYTES",
-                    str(512 * 1024 * 1024),
-                )
-            ),
-        )
-        precomputed: dict[tuple[int, int], tuple[float, int]] = {}
-        task_specs: list[dict[str, Any]] = []
-        shared_bytes = 0
-        mmap_bytes = 0
-        fast_metric_items: set[int] = set()
-
-        with ExitStack() as stack:
-
-            def own(array: np.ndarray) -> SharedArrayOwner:
-                nonlocal shared_bytes, mmap_bytes
-                owner = stack.enter_context(
-                    SharedArrayOwner(
-                        array,
-                        self.compute_engine.runtime_dir,
-                        shm_threshold_bytes=threshold,
-                    )
-                )
-                if owner.descriptor.backend == "shm":
-                    shared_bytes += owner.descriptor.nbytes
-                else:
-                    mmap_bytes += owner.descriptor.nbytes
-                return owner
-
-            for dependencies, entries_by_period in grouped_entries.items():
-                sources = series_by_dependency[dependencies]
-                physical_columns = list(
-                    dict.fromkeys(
-                        [
-                            "adjusted_nav",
-                            *[
-                                name
-                                for name in dependencies
-                                if name
-                                not in {"returns", "log_returns", "adjusted_nav"}
-                            ],
-                        ]
-                    )
-                )
-                offsets = np.zeros(len(product_ids) + 1, dtype=np.int64)
-                for row_index, product_id in enumerate(product_ids):
-                    source = sources.get(product_id)
-                    offsets[row_index + 1] = offsets[row_index] + (
-                        len(source.frame) if source is not None else 0
-                    )
-                total_points = int(offsets[-1])
-                if total_points == 0:
-                    continue
-                packed_values = np.empty(
-                    (len(physical_columns), total_points), dtype=np.float64
-                )
-                for row_index, product_id in enumerate(product_ids):
-                    source = sources.get(product_id)
-                    start = int(offsets[row_index])
-                    end = int(offsets[row_index + 1])
-                    if source is None or start == end:
-                        continue
-                    for value_index, column in enumerate(physical_columns):
-                        if column not in source.frame.columns:
-                            packed_values[value_index, start:end] = np.nan
-                        else:
-                            packed_values[value_index, start:end] = source.frame[
-                                column
-                            ].to_numpy(dtype=np.float64, copy=False)
-                values_owner = own(np.ascontiguousarray(packed_values))
-
-                for period, period_entries in entries_by_period.items():
-                    starts = np.full(len(product_ids), -1, dtype=np.int64)
-                    ends = np.full(len(product_ids), -1, dtype=np.int64)
-                    observation_total = 0
-                    for row_index, product_id in enumerate(product_ids):
-                        window, error = selected_windows[
-                            (dependencies, period, product_id)
-                        ]
-                        if window is None or error is not None:
-                            continue
-                        local_start = int(window.frame.index[0])
-                        local_end = int(window.frame.index[-1]) + 1
-                        starts[row_index] = int(offsets[row_index]) + local_start
-                        ends[row_index] = int(offsets[row_index]) + local_end
-                        observation_total += max(0, local_end - local_start - 1)
-
-                    codes = np.ascontiguousarray(
-                        [code for _, code in period_entries], dtype=np.int64
-                    )
-                    primary = np.full(codes.size, -1, dtype=np.int64)
-                    secondary = np.full(codes.size, -1, dtype=np.int64)
-                    column_index = {
-                        name: index for index, name in enumerate(physical_columns)
-                    }
-                    for metric_index, code in enumerate(codes):
-                        if code in (30, 31):
-                            primary[metric_index] = column_index.get("volume", -1)
-                        elif code == 32:
-                            primary[metric_index] = column_index.get("market_high", -1)
-                        elif code == 33:
-                            primary[metric_index] = column_index.get("market_low", -1)
-                        elif code == 34:
-                            primary[metric_index] = column_index.get("market_high", -1)
-                            secondary[metric_index] = column_index.get("market_low", -1)
-                    risk_free = np.ascontiguousarray(
-                        [
-                            self._risk_free_context(entry["definition"])[
-                                "risk_free_rate_per_observation"
-                            ]
-                            for entry, _ in period_entries
-                        ],
-                        dtype=np.float64,
-                    )
-                    output_owner = own(
-                        np.full(
-                            (len(product_ids), len(period_entries)),
-                            np.nan,
-                            dtype=np.float64,
-                        )
-                    )
-                    status_owner = own(
-                        np.full(
-                            (len(product_ids), len(period_entries)),
-                            STATUS_INSUFFICIENT_SAMPLE,
-                            dtype=np.int16,
-                        )
-                    )
-                    task_specs.append(
-                        {
-                            "values": values_owner,
-                            "starts": own(np.ascontiguousarray(starts)),
-                            "ends": own(np.ascontiguousarray(ends)),
-                            "codes": own(codes),
-                            "primary": own(np.ascontiguousarray(primary)),
-                            "secondary": own(np.ascontiguousarray(secondary)),
-                            "risk_free": own(risk_free),
-                            "output": output_owner,
-                            "statuses": status_owner,
-                            "entries": period_entries,
-                            "observation_total": observation_total,
-                        }
-                    )
-                    fast_metric_items.update(
-                        int(entry["index"]) for entry, _ in period_entries
-                    )
-
-            if not task_specs:
-                return {}, {
-                    **empty_meta,
-                    "shared_memory_bytes": shared_bytes,
-                    "mmap_bytes": mmap_bytes,
-                }
-
-            use_inner_parallel = len(task_specs) == 1 and bool(
-                len(product_ids) >= 32
-                and task_specs[0]["observation_total"]
-                >= self.compute_engine.prange_min_elements
-                and thread_budget > 1
-            )
-
-            def submit_all() -> list[Any]:
-                return [
-                    self.compute_engine.submit_builtin_shared(
-                        values=task["values"].descriptor,
-                        starts=task["starts"].descriptor,
-                        ends=task["ends"].descriptor,
-                        codes=task["codes"].descriptor,
-                        primary_indices=task["primary"].descriptor,
-                        secondary_indices=task["secondary"].descriptor,
-                        risk_free=task["risk_free"].descriptor,
-                        output=task["output"].descriptor,
-                        statuses=task["statuses"].descriptor,
-                        parallel=use_inner_parallel,
-                        thread_budget=(thread_budget if use_inner_parallel else 1),
-                    )
-                    for task in task_specs
-                ]
-
-            futures = submit_all()
-            try:
-                outcomes = [self.compute_engine.wait(future) for future in futures]
-            except Exception:
-                self.compute_engine.restart()
-                outcomes = [
-                    self.compute_engine.wait(future) for future in submit_all()
-                ]
-            worker_pids = {int(outcome["worker_pid"]) for outcome in outcomes}
-            for task in task_specs:
-                output = np.asarray(task["output"].view())
-                statuses = np.asarray(task["statuses"].view())
-                for metric_position, (entry, _) in enumerate(task["entries"]):
-                    output_index = int(entry["index"])
-                    dependencies = entry["data_dependencies"]
-                    period = str(entry["item"]["period"])
-                    for row_index, product_id in enumerate(product_ids):
-                        window, error = selected_windows[
-                            (dependencies, period, product_id)
-                        ]
-                        if window is None or error is not None:
-                            continue
-                        precomputed[(output_index, row_index)] = (
-                            float(output[row_index, metric_position]),
-                            int(statuses[row_index, metric_position]),
-                        )
-
-        return precomputed, {
-            "metric_items": len(fast_metric_items),
-            "worker_pids": sorted(worker_pids),
-            "shared_memory_bytes": shared_bytes,
-            "mmap_bytes": mmap_bytes,
-            "parallel_tasks": int(use_inner_parallel),
-        }
-
     def _run_fused_typed_groups(
         self,
         *,
@@ -4504,6 +5669,7 @@ class CustomIndicatorService:
             tuple[VariablePeriodWindow | None, ValidationError | None],
         ],
         thread_budget: int,
+        required_plan_ids: Optional[frozenset[str]] = None,
     ) -> tuple[
         dict[tuple[int, int], tuple[float, int]],
         dict[str, Any],
@@ -4527,6 +5693,7 @@ class CustomIndicatorService:
 
         precomputed: dict[tuple[int, int], tuple[float, int]] = {}
         compiled_plan_ids: list[str] = []
+        execution_audits: list[dict[str, Any]] = []
         compile_ms = 0.0
         parallel_tasks = 0
         metric_items: set[int] = set()
@@ -4569,7 +5736,9 @@ class CustomIndicatorService:
                     if source is None or start == end:
                         continue
                     for value_index, column in enumerate(physical_columns):
-                        if column in source.frame.columns:
+                        if column == "observation_dates":
+                            packed_values[value_index, start:end] = source.frame["date"].to_numpy(dtype="datetime64[D]").astype(np.float64)
+                        elif column in source.frame.columns:
                             packed_values[value_index, start:end] = source.frame[
                                 column
                             ].to_numpy(dtype=np.float64, copy=False)
@@ -4605,23 +5774,39 @@ class CustomIndicatorService:
                 )
                 execution_groups: list[tuple[list[dict[str, Any]], Any]] = []
                 if warmed_fused is not None:
+                    if (
+                        required_plan_ids is not None
+                        and warmed_fused.plan_id not in required_plan_ids
+                    ):
+                        raise ValidationError(
+                            "NJIT_BATCH_PLAN_CONTRACT_MISMATCH",
+                            "当前融合 NJIT 计划不属于已保存评价方案的 immutable 编译契约。",
+                            field="plan_revision",
+                            diagnostics=[
+                                {
+                                    "actual_compiled_plan_id": warmed_fused.plan_id,
+                                    "expected_compiled_plan_ids": sorted(required_plan_ids),
+                                }
+                            ],
+                        )
                     execution_groups.append((entries, warmed_fused))
                 else:
-                    # Arbitrary preview selections have combinatorial batch
-                    # shapes.  Reuse their startup-warmed singleton plans
-                    # instead of compiling a new fused dispatcher in a request.
-                    for entry in entries:
-                        singleton = get_cached_numba_batch_plan(
-                            (entry["runtime"].plan,),
-                            (entry["definition"],),
-                            physical_columns,
+                    if required_plan_ids is not None:
+                        raise ValidationError(
+                            "NJIT_BATCH_PLAN_NOT_WARMED",
+                            "评价方案保存的融合 NJIT 计划未命中预热缓存；运行已关闭，未改用其他计划。",
+                            field="plan_revision",
+                            diagnostics=[
+                                {
+                                    "expected_compiled_plan_ids": sorted(required_plan_ids),
+                                }
+                            ],
                         )
-                        if singleton is None:
-                            raise RuntimeError(
-                                "NJIT batch plan was not prewarmed: "
-                                f"{entry['definition'].get('id') or 'inline'}"
-                            )
-                        execution_groups.append(([entry], singleton))
+                    raise ValidationError(
+                        "NJIT_BATCH_PLAN_NOT_WARMED",
+                        "请先准备本次所选指标的共享计算计划；系统不会逐项重复执行或在计算时临时编译。",
+                        field="indicator_ids",
+                    )
 
                 packed_contiguous = np.ascontiguousarray(packed_values)
                 starts_contiguous = np.ascontiguousarray(starts)
@@ -4629,6 +5814,7 @@ class CustomIndicatorService:
                 elapsed_contiguous = np.ascontiguousarray(elapsed_days)
                 for execution_entries, batch_plan in execution_groups:
                     compiled_plan_ids.append(batch_plan.plan_id)
+                    execution_audits.append(batch_plan.metadata())
                     output = np.full(
                         (len(product_ids), len(execution_entries)),
                         np.nan,
@@ -4699,9 +5885,32 @@ class CustomIndicatorService:
             "mmap_bytes": 0,
             "parallel_tasks": parallel_tasks,
             "compiled_plan_ids": compiled_plan_ids,
+            "execution_audits": execution_audits,
             "compile_ms": round(compile_ms, 3),
             "python_fallback": 0,
             "python_operator_calls": 0,
+        }
+
+    @staticmethod
+    def _plan_universe_lineage(plan: dict[str, Any], as_of: Optional[str]) -> dict[str, Any]:
+        """Where this run's candidate list came from, and whether it knew the future."""
+
+        picked_at = str(plan.get("updated_at") or plan.get("created_at") or "")[:10]
+        lookahead = bool(as_of and picked_at and picked_at > str(as_of))
+        warnings: list[str] = []
+        if lookahead:
+            warnings.append(
+                f"候选产品名单是 {picked_at} 选定的，却用于 {as_of} 的评价——"
+                "名单本身带入了研究日之后的信息。"
+            )
+        return {
+            "source": "manual_target_list",
+            "replayable": False,
+            "target_count": len(plan.get("targets") or []),
+            "picked_at": picked_at or None,
+            "as_of": as_of,
+            "lookahead": lookahead,
+            "warnings": warnings,
         }
 
     def _run_plan_batch(
@@ -4769,14 +5978,9 @@ class CustomIndicatorService:
                     f"评价方案中的指标 {definition['name']} 没有 NJIT 计算计划。",
                     field="indicators",
                 )
-            dependencies = (
-                canonicalize_variables(runtime.plan.context_requirements)
-                if isinstance(runtime, TypedIndicatorRuntime)
-                else ()
-            )
+            dependencies = canonicalize_variables(runtime.plan.context_requirements)
             data_dependencies = self._physical_dependency_signature(dependencies)
-            if isinstance(runtime, TypedIndicatorRuntime):
-                typed_dependencies.add(data_dependencies)
+            typed_dependencies.add(data_dependencies)
             prepared.append(
                 {
                     "index": index,
@@ -4785,7 +5989,7 @@ class CustomIndicatorService:
                     "runtime": runtime,
                     "dependencies": dependencies,
                     "data_dependencies": data_dependencies,
-                    "typed": isinstance(runtime, TypedIndicatorRuntime),
+                    "typed": True,
                 }
             )
         snapshot_item_count = 0
@@ -4799,18 +6003,37 @@ class CustomIndicatorService:
                 )
                 for item in self.snapshot_config.get().get("items", [])
             }
-            snapshot_groups: dict[str, list[dict[str, Any]]] = {}
+            # A saved evaluation plan owns immutable fused NJIT batches.  Never
+            # remove only part of one batch after snapshot lookup: doing so
+            # creates a new batch shape that was neither saved nor startup-warmed.
+            # Snapshot reuse is therefore all-or-nothing per fused group.
+            candidate_snapshot_groups: dict[
+                tuple[tuple[str, ...], str], list[dict[str, Any]]
+            ] = {}
             for entry in prepared:
-                item = entry["item"]
-                key = (
-                    str(item["indicator_id"]),
-                    int(item["indicator_revision"]),
-                    str(item["period"]).upper(),
-                )
-                if key in configured_keys:
-                    snapshot_groups.setdefault(key[2], []).append(entry)
+                candidate_snapshot_groups.setdefault(
+                    (
+                        entry["data_dependencies"],
+                        str(entry["item"]["period"]).upper(),
+                    ),
+                    [],
+                ).append(entry)
             snapshot_indexes: set[int] = set()
-            for snapshot_period, snapshot_entries in snapshot_groups.items():
+            expected_targets = {
+                (str(target["kind"]), str(target["product_id"]))
+                for target in plan["targets"]
+            }
+            for (_dependencies, snapshot_period), snapshot_entries in candidate_snapshot_groups.items():
+                entry_keys = {
+                    (
+                        str(entry["item"]["indicator_id"]),
+                        int(entry["item"]["indicator_revision"]),
+                        str(entry["item"]["period"]).upper(),
+                    )
+                    for entry in snapshot_entries
+                }
+                if not entry_keys.issubset(configured_keys):
+                    continue
                 snapshot_response = self._evaluate_from_snapshot(
                     [entry["definition"] for entry in snapshot_entries],
                     plan["targets"],
@@ -4825,24 +6048,41 @@ class CustomIndicatorService:
                     ): entry
                     for entry in snapshot_entries
                 }
-                for snapshot_result in snapshot_response["results"]:
-                    entry = entries_by_definition[
-                        (
-                            str(snapshot_result["indicator_id"]),
-                            int(snapshot_result["indicator_revision"]),
-                        )
-                    ]
-                    target = snapshot_result["target"]
-                    row_index = target_index[
-                        (str(target["kind"]), str(target["product_id"]))
-                    ]
+                expected_cells = {
+                    (definition_key, target_key)
+                    for definition_key in entries_by_definition
+                    for target_key in expected_targets
+                }
+                results_by_cell: dict[
+                    tuple[tuple[str, int], tuple[str, str]], dict[str, Any]
+                ] = {}
+                for snapshot_result in snapshot_response.get("results", []):
+                    definition_key = (
+                        str(snapshot_result.get("indicator_id")),
+                        int(snapshot_result.get("indicator_revision") or 0),
+                    )
+                    target = snapshot_result.get("target") or {}
+                    target_key = (
+                        str(target.get("kind")),
+                        str(target.get("product_id")),
+                    )
+                    if definition_key in entries_by_definition and target_key in expected_targets:
+                        results_by_cell[(definition_key, target_key)] = snapshot_result
+                if set(results_by_cell) != expected_cells:
+                    # Partial snapshot coverage must not split the immutable NJIT
+                    # group. Compute the complete group through its warmed plan.
+                    continue
+                for (definition_key, target_key), snapshot_result in results_by_cell.items():
+                    entry = entries_by_definition[definition_key]
+                    row_index = target_index[target_key]
                     output_index = int(entry["index"])
                     values_by_target[row_index][output_index] = self._plan_value_payload(
                         entry["item"], entry["definition"], snapshot_result
                     )
+                    target = snapshot_result["target"]
                     target_names[row_index] = str(target.get("name") or target["product_id"])
                     snapshot_cell_hits += 1
-                    snapshot_indexes.add(output_index)
+                snapshot_indexes.update(int(entry["index"]) for entry in snapshot_entries)
                 snapshot_item_count += len(snapshot_entries)
             prepared = [
                 entry for entry in prepared if int(entry["index"]) not in snapshot_indexes
@@ -4963,6 +6203,11 @@ class CustomIndicatorService:
             series_by_dependency=series_by_dependency,
             selected_windows=selected_windows,
             thread_budget=thread_budget,
+            required_plan_ids=frozenset(
+                str(item.get("compiled_plan_id"))
+                for item in plan.get("compiled_batches", [])
+                if item.get("compiled_plan_id")
+            ),
         )
         cell_hits = snapshot_cell_hits
         cell_misses = 0
@@ -5058,107 +6303,31 @@ class CustomIndicatorService:
         score_started = time.perf_counter()
         product_count = len(target_keys)
         metric_count = len(plan["indicators"])
-        raw_matrix = np.full((product_count, metric_count), np.nan, dtype=np.float64)
-        concrete_values: list[list[dict[str, Any]]] = []
-        for row_index, value_slots in enumerate(values_by_target):
-            row_values: list[dict[str, Any]] = []
-            for metric_index, value in enumerate(value_slots):
-                if value is None:
-                    raise RuntimeError("评价方案批量执行未填充完整的指标结果。")
-                row_values.append(value)
-                if value["value"] is not None:
-                    raw_matrix[row_index, metric_index] = float(value["value"])
-            concrete_values.append(row_values)
-
-        complete_mask = np.all(np.isfinite(raw_matrix), axis=1)
-        weights = np.asarray(
-            [float(item["weight"]) for item in plan["indicators"]],
-            dtype=np.float64,
-        )
-        total_weight = float(np.sum(weights))
-        effective_weights = weights / total_weight
-        normalized = np.full_like(raw_matrix, np.nan)
-        contributions = np.full_like(raw_matrix, np.nan)
-        if np.any(complete_mask):
-            complete_values = raw_matrix[complete_mask]
-            lower = np.min(complete_values, axis=0)
-            upper = np.max(complete_values, axis=0)
-            spans = upper - lower
-            lower_better = np.asarray(
-                [item["direction"] == "lower_better" for item in plan["indicators"]],
-                dtype=np.int8,
-            )
-            normalized, parallel_scoring = score_matrix(
-                raw_matrix,
-                effective_weights,
-                lower_better,
-                complete_mask,
-                lower,
-                upper,
-                min_parallel_elements=self.compute_engine.prange_min_elements,
-                thread_budget=thread_budget,
-            )
-            contributions[complete_mask] = (
-                normalized[complete_mask] * effective_weights
-            )
-        else:
-            parallel_scoring = False
-        scores = np.full(product_count, np.nan, dtype=np.float64)
-        scores[complete_mask] = np.sum(contributions[complete_mask], axis=1)
-        ranked_indices = np.flatnonzero(complete_mask)
-        if ranked_indices.size:
-            order = np.argsort(-scores[ranked_indices], kind="stable")
-            ranked_indices = ranked_indices[order]
-        ranks = np.zeros(product_count, dtype=np.int64)
-        ranks[ranked_indices] = np.arange(1, ranked_indices.size + 1, dtype=np.int64)
-        for row_index, values in enumerate(concrete_values):
-            for metric_index, value in enumerate(values):
-                value["effective_weight"] = float(effective_weights[metric_index])
-                if complete_mask[row_index]:
-                    value["normalized_score"] = float(
-                        normalized[row_index, metric_index]
-                    )
-                    value["weighted_contribution"] = float(
-                        contributions[row_index, metric_index]
-                    )
+        rows, ranked_count, total_weight = score_result_rows(plan, values_by_target, target_names)
+        parallel_scoring = False
         scoring_ms = (time.perf_counter() - score_started) * 1000.0
-
-        assembly_started = time.perf_counter()
-        rows: list[dict[str, Any]] = []
-        for row_index, target in enumerate(plan["targets"]):
-            values = concrete_values[row_index]
-            complete = bool(complete_mask[row_index])
-            rows.append(
-                {
-                    "rank": int(ranks[row_index]) if complete else None,
-                    "target": {**target, "name": target_names[row_index]},
-                    "score": round(float(scores[row_index]), 6) if complete else None,
-                    "status": "ranked" if complete else "excluded",
-                    "missing_indicators": [
-                        value["indicator_name"]
-                        for value in values
-                        if value["value"] is None
-                    ],
-                    "exclusion_reasons": [
-                        warning
-                        for value in values
-                        if value["value"] is None
-                        for warning in value.get("warnings", [])
-                    ],
-                    "values": values,
-                }
-            )
-        rows.sort(key=lambda row: (row["rank"] is None, row["rank"] or math.inf))
-        assembly_ms = (time.perf_counter() - assembly_started) * 1000.0
+        assembly_ms = 0.0  # Row assembly is included in the shared scoring stage.
         total_ms = (time.perf_counter() - started) * 1000.0
+        execution_audit = self._combined_njit_audit(
+            [
+                *fused_meta.get("execution_audits", []),
+                plan_scoring_execution_audit(),
+            ]
+        )
         result = {
             "plan_id": plan_id,
             "plan_revision": int(plan["revision"]),
             "run_at": datetime.now(timezone.utc).isoformat(),
             "as_of": as_of,
+            # A plan's target list is a human choice, and a human choosing today
+            # which products to evaluate "as of 2018" has already used 2018's
+            # future. Running the same plan at a different `as_of` re-scores the
+            # same candidates; it does not re-pick them, so the candidate list is
+            # labelled rather than silently treated as point-in-time.
+            "universe": self._plan_universe_lineage(plan, as_of),
             "rows": rows,
-            "ranked_count": int(ranked_indices.size),
-            "excluded_count": int(product_count - ranked_indices.size),
+            "ranked_count": ranked_count,
+            "excluded_count": product_count - ranked_count,
             "normalization": {
                 "method": "min_max_0_100",
                 "configured_weight_total": total_weight,
@@ -5166,6 +6335,7 @@ class CustomIndicatorService:
                 "missing_policy": "strict",
             },
             "execution": {
+                **execution_audit,
                 "engine_version": ENGINE_VERSION,
                 "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
                 "operator_coverage": kernel_registry_status()[
@@ -5243,63 +6413,6 @@ class CustomIndicatorService:
         page_size: int = 100,
     ) -> dict[str, Any]:
         return self.run_results.page(result_id, page=page, page_size=page_size)
-
-    @staticmethod
-    def _compare_shadow_results(
-        fast: dict[str, Any], compatibility: dict[str, Any]
-    ) -> dict[str, Any]:
-        fast_rows = {
-            (row["target"]["kind"], row["target"]["product_id"]): row
-            for row in fast.get("rows", [])
-        }
-        compatibility_rows = {
-            (row["target"]["kind"], row["target"]["product_id"]): row
-            for row in compatibility.get("rows", [])
-        }
-        mismatches = 0
-        max_absolute_error = 0.0
-        if fast_rows.keys() != compatibility_rows.keys():
-            mismatches += len(fast_rows.keys() ^ compatibility_rows.keys())
-        for key in fast_rows.keys() & compatibility_rows.keys():
-            fast_row = fast_rows[key]
-            compatibility_row = compatibility_rows[key]
-            if (
-                fast_row.get("rank") != compatibility_row.get("rank")
-                or fast_row.get("status") != compatibility_row.get("status")
-            ):
-                mismatches += 1
-            fast_values = fast_row.get("values", [])
-            compatibility_values = compatibility_row.get("values", [])
-            if len(fast_values) != len(compatibility_values):
-                mismatches += abs(len(fast_values) - len(compatibility_values))
-            for fast_value, compatibility_value in zip(
-                fast_values, compatibility_values, strict=False
-            ):
-                left = fast_value.get("value")
-                right = compatibility_value.get("value")
-                if left is None or right is None:
-                    if left is not right:
-                        mismatches += 1
-                else:
-                    error = abs(float(left) - float(right))
-                    max_absolute_error = max(max_absolute_error, error)
-                    if not math.isclose(
-                        float(left), float(right), rel_tol=1e-10, abs_tol=1e-12
-                    ):
-                        mismatches += 1
-                if fast_value.get("window") != compatibility_value.get("window"):
-                    mismatches += 1
-                if fast_value.get("status") != compatibility_value.get("status"):
-                    mismatches += 1
-        return {
-            "compared": True,
-            "equivalent": mismatches == 0,
-            "mismatch_count": mismatches,
-            "max_absolute_error": max_absolute_error,
-            "row_count_equal": len(fast_rows) == len(compatibility_rows),
-            "ranked_count_equal": fast.get("ranked_count")
-            == compatibility.get("ranked_count"),
-        }
 
     def run_plan(self, plan_id: str, as_of: Optional[str] = None) -> dict[str, Any]:
         plan = self.plans.get(plan_id)

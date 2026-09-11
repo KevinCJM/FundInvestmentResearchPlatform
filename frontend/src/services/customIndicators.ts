@@ -1,12 +1,85 @@
+import {
+  assertFixedNjitExecution,
+  type FixedNjitExecutionAudit,
+} from '../utils/fixedNjitExecution'
+
 export type ProductKind = 'etf' | 'fund'
 
 export type IndicatorSource = 'built_in' | 'custom'
-export type IndicatorDisplayFormat = 'number' | 'percent'
-export type IndicatorDirection = 'higher_better' | 'lower_better'
+export type IndicatorDisplayFormat = 'number' | 'percent' | 'date'
+
+export type IndicatorDirection = 'higher_better' | 'lower_better' | 'neutral'
 export type EvaluationStatus = 'ok' | 'warning' | 'unavailable' | 'error'
-export type IndicatorShape = 'scalar' | 'series' | 'vector' | 'matrix' | 'mask' | 'tuple' | 'unknown'
+export type IndicatorShape = 'scalar' | 'series' | 'vector' | 'matrix' | 'window' | 'mask' | 'tuple' | 'record' | 'unknown'
 export type IndicatorContextDomain = 'single_product' | 'portfolio'
-export type IndicatorType = 'return' | 'risk' | 'risk_adjusted' | 'path' | 'market_liquidity' | 'other'
+export type IndicatorResultKind = 'scalar' | 'time_series'
+export type IndicatorType = 'return' | 'risk' | 'risk_adjusted' | 'path' | 'market_liquidity' | 'technical' | 'other'
+export type SeriesOutputMeasureId =
+  | 'auto'
+  | 'raw_market_price'
+  | 'adjusted_nav'
+  | 'reported_nav'
+  | 'virtual_nav'
+  | 'normalized'
+  | 'bounded_0_1'
+  | 'bounded_minus1_1'
+  | 'oscillator_0_100'
+  | 'return_decimal'
+  | 'rate_decimal'
+  | 'volume'
+  | 'currency_amount'
+  | 'count'
+  | 'calendar_days'
+  | 'dimensionless'
+  | 'derived'
+
+export interface SeriesOutputMeasureOption {
+  id: SeriesOutputMeasureId
+  label: string
+  description: string
+  semantic_dimensions: string[]
+  range: [number | null, number | null] | null
+  default_unit: string
+  default_display_format: IndicatorDisplayFormat
+}
+
+export interface FixedSeriesParameter {
+  id: string
+  label: string
+  value: number
+  type: 'integer' | 'number'
+  source?: string
+}
+
+export interface RollingSourceDefinition {
+  kind: 'rolling_scalar'
+  /** Canonical rolling-transform protocol version. */
+  transform_version: '1.0.0' | '2.0.0' | '3.0.0'
+  /** Compatibility field accepted from older generated drafts. */
+  version?: '1.0.0' | '2.0.0' | '3.0.0'
+  indicator_id: string
+  indicator_revision: number
+  indicator_name: string
+  /** Canonical hash of the locked scalar calculation contract. */
+  definition_hash: string
+  /** Compatibility field accepted from older generated drafts. */
+  source_definition_hash?: string
+  source_dsl_version: string
+  window_observations: number
+  minimum_observations: number
+  detached: boolean
+}
+
+export interface RollingSeriesDerivationResponse {
+  definition: IndicatorDraft
+  validation: ValidationResponse
+  source: {
+    indicator_id: string
+    indicator_revision: number
+    indicator_name: string
+    window_observations: number
+  }
+}
 
 export interface MetricPresentation {
   indicator_id: string | null
@@ -17,6 +90,7 @@ export interface MetricPresentation {
   category: string
   category_label: string
   context_kind: IndicatorContextDomain
+  result_kind?: IndicatorResultKind
   catalog_status: 'current' | 'compatibility' | string
   display_format: IndicatorDisplayFormat
   precision: number
@@ -30,6 +104,13 @@ export interface MetricPresentation {
   data_basis: string
   minimum_observations: number
   applicable_product_kinds: Array<ProductKind | 'portfolio'>
+  axis_anchor?: string | null
+  parameter_schema?: SeriesParameterDefinition[]
+  fixed_parameters?: FixedSeriesParameter[]
+  series_outputs?: SeriesOutputDefinition[]
+  history_policy?: SeriesHistoryPolicy | null
+  history_inference_source?: string | null
+  lookback_observations?: number
 }
 
 export interface IndicatorTemplateOrigin {
@@ -39,10 +120,70 @@ export interface IndicatorTemplateOrigin {
   detached?: boolean
 }
 
+export type SeriesHistoryPolicy = 'lookback' | 'full_history'
+
+export interface SeriesParameterDefinition {
+  id: string
+  label: string
+  type: 'integer' | 'number'
+  default: number
+  minimum: number
+  maximum: number
+  step: number
+  description?: string
+}
+
+export interface SeriesOutputDefinition {
+  id: string
+  label: string
+  expression: string
+  editable_latex?: string | null
+  unit: string
+  display_format: 'number' | 'percent'
+  precision: number
+  output_measure: SeriesOutputMeasureId
+  inferred_output_measure?: SeriesOutputMeasureId | null
+  resolved_output_measure?: SeriesOutputMeasureId | null
+  output_measure_source?: 'inferred' | 'explicit' | string | null
+  semantic_dimension?: string | null
+  price_basis?: string | null
+  value_range?: [number | null, number | null] | null
+}
+
+export interface SeriesOutputInference {
+  id: string
+  label: string
+  expression: string
+  editable_latex?: string | null
+  latex: string
+  display_latex?: string | null
+  math_notation_version?: string | null
+  python_expression?: string | null
+  inferred_type: string
+  shape: IndicatorShape
+  semantic_dimension?: string | null
+  price_basis?: string | null
+  output_measure?: SeriesOutputMeasureId | null
+  inferred_output_measure?: SeriesOutputMeasureId | null
+  resolved_output_measure?: SeriesOutputMeasureId | null
+  output_measure_source?: 'inferred' | 'explicit' | string | null
+  value_range?: [number | null, number | null] | null
+  dependencies: string[]
+  root_id: string | number
+}
+
+export interface IndicatorReference {
+  indicator_id: string
+  indicator_revision?: number
+}
+
 export interface IndicatorDraft {
+  parameter_contract_version?: '1.0' | null
   name: string
   description: string
   expression: string
+  /** Response-only reversible LaTeX; never the compact preview notation. */
+  editable_latex?: string | null
   /** Legacy response compatibility only. v2 definitions do not persist runtime periods. */
   periods?: readonly string[]
   unit: string
@@ -59,9 +200,45 @@ export interface IndicatorDraft {
   data_contract_version?: string
   period_policy?: 'all_supported'
   context_kind?: IndicatorContextDomain
-  output_contract?: 'scalar'
+  result_kind?: IndicatorResultKind
+  output_contract?: 'scalar' | 'series_bundle'
   output_measure?: string
+  parameter_schema?: SeriesParameterDefinition[]
+  fixed_parameters?: FixedSeriesParameter[]
+  series_outputs?: SeriesOutputDefinition[]
+  axis_anchor?: string | null
+  history_policy?: SeriesHistoryPolicy | null
+  lookback_parameter?: string | null
+  lookback_observations?: number
+  history_inference_source?: string | null
+  minimum_observations?: number
+  methodology?: string
+  data_basis?: string
   template_origin?: IndicatorTemplateOrigin | string | null
+  rolling_source?: RollingSourceDefinition | null
+  rolling_transform?: {
+    version?: string
+    window_observations?: number
+    source_expression?: string
+    generated_expression?: string
+    series_variables?: string[]
+    reduction_mappings?: string[]
+    rewritten_reductions?: string[]
+    source_variables?: string[]
+  } | null
+  rolling_series_compatibility?: {
+    inputs?: string[]
+    reset_operators?: string[]
+    window_unit?: 'return_observations' | 'observations'
+    window_unit_label?: string
+    missing_policy?: string
+    state_policy?: string
+    supported: boolean
+    protocol_version: string
+    rewritten_reductions?: string[]
+    code?: string
+    message?: string
+  }
 }
 
 export interface IndicatorDefinition extends IndicatorDraft {
@@ -84,6 +261,15 @@ export interface IndicatorDefinition extends IndicatorDraft {
   display_latex?: string | null
   math_notation_version?: string
   required_variables?: string[]
+  channel_types?: Record<string, {
+    kind?: string
+    dtype?: string
+    axes?: string[]
+    shape?: Array<string | number>
+    semantic_dimension?: string
+    price_basis?: string | null
+  }>
+  compiled_series_plan_id?: string
   availability_policy?: 'runtime_required' | string
   availability_status?: 'runtime_check' | 'ready' | string
   product_kind_hint?: {
@@ -98,6 +284,8 @@ export interface SnapshotIndicatorConfigItem {
   indicator_revision: number
   period: string
   field: string
+  channel_id?: string | null
+  reducer?: 'last_finite' | null
   name?: string
   source?: IndicatorSource
   status?: 'ready' | 'definition_missing' | string
@@ -167,6 +355,8 @@ export interface IndicatorVariable {
 }
 
 export interface IndicatorOperatorParameter {
+  intermediate_kind?: 'linear_fit' | 'drawdown_interval'
+  suggested_variable?: string
   name: string
   label?: string
   description?: string
@@ -174,8 +364,14 @@ export interface IndicatorOperatorParameter {
   allowed_shapes?: IndicatorShape[]
   allowed_types?: string[]
   allowed_semantic_roles?: string[]
+  excluded_semantic_dimensions?: string[]
   optional?: boolean
   default?: number | string | null
+  parameterizable?: boolean
+  source_policy?: 'fixed_constant' | string
+  constant_kind?: 'integer' | 'number' | string
+  minimum?: number
+  maximum?: number
 }
 
 export interface IndicatorOperatorParameterSet {
@@ -186,6 +382,7 @@ export interface IndicatorOperatorParameterSet {
 }
 
 export interface IndicatorOperator {
+  intermediate_kind?: 'linear_fit' | 'drawdown_interval'
   name: string
   label: string
   signature: string
@@ -266,6 +463,8 @@ export interface IndicatorMeta {
   context_schema_version?: string
   math_notation_version?: string
   context_kinds?: IndicatorContextDomain[]
+  indicator_result_kinds?: Array<{ id: IndicatorResultKind; label: string }>
+  series_output_measures?: SeriesOutputMeasureOption[]
   indicator_categories?: Array<{ id: string; label: string }>
   indicator_types?: Array<{ id: IndicatorType; label: string }>
   numeric_backend?: {
@@ -349,8 +548,26 @@ export interface ValidationResponse {
   python_expression: string | null
   dag: IndicatorDag | null
   latex?: string | null
+  editable_latex?: string | null
   display_latex?: string | null
   math_notation_version?: string | null
+  compile_token?: string | null
+  compile_token_scope?: 'current_process_warm_cache' | string
+  result_kind?: IndicatorResultKind
+  output_contract?: 'scalar' | 'series_bundle'
+  output_measure?: string
+  output_channels?: SeriesOutputDefinition[]
+  output_inferences?: Record<string, SeriesOutputInference>
+  channel_types?: IndicatorDefinition['channel_types']
+  parameter_schema?: SeriesParameterDefinition[]
+  fixed_parameters?: FixedSeriesParameter[]
+  history_policy?: SeriesHistoryPolicy | null
+  history_inference_source?: string | null
+  lookback_observations?: number
+  minimum_observations?: number
+  compiled_series_plan_id?: string
+  compile_status?: string
+  execution?: FixedNjitExecutionAudit
 }
 
 export interface ComposeArgument {
@@ -371,11 +588,16 @@ export interface ComposeIndicatorRequest {
   variable_registry_version?: string
   data_contract_version?: string
   context_schema_version?: string
+  parameter_schema?: SeriesParameterDefinition[]
 }
 
 export interface InferenceResponse {
+  /** Compatibility input; not necessarily normalized. */
   latex: string
   expression?: string
+  /** Lossless source for the advanced editor, not display_latex. */
+  editable_latex?: string | null
+  python_expression?: string
   normalized_expression?: string
   display_latex?: string
   math_notation_version?: string
@@ -507,12 +729,14 @@ export interface EvaluationSeriesPoint {
 }
 
 export interface EvaluationResult {
+  result_kind?: IndicatorResultKind
   indicator_id: string | null
   indicator_revision: number | null
   indicator_name: string
   target: { kind: ProductKind | 'portfolio'; product_id: string; name: string }
   period: string
-  value: number | null
+  value: number | string | null
+  value_type?: 'number' | 'date' | 'duration'
   status: EvaluationStatus
   warnings: EvaluationWarning[]
   window: EvaluationWindow
@@ -523,24 +747,106 @@ export interface EvaluationResult {
 }
 
 export interface EvaluateIndicatorsRequest {
+  indicator_refs?: IndicatorReference[]
   indicator_ids?: string[]
   inline_definition?: IndicatorDraft
+  compile_token?: string
   targets: EvaluationTarget[]
   period: string
   as_of?: string
   include_series?: boolean
 }
 
+export interface SeriesIndicatorInstance {
+  indicator_id?: string
+  indicator_revision?: number
+  inline_definition?: IndicatorDraft
+  compile_token?: string
+  /** Per-instance overrides of explicitly opened parameters; omitted keys use revision defaults. */
+  parameters?: Record<string, number>
+}
+
+export interface EvaluateTimeSeriesIndicatorsRequest {
+  indicator_instances: SeriesIndicatorInstance[]
+  target: EvaluationTarget
+  period: string
+  as_of?: string
+  max_points?: number
+}
+
+export interface TimeSeriesChannelResult {
+  id: string
+  label: string
+  unit: string
+  display_format: IndicatorDisplayFormat
+  precision: number
+  output_measure: SeriesOutputMeasureId | string
+  semantic_dimension?: string | null
+  price_basis?: string | null
+  value_range?: [number | null, number | null] | null
+  null_count?: number
+  values: Array<number | null>
+}
+
+export interface TimeSeriesIndicatorResult {
+  indicator_id: string | null
+  indicator_revision: number | null
+  indicator_name: string
+  result_kind: 'time_series'
+  target: { kind: ProductKind; product_id: string; name: string }
+  period: string
+  parameters: Record<string, number>
+  parameter_hash?: string
+  axis_anchor: string
+  history_policy: SeriesHistoryPolicy
+  lookback_observations?: number
+  minimum_observations?: number
+  status: EvaluationStatus
+  warnings: EvaluationWarning[]
+  window: EvaluationWindow
+  dates: string[]
+  channels: TimeSeriesChannelResult[]
+  presentation: MetricPresentation
+  execution?: FixedNjitExecutionAudit
+}
+
+export interface EvaluateTimeSeriesIndicatorsResponse {
+  results: TimeSeriesIndicatorResult[]
+  summary: { total: number; ok: number; warning: number; error: number; unavailable: number }
+  cache: { hits: number; misses: number }
+  execution: FixedNjitExecutionAudit & {
+    compiled_plan_ids?: string[]
+    request_time_compilation?: number
+  }
+}
+
+export interface ExportIndicatorExcelRequest {
+  indicator_ids?: string[]
+  inline_definition?: IndicatorDraft
+  compile_token?: string
+  targets: EvaluationTarget[]
+  period: string
+  as_of?: string
+  parameters?: Record<string, number>
+}
+
+export interface DownloadedFile {
+  blob: Blob
+  filename: string
+}
+
 export interface EvaluatePortfolioIndicatorsRequest {
   run_id: string
   indicator_ids?: string[]
   inline_definition?: IndicatorDraft
+  compile_token?: string
 }
 
 export interface EvaluateIndicatorsResponse {
   results: EvaluationResult[]
   summary: { total: number; ok: number; warning: number; error: number; unavailable?: number }
   cache: { hits: number; misses: number }
+  execution: FixedNjitExecutionAudit
 }
 
 export interface EvaluationPlanIndicator {
@@ -551,7 +857,7 @@ export interface EvaluationPlanIndicator {
   direction: IndicatorDirection
 }
 
-export type InstrumentProductFilterKey = 'fund_type' | 'invest_type' | 'market' | 'status' | 'management' | 'custodian'
+export type InstrumentProductFilterKey = 'fund_type' | 'invest_type' | 'qdii_type' | 'market' | 'status' | 'management' | 'custodian'
 
 export type InstrumentProductFilterState = Record<InstrumentProductFilterKey, string[]>
 
@@ -633,16 +939,16 @@ export interface EvaluationPlanRunResponse {
     has_next: boolean
     expires_at: string
   }
-  execution?: {
-    engine_version: string
-    data_generation: string
-    execution_lanes: Record<string, number>
-    worker_processes: number
-    numba_threads: number
-    shared_memory_bytes: number
-    combinations: number
-    cache: Record<string, number>
-    timings_ms: Record<string, number>
+  execution: FixedNjitExecutionAudit & {
+    engine_version?: string
+    data_generation?: string
+    execution_lanes?: Record<string, number>
+    worker_processes?: number
+    numba_threads?: number
+    shared_memory_bytes?: number
+    combinations?: number
+    cache?: Record<string, number>
+    timings_ms?: Record<string, number>
     parallel_scoring?: boolean
   }
 }
@@ -699,6 +1005,8 @@ export interface InstrumentProductItem extends InstrumentSearchItem {
   fund_type?: string | null
   type?: string | null
   invest_type?: string | null
+  qdii_type?: 'QDII' | '非QDII' | string | null
+  qdii_source?: string | null
   market?: string | null
   status?: string | null
   list_date?: string | null
@@ -749,7 +1057,7 @@ export interface InstrumentProductQueryOptions {
   pageSize?: number
   sortBy?: string
   sortDir?: 'asc' | 'desc'
-  filters?: Partial<Record<'fund_type' | 'type' | 'invest_type' | 'market' | 'status' | 'management' | 'custodian', string[]>>
+  filters?: Partial<Record<'fund_type' | 'type' | 'invest_type' | 'qdii_type' | 'market' | 'status' | 'management' | 'custodian', string[]>>
   conditions?: ProductCondition[]
   snapshotMetrics?: string[]
   signal?: AbortSignal
@@ -783,7 +1091,7 @@ const DEFAULT_ERROR: ApiErrorDetail = {
   message: '请求失败，请稍后重试。',
 }
 
-async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
@@ -813,6 +1121,53 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function calculationRequest<T extends { execution: unknown }>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const result = await apiRequest<T>(path, init)
+  assertFixedNjitExecution(result.execution, '指标与评价计算')
+  return result
+}
+
+const downloadFilename = (disposition: string | null) => {
+  if (!disposition) return 'indicator-calculation.xlsx'
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      return encoded
+    }
+  }
+  return disposition.match(/filename="?([^";]+)"?/i)?.[1] ?? 'indicator-calculation.xlsx'
+}
+
+async function fileRequest(path: string, init?: RequestInit): Promise<DownloadedFile> {
+  const headers = new Headers(init?.headers)
+  if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  const response = await fetch(path, { ...init, headers })
+  if (!response.ok) {
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      payload = null
+    }
+    const maybeDetail = (payload as { detail?: unknown } | null)?.detail
+    const detail = typeof maybeDetail === 'object' && maybeDetail !== null
+      ? maybeDetail as ApiErrorDetail
+      : typeof maybeDetail === 'string'
+        ? { code: `HTTP_${response.status}`, message: maybeDetail }
+        : { ...DEFAULT_ERROR, code: `HTTP_${response.status}` }
+    throw new CustomIndicatorApiError(response.status, { ...DEFAULT_ERROR, ...detail })
+  }
+  return {
+    blob: await response.blob(),
+    filename: downloadFilename(response.headers.get('Content-Disposition')),
+  }
+}
+
 export const getCustomIndicatorMeta = () =>
   apiRequest<IndicatorMeta>('/api/custom-indicators/meta')
 
@@ -840,9 +1195,10 @@ export const listCustomIndicators = (options: IndicatorListOptions = {}) => {
   if (options.category) params.set('category', options.category)
   if (options.includeCompatibility) params.set('include_compatibility', 'true')
   const query = params.toString()
-  return apiRequest<{ items: IndicatorDefinition[]; total: number }>(
+  const response = apiRequest<{ items: IndicatorDefinition[]; total: number }>(
     `/api/custom-indicators${query ? `?${query}` : ''}`,
   )
+  return response
 }
 
 export const getCustomIndicator = (id: string) =>
@@ -870,10 +1226,29 @@ export const getSnapshotIndicatorConfig = () =>
 
 export const updateSnapshotIndicatorConfig = (
   revision: number,
-  items: Array<Pick<SnapshotIndicatorConfigItem, 'indicator_id' | 'indicator_revision' | 'period'>>,
+  items: Array<Pick<SnapshotIndicatorConfigItem, 'indicator_id' | 'indicator_revision' | 'period' | 'channel_id' | 'reducer'>>,
 ) => apiRequest<SnapshotIndicatorConfig>('/api/custom-indicators/snapshot-config', {
   method: 'PUT',
   body: JSON.stringify({ revision, items }),
+})
+
+export const buildRollingScalarDraft = (input: {
+  indicator_id: string
+  indicator_revision?: number
+  window_observations: number
+  min_periods?: number
+  name?: string
+}) => apiRequest<{
+  definition: IndicatorDraft
+  validation: ValidationResponse
+  source: {
+    indicator_id: string
+    indicator_revision: number
+    name: string
+  }
+}>('/api/custom-indicators/rolling-scalar-draft', {
+  method: 'POST',
+  body: JSON.stringify(input),
 })
 
 export const validateCustomIndicator = (input: IndicatorDraft) =>
@@ -881,6 +1256,17 @@ export const validateCustomIndicator = (input: IndicatorDraft) =>
     method: 'POST',
     body: JSON.stringify(input),
   })
+
+export const deriveRollingSeriesIndicator = (input: {
+  indicator_id: string
+  indicator_revision: number
+  window_observations: number
+  name?: string
+  description?: string
+}) => apiRequest<RollingSeriesDerivationResponse>('/api/custom-indicators/derive-rolling-series', {
+  method: 'POST',
+  body: JSON.stringify(input),
+})
 
 /** v2 compositional helper. Older servers may not expose this endpoint yet. */
 export const composeCustomIndicator = (input: ComposeIndicatorRequest) =>
@@ -890,7 +1276,7 @@ export const composeCustomIndicator = (input: ComposeIndicatorRequest) =>
   })
 
 /** Infers the current expression shape and semantic warnings without evaluating data. */
-export const inferCustomIndicator = (input: { expression: string; context: IndicatorContextDomain; dsl_version?: string; operator_registry_version?: string }) =>
+export const inferCustomIndicator = (input: { expression: string; context: IndicatorContextDomain; dsl_version?: string; operator_registry_version?: string; parameter_schema?: SeriesParameterDefinition[] }) =>
   apiRequest<InferenceResponse>('/api/custom-indicators/infer', {
     method: 'POST',
     body: JSON.stringify(input),
@@ -908,8 +1294,35 @@ export const getVariableAvailability = (input: {
   body: JSON.stringify(input),
 })
 
-export const evaluateCustomIndicators = (input: EvaluateIndicatorsRequest) =>
-  apiRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', {
+export const evaluateCustomIndicators = async (input: EvaluateIndicatorsRequest) => {
+  if (input.inline_definition || (input.indicator_refs?.length ?? input.indicator_ids?.length ?? 0) <= 1) {
+    // Singleton and validated inline plans were prepared on startup/save/validate.
+    return calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', { method: 'POST', body: JSON.stringify(input) })
+  }
+  const prepared = await apiRequest<{ prepared: boolean; indicator_refs: IndicatorReference[] }>('/api/custom-indicators/prepare', {
+    method: 'POST', body: JSON.stringify({ indicator_ids: input.indicator_ids ?? [], indicator_refs: input.indicator_refs ?? [], inline_definition: input.inline_definition, compile_token: input.compile_token }),
+  })
+  if (!prepared.prepared) throw new Error('计算计划尚未准备完成。')
+  // Use the prepared revisions; a concurrent catalog edit must not switch the
+  // algorithm between preparation and execution. Inline drafts retain tokens.
+  const request = input.inline_definition ? input : { ...input, indicator_ids: [], indicator_refs: prepared.indicator_refs }
+  return calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate', {
+    method: 'POST', body: JSON.stringify(request),
+  })
+}
+
+export const evaluateTimeSeriesIndicators = (
+  input: EvaluateTimeSeriesIndicatorsRequest,
+) => calculationRequest<EvaluateTimeSeriesIndicatorsResponse>(
+  '/api/custom-indicators/evaluate-series',
+  {
+    method: 'POST',
+    body: JSON.stringify(input),
+  },
+)
+
+export const exportCustomIndicatorExcel = (input: ExportIndicatorExcelRequest) =>
+  fileRequest('/api/custom-indicators/export-excel', {
     method: 'POST',
     body: JSON.stringify(input),
   })
@@ -918,7 +1331,7 @@ export const getPortfolioRuns = () =>
   apiRequest<{ items: PortfolioRun[] }>('/api/portfolio-runs')
 
 export const evaluatePortfolioCustomIndicators = (input: EvaluatePortfolioIndicatorsRequest) =>
-  apiRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate-portfolio', {
+  calculationRequest<EvaluateIndicatorsResponse>('/api/custom-indicators/evaluate-portfolio', {
     method: 'POST',
     body: JSON.stringify(input),
   })
@@ -1006,12 +1419,12 @@ export const deleteEvaluationPlan = (id: string, revision: number) =>
   })
 
 export const runEvaluationPlan = (id: string, asOf?: string) =>
-  apiRequest<EvaluationPlanRunResponse>(`/api/evaluation-plans/${encodeURIComponent(id)}/run`, {
+  calculationRequest<EvaluationPlanRunResponse>(`/api/evaluation-plans/${encodeURIComponent(id)}/run`, {
     method: 'POST',
     body: JSON.stringify(asOf ? { as_of: asOf } : {}),
   })
 
 export const getEvaluationPlanRunPage = (resultId: string, page = 1, pageSize = 100) =>
-  apiRequest<EvaluationPlanRunResponse>(
+  calculationRequest<EvaluationPlanRunResponse>(
     `/api/evaluation-plan-runs/${encodeURIComponent(resultId)}?page=${page}&page_size=${pageSize}`,
   )

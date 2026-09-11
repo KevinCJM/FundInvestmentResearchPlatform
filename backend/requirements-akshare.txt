@@ -1,0 +1,3 @@
+# Optional SDK dependency. Kept separate so core application startup is unaffected.
+# Re-test the two controlled adapters before changing this pin.
+akshare==1.18.94

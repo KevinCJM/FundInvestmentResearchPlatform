@@ -1,4 +1,6 @@
 import type { IndicatorDefinition, MetricPresentation } from './customIndicators'
+import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import type { HistoricalRegimeBacktestReference, RegimeConditioningResult } from './portfolioRegime'
 
 export type PortfolioProductKind = 'etf' | 'fund'
 export type PortfolioMethod = 'equal_weight' | 'manual' | 'risk_budget' | 'target_optimization'
@@ -14,6 +16,8 @@ export interface PortfolioInstrument {
 export interface PortfolioConstituent extends PortfolioInstrument {
   weight?: number
   risk_budget?: number
+  asset_class_id?: string
+  asset_class_name?: string
 }
 
 export interface PortfolioConstraint {
@@ -24,6 +28,7 @@ export interface PortfolioConstraint {
 
 export interface PortfolioRunRequest {
   name: string
+  universe_snapshot_id?: string | null
   constituents: PortfolioConstituent[]
   method: PortfolioMethod
   constraints: PortfolioConstraint
@@ -32,6 +37,7 @@ export interface PortfolioRunRequest {
   benchmark?: { kind: PortfolioProductKind; product_id: string; name?: string } | null
   objective?: 'max_sharpe' | 'min_volatility' | 'target_return' | null
   target_return?: number | null
+  allocation_source?: { kind: 'taa'; decision_id: string; baseline_id: string; class_weights: Record<string, number>; expires_on?: string }
 }
 
 export interface PortfolioSeriesPoint { date: string; value: number }
@@ -62,6 +68,7 @@ export interface PortfolioRun {
   covariance?: { labels: string[]; values: number[][] } | null
   custom_indicators?: PortfolioMetric[]
   rebalances?: Array<{ date: string; turnover?: number | null; message?: string | null }>
+  regime_conditioning?: RegimeConditioningResult | null
   warnings: string[]
 }
 
@@ -256,6 +263,11 @@ function normalizeWeightPath(value: unknown, assets: unknown, dates: unknown): P
 
 function normalizeRun(raw: unknown): PortfolioRun {
   const source = (raw ?? {}) as Record<string, any>
+  assertFixedNjitExecution(source.execution, '组合研究运行')
+  const regimeConditioning = source.regime_conditioning && typeof source.regime_conditioning === 'object'
+    ? source.regime_conditioning as RegimeConditioningResult
+    : null
+  if (regimeConditioning) assertFixedNjitExecution(regimeConditioning.execution, '组合历史情景条件统计')
   const dates = source.dates ?? []
   const rawWeights = Array.isArray(source.weight_path) ? source.weight_path : Array.isArray(source.weights) ? source.weights : []
   return {
@@ -268,12 +280,14 @@ function normalizeRun(raw: unknown): PortfolioRun {
     contributions: Array.isArray(source.contributions) ? source.contributions : [],
     correlation: source.correlation ?? null, covariance: source.covariance ?? null,
     custom_indicators: portfolioMetricList(source.custom_indicators), rebalances: Array.isArray(source.rebalances) ? source.rebalances : [],
+    regime_conditioning: regimeConditioning,
     warnings: warningMessages(source.warnings),
   }
 }
 
 function normalizeDiagnosis(raw: unknown): PortfolioDiagnosis {
   const source = (raw ?? {}) as Record<string, any>
+  assertFixedNjitExecution(source.execution, '组合研究诊断')
   return {
     summary: metricList(source.summary_metrics ?? source.metrics ?? source.summary), components: Array.isArray(source.components) ? source.components : [],
     custom_indicators: portfolioMetricList(source.custom_indicators), contributions: Array.isArray(source.contributions) ? source.contributions : [],
@@ -307,7 +321,15 @@ export async function listPortfolioIndicators() {
 }
 function targetDefinition(input: PortfolioRunRequest) {
   return {
-    components: input.constituents.map(({ kind, product_id, name }) => ({ kind, product_id, name })),
+    allocation_source: input.allocation_source,
+    universe_snapshot_id: input.universe_snapshot_id ?? undefined,
+    components: input.constituents.map(({
+      kind,
+      product_id,
+      name,
+      asset_class_id,
+      asset_class_name,
+    }) => ({ kind, product_id, name, asset_class_id, asset_class_name })),
     strategy: {
       type: input.method,
       weights: input.method === 'manual' ? input.constituents.map((item) => (item.weight ?? 0) / 100) : undefined,
@@ -333,7 +355,7 @@ export const createResearchTarget = (input: { name: string; kind?: 'portfolio'; 
     body: JSON.stringify({ name: input.name, description: input.description ?? '', definition: targetDefinition(input.definition) }),
   })
 
-export async function runPortfolio(targetId: string, input: { as_of?: string | null; start_date?: string | null } = {}) {
+export async function runPortfolio(targetId: string, input: { as_of?: string | null; start_date?: string | null; historical_regime?: HistoricalRegimeBacktestReference | null } = {}) {
   return normalizeRun(await request<unknown>(`/api/research-targets/${encodeURIComponent(targetId)}/run`, { method: 'POST', body: JSON.stringify(input) }))
 }
 export async function getPortfolioRun(id: string) { return normalizeRun(await request<unknown>(`/api/portfolio-runs/${encodeURIComponent(id)}`)) }
@@ -348,7 +370,8 @@ export async function diagnosePortfolioRun(id: string, indicatorIds: string[] = 
   }))
 }
 export async function runPortfolioScenario(id: string, input: { name: string; start_date: string; end_date: string }) {
-  const response = await request<{ name: string; metrics?: PortfolioMetric[]; warnings?: unknown }>(`/api/portfolio-runs/${encodeURIComponent(id)}/scenario`, { method: 'POST', body: JSON.stringify(input) })
+  const response = await request<{ name: string; metrics?: PortfolioMetric[]; warnings?: unknown; execution: FixedNjitExecutionAudit }>(`/api/portfolio-runs/${encodeURIComponent(id)}/scenario`, { method: 'POST', body: JSON.stringify(input) })
+  assertFixedNjitExecution(response.execution, '组合历史情景')
   return { name: response.name, metrics: metricList(response.metrics), warnings: warningMessages(response.warnings) }
 }
 

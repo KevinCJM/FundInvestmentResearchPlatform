@@ -1,0 +1,605 @@
+{
+  "_comment": "算子因果性裁决基线。由 python -m causality.audit 重新生成；verdict 变化必须经人工复核后才能提交。",
+  "operators": {
+    "absolute": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "active_returns": {
+      "verdict": "causal",
+      "category": "portfolio",
+      "note": ""
+    },
+    "add": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "annualized_return": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "argmax": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "argmin": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "clip": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "correlation": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "count_true": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "covariance": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "cumulative_max": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "cumulative_min": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "cumulative_product": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "cumulative_return": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "cumulative_sum": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "diag": {
+      "verdict": "causal",
+      "category": "linear_algebra",
+      "note": ""
+    },
+    "difference": {
+      "verdict": "causal",
+      "category": "sequence",
+      "note": "人工核定：返回 x[n:]-x[:-n]，第 j 项属于时点 j+n（右对齐）。按左对齐比较会误报为泄露。"
+    },
+    "days_between": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "纯日期标量差；不读取时间序列未来数据。"
+    },
+    "divide": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "divide_or_default": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "dot": {
+      "verdict": "window_consuming",
+      "category": "linear_algebra",
+      "note": ""
+    },
+    "drawdown_series": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "因果（内部是 cummax 而非 max）；扩张窗口，最新值依赖全部历史。"
+    },
+    "equal": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": ""
+    },
+    "excess_kurtosis": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "exp": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "finite_mask": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": "逐项有限值判断只依赖同一时点的输入；不填充、不压缩时间轴。"
+    },
+    "first": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": "只读窗口头部，改动尾部输出不变，故非消费整窗。"
+    },
+    "fit_intercept": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_observation_count": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_residual_sum_squares": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_slope": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "fit_total_sum_squares": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": "只读取已完成拟合的中间状态，不再次访问时间序列。"
+    },
+    "greater_equal": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": ""
+    },
+    "greater_than": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": ""
+    },
+    "interval_recovery": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "只读取已识别回撤区间的恢复位置。"
+    },
+    "interval_start": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "只读取已识别回撤区间的峰值位置。"
+    },
+    "interval_trough": {
+      "verdict": "causal",
+      "category": "path",
+      "note": "只读取已识别回撤区间的谷底位置。"
+    },
+    "lag": {
+      "verdict": "causal",
+      "category": "sequence",
+      "note": "人工核定：_lag 返回 array[:-n] 并拒绝负 periods，输出右对齐到时点 j+n，无法取到未来值。"
+    },
+    "last": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": "取窗口最后一个值，必须在截断到决策日的窗口上求值。"
+    },
+    "last_drawdown_interval": {
+      "verdict": "window_consuming",
+      "category": "path",
+      "note": "最大回撤区间依赖完整输入窗口；公式层必须把窗口右端锁定在决策日。"
+    },
+    "length": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "less_equal": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": ""
+    },
+    "less_than": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": ""
+    },
+    "linear_fit": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": "OLS 拟合使用整个输入窗口；公式层必须把窗口右端锁定在决策日。"
+    },
+    "linear_intercept": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "linear_r_squared": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "linear_slope": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "log": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "logical_and": {
+      "verdict": "causal",
+      "category": "mask",
+      "note": ""
+    },
+    "logical_not": {
+      "verdict": "causal",
+      "category": "mask",
+      "note": ""
+    },
+    "logical_or": {
+      "verdict": "causal",
+      "category": "mask",
+      "note": ""
+    },
+    "matmul": {
+      "verdict": "causal",
+      "category": "linear_algebra",
+      "note": ""
+    },
+    "matvec": {
+      "verdict": "causal",
+      "category": "linear_algebra",
+      "note": ""
+    },
+    "max_asset": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "max_consecutive_true": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": "最长真值段依赖整个窗口；单一扰动下曾被误判为 causal，多扰动后纠正。"
+    },
+    "max_time": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "max_value": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "max_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "maximum": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "mean": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "mean_absolute_deviation": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "mean_asset": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": "截面聚合只用当日数据，天然 PIT-safe。同族：max/min/std/sum/product/variance_asset。"
+    },
+    "mean_time": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": "沿时间轴归约，吃掉整个窗口；正确性取决于调用方切的窗口右端。"
+    },
+    "mean_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "median": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "median_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "min_asset": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "min_time": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "min_value": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "min_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "minimum": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "multiply": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "negate": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "new_high_mask": {
+      "verdict": "causal",
+      "category": "path",
+      "note": ""
+    },
+    "normal_pdf": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": ""
+    },
+    "normal_ppf": {
+      "verdict": "causal",
+      "category": "statistics",
+      "note": ""
+    },
+    "not_equal": {
+      "verdict": "causal",
+      "category": "comparison",
+      "note": ""
+    },
+    "outer": {
+      "verdict": "causal",
+      "category": "linear_algebra",
+      "note": ""
+    },
+    "portfolio_returns": {
+      "verdict": "causal",
+      "category": "portfolio",
+      "note": ""
+    },
+    "power": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "product": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "product_asset": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "product_time": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "quadratic_form": {
+      "verdict": "causal",
+      "category": "portfolio",
+      "note": ""
+    },
+    "quantile": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "quantile_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "reciprocal": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "require_nonnegative": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": "仅做标量定义域检查。"
+    },
+    "require_positive": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": "仅做标量定义域检查。"
+    },
+    "recursive_smooth": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": "因果，但预热敏感（EMA 类递归）：回测与实盘会因可得历史长度不同而分叉，需声明最小预热长度。"
+    },
+    "regression_standard_error": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "rolling_apply": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": "完整区间子图在右对齐窗口内独立执行，已用实际编译计划通过多类子图的尾部扰动验证。"
+    },
+    "rolling_max": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": ""
+    },
+    "rolling_mean": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": ""
+    },
+    "rolling_window": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": "逻辑滚动窗口只包含截至当前时点的历史观察值；执行层与下游归约融合，不物化 T×W 窗口矩阵。"
+    },
+    "rolling_min": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": ""
+    },
+    "rolling_std": {
+      "verdict": "causal",
+      "category": "rolling",
+      "note": ""
+    },
+    "root_mean_square": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "sign": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "skewness": {
+      "verdict": "window_consuming",
+      "category": "statistics",
+      "note": ""
+    },
+    "solve": {
+      "verdict": "causal",
+      "category": "linear_algebra",
+      "note": ""
+    },
+    "sqrt": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "std": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "std_asset": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "std_time": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "std_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "subtract": {
+      "verdict": "causal",
+      "category": "basic",
+      "note": ""
+    },
+    "sum": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "sum_asset": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "sum_time": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "sum_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "total_return": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "trace": {
+      "verdict": "causal",
+      "category": "linear_algebra",
+      "note": ""
+    },
+    "transpose": {
+      "verdict": "causal",
+      "category": "linear_algebra",
+      "note": "输出时间轴移到 1 号位，比较必须按 time_axis 切片。"
+    },
+    "variance": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "variance_asset": {
+      "verdict": "causal",
+      "category": "reduction",
+      "note": ""
+    },
+    "variance_time": {
+      "verdict": "window_consuming",
+      "category": "reduction",
+      "note": ""
+    },
+    "variance_where": {
+      "verdict": "window_consuming",
+      "category": "mask",
+      "note": ""
+    },
+    "value_at": {
+      "verdict": "causal",
+      "category": "sequence",
+      "note": "按显式零基位置读取序列；审计确认未来尾部扰动不会改变已指定位置。"
+    },
+    "where": {
+      "verdict": "causal",
+      "category": "mask",
+      "note": ""
+    }
+  }
+}

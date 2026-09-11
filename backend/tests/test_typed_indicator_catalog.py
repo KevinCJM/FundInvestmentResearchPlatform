@@ -17,9 +17,9 @@ from cal_indicators.typed_dsl import (
 def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
     catalog = get_typed_dsl_catalog()
 
-    assert catalog["dsl_version"] == "2.2.0"
-    assert catalog["compiler_version"] == "typed-numba-3"
-    assert catalog["operator_registry_version"] == "2.2.0"
+    assert catalog["dsl_version"] == "2.4.0"
+    assert catalog["compiler_version"] == "typed-numba-5"
+    assert catalog["operator_registry_version"] == "2.4.0"
     operators = {item["id"]: item for item in catalog["operators"]}
     assert {
         "add",
@@ -29,6 +29,9 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "correlation",
         "drawdown_series",
         "new_high_mask",
+        "rolling_window",
+        "recursive_smooth",
+        "divide_or_default",
     } <= set(operators)
     assert {
         "cumulative_return",
@@ -42,11 +45,13 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "reduction",
         "linear_algebra",
         "statistics",
-        "portfolio",
+        "mask",
         "path",
     }
     assert "inverse" not in operators
-    assert all(item["version"] == "2.2.0" for item in operators.values())
+    assert all(item["version"] == "2.4.0" for item in operators.values())
+    assert {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}.isdisjoint(operators)
+    assert operators["rolling_window"]["execution_lane"] == "compiler_fused_no_materialization"
     assert all(item["njit_supported"] is True for item in operators.values())
     assert all(item["kernel_version"] == "2.2.0" for item in operators.values())
     assert all(
@@ -67,12 +72,49 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "quantile",
         "skewness",
         "cumulative_max",
-        "linear_slope",
-        "regression_standard_error",
+        "linear_fit",
+        "fit_residual_sum_squares",
         "normal_ppf",
     } <= set(operators)
     assert "cumulative_maximum" not in operators
     assert "masked_sum" not in operators
+
+
+def test_frozen_23_catalog_preserves_historical_rolling_wrappers() -> None:
+    frozen = get_typed_operator_catalog("2.3.0")
+    operators = {item["id"]: item for item in frozen["operators"]}
+
+    assert frozen["dsl_version"] == "2.3.0"
+    assert frozen["compiler_version"] == "typed-numba-4"
+    assert frozen["operator_registry_version"] == "2.3.0"
+    assert {
+        "rolling_mean",
+        "rolling_std",
+        "rolling_min",
+        "rolling_max",
+        "recursive_smooth",
+        "divide_or_default",
+    } <= set(operators)
+    assert "rolling_window" not in operators
+    assert all(item["version"] == "2.3.0" for item in operators.values())
+
+
+def test_frozen_22_catalog_excludes_new_time_series_operators() -> None:
+    frozen = get_typed_operator_catalog("2.2.0")
+    operators = {item["id"]: item for item in frozen["operators"]}
+
+    assert frozen["dsl_version"] == "2.2.0"
+    assert frozen["operator_registry_version"] == "2.2.0"
+    assert len(operators) == 92
+    assert all(item["version"] == "2.2.0" for item in operators.values())
+    assert {
+        "rolling_mean",
+        "rolling_std",
+        "rolling_min",
+        "rolling_max",
+        "recursive_smooth",
+        "divide_or_default",
+    }.isdisjoint(operators)
 
 
 def test_legacy_20_catalog_and_registry_contract_remain_available() -> None:
@@ -157,19 +199,19 @@ def test_typed_dag_nodes_include_type_operator_and_cost_annotations() -> None:
     assert graph["roots"] == {"result": plan.root_id}
     call_nodes = [node for node in graph["nodes"] if node["operator"]]
     assert {node["operator"]["id"] for node in call_nodes} == {
-        "portfolio_returns",
+        "matvec",
         "mean",
     }
     assert all("inferred_type" in node and "cost" in node for node in graph["nodes"])
     portfolio_node = next(
-        node for node in call_nodes if node["operator"]["id"] == "portfolio_returns"
+        node for node in call_nodes if node["operator"]["id"] == "matvec"
     )
     assert portfolio_node["arguments"] == [
-        {"name": "asset_returns", "input_node_id": portfolio_node["inputs"][0]},
-        {"name": "asset_weights", "input_node_id": portfolio_node["inputs"][1]},
+        {"name": "matrix", "input_node_id": portfolio_node["inputs"][0]},
+        {"name": "vector", "input_node_id": portfolio_node["inputs"][1]},
     ]
     assert portfolio_node["formula_fragment"] == (
-        "portfolio_returns(asset_returns, asset_weights)"
+        "matvec(asset_returns, asset_weights)"
     )
     assert graph["estimated_cost"]["node_count"] == len(graph["nodes"])
 

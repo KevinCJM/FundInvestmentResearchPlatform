@@ -8,6 +8,7 @@ import type {
   Loadable,
   SegmentKind,
 } from './types';
+import { assertFixedNjitExecution } from '../../utils/fixedNjitExecution';
 
 const emptyLoadable = <T,>(): Loadable<T> => ({ data: null, loading: false, error: null });
 
@@ -24,12 +25,14 @@ const appendFilters = (
   });
 };
 
-const fetchJson = async <T,>(url: string, signal: AbortSignal): Promise<T> => {
+const fetchJson = async <T extends { execution: unknown }>(url: string, signal: AbortSignal): Promise<T> => {
   const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  const payload = await response.json() as T;
+  assertFixedNjitExecution(payload.execution, '市场与产品统计');
+  return payload;
 };
 
 interface UseInstrumentDashboardArgs {

@@ -45,7 +45,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 REFRESH_SCRIPT = PROJECT_ROOT / "T01_get_data.py"
 TRUE_VALUES = {"1", "true", "yes", "on"}
-REFRESH_MODULES = {"base", "etf", "fund", "index"}
+REFRESH_MODULES = {"base", "etf", "fund", "index", "macro"}
 REFRESH_MODES = {"incremental", "full"}
 REFRESH_LOCK_FILENAME = ".tushare_refresh.lock"
 REFRESH_STATE_FILENAME = ".tushare_refresh_status.json"
@@ -62,9 +62,25 @@ DATASET_SPECS = {
     "etf_candle": ("etf_daily_candle_df.parquet", "date"),
     "fund_info": ("fund_info_df.parquet", None),
     "fund_nav": ("fund_nav_df.parquet", "date"),
+    "fund_manager": ("fund_manager_df.parquet", "available_at"),
+    "fund_scale": ("fund_scale_df.parquet", "observation_date"),
+    "fund_portfolio": ("fund_portfolio_df.parquet", "available_at"),
+    "fund_dividend": ("fund_dividend_df.parquet", "available_at"),
+    "fund_adjustment": ("fund_adj_factor_df.parquet", "date"),
+    "fund_benchmark": ("fund_benchmark_df.parquet", None),
     "fund_company": ("fund_company_df.parquet", None),
     "calendar": ("trade_day_df.parquet", "cal_date"),
     "instrument_metrics": ("instrument_metrics_snapshot.parquet", "latest_date"),
+    "macro_gdp": ("macro_cn_gdp_df.parquet", "observation_date"),
+    "macro_cpi": ("macro_cn_cpi_df.parquet", "observation_date"),
+    "macro_ppi": ("macro_cn_ppi_df.parquet", "observation_date"),
+    "macro_pmi": ("macro_cn_pmi_df.parquet", "observation_date"),
+    "macro_money": ("macro_cn_money_df.parquet", "observation_date"),
+    "macro_social_financing": ("macro_cn_social_financing_df.parquet", "observation_date"),
+    "macro_shibor": ("macro_shibor_df.parquet", "observation_date"),
+    "macro_lpr": ("macro_lpr_df.parquet", "observation_date"),
+    "macro_repo": ("macro_repo_daily_df.parquet", "observation_date"),
+    "macro_release_calendar": ("macro_cn_schedule_df.parquet", "observation_date"),
     **{
         key: (filename, date_column)
         for key, (filename, date_column, _scope) in INDEX_DATASET_SPECS.items()
@@ -88,14 +104,16 @@ INDEX_SCOPE_FLAGS = {scope: f"--index-{scope}" for scope in INDEX_SCOPES}
 MODULE_SCOPES = {
     "base": ("calendar", "stock_basic", "fund_company"),
     "etf": ("info", "nav", "share", "candle"),
-    "fund": ("info", "nav"),
+    "fund": ("info", "nav", "manager", "scale", "portfolio", "dividend", "adjustment", "benchmark"),
     "index": INDEX_SCOPES,
+    "macro": ("cycle", "money_credit", "rates", "release_calendar"),
 }
 DEFAULT_MODULE_SCOPES = {
     "base": MODULE_SCOPES["base"],
     "etf": MODULE_SCOPES["etf"],
-    "fund": MODULE_SCOPES["fund"],
+    "fund": ("info", "nav", "manager", "scale", "benchmark"),
     "index": DEFAULT_INDEX_SCOPES,
+    "macro": MODULE_SCOPES["macro"],
 }
 MODULE_SCOPE_FLAGS = {
     "base": {
@@ -109,12 +127,34 @@ MODULE_SCOPE_FLAGS = {
         "share": "--etf-share",
         "candle": "--candle",
     },
-    "fund": {"info": "--fund-info", "nav": "--fund-nav"},
+    "fund": {
+        "info": "--fund-info",
+        "nav": "--fund-nav",
+        "manager": "--fund-manager",
+        "scale": "--fund-scale",
+        "portfolio": "--fund-portfolio",
+        "dividend": "--fund-dividend",
+        "adjustment": "--fund-adjustment",
+        "benchmark": "--fund-benchmark",
+    },
     "index": INDEX_SCOPE_FLAGS,
+    "macro": {
+        "cycle": "--macro-cycle",
+        "money_credit": "--macro-money-credit",
+        "rates": "--macro-rates",
+        "release_calendar": "--macro-release-calendar",
+    },
 }
 MODULE_SCOPE_DEPENDENCIES = {
     "etf": {"nav": ("info",), "share": ("info",), "candle": ("info",)},
-    "fund": {"nav": ("info",)},
+    "fund": {
+        "nav": ("info",),
+        "manager": ("info",),
+        "scale": ("info", "nav"),
+        "portfolio": ("info",),
+        "dividend": ("info",),
+        "adjustment": ("info",),
+    },
 }
 
 TUSHARE_TOKEN_VALUE = re.compile(r"^[A-Za-z0-9._-]{16,256}$")
@@ -402,6 +442,8 @@ def refresh_request_fingerprint(
         or datetime.now(timezone.utc).strftime("%Y%m%d"),
         "history_chunk_days": os.getenv("TUSHARE_HISTORY_CHUNK_DAYS", "3650"),
     }
+    from backend.data_sources.legacy_bridge import configuration_fingerprint
+    payload["source_configuration_hash"] = configuration_fingerprint(DATA_DIR)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
 
@@ -425,6 +467,8 @@ def build_refresh_command(
     max_calls = os.getenv("TUSHARE_MAX_CALLS_PER_MINUTE", "450")
     min_interval = os.getenv("TUSHARE_MIN_CALL_INTERVAL_SECONDS", "0.13")
     max_days = os.getenv("TUSHARE_MAX_LATEST_DAYS", "120")
+    from backend.data_sources.legacy_bridge import pagination_defaults
+    configured_paging = pagination_defaults(DATA_DIR)
     command = [
         sys.executable,
         str(REFRESH_SCRIPT),
@@ -445,11 +489,13 @@ def build_refresh_command(
         "--max-workers",
         os.getenv("TUSHARE_MAX_WORKERS", "16"),
         "--max-fund-basic-pages",
-        os.getenv("TUSHARE_MAX_FUND_BASIC_PAGES", "20"),
+        os.getenv("TUSHARE_MAX_FUND_BASIC_PAGES", configured_paging["basic_pages"]),
         "--max-fund-nav-pages",
-        os.getenv("TUSHARE_MAX_FUND_NAV_PAGES", "20"),
+        os.getenv("TUSHARE_MAX_FUND_NAV_PAGES", configured_paging["nav_pages"]),
         "--fund-nav-page-size",
-        os.getenv("TUSHARE_FUND_NAV_PAGE_SIZE", "10000"),
+        os.getenv("TUSHARE_FUND_NAV_PAGE_SIZE", configured_paging["nav_page_size"]),
+        "--max-fund-manager-pages",
+        os.getenv("TUSHARE_MAX_FUND_MANAGER_PAGES", configured_paging["manager_pages"]),
         "--incremental-batch-days",
         os.getenv("TUSHARE_INCREMENTAL_BATCH_DAYS", "20"),
     ]
@@ -472,7 +518,7 @@ def build_refresh_command(
     flags: list[str] = []
     history_selected = bool(
         set(scopes.get("etf", [])) & {"nav", "share", "candle"}
-        or "nav" in scopes.get("fund", [])
+        or set(scopes.get("fund", [])) & {"nav", "scale", "adjustment"}
         or set(scopes.get("index", [])) - {"catalog"}
     )
     if mode == "incremental" and history_selected:
@@ -727,6 +773,8 @@ def _empty_job() -> dict[str, Any]:
         "staging_data_dir": None,
         "fetch_complete": False,
         "resumed": False,
+        "resume_available": False,
+        "interruption_reason": None,
     }
 
 
@@ -883,7 +931,14 @@ class DataRefreshManager:
                 {
                     "status": "failed",
                     "finished_at": utc_now(),
-                    "message": "数据更新进程已中断；检查点仍保留，可稍后重新启动继续。",
+                    "message": (
+                        "数据更新后台服务已退出或重启，任务已中断；"
+                        "已落盘数据和检查点仍保留，可按原配置继续。"
+                    ),
+                    "resume_available": bool(
+                        self._job.get("modules") and self._job.get("mode") in REFRESH_MODES
+                    ),
+                    "interruption_reason": "owner_process_lost",
                 }
             )
             self._persist_locked()
@@ -897,6 +952,11 @@ class DataRefreshManager:
             latest_status = _latest_complete_status_line(str(job.get("log_tail") or ""))
             if latest_status:
                 job["message"] = latest_status
+        elif job.get("status") == "failed" and job.get("modules") and job.get("mode") in REFRESH_MODES:
+            # Old persisted failures did not carry an explicit recovery flag.
+            # Retrying the same request is safe: incremental writes are idempotent
+            # upserts and full refreshes reuse their staging checkpoints.
+            job["resume_available"] = True
         legacy_checkpoint = self._legacy_external_checkpoint()
         if job.get("status") != "running" and legacy_checkpoint is not None:
             job = {

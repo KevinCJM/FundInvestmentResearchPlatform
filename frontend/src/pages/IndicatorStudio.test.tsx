@@ -14,9 +14,23 @@ vi.mock('echarts-for-react', () => ({
   },
 }))
 
+const fixedExecution = {
+  execution_backend: 'numba_njit_fixed_signature',
+  nopython: true,
+  object_mode: 0,
+  python_fallback: 0,
+  request_time_compilation: 0,
+  kernel_signatures: { typed_indicator_plan: ['fixed'] },
+}
+
 const variables: IndicatorVariable[] = [
-  { name: 'returns', label: '普通收益率序列', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{r}', shape: 'series', semantic: '复权净值计算得到的普通收益率。', semantic_role: 'ordinary_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '后复权', frequency: '交易日', unit: '小数', domains: ['single_product'], category_id: 'returns', category_label: '收益与变化', availability: 'available' },
+  { name: 'returns', label: '复权净值普通收益率', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{r}', shape: 'series', semantic: '由相邻复权净值计算的普通收益率。', semantic_role: 'ordinary_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值派生', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '复权净值', frequency: '交易日', unit: '小数', domains: ['single_product'], product_kinds: ['etf', 'fund'], category_id: 'returns', category_label: '收益与变化', availability: 'available' },
+  { name: 'log_returns', label: '复权净值对数收益率', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{\\ell}', shape: 'series', semantic: '由相邻复权净值计算的对数收益率。', semantic_role: 'log_return', measure: 'return_decimal', price_basis: 'adjusted_nav', source: '真实复权净值派生', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '复权净值', frequency: '交易日', unit: '小数', domains: ['single_product'], product_kinds: ['etf', 'fund'], category_id: 'returns', category_label: '收益与变化', availability: 'available' },
   { name: 'adjusted_nav', label: '复权净值', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{p}_{\\mathrm{adj}}', shape: 'series', semantic: '产品在计算窗口内的复权净值。', semantic_role: 'adjusted_nav_level', measure: 'adjusted_nav', price_basis: 'adjusted_nav', source: 'Tushare 本地 Parquet', source_dataset: 'fund_nav', source_field: 'adj_nav', data_basis: '后复权', frequency: '交易日', unit: '净值', domains: ['single_product'], category_id: 'price', category_label: '净值与价格', availability: 'available' },
+  { name: 'market_open', label: '开盘价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{o}', shape: 'series', semantic: 'ETF 未复权日 K 开盘价。', semantic_role: 'raw_open_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'open', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_high', label: '最高价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{h}', shape: 'series', semantic: 'ETF 未复权日 K 最高价。', semantic_role: 'raw_high_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'high', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_low', label: '最低价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{l}', shape: 'series', semantic: 'ETF 未复权日 K 最低价。', semantic_role: 'raw_low_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'low', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
+  { name: 'market_close', label: '收盘价', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{c}', shape: 'series', semantic: 'ETF 未复权日 K 收盘价。', semantic_role: 'raw_close_price', measure: 'raw_market_price', price_basis: 'raw_market', source: 'Tushare ETF 日线行情', source_dataset: 'candle', source_field: 'close', data_basis: '未复权日 K', frequency: '交易日', unit: '价格', domains: ['single_product'], product_kinds: ['etf'], category_id: 'price', category_label: '净值与价格' },
   { name: 'volume', label: '成交量', value_type: 'series<time>', dtype: 'float64', latex: '\\mathbf{v}', shape: 'series', semantic_role: 'trading_volume', measure: 'volume', source: 'Tushare ETF 日线', source_dataset: 'candle', source_field: 'vol', unit: '原始单位', domains: ['single_product'], product_kinds: ['etf'], category_id: 'trading', category_label: '成交与流动性' },
   { name: 'risk_free_rate_per_observation', label: '单观察期无风险收益率', value_type: 'scalar', dtype: 'float64', latex: 'r_f', shape: 'scalar', semantic: '按当前观察频率换算的无风险收益率。', source: '指标配置', domains: ['single_product', 'portfolio'], category_id: 'configuration', category_label: '基准与配置' },
   { name: 'asset_returns', label: '多资产普通收益矩阵', value_type: 'matrix<time,asset>', dtype: 'float64', latex: '\\mathbf{R}', shape: 'matrix', domains: ['portfolio'], semantic_role: 'ordinary_return_matrix', category_id: 'portfolio', category_label: '组合上下文' },
@@ -34,10 +48,53 @@ const operators: IndicatorOperator[] = [
   { name: 'matvec', label: '矩阵向量乘', signature: 'matrix<time,asset> × vector<asset> → series<time>', latex_template: '\\operatorname{matvec}', return_type: 'series<time>', output_shape: 'series', domains: ['portfolio'], mathematical_essence: '矩阵与资产向量相乘。', semantic: '资产轴必须对齐。', category_id: 'linear_algebra', category_label: '线性代数', parameters: [{ name: 'matrix', label: '矩阵', allowed_shapes: ['matrix'] }, { name: 'vector', label: '向量', allowed_shapes: ['vector'] }] },
 ]
 
+const rollingWindowOperator: IndicatorOperator = {
+  name: 'rolling_window',
+  label: '滚动窗口',
+  signature: 'rolling_window(values, window) → window<time,window>',
+  latex_template: '\\mathcal{W}_{t,w}(x)',
+  return_type: 'window<time,window>',
+  output_shape: 'window',
+  mathematical_essence: '只定义截至当前时点最近 W 个观察位置的因果窗口。',
+  semantic: '不计算统计量；后续连接平均值、标准差或极值。',
+  category_id: 'rolling',
+  category_label: '滚动与时序',
+  domains: ['single_product'],
+  parameters: [
+    { name: 'values', label: '输入序列', allowed_shapes: ['series'] },
+    { name: 'window', label: '窗口期数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
+  ],
+  parameter_sets: [
+    { arity: 2, parameters: [
+      { name: 'values', label: '输入序列', allowed_shapes: ['series'] },
+      { name: 'window', label: '窗口期数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
+    ] },
+    { arity: 3, parameters: [
+      { name: 'values', label: '输入序列', allowed_shapes: ['series'] },
+      { name: 'window', label: '窗口期数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
+      { name: 'min_periods', label: '最少有效观察数', allowed_shapes: ['scalar'], source_policy: 'fixed_constant', constant_kind: 'integer', default: 20, minimum: 1, maximum: 20_000 },
+    ] },
+  ],
+}
+
+const meanOperator: IndicatorOperator = {
+  name: 'mean', label: '平均值', signature: 'mean(values)', latex_template: '\\overline{x}',
+  return_type: 'scalar | series<time>', output_shape: 'unknown', mathematical_essence: '对输入中的数值取算术平均。',
+  semantic: '普通序列得到标量；滚动窗口集合逐时点得到时间序列。', category_id: 'reduction', category_label: '统计归约',
+  parameters: [{ name: 'values', label: '待处理数值', allowed_shapes: ['series', 'vector', 'matrix', 'window'] }],
+}
+
+const stdOperator: IndicatorOperator = {
+  name: 'std', label: '标准差', signature: 'std(values, ddof)', latex_template: '\\operatorname{Std}(x)',
+  return_type: 'scalar | series<time>', output_shape: 'unknown', mathematical_essence: '按指定自由度计算标准差。',
+  semantic: '普通序列得到标量；滚动窗口集合逐时点得到时间序列。', category_id: 'statistics', category_label: '统计归约',
+  parameters: [{ name: 'values', label: '待处理数值', allowed_shapes: ['series', 'vector', 'matrix', 'window'] }, { name: 'ddof', label: '自由度修正', allowed_shapes: ['scalar'], default: 1, optional: true }],
+}
+
 const meta: IndicatorMeta = {
   engine_version: 'test', workspace_scope: 'shared', limits: {}, variables, operators,
   periods: [{ value: '1M', label: '近 1 月', description: '自然月窗口' }, { value: '1Y', label: '近 1 年', description: '自然年窗口' }],
-  templates: [], predefined_calculations: [], indicator_types: [{ id: 'risk', label: '风险型指标' }, { id: 'return', label: '收益型指标' }, { id: 'other', label: '其他指标' }],
+  templates: [], predefined_calculations: [], indicator_types: [{ id: 'risk', label: '风险型指标' }, { id: 'return', label: '收益型指标' }, { id: 'risk_adjusted', label: '风险调整指标' }, { id: 'technical', label: '技术与时序指标' }, { id: 'other', label: '其他指标' }],
 }
 
 const builtIn: IndicatorDefinition = {
@@ -76,6 +133,28 @@ const reusableBuiltIn: IndicatorDefinition = {
   output_measure: 'return_decimal',
 }
 
+const rollingSharpeSource: IndicatorDefinition = {
+  ...reusableBuiltIn,
+  id: 'builtin-annualized-sharpe-v2',
+  name: '年化夏普比率',
+  description: '平均超额收益与样本标准差之比，再乘以年化因子的平方根。',
+  expression: '((mean(returns) - risk_free_rate_per_observation) / std(returns, 1)) * sqrt(periods_per_year)',
+  display_latex: '\\frac{\\bar r-r_f}{s_r}\\sqrt{p_{year}}',
+  indicator_type: 'risk_adjusted',
+  category_id: 'risk_adjusted',
+  category_label: '风险调整指标',
+  output_measure: 'dimensionless',
+  unit: '',
+  display_format: 'number',
+  precision: 3,
+  direction: 'higher_better',
+  rolling_series_compatibility: {
+    supported: true,
+    protocol_version: '1.0.0',
+    rewritten_reductions: ['mean', 'std'],
+  },
+}
+
 const workspaceIndicator: IndicatorDefinition = {
   ...builtIn,
   id: 'workspace-volatility',
@@ -83,6 +162,139 @@ const workspaceIndicator: IndicatorDefinition = {
   read_only: false,
   name: '我的波动指标',
   revision: 3,
+}
+
+const timeSeriesBuiltIn: IndicatorDefinition = {
+  ...builtIn,
+  id: 'builtin-close-moving-average-series',
+  name: '20 日收盘价均线',
+  description: '对真实收盘价执行固定 20 个交易日窗口的简单移动平均。',
+  expression: 'mean(rolling_window(market_close, 20))',
+  result_kind: 'time_series',
+  output_contract: 'series_bundle',
+  output_measure: 'series_bundle',
+  indicator_type: 'technical',
+  category_id: 'technical',
+  category_label: '技术与时序指标',
+  unit: '元',
+  display_format: 'number',
+  precision: 4,
+  direction: 'higher_better',
+  annual_risk_free_rate_percent: 0,
+  dsl_version: '2.4.0',
+  operator_registry_version: '2.4.0',
+  variable_registry_version: '2.1.0',
+  data_contract_version: 'tushare-eod-v2',
+  context_schema_version: 'typed-context-v2',
+  parameter_schema: [],
+  fixed_parameters: [],
+  series_outputs: [{
+    id: 'ma',
+    label: '20 日收盘价均线',
+    expression: 'mean(rolling_window(market_close, 20))',
+    unit: '元',
+    display_format: 'number',
+    precision: 4,
+    output_measure: 'auto',
+    inferred_output_measure: 'raw_market_price',
+    resolved_output_measure: 'raw_market_price',
+    output_measure_source: 'inferred',
+    semantic_dimension: 'raw_market_price',
+    price_basis: 'raw_market',
+    value_range: null,
+  }],
+  axis_anchor: 'market_close',
+  history_policy: 'lookback',
+  history_inference_source: 'typed_dag',
+  lookback_parameter: null,
+  lookback_observations: 20,
+  minimum_observations: 20,
+  methodology: '在每个时点使用截至当日最近 20 个有限收盘价计算简单移动平均。',
+  data_basis: 'ETF 未复权日 K 收盘价。',
+  applicable_product_kinds: ['etf'],
+  required_variables: ['market_close'],
+  display_latex: null,
+}
+
+const rollingSharpeTimeSeriesBuiltIn: IndicatorDefinition = {
+  ...timeSeriesBuiltIn,
+  id: 'builtin-rolling-5d-annualized-sharpe-series',
+  name: '5 日滚动年化夏普比率',
+  description: '对每个时点最近 5 个有效收益观察值计算样本标准差口径的年化夏普比率。',
+  expression: '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(periods_per_year)',
+  indicator_type: 'risk_adjusted',
+  category_id: 'risk_adjusted',
+  category_label: '风险调整指标',
+  unit: '',
+  display_format: 'number',
+  precision: 3,
+  annual_risk_free_rate_percent: 1.5,
+  series_outputs: [{
+    id: 'value',
+    label: '5 日滚动年化夏普比率',
+    expression: '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(periods_per_year)',
+    unit: '',
+    display_format: 'number',
+    precision: 3,
+    output_measure: 'auto',
+    inferred_output_measure: 'dimensionless',
+    resolved_output_measure: 'dimensionless',
+    output_measure_source: 'inferred',
+    semantic_dimension: 'dimensionless',
+    price_basis: null,
+    value_range: null,
+  }],
+  axis_anchor: 'adjusted_nav',
+  lookback_observations: 5,
+  minimum_observations: 5,
+  methodology: '最近 5 个普通收益率的平均超额收益除以样本标准差，再乘年化因子平方根。',
+  data_basis: '复权净值普通收益率；日期对齐，缺失不填充。',
+  applicable_product_kinds: ['etf', 'fund'],
+  required_variables: ['returns', 'risk_free_rate_per_observation', 'periods_per_year'],
+  rolling_source: {
+    kind: 'rolling_scalar',
+    transform_version: '2.0.0',
+    indicator_id: rollingSharpeSource.id,
+    indicator_revision: rollingSharpeSource.revision,
+    indicator_name: rollingSharpeSource.name,
+    definition_hash: 'd'.repeat(64),
+    source_dsl_version: rollingSharpeSource.dsl_version || '2.1.0',
+    window_observations: 5,
+    minimum_observations: 5,
+    detached: false,
+  },
+  rolling_transform: {
+    version: '2.0.0',
+    window_observations: 5,
+    source_expression: rollingSharpeSource.expression,
+    generated_expression: '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(periods_per_year)',
+    series_variables: ['returns'],
+    reduction_mappings: ['mean', 'std'],
+  },
+  display_latex: null,
+}
+
+const rollingSharpeSeriesDag = {
+  nodes: [
+    { id: 'returns', label: 'returns', kind: 'variable', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\mathbf{r}' },
+    { id: 'window', label: '5', kind: 'constant', value_type: 'scalar<count>', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: '5', formula_fragment: '5' },
+    { id: 'ddof', label: '1', kind: 'constant', value_type: 'scalar<count>', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: '1', formula_fragment: '1' },
+    { id: 'rolling-window', label: 'rolling_window', operator_id: 'rolling_window', kind: 'call', value_type: 'window<time,window>', shape: 'window' as const, symbolic_shape: ['T', 'W'], latex_fragment: '\\mathcal{W}_{t,5}(\\mathbf r)' },
+    { id: 'mean', label: 'mean', operator_id: 'mean', kind: 'call', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\mu_{t,5}(\\mathbf r)' },
+    { id: 'rf', label: 'risk_free_rate_per_observation', kind: 'variable', value_type: 'scalar<rate_decimal>', shape: 'scalar' as const, symbolic_shape: [], latex_fragment: 'r_f' },
+    { id: 'std', label: 'std', operator_id: 'std', kind: 'call', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: 's_{t,5}' },
+    { id: 'root', label: 'multiply', operator_id: 'multiply', kind: 'binary', value_type: 'series<time>', shape: 'series' as const, symbolic_shape: ['T'], latex_fragment: '\\frac{\\overline{r}_{t,5}-r_f}{s_{t,5}}\\sqrt{p_{\\mathrm{year}}}' },
+  ],
+  edges: [
+    { source: 'returns', target: 'rolling-window', parameter: 'values', order: 0 },
+    { source: 'window', target: 'rolling-window', parameter: 'window', order: 1 },
+    { source: 'rolling-window', target: 'mean', parameter: 'values', order: 0 },
+    { source: 'rolling-window', target: 'std', parameter: 'values', order: 0 },
+    { source: 'ddof', target: 'std', parameter: 'ddof', order: 1 },
+    { source: 'mean', target: 'root', parameter: 'lhs', order: 0 },
+    { source: 'std', target: 'root', parameter: 'rhs', order: 1 },
+  ],
+  roots: { value: 'root' },
 }
 
 const reusableDag = {
@@ -102,6 +314,82 @@ const reusableDag = {
     { source: 'one-b', target: 'result', parameter: 'rhs', order: 1 },
   ],
   roots: { result: 'result' },
+}
+
+const timeSeriesDag = {
+  nodes: [
+    {
+      id: 'market-close',
+      label: 'market_close',
+      kind: 'variable',
+      value_type: 'series<time>',
+      shape: 'series' as const,
+      symbolic_shape: ['T'],
+      formula_fragment: 'market_close',
+      latex_fragment: '\\mathbf{c}',
+    },
+    {
+      id: 'window',
+      label: '20',
+      kind: 'constant',
+      value_type: 'scalar',
+      shape: 'scalar' as const,
+      symbolic_shape: [],
+      formula_fragment: '20',
+      latex_fragment: '20',
+    },
+    {
+      id: 'rolling-window',
+      label: 'rolling_window',
+      operator: { id: 'rolling_window', version: '2.4.0' },
+      operator_id: 'rolling_window',
+      kind: 'call',
+      inferred_type: {
+        kind: 'window',
+        display: 'window<time,window>',
+        shape: ['T', 'W'],
+        semantic_dimension: 'raw_market_price',
+        price_basis: 'raw_market',
+      },
+      value_type: 'window<time,window>',
+      shape: 'window' as const,
+      symbolic_shape: ['T', 'W'],
+      formula_fragment: 'rolling_window(market_close, 20)',
+      latex_fragment: '\\mathcal{W}_{t,20}(\\mathbf c)',
+      inputs: ['market-close', 'window'],
+      arguments: [
+        { name: 'values', input_node_id: 'market-close' },
+        { name: 'window', input_node_id: 'window' },
+      ],
+    },
+    {
+      id: 'ma-root',
+      label: 'mean',
+      operator: { id: 'mean', version: '2.4.0' },
+      operator_id: 'mean',
+      kind: 'call',
+      inferred_type: {
+        kind: 'series',
+        display: 'series<time>',
+        shape: ['T'],
+        semantic_dimension: 'raw_market_price',
+        price_basis: 'raw_market',
+      },
+      value_type: 'series<time>',
+      shape: 'series' as const,
+      symbolic_shape: ['T'],
+      formula_fragment: 'mean(rolling_window(market_close, 20))',
+      latex_fragment: '\\mu_{t,20}(\\mathbf c)',
+      inputs: ['rolling-window'],
+      arguments: [{ name: 'values', input_node_id: 'rolling-window' }],
+    },
+  ],
+  edges: [
+    { source: 'market-close', target: 'rolling-window', parameter: 'values', order: 0 },
+    { source: 'window', target: 'rolling-window', parameter: 'window', order: 1 },
+    { source: 'rolling-window', target: 'ma-root', parameter: 'values', order: 0 },
+  ],
+  roots: { ma: 'ma-root' },
 }
 
 function json(body: unknown) {
@@ -152,15 +440,13 @@ describe('IndicatorStudio', () => {
   let catalog: IndicatorDefinition[]
   let activeMeta: IndicatorMeta
   let composeFailure = false
-  let availabilityFailure = false
   let validateAsSeries = false
   let snapshotConfig: SnapshotIndicatorConfig
 
   beforeEach(() => {
-    catalog = [builtIn, reusableBuiltIn, portfolioBuiltIn]
+    catalog = [builtIn, reusableBuiltIn, rollingSharpeSource, portfolioBuiltIn]
     activeMeta = meta
     composeFailure = false
-    availabilityFailure = false
     validateAsSeries = false
     snapshotConfig = {
       schema_version: 1,
@@ -173,6 +459,10 @@ describe('IndicatorStudio', () => {
     vi.stubGlobal('confirm', vi.fn(() => true))
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url === '/api/custom-indicators/prepare') {
+        const request = JSON.parse(String(init?.body || '{}'))
+        return json({ prepared: true, plans: [], indicator_refs: request.indicator_refs ?? (request.indicator_ids ?? []).map((id: string) => ({ indicator_id: id, indicator_revision: 1 })) })
+      }
       if (url === '/api/custom-indicators/meta') return json(activeMeta)
       if (url === '/api/custom-indicators?context_kind=single_product') {
         const items = catalog.filter((item) => (item.context_kind ?? 'single_product') === 'single_product')
@@ -203,6 +493,87 @@ describe('IndicatorStudio', () => {
         }
         return json({ items: catalog, total: catalog.length })
       }
+      if (url === '/api/custom-indicators/derive-rolling-series') {
+        const body = JSON.parse(String(init?.body || '{}'))
+        const source = catalog.find((item) => item.id === body.indicator_id) ?? rollingSharpeSource
+        const window = Number(body.window_observations)
+        const expression = `(mean(rolling_window(returns, ${window})) - risk_free_rate_per_observation) / std(rolling_window(returns, ${window}), 1) * sqrt(252)`
+        const definition = {
+          ...timeSeriesBuiltIn,
+          name: `${window} 日滚动${source.name}`,
+          description: `对每个时点最近 ${window} 个有效观察值应用锁定的“${source.name}”标量公式。`,
+          expression,
+          indicator_type: source.indicator_type,
+          category_id: source.indicator_type,
+          category_label: source.category_label,
+          direction: source.direction,
+          annual_risk_free_rate_percent: source.annual_risk_free_rate_percent,
+          unit: source.unit,
+          precision: source.precision,
+          axis_anchor: 'adjusted_nav',
+          lookback_observations: window,
+          minimum_observations: window,
+          fixed_parameters: [{ id: 'window_observations', label: '滚动观察数', type: 'integer', value: window, source: 'rolling_source' }],
+          series_outputs: [{
+            id: 'value',
+            label: `${window} 日滚动${source.name}`,
+            expression,
+            unit: source.unit,
+            display_format: source.display_format,
+            precision: source.precision,
+            output_measure: 'auto',
+            inferred_output_measure: 'dimensionless',
+            resolved_output_measure: 'dimensionless',
+            output_measure_source: 'inferred',
+            semantic_dimension: 'dimensionless',
+            price_basis: null,
+            value_range: null,
+          }],
+          required_variables: ['returns', 'risk_free_rate_per_observation'],
+          applicable_product_kinds: ['etf', 'fund'],
+          rolling_source: {
+            kind: 'rolling_scalar',
+            transform_version: '1.0.0',
+            indicator_id: source.id,
+            indicator_revision: source.revision,
+            indicator_name: source.name,
+            definition_hash: 'b'.repeat(64),
+            source_dsl_version: source.dsl_version,
+            window_observations: window,
+            minimum_observations: window,
+            detached: false,
+          },
+          rolling_transform: { version: '2.0.0', rewritten_reductions: ['mean', 'std'], source_variables: ['returns'] },
+        }
+        return json({
+          definition,
+          validation: {
+            valid: true,
+            diagnostics: [],
+            dependencies: ['returns', 'risk_free_rate_per_observation'],
+            dag: null,
+            result_kind: 'time_series',
+            output_contract: 'series_bundle',
+            output_channels: definition.series_outputs,
+            output_inferences: {},
+            parameter_schema: [],
+            fixed_parameters: definition.fixed_parameters,
+            history_policy: 'lookback',
+            history_inference_source: 'typed_dag',
+            lookback_observations: window,
+            minimum_observations: window,
+            compile_token: 'c'.repeat(64),
+            compile_token_scope: 'current_process_warm_cache',
+            execution: fixedExecution,
+          },
+          source: {
+            indicator_id: source.id,
+            indicator_revision: source.revision,
+            indicator_name: source.name,
+            window_observations: window,
+          },
+        })
+      }
       if (url === '/api/custom-indicators/validate' && validateAsSeries) return json({
         valid: false,
         diagnostics: [{ code: 'OUTPUT_CONTRACT_MISMATCH', message: '输出契约要求 scalar，实际推断为 series<time>[T]。', expected: 'scalar', actual: 'series<time>[T]' }],
@@ -210,7 +581,94 @@ describe('IndicatorStudio', () => {
         python_expression: 'returns',
         dag: null,
       })
-      if (url === '/api/custom-indicators/validate') return json({
+      if (url === '/api/custom-indicators/validate') {
+        const body = JSON.parse(String(init?.body || '{}'))
+        if (body.result_kind === 'time_series') {
+          const output = body.series_outputs?.[0]
+          if (output?.id === 'value' && String(output.expression).includes('mean(rolling_window(returns, 5))')) return json({
+            valid: true,
+            diagnostics: [],
+            dependencies: ['returns', 'risk_free_rate_per_observation', 'periods_per_year'],
+            python_expression: null,
+            dag: rollingSharpeSeriesDag,
+            result_kind: 'time_series',
+            output_contract: 'series_bundle',
+            output_channels: body.series_outputs,
+            output_inferences: {
+              value: {
+                id: 'value',
+                label: '5 日滚动年化夏普比率',
+                expression: output.expression,
+                latex: output.expression,
+                display_latex: '\\frac{\\mu_{t,5}\\left(\\mathbf r\\right)-r_f}{s_{t,5}\\left(\\mathbf r\\right)}\\cdot\\sqrt{p_{\\mathrm{year}}}',
+                math_notation_version: '1.5.0',
+                python_expression: output.expression,
+                inferred_type: 'series<time>',
+                shape: 'series',
+                semantic_dimension: 'dimensionless',
+                price_basis: null,
+                output_measure: 'auto',
+                inferred_output_measure: 'dimensionless',
+                resolved_output_measure: 'dimensionless',
+                output_measure_source: 'inferred',
+                value_range: null,
+                dependencies: ['returns', 'risk_free_rate_per_observation', 'periods_per_year'],
+                root_id: 'root',
+              },
+            },
+            parameter_schema: [],
+            fixed_parameters: body.fixed_parameters ?? [],
+            history_policy: 'lookback',
+            history_inference_source: 'typed_dag',
+            lookback_observations: 5,
+            minimum_observations: 5,
+            compile_token: 'e'.repeat(64),
+            compile_token_scope: 'current_process_warm_cache',
+            execution: fixedExecution,
+          })
+          return json({
+          valid: true,
+          diagnostics: [],
+          dependencies: ['market_close'],
+          python_expression: null,
+          dag: timeSeriesDag,
+          result_kind: 'time_series',
+          output_contract: 'series_bundle',
+          output_channels: body.series_outputs,
+          output_inferences: {
+            ma: {
+              id: 'ma',
+              label: '20 日收盘价均线',
+              expression: 'mean(rolling_window(market_close, 20))',
+              latex: 'mean(rolling_window(market_close, 20))',
+              display_latex: '\\mu_{t,20}\\left(\\mathbf c\\right)',
+              math_notation_version: '1.5.0',
+              python_expression: 'mean(rolling_window(market_close, 20))',
+              inferred_type: 'series<time>',
+              shape: 'series',
+              semantic_dimension: 'raw_market_price',
+              price_basis: 'raw_market',
+              output_measure: 'auto',
+              inferred_output_measure: 'raw_market_price',
+              resolved_output_measure: 'raw_market_price',
+              output_measure_source: 'inferred',
+              value_range: null,
+              dependencies: ['market_close'],
+              root_id: 'ma-root',
+            },
+          },
+          parameter_schema: [],
+          fixed_parameters: [],
+          history_policy: 'lookback',
+          history_inference_source: 'typed_dag',
+          lookback_observations: 20,
+          minimum_observations: 20,
+          compile_token: 'a'.repeat(64),
+          compile_token_scope: 'current_process_warm_cache',
+          execution: fixedExecution,
+        })
+        }
+        return json({
         valid: true, diagnostics: [], dependencies: ['returns'], python_expression: 'sequence_std(returns, 1)',
         display_latex: '\\operatorname{Std}_{\\mathrm{ddof}=1}\\left(\\mathbf{r}\\right)',
         dag: {
@@ -222,16 +680,16 @@ describe('IndicatorStudio', () => {
           roots: { result: 'root' },
         },
       })
+      }
       if (url === '/api/custom-indicators/compose') {
         if (composeFailure) return apiError('服务端拒绝展开，请检查参数。')
         const body = JSON.parse(String(init?.body))
-        if (body.indicator_id === reusableBuiltIn.id) return json({ expression: reusableBuiltIn.expression, latex: reusableBuiltIn.expression, display_latex: reusableBuiltIn.display_latex, inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [], dependencies: ['returns'], dag: reusableDag, indicator_origin: { indicator_id: reusableBuiltIn.id, indicator_revision: reusableBuiltIn.revision, name: reusableBuiltIn.name, source: reusableBuiltIn.source } })
-        if (body.operator_id === 'identity_series') return json({ expression: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', latex: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', display_latex: '\\left\\lvert\\mathbf{r}\\right\\rvert', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
-        if (body.operator_id === 'sequence_std') return json({ expression: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', latex: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', display_latex: '\\operatorname{Std}_{\\mathrm{ddof}=1}\\left(\\mathbf{r}\\right)', inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [] })
-        return json({ expression: '\\left(\\mathbf{r}+1\\right)', latex: '\\left(\\mathbf{r}+1\\right)', display_latex: '\\left(\\mathbf{r}\\right)+\\left(1\\right)', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
+        if (body.indicator_id === reusableBuiltIn.id) return json({ expression: reusableBuiltIn.expression, editable_latex: String.raw`\left(\operatorname{product}\left(\left(\mathbf{r}+1\right)\right)-1\right)`, latex: reusableBuiltIn.expression, display_latex: reusableBuiltIn.display_latex, inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [], dependencies: ['returns'], dag: reusableDag, indicator_origin: { indicator_id: reusableBuiltIn.id, indicator_revision: reusableBuiltIn.revision, name: reusableBuiltIn.name, source: reusableBuiltIn.source } })
+        if (body.operator_id === 'identity_series') return json({ editable_latex: String.raw`\operatorname{absolute}\left(\mathbf{r}\right)`, python_expression: 'absolute(returns)', expression: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', latex: '\\operatorname{abs}\\left(\\mathbf{r}\\right)', display_latex: '\\left\\lvert\\mathbf{r}\\right\\rvert', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
+        if (body.operator_id === 'sequence_std') return json({ editable_latex: String.raw`\operatorname{std}\left(\operatorname{absolute}\left(\mathbf{r}\right),1\right)`, python_expression: 'std(absolute(returns), 1)', expression: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', latex: '\\operatorname{std}\\left(\\mathbf{r},1\\right)', display_latex: '\\operatorname{Std}_{\\mathrm{ddof}=1}\\left(\\mathbf{r}\\right)', inferred_type: 'scalar', shape: 'scalar', semantic_warnings: [] })
+        return json({ editable_latex: String.raw`\left(\mathbf{r}+1\right)`, python_expression: 'returns + 1', expression: '\\left(\\mathbf{r}+1\\right)', latex: '\\left(\\mathbf{r}+1\\right)', display_latex: '\\left(\\mathbf{r}\\right)+\\left(1\\right)', inferred_type: 'series<time>', shape: 'series', semantic_warnings: [] })
       }
       if (url === '/api/custom-indicators/variables/availability') {
-        if (availabilityFailure) return apiError('真实变量可用性服务暂不可用')
         const body = JSON.parse(String(init?.body))
         const requestedTargets = body.targets || [{ kind: body.kind, product_id: body.product_id }]
         return json({
@@ -240,19 +698,29 @@ describe('IndicatorStudio', () => {
           })),
           period: body.period,
           as_of: body.as_of || null,
-          items: body.variable_ids.map((variableId: string) => ({
-            variable_id: variableId,
-            status: 'available',
-            coverage: { coverage_ratio: 0.98 },
-            actual_shape: variableId === 'risk_free_rate_per_observation' ? [] : [250],
-            reason: null,
-            target_statuses: requestedTargets.map((target: { kind: string; product_id: string }) => ({
-              target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id },
-              status: 'available',
-              reason: null,
-            })),
-            window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 249, data_latest_date: '2026-08-28' },
-          })),
+          items: body.variable_ids.map((variableId: string) => {
+            const definition = activeMeta.variables.find((variable) => variable.name === variableId)
+            const targetStatuses = requestedTargets.map((target: { kind: 'etf' | 'fund'; product_id: string }) => {
+              const applicable = !definition?.product_kinds || definition.product_kinds.includes(target.kind)
+              const kindLabel = target.kind === 'etf' ? 'ETF' : '场外公募基金'
+              return {
+                target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id },
+                status: applicable ? 'available' : 'source_unavailable',
+                reason: applicable ? null : { code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', message: `${kindLabel}没有可供计算“${definition?.label || variableId}”的真实数据源。` },
+              }
+            })
+            const availableCount = targetStatuses.filter((item: { status: string }) => item.status === 'available').length
+            const status = availableCount === targetStatuses.length ? 'available' : availableCount ? 'partial' : 'source_unavailable'
+            return {
+              variable_id: variableId,
+              status,
+              coverage: { coverage_ratio: 0.98 },
+              actual_shape: availableCount ? (variableId === 'risk_free_rate_per_observation' ? [] : [250]) : null,
+              reason: status === 'available' ? null : { code: 'VARIABLE_AVAILABILITY_SUMMARY', message: `所选产品中 ${availableCount}/${targetStatuses.length} 个可使用该变量。` },
+              target_statuses: targetStatuses,
+              window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 249, data_latest_date: '2026-08-28' },
+            }
+          }),
         })
       }
       if (url === '/api/portfolio-runs') return json({ items: [{ id: 'run-001', target_name: '稳健组合', target_revision: 7, effective_as_of: '2026-08-28', window: { start_date: '2024-01-02', end_date: '2026-08-28' } }] })
@@ -262,6 +730,18 @@ describe('IndicatorStudio', () => {
         const code = second ? '512960.SH' : '510300.SH'
         return json({ items: [{ code, ts_code: code, name: second ? '证券ETF' : '沪深300ETF', management: '测试', found_date: '2026-01-01', instrument_type: 'etf' }], total: 1, page: 1, page_size: 30, kind: 'etf' })
       }
+      if (url === '/api/custom-indicators/export-excel') {
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({
+            'Content-Disposition': "attachment; filename*=UTF-8''indicator-calculation.xlsx",
+          }),
+          blob: async () => new Blob(['xlsx-content'], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          }),
+        }
+      }
       if (url === '/api/custom-indicators/evaluate') {
         const body = JSON.parse(String(init?.body))
         const targets = body.targets as Array<{ kind: 'etf' | 'fund'; product_id: string }>
@@ -269,15 +749,61 @@ describe('IndicatorStudio', () => {
           results: targets.map((target) => ({ indicator_id: null, indicator_revision: null, indicator_name: '收益波动率', target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id }, period: body.period, value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 250, data_latest_date: '2026-08-28' } })),
           summary: { total: targets.length, ok: targets.length, warning: 0, error: 0 },
           cache: { hits: 0, misses: targets.length },
+          execution: fixedExecution,
         })
       }
-      if (url === '/api/custom-indicators/evaluate-portfolio') return json({ results: [{ indicator_id: null, indicator_revision: null, indicator_name: '组合波动率', target: { kind: 'portfolio', product_id: 'run-001', name: '稳健组合' }, period: 'snapshot', value: 0.087, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-08-28', start_date: '2024-01-02', end_date: '2026-08-28', observation_count: 640, data_latest_date: '2026-08-28' } }], summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 } })
+      if (url === '/api/custom-indicators/evaluate-portfolio') return json({ results: [{ indicator_id: null, indicator_revision: null, indicator_name: '组合波动率', target: { kind: 'portfolio', product_id: 'run-001', name: '稳健组合' }, period: 'snapshot', value: 0.087, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-08-28', start_date: '2024-01-02', end_date: '2026-08-28', observation_count: 640, data_latest_date: '2026-08-28' } }], summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 }, execution: fixedExecution })
       return json({})
     }))
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('目录延迟返回时不会覆盖已经输入的新指标', async () => {
+    const fetchImplementation = vi.mocked(fetch).getMockImplementation()!
+    let complete!: () => void
+    const pending = new Promise<void>(resolve => { complete = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (...args: Parameters<typeof fetch>) => {
+      if (String(args[0]) === '/api/custom-indicators/meta') await pending
+      return fetchImplementation(...args)
+    }))
+    render(<MemoryRouter initialEntries={['/indicator-studio']}><IndicatorStudio /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: '新建指标' }))
+    fireEvent.change(screen.getByLabelText('名称', { exact: true }), { target: { value: '慢连接下的草稿' } })
+    fireEvent.click(screen.getByRole('tab', { name: '高级公式模式' }))
+    const input = document.getElementById('indicator-expression')!
+    fireEvent.change(input, { target: { value: 'mean(returns)' } })
+    expect(screen.getByRole('button', { name: '解析并校验公式' })).toBeDisabled()
+    for (const button of screen.getAllByRole('button', { name: '保存新指标' })) expect(button).toBeDisabled()
+    await act(async () => { complete(); await pending })
+    await screen.findByRole('button', { name: /收益波动率/ })
+    expect(screen.getByLabelText('名称', { exact: true })).toHaveValue('慢连接下的草稿')
+    expect(input).toHaveValue('mean(returns)')
+    expect(screen.getByRole('button', { name: '解析并校验公式' })).toBeEnabled()
+    expect(screen.getAllByRole('button', { name: '保存新指标' })[0]).toBeEnabled()
+  })
+
+  it('新建时序指标不预填业务定义', async () => {
+    const user = setupUser()
+    await renderStudio()
+
+    await user.click(screen.getByRole('button', { name: '新建指标' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: '结果类型' }), 'time_series')
+
+    expect(screen.getByLabelText('输出通道 1 ID')).toHaveValue('')
+    expect(screen.getByLabelText('输出通道 1 名称')).toHaveValue('')
+    expect(screen.getByLabelText('日期轴变量')).toHaveValue('')
+    expect(screen.getByLabelText('滚动来源标量指标')).toHaveValue('')
+    expect(screen.getByLabelText('滚动观察数')).toHaveValue(null)
+    expect(screen.getByText('请选择日期轴变量')).toBeInTheDocument()
+    expect(screen.queryByText('20 日指标序列')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
+    expect(screen.getByLabelText('“当前结果”公式源码（LaTeX）')).toHaveValue('')
+    expect(screen.getByRole('button', { name: '解析并校验全部通道' })).toBeDisabled()
+    expect(screen.getAllByRole('button', { name: '保存新指标' }).every((button) => button.hasAttribute('disabled'))).toBe(true)
   })
 
   it('解析与校验合并为资源按钮下方的单一操作', async () => {
@@ -337,14 +863,7 @@ describe('IndicatorStudio', () => {
 
     expect(await screen.findByText('2 / 10')).toBeInTheDocument()
     expect(screen.queryByText(/仅保留第一个已选产品/)).not.toBeInTheDocument()
-    await waitFor(() => {
-      const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/variables/availability')
-      const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
-      expect(body.targets).toEqual([
-        { kind: 'etf', product_id: '510300.SH' },
-        { kind: 'etf', product_id: '512960.SH' },
-      ])
-    })
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
 
@@ -361,17 +880,239 @@ describe('IndicatorStudio', () => {
     expect(screen.getAllByText('512960.SH').length).toBeGreaterThan(0)
   })
 
-  it('滚动曲线必须显式启用，避免默认执行 500 次窗口计算', async () => {
+  it('在预览按钮下方下载包含直接入参与 Excel 公式的工作簿', async () => {
+    const nativeUrl = URL
+    const createObjectURL = vi.fn(() => 'blob:indicator-excel')
+    const revokeObjectURL = vi.fn()
+    class DownloadURL extends nativeUrl {
+      static createObjectURL = createObjectURL
+      static revokeObjectURL = revokeObjectURL
+    }
+    vi.stubGlobal('URL', DownloadURL)
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
     const user = setupUser()
     await renderStudio('/indicator-studio?kind=etf&ids=510300.SH')
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
-    await user.click(screen.getByRole('checkbox', { name: /同时计算滚动曲线/ }))
+
+    const previewButton = screen.getByRole('button', { name: '预览指标' })
+    const downloadButton = screen.getByRole('button', { name: '下载 Excel 计算逻辑' })
+    expect(previewButton.compareDocumentPosition(downloadButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await user.click(downloadButton)
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/custom-indicators/export-excel')
+      expect(call).toBeDefined()
+      expect(JSON.parse(String((call?.[1] as RequestInit).body))).toMatchObject({
+        targets: [{ kind: 'etf', product_id: '510300.SH' }],
+        period: '1Y',
+      })
+    })
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    expect(anchorClick).toHaveBeenCalled()
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:indicator-excel')
+    expect(await screen.findByText(/Excel 已生成：包含 1 个产品/)).toBeInTheDocument()
+    anchorClick.mockRestore()
+  })
+
+  it('可以锁定标量指标版本并生成固定观察数的滚动时序指标草稿', async () => {
+    const user = setupUser()
+    await renderStudio()
+
+    await user.click(screen.getByRole('button', { name: /年化夏普比率/ }))
+    await user.click(screen.getByRole('button', { name: '生成滚动时序指标' }))
+    const rollingPanel = screen.getByRole('region', { name: '标量指标滚动派生' })
+    const sourceSelect = within(rollingPanel).getByLabelText('滚动来源标量指标')
+    expect(sourceSelect).toHaveTextContent('年化夏普比率 · v1')
+    expect(sourceSelect).toHaveAttribute('role', 'combobox')
+    expect(within(rollingPanel).getByLabelText('滚动观察数')).toHaveValue(5)
+
+    await user.click(within(rollingPanel).getByRole('button', { name: '生成滚动公式' }))
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([url]) => url === '/api/custom-indicators/derive-rolling-series')
+      expect(call).toBeDefined()
+      expect(JSON.parse(String((call?.[1] as RequestInit).body))).toEqual({
+        indicator_id: 'builtin-annualized-sharpe-v2',
+        indicator_revision: 1,
+        window_observations: 5,
+      })
+    })
+
+    expect(screen.getByLabelText('名称')).toHaveValue('5 日滚动年化夏普比率')
+    await user.click(screen.getByText('窗口规则与来源版本'))
+    expect(await screen.findByText(/来源定义哈希、版本和生成公式已锁定/)).toBeVisible()
+    expect(screen.getByText(/已从“年化夏普比率”v1 生成 5 日滚动时序草稿/)).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
+    expect(screen.getByLabelText('“5 日滚动年化夏普比率”公式源码（LaTeX）')).toHaveValue(
+      '(mean(rolling_window(returns, 5)) - risk_free_rate_per_observation) / std(rolling_window(returns, 5), 1) * sqrt(252)',
+    )
+  })
+
+  it('滚动窗口拒绝小数、空值和越界，不会替用户四舍五入', async () => {
+    const user = setupUser()
+    await renderStudio()
+    await user.click(screen.getByRole('button', { name: /年化夏普比率/ }))
+    await user.click(screen.getByRole('button', { name: '生成滚动时序指标' }))
+    const panel = screen.getByRole('region', { name: '标量指标滚动派生' })
+    const input = within(panel).getByLabelText('滚动观察数')
+    const generate = within(panel).getByRole('button', { name: '生成滚动公式' })
+    for (const value of ['', '2.5', '5001']) {
+      await user.clear(input)
+      if (value) await user.type(input, value)
+      expect(generate).toBeDisabled()
+    }
+    await user.clear(input)
+    await user.type(input, '20')
+    expect(generate).toBeEnabled()
+    expect(panel).toHaveTextContent('对最近 20 个观察点逐日计算')
+  })
+
+  it('滚动来源可搜索，只展示后端确认支持的区间指标', async () => {
+    const user = setupUser()
+    await renderStudio()
+    await user.click(screen.getByRole('button', { name: /年化夏普比率/ }))
+    await user.click(screen.getByRole('button', { name: '生成滚动时序指标' }))
+    await user.click(screen.getByRole('combobox', { name: '滚动来源标量指标' }))
+    await user.type(screen.getByLabelText('搜索滚动来源标量指标'), '夏普')
+    expect(screen.getByRole('option', { name: /年化夏普比率/ })).toBeVisible()
+    expect(screen.queryByRole('option', { name: /我的波动指标/ })).not.toBeInTheDocument()
+  })
+
+  it('5 日滚动年化夏普点击校验后展示数学 LaTeX', async () => {
+    catalog = [...catalog, rollingSharpeTimeSeriesBuiltIn]
+    const user = setupUser()
+    await renderStudio()
+
+    await user.click(
+      screen.getByRole('button', { name: /5 日滚动年化夏普比率/ }),
+    )
+    await user.click(
+      screen.getByRole('button', { name: '解析并校验全部通道' }),
+    )
+
+    expect(
+      await screen.findByText(/时序定义校验通过，共 1 个输出通道/),
+    ).toBeInTheDocument()
+    const preview = screen.getByTestId('formula-preview')
+    expect(preview.querySelector('.katex')).not.toBeNull()
+    expect(preview).not.toHaveTextContent('rolling_mean')
+    expect(preview).not.toHaveTextContent('rolling_std')
+    expect(preview).not.toHaveTextContent('NaN')
+    expect(preview).not.toHaveTextContent('∑')
+    expect(preview).toHaveTextContent('μ')
+    expect(screen.getByText('dimensionless / 无')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '查看完整计算说明' }))
+    const explanation = screen.getByRole('region', { name: '公式计算说明' })
+    expect(within(explanation).getByText('使用“滚动窗口”')).toBeInTheDocument()
+    expect(explanation).toHaveTextContent('常量 1')
+    expect(explanation).not.toHaveTextContent('滚动平均值')
+    expect(explanation).not.toHaveTextContent('滚动标准差')
+    expect(explanation).not.toHaveTextContent('rolling_mean')
+    expect(explanation).not.toHaveTextContent('rolling_std')
+  })
+
+  it('时序指标支持构建向导、LaTeX、嵌套说明和公式驱动 Excel 导出', async () => {
+    catalog = [...catalog, timeSeriesBuiltIn]
+    activeMeta = {
+      ...meta,
+      operators: [...operators, rollingWindowOperator, meanOperator, stdOperator],
+      indicator_types: meta.indicator_types,
+    }
+    const nativeUrl = URL
+    const createObjectURL = vi.fn(() => 'blob:series-indicator-excel')
+    const revokeObjectURL = vi.fn()
+    class DownloadURL extends nativeUrl {
+      static createObjectURL = createObjectURL
+      static revokeObjectURL = revokeObjectURL
+    }
+    vi.stubGlobal('URL', DownloadURL)
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    const user = setupUser()
+
+    await renderStudio('/indicator-studio?kind=etf&ids=510300.SH')
+    await user.click(screen.getAllByRole('button', { name: /收盘价均线/ })[0])
+
+    expect(screen.getByRole('tab', { name: '构建向导' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '高级公式模式' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('时序图表区域')).not.toBeInTheDocument()
+    expect(screen.getByText(/图表位置由具体使用页面决定/)).toBeInTheDocument()
+    const measureSelect = screen.getByLabelText('输出通道 1 输出量纲')
+    expect(measureSelect).toHaveValue('auto')
+    expect(within(measureSelect).getByRole('option', { name: '自动推断' })).toBeInTheDocument()
+    expect(within(measureSelect).getByRole('option', { name: '原始市价' })).toBeInTheDocument()
+    expect(within(measureSelect).getByRole('option', { name: '虚拟净值（起点 1）' })).toBeInTheDocument()
+    expect(within(measureSelect).getByRole('option', { name: '0～1 区间' })).toBeInTheDocument()
+    expect(within(measureSelect).getByRole('option', { name: '-1～1 区间' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '解析并校验全部通道' }))
+    expect(await screen.findByText(/时序定义校验通过，共 1 个输出通道；当前通道已解析为可编辑的嵌套计算步骤/)).toBeInTheDocument()
+    expect(screen.getByText('计算逻辑已解析')).toBeInTheDocument()
+    const formulaPreview = screen.getByTestId('formula-preview')
+    expect(formulaPreview.querySelector('.katex')).not.toBeNull()
+    expect(formulaPreview).not.toHaveTextContent('rolling_mean')
+    expect(screen.getAllByText('原始市价').length).toBeGreaterThan(0)
+    expect(screen.getByText('raw_market_price / raw_market')).toBeInTheDocument()
+    expect(screen.getAllByText('20 个').length).toBeGreaterThanOrEqual(2)
+
+    await user.click(screen.getByRole('button', { name: '查看完整计算说明' }))
+    const explanation = screen.getByRole('region', { name: '公式计算说明' })
+    expect(within(explanation).getAllByText('滚动窗口').length).toBeGreaterThan(0)
+    expect(explanation).toHaveTextContent('窗口期数：常量 20')
+    expect(explanation).not.toHaveTextContent('滚动平均值')
+    expect(within(explanation).queryByText(/运行参数/)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '浏览公式构建资源' }))
+    const composer = await screen.findByRole('dialog', { name: '编辑“20 日收盘价均线”的计算逻辑' })
+    expect(within(composer).getByLabelText('窗口期数 有限常量')).toHaveValue(20)
+    expect(within(composer).getByLabelText('窗口期数 输入来源')).toBeDisabled()
+    expect(within(composer).getByText(/必须随指标版本固定/)).toBeInTheDocument()
+    await user.click(within(composer).getByRole('button', { name: '关闭参数配置' }))
+
+    await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
+    expect(screen.getByLabelText('“20 日收盘价均线”公式源码（LaTeX）')).toHaveValue(
+      'mean(rolling_window(market_close, 20))',
+    )
+
+    await user.click(screen.getByRole('button', { name: '下载 Excel 计算逻辑' }))
+    await waitFor(() => {
+      const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/export-excel')
+      const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
+      expect(body).toMatchObject({
+        period: '1Y',
+        targets: [{ kind: 'etf', product_id: '510300.SH' }],
+        inline_definition: {
+          result_kind: 'time_series',
+          output_contract: 'series_bundle',
+          axis_anchor: 'market_close',
+          parameter_schema: [],
+          history_policy: 'lookback',
+          lookback_parameter: null,
+          series_outputs: [{
+            expression: 'mean(rolling_window(market_close, 20))',
+            output_measure: 'auto',
+          }],
+        },
+      })
+      expect(body).not.toHaveProperty('parameters')
+      expect(body.inline_definition).not.toHaveProperty('chart_panel')
+    })
+    expect(await screen.findByText(/逐步 Excel 公式和各时序通道结果/)).toBeInTheDocument()
+    expect(createObjectURL).toHaveBeenCalledWith(expect.any(Blob))
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:series-indicator-excel')
+    anchorClick.mockRestore()
+  })
+
+  it('指标中心不提供滚动曲线入口，预览只请求单窗口结果', async () => {
+    const user = setupUser()
+    await renderStudio('/indicator-studio?kind=etf&ids=510300.SH')
+    expect(screen.queryByRole('checkbox', { name: /同时计算滚动曲线/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /收益波动率/ }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
 
     await waitFor(() => {
       const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/evaluate')
       const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
-      expect(body.include_series).toBe(true)
+      expect(body.include_series).toBe(false)
     })
   })
 
@@ -465,6 +1206,49 @@ describe('IndicatorStudio', () => {
     expect(within(dialog).queryByText(/series<time>|\[T\]/)).not.toBeInTheDocument()
   })
 
+  it('构建目录不按深链产品禁用变量，收益率名称明确复权净值口径', async () => {
+    const user = setupUser()
+    await renderStudio('/indicator-studio?kind=fund&ids=005300.OF')
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
+    await user.click(screen.getByText('浏览公式构建资源'))
+    const dialog = (await screen.findByText('变量、算子与已有指标')).closest<HTMLElement>('[role="dialog"]') as HTMLElement
+    const chooseCatalogOption = async (label: string, query: string) => {
+      const combobox = within(dialog).getAllByLabelText(label).find((element) => element.getAttribute('role') === 'combobox') as HTMLElement
+      if (combobox.getAttribute('aria-expanded') !== 'true') await user.click(combobox)
+      const search = within(dialog).getByLabelText(`搜索${label}`)
+      await user.click(search)
+      await user.type(search, query)
+      await user.keyboard('{Enter}')
+    }
+
+    await chooseCatalogOption('资源分类', '净值与价格')
+    expect(within(dialog).getByLabelText('资源分类')).toHaveTextContent('净值与价格（5）')
+    const variableCombobox = within(dialog).getAllByLabelText('选择变量').find((element) => element.getAttribute('role') === 'combobox') as HTMLElement
+    await user.click(variableCombobox)
+    const priceOptions = variableCombobox.parentElement?.querySelector<HTMLElement>('[role="listbox"]')
+    expect(priceOptions).not.toBeNull()
+    if (!priceOptions) throw new Error('Price option list is missing')
+    expect(within(priceOptions).getByText('开盘价')).toBeInTheDocument()
+    expect(within(priceOptions).getByText('最高价')).toBeInTheDocument()
+    expect(within(priceOptions).getByText('最低价')).toBeInTheDocument()
+    expect(within(priceOptions).getByText('收盘价')).toBeInTheDocument()
+    await user.click(within(priceOptions).getByText('开盘价'))
+    expect(within(dialog).getByText('开盘价', { selector: 'h4' })).toBeInTheDocument()
+    expect(within(dialog).getByText('ETF')).toBeInTheDocument()
+    expect(within(dialog).queryByText(/场外公募基金没有可供计算“开盘价”的真实数据源/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('所选产品可用性')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '设为当前公式' })).toBeEnabled()
+
+    await chooseCatalogOption('资源分类', '收益与变化')
+    const returnCombobox = within(dialog).getAllByLabelText('选择变量').find((element) => element.getAttribute('role') === 'combobox') as HTMLElement
+    await user.click(returnCombobox)
+    const returnOptions = returnCombobox.parentElement?.querySelector<HTMLElement>('[role="listbox"]')
+    expect(returnOptions).not.toBeNull()
+    if (!returnOptions) throw new Error('Return option list is missing')
+    expect(within(returnOptions).getByText('复权净值普通收益率')).toBeInTheDocument()
+    expect(within(returnOptions).getByText('复权净值对数收益率')).toBeInTheDocument()
+  })
+
   it('输出结果与输出契约错误只展示中文数据类型', async () => {
     validateAsSeries = true
     const user = setupUser()
@@ -532,9 +1316,9 @@ describe('IndicatorStudio', () => {
     const explanation = await within(dialog).findByRole('region', { name: '公式计算说明' })
     expect(within(explanation).getByText('输入变量与符号')).toBeInTheDocument()
     expect(within(explanation).getByText('算子与数学符号')).toBeInTheDocument()
-    expect(within(explanation).getByText('累乘')).toBeInTheDocument()
+    expect(within(explanation).getByText('全元素累乘')).toBeInTheDocument()
     expect(within(explanation).getByText('逐元素加法')).toBeInTheDocument()
-    expect(within(explanation).getByLabelText('累乘的数学符号').querySelector('.katex')).not.toBeNull()
+    expect(within(explanation).getByLabelText('全元素累乘的数学符号').querySelector('.katex')).not.toBeNull()
     await user.click(within(dialog).getByRole('button', { name: '展开为当前公式' }))
 
     await waitFor(() => {
@@ -548,8 +1332,8 @@ describe('IndicatorStudio', () => {
         indicator_id: reusableBuiltIn.id,
         indicator_revision: 1,
         context: 'single_product',
-        dsl_version: '2.2.0',
-        operator_registry_version: '2.2.0',
+        dsl_version: '2.4.0',
+        operator_registry_version: '2.4.0',
       })
     })
     expect(screen.getByText(/“累计收益率” v1 已按锁定版本展开为当前公式/)).toBeInTheDocument()
@@ -572,12 +1356,12 @@ describe('IndicatorStudio', () => {
 
     await user.click(screen.getByRole('button', { name: /平均盈亏比/ }))
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
-    expect(screen.getByLabelText('受限公式源码（DSL / LaTeX）')).toHaveValue(payoffIndicator.expression)
+    expect(screen.getByLabelText('受限公式源码（LaTeX）')).toHaveValue(payoffIndicator.expression)
     const preview = screen.getByTestId('formula-preview')
     expect(preview.innerHTML).not.toContain('mean_where')
     expect(preview.innerHTML).not.toContain('greater_than')
 
-    await user.type(screen.getByLabelText('受限公式源码（DSL / LaTeX）'), '+1')
+    await user.type(screen.getByLabelText('受限公式源码（LaTeX）'), '+1')
     expect(screen.getByTestId('formula-preview')).toHaveTextContent('请先解析并校验公式以生成数学排版')
     expect(screen.getByTestId('formula-preview').innerHTML).not.toContain('mean_where')
   })
@@ -623,7 +1407,7 @@ describe('IndicatorStudio', () => {
     const composeCalls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/compose')
     const parentBody = JSON.parse(String((composeCalls[1][1] as RequestInit).body))
     expect(parentBody.arguments[0]).toMatchObject({ parameter: 'values', source: 'expression' })
-    expect(await screen.findByText('输出结果')).toBeInTheDocument()
+    expect(await screen.findByText('类型推断')).toBeInTheDocument()
   })
 
   it('引导构建允许分别切换输入，并在参数组合层校验类型与语义量纲', async () => {
@@ -638,7 +1422,7 @@ describe('IndicatorStudio', () => {
     const composer = await screen.findByRole('dialog', { name: '配置 逐元素加法' })
     const firstInput = within(composer).getByLabelText('输入 A 变量')
     const secondInput = within(composer).getByLabelText('输入 B 变量')
-    expect(within(secondInput).getByRole('option', { name: /普通收益率序列/ })).not.toBeDisabled()
+    expect(within(secondInput).getByRole('option', { name: /复权净值普通收益率/ })).not.toBeDisabled()
     expect(within(secondInput).getByRole('option', { name: /成交量/ })).not.toBeDisabled()
 
     await user.selectOptions(firstInput, 'volume')
@@ -701,8 +1485,8 @@ describe('IndicatorStudio', () => {
     const composer = await screen.findByRole('dialog', { name: '配置 逐元素减法' })
     const firstInput = within(composer).getByLabelText('输入 A 变量')
     const secondInput = within(composer).getByLabelText('输入 B 变量')
-    expect(within(firstInput).getByRole('option', { name: /复权净值/ })).not.toBeDisabled()
-    expect(within(secondInput).getByRole('option', { name: /复权净值/ })).not.toBeDisabled()
+    expect(within(firstInput).getByRole('option', { name: /^复权净值 ·/ })).not.toBeDisabled()
+    expect(within(secondInput).getByRole('option', { name: /^复权净值 ·/ })).not.toBeDisabled()
 
     await user.selectOptions(firstInput, 'adjusted_nav')
     expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeDisabled()
@@ -733,7 +1517,7 @@ describe('IndicatorStudio', () => {
     expect(within(catalogDialog).queryByRole('option', { name: /线性代数/ })).not.toBeInTheDocument()
   })
 
-  it('公式编辑会清除旧推导、校验、DAG 与运行结果，并提示重新校验', async () => {
+  it('公式编辑会清除旧推导、校验与运行结果，预览页不再重复展示 DAG', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
@@ -742,21 +1526,22 @@ describe('IndicatorStudio', () => {
     await user.click(await screen.findByRole('button', { name: '添加' }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
     expect((await screen.findAllByText('12.34%')).length).toBeGreaterThan(0)
-    expect(screen.getByText('输出结果')).toBeInTheDocument()
+    expect(screen.getByText('类型推断')).toBeInTheDocument()
     expect(screen.getByText('校验通过')).toBeInTheDocument()
-    expect(screen.getByTestId('dag-chart')).toBeInTheDocument()
+    expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: '高级公式模式' }))
-    await user.type(screen.getByLabelText('受限公式源码（DSL / LaTeX）'), '+1')
+    await user.type(screen.getByLabelText('受限公式源码（LaTeX）'), '+1')
 
-    expect(screen.queryByText('输出结果')).not.toBeInTheDocument()
+    expect(screen.queryByText('类型推断')).not.toBeInTheDocument()
+    expect(screen.getByTestId('indicator-output-settings')).toBeInTheDocument()
     expect(screen.queryByText('校验通过')).not.toBeInTheDocument()
     expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
     expect(screen.queryByText('12.34%')).not.toBeInTheDocument()
     expect(screen.getByText('公式已更改，需要重新解析并校验。')).toBeInTheDocument()
   })
 
-  it('DAG 始终使用单一 result 根，运行周期只更新展示上下文', async () => {
+  it('公式说明保留命名参数，运行周期变化不重复校验定义或展示 DAG', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
@@ -780,27 +1565,13 @@ describe('IndicatorStudio', () => {
     expect(within(parsedComposer).getByRole('button', { name: '应用逻辑修改' })).toBeInTheDocument()
     expect(within(parsedComposer).getByRole('button', { name: '改用其他构建资源' })).toBeInTheDocument()
     await user.click(within(parsedComposer).getByRole('button', { name: '取消' }))
-    const chart = screen.getByTestId('dag-chart')
-    expect(chart).toHaveAttribute('data-layout', 'none')
-    expect(chart).toHaveAttribute('data-directed', 'true')
-    expect(chart).toHaveAttribute('data-arrow', 'arrow')
-    expect(chart).toHaveAttribute('data-link-count', '1')
-    expect(chart).toHaveAttribute('data-edge-parameter', '输入值')
-    expect(screen.getByText('预览周期：1Y')).toBeInTheDocument()
-    const table = screen.getByRole('table', { name: 'DAG 节点、输入参数和输出类型数据表' })
-    expect(table).toHaveTextContent('输入值 ← 普通收益率序列')
-    expect(table).toHaveTextContent('全元素标准差')
-    expect(screen.getByRole('button', { name: '适配并复位图谱' })).toBeInTheDocument()
-    const nodeDetails = screen.getByRole('article', { name: 'DAG 节点详情' })
-    expect(nodeDetails).toHaveTextContent('全元素标准差')
-    expect(nodeDetails).toHaveTextContent('理论规模：单个数值')
-    expect(table).toHaveTextContent('理论规模：随计算窗口变化的时间点数量')
-    await user.click(within(table).getByRole('button', { name: '普通收益率序列' }))
-    expect(nodeDetails).toHaveTextContent('普通收益率序列')
-
+    expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: 'DAG 节点、输入参数和输出类型数据表' })).not.toBeInTheDocument()
+    const validationCount = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate').length
     await user.selectOptions(screen.getByLabelText('计算周期'), '1M')
-    expect(screen.getByText('预览周期：1M')).toBeInTheDocument()
-    expect(screen.getByTestId('dag-chart')).toHaveAttribute('data-link-count', '1')
+    expect(screen.getByLabelText('计算周期')).toHaveValue('1M')
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(validationCount)
+    expect(screen.getByRole('heading', { name: '指标定义校验' })).toBeInTheDocument()
   })
 
   it('已有工作区指标从统一入口载入当前逻辑，修改后可另存为新指标', async () => {
@@ -844,7 +1615,7 @@ describe('IndicatorStudio', () => {
     expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/portfolio-runs')).toBe(false)
   })
 
-  it('按产品、周期和历史截止日展示变量实际可用性，并在预览时传递 as-of', async () => {
+  it('构建目录只展示变量定义，产品可计算性留到预览，并传递 as-of', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: /收益波动率/ }))
@@ -852,20 +1623,19 @@ describe('IndicatorStudio', () => {
     await user.click(await screen.findByRole('button', { name: '添加' }))
     await user.type(screen.getByLabelText('历史截止日'), '2026-08-28')
 
-    await waitFor(() => {
-      const calls = vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/variables/availability')
-      expect(calls.length).toBeGreaterThan(0)
-      const body = JSON.parse(String((calls[calls.length - 1]?.[1] as RequestInit).body))
-      expect(body).toMatchObject({ targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1Y', as_of: '2026-08-28' })
-    })
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
 
     await user.click(screen.getByRole('button', { name: '浏览公式构建资源' }))
     const currentLogic = await screen.findByRole('dialog', { name: '编辑“收益波动率”的计算逻辑' })
     await user.click(within(currentLogic).getByRole('button', { name: '改用其他构建资源' }))
     const dialog = await screen.findByRole('dialog', { name: '变量、算子与已有指标' })
     await chooseCombobox(user, '资源分类', '收益与变化')
-    await chooseCombobox(user, '选择变量', '普通收益率序列')
-    expect(within(dialog).getByText('250 个时间点 · 98.0%')).toBeInTheDocument()
+    await chooseCombobox(user, '选择变量', '复权净值普通收益率')
+    expect(within(dialog).getAllByText('由相邻复权净值计算的普通收益率。').length).toBeGreaterThan(0)
+    expect(within(dialog).queryByText(/所选产品中/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('所选产品可用性')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('实际数据规模 / 覆盖率')).not.toBeInTheDocument()
+    expect(within(dialog).getByText(/实际可计算性将在选择产品并执行预览后/)).toBeInTheDocument()
     await user.click(within(dialog).getByRole('button', { name: '设为当前公式' }))
     await user.click(screen.getByRole('button', { name: '预览指标' }))
     await waitFor(() => {
@@ -874,14 +1644,13 @@ describe('IndicatorStudio', () => {
     })
   })
 
-  it('变量可用性核对失败时关闭入口，算子参数也不会继续提供未知变量', async () => {
-    availabilityFailure = true
+  it('构建阶段不请求产品可用性，算子继续提供定义上兼容的变量', async () => {
     const user = setupUser()
     await renderStudio()
     await user.click(screen.getByRole('button', { name: '搜索' }))
     await user.click(await screen.findByRole('button', { name: '添加' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('变量可用性核对失败')
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/custom-indicators/variables/availability')).toBe(false)
     const catalogDialog = await openCatalog(user)
     await user.selectOptions(within(catalogDialog).getByLabelText('资源类型'), 'operators')
     await chooseCombobox(user, '资源分类', '统计归约')
@@ -890,11 +1659,12 @@ describe('IndicatorStudio', () => {
 
     const composer = await screen.findByRole('dialog', { name: '配置 全元素标准差' })
     expect(within(composer).getByLabelText('输入值 输入来源')).toHaveTextContent('兼容变量')
-    expect(within(composer).getByText(/当前产品变量中没有满足该参数类型与语义约束的输入/)).toBeInTheDocument()
-    expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeDisabled()
+    expect(within(composer).getByRole('option', { name: /复权净值普通收益率/ })).not.toBeDisabled()
+    expect(within(composer).queryByText(/当前产品变量中没有满足该参数类型与语义约束的输入/)).not.toBeInTheDocument()
+    expect(within(composer).getByRole('button', { name: '展开到公式' })).toBeEnabled()
   })
 
-  it('资源分类只展示可用数量，并隐藏当前域不可用的分类', async () => {
+  it('资源分类只展示定义数量，并隐藏当前域不可用的分类', async () => {
     const user = setupUser()
     await renderStudio()
     const dialog = await openCatalog(user)
@@ -951,7 +1721,7 @@ describe('IndicatorStudio', () => {
     const previewPanel = document.getElementById('indicator-panel-preview')
 
     expect(editorTab).toHaveAttribute('aria-selected', 'true')
-    expect(editorPanel).toHaveClass('md:block')
+    expect(editorPanel).toHaveClass('md:flex')
     expect(previewPanel).toHaveClass('md:hidden')
 
     fireEvent.keyDown(editorTab, { key: 'ArrowRight' })
@@ -978,7 +1748,8 @@ describe('IndicatorStudio', () => {
     expect(document.getElementById('indicator-panel-preview')).toHaveClass('md:block')
     expect(screen.getByLabelText('当前预览指标')).toHaveTextContent('累计收益率')
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
-    expect(await screen.findByRole('heading', { name: '层级计算 DAG' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '指标定义校验' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '层级计算 DAG' })).not.toBeInTheDocument()
     expect(screen.getByText(/已保留预览条件.*公式解析和校验通过/)).toBeInTheDocument()
   })
 
@@ -991,7 +1762,8 @@ describe('IndicatorStudio', () => {
     await user.click(previewTab)
 
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
-    expect(await screen.findByRole('heading', { name: '层级计算 DAG' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '指标定义校验' })).toBeInTheDocument()
+    expect(screen.queryByTestId('dag-chart')).not.toBeInTheDocument()
   })
 
   it('算子展开失败会在抽屉内给出明确错误并允许重试', async () => {

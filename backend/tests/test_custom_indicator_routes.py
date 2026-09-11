@@ -84,7 +84,15 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     assert meta.status_code == 200
     assert meta.json()["workspace_scope"] == "shared"
     assert listing.status_code == 200
-    assert listing.json()["total"] == 37
+    visible_items = listing.json()["items"]
+    assert listing.json()["total"] == len(visible_items)
+    assert all(item.get("result_kind", "scalar") in {"scalar", "time_series"} for item in visible_items)
+    assert {item["id"] for item in visible_items} >= {
+        "builtin-last-maximum-drawdown-rate", "builtin-maximum-drawdown-start-date",
+        "builtin-maximum-drawdown-trough-date", "builtin-maximum-drawdown-duration-days",
+        "builtin-maximum-drawdown-recovery-date", "builtin-maximum-drawdown-recovery-days",
+        "builtin-maximum-drawdown-total-days",
+    }
     assert sum(item["name"] == "累计收益率" for item in listing.json()["items"]) == 1
     assert all(item["catalog_status"] == "current" for item in listing.json()["items"])
     risk_listing = client.get("/api/custom-indicators?indicator_type=risk")
@@ -96,7 +104,8 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     )
     compatibility = client.get("/api/custom-indicators?include_compatibility=true")
     assert compatibility.status_code == 200
-    assert compatibility.json()["total"] == 42
+    assert compatibility.json()["total"] == len(compatibility.json()["items"])
+    assert compatibility.json()["total"] > listing.json()["total"]
     hidden_legacy = next(
         item
         for item in compatibility.json()["items"]
@@ -112,6 +121,62 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     assert invalid.status_code == 200
     assert invalid.json()["valid"] is False
     assert invalid.json()["diagnostics"][0]["code"] == "UNKNOWN_FUNCTION"
+
+
+def test_time_series_builder_requires_fixed_constants_and_runtime_cannot_override(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = _client(monkeypatch, tmp_path)
+
+    invalid_compose = client.post(
+        "/api/custom-indicators/compose",
+        json={
+            "operator_id": "rolling_mean",
+            "context": "single_product",
+            "arguments": [
+                {"parameter": "values", "source": "variable", "value": "market_close"},
+                {"parameter": "window", "source": "variable", "value": "observation_count"},
+            ],
+        },
+    )
+    valid_compose = client.post(
+        "/api/custom-indicators/compose",
+        json={
+            "operator_id": "rolling_mean",
+            "context": "single_product",
+            "arguments": [
+                {"parameter": "values", "source": "variable", "value": "market_close"},
+                {"parameter": "window", "source": "constant", "value": 20},
+            ],
+        },
+    )
+    runtime_override = client.post(
+        "/api/custom-indicators/evaluate-series",
+        json={
+            "indicator_instances": [
+                {
+                    "indicator_id": "builtin-close-moving-average-series",
+                    "parameters": {"window": 5},
+                }
+            ],
+            "target": {"kind": "etf", "product_id": "510050.SH"},
+            "period": "ALL",
+        },
+    )
+
+    assert invalid_compose.status_code == 422
+    assert invalid_compose.json()["detail"]["code"] == (
+        "SERIES_CONFIGURATION_MUST_BE_CONSTANT"
+    )
+    assert valid_compose.status_code == 200
+    assert "rolling_mean" in valid_compose.json()["normalized_expression"]
+    assert "20.0" in valid_compose.json()["normalized_expression"]
+    assert "rolling_mean" not in valid_compose.json()["display_latex"]
+    assert runtime_override.status_code == 422
+    assert runtime_override.json()["detail"]["code"] == (
+        "SERIES_PARAMETERS_FIXED_IN_DEFINITION"
+    )
 
 
 def test_legacy_typed_requests_infer_the_matching_registry_version(
@@ -338,6 +403,13 @@ def test_typed_compose_infer_and_portfolio_snapshot_evaluation(monkeypatch, tmp_
             "operator_registry_version": "2.0.0",
         },
     }
+    validation = client.post(
+        "/api/custom-indicators/validate",
+        json=payload["inline_definition"],
+    )
+    assert validation.status_code == 200
+    assert validation.json()["valid"] is True
+    payload["compile_token"] = validation.json()["compile_token"]
     first = client.post("/api/custom-indicators/evaluate-portfolio", json=payload)
     second = client.post("/api/custom-indicators/evaluate-portfolio", json=payload)
     assert first.status_code == 200
@@ -351,7 +423,7 @@ def test_crud_revision_conflict_and_delete_contract(monkeypatch, tmp_path: Path)
     created_response = client.post("/api/custom-indicators", json=_draft())
     assert created_response.status_code == 201
     created = created_response.json()
-    assert created["dsl_version"] == "2.2.0"
+    assert created["dsl_version"] == "2.4.0"
     assert created["numeric_kernel_version"] == "2.2.0"
     assert created["period_policy"] == "all_supported"
     assert created["periods"] == list(custom_indicator_routes.SUPPORTED_PERIODS)
@@ -434,6 +506,7 @@ def test_evaluation_plan_create_list_run_and_delete(monkeypatch, tmp_path: Path)
                 "filters": {
                     "fund_type": ["股票型"],
                     "invest_type": ["被动指数型"],
+                    "qdii_type": ["非QDII"],
                     "market": ["上交所"],
                     "status": ["上市交易"],
                     "management": [],
@@ -457,6 +530,7 @@ def test_evaluation_plan_create_list_run_and_delete(monkeypatch, tmp_path: Path)
         "filters": {
             "fund_type": ["股票型"],
             "invest_type": ["被动指数型"],
+            "qdii_type": ["非QDII"],
             "market": ["上交所"],
             "status": ["上市交易"],
             "management": [],
@@ -577,3 +651,37 @@ def test_snapshot_indicator_config_routes(monkeypatch, tmp_path: Path) -> None:
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "REVISION_CONFLICT"
+
+
+def test_evaluate_inherits_the_platform_research_day(monkeypatch, tmp_path: Path) -> None:
+    """The wiring that was missing: the route never asked for the口径.
+
+    Every `/api/` request already carries the tab's PIT headers, but these
+    endpoints only read `as_of` from the page's own 截止日 box — so 产品研究
+    showed 2026 numbers while the badge claimed a historical research day.
+    """
+
+    from backend.pit.settings import PitSettingsRepository
+
+    client = _client(monkeypatch, tmp_path)
+    _write_etf_data(tmp_path)
+    PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2026-02-02")
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        custom_indicator_routes.indicator_service,
+        "evaluate",
+        lambda **kwargs: seen.update(kwargs) or {"results": []},
+    )
+
+    body = {
+        "indicator_ids": ["indicator-x"],
+        "targets": [{"kind": "etf", "product_id": "510050.SH"}],
+        "period": "1W",
+    }
+    assert client.post("/api/custom-indicators/evaluate", json=body).status_code == 200
+    assert seen["as_of"] == "2026-02-02"
+
+    # A stated 截止日 is a per-run override and still wins: a backtest sweeping
+    # as_of must not be clamped to the platform day.
+    client.post("/api/custom-indicators/evaluate", json={**body, "as_of": "2026-01-15"})
+    assert seen["as_of"] == "2026-01-15"

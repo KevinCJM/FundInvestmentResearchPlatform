@@ -23,6 +23,11 @@ import {
   withSelectedIndicators,
 } from '../components/metrics/useMetricDisplayPreference';
 import { readReturnNavigationState, returnToOrigin } from '../utils/returnNavigation';
+import {
+  analyzeProductComparison,
+  type ProductCompareAnalysisResponse,
+  type ProductCompareMetrics,
+} from '../services/productCompare';
 
 interface TimeSeriesPoint {
   date: string;
@@ -86,20 +91,11 @@ const CORE_RESEARCH_INDICATOR_IDS = [
   'builtin-total-return-v2',
   'builtin-annualized-return-v2',
   'builtin-annualized-volatility-v2',
-  'builtin-maximum-drawdown-v2',
+  'builtin-drawdown-analysis-v3',
   'builtin-annualized-sharpe-v2',
 ];
 
-interface DerivedMetrics {
-  cumulativeReturn: number | null;
-  annualizedReturn: number | null;
-  volatility: number | null;
-  maxDrawdown: number | null;
-  returnToFee: number | null;
-  totalFee: number | null;
-  sharpeRatio: number | null;
-  calmarRatio: number | null;
-}
+type DerivedMetrics = ProductCompareMetrics;
 
 type MetricColumn = {
   key: string;
@@ -281,31 +277,11 @@ const efficiencyQuadrantConfigs: QuadrantMetricConfig[] = [
 ];
 
 const generateSyntheticSeries = (
-  startDate: string,
-  length: number,
-  options: { drift: number; volatility: number; seasonal?: number },
+  _startDate: string,
+  _length: number,
+  _options: { drift: number; volatility: number; seasonal?: number },
 ): TimeSeriesPoint[] => {
-  const series: TimeSeriesPoint[] = [];
-  const baseDate = new Date(startDate);
-  const day = new Date(baseDate);
-  let value = 1;
-  let index = 0;
-  const volatility = options.volatility;
-  const seasonal = options.seasonal ?? 0.0025;
-
-  while (series.length < length) {
-    const weekDay = day.getDay();
-    if (weekDay !== 0 && weekDay !== 6) {
-      const wave = Math.sin(index / 7) * volatility + Math.cos(index / 13) * seasonal;
-      const step = options.drift + wave;
-      value = Math.max(0.2, value * (1 + step));
-      series.push({ date: day.toISOString().slice(0, 10), close: Number(value.toFixed(4)) });
-      index += 1;
-    }
-    day.setDate(day.getDate() + 1);
-  }
-
-  return series;
+  return [];
 };
 
 const DEMO_PRODUCTS: ProductDetailResponse[] = [
@@ -846,198 +822,10 @@ const RangeSelector: React.FC<RangeSelectorProps> = ({
   );
 };
 
-const MS_IN_DAY = 86_400_000;
-const TRADING_DAYS_PER_YEAR = 252;
 const DEFAULT_ROLLING_WINDOW_DAYS = 30;
 const ROLLING_WINDOW_MIN = 5;
 const ROLLING_WINDOW_MAX = 120;
 const ROLLING_WINDOW_STEP = 1;
-
-const computeDerivedMetrics = (
-  product: ProductDetailResponse,
-  range?: { startTimestamp?: number | null; endTimestamp?: number | null },
-): DerivedMetrics => {
-  const points = (product.timeseries ?? [])
-    .filter((point): point is TimeSeriesPoint =>
-      Boolean(point?.date) && Number.isFinite(point?.close ?? NaN),
-    )
-    .map((point) => {
-      const date = String(point.date);
-      const timestamp = new Date(date).getTime();
-      return {
-        date,
-        close: Number(point.close),
-        timestamp: Number.isNaN(timestamp) ? null : timestamp,
-      };
-    })
-    .sort((a, b) => {
-      if (a.timestamp !== null && b.timestamp !== null) {
-        return a.timestamp - b.timestamp;
-      }
-      return a.date.localeCompare(b.date);
-    });
-
-  const filteredPoints = points.filter((point) => {
-    if (range?.startTimestamp !== undefined && range?.startTimestamp !== null && point.timestamp !== null) {
-      if (point.timestamp < range.startTimestamp) {
-        return false;
-      }
-    }
-    if (range?.endTimestamp !== undefined && range?.endTimestamp !== null && point.timestamp !== null) {
-      if (point.timestamp > range.endTimestamp) {
-        return false;
-      }
-    }
-    return true;
-  });
-
-  if (filteredPoints.length === 0) {
-    return {
-      cumulativeReturn: null,
-      annualizedReturn: null,
-      volatility: null,
-      maxDrawdown: null,
-      returnToFee: null,
-      totalFee: null,
-      sharpeRatio: null,
-      calmarRatio: null,
-    };
-  }
-
-  let baseValue: number | null = null;
-  for (const point of filteredPoints) {
-    if (Number.isFinite(point.close) && point.close > 0) {
-      baseValue = point.close;
-      break;
-    }
-  }
-  if (baseValue === null) {
-    const fallback = filteredPoints[0]?.close;
-    baseValue = fallback !== undefined && fallback > 0 ? fallback : null;
-  }
-
-  if (baseValue === null) {
-    return {
-      cumulativeReturn: null,
-      annualizedReturn: null,
-      volatility: null,
-      maxDrawdown: null,
-      returnToFee: null,
-      totalFee: null,
-      sharpeRatio: null,
-      calmarRatio: null,
-    };
-  }
-
-  const normalized = filteredPoints.map((point) => point.close / baseValue!);
-  const lastClose = filteredPoints[filteredPoints.length - 1]?.close ?? null;
-  const cumulativeReturn =
-    lastClose !== null && Number.isFinite(lastClose)
-      ? (lastClose / baseValue - 1) * 100
-      : null;
-
-  let annualizedReturn: number | null = null;
-  const firstTimestamp = filteredPoints[0]?.timestamp;
-  const lastTimestamp = filteredPoints[filteredPoints.length - 1]?.timestamp;
-  if (
-    cumulativeReturn !== null &&
-    firstTimestamp !== null &&
-    lastTimestamp !== null &&
-    lastTimestamp > firstTimestamp
-  ) {
-    const diffDays = (lastTimestamp - firstTimestamp) / MS_IN_DAY;
-    if (diffDays > 0) {
-      const years = diffDays / 365;
-      if (years > 0) {
-        const totalGrowth = 1 + cumulativeReturn / 100;
-        annualizedReturn = (Math.pow(totalGrowth, 1 / years) - 1) * 100;
-      }
-    }
-  }
-
-  const dailyReturns: number[] = [];
-  for (let i = 1; i < filteredPoints.length; i += 1) {
-    const prev = filteredPoints[i - 1];
-    const current = filteredPoints[i];
-    if (prev.close > 0 && current.close > 0) {
-      dailyReturns.push(current.close / prev.close - 1);
-    }
-  }
-
-  let volatility: number | null = null;
-  if (dailyReturns.length > 1) {
-    const mean = dailyReturns.reduce((acc, value) => acc + value, 0) / dailyReturns.length;
-    const variance =
-      dailyReturns.reduce((acc, value) => acc + (value - mean) ** 2, 0) / (dailyReturns.length - 1);
-    const dailyVol = Math.sqrt(Math.max(variance, 0));
-    volatility = dailyVol * Math.sqrt(TRADING_DAYS_PER_YEAR) * 100;
-  }
-
-  let maxDrawdown: number | null = null;
-  if (normalized.length > 1) {
-    let peak = -Infinity;
-    let minDrawdown = 0;
-    normalized.forEach((value) => {
-      if (!Number.isFinite(value)) {
-        return;
-      }
-      peak = Math.max(peak, value);
-      if (peak <= 0) {
-        return;
-      }
-      const drawdown = value / peak - 1;
-      if (drawdown < minDrawdown) {
-        minDrawdown = drawdown;
-      }
-    });
-    maxDrawdown = minDrawdown * 100;
-  }
-
-  const managementFee = Number.isFinite(product.metrics?.m_fee ?? NaN)
-    ? (product.metrics?.m_fee as number)
-    : null;
-  const custodyFee = Number.isFinite(product.metrics?.c_fee ?? NaN)
-    ? (product.metrics?.c_fee as number)
-    : null;
-  const totalFee =
-    managementFee === null && custodyFee === null
-      ? null
-      : (managementFee ?? 0) + (custodyFee ?? 0);
-
-  let returnToFee: number | null = null;
-  if (totalFee !== null && totalFee !== 0 && cumulativeReturn !== null) {
-    returnToFee = cumulativeReturn / totalFee;
-  }
-
-  let sharpeRatio: number | null = null;
-  if (annualizedReturn !== null && volatility !== null && volatility !== 0) {
-    const annualizedReturnDecimal = annualizedReturn / 100;
-    const volatilityDecimal = volatility / 100;
-    if (volatilityDecimal !== 0) {
-      sharpeRatio = annualizedReturnDecimal / volatilityDecimal;
-    }
-  }
-
-  let calmarRatio: number | null = null;
-  if (annualizedReturn !== null && maxDrawdown !== null && maxDrawdown !== 0) {
-    const annualizedReturnDecimal = annualizedReturn / 100;
-    const drawdownMagnitude = Math.abs(maxDrawdown) / 100;
-    if (drawdownMagnitude > 0) {
-      calmarRatio = annualizedReturnDecimal / drawdownMagnitude;
-    }
-  }
-
-  return {
-    cumulativeReturn,
-    annualizedReturn,
-    volatility,
-    maxDrawdown,
-    returnToFee,
-    totalFee,
-    sharpeRatio,
-    calmarRatio,
-  };
-};
 
 const formatRatio = (value?: number | null, suffix = '') => {
   if (value === null || value === undefined || Number.isNaN(value)) {
@@ -1056,6 +844,9 @@ export default function ProductCompare() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedIds, setFailedIds] = useState<string[]>([]);
+  const [comparisonAnalyses, setComparisonAnalyses] = useState<Map<string, ProductCompareAnalysisResponse>>(new Map());
+  const [comparisonAnalysisLoading, setComparisonAnalysisLoading] = useState(false);
+  const [comparisonAnalysisError, setComparisonAnalysisError] = useState<string | null>(null);
   const [performanceRange, setPerformanceRange] = useState<RangeSelection>({ preset: '1Y' });
   const [riskRange, setRiskRange] = useState<RangeSelection>({ preset: '1Y' });
   const [efficiencyRange, setEfficiencyRange] = useState<RangeSelection>({ preset: '1Y' });
@@ -1211,6 +1002,11 @@ export default function ProductCompare() {
         key: 'invest_type',
         label: '投资风格',
         render: (product: ProductDetailResponse) => formatText(product.base_info?.invest_type),
+      },
+      {
+        key: 'qdii_type',
+        label: 'QDII 属性',
+        render: (product: ProductDetailResponse) => formatText(product.base_info?.qdii_type),
       },
       {
         key: 'market',
@@ -1415,27 +1211,18 @@ export default function ProductCompare() {
     [],
   );
 
-  const chartSource = useMemo(() => {
-    if (!products.length) {
-      return { allDates: [] as string[], sources: [] as { name: string; map: Map<string, number> }[] };
-    }
+  const allDates = useMemo(() => {
+    if (!products.length) return [] as string[];
     const dateSet = new Set<string>();
-    const sources = products.map((product) => {
-      const name = product.name ?? product.product_id ?? '未知产品';
-      const map = new Map<string, number>();
+    products.forEach((product) => {
       product.timeseries?.forEach((point) => {
         if (point.date && Number.isFinite(point.close)) {
           dateSet.add(point.date);
-          map.set(point.date, point.close);
         }
       });
-      return { name, map };
     });
-    const allDates = Array.from(dateSet).sort();
-    return { allDates, sources };
+    return Array.from(dateSet).sort();
   }, [products]);
-
-  const { allDates, sources } = chartSource;
 
   const dateTimestamps = useMemo(
     () =>
@@ -1529,45 +1316,30 @@ export default function ProductCompare() {
 
   const performanceMetricsByProduct = useMemo(() => {
     const map = new Map<string, DerivedMetrics>();
-    productPresentations.forEach(({ key, product }) => {
-      map.set(
-        key,
-        computeDerivedMetrics(product, {
-          startTimestamp: performanceRangeMeta.startTimestamp,
-          endTimestamp: performanceRangeMeta.endTimestamp,
-        }),
-      );
+    productPresentations.forEach(({ key }) => {
+      const result = comparisonAnalyses.get(key);
+      if (result) map.set(key, result.ranges.performance.metrics);
     });
     return map;
-  }, [performanceRangeMeta.endTimestamp, performanceRangeMeta.startTimestamp, productPresentations]);
+  }, [comparisonAnalyses, productPresentations]);
 
   const riskMetricsByProduct = useMemo(() => {
     const map = new Map<string, DerivedMetrics>();
-    productPresentations.forEach(({ key, product }) => {
-      map.set(
-        key,
-        computeDerivedMetrics(product, {
-          startTimestamp: riskRangeMeta.startTimestamp,
-          endTimestamp: riskRangeMeta.endTimestamp,
-        }),
-      );
+    productPresentations.forEach(({ key }) => {
+      const result = comparisonAnalyses.get(key);
+      if (result) map.set(key, result.ranges.risk.metrics);
     });
     return map;
-  }, [productPresentations, riskRangeMeta.endTimestamp, riskRangeMeta.startTimestamp]);
+  }, [comparisonAnalyses, productPresentations]);
 
   const efficiencyMetricsByProduct = useMemo(() => {
     const map = new Map<string, DerivedMetrics>();
-    productPresentations.forEach(({ key, product }) => {
-      map.set(
-        key,
-        computeDerivedMetrics(product, {
-          startTimestamp: efficiencyRangeMeta.startTimestamp,
-          endTimestamp: efficiencyRangeMeta.endTimestamp,
-        }),
-      );
+    productPresentations.forEach(({ key }) => {
+      const result = comparisonAnalyses.get(key);
+      if (result) map.set(key, result.ranges.efficiency.metrics);
     });
     return map;
-  }, [efficiencyRangeMeta.endTimestamp, efficiencyRangeMeta.startTimestamp, productPresentations]);
+  }, [comparisonAnalyses, productPresentations]);
 
   const efficiencyQuadrantChartOption = useMemo(() => {
     const config =
@@ -1635,9 +1407,6 @@ export default function ProductCompare() {
     const yValues = points.map((point) => point.y);
     const xBounds = computeBounds(xValues, config.x.enforceNonNegative);
     const yBounds = computeBounds(yValues, config.y.enforceNonNegative);
-
-    const xBaseline = points.reduce((acc, point) => acc + point.x, 0) / points.length;
-    const yBaseline = points.reduce((acc, point) => acc + point.y, 0) / points.length;
 
     const scatterData = points.map((point) => ({
       value: [point.x, point.y],
@@ -1726,18 +1495,6 @@ export default function ProductCompare() {
           data: scatterData,
         },
       ],
-      markLine: {
-        silent: true,
-        symbol: ['none', 'none'],
-        lineStyle: {
-          type: 'dashed',
-          color: '#94a3b8',
-        },
-        data: [
-          { xAxis: xBaseline },
-          { yAxis: yBaseline },
-        ],
-      },
     };
   }, [efficiencyMetricsByProduct, efficiencyQuadrantKey, productPresentations]);
 
@@ -1770,6 +1527,86 @@ export default function ProductCompare() {
   }, [rollingWindowDays]);
 
   useEffect(() => {
+    const rangesReady = [performanceRangeMeta, riskRangeMeta, efficiencyRangeMeta].every(
+      (item) => item.startDate !== null && item.endDate !== null,
+    );
+    if (!productPresentations.length || !rangesReady) {
+      setComparisonAnalyses(new Map());
+      setComparisonAnalysisError(null);
+      setComparisonAnalysisLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setComparisonAnalysisLoading(true);
+    setComparisonAnalysisError(null);
+    setComparisonAnalyses(new Map());
+    Promise.allSettled(
+      productPresentations.map(async ({ key, code, kind, product }) => {
+        const productId = code === '--' ? product.product_id : code;
+        if (!productId) throw new Error('产品缺少可用于计算的代码');
+        const response = await analyzeProductComparison(
+          productId,
+          kind,
+          {
+            ranges: {
+              performance: {
+                start_date: performanceRangeMeta.startDate,
+                end_date: performanceRangeMeta.endDate,
+              },
+              risk: {
+                start_date: riskRangeMeta.startDate,
+                end_date: riskRangeMeta.endDate,
+              },
+              efficiency: {
+                start_date: efficiencyRangeMeta.startDate,
+                end_date: efficiencyRangeMeta.endDate,
+              },
+            },
+            rolling_window_days: effectiveRollingWindowDays,
+            management_fee: product.metrics?.m_fee ?? null,
+            custody_fee: product.metrics?.c_fee ?? null,
+          },
+          controller.signal,
+        );
+        return { key, response };
+      }),
+    )
+      .then((results) => {
+        if (controller.signal.aborted) return;
+        const next = new Map<string, ProductCompareAnalysisResponse>();
+        const failures: string[] = [];
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled') {
+            next.set(result.value.key, result.value.response);
+          } else {
+            const reason = result.reason as Error | undefined;
+            if (reason?.name !== 'AbortError') {
+              const label = productPresentations[index]?.displayName ?? `产品 ${index + 1}`;
+              failures.push(`${label}：${reason?.message ?? '计算失败'}`);
+            }
+          }
+        });
+        setComparisonAnalyses(next);
+        setComparisonAnalysisError(
+          failures.length ? `部分产品指标不可用。${failures.join('；')}` : null,
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setComparisonAnalysisLoading(false);
+      });
+    return () => controller.abort();
+  }, [
+    effectiveRollingWindowDays,
+    efficiencyRangeMeta.endDate,
+    efficiencyRangeMeta.startDate,
+    performanceRangeMeta.endDate,
+    performanceRangeMeta.startDate,
+    productPresentations,
+    riskRangeMeta.endDate,
+    riskRangeMeta.startDate,
+  ]);
+
+  useEffect(() => {
     setPerformanceZoomRange(null);
   }, [performanceRangeMeta.startDate, performanceRangeMeta.endDate]);
 
@@ -1778,7 +1615,7 @@ export default function ProductCompare() {
   }, [riskRangeMeta.startDate, riskRangeMeta.endDate]);
 
   const comparisonChartOption = useMemo(() => {
-    if (!sources.length || !performanceDates.length) {
+    if (!comparisonAnalyses.size || !performanceDates.length) {
       return undefined;
     }
 
@@ -1786,34 +1623,23 @@ export default function ProductCompare() {
     const clamp = (value: number) => Math.min(Math.max(value, 0), lastIndex);
     const startIndex = performanceZoomRange ? clamp(performanceZoomRange.start) : 0;
     const endIndex = performanceZoomRange ? clamp(performanceZoomRange.end) : lastIndex;
-    const visibleDates = performanceDates.slice(startIndex, endIndex + 1);
     const denominator = lastIndex > 0 ? lastIndex : 1;
     const startPercent = lastIndex > 0 ? (startIndex / denominator) * 100 : 0;
     const endPercent = lastIndex > 0 ? (endIndex / denominator) * 100 : 100;
 
-    const series = sources.map(({ name, map }) => {
-      let baseValue = 1;
-      for (const date of visibleDates) {
-        const candidate = map.get(date);
-        if (candidate !== undefined && candidate !== null && Number.isFinite(candidate)) {
-          baseValue = candidate === 0 ? 1 : candidate;
-          break;
-        }
-      }
-      const data = performanceDates.map((date) => {
-        const value = map.get(date);
-        if (value === undefined || value === null || !Number.isFinite(value)) {
-          return null;
-        }
-        return Number((value / baseValue).toFixed(4));
-      });
-      return {
-        name,
+    const series = productPresentations.flatMap(({ key, displayName }) => {
+      const response = comparisonAnalyses.get(key);
+      if (!response) return [];
+      const valuesByDate = new Map(
+        response.ranges.performance.normalized_nav.map((point) => [point.date, point.value]),
+      );
+      return [{
+        name: displayName,
         type: 'line' as const,
         smooth: true,
         showSymbol: false,
-        data,
-      };
+        data: performanceDates.map((date) => valuesByDate.get(date) ?? null),
+      }];
     });
 
     const yValues: number[] = [];
@@ -1897,10 +1723,10 @@ export default function ProductCompare() {
       ],
       series,
     };
-  }, [performanceDates, performanceZoomRange, sources]);
+  }, [comparisonAnalyses, performanceDates, performanceZoomRange, productPresentations]);
 
   const drawdownChartOption = useMemo(() => {
-    if (!sources.length || !riskDates.length) {
+    if (!comparisonAnalyses.size || !riskDates.length) {
       return undefined;
     }
 
@@ -1908,80 +1734,26 @@ export default function ProductCompare() {
     const clamp = (value: number) => Math.min(Math.max(value, 0), lastIndex);
     const startIndex = riskZoomRange ? clamp(riskZoomRange.start) : 0;
     const endIndex = riskZoomRange ? clamp(riskZoomRange.end) : lastIndex;
-    const visibleDates = riskDates.slice(startIndex, endIndex + 1);
     const denominator = lastIndex > 0 ? lastIndex : 1;
     const startPercent = lastIndex > 0 ? (startIndex / denominator) * 100 : 0;
     const endPercent = lastIndex > 0 ? (endIndex / denominator) * 100 : 100;
 
-    let hasSeries = false;
-    const series = sources.map(({ name, map }) => {
-      const findBaseValue = (dates: string[]) => {
-        for (const date of dates) {
-          const candidate = map.get(date);
-          if (
-            candidate !== undefined &&
-            candidate !== null &&
-            Number.isFinite(candidate) &&
-            candidate > 0
-          ) {
-            return candidate;
-          }
-        }
-        return null;
-      };
-
-      const baseValue = findBaseValue(visibleDates) ?? findBaseValue(riskDates);
-      if (baseValue === null || !Number.isFinite(baseValue) || baseValue <= 0) {
-        return {
-          name,
-          type: 'line' as const,
-          smooth: true,
-          showSymbol: false,
-          data: riskDates.map(() => null as number | null),
-        };
-      }
-
-      let peak = 1;
-      const data = riskDates.map((date, index) => {
-        const value = map.get(date);
-        if (
-          value === undefined ||
-          value === null ||
-          !Number.isFinite(value) ||
-          value <= 0 ||
-          index < startIndex
-        ) {
-          return null;
-        }
-
-        const normalized = value / baseValue;
-        if (!Number.isFinite(normalized) || normalized <= 0) {
-          return null;
-        }
-
-        peak = Math.max(peak, normalized);
-        if (peak <= 0) {
-          return null;
-        }
-
-        const drawdown = (normalized / peak - 1) * 100;
-        if (!Number.isFinite(drawdown)) {
-          return null;
-        }
-
-        hasSeries = true;
-        return Number(drawdown.toFixed(2));
-      });
-      return {
-        name,
+    const series = productPresentations.flatMap(({ key, displayName }) => {
+      const response = comparisonAnalyses.get(key);
+      if (!response) return [];
+      const valuesByDate = new Map(
+        response.ranges.risk.drawdown.map((point) => [point.date, point.value]),
+      );
+      return [{
+        name: displayName,
         type: 'line' as const,
         smooth: true,
         showSymbol: false,
-        data,
-      };
+        data: riskDates.map((date) => valuesByDate.get(date) ?? null),
+      }];
     });
 
-    if (!hasSeries) {
+    if (!series.length) {
       return undefined;
     }
 
@@ -2062,14 +1834,13 @@ export default function ProductCompare() {
       ],
       series,
     };
-  }, [riskDates, riskZoomRange, sources]);
+  }, [comparisonAnalyses, productPresentations, riskDates, riskZoomRange]);
 
   const rollingVolatilityChartOption = useMemo(() => {
-    if (!sources.length || riskDates.length < 2) {
+    if (!comparisonAnalyses.size || riskDates.length < 2) {
       return undefined;
     }
 
-    const windowSize = effectiveRollingWindowDays;
     const lastIndex = riskDates.length - 1;
     const clamp = (value: number) => Math.min(Math.max(value, 0), lastIndex);
     const startIndex = riskZoomRange ? clamp(riskZoomRange.start) : 0;
@@ -2078,65 +1849,22 @@ export default function ProductCompare() {
     const startPercent = lastIndex > 0 ? (startIndex / denominator) * 100 : 0;
     const endPercent = lastIndex > 0 ? (endIndex / denominator) * 100 : 100;
 
-    let hasSeries = false;
-    const series = sources.map(({ name, map }) => {
-      const values = riskDates.map((date) => {
-        const value = map.get(date);
-        if (value === undefined || value === null || !Number.isFinite(value) || value <= 0) {
-          return null;
-        }
-        return Number(value);
-      });
-
-      const returns = values.map((value, index) => {
-        if (index === 0) {
-          return null;
-        }
-        const prev = values[index - 1];
-        if (value === null || prev === null || prev <= 0) {
-          return null;
-        }
-        return value / prev - 1;
-      });
-
-      const data = riskDates.map((_, index) => {
-        if (index === 0) {
-          return null;
-        }
-        const start = Math.max(1, index - windowSize + 1);
-        const windowReturns: number[] = [];
-        for (let i = start; i <= index; i += 1) {
-          const value = returns[i];
-          if (value !== null && Number.isFinite(value)) {
-            windowReturns.push(value);
-          }
-        }
-        if (windowReturns.length < 2) {
-          return null;
-        }
-        const mean = windowReturns.reduce((acc, value) => acc + value, 0) / windowReturns.length;
-        const variance =
-          windowReturns.reduce((acc, value) => acc + (value - mean) ** 2, 0) /
-          (windowReturns.length - 1);
-        const dailyVol = Math.sqrt(Math.max(variance, 0));
-        const annualizedVol = dailyVol * Math.sqrt(TRADING_DAYS_PER_YEAR) * 100;
-        if (!Number.isFinite(annualizedVol)) {
-          return null;
-        }
-        hasSeries = true;
-        return Number(annualizedVol.toFixed(2));
-      });
-
-      return {
-        name,
+    const series = productPresentations.flatMap(({ key, displayName }) => {
+      const response = comparisonAnalyses.get(key);
+      if (!response) return [];
+      const valuesByDate = new Map(
+        response.ranges.risk.rolling_volatility.map((point) => [point.date, point.value]),
+      );
+      return [{
+        name: displayName,
         type: 'line' as const,
         smooth: true,
         showSymbol: false,
-        data,
-      };
+        data: riskDates.map((date) => valuesByDate.get(date) ?? null),
+      }];
     });
 
-    if (!hasSeries) {
+    if (!series.length) {
       return undefined;
     }
 
@@ -2217,7 +1945,7 @@ export default function ProductCompare() {
       ],
       series,
     };
-  }, [effectiveRollingWindowDays, riskDates, riskZoomRange, sources]);
+  }, [comparisonAnalyses, productPresentations, riskDates, riskZoomRange]);
 
   const handlePerformanceDataZoom = useCallback(
     (event: any) => {
@@ -2326,6 +2054,7 @@ export default function ProductCompare() {
   const shouldShowLoading = !previewMode && hasRemoteIds && loading;
   const shouldShowError = !previewMode && hasRemoteIds && !loading && !!error;
   const showContent = products.length > 0 && !shouldShowLoading && !shouldShowError;
+  const comparisonExecution = comparisonAnalyses.values().next().value?.execution ?? null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10">
@@ -2349,13 +2078,13 @@ export default function ProductCompare() {
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            onClick={() => returnToOrigin(navigate, location, `/research?kind=${defaultProductKind}`)}
+            onClick={() => returnToOrigin(navigate, location, `/product-research/products?kind=${defaultProductKind}`)}
             className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:border-emerald-400 hover:text-emerald-600"
           >
             ← {returnNavigation?.returnLabel ?? '返回上一页'}
           </button>
           <Link
-            to="/research"
+            to="/product-research/products"
             className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600"
           >
             回到产品研究
@@ -2368,7 +2097,7 @@ export default function ProductCompare() {
           <p>未能加载任何产品详情。</p>
           <div className="mt-6 flex justify-center">
             <Link
-              to="/product-compare?preview=demo"
+              to="/product-research/compare?preview=demo"
               className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600"
             >
               查看虚拟产品预览
@@ -2402,6 +2131,28 @@ export default function ProductCompare() {
               部分产品未能成功加载：{failedIds.join('、')}。
             </div>
           )}
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm" aria-live="polite">
+            {comparisonAnalysisLoading ? (
+              <span className="text-emerald-800">正在由服务端固定签名 NJIT 内核计算比较指标…</span>
+            ) : comparisonAnalysisError ? (
+              <span className="text-amber-800">{comparisonAnalysisError}</span>
+            ) : comparisonExecution ? (
+              <details>
+                <summary className="cursor-pointer font-medium text-emerald-800">
+                  数值引擎：Numba NJIT · {comparisonExecution.kernel_coverage}
+                </summary>
+                <dl className="mt-2 grid gap-1 text-xs text-emerald-900 sm:grid-cols-2">
+                  <div><dt className="inline font-medium">后端：</dt><dd className="inline"> {comparisonExecution.execution_backend}</dd></div>
+                  <div><dt className="inline font-medium">内核版本：</dt><dd className="inline"> {comparisonExecution.kernel_version}</dd></div>
+                  <div><dt className="inline font-medium">nopython：</dt><dd className="inline"> {String(comparisonExecution.nopython)}</dd></div>
+                  <div><dt className="inline font-medium">Python fallback：</dt><dd className="inline"> {comparisonExecution.python_fallback}</dd></div>
+                  <div className="sm:col-span-2 break-all"><dt className="inline font-medium">指纹：</dt><dd className="inline"> {comparisonExecution.kernel_fingerprint}</dd></div>
+                </dl>
+              </details>
+            ) : (
+              <span className="text-slate-600">所选区间暂无可计算结果。</span>
+            )}
+          </div>
 
           <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
             <div className="border-b border-slate-100 px-6 py-4">
@@ -2452,7 +2203,7 @@ export default function ProductCompare() {
                   <MetricSelector indicators={customIndicators} selectedIds={metricPreference.indicatorIds} onChange={(indicatorIds) => setMetricPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))} maxSelected={10} label="选择比较指标" />
                   <label className="text-sm text-slate-600">截止日<input type="date" value={customIndicatorAsOf} onChange={(event) => setCustomIndicatorAsOf(event.target.value)} className="ml-2 min-h-11 rounded-lg border border-slate-200 px-3 text-sm" /></label>
                   {comparisonProductKind ? (
-                    <Link to={`/indicator-studio?kind=${comparisonProductKind}&ids=${encodeURIComponent(limitedIds.join(','))}`} className="inline-flex min-h-11 items-center rounded-lg border border-violet-200 px-3 text-sm font-medium text-violet-700 hover:bg-violet-50">指标中心</Link>
+                    <Link to={`/settings/indicators-models?kind=${comparisonProductKind}&ids=${encodeURIComponent(limitedIds.join(','))}`} className="inline-flex min-h-11 items-center rounded-lg border border-violet-200 px-3 text-sm font-medium text-violet-700 hover:bg-violet-50">指标中心</Link>
                   ) : (
                     <span title="混合产品对比请直接使用本页研究指标矩阵" className="inline-flex min-h-11 cursor-not-allowed items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-400">指标中心</span>
                   )}

@@ -6,7 +6,6 @@ import DashboardRankingTable from '../components/dashboard/DashboardRankingTable
 import DashboardResearchSearch from '../components/dashboard/DashboardResearchSearch';
 import DashboardScopeTabs from '../components/dashboard/DashboardScopeTabs';
 import { DistributionChartCard, TrendChartCard } from '../components/dashboard/DashboardChartCard';
-import DataHealthRefreshPanel from '../components/dashboard/DataHealthRefreshPanel';
 import type {
   DashboardFilterKey,
   DashboardFilters,
@@ -87,7 +86,7 @@ const researchUrl = (kind: SegmentKind, filters: DashboardFilters, extra?: { key
   if (extra && !params.getAll(extra.key).includes(extra.value)) {
     params.append(extra.key, extra.value);
   }
-  return `/research?${params.toString()}`;
+  return `/product-research/products?${params.toString()}`;
 };
 
 interface SegmentLensProps {
@@ -106,7 +105,11 @@ function SegmentLens({ kind, segment, filters, loading = false }: SegmentLensPro
     return (
       <section className="min-w-0 rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-6">
         <h2 className="text-lg font-semibold text-amber-900">{label}数据尚未就绪</h2>
-        <p className="mt-2 text-sm leading-6 text-amber-800">该品类会局部降级，不影响另一类产品的结构与排行。可在上方“数据管理”中更新对应模块。</p>
+        <p className="mt-2 text-sm leading-6 text-amber-800">
+          该品类会局部降级，不影响另一类产品的结构与排行。请前往
+          <Link to="/settings/data-sources" className="font-semibold underline underline-offset-2">设置中的“数据源与下载”</Link>
+          更新对应模块。
+        </p>
       </section>
     );
   }
@@ -164,7 +167,7 @@ function SegmentLens({ kind, segment, filters, loading = false }: SegmentLensPro
               {latestProducts.map((product) => (
                 <tr key={product.ts_code}>
                   <td className="px-3 py-3">
-                    <Link to={`/product/${encodeURIComponent(product.ts_code)}?kind=${kind}`} className="font-semibold text-indigo-700 hover:text-indigo-600">{product.name ?? product.ts_code}</Link>
+                    <Link to={`/product-research/products/${encodeURIComponent(product.ts_code)}?kind=${kind}`} className="font-semibold text-indigo-700 hover:text-indigo-600">{product.name ?? product.ts_code}</Link>
                     <div className="text-xs text-slate-400">{product.ts_code}</div>
                   </td>
                   <td className="px-3 py-3 text-slate-600">
@@ -270,7 +273,6 @@ export default function Dashboard() {
 
   const resetFilters = () => updateParams((next) => filterKeys.forEach((key) => next.delete(key)));
   const changeMetric = (metric: string) => updateParams((next) => next.set('metric', metric));
-  const analyticsStatus = analytics?.status ?? (overview.loading ? 'partial' : 'unavailable');
   const metricOptions = [
     ...commonMetrics,
     ...(kind === 'etf' ? etfMetrics : []),
@@ -301,8 +303,6 @@ export default function Dashboard() {
       </header>
 
       <main id="dashboard-content" role="tabpanel" aria-labelledby={`dashboard-tab-${kind}`} className="mx-auto max-w-7xl space-y-8 px-4 py-8 sm:px-6 lg:px-8">
-        <DataHealthRefreshPanel analyticsStatus={analyticsStatus} asOf={analytics?.as_of} dataQuality={analytics?.data_quality} onRefreshCompleted={reload} />
-
         <DashboardFilterBar filters={filters} availableFilters={analytics?.available_filters} onChange={changeFilter} onReset={resetFilters} />
 
         {overview.error && (

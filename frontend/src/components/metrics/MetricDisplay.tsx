@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import katex from 'katex'
+import { useI18n } from '../../i18n/runtime'
 import 'katex/dist/katex.min.css'
 import { indicatorPeriodOptionLabel } from '../../utils/indicatorPeriods'
 import { indicatorDiagnosticDetail } from '../../utils/indicatorDiagnostics'
@@ -41,11 +42,16 @@ export const resolveMetricPresentation = (
 ) => result?.presentation ?? fallbackPresentation(indicator)
 
 export const formatMetricValue = (
-  value: number | null | undefined,
+  value: number | string | null | undefined,
   presentation?: MetricPresentation,
 ) => {
-  if (value === null || value === undefined || !Number.isFinite(value)) return '不可计算'
   const contract = presentation ?? fallbackPresentation()
+  if (contract.display_format === 'date') {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return '不可计算'
+    const parsed = new Date(`${value}T00:00:00Z`)
+    return Number.isFinite(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value ? value : '不可计算'
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '不可计算'
   const scaled = value * (contract.value_scale ?? (contract.display_format === 'percent' ? 100 : 1))
   const formatter = new Intl.NumberFormat('zh-CN', {
     notation: contract.notation ?? 'standard',
@@ -62,12 +68,12 @@ export function MetricValue({
   presentation,
   className = '',
 }: {
-  value: number | null | undefined
+  value: number | string | null | undefined
   presentation?: MetricPresentation
   className?: string
 }) {
-  const unavailable = value === null || value === undefined || !Number.isFinite(value)
-  return <span className={`${unavailable ? 'text-slate-400' : 'tabular-nums'} ${className}`}>{formatMetricValue(value, presentation)}</span>
+  const formatted = formatMetricValue(value, presentation)
+  return <span className={`${formatted === '不可计算' ? 'text-slate-400' : 'tabular-nums'} ${className}`}>{formatted}</span>
 }
 
 const statusCopy = (
@@ -334,8 +340,7 @@ export function MetricDefinitionDrawer({
 }) {
   if (!indicator) return null
   const presentation = fallbackPresentation(indicator)
-  const displayFormula = indicator.display_latex?.trim()
-    || (indicator.expression.includes('\\') ? indicator.expression.trim() : '')
+  const displayFormula = indicator.display_latex?.trim() || ''
   let formulaMarkup: { __html: string } | null = null
   if (displayFormula) {
     try {
@@ -346,10 +351,10 @@ export function MetricDefinitionDrawer({
       formulaMarkup = null
     }
   }
-  return <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
+  return <div className="fixed inset-0 z-[100] flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
     <aside role="dialog" aria-modal="true" aria-labelledby="metric-definition-title" className="h-full w-full max-w-lg overflow-auto bg-white p-6 shadow-2xl">
       <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold text-violet-600">{presentation.category_label}</p><h2 id="metric-definition-title" className="mt-1 text-2xl font-semibold text-slate-900">{presentation.name}</h2><p className="mt-1 text-sm text-slate-500">{indicatorOptionLabel(indicator)}</p></div><button type="button" onClick={onClose} className="min-h-11 rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-100">关闭</button></div>
-      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'higher_better' ? '数值高优先' : '数值低优先'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-violet-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details></dd></div></dl>
+      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? '仅展示，不判断优劣' : presentation.direction === 'higher_better' ? '数值高优先' : '数值低优先'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-violet-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
     </aside>
   </div>
 }
@@ -371,6 +376,7 @@ export function MetricResultCard({
   periodOptions?: string[]
   onPeriodChange?: (period: string) => void
 }) {
+  const { s } = useI18n()
   const presentation = resolveMetricPresentation(result, indicator)
   return <article className="rounded-xl border border-slate-200 bg-white p-4">
     <div className="flex items-start justify-between gap-3"><div><p className="text-xs text-slate-500">{presentation.category_label} · {presentation.source === 'built_in' ? '内置' : '工作区'} v{presentation.revision}</p><h3 className="mt-1 font-semibold text-slate-900">{presentation.name}</h3></div>{onRemove && <button type="button" onClick={onRemove} aria-label={`移除指标 ${presentation.name}`} title="仅从当前页面移除，不会删除指标定义" className="inline-flex min-h-9 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-500 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500">移除</button>}</div>
@@ -403,12 +409,12 @@ export function MetricMatrix({
   return <div className="overflow-auto rounded-xl border border-slate-200">
     <table className="min-w-[760px] w-full text-sm"><thead className="bg-slate-50 text-left text-slate-500"><tr><th className="sticky left-0 bg-slate-50 px-4 py-3">指标</th>{targets.map((target) => <th key={`${target.kind}:${target.product_id}`} className="px-4 py-3 text-center">{target.name}<span className="block text-xs font-normal">{target.product_id}</span></th>)}</tr></thead><tbody>{indicators.map((indicator) => {
       const rowResults = targets.map((target) => resultMap.get(`${indicator.id}:${target.kind}:${target.product_id}`))
-      const finiteValues = rowResults.flatMap((result) => result?.value !== null && result?.value !== undefined && Number.isFinite(result.value) ? [result.value] : [])
+      const finiteValues = rowResults.flatMap((result) => typeof result?.value === 'number' && Number.isFinite(result.value) ? [result.value] : [])
       const direction = indicator.presentation?.direction ?? indicator.direction
-      const bestValue = finiteValues.length > 1 ? (direction === 'lower_better' ? Math.min(...finiteValues) : Math.max(...finiteValues)) : null
-      const worstValue = finiteValues.length > 1 ? (direction === 'lower_better' ? Math.max(...finiteValues) : Math.min(...finiteValues)) : null
+      const bestValue = direction !== 'neutral' && finiteValues.length > 1 ? (direction === 'lower_better' ? Math.min(...finiteValues) : Math.max(...finiteValues)) : null
+      const worstValue = direction !== 'neutral' && finiteValues.length > 1 ? (direction === 'lower_better' ? Math.max(...finiteValues) : Math.min(...finiteValues)) : null
       const period = periodsByIndicator[indicator.id]
-      return <tr key={indicator.id} className="border-t border-slate-100"><th className="sticky left-0 bg-white px-4 py-3 text-left"><button type="button" onClick={() => onDefinition?.(indicator)} className="font-semibold text-slate-800 hover:text-violet-700">{indicator.name}</button><span className="block text-xs font-normal text-slate-400">{indicator.source === 'built_in' ? '内置' : '工作区'} v{indicator.revision} · {direction === 'lower_better' ? '低值优先' : '高值优先'}</span>{onPeriodChange && period && <label className="mt-2 block text-xs font-medium text-slate-500">计算区间<select aria-label={`${indicator.name}计算区间`} value={period} onChange={(event) => onPeriodChange(indicator.id, event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-violet-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}</th>{targets.map((target, index) => {
+      return <tr key={indicator.id} className="border-t border-slate-100"><th className="sticky left-0 bg-white px-4 py-3 text-left"><button type="button" onClick={() => onDefinition?.(indicator)} className="font-semibold text-slate-800 hover:text-violet-700">{indicator.name}</button><span className="block text-xs font-normal text-slate-400">{indicator.source === 'built_in' ? '内置' : '工作区'} v{indicator.revision} · {direction === 'neutral' ? '仅展示' : direction === 'lower_better' ? '低值优先' : '高值优先'}</span>{onPeriodChange && period && <label className="mt-2 block text-xs font-medium text-slate-500">计算区间<select aria-label={`${indicator.name}计算区间`} value={period} onChange={(event) => onPeriodChange(indicator.id, event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-violet-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}</th>{targets.map((target, index) => {
         const result = rowResults[index]
         const presentation = resolveMetricPresentation(result, indicator)
         const isBest = bestValue !== null && result?.value === bestValue

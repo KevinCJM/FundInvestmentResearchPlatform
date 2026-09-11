@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, Mapping, Optional
 
 from cal_indicators.typed_dsl import (
     TypedDslError,
@@ -21,6 +21,10 @@ from cal_indicators.typed_operators import (
     COMPAT_TYPED_DSL_VERSION,
     LEGACY_OPERATOR_REGISTRY_VERSION,
     LEGACY_TYPED_DSL_VERSION,
+    PREVIOUS_OPERATOR_REGISTRY_VERSION,
+    PREVIOUS_TYPED_DSL_VERSION,
+    ROLLING_OPERATOR_REGISTRY_VERSION,
+    ROLLING_TYPED_DSL_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
     get_typed_operator_registry,
@@ -28,6 +32,9 @@ from cal_indicators.typed_operators import (
 from cal_indicators.typed_numba_plan import NumbaPlanCompileError, compile_numba_plan
 
 from .errors import ValidationError
+from .formula_source import canonical_formula_source, editable_formula_latex
+from .series_definitions import normalize_parameter_schema, parameter_variable_types
+from .series_parameters import PARAMETER_CAPABILITIES
 from .variable_registry import (
     CONTEXT_SCHEMA_VERSION,
     DATA_CONTRACT_VERSION,
@@ -117,6 +124,22 @@ VARIABLE_METADATA: dict[str, dict[str, Any]] = {
 
 
 OPERATOR_LABELS = {
+    "rolling_apply": ("滚动计算", "逐窗口独立执行区间标量计算图。默认要求完整有限窗口；可显式设置最少有效观察数，缺失处理由区间图声明。"),
+    "finite_mask": ("有限值判断", "判断每个观察是否为有限数值；NaN和正负无穷为假，真实0为真，不删除日期位置。"),
+    "last_drawdown_interval": ("最后一次最大回撤区间", "选择最后一个最深谷底及其起点、恢复位置；只作为后续计算的中间区间。"),
+    "interval_start": ("区间起点位置", "提取所选谷底前最后一个历史峰值的位置。"),
+    "interval_trough": ("区间谷底位置", "提取最后一次最大回撤谷底的位置。"),
+    "interval_recovery": ("区间恢复位置", "提取所选谷底后首次恢复原峰值的位置；尚未恢复时不可用。"),
+    "value_at": ("按位置取值", "从同轴序列取一个值；输入为日期时输出日期，输入为数值时保留原量纲。"),
+    "require_positive": ("要求正数", "验证数值严格大于零，不改变输入数值；不符合时明确失败。"),
+    "require_nonnegative": ("要求非负数", "验证数值大于或等于零，不改变输入数值；不符合时明确失败。"),
+    "linear_fit": ("线性拟合", "对同一组观察值执行一次带截距OLS，后续字段提取共享这次拟合。一个序列时使用观察序号作为解释变量。"),
+    "fit_slope": ("拟合斜率", "读取同一次拟合的斜率，不重复拟合。"),
+    "fit_intercept": ("拟合截距", "读取同一次拟合的截距，不重复拟合。"),
+    "fit_residual_sum_squares": ("残差平方和", "读取同一次拟合的残差平方和SSE，供构建拟合度或残差标准误。"),
+    "fit_total_sum_squares": ("总离差平方和", "读取同一次拟合的因变量总离差平方和SST。"),
+    "fit_observation_count": ("拟合样本数", "读取同一次拟合使用的观察数，不重新筛选样本。"),
+    "days_between": ("日期间隔天数", "计算结束日期与开始日期的自然日差。"),
     "add": ("逐元素加法", "对 A 与 B 执行逐元素加法；仅标量可广播。"),
     "subtract": ("逐元素减法", "对 A 与 B 执行逐元素减法；仅标量可广播。"),
     "multiply": ("逐元素乘法", "对同轴同 shape 输入逐元素相乘；仅标量可广播。"),
@@ -136,6 +159,13 @@ OPERATOR_LABELS = {
     "mean": ("全元素算术平均值", "计算时间序列、向量或矩阵全部元素的算术平均值并归约为标量。"),
     "variance": ("全元素方差", "计算时间序列、向量或矩阵全部元素的样本方差并归约为标量。"),
     "std": ("全元素标准差", "计算时间序列、向量或矩阵全部元素的样本标准差并归约为标量。"),
+    "rolling_window": ("滚动窗口", "只定义截至当前时点的最近观察窗口；后续再连接均值、标准差、方差或极值算子。"),
+    "rolling_mean": ("滚动平均值（兼容）", "历史公式兼容名称；新建公式使用“滚动窗口 → 平均值”。"),
+    "rolling_std": ("滚动标准差", "沿时间轴按固定窗口计算标准差，可固定自由度修正和最少有效观察数。"),
+    "rolling_min": ("滚动最小值", "沿时间轴按固定窗口取得最小值。"),
+    "rolling_max": ("滚动最大值", "沿时间轴按固定窗口取得最大值。"),
+    "recursive_smooth": ("递归平滑", "按固定平滑期数和初始值进行因果递归平滑。"),
+    "divide_or_default": ("安全除法", "逐元素计算分子除以分母；分母为零或接近零时返回指定默认值。"),
     "min_value": ("全元素最小值", "归约得到时间序列、向量或矩阵全部元素中的最小值。"),
     "max_value": ("全元素最大值", "归约得到时间序列、向量或矩阵全部元素中的最大值。"),
     "cumulative_sum": ("一维累计和", "沿时间序列或向量的唯一名义轴生成累计和。"),
@@ -222,6 +252,8 @@ OPERATOR_LABELS = {
 
 
 PARAMETER_NAMES: dict[str, tuple[str, ...]] = {
+    "rolling_apply": ("calculation", "window", "dates", "annual_rate", "min_periods"),
+    "finite_mask": ("values",),
     "add": ("A", "B"),
     "subtract": ("A", "B"),
     "multiply": ("A", "B"),
@@ -240,6 +272,13 @@ PARAMETER_NAMES: dict[str, tuple[str, ...]] = {
     "correlation": ("values",),
     "std": ("values", "ddof"),
     "variance": ("values", "ddof"),
+    "rolling_window": ("values", "window", "min_periods"),
+    "rolling_mean": ("values", "window", "min_periods"),
+    "rolling_std": ("values", "window", "ddof", "min_periods"),
+    "rolling_min": ("values", "window", "min_periods"),
+    "rolling_max": ("values", "window", "min_periods"),
+    "recursive_smooth": ("values", "periods", "initial"),
+    "divide_or_default": ("numerator", "denominator", "default"),
     "where": ("mask", "if_true", "if_false"),
     "lag": ("values", "periods"),
     "difference": ("values", "periods"),
@@ -258,7 +297,30 @@ PARAMETER_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 
+_FIXED_CONSTANT_OPERATOR_PARAMETERS: dict[str, frozenset[str]] = {
+    "rolling_window": frozenset({"window", "min_periods"}),
+    "rolling_mean": frozenset({"window", "min_periods"}),
+    "rolling_std": frozenset({"window", "ddof", "min_periods"}),
+    "rolling_min": frozenset({"window", "min_periods"}),
+    "rolling_max": frozenset({"window", "min_periods"}),
+    "recursive_smooth": frozenset({"periods", "initial"}),
+    "divide_or_default": frozenset({"default"}),
+    "lag": frozenset({"periods"}),
+    "difference": frozenset({"periods"}),
+    "variance": frozenset({"ddof"}),
+    "std": frozenset({"ddof"}),
+    "quantile": frozenset({"probability"}),
+    "quantile_where": frozenset({"probability"}),
+    "clip": frozenset({"lower", "upper"}),
+    "power": frozenset({"exponent"}),
+}
+
 PARAMETER_LABELS = {
+    "calculation": "区间计算内容",
+    "dates": "观察日期（自动绑定）",
+    "annual_rate": "年度配置（自动绑定）",
+    "default": "分母无效时的默认值",
+    "initial": "递推初始值",
     "values": "输入值",
     "levels": "净值或价格序列",
     "lhs": "输入 A",
@@ -283,7 +345,161 @@ PARAMETER_LABELS = {
     "if_true": "条件成立值",
     "if_false": "条件不成立值",
     "periods": "间隔期数",
+    "window": "窗口期数",
+    "min_periods": "最少有效观察数",
+    "initial": "递归初始值",
+    "default": "分母为零时的默认值",
     "probability": "概率",
+}
+
+
+_FIXED_CONSTANT_PARAMETER_POLICIES: dict[tuple[str, str], dict[str, Any]] = {
+    ("rolling_apply", "window"): {"source_policy": "fixed_constant", "constant_kind": "integer", "default": 20, "minimum": 1, "maximum": 5000},
+    ("rolling_apply", "min_periods"): {"source_policy": "fixed_constant", "constant_kind": "integer", "default": 1, "minimum": 1, "maximum": 5000},
+    ("rolling_window", "window"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_window", "min_periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_mean", "window"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_mean", "min_periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_std", "window"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_std", "ddof"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 19_999,
+    },
+    ("rolling_std", "min_periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_min", "window"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_min", "min_periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_max", "window"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("rolling_max", "min_periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 20,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("recursive_smooth", "periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("recursive_smooth", "initial"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "number",
+        "default": 50,
+    },
+    ("lag", "periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("difference", "periods"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 20_000,
+    },
+    ("variance", "ddof"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 1,
+        "minimum": 0,
+    },
+    ("std", "ddof"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "integer",
+        "default": 1,
+        "minimum": 0,
+    },
+    ("quantile", "probability"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "number",
+        "default": 0.5,
+        "minimum": 0.0,
+        "maximum": 1.0,
+    },
+    ("quantile_where", "probability"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "number",
+        "default": 0.5,
+        "minimum": 0.0,
+        "maximum": 1.0,
+    },
+    ("clip", "lower"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "number",
+        "default": 0.0,
+    },
+    ("clip", "upper"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "number",
+        "default": 1.0,
+    },
+    ("divide_or_default", "default"): {
+        "source_policy": "fixed_constant",
+        "constant_kind": "number",
+        "default": 0.0,
+    },
 }
 
 
@@ -518,6 +734,7 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
         "linear_algebra": "线性代数",
         "matrix": "矩阵统计",
         "portfolio": "线性代数",
+        "rolling": "滚动与时序",
     }.get(category_id, "其他数学算子")
     label, essence = OPERATOR_LABELS.get(operator_id, (operator_id, str(entry.get("description") or "受控数学算子。")))
     signatures = list(entry.get("signatures") or [])
@@ -529,39 +746,65 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
         result: list[dict[str, Any]] = []
         for index, contract in enumerate(inputs):
             name = names[index] if index < len(names) else f"arg{index + 1}"
-            default = (
+            policy = copy.deepcopy(
+                _FIXED_CONSTANT_PARAMETER_POLICIES.get((operator_id, name), {})
+            )
+            default = policy.get(
+                "default",
                 1
                 if operator_id in {"std", "variance", "lag", "difference"}
                 and name in {"ddof", "periods"}
-                else None
+                else None,
             )
             lowered = contract.lower()
             if "mask" in lowered:
                 allowed_shapes = ["mask"]
             elif "numeric" in lowered:
                 allowed_shapes = ["scalar", "series", "vector", "matrix"]
+            elif "window<" in lowered:
+                allowed_shapes = ["window"]
             elif "same(first)" in lowered and result:
                 allowed_shapes = list(result[0]["allowed_shapes"])
             else:
                 allowed_shapes = [
                     shape
-                    for shape in ("scalar", "series", "vector", "matrix")
+                    for shape in ("scalar", "series", "vector", "matrix", "window", "record")
                     if shape in lowered
                 ]
                 if not allowed_shapes and "same(" in lowered:
                     allowed_shapes = ["scalar", "series", "vector", "matrix"]
-            result.append(
-                {
-                    "name": name,
-                    "label": PARAMETER_LABELS.get(name, name),
-                    "description": f"允许类型：{contract or '由算子签名约束'}。",
-                    "allowed_types": [contract],
-                    "allowed_shapes": allowed_shapes or ["scalar", "series", "vector", "matrix"],
-                    "optional": default is not None,
-                    "default": default,
-                    "requires_mask": "mask" in lowered,
-                }
-            )
+            parameter_meta = {
+                "name": name,
+                "label": {"start_date": "开始日期", "end_date": "结束日期", "drawdowns": "回撤序列"}.get(name, PARAMETER_LABELS.get(name, name)),
+                "description": (
+                    "定义级固定常量；保存后成为指标版本的一部分。"
+                    if policy.get("source_policy") == "fixed_constant"
+                    else f"允许类型：{contract or '由算子签名约束'}。"
+                ),
+                "allowed_types": [contract],
+                "allowed_shapes": allowed_shapes
+                or ["scalar", "series", "vector", "matrix"],
+                "optional": default is not None,
+                "default": default,
+                "requires_mask": "mask" in lowered,
+            }
+            parameter_meta.update(policy)
+            parameter_meta["parameterizable"] = (operator_id, name) in PARAMETER_CAPABILITIES
+            if parameter_meta["parameterizable"]:
+                parameter_meta["description"] = "数值常量；可在时序指标的计算参数面板中开放为可调参数。"
+            parameter_meta["default"] = default
+            if name == "fit":
+                parameter_meta["label"] = "线性拟合结果"
+                parameter_meta["intermediate_kind"] = "linear_fit"
+            elif name == "interval":
+                parameter_meta["label"] = "最大回撤区间"
+                parameter_meta["intermediate_kind"] = "drawdown_interval"
+            elif name == "position":
+                parameter_meta["label"] = "观察位置（从0开始）"
+                parameter_meta["allowed_semantic_roles"] = ["count", "numeric_constant", "dimensionless"]
+            if operator_id == "value_at" and name == "values":
+                parameter_meta["label"] = "数值或日期序列"
+            result.append(parameter_meta)
         return result
 
     parameter_sets = [
@@ -585,7 +828,7 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
     output = " | ".join(sorted({str(item.get("output")) for item in signatures}))
     output_shapes = [
         shape
-        for shape in ("mask", "scalar", "series", "vector", "matrix")
+        for shape in ("mask", "scalar", "series", "vector", "matrix", "window", "record")
         if shape in output
     ]
     output_shape = (
@@ -635,7 +878,10 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": operator_id,
         "id": operator_id,
+        **({"intermediate_kind": "linear_fit"} if operator_id == "linear_fit" else {"intermediate_kind": "drawdown_interval"} if operator_id == "last_drawdown_interval" else {}),
         "family": category_id,
+        "interval_policy": entry.get("interval_policy"),
+        "execution_scope": "interval_body" if operator_id == "rolling_apply" else None,
         "version": entry.get("version"),
         "label": label,
         "signature": " / ".join(
@@ -723,9 +969,45 @@ def _allowed_variables(context: ContextKind) -> set[str]:
     return allowed_variables(context)
 
 
-def _argument_expressions(arguments: list[dict[str, Any]], context: ContextKind) -> tuple[dict[str, str], dict[str, Optional[str]]]:
+def _parameter_latex_symbol(parameter_id: str) -> str:
+    escaped = parameter_id.replace("_", r"\_")
+    return rf"\mathrm{{{escaped}}}"
+
+
+def parameter_composition_context(
+    raw_schema: Any,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any],
+    dict[str, str],
+    dict[str, str],
+]:
+    schema = normalize_parameter_schema(raw_schema or [])
+    parameter_types = parameter_variable_types({"parameter_schema": schema})
+    latex_symbols = {
+        str(item["id"]): _parameter_latex_symbol(str(item["id"]))
+        for item in schema
+    }
+    semantic_roles = {
+        str(item["id"]): (
+            "count" if item.get("type") == "integer" else "numeric_parameter"
+        )
+        for item in schema
+    }
+    return schema, parameter_types, latex_symbols, semantic_roles
+
+
+def _argument_expressions(
+    arguments: list[dict[str, Any]],
+    context: ContextKind,
+    *,
+    additional_variable_types: Mapping[str, Any] | None = None,
+    additional_semantics: Mapping[str, str] | None = None,
+) -> tuple[dict[str, str], dict[str, Optional[str]]]:
     expressions: dict[str, str] = {}
     semantics: dict[str, Optional[str]] = {}
+    extra_types = dict(additional_variable_types or {})
+    extra_semantics = dict(additional_semantics or {})
     for argument in arguments:
         parameter = str(argument.get("parameter") or "")
         if not parameter or parameter in expressions:
@@ -734,6 +1016,10 @@ def _argument_expressions(arguments: list[dict[str, Any]], context: ContextKind)
         value = argument.get("value")
         if source == "variable":
             requested_variable = str(value)
+            if requested_variable in extra_types:
+                expressions[parameter] = requested_variable
+                semantics[parameter] = extra_semantics.get(requested_variable)
+                continue
             variable = canonical_variable_id(requested_variable)
             if variable not in _allowed_variables(context):
                 raise ValidationError(
@@ -763,6 +1049,77 @@ def _argument_expressions(arguments: list[dict[str, Any]], context: ContextKind)
         else:
             raise ValidationError("INVALID_ARGUMENT_SOURCE", "参数来源必须为 variable、constant 或 expression。", f"arguments.{parameter}")
     return expressions, semantics
+
+
+def _validate_fixed_constant_arguments(
+    operator_id: str,
+    arguments: list[dict[str, Any]],
+    operator_registry_version: str,
+) -> None:
+    registry = get_typed_operator_registry(operator_registry_version)
+    try:
+        spec = registry[operator_id]
+    except KeyError as exc:
+        raise TypedDslError("UNKNOWN_OPERATOR", f"未知函数或算子: {operator_id}") from exc
+    arity = len(arguments)
+    if arity not in spec.arities:
+        return
+    canonical_names = spec.argument_names(arity)
+    legacy_names = _operator_parameter_names(operator_id, arity)
+    by_name = {str(item.get("parameter") or ""): item for item in arguments}
+    for index, canonical_name in enumerate(canonical_names):
+        legacy_name = legacy_names[index] if index < len(legacy_names) else canonical_name
+        candidates = tuple(
+            dict.fromkeys((canonical_name, legacy_name, f"input_{index + 1}"))
+        )
+        argument = next((by_name[name] for name in candidates if name in by_name), None)
+        if argument is None:
+            continue
+        policy = _FIXED_CONSTANT_PARAMETER_POLICIES.get(
+            (spec.operator_id, canonical_name)
+        )
+        if not policy:
+            continue
+        if str(argument.get("source") or "") != "constant":
+            raise ValidationError(
+                "SERIES_CONFIGURATION_MUST_BE_CONSTANT",
+                f"{spec.operator_id} 的 {PARAMETER_LABELS.get(canonical_name, canonical_name)}必须是定义级固定常量。",
+                f"arguments.{canonical_name}",
+            )
+        try:
+            value = float(argument.get("value"))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "INVALID_CONSTANT",
+                "固定配置必须是有限数值。",
+                f"arguments.{canonical_name}",
+            ) from exc
+        if not math.isfinite(value):
+            raise ValidationError(
+                "INVALID_CONSTANT",
+                "固定配置必须是有限数值。",
+                f"arguments.{canonical_name}",
+            )
+        if policy.get("constant_kind") == "integer" and not value.is_integer():
+            raise ValidationError(
+                "SERIES_CONFIGURATION_MUST_BE_INTEGER",
+                f"{PARAMETER_LABELS.get(canonical_name, canonical_name)}必须是整数常量。",
+                f"arguments.{canonical_name}",
+            )
+        minimum = policy.get("minimum")
+        maximum = policy.get("maximum")
+        if minimum is not None and value < float(minimum):
+            raise ValidationError(
+                "SERIES_CONFIGURATION_OUT_OF_RANGE",
+                f"{PARAMETER_LABELS.get(canonical_name, canonical_name)}不能小于 {minimum:g}。",
+                f"arguments.{canonical_name}",
+            )
+        if maximum is not None and value > float(maximum):
+            raise ValidationError(
+                "SERIES_CONFIGURATION_OUT_OF_RANGE",
+                f"{PARAMETER_LABELS.get(canonical_name, canonical_name)}不能大于 {maximum:g}。",
+                f"arguments.{canonical_name}",
+            )
 
 
 def _operator_expression(
@@ -805,7 +1162,9 @@ def _operator_expression(
             f"未知或重复参数: {', '.join(unknown)}",
             "arguments",
         )
-    values = [arguments[name] for name in resolved_names]
+    # Canonical DSL children no longer carry the builder's outer LaTeX
+    # parentheses. Keep each operand grouped so (a-b)*c and a-(b-c) round-trip.
+    values = [rf"\left({arguments[name]}\right)" for name in resolved_names]
     if operator_id == "add":
         return rf"\left({values[0]}+{values[1]}\right)"
     if operator_id == "subtract":
@@ -837,8 +1196,12 @@ def _diagnostic_from_typed(error: TypedDslError, field: str = "expression") -> V
     return ValidationError(error.code, error.message, field, [diagnostic])
 
 
-def _ensure_context(plan, context: ContextKind) -> None:
-    allowed = _allowed_variables(context)
+def _ensure_context(
+    plan: Any,
+    context: ContextKind,
+    additional_variables: Mapping[str, Any] | None = None,
+) -> None:
+    allowed = _allowed_variables(context) | set(additional_variables or {})
     unavailable = sorted(set(plan.context_requirements) - allowed)
     if unavailable:
         raise ValidationError(
@@ -855,17 +1218,23 @@ def infer_expression(
     scalar_required: bool = False,
     dsl_version: str = TYPED_DSL_VERSION,
     operator_registry_version: str = TYPED_OPERATOR_REGISTRY_VERSION,
+    additional_variable_types: Mapping[str, Any] | None = None,
+    additional_latex_symbols: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     normalized_expression = normalize_variable_latex(expression)
+    extended_variable_types = {
+        **variable_types(context, dsl_version),
+        **dict(additional_variable_types or {}),
+    }
     try:
         plan = infer_typed_expression(
             normalized_expression,
-            variable_types=variable_types(context, dsl_version),
+            variable_types=extended_variable_types,
             allow_non_scalar_root=not scalar_required,
             dsl_version=dsl_version,
             operator_registry_version=operator_registry_version,
         )
-        _ensure_context(plan, context)
+        _ensure_context(plan, context, additional_variable_types)
         compiled = compile_numba_plan(plan)
     except NumbaPlanCompileError as exc:
         raise ValidationError(
@@ -885,7 +1254,10 @@ def infer_expression(
     except TypedDslError as exc:
         raise _diagnostic_from_typed(exc) from exc
     output = plan.output_type.to_dict()
-    latex_symbols = variable_latex_symbols(context)
+    latex_symbols = {
+        **variable_latex_symbols(context),
+        **dict(additional_latex_symbols or {}),
+    }
     display_latex = render_python_expression_latex(
         plan.python_expression,
         latex_symbols,
@@ -910,15 +1282,18 @@ def infer_expression(
                 "message": "对数收益率不应直接用于增长因子累乘；请确认是否应改用普通收益率。",
             }
         )
+    executable_source = canonical_formula_source(plan.python_expression)
     return {
-        "expression": expression,
-        # ``latex`` remains the executable, round-trippable surface for older
-        # clients. New UIs render ``display_latex`` instead.
+        **({"intermediate_kind": "linear_fit" if tuple(name for name, _ in plan.output_type.fields)[0] == "slope" else "drawdown_interval"} if plan.output_type.kind == "record" else {}),
+        "expression": executable_source,
+        "editable_latex": editable_formula_latex(executable_source),
+        # Compatibility input; new editors use editable_latex and previews
+        # use display_latex. Nested composition uses canonical DSL internally.
         "latex": expression,
         "display_latex": display_latex,
         "math_notation_version": MATH_NOTATION_VERSION,
         "normalized_expression": normalized_expression,
-        "python_expression": plan.python_expression,
+        "python_expression": executable_source,
         "inferred_type": output["display"],
         "shape": output["kind"],
         "semantic_warnings": warnings,
@@ -935,7 +1310,18 @@ def compose_expression(request: dict[str, Any]) -> dict[str, Any]:
     context = str(request.get("context") or "single_product")
     if context not in {"single_product", "portfolio"}:
         raise ValidationError("INVALID_CONTEXT_KIND", "上下文域必须为 single_product 或 portfolio。", "context")
-    expressions, semantics = _argument_expressions(list(request.get("arguments") or []), context)  # type: ignore[arg-type]
+    (
+        parameter_schema,
+        parameter_types,
+        parameter_latex_symbols,
+        parameter_semantics,
+    ) = parameter_composition_context(request.get("parameter_schema") or [])
+    expressions, semantics = _argument_expressions(
+        list(request.get("arguments") or []),
+        context,  # type: ignore[arg-type]
+        additional_variable_types=parameter_types,
+        additional_semantics=parameter_semantics,
+    )
     operator_id = request.get("operator_id")
     template_id = request.get("template_id")
     dsl_version = str(request.get("dsl_version") or TYPED_DSL_VERSION)
@@ -947,7 +1333,15 @@ def compose_expression(request: dict[str, Any]) -> dict[str, Any]:
             else (
                 COMPAT_OPERATOR_REGISTRY_VERSION
                 if dsl_version == COMPAT_TYPED_DSL_VERSION
-                else TYPED_OPERATOR_REGISTRY_VERSION
+                else (
+                    PREVIOUS_OPERATOR_REGISTRY_VERSION
+                    if dsl_version == PREVIOUS_TYPED_DSL_VERSION
+                    else (
+                        ROLLING_OPERATOR_REGISTRY_VERSION
+                        if dsl_version == ROLLING_TYPED_DSL_VERSION
+                        else TYPED_OPERATOR_REGISTRY_VERSION
+                    )
+                )
             )
         )
     )
@@ -955,6 +1349,11 @@ def compose_expression(request: dict[str, Any]) -> dict[str, Any]:
         raise ValidationError("INVALID_COMPOSE_TARGET", "必须且只能指定 operator_id 或 template_id。")
     if operator_id:
         try:
+            _validate_fixed_constant_arguments(
+                str(operator_id),
+                list(request.get("arguments") or []),
+                operator_registry_version,
+            )
             expression = _operator_expression(
                 str(operator_id),
                 expressions,
@@ -968,7 +1367,10 @@ def compose_expression(request: dict[str, Any]) -> dict[str, Any]:
             scalar_required=False,
             dsl_version=dsl_version,
             operator_registry_version=operator_registry_version,
+            additional_variable_types=parameter_types,
+            additional_latex_symbols=parameter_latex_symbols,
         )
+        result["parameter_schema"] = copy.deepcopy(parameter_schema)
         result["template_origin"] = None
         return result
 
@@ -1002,7 +1404,10 @@ def compose_expression(request: dict[str, Any]) -> dict[str, Any]:
         scalar_required=template.output_contract == "scalar",
         dsl_version=dsl_version,
         operator_registry_version=operator_registry_version,
+        additional_variable_types=parameter_types,
+        additional_latex_symbols=parameter_latex_symbols,
     )
+    result["parameter_schema"] = copy.deepcopy(parameter_schema)
     result["template_origin"] = {
         "template_id": template.template_id,
         "template_version": 1,
@@ -1016,5 +1421,6 @@ __all__ = [
     "TEMPLATES",
     "compose_expression",
     "infer_expression",
+    "parameter_composition_context",
     "typed_product_meta",
 ]

@@ -12,6 +12,384 @@
   },
   "modules": [
     {
+      "id": "tactical_allocation_workbench",
+      "name": "SAA-linked tactical decision workbench",
+      "path": "backend/tactical_allocation",
+      "kind": "full_stack_research_module",
+      "purpose": "Freezes SAA class budgets and group constraints from real local configuration, reads strict common NAV intervals, compares causal momentum/manual/published-regime tilts using one TAA numerical core, selects strengths on mature training returns only, validates on a separate holdout, compares explicit shocks or historical replay and saves immutable decisions with frozen inputs. Shared application gates and server-owned product mappings preserve budgets in portfolio research. Research-only provenance never certifies historical deployment or formal PIT. Preflight reports common coverage, training/holdout counts, immature and unknown knowledge dates, and NAV scale findings; suggested date boundaries use clocks only and fixed-hypothesis comparison is explicit. Named scenario inputs are recomputed on save and restored with immutable decisions. Momentum algorithm available-window-relative-momentum/2.0.0 uses the latest contiguous complete window whose endpoints are known by each decision cutoff; unknown and expired windows cannot emit a signal, and preflight reports effective training/holdout signal counts and blocks strength selection when training has none.",
+      "entry_files": [
+        "backend/tactical_allocation",
+        "backend/services/tactical_allocation_routes.py",
+        "frontend/src/pages/TacticalAllocationWorkspace.tsx",
+        "frontend/src/services/tacticalAllocation.ts",
+        "frontend/src/components/tactical-allocation"
+      ],
+      "key_symbols": [
+        "TacticalAllocationService",
+        "TacticalAllocationData",
+        "TacticalAllocationRepository",
+        "evaluate_candidates",
+        "build_momentum_signals",
+        "validate_decision_application",
+        "validate_allocation_source",
+        "preflight",
+        "training_readiness_kernel",
+        "momentum_windows_kernel",
+        "signal_counts_kernel"
+      ],
+      "first_read_files": [
+        "docs/research/tactical-allocation-workbench-design-2026-09-11.md",
+        "backend/tactical_allocation/contracts.py",
+        "backend/tactical_allocation/service.py",
+        "frontend/src/pages/TacticalAllocationWorkspace.tsx"
+      ],
+      "then_check_files": [
+        "docs/research/tactical-allocation-workbench-acceptance-2026-09-11.md",
+        "docs/research/taa-numeric-contract.md",
+        "backend/historical_regimes/taa.py",
+        "backend/historical_regimes/data.py",
+        "backend/custom_indicators/portfolio_service.py",
+        "frontend/src/pages/ClassAllocation.tsx",
+        "frontend/src/pages/PortfolioConstruction.tsx",
+        "backend/research_input_checks.py",
+        "frontend/src/app/allocationJourney.ts",
+        "docs/research/journey-taa-implementation-2026-09-11.md",
+        "docs/research/taa-human-journey-audit-2026-09-11.md",
+        "docs/research/tactical-allocation-product-analysis-2026-09-10.md"
+      ],
+      "child_modules": [],
+      "upstream_dependencies": [
+        "backend_regime_research",
+        "frontend_allocation_workflows",
+        "backend_data_storage",
+        "published_risk_scenario_research"
+      ],
+      "downstream_dependencies": [
+        "backend_portfolio_research",
+        "frontend_portfolio_research"
+      ],
+      "out_of_scope_dependencies": [
+        "actual trading",
+        "formal historical deployment certification",
+        "automatic asset-class product inference",
+        "global future optimum"
+      ],
+      "related_tests": [
+        "backend/tests/test_tactical_allocation_numeric.py",
+        "backend/tests/test_tactical_allocation_data.py",
+        "backend/tests/test_tactical_allocation_service.py",
+        "backend/tests/test_tactical_allocation_bridge.py",
+        "backend/tests/test_historical_regime_taa.py",
+        "frontend/src/pages/TacticalAllocationWorkspace.test.tsx",
+        "frontend/src/pages/ClassAllocation.test.tsx",
+        "frontend/src/pages/PortfolioConstruction.test.tsx",
+        "frontend/src/test/tacticalAllocationFixtures.ts",
+        "frontend/e2e/tactical-allocation.spec.ts",
+        "backend/tests/test_research_input_checks.py",
+        "frontend/src/app/allocationJourney.test.tsx"
+      ],
+      "related_configs": [
+        "backend/app.py",
+        "frontend/package.json",
+        "frontend/playwright.taa.config.ts"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_research_input_checks.py backend/tests/test_tactical_allocation_service.py -q",
+        "python3 -m pytest backend/tests/test_tactical_allocation_numeric.py backend/tests/test_tactical_allocation_data.py backend/tests/test_tactical_allocation_service.py backend/tests/test_tactical_allocation_bridge.py backend/tests/test_historical_regime_taa.py backend/tests/test_portfolio_research.py -q",
+        "npm run test --prefix frontend -- --run TacticalAllocationWorkspace.test.tsx ClassAllocation.test.tsx PortfolioConstruction.test.tsx portfolioResearch.test.ts",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- --config=playwright.taa.config.ts --workers=1"
+      ],
+      "pitfall_ids": [
+        "P07",
+        "P14",
+        "P15"
+      ],
+      "edit_risk": "high",
+      "routing_confidence": "high",
+      "risk_flags": [
+        "holdout_never_selects",
+        "mature_training_labels",
+        "unknown_is_not_pit",
+        "same_period_signal_forbidden",
+        "single_simulation_core",
+        "readonly_input_views",
+        "immutable_versions",
+        "no_class_budget_relabeling",
+        "shared_application_gate",
+        "preflight_does_not_waive_compute_or_application_gates",
+        "clock_only_split_guidance",
+        "saved_scenarios_recomputed_from_frozen_inputs"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/tactical_allocation/service.py",
+          "backend/tactical_allocation/portfolio_bridge.py",
+          "backend/tests/test_tactical_allocation_numeric.py",
+          "backend/tests/test_tactical_allocation_bridge.py",
+          "backend/research_input_checks.py",
+          "backend/tests/test_research_input_checks.py",
+          "backend/tests/test_tactical_allocation_service.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "published_risk_scenario_research",
+      "name": "Published sensitivity models and reusable scenario impacts",
+      "path": "backend/sensitivity",
+      "kind": "full_stack_research_module",
+      "purpose": "Separates product risk research from scenario transmission research while sharing typed variables and fixed-signature numerical kernels. OLS coefficients are estimated with independent chronological holdout validation, optional post-validation refit and explicit conditional-not-causal semantics. Fixed positive cashflows provide duration, convexity and single-step full repricing. Model, cashflow, transmission and scenario previews are transient and must not persist artifacts. Only explicit user confirmation of publication may write immutable runs, frozen arrays, scenario paths and release records to the guarded managed data disk, after recomputation and preview-hash verification. Product, portfolio, SAA and TAA consumers read published snapshots without training; portfolio inputs come from saved end holdings, not class-name guesses. Their stress-impact calculations are transient and are not newly persisted; old impact IDs remain read-only compatibility only. Original simulation methods remain real advanced experiments with their existing contracts.",
+      "module_tags": ["risk-model", "sensitivity", "macro-transmission", "published-scenario", "managed-storage", "njit"],
+      "entry_files": ["backend/sensitivity", "backend/scenario_stress/published.py", "backend/scenario_stress/published_contracts.py", "backend/services/risk_model_routes.py", "backend/services/published_scenario_routes.py", "frontend/src/services/riskModels.ts", "frontend/src/components/risk-models", "frontend/src/pages/RiskModelCenter.tsx", "frontend/src/pages/PublishedScenarioCenter.tsx", "frontend/src/pages/RiskApplicationWorkspace.tsx", "docs/research/risk-model-scenario-design-2026-09-10.md", "docs/research/risk-model-scenario-acceptance-2026-09-10.md"],
+      "key_symbols": ["ModelResearchService", "VariableRegistry", "ResearchData", "ArtifactRepository", "PublishedScenarioService", "ResearchWorkbench", "PublishedRiskPanel", "PortfolioRiskSection", "NumberInput"],
+      "child_modules": [],
+      "first_read_files": ["docs/research/risk-model-scenario-design-2026-09-10.md", "backend/sensitivity/contracts.py", "backend/sensitivity/service.py", "backend/scenario_stress/published.py", "frontend/src/components/risk-models/ResearchWorkbench.tsx", "frontend/src/pages/PublishedScenarioCenter.tsx"],
+      "then_check_files": ["backend/sensitivity/catalog.py", "backend/sensitivity/data.py", "backend/sensitivity/repository.py", "backend/sensitivity/kernels.py", "backend/services/risk_model_routes.py", "backend/services/published_scenario_routes.py", "backend/app.py", "frontend/src/services/riskModels.ts", "frontend/src/components/risk-models/PublishedRiskPanel.tsx", "frontend/src/components/risk-models/ResearchUI.tsx", "frontend/src/pages/ProductDetail.tsx", "frontend/src/pages/PortfolioConstruction.tsx", "frontend/src/pages/HoldingDiagnosis.tsx", "frontend/src/pages/ClassAllocation.tsx", "frontend/src/pages/TacticalAllocationWorkspace.tsx", "frontend/src/pages/ScenarioCenters.tsx", "frontend/src/App.tsx", "frontend/src/app/processRegistry.ts", "frontend/src/test/publishedRiskFixtures.ts"],
+      "upstream_dependencies": ["factor_research_center", "backend_data_storage", "backend_portfolio_research", "backend_regime_research"],
+      "downstream_dependencies": ["frontend_etf_research_pages", "frontend_allocation_workflows", "frontend_portfolio_research", "frontend_app_shell"],
+      "out_of_scope_dependencies": ["identified structural macro causality or calibrated SVAR/BVAR", "live holdings and automatic trading", "complete Barra covariance model", "option/credit-default pricing", "automatic class-to-product proxy inference", "historical PIT certification"],
+      "related_tests": ["backend/tests/test_published_risk_models.py", "frontend/src/pages/PublishedRiskFlow.test.tsx", "frontend/src/services/riskModels.test.ts", "frontend/src/components/risk-models/ResearchUI.test.tsx", "frontend/src/pages/ScenarioCenters.test.tsx", "frontend/e2e/published-risk.spec.ts"],
+      "related_configs": ["frontend/playwright.risk.config.ts", "frontend/package.json", "backend/requirements.txt"],
+      "risk_flags": ["period_changes_not_cumulative_levels", "conditional_response_not_identified_causality", "actual_data_end_not_requested_asof", "published_at_cannot_be_backdated", "no_manual_beta", "unconfirmed_preview_must_not_persist", "impact_is_transient", "missing_nonzero_exposure_blocks", "negative_input_must_preserve_sign", "fixed_njit_warmup", "readonly_immutable_artifacts"],
+      "edit_risk": "high",
+      "blast_radius": ["product and portfolio risk evidence", "confirmed scenario/model releases", "transient stress impacts", "managed data disk", "SAA/TAA research consumers"],
+      "pitfall_ids": ["P14", "P15", "P19", "P20"],
+      "minimum_regression": ["python3 -m pytest backend/tests/test_published_risk_models.py -q", "npm run test --prefix frontend -- --run PublishedRiskFlow.test.tsx riskModels.test.ts ResearchUI.test.tsx ScenarioCenters.test.tsx ProductDetail.test.tsx PortfolioConstruction.test.tsx HoldingDiagnosis.test.tsx", "npm run build --prefix frontend", "npm run test:e2e --prefix frontend -- --config=playwright.risk.config.ts --workers=1"],
+      "routing_confidence": "high",
+      "scope_flags": ["subtree_only", "research_only", "persist_only_on_confirmed_publish", "transient_previews_and_impacts", "immutable_published_artifacts", "no_network_training"],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": ["backend/tests/test_published_risk_models.py", "frontend/src/pages/PublishedRiskFlow.test.tsx", "frontend/e2e/published-risk.spec.ts", "backend/sensitivity/service.py", "backend/scenario_stress/published.py", "docs/research/risk-model-scenario-acceptance-2026-09-10.md"],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "product_timing_research",
+      "name": "Versioned low-code ETF timing research",
+      "path": "backend/timing_research",
+      "kind": "full_stack_research_module",
+      "purpose": "Editable ETF timing graphs reuse shared indicator, condition and axis kernels. Fourteen explicitly identified ETF adaptations add fixed-member basket panels, train-only mature-trade candidate selection, frozen global/state/calendar policies and causal priority quotas. Next-open T+1 execution, bounded readonly workspaces, immutable inputs and research-only releases remain mandatory; ETF adaptations do not inherit stock experiment performance or formal PIT authority.",
+      "module_tags": ["timing", "etf", "njit", "immutable-research"],
+      "entry_files": ["backend/timing_research", "backend/services/timing_research_routes.py", "frontend/src/pages/TimingResearch.tsx", "frontend/src/services/timingResearch.ts", "frontend/src/components/timing-research", "docs/research/product-timing-research-design-2026-09-10.md", "docs/research/etf-algorithm-adaptations-2026-09-10.md"],
+      "key_symbols": ["TimingResearchService", "GraphRuntime", "TimingRepository", "load_etf_bars", "simulate_kernel", "TimingResearch"],
+      "child_modules": [],
+      "first_read_files": ["docs/research/product-timing-research-design-2026-09-10.md", "docs/research/etf-algorithm-adaptations-2026-09-10.md", "backend/timing_research/contracts.py", "backend/timing_research/service.py", "backend/timing_research/graph.py", "frontend/src/pages/TimingResearch.tsx"],
+      "then_check_files": ["backend/timing_research/catalog.py", "backend/timing_research/numeric.py", "backend/timing_research/data.py", "backend/timing_research/repository.py", "backend/services/timing_research_routes.py", "backend/historical_regimes/condition_numba.py", "backend/historical_regimes/v2_numba.py", "backend/app.py", "frontend/src/App.tsx", "frontend/src/app/processRegistry.ts", "frontend/src/pages/ProductDetail.tsx", "frontend/src/services/timingResearch.ts"],
+      "upstream_dependencies": ["backend_custom_indicator_service", "market_data_snapshot_lifecycle", "backend_api_shell", "frontend_app_shell", "frontend_investment_process_framework"],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": ["OTC subscription settlement", "cross-border ETF execution", "stock mother-pool numerical replication", "automatic portfolio weights and live orders", "full historical revision PIT certification"],
+      "related_tests": ["backend/tests/test_timing_data.py", "backend/tests/test_timing_research_numeric.py", "backend/tests/test_timing_graph.py", "backend/tests/test_timing_repository.py", "backend/tests/test_timing_service.py", "backend/tests/test_timing_routes.py", "backend/tests/test_timing_etf_templates.py", "backend/tests/test_timing_learning.py", "backend/tests/test_timing_panel.py", "backend/tests/test_timing_training_runtime.py", "frontend/src/pages/TimingResearch.test.tsx", "frontend/e2e/timing-research.spec.ts"],
+      "related_configs": ["AGENTS.md", "frontend/package.json", "frontend/playwright.config.ts", "locales/navigation.json", "backend/scripts/benchmark_timing_research.py"],
+      "minimum_regression": ["python3 -m pytest backend/tests/test_timing_data.py backend/tests/test_timing_research_numeric.py backend/tests/test_timing_graph.py backend/tests/test_timing_repository.py backend/tests/test_timing_service.py backend/tests/test_timing_routes.py backend/tests/test_timing_etf_templates.py backend/tests/test_timing_learning.py backend/tests/test_timing_panel.py backend/tests/test_timing_training_runtime.py -q", "npm run test --prefix frontend -- --run TimingResearch.test.tsx TimingTrainingEditor.test.tsx App.test.tsx ProductDetail.test.tsx", "npm run build --prefix frontend", "npm run test:e2e --prefix frontend -- timing-research.spec.ts"],
+      "pitfall_ids": ["P07", "P12", "P13", "P14"],
+      "risk_flags": ["lag_must_preserve_trading_axis", "missing_is_unknown_not_false", "next_open_T1_no_same_day_exit", "fixed_signature_no_request_compile", "immutable_market_inputs", "research_binding_not_trade_authority", "etf_adaptation_not_stock_performance", "mature_training_labels_and_embargo", "frozen_policy_no_empty_test_fallback", "fixed_basket_identity_and_survivorship", "nominal_panel_axes_no_positional_mix"],
+      "scope_flags": ["subtree_only", "real_data_required"],
+      "blast_radius": ["indicator formula reuse", "ETF research", "pre-investment evidence"],
+      "edit_risk": "high",
+      "routing_confidence": "high",
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": ["backend/timing_research/service.py", "backend/tests/test_timing_service.py", "backend/tests/test_timing_routes.py", "frontend/src/pages/TimingResearch.test.tsx", "frontend/e2e/timing-research.spec.ts"],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "backend_data_storage",
+      "name": "Managed data storage and offline disk relocation",
+      "path": "backend/data_storage.py",
+      "kind": "data_and_config",
+      "purpose": "Checks a local disk target, schedules a first relocation of the complete data area, copies and verifies offline, preserves the original backup and rejects missing storage without fallback.",
+      "module_tags": ["storage", "disk", "migration", "data", "local-only"],
+      "entry_files": ["backend/data_storage.py", "backend/storage_migration.py", "backend/services/storage_routes.py", "scripts/manage_data_storage.py", "start_services.sh", "docs/data_storage_design.md", "frontend/src/services/dataStorage.ts", "frontend/src/components/data-sources/DataStoragePanel.tsx"],
+      "key_symbols": ["StorageManager", "StorageMigration", "guard_path", "storage_lifespan", "DataStoragePanel"],
+      "child_modules": [],
+      "first_read_files": ["docs/data_storage_design.md", "backend/data_storage.py", "backend/storage_migration.py", "backend/services/storage_routes.py"],
+      "then_check_files": ["scripts/manage_data_storage.py", "start_services.sh", "backend/app.py", "backend/data_sources/store.py", "backend/data_sources/runtime.py", "backend/data_sources/batches.py", "backend/services/refresh_runtime.py", "backend/market_data.py", "T01_get_data.py", "frontend/src/services/dataStorage.ts", "frontend/src/components/data-sources/DataStoragePanel.tsx", "frontend/src/pages/DataManagement.tsx"],
+      "upstream_dependencies": ["data_ingestion_config", "backend_data_source_etl", "market_data_snapshot_lifecycle"],
+      "downstream_dependencies": ["frontend_data_source_center", "backend_api_shell"],
+      "out_of_scope_dependencies": ["automatic disk formatting", "second cross-disk relocation", "real external disk migration without user-selected target"],
+      "related_tests": ["backend/tests/test_data_storage.py", "frontend/src/components/data-sources/DataStoragePanel.test.tsx", "frontend/src/pages/DataManagement.test.tsx", "frontend/e2e/data-storage.spec.ts"],
+      "related_configs": [".gitignore", "AGENTS.md"],
+      "risk_flags": ["missing_disk_must_not_recreate_mount_or_fallback", "offline_migration_excludes_api_and_download_workers", "copy_is_not_space_reclamation", "first_relocation_only", "private_credentials_require_posix_permissions"],
+      "edit_risk": "high",
+      "blast_radius": ["all persisted data and metadata", "download checkpoints and quotas", "snapshot readers", "local disk capacity"],
+      "pitfall_ids": ["P05", "P09", "P11", "P15"],
+      "minimum_regression": ["/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q", "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'", "bash -n start_services.sh"],
+      "routing_confidence": "high",
+      "scope_flags": ["local_only", "offline_switch", "no_implicit_delete"],
+      "grounding": {"fact_status": "grounded", "evidence": ["backend/tests/test_data_storage.py", "frontend/src/components/data-sources/DataStoragePanel.test.tsx", "scripts/manage_data_storage.py", "docs/data_storage_design.md"], "unsampled_paths": []}
+    },
+    {
+      "id": "factor_research_center",
+      "name": "Two-module factor research center and investment evidence",
+      "path": "backend/factor_research",
+      "kind": "full_stack_research_module",
+      "purpose": "Two algorithm/output modules at one entry: product characteristics with daily/weekly/monthly sampling and maturity-dated rolling IC; factor returns with frozen-input characteristic spreads, uploaded point-in-time-panel FF3-style 2x3 construction, immutable datasets and checked CSV/JSON export. RBSA, FF3 and generic total/excess-return attribution share fixed-signature NJIT readiness. Fixed or prior-window rolling exposures feed daily factor/intercept/residual contributions, with RF explicitly restored for excess-return models; beginning-wealth linking reconciles full/in-sample/out-of-sample/monthly totals without skipping gaps. Frontend exposes coefficient paths, contribution reconciliation, raw-decimal CSV and legacy-run read-only compatibility. PBSA and Brinson remain outside this module. Existing research-only releases, manual candidate admission and workflow evidence remain compatible. Native stock and QDII data capabilities remain gated; imported custom-market FF3 is not an official French replication or a Barra risk model.",
+      "module_tags": [
+        "factor-research",
+        "etf",
+        "fund",
+        "njit",
+        "immutable-research",
+        "investment-evidence"
+      ],
+      "entry_files": [
+        "backend/factor_research",
+        "backend/services/factor_research_routes.py",
+        "frontend/src/services/factorResearch.ts",
+        "frontend/src/pages/FactorResearchCenter.tsx",
+        "frontend/src/components/factor-research",
+        "frontend/src/components/FactorEvidencePanel.tsx",
+        "frontend/src/test/factorFixtures.ts",
+        "frontend/src/test/factorReturnFixtures.ts",
+        "frontend/e2e/factor-returns.spec.ts",
+        "frontend/e2e/factor-research.spec.ts",
+        "frontend/e2e/factor-research-live.spec.ts",
+        "frontend/playwright.factor-live.config.ts",
+        "scripts/start_factor_research_preview.mjs",
+        "因子研究中心_详细设计.md",
+        "因子研究中心_双模块详细设计.md",
+        "因子研究中心_首套因子验收.md"
+      ],
+      "first_read_files": [
+        "因子研究中心_双模块详细设计.md",
+        "因子研究中心_详细设计.md",
+        "backend/factor_research/contracts.py",
+        "backend/factor_research/service.py",
+        "backend/factor_research/numba_kernels.py",
+        "frontend/src/pages/FactorResearchCenter.tsx"
+      ],
+      "then_check_files": [
+        "backend/factor_research/data.py",
+        "backend/factor_research/catalog.py",
+        "backend/factor_research/repository.py",
+        "backend/factor_research/return_contracts.py",
+        "backend/factor_research/return_service.py",
+        "backend/factor_research/return_kernels.py",
+        "backend/services/factor_research_routes.py",
+        "backend/app.py",
+        "backend/services/product_pool_routes.py",
+        "backend/product_pools/service.py",
+        "backend/custom_indicators/series_provider.py",
+        "frontend/src/services/factorResearch.ts",
+        "frontend/src/components/FactorEvidencePanel.tsx",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/pages/ProductDetail.tsx",
+        "因子研究中心_首套因子验收.md"
+      ],
+      "related_tests": [
+        "backend/tests/test_factor_research_numba.py",
+        "backend/tests/test_factor_research_service.py",
+        "backend/tests/test_factor_return_kernels.py",
+        "backend/tests/test_factor_return_service.py",
+        "backend/tests/test_product_pools.py",
+        "frontend/src/pages/FactorResearchCenter.test.tsx",
+        "frontend/src/pages/FactorReturnCenter.test.tsx",
+        "frontend/e2e/factor-returns.spec.ts",
+        "frontend/src/App.test.tsx",
+        "frontend/src/pages/ProductDetail.test.tsx",
+        "frontend/e2e/factor-research.spec.ts",
+        "frontend/e2e/factor-research-live.spec.ts",
+        "backend/tests/test_factor_attribution.py"
+      ],
+      "related_configs": [
+        "backend/requirements.txt",
+        "frontend/package.json",
+        "frontend/playwright.config.ts",
+        "frontend/playwright.factor-live.config.ts",
+        ".gitignore"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_factor_research_numba.py backend/tests/test_factor_research_service.py backend/tests/test_factor_return_kernels.py backend/tests/test_factor_return_service.py backend/tests/test_product_pools.py -q",
+        "npm run test --prefix frontend -- --run FactorResearchCenter.test.tsx FactorReturnCenter.test.tsx App.test.tsx ProductDetail.test.tsx",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- factor-research.spec.ts factor-returns.spec.ts",
+        "python3 -m pytest backend/tests/test_factor_attribution.py -q"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell",
+        "backend_custom_indicator_service",
+        "market_data_snapshot_lifecycle",
+        "frontend_app_shell",
+        "frontend_investment_process_framework"
+      ],
+      "downstream_dependencies": [],
+      "child_modules": [],
+      "out_of_scope_dependencies": [
+        "full historical point-in-time revised datasets",
+        "live ETF execution and fund subscription settlement",
+        "automatic SAA/TAA/optimizer signal consumption",
+        "native-snapshot stock and cross-market QDII factor calculations",
+        "official Kenneth French data replication and complete Barra covariance/specific-risk models"
+      ],
+      "grounding": {
+        "evidence": [
+          "backend/factor_research/service.py",
+          "backend/factor_research/numba_kernels.py",
+          "backend/tests/test_factor_research_numba.py",
+          "backend/tests/test_factor_research_service.py",
+          "frontend/src/pages/FactorResearchCenter.test.tsx",
+          "frontend/e2e/factor-research.spec.ts",
+          "frontend/e2e/factor-research-live.spec.ts",
+          "因子研究中心_首套因子验收.md"
+        ],
+        "fact_status": "grounded",
+        "unsampled_paths": []
+      },
+      "key_symbols": [
+        "FactorResearchService",
+        "FactorReturnService",
+        "build_contribution_analysis",
+        "exposure_path_kernel",
+        "daily_contributions_kernel",
+        "link_contributions_kernel",
+        "AttributionResults",
+        "ReturnPlanFields",
+        "FF3SourceFields",
+        "Study",
+        "StudyFields",
+        "FactorResearchCenter",
+        "FactorEvidencePanel",
+        "IndicatorEvaluationGateway",
+        "build_router",
+        "execution_audit"
+      ],
+      "pitfall_ids": [
+        "P03",
+        "P19"
+      ],
+      "risk_flags": [
+        "factor_returns_not_benchmark_or_characteristic_scores",
+        "announcement_lag_not_full_revision_pit",
+        "fixed_universe_survivorship_bias",
+        "no_future_missing_data_selection",
+        "fixed_njit_signatures_warmed_before_requests",
+        "manual_product_pool_admission",
+        "immutable_release_validity_and_staleness",
+        "workflow_binding_not_automatic_allocation",
+        "rolling_ic_maturity_date_and_sample_boundary",
+        "factor_spreads_not_overlapping_forward_labels",
+        "ff3_uploaded_panel_not_verified_full_market_pit",
+        "no_rf_zero_fill_or_total_return_alpha_claim"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "workspace_shared_feature",
+        "real_data_required"
+      ],
+      "blast_radius": [
+        "system settings",
+        "research scores and NAV simulation",
+        "return attribution",
+        "product pool evaluation sources",
+        "investment evidence panels"
+      ],
+      "edit_risk": "high",
+      "routing_confidence": "high"
+    },
+    {
       "id": "project_docs",
       "name": "Project documentation and product scope",
       "path": "README.md",
@@ -23,14 +401,16 @@
         "requirements",
         "orientation"
       ],
-    "entry_files": [
-      "README.md",
-      "README_SEPARATED.md",
-      "design-qa.md",
-      "docs/requirements.md",
+      "entry_files": [
+        "README.md",
+        "./LICENSE",
+        "公募基金量化投资流程大纲.md",
+        "README_SEPARATED.md",
+        "docs/requirements.md",
         "docs/custom_indicator_design.md",
         "docs/weight_reuse_task_plan.md",
-        "docs/test_report.md"
+        "docs/test_report.md",
+        "docs/product_scenario_research_design.md"
       ],
       "key_symbols": [],
       "child_modules": [],
@@ -38,12 +418,15 @@
         "README.md",
         "docs/requirements.md"
       ],
-    "then_check_files": [
-      "design-qa.md",
-      "docs/custom_indicator_design.md",
+      "then_check_files": [
+        "docs/custom_indicator_design.md",
         "docs/weight_reuse_task_plan.md",
         "docs/test_report.md",
-        "README_SEPARATED.md"
+        "README_SEPARATED.md",
+        "docs/project_audit_fixes_acceptance.md",
+        "docs/project_audit_fixes_design.md",
+        "docs/project_code_logic_audit_2026-09-10.md",
+        "docs/submission_fixes_acceptance_2026-09-11.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -78,10 +461,9 @@
       ],
       "grounding": {
         "fact_status": "grounded",
-      "evidence": [
-        "README.md",
-        "design-qa.md",
-        "docs/requirements.md",
+        "evidence": [
+          "README.md",
+      "docs/requirements.md",
           "docs/custom_indicator_design.md",
           "docs/weight_reuse_task_plan.md"
         ],
@@ -93,7 +475,7 @@
       "name": "FastAPI app shell and static hosting",
       "path": "backend/app.py",
       "kind": "backend_api_entrypoint",
-      "purpose": "Creates the FastAPI app, configures permissive local CORS, includes modular routers, retains legacy inline endpoints, exposes ETF product APIs, and mounts the built Vite app from frontend/dist.",
+      "purpose": "Creates the FastAPI app, configures a bounded development CORS allowlist with explicit production origins, includes modular routers, retains legacy inline endpoints, exposes ETF product APIs, and mounts the built Vite app from frontend/dist. start_services.sh manages local backend/frontend start, stop, restart and status; readiness checks NJIT and worker warmup plus the frontend page and API proxy before printing Chinese success feedback and the browser URL. Integrates the server-held PIT convention, dataset clock declarations and release fingerprints through one request context; explicit tab headers override the viewing context without writing system settings. Release name, note, as_of and run_mode are editable convention metadata, while table fingerprints stay immutable evidence; these controls do not certify historical data vintages.",
       "module_tags": [
         "backend",
         "fastapi",
@@ -103,14 +485,15 @@
       ],
       "entry_files": [
         "backend/app.py",
-        "backend/run.py"
+        "backend/run.py",
+        "start_services.sh",
+        "scripts/service_process.py",
+        "backend/services/business_numeric_routes.py"
       ],
       "key_symbols": [
         "app",
         "health",
         "solve",
-        "fit_classes",
-        "rolling_corr",
         "save_allocation",
         "list_allocations",
         "load_allocation",
@@ -134,10 +517,17 @@
         "backend/run.py"
       ],
       "then_check_files": [
+        "backend/pit/audit.py",
         "backend/services/strategy_routes.py",
         "backend/services/analytics_routes.py",
         "frontend/vite.config.ts",
-        "backend/requirements.txt"
+        "backend/requirements.txt",
+        "backend/pit/catalog.py",
+        "backend/pit/context.py",
+        "backend/pit/release.py",
+        "backend/pit/settings.py",
+        "backend/services/pit_routes.py",
+        "docs/pit_workflow_design.md"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -151,8 +541,14 @@
         "external deployment process"
       ],
       "related_tests": [
+        "backend/tests/conftest.py",
+        "backend/tests/test_business_numeric_numba.py",
+        "backend/tests/test_pit_startup.py",
+        "backend/tests/test_start_services.py",
+        "backend/tests/test_pit_workflow.py",
         "backend/tests/test_strategy_api.py",
-        "backend/tests/test_analytics_routes.py"
+        "backend/tests/test_analytics_routes.py",
+        "backend/tests/test_pit_decision_clock.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
@@ -160,8 +556,11 @@
       ],
       "risk_flags": [
         "dual_route_definitions",
-        "permissive_cors",
-        "frontend_dist_optional"
+        "cors_allowlist_requires_deployment_review",
+        "frontend_dist_optional",
+        "request_pit_override_must_not_mutate_system_settings",
+        "service_ownership_must_precede_listener_adoption_or_process_group_signals",
+        "editable_pit_conventions_are_not_historical_vintage_certification"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -172,11 +571,16 @@
       "pitfall_ids": [
         "P03",
         "P05",
-        "P07"
+        "P07",
+        "P11"
       ],
       "minimum_regression": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/run.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_pit_startup.py backend/tests/test_pit_workflow.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_start_services.py -q",
+        "bash -n start_services.sh",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+        "python3 -m pytest backend/tests/test_pit_decision_clock.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -200,7 +604,7 @@
       "name": "Portfolio math, fitting, optimization, calendar, and backtest core",
       "path": "backend/backtest_engine.py",
       "kind": "backend_domain_core",
-      "purpose": "Core portfolio calculations: ETF-to-class NAV fitting, rolling correlation, efficient frontier exploration, risk-budget and target-weight solving, rebalance date generation, fitting-window validation, and portfolio backtests.",
+      "purpose": "Core portfolio calculations: ETF-to-class NAV fitting, rolling correlation, efficient frontier exploration, risk-budget and target-weight solving, rebalance date generation, fitting-window validation, and portfolio backtests. Class NAV computation returns one request-owned ClassNavResult containing numerical outputs, lineage and availability dates; fitting APIs and allocation persistence consume that same result instead of process-global last-load state.",
       "module_tags": [
         "backend",
         "quant",
@@ -211,9 +615,18 @@
       ],
       "entry_files": [
         "backend/fit.py",
+        "backend/fit_numba.py",
         "backend/optimizer.py",
         "backend/strategy.py",
         "backend/backtest_engine.py",
+        "backend/backtest_numba.py",
+        "backend/fund_taxonomy.py",
+        "backend/auto_asset_class.py",
+        "backend/auto_class_numba.py",
+        "backend/services/auto_class_routes.py",
+        "backend/business_numeric_numba.py",
+        "backend/compute_policy.py",
+        "backend/synthetic_series_numba.py",
         "backend/trading_calendar.py"
       ],
       "key_symbols": [
@@ -232,7 +645,11 @@
         "ensure_valid_rebalance_window",
         "gen_rebalance_dates",
         "backtest_portfolio",
-        "get_trading_days"
+        "get_trading_days",
+        "run_auto_classification",
+        "classify",
+        "taxonomy_tree",
+        "allocate_block_clusters_kernel"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -259,6 +676,14 @@
         "exchange calendar updates outside the repository"
       ],
       "related_tests": [
+        "backend/tests/test_app_risk_parity_njit.py",
+        "backend/tests/test_auto_asset_class.py",
+        "backend/tests/test_business_numeric_numba.py",
+        "backend/tests/test_compute_policy.py",
+        "backend/tests/test_fit_numba.py",
+        "backend/tests/test_legacy_etf_njit.py",
+        "backend/tests/test_optimizer_strategy_numba.py",
+        "backend/tests/test_synthetic_series_numba.py",
         "backend/tests/test_window_slice.py",
         "backend/tests/test_rebalance_window.py",
         "backend/tests/test_backtest_output.py",
@@ -304,7 +729,8 @@
           "backend/fit.py",
           "backend/optimizer.py",
           "backend/trading_calendar.py",
-          "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+          "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+          "backend/fund_taxonomy.py"
         ],
         "unsampled_paths": []
       }
@@ -407,7 +833,7 @@
       "name": "Asset-class analytics and efficient frontier API",
       "path": "backend/services/analytics_routes.py",
       "kind": "backend_api_router",
-      "purpose": "Modular /api analytics router for class fitting, rolling correlations, consistency metrics, and efficient frontier calculation over saved allocation NAV data.",
+      "purpose": "Modular /api analytics router for class fitting, rolling correlations, consistency metrics, and efficient frontier calculation over saved allocation NAV data. Allocation fitting shares fixed-signature NJIT input checks for date conflicts and adjacent NAV scale breaks; it reports the affected asset/date and rejects suspect inputs without guessing a price repair. The scale rule is not a comprehensive data-quality certificate.",
       "module_tags": [
         "backend",
         "fastapi-router",
@@ -424,7 +850,10 @@
         "RollingRequest",
         "rolling_corr",
         "FrontierRequest",
-        "post_efficient_frontier"
+        "post_efficient_frontier",
+        "ResearchInputError",
+        "require_return_quality",
+        "return_scale_breaks_kernel"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -434,7 +863,8 @@
       ],
       "then_check_files": [
         "frontend/src/pages/ManualConstruction.tsx",
-        "frontend/src/pages/ClassAllocation.tsx"
+        "frontend/src/pages/ClassAllocation.tsx",
+        "backend/research_input_checks.py"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -447,7 +877,8 @@
         "actual parquet market-data freshness"
       ],
       "related_tests": [
-        "backend/tests/test_analytics_routes.py"
+        "backend/tests/test_analytics_routes.py",
+        "backend/tests/test_research_input_checks.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -455,7 +886,9 @@
       "risk_flags": [
         "json_nan_inf_sanitisation",
         "saved_allocation_nav_schema_required",
-        "efficient_frontier_point_filtering"
+        "efficient_frontier_point_filtering",
+        "nav_scale_review_gate_is_not_full_quality_certification",
+        "suspect_prices_are_not_automatically_repaired"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -467,6 +900,7 @@
         "P05"
       ],
       "minimum_regression": [
+        "python3 -m pytest backend/tests/test_research_input_checks.py -q",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_analytics_routes.py -q"
       ],
       "routing_confidence": "high",
@@ -481,7 +915,9 @@
           "backend/fit.py",
           "backend/optimizer.py",
           "backend/tests/test_analytics_routes.py",
-          "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_analytics_routes.py -q"
+          "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_analytics_routes.py -q",
+          "backend/research_input_checks.py",
+          "backend/tests/test_research_input_checks.py"
         ],
         "unsampled_paths": []
       }
@@ -502,7 +938,10 @@
       ],
       "entry_files": [
         "backend/app.py",
-        "backend/services/instrument_routes.py"
+        "backend/services/instrument_routes.py",
+        "backend/product_pools",
+        "backend/services/product_pool_review.py",
+        "backend/services/product_pool_routes.py"
       ],
       "key_symbols": [
         "_load_etf_info_df",
@@ -544,6 +983,10 @@
         "live ETF information provider quality"
       ],
       "related_tests": [
+        "backend/tests/test_product_pool_review.py",
+        "backend/tests/test_product_pool_routes.py",
+        "backend/tests/test_product_pool_service.py",
+        "backend/tests/test_product_pools.py",
         "backend/tests/test_instrument_routes.py"
       ],
       "related_configs": [
@@ -580,10 +1023,10 @@
       ],
       "grounding": {
         "fact_status": "mixed",
-      "evidence": [
-        "backend/app.py",
-        "backend/services/instrument_routes.py",
-        "backend/tests/test_instrument_routes.py"
+        "evidence": [
+          "backend/app.py",
+          "backend/services/instrument_routes.py",
+          "backend/tests/test_instrument_routes.py"
         ],
         "unsampled_paths": []
       }
@@ -593,7 +1036,7 @@
       "name": "Unified ETF/public-fund dashboard analytics and metric snapshots",
       "path": "backend/services/instrument_analytics.py",
       "kind": "backend_analytics_feature",
-      "purpose": "Serves small-table ETF/public-fund summaries, independent trend series, filtered rankings, and data-quality metadata; during data refresh it streams NAV and candle parquet row groups, then materializes the exact Indicator Center revisions and periods selected by the workspace snapshot configuration. Shared series-quality gates require complete metric windows and reject adjusted-NAV discontinuities.",
+      "purpose": "Serves small-table ETF/public-fund summaries, independent trend series, filtered rankings, and data-quality metadata; during data refresh it streams NAV and candle parquet row groups, then materializes the exact Indicator Center revisions and periods selected by the workspace snapshot configuration. Shared series-quality gates require complete metric windows and reject adjusted-NAV discontinuities. Product analysis reads an explicit adjusted-NAV or ETF close basis from the active inventory, preserves missing observations and regime boundaries, and returns segment evidence plus explicitly requested fixed-signature conditional simulations.",
       "module_tags": [
         "backend",
         "analytics",
@@ -605,6 +1048,11 @@
       "entry_files": [
         "backend/services/instrument_analytics.py",
         "backend/services/instrument_routes.py",
+        "backend/services/data_quality.py",
+        "backend/services/product_analysis.py",
+        "backend/services/product_compare.py",
+        "backend/instrument_analytics_numba.py",
+        "backend/product_analysis_numba.py",
         "backend/series_quality.py"
       ],
       "key_symbols": [
@@ -645,6 +1093,12 @@
         "parent-fund share-class consolidation"
       ],
       "related_tests": [
+        "backend/tests/test_data_quality.py",
+        "backend/tests/test_instrument_analytics_numba.py",
+        "backend/tests/test_product_analysis_numba.py",
+        "backend/tests/test_product_analysis_routes.py",
+        "backend/tests/test_product_compare_numba.py",
+        "backend/tests/test_product_compare_routes.py",
         "backend/tests/test_instrument_analytics.py",
         "backend/tests/test_series_quality.py",
         "backend/tests/test_instrument_routes.py"
@@ -675,7 +1129,8 @@
       ],
       "minimum_regression": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/services/instrument_analytics.py backend/services/instrument_routes.py backend/series_quality.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q"
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_series_quality.py backend/tests/test_instrument_routes.py -q",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_product_analysis_numba.py tests/test_product_analysis_routes.py -q'"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -702,7 +1157,7 @@
       "name": "Versioned Tushare data resolution, validation, and activation",
       "path": "backend/market_data.py",
       "kind": "market_data_lifecycle",
-      "purpose": "Resolves every Tushare reader through an active version manifest with legacy fallback, runs a read-only whole-snapshot promotion gate with independent metric samples and source fingerprints, and atomically activates only unchanged validated files.",
+      "purpose": "Resolves every Tushare reader through an active version manifest with legacy fallback, runs a read-only whole-snapshot promotion gate with independent metric samples and source fingerprints, and atomically activates only unchanged validated files. Configured metric snapshots are re-evaluated from their recorded Indicator Center IDs, revisions and periods with prefer_snapshot=false after NJIT warmup; fixed formulas only validate snapshots without configured metadata. Missing metadata, failed or missing results, value/status mismatches block activation. The recorded metadata file is included in the validation inventory.",
       "module_tags": [
         "backend",
         "market-data",
@@ -789,11 +1244,11 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-        "backend/market_data.py",
-        "backend/market_data_validation.py",
-        "backend/tests/test_market_data.py",
-        "backend/tests/test_market_data_readers.py",
-        "backend/tests/test_market_data_validation.py",
+          "backend/market_data.py",
+          "backend/market_data_validation.py",
+          "backend/tests/test_market_data.py",
+          "backend/tests/test_market_data_readers.py",
+          "backend/tests/test_market_data_validation.py",
           "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_analytics.py backend/tests/test_instrument_routes.py backend/tests/test_market_data.py backend/tests/test_market_data_validation.py backend/tests/test_data_refresh.py backend/tests/test_tushare_data_script.py -q"
         ],
         "unsampled_paths": []
@@ -915,6 +1370,7 @@
         "result-pagination"
       ],
       "entry_files": [
+        "backend/custom_indicators",
         "backend/custom_indicators/__init__.py",
         "backend/custom_indicators/service.py",
         "backend/custom_indicators/presentation.py",
@@ -928,7 +1384,10 @@
         "backend/custom_indicators/errors.py",
         "backend/cal_indicators/builtin_batch_kernel.py",
         "backend/services/custom_indicator_routes.py",
-        "backend/benchmark_indicator_engine.py"
+        "backend/benchmark_indicator_engine.py",
+        "docs/custom_indicator_excel_export_design.md",
+        "docs/rolling_scalar_indicator_design.md",
+        "docs/scalar_to_rolling_series_design.md"
       ],
       "key_symbols": [
         "CustomIndicatorService",
@@ -973,6 +1432,7 @@
         "backend/cal_indicators/builtin_batch_kernel.py"
       ],
       "then_check_files": [
+        "docs/market_attribution_builtin.md",
         "backend/tests/test_custom_indicator_service.py",
         "backend/tests/test_custom_indicator_routes.py",
         "backend/tests/test_custom_indicator_variables.py",
@@ -1000,12 +1460,17 @@
         "live market feeds"
       ],
       "related_tests": [
+        "backend/tests/test_custom_indicator_excel_export.py",
+        "backend/tests/test_portfolio_numba.py",
         "backend/tests/test_custom_indicator_service.py",
         "backend/tests/test_custom_indicator_routes.py",
         "backend/tests/test_custom_indicator_variables.py",
+        "backend/tests/test_custom_indicator_time_series.py",
+        "backend/tests/test_custom_indicator_time_series_excel.py",
         "backend/tests/test_numba_finance_indicators.py",
         "backend/tests/test_indicator_parallel_engine.py",
-        "backend/tests/test_evaluation_run_results.py"
+        "backend/tests/test_evaluation_run_results.py",
+        "backend/tests/test_audit_regressions.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
@@ -1028,6 +1493,13 @@
         "process_and_numba_thread_oversubscription",
         "data_generation_cache_invalidation",
         "snapshot_config_locks_indicator_revision_and_period",
+        "independent_scalar_consumers_lock_indicator_id_and_revision",
+        "runtime_series_parameters_require_explicit_contract_version_and_author_opened_operator_positions",
+        "runtime_series_defaults_are_revision_locked_and_overrides_recompute_history_ranges_cache_and_excel_without_new_jit_signatures",
+        "removed_market_attribution_has_no_hidden_catalog_or_evaluation_entry",
+        "independent_drawdown_dates_share_last_equal_maximum_interval",
+        "rolling_routes_use_one_transformer_and_preserve_data_provenance",
+        "scalar_date_and_series_channel_snapshots_keep_distinct_locked_presentation",
         "snapshot_read_requires_matching_config_revision_and_data_generation",
         "large_result_expiration_contract"
       ],
@@ -1050,7 +1522,8 @@
       ],
       "minimum_regression": [
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_numba_finance_indicators.py tests/test_indicator_parallel_engine.py tests/test_evaluation_run_results.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/service.py backend/custom_indicators/presentation.py backend/custom_indicators/repository.py backend/custom_indicators/periods.py backend/custom_indicators/series_provider.py backend/custom_indicators/parallel_engine.py backend/custom_indicators/run_result_repository.py backend/custom_indicators/variable_registry.py backend/cal_indicators/builtin_batch_kernel.py backend/services/custom_indicator_routes.py backend/benchmark_indicator_engine.py"
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/service.py backend/custom_indicators/presentation.py backend/custom_indicators/repository.py backend/custom_indicators/periods.py backend/custom_indicators/series_provider.py backend/custom_indicators/parallel_engine.py backend/custom_indicators/run_result_repository.py backend/custom_indicators/variable_registry.py backend/cal_indicators/builtin_batch_kernel.py backend/services/custom_indicator_routes.py backend/benchmark_indicator_engine.py",
+        "python3 -m pytest backend/tests/test_audit_regressions.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1083,16 +1556,18 @@
     },
     {
       "id": "backend_typed_indicator_v2",
-      "name": "Typed v2.2 indicator type system, NJIT kernel registry, and fused formula runtime",
+      "name": "Typed indicator primitives, shared DAG and fixed-signature NJIT runtime",
       "path": "backend/cal_indicators/typed_dsl.py",
       "kind": "backend_indicator_engine",
-      "purpose": "Typed DSL 2.2 keeps nominal axes, bool masks, semantic dimensions and price-basis checks while adding an explicit 95-operator fixed-signature NJIT KernelSpec registry, compiler-owned per-formula and multi-metric fused Numba plans, startup signature warmup, integer status outputs, and fail-closed execution with no Python operator fallback. Product-facing metadata exposes kernel coverage and compile state, while typed 2.0/2.1 and legacy v1 definitions are adapted without rewriting persisted history.",
+      "purpose": "Typed DSL preserves nominal axes, bool masks, semantic dimensions and price-basis checks. Current authoring supports rolling_apply as a deferred complete interval-scalar subgraph: eligibility follows typed dependencies and reviewed primitive interval policies, not an indicator allowlist. A prepared NJIT loop binds aligned slice views, resets path/context state per window and collects numeric scalar results without materializing T×W data or compiling during evaluation. Scope implementation version participates in plan identity. Price/return date axes preserve existing missing observations, and return-only scopes do not discard the first supplied valid return; an extra preceding observation is requested only when level paths or elapsed-period context require it. Existing 2.3 rolling_* and 2.4 rolling_window-plus-reducer formulas retain their frozen contracts; newly derived whole-graph definitions use transform protocol 3.0.0. All five built-in time-series indicators now select revision 3 and use whole-interval scopes; explicit revision 1/2 references retain their original definitions. BOLL shares two scopes across three channels. KDJ uses optional minimum observations of 1 with finite_mask and conditional extrema, while its K/D recursion remains outside the scopes. Optional minimum-count scopes preserve raw date positions and delegate missing-value handling to the body; omitted minimum retains the complete-window contract. Generic execution costs the sum of interval computations, not guaranteed O(T), and is measurably slower than the historical specialized kernels for these small built-ins. Current formulas use mathematical and state primitives; supported historical business function spellings lower into the same current DAG rather than alternate production algorithms. Independent scalar metrics merge structurally identical nodes under matching bindings, versions and windows; selected roots prune unrelated branches. Drawdown dates share the last equally deepest interval and regression projections share a fitted state. Startup/save/explicit preparation owns fixed-signature NJIT compilation; formal evaluation fails closed without Python fallback or new signatures. Ordinary time-series multi-channel contracts remain separate from removed scalar bundles.",
       "module_tags": [
         "backend",
         "indicators",
         "typed-v2",
         "typed-v2.1",
         "typed-v2.2",
+        "typed-v2.3",
+        "typed-v2.4",
         "numba-njit",
         "fused-plan",
         "fail-closed",
@@ -1106,6 +1581,7 @@
       "entry_files": [
         "backend/cal_indicators/typed_types.py",
         "backend/cal_indicators/typed_operators.py",
+        "backend/cal_indicators/operator_lowering.py",
         "backend/cal_indicators/typed_latex.py",
         "backend/cal_indicators/typed_numeric_backend.py",
         "backend/cal_indicators/typed_numba_kernels.py",
@@ -1114,13 +1590,19 @@
         "backend/custom_indicators/variable_registry.py",
         "backend/custom_indicators/typed_service.py",
         "backend/custom_indicators/service.py",
-        "backend/services/custom_indicator_routes.py"
+        "backend/services/custom_indicator_routes.py",
+        "backend/cal_indicators/drawdown_interval.py",
+        "backend/cal_indicators/primitive_access.py",
+        "backend/cal_indicators/regression_state.py",
+        "backend/cal_indicators/rolling_scope.py",
+        "backend/computation_graph/causal_series.py"
       ],
       "key_symbols": [
         "ValueType",
         "TypedDslError",
         "SUPPORTED_SEMANTIC_DIMENSIONS",
         "get_typed_operator_registry",
+        "expand_operator",
         "render_python_expression_latex",
         "operator_display_latex_template",
         "warm_typed_numeric_backend",
@@ -1144,6 +1626,7 @@
       "first_read_files": [
         "backend/cal_indicators/typed_types.py",
         "backend/cal_indicators/typed_operators.py",
+        "backend/cal_indicators/operator_lowering.py",
         "backend/cal_indicators/typed_latex.py",
         "backend/cal_indicators/typed_numeric_backend.py",
         "backend/cal_indicators/typed_numba_kernels.py",
@@ -1155,6 +1638,12 @@
         "backend/services/custom_indicator_routes.py"
       ],
       "then_check_files": [
+        "docs/independent_indicators_shared_execution_design.md",
+        "docs/indicator_operator_primitives_design.md",
+        "docs/indicator_operator_primitives_acceptance.md",
+        "backend/causality/audit.py",
+        "backend/causality/baseline.json",
+        "backend/tests/test_causality.py",
         "backend/tests/test_typed_indicator_types.py",
         "backend/tests/test_typed_indicator_catalog.py",
         "backend/tests/test_typed_indicator_compiler.py",
@@ -1165,7 +1654,21 @@
         "backend/tests/test_custom_indicator_variables.py",
         "backend/tests/test_custom_indicator_service.py",
         "backend/tests/test_custom_indicator_routes.py",
-        "docs/custom_indicator_design.md"
+        "backend/tests/test_series_runtime_parameters.py",
+        "backend/tests/test_indicator_formula_roundtrip.py",
+        "backend/tests/test_indicator_graph.py",
+        "docs/custom_indicator_design.md",
+        "backend/causality/rolling_scope.py",
+        "backend/causality/synthetic.py",
+        "backend/causality/temporal_numba.py",
+        "backend/scripts/benchmark_builtin_series_migration.py",
+        "backend/scripts/benchmark_rolling_interval.py",
+        "docs/builtin_series_rolling_migration_acceptance.md",
+        "docs/builtin_series_rolling_migration_design.md",
+        "docs/rolling_interval_graph_acceptance.md",
+        "docs/rolling_interval_graph_design.md",
+        "docs/rolling_window_operator_split_acceptance.md",
+        "docs/rolling_window_operator_split_design.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -1185,7 +1688,17 @@
         "backend/tests/test_typed_indicator_product_service.py",
         "backend/tests/test_custom_indicator_variables.py",
         "backend/tests/test_custom_indicator_service.py",
-        "backend/tests/test_custom_indicator_routes.py"
+        "backend/tests/test_custom_indicator_routes.py",
+        "backend/tests/test_series_runtime_parameters.py",
+        "backend/tests/test_indicator_formula_roundtrip.py",
+        "backend/tests/test_indicator_graph.py",
+        "backend/tests/test_causality.py",
+        "backend/tests/indicator_primitives_app.py",
+        "backend/tests/test_builtin_series_rolling_migration.py",
+        "backend/tests/test_cross_center_rolling.py",
+        "backend/tests/test_rolling_interval_graph.py",
+        "backend/tests/test_rolling_interval_safety.py",
+        "backend/tests/test_rolling_interval_service.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -1201,7 +1714,9 @@
         "public_typed_api_contract",
         "njit_kernel_registry_set_equality",
         "startup_warmup_must_cover_all_signatures",
-        "python_operator_fallback_forbidden"
+        "python_operator_fallback_forbidden",
+        "operator_causality_baseline_complete",
+        "logical_rolling_window_must_fuse_without_materialization"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -1215,8 +1730,9 @@
         "P13"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py"
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py",
+        "python3 -m pytest backend/tests/test_rolling_interval_graph.py backend/tests/test_rolling_interval_safety.py backend/tests/test_rolling_interval_service.py backend/tests/test_builtin_series_rolling_migration.py backend/tests/test_cross_center_rolling.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1228,20 +1744,27 @@
         "evidence": [
           "backend/cal_indicators/typed_types.py",
           "backend/cal_indicators/typed_operators.py",
-        "backend/cal_indicators/typed_latex.py",
-        "backend/cal_indicators/typed_numba_kernels.py",
-        "backend/cal_indicators/typed_numba_plan.py",
-        "backend/cal_indicators/typed_dsl.py",
+          "backend/cal_indicators/operator_lowering.py",
+          "backend/cal_indicators/typed_latex.py",
+          "backend/cal_indicators/typed_numba_kernels.py",
+          "backend/cal_indicators/typed_numba_plan.py",
+          "backend/cal_indicators/typed_dsl.py",
           "backend/custom_indicators/variable_registry.py",
           "backend/custom_indicators/typed_service.py",
           "backend/custom_indicators/service.py",
           "backend/services/custom_indicator_routes.py",
+          "backend/causality/audit.py",
+          "backend/causality/baseline.json",
+          "backend/tests/test_causality.py",
           "backend/tests/test_typed_indicator_compiler.py",
-        "backend/tests/test_typed_indicator_runtime.py",
-        "backend/tests/test_typed_numba_v22.py",
-        "backend/tests/test_typed_indicator_product_service.py",
+          "backend/tests/test_typed_indicator_runtime.py",
+          "backend/tests/test_typed_numba_v22.py",
+          "backend/tests/test_typed_indicator_product_service.py",
           "backend/tests/test_custom_indicator_variables.py",
-          "backend/tests/test_custom_indicator_routes.py"
+          "backend/tests/test_custom_indicator_routes.py",
+          "backend/tests/test_series_runtime_parameters.py",
+          "backend/tests/test_indicator_formula_roundtrip.py",
+          "backend/tests/test_indicator_graph.py"
         ],
         "unsampled_paths": []
       }
@@ -1263,7 +1786,8 @@
       "entry_files": [
         "backend/custom_indicators/portfolio_service.py",
         "backend/custom_indicators/portfolio_repository.py",
-        "backend/services/portfolio_routes.py"
+        "backend/services/portfolio_routes.py",
+        "backend/portfolio_regime.py"
       ],
       "key_symbols": [
         "PortfolioResearchService",
@@ -1283,6 +1807,7 @@
       "then_check_files": [
         "backend/custom_indicators/series_provider.py",
         "backend/tests/test_portfolio_research.py",
+        "backend/tests/test_portfolio_regime_backtest.py",
         "frontend/src/services/portfolioResearch.ts",
         "docs/custom_indicator_design.md"
       ],
@@ -1301,7 +1826,8 @@
         "legacy allocation endpoint migration"
       ],
       "related_tests": [
-        "backend/tests/test_portfolio_research.py"
+        "backend/tests/test_portfolio_research.py",
+        "backend/tests/test_portfolio_regime_backtest.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
@@ -1327,8 +1853,8 @@
         "P15"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_portfolio_research.py -q'",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py"
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_portfolio_research.py tests/test_portfolio_regime_backtest.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/custom_indicators/portfolio_service.py backend/custom_indicators/portfolio_repository.py backend/services/portfolio_routes.py backend/portfolio_regime.py"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1342,7 +1868,538 @@
           "backend/custom_indicators/portfolio_service.py",
           "backend/custom_indicators/portfolio_repository.py",
           "backend/services/portfolio_routes.py",
-          "backend/tests/test_portfolio_research.py"
+          "backend/portfolio_regime.py",
+          "backend/tests/test_portfolio_research.py",
+          "backend/tests/test_portfolio_regime_backtest.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "backend_regime_research",
+      "name": "Historical regime graph, research-series, and scenario-stress services",
+      "path": "backend/historical_regimes/v2_service.py",
+      "kind": "backend_api_feature",
+      "purpose": "Exposes primitive/composite/coupled granularity metadata, nominal nullable conditions and phase directions, and pure authoring expansion for threshold, quadrant and PS composites. Expanded and stored compatibility entries share fixed-signature numerical kernels; all original ports, explicit edges and temporal knowledge remain intact. New step-template identities leave old template hashes and saved runs unchanged. Provides the versioned Regime Graph v2 registry, typed graph inference, explicit fixed-signature NJIT preparation and execution, non-authorizing persistent plan manifests, immutable artifacts, research-series catalog/profile, historical-state experiments, and published-state scenario-stress integration. Completed previews expose a read-only overview from deep-frozen definitions and final series; saved details use the same observation-index segment and full-sample summary contract without rerunning the graph. The version-2 bull/bear template uses causal log-index Super Smoother, prior-return RMS scaling, directional efficiency and persistent three-state confirmation. KAMA is available for comparison; short reversed runs can only be merged retrospectively. Final series persist traceable trend and raw-price risk evidence. Legacy PS-style peak/trough dating has retrospective monthly and daily compatibility templates with independent left/right/head/tail windows; legacy symmetric parameters and two-state definitions remain supported. Those legacy templates classify sideways intervals by merging bounded small reversed waves with low full-path efficiency, minimum duration and a directional peak/trough structure guard; only complete intervals are classified and full-sample availability never becomes an executable trading date. Daily peak template v2 separates local-extrema detection, complete interval boundaries, independently selected statistics and threshold classification; legacy templates retain their old definitions. A bounded graph-authoring adapter roundtrips registered node calls and port references; numeric expressions and 24 causal operator nodes use the Indicator Center typed registry and warmed numeric plan. Enum and named numeric series outputs have explicit contracts; presentation metadata is frozen with results and empty metadata is omitted for legacy compatibility. Full-input dating availability follows node metadata through final-output ancestors. The read-only authoring resolver returns per-output mathematical notation and dependency equations; numeric expressions reuse the canonical indicator renderer, while domain operators preserve their exact names and parameters without computing data. Independent node previews project unfinished drafts onto one main output plus up to seven selected comparison outputs and their dependency union, preserve realtime eligibility and as-of checks, reuse warmed graph execution, and cannot be saved or published as regime definitions. A read-only normalized-chart endpoint rebases frozen numeric preview outputs using the existing warmed binary arithmetic kernel; it rejects enums and invalid bases and never changes graph results or stored source values. Node-series pages retain the frozen upstream-output catalog and expose all computed overlay outputs with node/port labels, plotting eligibility and upstream/other/same-node relationships. Comparisons share one frozen run and source cache; read-only overlays never resolve sources or rerun the graph. Comparison targets are bound to preparation tokens and all selected ancestors retain realtime gates. Source-file decoding accepts bounded CSV/XLSX/JSON input with explicit sheet/column selection and no persistence until profile registration. Named upload receipts are immutable and searchable through /research-series/uploads, including older artifacts without receipts. Production indicator catalog uses the same built-in/custom exact-version registry as indicator execution and declares compatible product kinds and unsupported-version reasons. Workspace-only indicator/upload catalogs do not require a market snapshot. Exact Indicator Center revisions can also become upstream-fed indicator calculation nodes with named numeric outputs, original runtime parameters and supported scalar-to-rolling conversion; unavailable contracts carry reasons. Exact indicator references preserve their DSL/registry revision and bind reserved date/risk-free context from the real shared axis and locked definition, not user-connectable series ports. Scope-aware validation accepts trailing-window reductions while rejecting naked full-sample reductions, including a shared reducer also used outside a scope. Each regime output keeps its prepared execution and temporal provenance; timing indicator multi-channel outputs share one prepared bundle. Creation of inline/product-bound indicator source nodes is hidden while stored definitions retain their execution contract. ETF price fields optionally use exact-date fund_adj factors with separate frozen checksums, warmed fixed-signature price adjustment, post-cutoff forward-adjustment anchors and date-based availability checks. Missing factors disable adjusted market-price choices. ETF adjusted NAV reads the separately published etf_daily_df.parquet fund_nav source without price factors; per-field bindings pin the correct file checksum, preserve announcement cutoffs and allow realtime analysis. Adjusted data retains unverified historical PIT metadata for formal publication checks; QFQ source and evaluation caches include the request cutoff before rebasing. NAV-only ETFs remain selectable. Alignment diagnostics name the blocked node. Merrill macro template v3 binds manufacturing PMI and CPI year-on-year on common monthly dates, uses editable trend/quadrant/confirmation steps and defaults to retrospective research. Macro source aliases and catalog filenames share a whitelist; unknown releases retain acquisition-time knowledge and cannot produce historical executable dates or enter realtime mode. Research activation accepts exact saved revisions and a warmed plan, reuses immutable results per revision/mode/cutoff under a separate process-shared lock, and enables research_display/product_research only. Empty classifications and tampered lineage are rejected; stored optional default_mode is omitted from legacy serialization and does not alter old definition hashes.",
+      "module_tags": [
+        "backend",
+        "historical-regime",
+        "scenario-stress",
+        "research-series",
+        "typed-graph",
+        "numba",
+        "immutable-artifacts"
+      ],
+      "entry_files": [
+        "backend/historical_regimes",
+        "backend/research_series",
+        "backend/scenario_stress",
+        "backend/portfolio_regime.py",
+        "backend/historical_regimes/v2_service.py",
+        "backend/historical_regimes/v2_contracts.py",
+        "backend/historical_regimes/v2_registry.py",
+        "backend/historical_regimes/v2_numba.py",
+        "backend/historical_regimes/numba_kernels.py",
+        "backend/historical_regimes/repository.py",
+        "backend/historical_regimes/v2_templates.py",
+        "backend/research_series/service.py",
+        "backend/scenario_stress/service.py",
+        "backend/services/historical_regime_routes.py",
+        "backend/services/research_series_routes.py",
+        "backend/services/scenario_stress_routes.py",
+        "backend/historical_regimes/segment_numba.py",
+        "backend/historical_regimes/authoring.py",
+        "backend/computation_graph/series_contracts.py",
+        "backend/computation_graph/series_expression.py",
+        "backend/computation_graph/series_operators.py",
+        "backend/computation_graph/series_runtime.py",
+        "backend/computation_graph/series_numba.py",
+        "backend/historical_regimes/math_presentation.py"
+      ],
+      "key_symbols": [
+        "RegimeGraphV2Service",
+        "RegimePlanManifestRepository",
+        "RegimeDefinitionV2",
+        "NODE_REGISTRY",
+        "ResearchSeriesService",
+        "ScenarioStressService",
+        "infer",
+        "prepare",
+        "preview",
+        "preview_overview",
+        "run",
+        "publish"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "backend/services/historical_regime_routes.py",
+        "backend/historical_regimes/v2_contracts.py",
+        "backend/historical_regimes/v2_registry.py",
+        "backend/historical_regimes/v2_service.py"
+      ],
+      "then_check_files": [
+        "backend/historical_regimes/composite_expansion.py",
+        "backend/historical_regimes/granular_registry.py",
+        "backend/historical_regimes/granular_runtime.py",
+        "backend/historical_regimes/condition_numba.py",
+        "backend/scripts/benchmark_regime_granularity.py",
+        "backend/historical_regimes/v2_numba.py",
+        "backend/historical_regimes/numba_kernels.py",
+        "backend/historical_regimes/repository.py",
+        "backend/historical_regimes/v2_templates.py",
+        "backend/research_series/service.py",
+        "backend/scenario_stress/service.py",
+        "backend/tests/test_historical_regime_v2.py",
+        "backend/tests/test_historical_regime_v2_p1.py",
+        "backend/tests/test_research_series_routes.py",
+        "backend/tests/test_scenario_stress.py",
+        "backend/historical_regimes/trend_numba.py",
+        "backend/tests/test_historical_regime_trend.py",
+        "backend/scripts/benchmark_regime_trend.py",
+        "backend/historical_regimes/peak_trough_numba.py",
+        "backend/tests/test_historical_regime_peak_trough.py",
+        "docs/research/peak-trough-regime-implementation-2026-09-07.md",
+        "backend/historical_regimes/segment_numba.py",
+        "backend/historical_regimes/authoring.py",
+        "docs/research/regime-authoring-design-2026-09-07.md",
+        "backend/computation_graph/series_contracts.py",
+        "backend/computation_graph/series_expression.py",
+        "backend/computation_graph/series_operators.py",
+        "backend/computation_graph/series_runtime.py",
+        "backend/computation_graph/series_numba.py",
+        "docs/research/regime-series-studio-design-2026-09-07.md",
+        "backend/historical_regimes/node_preview.py",
+        "backend/research_series/file_import.py",
+        "docs/research/regime-source-forms-2026-09-08.md",
+        "backend/historical_regimes/indicator_nodes.py",
+        "docs/research/regime-indicator-nodes-2026-09-08.md",
+        "backend/historical_regimes/data.py",
+        "backend/research_series/product_sources.py",
+        "docs/research/regime-product-sources-2026-09-08.md",
+        "backend/research_series/numba_kernels.py",
+        "TushareDownload.md",
+        "docs/research/merrill-clock-run-repair-2026-09-10.md",
+        "docs/research/regime-save-for-research-design-2026-09-10.md",
+        "docs/research/manual-historical-event-intervals-design-2026-09-10.md",
+        "docs/research/regime-operator-granularity-design-2026-09-09.md",
+        "docs/research/temporal-capability-event-library-design-2026-09-10.md"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell",
+        "backend_typed_indicator_v2",
+        "data_ingestion_config"
+      ],
+      "downstream_dependencies": [
+        "frontend_regime_research",
+        "backend_portfolio_research"
+      ],
+      "out_of_scope_dependencies": [
+        "arbitrary Python user code",
+        "unregistered third-party model callbacks",
+        "database migrations"
+      ],
+      "related_tests": [
+        "backend/tests/test_regime_granularity.py",
+        "backend/tests/test_historical_regime_formula_routes.py",
+        "backend/tests/test_historical_regime_indicator_source.py",
+        "backend/tests/test_historical_regime_routes.py",
+        "backend/tests/test_historical_regime_taa.py",
+        "backend/tests/test_historical_regimes.py",
+        "backend/tests/test_portfolio_regime_backtest.py",
+        "backend/tests/test_historical_regime_v2.py",
+        "backend/tests/test_historical_regime_v2_p1.py",
+        "backend/tests/test_historical_regime_numba.py",
+        "backend/tests/test_research_series_numba.py",
+        "backend/tests/test_research_series_routes.py",
+        "backend/tests/test_scenario_stress.py",
+        "backend/tests/test_scenario_stress_routes.py",
+        "backend/tests/test_historical_regime_trend.py",
+        "backend/tests/test_historical_regime_peak_trough.py",
+        "backend/tests/test_regime_segments.py",
+        "backend/tests/test_regime_authoring.py",
+        "backend/tests/test_regime_series_builder.py",
+        "backend/tests/test_regime_math_presentation.py",
+        "backend/tests/test_regime_node_preview.py",
+        "backend/tests/test_regime_chart_normalization.py",
+        "backend/tests/test_research_series_import.py",
+        "backend/tests/test_regime_indicator_nodes.py",
+        "backend/tests/test_regime_product_sources.py",
+        "backend/tests/test_merrill_clock.py",
+        "backend/tests/test_regime_research_versions.py",
+        "backend/tests/test_manual_historical_events.py",
+        "backend/tests/test_regime_event_library.py",
+        "backend/tests/test_regime_temporal_capability.py"
+      ],
+      "related_configs": [
+        "backend/requirements.txt",
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "realtime_blocks_retrospective_nodes_and_automatic_retrospective_diagnostics",
+        "no_request_time_compilation",
+        "pit_asof_required_for_formal_use",
+        "missing_values_never_zero_filled",
+        "published_version_lineage_lock",
+        "third_party_model_isolation",
+        "persisted_plan_manifest_never_authorizes_execution",
+        "large_arrays_externalized",
+        "preview_overview_uses_frozen_run_metadata",
+        "overview_intervals_use_inclusive_observation_indices",
+        "unknown_intervals_are_not_neutral_states",
+        "effective_timeline_requires_complete_server_projection",
+        "trend_confirmation_never_backfills_and_missing_resets_candidate",
+        "sideways_requires_flat_slope_and_low_directional_efficiency",
+        "retrospective_merge_preserves_crashes_unknowns_and_unfinished_tail",
+        "template_upgrade_does_not_mutate_saved_runs",
+        "peak_trough_durations_count_input_observations",
+        "peak_trough_unknown_edges_never_extend_or_become_sideways",
+        "peak_trough_global_censoring_requires_full_sample_knowledge",
+        "peak_trough_split_windows_override_legacy_fields_independently",
+        "peak_trough_sideways_requires_complete_bounded_reverse_waves",
+        "peak_trough_sideways_preserves_directional_structure_and_unknowns",
+        "independent_segment_stats_require_same_boundary_node_and_exact_axis",
+        "enumerated_neutral_not_missing",
+        "formula_authoring_never_executes_python_or_prepares_numeric_plan",
+        "enum_values_cannot_feed_numeric_series_ports",
+        "rolling_warmup_missing_preserved_without_python_fallback",
+        "typed_formula_availability_propagates_input_publication_times",
+        "node_preview_projection_does_not_relax_formal_state_output_or_realtime_contracts"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "historical state labels and probabilities",
+        "TAA and formal-backtest timing",
+        "product state overlays",
+        "scenario transition and return distributions",
+        "published run reproducibility"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P09",
+        "P14"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_regime_granularity.py backend/tests/test_regime_segments.py -q",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_historical_regime_numba.py tests/test_historical_regime_trend.py tests/test_historical_regime_peak_trough.py tests/test_historical_regime_v2.py tests/test_historical_regime_v2_p1.py tests/test_research_series_numba.py tests/test_research_series_routes.py tests/test_scenario_stress.py tests/test_scenario_stress_routes.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/historical_regimes/v2_contracts.py backend/historical_regimes/v2_registry.py backend/historical_regimes/v2_service.py backend/historical_regimes/numba_kernels.py backend/historical_regimes/repository.py backend/research_series/service.py backend/scenario_stress/service.py backend/historical_regimes/trend_numba.py backend/historical_regimes/v2_numba.py backend/historical_regimes/v2_templates.py backend/historical_regimes/peak_trough_numba.py backend/historical_regimes/segment_numba.py backend/historical_regimes/authoring.py",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_series_builder.py tests/test_regime_segments.py tests/test_regime_authoring.py tests/test_indicator_graph.py tests/test_indicator_formula_roundtrip.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_math_presentation.py tests/test_regime_authoring.py tests/test_regime_series_builder.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_node_preview.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_chart_normalization.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_research_series_import.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_indicator_nodes.py -q'",
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_product_sources.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_merrill_clock.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_regime_research_versions.py -q",
+        "python3 -m pytest backend/tests/test_manual_historical_events.py backend/tests/test_regime_event_library.py backend/tests/test_regime_temporal_capability.py -q"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "versioned_research_runtime",
+        "fixed_signature_njit",
+        "immutable_snapshot"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/historical_regimes/v2_contracts.py",
+          "backend/historical_regimes/v2_registry.py",
+          "backend/historical_regimes/v2_service.py",
+          "backend/historical_regimes/numba_kernels.py",
+          "backend/historical_regimes/repository.py",
+          "backend/research_series/service.py",
+          "backend/scenario_stress/service.py",
+          "backend/services/historical_regime_routes.py",
+          "backend/tests/test_historical_regime_v2.py",
+          "backend/tests/test_historical_regime_v2_p1.py",
+          "backend/tests/test_research_series_routes.py",
+          "backend/tests/test_scenario_stress.py",
+          "backend/historical_regimes/trend_numba.py",
+          "backend/tests/test_historical_regime_trend.py",
+          "backend/historical_regimes/peak_trough_numba.py",
+          "backend/tests/test_historical_regime_peak_trough.py",
+          "backend/computation_graph/series_contracts.py",
+          "backend/computation_graph/series_expression.py",
+          "backend/computation_graph/series_operators.py",
+          "backend/computation_graph/series_runtime.py",
+          "backend/computation_graph/series_numba.py",
+          "backend/tests/test_regime_series_builder.py",
+          "backend/historical_regimes/math_presentation.py",
+          "backend/tests/test_regime_math_presentation.py",
+          "backend/historical_regimes/node_preview.py",
+          "backend/tests/test_regime_node_preview.py",
+          "backend/tests/test_regime_chart_normalization.py",
+          "backend/tests/test_research_series_import.py",
+          "backend/research_series/file_import.py",
+          "backend/historical_regimes/indicator_nodes.py",
+          "docs/research/regime-indicator-nodes-2026-09-08.md",
+          "backend/tests/test_regime_indicator_nodes.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "frontend_regime_research",
+      "name": "Historical regime graph workbench, data lab, and scenario UI",
+      "path": "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+      "kind": "frontend_feature_pages",
+      "purpose": "Separates primitives, expandable composites and coupled kernels in the resource library. Add-and-expand and explicit expansion in canvas/guided editors create one undoable draft edit, preserve existing layout and reject stale replies; undo/redo is available in all authoring modes. State-code parameters display user-defined labels and retain integer payloads. Recommended step templates do not auto-migrate saved definitions. Lets researchers build typed historical-regime graphs through an Indicator-Studio-like same-page library, definition and preview layout with lossless guided forms or expandable canvases, open tools in non-resizing drawers, inspect frozen complete final results separately from node debugging, compare experiments, publish immutable versions, and reuse eligible versions in scenario simulation and portfolio workflows. Trend results show the identification index and filter separately from the replaceable evaluation series, with raw-risk and pre-merge phase evidence. The main scenario-center entry opens the studio directly; its library separates real-time and retrospective templates and retains the old directory for historical versions and migration; loading a retrospective graph selects retrospective mode after the catalog loads. Peak/trough evidence has an independent identification-index plot, retained extrema and complete-phase boundaries. Legacy peak/trough forms expose four independent windows and sideways controls while displaying inherited legacy values; evidence distinguishes original waves from merged sideways boundaries, width, ER and wave count. Three authoring modes share one definition: canvas, guided typed connections and full-graph formula source. Pending formula edits block running/saving/mode switching; explicit apply or restore is required, stale async responses cannot overwrite newer drafts, and original node positions survive formula apply. Resource classification uses the existing registry; CalculationSteps and SeriesOutputFields are shared with Indicator Center, whose storage and computation semantics remain unchanged. Guided configuration summarizes dependencies of the selected output and opens one selected calculation step in a drawer; output configuration supports an enum main channel and optional numeric channels. Numeric charts use frozen channel metadata and preserve missing values. Execution mode, cutoff and data controls belong to preview. Switching scenario-center tabs retains drafts; asynchronous template and saved-definition loads cannot overwrite newer selections or edits. Server-authored mathematical LaTeX is rendered with KaTeX in all three modes; preview follows the selected output and hides outdated or unapplied drafts, with dependency equations and parameters available on demand. Canvas and guided node drawers can preview a main node and search/select up to seven numeric comparison outputs from other branches before a final output exists; selected curves appear automatically, with same-axis, right-axis and synchronized subplot layouts. Node previews have separate transient job state, mode and cutoff, stale-result and cancellation handling, full paginated chart history and a recent-row table. Node charts offer a display-only first-visible-observation-equals-one switch. Slider and inside zoom select the exact category base; backend-normalized values and percentage changes preserve raw tables and zoom bounds. Late responses are ignored and nonpositive or missing bases are rejected. Node charts optionally load transitive upstream numeric outputs from the same preview with full pagination. Each overlay selects a shared left axis, shared right axis or independent subplot; all panels share date-based zoom and tooltips. Sparse calendars retain original observations and missing values. Numeric overlays normalize against the same visible date using the warmed backend endpoint; missing bases remain explicit errors. Raw comparison tables remain available. Scenario help tips render in a fixed body portal to escape drawer overflow, clamp to the viewport and flip below the trigger when necessary. Hover and keyboard access are retained; Escape dismisses the hint before the drawer, and container scrolling removes detached hints. The shared-left-axis overlay is labeled 同图同轴. Scenario source editors share single-binding controls across canvas and guided forms. Uploads support file preview, column mapping, confirmation and saved-version selection; cancelled or failed uploads preserve the old binding. Stored product-bound indicator source definitions retain their separate version and fund/ETF target choices as a compatibility contract. Index/macro/upload/indicator identity fields are read-only; replacing a source clears old identity and provenance. Indicator Center implementation remains unchanged. The node library uses one dropdown and text search, exposes Indicator Center calculations as a distinct category, and hides manual-entry and product-bound indicator creation. Native multi-output indicator nodes connect explicit upstream inputs without a second product picker. Existing inline data is read-only; the manual editor was removed. Binary arithmetic preview errors offer one user-triggered, undoable insertion of an explicit common-date alignment node followed by preview; structured server diagnostics remain visible. Unavailable adjusted source fields show their reason and cannot be selected. One ETF picker switches between market prices and downloaded adjusted NAV, rebinding field-specific files within the same frozen generation; field editing waits for catalog metadata and older generations require explicit product reselection. Adjusted NAV and market-price labels no longer imply retrospective-only use; help text explains announcement dates and the QFQ cutoff anchor. Preview settings show asynchronous run failures and progress beside Run, support source-node navigation, and honor the catalog template default mode. Save Scenario combines definition saving, plan preparation and research activation into one user action. Technical version/run/publication tools remain under collapsed advanced management. Product research chooses named algorithm versions, refreshes available scenarios and preserves selected immutable references when deduplicating results.",
+      "module_tags": [
+        "frontend",
+        "historical-regime",
+        "scenario-stress",
+        "data-lab",
+        "xyflow",
+        "accessible-tables"
+      ],
+      "entry_files": [
+        "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+        "frontend/src/pages/HistoricalRegimeCenter.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.tsx",
+        "frontend/src/pages/ResearchDataLab.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.tsx",
+        "frontend/src/pages/ScenarioCenters.tsx",
+        "frontend/src/pages/TacticalAllocationWorkspace.tsx",
+        "frontend/src/pages/regime-workbench",
+        "frontend/src/components/HistoricalRegimeBacktest.tsx",
+        "frontend/src/pages/regime-workbench/RegimeValidationPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeExperimentPanel.tsx",
+        "frontend/src/services/historicalRegimes.ts",
+        "frontend/src/services/portfolioRegime.ts",
+        "frontend/src/services/tacticalAllocation.ts",
+        "frontend/src/services/regimeGraph.ts",
+        "frontend/src/services/researchSeries.ts",
+        "frontend/src/services/scenarioStress.ts",
+        "frontend/src/pages/regime-workbench/RegimeFormulaEditor.tsx",
+        "frontend/src/components/computation-graph/CalculationSteps.tsx",
+        "frontend/src/components/computation-graph/SeriesOutputFields.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
+        "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
+        "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx",
+        "frontend/src/services/eventLibrary.ts"
+      ],
+      "key_symbols": [
+        "HistoricalRegimeWorkbench",
+        "HistoricalRegimeDirectory",
+        "ResearchDataLab",
+        "ScenarioAlgorithmCenter",
+        "RegimeGraphCanvas",
+        "RegimeNodeInspector",
+        "RegimeResultDock",
+        "RegimeValidationPanel",
+        "RegimeExperimentPanel",
+        "RegimeDefinitionLibrary",
+        "RegimeGuidedFormulaPanel"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+        "frontend/src/services/regimeGraph.ts",
+        "frontend/src/pages/regime-workbench/RegimeGraphCanvas.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNodeInspector.tsx"
+      ],
+      "then_check_files": [
+        "frontend/src/pages/ResearchDataLab.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.tsx",
+        "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeValidationPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
+        "frontend/src/pages/ResearchDataLab.test.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeTimelineChart.tsx",
+        "frontend/src/pages/regime-workbench/RegimeEvidencePanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeTrend.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeFormulaEditor.tsx",
+        "frontend/src/components/computation-graph/CalculationSteps.tsx",
+        "frontend/src/components/computation-graph/SeriesOutputFields.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
+        "docs/research/regime-series-studio-design-2026-09-07.md",
+        "frontend/src/components/indicator-graph/IndicatorGraphEditor.tsx",
+        "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
+        "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
+        "docs/research/regime-studio-ui-parity-2026-09-07.md",
+        "docs/research/assets/regime-studio-canvas-2026-09-07.png",
+        "docs/research/assets/regime-studio-guided-2026-09-07.png",
+        "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx",
+        "docs/research/assets/regime-math-formula-2026-09-07.png",
+        "docs/research/assets/regime-math-steps-2026-09-07.png",
+        "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.tsx",
+        "frontend/src/services/regimePreviewSeries.test.ts",
+        "frontend/e2e/regime-upstream-preview.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeUploadSeriesEditor.tsx",
+        "frontend/src/pages/regime-workbench/RegimeIndicatorSourceFields.tsx",
+        "docs/research/regime-source-forms-2026-09-08.md",
+        "frontend/src/pages/regime-workbench/RegimeResourceLibrary.tsx",
+        "docs/research/regime-indicator-nodes-2026-09-08.md",
+        "docs/research/regime-product-sources-2026-09-08.md",
+        "frontend/src/pages/regime-workbench/RegimeSavePanel.tsx",
+        "frontend/src/services/regimeResearchVersions.ts"
+      ],
+      "upstream_dependencies": [
+        "frontend_app_shell",
+        "backend_regime_research"
+      ],
+      "downstream_dependencies": [
+        "frontend_portfolio_research",
+        "frontend_allocation_workflows"
+      ],
+      "out_of_scope_dependencies": [
+        "browser-authored Python code",
+        "client-side authoritative financial calculations"
+      ],
+      "related_tests": [
+        "frontend/src/pages/regime-workbench/useRegimeCompositeExpansion.test.tsx",
+        "frontend/e2e/regime-granularity.spec.ts",
+        "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
+        "frontend/src/pages/HistoricalRegimeCenter.test.tsx",
+        "frontend/src/pages/HistoricalRegimeDirectory.test.tsx",
+        "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
+        "frontend/src/pages/ResearchDataLab.test.tsx",
+        "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx",
+        "frontend/src/pages/ScenarioCenters.test.tsx",
+        "frontend/src/pages/TacticalAllocationWorkspace.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeResultDock.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeTrend.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeFormulaEditor.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.test.tsx",
+        "frontend/e2e/historical-regime-workbench.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeMathPreview.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.test.tsx",
+        "frontend/e2e/regime-source-picker.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.test.tsx",
+        "frontend/e2e/regime-node-preview.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.test.tsx",
+        "frontend/src/services/regimePreviewSeries.test.ts",
+        "frontend/e2e/regime-upstream-preview.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeHelpTip.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeSourceForms.test.tsx",
+        "frontend/e2e/regime-source-forms.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeResourceLibrary.test.tsx",
+        "frontend/e2e/regime-indicator-nodes.spec.ts",
+        "frontend/src/pages/regime-workbench/RegimeSavePanel.test.tsx",
+        "frontend/src/services/regimeResearchVersions.test.ts",
+        "frontend/e2e/regime-manual-events.spec.ts",
+        "frontend/e2e/regime-temporal-event-library.spec.ts",
+        "frontend/src/test/eventLibraryFixtures.ts"
+      ],
+      "related_configs": [
+        "frontend/package.json",
+        "frontend/vite.config.ts"
+      ],
+      "risk_flags": [
+        "realtime_disables_retrospective_node_selection_and_blocks_existing_graph_runs",
+        "stale_preview_response",
+        "dynamic_schema_contract",
+        "graph_keyboard_accessibility",
+        "chart_requires_table_alternative",
+        "publication_lineage_lock",
+        "preview_identity_includes_execution_context",
+        "full_series_required_for_global_regime_overlays",
+        "frozen_result_labels_and_colors",
+        "formal_result_identity_separate_from_current_draft",
+        "classification_filter_overlay_must_not_use_evaluation_price_axis",
+        "template_mode_selection_waits_for_catalog",
+        "peak_trough_plot_uses_dating_index_and_marks_retrospective_semantics",
+        "deprecated_symmetric_peak_parameters_hidden_but_inherited_values_displayed",
+        "scenario_center_tab_switch_preserves_draft",
+        "definition_load_checks_request_and_draft_signature",
+        "research_source_search_queries_full_catalog_with_pagination_and_stale_response_guard",
+        "index_identity_bound_once_and_shown_readonly_without_implicit_snapshot_rebinding",
+        "partial_node_preview_preserves_draft_and_full_regime_run_state"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "historical regime research workflow",
+        "research-series selection",
+        "scenario stress definitions",
+        "published-state application selectors"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P07",
+        "P14"
+      ],
+      "minimum_regression": [
+        "npm run test --prefix frontend -- --run useRegimeCompositeExpansion.test.tsx RegimeResourceLibrary.test.tsx",
+        "npm run test:e2e --prefix frontend -- regime-granularity.spec.ts --workers=1",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/HistoricalRegimeDirectory.test.tsx src/pages/HistoricalRegimeWorkbench.test.tsx src/pages/ResearchDataLab.test.tsx src/pages/ScenarioAlgorithmCenter.test.tsx src/pages/regime-workbench/RegimeP1Panels.test.tsx src/pages/regime-workbench/RegimeResultDock.test.tsx src/pages/regime-workbench/RegimeLifecyclePanel.test.tsx src/pages/regime-workbench/RegimeTrend.test.tsx src/pages/regime-workbench/regimeResultAdapter.test.ts src/pages/regime-workbench/RegimeResultView.test.tsx'",
+        "npm run build --prefix frontend",
+        "npm run test --prefix frontend -- --run RegimeSeriesOutputs.test.tsx HistoricalRegimeWorkbench.test.tsx ScenarioCenters.test.tsx RegimeFormulaEditor.test.tsx RegimeTrend.test.tsx IndicatorStudio.test.tsx IndicatorStudio.roundtrip.test.tsx",
+        "npm run test:e2e --prefix frontend -- historical-regime-workbench.spec.ts regime-source-picker.spec.ts --workers=1",
+        "npm run test --prefix frontend -- --run RegimeMathPreview.test.tsx RegimeFormulaEditor.test.tsx",
+        "npm run test --prefix frontend -- --run RegimeResearchSeriesPicker.test.tsx",
+        "npm run test --prefix frontend -- --run RegimeNodePreviewPanel.test.tsx",
+        "npm run test:e2e --prefix frontend -- regime-node-preview.spec.ts --workers=1",
+        "npm run test --prefix frontend -- --run RegimeNodeSeriesChart.test.tsx",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/services/regimePreviewSeries.test.ts src/pages/regime-workbench/RegimeNodeSeriesChart.test.tsx'",
+        "npm run test --prefix frontend -- --run RegimeSourceForms.test.tsx RegimeResearchSeriesPicker.test.tsx",
+        "npm run test --prefix frontend -- --run RegimeResourceLibrary.test.tsx",
+        "npm run test --prefix frontend -- --run RegimeSavePanel.test.tsx regimeResearchVersions.test.ts ProductDetail.test.tsx",
+        "npm run test:e2e --prefix frontend -- regime-manual-events.spec.ts regime-temporal-event-library.spec.ts --workers=1"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "frontend_runtime_tested",
+        "versioned_graph_workbench"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+          "frontend/src/pages/ResearchDataLab.tsx",
+          "frontend/src/pages/ScenarioAlgorithmCenter.tsx",
+          "frontend/src/pages/regime-workbench/RegimeValidationPanel.tsx",
+          "frontend/src/services/regimeGraph.ts",
+          "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeP1Panels.test.tsx",
+          "frontend/src/pages/ScenarioAlgorithmCenter.test.tsx",
+          "frontend/src/pages/HistoricalRegimeDirectory.tsx",
+          "frontend/src/pages/HistoricalRegimeDirectory.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeTimelineChart.tsx",
+          "frontend/src/pages/regime-workbench/RegimeEvidencePanel.tsx",
+          "frontend/src/pages/regime-workbench/RegimeTrend.test.tsx",
+          "frontend/src/components/computation-graph/CalculationSteps.tsx",
+          "frontend/src/components/computation-graph/SeriesOutputFields.tsx",
+          "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
+          "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
+          "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
+          "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
+          "frontend/src/pages/ScenarioCenters.tsx",
+          "frontend/src/pages/ScenarioCenters.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx",
+          "frontend/src/pages/regime-workbench/RegimeMathPreview.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.tsx",
+          "frontend/src/pages/regime-workbench/RegimeResearchSeriesPicker.test.tsx",
+          "frontend/e2e/regime-source-picker.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.tsx",
+          "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.test.tsx",
+          "frontend/e2e/regime-node-preview.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeNodeSeriesChart.tsx",
+          "frontend/src/services/regimePreviewSeries.test.ts",
+          "frontend/e2e/regime-upstream-preview.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeHelpTip.tsx",
+          "frontend/src/pages/regime-workbench/RegimeHelpTip.test.tsx",
+          "frontend/src/pages/regime-workbench/RegimeSourceForms.test.tsx",
+          "frontend/e2e/regime-source-forms.spec.ts",
+          "frontend/src/pages/regime-workbench/RegimeUploadSeriesEditor.tsx",
+          "frontend/src/pages/regime-workbench/RegimeIndicatorSourceFields.tsx",
+          "frontend/src/pages/regime-workbench/RegimeResourceLibrary.tsx",
+          "docs/research/regime-indicator-nodes-2026-09-08.md",
+          "frontend/src/pages/regime-workbench/RegimeResourceLibrary.test.tsx",
+          "frontend/e2e/regime-indicator-nodes.spec.ts"
         ],
         "unsampled_paths": []
       }
@@ -1352,7 +2409,7 @@
       "name": "React app shell, routing, and Vite config",
       "path": "frontend/src/App.tsx",
       "kind": "frontend_entrypoint",
-      "purpose": "React BrowserRouter shell, top navigation, page route table, Vite proxy to the FastAPI backend, Tailwind setup, and Vitest setup.",
+      "purpose": "React BrowserRouter shell, top navigation, page route table, Vite proxy to the FastAPI backend, Tailwind setup, and Vitest setup. Integrates the PIT settings page and shared context/provenance UI. Server-held defaults remain separate from a sessionStorage tab-only viewing override sent on data-request headers; changing the temporary view does not update global settings. Result footnotes describe the saved run lineage rather than inferring it from the current page badge.",
       "module_tags": [
         "frontend",
         "react",
@@ -1371,7 +2428,9 @@
         "frontend/tsconfig.json",
         "frontend/tailwind.config.js",
         "frontend/postcss.config.js",
-        "frontend/src/test/setup.ts"
+        "frontend/src/test/setup.ts",
+        "frontend/src/utils/fixedNjitExecution.ts",
+        "frontend/dev/sourceWriteGuard.ts"
       ],
       "key_symbols": [
         "App",
@@ -1379,6 +2438,7 @@
         "defineConfig"
       ],
       "child_modules": [
+        "frontend_investment_process_framework",
         "frontend_indicator_studio",
         "frontend_etf_research_pages",
         "frontend_allocation_workflows",
@@ -1395,7 +2455,14 @@
         "frontend/src/utils/returnNavigation.ts",
         "frontend/src/index.css",
         "frontend/src/App.test.tsx",
-        "frontend/src/test/setup.ts"
+        "frontend/src/test/setup.ts",
+        "frontend/src/app/ResearchContext.tsx",
+        "frontend/src/components/PitBadge.tsx",
+        "frontend/src/components/PitDecisionNotice.tsx",
+        "frontend/src/components/PitProvenance.tsx",
+        "frontend/src/pages/PitSnapshots.tsx",
+        "frontend/src/services/pit.ts",
+        "frontend/src/services/pitOverride.ts"
       ],
       "upstream_dependencies": [
         "backend_api_shell"
@@ -1406,19 +2473,28 @@
       ],
       "related_tests": [
         "frontend/src/App.test.tsx",
-        "frontend/src/utils/returnNavigation.test.ts"
+        "frontend/src/utils/fixedNjitExecution.test.ts",
+        "frontend/src/utils/returnNavigation.test.ts",
+        "frontend/src/app/ResearchContext.test.tsx",
+        "frontend/dev/sourceWriteGuard.test.ts",
+        "frontend/e2e/data-governance-errors.spec.ts",
+        "frontend/src/pages/PitSnapshots.test.tsx"
       ],
       "related_configs": [
         "frontend/vite.config.ts",
         "frontend/package.json",
         "frontend/tsconfig.json",
         "frontend/tailwind.config.js",
-        "frontend/postcss.config.js"
+        "frontend/postcss.config.js",
+        "locales/business.json",
+        "locales/system.json"
       ],
       "risk_flags": [
         "node_modules_not_present_at_bootstrap",
         "react_router_version_mismatch_possible",
-        "vite_proxy_contract"
+        "vite_proxy_contract",
+        "tab_pit_view_is_distinct_from_server_system_settings",
+        "result_provenance_must_not_be_inferred_from_current_view"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -1453,11 +2529,155 @@
       }
     },
     {
+      "id": "frontend_investment_process_framework",
+      "name": "Investment lifecycle, actual portfolio, allocation, and accounting prototype",
+      "path": "frontend/src/app/processRegistry.ts",
+      "kind": "frontend_workflow_framework",
+      "purpose": "Defines the product research through feedback lifecycle, actual-portfolio registry, effective-dated external-account and portfolio-manager relationships, cross-portfolio fair allocation, source-account reconciliation, fund-accounting Booking, double-entry controls, dual-entity statements, static-demo boundaries, and legacy route redirects.",
+      "module_tags": [
+        "frontend",
+        "investment-lifecycle",
+        "actual-portfolio",
+        "external-account",
+        "trade-allocation",
+        "fund-accounting",
+        "static-prototype"
+      ],
+      "entry_files": [
+        "CONTEXT.md",
+        "docs/frontend-investment-research-blueprint.md",
+        "docs/account-portfolio-allocation-accounting-design.md",
+        "frontend/src/app",
+        "frontend/src/layouts",
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/app/actualPortfolioDemoData.ts",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/components/ActualPortfolioSelector.tsx",
+        "frontend/src/components/LegacyRedirect.tsx",
+        "frontend/src/components/StaticDemoBanner.tsx",
+        "frontend/src/pages/ProcessHome.tsx",
+        "frontend/src/pages/StageOverview.tsx",
+        "frontend/src/pages/PortfolioCenterWorkspace.tsx",
+        "frontend/src/pages/PortfolioOnboardingWorkspace.tsx",
+        "frontend/src/pages/TradeAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountingBookingWorkspace.tsx",
+        "frontend/src/pages/FinancialStatementsWorkspace.tsx",
+        "frontend/src/pages/PortfolioSolutionCatalog.tsx",
+        "frontend/src/pages/PortfolioSolutionShowcase.tsx",
+        "frontend/src/pages/PrototypeWorkspace.tsx",
+        "frontend/src/pages/ToolHubPage.tsx",
+        "frontend/src/services/businessNumeric.ts"
+      ],
+      "key_symbols": [
+        "businessStages",
+        "actualPortfolioDemoData",
+        "portfolioAccountRelationships",
+        "portfolioManagerAssignments",
+        "PortfolioCenterWorkspace",
+        "TradeAllocationWorkspace",
+        "AccountStatementAllocationWorkspace",
+        "AccountingBookingWorkspace"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "CONTEXT.md",
+        "docs/account-portfolio-allocation-accounting-design.md",
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/app/actualPortfolioDemoData.ts",
+        "frontend/src/App.tsx"
+      ],
+      "then_check_files": [
+        "docs/frontend-investment-research-blueprint.md",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/pages/PortfolioCenterWorkspace.tsx",
+        "frontend/src/pages/PortfolioOnboardingWorkspace.tsx",
+        "frontend/src/pages/TradeAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
+        "frontend/src/pages/AccountingBookingWorkspace.tsx",
+        "frontend/src/pages/FinancialStatementsWorkspace.tsx",
+        "frontend/src/ProcessFramework.test.tsx",
+        "frontend/e2e/process-framework.spec.ts"
+      ],
+      "upstream_dependencies": [
+        "frontend_app_shell"
+      ],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [
+        "live order routing",
+        "bank and custodian file ingestion",
+        "legal fund establishment",
+        "statutory accounting posting"
+      ],
+      "related_tests": [
+        "frontend/src/pages/PortfolioSolutionShowcase.test.tsx",
+        "frontend/src/pages/PrototypeWorkspace.test.tsx",
+        "frontend/src/services/businessNumeric.test.ts",
+        "frontend/src/ProcessFramework.test.tsx",
+        "frontend/src/app/actualPortfolioDemoData.test.ts",
+        "frontend/src/pages/PortfolioCenterWorkspace.test.tsx",
+        "frontend/src/pages/PortfolioOnboardingWorkspace.test.tsx",
+        "frontend/src/pages/TradeAllocationWorkspace.test.tsx",
+        "frontend/src/pages/AccountStatementAllocationWorkspace.test.tsx",
+        "frontend/src/pages/AccountingBookingWorkspace.test.tsx",
+        "frontend/src/pages/FinancialStatementsWorkspace.test.tsx",
+        "frontend/e2e/process-framework.spec.ts"
+      ],
+      "related_configs": [
+        "frontend/package.json",
+        "frontend/playwright.config.ts"
+      ],
+      "risk_flags": [
+        "research_and_actual_portfolio_context_must_not_mix",
+        "shared_execution_channel_must_not_create_shared_fund_ledger",
+        "allocation_must_balance_before_booking",
+        "booking_is_not_a_posted_journal",
+        "static_pages_must_not_call_backend_or_submit_orders"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "all investment-process navigation",
+        "actual-portfolio context",
+        "account and manager responsibility lineage",
+        "trade-to-accounting audit trail",
+        "portfolio performance source data"
+      ],
+      "pitfall_ids": [
+        "P07"
+      ],
+      "minimum_regression": [
+        "npm run test --prefix frontend -- --run",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "frontend_static_prototype",
+        "no_backend_contract_change"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "CONTEXT.md",
+          "docs/account-portfolio-allocation-accounting-design.md",
+          "frontend/src/app/processRegistry.ts",
+          "frontend/src/app/actualPortfolioDemoData.ts",
+          "frontend/src/pages/TradeAllocationWorkspace.tsx",
+          "frontend/src/pages/AccountStatementAllocationWorkspace.tsx",
+          "frontend/src/pages/AccountingBookingWorkspace.tsx",
+          "frontend/src/app/actualPortfolioDemoData.test.ts",
+          "frontend/e2e/process-framework.spec.ts"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
       "id": "frontend_indicator_studio",
       "name": "Custom indicator studio and API client",
       "path": "frontend/src/pages/IndicatorStudio.tsx",
       "kind": "frontend_feature_page",
-      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, a reusable focus-aware remote-search dropdown, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a single-result DAG plus accessible table, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types.",
+      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, a reusable focus-aware remote-search dropdown, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a shared DAG with named numeric scalar results or time-series channels plus accessible result tables, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types.",
       "module_tags": [
         "frontend",
         "custom-indicators",
@@ -1473,6 +2693,7 @@
         "frontend/src/pages/IndicatorStudio.tsx",
         "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/services/customIndicators.ts",
+        "frontend/src/services/customIndicatorsRolling.test.ts",
         "frontend/src/pages/IndicatorStudio.test.tsx"
       ],
       "key_symbols": [
@@ -1495,9 +2716,11 @@
       "then_check_files": [
         "frontend/src/pages/IndicatorStudio.test.tsx",
         "frontend/e2e/indicator-studio.spec.ts",
+        "frontend/e2e/indicator-primitives.spec.ts",
         "frontend/src/App.tsx",
         "frontend/src/components/Header.tsx",
-        "docs/custom_indicator_design.md"
+        "docs/custom_indicator_design.md",
+        "frontend/src/components/indicator-graph/indicatorGraphPresentation.ts"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -1508,9 +2731,14 @@
         "browser screenshot and physical-device QA"
       ],
       "related_tests": [
+        "frontend/src/services/customIndicatorsExecution.test.ts",
+        "frontend/src/services/customIndicatorsRolling.test.ts",
         "frontend/src/pages/IndicatorStudio.test.tsx",
         "frontend/e2e/indicator-studio.spec.ts",
-        "frontend/src/App.test.tsx"
+        "frontend/e2e/indicator-primitives.spec.ts",
+        "frontend/src/App.test.tsx",
+        "frontend/e2e/indicator-canvas.spec.ts",
+        "frontend/e2e/indicator-formula-roundtrip.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -1523,7 +2751,9 @@
         "existing_indicator_revision_and_protocol_lock",
         "executable_source_and_display_latex_must_not_be_confused",
         "availability_failure_must_disable_variables",
-        "single_result_dag_contract",
+        "versioned_independent_scalar_and_time_series_channel_contract",
+        "output_identity_is_stable_across_label_and_order_changes",
+        "saved_source_changes_invalidate_inline_compile_tokens",
         "echarts_browser_rendering",
         "katex_formula_rendering",
         "search_dropdown_must_close_when_focus_leaves_or_escape_is_pressed",
@@ -1558,6 +2788,7 @@
           "frontend/src/services/customIndicators.ts",
           "frontend/src/pages/IndicatorStudio.test.tsx",
           "frontend/e2e/indicator-studio.spec.ts",
+          "frontend/e2e/indicator-primitives.spec.ts",
           "frontend/playwright.config.ts"
         ],
         "unsampled_paths": []
@@ -1579,10 +2810,10 @@
         "accessibility"
       ],
       "entry_files": [
-      "frontend/src/components/metrics/MetricDisplay.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.ts",
-      "frontend/src/utils/indicatorDiagnostics.ts",
-      "frontend/src/utils/indicatorPeriods.ts",
+        "frontend/src/components/metrics/MetricDisplay.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.ts",
+        "frontend/src/utils/indicatorDiagnostics.ts",
+        "frontend/src/utils/indicatorPeriods.ts",
         "frontend/src/services/customIndicators.ts"
       ],
       "key_symbols": [
@@ -1602,17 +2833,17 @@
       ],
       "child_modules": [],
       "first_read_files": [
-      "frontend/src/components/metrics/MetricDisplay.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.ts",
-      "frontend/src/utils/indicatorDiagnostics.ts",
-      "frontend/src/utils/indicatorPeriods.ts",
+        "frontend/src/components/metrics/MetricDisplay.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.ts",
+        "frontend/src/utils/indicatorDiagnostics.ts",
+        "frontend/src/utils/indicatorPeriods.ts",
         "frontend/src/services/customIndicators.ts"
       ],
       "then_check_files": [
-      "frontend/src/components/metrics/MetricDisplay.test.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
-      "frontend/src/utils/indicatorDiagnostics.test.ts",
-      "frontend/src/utils/indicatorPeriods.test.ts",
+        "frontend/src/components/metrics/MetricDisplay.test.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
+        "frontend/src/utils/indicatorDiagnostics.test.ts",
+        "frontend/src/utils/indicatorPeriods.test.ts",
         "frontend/e2e/metric-display.spec.ts",
         "frontend/src/pages/ProductResearch.tsx",
         "frontend/src/pages/ProductDetail.tsx",
@@ -1632,10 +2863,10 @@
         "workspace-shared display presets"
       ],
       "related_tests": [
-      "frontend/src/components/metrics/MetricDisplay.test.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
-      "frontend/src/utils/indicatorDiagnostics.test.ts",
-      "frontend/src/utils/indicatorPeriods.test.ts",
+        "frontend/src/components/metrics/MetricDisplay.test.tsx",
+        "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
+        "frontend/src/utils/indicatorDiagnostics.test.ts",
+        "frontend/src/utils/indicatorPeriods.test.ts",
         "frontend/e2e/metric-display.spec.ts",
         "frontend/src/pages/ProductResearch.test.tsx",
         "frontend/src/pages/ProductDetail.test.tsx",
@@ -1680,15 +2911,15 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-      "frontend/src/components/metrics/MetricDisplay.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.ts",
-      "frontend/src/utils/indicatorDiagnostics.ts",
-      "frontend/src/utils/indicatorPeriods.ts",
+          "frontend/src/components/metrics/MetricDisplay.tsx",
+          "frontend/src/components/metrics/useMetricDisplayPreference.ts",
+          "frontend/src/utils/indicatorDiagnostics.ts",
+          "frontend/src/utils/indicatorPeriods.ts",
           "frontend/src/services/customIndicators.ts",
-      "frontend/src/components/metrics/MetricDisplay.test.tsx",
-      "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
-      "frontend/src/utils/indicatorDiagnostics.test.ts",
-      "frontend/src/utils/indicatorPeriods.test.ts",
+          "frontend/src/components/metrics/MetricDisplay.test.tsx",
+          "frontend/src/components/metrics/useMetricDisplayPreference.test.tsx",
+          "frontend/src/utils/indicatorDiagnostics.test.ts",
+          "frontend/src/utils/indicatorPeriods.test.ts",
           "frontend/e2e/metric-display.spec.ts",
           "npm run test --prefix frontend -- --run",
           "npm run test:e2e --prefix frontend",
@@ -1702,7 +2933,7 @@
       "name": "ETF/public-fund panorama dashboard and product research pages",
       "path": "frontend/src/pages/ProductResearch.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "ETF/public-fund panorama dashboard with explicit read-only snapshot labels, URL-scoped views, partial-data cards, accessible charts and tables, plus product filtering and a shared-protocol indicator-analysis view, detail cards, and comparison matrix.",
+      "purpose": "ETF/public-fund panorama dashboard with explicit read-only snapshot labels, URL-scoped views, partial-data cards, accessible charts and tables, plus product filtering and a shared-protocol indicator-analysis view, detail cards, and comparison matrix. Single-product research uses four workspaces and one published scenario context; conditional statistics preserve continuous segment boundaries and simulations run only on explicit request.",
       "module_tags": [
         "frontend",
         "etf",
@@ -1717,6 +2948,13 @@
         "frontend/src/pages/ProductResearch.tsx",
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
+        "frontend/src/pages/ProductPools.tsx",
+        "frontend/src/pages/ProductPoolLifecycle.tsx",
+        "frontend/src/pages/ProductPoolSelection.tsx",
+        "frontend/src/components/product-pools",
+        "frontend/src/services/productAnalysis.ts",
+        "frontend/src/services/productCompare.ts",
+        "frontend/src/services/productPools.ts",
         "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/components/HorizontalMetricComparison.tsx",
         "frontend/src/components/dashboard/DashboardOverviewCards.tsx",
@@ -1730,7 +2968,7 @@
         "frontend/src/components/dashboard/useDataRefresh.ts",
         "frontend/src/components/dashboard/useInstrumentDashboard.ts",
         "frontend/src/utils/performance.ts",
-        "frontend/src/utils/statisticalAnalysis.ts"
+        "frontend/src/components/product-research/ProductScenarioPanel.tsx"
       ],
       "key_symbols": [
         "Dashboard",
@@ -1779,10 +3017,10 @@
         "frontend/src/components/FilterDropdown.tsx",
         "frontend/src/components/HorizontalMetricComparison.tsx",
         "frontend/src/utils/performance.ts",
-        "frontend/src/utils/statisticalAnalysis.ts",
         "backend/services/instrument_analytics.py",
         "backend/services/instrument_routes.py",
-        "backend/services/data_routes.py"
+        "backend/services/data_routes.py",
+        "docs/product_scenario_research_design.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -1797,6 +3035,10 @@
         "real browser screenshot QA"
       ],
       "related_tests": [
+        "frontend/src/pages/ProductPools.test.tsx",
+        "frontend/src/pages/ProductPoolSelection.test.tsx",
+        "frontend/src/services/productAnalysis.test.ts",
+        "frontend/src/services/productPools.test.ts",
         "frontend/src/App.test.tsx",
         "frontend/src/pages/Dashboard.test.tsx",
         "frontend/e2e/dashboard.spec.ts",
@@ -1804,7 +3046,8 @@
         "frontend/src/pages/ProductResearch.test.tsx",
         "frontend/src/pages/ProductDetail.test.tsx",
         "frontend/src/pages/ProductCompare.test.tsx",
-        "frontend/src/utils/statisticalAnalysis.test.ts"
+        "frontend/e2e/product-scenario.spec.ts",
+        "frontend/e2e/metric-display.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -1848,12 +3091,12 @@
         "fact_status": "mixed",
         "evidence": [
           "frontend/src/pages/Dashboard.tsx",
-        "frontend/src/components/dashboard/useInstrumentDashboard.ts",
-        "frontend/src/components/dashboard/useDataRefresh.ts",
-        "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
-        "frontend/src/components/dashboard/DashboardResearchSearch.tsx",
-        "frontend/src/pages/Dashboard.test.tsx",
-        "frontend/e2e/dashboard.spec.ts",
+          "frontend/src/components/dashboard/useInstrumentDashboard.ts",
+          "frontend/src/components/dashboard/useDataRefresh.ts",
+          "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+          "frontend/src/components/dashboard/DashboardResearchSearch.tsx",
+          "frontend/src/pages/Dashboard.test.tsx",
+          "frontend/e2e/dashboard.spec.ts",
           "frontend/src/components/dashboard/useDataRefresh.test.tsx",
           "frontend/src/pages/ProductResearch.tsx",
           "frontend/src/pages/ProductDetail.tsx",
@@ -1884,7 +3127,9 @@
       "entry_files": [
         "frontend/src/pages/PortfolioConstruction.tsx",
         "frontend/src/pages/HoldingDiagnosis.tsx",
-        "frontend/src/services/portfolioResearch.ts"
+        "frontend/src/services/portfolioResearch.ts",
+        "frontend/src/components/HistoricalRegimeBacktest.tsx",
+        "frontend/src/services/portfolioRegime.ts"
       ],
       "key_symbols": [
         "PortfolioConstruction",
@@ -1903,6 +3148,7 @@
       "then_check_files": [
         "frontend/src/pages/PortfolioConstruction.test.tsx",
         "frontend/src/pages/HoldingDiagnosis.test.tsx",
+        "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
         "frontend/src/services/portfolioResearch.test.ts",
         "backend/services/portfolio_routes.py",
         "docs/custom_indicator_design.md"
@@ -1921,6 +3167,7 @@
       "related_tests": [
         "frontend/src/pages/PortfolioConstruction.test.tsx",
         "frontend/src/pages/HoldingDiagnosis.test.tsx",
+        "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
         "frontend/src/services/portfolioResearch.test.ts",
         "frontend/src/App.test.tsx"
       ],
@@ -1947,7 +3194,7 @@
         "P17"
       ],
       "minimum_regression": [
-        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/PortfolioConstruction.test.tsx src/pages/HoldingDiagnosis.test.tsx src/services/portfolioResearch.test.ts'",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/PortfolioConstruction.test.tsx src/pages/HoldingDiagnosis.test.tsx src/components/HistoricalRegimeBacktest.test.tsx src/services/portfolioResearch.test.ts'",
         "npm run build --prefix frontend"
       ],
       "routing_confidence": "high",
@@ -1962,8 +3209,11 @@
           "frontend/src/pages/PortfolioConstruction.tsx",
           "frontend/src/pages/HoldingDiagnosis.tsx",
           "frontend/src/services/portfolioResearch.ts",
+          "frontend/src/components/HistoricalRegimeBacktest.tsx",
+          "frontend/src/services/portfolioRegime.ts",
           "frontend/src/pages/PortfolioConstruction.test.tsx",
           "frontend/src/pages/HoldingDiagnosis.test.tsx",
+          "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
           "frontend/src/services/portfolioResearch.test.ts"
         ],
         "unsampled_paths": []
@@ -1974,7 +3224,7 @@
       "name": "Manual ETF/public-fund construction, class allocation, strategy, and backtest UI",
       "path": "frontend/src/pages/ClassAllocation.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "Manual ETF/public-fund-to-class construction, class allocation and strategy workflows, plus real-product evaluation plans that lock custom-indicator revisions and run strict-complete weighted rankings.",
+      "purpose": "Manual ETF/public-fund-to-class construction, class allocation and strategy workflows, plus real-product evaluation plans that lock custom-indicator revisions and run strict-complete weighted rankings. Shared allocationJourney preserves browser input drafts and saved references by explicit universe/allocation/baseline scope, carries the product-pool-to-SAA-to-TAA navigation context and invalidates results after input or research-clock changes; a browser draft is not saved calculation or PIT evidence. AllocationMetricsReview gives ManualConstruction and ClassAllocation an opt-in core-metric view with annual detail and research charts expanded on demand, while the base comparison table keeps its existing full-row default. Active journey metadata is isolated per browser tab in sessionStorage, initially seeded from the latest local record; cross-tab storage events cannot replace navigation. Explicit universe changes clear old range metadata, and pool return links restore the named immutable universe rather than another selection draft.",
       "module_tags": [
         "frontend",
         "allocation",
@@ -1987,11 +3237,16 @@
       "entry_files": [
         "frontend/src/pages/ManualConstruction.tsx",
         "frontend/src/pages/ClassAllocation.tsx",
+        "frontend/src/pages/AutoAssetClassification.tsx",
+        "frontend/src/components/ClassFitPanel.tsx",
+        "frontend/src/services/strategyWeights.ts",
+        "docs/auto_asset_class_design.md",
         "frontend/src/pages/EvaluationPlan.tsx",
         "frontend/src/components/evaluation/EvaluationProductSelector.tsx",
         "frontend/src/pages/Placeholder.tsx",
         "frontend/src/components/HorizontalMetricComparison.tsx",
-        "frontend/src/utils/performance.ts"
+        "frontend/src/utils/performance.ts",
+        "frontend/src/app/allocationJourney.ts"
       ],
       "key_symbols": [
         "ManualConstruction",
@@ -2001,12 +3256,18 @@
         "buildSchedulePayload",
         "buildComputeWeightsPayload",
         "stableStringify",
-        "PerformanceQuadrantChart"
+        "PerformanceQuadrantChart",
+        "useAllocationDraft",
+        "readAllocationDraft",
+        "updateAllocationJourney",
+        "allocationJourneyPath",
+        "AllocationMetricsReview"
       ],
       "child_modules": [],
       "first_read_files": [
         "frontend/src/pages/ManualConstruction.tsx",
-        "frontend/src/pages/ClassAllocation.tsx"
+        "frontend/src/pages/ClassAllocation.tsx",
+        "frontend/src/app/allocationJourney.ts"
       ],
       "then_check_files": [
         "frontend/src/pages/EvaluationPlan.tsx",
@@ -2015,7 +3276,14 @@
         "frontend/src/utils/performance.ts",
         "backend/services/analytics_routes.py",
         "backend/services/strategy_routes.py",
-        "backend/app.py"
+        "backend/app.py",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/pages/ProductPools.tsx",
+        "frontend/src/pages/ProductPoolSelection.tsx",
+        "docs/research/allocation-journey-optimization-acceptance-2026-09-11.md",
+        "docs/research/allocation-journey-optimization-design-2026-09-11.md",
+        "docs/research/journey-saa-implementation-2026-09-11.md",
+        "docs/research/journey-upstream-implementation-2026-09-11.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -2031,8 +3299,16 @@
       ],
       "related_tests": [
         "frontend/src/App.test.tsx",
+        "frontend/src/pages/AutoAssetClassification.test.tsx",
+        "frontend/src/pages/AutoAssetClassification.universe.test.tsx",
+        "frontend/src/pages/ClassAllocation.test.tsx",
         "frontend/src/pages/EvaluationPlan.test.tsx",
-        "frontend/src/pages/ManualConstruction.test.tsx"
+        "frontend/src/pages/ManualConstruction.test.tsx",
+        "frontend/src/app/allocationJourney.test.tsx",
+        "frontend/src/layouts/StageLayout.test.tsx",
+        "frontend/src/pages/ProductPoolSelection.test.tsx",
+        "frontend/src/pages/ProductPools.test.tsx",
+        "frontend/src/components/HorizontalMetricComparison.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -2042,7 +3318,10 @@
         "frontend_backend_payload_coupling",
         "schedule_cache_contract",
         "window_mode_ui_contract",
-        "large_page_components"
+        "large_page_components",
+        "drafts_are_inputs_not_pit_evidence",
+        "explicit_scope_prevents_cross_universe_restore",
+        "upstream_changes_invalidate_downstream_references"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -2061,6 +3340,7 @@
         "P17"
       ],
       "minimum_regression": [
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/components/HorizontalMetricComparison.test.tsx src/app/allocationJourney.test.tsx src/layouts/StageLayout.test.tsx src/pages/ManualConstruction.test.tsx src/pages/ProductPoolSelection.test.tsx src/pages/ProductPools.test.tsx src/pages/ClassAllocation.test.tsx src/pages/PortfolioConstruction.test.tsx'",
         "npm run test --prefix frontend -- --run",
         "npm run build --prefix frontend",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
@@ -2080,7 +3360,12 @@
           "frontend/src/pages/EvaluationPlan.test.tsx",
           "frontend/src/pages/ManualConstruction.test.tsx",
           "backend/services/analytics_routes.py",
-          "backend/services/strategy_routes.py"
+          "backend/services/strategy_routes.py",
+          "frontend/src/app/allocationJourney.ts",
+          "frontend/src/app/allocationJourney.test.tsx",
+          "frontend/src/layouts/StageLayout.test.tsx",
+          "frontend/src/components/HorizontalMetricComparison.tsx",
+          "frontend/src/components/HorizontalMetricComparison.test.tsx"
         ],
         "unsampled_paths": []
       }
@@ -2090,7 +3375,7 @@
       "name": "Data ingestion scripts, frontend-managed credential, and parquet contracts",
       "path": "config.py",
       "kind": "data_and_config",
-      "purpose": "Frontend-managed local Tushare credential access, rate-limited and checkpointed ETF/public-fund/index parquet acquisition, overlap-safe incremental merges, cross-process CLI/Web refresh state, isolated full-version staging, local analytics post-processing, and the index data center.",
+      "purpose": "Frontend-managed local Tushare credential access, rate-limited and checkpointed ETF/public-fund/index/macro parquet acquisition, point-in-time lineage, overlap-safe incremental merges, cross-process CLI/Web refresh state, isolated full-version staging, local analytics post-processing, and the index data center.",
       "module_tags": [
         "data",
         "config",
@@ -2105,6 +3390,7 @@
         "docker-compose.yml",
         "deploy/README.md",
         "config.py",
+        "TushareDownload.md",
         "T01_get_data.py",
         "backend/services/refresh_runtime.py",
         "backend/services/data_refresh.py",
@@ -2114,6 +3400,7 @@
         "frontend/src/pages/Dashboard.tsx",
         "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
         "frontend/src/pages/IndexData.tsx",
+        "frontend/src/pages/DataManagement.tsx",
         "docs/tushare_data_refresh_design.md",
         "docs/requirements.md"
       ],
@@ -2128,6 +3415,17 @@
         "save_public_fund_info",
         "save_public_fund_nav",
         "save_latest_public_fund_nav",
+        "save_fund_manager",
+        "save_fund_scale",
+        "save_fund_portfolio",
+        "save_fund_dividend",
+        "save_fund_adjustment",
+        "save_fund_benchmark",
+        "save_macro_cycle",
+        "save_macro_money_credit",
+        "save_macro_rates",
+        "save_macro_release_calendar",
+        "merge_vintage_rows",
         "save_fund_company",
         "save_nav",
         "save_candles",
@@ -2157,6 +3455,7 @@
         "market_data_snapshot_lifecycle"
       ],
       "first_read_files": [
+        "TushareDownload.md",
         "config.py",
         "T01_get_data.py",
         "backend/services/refresh_runtime.py",
@@ -2199,11 +3498,13 @@
       ],
       "related_tests": [
         "backend/tests/test_tushare_data_script.py",
+        "backend/tests/test_fund_event_download.py",
         "backend/tests/test_data_refresh.py",
         "backend/tests/test_index_data.py",
         "backend/tests/test_instrument_routes.py",
         "frontend/src/components/dashboard/DataHealthRefreshPanel.test.tsx",
         "frontend/src/pages/IndexData.test.tsx",
+        "frontend/src/pages/DataManagement.test.tsx",
         "frontend/e2e/index-data.spec.ts",
         "frontend/src/App.test.tsx",
         "backend/tests/test_strategy_api.py",
@@ -2224,6 +3525,8 @@
         "external_network_calls_not_allowed_in_tests",
         "refresh_lock_requires_shared_local_filesystem",
         "incremental_overlap_incoming_rows_win",
+        "macro_release_date_unknown_must_not_be_treated_as_point_in_time",
+        "fund_portfolio_is_disclosed_stock_holdings_not_complete_asset_allocation",
         "full_refresh_must_not_expose_staging_data",
         "snapshot_failure_must_not_repeat_fetch",
         "index_request_paths_must_not_scan_complete_history",
@@ -2234,6 +3537,7 @@
       "blast_radius": [
         "all data-backed APIs",
         "ETF/public-fund universe analytics and search",
+        "macro regime features and point-in-time backtests",
         "index catalog, coverage health, and index data center",
         "class fitting",
         "strategy backtests",
@@ -2263,25 +3567,417 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-        "config.py",
-        "T01_get_data.py",
-        "docs/requirements.md",
-        "backend/services/refresh_runtime.py",
-        "backend/services/data_refresh.py",
-        "backend/services/data_routes.py",
-        "backend/services/index_data.py",
-        "backend/services/index_routes.py",
-        "frontend/src/pages/Dashboard.tsx",
-        "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
-        "frontend/src/pages/IndexData.tsx",
-        "backend/tests/test_tushare_data_script.py",
-        "backend/tests/test_data_refresh.py",
-        "backend/tests/test_index_data.py",
-        "backend/tests/test_instrument_routes.py",
-        "frontend/src/App.test.tsx",
-        "frontend/src/components/dashboard/DataHealthRefreshPanel.test.tsx",
-        "frontend/src/pages/IndexData.test.tsx",
-        "frontend/e2e/index-data.spec.ts"
+          "TushareDownload.md",
+          "config.py",
+          "T01_get_data.py",
+          "docs/requirements.md",
+          "docs/tushare_data_refresh_design.md",
+          "backend/services/refresh_runtime.py",
+          "backend/services/data_refresh.py",
+          "backend/services/data_routes.py",
+          "backend/services/index_data.py",
+          "backend/services/index_routes.py",
+          "frontend/src/pages/Dashboard.tsx",
+          "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+          "frontend/src/pages/IndexData.tsx",
+          "backend/tests/test_tushare_data_script.py",
+          "backend/tests/test_data_refresh.py",
+          "backend/tests/test_index_data.py",
+          "backend/tests/test_instrument_routes.py",
+          "frontend/src/App.test.tsx",
+          "frontend/src/components/dashboard/DataHealthRefreshPanel.test.tsx",
+          "frontend/src/pages/IndexData.test.tsx",
+          "frontend/e2e/index-data.spec.ts"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "backend_data_model_catalog",
+      "name": "Canonical financial data-model catalog and field contracts",
+      "path": "backend/data_model/catalog.py",
+      "kind": "backend_domain_catalog",
+      "purpose": "Defines versioned financial domain tables, fields, semantic types, governance metadata, and the API catalog consumed by data-source mapping and research workflows.",
+      "module_tags": [
+        "backend",
+        "data-model",
+        "schema-catalog",
+        "financial-domain",
+        "governance"
+      ],
+      "entry_files": [
+        "backend/data_model",
+        "backend/services/data_model_routes.py"
+      ],
+      "key_symbols": [
+        "DataModelCatalog",
+        "TableDefinition",
+        "FieldDefinition"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "backend/data_model/catalog.py",
+        "backend/data_model/types.py",
+        "backend/services/data_model_routes.py"
+      ],
+      "then_check_files": [
+        "backend/data_model/definitions",
+        "backend/tests/test_data_model_catalog.py",
+        "docs/data_source_center_design.md"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell"
+      ],
+      "downstream_dependencies": [
+        "backend_data_source_etl",
+        "frontend_data_source_center"
+      ],
+      "out_of_scope_dependencies": [
+        "external database migrations",
+        "unobserved vendor schemas"
+      ],
+      "related_tests": [
+        "backend/tests/test_data_model_catalog.py"
+      ],
+      "related_configs": [
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "field_identity_must_be_stable",
+        "semantic_type_changes_affect_mappings",
+        "catalog_versions_are_contracts"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "data-source mappings",
+        "ETL output validation",
+        "research-series discovery"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P07"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_data_model_catalog.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_model/catalog.py backend/data_model/types.py backend/services/data_model_routes.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "versioned_schema_contract"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/data_model/catalog.py",
+          "backend/data_model/types.py",
+          "backend/services/data_model_routes.py",
+          "backend/tests/test_data_model_catalog.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "backend_data_source_etl",
+      "name": "Multi-source acquisition, resolution, mapping, and ETL runtime",
+      "path": "backend/data_sources/service.py",
+      "kind": "backend_api_feature",
+      "purpose": "Registers Tushare, AkShare, and extensible data sources; manages credentials, quotas, synchronization jobs, source identity resolution, canonical mappings, versioned ETL workflows, and atomic snapshot outputs.",
+      "module_tags": [
+        "backend",
+        "data-source",
+        "etl",
+        "mapping",
+        "resolution",
+        "snapshot",
+        "akshare"
+      ],
+      "entry_files": [
+        "backend/data_sources",
+        "backend/services/data_source_routes.py",
+        "backend/services/etl_routes.py",
+        "backend/requirements-akshare.txt",
+        "scripts/audit_tushare_contracts.py",
+        "scripts/smoke_data_source_center.py",
+        "scripts/smoke_etl_workflow.py",
+        "scripts/smoke_multi_source.py",
+        "scripts/smoke_fund_events.py",
+        "docs/data_source_center_design.md",
+        "docs/data_sync_user_flow.md",
+        "docs/etl_workflow_design.md",
+        "docs/etl_task_card_design.md",
+        "docs/auto_incremental_design.md",
+        "docs/etl_generic_full_data_design.md",
+        "docs/multi_source_resolution_design.md"
+      ],
+      "key_symbols": [
+        "DataSourceService",
+        "EtlService",
+        "ResolutionStore",
+        "SyncJobService"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "backend/data_sources/models.py",
+        "backend/data_sources/service.py",
+        "backend/data_sources/etl_service.py",
+        "backend/services/data_source_routes.py",
+        "backend/services/etl_routes.py"
+      ],
+      "then_check_files": [
+        "backend/data_sources/etl_executor.py",
+        "backend/data_sources/etl_partial_recovery.py",
+        "backend/data_sources/fund_events.py",
+        "backend/data_sources/fund_event_recovery.py",
+        "backend/data_sources/index_history_recovery.py",
+        "backend/data_sources/index_checkpoints.py",
+        "backend/data_sources/constituent_recovery.py",
+        "backend/data_sources/macro_ranges.py",
+        "backend/services/etl_run_view.py",
+        "backend/services/etl_recovery.py",
+        "backend/data_sources/etl_migration.py",
+        "backend/data_sources/etl_collection.py",
+        "backend/data_sources/etl_runner.py",
+        "backend/data_sources/task_receipt.py",
+        "backend/data_sources/resolution.py",
+        "backend/data_sources/mapping.py",
+        "backend/data_sources/sync_jobs.py",
+        "backend/data_sources/credentials.py",
+        "backend/data_sources/transport.py",
+        "backend/tests/test_data_source_center.py",
+        "backend/tests/test_etl_workflows.py",
+        "backend/tests/test_multi_source_resolution.py"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell",
+        "backend_data_model_catalog",
+        "data_ingestion_config",
+        "market_data_snapshot_lifecycle"
+      ],
+      "downstream_dependencies": [
+        "frontend_data_source_center",
+        "backend_custom_indicator_service",
+        "backend_regime_research"
+      ],
+      "out_of_scope_dependencies": [
+        "unregistered arbitrary Python connectors",
+        "unverified external source availability"
+      ],
+      "related_tests": [
+        "backend/tests/test_akshare_adapter.py",
+        "backend/tests/test_data_source_center.py",
+        "backend/tests/test_data_source_security.py",
+        "backend/tests/test_etl_snapshot.py",
+        "backend/tests/test_etl_run_options.py",
+        "backend/tests/test_auto_incremental.py",
+        "backend/tests/test_event_coverage.py",
+        "backend/tests/test_etl_progress.py",
+        "backend/tests/test_etl_recovery.py",
+        "backend/tests/test_etl_collection.py",
+        "backend/tests/test_etl_migration.py",
+        "backend/tests/test_index_history_recovery.py",
+        "backend/tests/test_index_checkpoints.py",
+        "backend/tests/test_constituent_download.py",
+        "backend/tests/test_constituent_recovery.py",
+        "backend/tests/test_weight_recovery.py",
+        "backend/tests/test_macro_ranges.py",
+        "backend/tests/test_etl_failure_isolation.py",
+        "backend/tests/test_source_db_retry.py",
+        "backend/tests/test_etl_run_view.py",
+        "backend/tests/test_etl_web_recovery.py",
+        "backend/tests/test_fund_event_download.py",
+        "backend/tests/test_fund_event_conflicts.py",
+        "backend/tests/test_fund_adjustment_paging.py",
+        "backend/tests/test_fund_event_recovery.py",
+        "backend/tests/test_etl_executor.py",
+        "backend/tests/etl_lifecycle_fixture.py",
+        "backend/tests/test_etl_dataset_tasks.py",
+        "backend/tests/test_etl_graph.py",
+        "backend/tests/test_etl_workflows.py",
+        "backend/tests/test_multi_source_resolution.py",
+        "backend/tests/test_resolution_routes.py",
+        "backend/tests/test_source_sync_jobs.py"
+      ],
+      "related_configs": [
+        "backend/requirements.txt",
+        "backend/requirements-akshare.txt",
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "credentials_must_remain_local_and_redacted",
+        "external_calls_forbidden_in_unit_tests",
+        "source_identity_must_be_deterministic",
+        "etl_snapshots_require_atomic_promotion",
+        "njit_resolution_kernels_cannot_fallback"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "source synchronization",
+        "canonical financial datasets",
+        "indicator and regime inputs",
+        "data lineage and reproducibility"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P05",
+        "P09",
+        "P11",
+        "P15"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_akshare_adapter.py tests/test_data_source_center.py tests/test_etl_snapshot.py tests/test_etl_workflows.py tests/test_multi_source_resolution.py tests/test_resolution_routes.py tests/test_source_sync_jobs.py -q'",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_executor.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_constituent_download.py backend/tests/test_constituent_recovery.py backend/tests/test_source_db_retry.py backend/tests/test_etl_run_view.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_etl_failure_isolation.py backend/tests/test_weight_recovery.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_fund_event_conflicts.py backend/tests/test_fund_event_download.py backend/tests/test_fund_event_recovery.py -q",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/data_sources/service.py backend/data_sources/etl_service.py backend/services/data_source_routes.py backend/services/etl_routes.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "external_source_boundary",
+        "immutable_snapshot"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/data_sources/service.py",
+          "backend/data_sources/etl_service.py",
+          "backend/data_sources/resolution.py",
+          "backend/services/data_source_routes.py",
+          "backend/services/etl_routes.py",
+          "backend/tests/test_data_source_center.py",
+          "backend/tests/test_etl_workflows.py",
+          "backend/tests/test_multi_source_resolution.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "frontend_data_source_center",
+      "name": "Data-source center, data-model catalog, and ETL workspace UI",
+      "path": "frontend/src/pages/DataSourceCenter.tsx",
+      "kind": "frontend_feature_pages",
+      "purpose": "Provides catalog browsing, source configuration, download and synchronization controls, canonical mapping, conflict resolution, ETL workflow editing, run history, and data-model navigation with backend-owned execution.",
+      "module_tags": [
+        "frontend",
+        "data-source",
+        "data-model",
+        "etl",
+        "mapping",
+        "sync-workflow"
+      ],
+      "entry_files": [
+        "frontend/src/components/data-sources",
+        "frontend/src/pages/DataModelCatalog.tsx",
+        "frontend/src/pages/DataModelCatalog.test.tsx",
+        "frontend/src/pages/DataSourceCenter.tsx",
+        "frontend/src/pages/DataSourceCenter.test.tsx",
+        "frontend/src/services/dataModel.ts",
+        "frontend/src/services/dataSources.ts",
+        "frontend/src/services/etl.ts",
+        "frontend/src/components/dashboard/DataSyncFlow.test.tsx",
+        "frontend/src/components/dashboard/RefreshRecoveryActions.tsx",
+        "frontend/e2e/data-model-catalog.spec.ts",
+        "frontend/e2e/data-source-center.spec.ts",
+        "frontend/e2e/data-sync-flow.spec.ts",
+        "frontend/e2e/etl-workflow.spec.ts",
+        "frontend/e2e/auto-incremental.spec.ts",
+        "frontend/e2e/etl-progress.spec.ts",
+        "frontend/e2e/multi-source.spec.ts"
+      ],
+      "key_symbols": [
+        "DataSourceCenter",
+        "DataModelCatalog",
+        "DataDownloadWorkspace",
+        "EtlWorkflowEditor",
+        "ResolutionPanel",
+        "SourceSyncPanel"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "frontend/src/pages/DataSourceCenter.tsx",
+        "frontend/src/pages/DataModelCatalog.tsx",
+        "frontend/src/services/dataSources.ts",
+        "frontend/src/services/etl.ts"
+      ],
+      "then_check_files": [
+        "frontend/src/components/data-sources",
+        "frontend/src/pages/DataSourceCenter.test.tsx",
+        "frontend/src/pages/DataModelCatalog.test.tsx",
+        "frontend/e2e/data-source-center.spec.ts",
+        "frontend/e2e/etl-workflow.spec.ts"
+      ],
+      "upstream_dependencies": [
+        "frontend_app_shell",
+        "backend_data_model_catalog",
+        "backend_data_source_etl"
+      ],
+      "downstream_dependencies": [
+        "frontend_indicator_studio",
+        "frontend_regime_research"
+      ],
+      "out_of_scope_dependencies": [
+        "client-side authoritative ETL execution",
+        "browser-persisted source credentials"
+      ],
+      "related_tests": [
+        "frontend/src/components/data-sources/DataDownloadWorkspace.test.tsx",
+        "frontend/src/components/data-sources/EtlRunActions.test.tsx",
+        "frontend/src/components/data-sources/EtlRunHistory.test.tsx",
+        "frontend/src/components/data-sources/ResolutionPanel.test.tsx",
+        "frontend/src/components/data-sources/SourceSyncPanel.test.tsx",
+        "frontend/src/test/etlGraphFixtures.ts",
+        "frontend/e2e/etl-graph.spec.ts",
+        "frontend/src/components/dashboard/DataSyncFlow.test.tsx",
+        "frontend/src/pages/DataModelCatalog.test.tsx",
+        "frontend/src/pages/DataSourceCenter.test.tsx",
+        "frontend/e2e/data-model-catalog.spec.ts",
+        "frontend/e2e/data-source-center.spec.ts",
+        "frontend/e2e/data-sync-flow.spec.ts",
+        "frontend/e2e/etl-workflow.spec.ts",
+        "frontend/e2e/multi-source.spec.ts"
+      ],
+      "related_configs": [
+        "frontend/package.json",
+        "frontend/vite.config.ts"
+      ],
+      "risk_flags": [
+        "credential_values_must_never_round_trip",
+        "long_running_jobs_need_recovery_actions",
+        "frontend_is_not_authoritative_for_lineage"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "data operations navigation",
+        "source and ETL configuration",
+        "download and synchronization UX"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P07",
+        "P09",
+        "P11"
+      ],
+      "minimum_regression": [
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/pages/DataModelCatalog.test.tsx src/pages/DataSourceCenter.test.tsx src/components/data-sources/DataDownloadWorkspace.test.tsx src/components/data-sources/ResolutionPanel.test.tsx src/components/data-sources/SourceSyncPanel.test.tsx'",
+        "npm run build --prefix frontend"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "frontend_runtime_tested",
+        "backend_authoritative_execution"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "frontend/src/pages/DataSourceCenter.tsx",
+          "frontend/src/pages/DataModelCatalog.tsx",
+          "frontend/src/services/dataSources.ts",
+          "frontend/src/services/etl.ts",
+          "frontend/src/pages/DataSourceCenter.test.tsx",
+          "frontend/src/pages/DataModelCatalog.test.tsx"
         ],
         "unsampled_paths": []
       }
@@ -2336,7 +4032,8 @@
         "skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py",
         "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
         "skills/ai-hermes-self-evolve/scripts/route_task.py",
-        "skills/ai-hermes-routing-init/scripts/init_ai_routing.py"
+        "skills/ai-hermes-routing-init/scripts/init_ai_routing.py",
+        "docs/research/journey-routing-validation-2026-09-11.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [

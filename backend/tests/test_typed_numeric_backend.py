@@ -57,5 +57,8 @@ def test_optimizer_njit_kernels_are_fixed_signature_and_startup_ready() -> None:
     status = warm_optimizer_numba_kernels()
 
     assert status["warmed"] is True
-    assert status["kernel_coverage"] == "4/4"
+    assert status["kernel_coverage"] == f"{len(OPTIMIZER_NUMBA_KERNELS)}/{len(OPTIMIZER_NUMBA_KERNELS)}"
+    assert status["backend"] == "numba_njit_fixed_signature"
+    assert status["nopython"] is True
+    assert status["python_fallback"] == 0
     assert all(dispatcher.signatures for dispatcher in OPTIMIZER_NUMBA_KERNELS)

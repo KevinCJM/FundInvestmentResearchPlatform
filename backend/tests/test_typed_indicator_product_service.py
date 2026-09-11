@@ -177,6 +177,49 @@ def test_textual_fallback_identifiers_escape_underscores() -> None:
     assert "custom_variable" not in latex
 
 
+def test_rolling_operators_use_compact_mathematical_symbols() -> None:
+    symbols = {
+        "returns": r"\mathbf{r}",
+        "market_close": r"\mathbf{c}",
+        "market_low": r"\mathbf{l}",
+        "market_high": r"\mathbf{h}",
+        "risk_free_rate_per_observation": r"r_f",
+        "periods_per_year": r"p_{\mathrm{year}}",
+    }
+    moving_average = render_python_expression_latex(
+        "rolling_mean(market_close, 20, 20)",
+        symbols,
+    )
+    rolling_sharpe = render_python_expression_latex(
+        "((rolling_mean(returns, 5, 5) - risk_free_rate_per_observation) "
+        "/ rolling_std(returns, 5, 1, 5)) * sqrt(periods_per_year)",
+        symbols,
+    )
+    kdj_k = render_python_expression_latex(
+        "recursive_smooth("
+        "divide_or_default("
+        "(market_close - rolling_min(market_low, 9, 1)) * 100, "
+        "rolling_max(market_high, 9, 1) - rolling_min(market_low, 9, 1), "
+        "50), 3, 50)",
+        symbols,
+    )
+
+    assert moving_average == r"\mu_{t,20}\left(\mathbf{c}\right)"
+    assert r"\mu_{t,5}" in rolling_sharpe
+    assert r"s_{t,5}" in rolling_sharpe
+    assert r"\sqrt{p_{\mathrm{year}}}" in rolling_sharpe
+    assert r"\mathcal{S}_{3,50}" in kdj_k
+    assert r"\mathcal{W}_{t,9}" in kdj_k
+    assert r"\mathbin{\oslash}_{50}" in kdj_k
+    for latex in (moving_average, rolling_sharpe, kdj_k):
+        assert r"\begin{cases}" not in latex
+        assert r"\begin{aligned}" not in latex
+        assert r"\mathrm{NaN}" not in latex
+        assert "rolling_" not in latex
+        assert "recursive_smooth" not in latex
+        assert "divide_or_default" not in latex
+
+
 def test_nested_path_notation_groups_indices_and_separates_control_words() -> None:
     symbols = {"returns": r"\mathbf{r}"}
     path_latex = render_python_expression_latex(

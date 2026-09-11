@@ -26,6 +26,12 @@ from backend.services.refresh_runtime import InterProcessFileLock, atomic_write_
 TEST_TOKEN = "unit-test-token-1234567890"
 
 
+@pytest.fixture(autouse=True)
+def isolated_refresh_configuration(monkeypatch, tmp_path):
+    # Command/fingerprint helpers must never open the user's real SQLite store.
+    monkeypatch.setattr(data_refresh, 'DATA_DIR', tmp_path)
+
+
 def _write_test_token(data_dir: Path) -> None:
     data_refresh.save_local_tushare_token(TEST_TOKEN, data_dir=data_dir)
 
@@ -205,6 +211,8 @@ def test_cross_process_lock_rejects_duplicate_and_stale_state_recovers(tmp_path:
     recovered = manager.snapshot()["job"]
     assert recovered["status"] == "failed"
     assert "已中断" in recovered["message"]
+    assert recovered["resume_available"] is True
+    assert recovered["interruption_reason"] == "owner_process_lost"
     persisted = json.loads(manager.state_path.read_text(encoding="utf-8"))
     assert persisted["job"]["status"] == "failed"
 
@@ -831,6 +839,35 @@ def test_refresh_command_supports_scopes_for_every_module(monkeypatch) -> None:
     }
 
 
+def test_fund_and_macro_scope_dependencies_build_explicit_cli_flags() -> None:
+    command = data_refresh.build_refresh_command(
+        ["fund", "macro"],
+        "incremental",
+        module_scopes={
+            "fund": ["scale", "portfolio"],
+            "macro": ["cycle", "rates", "release_calendar"],
+        },
+    )
+
+    assert "--fund-info" in command
+    assert "--fund-nav" in command
+    assert "--fund-scale" in command
+    assert "--fund-portfolio" in command
+    assert "--macro-cycle" in command
+    assert "--macro-rates" in command
+    assert "--macro-release-calendar" in command
+    assert "--macro-money-credit" not in command
+
+    normalised = data_refresh.normalise_module_scopes(
+        ["fund", "macro"],
+        {"fund": ["scale"], "macro": ["money_credit"]},
+    )
+    assert normalised == {
+        "fund": ["info", "nav", "scale"],
+        "macro": ["money_credit"],
+    }
+
+
 def test_refresh_module_scopes_reject_invalid_or_unselected_content() -> None:
     with pytest.raises(ValueError, match="不支持下载内容"):
         data_refresh.normalise_module_scopes(["etf"], {"etf": ["unknown"]})
@@ -877,6 +914,13 @@ def test_refresh_status_exposes_index_scopes_and_datasets(tmp_path: Path) -> Non
     status = manager.snapshot()
 
     assert "index" in status["available_modules"]
+    assert "macro" in status["available_modules"]
+    assert status["default_module_scopes"]["fund"] == [
+        "info", "nav", "manager", "scale", "benchmark"
+    ]
+    assert status["default_module_scopes"]["macro"] == [
+        "cycle", "money_credit", "rates", "release_calendar"
+    ]
     assert status["default_index_scopes"] == ["catalog", "domestic", "industry", "global"]
     assert status["default_module_scopes"]["etf"] == ["info", "nav", "share", "candle"]
     assert status["available_module_scopes"]["base"] == [
