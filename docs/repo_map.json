@@ -927,7 +927,7 @@
       "name": "ETF/public-fund universe, product research, and ETF detail API",
       "path": "backend/app.py",
       "kind": "backend_api_feature",
-      "purpose": "Unified ETF/public-fund search and paged product APIs live in services/instrument_routes.py; ETF analytics, legacy search, detail lookup, and synthetic price-series fallback remain in backend/app.py.",
+      "purpose": "Unified ETF/public-fund search, paged products and product detail APIs live in services/instrument_routes.py. The compatibility ETF list/detail endpoints in backend/app.py delegate to the unified implementation; ETF analytics/trend endpoints delegate to instrument_analytics. Product detail returns real local price points, preserves missing fields as null and returns an empty timeseries when prices are unavailable; it does not generate synthetic prices.",
       "module_tags": [
         "backend",
         "etf",
@@ -944,7 +944,6 @@
         "backend/services/product_pool_routes.py"
       ],
       "key_symbols": [
-        "_load_etf_info_df",
         "_load_universe",
         "_get_universe",
         "etf_search",
@@ -954,8 +953,7 @@
         "instrument_search",
         "instrument_products",
         "instrument_product_detail",
-        "_match_product_by_identifier",
-        "_generate_synthetic_price_series",
+        "_match_instrument",
         "etf_product_detail"
       ],
       "child_modules": [
@@ -987,15 +985,16 @@
         "backend/tests/test_product_pool_routes.py",
         "backend/tests/test_product_pool_service.py",
         "backend/tests/test_product_pools.py",
-        "backend/tests/test_instrument_routes.py"
+        "backend/tests/test_instrument_routes.py",
+        "backend/tests/test_legacy_etf_njit.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
       ],
       "risk_flags": [
         "large_file_feature_area",
-        "synthetic_price_series_fallback",
-        "local_parquet_or_demo_data_dependency",
+        "missing_price_data_must_remain_empty",
+        "local_parquet_data_dependency",
         "today_based_recent_listings"
       ],
       "edit_risk": "medium",
@@ -1014,7 +1013,8 @@
       ],
       "minimum_regression": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/services/instrument_routes.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q"
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q",
+        "env CUSTOM_INDICATOR_DATA_DIR=\"$(mktemp -d)\" python3 -m pytest backend/tests/test_legacy_etf_njit.py -q"
       ],
       "routing_confidence": "medium",
       "scope_flags": [
@@ -1026,7 +1026,8 @@
         "evidence": [
           "backend/app.py",
           "backend/services/instrument_routes.py",
-          "backend/tests/test_instrument_routes.py"
+          "backend/tests/test_instrument_routes.py",
+          "backend/tests/test_legacy_etf_njit.py"
         ],
         "unsampled_paths": []
       }

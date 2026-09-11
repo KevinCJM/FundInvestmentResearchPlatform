@@ -571,29 +571,31 @@
     },
     {
       "id": "P10",
-      "title": "legacy_etf_detail_endpoint_still_has_a_synthetic_price_series_fallback",
+      "title": "etf_detail_compatibility_must_preserve_real_series_and_missing_values",
       "severity": "medium",
       "confidence": "high",
       "risk_codes": [
         "synthetic_data_misread_as_market_data",
-        "today_dependent_output",
+        "compatibility_route_drift",
         "chart_contract"
       ],
       "symptoms": [
-        "A new caller uses legacy /api/etf/products/{product_id} and receives plausible synthetic prices when no real series is loaded.",
-        "Legacy endpoint output changes over time because synthetic dates are generated to the current business day.",
-        "The active ProductDetail and ProductCompare flows regress from /api/instruments/products back to the legacy endpoint."
+        "An ETF compatibility-route change bypasses instrument_product_detail and diverges from the unified product response.",
+        "A change replaces an empty real-data timeseries with generated prices or fills missing OHLC/volume fields with invented values.",
+        "A chart assumes every product has prices even though the unified and compatibility detail endpoints preserve missing data."
       ],
       "trigger_actions": [
         "edit /api/etf/products/{product_id}",
         "edit ProductDetail or ProductCompare data-loading logic",
-        "replace synthetic fallback with real candle parquet data",
+        "change the unified price loader or missing-series handling",
         "change ETF product fields or date handling"
       ],
       "related_paths": [
         "backend/app.py",
         "backend/services/instrument_routes.py",
         "backend/custom_indicators/series_provider.py",
+        "backend/tests/test_legacy_etf_njit.py",
+        "backend/tests/test_instrument_routes.py",
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
         "docs/requirements.md"
@@ -608,13 +610,15 @@
         "user interpretation of ETF price history"
       ],
       "check_before_edit": [
-        "Keep active research pages on /api/instruments/products so missing data is empty instead of synthetic.",
+        "Keep /api/etf/products/{product_id} as a thin adapter to instrument_product_detail(kind='etf'); both routes use the same real-data implementation.",
+        "Preserve empty timeseries when prices are unavailable and null for missing OHLC/volume fields; do not restore synthetic price generation.",
+        "Set CUSTOM_INDICATOR_DATA_DIR to a temporary directory before running compatibility tests: importing backend.app initializes CustomIndicatorService before per-test monkeypatches and may migrate workspace files.",
         "Verify chart code accepts the unified real-series response shape after backend changes.",
         "Cover both ETF and public-fund detail series plus missing-parquet behavior with tmp fixtures."
       ],
       "safe_observation_methods": [
-        "rg -n \"_generate_synthetic_price_series|/api/etf/products|/api/instruments/products\" backend/app.py frontend/src/pages",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q"
+        "codegraph explore 'etf_product_detail instrument_product_detail'",
+        "env CUSTOM_INDICATOR_DATA_DIR=\"$(mktemp -d)\" python3 -m pytest backend/tests/test_legacy_etf_njit.py backend/tests/test_instrument_routes.py -q"
       ]
     },
     {
