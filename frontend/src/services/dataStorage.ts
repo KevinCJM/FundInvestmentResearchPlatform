@@ -1,17 +1,21 @@
 export interface StoragePlan {
+  operation?: 'attach'; storage_id?: string
   id: string; target: string; mount: string; phase: string; message: string
   files: number; bytes: number; inventory?: { files: number; bytes: number }
 }
 export interface StorageStatus {
   revision?: number; logical_path: string; actual_path?: string; online: boolean; error?: string | null
   editing_enabled: boolean; free_bytes: number | null; total_bytes: number | null
-  active?: { id: string; target: string; backup: string; backup_removed: boolean } | null
+  active?: { id: string; target: string; backup: string | null; backup_removed: boolean; operation?: 'attach' } | null
   pending?: StoragePlan | null
   volumes: { name: string; path: string; free_bytes: number }[]
 }
 export interface StorageProbe {
   target: string; mount: string; free_bytes: number; total_bytes: number
   reserve_bytes: number; same_device: boolean; message: string
+}
+export interface ExistingStorageProbe {
+  id: string; target: string; mount: string; free_bytes: number; total_bytes: number; message: string
 }
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api/data-storage${path}`, { ...init, cache: 'no-store', headers: { 'Content-Type': 'application/json' } })
@@ -23,3 +27,5 @@ export const getDataStorage = (signal?: AbortSignal) => request<StorageStatus>('
 export const probeDataStorage = (path: string) => request<StorageProbe>('/probe', { method: 'POST', body: JSON.stringify({ path }) })
 export const planDataStorage = (path: string, expected_revision: number) => request<StorageStatus>('/plan', { method: 'PUT', body: JSON.stringify({ path, expected_revision, confirm: true }) })
 export const cancelStoragePlan = (expected_revision: number) => request<StorageStatus>('/plan', { method: 'DELETE', body: JSON.stringify({ expected_revision }) })
+export const probeExistingStorage = (path: string) => request<ExistingStorageProbe>('/existing/probe', { method: 'POST', body: JSON.stringify({ path }) })
+export const planExistingStorage = (path: string, expected_revision: number, expected_id: string) => request<StorageStatus>('/existing/plan', { method: 'PUT', body: JSON.stringify({ path, expected_revision, expected_id, confirm: true }) })

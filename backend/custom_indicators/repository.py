@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
+from backend.data_storage import guard_path
 
 try:  # Linux/macOS production and development environments.
     import fcntl
@@ -37,18 +38,21 @@ class AtomicJsonStore:
 
     @contextmanager
     def locked(self) -> Iterator[None]:
+        guard_path(self.path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._thread_lock:
             with self.lock_path.open("a+", encoding="utf-8") as lock_file:
                 if fcntl is not None:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
                 try:
+                    guard_path(self.path)
                     yield
                 finally:
                     if fcntl is not None:
                         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def read_unlocked(self) -> dict[str, Any]:
+        guard_path(self.path)
         if not self.path.exists():
             return {"schema_version": 1, "items": []}
         try:
@@ -68,6 +72,7 @@ class AtomicJsonStore:
         return payload
 
     def write_unlocked(self, payload: dict[str, Any]) -> None:
+        guard_path(self.path, write=True)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_path = tempfile.mkstemp(
             prefix=f".{self.path.name}.",

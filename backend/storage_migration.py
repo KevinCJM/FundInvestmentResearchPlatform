@@ -11,9 +11,11 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from contextlib import ExitStack
 
-from .data_storage import (MARKER, RESERVE_BYTES, StorageError, StorageManager,
-                           atomic_json, file_lease, fsync_dir, mount_anchor, read_json)
+from .data_storage import (MARKER, USE_LOCK, RESERVE_BYTES, StorageError, StorageManager,
+                           atomic_json, file_lease, fsync_dir, mount_anchor, read_json,
+                           validate_target)
 
 
 def files(root, *, allow_marker=False):
@@ -25,6 +27,8 @@ def files(root, *, allow_marker=False):
             if stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
                 raise StorageError('STORAGE_SPECIAL_FILE', '数据区包含软链接或特殊文件，需人工核验后迁移。')
         for name in sorted(names):
+            if Path(directory) == root and name == USE_LOCK:
+                continue  # A runtime lease is not part of the immutable copy inventory.
             if Path(directory) == root and name == MARKER:
                 if allow_marker:
                     continue
@@ -119,12 +123,14 @@ class StorageMigration:
             if config['active'] or not re.fullmatch('[a-f0-9]{32}', pending['id']):
                 raise StorageError('STORAGE_PLAN_INVALID', '迁移计划无效，拒绝修改数据入口。')
             try:
-                if pending['phase'] in {'SWITCHING', 'LINKED'}:
+                if pending.get('operation') == 'attach':
+                    self.attach(config)
+                elif pending['phase'] in {'SWITCHING', 'LINKED'}:
                     self.finish_switch(config)
                 else:
                     manager.guard()
                     manager.logical.mkdir(exist_ok=True)
-                    with file_lease(manager.logical / '.tushare_refresh.lock'):
+                    with manager.data_lease(shared=False), file_lease(manager.logical / '.tushare_refresh.lock'):
                         self.copy(config)
                         self.finish_switch(config)
             except Exception as exc:
@@ -134,14 +140,60 @@ class StorageMigration:
                 raise
         return manager.status()
 
-    def copy(self, config):
+    def attach(self, config):
+        """Offline, recoverable local-link switch; existing data stays in place."""
         manager, plan = self.manager, config['pending']
-        # A data/ symlink must not hide Git-tracked fixtures/source from Git.
+        target, anchor = Path(plan['target']), Path(plan['mount'])
+        validate_target(target, anchor, plan['storage_id'])
+        self.check_tracked_data()
+        backup = manager.control / 'backups' / plan['id'] / 'data'
+        with ExitStack() as leases:
+            leases.enter_context(file_lease(target / USE_LOCK, shared=True, create_parent=False))
+            validate_target(target, anchor, plan['storage_id'])
+            if not manager.logical.is_symlink() and manager.logical.exists():
+                if not manager.logical.is_dir() or backup.exists():
+                    raise StorageError('STORAGE_BACKUP_EXISTS', '本机原数据或保留目录异常，拒绝覆盖。')
+                leases.enter_context(file_lease(manager.logical / USE_LOCK, create_parent=False))
+                leases.enter_context(file_lease(manager.logical / '.tushare_refresh.lock', create_parent=False))
+                self.report(config, 'SWITCHING', '正在切换本项目数据入口；本机原数据保留，不合并。')
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(manager.logical, backup)
+                fsync_dir(manager.project)
+            elif plan['phase'] == 'PLANNED':
+                self.report(config, 'SWITCHING', '正在连接已有数据目录，不复制、不下载。')
+            if manager.logical.is_symlink():
+                if manager.logical.resolve() != target:
+                    raise StorageError('STORAGE_LINK_CHANGED', 'data 入口被其他操作改变，拒绝覆盖。')
+            else:
+                manager.logical.symlink_to(target, target_is_directory=True)
+                fsync_dir(manager.project)
+            validate_target(target, anchor, plan['storage_id'])
+            config.update(active={'id': plan['storage_id'], 'target': str(target), 'mount': str(anchor),
+                                  'operation': 'attach', 'backup': str(backup) if backup.exists() else None,
+                                  'backup_removed': not backup.exists()},
+                          pending=None, revision=config['revision'] + 1)
+            atomic_json(manager.config_path, config)
+        manager.guard()
+        self.progress('存储接入成功 / SUCCESS：已连接已有数据目录，未复制、下载或删除数据。')
+
+    def check_tracked_data(self):
+        manager = self.manager
         if (manager.project / '.git').exists():
             tracked = subprocess.run(['git', 'ls-files', '--', 'data'], cwd=manager.project,
                                      capture_output=True, check=True, timeout=10).stdout
             if tracked.strip():
                 raise StorageError('STORAGE_TRACKED_DATA', 'data/ 包含 Git 跟踪文件，请先把版本化夹具与运行数据分离；不会移动这些文件。')
+
+    def copy_identity(self, plan, *, ready=False):
+        if plan.get('identity_version') == 2:
+            return {'id': plan['id'], 'schema_version': 2, 'state': 'ready' if ready else 'copying'}
+        # Resume an existing on-disk migration plan without replacing its contract.
+        return {'id': plan['id'], 'project': str(self.manager.project)}
+
+    def copy(self, config):
+        manager, plan = self.manager, config['pending']
+        # A data/ symlink must not hide Git-tracked fixtures/source from Git.
+        self.check_tracked_data()
         probe = manager.probe(plan['target'])
         if probe['mount'] != plan['mount']:
             raise StorageError('STORAGE_MOUNT_CHANGED', '目标挂载位置发生变化，请重新核验。')
@@ -149,7 +201,7 @@ class StorageMigration:
         stage = target.parent / ('.fund-storage-' + plan['id'])
         if stage.is_symlink():
             raise StorageError('STORAGE_STAGE_CHANGED', '迁移暂存目录不能是软链接。')
-        identity = {'id': plan['id'], 'project': str(manager.project)}
+        identity = self.copy_identity(plan)
         if stage.exists():
             if read_json(stage / MARKER) != identity:
                 raise StorageError('STORAGE_STAGE_CHANGED', '迁移暂存目录不属于当前计划。')
@@ -217,7 +269,7 @@ class StorageMigration:
     def finish_switch(self, config):
         manager, plan = self.manager, config['pending']
         target = Path(plan['target'])
-        identity = {'id': plan['id'], 'project': str(manager.project)}
+        identity = self.copy_identity(plan)
         stage = target.parent / ('.fund-storage-' + plan['id'])
         receipt = read_json(manager.control / 'migrations' / (plan['id'] + '.json'))
         if receipt.get('target') != str(target) or receipt.get('verified') is not True:
@@ -229,8 +281,18 @@ class StorageMigration:
                 target.rmdir()
             os.replace(stage, target)
             fsync_dir(target.parent)
-        if target.is_symlink() or read_json(target / MARKER) != identity or mount_anchor(target) != Path(plan['mount']):
+        if (target.is_symlink() or read_json(target / MARKER) not in (identity, self.copy_identity(plan, ready=True))
+                or mount_anchor(target) != Path(plan['mount'])):
             raise StorageError('STORAGE_IDENTITY_CHANGED', '目标盘身份或挂载发生变化，未改写原数据。')
+        with file_lease(target / USE_LOCK, create_parent=False):
+            self.finish_verified_link(config, target)
+
+    def finish_verified_link(self, config, target):
+        manager, plan = self.manager, config['pending']
+        if (read_json(target / MARKER) not in (self.copy_identity(plan), self.copy_identity(plan, ready=True))
+                or mount_anchor(target) != Path(plan['mount'])):
+            raise StorageError('STORAGE_IDENTITY_CHANGED', '加锁后数据目录身份或挂载发生变化。')
+        receipt = read_json(manager.control / 'migrations' / (plan['id'] + '.json'))
         listing = manager.control / 'migrations' / (plan['id'] + '.files.jsonl')
         if digest(listing) != receipt['listing_checksum']:
             raise StorageError('STORAGE_RECEIPT_INVALID', '文件校验清单发生变化，拒绝切换。')
@@ -258,6 +320,8 @@ class StorageMigration:
             fsync_dir(manager.project)
         elif manager.logical.resolve() != target:
             raise StorageError('STORAGE_LINK_CHANGED', 'data 入口被其他操作改变，拒绝覆盖。')
+        if plan.get('identity_version') == 2:
+            atomic_json(target / MARKER, self.copy_identity(plan, ready=True))
         config.update(active={'id': plan['id'], 'target': str(target), 'mount': plan['mount'],
                               'backup': str(backup), 'backup_removed': False},
                       pending=None, revision=config['revision'] + 1)
@@ -267,10 +331,13 @@ class StorageMigration:
 
     def cleanup_backup(self, confirmation):
         manager = self.manager
+        manager.config()
         with file_lease(manager.control / 'config.lock'), file_lease(manager.control / 'service.lock'):
             manager.guard()
             config = manager.config()
             active = config['active']
+            if active and active.get('operation') == 'attach':
+                raise StorageError('STORAGE_BACKUP_INVALID', '接入已有目录保留的本机数据不是迁移校验副本，不能使用迁移清理命令删除。')
             if not active or active['id'] != confirmation or not re.fullmatch('[a-f0-9]{32}', confirmation):
                 raise StorageError('STORAGE_CONFIRMATION_REQUIRED', '请提供已成功迁移的准确 ID；不接受任意删除路径。')
             backup = manager.control / 'backups' / confirmation / 'data'
@@ -285,7 +352,7 @@ class StorageMigration:
                 raise StorageError('STORAGE_BACKUP_MISSING', '副本已被外部操作移动或删除，请人工核验。')
             if inventory(backup) != receipt['inventory']:
                 raise StorageError('STORAGE_BACKUP_CHANGED', '原本机副本已被修改，拒绝删除；请人工核验新增或变化的文件。')
-            with file_lease(manager.logical / '.tushare_refresh.lock'):
+            with manager.data_lease(shared=False), file_lease(manager.logical / '.tushare_refresh.lock'):
                 self.progress(f'正在删除已确认的原本机副本（不可恢复）：{backup}')
                 shutil.rmtree(backup)
                 active['backup_removed'] = True
