@@ -26,6 +26,8 @@ test.beforeAll(async ({ request }) => {
     try { return (await request.get(`${apiRoot}/ready`, { timeout: 1000 })).ok() } catch { return false }
   }, { timeout: 100_000, message: 'Isolated real indicator API did not start' }).toBe(true)
 })
+// Drain proxied requests before Playwright closes the page or stops the fixture API.
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'wait' }) })
 test.afterAll(async () => {
   if (!backend || backend.exitCode !== null) return
   const stopped = new Promise<void>(resolve => backend?.once('exit', () => resolve()))
