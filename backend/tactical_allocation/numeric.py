@@ -548,7 +548,8 @@ def evaluate_candidates(
     max_abs_tilts, train_end_index, strengths=DEFAULT_STRENGTHS, cost=0.0,
     periods_per_year=252, risk_penalty=3.0, max_tracking_error=1.0,
     max_turnover=1.0, objective="active_utility", selected_candidate_id=None,
-    group_membership=None, group_min=None, group_max=None,
+    group_membership=None, group_min=None, group_max=None, validation_start_index=None,
+    allow_infeasible_selected=False,
 ):
     """Freeze a training-only selected strength, then evaluate its holdout path."""
     _require_ready()
@@ -565,7 +566,11 @@ def evaluate_candidates(
     if isinstance(train_end_index, bool) or int(train_end_index) != train_end_index:
         raise ValueError("Training split must be an integer observation index.")
     split = int(train_end_index)
-    if split < 20 or returns.shape[0] - split < 20:
+    validation_start = split if validation_start_index is None else validation_start_index
+    if isinstance(validation_start, bool) or int(validation_start) != validation_start or validation_start < split:
+        raise ValueError("Validation must begin at or after the mature training boundary.")
+    validation_start = int(validation_start)
+    if split < 20 or returns.shape[0] - validation_start < 20:
         raise ValueError("Training and untouched validation each require at least 20 observations.")
     strength_values = _array(strengths, np.float64, 1)
     if tuple(strength_values) not in (DEFAULT_STRENGTHS, (0.0, 1.0)):
@@ -603,13 +608,14 @@ def evaluate_candidates(
         if selected_candidate_id not in ids:
             raise ValueError("Unknown candidate selection.")
         selected = ids.index(selected_candidate_id)
-        if not feasible[selected]:
+        if not feasible[selected] and not allow_infeasible_selected:
             raise ValueError("Selected candidate violates training constraints.")
     selected_train_path = _checked_path(returns[:split], probabilities[:split], flags[:split], bounded[selected], base, float(cost))
     selected_train_path.setflags(write=False)
     candidates, selected_path = [], None
     for index, strength in enumerate(strength_values):
-        path = _checked_path(returns[split:], probabilities[split:], flags[split:], bounded[index], base, float(cost))
+        # An explicit maturity gap is skipped through views, never concatenated.
+        path = _checked_path(returns[validation_start:], probabilities[validation_start:], flags[validation_start:], bounded[index], base, float(cost))
         validation = path_metrics_kernel(path, base.size, float(periods_per_year), float(risk_penalty), objectives[objective])
         candidates.append({
             "id": f"scale-{index}", "strength": float(strength), "feasible": bool(feasible[index]),
@@ -635,8 +641,10 @@ def evaluate_candidates(
         "selected_nav": selected_path[:, offset + 9], "selected_weights": selected_path[:, :base.size],
         "selected_state_tilts": selected_tilts, "execution": execution_audit(),
         "selection_policy": {"scope": "predeclared_direction_and_strength_grid", "objective": objective,
-                             "training_observations": split, "validation_observations": returns.shape[0] - split,
+                             "training_observations": split, "validation_observations": returns.shape[0] - validation_start,
+                             **({"purged_training_tail": validation_start - split} if validation_start_index is not None else {}),
                              "holdout_used_for_selection": False, "independently_funded_intervals": True,
+                             "selected_training_feasible": bool(feasible[selected]),
                              "future_optimality_claim": False, "baseline_fallback_exemption": True},
     }
 

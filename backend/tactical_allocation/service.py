@@ -39,7 +39,12 @@ class TacticalAllocationService:
 
     def warm(self) -> dict[str, Any]:
         warm_tactical_data()
-        return numeric.warm_tactical_allocation_kernels()
+        audit = numeric.warm_tactical_allocation_kernels()
+        from backend.tactical_allocation.walk_forward import warm_walk_forward_kernels
+        audit["walk_forward"] = warm_walk_forward_kernels()
+        if not audit["walk_forward"]["complete"]:
+            raise RuntimeError("多段样本外验证预热未完成")
+        return audit
 
     def catalog(self) -> dict[str, Any]:
         catalog = self.data.catalog()
@@ -191,6 +196,8 @@ class TacticalAllocationService:
 
     def _calculate(self, request: PreviewRequest) -> tuple[dict, dict]:
         baseline = self.repository.get_baseline(request.baseline_id)
+        if baseline.get("policy") and request.max_tracking_error > baseline["policy"]["mandate"]["max_tracking_error"] + 1e-10:
+            raise ValidationError("SAA_POLICY_TRACKING_ERROR", "战术主动风险上限不得超过已确认政策预算；需要扩大时请回长期配置重新研究。")
         data = self.data.load_data(baseline, str(request.start_date), str(request.end_date), str(request.as_of))
         signals = self._signals(request, data, [item["id"] for item in baseline["assets"]]) if request.signal_mode == "momentum" else None
         preflight = self._preflight_data(request, baseline, data, signals)
@@ -305,6 +312,14 @@ class TacticalAllocationService:
                       "baseline_hash": baseline["content_hash"], "formal_pit_eligible": False,
                       "decision_as_of": str(request.as_of), "rebalance": "daily_target", "periods_per_year": 252},
         }
+        if request.walk_forward is not None:
+            from backend.tactical_allocation.walk_forward import evaluate_walk_forward
+            payload["walk_forward"] = evaluate_walk_forward(request, data, signals, base, lower, upper, limits, group_args)
+        if baseline.get("policy"):
+            from backend.strategic_allocation.policy_gate import check_policy
+            payload["policy_check"] = check_policy(baseline, payload["recommendation"]["weights"], request.max_tracking_error, str(request.as_of))
+            payload["warnings"].extend(payload["policy_check"]["violations"])
+            payload["recommendation"]["expires_on"] = min(payload["recommendation"]["expires_on"], baseline["policy"]["expires_on"])
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         # Keep the eventual immutable manifest within its checked reader budget.
         # Reject before any save, rather than creating a version it cannot reopen.

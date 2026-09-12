@@ -23,7 +23,7 @@ describe('allocation research continuity', () => {
     act(() => updateAllocationJourney({ name: '新范围研究', universeId: 'two' }))
     expect(context.result.current[0]).toEqual({ name: '新范围研究', universeId: 'two' })
     expect(readAllocationJourney().taaRunId).toBeUndefined()
-    expect(allocationJourneyPath('saa', { allocationName: '股债 60/40', universeId: 'one' })).toBe('/pre-investment/saa/allocation-lab?alloc=%E8%82%A1%E5%80%BA+60%2F40&universe=one')
+    expect(allocationJourneyPath('saa', { allocationName: '股债 60/40', universeId: 'one' })).toBe('/pre-investment/saa/policy?alloc=%E8%82%A1%E5%80%BA+60%2F40&universe=one')
     expect(allocationJourneyPath('pool', { universeId: 'two', poolVersionIds: ['version-b'] })).toBe('/pre-investment/product-pool?universe=two')
   })
 

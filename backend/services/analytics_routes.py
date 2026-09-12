@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.responses import JSONResponse
 
 from fit import (
@@ -192,6 +192,25 @@ def rolling_corr(req: RollingRequest):
     )
 
 
+class FrontierGridRequest(BaseModel):
+    """Curve density and per-target solve budget are independent controls."""
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    point_count: int = Field(default=20, ge=2, le=200, strict=True)
+    max_iterations: int = Field(default=300, ge=1, le=1000, strict=True)
+    weight_domain: Literal["continuous"] = "continuous"
+    accept_continuous_weights: bool = Field(default=False, strict=True)
+    target_start: Optional[float] = Field(default=None, strict=True)
+    target_end: Optional[float] = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def target_range(self):
+        if (self.target_start is None) != (self.target_end is None):
+            raise ValueError("自定义目标区间必须同时提供起点和终点。")
+        if self.target_start is not None and self.target_start > self.target_end:
+            raise ValueError("目标收益起点不能大于终点。")
+        return self
+
+
 class FrontierRequest(BaseModel):
     alloc_name: str
     start_date: str
@@ -203,6 +222,7 @@ class FrontierRequest(BaseModel):
     exploration: Optional[Dict[str, Any]] = None
     quantization: Optional[Dict[str, Any]] = None
     refine: Optional[Dict[str, Any]] = None
+    frontier_grid: Optional[FrontierGridRequest] = None
 
 
 @router.post("/efficient-frontier")
@@ -279,21 +299,30 @@ def post_efficient_frontier(req: FrontierRequest):
     if req.quantization:
         v = req.quantization.get('step', None)
         quant_step = None if v in (None, 'none') else float(v)
-    use_refine = bool(req.refine.get('use_slsqp', False)) if req.refine else False
-    refine_count = int(req.refine.get('count', 0)) if req.refine else 0
+    if req.refine and 'use_slsqp' in req.refine:
+        return JSONResponse(status_code=400, content={"detail": "SLSQP 字段不再代表实际算法；整条前沿请使用 frontier_grid，分别指定 point_count 与 max_iterations。"})
+    use_refine = bool(req.refine.get('enabled', False)) if req.refine else False
+    refine_method = str(req.refine.get('method', 'bounded_pairwise_pattern_search_njit')) if req.refine else 'bounded_pairwise_pattern_search_njit'
+    if use_refine and refine_method != 'bounded_pairwise_pattern_search_njit':
+        return JSONResponse(status_code=400, content={"detail": "不支持的局部精炼算法。"})
+    refine_iterations = int(req.refine.get('iterations', 20)) if req.refine else 0
 
-    results = calculate_efficient_frontier_exploration(
-        asset_returns=returns_df,
-        return_config=req.return_metric,
-        risk_config=req.risk_metric,
-        single_limits=single_limits,
-        group_limits=group_limits,
-        rounds=rounds,
-        quantize_step=quant_step,
-        use_slsqp_refine=use_refine,
-        refine_count=refine_count,
-        risk_free_rate=float(getattr(req, 'risk_free_rate', 0.0) or 0.0),
-    )
+    try:
+        results = calculate_efficient_frontier_exploration(
+            asset_returns=returns_df,
+            return_config=req.return_metric,
+            risk_config=req.risk_metric,
+            single_limits=single_limits,
+            group_limits=group_limits,
+            rounds=rounds,
+            quantize_step=quant_step,
+            use_local_refine=use_refine,
+            refine_iterations=refine_iterations,
+            frontier_grid=req.frontier_grid.model_dump() if req.frontier_grid else None,
+            risk_free_rate=float(getattr(req, 'risk_free_rate', 0.0) or 0.0),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     import math
     def extract_value(obj):
@@ -318,6 +347,21 @@ def post_efficient_frontier(req: FrontierRequest):
         "max_sharpe": results.get("max_sharpe") if is_finite_point(results.get("max_sharpe")) else None,
         "min_variance": results.get("min_variance") if is_finite_point(results.get("min_variance")) else None,
         "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
+        "refinement": results.get("refinement"),
+        "frontier_grid": results.get("frontier_grid"),
+        "grid_candidates": int(results.get("grid_candidates", 0)),
+        "research_interval": {
+            "requested_start": req.start_date,
+            "requested_end": req.end_date,
+            "actual_start": nav_wide.index[0].date().isoformat(),
+            "actual_end": nav_wide.index[-1].date().isoformat(),
+            "nav_observations": int(len(nav_wide)),
+            "return_observations": int(len(returns_df)),
+        },
+        "sampled_candidates": int(results.get("sampled_candidates", len(results.get("scatter", [])))),
+        "refined_candidates": int(results.get("refined_candidates", 0)),
+        "accepted_candidates": int(sum(1 for point in results.get("scatter", []) if is_finite_point(point))),
+        "frontier_candidates": int(sum(1 for point in results.get("frontier", []) if is_finite_point(point))),
         "execution": results.get("execution"),
         "pit": loaded.lineage,
     }

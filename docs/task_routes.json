@@ -114,6 +114,50 @@
   },
   "routes": [
     {
+      "id": "R87",
+      "task_type": "investment_objectives_cma_and_strategic_policy",
+      "match_keywords": [
+        "strategic-allocation",
+        "strategic_allocation",
+        "StrategicAllocationWorkspace",
+        "InvestmentObjectivesWorkspace",
+        "CMA",
+        "长期政策",
+        "投资目标",
+        "前瞻假设",
+        "SAA政策"
+      ],
+      "negative_keywords": [],
+      "route_priority": 101,
+      "first_read_modules": [
+        "strategic_allocation_policy"
+      ],
+      "expand_to_modules": [
+        "tactical_allocation_workbench",
+        "backend_quant_core",
+        "frontend_allocation_workflows"
+      ],
+      "pitfall_ids": [
+        "P04",
+        "P05",
+        "P07",
+        "P08"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "research_only"
+      ]
+    },
+    {
       "id": "R86",
       "task_type": "tactical_allocation_saa_linked_decision_workbench",
       "match_keywords": [

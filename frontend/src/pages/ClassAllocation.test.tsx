@@ -1,11 +1,16 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ClassAllocation from './ClassAllocation'
 import { readAllocationDraft, readAllocationJourney, updateAllocationJourney, writeAllocationDraft } from '../app/allocationJourney'
 
-vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }))
+vi.mock('echarts-for-react', () => ({ default: ({ option }: { option: unknown }) => <div data-testid="chart" data-option={JSON.stringify(option)} /> }))
+
+function CurrentLocation() {
+  const location = useLocation()
+  return <output data-testid="current-location">{location.pathname}|{new URLSearchParams(location.search).get('alloc') ?? ''}</output>
+}
 
 const allocation = [
   { name: '权益', etfs: [{ code: '510300.SH', name: '沪深300ETF', weight: 1 }] },
@@ -150,7 +155,7 @@ describe('ClassAllocation fixed-signature equal weights', () => {
     render(<MemoryRouter><ClassAllocation /></MemoryRouter>)
 
     await selectAllocation(user)
-    await user.click(screen.getByRole('button', { name: '比较收益与风险候选' }))
+    await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/efficient-frontier',
@@ -248,8 +253,61 @@ describe('ClassAllocation fixed-signature equal weights', () => {
 })
 
 describe('ClassAllocation continuous research journey', () => {
+  it.each([20, 200])('%i 个目标作为点数发送、保存草稿并绘制目标曲线；改输入清空旧结果', async count => {
+    const points = Array.from({ length: count }, (_, index) => ({
+      target_index: index, target: .03 + index / 10000,
+      value: [.08 + index / 10000, .03 + index / 10000],
+      weights: [.3 + index / 1000, .6 - index / 1000, .1],
+      status: 'converged', iterations: 4, optimality_residual: 0, constraint_violation: 0,
+      duplicate_of: null, candidate_index: index, on_frontier: true,
+    }))
+    const fetchMock = installFetch(execution, { '/api/efficient-frontier': {
+      asset_names: ['权益', '固收', '商品'], scatter: points, frontier: points,
+      sampled_candidates: 0, grid_candidates: count, accepted_candidates: count, frontier_candidates: count,
+      min_variance: points[0], max_sharpe: points[0], max_return: points[count - 1], execution,
+      frontier_grid: { requested_points: count, attempted_points: count, successful_points: count,
+        failed_points: 0, unattempted_points: 0, duplicate_targets: 0, duplicate_solutions: 0,
+        added_candidates: count, max_iterations: 37, risk_solver: 'active_set_qp',
+        optimality_scope: 'convex_quadratic_kkt', points, curve: points,
+        endpoints: [{ kind: 'minimum_risk', status: 'converged', iterations: 2 }] },
+    } })
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab?alloc=测试方案&universe=universe-1']}><ClassAllocation /></MemoryRouter>)
+    await screen.findByText('沪深300ETF')
+    await user.click(screen.getByRole('checkbox', { name: '按目标网格加密整条前沿' }))
+    fireEvent.change(screen.getByLabelText('前沿目标点数'), { target: { value: String(count) } })
+    fireEvent.change(screen.getByLabelText('单点最大迭代次数'), { target: { value: '37' } })
+    await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
+    await screen.findByRole('region', { name: '逐目标前沿求解结果' })
+    const call = fetchMock.mock.calls.find(([url]) => url === '/api/efficient-frontier')!
+    expect(JSON.parse(String(call[1]?.body)).frontier_grid).toEqual({
+      point_count: count, max_iterations: 37, weight_domain: 'continuous', accept_continuous_weights: false,
+    })
+    expect(readAllocationDraft<any>('saa:universe-1:测试方案')?.frontierGrid).toMatchObject({ point_count: count, max_iterations: 37 })
+    const chart = JSON.parse(screen.getByTestId('chart').getAttribute('data-option')!)
+    const curve = chart.series.find((series: any) => series.name === '有效前沿')
+    expect(curve.type).toBe('line')
+    expect(curve.connectNulls).toBe(false)
+    expect(curve.smooth).toBe(false)
+    expect(curve.data).toEqual(points)
+    fireEvent.change(screen.getByLabelText('前沿目标点数'), { target: { value: count === 20 ? '200' : '20' } })
+    await waitFor(() => expect(screen.queryByTestId('chart')).not.toBeInTheDocument())
+  })
+
   beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear() })
   afterEach(() => { vi.unstubAllGlobals() })
+
+  it('历史实验切换方案后仍停留在 allocation-lab，不误跳到新的政策 SAA 首页', async () => {
+    installFetch()
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab']}><Routes>
+      <Route path="/pre-investment/saa/allocation-lab" element={<><ClassAllocation /><CurrentLocation /></>} />
+      <Route path="/pre-investment/saa/policy" element={<p>错误进入政策页</p>} />
+    </Routes></MemoryRouter>)
+    await user.click(await screen.findByRole('button', { name: '选择该方案' }))
+    await waitFor(() => expect(screen.getByTestId('current-location')).toHaveTextContent('/pre-investment/saa/allocation-lab|测试方案'))
+    expect(screen.queryByText('错误进入政策页')).not.toBeInTheDocument()
+  })
 
   it('从大类 URL 自动加载并恢复输入，计算结果不跨数据口径复用', async () => {
     installFetch()
@@ -295,7 +353,7 @@ describe('ClassAllocation continuous research journey', () => {
     await user.click(within(group).getByRole('checkbox', { name: '权益' }))
     await user.click(within(group).getByRole('checkbox', { name: '商品' }))
     fireEvent.change(screen.getByLabelText('联合约束 1 最高权重 (%)'), { target: { value: '90' } })
-    await user.click(screen.getByRole('button', { name: '比较收益与风险候选' }))
+    await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
     expect(await screen.findByRole('table', { name: '长期配置候选' })).toHaveTextContent('8.00%')
     const payload = JSON.parse(String(fetchMock.mock.calls.find(([url]) => url === '/api/efficient-frontier')?.[1]?.body))
     expect(payload.constraints.single_limits.权益).toEqual({ lo: .1, hi: .8 })
@@ -308,6 +366,36 @@ describe('ClassAllocation continuous research journey', () => {
     expect(baseline.weights).toEqual({ 权益: .6, 固收: .3, 商品: .1 })
     expect(baseline.constraints.权益).toEqual({ min_weight: .1, max_weight: .8, max_abs_tilt: .1 })
     expect(baseline.group_limits[0]).toMatchObject({ assets: ['权益', '商品'], lo: 0, hi: .9 })
+  })
+
+  it('局部精炼使用真实 NJIT 算法字段，前沿图默认展开并展示精炼证据', async () => {
+    const fetchMock = installFetch(execution, {
+      '/api/efficient-frontier': {
+        asset_names: ['权益', '固收', '商品'], scatter: [], frontier: [],
+        min_variance: { value: [.04, .08], weights: [.2, .7, .1] },
+        max_sharpe: { value: [.08, .12], weights: [.6, .3, .1] },
+        max_return: { value: [.12, .2], weights: [.8, .1, .1] },
+        refinement: { requested: true, algorithm: 'bounded_pairwise_pattern_search_njit', max_iterations: 25,
+          accepted_points: 1, global_optimum_claim: false, items: [{ candidate: 'max_sharpe', status: 'converged', iterations: 8, non_worsening: true, applied: true }] },
+        sampled_candidates: 100, refined_candidates: 1, accepted_candidates: 101, frontier_candidates: 12,
+        research_interval: { actual_start: '2024-01-02', actual_end: '2024-06-28', nav_observations: 120, return_observations: 119 },
+        execution,
+      },
+    })
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab?alloc=测试方案&universe=universe-1']}><ClassAllocation /></MemoryRouter>)
+    await screen.findByText('沪深300ETF')
+    await user.click(screen.getByText('高级设置：指标口径与计算精度'))
+    await user.click(screen.getByRole('checkbox', { name: '使用受约束局部精炼' }))
+    fireEvent.change(screen.getByLabelText('局部精炼最大迭代次数'), { target: { value: '25' } })
+    await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
+    await screen.findByRole('table', { name: '长期配置候选' })
+    const request = fetchMock.mock.calls.find(([url]) => url === '/api/efficient-frontier')
+    expect(JSON.parse(String(request?.[1]?.body)).refine).toEqual({ enabled: true, method: 'bounded_pairwise_pattern_search_njit', iterations: 25 })
+    expect(screen.getByText(/局部精炼仅处理最大夏普、最小风险、最大收益 3 个代表候选/)).toBeInTheDocument()
+    expect(screen.getByText(/采样候选 100 个 \+ 精炼新增 1 个/)).toBeInTheDocument()
+    expect(screen.getByText('有效前沿图（默认展开，可收起）').parentElement).toHaveAttribute('open')
+    expect(screen.getByTestId('chart')).toBeInTheDocument()
   })
 
   it('前沿候选旁边要印出它是按哪天、哪个产品域算出来的', async () => {
@@ -336,7 +424,7 @@ describe('ClassAllocation continuous research journey', () => {
     render(<MemoryRouter><ClassAllocation /></MemoryRouter>)
 
     await selectAllocation(user)
-    await user.click(screen.getByRole('button', { name: '比较收益与风险候选' }))
+    await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
     await screen.findByRole('table', { name: '长期配置候选' })
 
     // 挑权重的就是这张表，口径必须跟它在同一块，不能只在回测那边有。
@@ -351,7 +439,7 @@ describe('ClassAllocation continuous research journey', () => {
     render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab?alloc=测试方案&universe=universe-1']}><ClassAllocation /></MemoryRouter>)
     await screen.findByText('沪深300ETF')
     expect(screen.queryByDisplayValue('其他研究')).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '比较收益与风险候选' }))
+    await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
     await screen.findByRole('table', { name: '长期配置候选' })
     fireEvent.change(screen.getByLabelText('研究区间结束'), { target: { value: '2025-01-01' } })
     await waitFor(() => expect(screen.queryByRole('table', { name: '长期配置候选' })).not.toBeInTheDocument())

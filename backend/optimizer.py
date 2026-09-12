@@ -12,12 +12,21 @@ from numba import njit, types
 from numba.core.registry import CPUDispatcher
 
 
-OPTIMIZER_NUMBA_KERNEL_VERSION = "2.0.0"
+from backend.qp_numba import QP_KERNELS, feasible_qp_kernel
+from backend.cal_indicators.typed_numba_kernels import covariance_2d
+
+
+OPTIMIZER_NUMBA_KERNEL_VERSION = "2.4.0"
 _FLOAT64_1D = types.float64[::1]
 _FLOAT64_2D = types.float64[:, ::1]
 _INT64_1D = types.int64[::1]
 _UINT8_2D = types.uint8[:, ::1]
+_GRID_R1 = types.Array(types.float64, 1, "A", readonly=True)
+_GRID_R2 = types.Array(types.float64, 2, "A", readonly=True)
+_GRID_U2 = types.Array(types.uint8, 2, "A", readonly=True)
 _PORTFOLIO_RESULT = types.UniTuple(types.float64, 2)
+_FRONTIER_RESULT = types.Tuple((_INT64_1D, types.int64))
+_REPRESENTATIVE_RESULT = types.UniTuple(types.int64, 3)
 
 
 @njit(_FLOAT64_1D(_FLOAT64_1D), cache=False, nogil=True)
@@ -234,7 +243,7 @@ def generate_random_portfolios(
     return results
 
 
-@njit((_FLOAT64_2D, _FLOAT64_1D), cache=False, nogil=True)
+@njit((_GRID_R2, _GRID_R1), cache=False, nogil=True)
 def portfolio_returns_kernel(
     asset_returns: np.ndarray,
     weights: np.ndarray,
@@ -382,6 +391,82 @@ def repair_weights_kernel(
 
 
 @njit(
+    _FRONTIER_RESULT(_FLOAT64_1D, _FLOAT64_1D, types.int64),
+    cache=False,
+    nogil=True,
+)
+def pareto_frontier_indices_kernel(
+    risks: np.ndarray,
+    returns: np.ndarray,
+    count: int,
+) -> tuple[np.ndarray, int]:
+    """Return the exact non-dominated risk/return frontier for the supplied candidates."""
+    if count < 0 or count > risks.size or returns.size != risks.size:
+        raise ValueError("FRONTIER_AXIS")
+    indices = np.full(risks.size, -1, dtype=np.int64)
+    if count == 0:
+        return indices, 0
+    order = np.argsort(risks[:count])
+    frontier_count = 0
+    best_return = -np.inf
+    position = 0
+    while position < count:
+        first_index = order[position]
+        current_risk = risks[first_index]
+        best_index = first_index
+        scan = position + 1
+        while scan < count and risks[order[scan]] == current_risk:
+            candidate_index = order[scan]
+            if returns[candidate_index] > returns[best_index]:
+                best_index = candidate_index
+            scan += 1
+        if np.isfinite(current_risk) and np.isfinite(returns[best_index]) and returns[best_index] > best_return + 1e-12:
+            indices[frontier_count] = best_index
+            frontier_count += 1
+            best_return = returns[best_index]
+        position = scan
+    return indices, frontier_count
+
+
+@njit(
+    _REPRESENTATIVE_RESULT(_FLOAT64_1D, _FLOAT64_1D, types.int64, types.float64),
+    cache=False,
+    nogil=True,
+)
+def representative_indices_kernel(
+    risks: np.ndarray,
+    returns: np.ndarray,
+    count: int,
+    risk_free_rate: float,
+) -> tuple[int, int, int]:
+    """Select max-Sharpe, minimum-risk and maximum-return from one finite candidate set."""
+    if count < 0 or count > risks.size or returns.size != risks.size:
+        raise ValueError("REPRESENTATIVE_AXIS")
+    if count == 0:
+        return -1, -1, -1
+
+    minimum_risk_index = -1
+    maximum_return_index = -1
+    maximum_sharpe_index = -1
+    maximum_sharpe = -np.inf
+    for index in range(count):
+        risk_value = risks[index]
+        return_value = returns[index]
+        if not np.isfinite(risk_value) or not np.isfinite(return_value):
+            continue
+        if minimum_risk_index < 0 or risk_value < risks[minimum_risk_index]:
+            minimum_risk_index = index
+        if maximum_return_index < 0 or return_value > returns[maximum_return_index]:
+            maximum_return_index = index
+        if risk_value > 1e-12:
+            sharpe = (return_value - risk_free_rate) / risk_value
+            if sharpe > maximum_sharpe:
+                maximum_sharpe = sharpe
+                maximum_sharpe_index = index
+    return maximum_sharpe_index, minimum_risk_index, maximum_return_index
+
+
+@njit(
     (
         _FLOAT64_2D, _FLOAT64_2D, _UINT8_2D, _FLOAT64_1D, _FLOAT64_1D,
         _INT64_1D, _FLOAT64_1D, _INT64_1D, types.float64, types.int64,
@@ -477,45 +562,14 @@ def explore_portfolios_kernel(
     if accepted == 0:
         return weights_output, risks, returns, 0, frontier_indices, 0, special_indices, 3
 
-    order = np.argsort(risks[:accepted])
-    frontier_count = 0
-    last_return = -np.inf
-    position = 0
-    while position < accepted:
-        first_index = order[position]
-        rounded_risk = np.round(risks[first_index] * 10000.0) / 10000.0
-        best_index = first_index
-        scan = position + 1
-        while scan < accepted:
-            candidate_index = order[scan]
-            candidate_rounded = np.round(risks[candidate_index] * 10000.0) / 10000.0
-            if candidate_rounded != rounded_risk:
-                break
-            if returns[candidate_index] > returns[best_index]:
-                best_index = candidate_index
-            scan += 1
-        if returns[best_index] > last_return:
-            frontier_indices[frontier_count] = best_index
-            frontier_count += 1
-            last_return = returns[best_index]
-        position = scan
+    frontier_indices, frontier_count = pareto_frontier_indices_kernel(risks, returns, accepted)
+    maximum_sharpe_index, minimum_risk_index, maximum_return_index = representative_indices_kernel(
+        risks, returns, accepted, risk_free_rate
+    )
 
-    minimum_risk_index = 0
-    maximum_return_index = 0
-    maximum_sharpe_index = -1
-    maximum_sharpe = -np.inf
     target_index = -1
     target_score = np.inf
     for index in range(accepted):
-        if risks[index] < risks[minimum_risk_index]:
-            minimum_risk_index = index
-        if returns[index] > returns[maximum_return_index]:
-            maximum_return_index = index
-        if risks[index] > 1e-12:
-            sharpe = (returns[index] - risk_free_rate) / risks[index]
-            if sharpe > maximum_sharpe:
-                maximum_sharpe = sharpe
-                maximum_sharpe_index = index
         if target_code == 0 and risks[index] < target_score:
             target_score = risks[index]
             target_index = index
@@ -547,6 +601,429 @@ def explore_portfolios_kernel(
     return weights_output, risks, returns, accepted, frontier_indices, frontier_count, special_indices, status
 
 
+@njit(
+    (_FLOAT64_2D, _FLOAT64_1D, types.int64, types.int64, types.float64,
+     types.float64, types.float64, types.float64, types.int64, types.float64,
+     types.float64, types.int64),
+    cache=False,
+    nogil=True,
+)
+def refine_objective_kernel(
+    asset_returns: np.ndarray,
+    weights: np.ndarray,
+    return_metric_code: int,
+    risk_metric_code: int,
+    return_periods: float,
+    risk_periods: float,
+    return_decay: float,
+    risk_decay: float,
+    risk_window: int,
+    confidence: float,
+    risk_free_rate: float,
+    objective_code: int,
+) -> tuple[float, float, float]:
+    portfolio_returns = portfolio_returns_kernel(asset_returns, weights)
+    return_value = calculate_return_kernel(portfolio_returns, return_metric_code, return_periods, return_decay)
+    risk_value = calculate_risk_kernel(
+        portfolio_returns, risk_metric_code, risk_periods, risk_decay, risk_window, confidence
+    )
+    if not np.isfinite(return_value) or not np.isfinite(risk_value):
+        return return_value, risk_value, -np.inf
+    if objective_code == 0:
+        score = (return_value - risk_free_rate) / risk_value if risk_value > 1e-12 else -np.inf
+    elif objective_code == 1:
+        score = -risk_value
+    else:
+        score = return_value
+    return return_value, risk_value, score
+
+
+@njit(
+    (_FLOAT64_2D, _FLOAT64_2D, _FLOAT64_2D, _UINT8_2D, _FLOAT64_1D,
+     _FLOAT64_1D, types.float64, types.int64, types.int64, types.float64,
+     types.float64, types.float64, types.float64, types.int64, types.float64,
+     types.float64, types.int64),
+    cache=False,
+    nogil=True,
+)
+def refine_special_candidates_kernel(
+    asset_returns: np.ndarray,
+    initial_weights: np.ndarray,
+    single_bounds: np.ndarray,
+    group_membership: np.ndarray,
+    group_lows: np.ndarray,
+    group_highs: np.ndarray,
+    quantize_step: float,
+    return_metric_code: int,
+    risk_metric_code: int,
+    return_periods: float,
+    risk_periods: float,
+    return_decay: float,
+    risk_decay: float,
+    risk_window: int,
+    confidence: float,
+    risk_free_rate: float,
+    max_iterations: int,
+):
+    """Deterministic pairwise-transfer local refinement for three frontier landmarks."""
+    row_count, asset_count = initial_weights.shape
+    refined = np.full((row_count, asset_count), np.nan, dtype=np.float64)
+    returns_out = np.full(row_count, np.nan, dtype=np.float64)
+    risks_out = np.full(row_count, np.nan, dtype=np.float64)
+    before_scores = np.full(row_count, np.nan, dtype=np.float64)
+    after_scores = np.full(row_count, np.nan, dtype=np.float64)
+    iterations = np.zeros(row_count, dtype=np.int64)
+    statuses = np.ones(row_count, dtype=np.int64)
+    if row_count != 3 or asset_count == 0 or max_iterations < 1:
+        return refined, returns_out, risks_out, before_scores, after_scores, iterations, statuses
+    for objective_code in range(3):
+        raw = initial_weights[objective_code]
+        if np.any(~np.isfinite(raw)):
+            continue
+        total = 0.0
+        feasible = True
+        for asset_index in range(asset_count):
+            value = raw[asset_index]
+            if (not np.isfinite(value)
+                    or value < single_bounds[asset_index, 0] - 1e-7
+                    or value > single_bounds[asset_index, 1] + 1e-7):
+                feasible = False
+            total += value
+        if abs(total - 1.0) > 1e-7:
+            feasible = False
+        for group_index in range(group_membership.shape[0]):
+            group_total = 0.0
+            for asset_index in range(asset_count):
+                if group_membership[group_index, asset_index] != 0:
+                    group_total += raw[asset_index]
+            if group_total < group_lows[group_index] - 1e-7 or group_total > group_highs[group_index] + 1e-7:
+                feasible = False
+        if not feasible:
+            continue
+        # The exploration candidate is already repaired and quantized.  Preserve
+        # it exactly as the comparison baseline; repairing it again is not
+        # idempotent under quantization + group bounds and can lower the objective.
+        current = raw.copy()
+        return_value, risk_value, score = refine_objective_kernel(
+            asset_returns, current, return_metric_code, risk_metric_code,
+            return_periods, risk_periods, return_decay, risk_decay, risk_window,
+            confidence, risk_free_rate, objective_code,
+        )
+        if not np.isfinite(score):
+            continue
+        before_scores[objective_code] = score
+        step = 0.05
+        loop_count = 0
+        while loop_count < max_iterations and step >= 1e-4:
+            best_score = score
+            best = current.copy()
+            best_return = return_value
+            best_risk = risk_value
+            for donor in range(asset_count):
+                donor_room = current[donor] - single_bounds[donor, 0]
+                if donor_room <= 1e-12:
+                    continue
+                for receiver in range(asset_count):
+                    if receiver == donor:
+                        continue
+                    receive_room = single_bounds[receiver, 1] - current[receiver]
+                    amount = min(step, min(donor_room, receive_room))
+                    if amount <= 1e-12:
+                        continue
+                    proposal = current.copy()
+                    proposal[donor] -= amount
+                    proposal[receiver] += amount
+                    candidate, repair_status = repair_weights_kernel(
+                        proposal, single_bounds, group_membership, group_lows, group_highs, quantize_step
+                    )
+                    if repair_status != 0:
+                        continue
+                    candidate_return, candidate_risk, candidate_score = refine_objective_kernel(
+                        asset_returns, candidate, return_metric_code, risk_metric_code,
+                        return_periods, risk_periods, return_decay, risk_decay, risk_window,
+                        confidence, risk_free_rate, objective_code,
+                    )
+                    if candidate_score > best_score + 1e-12:
+                        best_score = candidate_score
+                        best = candidate
+                        best_return = candidate_return
+                        best_risk = candidate_risk
+            loop_count += 1
+            if best_score > score + 1e-12:
+                current = best
+                score = best_score
+                return_value = best_return
+                risk_value = best_risk
+            else:
+                step *= 0.5
+        refined[objective_code] = current
+        returns_out[objective_code] = return_value
+        risks_out[objective_code] = risk_value
+        after_scores[objective_code] = score
+        iterations[objective_code] = loop_count
+        statuses[objective_code] = 0 if step < 1e-4 else 2
+    return refined, returns_out, risks_out, before_scores, after_scores, iterations, statuses
+
+
+@njit((_GRID_R2, _GRID_R2, _GRID_U2, _GRID_R1, _GRID_R1,
+       types.int64, types.int64, _GRID_R1), cache=False, nogil=True)
+def frontier_grid_model_kernel(values, bounds, groups, group_lows, group_highs,
+                               return_code, risk_code, settings):
+    """Build the linear return axis and constraints once; reuse the risk contract."""
+    rows, assets = values.shape
+    means = np.empty(assets, dtype=np.float64)
+    series = np.empty(rows, dtype=np.float64)
+    covariance = np.zeros((assets, assets), dtype=np.float64)
+    for j in range(assets):
+        for t in range(rows):
+            series[t] = values[t, j]
+        means[j] = calculate_return_kernel(series, return_code, settings[0], settings[2])
+    if risk_code <= 1:
+        covariance = covariance_2d(values)
+        if risk_code == 1:
+            covariance *= settings[1]
+    elif risk_code == 2:
+        # Polarization uses the existing EWM risk recurrence, not a second
+        # independently maintained weighting/variance definition.
+        for j in range(assets):
+            for t in range(rows):
+                series[t] = values[t, j]
+            sigma = calculate_risk_kernel(series, risk_code, settings[1], settings[3],
+                                          int(settings[4]), settings[5])
+            covariance[j, j] = sigma * sigma
+        for j in range(assets):
+            for k in range(j):
+                for t in range(rows):
+                    series[t] = values[t, j] + values[t, k]
+                sigma = calculate_risk_kernel(series, risk_code, settings[1], settings[3],
+                                              int(settings[4]), settings[5])
+                covariance[j, k] = (sigma * sigma - covariance[j, j] - covariance[k, k]) * .5
+                covariance[k, j] = covariance[j, k]
+    count = 1 + assets * 2 + groups.shape[0] * 2
+    matrix = np.zeros((count + 1, assets), dtype=np.float64)
+    limits = np.empty(count + 1, dtype=np.float64)
+    matrix[0] = 1.0
+    limits[0] = 1.0
+    for j in range(assets):
+        matrix[1 + j * 2, j] = 1.0
+        limits[1 + j * 2] = bounds[j, 0]
+        matrix[2 + j * 2, j] = -1.0
+        limits[2 + j * 2] = -bounds[j, 1]
+    for k in range(groups.shape[0]):
+        row = 1 + assets * 2 + k * 2
+        for j in range(assets):
+            matrix[row, j] = 1.0 if groups[k, j] != 0 else 0.0
+            matrix[row + 1, j] = -matrix[row, j]
+        limits[row] = group_lows[k]
+        limits[row + 1] = -group_highs[k]
+    matrix[count] = means
+    limits[count] = 0.0
+    return means, covariance, matrix, limits
+
+
+@njit((_GRID_R2, _GRID_R1, types.int64, _GRID_R1), cache=False, nogil=True)
+def grid_risk_gradient_kernel(values, weights, risk_code, settings):
+    """Finite differences of the existing non-quadratic risk, with owned scratch."""
+    portfolio = portfolio_returns_kernel(values, weights)
+    risk = calculate_risk_kernel(portfolio, risk_code, settings[1], settings[3],
+                                 int(settings[4]), settings[5])
+    gradient = np.empty(weights.size, dtype=np.float64)
+    plus = np.empty(values.shape[0], dtype=np.float64)
+    minus = np.empty(values.shape[0], dtype=np.float64)
+    epsilon = 1e-6
+    for j in range(weights.size):
+        for t in range(values.shape[0]):
+            plus[t] = portfolio[t] + epsilon * values[t, j]
+            minus[t] = portfolio[t] - epsilon * values[t, j]
+        hi = calculate_risk_kernel(plus, risk_code, settings[1], settings[3],
+                                   int(settings[4]), settings[5])
+        lo = calculate_risk_kernel(minus, risk_code, settings[1], settings[3],
+                                   int(settings[4]), settings[5])
+        gradient[j] = (hi - lo) / (2.0 * epsilon)
+    return risk, gradient
+
+
+@njit((_GRID_R2, _GRID_R2, _GRID_R2, _GRID_R1, _GRID_R1,
+       types.int64, _GRID_R1, types.int64), cache=False, nogil=True)
+def grid_minimum_risk_kernel(values, covariance, matrix, limits, initial,
+                             risk_code, settings, max_iterations):
+    """One target's QP, or feasible BFGS-SQP for a non-quadratic risk metric.
+
+    Every SQP subproblem has the same linear weight/group/return constraints.
+    A line search between feasible points cannot relax those constraints.
+    Non-smooth metrics have only a local numerical stopping test, not a global
+    optimality certificate. Failed solves are never added to the plotted set.
+    """
+    n = initial.size
+    if risk_code <= 2:
+        return feasible_qp_kernel(2.0 * covariance, np.zeros(n), matrix, limits,
+                                  initial, max_iterations, 1e-9)
+    x = initial.copy()
+    value, gradient = grid_risk_gradient_kernel(values, x, risk_code, settings)
+    if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
+        return x, 3, 0, np.inf
+    scale = max(np.max(np.abs(gradient)), abs(value), 1e-6)
+    gradient /= scale
+    value /= scale
+    hessian = np.eye(n)
+    residual = np.inf
+    for iteration in range(max_iterations):
+        proposal, status, _, residual = feasible_qp_kernel(
+            hessian, gradient - hessian @ x, matrix, limits, x, 300, 1e-9)
+        if status != 0:
+            return x, status, iteration + 1, residual
+        direction = proposal - x
+        residual = np.max(np.abs(direction))
+        # The generic lane uses 1e-6 finite differences, so its local step
+        # tolerance is 1e-6 too; the exact quadratic lane keeps 1e-9 KKT tests.
+        if residual <= 1e-6:
+            return x, 0, iteration + 1, residual
+        slope = np.dot(gradient, direction)
+        alpha = 1.0
+        accepted = False
+        new_x = x.copy()
+        new_value = value
+        new_gradient = gradient.copy()
+        for _ in range(30):
+            new_x = x + alpha * direction
+            raw_value, raw_gradient = grid_risk_gradient_kernel(values, new_x, risk_code, settings)
+            new_value = raw_value / scale
+            new_gradient = raw_gradient / scale
+            if (np.isfinite(new_value) and np.all(np.isfinite(new_gradient))
+                    and new_value <= value + 1e-4 * alpha * min(slope, 0.0)):
+                accepted = True
+                break
+            alpha *= .5
+        if not accepted:
+            return x, 4, iteration + 1, residual
+        step = new_x - x
+        change = new_gradient - gradient
+        hs = hessian @ step
+        curvature = np.dot(step, change)
+        model_curvature = np.dot(step, hs)
+        if model_curvature > 1e-16:
+            if curvature < .2 * model_curvature:
+                theta = .8 * model_curvature / (model_curvature - curvature)
+                change = theta * change + (1.0 - theta) * hs
+                curvature = np.dot(step, change)
+            if curvature > 1e-16:
+                hessian += np.outer(change, change) / curvature - np.outer(hs, hs) / model_curvature
+        x, value, gradient = new_x, new_value, new_gradient
+    return x, 1, max_iterations, residual
+
+
+@njit((_GRID_R2, _GRID_R2, _GRID_U2, _GRID_R1, _GRID_R1,
+       _GRID_R1, types.int64, types.int64, _GRID_R1, types.int64,
+       types.int64, types.boolean, types.float64, types.float64), cache=False, nogil=True)
+def solve_frontier_grid_kernel(values, bounds, groups, group_lows, group_highs,
+                               initial, return_code, risk_code, settings, point_count,
+                               max_iterations, explicit_range, start_target, end_target):
+    """Optimize endpoints, generate N return targets and attempt N constrained solves."""
+    n = initial.size
+    if (not 1 <= n <= 30 or values.shape[0] < 2 or values.shape[1] != n
+            or bounds.shape != (n, 2) or groups.shape[1] != n
+            or groups.shape[0] != group_lows.size or group_lows.size != group_highs.size
+            or settings.size != 6 or not 2 <= point_count <= 200
+            or not 1 <= max_iterations <= 1000 or not 0 <= return_code <= 3
+            or not 0 <= risk_code <= 6):
+        raise ValueError("FRONTIER_GRID_INPUT_AXIS")
+    means, covariance, matrix, limits = frontier_grid_model_kernel(
+        values, bounds, groups, group_lows, group_highs, return_code, risk_code, settings)
+    n = initial.size
+    base_matrix, base_limits = matrix[:-1], limits[:-1]
+    low, low_status, low_iterations, low_residual = grid_minimum_risk_kernel(
+        values, covariance, base_matrix, base_limits, initial, risk_code, settings, max_iterations)
+    high, high_status, high_iterations, high_residual = feasible_qp_kernel(
+        np.zeros((n, n)), -means, base_matrix, base_limits, initial, max_iterations, 1e-9)
+    range_resolved = low_status == 0 and high_status == 0
+    low_return, high_return = np.dot(means, low), np.dot(means, high)
+    targets = np.linspace(start_target if explicit_range else low_return,
+                          end_target if explicit_range else max(low_return, high_return), point_count)
+    weights = np.full((point_count, n), np.nan)
+    metrics = np.full((point_count, 2), np.nan)
+    statuses = np.full(point_count, 5, dtype=np.int64)
+    iterations = np.zeros(point_count, dtype=np.int64)
+    residuals = np.full(point_count, np.nan)
+    violations = np.full(point_count, np.nan)
+    attempted = 0
+    # Unresolved endpoints do not certify a feasible frontier range. The caller
+    # still receives the requested N rows and endpoint diagnostics, not a fake curve.
+    if range_resolved:
+        for k in range(point_count):
+            attempted += 1
+            target = targets[k]
+            if target > high_return + 1e-8:
+                statuses[k] = 2
+                continue
+            limits[-1] = target
+            seed = low if target <= low_return else high
+            solution, status, used, residual = grid_minimum_risk_kernel(
+                values, covariance, matrix, limits, seed, risk_code, settings, max_iterations)
+            if status == 2:
+                status = 3  # An infeasible numerical starting point is not an infeasibility proof.
+            portfolio = portfolio_returns_kernel(values, solution)
+            actual_return = calculate_return_kernel(portfolio, return_code, settings[0], settings[2])
+            actual_risk = calculate_risk_kernel(portfolio, risk_code, settings[1], settings[3],
+                                                int(settings[4]), settings[5])
+            slack = matrix @ solution - limits
+            violation = max(abs(slack[0]), max(0.0, -np.min(slack[1:])))
+            if status == 0 and (violation > 1e-7 or not np.isfinite(actual_risk)
+                                or not np.isfinite(actual_return)):
+                status = 3
+            weights[k] = solution
+            metrics[k, 0] = actual_risk
+            metrics[k, 1] = actual_return
+            statuses[k], iterations[k] = status, used
+            residuals[k], violations[k] = residual, violation
+    endpoint_statuses = np.array([low_status, high_status], dtype=np.int64)
+    endpoint_iterations = np.array([low_iterations, high_iterations], dtype=np.int64)
+    endpoint_residuals = np.array([low_residual, high_residual])
+    endpoint_returns = np.array([low_return, high_return])
+    return (targets, weights, metrics, statuses, iterations, residuals, violations,
+            endpoint_statuses, endpoint_iterations, endpoint_residuals, endpoint_returns, attempted)
+
+
+@njit((_FLOAT64_2D, _FLOAT64_1D, _FLOAT64_1D, types.int64,
+       _FLOAT64_2D, _FLOAT64_2D, _INT64_1D), cache=False, nogil=True)
+def append_grid_candidates_kernel(weights, risks, returns, count, grid_weights, metrics, statuses):
+    """Append successful unique grid solutions to this request's owned buffer."""
+    indices = np.full(statuses.size, -1, dtype=np.int64)
+    duplicate_of = np.full(statuses.size, -1, dtype=np.int64)
+    for i in range(statuses.size):
+        if statuses[i] != 0:
+            continue
+        for previous in range(i):
+            if indices[previous] < 0:
+                continue
+            if np.max(np.abs(grid_weights[i] - grid_weights[previous])) <= 1e-10:
+                duplicate_of[i] = previous
+                indices[i] = indices[previous]
+                break
+        if indices[i] < 0:
+            indices[i] = count
+            weights[count] = grid_weights[i]
+            risks[count], returns[count] = metrics[i, 0], metrics[i, 1]
+            count += 1
+    return count, indices, duplicate_of
+
+
+@njit((_FLOAT64_2D, _INT64_1D, _FLOAT64_1D, _FLOAT64_1D, _INT64_1D, types.int64),
+      cache=False, nogil=True)
+def grid_curve_membership_kernel(metrics, statuses, risks, returns, frontier_indices, frontier_count):
+    """Only plot grid solutions surviving the final common Pareto filter."""
+    output = np.zeros(statuses.size, dtype=np.bool_)
+    for i in range(statuses.size):
+        if statuses[i] != 0:
+            continue
+        for k in range(frontier_count):
+            candidate = frontier_indices[k]
+            if (abs(metrics[i, 0] - risks[candidate]) <= 1e-10
+                    and abs(metrics[i, 1] - returns[candidate]) <= 1e-10):
+                output[i] = True
+                break
+    return output
+
+
 OPTIMIZER_NUMBA_KERNELS: tuple[CPUDispatcher, ...] = (
     get_log_returns,
     get_simple_returns,
@@ -557,7 +1034,18 @@ OPTIMIZER_NUMBA_KERNELS: tuple[CPUDispatcher, ...] = (
     generate_random_portfolios,
     portfolio_returns_kernel,
     repair_weights_kernel,
+    pareto_frontier_indices_kernel,
+    representative_indices_kernel,
     explore_portfolios_kernel,
+    refine_objective_kernel,
+    refine_special_candidates_kernel,
+    frontier_grid_model_kernel,
+    grid_risk_gradient_kernel,
+    grid_minimum_risk_kernel,
+    solve_frontier_grid_kernel,
+    append_grid_candidates_kernel,
+    grid_curve_membership_kernel,
+    *QP_KERNELS,
 )
 for _dispatcher in OPTIMIZER_NUMBA_KERNELS:
     _dispatcher.disable_compile()
@@ -634,6 +1122,14 @@ def warm_optimizer_numba_kernels() -> dict[str, Any]:
     generate_random_portfolios(np.int64(2), np.int64(2), means, covariance)
     portfolio_returns_kernel(returns, weights)
     repair_weights_kernel(weights, bounds, groups, empty_float, empty_float, np.float64(0.0))
+    pareto_frontier_indices_kernel(
+        np.ascontiguousarray([0.1, 0.2], dtype=np.float64),
+        np.ascontiguousarray([0.02, 0.03], dtype=np.float64), np.int64(2),
+    )
+    representative_indices_kernel(
+        np.ascontiguousarray([0.1, 0.2], dtype=np.float64),
+        np.ascontiguousarray([0.02, 0.03], dtype=np.float64), np.int64(2), np.float64(0.0),
+    )
     explore_portfolios_kernel(
         returns, bounds, groups, empty_float, empty_float, samples, steps, buckets,
         np.float64(0.0), np.int64(42), np.int64(0), np.int64(0),
@@ -641,6 +1137,30 @@ def warm_optimizer_numba_kernels() -> dict[str, Any]:
         np.int64(60), np.float64(0.95), np.float64(0.0), np.int64(-1),
         np.float64(0.0), np.float64(0.0),
     )
+    refine_objective_kernel(
+        returns, weights, np.int64(0), np.int64(0), np.float64(252.0),
+        np.float64(252.0), np.float64(0.94), np.float64(0.94), np.int64(60),
+        np.float64(0.95), np.float64(0.0), np.int64(0),
+    )
+    refine_special_candidates_kernel(
+        returns, np.ascontiguousarray(np.vstack((weights, weights, weights))), bounds,
+        groups, empty_float, empty_float, np.float64(0.0), np.int64(0), np.int64(0),
+        np.float64(252.0), np.float64(252.0), np.float64(0.94), np.float64(0.94),
+        np.int64(60), np.float64(0.95), np.float64(0.0), np.int64(2),
+    )
+    grid_settings = np.array([252.0, 252.0, .94, .94, 60.0, .95])
+    for risk_code in (0, 2, 6):
+        grid = solve_frontier_grid_kernel(
+            returns, bounds, groups, empty_float, empty_float, weights,
+            np.int64(2), np.int64(risk_code), grid_settings, np.int64(2),
+            np.int64(10), False, np.float64(0.0), np.float64(0.0))
+    scratch_weights = np.empty((2, 2))
+    scratch_risks, scratch_returns = np.empty(2), np.empty(2)
+    count, _, _ = append_grid_candidates_kernel(scratch_weights, scratch_risks, scratch_returns,
+                                                np.int64(0), grid[1], grid[2], grid[3])
+    frontier_indices, frontier_count = pareto_frontier_indices_kernel(scratch_risks, scratch_returns, count)
+    grid_curve_membership_kernel(grid[2], grid[3], scratch_risks, scratch_returns,
+                                 frontier_indices, frontier_count)
     if any(len(dispatcher.nopython_signatures) != 1 for dispatcher in OPTIMIZER_NUMBA_KERNELS):
         raise RuntimeError("optimizer NJIT kernels must each expose exactly one fixed signature")
     _OPTIMIZER_WARMED = True
@@ -762,9 +1282,6 @@ def _constraint_arrays(
 
 def _round_arrays(
     rounds: Optional[List[Dict[str, Any]]],
-    *,
-    use_refine: bool,
-    refine_count: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     configured = rounds or [{"samples": 100, "step": 0.99, "buckets": 50}]
     samples: list[int] = []
@@ -780,10 +1297,6 @@ def _round_arrays(
         samples.append(count)
         steps.append(step)
         buckets.append(max(1, int(item.get("buckets", 50))))
-    if use_refine and refine_count > 0:
-        samples.append(int(refine_count))
-        steps.append(0.05)
-        buckets.append(max(2, int(refine_count)))
     if sum(samples) > 200_000:
         raise ValueError("候选组合总数不能超过 200000")
     return (
@@ -815,8 +1328,6 @@ def _run_exploration(
     group_limits: Optional[Dict[Tuple[int, ...], Tuple[float, float]]],
     rounds: Optional[List[Dict[str, Any]]],
     quantize_step: Optional[float],
-    use_refine: bool,
-    refine_count: int,
     risk_free_rate: float,
     seed: int,
     target: Optional[str],
@@ -833,7 +1344,7 @@ def _run_exploration(
     if quantize_step is not None and quantize_step <= 0.0:
         raise ValueError("权重量化步长必须大于 0")
     bounds, membership, group_lows, group_highs = _constraint_arrays(values.shape[1], single_limits, group_limits)
-    samples, steps, buckets = _round_arrays(rounds, use_refine=use_refine, refine_count=refine_count)
+    samples, steps, buckets = _round_arrays(rounds)
     confidence = float(95 if risk_config.get("confidence") is None else risk_config["confidence"])
     if confidence > 1.0:
         confidence /= 100.0
@@ -897,30 +1408,214 @@ def calculate_efficient_frontier_exploration(
     group_limits: Optional[Dict[Tuple[int, ...], Tuple[float, float]]] = None,
     rounds: Optional[List[Dict[str, Any]]] = None,
     quantize_step: Optional[float] = None,
-    use_slsqp_refine: bool = False,
-    refine_count: int = 0,
+    use_local_refine: bool = False,
+    refine_iterations: int = 0,
+    frontier_grid: Optional[Dict[str, Any]] = None,
     risk_free_rate: float = 0.0,
     seed: int = 42,
 ):
     asset_names = list(asset_returns.columns)
+    grid_count = 0
+    if frontier_grid is not None:
+        grid_count = frontier_grid.get("point_count", 20)
+        grid_iterations = frontier_grid.get("max_iterations", 300)
+        if (type(grid_count) is not int or not 2 <= grid_count <= 200
+                or type(grid_iterations) is not int or not 1 <= grid_iterations <= 1000):
+            raise ValueError("前沿目标点数须为 2–200 的整数；单点最大迭代次数须为 1–1000 的整数。")
+        if len(asset_names) > 30 or len(group_limits or {}) > 30:
+            raise ValueError("目标网格求解最多支持 30 个资产和 30 个分组约束。")
+        if frontier_grid.get("weight_domain", "continuous") != "continuous":
+            raise ValueError("目标网格使用连续权重，不提供未经验证的整数权重求解。")
+        if quantize_step and frontier_grid.get("accept_continuous_weights") is not True:
+            raise ValueError("散点启用取整时，请明确确认目标网格采用连续权重；不会静默将离散约束用于连续曲线。")
+        target_start, target_end = frontier_grid.get("target_start"), frontier_grid.get("target_end")
+        if (target_start is None) != (target_end is None):
+            raise ValueError("自定义目标区间必须同时提供起点和终点。")
+        if target_start is not None and (not np.isfinite(target_start) or not np.isfinite(target_end) or target_start > target_end):
+            raise ValueError("目标收益区间须为有限数值且起点不大于终点。")
+    asset_values = np.ascontiguousarray(asset_returns.to_numpy(dtype=np.float64))
+    if frontier_grid is not None and asset_values.shape[0] < 2:
+        raise ValueError("目标网格至少需要两个收益观察期。")
     result = _run_exploration(
-        asset_returns.to_numpy(dtype=np.float64), return_config, risk_config,
+        asset_values, return_config, risk_config,
         single_limits=single_limits, group_limits=group_limits, rounds=rounds,
-        quantize_step=quantize_step, use_refine=use_slsqp_refine,
-        refine_count=refine_count, risk_free_rate=risk_free_rate, seed=seed,
+        quantize_step=quantize_step, risk_free_rate=risk_free_rate, seed=seed,
         target=None, target_return=None, target_risk=None,
     )
-    weights, risks, returns, accepted, frontier_indices, frontier_count, special_indices, _ = result
-    scatter = [_point(weights, risks, returns, index) for index in range(int(accepted))]
-    frontier = [_point(weights, risks, returns, int(frontier_indices[index])) for index in range(int(frontier_count))]
+    weights, risks, returns, accepted, _frontier_indices, _frontier_count, special_indices, _ = result
+    sampled_candidates = int(accepted)
+    combined_weights = np.empty((sampled_candidates + 3 + grid_count, len(asset_names)), dtype=np.float64)
+    combined_risks = np.empty(sampled_candidates + 3 + grid_count, dtype=np.float64)
+    combined_returns = np.empty(sampled_candidates + 3 + grid_count, dtype=np.float64)
+    combined_weights[:sampled_candidates] = weights[:sampled_candidates]
+    combined_risks[:sampled_candidates] = risks[:sampled_candidates]
+    combined_returns[:sampled_candidates] = returns[:sampled_candidates]
+    combined_count = sampled_candidates
+
     max_sharpe_index = int(special_indices[0])
+    refinement: dict[str, Any] = {
+        "requested": bool(use_local_refine),
+        "algorithm": "bounded_pairwise_pattern_search_njit",
+        "max_iterations": int(refine_iterations),
+        "items": [],
+        "accepted_points": 0,
+        "global_optimum_claim": False,
+    }
+    if use_local_refine:
+        if not 1 <= int(refine_iterations) <= 200:
+            raise ValueError("局部精炼迭代次数必须位于 1 至 200 之间")
+        initial = np.full((3, len(asset_names)), np.nan, dtype=np.float64)
+        source_indices = (max_sharpe_index, int(special_indices[1]), int(special_indices[2]))
+        for index, source_index in enumerate(source_indices):
+            if source_index >= 0:
+                initial[index] = weights[source_index]
+        bounds, membership, group_lows, group_highs = _constraint_arrays(len(asset_names), single_limits, group_limits)
+        confidence = float(95 if risk_config.get("confidence") is None else risk_config["confidence"])
+        if confidence > 1.0:
+            confidence /= 100.0
+        refined = refine_special_candidates_kernel(
+            asset_values, np.ascontiguousarray(initial), bounds, membership, group_lows, group_highs,
+            np.float64(quantize_step or 0.0), np.int64(_return_metric_code(return_config)),
+            np.int64(_risk_metric_code(risk_config)),
+            np.float64(252 if return_config.get("days") is None else return_config["days"]),
+            np.float64(252 if risk_config.get("days") is None else risk_config["days"]),
+            np.float64(0.94 if return_config.get("alpha") is None else return_config["alpha"]),
+            np.float64(0.94 if risk_config.get("alpha") is None else risk_config["alpha"]),
+            np.int64(60 if risk_config.get("window") is None else risk_config["window"]),
+            np.float64(confidence), np.float64(risk_free_rate), np.int64(refine_iterations),
+        )
+        refined_weights, refined_returns, refined_risks, before_scores, after_scores, iterations, statuses = refined
+        keys = ("max_sharpe", "min_variance", "max_return")
+        for index, key in enumerate(keys):
+            status = int(statuses[index])
+            non_worsening = (
+                status in (0, 2)
+                and np.isfinite(before_scores[index])
+                and np.isfinite(after_scores[index])
+                and after_scores[index] >= before_scores[index] - 1e-12
+            )
+            improved = bool(non_worsening and after_scores[index] > before_scores[index] + 1e-12)
+            refinement["items"].append({
+                "candidate": key,
+                "status": "converged" if status == 0 else "max_iterations" if status == 2 else "failed",
+                "iterations": int(iterations[index]),
+                "before_score": float(before_scores[index]) if np.isfinite(before_scores[index]) else None,
+                "after_score": float(after_scores[index]) if np.isfinite(after_scores[index]) else None,
+                "non_worsening": bool(non_worsening),
+                "applied": improved,
+            })
+            if improved:
+                combined_weights[combined_count] = refined_weights[index]
+                combined_risks[combined_count] = refined_risks[index]
+                combined_returns[combined_count] = refined_returns[index]
+                combined_count += 1
+        refinement["accepted_points"] = combined_count - sampled_candidates
+
+    local_refined_count = combined_count - sampled_candidates
+    grid_start_index = combined_count
+    grid_result = None
+    if frontier_grid is not None:
+        bounds, membership, group_lows, group_highs = _constraint_arrays(len(asset_names), single_limits, group_limits)
+        confidence = float(95 if risk_config.get("confidence") is None else risk_config["confidence"])
+        if confidence > 1.0:
+            confidence /= 100.0
+        settings = np.array([
+            252 if return_config.get("days") is None else return_config["days"],
+            252 if risk_config.get("days") is None else risk_config["days"],
+            .94 if return_config.get("alpha") is None else return_config["alpha"],
+            .94 if risk_config.get("alpha") is None else risk_config["alpha"],
+            60 if risk_config.get("window") is None else risk_config["window"], confidence,
+        ], dtype=np.float64)
+        grid_result = solve_frontier_grid_kernel(
+            asset_values, bounds, membership, group_lows, group_highs, weights[0],
+            np.int64(_return_metric_code(return_config)), np.int64(_risk_metric_code(risk_config)),
+            settings, np.int64(grid_count), np.int64(grid_iterations), target_start is not None,
+            np.float64(target_start or 0.0), np.float64(target_end or 0.0))
+        combined_count, grid_indices, grid_duplicates = append_grid_candidates_kernel(
+            combined_weights, combined_risks, combined_returns, np.int64(combined_count),
+            grid_result[1], grid_result[2], grid_result[3])
+
+    final_frontier_indices, final_frontier_count = pareto_frontier_indices_kernel(
+        combined_risks, combined_returns, np.int64(combined_count)
+    )
+    final_max_sharpe, final_min_risk, final_max_return = representative_indices_kernel(
+        combined_risks, combined_returns, np.int64(combined_count), np.float64(risk_free_rate)
+    )
+    final_indices = {
+        "max_sharpe": int(final_max_sharpe),
+        "min_variance": int(final_min_risk),
+        "max_return": int(final_max_return),
+    }
+    special_points = {
+        key: None if index < 0 else _point(combined_weights, combined_risks, combined_returns, index)
+        for key, index in final_indices.items()
+    }
+    refinement["final_representatives"] = {
+        key: {
+            "candidate_index": index,
+            "source": "unavailable" if index < 0 else "sampled" if index < sampled_candidates else "refined" if index < grid_start_index else "grid",
+        }
+        for key, index in final_indices.items()
+    }
+    scatter = [_point(combined_weights, combined_risks, combined_returns, index) for index in range(combined_count)]
+    frontier = [
+        _point(combined_weights, combined_risks, combined_returns, int(final_frontier_indices[index]))
+        for index in range(int(final_frontier_count))
+    ]
+    grid_payload = None
+    if grid_result is not None:
+        targets, grid_weights, metrics, statuses, iterations, residuals, violations = grid_result[:7]
+        plot_mask = grid_curve_membership_kernel(metrics, statuses, combined_risks, combined_returns,
+                                                 final_frontier_indices, final_frontier_count)
+        status_names = ("converged", "max_iterations", "infeasible_target", "numerical_failure",
+                        "line_search_failed", "range_unresolved")
+        finite = lambda value: float(value) if np.isfinite(value) else None
+        points = []
+        for i in range(grid_count):
+            candidate_index = int(grid_indices[i])
+            point = {"target_index": i, "target": finite(targets[i]),
+                     "status": status_names[int(statuses[i])], "iterations": int(iterations[i]),
+                     "optimality_residual": finite(residuals[i]), "constraint_violation": finite(violations[i]),
+                     "candidate_index": candidate_index if candidate_index >= 0 else None,
+                     "duplicate_of": int(grid_duplicates[i]) if grid_duplicates[i] >= 0 else None,
+                     "on_frontier": bool(plot_mask[i]),
+                     "value": [finite(metrics[i, 0]), finite(metrics[i, 1])],
+                     "weights": [finite(value) for value in grid_weights[i]]}
+            points.append(point)
+        success = sum(point["status"] == "converged" for point in points)
+        grid_payload = {
+            "algorithm": "target_return_grid_sqp_njit", "target_axis": "return",
+            "subproblem": "minimum_risk_given_return_floor", "weight_domain": "continuous",
+            "risk_solver": "active_set_qp" if _risk_metric_code(risk_config) <= 2 else "feasible_bfgs_sqp",
+            "optimality_scope": "convex_quadratic_kkt" if _risk_metric_code(risk_config) <= 2 else "local_numerical_stationarity",
+            "requested_points": grid_count, "attempted_points": int(grid_result[11]),
+            "solver_calls": sum(point["iterations"] > 0 for point in points),
+            "infeasible_targets": sum(point["status"] == "infeasible_target" for point in points),
+            "successful_points": success, "failed_points": int(grid_result[11]) - success,
+            "unattempted_points": grid_count - int(grid_result[11]),
+            "duplicate_targets": sum(points[i]["target"] == points[i - 1]["target"] for i in range(1, grid_count)),
+            "duplicate_solutions": sum(point["duplicate_of"] is not None for point in points),
+            "added_candidates": int(combined_count) - grid_start_index,
+            "max_iterations": grid_iterations, "constraint_tolerance": 1e-7,
+            "stationarity_tolerance": 1e-9 if _risk_metric_code(risk_config) <= 2 else 1e-6,
+            "inner_qp_max_iterations": 300, "line_search_max_steps": 30,
+            "points": points, "curve": [point if point["on_frontier"] else None for point in points],
+            "endpoints": [{"kind": kind, "status": status_names[int(grid_result[7][i])],
+                           "iterations": int(grid_result[8][i]), "optimality_residual": finite(grid_result[9][i]),
+                           "return": finite(grid_result[10][i])} for i, kind in enumerate(("minimum_risk", "maximum_return"))],
+        }
+    refined_candidates = local_refined_count
     return {
         "asset_names": asset_names,
         "scatter": scatter,
         "frontier": frontier,
-        "max_sharpe": None if max_sharpe_index < 0 else _point(weights, risks, returns, max_sharpe_index),
-        "min_variance": _point(weights, risks, returns, int(special_indices[1])),
-        "max_return": _point(weights, risks, returns, int(special_indices[2])),
+        "sampled_candidates": sampled_candidates,
+        "refined_candidates": refined_candidates,
+        "grid_candidates": int(combined_count) - grid_start_index,
+        "frontier_grid": grid_payload,
+        "accepted_candidates": int(combined_count),
+        **special_points,
+        "refinement": refinement,
         "execution": _validate_optimizer_audit(optimizer_numba_status()),
     }
 
@@ -963,7 +1658,7 @@ def select_target_weights(
             {"samples": first_count, "step": 1.0, "buckets": 40},
             {"samples": max(1, int(candidate_count) - first_count), "step": 0.25, "buckets": 80},
         ],
-        quantize_step=None, use_refine=False, refine_count=0,
+        quantize_step=None,
         risk_free_rate=risk_free_rate, seed=seed, target=target,
         target_return=target_return, target_risk=target_risk,
     )
@@ -980,7 +1675,9 @@ __all__ = [
     "calculate_return", "calculate_return_kernel", "calculate_risk",
     "calculate_risk_kernel", "compute_portfolio_performance",
     "explore_portfolios_kernel", "generate_random_portfolios", "get_log_returns",
-    "get_simple_returns", "nav_matrix_returns_kernel", "optimizer_numba_status", "portfolio_returns_kernel",
-    "repair_weights_kernel", "select_target_weights", "warm_optimizer_numba_kernels",
+    "get_simple_returns", "nav_matrix_returns_kernel", "optimizer_numba_status", "pareto_frontier_indices_kernel",
+    "representative_indices_kernel",
+    "portfolio_returns_kernel", "refine_objective_kernel", "refine_special_candidates_kernel", "repair_weights_kernel",
+    "select_target_weights", "warm_optimizer_numba_kernels",
     "returns_from_nav_matrix",
 ]

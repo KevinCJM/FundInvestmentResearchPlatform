@@ -83,7 +83,7 @@ const preInvestment: StageDefinition = {
     text: 'text-violet-700',
   },
   nodes: [
-    { id: 'objectives', label: '投资目标与约束', description: '定义收益、风险、基准、期限、流动性和投资范围。', path: '/pre-investment/objectives', status: 'prototype' },
+    { id: 'objectives', label: '投资目标与约束', description: '保存期限、币种、收益目标、波动与流动性边界及战术风险预算，供长期政策真实消费。', path: '/pre-investment/objectives', status: 'partial' },
     { id: 'product-pool', label: '选择产品池版本', description: '选择已生效产品池版本并冻结为本次投前可投资域。', path: '/pre-investment/product-pool', status: 'available' },
     { id: 'saa', label: '战略资产配置（SAA）', description: '确定大类资产中枢权重、偏离区间与长期风险预算。', path: '/pre-investment/saa', status: 'partial' },
     { id: 'taa', label: '战术资产配置（TAA）', description: '锁定 SAA，研究相对强弱或观点偏离，比较含成本回测与情景影响，并将已保存的大类预算传入产品配置。', path: '/pre-investment/taa', status: 'partial' },
@@ -93,6 +93,7 @@ const preInvestment: StageDefinition = {
     { id: 'approval', label: '研究方案定稿与外部审批记录', description: '固化研究方案、数据截止日和版本，并记录平台外部审批结果。', path: '/pre-investment/approval', status: 'prototype' },
   ],
   tools: [
+    { label: '长期政策配置', description: '经济大类、长期资本市场假设、稳健候选与政策确认。', path: '/pre-investment/saa/policy' },
     { label: '大类资产构建', description: '定义大类及其 ETF/公募基金代理。', path: '/pre-investment/saa/asset-classes' },
     { label: '自动构建大类', description: '按收益相关性、风险画像或主成分自动划分大类，并给出代表产品、类内权重与分类诊断。', path: '/pre-investment/saa/auto-classification' },
     { label: '大类资产配置与策略回测', description: '效率前沿、风险预算、目标权重、调仓与回测。', path: '/pre-investment/saa/allocation-lab' },

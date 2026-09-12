@@ -284,8 +284,13 @@ class TacticalAllocationData:
                     product["kind"] = member["kind"]
                     product["product_id"] = member["product_id"]
         lineage["universe"] = universe
-        _, nav_file_hash, nav_hash = self._nav_version(alloc_name, lineage["as_of"])
-        lineage.update(nav_file_hash=nav_file_hash, nav_hash=nav_hash)
+        nav_frame, nav_file_hash, nav_hash = self._nav_version(alloc_name, lineage["as_of"])
+        snapshot_dates = pd.to_datetime(nav_frame["date"], errors="coerce")
+        if snapshot_dates.isna().any() or snapshot_dates.empty:
+            raise ValidationError("TAA_NAV_DATE", "SAA 类别净值缺少可冻结的有效日期。")
+        lineage.update(nav_file_hash=nav_file_hash, nav_hash=nav_hash,
+                       nav_snapshot_end_date=snapshot_dates.max().strftime("%Y-%m-%d"),
+                       nav_snapshot_rows=int(len(nav_frame)))
         reasons = ["SAA 分类净值不保留完整历史修订版本；此基线用于研究，不构成历史 PIT 认证。"]
         if not lineage["as_of"]:
             reasons.append("资产类别由全历史口径构建，历史回放含事后产品选择风险。")
@@ -311,8 +316,21 @@ class TacticalAllocationData:
         # Pick and verify the exact NAV version frozen with the SAA baseline.
         variant = config.get("as_of") or ""
         frame, source_file_hash, nav_hash = self._nav_version(alloc_name, variant)
-        if nav_hash != baseline.get("lineage", {}).get("nav_hash"):
-            raise ValidationError("TAA_NAV_CHANGED", "SAA 类别净值已变更，请重新保存基线；旧决策可读取冻结结果。")
+        frozen_lineage = baseline.get("lineage", {})
+        frozen_hash = frozen_lineage.get("nav_hash")
+        appended_after_baseline = False
+        if nav_hash != frozen_hash:
+            snapshot_end = frozen_lineage.get("nav_snapshot_end_date")
+            if snapshot_end:
+                parsed_dates = pd.to_datetime(frame["date"], errors="coerce")
+                prefix = frame.loc[parsed_dates <= pd.Timestamp(snapshot_end)]
+                prefix_hash = digest_json(_records(prefix.sort_values(["asset_name", "date"])))
+                if prefix_hash == frozen_hash and len(prefix) == int(frozen_lineage.get("nav_snapshot_rows", len(prefix))):
+                    appended_after_baseline = True
+                else:
+                    raise ValidationError("TAA_NAV_CHANGED", "SAA 基线建立前的类别净值历史已被修订；请保存新基线，旧决策继续读取原冻结结果。")
+            else:
+                raise ValidationError("TAA_NAV_CHANGED", "SAA 类别净值已变更，请重新保存基线；旧决策可读取冻结结果。")
         frame = frame.copy()
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         if frame["date"].isna().any():
@@ -379,6 +397,8 @@ class TacticalAllocationData:
         lineage = {"alloc_name": alloc_name, "config_hash": config["config_hash"],
                    "source_file": "asset_nv.parquet", "file_hash": source_file_hash,
                    "series_as_of": variant or None, "requested_as_of": cutoff,
+                   "policy_snapshot_end_date": frozen_lineage.get("nav_snapshot_end_date"),
+                   "appended_after_baseline": appended_after_baseline,
                    "alignment": "strict_intersection", "excluded_incomplete_dates": excluded_incomplete,
                    "knowledge_time_granularity": "day", "price_basis": "saved_class_nav",
                    "intraday_execution_verified": False,

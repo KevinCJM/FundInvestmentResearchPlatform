@@ -109,7 +109,7 @@ export function allocationJourneyPath(step: AllocationJourneyStep, journey = rea
   if (step === 'products' && journey.taaRunId && !readAllocationDraft(`products:${journey.universeId || 'local'}:${journey.taaRunId}`)) return allocationJourneyPath('taa', journey)
   const paths = {
     pool: '/pre-investment/product-pool', classes: '/pre-investment/saa/asset-classes',
-    saa: '/pre-investment/saa/allocation-lab', taa: '/pre-investment/taa',
+    saa: '/pre-investment/saa/policy', taa: '/pre-investment/taa',
     products: '/pre-investment/product-allocation-timing/construction',
   }
   const query = new URLSearchParams()

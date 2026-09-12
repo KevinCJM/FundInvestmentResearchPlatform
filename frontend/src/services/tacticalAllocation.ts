@@ -25,6 +25,11 @@ export interface TaaBaseline {
   apply_reasons?: string[]
   pit: { status: string; reasons: string[] }
   lineage: Record<string, unknown>
+  policy?: {
+    mandate_id: string; cma_id: string; expires_on: string; reason: string
+    mandate: { max_tracking_error: number; max_volatility: number; currency: string; horizon_years: number }
+    independent_approval: boolean; execution: FixedNjitExecutionAudit
+  }
 }
 
 export interface TaaBaselineInput {
@@ -66,6 +71,22 @@ export interface TaaPreviewRequest {
   review_days: number
   note: string
   selected_candidate_id?: string
+  walk_forward?: TaaWalkForwardConfig | null
+}
+
+export interface TaaWalkForwardConfig {
+  window_mode: 'rolling' | 'expanding'; training_periods: number; validation_periods: number
+}
+export interface TaaWalkForwardResult {
+  config: TaaWalkForwardConfig; completed_folds: number; blocked_folds: number; excluded_tail_observations: number
+  primary_selection_changed: boolean; independently_funded_intervals: boolean; warnings: string[]
+  folds: Array<{
+    fold: number; status: 'complete' | 'blocked'; reasons: string[]; train_start: string; train_end: string | null
+    validation_start: string; validation_end: string; training_observations: number; validation_observations: number
+    purged_training_periods: number; strength?: number; training?: TaaMetrics; validation?: TaaMetrics
+    validation_feasible?: boolean; baseline_fallback_exemption?: boolean
+  }>
+  execution: FixedNjitExecutionAudit
 }
 
 export interface TaaMetrics {
@@ -123,6 +144,8 @@ export interface TaaPreview {
   warnings: string[]
   execution: FixedNjitExecutionAudit
   audit: Record<string, unknown>
+  walk_forward?: TaaWalkForwardResult
+  policy_check?: { within_limits: boolean; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: FixedNjitExecutionAudit }
 }
 
 export interface TaaScenarioRequest {
@@ -213,7 +236,16 @@ export const getTaaBaseline = async (id: string, signal?: AbortSignal) => {
   return value
 }
 export const createTaaBaseline = (input: TaaBaselineInput) => post<TaaBaseline>('/baselines', input)
-export const previewTaa = async (input: TaaPreviewRequest) => audited(await post<TaaPreview>('/preview', input), '战术配置研究')
+function checkedPreview(value: TaaPreview): TaaPreview {
+  audited(value, '战术配置研究')
+  if (value.walk_forward) {
+    audited(value.walk_forward, '多段样本外验证')
+    if (value.walk_forward.primary_selection_changed !== false || value.walk_forward.independently_funded_intervals !== true || !Array.isArray(value.walk_forward.folds)) throw new Error('分段验证口径不完整，已停止展示。')
+  }
+  if (value.policy_check) audited(value.policy_check, '政策风险校验')
+  return value
+}
+export const previewTaa = async (input: TaaPreviewRequest) => checkedPreview(await post<TaaPreview>('/preview', input))
 export const preflightTaa = async (input: TaaPreviewRequest, signal?: AbortSignal) => {
   const value = await request<TaaPreflight>('/preflight', { method: 'POST', body: JSON.stringify(input), signal })
   if (!value || typeof value.can_calculate !== 'boolean' || !['clear', 'blocked'].includes(value.quality?.status)
@@ -227,7 +259,7 @@ export const preflightTaa = async (input: TaaPreviewRequest, signal?: AbortSigna
 export const simulateTaaScenario = async (input: TaaScenarioRequest) => audited(await post<TaaScenarioResult>('/scenarios', input), '战术配置情景模拟')
 export const saveTaaDecision = async (input: { request: TaaPreviewRequest; preview_hash: string; name: string; note: string; scenarios?: TaaScenario[] }) => checkedDecision(await post<TaaDecision>('/decisions', input))
 function checkedDecision(result: TaaDecision): TaaDecision {
-  audited(result.preview, '已保存战术配置研究')
+  checkedPreview(result.preview)
   if (result.scenarios && !Array.isArray(result.scenarios)) throw new Error('已保存情景格式不完整，请重新读取。')
   result.scenarios?.forEach(item => audited(item.result, '已保存情景实验'))
   return result

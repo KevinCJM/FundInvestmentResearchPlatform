@@ -17,7 +17,7 @@ it('shows the actual selected research and preserves the allocation in a return 
   expect(screen.getByText('股债研究甲')).toBeInTheDocument()
   expect(screen.queryByText(/RS-2026-018/)).not.toBeInTheDocument()
   const flow = within(screen.getByRole('navigation', { name: '配置研究流程' }))
-  expect(flow.getByRole('link', { name: '3. 长期配置 SAA' })).toHaveAttribute('href', '/pre-investment/saa/allocation-lab?alloc=60%2F40&universe=u1')
+  expect(flow.getByRole('link', { name: '3. 长期配置 SAA' })).toHaveAttribute('href', '/pre-investment/saa/policy?alloc=60%2F40&universe=u1')
   expect(flow.getByRole('link', { name: '4. 战术研究 TAA' })).toHaveAttribute('aria-current', 'step')
   expect(flow.getByRole('link', { name: '1. 产品范围' })).toHaveAttribute('href', '/pre-investment/product-pool?universe=u1')
 })

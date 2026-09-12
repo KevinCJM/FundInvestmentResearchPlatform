@@ -30,6 +30,7 @@
   "pre-investment.objectives": {"zh-CN":"投资目标与约束","en-US":"Investment objectives and constraints"},
   "pre-investment.product-pool": {"zh-CN":"选择产品池版本","en-US":"Select a product pool version"},
   "pre-investment.saa": {"zh-CN":"战略资产配置（SAA）","en-US":"Strategic asset allocation (SAA)"},
+  "pre-investment.saa.policy": {"zh-CN":"长期政策配置","en-US":"Long-term policy allocation"},
   "pre-investment.taa": {"zh-CN":"战术资产配置（TAA）","en-US":"Tactical asset allocation (TAA)"},
   "pre-investment.product-allocation-timing": {"zh-CN":"产品配置与择时","en-US":"Product allocation and timing"},
   "pre-investment.portfolio-synthesis": {"zh-CN":"目标组合合成与风险检查","en-US":"Target portfolio synthesis and risk checks"},

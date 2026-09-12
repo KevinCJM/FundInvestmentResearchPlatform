@@ -282,7 +282,7 @@ describe('ManualConstruction product navigation', () => {
       await user.click(screen.getByRole('button', { name: '保存' }))
     })
     await waitFor(() => expect(bodies['/api/save-allocation']?.universe_snapshot_id).toBe('universe-1'))
-    expect(screen.getByRole('link', { name: /继续 SAA：手动大类-测试/ })).toHaveAttribute('href', '/pre-investment/saa/allocation-lab?alloc=%E6%89%8B%E5%8A%A8%E5%A4%A7%E7%B1%BB-%E6%B5%8B%E8%AF%95&universe=universe-1')
+    expect(screen.getByRole('link', { name: /继续 SAA：手动大类-测试/ })).toHaveAttribute('href', '/pre-investment/saa/policy?alloc=%E6%89%8B%E5%8A%A8%E5%A4%A7%E7%B1%BB-%E6%B5%8B%E8%AF%95&universe=universe-1')
   })
 
   it('滚动相关性响应缺少固定签名 NJIT 证明时失败关闭', async () => {

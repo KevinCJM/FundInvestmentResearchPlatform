@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple, Dict, Any
 from pathlib import Path
+from datetime import date
 from collections import OrderedDict
 from threading import Lock
 import hashlib
 import json
 
 import pandas as pd
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
@@ -208,6 +209,7 @@ def _build_schedule_spec(
     strategy: StrategySpec,
     model: Dict[str, Any],
     pit: Optional[Dict[str, Any]] = None,
+    end_date: Optional[date] = None,
 ) -> Dict[str, Any]:
     if strategy.type == 'risk_budget':
         classes = [
@@ -220,6 +222,7 @@ def _build_schedule_spec(
     return {
         'alloc_name': alloc_name,
         'start_date': start_date,
+        'end_date': str(end_date) if end_date is not None else None,
         'type': strategy.type,
         'rebalance': rebalance,
         'model': model,
@@ -233,8 +236,26 @@ def _build_schedule_spec(
     }
 
 
+def _bounded_nav(nav_wide: pd.DataFrame, end_date: Optional[date], start_date: Optional[str] = None) -> pd.DataFrame:
+    """Restrict the research axis before any weight fitting or path calculation."""
+    if end_date is None:
+        return nav_wide
+    if end_date > date.today():
+        raise HTTPException(400, detail="研究结束日不能位于未来。")
+    try:
+        if start_date and pd.Timestamp(start_date) >= pd.Timestamp(end_date):
+            raise HTTPException(400, detail="研究开始日必须早于结束日。")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, detail="研究开始日格式无效。") from exc
+    bounded = nav_wide.loc[nav_wide.index <= pd.Timestamp(end_date)]
+    if len(bounded) < 2:
+        raise HTTPException(400, detail="截至所选结束日不足两条有效净值，请调整研究区间。")
+    return bounded
+
+
 class ComputeWeightsRequest(BaseModel):
     alloc_name: str
+    end_date: Optional[date] = None
     strategy: StrategySpec
     data_len: Optional[int] = None
     window_mode: Optional[str] = None  # 'all'|'rollingN'
@@ -262,7 +283,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
     loaded, context, error = _load_alloc_nav(req.alloc_name)
     if error is not None:
         return error
-    nav_wide = loaded.nav_wide
+    nav_wide = _bounded_nav(loaded.nav_wide, req.end_date)
     # Filter to requested classes order
     class_names = [c.name for c in req.strategy.classes]
     nav_wide = nav_wide[class_names].dropna(how='all').dropna(axis=0)
@@ -272,7 +293,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
 
     window_mode = req.window_mode or (req.strategy.model or {}).get('window_mode') or 'all'
     data_len = req.data_len if req.data_len is not None else (req.strategy.model or {}).get('data_len')
-    nav_fit = slice_fit_data(nav_wide, nav_wide.index[-1], window_mode, data_len, loaded.available_at)
+    nav_fit = slice_fit_data(nav_wide, pd.Timestamp(req.end_date) if req.end_date else nav_wide.index[-1], window_mode, data_len, loaded.available_at)
     if len(nav_fit) < 2 or (window_mode.lower() == 'rollingn' and data_len and len(nav_fit) < int(data_len)):
         return JSONResponse(status_code=400, content={"detail": "样本不足，无法根据当前窗口计算权重"})
 
@@ -351,6 +372,7 @@ class BacktestRequest(BaseModel):
 
     alloc_name: str
     start_date: Optional[str] = None
+    end_date: Optional[date] = None
     strategies: List[StrategySpec]
     historical_regime: Optional[PublishedRegimeBacktestReference] = Field(
         default=None,
@@ -363,7 +385,7 @@ def api_backtest(req: BacktestRequest):
     loaded, context, error = _load_alloc_nav(req.alloc_name)
     if error is not None:
         return error
-    nav_wide = loaded.nav_wide
+    nav_wide = _bounded_nav(loaded.nav_wide, req.end_date, req.start_date)
 
     # Build strategies weights in class order
     class_names = list(nav_wide.columns)
@@ -373,7 +395,7 @@ def api_backtest(req: BacktestRequest):
         weights = [float(cls_map.get(n).weight) if (n in cls_map and cls_map[n].weight is not None) else 0.0 for n in class_names]
         rb = s.rebalance if isinstance(s.rebalance, dict) else None
         model_cfg = _effective_model_config(s)
-        cache_spec = _build_schedule_spec(req.alloc_name, req.start_date, s, model_cfg, loaded.lineage)
+        cache_spec = _build_schedule_spec(req.alloc_name, req.start_date, s, model_cfg, loaded.lineage, req.end_date)
         computed_key = _schedule_cache_key(cache_spec)
         sdict = {
             "name": s.name or s.type,
@@ -415,6 +437,9 @@ def api_backtest(req: BacktestRequest):
     except PitContextError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     res["pit"] = {**loaded.lineage, "decision_clock": clock.lineage(), "universe": universe}
+    res["research_interval"] = {"requested_start": req.start_date, "requested_end": str(req.end_date) if req.end_date else None,
+                                "actual_start": res["dates"][0] if res.get("dates") else None,
+                                "actual_end": res["dates"][-1] if res.get("dates") else None}
     if req.historical_regime is not None:
         try:
             resolved_regime = regime_backtest_resolver.resolve(req.historical_regime)
@@ -450,6 +475,7 @@ def api_default_start(alloc_name: str):
 class ComputeScheduleRequest(BaseModel):
     alloc_name: str
     start_date: Optional[str] = None
+    end_date: Optional[date] = None
     strategy: StrategySpec
 
 
@@ -532,7 +558,7 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
     loaded, context, error = _load_alloc_nav(req.alloc_name)
     if error is not None:
         return error
-    nav_wide = loaded.nav_wide
+    nav_wide = _bounded_nav(loaded.nav_wide, req.end_date, req.start_date)
     if req.start_date:
         nav_wide = nav_wide[nav_wide.index >= pd.to_datetime(req.start_date)]
     class_names = [c.name for c in req.strategy.classes]
@@ -543,7 +569,7 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
     asset_names = list(nav_wide.columns)
     model_cfg = _effective_model_config(req.strategy)
     cache_spec = _build_schedule_spec(
-        req.alloc_name, req.start_date, req.strategy, model_cfg, loaded.lineage
+        req.alloc_name, req.start_date, req.strategy, model_cfg, loaded.lineage, req.end_date
     )
     cache_key = _schedule_cache_key(cache_spec)
 

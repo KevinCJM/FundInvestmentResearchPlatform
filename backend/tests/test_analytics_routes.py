@@ -174,6 +174,33 @@ def test_efficient_frontier_filters_invalid_points(monkeypatch, tmp_path: Path) 
     assert resp["frontier"] == [{"value": (0.05, 0.15)}]
     assert resp["max_sharpe"] == {"value": (0.12, 0.25)}
     assert resp["min_variance"] is None
+    assert resp["accepted_candidates"] == 1
+    assert resp["frontier_candidates"] == 1
+    assert resp["research_interval"] == {
+        "requested_start": "2024-01-01", "requested_end": "2024-01-31",
+        "actual_start": "2024-01-01", "actual_end": "2024-01-06",
+        "nav_observations": 6, "return_observations": 5,
+    }
+
+
+def test_efficient_frontier_rejects_retired_slsqp_contract(monkeypatch, tmp_path: Path) -> None:
+    _set_data_dir(tmp_path)
+    _write_asset_nv(tmp_path)
+    called = False
+    def should_not_run(**_: Any) -> Dict[str, Any]:
+        nonlocal called
+        called = True
+        return {}
+    monkeypatch.setattr(routes, "calculate_efficient_frontier_exploration", should_not_run)
+    resp = routes.post_efficient_frontier(routes.FrontierRequest(
+        alloc_name="demo", start_date="2024-01-01", end_date="2024-01-06",
+        return_metric={"type": "simple"}, risk_metric={"type": "std"},
+        refine={"use_slsqp": True, "count": 20},
+    ))
+    assert isinstance(resp, JSONResponse)
+    assert resp.status_code == 400
+    assert "SLSQP" in _json(resp)["detail"]
+    assert called is False
 
 
 def test_efficient_frontier_refuses_what_the_backtest_refuses(
