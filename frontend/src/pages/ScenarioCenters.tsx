@@ -62,7 +62,7 @@ export default function ScenarioCenters() {
                 tabIndex={active ? 0 : -1}
                 onClick={() => activateCenter(center.id)}
                 onKeyDown={(event) => handleKeyDown(event, index)}
-                className={`min-h-11 rounded-lg px-4 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${active ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-50'}`}
+                className={`min-h-11 rounded-lg px-4 py-2 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${active ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-50'}`}
               >
                 <span className="block text-sm font-bold">{center.label}</span>
                 <span className="sr-only">{center.description}</span>

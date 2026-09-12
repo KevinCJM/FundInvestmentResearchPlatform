@@ -11,7 +11,7 @@ interface Props {
   periods: string[]
   asOf?: string
 }
-const field = 'mt-1 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300'
+const field = 'mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-500'
 
 function SeriesCalculation({ indicator, productId, productKind, period, asOf }: {
   indicator: IndicatorDefinition; productId: string; productKind: ProductKind; period: string; asOf?: string
@@ -42,8 +42,8 @@ function SeriesCalculation({ indicator, productId, productKind, period, asOf }: 
   }
   return <div className="mt-4 min-w-0">
     <p className="text-sm font-semibold text-slate-800">{indicator.name} · v{indicator.revision}</p>
-    {schema.length ? <IndicatorParameterInputs schema={schema} values={parameters} onApply={setParameters} /> : <p className="mt-2 text-xs text-slate-500">{s('indicatorParameters.fixedHint')}</p>}
-    {!current && <p role="status" className="mt-4 text-sm text-slate-500">{s('indicatorParameters.calculating')}</p>}
+    {schema.length ? <IndicatorParameterInputs schema={schema} values={parameters} onApply={setParameters} /> : <p className="mt-2 text-xs text-slate-600">{s('indicatorParameters.fixedHint')}</p>}
+    {!current && <p role="status" className="mt-4 text-sm text-slate-600">{s('indicatorParameters.calculating')}</p>}
     {current?.error && <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{current.error}</p>}
     {result && <div className="mt-4">
       <p className="break-words text-xs text-slate-600">{s('indicatorParameters.actual')}: {Object.entries(result.parameters).map(([id, value]) => `${schema.find(item => item.id === id)?.label ?? id}=${value}`).join(' · ') || '—'} · {result.window.start_date ?? '—'} – {result.window.end_date ?? '—'}</p>
@@ -71,7 +71,7 @@ export default function TimeSeriesIndicatorPanel({ indicators, productId, produc
   const selected = available.find(item => item.id === selectedId)
   const actualPeriod = periods.includes(period) ? period : periods[0] || '1Y'
   if (!available.length) return null
-  return <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby={`${id}-title`}>
+  return <section className="min-w-0 rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby={`${id}-title`}>
     <h2 id={`${id}-title`} className="font-semibold text-slate-900">{s('indicatorParameters.customSeries')}</h2>
     <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
       <label className="text-sm text-slate-700">{s('indicatorParameters.choose')}<select className={field} value={selected?.id ?? ''} onChange={event => setSelectedId(event.target.value)}><option value="">{s('indicatorParameters.choose')}</option>{available.map(item => <option key={item.id} value={item.id}>{item.name} · v{item.revision}</option>)}</select></label>

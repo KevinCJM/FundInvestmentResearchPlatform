@@ -57,8 +57,8 @@ export default function SourceSyncPanel({ record, source, disabled }: {
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法启动下载。') }
     finally { submitting.current = false; setBusy(false) }
   }
-  return <details ref={container} className="rounded-xl border border-indigo-200 p-4" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary className="cursor-pointer text-sm font-bold text-indigo-900">5. 下载与更新此接口</summary>
+  return <details ref={container} className="rounded-xl border border-accent-200 p-4" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary className="cursor-pointer text-sm font-bold text-accent-900">5. 下载与更新此接口</summary>
     <p className="mt-3 text-xs leading-6 text-slate-600">按此接口的已保存映射、分页和限流下载。增量模式复用同配置同产品的断点，并回查最近 3 天；不代表全市场下载。{source.transport === 'akshare' ? '基金净值接口可能先取得单基金历史，再在本地按日期截取。' : ''}</p>
     <fieldset disabled={disabled || busy || job?.status === 'RUNNING'} className="mt-4 grid gap-3 sm:grid-cols-2">
       {hasCode ? <label className="text-xs font-semibold">产品代码<input className={inputClass} value={symbol} onChange={e => setSymbol(e.target.value)} placeholder={source.transport === 'akshare' ? '510300 / 000001' : '510300.SH'} /></label> : null}

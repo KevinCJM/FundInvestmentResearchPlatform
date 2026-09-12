@@ -10,7 +10,8 @@
     "factor:preview": "node ../scripts/start_factor_research_preview.mjs",
     "test": "vitest",
     "test:e2e": "playwright test",
-    "i18n:check": "node ../scripts/check_i18n.mjs"
+    "i18n:check": "node ../scripts/check_i18n.mjs",
+    "design:check": "node ../scripts/check_frontend_design.mjs"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

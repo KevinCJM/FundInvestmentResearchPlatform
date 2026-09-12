@@ -173,7 +173,7 @@ const statusTone = (status?: string | null) => {
     return 'bg-rose-100 text-rose-700';
   }
   if (clean.includes('存续') || clean.includes('上市')) {
-    return 'bg-emerald-100 text-emerald-700';
+    return 'bg-accent-100 text-accent-700';
   }
   return 'bg-slate-100 text-slate-600';
 };
@@ -667,7 +667,7 @@ export default function ProductResearch() {
                 type="button"
                 onClick={() => switchProductKind(kind)}
                 className={`rounded-lg px-5 py-2 text-sm font-semibold transition ${
-                  productKind === kind ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  productKind === kind ? 'bg-white text-accent-600 shadow-sm' : 'text-slate-600 hover:text-slate-700'
                 }`}
               >
                 {kind === 'etf' ? 'ETF' : '场外公募基金'}
@@ -677,7 +677,7 @@ export default function ProductResearch() {
         </div>
         <div className="inline-flex self-start rounded-xl border border-slate-200 bg-white p-1" aria-label="产品研究视图">
           <button type="button" onClick={() => setViewMode('basic')} className={`min-h-11 rounded-lg px-5 text-sm font-semibold ${viewMode === 'basic' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>基础资料</button>
-          <button type="button" aria-label="切换到研究指标视图" onClick={() => setViewMode('metrics')} className={`min-h-11 rounded-lg px-5 text-sm font-semibold ${viewMode === 'metrics' ? 'bg-violet-600 text-white' : 'text-slate-600'}`}><span aria-hidden="true">指标分析</span></button>
+          <button type="button" aria-label="切换到研究指标视图" onClick={() => setViewMode('metrics')} className={`min-h-11 rounded-lg px-5 text-sm font-semibold ${viewMode === 'metrics' ? 'bg-accent-600 text-white' : 'text-slate-600'}`}><span aria-hidden="true">指标分析</span></button>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
@@ -705,10 +705,10 @@ export default function ProductResearch() {
         </div>
       </div>
 
-      <section className="mb-8 space-y-4 rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+      <section className="mb-8 space-y-4 rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex w-full max-w-xl items-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2">
-            <svg className="h-5 w-5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg className="h-5 w-5 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
               <line x1="20" y1="20" x2="16.65" y2="16.65" />
             </svg>
@@ -716,18 +716,18 @@ export default function ProductResearch() {
               value={searchInput}
               onChange={(event) => setSearchInput(event.target.value)}
               placeholder="按代码、名称或管理人搜索"
-              className="ml-3 w-full bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400"
+              className="ml-3 w-full bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-600"
             />
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600">
+            <span className="rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-600">
               已选条件 {appliedFiltersCount}
             </span>
             {appliedFiltersCount > 0 && (
               <button
                 type="button"
                 onClick={clearAllFilters}
-                className="text-sm font-medium text-emerald-600 hover:text-emerald-500"
+                className="text-sm font-medium text-accent-600 hover:text-accent-600"
               >
                 重置全部筛选
               </button>
@@ -809,9 +809,9 @@ export default function ProductResearch() {
                 key={`${chip.key}-${chip.value}`}
                 type="button"
                 onClick={() => removeChip(chip.key, chip.value)}
-                className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 hover:bg-emerald-100"
+                className="inline-flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-700 hover:bg-accent-100"
               >
-                <span className="rounded bg-white px-2 py-0.5 text-[10px] font-semibold text-emerald-500">
+                <span className="rounded-lg bg-white px-2 py-0.5 text-xs font-semibold text-accent-600">
                   {filterLabels[chip.key] ?? chip.key}
                 </span>
                 {chip.label}
@@ -828,15 +828,15 @@ export default function ProductResearch() {
         )}
       </section>
 
-      <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+      <section className="rounded-xl bg-white shadow-sm ring-1 ring-slate-100">
         <div className="flex flex-col gap-3 border-b border-slate-100 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">{viewMode === 'basic' ? '产品列表' : '当前页指标矩阵'}</h2>
-            <div className="mt-1 text-xs text-slate-500">
+            <div className="mt-1 text-xs text-slate-600">
               {viewMode === 'basic' ? (
                 <>
-                  <span className="font-medium text-emerald-600">提示：点击产品名称可进入单产品研究页面</span>
-                  <span aria-hidden="true" className="mx-1 text-slate-300">·</span>
+                  <span className="font-medium text-accent-600">提示：点击产品名称可进入单产品研究页面</span>
+                  <span aria-hidden="true" className="mx-1 text-slate-600">·</span>
                   <span>支持本页全选和当前筛选结果全选；产品对比最多使用 10 个产品</span>
                 </>
               ) : '只批量计算当前分页产品；每个指标可独立选择计算区间'}
@@ -845,7 +845,7 @@ export default function ProductResearch() {
               <div className="mt-2 max-w-xl text-xs font-medium text-amber-700" role="status">{selectionActionHint}</div>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
+          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
             {viewMode === 'basic' && (
               <SnapshotMetricSelector
                 options={snapshotMetricFields}
@@ -869,7 +869,7 @@ export default function ProductResearch() {
                 setPageSize(Number(event.target.value));
                 setPage(1);
               }}
-              className="rounded-lg border border-slate-200 px-3 py-1 text-sm text-slate-600 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              className="rounded-lg border border-slate-200 px-3 py-1 text-sm text-slate-600 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
             >
               {PAGE_SIZE_OPTIONS.map((size) => (
                 <option key={size} value={size}>
@@ -877,12 +877,12 @@ export default function ProductResearch() {
                 </option>
               ))}
             </select>
-            <span className="text-slate-400">共 {response?.total ?? 0} 条</span>
+            <span className="text-slate-600">共 {response?.total ?? 0} 条</span>
             <button
               type="button"
               onClick={toggleCurrentPageSelection}
               disabled={currentPageSelectableProducts.length === 0}
-              className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-600 hover:border-emerald-400 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-600 hover:border-accent-400 hover:text-accent-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {currentPageAllSelected ? '取消本页全选' : '本页全选'}
             </button>
@@ -890,11 +890,11 @@ export default function ProductResearch() {
               type="button"
               onClick={toggleAllMatchingSelection}
               disabled={!response || response.total === 0}
-              className={`rounded-lg border px-3 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${allMatchingSelected ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600 hover:border-emerald-400 hover:text-emerald-600'}`}
+              className={`rounded-lg border px-3 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${allMatchingSelected ? 'border-accent-500 bg-accent-50 text-accent-700' : 'border-slate-200 text-slate-600 hover:border-accent-400 hover:text-accent-600'}`}
             >
               {allMatchingSelected ? '取消全选' : `全选 ${integerFormatter.format(response?.total ?? 0)} 条`}
             </button>
-            <div className="flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600">
+            <div className="flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-600">
               已选 {integerFormatter.format(selectedCount)}
             </div>
             <button
@@ -902,22 +902,22 @@ export default function ProductResearch() {
               onClick={goToComparison}
               disabled={!canCompareSelection}
               title={selectionActionHint}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-3 py-1 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent-600 px-3 py-1 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-accent-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
             >
               产品对比
-              {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-emerald-600">{selectedCount}</span>}
+              {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-accent-600">{selectedCount}</span>}
             </button>
           </div>
         </div>
 
         {viewMode === 'metrics' ? (
           <div className="p-4">
-            {loading || researchLoading ? <div className="py-20 text-center text-slate-500">正在计算当前页指标…</div> : error || researchError ? <div className="py-20 text-center text-rose-600">{error ?? researchError}</div> : currentPageTargets.length === 0 ? <div className="py-20 text-center text-slate-500">当前页没有可计算产品。</div> : <MetricMatrix indicators={selectedResearchIndicators} targets={currentPageTargets} results={researchResults} periodsByIndicator={researchPreference.periodsByIndicator} periodOptions={researchPeriods} onPeriodChange={(indicatorId, period) => setResearchPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))} onDefinition={setDefinitionIndicator} />}
+            {loading || researchLoading ? <div className="py-20 text-center text-slate-600">正在计算当前页指标…</div> : error || researchError ? <div className="py-20 text-center text-rose-600">{error ?? researchError}</div> : currentPageTargets.length === 0 ? <div className="py-20 text-center text-slate-600">当前页没有可计算产品。</div> : <MetricMatrix indicators={selectedResearchIndicators} targets={currentPageTargets} results={researchResults} periodsByIndicator={researchPreference.periodsByIndicator} periodOptions={researchPeriods} onPeriodChange={(indicatorId, period) => setResearchPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))} onDefinition={setDefinitionIndicator} />}
           </div>
         ) : loading ? (
-          <div className="flex items-center justify-center px-6 py-24 text-slate-400">
+          <div className="flex items-center justify-center px-6 py-24 text-slate-600">
             <div className="flex items-center gap-3">
-              <svg className="h-5 w-5 animate-spin text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg className="h-5 w-5 animate-spin text-accent-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle className="opacity-25" cx="12" cy="12" r="10" />
                 <path className="opacity-75" d="M4 12a8 8 0 018-8" />
               </svg>
@@ -927,13 +927,13 @@ export default function ProductResearch() {
         ) : error ? (
           <div className="px-6 py-24 text-center">
             <div className="mx-auto max-w-md space-y-4">
-              <div className="inline-flex rounded-full bg-rose-50 px-4 py-1 text-sm font-semibold text-rose-500">提示</div>
+              <div className="inline-flex rounded-full bg-rose-50 px-4 py-1 text-sm font-semibold text-rose-700">提示</div>
               <p className="text-lg font-semibold text-slate-800">{error}</p>
-              <p className="text-sm text-slate-500">请检查数据目录或稍后重试，如需帮助可联系系统管理员。</p>
+              <p className="text-sm text-slate-600">请检查数据目录或稍后重试，如需帮助可联系系统管理员。</p>
             </div>
           </div>
         ) : response && response.items.length === 0 ? (
-          <div className="px-6 py-24 text-center text-slate-500">暂无符合筛选条件的{productKind === 'etf' ? 'ETF' : '场外公募基金'}。</div>
+          <div className="px-6 py-24 text-center text-slate-600">暂无符合筛选条件的{productKind === 'etf' ? 'ETF' : '场外公募基金'}。</div>
         ) : (
           <div className="h-[520px] w-full overflow-auto">
             <table className="products-table min-w-[1280px] divide-y divide-slate-100">
@@ -942,27 +942,27 @@ export default function ProductResearch() {
                   <th
                     scope="col"
                     ref={selectHeaderRef}
-                    className="sticky left-0 top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap w-[120px] min-w-[120px]"
+                    className="sticky left-0 top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap w-[120px] min-w-[120px]"
                   >
                     选择
                   </th>
                   <th
                     scope="col"
-                    className="sticky top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap"
+                    className="sticky top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap"
                     style={{ left: productLeft }}
                   >
                     产品
                   </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
                     基金类型 / 投资类型 / QDII
                   </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
                     风格 / 市场
                   </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
                     管理 / 托管
                   </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
                     <SortButton label="发行规模" activeKey={sortKey} columnKey="issue_amount" direction={sortDir} onClick={toggleSort} />
                   </th>
                   {selectedSnapshotMetricFields.map((field) => (
@@ -970,19 +970,19 @@ export default function ProductResearch() {
                       key={field.field}
                       scope="col"
                       title={field.description}
-                      className="sticky top-0 z-40 bg-violet-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-violet-700 whitespace-nowrap"
+                      className="sticky top-0 z-40 bg-accent-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-accent-700 whitespace-nowrap"
                     >
                       {field.label}
-                      <span className="ml-1 font-normal text-violet-400">快照</span>
+                      <span className="ml-1 font-normal text-accent-600">快照</span>
                     </th>
                   ))}
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
                     <SortButton label="费用 / 基准" activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
                   </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
                     <SortButton label={productKind === 'etf' ? '上市日' : '成立日'} activeKey={sortKey} columnKey={productKind === 'etf' ? 'list_date' : 'found_date'} direction={sortDir} onClick={toggleSort} />
                   </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap">
+                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
                     状态
                   </th>
                 </tr>
@@ -996,13 +996,13 @@ export default function ProductResearch() {
                   const selectionId = item.ts_code ?? item.code ?? null;
                   const isSelected = selectionId ? isProductSelected(selectionId) : false;
                   return (
-                    <tr key={`${code}-${item.name}`} className="group hover:bg-emerald-50/40">
+                    <tr key={`${code}-${item.name}`} className="group hover:bg-accent-50/40">
                       <td
-                        className="sticky left-0 z-40 border-r border-slate-100 bg-white px-6 py-4 whitespace-nowrap group-hover:bg-emerald-50/40 w-[120px] min-w-[120px]"
+                        className="sticky left-0 z-40 border-r border-slate-100 bg-white px-6 py-4 whitespace-nowrap group-hover:bg-accent-50/40 w-[120px] min-w-[120px]"
                       >
                         <input
                           type="checkbox"
-                          className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                          className="h-4 w-4 rounded-lg border-slate-300 text-accent-600 focus:ring-accent-500"
                           checked={isSelected}
                           disabled={!selectionId}
                           aria-label={`选择 ${item.name ?? code}`}
@@ -1010,7 +1010,7 @@ export default function ProductResearch() {
                         />
                       </td>
                       <td
-                        className="sticky z-40 border-r border-slate-100 bg-white px-6 py-4 group-hover:bg-emerald-50/40"
+                        className="sticky z-40 border-r border-slate-100 bg-white px-6 py-4 group-hover:bg-accent-50/40"
                         style={{ left: productLeft }}
                       >
                         {detailPath ? (
@@ -1020,26 +1020,26 @@ export default function ProductResearch() {
                             rel="noreferrer"
                             aria-label={`进入${item.name ?? code}的单产品研究页面`}
                             title="点击进入单产品研究页面"
-                            className="group block rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                            className="group block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2"
                           >
-                            <div className="text-sm font-semibold text-emerald-600 group-hover:text-emerald-700">
+                            <div className="text-sm font-semibold text-accent-600 group-hover:text-accent-700">
                               {item.name ?? '--'}
                             </div>
-                            <div className="mt-1 text-xs text-emerald-500 group-hover:text-emerald-600">{code}</div>
+                            <div className="mt-1 text-xs text-accent-600 group-hover:text-accent-600">{code}</div>
                           </Link>
                         ) : (
                           <div>
                             <div className="text-sm font-semibold text-slate-900">{item.name ?? '--'}</div>
-                            <div className="mt-1 text-xs text-slate-500">{code}</div>
+                            <div className="mt-1 text-xs text-slate-600">{code}</div>
                           </div>
                         )}
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">{formatText(item.type)}</div>
-                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <div className="flex items-center gap-2 text-xs text-slate-600">
                           <span>{formatText(item.fund_type)}</span>
                           {item.qdii_type && (
-                            <span className={`rounded-full px-2 py-0.5 font-semibold ${item.qdii_type === 'QDII' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}>
+                            <span className={`rounded-full px-2 py-0.5 font-semibold ${item.qdii_type === 'QDII' ? 'bg-accent-100 text-accent-700' : 'bg-slate-100 text-slate-600'}`}>
                               {item.qdii_type}
                             </span>
                           )}
@@ -1047,15 +1047,15 @@ export default function ProductResearch() {
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">{formatText(item.invest_type)}</div>
-                        <div className="text-xs text-slate-400">{formatText(item.market)}</div>
+                        <div className="text-xs text-slate-600">{formatText(item.market)}</div>
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">{formatText(item.management)}</div>
-                        <div className="text-xs text-slate-400">{formatText(item.custodian)}</div>
+                        <div className="text-xs text-slate-600">{formatText(item.custodian)}</div>
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-semibold text-slate-800">{formatIssueAmount(item.issue_amount)}</div>
-                        <div className="text-xs text-slate-400">发行披露口径（非当前 AUM）</div>
+                        <div className="text-xs text-slate-600">发行披露口径（非当前 AUM）</div>
                       </td>
                       {selectedSnapshotMetricFields.map((field) => {
                         const value = item.snapshot_values?.[field.field];
@@ -1063,11 +1063,11 @@ export default function ProductResearch() {
                         const snapshotStatus = item.snapshot_statuses?.[field.field];
                         const snapshotWarning = item.snapshot_warnings?.[field.field];
                         return (
-                          <td key={field.field} className="bg-violet-50/30 px-6 py-4 text-sm text-slate-600">
+                          <td key={field.field} className="bg-accent-50/30 px-6 py-4 text-sm text-slate-600">
                             <div className="font-semibold text-slate-800">
                               {formatSnapshotValue(value, field.unit)}
                             </div>
-                            <div className="text-xs text-slate-400">
+                            <div className="text-xs text-slate-600">
                               {snapshotWarning
                                 ? snapshotWarning
                                 : asOf
@@ -1081,11 +1081,11 @@ export default function ProductResearch() {
                       })}
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">管理费 {formatPercent(item.m_fee)} / 托管费 {formatPercent(item.c_fee)}</div>
-                        <div className="text-xs text-slate-400">基准 {formatText(item.benchmark)} · 产品类型 {formatText(item.fund_type)}</div>
+                        <div className="text-xs text-slate-600">基准 {formatText(item.benchmark)} · 产品类型 {formatText(item.fund_type)}</div>
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">
                         <div className="font-medium text-slate-700">{formatDate(productKind === 'etf' ? item.list_date : item.found_date)}</div>
-                        <div className="text-xs text-slate-400">{productKind === 'etf' ? `成立：${formatDate(item.found_date ?? item.issue_date)}` : `发行：${formatDate(item.issue_date)}`}</div>
+                        <div className="text-xs text-slate-600">{productKind === 'etf' ? `成立：${formatDate(item.found_date ?? item.issue_date)}` : `发行：${formatDate(item.issue_date)}`}</div>
                       </td>
                       <td className="px-6 py-4">
                         <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusTone(item.status)}`}>
@@ -1102,7 +1102,7 @@ export default function ProductResearch() {
 
         {response && response.items.length > 0 && (
           <div className="flex flex-col gap-4 border-t border-slate-100 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-slate-500">
+            <div className="text-sm text-slate-600">
               第 {page} / {totalPages} 页
             </div>
             <div className="flex items-center gap-2">
@@ -1110,7 +1110,7 @@ export default function ProductResearch() {
                 type="button"
                 onClick={() => setPage((prev) => Math.max(1, prev - 1))}
                 disabled={page === 1}
-                className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 hover:border-emerald-400 hover:text-emerald-600"
+                className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 hover:border-accent-400 hover:text-accent-600"
               >
                 上一页
               </button>
@@ -1118,7 +1118,7 @@ export default function ProductResearch() {
                 type="button"
                 onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
                 disabled={page >= totalPages}
-                className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 hover:border-emerald-400 hover:text-emerald-600"
+                className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 hover:border-accent-400 hover:text-accent-600"
               >
                 下一页
               </button>
@@ -1126,20 +1126,20 @@ export default function ProductResearch() {
           </div>
         )}
         {selectedCount > 0 && (
-          <div className="flex flex-wrap gap-2 border-t border-slate-100 px-6 py-4 text-xs text-emerald-600">
+          <div className="flex flex-wrap gap-2 border-t border-slate-100 px-6 py-4 text-xs text-accent-600">
             {allMatchingSelected ? (
-              <span className="rounded-full bg-emerald-50 px-3 py-1 font-semibold">
+              <span className="rounded-full bg-accent-50 px-3 py-1 font-semibold">
                 已选择全部符合筛选条件的产品{excludedProductIds.size > 0 ? `，排除 ${excludedProductIds.size} 个` : ''}
               </span>
             ) : (
               <>
                 {selectedList.slice(0, 20).map((item) => (
-                  <span key={item.id} className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1">
+                  <span key={item.id} className="inline-flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1">
                     {item.name}
                     <button
                       type="button"
                       aria-label={`取消选择 ${item.name}`}
-                      className="text-emerald-500 hover:text-emerald-700"
+                      className="text-accent-600 hover:text-accent-700"
                       onClick={() => toggleProductSelection(item.id, item.name, item.code)}
                     >
                       ×
@@ -1218,11 +1218,11 @@ function ProductConditionBuilder({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h3 className="text-sm font-semibold text-slate-800">日期与快照指标筛选</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">
+          <p className="mt-1 text-xs leading-5 text-slate-600">
             指标直接读取已生成的分析快照，不实时扫描完整净值历史；指标为空的产品不会按 0 处理。
           </p>
         </div>
-        <span className={`self-start rounded-full px-3 py-1 text-xs font-semibold ${snapshotReady ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+        <span className={`self-start rounded-full px-3 py-1 text-xs font-semibold ${snapshotReady ? 'bg-accent-50 text-accent-700' : 'bg-amber-50 text-amber-700'}`}>
           指标快照：{snapshotReady ? '可用' : '未就绪'}
         </span>
       </div>
@@ -1233,7 +1233,7 @@ function ProductConditionBuilder({
             aria-label="筛选字段"
             value={fieldName}
             onChange={(event) => { setFieldName(event.target.value); setValue(''); }}
-            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
           >
             {fields.map((field) => (
               <option key={field.field} value={field.field} disabled={!field.available}>
@@ -1248,7 +1248,7 @@ function ProductConditionBuilder({
             aria-label="比较方式"
             value={operator}
             onChange={(event) => setOperator(event.target.value as ProductConditionOperator)}
-            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
           >
             {resolvedOperators.map((item) => (
               <option key={item.value} value={item.value}>{item.label}（{item.symbol}）</option>
@@ -1267,7 +1267,7 @@ function ProductConditionBuilder({
               if (event.key === 'Enter') { event.preventDefault(); addCondition(); }
             }}
             placeholder={selectedField?.unit_label === '%' ? '如 10 表示 10%' : '请输入数值'}
-            className="min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
           />
         </label>
         <button
@@ -1287,7 +1287,7 @@ function ProductConditionBuilder({
               type="button"
               onClick={() => onRemove(index)}
               aria-label={`移除条件 ${formatProductCondition(condition, fields, resolvedOperators)}`}
-              className="inline-flex items-center gap-2 rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-100"
+              className="inline-flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-700 hover:bg-accent-100"
             >
               {formatProductCondition(condition, fields, resolvedOperators)}
               <span aria-hidden="true">×</span>
@@ -1313,10 +1313,10 @@ function SortButton({ label, columnKey, activeKey, direction, onClick }: SortBut
     <button
       type="button"
       onClick={() => onClick(columnKey)}
-      className={`inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider whitespace-nowrap ${isActive ? 'text-emerald-600' : 'text-slate-500'}`}
+      className={`inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider whitespace-nowrap ${isActive ? 'text-accent-600' : 'text-slate-600'}`}
     >
       {label}
-      <svg className={`h-3 w-3 ${isActive ? 'text-emerald-500' : 'text-slate-400'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <svg className={`h-3 w-3 ${isActive ? 'text-accent-600' : 'text-slate-600'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
         <path d="M8 15l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
         <path d="M16 9l-4-4-4 4" strokeLinecap="round" strokeLinejoin="round" />
         {isActive && (
@@ -1335,10 +1335,10 @@ interface MetricCardProps {
 
 function MetricCard({ title, value, description }: MetricCardProps) {
   return (
-    <div className="rounded-2xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-5 shadow-sm">
-      <div className="text-xs font-semibold uppercase tracking-wide text-emerald-500">{title}</div>
+    <div className="rounded-xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-accent-50 p-5 shadow-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-accent-600">{title}</div>
       <div className="mt-2 text-2xl font-bold text-slate-900">{value}</div>
-      {description && <div className="mt-1 text-xs text-slate-500">{description}</div>}
+      {description && <div className="mt-1 text-xs text-slate-600">{description}</div>}
     </div>
   );
 }

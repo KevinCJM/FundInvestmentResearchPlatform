@@ -10,16 +10,16 @@ export default function DataManagement() {
   return (
     <div className="space-y-5">
       <DataWorkspaceNav />
-      <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <header className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-600">Data operations</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent-600">Data operations</p>
             <h1 className="mt-2 text-2xl font-bold text-slate-950">数据下载与更新</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">先选择数据源与下载内容，再执行全量或增量更新。需要跨来源、控制先后顺序或安排快照时，使用 ETL 任务编排。</p>
           </div>
           <Link
             to="/settings/data-quality"
-            className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-accent-200 hover:bg-accent-50 hover:text-accent-800 focus:outline-none focus:ring-2 focus:ring-accent-500"
           >
             查看数据质量 →
           </Link>

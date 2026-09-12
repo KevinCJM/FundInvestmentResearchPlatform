@@ -78,8 +78,8 @@ export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, 
     </div>
     {!valid && !result && !step && <p role="alert" className="text-sm text-amber-800">请先完成公式检查，再保存情景。</p>}
     {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm leading-6 text-rose-800">{error}</p>}
-    {step && <p role="status" className="text-sm font-medium text-violet-700">{step}</p>}
-    <button type="button" disabled={!valid || !name.trim() || Boolean(step) || Boolean(result)} onClick={() => void save()} className="min-h-11 w-full rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-40">{step ? '正在保存…' : result ? '已保存，可用于研究' : error && saved.current ? '重试生成研究结果' : '保存并用于研究'}</button>
+    {step && <p role="status" className="text-sm font-medium text-accent-700">{step}</p>}
+    <button type="button" disabled={!valid || !name.trim() || Boolean(step) || Boolean(result)} onClick={() => void save()} className="min-h-11 w-full rounded-xl bg-accent-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-40">{step ? '正在保存…' : result ? '已保存，可用于研究' : error && saved.current ? '重试生成研究结果' : '保存并用于研究'}</button>
     {result && <div role="status" className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
       <p className="font-semibold">{result.name} · v{result.revision} 已可选用</p>
       <p>{result.series_summary.first_observation_date} — {result.series_summary.last_observation_date} · {result.series_summary.row_count} 个观测</p>
