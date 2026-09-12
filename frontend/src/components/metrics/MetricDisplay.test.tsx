@@ -47,6 +47,31 @@ describe('统一指标展示协议', () => {
     expect(screen.queryByText(/日期筛选后|该来源还按公告日期筛选/)).not.toBeInTheDocument()
   })
 
+  it.each([true, false])('拒绝使用缺失公告字段的来源时，不宣称已使用或筛选净值：%s', (usesDisclosureDate) => {
+    render(<MetricUnavailableReason result={{
+      value: null, status: 'unavailable', warnings: [],
+      data_context: {
+        found_date: null, list_date: null, as_of: '2026-01-02',
+        sources: [
+          { label: '基金净值', first_date: null, latest_date: null, rows_before_as_of: null,
+            rows_after_date_filter: null, rows_after_as_of: 0, uses_disclosure_date: usesDisclosureDate,
+            disclosure_status: 'required_unavailable' },
+          { label: 'ETF 行情', first_date: '2026-01-01', latest_date: '2026-01-02', rows_before_as_of: 2,
+            rows_after_date_filter: 2, rows_after_as_of: 2, uses_disclosure_date: false,
+            disclosure_status: 'not_applied' },
+        ],
+      },
+    }} />)
+    const rejected = within(screen.getByText(/基金净值本地覆盖/).parentElement!)
+    expect(rejected.getByText(/缺少公告日期字段.*已停止使用该来源，未接受任何记录/)).toBeInTheDocument()
+    expect(rejected.getByText(/原始条数和日期覆盖尚未核实，不代表本地没有数据/)).toBeInTheDocument()
+    expect(rejected.queryByText(/仅按数据日期筛选|还按公告日期筛选|日期筛选后|原有 0 条/)).not.toBeInTheDocument()
+    const accepted = within(screen.getByText(/ETF 行情本地覆盖/).parentElement!)
+    expect(accepted.getByText(/仅按数据日期筛选，未校验公告日期/)).toBeInTheDocument()
+    expect(accepted.getByText(/去重后 2 条/)).toBeInTheDocument()
+    expect(accepted.queryByText(/已停止使用/)).not.toBeInTheDocument()
+  })
+
   it('公共指标选择器按业务指标类型和来源筛选，供研究、详情、对比和评价共用', () => {
     const definition = (id: string, name: string, indicatorType: 'return' | 'risk', source: 'built_in' | 'custom' = 'built_in'): IndicatorDefinition => ({
       id, revision: 1, source, read_only: source === 'built_in', created_at: '', updated_at: '',

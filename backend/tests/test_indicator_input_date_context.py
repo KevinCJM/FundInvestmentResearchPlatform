@@ -73,6 +73,70 @@ def test_single_and_batch_preserve_date_filters_and_explain_missing_inputs(
     assert source["rows_after_date_filter"] == int(cutoff >= "2026-01-02")
     assert source["rows_after_as_of"] == expected_rows
     assert source["uses_disclosure_date"] is True
+    assert source["disclosure_status"] == "applied"
+
+
+@pytest.mark.parametrize("kind,codes,source_name", [
+    ("fund", ["000001.OF", "000002.OF"], "fund_nav_df.parquet"),
+    ("etf", ["510300.SH", "510500.SH"], "etf_daily_df.parquet"),
+])
+@pytest.mark.parametrize("as_of", ["2026-01-02", None])
+def test_missing_disclosure_field_preserves_rejection_for_every_entrypoint(
+    tmp_path, monkeypatch, kind, codes, source_name, as_of,
+):
+    pd.DataFrame([
+        {"ts_code": code, "name": code, "found_date": "20200101"}
+        for code in codes
+    ]).to_parquet(tmp_path / f"{kind}_info_df.parquet", index=False)
+    pd.DataFrame([
+        {"ts_code": code, "date": pd.Timestamp("2026-01-02"), "adj_nav": 1.0}
+        for code in codes
+    ]).to_parquet(tmp_path / source_name, index=False)
+
+    if as_of:
+        # A missing schema field must fail before scanning rows. Neither the
+        # single pandas path nor the batch Arrow path can infer source counts.
+        import pyarrow.dataset as ds
+
+        read_parquet = pd.read_parquet
+        dataset = ds.dataset
+
+        def guarded_read(path, *args, **kwargs):
+            assert str(path) != str(tmp_path / source_name), "rejected source was read"
+            return read_parquet(path, *args, **kwargs)
+
+        def guarded_dataset(path, *args, **kwargs):
+            assert str(path) != str(tmp_path / source_name), "rejected source was scanned"
+            return dataset(path, *args, **kwargs)
+
+        monkeypatch.setattr(pd, "read_parquet", guarded_read)
+        monkeypatch.setattr(ds, "dataset", guarded_dataset)
+
+    batch = load_product_variable_series_batch(kind, codes, ["adjusted_nav"], tmp_path, as_of)
+    for code in codes:
+        single = load_product_variable_series(kind, code, ["adjusted_nav"], tmp_path, as_of)
+        chart = load_product_chart_series(kind, code, ["adjusted_nav"], "adjusted_nav", tmp_path, as_of)
+        context = input_date_context(single, as_of)
+        assert context == input_date_context(batch[code], as_of) == input_date_context(chart, as_of)
+        assert len(context["sources"]) == 1
+        source = context["sources"][0]
+        for result in (single, batch[code], chart):
+            if as_of:
+                assert result.frame.empty
+                assert result.unavailable_variables["adjusted_nav"]["code"] == "ANN_DATE_UNAVAILABLE"
+            else:
+                assert len(result.frame) == 1
+                assert not result.unavailable_variables
+        if as_of:
+            assert source["uses_disclosure_date"] is True
+            assert source["disclosure_status"] == "required_unavailable"
+            assert source["first_date"] is source["latest_date"] is None
+            assert source["rows_before_as_of"] is source["rows_after_date_filter"] is None
+            assert source["rows_after_as_of"] == 0
+        else:
+            assert source["uses_disclosure_date"] is False
+            assert source["disclosure_status"] == "not_applied"
+            assert source["rows_before_as_of"] == source["rows_after_as_of"] == 1
 
 
 @pytest.mark.parametrize("kind,loader,source_name", [
@@ -113,5 +177,6 @@ def test_scalar_loader_preserves_identity_and_normalized_source_coverage(
         "first_date": "2026-01-02", "latest_date": "2026-01-04",
         "rows_before_as_of": 3, "rows_after_date_filter": expected_count,
         "rows_after_as_of": expected_count, "uses_disclosure_date": False,
+        "disclosure_status": "not_applied",
     }]
     pd.testing.assert_frame_equal(result.frame, original)

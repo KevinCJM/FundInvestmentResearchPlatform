@@ -684,6 +684,7 @@ def input_date_context(source: Any, as_of: str | None) -> dict[str, Any] | None:
     for item in getattr(source, "lineage", []):
         if "rows_before_as_of" not in item:
             continue
+        uses_disclosure_date = item.get("availability_field") == "ann_date"
         sources.append({
             "label": labels.get(item.get("dataset"), "指标输入数据"),
             "first_date": item.get("dataset_first_date"),
@@ -691,13 +692,31 @@ def input_date_context(source: Any, as_of: str | None) -> dict[str, Any] | None:
             "rows_before_as_of": item.get("rows_before_as_of"),
             "rows_after_date_filter": scalar_rows if scalar_rows is not None else item.get("rows_after_date_filter"),
             "rows_after_as_of": scalar_rows if scalar_rows is not None else item.get("rows_after_as_of"),
-            "uses_disclosure_date": item.get("availability_field") == "ann_date",
+            "uses_disclosure_date": uses_disclosure_date,
+            "disclosure_status": item.get("disclosure_status") or (
+                "applied" if as_of and uses_disclosure_date else "not_applied"
+            ),
         })
     return {
         "found_date": source.identity.found_date,
         "list_date": source.identity.list_date,
         "as_of": as_of,
         "sources": sources,
+    }
+
+
+def _unavailable_disclosure_lineage(path: Path, fingerprint: str) -> dict[str, Any]:
+    """Schema rejection proves zero accepted rows, not an empty source dataset."""
+    return {
+        "dataset": path.name,
+        "fingerprint": fingerprint,
+        "source_fields": [],
+        "rows_before_as_of": None,
+        "rows_after_date_filter": None,
+        "rows_after_as_of": 0,
+        "availability_field": "ann_date",
+        "availability_filter": "ann_date <= as_of (required)",
+        "disclosure_status": "required_unavailable",
     }
 
 
@@ -768,14 +787,7 @@ def _read_source_frame(
             coverage,
             unavailable,
             warnings,
-            {
-                "dataset": path.name,
-                "fingerprint": _file_fingerprint(path),
-                "source_fields": [],
-                "rows_before_as_of": 0,
-                "rows_after_as_of": 0,
-                "availability_filter": "ann_date <= as_of (required)",
-            },
+            _unavailable_disclosure_lineage(path, _file_fingerprint(path)),
             None,
         )
 
@@ -814,6 +826,7 @@ def _read_source_frame(
             "rows_before_as_of": 0,
             "rows_after_as_of": 0,
             "availability_filter": "ann_date <= as_of" if dataset == "nav" else "date <= as_of",
+            "availability_field": "ann_date" if dataset == "nav" and "ann_date" in schema else "date",
         }
         return pd.DataFrame(), fingerprint, coverage, unavailable, warnings, lineage, None
 
@@ -974,6 +987,7 @@ def _scan_source_batch(
                     "message": "历史 as-of 计算要求 ann_date；未使用 nav_date 代替公告时点。",
                 }
             )
+            lineage[product_id] = _unavailable_disclosure_lineage(path, fingerprint)
         return frames, fingerprint, coverage, unavailable, warnings, lineage, latest_dates
 
     fields_by_variable = {
@@ -1026,6 +1040,7 @@ def _scan_source_batch(
                 "rows_before_as_of": 0,
                 "rows_after_as_of": 0,
                 "availability_filter": "ann_date <= as_of" if dataset == "nav" else "date <= as_of",
+                "availability_field": "ann_date" if dataset == "nav" and "ann_date" in schema else "date",
                 "batch_scan": True,
             }
             continue

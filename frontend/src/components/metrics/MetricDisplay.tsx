@@ -120,10 +120,14 @@ export function IndicatorInputDates({ context }: { context?: IndicatorDateContex
     </dl>
     {context.sources.map((source, index) => <div key={`${source.label}-${index}`} className="mt-3 border-t border-amber-200 pt-2">
       <p>{source.label}本地覆盖：{source.first_date || '起点未确认'} 至 {source.latest_date || '终点未确认'}</p>
-      {context.as_of && <p className="mt-1 text-xs">原有 {source.rows_before_as_of ?? '未确认'} 条记录 → 日期筛选后 {source.rows_after_date_filter ?? '未确认'} 条 → {source.uses_disclosure_date ? '披露筛选并去重后' : '去重后'} {source.rows_after_as_of ?? '未确认'} 条。</p>}
-      {context.as_of && <p className="mt-1 text-xs">{source.uses_disclosure_date
-        ? '该来源还按公告日期筛选：公告日期晚于截止日或缺失的记录不参与计算。'
-        : '该来源仅按数据日期筛选，未校验公告日期，不能据此认定截止日已披露。'}</p>}
+      {context.as_of && (source.disclosure_status === 'required_unavailable'
+        ? <p className="mt-1 text-xs">该来源缺少公告日期字段，无法验证截止日当时已披露，已停止使用该来源，未接受任何记录。原始条数和日期覆盖尚未核实，不代表本地没有数据。</p>
+        : <>
+          <p className="mt-1 text-xs">原有 {source.rows_before_as_of ?? '未确认'} 条记录 → 日期筛选后 {source.rows_after_date_filter ?? '未确认'} 条 → {source.uses_disclosure_date ? '披露筛选并去重后' : '去重后'} {source.rows_after_as_of ?? '未确认'} 条。</p>
+          <p className="mt-1 text-xs">{source.uses_disclosure_date
+            ? '该来源还按公告日期筛选：公告日期晚于截止日或缺失的记录不参与计算。'
+            : '该来源仅按数据日期筛选，未校验公告日期，不能据此认定截止日已披露。'}</p>
+        </>)}
     </div>)}
     <p className="mt-2 text-xs">成立日期、上市日期和本地数据起点是不同概念；产品已经成立，也可能尚无已下载的数据。</p>
     {context.as_of && <>

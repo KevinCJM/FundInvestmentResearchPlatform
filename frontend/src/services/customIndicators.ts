@@ -688,6 +688,7 @@ export interface IndicatorDateContext {
     rows_after_date_filter: number | null
     rows_after_as_of: number | null
     uses_disclosure_date: boolean
+    disclosure_status?: 'not_applied' | 'applied' | 'required_unavailable'
   }>
 }
 

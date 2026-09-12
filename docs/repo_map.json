@@ -839,7 +839,8 @@
         "docs/images/frontend-design-20260912/home-en-1251.png",
         "docs/images/frontend-design-20260912/indicator-tablet.png",
         "docs/images/frontend-design-20260912/report-desktop.png",
-        "docs/images/frontend-design-20260912/report-mobile.png"
+        "docs/images/frontend-design-20260912/report-mobile.png",
+        "docs/images/frontend-design-20260912/disclosure-unavailable-mobile.png"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
