@@ -32,7 +32,7 @@ export default function PitBadge() {
     : temporary
     ? 'border-accent-400/60 bg-accent-400/10 text-accent-200'
     : noPit
-      ? 'border-slate-600 text-slate-600'
+      ? 'border-slate-600 text-slate-200'
       : strict
         ? 'border-amber-400/60 bg-amber-400/10 text-amber-200'
         : 'border-emerald-400/60 bg-emerald-400/10 text-emerald-200'

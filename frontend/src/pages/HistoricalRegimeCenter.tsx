@@ -247,7 +247,7 @@ function PipelineNavigation({ active, onChange }: { active: PipelineStep; onChan
               <span className={cx('grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-bold', active === step.id ? 'bg-accent-600 text-white' : 'bg-slate-100 text-slate-600')}>{index + 1}</span>
               <span>
                 <span className="block text-sm font-bold">{step.label}</span>
-                <span className={cx('block text-xs', active === step.id ? 'text-slate-600' : 'text-slate-600')}>{step.helper}</span>
+                <span className={cx('block text-xs', active === step.id ? 'text-slate-200' : 'text-slate-600')}>{step.helper}</span>
               </span>
             </button>
           </li>

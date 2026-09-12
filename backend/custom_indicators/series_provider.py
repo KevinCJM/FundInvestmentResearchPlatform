@@ -64,6 +64,7 @@ class ProductSeries:
     fingerprint: str
     data_latest_date: str
     open_dates: pd.DatetimeIndex = field(default_factory=lambda: pd.DatetimeIndex([]))
+    lineage: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -331,6 +332,17 @@ def _read_candidate(path: Path, ts_code: str, value_column: str) -> pd.DataFrame
     return result.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
 
 
+def _scalar_source_lineage(path: Path, frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """Describe the already normalized scalar input, without reading it again."""
+    return [{
+        "dataset": path.name,
+        "dataset_first_date": frame.iloc[0]["date"].strftime("%Y-%m-%d"),
+        "dataset_latest_date": frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
+        "rows_before_as_of": len(frame),
+        "availability_field": "date",
+    }]
+
+
 def load_product_series(
     kind: Literal["etf", "fund"],
     product_id: str,
@@ -355,13 +367,13 @@ def load_product_series(
             frame = _read_candidate(path, product_id, value_column)
         if frame.empty:
             continue
-        resolved_id = identity.ts_code
         return ProductSeries(
-            identity=InstrumentIdentity(kind, resolved_id, resolved_id, identity.name),
+            identity=identity,
             frame=frame,
             fingerprint=_file_fingerprint(path),
             data_latest_date=frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
             open_dates=open_dates,
+            lineage=_scalar_source_lineage(path, frame),
         )
     return None
 
@@ -390,13 +402,13 @@ def load_adjusted_product_series(
         frame = _read_candidate(path, product_id, "adj_nav")
     if frame.empty:
         return None
-    resolved_id = identity.ts_code
     return ProductSeries(
-        identity=InstrumentIdentity(kind, resolved_id, resolved_id, identity.name),
+        identity=identity,
         frame=frame,
         fingerprint=_file_fingerprint(path),
         data_latest_date=frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
         open_dates=open_dates,
+        lineage=_scalar_source_lineage(path, frame),
     )
 
 
@@ -624,6 +636,8 @@ def _no_observations_detail(
     rows_after: int, availability_field: str,
 ) -> dict[str, str]:
     label = _variable_label(variable_id)
+    cutoff = _parse_as_of(as_of)
+    as_of = cutoff.strftime("%Y-%m-%d") if cutoff is not None else None
     # Inception is explanatory metadata, never an extra data filter: predecessor
     # history may legitimately predate the current fund contract.
     if as_of and rows_before and not rows_after_date and first_date and first_date > as_of:
@@ -651,6 +665,15 @@ def input_date_context(source: Any, as_of: str | None) -> dict[str, Any] | None:
     """Explain the loaded inputs using existing provenance, without another scan."""
     if source is None:
         return None
+    cutoff = _parse_as_of(as_of)
+    as_of = cutoff.strftime("%Y-%m-%d") if cutoff is not None else None
+    # Scalar loaders retain their full, sorted input; the period selector applies
+    # the date cutoff later. Count this same boundary without copying or filtering.
+    scalar_rows = None
+    if isinstance(source, ProductSeries):
+        scalar_rows = len(source.frame)
+        if cutoff is not None:
+            scalar_rows = int(source.frame["date"].searchsorted(cutoff, side="right"))
     labels = {
         "etf_daily_df.parquet": "ETF 净值",
         "fund_nav_df.parquet": "基金净值",
@@ -666,8 +689,8 @@ def input_date_context(source: Any, as_of: str | None) -> dict[str, Any] | None:
             "first_date": item.get("dataset_first_date"),
             "latest_date": item.get("dataset_latest_date"),
             "rows_before_as_of": item.get("rows_before_as_of"),
-            "rows_after_date_filter": item.get("rows_after_date_filter"),
-            "rows_after_as_of": item.get("rows_after_as_of"),
+            "rows_after_date_filter": scalar_rows if scalar_rows is not None else item.get("rows_after_date_filter"),
+            "rows_after_as_of": scalar_rows if scalar_rows is not None else item.get("rows_after_as_of"),
             "uses_disclosure_date": item.get("availability_field") == "ann_date",
         })
     return {

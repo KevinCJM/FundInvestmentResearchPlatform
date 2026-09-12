@@ -2921,7 +2921,7 @@ export function ScenarioSimulationCenter() {
               className="h-2 w-2 rounded-full bg-emerald-400"
               aria-hidden="true"
             />
-            <span className="text-slate-600">后端计算协议</span>
+            <span className="text-slate-200">后端计算协议</span>
             <strong>{meta.schema_version ?? "已连接"}</strong>
           </div>
         </div>
@@ -2968,7 +2968,7 @@ export function ScenarioSimulationCenter() {
               <span
                 className={cx(
                   "mt-0.5 block text-xs",
-                  activeTab === tab.id ? "text-slate-600" : "text-slate-600",
+                  activeTab === tab.id ? "text-slate-200" : "text-slate-600",
                 )}
               >
                 {tab.helper}
