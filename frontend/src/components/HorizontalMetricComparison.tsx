@@ -96,7 +96,7 @@ export default function HorizontalMetricComparison({
   }, [exportMatrix]);
 
   if (!hasData) {
-    return <p className="text-xs text-gray-500">{emptyText}</p>;
+    return <p className="text-xs text-slate-600">{emptyText}</p>;
   }
 
   return (
@@ -105,7 +105,7 @@ export default function HorizontalMetricComparison({
         <button
           type="button"
           onClick={handleExport}
-          className="rounded border border-gray-300 bg-white px-3 py-1 text-xs text-gray-700 shadow-sm transition hover:bg-gray-50"
+          className="rounded-xl border border-slate-300 bg-white px-3 py-1 text-xs text-slate-700 shadow-sm transition hover:bg-slate-50"
         >
           导出表格
         </button>
@@ -118,9 +118,9 @@ export default function HorizontalMetricComparison({
           <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
             <thead>
               <tr>
-                <th className="border px-2 py-2">指标</th>
+                <th scope="col" className="border px-2 py-2">指标</th>
                 {columns.map(col => (
-                  <th key={`metric-header-${col}`} className="border px-2 py-2">
+                  <th scope="col" key={`metric-header-${col}`} className="border px-2 py-2">
                     {col}
                   </th>
                 ))}
@@ -138,7 +138,7 @@ export default function HorizontalMetricComparison({
                       const rawValue = row.values[idx];
                       if (!Number.isFinite(rawValue as number)) {
                         return (
-                          <td key={`metric-cell-${row.label}-${idx}`} className="border px-2 py-3 text-right text-gray-400">
+                          <td key={`metric-cell-${row.label}-${idx}`} className="border px-2 py-3 text-right text-slate-600">
                             {emptyText}
                           </td>
                         );
@@ -283,15 +283,15 @@ export function PerformanceQuadrantChart({
   }, [defaultXAxis, defaultYAxis, metricLabels, resolveDefault, xMetric, yMetric]);
 
   if (sanitizedRows.length === 0 || !metricLabels.length) {
-    return <p className="text-xs text-gray-500">{emptyText}</p>;
+    return <p className="text-xs text-slate-600">{emptyText}</p>;
   }
 
   const selectorControls = (
     <div className="flex flex-wrap gap-4 text-xs">
-      <label className="flex flex-col gap-1 text-gray-600">
+      <label className="flex flex-col gap-1 text-slate-600">
         <span>X轴指标</span>
         <select
-          className="rounded border border-gray-300 px-2 py-1"
+          className="rounded-lg border border-slate-300 px-2 py-1"
           value={xMetric}
           onChange={(e) => setXMetric(e.target.value)}
         >
@@ -302,10 +302,10 @@ export function PerformanceQuadrantChart({
           ))}
         </select>
       </label>
-      <label className="flex flex-col gap-1 text-gray-600">
+      <label className="flex flex-col gap-1 text-slate-600">
         <span>Y轴指标</span>
         <select
-          className="rounded border border-gray-300 px-2 py-1"
+          className="rounded-lg border border-slate-300 px-2 py-1"
           value={yMetric}
           onChange={(e) => setYMetric(e.target.value)}
         >
@@ -347,7 +347,7 @@ export function PerformanceQuadrantChart({
     return (
       <div className="space-y-3">
         {selectorControls}
-        <p className="text-xs text-gray-500">{emptyText}</p>
+        <p className="text-xs text-slate-600">{emptyText}</p>
       </div>
     );
   }

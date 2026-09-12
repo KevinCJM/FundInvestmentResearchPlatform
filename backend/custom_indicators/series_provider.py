@@ -53,6 +53,8 @@ class InstrumentIdentity:
     product_id: str
     ts_code: str
     name: str
+    found_date: str | None = None
+    list_date: str | None = None
 
 
 @dataclass
@@ -62,6 +64,7 @@ class ProductSeries:
     fingerprint: str
     data_latest_date: str
     open_dates: pd.DatetimeIndex = field(default_factory=lambda: pd.DatetimeIndex([]))
+    lineage: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -226,17 +229,17 @@ def _identity_rows(
     path_text: str,
     size: int,
     modified_ns: int,
-) -> tuple[tuple[str, str, str], ...]:
+) -> tuple[tuple[str, str, str, str | None, str | None], ...]:
     del size, modified_ns
     path = Path(path_text)
     if not path.exists():
         return ()
     columns = set(arrow_parquet.read_schema(path).names)
-    requested = [name for name in ("ts_code", "code", "name") if name in columns]
+    requested = [name for name in ("ts_code", "code", "name", "found_date", "list_date") if name in columns]
     if "ts_code" not in requested:
         return ()
     frame = pd.read_parquet(path, columns=requested)
-    rows: list[tuple[str, str, str]] = []
+    rows = []
     for row in frame.itertuples(index=False):
         payload = row._asdict()
         ts_code = str(payload.get("ts_code") or "")
@@ -247,9 +250,20 @@ def _identity_rows(
                 ts_code,
                 str(payload.get("code") or ts_code.split(".", 1)[0]),
                 str(payload.get("name") or ts_code),
+                _identity_date(payload.get("found_date")),
+                _identity_date(payload.get("list_date")),
             )
         )
     return tuple(rows)
+
+
+def _identity_date(value: Any) -> str | None:
+    """Normalize info-table dates without substituting listing for inception."""
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).removesuffix(".0")
+    parsed = pd.to_datetime(text, format="%Y%m%d" if len(text) == 8 and text.isdigit() else None, errors="coerce")
+    return None if pd.isna(parsed) else parsed.strftime("%Y-%m-%d")
 
 
 def resolve_identities(
@@ -263,24 +277,22 @@ def resolve_identities(
     info_path = resolved_dir / (
         "etf_info_df.parquet" if kind == "etf" else "fund_info_df.parquet"
     )
-    rows: tuple[tuple[str, str, str], ...] = ()
+    rows = ()
     if info_path.exists():
         stat = info_path.stat()
         rows = _identity_rows(
             str(info_path.resolve()), int(stat.st_size), int(stat.st_mtime_ns)
         )
-    by_token: dict[str, tuple[str, str]] = {}
-    for ts_code, code, name in rows:
-        by_token[ts_code.strip().lower()] = (ts_code, name)
-        by_token[code.strip().lower()] = (ts_code, name)
-        by_token[ts_code.split(".", 1)[0].strip().lower()] = (ts_code, name)
-        by_token[name.strip().lower()] = (ts_code, name)
+    by_token = {}
+    for ts_code, code, name, found_date, list_date in rows:
+        for token in (ts_code, code, ts_code.split(".", 1)[0], name):
+            by_token[token.strip().lower()] = (ts_code, name, found_date, list_date)
     output: dict[str, InstrumentIdentity] = {}
     for raw_id in product_ids:
         product_id = str(raw_id)
         match = by_token.get(product_id.strip().lower())
-        ts_code, name = match if match is not None else (product_id, product_id)
-        output[product_id] = InstrumentIdentity(kind, ts_code, ts_code, name)
+        ts_code, name, found_date, list_date = match if match is not None else (product_id, product_id, None, None)
+        output[product_id] = InstrumentIdentity(kind, ts_code, ts_code, name, found_date, list_date)
     return output
 
 
@@ -320,6 +332,17 @@ def _read_candidate(path: Path, ts_code: str, value_column: str) -> pd.DataFrame
     return result.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
 
 
+def _scalar_source_lineage(path: Path, frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """Describe the already normalized scalar input, without reading it again."""
+    return [{
+        "dataset": path.name,
+        "dataset_first_date": frame.iloc[0]["date"].strftime("%Y-%m-%d"),
+        "dataset_latest_date": frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
+        "rows_before_as_of": len(frame),
+        "availability_field": "date",
+    }]
+
+
 def load_product_series(
     kind: Literal["etf", "fund"],
     product_id: str,
@@ -344,13 +367,13 @@ def load_product_series(
             frame = _read_candidate(path, product_id, value_column)
         if frame.empty:
             continue
-        resolved_id = identity.ts_code
         return ProductSeries(
-            identity=InstrumentIdentity(kind, resolved_id, resolved_id, identity.name),
+            identity=identity,
             frame=frame,
             fingerprint=_file_fingerprint(path),
             data_latest_date=frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
             open_dates=open_dates,
+            lineage=_scalar_source_lineage(path, frame),
         )
     return None
 
@@ -379,13 +402,13 @@ def load_adjusted_product_series(
         frame = _read_candidate(path, product_id, "adj_nav")
     if frame.empty:
         return None
-    resolved_id = identity.ts_code
     return ProductSeries(
-        identity=InstrumentIdentity(kind, resolved_id, resolved_id, identity.name),
+        identity=identity,
         frame=frame,
         fingerprint=_file_fingerprint(path),
         data_latest_date=frame.iloc[-1]["date"].strftime("%Y-%m-%d"),
         open_dates=open_dates,
+        lineage=_scalar_source_lineage(path, frame),
     )
 
 
@@ -607,6 +630,96 @@ def _variable_label(variable_id: str) -> str:
     return definition.label if definition is not None else variable_id
 
 
+def _no_observations_detail(
+    variable_id: str, identity: InstrumentIdentity, as_of: str | None,
+    first_date: str | None, rows_before: int, rows_after_date: int,
+    rows_after: int, availability_field: str,
+) -> dict[str, str]:
+    label = _variable_label(variable_id)
+    cutoff = _parse_as_of(as_of)
+    as_of = cutoff.strftime("%Y-%m-%d") if cutoff is not None else None
+    # Inception is explanatory metadata, never an extra data filter: predecessor
+    # history may legitimately predate the current fund contract.
+    if as_of and rows_before and not rows_after_date and first_date and first_date > as_of:
+        if identity.found_date and identity.found_date > as_of:
+            return {
+                "code": "PRODUCT_NOT_ESTABLISHED_AS_OF",
+                "message": f"当前计算截止日为 {as_of}，早于产品成立日期 {identity.found_date}；本地数据从 {first_date} 开始，当时没有可用的“{label}”数据。",
+            }
+        return {
+            "code": "NO_DATA_BEFORE_CUTOFF",
+            "message": f"当前计算截止日为 {as_of}，但本地数据从 {first_date} 才开始，截止日之前没有“{label}”数据。数据起点不等于产品成立日期。",
+        }
+    if as_of and rows_after_date and not rows_after and availability_field == "ann_date":
+        return {
+            "code": "NO_DISCLOSURES_AS_OF",
+            "message": f"已有截止 {as_of} 的净值记录，但公告日期晚于截止日或缺失，无法确认当时已披露；因此未用于计算“{label}”。",
+        }
+    return {
+        "code": "VARIABLE_NO_OBSERVATIONS",
+        "message": f"“{label}”在当前产品和截止日没有有效观察值；请检查该字段的缺失值和数据覆盖范围。",
+    }
+
+
+def input_date_context(source: Any, as_of: str | None) -> dict[str, Any] | None:
+    """Explain the loaded inputs using existing provenance, without another scan."""
+    if source is None:
+        return None
+    cutoff = _parse_as_of(as_of)
+    as_of = cutoff.strftime("%Y-%m-%d") if cutoff is not None else None
+    # Scalar loaders retain their full, sorted input; the period selector applies
+    # the date cutoff later. Count this same boundary without copying or filtering.
+    scalar_rows = None
+    if isinstance(source, ProductSeries):
+        scalar_rows = len(source.frame)
+        if cutoff is not None:
+            scalar_rows = int(source.frame["date"].searchsorted(cutoff, side="right"))
+    labels = {
+        "etf_daily_df.parquet": "ETF 净值",
+        "fund_nav_df.parquet": "基金净值",
+        "etf_daily_candle_df.parquet": "ETF 行情",
+        "etf_share_size_df.parquet": "ETF 份额与规模",
+    }
+    sources = []
+    for item in getattr(source, "lineage", []):
+        if "rows_before_as_of" not in item:
+            continue
+        uses_disclosure_date = item.get("availability_field") == "ann_date"
+        sources.append({
+            "label": labels.get(item.get("dataset"), "指标输入数据"),
+            "first_date": item.get("dataset_first_date"),
+            "latest_date": item.get("dataset_latest_date"),
+            "rows_before_as_of": item.get("rows_before_as_of"),
+            "rows_after_date_filter": scalar_rows if scalar_rows is not None else item.get("rows_after_date_filter"),
+            "rows_after_as_of": scalar_rows if scalar_rows is not None else item.get("rows_after_as_of"),
+            "uses_disclosure_date": uses_disclosure_date,
+            "disclosure_status": item.get("disclosure_status") or (
+                "applied" if as_of and uses_disclosure_date else "not_applied"
+            ),
+        })
+    return {
+        "found_date": source.identity.found_date,
+        "list_date": source.identity.list_date,
+        "as_of": as_of,
+        "sources": sources,
+    }
+
+
+def _unavailable_disclosure_lineage(path: Path, fingerprint: str) -> dict[str, Any]:
+    """Schema rejection proves zero accepted rows, not an empty source dataset."""
+    return {
+        "dataset": path.name,
+        "fingerprint": fingerprint,
+        "source_fields": [],
+        "rows_before_as_of": None,
+        "rows_after_date_filter": None,
+        "rows_after_as_of": 0,
+        "availability_field": "ann_date",
+        "availability_filter": "ann_date <= as_of (required)",
+        "disclosure_status": "required_unavailable",
+    }
+
+
 def _read_source_frame(
     *,
     identity: InstrumentIdentity,
@@ -674,14 +787,7 @@ def _read_source_frame(
             coverage,
             unavailable,
             warnings,
-            {
-                "dataset": path.name,
-                "fingerprint": _file_fingerprint(path),
-                "source_fields": [],
-                "rows_before_as_of": 0,
-                "rows_after_as_of": 0,
-                "availability_filter": "ann_date <= as_of (required)",
-            },
+            _unavailable_disclosure_lineage(path, _file_fingerprint(path)),
             None,
         )
 
@@ -720,16 +826,19 @@ def _read_source_frame(
             "rows_before_as_of": 0,
             "rows_after_as_of": 0,
             "availability_filter": "ann_date <= as_of" if dataset == "nav" else "date <= as_of",
+            "availability_field": "ann_date" if dataset == "nav" and "ann_date" in schema else "date",
         }
         return pd.DataFrame(), fingerprint, coverage, unavailable, warnings, lineage, None
 
     raw["date"] = _date_values(raw[date_field])
     raw = raw.dropna(subset=["date"])
+    dataset_first = raw["date"].min().strftime("%Y-%m-%d") if not raw.empty else None
     dataset_latest = raw["date"].max().strftime("%Y-%m-%d") if not raw.empty else None
     rows_before = len(raw)
     cutoff = _parse_as_of(as_of)
     if cutoff is not None:
         raw = raw[raw["date"] <= cutoff].copy()
+    rows_after_date = len(raw)
     availability_field = "date"
     if dataset == "nav":
         if "ann_date" in raw.columns:
@@ -787,10 +896,10 @@ def _read_source_frame(
             "conditional": bool(definition.conditional),
         }
         if not valid.any():
-            unavailable[variable_id] = {
-                "code": "VARIABLE_NO_OBSERVATIONS",
-                "message": f"“{_variable_label(variable_id)}”在当前产品和截止日没有有效观察值。",
-            }
+            unavailable[variable_id] = _no_observations_detail(
+                variable_id, identity, as_of, dataset_first, rows_before,
+                rows_after_date, len(raw), availability_field,
+            )
             continue
         output[variable_id] = values
 
@@ -799,7 +908,9 @@ def _read_source_frame(
         "fingerprint": fingerprint,
         "source_fields": sorted(present_fields),
         "rows_before_as_of": int(rows_before),
+        "rows_after_date_filter": int(rows_after_date),
         "rows_after_as_of": int(len(raw)),
+        "dataset_first_date": dataset_first,
         "dataset_latest_date": dataset_latest,
         "availability_field": availability_field,
         "as_of": as_of,
@@ -876,6 +987,7 @@ def _scan_source_batch(
                     "message": "历史 as-of 计算要求 ann_date；未使用 nav_date 代替公告时点。",
                 }
             )
+            lineage[product_id] = _unavailable_disclosure_lineage(path, fingerprint)
         return frames, fingerprint, coverage, unavailable, warnings, lineage, latest_dates
 
     fields_by_variable = {
@@ -928,12 +1040,14 @@ def _scan_source_batch(
                 "rows_before_as_of": 0,
                 "rows_after_as_of": 0,
                 "availability_filter": "ann_date <= as_of" if dataset == "nav" else "date <= as_of",
+                "availability_field": "ann_date" if dataset == "nav" and "ann_date" in schema else "date",
                 "batch_scan": True,
             }
             continue
 
         product_raw["date"] = _date_values(product_raw[date_field])
         product_raw = product_raw.dropna(subset=["date"])
+        dataset_first = product_raw["date"].min().strftime("%Y-%m-%d") if not product_raw.empty else None
         dataset_latest = (
             product_raw["date"].max().strftime("%Y-%m-%d")
             if not product_raw.empty
@@ -943,6 +1057,7 @@ def _scan_source_batch(
         rows_before = len(product_raw)
         if cutoff is not None:
             product_raw = product_raw[product_raw["date"] <= cutoff].copy()
+        rows_after_date = len(product_raw)
         availability_field = "date"
         if dataset == "nav" and "ann_date" in product_raw.columns:
             product_raw["available_date"] = _date_values(product_raw["ann_date"])
@@ -1001,10 +1116,10 @@ def _scan_source_batch(
                 "conditional": bool(definition.conditional),
             }
             if not valid.any():
-                unavailable[product_id][variable_id] = {
-                    "code": "VARIABLE_NO_OBSERVATIONS",
-                    "message": f"“{_variable_label(variable_id)}”在当前产品和截止日没有有效观察值。",
-                }
+                unavailable[product_id][variable_id] = _no_observations_detail(
+                    variable_id, identity, as_of, dataset_first, rows_before,
+                    rows_after_date, len(product_raw), availability_field,
+                )
                 continue
             output[variable_id] = values.to_numpy(copy=False)
 
@@ -1014,7 +1129,9 @@ def _scan_source_batch(
             "fingerprint": fingerprint,
             "source_fields": sorted(present_fields),
             "rows_before_as_of": int(rows_before),
+            "rows_after_date_filter": int(rows_after_date),
             "rows_after_as_of": int(len(product_raw)),
+            "dataset_first_date": dataset_first,
             "dataset_latest_date": dataset_latest,
             "availability_field": availability_field,
             "as_of": as_of,

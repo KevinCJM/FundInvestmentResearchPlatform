@@ -67,7 +67,7 @@ export function buildManualEventLaneOption(result: RegimeResultData): EChartsOpt
 }
 
 function EventTable({ events }: { events: RegimeManualEventResult[] }) {
-  return <div className="max-h-[420px] overflow-auto rounded-xl border border-slate-200"><table className="min-w-full text-left text-xs" aria-label="人工历史事件明细"><thead className="sticky top-0 bg-slate-50 text-slate-600"><tr>{['事件', '定义开始', '定义结束', '实际覆盖', '说明'].map(label => <th key={label} className="whitespace-nowrap px-3 py-2">{label}</th>)}</tr></thead><tbody>{events.map(event => <tr key={event.id} className="border-t border-slate-100"><td className="min-w-40 px-3 py-2"><span className="mr-2 inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: event.color }} />{event.label}</td><td className="whitespace-nowrap px-3 py-2">{event.start_date}</td><td className="whitespace-nowrap px-3 py-2">{event.end_date}</td><td className="whitespace-nowrap px-3 py-2">{event.covered_observations ? `${event.covered_observations} 个观测 · ${event.first_observation_date} 至 ${event.last_observation_date}` : '当前数据范围外'}</td><td className="max-w-xs px-3 py-2 text-slate-500">{event.description || '—'}</td></tr>)}</tbody></table></div>
+  return <div className="max-h-[420px] overflow-auto rounded-xl border border-slate-200"><table className="min-w-full text-left text-xs" aria-label="人工历史事件明细"><thead className="sticky top-0 bg-slate-50 text-slate-600"><tr>{['事件', '定义开始', '定义结束', '实际覆盖', '说明'].map(label => <th scope="col" key={label} className="whitespace-nowrap px-3 py-2">{label}</th>)}</tr></thead><tbody>{events.map(event => <tr key={event.id} className="border-t border-slate-100"><td className="min-w-40 px-3 py-2"><span className="mr-2 inline-block h-2.5 w-2.5 rounded-lg" style={{ backgroundColor: event.color }} />{event.label}</td><td className="whitespace-nowrap px-3 py-2">{event.start_date}</td><td className="whitespace-nowrap px-3 py-2">{event.end_date}</td><td className="whitespace-nowrap px-3 py-2">{event.covered_observations ? `${event.covered_observations} 个观测 · ${event.first_observation_date} 至 ${event.last_observation_date}` : '当前数据范围外'}</td><td className="max-w-xs px-3 py-2 text-slate-600">{event.description || '—'}</td></tr>)}</tbody></table></div>
 }
 
 export default function RegimeManualEventResult({ result, stale = false }: { result: RegimeResultData; stale?: boolean }) {
@@ -77,9 +77,9 @@ export default function RegimeManualEventResult({ result, stale = false }: { res
   const laneOption = useMemo(() => buildManualEventLaneOption(result), [result])
   const laneHeight = Math.max(220, overview.manual_events.length * 38 + 100)
   return <section aria-label="人工历史事件结果" className="min-w-0 space-y-5 p-3 sm:p-5" data-run-id={overview.run_id}>
-    <header className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-bold text-slate-950">人工历史事件结果</h2><p className="mt-1 text-xs text-slate-500">{overview.date_range.start ?? '无样本'} 至 {overview.date_range.end ?? '无样本'} · 共 {overview.summary.total} 个观察序列观测{overview.as_of ? ` · 截至 ${overview.as_of}` : ''}</p></div><span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">事后识别 · 多标签事件</span></header>
+    <header className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-bold text-slate-950">人工历史事件结果</h2><p className="mt-1 text-xs text-slate-600">{overview.date_range.start ?? '无样本'} 至 {overview.date_range.end ?? '无样本'} · 共 {overview.summary.total} 个观察序列观测{overview.as_of ? ` · 截至 ${overview.as_of}` : ''}</p></div><span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800">事后识别 · 多标签事件</span></header>
     {stale ? <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">此结果使用上一次运行时冻结的事件定义；当前修改需重新运行后才会生效。</p> : null}
-    <p className="rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-900">事件由人类事后定义，<strong>允许重叠</strong>。每个事件独立保留，不做优先级去重，也不能直接作为当时可交易信号。</p>
+    <p className="rounded-xl border border-accent-200 bg-accent-50 px-3 py-2 text-xs leading-5 text-accent-900">事件由人类事后定义，<strong>允许重叠</strong>。每个事件独立保留，不做优先级去重，也不能直接作为当时可交易信号。</p>
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="人工事件摘要">
       <Summary label="事件数量" value={String(summary.event_count)} detail="事件可互相重叠" />
       <Summary label="任一事件覆盖" value={String(summary.covered_observations)} detail={`${percent(summary.covered_observations, overview.summary.total)} 的观察序列`} />
@@ -87,11 +87,11 @@ export default function RegimeManualEventResult({ result, stale = false }: { res
       <Summary label="最大同时事件" value={String(summary.max_concurrent_events)} detail="同一观测点的事件数量" />
     </div>
     {result.points.length ? <section aria-label="观察序列与人工事件背景"><h3 className="mb-2 text-sm font-bold text-slate-900">观察序列</h3><ReactECharts option={marketOption} notMerge lazyUpdate style={{ height: 400, width: '100%' }} /></section> : null}
-    {overview.manual_events.length ? <section aria-label="人工事件轨道"><div className="mb-2"><h3 className="text-sm font-bold text-slate-900">事件轨道</h3><p className="mt-1 text-xs text-slate-500">每个事件单独一行；同一日期出现多条色带即表示事件重叠。</p></div><div className="max-h-[720px] overflow-y-auto"><ReactECharts option={laneOption} notMerge lazyUpdate style={{ height: laneHeight, width: '100%' }} /></div></section> : <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">本次运行没有定义历史事件。</p>}
+    {overview.manual_events.length ? <section aria-label="人工事件轨道"><div className="mb-2"><h3 className="text-sm font-bold text-slate-900">事件轨道</h3><p className="mt-1 text-xs text-slate-600">每个事件单独一行；同一日期出现多条色带即表示事件重叠。</p></div><div className="max-h-[720px] overflow-y-auto"><ReactECharts option={laneOption} notMerge lazyUpdate style={{ height: laneHeight, width: '100%' }} /></div></section> : <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-600">本次运行没有定义历史事件。</p>}
     <section><h3 className="mb-2 text-sm font-bold text-slate-900">事件明细</h3><EventTable events={overview.manual_events} /></section>
   </section>
 }
 
 function Summary({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 text-xl font-bold text-slate-950">{value}</p><p className="mt-1 text-[11px] text-slate-500">{detail}</p></div>
+  return <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs text-slate-600">{label}</p><p className="mt-1 text-xl font-bold text-slate-950">{value}</p><p className="mt-1 text-xs text-slate-600">{detail}</p></div>
 }

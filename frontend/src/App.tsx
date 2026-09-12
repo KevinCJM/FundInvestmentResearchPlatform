@@ -68,7 +68,7 @@ export default function App() {
     <LocalizationProvider><BrowserRouter>
       <ActualPortfolioProvider>
         <ResearchContextProvider>
-        <div className="min-h-screen bg-gray-100">
+        <div className="min-h-screen bg-slate-100">
           <Header />
           <main>
           <Routes>

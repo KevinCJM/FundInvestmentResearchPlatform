@@ -288,7 +288,7 @@ def test_rolling_sharpe_zero_volatility_is_missing_not_a_full_plan_failure(
     )
     result = response["results"][0]
     assert result["status"] == "unavailable"
-    assert result["warnings"] == []
+    assert result["warnings"][0]["code"] == "NO_FINITE_SERIES_RESULT"
     assert len(result["channels"]) == 1
     assert set(result["channels"][0]["values"]) == {None}
     assert response["execution"]["python_fallback"] == 0
@@ -853,7 +853,7 @@ def test_missing_ohlc_is_unavailable_and_never_filled(tmp_path: Path) -> None:
     )
     assert response["results"][0]["status"] == "unavailable"
     assert response["results"][0]["dates"] == []
-    assert response["results"][0]["warnings"][0]["code"] == "VARIABLE_UNAVAILABLE"
+    assert response["results"][0]["warnings"][0]["code"] == "SOURCE_FIELD_MISSING"
 
 
 def test_output_measure_catalog_and_incompatible_override_are_fail_closed(tmp_path: Path) -> None:

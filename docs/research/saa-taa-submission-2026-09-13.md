@@ -1,14 +1,14 @@
 # SAA / TAA 开发分支提交记录
 
 日期：2026-09-13。来源 `codex/saa-taa-frontier-grid`，目标 `Dev`。
-基线：`c7e85397de53e286955c02e7401998192ad22ea2`。最终提交 SHA 和实际 PR 编号以 PR 绑定记录为准。
+最终基线：`440cb42aa79bfdf90302c0555dcdb695f095a93a`。实际 PR 为 [#14](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/14)，最终 HEAD 以 PR 的绑定审核记录为准。
 
 ## 本次范围
 
 - 大类分类纠正、投资目标与 CMA、前瞻长期政策、TAA 主动风险门禁和训练/留出分段验证。
 - 恢复整条有效前沿按收益目标求解：默认 20 点、可选 200 点；单点预算默认 300 次，分别传参和保存。实际算法为固定签名 NJIT 主动集 QP / BFGS-SQP，非 SciPy SLSQP。
 - 网格、随机散点和三个代表点局部精炼各自保留独立语义；最终候选共同重建 Pareto 前沿和代表点。失败状态保留，连续网格与取整散点需显式确认。
-- 新分支从最新 Dev 创建，仅迁移任务差异。Dev 尚未合入原工作区依赖的前端设计 PR，因此只补充新页面实际使用的 Button 和 accent 调色板，并在该组合上重新验证；没有带入其它设计与指标修改。
+- 新分支从当时最新 Dev 创建，仅迁移任务差异。PR 创建期间 Dev 合入前端设计 PR #12，随后把最新 Dev 同步进本开发分支、处理 7 处文件冲突，并重新验证。最终复用 Dev 已有的 Button 和 accent 调色板；相对 Dev 的 PR 差异只保留 SAA/TAA 任务。
 - 五轮原始审核报告的内容与结论保留；提交副本仅规范化行尾空白和文件末尾空行，原工作区证据不改。早期设计/整改文档中的“未提交”“路由待纳入”等是当时快照；本记录说明之后的提交准备状态。
 
 ## 本次明确接受的 P2
@@ -24,14 +24,16 @@
 | 检查 | 结果 |
 | --- | --- |
 | 18 个相关后端文件 | 392 passed，19 条既有警告 |
-| 前端全量 Vitest | 124 文件，918 passed |
+| 前端全量 Vitest | 124 文件，924 passed |
 | Chrome 桌面 1440 / 手机 390 | 6 passed，真实隔离 API 和真实内核 |
+| 旧 TAA Chrome 流程 | 2 passed；模拟 API 的真实桌面/手机流程，单独计数 |
+| 设计规范 | `design:check` 无新增回归，退出码 0 |
 | TypeScript | 退出码 0 |
 | Vite production build | 退出码 0，保留大 bundle 提示 |
 | i18n 目录校验 | valid=true，退出码 0 |
 | 独立 QP 对照 | 60 / 60 正定问题与测试专用 SciPy SLSQP 一致，最大目标差 4.61e-13 |
 
-后端为相关范围回归，没有重跑全仓后端。Dev 基线没有 `design:check` 脚本，因此不沿用另一未合并分支的设计检查结果；本组合已执行真实交互和响应式浏览器验证。手机历史图表的收益轴留白不足沿用既有布局，数值表仍可查看，此局限未作为本次已修复项。
+后端为相关范围回归，没有重跑全仓后端。同步后的 Dev 已提供 `design:check`，本次在最终组合上执行并通过；同时执行真实交互和响应式浏览器验证。手机历史图表的收益轴留白不足沿用既有布局，数值表仍可查看，此局限未作为本次已修复项。
 
 后端命令（Python 3.12；运行前把 `CUSTOM_INDICATOR_DATA_DIR`、`HISTORICAL_REGIME_DATA_DIR`、`TACTICAL_ALLOCATION_DATA_DIR`、`STRATEGIC_ALLOCATION_DATA_DIR`、`TIMING_RESEARCH_DATA_DIR` 指向独立临时目录）：
 
@@ -59,10 +61,12 @@ npm run test --prefix frontend -- --run
 (cd frontend && npx tsc --noEmit)
 npm run build --prefix frontend
 npm run i18n:check --prefix frontend
+npm run design:check --prefix frontend
 npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts
+npm run test:e2e --prefix frontend -- --config=playwright.taa.config.ts --workers=1
 ```
 
-浏览器配置启动自己的隔离测试 API，不复用生产服务。源码未写入正式研究数据、活跃快照或投资组合。新文件的 AI Hermes 长期路由在本次纳入 Git 时同步登记：全部 75 个改动文件已覆盖，结构校验及 R87 / R86 / R30 / R60 路由展开均通过；记录见 PR。新隔离目录没有 CodeGraph 索引；调用链先借助原工作区已同步的 CodeGraph 定位，再以本次实际文件与测试为准。
+浏览器配置启动自己的隔离测试 API，不复用生产服务。源码未写入正式研究数据、活跃快照或投资组合。新文件的 AI Hermes 长期路由在本次纳入 Git 时同步登记：最终相对 Dev 的全部 73 个改动文件已覆盖，结构校验及 R03 / R87 / R86 / R30 / R60 路由展开均通过；记录见 PR。新隔离目录没有 CodeGraph 索引；调用链先借助原工作区已同步的 CodeGraph 定位，再以本次实际文件与测试为准。
 
 ## 浏览器截图
 

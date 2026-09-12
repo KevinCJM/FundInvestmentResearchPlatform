@@ -26,7 +26,7 @@ describe('投研流程框架', () => {
 
     const trigger = screen.getByRole('button', { name: '投前决策阶段导航' })
     expect(trigger).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByLabelText('投前决策子页面导航')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('投前决策子页面导航')).toHaveClass('hidden', 'xl:block')
 
     await act(async () => { await user.click(trigger) })
 
@@ -35,7 +35,7 @@ describe('投研流程框架', () => {
     expect(within(navigation).getByRole('link', { name: /战略资产配置（SAA）/ })).toBeInTheDocument()
 
     await act(async () => { await user.keyboard('{Escape}') })
-    expect(screen.queryByLabelText('投前决策子页面导航')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('投前决策子页面导航')).toHaveClass('hidden', 'xl:block')
     expect(trigger).toHaveFocus()
   })
 

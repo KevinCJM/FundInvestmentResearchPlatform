@@ -26,7 +26,7 @@ export default function DashboardScopeTabs({ value, onChange }: DashboardScopeTa
     <div
       role="tablist"
       aria-label="驾驶舱产品范围"
-      className="flex max-w-full gap-1 overflow-x-auto rounded-2xl border border-white/20 bg-white/10 p-1 backdrop-blur"
+      className="flex max-w-full gap-1 overflow-x-auto rounded-xl border border-white/20 bg-white/10 p-1 backdrop-blur"
     >
       {options.map((option, index) => (
         <button
@@ -57,8 +57,8 @@ export default function DashboardScopeTabs({ value, onChange }: DashboardScopeTa
           }}
           className={`shrink-0 rounded-xl px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/80 ${
             value === option.value
-              ? 'bg-white text-indigo-700 shadow-sm'
-              : 'text-white/85 hover:bg-white/10 hover:text-white'
+              ? 'bg-white text-accent-700 shadow-sm'
+              : 'text-white hover:bg-white/10'
           }`}
         >
           {option.label}
