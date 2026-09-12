@@ -19,11 +19,11 @@ interface DashboardFiltersProps {
 export default function DashboardFilterBar({ filters, availableFilters = {}, onChange, onReset }: DashboardFiltersProps) {
   const activeCount = Object.values(filters).reduce((sum, values) => sum + values.length, 0);
   return (
-    <section aria-labelledby="dashboard-filter-heading" className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+    <section aria-labelledby="dashboard-filter-heading" className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h2 id="dashboard-filter-heading" className="text-base font-semibold text-slate-900">细分筛选</h2>
-          <p className="mt-1 text-xs leading-5 text-slate-500">结构与趋势包含全部状态；排行榜始终仅含存续且样本有效的产品。</p>
+          <p className="mt-1 text-xs leading-5 text-slate-600">结构与趋势包含全部状态；排行榜始终仅含存续且样本有效的产品。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {fields.map((field) => (
@@ -36,7 +36,7 @@ export default function DashboardFilterBar({ filters, availableFilters = {}, onC
             />
           ))}
           {activeCount > 0 && (
-            <button type="button" onClick={onReset} className="rounded-lg px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <button type="button" onClick={onReset} className="rounded-lg px-3 py-2 text-sm font-semibold text-accent-700 hover:bg-accent-50 focus:outline-none focus:ring-2 focus:ring-accent-500">
               重置 {activeCount} 项
             </button>
           )}

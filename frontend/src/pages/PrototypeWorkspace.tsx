@@ -5,29 +5,29 @@ import { getPrototypeConfig, type PrototypeConfig } from '../app/prototypeRegist
 import { getPrototypeBlueprint, type PrototypeBlueprint } from '../app/prototypeBlueprintRegistry'
 
 const familyStyles: Record<PrototypeConfig['family'], string> = {
-  product: 'from-sky-700 to-cyan-600',
-  allocation: 'from-violet-700 to-indigo-600',
-  execution: 'from-amber-700 to-orange-600',
-  accounting: 'from-cyan-800 to-teal-700',
-  post: 'from-emerald-700 to-teal-600',
-  feedback: 'from-rose-700 to-pink-600',
+  product: 'from-accent-700 to-accent-600',
+  allocation: 'from-accent-700 to-accent-600',
+  execution: 'from-orange-800 to-orange-700',
+  accounting: 'from-accent-800 to-accent-700',
+  post: 'from-emerald-700 to-accent-600',
+  feedback: 'from-rose-800 to-pink-700',
   settings: 'from-slate-800 to-slate-600',
 }
 
 function SampleChart({ config }: { config: PrototypeConfig }) {
   const maxValue = Math.max(...config.chartPoints.map((point) => point.value), 1)
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-semibold text-slate-900">{config.chartTitle}</h3>
-        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">示例数据</span>
+        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">示例数据</span>
       </div>
       <div className="mt-6 flex h-52 items-end gap-3" aria-label={config.chartTitle}>
         {config.chartPoints.map((point) => (
           <div key={point.label} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-2">
             <span className="text-xs font-semibold text-slate-600">{point.value}</span>
             <div className={`w-full max-w-16 rounded-t-lg bg-gradient-to-t ${familyStyles[config.family]}`} style={{ height: `${Math.max(12, (point.value / maxValue) * 150)}px` }} />
-            <span className="truncate text-xs text-slate-500">{point.label}</span>
+            <span className="truncate text-xs text-slate-600">{point.label}</span>
           </div>
         ))}
       </div>
@@ -38,7 +38,7 @@ function SampleChart({ config }: { config: PrototypeConfig }) {
 function GuidancePanel({ config }: { config: PrototypeConfig }) {
   return (
     <aside className="border-l-2 border-slate-300 bg-slate-50/70 px-4 py-4" role="note" aria-label="研究口径说明（非交互）">
-      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">非交互说明</p>
+      <p className="text-xs font-semibold tracking-wide text-slate-600">非交互说明</p>
       <h3 className="mt-1 font-semibold text-slate-800">研究口径说明</h3>
       <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-slate-600">
         {config.guidance.map((item) => <li key={item}>{item}</li>)}
@@ -55,13 +55,13 @@ function BlueprintPanel({ blueprint }: { blueprint: PrototypeBlueprint }) {
   ]
   return (
     <details data-testid="non-interactive-blueprint" className="group overflow-hidden rounded-xl border border-dashed border-slate-300 bg-slate-50/60">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-4 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500 [&::-webkit-details-marker]:hidden">
         <div>
           <h3 className="text-sm font-semibold text-slate-700">页面职责说明（非功能区）</h3>
-          <p className="mt-0.5 text-xs text-slate-500">仅用于解释页面边界，不可执行业务操作</p>
+          <p className="mt-0.5 text-xs text-slate-600">仅用于解释页面边界，不可执行业务操作</p>
         </div>
-        <span className="shrink-0 text-xs font-medium text-slate-500 group-open:hidden">展开查看 ↓</span>
-        <span className="hidden shrink-0 text-xs font-medium text-slate-500 group-open:inline">收起说明 ↑</span>
+        <span className="shrink-0 text-xs font-medium text-slate-600 group-open:hidden">展开查看 ↓</span>
+        <span className="hidden shrink-0 text-xs font-medium text-slate-600 group-open:inline">收起说明 ↑</span>
       </summary>
 
       <div className="border-t border-slate-200 px-4 py-5 sm:px-5" aria-label="页面职责说明内容">
@@ -88,14 +88,14 @@ function BlueprintPanel({ blueprint }: { blueprint: PrototypeBlueprint }) {
 
 function RecordsTable({ config, rows, onRemove }: { config: PrototypeConfig; rows: string[][]; onRemove: (index: number) => void }) {
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr>{config.columns.map((column) => <th key={column} className="px-4 py-3">{column}</th>)}<th className="px-4 py-3 text-right">演示操作</th></tr></thead>
-          <tbody>{rows.map((row, rowIndex) => <tr key={`${row.join('-')}-${rowIndex}`} className="border-t border-slate-100"><>{row.map((cell, index) => <td key={`${cell}-${index}`} className="px-4 py-3 text-slate-700">{cell}</td>)}</><td className="px-4 py-3 text-right"><button type="button" onClick={() => onRemove(rowIndex)} className="rounded px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50">移除示例</button></td></tr>)}</tbody>
+          <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-600"><tr>{config.columns.map((column) => <th scope="col" key={column} className="px-4 py-3">{column}</th>)}<th scope="col" className="px-4 py-3 text-right">演示操作</th></tr></thead>
+          <tbody>{rows.map((row, rowIndex) => <tr key={`${row.join('-')}-${rowIndex}`} className="border-t border-slate-100"><>{row.map((cell, index) => <td key={`${cell}-${index}`} className="px-4 py-3 text-slate-700">{cell}</td>)}</><td className="px-4 py-3 text-right"><button type="button" onClick={() => onRemove(rowIndex)} className="rounded-lg px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50">移除示例</button></td></tr>)}</tbody>
         </table>
       </div>
-      {rows.length === 0 && <p className="p-6 text-center text-sm text-slate-500">当前筛选下没有演示记录。</p>}
+      {rows.length === 0 && <p className="p-6 text-center text-sm text-slate-600">当前筛选下没有演示记录。</p>}
     </section>
   )
 }
@@ -134,18 +134,18 @@ export default function PrototypeWorkspace({ pageKey }: { pageKey: string }) {
   return (
     <div className="space-y-5" data-testid={`prototype-${pageKey}`}>
       <StaticDemoBanner />
-      <header className={`rounded-2xl bg-gradient-to-r ${familyStyles[config.family]} p-6 text-white shadow-sm`}>
+      <header className={`rounded-xl bg-gradient-to-r ${familyStyles[config.family]} p-6 text-white shadow-sm`}>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/70">Interactive prototype</p><h2 className="mt-2 text-2xl font-bold">{config.title}</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-white/80">{config.description}</p></div>
-          <span className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold">预置示例数据</span>
+          <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-white">Interactive prototype</p><h2 className="mt-2 text-2xl font-bold">{config.title}</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-white">{config.description}</p></div>
+          <span className="shrink-0 rounded-full border border-white/40 px-3 py-1 text-xs font-semibold">预置示例数据</span>
         </div>
       </header>
 
       <BlueprintPanel blueprint={blueprint} />
 
-      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-1 flex-col gap-3 sm:flex-row">
-          <label className="text-sm text-slate-600">{config.filterLabel}<select value={scope} onChange={(event) => setScope(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 sm:w-56">{config.filterOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
+          <label className="text-sm text-slate-600">{config.filterLabel}<select value={scope} onChange={(event) => setScope(event.target.value)} className="mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 sm:w-56">{config.filterOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
           <label className="flex-1 text-sm text-slate-600">筛选演示记录<input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词" className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2" /></label>
         </div>
         <button type="button" onClick={reset} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">恢复示例</button>
@@ -155,14 +155,14 @@ export default function PrototypeWorkspace({ pageKey }: { pageKey: string }) {
         {tabs.map((tab) => <button type="button" key={tab} onClick={() => setActiveTab(tab)} className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold ${activeTab === tab ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{tab}</button>)}
       </nav>
 
-      {activeTab === tabs[0] ? <><section className="grid gap-4 sm:grid-cols-3">{config.metrics.map((metric) => <article key={metric.label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm text-slate-500">{metric.label}</p><p className="mt-2 text-2xl font-bold text-slate-950">{metric.value}</p><p className="mt-1 text-xs text-slate-400">{metric.hint}</p></article>)}</section><div className="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.6fr)]"><SampleChart config={config} /><GuidancePanel config={config} /></div></> : null}
+      {activeTab === tabs[0] ? <><section className="grid gap-4 sm:grid-cols-3">{config.metrics.map((metric) => <article key={metric.label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-sm text-slate-600">{metric.label}</p><p className="mt-2 text-2xl font-bold text-slate-950">{metric.value}</p><p className="mt-1 text-xs text-slate-600">{metric.hint}</p></article>)}</section><div className="grid gap-5 xl:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.6fr)]"><SampleChart config={config} /><GuidancePanel config={config} /></div></> : null}
 
-      {activeTab !== tabs[0] && activeTab !== tabs[tabs.length - 1] ? <div className="grid gap-5 lg:grid-cols-2"><GuidancePanel config={config} /><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-semibold text-slate-900">{activeTab}（示例）</h3><div className="mt-4 space-y-3">{config.metrics.map((metric) => <label key={metric.label} className="block text-sm text-slate-600">{metric.label}<input value={metric.value} readOnly className="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2" /></label>)}</div><p className="mt-4 text-xs text-slate-500">输入控件用于呈现未来交互结构，本期不计算、不保存。</p></section></div> : null}
+      {activeTab !== tabs[0] && activeTab !== tabs[tabs.length - 1] ? <div className="grid gap-5 lg:grid-cols-2"><GuidancePanel config={config} /><section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-semibold text-slate-900">{activeTab}（示例）</h3><div className="mt-4 space-y-3">{config.metrics.map((metric) => <label key={metric.label} className="block text-sm text-slate-600">{metric.label}<input value={metric.value} readOnly className="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2" /></label>)}</div><p className="mt-4 text-xs text-slate-600">输入控件用于呈现未来交互结构，本期不计算、不保存。</p></section></div> : null}
 
       {activeTab === tabs[tabs.length - 1] ? <RecordsTable config={config} rows={filteredRows} onRemove={removeRow} /> : null}
 
-      {config.links?.length ? <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5"><h3 className="font-semibold text-emerald-950">可复用的已有能力</h3><div className="mt-3 grid gap-3 md:grid-cols-2">{config.links.map((link) => <Link key={link.path} to={link.path} className="rounded-xl border border-emerald-200 bg-white p-4 hover:border-emerald-400"><span className="font-semibold text-emerald-800">{link.label} →</span><p className="mt-1 text-sm text-slate-600">{link.description}</p></Link>)}</div></section> : null}
-      {notice && <p className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800" aria-live="polite">{notice}</p>}
+      {config.links?.length ? <section className="rounded-xl border border-emerald-200 bg-emerald-50 p-5"><h3 className="font-semibold text-emerald-950">可复用的已有能力</h3><div className="mt-3 grid gap-3 md:grid-cols-2">{config.links.map((link) => <Link key={link.path} to={link.path} className="rounded-xl border border-emerald-200 bg-white p-4 hover:border-accent-400"><span className="font-semibold text-emerald-800">{link.label} →</span><p className="mt-1 text-sm text-slate-600">{link.description}</p></Link>)}</div></section> : null}
+      {notice && <p className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 text-sm text-accent-800" aria-live="polite">{notice}</p>}
     </div>
   )
 }

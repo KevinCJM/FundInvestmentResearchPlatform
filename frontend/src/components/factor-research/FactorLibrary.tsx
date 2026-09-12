@@ -17,9 +17,9 @@ export default function FactorLibrary({ factors, action, busy, onChanged }: { fa
       <div className="mb-4 flex flex-wrap gap-2">{[['all', '全部'], ['etf', 'ETF'], ['fund', '场外基金'], ['stock', '股票']].map(([value, label]) => <button type="button" key={value} aria-pressed={kind === value} onClick={() => setKind(value)} className={kind === value ? buttonClass : secondaryClass}>{label}</button>)}</div>
       {kind === 'stock' && <p className="mb-4 text-sm text-amber-800">股票研究共用定义框架；当前缺少完整股票行情与财务时点数据。</p>}
       <div className="space-y-3">{factors.filter(item => kind === 'all' || item.product_kinds.includes(kind as 'etf')).map(factor => <article key={factor.id} className="rounded-lg border border-slate-200 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="font-semibold text-slate-900">{factor.name}</h4><span className="text-xs text-slate-500">v{factor.revision} · {factor.read_only ? '内置模板' : '自定义'}</span></div>
+        <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="font-semibold text-slate-900">{factor.name}</h4><span className="text-xs text-slate-600">v{factor.revision} · {factor.read_only ? '内置模板' : '自定义'}</span></div>
         <p className="mt-2 text-sm leading-6 text-slate-600">{factor.description}</p>
-        <p className="mt-2 text-xs text-slate-500">{names[factor.operator]} · {factor.window} 日窗口 · 跳过 {factor.skip} 日 · {factor.direction > 0 ? '越大越好' : '越小越好'}</p>
+        <p className="mt-2 text-xs text-slate-600">{names[factor.operator]} · {factor.window} 日窗口 · 跳过 {factor.skip} 日 · {factor.direction > 0 ? '越大越好' : '越小越好'}</p>
         <div className="mt-3 flex gap-2"><button className={secondaryClass} onClick={() => select(factor, true)}>复制构建</button>{!factor.read_only && <button className={secondaryClass} onClick={() => select(factor)}>编辑版本</button>}</div>
       </article>)}</div>
     </Card>

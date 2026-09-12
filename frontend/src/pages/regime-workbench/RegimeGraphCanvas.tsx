@@ -45,7 +45,7 @@ function CanvasTools({ nodes, edges, selectedNodeId, onNodesChange }: Pick<Regim
     observer.observe(container)
     return () => { observer.disconnect(); cancelAnimationFrame(frame) }
   }, [identity, fitView])
-  const button = 'min-h-8 rounded-lg border border-slate-200 bg-white px-2 text-slate-700 disabled:opacity-40'
+  const button = 'min-h-8 rounded-xl border border-slate-200 bg-white px-2 text-slate-700 disabled:opacity-40'
   return <><button ref={fitButton} type="button" disabled={!nodes.length} onClick={() => void fitView({ padding: 0.22, duration: 200 })} className={button}>适应全部</button><button type="button" disabled={!selectedNodeId} onClick={() => { if (selectedNodeId) void fitView({ nodes: [{ id: selectedNodeId }], maxZoom: 1, duration: 200 }) }} className={button}>定位选中</button><button type="button" disabled={!nodes.length} onClick={() => onNodesChange(layoutRegimeGraph(nodes, edges))} className={button}>自动布局</button></>
 }
 

@@ -15,6 +15,20 @@ export interface PortfolioSolutionDemo {
   allocation: Array<{ label: string; value: number; color: string }>
 }
 
+/**
+ * 大类分类色。这是数据色，不是界面色：颜色在这里承载"是哪一类资产"，
+ * 因此不得跟着界面强调色一起改，也不得有两类共用同一个值 —— 堆叠条里相邻的
+ * 同色段会连成一段，52% 和 28% 会被读成 80%。
+ * 取值与首页 home-tone-* 同一套五色调，再加中性色表示现金。
+ */
+export const ASSET_CLASS_COLORS = {
+  fixedIncome: 'bg-accent-600',
+  equity: 'bg-violet-500',
+  commodity: 'bg-orange-500',
+  overseas: 'bg-teal-500',
+  cash: 'bg-slate-400',
+} as const
+
 export const portfolioSolutions: PortfolioSolutionDemo[] = [
   {
     id: 'steady-multi-asset',
@@ -31,11 +45,11 @@ export const portfolioSolutions: PortfolioSolutionDemo[] = [
     maxDrawdown: '-6.84%',
     sharpe: '0.92',
     allocation: [
-      { label: '固收', value: 52, color: 'bg-indigo-500' },
-      { label: '权益', value: 28, color: 'bg-fuchsia-500' },
-      { label: '商品', value: 8, color: 'bg-amber-500' },
-      { label: '海外', value: 7, color: 'bg-emerald-500' },
-      { label: '现金', value: 5, color: 'bg-slate-400' },
+      { label: '固收', value: 52, color: ASSET_CLASS_COLORS.fixedIncome },
+      { label: '权益', value: 28, color: ASSET_CLASS_COLORS.equity },
+      { label: '商品', value: 8, color: ASSET_CLASS_COLORS.commodity },
+      { label: '海外', value: 7, color: ASSET_CLASS_COLORS.overseas },
+      { label: '现金', value: 5, color: ASSET_CLASS_COLORS.cash },
     ],
   },
   {
@@ -53,11 +67,11 @@ export const portfolioSolutions: PortfolioSolutionDemo[] = [
     maxDrawdown: '-11.36%',
     sharpe: '0.86',
     allocation: [
-      { label: '权益', value: 48, color: 'bg-fuchsia-500' },
-      { label: '固收', value: 35, color: 'bg-indigo-500' },
-      { label: '商品', value: 7, color: 'bg-amber-500' },
-      { label: '海外', value: 6, color: 'bg-emerald-500' },
-      { label: '现金', value: 4, color: 'bg-slate-400' },
+      { label: '权益', value: 48, color: ASSET_CLASS_COLORS.equity },
+      { label: '固收', value: 35, color: ASSET_CLASS_COLORS.fixedIncome },
+      { label: '商品', value: 7, color: ASSET_CLASS_COLORS.commodity },
+      { label: '海外', value: 6, color: ASSET_CLASS_COLORS.overseas },
+      { label: '现金', value: 4, color: ASSET_CLASS_COLORS.cash },
     ],
   },
   {
@@ -75,10 +89,10 @@ export const portfolioSolutions: PortfolioSolutionDemo[] = [
     maxDrawdown: '-19.74%',
     sharpe: '0.71',
     allocation: [
-      { label: '权益', value: 78, color: 'bg-fuchsia-500' },
-      { label: '固收', value: 10, color: 'bg-indigo-500' },
-      { label: '海外', value: 7, color: 'bg-emerald-500' },
-      { label: '现金', value: 5, color: 'bg-slate-400' },
+      { label: '权益', value: 78, color: ASSET_CLASS_COLORS.equity },
+      { label: '固收', value: 10, color: ASSET_CLASS_COLORS.fixedIncome },
+      { label: '海外', value: 7, color: ASSET_CLASS_COLORS.overseas },
+      { label: '现金', value: 5, color: ASSET_CLASS_COLORS.cash },
     ],
   },
 ]

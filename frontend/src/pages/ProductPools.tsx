@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { EmptyState } from '../components/ui'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useAllocationDraft } from '../app/allocationJourney'
 import { useResearchDay } from '../app/ResearchContext'
@@ -123,9 +124,9 @@ export default function ProductPools() {
         onPool={applyPool}
         onMessage={showMessage}
         onError={showError}
-      /> : <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
-        {loading ? '正在加载产品池…' : '点击表头中的“新建产品池”创建草稿后开始配置。'}
-      </div>}
+      /> : loading
+        ? <p role="status" className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-600">正在加载产品池…</p>
+        : <EmptyState title="还没有产品池" hint="点击表头中的“新建产品池”创建草稿后开始配置。" />}
     </main>
   </div>
 }
@@ -265,10 +266,10 @@ function PoolWorkspace({ pool, evaluationPlans, busy, setBusy, onPool, onMessage
       onError={onError}
     />
 
-    <details open={pool.members.length === 0 ? true : undefined} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <details open={pool.members.length === 0 ? true : undefined} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <summary className="cursor-pointer font-semibold text-slate-800">产品池规则与基本信息</summary>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 className="text-lg font-semibold text-slate-900">产品池规则与基本信息</h2><p className="mt-1 text-sm text-slate-500">编辑修订 {pool.revision} · {pool.current_version_id ? '已发布版本保持不变' : '尚未发布'}</p></div>
+        <div><h2 className="text-lg font-semibold text-slate-900">产品池规则与基本信息</h2><p className="mt-1 text-sm text-slate-600">编辑修订 {pool.revision} · {pool.current_version_id ? '已发布版本保持不变' : '尚未发布'}</p></div>
         <button type="button" disabled={busy} onClick={() => void saveMetadata()} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-400">保存基本信息</button>
       </div>
       <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 sm:grid-cols-2">
@@ -279,35 +280,35 @@ function PoolWorkspace({ pool, evaluationPlans, busy, setBusy, onPool, onMessage
       </div>
     </details>
 
-    <details open={pool.members.length === 0 ? true : undefined} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <details open={pool.members.length === 0 ? true : undefined} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <summary className="cursor-pointer font-semibold text-slate-800">评价方案与候选来源</summary>
       <h2 className="text-lg font-semibold text-slate-900">评价方案与候选来源</h2>
-      <p className="mt-1 text-sm text-slate-500">评价方案就是产品分组。关联时运行当前锁定版本，并保存运行结果编号作为入池证据。</p>
+      <p className="mt-1 text-sm text-slate-600">评价方案就是产品分组。关联时运行当前锁定版本，并保存运行结果编号作为入池证据。</p>
       <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 lg:grid-cols-[minmax(0,1fr)_150px_130px_150px_auto]">
         <label className="text-xs text-slate-600">评价方案<select aria-label="待关联评价方案" value={planId} onChange={(event) => setPlanId(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"><option value="">请选择</option>{candidatePlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · v{plan.revision}{attachedPlanIds.has(plan.id) ? '（已关联，可重新运行）' : ''}</option>)}</select></label>
         <label className="text-xs text-slate-600">评价截止日<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
           {/* 空着不等于「用全部数据」——它跟随平台研究日，和产品研究页同一个口径。 */}
-          <span className="mt-1 block text-[11px] text-slate-500">{asOf ? '仅本次运行生效' : platformAsOf === undefined ? '平台 PIT 口径尚未确认，以服务端结果为准' : platformAsOf ? `跟随平台研究日 ${platformAsOf}` : '磁盘全部数据'}</span>
+          <span className="mt-1 block text-xs text-slate-600">{asOf ? '仅本次运行生效' : platformAsOf === undefined ? '平台 PIT 口径尚未确认，以服务端结果为准' : platformAsOf ? `跟随平台研究日 ${platformAsOf}` : '磁盘全部数据'}</span>
         </label>
         <label className="text-xs text-slate-600">导入方式<select value={selectionMode} onChange={(event) => setSelectionMode(event.target.value as EvaluationPlanSelectionMode)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm">{Object.entries(selectionLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label className="text-xs text-slate-600">N / 百分比<input aria-label="N / 百分比" type={selectionMode === 'all_ranked' ? 'text' : 'number'} inputMode={selectionMode === 'all_ranked' ? undefined : 'decimal'} disabled={selectionMode === 'all_ranked'} value={selectionMode === 'all_ranked' ? '-' : selectionValue} onChange={(event) => setSelectionValue(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-500" /></label>
-        <button type="button" disabled={busy || !planId} onClick={attachPlan} className="self-end rounded-lg bg-violet-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-violet-300">运行并关联</button>
+        <label className="text-xs text-slate-600">N / 百分比<input aria-label="N / 百分比" type={selectionMode === 'all_ranked' ? 'text' : 'number'} inputMode={selectionMode === 'all_ranked' ? undefined : 'decimal'} disabled={selectionMode === 'all_ranked'} value={selectionMode === 'all_ranked' ? '-' : selectionValue} onChange={(event) => setSelectionValue(event.target.value)} className="mt-1 min-w-0 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100 disabled:text-slate-600" /></label>
+        <button type="button" disabled={busy || !planId} onClick={attachPlan} className="self-end rounded-lg bg-accent-700 px-4 py-2 text-sm font-semibold text-white disabled:bg-accent-300">运行并关联</button>
       </div>
       <div className="mt-4 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-slate-800">已关联评价方案（{pool.evaluation_plans.length}）</h3>
-        <span className="text-xs text-slate-500">可继续关联其他方案，也可重新运行已关联方案。</span>
+        <span className="text-xs text-slate-600">可继续关联其他方案，也可重新运行已关联方案。</span>
       </div>
       <div className="mt-3 grid gap-3 xl:grid-cols-2">
         {pool.evaluation_plans.map((binding) => <div key={binding.plan_id} className="rounded-xl border border-slate-200 p-4">
-          <div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold text-slate-900">{binding.plan_name}</h3><p className="mt-1 text-xs text-slate-500">方案 v{binding.plan_revision} · {binding.product_kind === 'etf' ? 'ETF' : '公募基金'} · 截止 {binding.as_of || '运行日'}</p></div><button type="button" aria-label={`删除关联：${binding.plan_name}`} disabled={busy} onClick={() => { if (window.confirm(`删除评价方案“${binding.plan_name}”与当前产品池的关联？`)) void runAction(() => removeEvaluationPlan(pool.id, binding.plan_id, pool.revision), '评价方案及其候选证据已移除。') }} className="text-sm text-rose-700 underline">删除关联</button></div>
-          <dl className="mt-3 grid grid-cols-3 gap-2 text-center text-xs"><div className="rounded bg-slate-50 p-2"><dt className="text-slate-500">已排名</dt><dd className="mt-1 font-semibold">{binding.ranked_count}</dd></div><div className="rounded bg-slate-50 p-2"><dt className="text-slate-500">未排名</dt><dd className="mt-1 font-semibold">{binding.excluded_count}</dd></div><div className="rounded bg-slate-50 p-2"><dt className="text-slate-500">已导入</dt><dd className="mt-1 font-semibold">{binding.imported_count}</dd></div></dl>
-          <p className="mt-2 truncate font-mono text-[11px] text-slate-400" title={binding.result_id}>结果：{binding.result_id}</p>
+          <div className="flex items-start justify-between gap-3"><div><h3 className="font-semibold text-slate-900">{binding.plan_name}</h3><p className="mt-1 text-xs text-slate-600">方案 v{binding.plan_revision} · {binding.product_kind === 'etf' ? 'ETF' : '公募基金'} · 截止 {binding.as_of || '运行日'}</p></div><button type="button" aria-label={`删除关联：${binding.plan_name}`} disabled={busy} onClick={() => { if (window.confirm(`删除评价方案“${binding.plan_name}”与当前产品池的关联？`)) void runAction(() => removeEvaluationPlan(pool.id, binding.plan_id, pool.revision), '评价方案及其候选证据已移除。') }} className="text-sm text-rose-700 underline">删除关联</button></div>
+          <dl className="mt-3 grid grid-cols-3 gap-2 text-center text-xs"><div className="rounded-lg bg-slate-50 p-2"><dt className="text-slate-600">已排名</dt><dd className="mt-1 font-semibold">{binding.ranked_count}</dd></div><div className="rounded-lg bg-slate-50 p-2"><dt className="text-slate-600">未排名</dt><dd className="mt-1 font-semibold">{binding.excluded_count}</dd></div><div className="rounded-lg bg-slate-50 p-2"><dt className="text-slate-600">已导入</dt><dd className="mt-1 font-semibold">{binding.imported_count}</dd></div></dl>
+          <p className="mt-2 truncate font-mono text-xs text-slate-600" title={binding.result_id}>结果：{binding.result_id}</p>
         </div>)}
-        {pool.evaluation_plans.length === 0 && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">尚未关联评价方案。</p>}
+        {pool.evaluation_plans.length === 0 && <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600">尚未关联评价方案。</p>}
       </div>
     </details>
 
-    <details open={pool.members.length === 0 ? true : undefined} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <details open={pool.members.length === 0 ? true : undefined} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <summary className="cursor-pointer font-semibold text-slate-800">人工补充例外产品</summary>
       <h2 className="text-lg font-semibold text-slate-900">人工补充例外产品</h2>
       <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 md:grid-cols-2 xl:grid-cols-[1fr_110px_150px_1fr_1.4fr_auto]">
@@ -322,7 +323,7 @@ function PoolWorkspace({ pool, evaluationPlans, busy, setBusy, onPool, onMessage
 
 
 
-    <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5">
+    <section className="rounded-xl border border-emerald-200 bg-emerald-50 p-5">
       <h2 className="text-lg font-semibold text-emerald-950">复核完成，发布研究用版本</h2>
       <p className="mt-1 text-sm text-emerald-800">发布前必须处理全部待复核产品。历史版本不会被后续修改覆盖。</p>
       <div className="mt-4 grid min-w-0 gap-3 [&>label]:min-w-0 md:grid-cols-[160px_160px_minmax(0,1fr)_auto]">

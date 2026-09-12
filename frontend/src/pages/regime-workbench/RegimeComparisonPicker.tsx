@@ -41,17 +41,17 @@ export default function RegimeComparisonPicker({ options, selected, onChange, di
   const visible = options.filter(item => `${item.label} ${item.node_id}`.toLowerCase().includes(search.trim().toLowerCase()))
   return <details ref={detailsRef} className="rounded-xl border border-slate-200 bg-white p-3" aria-label="选择对比节点">
     <summary className="cursor-pointer text-sm font-semibold text-slate-700">叠加对比节点{selected.length ? `（已选 ${selected.length}）` : '（可选）'}</summary>
-    <p className="my-2 text-xs leading-5 text-slate-500">可选择画布上的其他分支，最多 7 个输出。选好后点击“预览节点数据”，一起计算并显示；无需连接到主节点。</p>
+    <p className="my-2 text-xs leading-5 text-slate-600">可选择画布上的其他分支，最多 7 个输出。选好后点击“预览节点数据”，一起计算并显示；无需连接到主节点。</p>
     <input aria-label="搜索对比节点" placeholder="搜索节点或输出名称" value={search} onChange={event => setSearch(event.target.value)} className="mb-2 min-h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" />
     <div className="max-h-52 space-y-2 overflow-auto">
       {visible.map(item => {
         const checked = selectedKeys.has(comparisonKey(item))
         return <label key={comparisonKey(item)} className="flex items-start gap-2 rounded-lg bg-slate-50 p-2 text-xs text-slate-700">
           <input type="checkbox" className="mt-0.5" checked={checked} disabled={disabled || (!checked && (!!item.reason || selected.length >= 7))} onChange={event => onChange(event.target.checked ? [...selected, { node_id: item.node_id, port: item.port }] : selected.filter(ref => comparisonKey(ref) !== comparisonKey(item)))} />
-          <span className="min-w-0 break-words">{item.label}<span className="ml-2 text-slate-400">{item.relationship}</span>{item.reason && <span className="mt-1 block text-amber-800">{item.reason}</span>}</span>
+          <span className="min-w-0 break-words">{item.label}<span className="ml-2 text-slate-600">{item.relationship}</span>{item.reason && <span className="mt-1 block text-amber-800">{item.reason}</span>}</span>
         </label>
       })}
-      {!visible.length && <p className="text-xs text-slate-500">没有匹配的其他输出。</p>}
+      {!visible.length && <p className="text-xs text-slate-600">没有匹配的其他输出。</p>}
     </div>
     {selected.length > 0 && <button type="button" disabled={disabled} onClick={() => onChange([])} className="mt-2 min-h-9 text-xs text-slate-600">清空对比选择</button>}
   </details>

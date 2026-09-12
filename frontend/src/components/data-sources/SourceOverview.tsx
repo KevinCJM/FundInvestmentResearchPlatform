@@ -25,7 +25,7 @@ export default function SourceOverview({ source, interfaces, total, targets, edi
   const visible = interfaces.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
 
   return <section aria-label="数据源使用引导" className="min-w-0 space-y-5">
-    <div className="rounded-2xl border border-slate-200 bg-white p-5">
+    <div className="rounded-xl border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h2 className="text-xl font-bold text-slate-950">{source.config.name} · 先选你需要的数据</h2>
           <p className="mt-2 text-sm leading-6 text-slate-600">已有接口不用重新创建。选择下方数据，查看字段对应并验证；日常更新直接进入下载页。</p>
@@ -38,20 +38,20 @@ export default function SourceOverview({ source, interfaces, total, targets, edi
       </div>
     </div>
 
-    <div className="rounded-2xl border border-slate-200 bg-white p-5">
+    <div className="rounded-xl border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h3 className="font-bold text-slate-950">可接入的数据</h3><p className="mt-1 text-xs text-slate-500">显示 {interfaces.length} / {total} 个接口。状态表示配置进度，不表示已经下载。</p></div>
+        <div><h3 className="font-bold text-slate-950">可接入的数据</h3><p className="mt-1 text-xs text-slate-600">显示 {interfaces.length} / {total} 个接口。状态表示配置进度，不表示已经下载。</p></div>
         <button type="button" className={buttonClass} onClick={onReview}>查看待完善映射</button>
       </div>
       <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {visible.map(item => {
           const mapped = item.config.mappings.filter(mapping => mapping.enabled)
           const state = !item.config.enabled ? '接口已停用' : item.validation?.ready ? '定义已校验 · 待验证实际数据' : '映射待完善'
-          return <button type="button" key={item.config.id} onClick={() => onOpen(item.config.id)} className="min-w-0 rounded-xl border border-slate-200 p-4 text-left hover:border-indigo-400 hover:bg-indigo-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">
+          return <button type="button" key={item.config.id} onClick={() => onOpen(item.config.id)} className="min-w-0 rounded-xl border border-slate-200 p-4 text-left hover:border-accent-400 hover:bg-accent-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
             <span className="block text-base font-semibold text-slate-950">{item.config.name}</span>
             <span className="mt-2 block text-sm text-slate-600">存入：{mapped.length ? mapped.map(mapping => targets.tables.find(table => table.table_id === mapping.target_table)?.label ?? mapping.target_table).join('、') : '尚未选择系统数据表'}</span>
-            <span className={`mt-3 block text-xs ${item.config.enabled && item.validation?.ready ? 'text-slate-500' : 'text-amber-800'}`}>{state}</span>
-            <span className="mt-3 block text-sm font-semibold text-indigo-700">查看字段与验证 →</span>
+            <span className={`mt-3 block text-xs ${item.config.enabled && item.validation?.ready ? 'text-slate-600' : 'text-amber-800'}`}>{state}</span>
+            <span className="mt-3 block text-sm font-semibold text-accent-700">查看字段与验证 →</span>
           </button>
         })}
       </div>
@@ -66,7 +66,7 @@ export default function SourceOverview({ source, interfaces, total, targets, edi
       </nav> : null}
     </div>
 
-    <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-5">
+    <div className="rounded-xl border border-accent-200 bg-accent-50 p-5">
       <h3 className="text-sm font-bold text-slate-950">只想更新数据？不需要重新配置映射</h3>
       <p className="mt-2 text-sm leading-6 text-slate-600">进入统一下载页选择本来源支持的数据及更新方式；配置和样本预览不会下载完整历史，也不会自动发布研究数据。</p>
       {connected ? <Link className={`${primaryClass} mt-3 inline-flex items-center`} to={`/settings/data-sources?source=${encodeURIComponent(source.config.id)}`}>进入 {source.config.name} 下载与更新 →</Link> : <p className="mt-3 text-xs font-semibold text-amber-900">完成连接配置后再下载。</p>}

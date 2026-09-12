@@ -23,9 +23,9 @@ export default function Header() {
   const [menuOpen, setMenuOpen] = useState(false);
   const { pathname } = useLocation();
   useEffect(() => { recordRecentVisit(pathname); setMenuOpen(false); }, [pathname]);
-  const baseStyle = 'whitespace-nowrap px-3 py-2 rounded-md text-sm font-medium';
-  const activeStyle = 'bg-gray-900 text-white';
-  const inactiveStyle = 'text-gray-500 hover:bg-gray-700 hover:text-white';
+  const baseStyle = 'whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium';
+  const activeStyle = 'bg-slate-900 text-white';
+  const inactiveStyle = 'text-slate-300 hover:bg-slate-700 hover:text-white';
 
   // The landing page owns its light navigation; workspaces keep the existing shell.
   if (pathname === '/') return null;
@@ -35,8 +35,8 @@ export default function Header() {
       <nav className="mx-auto max-w-[1600px] px-4 py-3 sm:px-6 lg:px-8" aria-label={s('navigation.main')}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <NavLink to="/" className="shrink-0 text-sm font-bold tracking-wide text-white" aria-label={s('app.home')}>{s('app.title')}</NavLink>
-          <label className="shrink-0"><span className="sr-only">{s('i18n.language')}</span><select aria-label={s('i18n.language')} value={locale} onChange={event => void chooseLocale(event.target.value as Locale)} className="min-h-10 max-w-[100px] rounded-md border border-slate-600 bg-slate-900 px-2 text-xs text-white">{availableLanguages().filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.id === 'zh-CN' ? '中文' : item.label}</option>)}</select></label>
-          <button type="button" className="rounded-md border border-slate-600 px-3 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-sky-300 xl:hidden" aria-expanded={menuOpen} aria-controls="mobile-navigation" onClick={() => setMenuOpen((open) => !open)}>{s('navigation.menu')}</button>
+          <label className="shrink-0"><span className="sr-only">{s('i18n.language')}</span><select aria-label={s('i18n.language')} value={locale} onChange={event => void chooseLocale(event.target.value as Locale)} className="min-h-10 max-w-[100px] rounded-lg border border-slate-600 bg-slate-900 px-2 text-xs text-white">{availableLanguages().filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.id === 'zh-CN' ? '中文' : item.label}</option>)}</select></label>
+          <button type="button" className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-accent-500 xl:hidden" aria-expanded={menuOpen} aria-controls="mobile-navigation" onClick={() => setMenuOpen((open) => !open)}>{s('navigation.menu')}</button>
           <div className="hidden items-center space-x-1 xl:flex">
           <PitBadge />
           {navItems.map((item) => (

@@ -2,6 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 小调整匹配示意图风格 */
-body { @apply bg-gray-50; }
+/* 页面底色只在 App.tsx 声明一处，避免两处互相覆盖。这里只放全局基线。 */
+@layer base {
+  /* 未被 Tailwind ring 工具覆盖的元素也要有可见焦点，键盘可达性不能依赖逐处声明。 */
+  :focus-visible { outline: 2px solid theme('colors.accent.DEFAULT'); outline-offset: 2px; }
+  /* 数字列对齐：金额、净值、权重靠等宽数字才能逐位比较。 */
+  td, th { font-variant-numeric: tabular-nums; }
+  /* Tailwind preflight 的占位符默认 gray-400，白底只有 2.54:1。
+     占位符承载的是输入格式提示，不是装饰，按正文门槛处理。slate-500 白底 4.76:1。 */
+  input::placeholder, textarea::placeholder { color: theme('colors.slate.500'); opacity: 1; }
+}
 
+/* 保留第三方画布署名，并覆盖其默认 10px / 浅灰文字。 */
+.computation-graph-flow .react-flow__attribution {
+  @apply bg-white text-xs;
+}
+.computation-graph-flow .react-flow__attribution a {
+  @apply text-slate-600;
+}

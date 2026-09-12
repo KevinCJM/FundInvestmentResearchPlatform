@@ -29,7 +29,7 @@ export default function IndicatorParameterInputs({ schema, values, onApply, disa
     })))
   }
   const summary = schema.map(item => `${item.label}=${values[item.id] ?? item.default}`).join(' · ')
-  return <details className="mt-3 rounded-xl border border-sky-200 bg-sky-50/40 p-4">
+  return <details className="mt-3 rounded-xl border border-accent-200 bg-accent-50/40 p-4">
     <summary className="cursor-pointer text-sm font-semibold text-slate-800">
       {s('indicatorParameters.runtimeTitle')}<span className="ml-3 break-words text-xs font-normal text-slate-600">{summary}</span>
     </summary>
@@ -40,14 +40,14 @@ export default function IndicatorParameterInputs({ schema, values, onApply, disa
         <input id={`${id}-${item.id}`} type="number" min={item.minimum} max={item.maximum} step={item.step}
           value={text[item.id] ?? ''} onChange={event => setText(current => ({ ...current, [item.id]: event.target.value }))}
           aria-invalid={submitted && Boolean(issues[item.id])} aria-describedby={`${id}-${item.id}-help`}
-          className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
-        <p id={`${id}-${item.id}-help`} className="mt-1 text-xs text-slate-500">{item.minimum}–{item.maximum} · {s('indicatorParameters.defaultValue')} {item.default} · {s('indicatorParameters.step')} {item.step}</p>
+          className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-500" />
+        <p id={`${id}-${item.id}-help`} className="mt-1 text-xs text-slate-600">{item.minimum}–{item.maximum} · {s('indicatorParameters.defaultValue')} {item.default} · {s('indicatorParameters.step')} {item.step}</p>
         {submitted && issues[item.id] && <p role="alert" className="mt-1 text-xs text-rose-700">{s(`indicatorParameters.error.${issues[item.id]}`)}</p>}
       </div>)}
     </fieldset>
     <div className="mt-3 flex flex-wrap gap-2">
-      <button type="button" disabled={disabled} onClick={apply} className="min-h-10 rounded-lg bg-sky-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 focus:ring-2 focus:ring-sky-300">{s('indicatorParameters.apply')}</button>
-      <button type="button" disabled={disabled} onClick={() => { setText(toText({})); setSubmitted(false); onApply({}) }} className="min-h-10 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm disabled:opacity-50 focus:ring-2 focus:ring-sky-300">{s('indicatorParameters.reset')}</button>
+      <button type="button" disabled={disabled} onClick={apply} className="min-h-10 rounded-lg bg-accent-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 focus:ring-2 focus:ring-accent-500">{s('indicatorParameters.apply')}</button>
+      <button type="button" disabled={disabled} onClick={() => { setText(toText({})); setSubmitted(false); onApply({}) }} className="min-h-10 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm disabled:opacity-50 focus:ring-2 focus:ring-accent-500">{s('indicatorParameters.reset')}</button>
     </div>
   </details>
 }

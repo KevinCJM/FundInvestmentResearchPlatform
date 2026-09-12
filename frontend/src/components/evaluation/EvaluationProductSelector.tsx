@@ -216,11 +216,11 @@ export default function EvaluationProductSelector({
   }
 
   return (
-    <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
+    <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h2 className="text-xl font-semibold text-slate-900">1. 筛选并选择真实产品</h2>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-slate-600">
             当前仅选择{productKind === 'etf' ? ' ETF' : '场外公募基金'}；筛选条件和选择模式随方案保存，入选产品代码同时锁定。
           </p>
         </div>
@@ -232,7 +232,7 @@ export default function EvaluationProductSelector({
 
       <div className="mt-5 space-y-4 rounded-xl border border-slate-100 bg-slate-50/60 p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <label className="flex w-full max-w-xl items-center rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700">
+          <label className="flex w-full max-w-xl items-center rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700">
             <span className="sr-only">搜索产品</span>
             <input
               value={searchInput}
@@ -294,24 +294,24 @@ export default function EvaluationProductSelector({
               aria-label="评价方案每页产品数量"
               value={pageSize}
               onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1) }}
-              className="min-h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"
+              className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm"
             >
               {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
             </select>
           </label>
-          <span className="text-slate-400">共 {response?.total ?? 0} 条</span>
+          <span className="text-slate-600">共 {response?.total ?? 0} 条</span>
           <button type="button" onClick={toggleCurrentPage} disabled={pageItems.length === 0} className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700 disabled:opacity-50">
             {currentPageAllSelected ? '取消本页全选' : '本页全选'}
           </button>
           <button type="button" onClick={() => void toggleAllMatching()} disabled={!response?.total || selectingAll} className={`min-h-10 rounded-lg border px-3 text-sm font-semibold disabled:opacity-50 ${allMatchingSelected ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-700'}`}>
             {selectingAll ? '正在全选…' : allMatchingSelected ? '取消全选' : `全选 ${response?.total ?? 0} 条`}
           </button>
-          {selectedList.length > 0 && !allMatchingSelected && <button type="button" onClick={() => onSelectedItemsChange({})} className="min-h-10 px-2 text-sm font-medium text-slate-500 hover:text-rose-600">清空选择</button>}
+          {selectedList.length > 0 && !allMatchingSelected && <button type="button" onClick={() => onSelectedItemsChange({})} className="min-h-10 px-2 text-sm font-medium text-slate-600 hover:text-rose-600">清空选择</button>}
         </div>
         <div className="flex items-center gap-2 text-sm text-slate-600">
-          <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page <= 1} className="rounded border border-slate-200 px-3 py-1 disabled:opacity-40">上一页</button>
+          <button type="button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={page <= 1} className="rounded-lg border border-slate-200 px-3 py-1 disabled:opacity-40">上一页</button>
           <span>第 {page} / {totalPages} 页</span>
-          <button type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page >= totalPages} className="rounded border border-slate-200 px-3 py-1 disabled:opacity-40">下一页</button>
+          <button type="button" onClick={() => setPage((current) => Math.min(totalPages, current + 1))} disabled={page >= totalPages} className="rounded-lg border border-slate-200 px-3 py-1 disabled:opacity-40">下一页</button>
         </div>
       </div>
       {allMatchingSelected && <p className="mt-2 text-xs font-medium text-emerald-700" role="status">
@@ -321,7 +321,7 @@ export default function EvaluationProductSelector({
       <div className="mt-3 max-h-80 overflow-auto rounded-xl border border-slate-100">
         <table className="min-w-[820px] w-full text-sm">
           <caption className="sr-only">{productKind === 'etf' ? 'ETF' : '场外公募基金'}评价候选产品</caption>
-          <thead className="sticky top-0 bg-slate-50 text-left text-slate-500">
+          <thead className="sticky top-0 bg-slate-50 text-left text-slate-600">
             <tr><th scope="col" className="px-4 py-3">选择</th><th scope="col" className="px-4 py-3">产品</th><th scope="col" className="px-4 py-3">投资类型 / 风格</th><th scope="col" className="px-4 py-3">管理人</th><th scope="col" className="px-4 py-3">状态</th></tr>
           </thead>
           <tbody>
@@ -330,20 +330,20 @@ export default function EvaluationProductSelector({
               const checked = Boolean(selectedItems[code])
               return <tr key={code} className="border-t border-slate-100">
                 <td className="px-4 py-3"><input aria-label={`选择 ${item.name ?? code}`} type="checkbox" checked={checked} onChange={() => toggleItem(item)} /></td>
-                <td className="px-4 py-3 font-medium text-slate-800">{item.name ?? '未命名'}<span className="ml-2 text-xs font-normal text-slate-400">{code}</span></td>
+                <td className="px-4 py-3 font-medium text-slate-800">{item.name ?? '未命名'}<span className="ml-2 text-xs font-normal text-slate-600">{code}</span></td>
                 <td className="px-4 py-3 text-slate-600">
                   {item.fund_type ?? '—'}
-                  <span className="ml-2 text-xs text-slate-400">{item.invest_type ?? ''}</span>
-                  {item.qdii_type && <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${item.qdii_type === 'QDII' ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'}`}>{item.qdii_type}</span>}
+                  <span className="ml-2 text-xs text-slate-600">{item.invest_type ?? ''}</span>
+                  {item.qdii_type && <span className={`ml-2 rounded-full px-2 py-0.5 text-xs font-semibold ${item.qdii_type === 'QDII' ? 'bg-accent-100 text-accent-700' : 'bg-slate-100 text-slate-600'}`}>{item.qdii_type}</span>}
                 </td>
                 <td className="px-4 py-3 text-slate-600">{item.management ?? '—'}</td>
                 <td className="px-4 py-3 text-slate-600">{item.status ?? '—'}</td>
               </tr>
             })}
-            {!loading && pageItems.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-500">没有符合筛选条件的产品。</td></tr>}
+            {!loading && pageItems.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-600">没有符合筛选条件的产品。</td></tr>}
           </tbody>
         </table>
-        {loading && <div className="p-6 text-center text-sm text-slate-500" aria-live="polite">正在加载筛选结果…</div>}
+        {loading && <div className="p-6 text-center text-sm text-slate-600" aria-live="polite">正在加载筛选结果…</div>}
       </div>
     </section>
   )
@@ -381,15 +381,15 @@ function ConditionFilters({
   return <div className="space-y-3 border-t border-slate-200 pt-4">
     <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-700">日期与快照指标筛选</p><span className={`rounded-full px-3 py-1 text-xs font-semibold ${snapshotStatus === 'ready' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>指标快照：{snapshotStatus === 'ready' ? '可用' : '未就绪'}</span></div>
     <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
-      <label className="text-xs font-medium text-slate-600">筛选字段<select aria-label="评价方案筛选字段" value={fieldName} onChange={(event) => { setFieldName(event.target.value); setValue('') }} className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm">{fields.map((field) => <option key={field.field} value={field.field} disabled={!field.available}>{field.label}{field.source === 'instrument_metrics_snapshot' ? '（快照）' : ''}{!field.available ? ' · 未就绪' : ''}</option>)}</select></label>
-      <label className="text-xs font-medium text-slate-600">比较方式<select aria-label="评价方案比较方式" value={operator} onChange={(event) => setOperator(event.target.value as ProductConditionOperator)} className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm">{operators.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.symbol}）</option>)}</select></label>
-      <label className="text-xs font-medium text-slate-600">筛选值{selectedField?.unit_label ? `（${selectedField.unit_label}）` : ''}<input aria-label="评价方案筛选值" type={selectedField?.data_type === 'date' ? 'date' : 'number'} step={selectedField?.data_type === 'number' ? 'any' : undefined} value={value} onChange={(event) => setValue(event.target.value)} className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+      <label className="text-xs font-medium text-slate-600">筛选字段<select aria-label="评价方案筛选字段" value={fieldName} onChange={(event) => { setFieldName(event.target.value); setValue('') }} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm">{fields.map((field) => <option key={field.field} value={field.field} disabled={!field.available}>{field.label}{field.source === 'instrument_metrics_snapshot' ? '（快照）' : ''}{!field.available ? ' · 未就绪' : ''}</option>)}</select></label>
+      <label className="text-xs font-medium text-slate-600">比较方式<select aria-label="评价方案比较方式" value={operator} onChange={(event) => setOperator(event.target.value as ProductConditionOperator)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm">{operators.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.symbol}）</option>)}</select></label>
+      <label className="text-xs font-medium text-slate-600">筛选值{selectedField?.unit_label ? `（${selectedField.unit_label}）` : ''}<input aria-label="评价方案筛选值" type={selectedField?.data_type === 'date' ? 'date' : 'number'} step={selectedField?.data_type === 'number' ? 'any' : undefined} value={value} onChange={(event) => setValue(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm" /></label>
       <button type="button" onClick={addCondition} disabled={!selectedField || !value.trim()} className="min-h-11 self-end rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white disabled:bg-slate-200">添加条件</button>
     </div>
     {conditions.length > 0 && <div className="flex flex-wrap gap-2">{conditions.map((condition, index) => {
       const field = fields.find((item) => item.field === condition.field)
       const itemOperator = operators.find((item) => item.value === condition.operator)
-      return <button key={`${condition.field}:${condition.operator}:${condition.value}:${index}`} type="button" onClick={() => onChange(conditions.filter((_, itemIndex) => itemIndex !== index))} className="rounded-full bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700">{field?.label ?? condition.field} {itemOperator?.symbol ?? condition.operator} {condition.value}{field?.unit_label ?? ''} ×</button>
+      return <button key={`${condition.field}:${condition.operator}:${condition.value}:${index}`} type="button" onClick={() => onChange(conditions.filter((_, itemIndex) => itemIndex !== index))} className="rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-700">{field?.label ?? condition.field} {itemOperator?.symbol ?? condition.operator} {condition.value}{field?.unit_label ?? ''} ×</button>
     })}</div>}
   </div>
 }

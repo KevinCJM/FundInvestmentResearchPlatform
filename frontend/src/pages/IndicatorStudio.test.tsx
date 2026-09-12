@@ -1721,13 +1721,13 @@ describe('IndicatorStudio', () => {
     const previewPanel = document.getElementById('indicator-panel-preview')
 
     expect(editorTab).toHaveAttribute('aria-selected', 'true')
-    expect(editorPanel).toHaveClass('md:flex')
-    expect(previewPanel).toHaveClass('md:hidden')
+    expect(editorPanel).toHaveClass('xl:flex')
+    expect(previewPanel).toHaveClass('xl:hidden')
 
     fireEvent.keyDown(editorTab, { key: 'ArrowRight' })
     expect(previewTab).toHaveAttribute('aria-selected', 'true')
-    expect(editorPanel).toHaveClass('md:hidden')
-    expect(previewPanel).toHaveClass('md:block')
+    expect(editorPanel).toHaveClass('xl:hidden')
+    expect(previewPanel).toHaveClass('xl:block')
 
     fireEvent.keyDown(previewTab, { key: 'Home' })
     expect(editorTab).toHaveAttribute('aria-selected', 'true')
@@ -1745,7 +1745,7 @@ describe('IndicatorStudio', () => {
 
     expect(previewTab).toHaveAttribute('aria-selected', 'true')
     expect(editorTab).toHaveAttribute('aria-selected', 'false')
-    expect(document.getElementById('indicator-panel-preview')).toHaveClass('md:block')
+    expect(document.getElementById('indicator-panel-preview')).toHaveClass('xl:block')
     expect(screen.getByLabelText('当前预览指标')).toHaveTextContent('累计收益率')
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/custom-indicators/validate')).toHaveLength(1))
     expect(await screen.findByRole('heading', { name: '指标定义校验' })).toBeInTheDocument()

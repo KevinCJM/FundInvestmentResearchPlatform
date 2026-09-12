@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
+import { EmptyState } from '../components/ui'
 import type { EChartsOption } from 'echarts'
 import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
 import { copyHistoricalRegimeDefinitionToV2, type RegimeGraphDefinition } from '../services/regimeGraph'
@@ -213,9 +214,9 @@ function metricEntries(value: Record<string, unknown> | undefined) {
 function SectionHeading({ eyebrow, title, detail }: { eyebrow: string; title: string; detail: string }) {
   return (
     <div>
-      <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600">{eyebrow}</p>
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-accent-600">{eyebrow}</p>
       <h3 className="mt-1 text-lg font-bold text-slate-950">{title}</h3>
-      <p className="mt-1 text-xs leading-5 text-slate-500">{detail}</p>
+      <p className="mt-1 text-xs leading-5 text-slate-600">{detail}</p>
     </div>
   )
 }
@@ -229,8 +230,8 @@ function CausalityBadge({ run }: { run: HistoricalRegimeRun | null }) {
 
 function PipelineNavigation({ active, onChange }: { active: PipelineStep; onChange: (step: PipelineStep) => void }) {
   return (
-    <nav aria-label="历史情景识别研究管线" className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-      <p className="px-2 pb-2 text-xs font-bold text-slate-500">研究管线</p>
+    <nav aria-label="历史情景识别研究管线" className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+      <p className="px-2 pb-2 text-xs font-bold text-slate-600">研究管线</p>
       <ol className="space-y-1">
         {pipelineSteps.map((step, index) => (
           <li key={step.id}>
@@ -239,14 +240,14 @@ function PipelineNavigation({ active, onChange }: { active: PipelineStep; onChan
               aria-current={active === step.id ? 'step' : undefined}
               onClick={() => onChange(step.id)}
               className={cx(
-                'flex min-h-14 w-full items-center gap-3 rounded-xl px-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500',
+                'flex min-h-14 w-full items-center gap-3 rounded-xl px-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500',
                 active === step.id ? 'bg-slate-950 text-white' : 'text-slate-700 hover:bg-slate-50',
               )}
             >
-              <span className={cx('grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-bold', active === step.id ? 'bg-indigo-500 text-white' : 'bg-slate-100 text-slate-600')}>{index + 1}</span>
+              <span className={cx('grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-bold', active === step.id ? 'bg-accent-600 text-white' : 'bg-slate-100 text-slate-600')}>{index + 1}</span>
               <span>
                 <span className="block text-sm font-bold">{step.label}</span>
-                <span className={cx('block text-[11px]', active === step.id ? 'text-slate-300' : 'text-slate-400')}>{step.helper}</span>
+                <span className={cx('block text-xs', active === step.id ? 'text-slate-200' : 'text-slate-600')}>{step.helper}</span>
               </span>
             </button>
           </li>
@@ -340,11 +341,11 @@ function RegimeChart({ run, onSelectSegment }: { run: HistoricalRegimeRun; onSel
       <figcaption id={chartId} className="sr-only">{run.name}历史情景识别结果</figcaption>
       <ReactECharts option={option} style={{ height: 500 }} notMerge lazyUpdate onEvents={{ click: handleChartClick }} />
       <details className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
-        <summary className="cursor-pointer font-semibold text-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500">查看图表数据表</summary>
+        <summary className="cursor-pointer font-semibold text-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">查看图表数据表</summary>
         <div className="mt-3 max-h-72 overflow-auto">
           <table className="min-w-full text-left text-xs">
             <caption className="sr-only">历史状态逐期数据</caption>
-            <thead className="sticky top-0 bg-slate-100 text-slate-500"><tr><th className="px-2 py-2">日期</th><th className="px-2 py-2 text-right">原始值</th><th className="px-2 py-2 text-right">趋势值</th><th className="px-2 py-2">状态</th><th className="px-2 py-2">识别日</th></tr></thead>
+            <thead className="sticky top-0 bg-slate-100 text-slate-600"><tr><th scope="col" className="px-2 py-2">日期</th><th scope="col" className="px-2 py-2 text-right">原始值</th><th scope="col" className="px-2 py-2 text-right">趋势值</th><th scope="col" className="px-2 py-2">状态</th><th scope="col" className="px-2 py-2">识别日</th></tr></thead>
             <tbody className="divide-y divide-slate-200">
               {run.series.map((point) => <tr key={point.date}><td className="px-2 py-2">{point.date}</td><td className="px-2 py-2 text-right tabular-nums">{formatNumber(point.value)}</td><td className="px-2 py-2 text-right tabular-nums">{formatNumber(point.filtered_value)}</td><td className="px-2 py-2">{point.state_label}</td><td className="px-2 py-2">{point.recognized_at || '—'}</td></tr>)}
             </tbody>
@@ -363,17 +364,17 @@ function EvidenceInspector({ run, segment }: { run: HistoricalRegimeRun; segment
     : current
   const probabilities = evidencePoint?.probabilities ?? {}
   return (
-    <aside aria-label="状态证据检查器" className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600">Evidence inspector</p>
+    <aside aria-label="状态证据检查器" className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-accent-600">Evidence inspector</p>
       <h4 className="mt-2 text-lg font-bold text-slate-950">{selected?.state_label ?? current?.state_label ?? '未识别'}</h4>
-      <p className="mt-1 text-xs text-slate-500">{selected ? selected.start_date + ' 至 ' + selected.end_date : '暂无区间'}</p>
+      <p className="mt-1 text-xs text-slate-600">{selected ? selected.start_date + ' 至 ' + selected.end_date : '暂无区间'}</p>
       <dl className="mt-4 space-y-3 text-sm">
-        <div><dt className="text-xs text-slate-500">置信度</dt><dd className="mt-1 font-bold text-slate-950">{formatPercent(selected?.confidence ?? evidencePoint?.confidence)}</dd></div>
-        <div><dt className="text-xs text-slate-500">事后区间起点</dt><dd className="mt-1 font-semibold">{selected?.start_date ?? '—'}</dd></div>
-        <div><dt className="text-xs text-slate-500">数据当时可用日</dt><dd className="mt-1 font-semibold">{evidencePoint?.data_available_at ?? '—'}</dd></div>
-        <div><dt className="text-xs text-slate-500">模型识别日</dt><dd className="mt-1 font-semibold">{selected?.recognized_at ?? evidencePoint?.recognized_at ?? '—'}</dd></div>
-        <div><dt className="text-xs text-slate-500">信号生效日</dt><dd className="mt-1 font-semibold">{evidencePoint?.effective_date ?? '—'}</dd></div>
-        <div><dt className="text-xs text-slate-500">持续观测数</dt><dd className="mt-1 font-semibold tabular-nums">{selected?.duration_observations ?? '—'}</dd></div>
+        <div><dt className="text-xs text-slate-600">置信度</dt><dd className="mt-1 font-bold text-slate-950">{formatPercent(selected?.confidence ?? evidencePoint?.confidence)}</dd></div>
+        <div><dt className="text-xs text-slate-600">事后区间起点</dt><dd className="mt-1 font-semibold">{selected?.start_date ?? '—'}</dd></div>
+        <div><dt className="text-xs text-slate-600">数据当时可用日</dt><dd className="mt-1 font-semibold">{evidencePoint?.data_available_at ?? '—'}</dd></div>
+        <div><dt className="text-xs text-slate-600">模型识别日</dt><dd className="mt-1 font-semibold">{selected?.recognized_at ?? evidencePoint?.recognized_at ?? '—'}</dd></div>
+        <div><dt className="text-xs text-slate-600">信号生效日</dt><dd className="mt-1 font-semibold">{evidencePoint?.effective_date ?? '—'}</dd></div>
+        <div><dt className="text-xs text-slate-600">持续观测数</dt><dd className="mt-1 font-semibold tabular-nums">{selected?.duration_observations ?? '—'}</dd></div>
       </dl>
       {evidencePoint?.executable === false ? <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-950">待下一交易日生效 / 不可执行</p> : evidencePoint?.executable === true ? <p className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-900">信号已生效 / 可用于当日决策</p> : null}
       {Object.keys(probabilities).length ? (
@@ -382,7 +383,7 @@ function EvidenceInspector({ run, segment }: { run: HistoricalRegimeRun; segment
           <div className="mt-3 space-y-3">{Object.entries(probabilities).map(([stateId, probability], index) => {
             const state = run.states.find((item) => item.id === stateId)
             const safeProbability = typeof probability === 'number' && Number.isFinite(probability) ? Math.min(1, Math.max(0, probability)) : 0
-            return <div key={stateId}><div className="flex items-center justify-between text-[11px]"><span className="font-semibold text-slate-700">{state?.label || stateId}</span><span className="tabular-nums text-slate-500">{formatPercent(probability)}</span></div><div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200"><span className="block h-full rounded-full" style={{ width: safeProbability * 100 + '%', backgroundColor: stateColor(run.states, stateId, index) }} /></div></div>
+            return <div key={stateId}><div className="flex items-center justify-between text-xs"><span className="font-semibold text-slate-700">{state?.label || stateId}</span><span className="tabular-nums text-slate-600">{formatPercent(probability)}</span></div><div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200"><span className="block h-full rounded-full" style={{ width: safeProbability * 100 + '%', backgroundColor: stateColor(run.states, stateId, index) }} /></div></div>
           })}</div>
         </div>
       ) : null}
@@ -397,7 +398,7 @@ function EvidenceInspector({ run, segment }: { run: HistoricalRegimeRun; segment
         <div className="mt-5 border-t border-slate-200 pt-4">
           <p className="text-xs font-bold text-slate-700">特征快照</p>
           <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
-            {Object.entries(evidencePoint.features).map(([name, value]) => <div key={name} className="rounded-lg bg-white p-2 ring-1 ring-slate-200"><dt className="truncate text-slate-500">{name}</dt><dd className="mt-1 font-bold tabular-nums text-slate-900">{formatNumber(value, 3)}</dd></div>)}
+            {Object.entries(evidencePoint.features).map(([name, value]) => <div key={name} className="rounded-lg bg-white p-2 ring-1 ring-slate-200"><dt className="truncate text-slate-600">{name}</dt><dd className="mt-1 font-bold tabular-nums text-slate-900">{formatNumber(value, 3)}</dd></div>)}
           </dl>
         </div>
       ) : null}
@@ -466,13 +467,13 @@ function InlineDataEditor({ rows, onApply }: { rows: Array<Record<string, unknow
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 sm:col-span-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div><p className="text-xs font-bold text-slate-700">粘贴或上传原始数据</p><p className="mt-1 text-[11px] text-slate-500">支持 CSV / JSON；字段可包含 date、value、available_at、vintage、growth、inflation。</p></div>
-        <label className="min-h-9 cursor-pointer rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50">选择 CSV / JSON 文件<input aria-label="选择原始数据文件" type="file" accept=".csv,.json,text/csv,application/json" className="sr-only" onChange={(event) => void loadFile(event.target.files?.[0])} /></label>
+        <div><p className="text-xs font-bold text-slate-700">粘贴或上传原始数据</p><p className="mt-1 text-xs text-slate-600">支持 CSV / JSON；字段可包含 date、value、available_at、vintage、growth、inflation。</p></div>
+        <label className="min-h-9 cursor-pointer rounded-lg border border-accent-200 bg-white px-3 py-2 text-xs font-bold text-accent-700 hover:bg-accent-50">选择 CSV / JSON 文件<input aria-label="选择原始数据文件" type="file" accept=".csv,.json,text/csv,application/json" className="sr-only" onChange={(event) => void loadFile(event.target.files?.[0])} /></label>
       </div>
-      <textarea aria-label="原始数据内容" value={text} onChange={(event) => setText(event.target.value)} rows={8} spellCheck={false} className="mt-3 w-full rounded-lg border border-slate-300 bg-white p-3 font-mono text-xs leading-5 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+      <textarea aria-label="原始数据内容" value={text} onChange={(event) => setText(event.target.value)} rows={8} spellCheck={false} className="mt-3 w-full rounded-xl border border-slate-300 bg-white p-3 font-mono text-xs leading-5 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" />
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <span className={cx('text-xs font-semibold', error ? 'text-rose-700' : 'text-emerald-700')}>{error || '已解析 ' + parsedCount + ' 条观测'}</span>
-        <button type="button" onClick={() => apply()} className="min-h-9 rounded-lg bg-indigo-600 px-3 text-xs font-bold text-white">解析并应用</button>
+        <button type="button" onClick={() => apply()} className="min-h-9 rounded-lg bg-accent-600 px-3 text-xs font-bold text-white">解析并应用</button>
       </div>
     </div>
   )
@@ -529,26 +530,26 @@ function DataPanel({
               aria-checked={draft.template_id === template.id}
               onClick={() => onTemplate(template)}
               className={cx(
-                'min-h-24 rounded-xl border p-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500',
-                draft.template_id === template.id ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-400',
+                'min-h-24 rounded-xl border p-3 text-left transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500',
+                draft.template_id === template.id ? 'border-accent-500 bg-accent-50' : 'border-slate-200 bg-white hover:border-slate-400',
               )}
             >
-              <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600">{template.category || '研究模板'}</span>
+              <span className="text-xs font-bold text-accent-600">{template.category || '研究模板'}</span>
               <span className="mt-1 block text-sm font-bold text-slate-950">{template.name}</span>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-500">{template.description}</span>
+              <span className="mt-1 block text-xs leading-4 text-slate-600">{template.description}</span>
             </button>
           ))}
         </div>
       </div>
       <label className="block text-sm font-semibold text-slate-700">研究名称
-        <input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+        <input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" />
       </label>
       <label className="block text-sm font-semibold text-slate-700">研究说明
-        <textarea value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} rows={2} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+        <textarea value={draft.description} onChange={(event) => onChange({ ...draft, description: event.target.value })} rows={2} className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" />
       </label>
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-sm font-semibold text-slate-700 sm:col-span-2">数据结构
-          <select aria-label="数据结构" value={draft.target.kind} onChange={(event) => selectTargetKind(event.target.value as HistoricalRegimeDefinition['target']['kind'])} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200">
+          <select aria-label="数据结构" value={draft.target.kind} onChange={(event) => selectTargetKind(event.target.value as HistoricalRegimeDefinition['target']['kind'])} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500">
             {meta.data_sources.map((source) => <option key={source.id} value={source.id}>{source.label || source.name || source.id}</option>)}
           </select>
         </label>
@@ -610,10 +611,10 @@ function DataPanel({
         ) : null}
         {draft.target.kind === 'inline' ? <InlineDataEditor key={draft.template_id} rows={draft.target.rows ?? draft.target.points ?? draft.target.series ?? []} onApply={(rows) => updateTarget({ rows, points: undefined, series: undefined })} /> : null}
         <label className="text-sm font-semibold text-slate-700">开始日期
-          <input type="date" value={draft.target.start_date || ''} onChange={(event) => updateTarget({ start_date: event.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+          <input type="date" value={draft.target.start_date || ''} onChange={(event) => updateTarget({ start_date: event.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" />
         </label>
         <label className="text-sm font-semibold text-slate-700">结束日期
-          <input type="date" value={draft.target.end_date || ''} onChange={(event) => updateTarget({ end_date: event.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+          <input type="date" value={draft.target.end_date || ''} onChange={(event) => updateTarget({ end_date: event.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" />
         </label>
         <label className="text-sm font-semibold text-slate-700">频率
           <select disabled={draft.target.kind === 'indicator'} value={draft.target.frequency || 'daily'} onChange={(event) => updateTarget({ frequency: event.target.value })} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 disabled:bg-slate-100">
@@ -654,13 +655,13 @@ function FeaturePanel({ meta, draft, onChange }: { meta: HistoricalRegimeMeta; d
         <div role="radiogroup" aria-label="滤波方法" className="grid gap-2 sm:grid-cols-2">
           {meta.feature_catalog.map((feature) => {
             const active = feature.id === filterId
-            return <button key={feature.id} type="button" role="radio" aria-checked={active} onClick={() => updateFeature('filter', feature.id)} className={cx('min-h-20 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500', active ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-400')}><span className="block text-sm font-bold text-slate-950">{feature.label || feature.name || feature.id}</span><span className={cx('mt-2 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold', feature.causal === false ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800')}>{feature.causal === false ? '双边 / 会重绘' : '单边 / 因果'}</span></button>
+            return <button key={feature.id} type="button" role="radio" aria-checked={active} onClick={() => updateFeature('filter', feature.id)} className={cx('min-h-20 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500', active ? 'border-accent-500 bg-accent-50' : 'border-slate-200 bg-white hover:border-slate-400')}><span className="block text-sm font-bold text-slate-950">{feature.label || feature.name || feature.id}</span><span className={cx('mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-bold', feature.causal === false ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800')}>{feature.causal === false ? '双边 / 会重绘' : '单边 / 因果'}</span></button>
           })}
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-xs font-semibold text-slate-600">原始变换
-          <select aria-label="原始变换" value={String(draft.features.transform ?? 'log')} onChange={(event) => updateFeature('transform', event.target.value)} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"><option value="identity">原值</option><option value="log">对数价格</option><option value="return">收益率</option><option value="zscore">滚动标准化</option></select>
+          <select aria-label="原始变换" value={String(draft.features.transform ?? 'log')} onChange={(event) => updateFeature('transform', event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm"><option value="identity">原值</option><option value="log">对数价格</option><option value="return">收益率</option><option value="zscore">滚动标准化</option></select>
         </label>
         <label className="text-xs font-semibold text-slate-600">平滑窗口
           <input aria-label="平滑窗口" type="number" min={1} value={Number(draft.features.window ?? 20)} onChange={(event) => updateFeature('window', Number(event.target.value))} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" />
@@ -672,15 +673,15 @@ function FeaturePanel({ meta, draft, onChange }: { meta: HistoricalRegimeMeta; d
           <input aria-label="波动率窗口" type="number" min={2} value={Number(draft.features.volatility_window ?? 20)} onChange={(event) => updateFeature('volatility_window', Number(event.target.value))} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" />
         </label>
       </div>
-      <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-xs font-bold text-slate-800">自定义因果公式（可选）</p><p className="mt-1 text-[11px] leading-5 text-slate-600">从数据源的数值字段生成一条新序列，再依次进入滤波、斜率计算与识别模型。留空时直接使用统一的 value 序列。</p></div>{meta.formula_language?.allowlist_version ? <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-indigo-700 ring-1 ring-indigo-200">白名单 {meta.formula_language.allowlist_version}</span> : null}</div>
+      <div className="rounded-xl border border-accent-200 bg-accent-50/50 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-xs font-bold text-slate-800">自定义因果公式（可选）</p><p className="mt-1 text-xs leading-5 text-slate-600">从数据源的数值字段生成一条新序列，再依次进入滤波、斜率计算与识别模型。留空时直接使用统一的 value 序列。</p></div>{meta.formula_language?.allowlist_version ? <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-accent-700 ring-1 ring-accent-200">白名单 {meta.formula_language.allowlist_version}</span> : null}</div>
         <label className="mt-3 block text-xs font-semibold text-slate-700">公式表达式
-          <textarea aria-label="自定义因果公式" value={formula} onChange={(event) => updateFormula(event.target.value)} rows={3} spellCheck={false} placeholder="例如：difference(log(value), 20)" className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm leading-6 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+          <textarea aria-label="自定义因果公式" value={formula} onChange={(event) => updateFormula(event.target.value)} rows={3} spellCheck={false} placeholder="例如：difference(log(value), 20)" className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm leading-6 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" />
         </label>
-        <div className="mt-2 flex flex-wrap gap-2" aria-label="公式示例">{formulaExamples.map((example) => <button key={example} type="button" onClick={() => updateFormula(example)} className="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 font-mono text-[11px] text-indigo-700 hover:bg-indigo-50">{example}</button>)}</div>
-        <details className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+        <div className="mt-2 flex flex-wrap gap-2" aria-label="公式示例">{formulaExamples.map((example) => <button key={example} type="button" onClick={() => updateFormula(example)} className="rounded-lg border border-accent-200 bg-white px-2.5 py-1.5 font-mono text-xs text-accent-700 hover:bg-accent-50">{example}</button>)}</div>
+        <details className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
           <summary className="cursor-pointer font-semibold text-slate-700">查看公式规则与允许函数</summary>
-          <div className="mt-2 space-y-2 leading-5 text-slate-600"><p>可用变量：数据源返回的数值列；统一别名为 <code>value</code>，相对序列另可用 <code>numerator</code>、<code>denominator</code>。</p><p>运算符：{meta.formula_language?.operators?.join('  ') || '+  -  *  /'}。窗口与滞后参数必须是正整数常量；不允许属性访问、下标、关键字参数、未来函数或全样本归约。</p><div className="flex flex-wrap gap-1.5">{formulaFunctions.map((name) => <code key={name} className="rounded bg-slate-100 px-2 py-0.5 text-[10px] text-slate-700">{name}</code>)}</div>{meta.formula_language?.variable_rule ? <p>{meta.formula_language.variable_rule}</p> : null}<p className="font-medium text-emerald-700">所有可用算子均走 typed AST → DAG → NJIT 固定签名内核；无 Python 回退。</p></div>
+          <div className="mt-2 space-y-2 leading-5 text-slate-600"><p>可用变量：数据源返回的数值列；统一别名为 <code>value</code>，相对序列另可用 <code>numerator</code>、<code>denominator</code>。</p><p>运算符：{meta.formula_language?.operators?.join('  ') || '+  -  *  /'}。窗口与滞后参数必须是正整数常量；不允许属性访问、下标、关键字参数、未来函数或全样本归约。</p><div className="flex flex-wrap gap-1.5">{formulaFunctions.map((name) => <code key={name} className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-700">{name}</code>)}</div>{meta.formula_language?.variable_rule ? <p>{meta.formula_language.variable_rule}</p> : null}<p className="font-medium text-emerald-700">所有可用算子均走 typed AST → DAG → NJIT 固定签名内核；无 Python 回退。</p></div>
         </details>
       </div>
       <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-3 text-xs leading-5 text-slate-600"><strong className="text-slate-800">指标中心版本引用：</strong>已作为独立的数据源接入。请在“数据”步骤选择“指标中心版本”，锁定指标修订、产品和逐期窗口；旧的 <code>features.indicator_ref</code> 不会被静默执行。</div>
@@ -739,17 +740,17 @@ function ModelPanel({ meta, draft, onChange }: { meta: HistoricalRegimeMeta; dra
           if (!family) return null
           const active = draft.algorithm.family === family
           const realtimeCapable = option.causal ?? option.supports_realtime
-          return <button key={family} type="button" role="radio" aria-checked={active} onClick={() => selectFamily(family)} className={cx('min-h-24 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500', active ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-slate-400')}><span className="block text-sm font-bold text-slate-950">{option.label || option.name || algorithmNames[family]}</span><span className="mt-1 block text-[11px] leading-4 text-slate-500">{option.description || '由后端算法注册表提供。'}</span><span className={cx('mt-2 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold', realtimeCapable ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900')}>{realtimeCapable ? '支持实时推断' : '仅适合事后识别'}</span></button>
+          return <button key={family} type="button" role="radio" aria-checked={active} onClick={() => selectFamily(family)} className={cx('min-h-24 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500', active ? 'border-accent-500 bg-accent-50' : 'border-slate-200 hover:border-slate-400')}><span className="block text-sm font-bold text-slate-950">{option.label || option.name || algorithmNames[family]}</span><span className="mt-1 block text-xs leading-4 text-slate-600">{option.description || '由后端算法注册表提供。'}</span><span className={cx('mt-2 inline-flex rounded-full px-2 py-0.5 text-xs font-bold', realtimeCapable ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900')}>{realtimeCapable ? '支持实时推断' : '仅适合事后识别'}</span></button>
         })}
       </div>
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold text-slate-500">当前算法</p><h4 className="mt-1 font-bold text-slate-950">{algorithmNames[draft.algorithm.family]}</h4></div><code className="rounded bg-white px-2 py-1 text-xs text-indigo-700 ring-1 ring-slate-200">{draft.algorithm.family}</code></div>
+        <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold text-slate-600">当前算法</p><h4 className="mt-1 font-bold text-slate-950">{algorithmNames[draft.algorithm.family]}</h4></div><code className="rounded-lg bg-white px-2 py-1 text-xs text-accent-700 ring-1 ring-slate-200">{draft.algorithm.family}</code></div>
         {draft.algorithm.family === 'ensemble' ? (
-          <div className="mt-4 rounded-xl border border-indigo-200 bg-white p-3">
+          <div className="mt-4 rounded-xl border border-accent-200 bg-white p-3">
             <label className="text-xs font-semibold text-slate-700">候选算法与权重（JSON）
               <textarea aria-label="候选算法与权重 JSON" value={membersText} onChange={(event) => setMembersText(event.target.value)} rows={10} spellCheck={false} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs leading-5" />
             </label>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-[11px] leading-5 text-slate-500">每个成员配置 family、weight 和自己的 parameters；冲突低于共识阈值时拒绝分类。</p><button type="button" onClick={applyMembers} className="min-h-9 rounded-lg border border-indigo-200 px-3 text-xs font-bold text-indigo-700 hover:bg-indigo-50">校验并应用成员</button></div>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2"><p className="text-xs leading-5 text-slate-600">每个成员配置 family、weight 和自己的 parameters；冲突低于共识阈值时拒绝分类。</p><button type="button" onClick={applyMembers} className="min-h-9 rounded-lg border border-accent-200 px-3 text-xs font-bold text-accent-700 hover:bg-accent-50">校验并应用成员</button></div>
             {membersError ? <p role="alert" className="mt-2 text-xs text-rose-700">{membersError}</p> : null}
           </div>
         ) : null}
@@ -757,14 +758,14 @@ function ModelPanel({ meta, draft, onChange }: { meta: HistoricalRegimeMeta; dra
           {Object.entries(draft.algorithm.parameters).filter(([key]) => key !== 'members').map(([key, value]) => (
             <label key={key} className="text-xs font-semibold text-slate-600">{parameterMeta[key]?.label || key}{parameterMeta[key]?.unit ? '（' + parameterMeta[key].unit + '）' : ''}
               {typeof value === 'boolean'
-                ? <span className="mt-2 flex min-h-10 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3"><input type="checkbox" checked={value} onChange={(event) => updateParameter(key, event.target.checked)} /><span>{value ? '启用' : '停用'}</span></span>
-                : <><input aria-label={'算法参数 ' + (parameterMeta[key]?.label || key)} type={typeof value === 'number' ? 'number' : 'text'} step="any" value={value == null ? '' : String(value)} placeholder={key === 'feature_fields' ? '例如：growth,inflation' : undefined} onChange={(event) => updateParameter(key, event.target.value)} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm" />{key === 'feature_fields' ? <span className="mt-1 block text-[11px] font-normal leading-4 text-slate-500">逗号分隔；留空时使用统一特征管线的趋势斜率与滚动波动率。</span> : null}</>}
+                ? <span className="mt-2 flex min-h-10 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3"><input type="checkbox" checked={value} onChange={(event) => updateParameter(key, event.target.checked)} /><span>{value ? '启用' : '停用'}</span></span>
+                : <><input aria-label={'算法参数 ' + (parameterMeta[key]?.label || key)} type={typeof value === 'number' ? 'number' : 'text'} step="any" value={value == null ? '' : String(value)} placeholder={key === 'feature_fields' ? '例如：growth,inflation' : undefined} onChange={(event) => updateParameter(key, event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm" />{key === 'feature_fields' ? <span className="mt-1 block text-xs font-normal leading-4 text-slate-600">逗号分隔；留空时使用统一特征管线的趋势斜率与滚动波动率。</span> : null}</>}
             </label>
           ))}
-          {!Object.keys(draft.algorithm.parameters).length ? <p className="text-xs text-slate-500 sm:col-span-2">该算法没有暴露可编辑参数。</p> : null}
+          {!Object.keys(draft.algorithm.parameters).length ? <p className="text-xs text-slate-600 sm:col-span-2">该算法没有暴露可编辑参数。</p> : null}
         </div>
       </div>
-      <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs leading-5 text-indigo-950">
+      <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 text-xs leading-5 text-accent-950">
         “零相位”或双边滤波可能利用未来样本。系统以运行结果中的因果诊断为准；含未来信息的结果只允许发布为研究展示。
       </div>
     </section>
@@ -784,7 +785,7 @@ function StatePanel({ draft, onChange }: { draft: HistoricalRegimeDefinition; on
         {draft.states.map((state, index) => (
           <article key={state.id} className="rounded-xl border border-slate-200 bg-white p-4">
             <div className="grid gap-3 sm:grid-cols-[52px_1fr_1fr_auto] sm:items-end">
-              <label className="text-xs font-semibold text-slate-600">颜色<input aria-label={state.label + '颜色'} type="color" value={state.color} onChange={(event) => updateState(index, { color: event.target.value })} className="mt-1 h-10 w-12 rounded border border-slate-300 bg-white p-1" /></label>
+              <label className="text-xs font-semibold text-slate-600">颜色<input aria-label={state.label + '颜色'} type="color" value={state.color} onChange={(event) => updateState(index, { color: event.target.value })} className="mt-1 h-10 w-12 rounded-xl border border-slate-300 bg-white p-1" /></label>
               <label className="text-xs font-semibold text-slate-600">状态 ID<input aria-label={'状态 ' + (index + 1) + ' ID'} value={state.id} onChange={(event) => updateState(index, { id: event.target.value })} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" /></label>
               <label className="text-xs font-semibold text-slate-600">业务标签<input aria-label={'状态 ' + (index + 1) + ' 标签'} value={state.label} onChange={(event) => updateState(index, { label: event.target.value })} className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 px-3 text-sm" /></label>
               <button type="button" disabled={draft.states.length <= 2} onClick={() => onChange({ ...draft, states: draft.states.filter((_, itemIndex) => itemIndex !== index) })} className="min-h-10 rounded-lg px-3 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-30">移除</button>
@@ -793,7 +794,7 @@ function StatePanel({ draft, onChange }: { draft: HistoricalRegimeDefinition; on
           </article>
         ))}
       </div>
-      <button type="button" onClick={addState} className="min-h-10 rounded-xl border border-indigo-200 px-4 text-sm font-bold text-indigo-700 hover:bg-indigo-50">添加状态</button>
+      <button type="button" onClick={addState} className="min-h-10 rounded-xl border border-accent-200 px-4 text-sm font-bold text-accent-700 hover:bg-accent-50">添加状态</button>
     </section>
   )
 }
@@ -822,7 +823,7 @@ function ValidationPanel({ draft, run, onChange }: { draft: HistoricalRegimeDefi
           {run.diagnostics.map((diagnostic, index) => <div key={(diagnostic.code || 'diagnostic') + index} data-diagnostic-code={diagnostic.code} className={cx('rounded-xl border px-4 py-3 text-xs leading-5', diagnostic.level === 'error' ? 'border-rose-200 bg-rose-50 text-rose-900' : diagnostic.level === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-950' : 'border-slate-200 bg-slate-50 text-slate-700')}>{diagnostic.message}</div>)}
           {!run.diagnostics.length ? <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-900">本次运行未返回阻断性诊断。</p> : null}
         </div>
-      ) : <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">运行后显示因果性、稳定性和 walk-forward 诊断。</p>}
+      ) : <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-600">运行后显示因果性、稳定性和 walk-forward 诊断。</p>}
     </section>
   )
 }
@@ -854,9 +855,9 @@ function PublishPanel({
         {(Object.keys(usageMeta) as PublicationUsage[]).map((item) => {
           const allowed = run?.causality.publish_eligible_usages.includes(item) ?? false
           return (
-            <button key={item} type="button" role="radio" aria-checked={usage === item} onClick={() => onUsage(item)} className={cx('flex min-h-16 w-full items-center justify-between gap-3 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500', usage === item ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 bg-white')}>
-              <span><span className="block text-sm font-bold text-slate-950">{usageMeta[item].name}</span><span className="mt-1 block text-[11px] text-slate-500">{usageMeta[item].description}</span></span>
-              <span className={cx('shrink-0 rounded-full px-2 py-1 text-[10px] font-bold', allowed ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500')}>{allowed ? '可发布' : '待门禁'}</span>
+            <button key={item} type="button" role="radio" aria-checked={usage === item} onClick={() => onUsage(item)} className={cx('flex min-h-16 w-full items-center justify-between gap-3 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500', usage === item ? 'border-accent-500 bg-accent-50' : 'border-slate-200 bg-white')}>
+              <span><span className="block text-sm font-bold text-slate-950">{usageMeta[item].name}</span><span className="mt-1 block text-xs text-slate-600">{usageMeta[item].description}</span></span>
+              <span className={cx('shrink-0 rounded-full px-2 py-1 text-xs font-bold', allowed ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600')}>{allowed ? '可发布' : '待门禁'}</span>
             </button>
           )
         })}
@@ -864,13 +865,13 @@ function PublishPanel({
       {run?.causality.blockers?.length ? <ul className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs leading-5 text-rose-900">{run.causality.blockers.map((blocker) => <li key={blocker}>• {blocker}</li>)}</ul> : null}
       {run && !hasSavedRun ? <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-950">当前是模板草稿试算，不能作为可追溯版本发布。请先保存定义，再重新运行识别。</p> : null}
       {stale ? <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">配置或模式已经变化，请重新运行后再发布。</p> : null}
-      <button type="button" disabled={!eligible || publishing} onClick={onPublish} className="min-h-12 w-full rounded-xl bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40">{publishing ? '正在发布…' : '发布到' + usageMeta[usage].name}</button>
+      <button type="button" disabled={!eligible || publishing} onClick={onPublish} className="min-h-12 w-full rounded-xl bg-accent-600 px-4 text-sm font-bold text-white hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-40">{publishing ? '正在发布…' : '发布到' + usageMeta[usage].name}</button>
       <div>
         <p className="text-xs font-bold text-slate-600">已发布与应用绑定</p>
         <div className="mt-2 space-y-2">
-          {run?.publications.map((publication) => <div key={publication.id} className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs"><div className="flex items-center justify-between gap-2"><strong>{usageMeta[publication.usage]?.name || publication.usage}</strong><span className="text-slate-500">{publication.published_at}</span></div><p className="mt-1 text-slate-500">{publication.id} · 定义 R{publication.definition_revision}</p></div>)}
-          {bindings.map((binding, index) => <div key={(binding.publication_id || binding.usage) + index} className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs"><strong>{binding.name || usageMeta[binding.usage]?.name || binding.usage}</strong><p className="mt-1 text-slate-500">{binding.status || (binding.run_id ? '已锁定运行版本' : '待绑定')}{binding.revision ? ' · R' + binding.revision : ''}</p></div>)}
-          {!run?.publications.length && !bindings.length ? <p className="rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs text-slate-500">尚无应用引用。</p> : null}
+          {run?.publications.map((publication) => <div key={publication.id} className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs"><div className="flex items-center justify-between gap-2"><strong>{usageMeta[publication.usage]?.name || publication.usage}</strong><span className="text-slate-600">{publication.published_at}</span></div><p className="mt-1 text-slate-600">{publication.id} · 定义 R{publication.definition_revision}</p></div>)}
+          {bindings.map((binding, index) => <div key={(binding.publication_id || binding.usage) + index} className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs"><strong>{binding.name || usageMeta[binding.usage]?.name || binding.usage}</strong><p className="mt-1 text-slate-600">{binding.status || (binding.run_id ? '已锁定运行版本' : '待绑定')}{binding.revision ? ' · R' + binding.revision : ''}</p></div>)}
+          {!run?.publications.length && !bindings.length ? <p className="rounded-xl border border-dashed border-slate-300 p-5 text-center text-xs text-slate-600">尚无应用引用。</p> : null}
         </div>
       </div>
     </section>
@@ -882,11 +883,11 @@ function SegmentTable({ run, selected, onSelect }: { run: HistoricalRegimeRun; s
     <div className="overflow-x-auto">
       <table className="w-full min-w-[920px] text-left text-xs">
         <caption className="sr-only">历史情景区间明细</caption>
-        <thead className="bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">状态</th><th className="px-3 py-3">区间</th><th className="px-3 py-3">当时识别日</th><th className="px-3 py-3 text-right">持续期</th><th className="px-3 py-3 text-right">累计收益</th><th className="px-3 py-3 text-right">波动率</th><th className="px-3 py-3 text-right">最大回撤</th><th className="px-3 py-3 text-right">置信度</th></tr></thead>
+        <thead className="bg-slate-50 text-slate-600"><tr><th scope="col" className="px-3 py-3">状态</th><th scope="col" className="px-3 py-3">区间</th><th scope="col" className="px-3 py-3">当时识别日</th><th scope="col" className="px-3 py-3 text-right">持续期</th><th scope="col" className="px-3 py-3 text-right">累计收益</th><th scope="col" className="px-3 py-3 text-right">波动率</th><th scope="col" className="px-3 py-3 text-right">最大回撤</th><th scope="col" className="px-3 py-3 text-right">置信度</th></tr></thead>
         <tbody className="divide-y divide-slate-100">
           {run.segments.map((segment, index) => (
-            <tr key={segment.state_id + segment.start_date} className={selected?.start_date === segment.start_date ? 'bg-indigo-50' : undefined}>
-              <td className="px-3 py-3"><button type="button" onClick={() => onSelect(segment)} className="flex items-center gap-2 font-bold text-slate-900 hover:text-indigo-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: stateColor(run.states, segment.state_id, index) }} />{segment.state_label}</button></td>
+            <tr key={segment.state_id + segment.start_date} className={selected?.start_date === segment.start_date ? 'bg-accent-50' : undefined}>
+              <td className="px-3 py-3"><button type="button" onClick={() => onSelect(segment)} className="flex items-center gap-2 font-bold text-slate-900 hover:text-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: stateColor(run.states, segment.state_id, index) }} />{segment.state_label}</button></td>
               <td className="px-3 py-3 text-slate-600">{segment.start_date} → {segment.end_date}</td>
               <td className="px-3 py-3 text-slate-600">{segment.recognized_at || '—'}</td>
               <td className="px-3 py-3 text-right tabular-nums">{segment.duration_observations}</td>
@@ -907,8 +908,8 @@ function ConditionalTable({ run }: { run: HistoricalRegimeRun }) {
     <div className="overflow-x-auto">
       <table className="w-full min-w-[720px] text-left text-xs">
         <caption className="sr-only">各历史状态条件表现</caption>
-        <thead className="bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">状态</th><th className="px-3 py-3 text-right">样本数</th><th className="px-3 py-3 text-right">年化收益</th><th className="px-3 py-3 text-right">波动率</th><th className="px-3 py-3 text-right">最大回撤</th><th className="px-3 py-3 text-right">夏普</th><th className="px-3 py-3 text-right">胜率</th></tr></thead>
-        <tbody className="divide-y divide-slate-100">{run.conditional_stats.map((item) => <tr key={item.state_id}><th className="px-3 py-3 font-bold text-slate-900">{item.state_label}</th><td className="px-3 py-3 text-right tabular-nums">{item.observations ?? '—'}</td><td className="px-3 py-3 text-right tabular-nums">{formatPercent(item.annualized_return ?? item.return)}</td><td className="px-3 py-3 text-right tabular-nums">{formatPercent(item.volatility)}</td><td className="px-3 py-3 text-right tabular-nums text-rose-700">{formatPercent(item.max_drawdown)}</td><td className="px-3 py-3 text-right tabular-nums">{formatNumber(item.sharpe)}</td><td className="px-3 py-3 text-right tabular-nums">{formatPercent(item.win_rate)}</td></tr>)}</tbody>
+        <thead className="bg-slate-50 text-slate-600"><tr><th scope="col" className="px-3 py-3">状态</th><th scope="col" className="px-3 py-3 text-right">样本数</th><th scope="col" className="px-3 py-3 text-right">年化收益</th><th scope="col" className="px-3 py-3 text-right">波动率</th><th scope="col" className="px-3 py-3 text-right">最大回撤</th><th scope="col" className="px-3 py-3 text-right">夏普</th><th scope="col" className="px-3 py-3 text-right">胜率</th></tr></thead>
+        <tbody className="divide-y divide-slate-100">{run.conditional_stats.map((item) => <tr key={item.state_id}><th scope="row" className="px-3 py-3 font-bold text-slate-900">{item.state_label}</th><td className="px-3 py-3 text-right tabular-nums">{item.observations ?? '—'}</td><td className="px-3 py-3 text-right tabular-nums">{formatPercent(item.annualized_return ?? item.return)}</td><td className="px-3 py-3 text-right tabular-nums">{formatPercent(item.volatility)}</td><td className="px-3 py-3 text-right tabular-nums text-rose-700">{formatPercent(item.max_drawdown)}</td><td className="px-3 py-3 text-right tabular-nums">{formatNumber(item.sharpe)}</td><td className="px-3 py-3 text-right tabular-nums">{formatPercent(item.win_rate)}</td></tr>)}</tbody>
       </table>
     </div>
   )
@@ -920,8 +921,8 @@ function TransitionMatrix({ run }: { run: HistoricalRegimeRun }) {
     <div className="overflow-x-auto">
       <table className="min-w-[520px] text-center text-xs">
         <caption className="mb-3 text-left font-semibold text-slate-700">状态转移概率（行：当前，列：下一期）</caption>
-        <thead><tr><th className="px-3 py-2 text-left text-slate-500">状态</th>{labels.map((label) => <th key={label} className="px-3 py-2 text-slate-500">{run.states.find((state) => state.id === label)?.label || label}</th>)}</tr></thead>
-        <tbody>{labels.map((label, row) => <tr key={label}><th className="px-3 py-3 text-left font-bold text-slate-900">{run.states.find((state) => state.id === label)?.label || label}</th>{labels.map((column, col) => { const value = run.transition.probabilities?.[row]?.[col]; return <td key={column} className="px-3 py-3 tabular-nums" style={{ backgroundColor: typeof value === 'number' ? 'rgba(99, 102, 241, ' + Math.max(0.05, value * 0.45) + ')' : undefined }}>{formatPercent(value, 1)}</td> })}</tr>)}</tbody>
+        <thead><tr><th scope="col" className="px-3 py-2 text-left text-slate-600">状态</th>{labels.map((label) => <th scope="col" key={label} className="px-3 py-2 text-slate-600">{run.states.find((state) => state.id === label)?.label || label}</th>)}</tr></thead>
+        <tbody>{labels.map((label, row) => <tr key={label}><th scope="row" className="px-3 py-3 text-left font-bold text-slate-900">{run.states.find((state) => state.id === label)?.label || label}</th>{labels.map((column, col) => { const value = run.transition.probabilities?.[row]?.[col]; return <td key={column} className="px-3 py-3 tabular-nums" style={{ backgroundColor: typeof value === 'number' ? 'rgba(99, 102, 241, ' + Math.max(0.05, value * 0.45) + ')' : undefined }}>{formatPercent(value, 1)}</td> })}</tr>)}</tbody>
       </table>
     </div>
   )
@@ -932,8 +933,8 @@ function ValidationResults({ run }: { run: HistoricalRegimeRun }) {
   const walkForward = metricEntries(run.walk_forward)
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <section className="rounded-xl border border-slate-200 p-4"><h4 className="font-bold text-slate-950">参数稳定性</h4><dl className="mt-3 grid grid-cols-2 gap-2">{stability.map((item) => <div key={item.key} className="rounded-lg bg-slate-50 p-3"><dt className="text-[11px] leading-4 text-slate-500">{item.label}</dt><dd className="mt-1 font-bold tabular-nums">{item.value}</dd></div>)}</dl>{!stability.length ? <p className="mt-3 text-xs text-slate-500">API 未返回稳定性指标。</p> : null}</section>
-      <section className="rounded-xl border border-slate-200 p-4"><h4 className="font-bold text-slate-950">Walk-forward</h4><dl className="mt-3 grid grid-cols-2 gap-2">{walkForward.map((item) => <div key={item.key} className="rounded-lg bg-slate-50 p-3"><dt className="text-[11px] leading-4 text-slate-500">{item.label}</dt><dd className="mt-1 font-bold tabular-nums">{item.value}</dd></div>)}</dl>{!walkForward.length ? <p className="mt-3 text-xs text-slate-500">API 未返回逐期验证指标。</p> : null}</section>
+      <section className="rounded-xl border border-slate-200 p-4"><h4 className="font-bold text-slate-950">参数稳定性</h4><dl className="mt-3 grid grid-cols-2 gap-2">{stability.map((item) => <div key={item.key} className="rounded-lg bg-slate-50 p-3"><dt className="text-xs leading-4 text-slate-600">{item.label}</dt><dd className="mt-1 font-bold tabular-nums">{item.value}</dd></div>)}</dl>{!stability.length ? <p className="mt-3 text-xs text-slate-600">API 未返回稳定性指标。</p> : null}</section>
+      <section className="rounded-xl border border-slate-200 p-4"><h4 className="font-bold text-slate-950">Walk-forward</h4><dl className="mt-3 grid grid-cols-2 gap-2">{walkForward.map((item) => <div key={item.key} className="rounded-lg bg-slate-50 p-3"><dt className="text-xs leading-4 text-slate-600">{item.label}</dt><dd className="mt-1 font-bold tabular-nums">{item.value}</dd></div>)}</dl>{!walkForward.length ? <p className="mt-3 text-xs text-slate-600">API 未返回逐期验证指标。</p> : null}</section>
     </div>
   )
 }
@@ -959,18 +960,18 @@ function ComparisonPanel({
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
         <p className="text-xs font-bold text-slate-700">选择 2–3 个不可变运行版本</p>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {runs.map((run) => <label key={run.id} className={cx('flex min-h-14 items-center gap-3 rounded-lg border bg-white px-3 text-xs', selectedIds.includes(run.id) ? 'border-indigo-400' : 'border-slate-200', !selectedIds.includes(run.id) && selectedIds.length >= 3 && 'opacity-50')}><input type="checkbox" checked={selectedIds.includes(run.id)} disabled={!selectedIds.includes(run.id) && selectedIds.length >= 3} onChange={() => toggle(run.id)} /><span><strong className="block text-slate-900">{run.name}</strong><span className="text-slate-500">{run.id} · {run.mode === 'realtime' ? '实时' : '事后'}</span></span></label>)}
+          {runs.map((run) => <label key={run.id} className={cx('flex min-h-14 items-center gap-3 rounded-lg border bg-white px-3 text-xs', selectedIds.includes(run.id) ? 'border-accent-400' : 'border-slate-200', !selectedIds.includes(run.id) && selectedIds.length >= 3 && 'opacity-50')}><input type="checkbox" checked={selectedIds.includes(run.id)} disabled={!selectedIds.includes(run.id) && selectedIds.length >= 3} onChange={() => toggle(run.id)} /><span><strong className="block text-slate-900">{run.name}</strong><span className="text-slate-600">{run.id} · {run.mode === 'realtime' ? '实时' : '事后'}</span></span></label>)}
         </div>
-        <button type="button" disabled={selectedIds.length < 2 || loading} onClick={compare} className="mt-3 min-h-10 rounded-lg bg-indigo-600 px-4 text-xs font-bold text-white disabled:opacity-40">{loading ? '正在比较…' : '运行版本对比'}</button>
+        <button type="button" disabled={selectedIds.length < 2 || loading} onClick={compare} className="mt-3 min-h-10 rounded-lg bg-accent-600 px-4 text-xs font-bold text-white disabled:opacity-40">{loading ? '正在比较…' : '运行版本对比'}</button>
         {error ? <p role="alert" className="mt-3 text-xs text-rose-700">{error}</p> : null}
       </div>
       {comparison ? (
         <div className="space-y-4">
           <div className="rounded-xl bg-slate-950 p-4 text-white"><p className="text-xs text-slate-400">总体状态一致率</p><p className="mt-1 text-3xl font-bold">{formatPercent(comparison.agreement_rate)}</p></div>
-          <div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left text-xs"><thead className="bg-slate-50 text-slate-500"><tr><th className="px-3 py-2">版本 A</th><th className="px-3 py-2">版本 B</th><th className="px-3 py-2 text-right">一致率</th><th className="px-3 py-2 text-right">平均边界距离</th></tr></thead><tbody>{comparison.pairwise?.map((item) => <tr key={item.left_run_id + item.right_run_id}><td className="px-3 py-3">{item.left_run_id}</td><td className="px-3 py-3">{item.right_run_id}</td><td className="px-3 py-3 text-right">{formatPercent(item.agreement_rate)}</td><td className="px-3 py-3 text-right">{formatNumber(item.boundary_distance)} 期</td></tr>)}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left text-xs"><thead className="bg-slate-50 text-slate-600"><tr><th scope="col" className="px-3 py-2">版本 A</th><th scope="col" className="px-3 py-2">版本 B</th><th scope="col" className="px-3 py-2 text-right">一致率</th><th scope="col" className="px-3 py-2 text-right">平均边界距离</th></tr></thead><tbody>{comparison.pairwise?.map((item) => <tr key={item.left_run_id + item.right_run_id}><td className="px-3 py-3">{item.left_run_id}</td><td className="px-3 py-3">{item.right_run_id}</td><td className="px-3 py-3 text-right">{formatPercent(item.agreement_rate)}</td><td className="px-3 py-3 text-right">{formatNumber(item.boundary_distance)} 期</td></tr>)}</tbody></table></div>
           {comparison.disagreement_periods?.length ? <div><p className="text-xs font-bold text-slate-700">分歧区间</p><ul className="mt-2 space-y-2 text-xs">{comparison.disagreement_periods.map((period) => <li key={period.start_date + period.end_date} className="rounded-lg border border-amber-200 bg-amber-50 p-3"><strong>{period.start_date} → {period.end_date}</strong><span className="mt-1 block text-amber-950">{Object.entries(period.states).map(([id, state]) => id + ': ' + state).join('；')}</span></li>)}</ul></div> : null}
         </div>
-      ) : <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">选择至少两个运行版本，比较状态一致率与边界分歧。</p>}
+      ) : <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-600">选择至少两个运行版本，比较状态一致率与边界分歧。</p>}
     </div>
   )
 }
@@ -981,7 +982,7 @@ function CalculationAuditPanel({ run }: { run: HistoricalRegimeRun }) {
     : run.calculation_audit
       ? [run.calculation_audit]
       : []
-  if (!audits.length) return <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">本次运行没有公式或指标中心计算计划。</p>
+  if (!audits.length) return <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-600">本次运行没有公式或指标中心计算计划。</p>
   return (
     <div className="space-y-5" aria-label="计算计划审计">
       {audits.map((audit, auditIndex) => {
@@ -1009,33 +1010,33 @@ function CalculationAuditPanel({ run }: { run: HistoricalRegimeRun }) {
         return (
           <article key={(audit.source_kind || 'calculation') + auditIndex} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
             <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 p-4 text-white lg:flex-row lg:items-start lg:justify-between">
-              <div><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-300">{sourceLabel}</p><h4 className="mt-1 text-base font-bold">{nodes.length ? 'typed AST → DAG → NJIT 固定签名' : '固定签名 NJIT 内核链'}</h4><p className="mt-1 break-all font-mono text-[10px] text-slate-400">{String(plan.compiled_plan_id || '未返回 plan id')}</p></div>
-              <div className="flex flex-wrap gap-2 text-[10px] font-bold"><span className="rounded-full bg-emerald-400/15 px-2 py-1 text-emerald-200">{plan.compile_status === 'compiled' ? '已编译' : String(plan.compile_status || '状态未知')}</span><span className="rounded-full bg-indigo-400/15 px-2 py-1 text-indigo-200">NJIT {plan.njit_required === false ? '非必需' : '必需'}</span><span className={cx('rounded-full px-2 py-1', plan.python_fallback === 0 && plan.python_operator_calls === 0 ? 'bg-emerald-400/15 text-emerald-200' : 'bg-rose-400/20 text-rose-200')}>Python fallback {String(plan.python_fallback ?? '—')}</span></div>
+              <div><p className="text-xs font-bold uppercase tracking-[0.16em] text-accent-300">{sourceLabel}</p><h4 className="mt-1 text-base font-bold">{nodes.length ? 'typed AST → DAG → NJIT 固定签名' : '固定签名 NJIT 内核链'}</h4><p className="mt-1 break-all font-mono text-xs text-slate-200">{String(plan.compiled_plan_id || '未返回 plan id')}</p></div>
+              <div className="flex flex-wrap gap-2 text-xs font-bold"><span className="rounded-full bg-emerald-400/15 px-2 py-1 text-emerald-200">{plan.compile_status === 'compiled' ? '已编译' : String(plan.compile_status || '状态未知')}</span><span className="rounded-full bg-accent-400/15 px-2 py-1 text-accent-200">NJIT {plan.njit_required === false ? '非必需' : '必需'}</span><span className={cx('rounded-full px-2 py-1', plan.python_fallback === 0 && plan.python_operator_calls === 0 ? 'bg-emerald-400/15 text-emerald-200' : 'bg-rose-400/20 text-rose-200')}>Python fallback {String(plan.python_fallback ?? '—')}</span></div>
             </div>
             <div className="grid gap-3 border-b border-slate-200 p-4 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-bold text-slate-500">{nodes.length ? '根节点' : '算法族'}</p><p className="mt-1 font-mono text-sm font-bold text-slate-950">{String(root ?? audit.family ?? '—')}</p></div>
-              <div className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-bold text-slate-500">节点 / 边</p><p className="mt-1 text-sm font-bold text-slate-950">{nodes.length} / {edges.length}</p></div>
-              <div className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-bold text-slate-500">Kernel</p><p className="mt-1 font-mono text-xs font-bold text-slate-950">{String(plan.kernel_version || '—')}</p></div>
-              <div className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-bold text-slate-500">Engine</p><p className="mt-1 font-mono text-xs font-bold text-slate-950">{String(plan.engine_version || '—')}</p></div>
+              <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-bold text-slate-600">{nodes.length ? '根节点' : '算法族'}</p><p className="mt-1 font-mono text-sm font-bold text-slate-950">{String(root ?? audit.family ?? '—')}</p></div>
+              <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-bold text-slate-600">节点 / 边</p><p className="mt-1 text-sm font-bold text-slate-950">{nodes.length} / {edges.length}</p></div>
+              <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-bold text-slate-600">Kernel</p><p className="mt-1 font-mono text-xs font-bold text-slate-950">{String(plan.kernel_version || '—')}</p></div>
+              <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs font-bold text-slate-600">Engine</p><p className="mt-1 font-mono text-xs font-bold text-slate-950">{String(plan.engine_version || '—')}</p></div>
             </div>
-            {kernels.length ? <div className="overflow-x-auto border-b border-slate-200 p-4"><table className="w-full min-w-[760px] text-left text-xs"><caption className="mb-2 text-left font-bold text-slate-700">预热内核与可复现指纹</caption><thead className="bg-slate-50 text-slate-500"><tr><th className="px-3 py-2">Kernel ID</th><th className="px-3 py-2">状态</th><th className="px-3 py-2">固定签名</th><th className="px-3 py-2">Fingerprint</th></tr></thead><tbody className="divide-y divide-slate-100">{kernels.map((kernel) => <tr key={kernel.kernel_id}><td className="px-3 py-2 font-mono font-bold text-slate-900">{kernel.kernel_id}</td><td className="px-3 py-2 text-emerald-700">{kernel.compile_status === 'compiled' ? '已预热' : kernel.compile_status || '未知'}</td><td className="max-w-[360px] break-all px-3 py-2 font-mono text-[10px] text-slate-600">{kernel.compiled_signatures?.join(' · ') || '—'}</td><td className="max-w-[260px] break-all px-3 py-2 font-mono text-[10px] text-slate-500">{kernel.kernel_fingerprint || '—'}</td></tr>)}</tbody></table></div> : null}
+            {kernels.length ? <div className="overflow-x-auto border-b border-slate-200 p-4"><table className="w-full min-w-[760px] text-left text-xs"><caption className="mb-2 text-left font-bold text-slate-700">预热内核与可复现指纹</caption><thead className="bg-slate-50 text-slate-600"><tr><th scope="col" className="px-3 py-2">Kernel ID</th><th scope="col" className="px-3 py-2">状态</th><th scope="col" className="px-3 py-2">固定签名</th><th scope="col" className="px-3 py-2">Fingerprint</th></tr></thead><tbody className="divide-y divide-slate-100">{kernels.map((kernel) => <tr key={kernel.kernel_id}><td className="px-3 py-2 font-mono font-bold text-slate-900">{kernel.kernel_id}</td><td className="px-3 py-2 text-emerald-700">{kernel.compile_status === 'compiled' ? '已预热' : kernel.compile_status || '未知'}</td><td className="max-w-[360px] break-all px-3 py-2 font-mono text-xs text-slate-600">{kernel.compiled_signatures?.join(' · ') || '—'}</td><td className="max-w-[260px] break-all px-3 py-2 font-mono text-xs text-slate-600">{kernel.kernel_fingerprint || '—'}</td></tr>)}</tbody></table></div> : null}
             <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_280px]">
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[600px] text-left text-xs">
                   <caption className="mb-2 text-left font-bold text-slate-700">AST / DAG 节点</caption>
-                  <thead className="bg-slate-50 text-slate-500"><tr><th className="px-3 py-2">ID</th><th className="px-3 py-2">类型</th><th className="px-3 py-2">算子 / 变量</th><th className="px-3 py-2">输入</th><th className="px-3 py-2">输出类型</th></tr></thead>
+                  <thead className="bg-slate-50 text-slate-600"><tr><th scope="col" className="px-3 py-2">ID</th><th scope="col" className="px-3 py-2">类型</th><th scope="col" className="px-3 py-2">算子 / 变量</th><th scope="col" className="px-3 py-2">输入</th><th scope="col" className="px-3 py-2">输出类型</th></tr></thead>
                   <tbody className="divide-y divide-slate-100">{nodes.map((node, index) => {
                     const id = node.id ?? node.node_id ?? index
                     const inputs = Array.isArray(node.inputs) ? node.inputs.join(', ') : '—'
                     const inferred = node.inferred_type
                     const output = inferred && typeof inferred === 'object' ? String((inferred as Record<string, unknown>).display ?? (inferred as Record<string, unknown>).kind ?? 'typed') : String(inferred ?? node.value_type ?? '—')
-                    return <tr key={String(id)} className={String(id) === String(root) ? 'bg-indigo-50' : undefined}><td className="px-3 py-2 font-mono font-bold">{String(id)}{String(id) === String(root) ? ' · root' : ''}</td><td className="px-3 py-2">{String(node.kind ?? '—')}</td><td className="px-3 py-2 font-mono">{String(node.operator_id ?? node.operator ?? node.label ?? '—')}</td><td className="px-3 py-2 font-mono text-slate-500">{inputs}</td><td className="px-3 py-2 text-slate-600">{output}</td></tr>
+                    return <tr key={String(id)} className={String(id) === String(root) ? 'bg-accent-50' : undefined}><td className="px-3 py-2 font-mono font-bold">{String(id)}{String(id) === String(root) ? ' · root' : ''}</td><td className="px-3 py-2">{String(node.kind ?? '—')}</td><td className="px-3 py-2 font-mono">{String(node.operator_id ?? node.operator ?? node.label ?? '—')}</td><td className="px-3 py-2 font-mono text-slate-600">{inputs}</td><td className="px-3 py-2 text-slate-600">{output}</td></tr>
                   })}</tbody>
                 </table>
               </div>
               <div className="space-y-3">
-                <div><p className="text-xs font-bold text-slate-700">DAG 连线</p><div className="mt-2 flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">{edges.map((edge, index) => <code key={String(edge.source) + '-' + String(edge.target) + index} className="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-700">{String(edge.source)} → {String(edge.target)}</code>)}{!edges.length ? <span className="text-xs text-slate-400">单节点计划，无连线</span> : null}</div></div>
-                <div><p className="text-xs font-bold text-slate-700">已编译签名</p><ul className="mt-2 space-y-1.5">{signatures.map((signature) => <li key={signature} className="break-all rounded bg-emerald-50 px-2 py-1.5 font-mono text-[10px] text-emerald-900">{signature}</li>)}{!signatures.length ? <li className="text-xs text-slate-400">未返回签名</li> : null}</ul></div>
+                <div><p className="text-xs font-bold text-slate-700">DAG 连线</p><div className="mt-2 flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">{edges.map((edge, index) => <code key={String(edge.source) + '-' + String(edge.target) + index} className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-700">{String(edge.source)} → {String(edge.target)}</code>)}{!edges.length ? <span className="text-xs text-slate-600">单节点计划，无连线</span> : null}</div></div>
+                <div><p className="text-xs font-bold text-slate-700">已编译签名</p><ul className="mt-2 space-y-1.5">{signatures.map((signature) => <li key={signature} className="break-all rounded-lg bg-emerald-50 px-2 py-1.5 font-mono text-xs text-emerald-900">{signature}</li>)}{!signatures.length ? <li className="text-xs text-slate-600">未返回签名</li> : null}</ul></div>
               </div>
             </div>
           </article>
@@ -1060,9 +1061,7 @@ function ResultWorkspace({
   const [tab, setTab] = useState<ResultTab>('segments')
   useEffect(() => { setSelectedSegment(run?.segments[run.segments.length - 1] ?? null) }, [run?.id])
   if (!run) return (
-    <section className="grid min-h-[620px] place-items-center rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-sm">
-      <div className="max-w-md"><p className="text-sm font-bold text-indigo-600">等待一次真实运行</p><h3 className="mt-2 text-xl font-bold text-slate-950">配置数据、特征与模型后运行识别</h3><p className="mt-2 text-sm leading-6 text-slate-500">结果区将展示原始序列、趋势线、状态背景带、识别日、概率、区间表与验证结果。页面不会生成前端伪结果。</p></div>
-    </section>
+    <EmptyState title="配置数据、特征与模型后运行识别" hint="结果区将展示原始序列、趋势线、状态背景带、识别日、概率、区间表与验证结果。页面不会生成前端伪结果。" />
   )
   const tabs: Array<{ id: ResultTab; label: string }> = [
     { id: 'segments', label: '区间明细' }, { id: 'conditional', label: '条件收益' }, { id: 'transition', label: '转移矩阵' }, { id: 'stability', label: '稳定性 / Walk-forward' }, { id: 'audit', label: '计算审计' }, { id: 'comparison', label: '版本对比' },
@@ -1078,15 +1077,15 @@ function ResultWorkspace({
   }
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-label="历史情景识别结果">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-label="历史情景识别结果">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div><p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600">Immutable run</p><h3 className="mt-1 text-lg font-bold text-slate-950">{run.name}</h3><p className="mt-1 text-xs text-slate-500">{run.id} · {run.definition_revision == null ? '未版本化试算' : '定义 R' + run.definition_revision} · {run.mode === 'realtime' ? '实时识别' : '事后划分'} · {run.created_at}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-[0.16em] text-accent-600">Immutable run</p><h3 className="mt-1 text-lg font-bold text-slate-950">{run.name}</h3><p className="mt-1 text-xs text-slate-600">{run.id} · {run.definition_revision == null ? '未版本化试算' : '定义 R' + run.definition_revision} · {run.mode === 'realtime' ? '实时识别' : '事后划分'} · {run.created_at}</p></div>
           <div className="flex flex-wrap items-center gap-2">
             <CausalityBadge run={run} />
             {stale ? <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">配置已变化 · 结果过期</span> : <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">结果与配置一致</span>}
-            <button type="button" onClick={exportRun} className="min-h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-700 hover:border-indigo-300 hover:text-indigo-700">导出完整 JSON</button>
+            <button type="button" onClick={exportRun} className="min-h-9 rounded-xl border border-slate-300 bg-white px-3 text-xs font-bold text-slate-700 hover:border-accent-300 hover:text-accent-700">导出完整 JSON</button>
             <label className="text-xs font-bold text-slate-600">运行版本
-              <select aria-label="运行版本" value={run.id} onChange={(event) => { const selected = runs.find((item) => item.id === event.target.value); if (selected) onSelectRun(selected) }} className="ml-2 min-h-9 rounded-lg border border-slate-300 bg-white px-2 font-normal">
+              <select aria-label="运行版本" value={run.id} onChange={(event) => { const selected = runs.find((item) => item.id === event.target.value); if (selected) onSelectRun(selected) }} className="ml-2 min-h-9 rounded-xl border border-slate-300 bg-white px-2 font-normal">
                 {runs.map((item) => <option key={item.id} value={item.id}>{item.id} · {item.mode === 'realtime' ? '实时' : '事后'}</option>)}
               </select>
             </label>
@@ -1097,9 +1096,9 @@ function ResultWorkspace({
           <EvidenceInspector run={run} segment={selectedSegment} />
         </div>
       </section>
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div role="tablist" aria-label="历史识别结果分析" className="flex overflow-x-auto border-b border-slate-200 p-2">
-          {tabs.map((item) => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => setTab(item.id)} className={cx('min-h-10 shrink-0 rounded-lg px-3 text-xs font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500', tab === item.id ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-50')}>{item.label}</button>)}
+          {tabs.map((item) => <button key={item.id} type="button" role="tab" aria-selected={tab === item.id} onClick={() => setTab(item.id)} className={cx('min-h-10 shrink-0 rounded-lg px-3 text-xs font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500', tab === item.id ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-50')}>{item.label}</button>)}
         </div>
         <div role="tabpanel" className="p-4">
           {tab === 'segments' ? <SegmentTable run={run} selected={selectedSegment} onSelect={setSelectedSegment} /> : null}
@@ -1205,10 +1204,10 @@ export default function HistoricalRegimeCenter() {
 
   if (workbenchOpen) return <HistoricalRegimeWorkbench initialDefinition={workbenchInitialDefinition} onExit={() => { setWorkbenchOpen(false); setWorkbenchInitialDefinition(undefined) }} />
 
-  if (loading) return <div role="status" className="grid min-h-[520px] place-items-center rounded-2xl border border-slate-200 bg-white"><div className="text-center"><span className="mx-auto block h-8 w-8 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" /><p className="mt-3 text-sm font-semibold text-slate-600">正在加载历史情景元数据与版本…</p></div></div>
+  if (loading) return <div role="status" className="grid min-h-[520px] place-items-center rounded-xl border border-slate-200 bg-white"><div className="text-center"><span className="mx-auto block h-8 w-8 animate-spin rounded-full border-4 border-accent-200 border-t-accent-600" /><p className="mt-3 text-sm font-semibold text-slate-600">正在加载历史情景元数据与版本…</p></div></div>
 
   if (!meta || !draft) return (
-    <section role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-6">
+    <section role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-6">
       <h2 className="text-lg font-bold text-rose-950">历史情景识别暂不可用</h2>
       <p className="mt-2 text-sm text-rose-900">{error || '接口未返回工作台所需数据。'}</p>
       <button type="button" onClick={() => window.location.reload()} className="mt-4 min-h-10 rounded-xl bg-rose-800 px-4 text-sm font-bold text-white">重新加载</button>
@@ -1345,19 +1344,19 @@ export default function HistoricalRegimeCenter() {
 
   return (
     <div className="space-y-5" data-testid="historical-regime-center">
-      <header className="rounded-2xl border border-slate-800 bg-slate-950 px-5 py-5 text-white shadow-sm sm:px-6">
+      <header className="rounded-xl border border-slate-800 bg-slate-950 px-5 py-5 text-white shadow-sm sm:px-6">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-          <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-indigo-300">Historical regime research</p><h2 className="mt-1 text-2xl font-bold">历史情景识别</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">从真实原始数据出发，自定义指标与模型，把历史拆成牛熊震荡、经济周期或风格轮动区间，并发布为可复用版本。</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-accent-300">Historical regime research</p><h2 className="mt-1 text-2xl font-bold">历史情景识别</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-200">从真实原始数据出发，自定义指标与模型，把历史拆成牛熊震荡、经济周期或风格轮动区间，并发布为可复用版本。</p></div>
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" disabled={!draft.id || convertingV2} onClick={() => void copyCurrentToV2()} className="min-h-9 rounded-lg border border-indigo-300 px-3 text-xs font-bold text-indigo-100 disabled:opacity-40">{convertingV2 ? '正在复制…' : '复制当前 V1 为 V2 图谱'}</button>
-            <button type="button" onClick={() => { setWorkbenchInitialDefinition(undefined); setWorkbenchOpen(true) }} className="min-h-9 rounded-lg bg-indigo-500 px-3 text-xs font-bold text-white shadow hover:bg-indigo-400">进入 V2 自由工作台</button>
+            <button type="button" disabled={!draft.id || convertingV2} onClick={() => void copyCurrentToV2()} className="min-h-9 rounded-lg border border-accent-300 px-3 text-xs font-bold text-accent-100 disabled:opacity-40">{convertingV2 ? '正在复制…' : '复制当前 V1 为 V2 图谱'}</button>
+            <button type="button" onClick={() => { setWorkbenchInitialDefinition(undefined); setWorkbenchOpen(true) }} className="min-h-9 rounded-lg bg-accent-600 px-3 text-xs font-bold text-white shadow hover:bg-accent-400">进入 V2 自由工作台</button>
             <CausalityBadge run={currentRun} />
             <span className={cx('rounded-full px-3 py-1 text-xs font-bold', resultStale ? 'bg-amber-300 text-amber-950' : 'bg-white/10 text-slate-200')}>{resultStale ? '结果已过期' : currentRun ? '结果已同步' : '待运行'}</span>
           </div>
         </div>
       </header>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="研究运行控制">
+      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="研究运行控制">
         <div className="grid gap-3 lg:grid-cols-[minmax(230px,1fr)_auto_auto_auto] lg:items-end">
           <label className="text-xs font-bold text-slate-600">已保存定义
             <select aria-label="已保存定义" value={draft.id || ''} onChange={(event) => selectDefinition(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-normal">
@@ -1366,21 +1365,21 @@ export default function HistoricalRegimeCenter() {
             </select>
           </label>
           <div role="radiogroup" aria-label="识别模式" className="flex rounded-xl border border-slate-300 bg-slate-50 p-1">
-            <button type="button" role="radio" aria-checked={mode === 'realtime'} onClick={() => setMode('realtime')} className={cx('min-h-9 rounded-lg px-3 text-xs font-bold', mode === 'realtime' ? 'bg-emerald-600 text-white' : 'text-slate-600')}>实时识别</button>
+            <button type="button" role="radio" aria-checked={mode === 'realtime'} onClick={() => setMode('realtime')} className={cx('min-h-9 rounded-lg px-3 text-xs font-bold', mode === 'realtime' ? 'bg-emerald-700 text-white' : 'text-slate-600')}>实时识别</button>
             <button type="button" role="radio" aria-checked={mode === 'retrospective'} onClick={() => setMode('retrospective')} className={cx('min-h-9 rounded-lg px-3 text-xs font-bold', mode === 'retrospective' ? 'bg-amber-500 text-slate-950' : 'text-slate-600')}>事后划分</button>
           </div>
-          <button type="button" disabled={!saveDirty || saving || running} onClick={saveDefinition} className="min-h-11 rounded-xl border border-indigo-200 px-4 text-sm font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-40">{saving ? '保存中…' : '保存定义'}</button>
-          <button type="button" disabled={running || saving} onClick={runDefinition} className="min-h-11 rounded-xl bg-indigo-600 px-5 text-sm font-bold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50">{running ? '正在运行识别…' : '运行历史识别'}</button>
+          <button type="button" disabled={!saveDirty || saving || running} onClick={saveDefinition} className="min-h-11 rounded-xl border border-accent-200 px-4 text-sm font-bold text-accent-700 hover:bg-accent-50 disabled:opacity-40">{saving ? '保存中…' : '保存定义'}</button>
+          <button type="button" disabled={running || saving} onClick={runDefinition} className="min-h-11 rounded-xl bg-accent-600 px-5 text-sm font-bold text-white shadow-sm hover:bg-accent-600 disabled:opacity-50">{running ? '正在运行识别…' : '运行历史识别'}</button>
         </div>
-        {running ? <div role="progressbar" aria-label="历史情景识别运行进度" aria-valuetext="后端正在锁定数据并计算" className="mt-3 h-2 overflow-hidden rounded-full bg-indigo-100"><span className="block h-full w-2/3 animate-pulse rounded-full bg-indigo-600" /></div> : null}
+        {running ? <div role="progressbar" aria-label="历史情景识别运行进度" aria-valuetext="后端正在锁定数据并计算" className="mt-3 h-2 overflow-hidden rounded-full bg-accent-100"><span className="block h-full w-2/3 animate-pulse rounded-full bg-accent-600" /></div> : null}
         {error ? <p role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">{error}</p> : null}
-        {notice ? <p role="status" className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-950">{notice}</p> : null}
+        {notice ? <p role="status" className="mt-3 rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 text-sm text-accent-950">{notice}</p> : null}
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[200px_minmax(350px,0.78fr)_minmax(0,1.35fr)]">
         <PipelineNavigation active={activeStep} onChange={setActiveStep} />
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">{editor}</section>
-        {runDetailLoading ? <section role="status" className="grid min-h-[620px] place-items-center rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm"><div><span className="mx-auto block h-8 w-8 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" /><p className="mt-3 text-sm font-semibold text-slate-600">正在按需读取所选运行的完整序列与分析结果…</p></div></section> : <ResultWorkspace run={currentRun} runs={runs} stale={resultStale} onSelectRun={(run) => { void loadRunDetail(run, draft) }} />}
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">{editor}</section>
+        {runDetailLoading ? <section role="status" className="grid min-h-[620px] place-items-center rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm"><div><span className="mx-auto block h-8 w-8 animate-spin rounded-full border-4 border-accent-200 border-t-accent-600" /><p className="mt-3 text-sm font-semibold text-slate-600">正在按需读取所选运行的完整序列与分析结果…</p></div></section> : <ResultWorkspace run={currentRun} runs={runs} stale={resultStale} onSelectRun={(run) => { void loadRunDetail(run, draft) }} />}
       </div>
     </div>
   )

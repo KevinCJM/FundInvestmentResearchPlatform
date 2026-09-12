@@ -140,6 +140,7 @@ from .series_provider import (
     ProductSeries,
     ProductVariableSeries,
     VariablePeriodWindow,
+    input_date_context,
     load_product_series,
     load_product_variable_series,
     load_product_variable_series_batch,
@@ -3116,6 +3117,9 @@ class CustomIndicatorService:
         if reason_code in {
             "PRODUCT_DATA_NOT_FOUND",
             "VARIABLE_NO_OBSERVATIONS",
+            "PRODUCT_NOT_ESTABLISHED_AS_OF",
+            "NO_DATA_BEFORE_CUTOFF",
+            "NO_DISCLOSURES_AS_OF",
             "DATA_NOT_FOUND",
         }:
             return "no_observations"
@@ -3925,6 +3929,7 @@ class CustomIndicatorService:
     ) -> dict[str, Any]:
         target_name = product_series.identity.name if product_series else target["product_id"]
         base = self._result_base(definition, target, target_name, period)
+        base["data_context"] = input_date_context(product_series, as_of)
         initial_requirements = self._input_requirements_payload(
             definition,
             product_series,
@@ -5649,6 +5654,7 @@ class CustomIndicatorService:
                 period,
             ),
             "value": output_value,
+            "data_context": input_date_context(source, window.requested_as_of),
             "status": "ok" if output_value is not None and not warnings else "warning",
             "warnings": warnings,
             "window": cls._window_payload(window),

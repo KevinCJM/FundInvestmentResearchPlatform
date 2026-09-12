@@ -56,29 +56,29 @@ export default function DashboardRankingTable({ kind, state }: DashboardRankingT
   const definition = response?.metric_definition;
 
   return (
-    <section aria-labelledby={headingId} className="min-w-0 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+    <section aria-labelledby={headingId} className="min-w-0 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h3 id={headingId} className="text-base font-semibold text-slate-900">{label} · 指标快照{definition ? ` · ${definition.label}` : ''}</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">来源：{definition?.source ?? '产品分析快照'} · 截至：{response?.as_of ?? '—'}。仅纳入存续、数据新鲜、完整覆盖所选区间且无异常跳点的产品；空值不按 0 处理。</p>
+          <p className="mt-1 text-xs leading-5 text-slate-600">来源：{definition?.source ?? '产品分析快照'} · 截至：{response?.as_of ?? '—'}。仅纳入存续、数据新鲜、完整覆盖所选区间且无异常跳点的产品；空值不按 0 处理。</p>
         </div>
-        <Link to={`/product-research/products?kind=${kind}`} className="shrink-0 text-sm font-semibold text-indigo-700 hover:text-indigo-600">查看全部产品 →</Link>
+        <Link to={`/product-research/products?kind=${kind}`} className="shrink-0 text-sm font-semibold text-accent-700 hover:text-accent-600">查看全部产品 →</Link>
       </div>
 
       {state.loading ? (
-        <div className="flex h-64 items-center justify-center text-sm text-slate-400">正在加载排行榜...</div>
+        <div className="flex h-64 items-center justify-center text-sm text-slate-600">正在加载排行榜...</div>
       ) : state.error ? (
-        <div role="alert" className="mt-4 rounded-xl bg-rose-50 p-4 text-sm text-rose-600">{state.error}</div>
+        <div role="alert" className="mt-4 rounded-xl bg-rose-50 p-4 text-sm text-rose-700">{state.error}</div>
       ) : !response || response.status === 'unavailable' ? (
         <div className="mt-4 rounded-xl border border-dashed border-amber-200 bg-amber-50 p-6 text-center text-sm text-amber-700">业绩快照尚未生成；结构统计仍可正常使用。</div>
       ) : response.items.length === 0 ? (
-        <div className="mt-4 rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">暂无满足排行榜口径的产品</div>
+        <div className="mt-4 rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-600">暂无满足排行榜口径的产品</div>
       ) : (
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-[1080px] divide-y divide-slate-200 text-left text-sm">
             <caption className="sr-only">{label}{definition?.label ?? '指标'}排行榜</caption>
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs uppercase tracking-wide text-slate-600">
                 <th scope="col" className="px-3 py-3">排名</th>
                 <th scope="col" className="px-3 py-3">产品</th>
                 <th scope="col" className="px-3 py-3">类型 / 风格</th>
@@ -93,15 +93,15 @@ export default function DashboardRankingTable({ kind, state }: DashboardRankingT
             </thead>
             <tbody className="divide-y divide-slate-100">
               {response.items.map((item, index) => (
-                <tr key={`${item.instrument_type}-${item.ts_code}`} className="hover:bg-indigo-50/50">
-                  <td className="px-3 py-3 font-semibold tabular-nums text-slate-400">{index + 1}</td>
+                <tr key={`${item.instrument_type}-${item.ts_code}`} className="hover:bg-accent-50/50">
+                  <td className="px-3 py-3 font-semibold tabular-nums text-slate-600">{index + 1}</td>
                   <td className="px-3 py-3">
-                    <Link to={`/product-research/products/${encodeURIComponent(item.ts_code)}?kind=${item.instrument_type}`} className="font-semibold text-indigo-700 hover:text-indigo-600">
+                    <Link to={`/product-research/products/${encodeURIComponent(item.ts_code)}?kind=${item.instrument_type}`} className="font-semibold text-accent-700 hover:text-accent-600">
                       {item.name ?? item.ts_code}
                     </Link>
-                    <div className="mt-0.5 text-xs text-slate-400">{item.ts_code}</div>
+                    <div className="mt-0.5 text-xs text-slate-600">{item.ts_code}</div>
                   </td>
-                  <td className="px-3 py-3 text-slate-600"><span className="font-medium text-slate-700">{item.fund_type ?? '--'}</span><div className="text-xs text-slate-400">{item.invest_type ?? '--'}</div></td>
+                  <td className="px-3 py-3 text-slate-600"><span className="font-medium text-slate-700">{item.fund_type ?? '--'}</span><div className="text-xs text-slate-600">{item.invest_type ?? '--'}</div></td>
                   <td className="px-3 py-3 text-slate-600">{item.management ?? '--'}</td>
                   <td className="px-3 py-3 text-right font-semibold text-slate-900"><MetricValue value={item.value} presentation={snapshotPresentation(definition, response.metric)} /></td>
                   <td className="px-3 py-3 text-right text-slate-600"><MetricValue value={item.metrics?.annual_volatility_1y} presentation={snapshotPresentation({ label: '1年年化波动', unit: 'ratio', source: definition?.source }, 'annual_volatility_1y')} /></td>

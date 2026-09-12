@@ -13,10 +13,10 @@ export default function EtlCollectionTiming({ run }: { run: EtlRun }) {
     <p>采集记录日期：{timing.first_date ? `${timing.first_date} 至 ${timing.last_date}` : '未知'}（北京时间）</p>
     <p className="text-xs text-slate-600">{timing.boundary}</p>
     <details>
-      <summary className="cursor-pointer text-xs text-indigo-700">查看采集批次时间与续跑记录</summary>
-      <p className="my-2 text-xs text-slate-500">{timing.scope} 以下按节点和尝试汇总，不是逐条数据的可得时点。</p>
+      <summary className="cursor-pointer text-xs text-accent-700">查看采集批次时间与续跑记录</summary>
+      <p className="my-2 text-xs text-slate-600">{timing.scope} 以下按节点和尝试汇总，不是逐条数据的可得时点。</p>
       <div className="overflow-x-auto"><table className="w-full text-left text-xs" aria-label="节点采集时间范围">
-        <thead><tr>{['节点 / 尝试', '时间范围（北京时间）', '时间依据 / 来源任务'].map(label => <th key={label} className="p-2">{label}</th>)}</tr></thead>
+        <thead><tr>{['节点 / 尝试', '时间范围（北京时间）', '时间依据 / 来源任务'].map(label => <th scope="col" key={label} className="p-2">{label}</th>)}</tr></thead>
         <tbody>{timing.windows.map(window => <tr key={`${window.run_id}-${window.step_id}-${window.attempt}`} className="border-t">
           <td className="p-2">{window.name} · 第 {window.attempt} 次</td>
           <td className="p-2">{time(window.first_at, timing.timezone)}<br />{time(window.last_at, timing.timezone)}</td>

@@ -74,7 +74,7 @@ export default function AutoIncrementalWorkspace({ catalog, canRun, onStarted, o
       </label>)}
     </fieldset>
     {selected.length && !definition ? <p role="alert">任务目录尚未就绪或依赖不完整，请重新加载页面。</p> : null}
-    {definition ? <p className="text-xs leading-6 text-slate-500">含依赖的执行顺序：{definition.steps.map(s => s.name).join(' → ')}</p> : null}
+    {definition ? <p className="text-xs leading-6 text-slate-600">含依赖的执行顺序：{definition.steps.map(s => s.name).join(' → ')}</p> : null}
     <EventUpdateSettings value={options} disabled={busy} onChange={value => { setPolicy(value); setPreview(null) }} />
     <button type="button" className={buttonClass} disabled={busy || !definition} onClick={() => void inspect()}>{busy ? '正在处理…' : '分析快照并预览区间'}</button>
     {error ? <p role="alert" className="text-sm text-rose-700">{error}</p> : null}

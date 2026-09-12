@@ -6,7 +6,7 @@ import { definitionForRequest, resolveRegimeAuthoring, type RegimeAuthoringResol
 function MathNotation({ latex, label }: { latex: string; label: string }) {
   try {
     const markup = katex.renderToString(latex, { displayMode: true, throwOnError: true, trust: false, strict: 'ignore', maxExpand: 1000 })
-    return <div aria-label={label} tabIndex={0} className="min-w-0 overflow-x-auto py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-violet-300" dangerouslySetInnerHTML={{ __html: markup }} />
+    return <div aria-label={label} tabIndex={0} className="min-w-0 overflow-x-auto py-2 text-slate-900 focus:outline-none focus:ring-2 focus:ring-accent-500" dangerouslySetInnerHTML={{ __html: markup }} />
   } catch {
     return <p role="status" className="text-sm text-amber-700">这条公式暂时无法排版，请检查公式定义。</p>
   }
@@ -17,13 +17,13 @@ export function RegimeMathDisplay({ resolution, outputId = 'state', message }: {
 }) {
   const latex = resolution?.display_latex?.[outputId]
   const steps = resolution?.formula_steps?.[outputId] || []
-  return <section aria-label="情景数学公式预览" className="mt-4 min-w-0 rounded-xl border border-violet-100 bg-violet-50/40 p-4">
+  return <section aria-label="情景数学公式预览" className="mt-4 min-w-0 rounded-xl border border-accent-100 bg-accent-50/40 p-4">
     <h3 className="text-sm font-semibold text-slate-800">数学公式</h3>
-    {latex && !message && <p className="mt-1 text-xs text-slate-500 sm:hidden">较长公式可左右滑动查看。</p>}
-    {message || !latex ? <p role="status" className="mt-2 text-sm text-slate-500">{message || resolution?.math_error || '连接输出并完成公式检查后，将显示数学公式。'}</p> : <>
+    {latex && !message && <p className="mt-1 text-xs text-slate-600 sm:hidden">较长公式可左右滑动查看。</p>}
+    {message || !latex ? <p role="status" className="mt-2 text-sm text-slate-600">{message || resolution?.math_error || '连接输出并完成公式检查后，将显示数学公式。'}</p> : <>
       <MathNotation latex={latex} label="当前输出的数学公式" />
-      {steps.length > 0 && <details className="mt-3 rounded-lg border border-slate-200 bg-white p-3"><summary className="cursor-pointer text-sm font-semibold text-slate-700">查看分步公式与参数</summary>
-        <p className="mt-2 text-xs leading-5 text-slate-500">每个 z 对应一个步骤的输出序列，θ 表示该步骤的参数。具名算子的含义见各步说明。</p>
+      {steps.length > 0 && <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer text-sm font-semibold text-slate-700">查看分步公式与参数</summary>
+        <p className="mt-2 text-xs leading-5 text-slate-600">每个 z 对应一个步骤的输出序列，θ 表示该步骤的参数。具名算子的含义见各步说明。</p>
         <ol className="mt-3 space-y-3">{steps.map((step, index) => <li key={`${step.node_id}:${step.port}`} className="min-w-0 rounded-lg bg-slate-50 p-3">
           <p className="text-sm font-semibold text-slate-800">{index + 1}. {step.label}</p>
           <MathNotation latex={step.latex} label={`第 ${index + 1} 步的数学公式`} />

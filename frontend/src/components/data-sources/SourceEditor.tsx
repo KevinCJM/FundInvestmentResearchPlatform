@@ -24,14 +24,14 @@ export default function SourceEditor({ record, editingEnabled, onSaved, onDirty,
     submitting.current = true; setBusy(true); onBusy?.(true); setError(''); setMessage('')
     try { await operation() } catch (reason) { setError(reason instanceof Error ? reason.message : '操作未完成。') } finally { submitting.current = false; setBusy(false); onBusy?.(false) }
   }
-  return <form ref={form} noValidate className="space-y-5 rounded-2xl border border-slate-200 bg-white p-5" onSubmit={event => {
+  return <form ref={form} noValidate className="space-y-5 rounded-xl border border-slate-200 bg-white p-5" onSubmit={event => {
     event.preventDefault()
     if (busy || !editingEnabled || !validateEditor(form.current)) return
     const destinationChanged = record.revision > 0 && ['base_url', 'transport', 'auth_mode', 'auth_header'].some(key => config[key as keyof SourceConfig] !== record.config[key as keyof SourceConfig])
     if (destinationChanged && !window.confirm('修改地址或认证协议后，已有凭据不会发往新地址；需要重新保存凭据。继续保存？')) return
     void perform(async () => { const saved = await saveSource(config, record.revision); onDirty(false); onSaved(saved.config.id) })
   }}>
-    <div><h2 className="text-lg font-bold text-slate-950">{record.revision ? '数据源设置' : '新建数据源'}</h2><p className="mt-1 text-xs text-slate-500">凭据独立存储，不写入参数、映射或浏览器缓存。修改配置并保存后，下次任务使用新版本。</p></div>
+    <div><h2 className="text-lg font-bold text-slate-950">{record.revision ? '数据源设置' : '新建数据源'}</h2><p className="mt-1 text-xs text-slate-600">凭据独立存储，不写入参数、映射或浏览器缓存。修改配置并保存后，下次任务使用新版本。</p></div>
     {error ? <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p> : null}
     {message ? <p role="status" className="text-sm text-emerald-800">{message}</p> : null}
     <fieldset disabled={busy || !editingEnabled} className="space-y-5">
@@ -58,7 +58,7 @@ export default function SourceEditor({ record, editingEnabled, onSaved, onDirty,
       })}>保存凭据</button><button type="button" className={buttonClass} disabled={busy || !editingEnabled || !credentialConfigured} onClick={() => {
         if (window.confirm('清除该数据源的认证凭据？已下载数据不会删除。')) void perform(async () => { await saveSourceCredential(record.config.id, null); setCredentialConfigured(false); setCredential(''); onCredentialChanged?.(false); onDirty(JSON.stringify(config) !== JSON.stringify(record.config)); setMessage('凭据已清除。') })
       }}>清除凭据</button></div>
-    </section> : <p className="text-xs text-slate-500">{record.revision ? '当前连接不需要认证凭据。' : '先保存数据源，再配置认证凭据和接口。'}</p>}
-    {record.revision > 0 && onNext ? <div className="border-t border-slate-100 pt-4"><p className="mb-3 text-xs text-slate-500">连接配置完成后，可选择已有接口，或配置新接口。</p><button type="button" className={buttonClass} disabled={busy || !editingEnabled} onClick={onNext}>下一步：选择需要的数据</button></div> : null}
+    </section> : <p className="text-xs text-slate-600">{record.revision ? '当前连接不需要认证凭据。' : '先保存数据源，再配置认证凭据和接口。'}</p>}
+    {record.revision > 0 && onNext ? <div className="border-t border-slate-100 pt-4"><p className="mb-3 text-xs text-slate-600">连接配置完成后，可选择已有接口，或配置新接口。</p><button type="button" className={buttonClass} disabled={busy || !editingEnabled} onClick={onNext}>下一步：选择需要的数据</button></div> : null}
   </form>
 }

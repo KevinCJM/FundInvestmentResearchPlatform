@@ -308,7 +308,7 @@ export default function DataHealthRefreshPanel({
   ) ?? '正在检查数据源状态...';
   const needsAttention = Boolean(error || status?.job.analytics_snapshot?.status === 'failed' || status?.job.status === 'failed');
   const jobTone = needsAttention ? 'bg-amber-100 text-amber-900' : status?.job.status === 'running' || status?.refresh_locked
-    ? 'bg-indigo-100 text-indigo-800'
+    ? 'bg-accent-100 text-accent-800'
     : status?.job.status === 'succeeded'
       ? 'bg-emerald-100 text-emerald-800'
       : status?.job.status === 'failed' || error
@@ -423,50 +423,50 @@ export default function DataHealthRefreshPanel({
       aria-label="数据下载与更新"
       className="min-w-0 space-y-5"
     >
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 ref={taskHeading} tabIndex={-1} id="data-refresh-heading" className="text-lg font-semibold text-slate-950">当前任务</h2>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${jobTone}`}>{jobLabel}</span>
             </div>
-            <p className="mt-1 text-sm text-slate-500">任务在后台运行，离开页面不会中断下载。</p>
+            <p className="mt-1 text-sm text-slate-600">任务在后台运行，离开页面不会中断下载。</p>
           </div>
           <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs sm:grid-cols-3">
-            <div><dt className="text-slate-400">数据源</dt><dd className="mt-1 font-semibold text-slate-700">Tushare</dd></div>
-            <div><dt className="text-slate-400">凭证</dt><dd className="mt-1 font-semibold text-slate-700">{status?.token_configured ? '已配置' : '未配置'}</dd></div>
-            <div className="col-span-2 sm:col-span-1"><dt className="text-slate-400">执行方式</dt><dd className="mt-1 font-semibold text-slate-700">后台任务</dd></div>
+            <div><dt className="text-slate-600">数据源</dt><dd className="mt-1 font-semibold text-slate-700">Tushare</dd></div>
+            <div><dt className="text-slate-600">凭证</dt><dd className="mt-1 font-semibold text-slate-700">{status?.token_configured ? '已配置' : '未配置'}</dd></div>
+            <div className="col-span-2 sm:col-span-1"><dt className="text-slate-600">执行方式</dt><dd className="mt-1 font-semibold text-slate-700">后台任务</dd></div>
           </dl>
         </div>
-        <div role="status" aria-live="polite" className={`mt-4 rounded-xl px-4 py-3 text-sm ${error ? 'bg-rose-50 text-rose-700' : running ? 'bg-indigo-50 text-indigo-800' : 'bg-slate-50 text-slate-700'}`}>
+        <div role="status" aria-live="polite" className={`mt-4 rounded-xl px-4 py-3 text-sm ${error ? 'bg-rose-50 text-rose-700' : running ? 'bg-accent-50 text-accent-800' : 'bg-slate-50 text-slate-700'}`}>
           <span className="font-semibold">{error ? '操作失败：' : running ? '正在执行：' : '任务状态：'}</span>
           <span className="break-words">{refreshMessage}</span>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
           <button type="button" onClick={() => void fetchStatus()} disabled={checking || submitting || rebuilding} className="min-h-10 rounded-lg border border-slate-300 px-3 font-semibold text-slate-700 disabled:opacity-50">{checking ? '正在检查…' : '重新检查状态'}</button>
-          <span className="text-slate-500">{lastCheckedAt ? `状态检查于 ${localDateTime(Date.parse(lastCheckedAt))}` : '尚未取得任务状态'}</span>
+          <span className="text-slate-600">{lastCheckedAt ? `状态检查于 ${localDateTime(Date.parse(lastCheckedAt))}` : '尚未取得任务状态'}</span>
         </div>
         {status?.job.status === 'succeeded' && !needsAttention ? <div className="mt-4 space-y-2 border-t border-slate-100 pt-4 text-sm">
           <p className="font-semibold text-slate-800">下载任务已结束，接下来检查数据质量。</p>
-          <p className="text-xs leading-5 text-slate-500">现有研究数据与新标准表候选是两条独立链路。下载成功不代表新标准表已经发布。</p>
-          <div className="flex flex-wrap gap-4 font-semibold text-indigo-700"><Link to="/settings/data-quality">检查数据质量 →</Link><Link to="/settings/source-center?view=results">查看标准表映射结果 →</Link></div>
+          <p className="text-xs leading-5 text-slate-600">现有研究数据与新标准表候选是两条独立链路。下载成功不代表新标准表已经发布。</p>
+          <div className="flex flex-wrap gap-4 font-semibold text-accent-700"><Link to="/settings/data-quality">检查数据质量 →</Link><Link to="/settings/source-center?view=results">查看标准表映射结果 →</Link></div>
         </div> : null}
       </div>
 
       <RefreshRecoveryActions status={status} locked={refreshControlsLocked} rebuilding={rebuilding} recoverableCandidate={recoverableCandidate} canResume={resumePreviousAvailable} onResume={() => void resumePreviousRefresh()} onRebuild={() => void rebuildAnalytics(recoverableCandidate)} />
 
-      <form onSubmit={submitToken} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <form onSubmit={submitToken} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <h2 className="text-base font-semibold text-slate-950">连接数据源</h2>
         <p className="mt-1 text-sm text-slate-600">Tushare · {status?.token_configured ? '凭据已保存，日常更新无需重复填写。' : '首次使用，请填写访问凭据。'} 保存凭据不代表接口权限已验证。</p>
         <details open={!status?.token_configured || showToken} onToggle={event => { if (status?.token_configured) setShowToken(event.currentTarget.open); }} className="mt-3">
-          <summary className="cursor-pointer py-2 text-sm font-semibold text-indigo-700">{status?.token_configured ? '管理连接凭据' : '填写连接凭据'}</summary>
+          <summary className="cursor-pointer py-2 text-sm font-semibold text-accent-700">{status?.token_configured ? '管理连接凭据' : '填写连接凭据'}</summary>
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
-              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">1</span>
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent-100 text-xs font-bold text-accent-700">1</span>
               <div>
                 <h3 className="text-base font-semibold text-slate-950">Tushare 访问凭据</h3>
-                <p className="mt-0.5 text-xs text-slate-500">用于本机直接下载 Tushare 数据。</p>
+                <p className="mt-0.5 text-xs text-slate-600">用于本机直接下载 Tushare 数据。</p>
               </div>
               <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${status?.token_configured ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>
                 {status?.token_configured ? 'Token 已配置' : 'Token 未配置'}
@@ -484,9 +484,9 @@ export default function DataHealthRefreshPanel({
               onChange={(event) => setTokenInput(event.target.value)}
               disabled={tokenControlsDisabled}
               placeholder={status?.token_configured ? '输入新 Token 以替换现有凭证' : '粘贴 Tushare Token'}
-              className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+              className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500 disabled:cursor-not-allowed disabled:bg-slate-100"
             />
-            <p id="tushare-token-help" className="mt-2 text-xs leading-5 text-slate-500">
+            <p id="tushare-token-help" className="mt-2 text-xs leading-5 text-slate-600">
               Token 只保存在运行本系统的本机凭据文件中；页面不回显明文，任务日志也不会记录。
             </p>
           </div>
@@ -496,7 +496,7 @@ export default function DataHealthRefreshPanel({
                 type="button"
                 onClick={clearToken}
                 disabled={tokenControlsDisabled}
-                className="rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                className="rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-50 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-600"
               >
                 清除 Token
               </button>
@@ -504,7 +504,7 @@ export default function DataHealthRefreshPanel({
             <button
               type="submit"
               disabled={tokenControlsDisabled || !tokenInput.trim()}
-              className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {savingToken ? '正在保存...' : status?.token_configured ? '更新 Token' : '保存 Token'}
             </button>
@@ -516,13 +516,13 @@ export default function DataHealthRefreshPanel({
         </details>
       </form>
 
-      <fieldset className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <fieldset className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <legend className="sr-only">更新方式</legend>
         <div className="flex items-start gap-3">
-          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">2</span>
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-100 text-xs font-bold text-accent-700">2</span>
           <div>
             <h2 className="text-base font-semibold text-slate-950">选择更新方式</h2>
-            <p className="mt-0.5 text-xs leading-5 text-slate-500">日常维护使用增量更新；仅在首次建库或需要彻底重建时使用全量更新。</p>
+            <p className="mt-0.5 text-xs leading-5 text-slate-600">日常维护使用增量更新；仅在首次建库或需要彻底重建时使用全量更新。</p>
           </div>
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -530,15 +530,15 @@ export default function DataHealthRefreshPanel({
             const selected = mode === option;
             const fullDisabled = option === 'full' && !status?.full_refresh_enabled;
             return (
-              <label key={option} className={`flex items-start gap-3 rounded-xl border p-4 ${selected ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-100' : 'border-slate-200 bg-white'} ${refreshControlsLocked || fullDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-indigo-200'}`}>
-                <input type="radio" name="refresh-mode" value={option} checked={selected} disabled={refreshControlsLocked || fullDisabled} onChange={() => setMode(option)} className="mt-1 text-indigo-600 focus:ring-indigo-500" />
+              <label key={option} className={`flex items-start gap-3 rounded-xl border p-4 ${selected ? 'border-accent-400 bg-accent-50 ring-1 ring-accent-100' : 'border-slate-200 bg-white'} ${refreshControlsLocked || fullDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-accent-200'}`}>
+                <input type="radio" name="refresh-mode" value={option} checked={selected} disabled={refreshControlsLocked || fullDisabled} onChange={() => setMode(option)} className="mt-1 text-accent-600 focus:ring-accent-500" />
                 <span>
                   <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
                     {option === 'incremental' ? '增量更新' : '全量更新'}
-                    {option === 'incremental' && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700">日常推荐</span>}
-                    {fullDisabled && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">当前不可用</span>}
+                    {option === 'incremental' && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">日常推荐</span>}
+                    {fullDisabled && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">当前不可用</span>}
                   </span>
-                  <span className="mt-1 block text-xs leading-5 text-slate-500">
+                  <span className="mt-1 block text-xs leading-5 text-slate-600">
                     {option === 'incremental' ? '从本地最新日期继续补抓，耗时更短。' : '从配置起始日重新构建，可能运行数小时。'}
                   </span>
                 </span>
@@ -548,26 +548,26 @@ export default function DataHealthRefreshPanel({
         </div>
       </fieldset>
 
-      <fieldset className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <fieldset className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <legend className="sr-only">下载范围</legend>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex items-start gap-3">
-            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">3</span>
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-100 text-xs font-bold text-accent-700">3</span>
             <div>
               <h2 className="text-base font-semibold text-slate-950">选择下载范围</h2>
-              <p className="mt-0.5 text-xs leading-5 text-slate-500">先选常用方案，需要时再展开具体内容；必要依赖会自动加入。</p>
+              <p className="mt-0.5 text-xs leading-5 text-slate-600">先选常用方案，需要时再展开具体内容；必要依赖会自动加入。</p>
             </div>
           </div>
-          <p className="text-xs font-semibold tabular-nums text-indigo-700">已选 {modules.length} 个模块 · {selectedScopeCount} 项内容</p>
+          <p className="text-xs font-semibold tabular-nums text-accent-700">已选 {modules.length} 个模块 · {selectedScopeCount} 项内容</p>
         </div>
         <div className="mt-4 flex flex-wrap gap-2" aria-label="同步方案">
-          <button type="button" aria-pressed={preset === 'daily'} disabled={refreshControlsLocked} onClick={() => applyPreset('daily')} className={`min-h-11 rounded-xl border px-4 text-sm font-semibold disabled:opacity-50 ${preset === 'daily' ? 'border-indigo-300 bg-indigo-50 text-indigo-900' : 'border-slate-200'}`}>日常基金更新</button>
-          <button type="button" aria-pressed={preset === 'research'} disabled={refreshControlsLocked} onClick={() => applyPreset('research')} className={`min-h-11 rounded-xl border px-4 text-sm font-semibold disabled:opacity-50 ${preset === 'research' ? 'border-indigo-300 bg-indigo-50 text-indigo-900' : 'border-slate-200'}`}>指数与宏观研究</button>
+          <button type="button" aria-pressed={preset === 'daily'} disabled={refreshControlsLocked} onClick={() => applyPreset('daily')} className={`min-h-11 rounded-xl border px-4 text-sm font-semibold disabled:opacity-50 ${preset === 'daily' ? 'border-accent-300 bg-accent-50 text-accent-900' : 'border-slate-200'}`}>日常基金更新</button>
+          <button type="button" aria-pressed={preset === 'research'} disabled={refreshControlsLocked} onClick={() => applyPreset('research')} className={`min-h-11 rounded-xl border px-4 text-sm font-semibold disabled:opacity-50 ${preset === 'research' ? 'border-accent-300 bg-accent-50 text-accent-900' : 'border-slate-200'}`}>指数与宏观研究</button>
           <button type="button" aria-pressed={preset === 'custom'} disabled={refreshControlsLocked} onClick={() => { setPreset('custom'); setShowScopes(true); }} className="min-h-11 rounded-xl border border-slate-200 px-4 text-sm font-semibold disabled:opacity-50">自定义范围</button>
         </div>
-        <p className="mt-2 text-xs leading-5 text-slate-500">方案只调整下载内容，不会自动启动，也不会切换为全量更新。</p>
+        <p className="mt-2 text-xs leading-5 text-slate-600">方案只调整下载内容，不会自动启动，也不会切换为全量更新。</p>
         <details open={showScopes} onToggle={event => setShowScopes(event.currentTarget.open)} className="mt-4">
-          <summary className="cursor-pointer py-2 text-sm font-semibold text-indigo-700">调整具体下载内容 · {selectedScopeCount} 项已选</summary>
+          <summary className="cursor-pointer py-2 text-sm font-semibold text-accent-700">调整具体下载内容 · {selectedScopeCount} 项已选</summary>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           {moduleOptions.map((option) => {
             const checked = modules.includes(option.value);
@@ -576,7 +576,7 @@ export default function DataHealthRefreshPanel({
             const availableScopes = status?.available_module_scopes?.[option.value]
               ?? (option.value === 'index' ? status?.available_index_scopes : undefined);
             return (
-              <section aria-label={`${option.label}模块`} key={option.value} className={`min-w-0 rounded-xl border ${checked ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-200 bg-slate-50/50'} ${unavailable ? 'opacity-50' : ''} ${option.value === 'index' ? 'md:col-span-2' : ''}`}>
+              <section aria-label={`${option.label}模块`} key={option.value} className={`min-w-0 rounded-xl border ${checked ? 'border-accent-300 bg-accent-50/50' : 'border-slate-200 bg-slate-50/50'} ${unavailable ? 'opacity-50' : ''} ${option.value === 'index' ? 'md:col-span-2' : ''}`}>
                 <label className={`flex items-start justify-between gap-3 p-4 ${refreshControlsLocked || unavailable ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
                   <span className="flex min-w-0 items-start gap-3">
                     <input
@@ -584,14 +584,14 @@ export default function DataHealthRefreshPanel({
                       checked={checked}
                       disabled={refreshControlsLocked || unavailable}
                       onChange={(event) => toggleModule(option.value, event.target.checked)}
-                      className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      className="mt-0.5 rounded-lg border-slate-300 text-accent-600 focus:ring-accent-500"
                     />
                     <span className="min-w-0">
                       <span className="block text-sm font-semibold text-slate-900">{option.label}</span>
-                      <span className="mt-1 block text-xs leading-5 text-slate-500">{option.description}</span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-600">{option.description}</span>
                     </span>
                   </span>
-                  <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold tabular-nums text-slate-600 ring-1 ring-slate-200">{selectedScopes.length}/{option.scopes.length}</span>
+                  <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-xs font-semibold tabular-nums text-slate-600 ring-1 ring-slate-200">{selectedScopes.length}/{option.scopes.length}</span>
                 </label>
                 <fieldset aria-label={`${option.label}下载内容`} className={`grid gap-2 border-t border-slate-200/80 p-3 ${option.value === 'index' ? 'sm:grid-cols-2 xl:grid-cols-4' : 'sm:grid-cols-2'}`}>
                   <legend className="sr-only">{option.label}下载内容</legend>
@@ -601,19 +601,19 @@ export default function DataHealthRefreshPanel({
                     const scopeUnavailable = Boolean(availableScopes && !availableScopes.includes(scope.value));
                     const scopeDisabled = refreshControlsLocked || unavailable || scopeUnavailable || dependency;
                     return (
-                      <label key={scope.value} className={`block rounded-lg border p-2.5 sm:p-3 ${scopeChecked ? 'border-indigo-200 bg-white' : 'border-slate-200 bg-white/70'} ${scopeDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-indigo-200'}`}>
+                      <label key={scope.value} className={`block rounded-lg border p-2.5 sm:p-3 ${scopeChecked ? 'border-accent-200 bg-white' : 'border-slate-200 bg-white/70'} ${scopeDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:border-accent-200'}`}>
                         <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                           <input
                             type="checkbox"
                             checked={scopeChecked}
                             disabled={scopeDisabled}
                             onChange={(event) => toggleScope(option.value, scope.value, event.target.checked)}
-                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            className="rounded-lg border-slate-300 text-accent-600 focus:ring-accent-500"
                           />
                           {scope.label}
-                          {dependency && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500">自动依赖</span>}
+                          {dependency && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">自动依赖</span>}
                         </span>
-                        <span className="mt-1 hidden text-xs leading-5 text-slate-500 sm:block">{scope.description}</span>
+                        <span className="mt-1 hidden text-xs leading-5 text-slate-600 sm:block">{scope.description}</span>
                       </label>
                     );
                   })}
@@ -623,7 +623,7 @@ export default function DataHealthRefreshPanel({
           })}
         </div>
         </details>
-        <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">增量更新历史数据时会自动同步交易日历，避免日期断层。</p>
+        <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-600">增量更新历史数据时会自动同步交易日历，避免日期断层。</p>
       </fieldset>
 
       {status && (!status.enabled || !status.token_configured) && (
@@ -633,12 +633,12 @@ export default function DataHealthRefreshPanel({
         <div
           id="refresh-background-notice"
           aria-live="polite"
-          className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-900"
+          className="rounded-xl border border-accent-200 bg-accent-50 p-4 text-sm text-accent-900"
         >
           <div className="font-semibold">
             {submitting ? '正在启动后台数据更新…' : rebuilding ? '正在整理分析数据，暂时不能启动新的下载。' : '数据更新正在后台运行，下载入口已锁定。'}
           </div>
-          <p className="mt-1 text-xs leading-5 text-indigo-700">
+          <p className="mt-1 text-xs leading-5 text-accent-700">
             您可以继续使用系统其他功能；当前任务结束前，不能启动新的增量更新、全量更新或分析快照重建。
           </p>
         </div>
@@ -648,29 +648,29 @@ export default function DataHealthRefreshPanel({
         <details className="rounded-xl border border-slate-200 bg-slate-950 p-4 text-xs text-slate-200"><summary className="cursor-pointer font-semibold">查看任务日志</summary><pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap">{status.job.log_tail}</pre></details>
       )}
 
-      <section aria-label="本次同步清单" className="rounded-2xl border border-slate-200 bg-white p-5">
+      <section aria-label="本次同步清单" className="rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="text-base font-semibold text-slate-900">确认本次同步内容</h2>
         <dl className="mt-3 space-y-2 text-sm">{moduleOptions.filter(option => modules.includes(option.value)).map(option => <div key={option.value} className="grid gap-1 sm:grid-cols-[130px_minmax(0,1fr)]">
           <dt className="font-semibold text-slate-700">{option.label}</dt><dd className="text-slate-600">{option.scopes.filter(scope => moduleScopes[option.value].includes(scope.value)).map(scope => scope.label).join('、') || '未选择内容'}</dd>
         </div>)}</dl>
         {!modules.length ? <p className="mt-2 text-sm text-amber-800">尚未选择数据，请选择方案或勾选具体内容。</p> : null}
-        <p className="mt-3 text-xs leading-5 text-slate-500">{mode === 'full' ? '全量会按系统配置的历史范围重建，启动前还需确认。' : '增量用于补充最近数据；首次使用需要完整历史时，请选择全量。'} 标准表映射结果单独生成候选，不自动替换正式研究数据。</p>
+        <p className="mt-3 text-xs leading-5 text-slate-600">{mode === 'full' ? '全量会按系统配置的历史范围重建，启动前还需确认。' : '增量用于补充最近数据；首次使用需要完整历史时，请选择全量。'} 标准表映射结果单独生成候选，不自动替换正式研究数据。</p>
       </section>
-      <div className="rounded-2xl bg-slate-950 p-5 text-white shadow-sm sm:p-6">
+      <div className="rounded-xl bg-slate-950 p-5 text-white shadow-sm sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
               <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs font-bold text-white">4</span>
               <div className="min-w-0 flex-1">
                 <h2 className="text-base font-semibold">启动更新</h2>
-                <p className="mt-1 text-sm text-slate-300">
+                <p className="mt-1 text-sm text-slate-200">
                   {mode === 'incremental' ? '增量更新' : '全量更新'} · {selectedModuleLabels.length ? selectedModuleLabels.join('、') : '未选择模块'} · {selectedScopeCount} 项内容
                 </p>
               </div>
             </div>
-            <p className={`mt-2 text-xs ${refreshDisabled ? 'text-amber-300' : 'text-slate-400'}`}>{refreshDisabledReason}</p>
+            <p className={`mt-2 text-xs ${refreshDisabled ? 'text-amber-300' : 'text-slate-200'}`}>{refreshDisabledReason}</p>
           </div>
-          <button type="button" aria-describedby={refreshControlsLocked ? 'refresh-background-notice' : undefined} onClick={async () => { await startRefresh(modules, mode, moduleScopes); taskHeading.current?.focus(); taskHeading.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }); }} disabled={refreshDisabled} className="inline-flex min-h-12 w-full shrink-0 items-center justify-center rounded-xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 lg:w-auto lg:min-w-52">
+          <button type="button" aria-describedby={refreshControlsLocked ? 'refresh-background-notice' : undefined} onClick={async () => { await startRefresh(modules, mode, moduleScopes); taskHeading.current?.focus(); taskHeading.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }); }} disabled={refreshDisabled} className="inline-flex min-h-12 w-full shrink-0 items-center justify-center rounded-xl bg-accent-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2 focus:ring-offset-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 lg:w-auto lg:min-w-52">
             {submitting ? '正在启动后台任务...' : running ? '后台更新中（已锁定）' : '开始数据更新'}
           </button>
         </div>

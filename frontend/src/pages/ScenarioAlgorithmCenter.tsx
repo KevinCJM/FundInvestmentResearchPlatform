@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import ReactECharts from "echarts-for-react";
+import { EmptyState } from "../components/ui";
 import type { EChartsOption } from "echarts";
 import {
   type HistoricalRegimeRun,
@@ -248,11 +249,11 @@ function SectionHeading(
 ) {
   return (
     <div>
-      <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600">
+      <p className="text-xs font-bold uppercase tracking-[0.16em] text-accent-600">
         {eyebrow}
       </p>
       <h3 className="mt-1 text-lg font-bold text-slate-950">{title}</h3>
-      <p className="mt-1 text-xs leading-5 text-slate-500">{detail}</p>
+      <p className="mt-1 text-xs leading-5 text-slate-600">{detail}</p>
     </div>
   );
 }
@@ -266,7 +267,7 @@ function Message({ error, notice }: { error: string; notice: string }) {
         "rounded-xl border px-4 py-3 text-sm",
         error
           ? "border-rose-200 bg-rose-50 text-rose-900"
-          : "border-indigo-200 bg-indigo-50 text-indigo-900",
+          : "border-accent-200 bg-accent-50 text-accent-900",
       )}
     >
       {error || notice}
@@ -293,7 +294,7 @@ function DefinitionBar(
     ? "简单收益响应"
     : "资产收益直接输入";
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="grid gap-3 xl:grid-cols-[minmax(260px,1fr)_auto] xl:items-end">
         <label className="text-sm font-semibold text-slate-700">
           已保存定义
@@ -301,7 +302,7 @@ function DefinitionBar(
             aria-label="已保存情景定义"
             value={draft.id ?? ""}
             onChange={(event) => onSelect(event.target.value)}
-            className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+            className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500"
           >
             <option value="">新建定义</option>
             {definitions.map((definition) => (
@@ -334,7 +335,7 @@ function DefinitionBar(
             type="button"
             disabled={Boolean(busy)}
             onClick={onSave}
-            className="min-h-11 rounded-xl border border-indigo-300 px-4 text-sm font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+            className="min-h-11 rounded-xl border border-accent-300 px-4 text-sm font-bold text-accent-700 hover:bg-accent-50 disabled:opacity-50"
           >
             {busy === "save"
               ? "保存中…"
@@ -346,7 +347,7 @@ function DefinitionBar(
             type="button"
             disabled={!runnable || Boolean(busy)}
             onClick={onRun}
-            className="min-h-11 rounded-xl bg-indigo-600 px-4 text-sm font-bold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-bold text-white hover:bg-accent-500 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             {busy === "run" ? "运行中…" : "按当前版本运行"}
           </button>
@@ -396,19 +397,19 @@ function BlueprintPanel(
               if (next) onChange(next);
             }}
             className={cx(
-              "min-h-24 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
+              "min-h-24 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
               draft.template_id === template.id
-                ? "border-indigo-500 bg-indigo-50"
+                ? "border-accent-500 bg-accent-50"
                 : "border-slate-200 hover:border-slate-400",
             )}
           >
-            <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600">
+            <span className="text-xs font-bold uppercase tracking-wide text-accent-600">
               {template.category || template.phase || "情景模板"}
             </span>
             <span className="mt-1 block text-sm font-bold text-slate-950">
               {template.name}
             </span>
-            <span className="mt-1 block text-[11px] leading-5 text-slate-500">
+            <span className="mt-1 block text-xs leading-5 text-slate-600">
               {template.description ||
                 methodDescriptions[
                   (template.definition ?? template.default_definition)
@@ -488,7 +489,7 @@ function BlueprintPanel(
                   ),
                 })}
               className={cx(
-                "min-h-24 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
+                "min-h-24 rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
                 draft.method === method
                   ? "border-slate-950 bg-slate-950 text-white"
                   : "border-slate-200 bg-white hover:border-slate-400",
@@ -499,8 +500,8 @@ function BlueprintPanel(
               </span>
               <span
                 className={cx(
-                  "mt-1 block text-[11px] leading-5",
-                  draft.method === method ? "text-slate-300" : "text-slate-500",
+                  "mt-1 block text-xs leading-5",
+                  draft.method === method ? "text-slate-600" : "text-slate-600",
                 )}
               >
                 {methodDescriptions[method]}
@@ -652,7 +653,7 @@ function PathPanel(
           />
           {draft.method === "reverse_stress"
             ? (
-              <span className="mt-1 block text-[11px] font-normal text-slate-500">
+              <span className="mt-1 block text-xs font-normal text-slate-600">
                 当前反向压力求解器采用单期线性近似。
               </span>
             )
@@ -871,7 +872,7 @@ function PathPanel(
                     <legend className="text-sm font-bold text-slate-900">
                       状态收益来源
                     </legend>
-                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                    <p className="mt-1 text-xs leading-5 text-slate-600">
                       状态转移来自上方发布运行；资产收益可以手工填写，也可以从同一运行的评价目标制品按状态联合抽样。
                     </p>
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -887,8 +888,8 @@ function PathPanel(
                       <label className={cx(
                         "flex min-h-12 items-center gap-3 rounded-xl border px-3 text-xs font-bold",
                         historicalDistributionLocked && draft.assets.length
-                          ? "cursor-pointer border-indigo-200 text-indigo-800"
-                          : "cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400",
+                          ? "cursor-pointer border-accent-200 text-accent-800"
+                          : "cursor-not-allowed border-slate-200 bg-slate-50 text-slate-600",
                       )}>
                         <input
                           type="radio"
@@ -908,7 +909,7 @@ function PathPanel(
                       </p>
                     )
                     : (
-                      <p className="mt-3 text-[11px] leading-5 text-slate-500">
+                      <p className="mt-3 text-xs leading-5 text-slate-600">
                         可用评价目标 {historicalDistribution.targets.length} 项 · 内容锁 {historicalDistribution.contentHash.slice(0, 12)}… · 制品锁 {historicalDistribution.checksum.slice(7, 19)}…
                       </p>
                     )}
@@ -917,7 +918,7 @@ function PathPanel(
               : null}
             {usesHistoricalDistribution && historicalDistributionLocked
               ? (
-                <div className="space-y-4 rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+                <div className="space-y-4 rounded-xl border border-accent-200 bg-accent-50/40 p-4">
                   {!sourceMatchesSelectedRun
                     ? (
                       <div role="alert" className="flex flex-col gap-2 rounded-lg bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-900 sm:flex-row sm:items-center sm:justify-between">
@@ -949,7 +950,7 @@ function PathPanel(
                     {draft.assets.map((asset) => {
                       const mapping = assetTargetMap[asset.id] ?? {};
                       return (
-                        <div key={asset.id} className="grid gap-2 rounded-xl border border-indigo-100 bg-white p-3 sm:grid-cols-[minmax(120px,.8fr)_minmax(170px,1.2fr)_minmax(170px,1fr)] sm:items-end">
+                        <div key={asset.id} className="grid gap-2 rounded-xl border border-accent-100 bg-white p-3 sm:grid-cols-[minmax(120px,.8fr)_minmax(170px,1.2fr)_minmax(170px,1fr)] sm:items-end">
                           <p className="text-sm font-bold text-slate-800">{asset.label}</p>
                           <label className="text-xs font-semibold text-slate-600">
                             评价目标<select
@@ -968,7 +969,7 @@ function PathPanel(
                                   },
                                 },
                               })}
-                              className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-2"
+                              className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2"
                             >
                               <option value="">请选择评价目标</option>
                               {historicalDistribution.targets.map((target) => (
@@ -992,7 +993,7 @@ function PathPanel(
                                   },
                                 },
                               })}
-                              className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-2"
+                              className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2"
                             >
                               <option value="simple_return">净值 / 价格转下一期简单收益</option>
                               <option value="forward_value">序列值已是下一期简单收益</option>
@@ -1017,7 +1018,7 @@ function PathPanel(
                             minimum_observations_per_state: Number(event.target.value),
                           },
                         })}
-                        className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3"
+                        className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-3"
                       />
                     </label>
                     <label className="text-xs font-semibold text-slate-600">
@@ -1030,7 +1031,7 @@ function PathPanel(
                             inline_policy: event.target.value,
                           },
                         })}
-                        className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3"
+                        className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-3"
                       >
                         <option value="forbid">禁止手工收益覆盖（默认）</option>
                         <option value="override">允许手工收益显式覆盖</option>
@@ -1184,7 +1185,7 @@ function FactorValueTable(
               <th scope="row" className="px-3 py-2 text-left font-semibold">
                 {factor.label}
               </th>
-              <td className="px-3 py-2 text-slate-500">{factor.unit}</td>
+              <td className="px-3 py-2 text-slate-600">{factor.unit}</td>
               <td className="px-3 py-2 text-right">
                 <input
                   aria-label={`${title}${factor.label}`}
@@ -1239,8 +1240,8 @@ function JsonEditor(
       <div className="mt-2 flex items-center justify-between gap-3">
         <span
           className={cx(
-            "text-[11px]",
-            error ? "text-rose-700" : "text-slate-500",
+            "text-xs",
+            error ? "text-rose-700" : "text-slate-600",
           )}
         >
           {error || helper}
@@ -1368,7 +1369,7 @@ function ExposurePanel(
         <button
           type="button"
           onClick={addPortfolio}
-          className="min-h-10 rounded-xl border border-dashed border-indigo-300 px-3 text-xs font-bold text-indigo-700"
+          className="min-h-10 rounded-xl border border-dashed border-accent-300 px-3 text-xs font-bold text-accent-700"
         >
           + 添加组合
         </button>
@@ -1407,10 +1408,10 @@ function ExposurePanel(
             <div className="mt-4 overflow-x-auto">
               <table className="w-full min-w-[420px] text-sm">
                 <caption className="sr-only">组合目标权重</caption>
-                <thead className="text-left text-xs text-slate-500">
+                <thead className="text-left text-xs text-slate-600">
                   <tr>
-                    <th className="pb-2">资产</th>
-                    <th className="pb-2 text-right">目标权重</th>
+                    <th scope="col" className="pb-2">资产</th>
+                    <th scope="col" className="pb-2 text-right">目标权重</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1442,7 +1443,7 @@ function ExposurePanel(
                 </tbody>
                 <tfoot>
                   <tr>
-                    <th className="pt-3 text-left">权重合计</th>
+                    <th scope="col" className="pt-3 text-left">权重合计</th>
                     <td className="pt-3 text-right font-bold">
                       {weightSummary
                         ? formatPercent(weightSummary.total_weight)
@@ -1470,7 +1471,7 @@ function ExposurePanel(
           </div>
         )
         : null}
-      <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-xs leading-5 text-indigo-950">
+      <div className="rounded-xl border border-accent-100 bg-accent-50 px-4 py-3 text-xs leading-5 text-accent-950">
         当前传导口径：<strong>
           {draft.mapping.response_space === "log_return"
             ? "对数收益响应"
@@ -1488,11 +1489,11 @@ function ExposurePanel(
             <caption className="sr-only">资产因子传导矩阵</caption>
             <thead>
               <tr>
-                <th className="p-2 text-left text-xs text-slate-500">资产</th>
+                <th scope="col" className="p-2 text-left text-xs text-slate-600">资产</th>
                 {draft.factors.map((factor) => (
-                  <th
+                  <th scope="col"
                     key={factor.id}
-                    className="p-2 text-right text-xs text-slate-500"
+                    className="p-2 text-right text-xs text-slate-600"
                   >
                     {factor.label}
                   </th>
@@ -1560,7 +1561,7 @@ function ExposurePanel(
               })}
             className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 px-3"
           />
-          <span className="mt-1 block text-[11px] font-normal text-slate-500">
+          <span className="mt-1 block text-xs font-normal text-slate-600">
             当前 {formatPercent(draft.mapping.minimum_coverage)}
           </span>
         </label>
@@ -1604,13 +1605,13 @@ function LimitsPanel(
       <div className="overflow-x-auto">
         <table className="w-full min-w-[820px] text-sm">
           <caption className="sr-only">情景约束</caption>
-          <thead className="text-left text-xs text-slate-500">
+          <thead className="text-left text-xs text-slate-600">
             <tr>
-              <th className="pb-2">名称</th>
-              <th className="pb-2">指标</th>
-              <th className="pb-2">关系</th>
-              <th className="pb-2 text-right">阈值</th>
-              <th />
+              <th scope="col" className="pb-2">名称</th>
+              <th scope="col" className="pb-2">指标</th>
+              <th scope="col" className="pb-2">关系</th>
+              <th scope="col" className="pb-2 text-right">阈值</th>
+              <th scope="col" />
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -1633,7 +1634,7 @@ function LimitsPanel(
                       update(index, {
                         metric: event.target.value as ScenarioLimit["metric"],
                       })}
-                    className="min-h-9 rounded-lg border border-slate-300 bg-white px-2"
+                    className="min-h-9 rounded-xl border border-slate-300 bg-white px-2"
                   >
                     {metrics.filter((metric) =>
                       deterministicMethods.has(draft.method)
@@ -1655,7 +1656,7 @@ function LimitsPanel(
                         operator: event.target
                           .value as ScenarioLimit["operator"],
                       })}
-                    className="min-h-9 rounded-lg border border-slate-300 bg-white px-2"
+                    className="min-h-9 rounded-xl border border-slate-300 bg-white px-2"
                   >
                     <option value="lt">小于</option>
                     <option value="lte">小于等于</option>
@@ -1695,7 +1696,7 @@ function LimitsPanel(
         </table>
         {!draft.limits.length
           ? (
-            <p className="rounded-xl bg-slate-50 p-5 text-center text-sm text-slate-500">
+            <p className="rounded-xl bg-slate-50 p-5 text-center text-sm text-slate-600">
               尚未配置约束。
             </p>
           )
@@ -1704,7 +1705,7 @@ function LimitsPanel(
       <button
         type="button"
         onClick={add}
-        className="min-h-10 rounded-xl border border-indigo-300 px-3 text-xs font-bold text-indigo-700"
+        className="min-h-10 rounded-xl border border-accent-300 px-3 text-xs font-bold text-accent-700"
       >
         + 添加约束
       </button>
@@ -1727,7 +1728,7 @@ function MetricCard(
         danger ? "border-rose-200 bg-rose-50" : "border-slate-200 bg-white",
       )}
     >
-      <p className="text-xs font-medium text-slate-500">{label}</p>
+      <p className="text-xs font-medium text-slate-600">{label}</p>
       <p
         className={cx(
           "mt-1 text-xl font-bold tabular-nums",
@@ -1736,7 +1737,7 @@ function MetricCard(
       >
         {value}
       </p>
-      <p className="mt-1 text-[11px] leading-4 text-slate-400">{hint}</p>
+      <p className="mt-1 text-xs leading-4 text-slate-600">{hint}</p>
     </article>
   );
 }
@@ -1747,14 +1748,14 @@ function ReverseCandidatesTable(
   return (
     <table className="w-full min-w-[820px] text-xs">
       <caption className="sr-only">反向压力候选组合</caption>
-      <thead className="text-left text-slate-500">
+      <thead className="text-left text-slate-600">
         <tr>
-          <th className="p-2">候选</th>
-          <th className="p-2 text-right">严重度</th>
-          <th className="p-2 text-right">组合收益</th>
-          <th className="p-2 text-right">最大回撤</th>
-          <th className="p-2">因子冲击</th>
-          <th className="p-2">达到目标</th>
+          <th scope="col" className="p-2">候选</th>
+          <th scope="col" className="p-2 text-right">严重度</th>
+          <th scope="col" className="p-2 text-right">组合收益</th>
+          <th scope="col" className="p-2 text-right">最大回撤</th>
+          <th scope="col" className="p-2">因子冲击</th>
+          <th scope="col" className="p-2">达到目标</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-slate-100">
@@ -1869,7 +1870,7 @@ function ResultChart(
     };
   }, [result, run.probabilistic]);
   return (
-    <figure className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+    <figure className="rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
       <figcaption className="sr-only">{result.name}情景结果图</figcaption>
       <ReactECharts
         option={option}
@@ -1878,7 +1879,7 @@ function ResultChart(
         lazyUpdate
       />
       <details className="mx-2 mb-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
-        <summary className="cursor-pointer font-bold text-indigo-700">
+        <summary className="cursor-pointer font-bold text-accent-700">
           查看图表数据表
         </summary>
         <div className="mt-3 max-h-64 overflow-auto">
@@ -1894,11 +1895,11 @@ function ResultChart(
                 <caption className="sr-only">分位净值逐期数据</caption>
                 <thead>
                   <tr>
-                    <th className="p-2 text-left">步数</th>
+                    <th scope="col" className="p-2 text-left">步数</th>
                     {Object.keys(result.distribution.fan.quantiles).map((
                       name,
                     ) => (
-                      <th key={name} className="p-2 text-right">
+                      <th scope="col" key={name} className="p-2 text-right">
                         {name.toUpperCase()}
                       </th>
                     ))}
@@ -1925,10 +1926,10 @@ function ResultChart(
                 <caption className="sr-only">确定性净值逐期数据</caption>
                 <thead>
                   <tr>
-                    <th className="p-2 text-left">步数</th>
-                    <th className="p-2 text-right">净值</th>
-                    <th className="p-2 text-right">收益</th>
-                    <th className="p-2 text-right">回撤</th>
+                    <th scope="col" className="p-2 text-left">步数</th>
+                    <th scope="col" className="p-2 text-right">净值</th>
+                    <th scope="col" className="p-2 text-right">收益</th>
+                    <th scope="col" className="p-2 text-right">回撤</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1965,12 +1966,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
       run?.results[0] ?? null;
   if (!run || !result) {
     return (
-      <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center">
-        <h3 className="text-lg font-bold text-slate-900">尚无真实运行结果</h3>
-        <p className="mt-2 text-sm text-slate-500">
-          保存定义并按版本运行后，这里才会展示路径、归因和约束结论。
-        </p>
-      </section>
+      <EmptyState title="尚无真实运行结果" hint="保存定义并按版本运行后，这里才会展示路径、归因和约束结论。" />
     );
   }
   const terminal = result.distribution?.terminal;
@@ -1998,7 +1994,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
   };
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <SectionHeading
             eyebrow="Immutable result"
@@ -2015,7 +2011,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
                     aria-label="结果研究对象"
                     value={result.portfolio_id}
                     onChange={(event) => setPortfolioId(event.target.value)}
-                    className="mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3"
+                    className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-3"
                   >
                     {run.results.map((item) => (
                       <option key={item.portfolio_id} value={item.portfolio_id}>
@@ -2029,7 +2025,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
             <button
               type="button"
               onClick={exportRun}
-              className="min-h-10 rounded-lg border border-slate-300 bg-white px-3 text-xs font-bold text-slate-700 hover:border-indigo-400 hover:text-indigo-700"
+              className="min-h-10 rounded-xl border border-slate-300 bg-white px-3 text-xs font-bold text-slate-700 hover:border-accent-400 hover:text-accent-700"
             >
               导出完整运行 JSON
             </button>
@@ -2110,13 +2106,13 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
         <aside className="space-y-4">
           <div
             className={cx(
-              "rounded-2xl border p-4",
+              "rounded-xl border p-4",
               computeCompliant
                 ? "border-emerald-200 bg-emerald-50"
                 : "border-rose-200 bg-rose-50",
             )}
           >
-            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
               计算执行审计
             </p>
             <p className="mt-1 text-lg font-bold text-slate-950">
@@ -2124,31 +2120,31 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
             </p>
             <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-lg bg-white/70 p-2">
-                <dt className="text-slate-500">内核覆盖</dt>
+                <dt className="text-slate-600">内核覆盖</dt>
                 <dd className="mt-1 font-bold text-slate-900">
                   {computeAudit?.kernel_coverage ?? `${compiledKernelCount} 个固定签名`}
                 </dd>
               </div>
               <div className="rounded-lg bg-white/70 p-2">
-                <dt className="text-slate-500">Python 回退</dt>
+                <dt className="text-slate-600">Python 回退</dt>
                 <dd className="mt-1 font-bold text-slate-900">
                   {computeAudit?.python_fallback ?? "未知"}
                 </dd>
               </div>
             </dl>
-            <p className="mt-2 break-all text-[11px] leading-5 text-slate-600">
+            <p className="mt-2 break-all text-xs leading-5 text-slate-600">
               nopython={String(computeAudit?.nopython ?? false)} · 指纹 {computeAudit?.fingerprint?.slice(0, 16) ?? "未提供"}
             </p>
           </div>
           <div
             className={cx(
-              "rounded-2xl border p-4",
+              "rounded-xl border p-4",
               result.coverage.status === "complete"
                 ? "border-emerald-200 bg-emerald-50"
                 : "border-amber-200 bg-amber-50",
             )}
           >
-            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+            <p className="text-xs font-bold uppercase tracking-wide text-slate-600">
               映射覆盖率
             </p>
             <p className="mt-1 text-3xl font-bold text-slate-950">
@@ -2170,13 +2166,13 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
               )
               : null}
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
             <h4 className="text-sm font-bold text-slate-900">
               回撤恢复与突破时间
             </h4>
             <dl className="mt-3 space-y-3 text-xs">
               <div className="flex justify-between">
-                <dt className="text-slate-500">首次突破</dt>
+                <dt className="text-slate-600">首次突破</dt>
                 <dd className="font-bold">
                   {firstBreachStep == null
                     ? "未突破或不适用"
@@ -2184,7 +2180,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
                 </dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-slate-500">恢复耗时</dt>
+                <dt className="text-slate-600">恢复耗时</dt>
                 <dd className="font-bold">
                   {result.summary.recovery_steps == null
                     ? "期限内未恢复或不适用"
@@ -2224,7 +2220,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
       </section>
       {result.reverse_stress?.candidates.length
         ? (
-          <section className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <section className="overflow-x-auto rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <SectionHeading
               eyebrow="Reverse candidates"
               title="多组反向压力候选"
@@ -2238,7 +2234,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
           </section>
         )
         : null}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <SectionHeading
           eyebrow="Contribution"
           title="损益贡献与失败对象"
@@ -2247,11 +2243,11 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[560px] text-sm">
             <caption className="sr-only">资产损益贡献</caption>
-            <thead className="text-left text-xs text-slate-500">
+            <thead className="text-left text-xs text-slate-600">
               <tr>
-                <th className="pb-2">资产</th>
-                <th className="pb-2 text-right">损益贡献</th>
-                <th className="pb-2">状态</th>
+                <th scope="col" className="pb-2">资产</th>
+                <th scope="col" className="pb-2 text-right">损益贡献</th>
+                <th scope="col" className="pb-2">状态</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -2266,7 +2262,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
                     className={cx(
                       "py-3 text-right font-bold tabular-nums",
                       contribution == null
-                        ? "text-slate-400"
+                        ? "text-slate-600"
                         : contribution < 0
                         ? "text-rose-700"
                         : "text-emerald-700",
@@ -2276,7 +2272,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
                       ? "不可计算"
                       : formatPercent(contribution)}
                   </td>
-                  <td className="py-3 text-slate-500">
+                  <td className="py-3 text-slate-600">
                     {contribution == null ? "缺少暴露或传导系数" : "已覆盖"}
                   </td>
                 </tr>
@@ -2287,7 +2283,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
       </section>
       {run.diagnostics.length
         ? (
-          <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
             <h4 className="text-sm font-bold text-slate-900">运行说明</h4>
             <ul className="mt-2 space-y-2 text-xs text-slate-600">
               {run.diagnostics.map((item, index) => (
@@ -2318,7 +2314,7 @@ function ComparePanel(
     );
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <SectionHeading
             eyebrow="Run comparison"
@@ -2329,7 +2325,7 @@ function ComparePanel(
             type="button"
             disabled={selected.length < 2 || busy}
             onClick={() => onCompare(selected)}
-            className="min-h-11 rounded-xl bg-indigo-600 px-4 text-sm font-bold text-white disabled:bg-slate-300"
+            className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-bold text-white disabled:bg-slate-300"
           >
             {busy ? "比较中…" : `比较 ${selected.length} 次运行`}
           </button>
@@ -2337,14 +2333,14 @@ function ComparePanel(
         <div className="mt-5 overflow-x-auto">
           <table className="w-full min-w-[820px] text-sm">
             <caption className="sr-only">可比较情景运行</caption>
-            <thead className="bg-slate-50 text-left text-xs text-slate-500">
+            <thead className="bg-slate-50 text-left text-xs text-slate-600">
               <tr>
-                <th className="p-3">选择</th>
-                <th className="p-3">运行 / 版本</th>
-                <th className="p-3">方法</th>
-                <th className="p-3">对象</th>
-                <th className="p-3">生成时间</th>
-                <th className="p-3">发布</th>
+                <th scope="col" className="p-3">选择</th>
+                <th scope="col" className="p-3">运行 / 版本</th>
+                <th scope="col" className="p-3">方法</th>
+                <th scope="col" className="p-3">对象</th>
+                <th scope="col" className="p-3">生成时间</th>
+                <th scope="col" className="p-3">发布</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -2360,13 +2356,13 @@ function ComparePanel(
                   </td>
                   <td className="p-3 font-mono text-xs">
                     {item.id}
-                    <span className="ml-2 text-slate-500">
+                    <span className="ml-2 text-slate-600">
                       R{item.definition_revision ?? "—"}
                     </span>
                   </td>
                   <td className="p-3">{methodLabels[item.method]}</td>
                   <td className="p-3">{item.results.length}</td>
-                  <td className="p-3 text-slate-500">
+                  <td className="p-3 text-slate-600">
                     {item.created_at ?? "—"}
                   </td>
                   <td className="p-3">
@@ -2380,7 +2376,7 @@ function ComparePanel(
           </table>
           {!runs.length
             ? (
-              <p className="p-8 text-center text-sm text-slate-500">
+              <p className="p-8 text-center text-sm text-slate-600">
                 暂无历史运行。
               </p>
             )
@@ -2389,7 +2385,7 @@ function ComparePanel(
       </section>
       {comparison
         ? (
-          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <SectionHeading
               eyebrow="Comparison result"
               title="版本与运行差异"
@@ -2401,15 +2397,15 @@ function ComparePanel(
               ? (
                 <div className="mt-4 overflow-x-auto">
                   <table className="w-full min-w-[780px] text-sm">
-                    <thead className="text-left text-xs text-slate-500">
+                    <thead className="text-left text-xs text-slate-600">
                       <tr>
-                        <th className="pb-2">运行</th>
-                        <th className="pb-2">对象</th>
-                        <th className="pb-2 text-right">期末收益</th>
-                        <th className="pb-2 text-right">ES 95%</th>
-                        <th className="pb-2 text-right">最大回撤</th>
-                        <th className="pb-2 text-right">突破</th>
-                        <th className="pb-2 text-right">覆盖率</th>
+                        <th scope="col" className="pb-2">运行</th>
+                        <th scope="col" className="pb-2">对象</th>
+                        <th scope="col" className="pb-2 text-right">期末收益</th>
+                        <th scope="col" className="pb-2 text-right">ES 95%</th>
+                        <th scope="col" className="pb-2 text-right">最大回撤</th>
+                        <th scope="col" className="pb-2 text-right">突破</th>
+                        <th scope="col" className="pb-2 text-right">覆盖率</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2497,7 +2493,7 @@ function PublishPanel({
   );
   return (
     <div className="grid gap-5 xl:grid-cols-2">
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <SectionHeading
           eyebrow="Batch stress"
           title="一次压测多个产品或组合"
@@ -2530,7 +2526,7 @@ function PublishPanel({
           )
           : null}
       </section>
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <SectionHeading
           eyebrow="Publish gate"
           title="按用途发布当前不可变运行"
@@ -2569,7 +2565,7 @@ function PublishPanel({
                 key={usage}
                 className={cx(
                   "flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-3 text-sm",
-                  !eligibleUsages.has(usage) && "bg-slate-50 text-slate-400",
+                  !eligibleUsages.has(usage) && "bg-slate-50 text-slate-600",
                 )}
               >
                 <input
@@ -2585,7 +2581,7 @@ function PublishPanel({
                 />
                 {usageLabels[usage] ?? usage}
                 {!eligibleUsages.has(usage)
-                  ? <span className="ml-auto text-[10px]">门禁阻断</span>
+                  ? <span className="ml-auto text-xs">门禁阻断</span>
                   : null}
               </label>
             ))}
@@ -2613,12 +2609,12 @@ function PublishPanel({
           type="button"
           disabled={!exactVersion || !selected.length || Boolean(busy)}
           onClick={() => onPublish(selected, note)}
-          className="mt-4 min-h-11 w-full rounded-xl bg-indigo-600 px-4 text-sm font-bold text-white disabled:bg-slate-300"
+          className="mt-4 min-h-11 w-full rounded-xl bg-accent-600 px-4 text-sm font-bold text-white disabled:bg-slate-300"
         >
           {busy === "publish" ? "发布中…" : "发布到选定用途"}
         </button>
       </section>
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+      <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
         <SectionHeading
           eyebrow="Application lineage"
           title="真实应用绑定关系"
@@ -2627,13 +2623,13 @@ function PublishPanel({
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[680px] text-sm">
             <caption className="sr-only">情景应用绑定关系</caption>
-            <thead className="text-left text-xs text-slate-500">
+            <thead className="text-left text-xs text-slate-600">
               <tr>
-                <th className="pb-2">用途</th>
-                <th className="pb-2">消费者</th>
-                <th className="pb-2">运行</th>
-                <th className="pb-2">修订</th>
-                <th className="pb-2">状态</th>
+                <th scope="col" className="pb-2">用途</th>
+                <th scope="col" className="pb-2">消费者</th>
+                <th scope="col" className="pb-2">运行</th>
+                <th scope="col" className="pb-2">修订</th>
+                <th scope="col" className="pb-2">状态</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -2659,7 +2655,7 @@ function PublishPanel({
           </table>
           {!bindings.length
             ? (
-              <p className="p-8 text-center text-sm text-slate-500">
+              <p className="p-8 text-center text-sm text-slate-600">
                 当前运行没有后端返回的应用绑定。
               </p>
             )
@@ -2870,7 +2866,7 @@ export function ScenarioSimulationCenter() {
     return (
       <div
         role="status"
-        className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-600 shadow-sm"
+        className="rounded-xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-600 shadow-sm"
       >
         正在加载情景模板、版本与运行记录…
       </div>
@@ -2909,14 +2905,14 @@ export function ScenarioSimulationCenter() {
 
   return (
     <div className="space-y-5" data-testid="scenario-algorithm-center">
-      <header className="rounded-2xl border border-slate-800 bg-slate-950 px-5 py-5 text-white shadow-sm sm:px-6">
+      <header className="rounded-xl border border-slate-800 bg-slate-950 px-5 py-5 text-white shadow-sm sm:px-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-indigo-300">
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-accent-300">
               Forward scenario & stress engine
             </p>
             <h2 className="mt-1 text-2xl font-bold">情景模拟与压测</h2>
-            <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-300">
+            <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-200">
               定义未来冲击、历史重演或反向压力目标，对版本化研究对象计算净值路径、尾部风险、损益来源和约束突破。
             </p>
           </div>
@@ -2925,7 +2921,7 @@ export function ScenarioSimulationCenter() {
               className="h-2 w-2 rounded-full bg-emerald-400"
               aria-hidden="true"
             />
-            <span className="text-slate-300">后端计算协议</span>
+            <span className="text-slate-200">后端计算协议</span>
             <strong>{meta.schema_version ?? "已连接"}</strong>
           </div>
         </div>
@@ -2941,7 +2937,7 @@ export function ScenarioSimulationCenter() {
         onRun={execute}
       />
       <Message error={error} notice={notice} />
-      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm">
+      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-sm">
         <div
           role="tablist"
           aria-label="情景模拟与压测工作区"
@@ -2962,7 +2958,7 @@ export function ScenarioSimulationCenter() {
               onClick={() => setActiveTab(tab.id)}
               onKeyDown={(event) => handleTabKeyDown(event, index)}
               className={cx(
-                "min-h-14 rounded-xl px-4 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500",
+                "min-h-14 rounded-xl px-4 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500",
                 activeTab === tab.id
                   ? "bg-slate-950 text-white"
                   : "text-slate-600 hover:bg-slate-50",
@@ -2971,8 +2967,8 @@ export function ScenarioSimulationCenter() {
               <span className="block text-sm font-bold">{tab.label}</span>
               <span
                 className={cx(
-                  "mt-0.5 block text-[11px]",
-                  activeTab === tab.id ? "text-slate-300" : "text-slate-400",
+                  "mt-0.5 block text-xs",
+                  activeTab === tab.id ? "text-slate-200" : "text-slate-600",
                 )}
               >
                 {tab.helper}
@@ -2991,7 +2987,7 @@ export function ScenarioSimulationCenter() {
             <div className="grid gap-5 xl:grid-cols-[250px_minmax(0,1fr)]">
               <nav
                 aria-label="情景定义步骤"
-                className="h-fit rounded-2xl border border-slate-200 bg-white p-3 shadow-sm"
+                className="h-fit rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
               >
                 <ol className="space-y-1">
                   {["模板与方法", "期限与路径", "对象与映射", "约束与阈值"].map(
@@ -3020,7 +3016,7 @@ export function ScenarioSimulationCenter() {
                   )}
                 </ol>
               </nav>
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
                 {panels[configureStep]}
                 <div className="mt-6 flex justify-between border-t border-slate-200 pt-4">
                   <button
@@ -3039,7 +3035,7 @@ export function ScenarioSimulationCenter() {
                       setConfigureStep((step) =>
                         Math.min(panels.length - 1, step + 1)
                       )}
-                    className="min-h-10 rounded-xl bg-indigo-50 px-3 text-xs font-bold text-indigo-700 disabled:opacity-30"
+                    className="min-h-10 rounded-xl bg-accent-50 px-3 text-xs font-bold text-accent-700 disabled:opacity-30"
                   >
                     下一步
                   </button>

@@ -145,21 +145,21 @@ export default function RegimeTimelineChart({ result, selectedId, onSelect }: { 
   const peakOption = useMemo(() => buildRegimePeakOption(result, selectedId), [result, selectedId])
   return <div className="min-w-0 space-y-3">
     <div className="flex flex-wrap gap-x-5 gap-y-2 px-2 text-xs" aria-label="情景图例">
-      {result.overview.states.map(state => <span key={state.id} className="inline-flex items-center gap-2"><span aria-hidden="true" className="h-3 w-3 rounded-sm" style={{ backgroundColor: state.color }} />{state.label}</span>)}
-      {result.overview.summary.unknown > 0 ? <span className="inline-flex items-center gap-2"><span aria-hidden="true" className="h-3 w-3 rounded-sm" style={{ backgroundColor: UNKNOWN_STATE_COLOR }} />未分类</span> : null}
+      {result.overview.states.map(state => <span key={state.id} className="inline-flex items-center gap-2"><span aria-hidden="true" className="h-3 w-3 rounded-lg" style={{ backgroundColor: state.color }} />{state.label}</span>)}
+      {result.overview.summary.unknown > 0 ? <span className="inline-flex items-center gap-2"><span aria-hidden="true" className="h-3 w-3 rounded-lg" style={{ backgroundColor: UNKNOWN_STATE_COLOR }} />未分类</span> : null}
     </div>
     <ReactECharts key={result.overview.run_id} option={option} lazyUpdate style={{ height: 400, width: '100%' }} onEvents={{ click: (event: unknown) => { const index = clickedIntervalIndex(event); if (index != null && result.intervals[index]) onSelect(result.intervals[index]) } }} aria-label="历史情景走势与背景区间" />
-    <p className="px-2 text-xs text-slate-500">曲线：{result.overview.primary_series.label}。色带按真实观测日绘制，拖动底部滑块可缩放；点击色带查看该段依据。缺失数值保留断点。</p>
+    <p className="px-2 text-xs text-slate-600">曲线：{result.overview.primary_series.label}。色带按真实观测日绘制，拖动底部滑块可缩放；点击色带查看该段依据。缺失数值保留断点。</p>
     {trendOption ? <section aria-label="识别指数与趋势滤波线">
       <h3 className="px-2 text-sm font-semibold">识别指数与趋势滤波线</h3>
       <ReactECharts option={trendOption} notMerge lazyUpdate style={{ height: 300 }} />
-      <p className="px-2 text-xs text-slate-500">交叉只产生候选，达到幅度、趋势与连续确认门槛后才切换状态；震荡另需平坦趋势和低方向效率。</p>
+      <p className="px-2 text-xs text-slate-600">交叉只产生候选，达到幅度、趋势与连续确认门槛后才切换状态；震荡另需平坦趋势和低方向效率。</p>
     </section> : null}
     {peakOption ? <section aria-label="峰谷定界图">
       <h3 className="px-2 text-sm font-semibold">峰谷定界图 · 事后识别</h3>
       <ReactECharts option={peakOption} notMerge lazyUpdate style={{ height: 300 }} />
-      <p className="px-2 text-xs text-slate-500">圆点为保留的高低点。拐点需要后续数据确认；首尾未完成区间保留未分类，不能作为当时的交易信号。</p>
+      <p className="px-2 text-xs text-slate-600">圆点为保留的高低点。拐点需要后续数据确认；首尾未完成区间保留未分类，不能作为当时的交易信号。</p>
     </section> : null}
-    {probabilityOption ? <section aria-label="状态概率"><p className="px-2 text-xs text-slate-500">状态概率描述模型对当前分类的判断，不等于投资获利概率。</p><ReactECharts option={probabilityOption} notMerge lazyUpdate style={{ height: 220 }} /></section> : null}
+    {probabilityOption ? <section aria-label="状态概率"><p className="px-2 text-xs text-slate-600">状态概率描述模型对当前分类的判断，不等于投资获利概率。</p><ReactECharts option={probabilityOption} notMerge lazyUpdate style={{ height: 220 }} /></section> : null}
   </div>
 }
