@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
 import { resultFixture } from '../src/pages/regime-workbench/regimeResultFixtures'
 
 const fixedExecution = {
@@ -93,6 +94,7 @@ test('历史情景工作台保留完整画板、按需配置并自动展示完�
   const canvas = page.getByTestId('regime-canvas-workspace')
   await expect(canvas).toBeVisible()
   await expect(page.getByLabel('当前输出的数学公式').locator('.katex')).toBeVisible()
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy()
   const initial = await canvas.boundingBox()
   const outer = await workspace.boundingBox()

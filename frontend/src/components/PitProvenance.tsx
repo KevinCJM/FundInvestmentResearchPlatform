@@ -17,7 +17,7 @@ export default function PitProvenance({ lineage }: { lineage?: PitRunLineage | n
 
   return (
     <div
-      className={`mt-3 rounded border px-2.5 py-2 text-[11px] leading-5 ${
+      className={`mt-3 rounded-lg border px-2.5 py-2 text-xs leading-5 ${
         applied ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-amber-200 bg-amber-50 text-amber-900'
       }`}
       data-testid="pit-provenance"
@@ -31,7 +31,7 @@ export default function PitProvenance({ lineage }: { lineage?: PitRunLineage | n
             <span className="tabular-nums">
               按 {lineage.availability_field} 公告时点截断，剔除 {lineage.rows_dropped_by_as_of.toLocaleString()} 行当时尚未公告的净值
             </span>
-            <span className="tabular-nums text-slate-500">可用 {lineage.rows_after_cut.toLocaleString()} 行</span>
+            <span className="tabular-nums text-slate-600">可用 {lineage.rows_after_cut.toLocaleString()} 行</span>
           </>
         ) : (
           <>

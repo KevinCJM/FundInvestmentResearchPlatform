@@ -61,6 +61,7 @@ from .series_definitions import (
 from .series_provider import (
     DEFAULT_DATA_DIR,
     ProductChartSeries,
+    input_date_context,
     load_product_chart_series,
     market_data_generation,
     select_chart_window,
@@ -1838,33 +1839,35 @@ class TimeSeriesIndicatorService:
             axis_anchor = str(definition["axis_anchor"])
             source = sources[axis_anchor]
             dependencies = set(_array_context_names(plan, parameters))
-            missing = [
+            missing = sorted(
                 name
                 for name in dependencies
                 if name in source.unavailable_variables
                 or name not in source.frame.columns
-            ]
+            )
             if source.frame.empty or missing:
                 labels = "、".join(
                     str(get_variable(name).label if get_variable(name) else name)
                     for name in missing
                 )
-                results.append(
-                    _unavailable_result(
-                        definition,
-                        public_target,
-                        normalized_period,
-                        parameters,
-                        code="VARIABLE_UNAVAILABLE",
-                        message=(
-                            f"缺少时序指标输入：{labels}。"
-                            if labels
-                            else "时序指标日期轴没有可用真实数据。"
-                        ),
-                        as_of=as_of,
-                        data_latest_date=source.data_latest_date,
-                    )
+                details = [source.unavailable_variables[name] for name in missing if name in source.unavailable_variables]
+                if not details and source.frame.empty:
+                    details = list(source.unavailable_variables.values())
+                reason = details[0] if details else None
+                message = "；".join(dict.fromkeys(item["message"] for item in details))
+                if not message:
+                    message = f"缺少时序指标输入：{labels}。" if labels else "时序指标日期轴没有可用真实数据。"
+                record = _unavailable_result(
+                    definition,
+                    public_target,
+                    normalized_period,
+                    parameters,
+                    code=reason["code"] if reason else "VARIABLE_UNAVAILABLE",
+                    message=message,
+                    as_of=as_of,
+                    data_latest_date=source.data_latest_date,
                 )
+                results.append(record)
                 continue
             key = _series_cache_key(
                 definition,
@@ -1975,6 +1978,11 @@ class TimeSeriesIndicatorService:
                 status = "ok" if has_finite and not warnings else (
                     "warning" if has_finite else "unavailable"
                 )
+                if not has_finite and not warnings:
+                    warnings.append(_warning(
+                        "NO_FINITE_SERIES_RESULT",
+                        "输入数据已读取，但当前窗口没有有效指标结果。请检查窗口所需样本数，以及公式是否存在除零、缺失值或不满足的计算条件。",
+                    ))
                 record = {
                     **_result_base(
                         definition,
@@ -2026,6 +2034,9 @@ class TimeSeriesIndicatorService:
                 self.cache.put(key, record)
             cache_misses += 1
             results.append(record)
+
+        for record in results:
+            record["data_context"] = input_date_context(sources[record["axis_anchor"]], as_of)
 
         summary = {
             "total": len(results),

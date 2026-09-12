@@ -124,7 +124,7 @@ export default function ClassFitPanel({ result }: { result: ClassFitResult }) {
         <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
         <HorizontalMetricComparison columns={table.columns} rows={table.rows} height={DEFAULT_METRIC_TABLE_HEIGHT} />
         <div className="mt-4">
-          <h4 className="text-sm font-semibold mb-2 text-gray-700">收益风险象限图</h4>
+          <h4 className="text-sm font-semibold mb-2 text-slate-700">收益风险象限图</h4>
           <PerformanceQuadrantChart
             columns={table.columns}
             rows={table.rows}
@@ -144,10 +144,10 @@ export function ClassConsistencyTable({ rows }: { rows: ClassFitConsistency[] })
       <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
         <thead>
           <tr>
-            <th className="border px-2 py-2">大类</th>
-            <th className="border px-2 py-2">相关性均值</th>
-            <th className="border px-2 py-2">主成分解释度(%)</th>
-            <th className="border px-2 py-2">最大跟踪误差(%)</th>
+            <th scope="col" className="border px-2 py-2">大类</th>
+            <th scope="col" className="border px-2 py-2">相关性均值</th>
+            <th scope="col" className="border px-2 py-2">主成分解释度(%)</th>
+            <th scope="col" className="border px-2 py-2">最大跟踪误差(%)</th>
           </tr>
         </thead>
         <tbody>

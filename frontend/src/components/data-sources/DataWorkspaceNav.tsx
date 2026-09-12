@@ -7,13 +7,13 @@ const destinations = [
 ]
 
 export default function DataWorkspaceNav({ beforeNavigate }: { beforeNavigate?: () => boolean }) {
-  return <nav aria-label="数据工作区" className="grid grid-cols-3 gap-1 rounded-2xl border border-slate-200 bg-white p-2 sm:gap-2">
+  return <nav aria-label="数据工作区" className="grid grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-white p-2 sm:gap-2">
     {destinations.map(item => <NavLink key={item.path} to={item.path} end
       onClick={event => { if (beforeNavigate && !beforeNavigate()) event.preventDefault() }}
-      className={({ isActive }) => `min-w-0 rounded-xl px-2 py-3 sm:px-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${isActive ? 'bg-indigo-50 text-indigo-900 ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50'}`}>
+      className={({ isActive }) => `min-w-0 rounded-xl px-2 py-3 sm:px-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${isActive ? 'bg-accent-50 text-accent-900 ring-1 ring-accent-200' : 'text-slate-600 hover:bg-slate-50'}`}>
       <span className="block text-center text-xs font-semibold sm:hidden">{item.shortLabel}</span>
       <span className="hidden text-sm font-semibold sm:block">{item.label}</span>
-      <span className="mt-1 hidden text-xs text-slate-500 sm:block">{item.description}</span>
+      <span className="mt-1 hidden text-xs text-slate-600 sm:block">{item.description}</span>
     </NavLink>)}
   </nav>
 }

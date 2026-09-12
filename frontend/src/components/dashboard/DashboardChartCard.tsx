@@ -24,10 +24,10 @@ interface CardStateProps {
 
 function CardState({ loading, error }: CardStateProps) {
   if (loading) {
-    return <div className="flex h-64 items-center justify-center text-sm text-slate-400">正在加载图表...</div>;
+    return <div className="flex h-64 items-center justify-center text-sm text-slate-600">正在加载图表...</div>;
   }
   if (error) {
-    return <div role="alert" className="flex h-64 items-center justify-center rounded-xl bg-rose-50 px-6 text-center text-sm text-rose-600">{error}</div>;
+    return <div role="alert" className="flex h-64 items-center justify-center rounded-xl bg-rose-50 px-6 text-center text-sm text-rose-700">{error}</div>;
   }
   return null;
 }
@@ -78,14 +78,14 @@ export function DistributionChartCard({
 
   const state = <CardState loading={loading} error={error} />;
   return (
-    <section aria-labelledby={headingId} className="min-w-0 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+    <section aria-labelledby={headingId} className="min-w-0 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
       <div className="flex items-start justify-between gap-3">
         <h3 id={headingId} className="text-base font-semibold text-slate-900">{title}</h3>
-        {viewAllTo && <Link to={viewAllTo} className="shrink-0 text-xs font-semibold text-indigo-700 hover:text-indigo-600">查看全部 →</Link>}
+        {viewAllTo && <Link to={viewAllTo} className="shrink-0 text-xs font-semibold text-accent-700 hover:text-accent-600">查看全部 →</Link>}
       </div>
-      <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
+      <p className="mt-1 text-xs leading-5 text-slate-600">{description}</p>
       {loading || error ? state : visibleData.length === 0 ? (
-        <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-slate-200 text-sm text-slate-400">暂无可展示数据</div>
+        <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-slate-200 text-sm text-slate-600">暂无可展示数据</div>
       ) : (
         <>
           <ReactECharts
@@ -96,17 +96,17 @@ export function DistributionChartCard({
             onEvents={onSelect ? { click: (params: { name?: string }) => params.name && onSelect(params.name) } : undefined}
           />
           <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
-            <summary className="cursor-pointer font-medium text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">查看数据表</summary>
+            <summary className="cursor-pointer font-medium text-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500">查看数据表</summary>
             <div className="mt-3 overflow-x-auto">
               <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
                 <caption className="sr-only">{title}数据表</caption>
-                <thead><tr><th scope="col" className="px-2 py-2 text-xs text-slate-500">分类</th><th scope="col" className="px-2 py-2 text-right text-xs text-slate-500">产品代码数</th></tr></thead>
+                <thead><tr><th scope="col" className="px-2 py-2 text-xs text-slate-600">分类</th><th scope="col" className="px-2 py-2 text-right text-xs text-slate-600">产品代码数</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibleData.map((item) => (
                     <tr key={item.name}>
                       <td className="px-2 py-2 text-slate-700">
                         {onSelect ? (
-                          <button type="button" onClick={() => onSelect(item.name)} className="text-left font-medium text-indigo-700 underline-offset-2 hover:underline">{item.name}</button>
+                          <button type="button" onClick={() => onSelect(item.name)} className="text-left font-medium text-accent-700 underline-offset-2 hover:underline">{item.name}</button>
                         ) : item.name}
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums text-slate-600">{integerFormatter.format(item.value)}</td>
@@ -164,23 +164,23 @@ export function TrendChartCard({ series, loading = false, error = null, viewAllT
     : '严格按交易所上市日期统计。';
 
   return (
-    <section aria-labelledby={headingId} className="min-w-0 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+    <section aria-labelledby={headingId} className="min-w-0 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
       <div className="flex items-start justify-between gap-3">
         <h3 id={headingId} className="text-base font-semibold text-slate-900">{title}</h3>
-        {viewAllTo && <Link to={viewAllTo} className="shrink-0 text-xs font-semibold text-indigo-700 hover:text-indigo-600">查看全部 →</Link>}
+        {viewAllTo && <Link to={viewAllTo} className="shrink-0 text-xs font-semibold text-accent-700 hover:text-accent-600">查看全部 →</Link>}
       </div>
-      <p className="mt-1 text-xs leading-5 text-slate-500">{dateDescription} 发行规模为披露口径，并非当前 AUM。</p>
+      <p className="mt-1 text-xs leading-5 text-slate-600">{dateDescription} 发行规模为披露口径，并非当前 AUM。</p>
       {loading || error ? <CardState loading={loading} error={error} /> : points.length === 0 ? (
-        <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-slate-200 text-sm text-slate-400">暂无趋势数据</div>
+        <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-slate-200 text-sm text-slate-600">暂无趋势数据</div>
       ) : (
         <>
           <ReactECharts option={option} style={{ height: 340 }} notMerge lazyUpdate />
           <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
-            <summary className="cursor-pointer font-medium text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">查看数据表</summary>
+            <summary className="cursor-pointer font-medium text-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500">查看数据表</summary>
             <div className="mt-3 overflow-x-auto">
               <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
                 <caption className="sr-only">{title}数据表</caption>
-                <thead><tr><th scope="col" className="px-2 py-2 text-xs text-slate-500">年份</th><th scope="col" className="px-2 py-2 text-right text-xs text-slate-500">新增产品代码数</th><th scope="col" className="px-2 py-2 text-right text-xs text-slate-500">披露发行规模</th></tr></thead>
+                <thead><tr><th scope="col" className="px-2 py-2 text-xs text-slate-600">年份</th><th scope="col" className="px-2 py-2 text-right text-xs text-slate-600">新增产品代码数</th><th scope="col" className="px-2 py-2 text-right text-xs text-slate-600">披露发行规模</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {points.map((point) => (
                     <tr key={point.year}><td className="px-2 py-2 text-slate-700">{point.year}</td><td className="px-2 py-2 text-right tabular-nums text-slate-600">{integerFormatter.format(point.count)}</td><td className="px-2 py-2 text-right text-slate-600">{formatIssueAmount(point.total_issue_amount)}</td></tr>

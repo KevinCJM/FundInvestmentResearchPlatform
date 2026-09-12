@@ -114,6 +114,60 @@
   },
   "routes": [
     {
+      "id": "R03",
+      "task_type": "branch_submission_ai_review_merge_or_release_policy",
+      "match_keywords": [
+        "branch_submission_rules.md",
+        "提交流程",
+        "提交要求",
+        "提交规范",
+        "代码提交",
+        "git commit",
+        "git push",
+        "pull request",
+        "创建 PR",
+        "更新 PR",
+        "提交 PR",
+        "合并 PR",
+        "PR 审核",
+        "AI 审核",
+        "推送分支",
+        "合并分支",
+        "分支保护",
+        "分支回滚",
+        "发布分支",
+        "release branch",
+        "branch-policy",
+        "ai-review",
+        "quality-gate"
+      ],
+      "negative_keywords": [],
+      "route_priority": 105,
+      "first_read_modules": [
+        "ai_routing_files",
+        "branch_submission_workflow"
+      ],
+      "expand_to_modules": [],
+      "pitfall_ids": [
+        "P01",
+        "P02"
+      ],
+      "expand_search_codes": [
+        "read_reference_map_first"
+      ],
+      "stop_and_verify_codes": [
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "read_reference_map_first"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "submission_protocol",
+        "business_regression_routed_separately"
+      ]
+    },
+    {
       "id": "R86",
       "task_type": "tactical_allocation_saa_linked_decision_workbench",
       "match_keywords": [

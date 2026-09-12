@@ -9,6 +9,7 @@ import {
   type EvaluationResult,
   type EvaluationWarning,
   type IndicatorDefinition,
+  type IndicatorDateContext,
   type MetricPresentation,
 } from '../../services/customIndicators'
 
@@ -73,7 +74,7 @@ export function MetricValue({
   className?: string
 }) {
   const formatted = formatMetricValue(value, presentation)
-  return <span className={`${formatted === '不可计算' ? 'text-slate-400' : 'tabular-nums'} ${className}`}>{formatted}</span>
+  return <span className={`${formatted === '不可计算' ? 'text-slate-600' : 'tabular-nums'} ${className}`}>{formatted}</span>
 }
 
 const statusCopy = (
@@ -88,7 +89,7 @@ const statusCopy = (
 
 type AvailabilityResult = Pick<
   EvaluationResult,
-  'value' | 'status' | 'warnings' | 'input_requirements' | 'target_data'
+  'value' | 'status' | 'warnings' | 'input_requirements' | 'target_data' | 'data_context'
 >
 
 const knownVariableLabels: Record<string, string> = {
@@ -108,6 +109,27 @@ const knownVariableLabels: Record<string, string> = {
   accumulated_nav: '累计净值',
 }
 
+export function IndicatorInputDates({ context }: { context?: IndicatorDateContext | null }) {
+  if (!context) return null
+  return <section aria-label="本次计算的数据与日期" className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-sm text-amber-950">
+    <h4 className="font-semibold">本次计算的数据与日期</h4>
+    <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+      <div><dt className="text-xs text-amber-800">产品成立日期</dt><dd>{context.found_date || '数据源未提供'}</dd></div>
+      {context.list_date && <div><dt className="text-xs text-amber-800">上市日期</dt><dd>{context.list_date}</dd></div>}
+      <div><dt className="text-xs text-amber-800">本次计算截止日（PIT）</dt><dd>{context.as_of || '未设置，使用本地全部日期'}</dd></div>
+    </dl>
+    {context.sources.map((source, index) => <div key={`${source.label}-${index}`} className="mt-3 border-t border-amber-200 pt-2">
+      <p>{source.label}本地覆盖：{source.first_date || '起点未确认'} 至 {source.latest_date || '终点未确认'}</p>
+      {context.as_of && <p className="mt-1 text-xs">原有 {source.rows_before_as_of ?? '未确认'} 条记录 → 日期筛选后 {source.rows_after_date_filter ?? '未确认'} 条 → {source.uses_disclosure_date ? '披露筛选并去重后' : '去重后'} {source.rows_after_as_of ?? '未确认'} 条。</p>}
+    </div>)}
+    <p className="mt-2 text-xs">成立日期、上市日期和本地数据起点是不同概念；产品已经成立，也可能尚无已下载的数据。</p>
+    {context.as_of && <>
+      <p className="mt-2">PIT 表示站在截止日查看数据：只使用该日及之前的记录；净值还须确认公告日期不晚于截止日。更晚的数据或公告日期缺失的净值不会用于本次计算。</p>
+      <p className="mt-2">做历史研究时，请选择当时已有可用数据的产品。若要查看最新表现，可在顶部 PIT 中选择“关闭 PIT · 查看全部磁盘数据”，仅影响当前标签页；预览中的历史截止日如已填写，也需相应调整。</p>
+    </>}
+  </section>
+}
+
 export function MetricUnavailableReason({
   result,
   compact = false,
@@ -119,9 +141,10 @@ export function MetricUnavailableReason({
   const blocked = requirements?.blocking_inputs ?? []
   const partial = requirements?.partial_inputs ?? []
   const affected = blocked.length ? blocked : partial
+  const dateContext = result.value === null ? <IndicatorInputDates context={result.data_context} /> : null
   if (!affected.length) {
-    if (result.value !== null || !result.warnings[0]) return null
-    return <p className="mt-2 text-xs text-amber-700">{indicatorDiagnosticDetail(result.warnings[0].code, result.warnings[0].message)}</p>
+    if (result.value !== null) return null
+    return <>{dateContext}{result.warnings[0] && <p className="mt-2 text-xs text-amber-700">{indicatorDiagnosticDetail(result.warnings[0].code, result.warnings[0].message)}</p>}</>
   }
   const labels = affected.map((item) => item.label || knownVariableLabels[item.variable_id] || item.variable_id)
   const alternatives = [...new Map(affected.flatMap((item) => item.alternative_variables ?? []).map((item) => [item.variable_id, item.label])).values()]
@@ -131,7 +154,7 @@ export function MetricUnavailableReason({
   const summary = blocked.length
     ? `该指标需要 ${requirements?.required_count ?? blocked.length} 个输入字段，当前产品缺少：${labels.join('、')}。`
     : `本次使用的${labels.join('、')}存在部分缺失，已按共同有效日期计算。`
-  return <div className={`${compact ? 'mt-1' : 'mt-3'} rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-xs text-amber-950`}>
+  return <>{dateContext}<div className={`${compact ? 'mt-1' : 'mt-3'} rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-xs text-amber-950`}>
     <p className="font-medium">{summary}</p>
     <details className="mt-2" open={!compact}>
       <summary className="cursor-pointer font-semibold text-amber-800">{blocked.length ? '为什么无法计算' : '查看数据覆盖情况'}</summary>
@@ -147,12 +170,12 @@ export function MetricUnavailableReason({
       {alternatives.length > 0 && <p className="mt-3 border-t border-amber-200 pt-2"><span className="font-semibold">建议：</span>可改用{alternatives.join('、')}构建适用于当前产品的指标。</p>}
       <details className="mt-2">
         <summary className="cursor-pointer text-amber-700">查看技术详情</summary>
-        <ul className="mt-1 space-y-1 font-mono text-[11px] text-amber-800">
+        <ul className="mt-1 space-y-1 font-mono text-xs text-amber-800">
           {affected.map((item) => <li key={item.variable_id}>{item.variable_id} · {item.source_dataset || '运行时派生'}{item.source_field ? `.${item.source_field}` : ''} · {item.reason_code || item.status}</li>)}
         </ul>
       </details>
     </details>
-  </div>
+  </div></>
 }
 
 export function MetricStatus({
@@ -167,7 +190,7 @@ export function MetricStatus({
   const copy = statusCopy(status, warnings)
   return <span className="inline-flex flex-col items-start gap-1">
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${copy.tone}`}>{copy.label}</span>
-    {showReason && warnings[0] && <span className="max-w-xs text-xs text-slate-500">{indicatorDiagnosticDetail(warnings[0].code, warnings[0].message)}</span>}
+    {showReason && warnings[0] && <span className="max-w-xs text-xs text-slate-600">{indicatorDiagnosticDetail(warnings[0].code, warnings[0].message)}</span>}
   </span>
 }
 
@@ -308,25 +331,25 @@ export function MetricSelector({
   }
 
   return <div className="relative">
-    <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)} className="flex min-h-11 cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500">
-      <span>{label}</span><span className="text-xs text-slate-400">已选 {selectedIds.length}/{maxSelected}</span>
+    <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)} className="flex min-h-11 cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
+      <span>{label}</span><span className="text-xs text-slate-600">已选 {selectedIds.length}/{maxSelected}</span>
     </button>
     {open && position && createPortal(<div ref={panelRef} id={panelId} role="dialog" aria-label={`${label}面板`} style={position} className="fixed z-[70] flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-      <div className="grid shrink-0 gap-2 border-b border-slate-100 p-3 sm:grid-cols-[9rem_9rem_minmax(12rem,1fr)]"><label className="block text-xs font-medium text-slate-600">指标类型<select aria-label="按指标类型筛选" value={indicatorType} onChange={(event) => setIndicatorType(event.target.value)} className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm focus:border-violet-500 focus:outline-none"><option value="all">全部类型</option>{indicatorTypes.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">指标来源<select aria-label="按指标来源筛选" value={indicatorSource} onChange={(event) => setIndicatorSource(event.target.value as 'all' | 'built_in' | 'custom')} className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-2 text-sm focus:border-violet-500 focus:outline-none"><option value="all">全部</option><option value="built_in">内置指标</option><option value="custom">工作区指标</option></select></label><label className="block text-xs font-medium text-slate-600">搜索指标
-        <input aria-label="搜索指标" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="名称、说明或分类" className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm focus:border-violet-500 focus:outline-none" />
+      <div className="grid shrink-0 gap-2 border-b border-slate-100 p-3 sm:grid-cols-[9rem_9rem_minmax(12rem,1fr)]"><label className="block text-xs font-medium text-slate-600">指标类型<select aria-label="按指标类型筛选" value={indicatorType} onChange={(event) => setIndicatorType(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部类型</option>{indicatorTypes.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">指标来源<select aria-label="按指标来源筛选" value={indicatorSource} onChange={(event) => setIndicatorSource(event.target.value as 'all' | 'built_in' | 'custom')} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部</option><option value="built_in">内置指标</option><option value="custom">工作区指标</option></select></label><label className="block text-xs font-medium text-slate-600">搜索指标
+        <input aria-label="搜索指标" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="名称、说明或分类" className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm focus:border-accent-500 focus:outline-none" />
       </label></div>
       <div className="min-h-0 flex-1 overflow-auto p-3" role="listbox" aria-multiselectable="true">
         {filtered.map((indicator) => {
           const disabledReason = disabledReasons[indicator.id]
           const checked = selectedIds.includes(indicator.id)
-          return <label key={indicator.id} className={`flex min-h-11 gap-3 border-b border-slate-100 px-2 py-2 last:border-0 ${disabledReason ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-violet-50'}`}>
+          return <label key={indicator.id} className={`flex min-h-11 gap-3 border-b border-slate-100 px-2 py-2 last:border-0 ${disabledReason ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-accent-50'}`}>
             <input type="checkbox" checked={checked} disabled={Boolean(disabledReason) || (!checked && selectedIds.length >= maxSelected)} onChange={() => toggle(indicator.id)} />
-            <span className="min-w-0"><span className="block text-sm font-medium text-slate-800">{indicatorOptionLabel(indicator)}</span><span className="block text-xs text-slate-500">{disabledReason ?? indicator.product_kind_hint?.message ?? indicator.presentation?.category_label ?? indicator.category_label ?? '未分类'}</span></span>
+            <span className="min-w-0"><span className="block text-sm font-medium text-slate-800">{indicatorOptionLabel(indicator)}</span><span className="block text-xs text-slate-600">{disabledReason ?? indicator.product_kind_hint?.message ?? indicator.presentation?.category_label ?? indicator.category_label ?? '未分类'}</span></span>
           </label>
         })}
-        {filtered.length === 0 && <p className="px-2 py-6 text-center text-sm text-slate-500">没有匹配的指标。</p>}
+        {filtered.length === 0 && <p className="px-2 py-6 text-center text-sm text-slate-600">没有匹配的指标。</p>}
       </div>
-      <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-4 py-2 text-xs text-slate-500"><span>显示 {filtered.length} 项 · 已选 {selectedIds.length}/{maxSelected}</span><button type="button" onClick={() => setOpen(false)} className="min-h-9 px-2 font-medium text-violet-700 hover:underline">完成</button></div>
+      <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-4 py-2 text-xs text-slate-600"><span>显示 {filtered.length} 项 · 已选 {selectedIds.length}/{maxSelected}</span><button type="button" onClick={() => setOpen(false)} className="min-h-9 px-2 font-medium text-accent-700 hover:underline">完成</button></div>
     </div>, document.body)}
   </div>
 }
@@ -353,8 +376,8 @@ export function MetricDefinitionDrawer({
   }
   return <div className="fixed inset-0 z-[100] flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
     <aside role="dialog" aria-modal="true" aria-labelledby="metric-definition-title" className="h-full w-full max-w-lg overflow-auto bg-white p-6 shadow-2xl">
-      <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold text-violet-600">{presentation.category_label}</p><h2 id="metric-definition-title" className="mt-1 text-2xl font-semibold text-slate-900">{presentation.name}</h2><p className="mt-1 text-sm text-slate-500">{indicatorOptionLabel(indicator)}</p></div><button type="button" onClick={onClose} className="min-h-11 rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-100">关闭</button></div>
-      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? '仅展示，不判断优劣' : presentation.direction === 'higher_better' ? '数值高优先' : '数值低优先'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-violet-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
+      <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold text-accent-600">{presentation.category_label}</p><h2 id="metric-definition-title" className="mt-1 text-2xl font-semibold text-slate-900">{presentation.name}</h2><p className="mt-1 text-sm text-slate-600">{indicatorOptionLabel(indicator)}</p></div><button type="button" onClick={onClose} className="min-h-11 rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-100">关闭</button></div>
+      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? '仅展示，不判断优劣' : presentation.direction === 'higher_better' ? '数值高优先' : '数值低优先'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-accent-100 bg-accent-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-accent-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
     </aside>
   </div>
 }
@@ -379,12 +402,12 @@ export function MetricResultCard({
   const { s } = useI18n()
   const presentation = resolveMetricPresentation(result, indicator)
   return <article className="rounded-xl border border-slate-200 bg-white p-4">
-    <div className="flex items-start justify-between gap-3"><div><p className="text-xs text-slate-500">{presentation.category_label} · {presentation.source === 'built_in' ? '内置' : '工作区'} v{presentation.revision}</p><h3 className="mt-1 font-semibold text-slate-900">{presentation.name}</h3></div>{onRemove && <button type="button" onClick={onRemove} aria-label={`移除指标 ${presentation.name}`} title="仅从当前页面移除，不会删除指标定义" className="inline-flex min-h-9 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-500 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500">移除</button>}</div>
-    {onPeriodChange && period && <label className="mt-3 block text-xs font-medium text-slate-600">计算区间<select aria-label={`${presentation.name}计算区间`} value={period} onChange={(event) => onPeriodChange(event.target.value)} className="mt-1 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-violet-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}
-    <div className="mt-4 text-2xl font-semibold text-violet-700"><MetricValue value={result?.value} presentation={presentation} /></div>
-    {result ? <p className="mt-3 text-xs text-slate-500">{result.period} · {result.window.start_date ?? '—'} 至 {result.window.end_date ?? '—'} · {result.window.observation_count} 个观察值 · 数据截至 {result.window.data_latest_date ?? '—'}</p> : <p className="mt-3 text-xs text-slate-500">等待计算</p>}
+    <div className="flex items-start justify-between gap-3"><div><p className="text-xs text-slate-600">{presentation.category_label} · {presentation.source === 'built_in' ? '内置' : '工作区'} v{presentation.revision}</p><h3 className="mt-1 font-semibold text-slate-900">{presentation.name}</h3></div>{onRemove && <button type="button" onClick={onRemove} aria-label={`移除指标 ${presentation.name}`} title="仅从当前页面移除，不会删除指标定义" className="inline-flex min-h-9 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">移除</button>}</div>
+    {onPeriodChange && period && <label className="mt-3 block text-xs font-medium text-slate-600">计算区间<select aria-label={`${presentation.name}计算区间`} value={period} onChange={(event) => onPeriodChange(event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}
+    <div className="mt-4 text-2xl font-semibold text-accent-700"><MetricValue value={result?.value} presentation={presentation} /></div>
+    {result ? <p className="mt-3 text-xs text-slate-600">{result.period} · {result.window.start_date ?? '—'} 至 {result.window.end_date ?? '—'} · {result.window.observation_count} 个观察值 · 数据截至 {result.window.data_latest_date ?? '—'}</p> : <p className="mt-3 text-xs text-slate-600">等待计算</p>}
     {result && <MetricUnavailableReason result={result} />}
-    {onDefinition && <button type="button" onClick={onDefinition} className="mt-3 text-sm font-medium text-violet-700 hover:underline">查看定义与口径</button>}
+    {onDefinition && <button type="button" onClick={onDefinition} className="mt-3 text-sm font-medium text-accent-700 hover:underline">查看定义与口径</button>}
   </article>
 }
 
@@ -407,14 +430,14 @@ export function MetricMatrix({
 }) {
   const resultMap = new Map(results.map((result) => [`${result.indicator_id}:${result.target.kind}:${result.target.product_id}`, result]))
   return <div className="overflow-auto rounded-xl border border-slate-200">
-    <table className="min-w-[760px] w-full text-sm"><thead className="bg-slate-50 text-left text-slate-500"><tr><th className="sticky left-0 bg-slate-50 px-4 py-3">指标</th>{targets.map((target) => <th key={`${target.kind}:${target.product_id}`} className="px-4 py-3 text-center">{target.name}<span className="block text-xs font-normal">{target.product_id}</span></th>)}</tr></thead><tbody>{indicators.map((indicator) => {
+    <table className="min-w-[760px] w-full text-sm"><thead className="bg-slate-50 text-left text-slate-600"><tr><th scope="col" className="sticky left-0 bg-slate-50 px-4 py-3">指标</th>{targets.map((target) => <th scope="col" key={`${target.kind}:${target.product_id}`} className="px-4 py-3 text-center">{target.name}<span className="block text-xs font-normal">{target.product_id}</span></th>)}</tr></thead><tbody>{indicators.map((indicator) => {
       const rowResults = targets.map((target) => resultMap.get(`${indicator.id}:${target.kind}:${target.product_id}`))
       const finiteValues = rowResults.flatMap((result) => typeof result?.value === 'number' && Number.isFinite(result.value) ? [result.value] : [])
       const direction = indicator.presentation?.direction ?? indicator.direction
       const bestValue = direction !== 'neutral' && finiteValues.length > 1 ? (direction === 'lower_better' ? Math.min(...finiteValues) : Math.max(...finiteValues)) : null
       const worstValue = direction !== 'neutral' && finiteValues.length > 1 ? (direction === 'lower_better' ? Math.max(...finiteValues) : Math.min(...finiteValues)) : null
       const period = periodsByIndicator[indicator.id]
-      return <tr key={indicator.id} className="border-t border-slate-100"><th className="sticky left-0 bg-white px-4 py-3 text-left"><button type="button" onClick={() => onDefinition?.(indicator)} className="font-semibold text-slate-800 hover:text-violet-700">{indicator.name}</button><span className="block text-xs font-normal text-slate-400">{indicator.source === 'built_in' ? '内置' : '工作区'} v{indicator.revision} · {direction === 'neutral' ? '仅展示' : direction === 'lower_better' ? '低值优先' : '高值优先'}</span>{onPeriodChange && period && <label className="mt-2 block text-xs font-medium text-slate-500">计算区间<select aria-label={`${indicator.name}计算区间`} value={period} onChange={(event) => onPeriodChange(indicator.id, event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-violet-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}</th>{targets.map((target, index) => {
+      return <tr key={indicator.id} className="border-t border-slate-100"><th scope="row" className="sticky left-0 bg-white px-4 py-3 text-left"><button type="button" onClick={() => onDefinition?.(indicator)} className="font-semibold text-slate-800 hover:text-accent-700">{indicator.name}</button><span className="block text-xs font-normal text-slate-600">{indicator.source === 'built_in' ? '内置' : '工作区'} v{indicator.revision} · {direction === 'neutral' ? '仅展示' : direction === 'lower_better' ? '低值优先' : '高值优先'}</span>{onPeriodChange && period && <label className="mt-2 block text-xs font-medium text-slate-600">计算区间<select aria-label={`${indicator.name}计算区间`} value={period} onChange={(event) => onPeriodChange(indicator.id, event.target.value)} className="mt-1 min-h-9 w-full rounded-xl border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}</th>{targets.map((target, index) => {
         const result = rowResults[index]
         const presentation = resolveMetricPresentation(result, indicator)
         const isBest = bestValue !== null && result?.value === bestValue

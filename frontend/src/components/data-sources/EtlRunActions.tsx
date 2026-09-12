@@ -25,21 +25,21 @@ export default function EtlRunActions({ run, busy, onResume, onCancel, onReuse, 
       setFeedback({ error: true, message: reason instanceof Error ? reason.message : '操作未完成，请检查任务状态后再试。' })
     } finally { submitting.current = false; setPending(null) }
   }
-  if (successor && !recovering) return <section aria-label={`${run.name}运行操作`} className="mt-4 space-y-3 rounded-lg bg-blue-50 p-3 text-sm text-blue-900">
+  if (successor && !recovering) return <section aria-label={`${run.name}运行操作`} className="mt-4 space-y-3 rounded-lg bg-accent-50 p-3 text-sm text-accent-900">
     <p>本记录是原任务，已有恢复后的后续任务。原失败记录保留，不代表当前下载失败。</p>
     <button type="button" className={buttonClass} onClick={() => onShowRun?.(successor.run_id)}>查看后续任务进度</button>
   </section>
   return <section aria-label={`${run.name}运行操作`} className="mt-4 space-y-3">
-    {canRecover && run.recovery?.blockers.length ? <details className="text-xs text-slate-500"><summary className="cursor-pointer">恢复检查说明（点击恢复后重新核验）</summary>{run.recovery.blockers.map(item => <p key={item.code} className="mt-2">{item.message}</p>)}</details> : null}
+    {canRecover && run.recovery?.blockers.length ? <details className="text-xs text-slate-600"><summary className="cursor-pointer">恢复检查说明（点击恢复后重新核验）</summary>{run.recovery.blockers.map(item => <p key={item.code} className="mt-2">{item.message}</p>)}</details> : null}
     {canRecover && run.recovery?.warnings?.map(item => <p key={item.code} role="alert" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{item.message}</p>)}
-    {pending ? <p role="status" className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-800">{pending === 'resume' ? '正在核验执行版本、下载锁和已完成文件；大文件校验可能耗时，请勿重复点击。' : '正在提交取消请求…'}</p> : null}
-    {job ? <div className={`space-y-2 rounded-lg p-3 text-sm ${job.status === 'FAILED' || job.status === 'INTERRUPTED' ? 'bg-rose-50 text-rose-800' : 'bg-indigo-50 text-indigo-900'}`}>
+    {pending ? <p role="status" className="rounded-lg bg-accent-50 p-3 text-sm text-accent-800">{pending === 'resume' ? '正在核验执行版本、下载锁和已完成文件；大文件校验可能耗时，请勿重复点击。' : '正在提交取消请求…'}</p> : null}
+    {job ? <div className={`space-y-2 rounded-lg p-3 text-sm ${job.status === 'FAILED' || job.status === 'INTERRUPTED' ? 'bg-rose-50 text-rose-800' : 'bg-accent-50 text-accent-900'}`}>
       <p role={job.status === 'FAILED' || job.status === 'INTERRUPTED' ? 'alert' : 'status'}>{job.status === 'FAILED' || job.status === 'INTERRUPTED' ? '恢复下载失败：' : ''}{job.phase} · {job.message}</p>
-      {recovering ? <><div role="progressbar" aria-label="恢复校验进行中" className="h-2 overflow-hidden rounded bg-indigo-100"><div className="h-full w-1/3 animate-pulse rounded bg-indigo-500" /></div><p className="text-xs">校验完成后自动继续下载；可刷新页面，独立恢复任务不会因此停止。总量未知，不估算百分比。</p></> : null}
+      {recovering ? <><div role="progressbar" aria-label="恢复校验进行中" className="h-2 overflow-hidden rounded-lg bg-accent-100"><div className="h-full w-1/3 animate-pulse rounded-lg bg-accent-500" /></div><p className="text-xs">校验完成后自动继续下载；可刷新页面，独立恢复任务不会因此停止。总量未知，不估算百分比。</p></> : null}
       {job.logs.length ? <details><summary className="cursor-pointer text-xs">恢复校验日志</summary><ol className="mt-2 max-h-40 overflow-auto text-xs">{job.logs.map((entry, index) => <li key={index}>{new Date(entry.at).toLocaleTimeString('zh-CN')} · {entry.message}</li>)}</ol></details> : null}
     </div> : null}
     {feedback ? <p role={feedback.error ? 'alert' : 'status'} className={`whitespace-pre-line rounded-lg p-3 text-sm ${feedback.error ? 'bg-rose-50 text-rose-800' : 'bg-emerald-50 text-emerald-900'}`}>{feedback.message}</p> : null}
-    {confirming && canRecover && !recovering ? <div role="group" aria-label="确认恢复任务" className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm">
+    {confirming && canRecover && !recovering ? <div role="group" aria-label="确认恢复任务" className="rounded-lg border border-accent-200 bg-accent-50 p-3 text-sm">
       <p>保留已成功步骤，只继续未完成步骤；可能访问数据源并消耗配额。确认继续吗？</p>
       <p className="mt-2">点击确认后才检查文件和版本。同版本从断点继续；版本变化时，先校验并复用旧数据到新任务。无法安全复用则明确提示失败，不删除旧文件。</p>
       <p className="mt-2 text-amber-900">如本次续跑跨采集日期，新旧下载内容的时点可能不一致。可接受风险后继续；此操作不会将数据标记为 PIT 一致，也不会改变原下载区间。</p>
@@ -49,6 +49,6 @@ export default function EtlRunActions({ run, busy, onResume, onCancel, onReuse, 
       {canRecover ? <button type="button" className={buttonClass} disabled={busy || pending !== null || recovering} onClick={() => { setConfirming(true); setFeedback(null) }}>{pending === 'resume' || recovering ? '正在恢复…' : '恢复下载'}</button> : null}
       {run.status === 'RUNNING' ? <button type="button" className={buttonClass} disabled={busy || pending !== null || run.cancel_requested} onClick={() => void execute('cancel')}>{pending === 'cancel' ? '正在提交取消…' : '取消运行'}</button> : <button type="button" className={buttonClass} disabled={busy || pending !== null} onClick={() => onReuse(run)}>复制到编排器</button>}
     </div>
-    {canRecover ? <p className="text-xs text-slate-500">“恢复下载”会核验并复用原数据；“复制到编排器”仅复制流程，不是断点续跑。</p> : null}
+    {canRecover ? <p className="text-xs text-slate-600">“恢复下载”会核验并复用原数据；“复制到编排器”仅复制流程，不是断点续跑。</p> : null}
   </section>
 }

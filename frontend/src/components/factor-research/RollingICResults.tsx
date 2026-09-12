@@ -27,8 +27,8 @@ export default function RollingICResults({ run, sample }: { run: FactorRun; samp
           { name: '滚动均值', type: 'line', showSymbol: false, connectNulls: false, data: rows.map(row => row[metric][selected]?.mean ?? null) },
         ],
       }} />
-      <details className="mt-3"><summary className="cursor-pointer text-sm font-semibold text-slate-700">查看滚动统计明细</summary><div className="mt-3 max-h-72 overflow-auto"><table className="w-full min-w-[650px] text-left text-xs" aria-label="滚动 IC 统计"><thead><tr><th className="p-2">标签兑现日</th><th>对应信号日</th><th>有效截面</th><th>滚动均值</th><th>ICIR（未年化）</th><th>正值比例</th></tr></thead><tbody>{rows.map(row => { const stats = row[metric][selected]; return <tr key={row.date} className="border-t border-slate-100"><td className="p-2">{row.date}</td><td>{row.signal_date}</td><td>{stats?.observations ?? 0}</td><td>{numberText(stats?.mean)}</td><td>{numberText(stats?.icir)}</td><td>{percentText(stats?.positive_rate)}</td></tr> })}</tbody></table></div></details>
-    </> : <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">当前样本区间尚无已兑现的有效标签。</p>}
-    <p className="mt-3 text-xs leading-6 text-slate-500">横轴为标签兑现日，不是信号日当时已知的信息；样本内外分开滚动，跨界标签剔除。相邻标签可能重叠，ICIR 不是独立样本显著性检验。</p>
+      <details className="mt-3"><summary className="cursor-pointer text-sm font-semibold text-slate-700">查看滚动统计明细</summary><div className="mt-3 max-h-72 overflow-auto"><table className="w-full min-w-[650px] text-left text-xs" aria-label="滚动 IC 统计"><thead><tr><th scope="col" className="p-2">标签兑现日</th><th scope="col">对应信号日</th><th scope="col">有效截面</th><th scope="col">滚动均值</th><th scope="col">ICIR（未年化）</th><th scope="col">正值比例</th></tr></thead><tbody>{rows.map(row => { const stats = row[metric][selected]; return <tr key={row.date} className="border-t border-slate-100"><td className="p-2">{row.date}</td><td>{row.signal_date}</td><td>{stats?.observations ?? 0}</td><td>{numberText(stats?.mean)}</td><td>{numberText(stats?.icir)}</td><td>{percentText(stats?.positive_rate)}</td></tr> })}</tbody></table></div></details>
+    </> : <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600">当前样本区间尚无已兑现的有效标签。</p>}
+    <p className="mt-3 text-xs leading-6 text-slate-600">横轴为标签兑现日，不是信号日当时已知的信息；样本内外分开滚动，跨界标签剔除。相邻标签可能重叠，ICIR 不是独立样本显著性检验。</p>
   </Card>
 }

@@ -88,8 +88,8 @@ export default function RegimeResearchSeriesPicker(props: Props) {
       <h4 className="text-sm font-semibold text-amber-950">尚未选择输入数据</h4>
       <p className="mt-1 text-xs leading-5 text-amber-900">此模板节点只有占位名称，没有观测数据。选择数据后即可计算，现有连线会保留。</p>
       <div className="mt-3 flex flex-wrap gap-2">
-        <button type="button" onClick={() => chooseSource('source.macro')} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white">选择宏观数据</button>
-        <button type="button" onClick={() => chooseSource('source.upload')} className="min-h-10 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700">上传时序</button>
+        <button type="button" onClick={() => chooseSource('source.macro')} className="min-h-10 rounded-lg bg-accent-600 px-3 text-xs font-semibold text-white">选择宏观数据</button>
+        <button type="button" onClick={() => chooseSource('source.upload')} className="min-h-10 rounded-xl border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700">上传时序</button>
       </div>
     </section>
   }
@@ -163,29 +163,29 @@ function SeriesCatalogPicker({ node, schema, onPatchNode, children }: Props) {
   const boundName = current?.name || String(p.name || p.ts_code || p.indicator_id || p.artifact_id || p.series_id || '')
 
   return <>
-    <section className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/40 p-3" aria-label="研究数据选择">
-      <h4 className="text-xs font-bold text-indigo-950">{node.type === 'source.indicator' ? '选择指标版本' : node.type === 'source.upload' ? '选择已上传数据' : '研究数据'}</h4>
+    <section className="space-y-3 rounded-xl border border-accent-200 bg-accent-50/40 p-3" aria-label="研究数据选择">
+      <h4 className="text-xs font-bold text-accent-950">{node.type === 'source.indicator' ? '选择指标版本' : node.type === 'source.upload' ? '选择已上传数据' : '研究数据'}</h4>
       {boundName && <p className="break-words text-xs text-slate-700">当前绑定：{boundName}{p.ts_code && boundName !== p.ts_code ? ` · ${p.ts_code}` : ''}</p>}
-      <label className="block text-xs font-semibold text-slate-700">搜索研究数据<input type="search" aria-label="搜索研究数据" value={query} placeholder={PLACEHOLDERS[kind]} onChange={event => { setQuery(event.target.value); setOffset(0) }} className="mt-1 min-h-10 w-full rounded-lg border border-indigo-200 bg-white px-2 font-normal" /></label>
-      <label className="block text-xs font-semibold text-slate-700">数据序列<select aria-label="节点研究数据序列" value={current?.id || (boundName ? '__current__' : '')} onChange={event => selectSeries(event.target.value)} className="mt-1 min-h-10 w-full rounded-lg border border-indigo-200 bg-white px-2 font-normal">
+      <label className="block text-xs font-semibold text-slate-700">搜索研究数据<input type="search" aria-label="搜索研究数据" value={query} placeholder={PLACEHOLDERS[kind]} onChange={event => { setQuery(event.target.value); setOffset(0) }} className="mt-1 min-h-10 w-full rounded-lg border border-accent-200 bg-white px-2 font-normal" /></label>
+      <label className="block text-xs font-semibold text-slate-700">数据序列<select aria-label="节点研究数据序列" value={current?.id || (boundName ? '__current__' : '')} onChange={event => selectSeries(event.target.value)} className="mt-1 min-h-10 w-full rounded-lg border border-accent-200 bg-white px-2 font-normal">
         <option value="">{boundName ? '选择其他研究数据' : '请选择研究数据'}</option>
         {!current && boundName && <option value="__current__" disabled>{boundName}{p.ts_code && boundName !== p.ts_code ? ` · ${p.ts_code}` : ''}（当前绑定）</option>}
         {options.map(series => <option key={series.id} value={series.id} disabled={series.status !== 'available' || series.binding_supported === false || series.regime_node_type !== node.type}>{series.name}{series.code && node.type !== 'source.indicator' ? ` · ${series.code}` : ''}{node.type === 'source.upload' && series.binding_parameters?.artifact_id ? ` · ${series.coverage?.observations ?? '—'} 行 · ${String(series.binding_parameters.artifact_id).slice(-8)}` : ''}{series.indicator_version ? ` · 第 ${series.indicator_version.revision} 版` : ''}{series.binding_supported === false ? `（${series.binding_reason || '暂不支持'}）` : series.status === 'available' ? '' : '（尚未下载）'}</option>)}
       </select></label>
-      {loading ? <p role="status" className="text-xs text-slate-500">正在搜索研究数据…</p> : error ? <p role="alert" className="text-xs text-rose-700">{error}<button type="button" onClick={() => setRetry(value => value + 1)} className="ml-2 underline">重试</button></p> : <p role="status" className="text-xs text-slate-500">{result?.total ? `找到 ${result.total} 条，已加载 ${items.length} 条。` : '没有匹配的研究数据，请换一个名称或代码。'}</p>}
-      {!error && result?.query === normalizedQuery && items.length < result.total && <button type="button" disabled={loading} onClick={() => setOffset(items.length)} className="min-h-9 text-xs font-semibold text-indigo-700 disabled:opacity-40">加载更多结果</button>}
+      {loading ? <p role="status" className="text-xs text-slate-600">正在搜索研究数据…</p> : error ? <p role="alert" className="text-xs text-rose-700">{error}<button type="button" onClick={() => setRetry(value => value + 1)} className="ml-2 underline">重试</button></p> : <p role="status" className="text-xs text-slate-600">{result?.total ? `找到 ${result.total} 条，已加载 ${items.length} 条。` : '没有匹配的研究数据，请换一个名称或代码。'}</p>}
+      {!error && result?.query === normalizedQuery && items.length < result.total && <button type="button" disabled={loading} onClick={() => setOffset(items.length)} className="min-h-9 text-xs font-semibold text-accent-700 disabled:opacity-40">加载更多结果</button>}
       <>
-        <p className="text-xs leading-5 text-slate-500">{node.type === 'source.indicator' ? '选择后固定使用这个指标版本；更新版本需要重新选择。' : node.type === 'source.upload' ? '已上传数据是固定版本，更换文件不会覆盖此前的研究结果。' : '选择后自动绑定数据来源，无需重复配置代码或接口。'}</p>
+        <p className="text-xs leading-5 text-slate-600">{node.type === 'source.indicator' ? '选择后固定使用这个指标版本；更新版本需要重新选择。' : node.type === 'source.upload' ? '已上传数据是固定版本，更换文件不会覆盖此前的研究结果。' : '选择后自动绑定数据来源，无需重复配置代码或接口。'}</p>
         {Boolean(boundName) && <details><summary className="cursor-pointer text-xs text-slate-600">查看数据来源</summary><dl className="mt-2 space-y-2 text-xs">{[...BINDING_FIELDS[node.type]].filter(name => p[name] !== undefined && p[name] !== '').map(name => {
           const property = sourceProperties[name] || {}
           const enumIndex = property.enum?.indexOf(p[name]) ?? -1
-          return <div key={name}><dt className="text-slate-500">{regimeParameterLabel(name, property)}</dt><dd className="break-all text-slate-700">{enumIndex >= 0 ? regimeEnumLabel(p[name], property, enumIndex) : String(p[name])}</dd></div>
+          return <div key={name}><dt className="text-slate-600">{regimeParameterLabel(name, property)}</dt><dd className="break-all text-slate-700">{enumIndex >= 0 ? regimeEnumLabel(p[name], property, enumIndex) : String(p[name])}</dd></div>
         })}</dl></details>}
       </>
     </section>
     {node.type === 'source.indicator' && <RegimeIndicatorSourceFields key={identity} node={node} series={current} onPatchNode={onPatchNode} />}
-    {node.type === 'source.etf' && <p className="text-xs leading-5 text-slate-500">复权净值与复权市价均可用于实时分析。净值按公告日期使用；前复权以截止范围内最后一日为基准。切换字段自动匹配来源，净值无需复权因子。</p>}
-    {node.type === 'source.fund' && <p className="text-xs leading-5 text-slate-500">基金净值（含复权净值）可用于实时分析，按公告日期使用已公布的数据。累计净值不等同于分红再投资收益。</p>}
+    {node.type === 'source.etf' && <p className="text-xs leading-5 text-slate-600">复权净值与复权市价均可用于实时分析。净值按公告日期使用；前复权以截止范围内最后一日为基准。切换字段自动匹配来源，净值无需复权因子。</p>}
+    {node.type === 'source.fund' && <p className="text-xs leading-5 text-slate-600">基金净值（含复权净值）可用于实时分析，按公告日期使用已公布的数据。累计净值不等同于分红再投资收益。</p>}
     {node.type === 'source.etf'
       ? <fieldset disabled={!current} className="min-w-0 space-y-3">{children(current)}</fieldset>
       : children(current)}

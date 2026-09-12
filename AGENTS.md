@@ -74,9 +74,9 @@
 - `SSE` 交易日日历来源 `data/trade_day_df.parquet`，新增数据时需保证 `exchange='SSE'`、`is_open=1`。
 
 ## 提交与合并请求规范
-- 提交信息遵循 `feat:`, `fix:`, `docs:` 等前缀，聚焦单一改动并描述影响面。
-- PR 需说明目的、关键变化、运行过的命令，并在涉及 UI 时附上截图或视频。
-- 关联相关 Issue 或任务编号，确认无敏感信息泄露后再发起合并。
+- AI 在创建开发分支、准备 commit/push、创建或更新 PR、执行 PR 审核、合并、发布、回滚及维护提交规则前，必须完整阅读并遵守 [branch_submission_rules.md](branch_submission_rules.md)，不能仅凭记忆或本节摘要操作。
+- 分支流向、提交范围、AI 审核、测试证据、合并条件及异常处理由该文档统一规定；不得在其他文档中维护相互冲突的提交规则。
+- 按用户已经授权的任务范围执行，不重复询问已授权动作；写文档或修改代码本身不表示已获准提交、推送、合并或修改远端仓库设置。
 
 ## 安全与配置提醒
 - 配置值由环境变量或 `.env` 读取，不要将密钥或令牌写入仓库。
@@ -118,7 +118,8 @@ Machine-first routing protocol for downstream agents operating from the current 
 2. `docs/repo_map.json`
 3. `docs/task_routes.json`
 4. `docs/pitfalls.json`
-5. Routed code, tests, and configs
+5. `branch_submission_rules.md` before branch creation, commit/push, PR creation or review, merge, release, rollback, or submission-policy maintenance
+6. Routed code, tests, and configs
 
 ## Routing Ownership
 

@@ -7,7 +7,7 @@ export default function AutoPlanSummary({ plan, busy = false, onBaseline, onExcl
   plan: AutoIncrementalPlan; busy?: boolean; onBaseline?: (id: string) => void; onExclude?: (definition: EtlDefinition) => void
 }) {
   const proposal = plan.exclusion_proposal
-  return <section aria-label="自动增量计划" className="min-w-0 space-y-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm">
+  return <section aria-label="自动增量计划" className="min-w-0 space-y-3 rounded-xl border border-accent-200 bg-accent-50 p-4 text-sm">
     <h3 className="font-bold">{plan.ready ? '本次实际下载计划' : '尚未启动：请处理增量计划中的拦截项'}</h3>
     <p className="break-all text-xs">基线快照：{plan.snapshot}</p>
     <p className="text-xs leading-6">请求截止：{plan.cutoff_date}（上海时区昨日，不代表上游已全部披露）。净值/行情回查最近 {plan.lookback_trade_days} 个交易日；持仓/分红按已核验查询覆盖与修订策略规划。写入私有候选，不覆盖正式快照。</p>
@@ -31,7 +31,7 @@ export default function AutoPlanSummary({ plan, busy = false, onBaseline, onExcl
       </dl> : null}
     </article>)}</div></details>
     {plan.errors.map((error, i) => <p key={i} className="text-rose-800">{error.message}</p>)}
-    {proposal && onExclude ? <div className="space-y-2 border-t border-indigo-200 pt-3">
+    {proposal && onExclude ? <div className="space-y-2 border-t border-accent-200 pt-3">
       <p className="text-xs leading-6">可从本次草稿排除：{proposal.excluded.map(s => `${s.name}${s.reason === 'dependency' ? '（真实依赖受影响）' : ''}`).join('、')}。排除不等于下载成功；这些数据需单独处理。</p>
       {proposal.rebuild_dependencies ? <p className="text-xs text-amber-900">旧串行流程将按服务端任务合同重新梳理依赖，只有顺序关系的节点可继续；请确认后再应用。</p> : null}
       <button type="button" className={buttonClass} disabled={busy} onClick={() => {

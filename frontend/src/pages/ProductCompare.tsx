@@ -754,7 +754,7 @@ const RangeSelector: React.FC<RangeSelectorProps> = ({
   resolvedEnd,
 }) => {
   return (
-    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
       <label htmlFor={id} className="font-medium text-slate-600">
         显示区间
       </label>
@@ -769,7 +769,7 @@ const RangeSelector: React.FC<RangeSelectorProps> = ({
             onChange({ preset, customStart: selection.customStart, customEnd: selection.customEnd });
           }
         }}
-        className="h-9 rounded border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+        className="h-9 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
       >
         {rangePresetOptions.map((option) => (
           <option key={option.value} value={option.value}>
@@ -792,9 +792,9 @@ const RangeSelector: React.FC<RangeSelectorProps> = ({
                 customEnd: selection.customEnd,
               });
             }}
-            className="h-9 rounded border border-slate-200 px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            className="h-9 rounded-lg border border-slate-200 px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
           />
-          <span className="text-slate-400">至</span>
+          <span className="text-slate-600">至</span>
           <input
             type="date"
             value={selection.customEnd ?? ''}
@@ -808,15 +808,15 @@ const RangeSelector: React.FC<RangeSelectorProps> = ({
                 customEnd: value || undefined,
               });
             }}
-            className="h-9 rounded border border-slate-200 px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            className="h-9 rounded-lg border border-slate-200 px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
           />
         </>
       )}
-      <span className="text-slate-400">
+      <span className="text-slate-600">
         当前：{resolvedStart ?? '--'} ~ {resolvedEnd ?? '--'}
       </span>
       {minDate && maxDate && (
-        <span className="text-slate-300">(可选范围：{minDate} - {maxDate})</span>
+        <span className="text-slate-600">(可选范围：{minDate} - {maxDate})</span>
       )}
     </div>
   );
@@ -1253,12 +1253,12 @@ export default function ProductCompare() {
       <table className="min-w-[720px] w-max divide-y divide-slate-100">
         <thead className="bg-slate-50">
           <tr>
-            <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">指标</th>
+            <th scope="col" className="px-6 py-3 text-left text-xs font-semibold tracking-wide r text-slate-600">指标</th>
             {productPresentations.map(({ key, displayName, code }) => (
-              <th key={`${tableKey}-head-${key}`} className="px-6 py-3 text-center text-xs font-semibold uppercase tracking-wider text-emerald-600">
+              <th scope="col" key={`${tableKey}-head-${key}`} className="px-6 py-3 text-center text-xs font-semibold uppercase tracking-wider text-accent-600">
                 <div className="flex flex-col items-center gap-0.5">
                   <span className="text-sm font-semibold">{displayName}</span>
-                  <span className="text-[11px] font-normal text-emerald-500">{code}</span>
+                  <span className="text-xs font-normal text-accent-600">{code}</span>
                 </div>
               </th>
             ))}
@@ -1272,7 +1272,7 @@ export default function ProductCompare() {
             });
             const gradientStyles = computeGradientStyles(values, column.higherIsBetter !== false);
             return (
-              <tr key={`${tableKey}-row-${column.key}`} className="hover:bg-emerald-50/20">
+              <tr key={`${tableKey}-row-${column.key}`} className="hover:bg-accent-50/20">
                 <th scope="row" className="whitespace-nowrap px-6 py-4 text-left text-sm font-semibold text-slate-600">
                   {column.label}
                 </th>
@@ -1440,7 +1440,7 @@ export default function ProductCompare() {
           }
           const [xValue, yValue] = data.value ?? [];
           return [
-            `<div class="text-sm font-semibold">${data.name} <span class="text-xs font-normal text-emerald-200">${data.code}</span></div>`,
+            `<div class="text-sm font-semibold">${data.name} <span class="text-xs font-normal text-accent-600">${data.code}</span></div>`,
             `<div class="text-xs text-slate-200">${config.metricLabel}：${config.metricFormatter(data.metric)}</div>`,
             `<div class="text-xs text-slate-200">${config.x.label}：${config.x.valueFormatter(
               typeof xValue === 'number' ? xValue : null,
@@ -2070,7 +2070,7 @@ export default function ProductCompare() {
             </p>
           )}
           {previewMode && (
-            <p className="mt-1 text-xs text-emerald-600">
+            <p className="mt-1 text-xs text-accent-600">
               当前展示为虚拟示例数据，便于预览页面布局与交互效果。
             </p>
           )}
@@ -2079,13 +2079,13 @@ export default function ProductCompare() {
           <button
             type="button"
             onClick={() => returnToOrigin(navigate, location, `/product-research/products?kind=${defaultProductKind}`)}
-            className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:border-emerald-400 hover:text-emerald-600"
+            className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:border-accent-400 hover:text-accent-600"
           >
             ← {returnNavigation?.returnLabel ?? '返回上一页'}
           </button>
           <Link
             to="/product-research/products"
-            className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600"
+            className="rounded-lg bg-accent-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-accent-600"
           >
             回到产品研究
           </Link>
@@ -2093,12 +2093,12 @@ export default function ProductCompare() {
       </div>
 
       {shouldShowEmptyState && (
-        <div className="rounded-2xl bg-white p-10 text-center text-slate-500 shadow-sm ring-1 ring-slate-100">
+        <div className="rounded-xl bg-white p-10 text-center text-slate-600 shadow-sm ring-1 ring-slate-100">
           <p>未能加载任何产品详情。</p>
           <div className="mt-6 flex justify-center">
             <Link
               to="/product-research/compare?preview=demo"
-              className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-600"
+              className="rounded-lg bg-accent-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-accent-600"
             >
               查看虚拟产品预览
             </Link>
@@ -2107,9 +2107,9 @@ export default function ProductCompare() {
       )}
 
       {shouldShowLoading && (
-        <div className="rounded-2xl bg-white p-10 text-center text-slate-400 shadow-sm ring-1 ring-slate-100">
+        <div className="rounded-xl bg-white p-10 text-center text-slate-600 shadow-sm ring-1 ring-slate-100">
           <div className="flex items-center justify-center gap-3">
-            <svg className="h-5 w-5 animate-spin text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg className="h-5 w-5 animate-spin text-accent-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle className="opacity-25" cx="12" cy="12" r="10" />
               <path className="opacity-75" d="M4 12a8 8 0 018-8" />
             </svg>
@@ -2119,7 +2119,7 @@ export default function ProductCompare() {
       )}
 
       {shouldShowError && (
-        <div className="rounded-2xl bg-white p-10 text-center text-rose-500 shadow-sm ring-1 ring-rose-100">
+        <div className="rounded-xl bg-white p-10 text-center text-rose-600 shadow-sm ring-1 ring-rose-100">
           {error}
         </div>
       )}
@@ -2131,17 +2131,17 @@ export default function ProductCompare() {
               部分产品未能成功加载：{failedIds.join('、')}。
             </div>
           )}
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm" aria-live="polite">
+          <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 text-sm" aria-live="polite">
             {comparisonAnalysisLoading ? (
-              <span className="text-emerald-800">正在由服务端固定签名 NJIT 内核计算比较指标…</span>
+              <span className="text-accent-800">正在由服务端固定签名 NJIT 内核计算比较指标…</span>
             ) : comparisonAnalysisError ? (
               <span className="text-amber-800">{comparisonAnalysisError}</span>
             ) : comparisonExecution ? (
               <details>
-                <summary className="cursor-pointer font-medium text-emerald-800">
+                <summary className="cursor-pointer font-medium text-accent-800">
                   数值引擎：Numba NJIT · {comparisonExecution.kernel_coverage}
                 </summary>
-                <dl className="mt-2 grid gap-1 text-xs text-emerald-900 sm:grid-cols-2">
+                <dl className="mt-2 grid gap-1 text-xs text-accent-900 sm:grid-cols-2">
                   <div><dt className="inline font-medium">后端：</dt><dd className="inline"> {comparisonExecution.execution_backend}</dd></div>
                   <div><dt className="inline font-medium">内核版本：</dt><dd className="inline"> {comparisonExecution.kernel_version}</dd></div>
                   <div><dt className="inline font-medium">nopython：</dt><dd className="inline"> {String(comparisonExecution.nopython)}</dd></div>
@@ -2154,18 +2154,18 @@ export default function ProductCompare() {
             )}
           </div>
 
-          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+          <section className="rounded-xl bg-white shadow-sm ring-1 ring-slate-100">
             <div className="border-b border-slate-100 px-6 py-4">
               <h2 className="text-lg font-semibold text-slate-900">基础信息对比</h2>
-              <p className="mt-1 text-xs text-slate-500">按产品展示核心要素，便于快速识别发行与运作差异。</p>
+              <p className="mt-1 text-xs text-slate-600">按产品展示核心要素，便于快速识别发行与运作差异。</p>
             </div>
             <div className="h-[420px] w-full overflow-auto px-6 pb-6 pt-4">
               <table className="min-w-[1100px] w-max divide-y divide-slate-100">
                 <thead className="bg-slate-50">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">产品</th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-semibold tracking-wide r text-slate-600">产品</th>
                     {detailColumns.map((column) => (
-                      <th key={column.key} className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      <th scope="col" key={column.key} className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
                         {column.label}
                       </th>
                     ))}
@@ -2173,11 +2173,11 @@ export default function ProductCompare() {
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
                   {productPresentations.map(({ key, product, displayName, code }) => (
-                    <tr key={`basic-${key}`} className="hover:bg-emerald-50/40">
-                      <td className="px-6 py-4 text-sm font-semibold text-emerald-600">
+                    <tr key={`basic-${key}`} className="hover:bg-accent-50/40">
+                      <td className="px-6 py-4 text-sm font-semibold text-accent-600">
                         <div className="flex flex-col">
                           <span>{displayName}</span>
-                          <span className="text-xs font-normal text-emerald-500">{code}</span>
+                          <span className="text-xs font-normal text-accent-600">{code}</span>
                         </div>
                       </td>
                       {detailColumns.map((column) => (
@@ -2192,35 +2192,35 @@ export default function ProductCompare() {
             </div>
           </section>
 
-          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-violet-100" aria-labelledby="custom-indicator-comparison-title">
-            <div className="border-b border-violet-100 px-6 py-4">
+          <section className="rounded-xl bg-white shadow-sm ring-1 ring-accent-100" aria-labelledby="custom-indicator-comparison-title">
+            <div className="border-b border-accent-100 px-6 py-4">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h2 id="custom-indicator-comparison-title" className="text-lg font-semibold text-slate-900">研究指标矩阵</h2>
-                  <p className="mt-1 text-xs text-slate-500">所有标量指标统一由指标引擎计算；每个指标可独立选择计算区间，并与下方图表显示区间相互独立。</p>
+                  <p className="mt-1 text-xs text-slate-600">所有标量指标统一由指标引擎计算；每个指标可独立选择计算区间，并与下方图表显示区间相互独立。</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <MetricSelector indicators={customIndicators} selectedIds={metricPreference.indicatorIds} onChange={(indicatorIds) => setMetricPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))} maxSelected={10} label="选择比较指标" />
                   <label className="text-sm text-slate-600">截止日<input type="date" value={customIndicatorAsOf} onChange={(event) => setCustomIndicatorAsOf(event.target.value)} className="ml-2 min-h-11 rounded-lg border border-slate-200 px-3 text-sm" /></label>
                   {comparisonProductKind ? (
-                    <Link to={`/settings/indicators-models?kind=${comparisonProductKind}&ids=${encodeURIComponent(limitedIds.join(','))}`} className="inline-flex min-h-11 items-center rounded-lg border border-violet-200 px-3 text-sm font-medium text-violet-700 hover:bg-violet-50">指标中心</Link>
+                    <Link to={`/settings/indicators-models?kind=${comparisonProductKind}&ids=${encodeURIComponent(limitedIds.join(','))}`} className="inline-flex min-h-11 items-center rounded-lg border border-accent-200 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50">指标中心</Link>
                   ) : (
-                    <span title="混合产品对比请直接使用本页研究指标矩阵" className="inline-flex min-h-11 cursor-not-allowed items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-400">指标中心</span>
+                    <span title="混合产品对比请直接使用本页研究指标矩阵" className="inline-flex min-h-11 cursor-not-allowed items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-600">指标中心</span>
                   )}
                 </div>
               </div>
             </div>
             <div className="overflow-auto px-6 py-4" aria-live="polite">
-              {customIndicatorLoading ? <p className="text-sm text-slate-500">正在批量计算指标…</p> : customIndicatorError ? <p className="text-sm text-amber-700">{customIndicatorError}</p> : selectedCustomIndicators.length === 0 ? <p className="text-sm text-slate-500">选择一个或多个指标以显示比较矩阵。</p> : <MetricMatrix indicators={selectedCustomIndicators} targets={productPresentations.flatMap(({ displayName, code, kind, product }) => { const productId = code === '--' ? product.product_id ?? '' : code; return productId ? [{ kind, product_id: productId, name: displayName }] : []; })} results={customIndicatorResults} periodsByIndicator={metricPreference.periodsByIndicator} periodOptions={customIndicatorPeriods} onPeriodChange={(indicatorId, period) => setMetricPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))} onDefinition={setDefinitionIndicator} />}
+              {customIndicatorLoading ? <p className="text-sm text-slate-600">正在批量计算指标…</p> : customIndicatorError ? <p className="text-sm text-amber-700">{customIndicatorError}</p> : selectedCustomIndicators.length === 0 ? <p className="text-sm text-slate-600">选择一个或多个指标以显示比较矩阵。</p> : <MetricMatrix indicators={selectedCustomIndicators} targets={productPresentations.flatMap(({ displayName, code, kind, product }) => { const productId = code === '--' ? product.product_id ?? '' : code; return productId ? [{ kind, product_id: productId, name: displayName }] : []; })} results={customIndicatorResults} periodsByIndicator={metricPreference.periodsByIndicator} periodOptions={customIndicatorPeriods} onPeriodChange={(indicatorId, period) => setMetricPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))} onDefinition={setDefinitionIndicator} />}
             </div>
           </section>
 
-          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+          <section className="rounded-xl bg-white shadow-sm ring-1 ring-slate-100">
             <div className="border-b border-slate-100 px-6 py-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h2 className="text-lg font-semibold text-slate-900">收益走势</h2>
-                  <p className="mt-1 text-xs text-slate-500">这里的区间只控制序列图显示，不改变上方各指标独立设置的计算区间。</p>
+                  <p className="mt-1 text-xs text-slate-600">这里的区间只控制序列图显示，不改变上方各指标独立设置的计算区间。</p>
                 </div>
                 <RangeSelector
                   id="performance-range"
@@ -2236,7 +2236,7 @@ export default function ProductCompare() {
             <div className="space-y-6 px-6 pb-6 pt-4">
               <div>
                 <h3 className="text-base font-semibold text-slate-900">虚拟净值走势</h3>
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-slate-600">
                   当前可见区间会自动将首个交易日归一到 1，并实时调整 Y 轴范围。
                 </p>
                 <div className="mt-4 rounded-xl bg-slate-50 p-4">
@@ -2256,12 +2256,12 @@ export default function ProductCompare() {
             </div>
           </section>
 
-          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+          <section className="rounded-xl bg-white shadow-sm ring-1 ring-slate-100">
             <div className="border-b border-slate-100 px-6 py-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h2 className="text-lg font-semibold text-slate-900">风险走势</h2>
-                  <p className="mt-1 text-xs text-slate-500">回撤和滚动波动为序列诊断，标量风险值统一在上方指标矩阵展示。</p>
+                  <p className="mt-1 text-xs text-slate-600">回撤和滚动波动为序列诊断，标量风险值统一在上方指标矩阵展示。</p>
                 </div>
                 <RangeSelector
                   id="risk-range"
@@ -2278,7 +2278,7 @@ export default function ProductCompare() {
               <div className="mt-6 space-y-6">
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">最大回撤</h3>
-                  <p className="mt-1 text-xs text-slate-500">回撤曲线相对于阶段高点的跌幅，辅助定位风控压力最大的时段。</p>
+                  <p className="mt-1 text-xs text-slate-600">回撤曲线相对于阶段高点的跌幅，辅助定位风控压力最大的时段。</p>
                   <div className="mt-4 rounded-xl bg-slate-50 p-4">
                     {drawdownChartOption ? (
                       <ReactECharts
@@ -2295,8 +2295,8 @@ export default function ProductCompare() {
                 </div>
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">滚动波动率</h3>
-                  <p className="mt-1 text-xs text-slate-500">{effectiveRollingWindowDays} 个交易日窗口年化的波动率，衡量短期震荡强度。</p>
-                  <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                  <p className="mt-1 text-xs text-slate-600">{effectiveRollingWindowDays} 个交易日窗口年化的波动率，衡量短期震荡强度。</p>
+                  <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
                     <label htmlFor="rolling-window-days" className="font-medium text-slate-600">
                       滚动窗口（交易日）
                     </label>
@@ -2331,10 +2331,10 @@ export default function ProductCompare() {
                         }
                         setRollingWindowDays(parsed);
                       }}
-                      className="h-9 w-24 rounded border border-slate-200 px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      className="h-9 w-24 rounded-lg border border-slate-200 px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
                     />
-                    <span className="text-xs text-slate-400">{rollingWindowMin} - {rollingWindowMax} 天</span>
-                    <span className="text-sm font-semibold text-emerald-600">当前：{effectiveRollingWindowDays} 天</span>
+                    <span className="text-xs text-slate-600">{rollingWindowMin} - {rollingWindowMax} 天</span>
+                    <span className="text-sm font-semibold text-accent-600">当前：{effectiveRollingWindowDays} 天</span>
                   </div>
                   <div className="mt-4 rounded-xl bg-slate-50 p-4">
                     {rollingVolatilityChartOption ? (
@@ -2355,12 +2355,12 @@ export default function ProductCompare() {
           </section>
           <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
 
-          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-100">
+          <section className="rounded-xl bg-white shadow-sm ring-1 ring-slate-100">
             <div className="border-b border-slate-100 px-6 py-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h2 className="text-lg font-semibold text-slate-900">性价比指标对比</h2>
-                  <p className="mt-1 text-xs text-slate-500">综合费用与回报，筛选最具投入产出效率的候选产品。</p>
+                  <p className="mt-1 text-xs text-slate-600">综合费用与回报，筛选最具投入产出效率的候选产品。</p>
                 </div>
                 <RangeSelector
                   id="efficiency-range"
@@ -2387,18 +2387,18 @@ export default function ProductCompare() {
               </div>
             </div>
             <div className="px-6 pb-6">
-              <div className="rounded-2xl bg-slate-50 p-5">
+              <div className="rounded-xl bg-slate-50 p-5">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <h3 className="text-base font-semibold text-slate-800">收益风险象限图</h3>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-slate-600">
                       选择关注的性价比指标，观察不同产品在收益（横轴）与风险（纵轴）维度的分布。
                     </p>
                   </div>
                   <label className="flex flex-col gap-2 text-sm text-slate-600 sm:flex-row sm:items-center">
                     <span className="font-medium text-slate-700">指标选择</span>
                     <select
-                      className="h-9 min-w-[160px] rounded border border-slate-200 px-3 text-sm text-slate-700 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      className="h-9 min-w-[160px] rounded-lg border border-slate-200 px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
                       value={efficiencyQuadrantKey}
                       onChange={(event) => {
                         const next = event.target.value as EfficiencyQuadrantKey;
@@ -2422,7 +2422,7 @@ export default function ProductCompare() {
                       lazyUpdate
                     />
                   ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-slate-500">
+                    <div className="flex h-full items-center justify-center text-sm text-slate-600">
                       暂无可用于绘制象限图的数据。
                     </div>
                   )}

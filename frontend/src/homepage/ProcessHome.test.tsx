@@ -27,6 +27,8 @@ describe('research landing homepage', () => {
     expect(screen.getByRole('link', { name: '探索数据源' })).toHaveAttribute('href', '/settings/source-center')
     expect(screen.queryByText('未连接业务服务')).not.toBeInTheDocument()
     expect(screen.getByText(/研究示例非投资建议/)).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: '查看平台导览' })).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: '探索完整流程' })).not.toBeInTheDocument()
   })
   it('search uses reviewed destinations and descriptions, with honest empty results', async () => {
     const user = userEvent.setup(); mount()
@@ -57,7 +59,8 @@ describe('research landing homepage', () => {
   })
   it('tour supports forward/back/end without generating business results', async () => {
     const user = userEvent.setup(); mount()
-    await user.click(screen.getByRole('button', { name: '查看平台导览' }))
+    // 同一意图只有一个文案，因此按区块限定；两个入口共用「查看平台导览」。
+    await user.click(within(screen.getByRole('region', { name: '完整的投研流程' })).getByRole('button', { name: '查看平台导览' }))
     expect(screen.getByRole('button', { name: '上一步' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: '下一步' }))
     expect(screen.getByText('2 / 3')).toBeInTheDocument()

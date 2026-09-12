@@ -16,6 +16,6 @@ export default function EventUpdateSettings({ value, onChange, disabled = false 
       <label>修订复核间隔（天）<input className={inputClass} type="number" min={1} max={90} value={value.event_revision_interval_days ?? 7} onChange={e => onChange({ ...value, event_revision_interval_days: Number(e.target.value) })} /></label>
       <label>修订回查范围（自然日）<input className={inputClass} type="number" min={1} max={366} value={value.event_revision_window_days ?? 90} onChange={e => onChange({ ...value, event_revision_window_days: Number(e.target.value) })} /></label>
     </fieldset>
-    <p className="mt-2 text-xs leading-6 text-slate-500">持仓/分红按公告日记录查询覆盖，已复核空响应也计入覆盖；净值仍按交易日回查。历史缺口请单独手动补齐。采集基线须明确选择，不会切换研究快照或自动发布；修改后须重新预览。</p>
+    <p className="mt-2 text-xs leading-6 text-slate-600">持仓/分红按公告日记录查询覆盖，已复核空响应也计入覆盖；净值仍按交易日回查。历史缺口请单独手动补齐。采集基线须明确选择，不会切换研究快照或自动发布；修改后须重新预览。</p>
   </details>
 }
