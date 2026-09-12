@@ -2470,7 +2470,8 @@
         "frontend/src/components/PitProvenance.tsx",
         "frontend/src/pages/PitSnapshots.tsx",
         "frontend/src/services/pit.ts",
-        "frontend/src/services/pitOverride.ts"
+        "frontend/src/services/pitOverride.ts",
+        "docs/frontend-design-guidelines.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell"

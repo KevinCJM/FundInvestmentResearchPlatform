@@ -18,6 +18,11 @@
 - 前端使用函数式组件与 PascalCase 文件名，局部样式与测试与组件同目录保存。
 - 避免硬编码路径，优先复用配置和工具模块；必要注释保持简洁并解释设计意图。
 
+## 前端设计执行协议
+- 修改前端视觉、交互或图片资产前，必须完整阅读 [前端设计准则](docs/frontend-design-guidelines.md)；涉及首页时另读 [首页需求与设计](docs/homepage-design.md)。视觉细则统一维护在设计准则中，不在本文件复制另一套标准。
+- 先确认首页与工作台的适用范围，复用既有设计令牌和共享组件；参考图片、外部风格说明中的估算值不能直接成为全站规则。差异与例外必须在设计准则对应章节明确说明。
+- 页面或资产修改的验收须覆盖受影响的真实交互状态、响应式布局、文字对比度及必要的降级效果；静态检查通过不能替代浏览器验收。仅修改规范时检查文档一致性、链接和路由，不据此宣称页面已经实现或通过视觉验收。
+
 ## 代码版本与存量代码治理
 - Git 是本项目唯一的代码版本管理机制。源码目录只保留一份代表当前版本、实际参与调用、构建和发布的实现；历史版本统一通过 Git commit、tag 或 branch 追溯，不在当前代码中并行保存。
 - 禁止仅为留档、对比或回滚而保留旧实现，包括但不限于 `old`、`legacy`、`backup`、`copy` 等副本、注释掉的大段旧代码、永远不会进入当前调用链的分支，以及同一功能的新旧双实现。
@@ -118,7 +123,8 @@ Machine-first routing protocol for downstream agents operating from the current 
 2. `docs/repo_map.json`
 3. `docs/task_routes.json`
 4. `docs/pitfalls.json`
-5. Routed code, tests, and configs
+5. `docs/frontend-design-guidelines.md` before frontend visual, interaction, or asset changes; also `docs/homepage-design.md` when the homepage is involved
+6. Routed code, tests, and configs
 
 ## Routing Ownership
 
