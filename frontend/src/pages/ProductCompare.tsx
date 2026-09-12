@@ -1440,7 +1440,7 @@ export default function ProductCompare() {
           }
           const [xValue, yValue] = data.value ?? [];
           return [
-            `<div class="text-sm font-semibold">${data.name} <span class="text-xs font-normal text-accent-600">${data.code}</span></div>`,
+            `<div class="text-sm font-semibold">${data.name} <span class="text-xs font-normal text-accent-200">${data.code}</span></div>`,
             `<div class="text-xs text-slate-200">${config.metricLabel}：${config.metricFormatter(data.metric)}</div>`,
             `<div class="text-xs text-slate-200">${config.x.label}：${config.x.valueFormatter(
               typeof xValue === 'number' ? xValue : null,
