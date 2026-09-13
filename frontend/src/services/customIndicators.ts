@@ -676,6 +676,22 @@ export interface TargetDataSummary {
   data_latest_date: string | null
 }
 
+export interface IndicatorDateContext {
+  found_date: string | null
+  list_date: string | null
+  as_of: string | null
+  sources: Array<{
+    label: string
+    first_date: string | null
+    latest_date: string | null
+    rows_before_as_of: number | null
+    rows_after_date_filter: number | null
+    rows_after_as_of: number | null
+    uses_disclosure_date: boolean
+    disclosure_status?: 'not_applied' | 'applied' | 'required_unavailable'
+  }>
+}
+
 export interface EvaluationWindow {
   requested_as_of: string | null
   effective_as_of: string | null
@@ -729,6 +745,7 @@ export interface EvaluationSeriesPoint {
 }
 
 export interface EvaluationResult {
+  data_context?: IndicatorDateContext | null
   result_kind?: IndicatorResultKind
   indicator_id: string | null
   indicator_revision: number | null
@@ -789,6 +806,7 @@ export interface TimeSeriesChannelResult {
 }
 
 export interface TimeSeriesIndicatorResult {
+  data_context?: IndicatorDateContext | null
   indicator_id: string | null
   indicator_revision: number | null
   indicator_name: string

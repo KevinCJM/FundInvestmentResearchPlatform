@@ -13,11 +13,11 @@ export default function EtlNodeInspector({ step, definition, catalog, schemas, o
 }) {
   const schema = schemas.find(item => item.id === step.kind)
   const edges = etlEdges(definition).filter(edge => edge.target === step.id)
-  return <aside aria-label="ETL 节点检查器" className="min-w-0 space-y-4 rounded-xl border border-indigo-200 bg-white p-4 shadow-lg">
+  return <aside aria-label="ETL 节点检查器" className="min-w-0 space-y-4 rounded-xl border border-accent-200 bg-white p-4 shadow-lg">
     <div className="flex items-center justify-between gap-2"><h3 className="font-bold">节点设置</h3><button type="button" className={buttonClass} onClick={onClose}>收起检查器</button></div>
     <fieldset disabled={readOnly} className="min-w-0 space-y-4">
       <label className="block text-xs font-semibold">步骤名称<input className={inputClass} maxLength={100} value={step.name} onChange={e => onPatch({ ...step, name: e.target.value })} /></label>
-      <p className="break-all text-xs text-slate-500">{schema?.label} · {step.id}</p>
+      <p className="break-all text-xs text-slate-600">{schema?.label} · {step.id}</p>
       {step.kind === 'download' ? <EtlDownloadFields step={step} catalog={catalog} onChange={onPatch} /> : null}
       {step.kind === 'task' ? <EtlTaskFields step={step} catalog={catalog} parameters={definition.parameters ?? []} onChange={onPatch} /> : null}
       <section className="space-y-3" aria-label="节点连接"><h4 className="text-sm font-semibold">输入与执行依赖</h4>
@@ -48,7 +48,7 @@ export default function EtlNodeInspector({ step, definition, catalog, schemas, o
             </select></label>
           </div>
         })}
-        <p className="text-xs leading-5 text-slate-500">仅执行顺序不会读取上游输出。改为顺序后如缺少必需数据，运行前校验会明确提示；不能用此选项绕过数据完整性检查。</p>
+        <p className="text-xs leading-5 text-slate-600">仅执行顺序不会读取上游输出。改为顺序后如缺少必需数据，运行前校验会明确提示；不能用此选项绕过数据完整性检查。</p>
       </section>
       {step.kind === 'resolve' ? <>
         <label className="block text-xs font-semibold">取值业务表<select className={inputClass} value={step.table_id ?? ''} onChange={e => onPatch({ ...step, table_id: e.target.value })}><option value="">请选择</option>{catalog.targets.categories.map(category => <optgroup key={category.category_id} label={category.label}>{catalog.targets.tables.filter(t => t.source_mappable && t.category_id === category.category_id).map(t => <option key={t.table_id} value={t.table_id}>{t.label}</option>)}</optgroup>)}</select></label>
@@ -57,7 +57,7 @@ export default function EtlNodeInspector({ step, definition, catalog, schemas, o
         <details><summary className="cursor-pointer text-xs">取值日期范围与历史时点</summary><div className="mt-3 space-y-2">{(['start_date', 'end_date', 'as_of'] as const).map(key => <label key={key} className="block text-xs">{({ start_date: '取值开始日期', end_date: '取值结束日期', as_of: '历史可得截止时点' })[key]}<input className={inputClass} type={key === 'as_of' ? 'text' : 'date'} value={step[key] ?? ''} onChange={e => onPatch({ ...step, [key]: e.target.value || null })} /></label>)}</div></details>
       </> : null}
       {step.kind === 'map' ? <p className="text-xs leading-6 text-slate-600">使用上游下载节点冻结的字段映射，不再次访问数据源。需要修改映射时进入数据源与接口映射中心。</p> : null}
-      {step.kind === 'snapshot' ? <p className="rounded-lg bg-indigo-50 p-3 text-xs leading-6 text-indigo-900">需要已取值的产品信息和基金净值；行情与日历可选。快照只使用连接的数据，不读取旧活跃价格、不自动发布。</p> : null}
+      {step.kind === 'snapshot' ? <p className="rounded-lg bg-accent-50 p-3 text-xs leading-6 text-accent-900">需要已取值的产品信息和基金净值；行情与日历可选。快照只使用连接的数据，不读取旧活跃价格、不自动发布。</p> : null}
       {step.kind !== 'download' ? <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={step.allow_empty} onChange={e => onPatch({ ...step, allow_empty: e.target.checked })} />允许空结果后继续</label> : null}
       <button type="button" className={`${buttonClass} text-rose-700`} onClick={onRemove}>删除此节点</button>
     </fieldset>

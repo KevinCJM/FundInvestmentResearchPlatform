@@ -68,7 +68,8 @@ test('native modal focus, search, tour and examples are interactive', async ({ p
   await page.keyboard.press('Control+k')
   await expect(search).toBeVisible()
   await dialog.getByRole('button', { name: '关闭', exact: true }).click()
-  await page.getByRole('button', { name: '查看平台导览' }).click()
+  // 两个区块共用「查看平台导览」，不限定区域会命中两个按钮。
+  await page.getByRole('region', { name: '完整的投研流程' }).getByRole('button', { name: '查看平台导览' }).click()
   await expect(dialog.getByRole('button', { name: '上一步' })).toBeDisabled()
   await dialog.getByRole('button', { name: '下一步' }).click()
   await expect(dialog).toContainText('2 / 3')
@@ -106,7 +107,7 @@ test('shared language, navigation menus and reduced motion', async ({ page }, in
   const originalViewport = page.viewportSize()!
   if (info.project.name === 'desktop-1440') {
     // Long English navigation must also fit immediately above the mobile breakpoint.
-    for (const width of [1251, 1366]) {
+    for (const width of [1250, 1251, 1366, 1401, 1440]) {
       await page.setViewportSize({ width, height: originalViewport.height })
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     }

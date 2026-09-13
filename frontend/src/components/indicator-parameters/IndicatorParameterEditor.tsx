@@ -3,8 +3,8 @@ import { useI18n } from '../../i18n/runtime'
 import type { IndicatorDraft, SeriesParameterDefinition } from '../../services/customIndicators'
 import { bindIndicatorParameter, inspectIndicatorParameters, parameterDefinitionKey, parameterInputIssue, type ParameterCandidate } from '../../services/indicatorParameters'
 
-const field = 'mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300'
-const button = 'min-h-10 rounded-lg border border-violet-200 bg-white px-3 py-2 text-sm font-semibold text-violet-700 disabled:opacity-50 focus:ring-2 focus:ring-violet-300'
+const field = 'mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-500'
+const button = 'min-h-10 rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm font-semibold text-accent-700 disabled:opacity-50 focus:ring-2 focus:ring-accent-500'
 
 function ParameterSettings({ parameter, disabled, onSave, onFix, onDirty }: {
   parameter: SeriesParameterDefinition; disabled: boolean
@@ -28,12 +28,12 @@ function ParameterSettings({ parameter, disabled, onSave, onFix, onDirty }: {
     setError(invalid)
     if (!invalid) onSave(next)
   }
-  return <article className="min-w-0 rounded-xl border border-violet-100 bg-white p-3">
+  return <article className="min-w-0 rounded-xl border border-accent-100 bg-white p-3">
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="text-xs font-semibold text-slate-600">{s('indicatorParameters.label')}<input className={field} maxLength={80} value={text.label} onChange={event => setText({ ...text, label: event.target.value })} /></label>
       <label className="text-xs font-semibold text-slate-600">{s('indicatorParameters.defaultValue')}<input className={field} type="number" step={parameter.type === 'integer' ? 1 : 'any'} value={text.default} onChange={event => setText({ ...text, default: event.target.value })} /></label>
     </div>
-    <p className="mt-2 text-xs text-slate-500">{s('indicatorParameters.code')}: <code>{parameter.id}</code> · {s(`indicatorParameters.type.${parameter.type}`)}</p>
+    <p className="mt-2 text-xs text-slate-600">{s('indicatorParameters.code')}: <code>{parameter.id}</code> · {s(`indicatorParameters.type.${parameter.type}`)}</p>
     <details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-600">{s('indicatorParameters.advanced')}</summary>
       <div className="mt-2 grid gap-3 sm:grid-cols-3">{(['minimum', 'maximum', 'step'] as const).map(key => <label key={key} className="text-xs text-slate-600">{s(`indicatorParameters.${key}`)}<input className={field} type="number" step={parameter.type === 'integer' ? 1 : 'any'} value={text[key]} onChange={event => setText({ ...text, [key]: event.target.value })} /></label>)}</div>
       <label className="mt-2 block text-xs text-slate-600">{s('indicatorParameters.description')}<input className={field} maxLength={300} value={text.description} onChange={event => setText({ ...text, description: event.target.value })} /></label>
@@ -86,7 +86,7 @@ export default function IndicatorParameterEditor({ draft, disabled = false, onPa
       if (sequence === request.current && latest.current === sourceKey) setError(failure instanceof Error ? failure.message : s('indicatorParameters.requestError'))
     } finally { if (sequence === request.current) setBusy(false) }
   }
-  return <section aria-label={s('indicatorParameters.editorTitle')} className="mt-4 min-w-0 rounded-xl border border-violet-200 bg-violet-50/30 p-4">
+  return <section aria-label={s('indicatorParameters.editorTitle')} className="mt-4 min-w-0 rounded-xl border border-accent-200 bg-accent-50/30 p-4">
     <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-sm font-semibold text-slate-800">{s('indicatorParameters.editorTitle')}</h3><button type="button" className={button} disabled={disabled || busy || hasPending} onClick={() => void run()}>{s(busy ? 'indicatorParameters.processing' : 'indicatorParameters.inspect')}</button></div>
     <p className="mt-2 text-xs leading-5 text-slate-600">{s('indicatorParameters.editorHint')}</p>
     {disabled && <p className="mt-2 text-xs text-amber-800">{s('indicatorParameters.applyCanvasFirst')}</p>}
@@ -96,12 +96,12 @@ export default function IndicatorParameterEditor({ draft, disabled = false, onPa
         onDirty={dirty => setPending(current => current[parameter.id] === dirty ? current : { ...current, [parameter.id]: dirty })}
         onSave={value => onPatch({ parameter_schema: schema.map(item => item.id === parameter.id ? value : item) })}
         onFix={() => { if (window.confirm(s('indicatorParameters.confirmFix', { name: parameter.label }))) void run({ fixed_parameter_id: parameter.id }) }} />)}
-      {candidates.filter(item => !item.parameter_id).map(candidate => <div key={candidate.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
-        <div className="min-w-0 flex-1"><p className="text-sm font-medium text-slate-700">{candidate.output_label} · {b(`parameters.${candidate.argument}.label`, candidate.label)}{candidate.position ? ` · #${candidate.position}` : ''}</p><p className="mt-1 break-words text-xs text-slate-500">{b(`operators.${candidate.operator_id}.label`, candidate.operator_id)} · {s('indicatorParameters.current')} {candidate.value}</p>{candidate.source_expression && <details className="mt-1 text-xs text-slate-500"><summary className="cursor-pointer">{s('indicatorParameters.showUsage')}</summary><code className="mt-1 block break-all">{candidate.source_expression}</code></details>}</div>
+      {candidates.filter(item => !item.parameter_id).map(candidate => <div key={candidate.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
+        <div className="min-w-0 flex-1"><p className="text-sm font-medium text-slate-700">{candidate.output_label} · {b(`parameters.${candidate.argument}.label`, candidate.label)}{candidate.position ? ` · #${candidate.position}` : ''}</p><p className="mt-1 break-words text-xs text-slate-600">{b(`operators.${candidate.operator_id}.label`, candidate.operator_id)} · {s('indicatorParameters.current')} {candidate.value}</p>{candidate.source_expression && <details className="mt-1 text-xs text-slate-600"><summary className="cursor-pointer">{s('indicatorParameters.showUsage')}</summary><code className="mt-1 block break-all">{candidate.source_expression}</code></details>}</div>
         {schema.length > 0 && <select aria-label={s('indicatorParameters.shareWith')} className={`${field} mt-0 !w-auto max-w-full`} value={shared[candidate.id] ?? ''} onChange={event => setShared(current => ({ ...current, [candidate.id]: event.target.value }))}><option value="">{s('indicatorParameters.newParameter')}</option>{schema.filter(item => item.type === candidate.type).map(item => <option key={item.id} value={item.id}>{item.label} ({item.id})</option>)}</select>}
         <button type="button" className={button} disabled={hasPending} onClick={() => void run({ candidate_id: candidate.id, parameter_id: shared[candidate.id] || undefined })}>{s(shared[candidate.id] ? 'indicatorParameters.link' : 'indicatorParameters.open')}</button>
       </div>)}
-      {inspection?.key === key && !candidates.some(item => !item.parameter_id) && <p className="text-xs text-slate-500">{s('indicatorParameters.noCandidates')}</p>}
+      {inspection?.key === key && !candidates.some(item => !item.parameter_id) && <p className="text-xs text-slate-600">{s('indicatorParameters.noCandidates')}</p>}
     </fieldset>
   </section>
 }

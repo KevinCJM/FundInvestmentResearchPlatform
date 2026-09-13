@@ -365,7 +365,7 @@ export const UNIVERSE_COVERAGE_LABELS: Record<PitUniverseCoverage, string> = {
 
 export const UNIVERSE_COVERAGE_TONE: Record<PitUniverseCoverage, string> = {
   REPLAYED: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  INTERVAL: 'bg-sky-100 text-sky-800 border-sky-200',
+  INTERVAL: 'bg-accent-100 text-accent-800 border-accent-200',
   LATEST_ONLY: 'bg-rose-100 text-rose-800 border-rose-200',
   NOT_APPLICABLE: 'bg-slate-100 text-slate-600 border-slate-200',
 }

@@ -6,7 +6,7 @@ import { graphConnectionIssue, graphEdges, nodeLabel, outputNodeId, parametersFo
 import { boundConstant, constantType } from './indicatorGraphConstants'
 import { createGraphTextFormatter, graphAxesLabel, graphParameterLabel, graphTypeLabel, graphVariableLabel } from './indicatorGraphPresentation'
 
-const field = 'mt-1 block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-300'
+const field = 'mt-1 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-500'
 const button = 'min-h-10 rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold hover:bg-slate-50 disabled:opacity-40'
 interface Props {
   graph: AuthoringGraph; selectedId: string | null; variables: IndicatorVariable[]; operators: IndicatorOperator[]
@@ -44,15 +44,15 @@ export default function IndicatorNodeInspector({ graph, selectedId, variables, o
     <label className="block text-sm font-medium">{s('graph.outputSource')}<select className={field} aria-label={s('graph.outputSource')} value={output.node_id ? nodePortKey(output.node_id, output.port_id) : ''} onChange={event => onOutputChange(output.id, event.target.value ? { port_id: 'value', ...nodePortRef(event.target.value) } : { node_id: null, port_id: 'value' })}><option value="">{s('graph.selectOutput')}</option>{options.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
     {isTimeSeries && <>
       <label className="block text-sm font-medium">{s('graph.outputName')}<input className={field} value={output.label} maxLength={80} onChange={event => onOutputChange(output.id, { label: event.target.value })} /></label>
-      {<label className="block text-sm font-medium">{s('graph.outputId')}<input aria-label={s('graph.outputId')} aria-invalid={Boolean(outputIdError)} className={field} value={outputIdDraft} maxLength={70} onChange={event => setOutputIdDraft(event.target.value)} onBlur={commitOutputId} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commitOutputId() } }} />{outputIdError && <span role="alert" className="mt-1 block text-xs text-rose-700">{s(outputIdError)}</span>}<span className="mt-1 block text-xs text-slate-500">{s('graph.outputIdentifierHint')}</span></label>}
+      {<label className="block text-sm font-medium">{s('graph.outputId')}<input aria-label={s('graph.outputId')} aria-invalid={Boolean(outputIdError)} className={field} value={outputIdDraft} maxLength={70} onChange={event => setOutputIdDraft(event.target.value)} onBlur={commitOutputId} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); commitOutputId() } }} />{outputIdError && <span role="alert" className="mt-1 block text-xs text-rose-700">{s(outputIdError)}</span>}<span className="mt-1 block text-xs text-slate-600">{s('graph.outputIdentifierHint')}</span></label>}
       <label className="block text-sm font-medium">{s('graph.unit')}<input className={field} value={output.unit} maxLength={20} onChange={event => onOutputChange(output.id, { unit: event.target.value })} /></label>
       <label className="block text-sm font-medium">{s('graph.format')}<select className={field} value={output.display_format} onChange={event => onOutputChange(output.id, { display_format: event.target.value as 'number' | 'percent' })}><option value="number">{s('graph.formatNumber')}</option><option value="percent">{s('graph.formatPercent')}</option></select></label>
       <label className="block text-sm font-medium">{s('graph.precision')}<input className={field} type="number" min={0} max={8} value={output.precision} onChange={event => onOutputChange(output.id, { precision: Math.max(0, Math.min(8, Number(event.target.value))) })} /></label>
-      <p className="text-xs leading-5 text-slate-500">{s('graph.outputPlacementHint')}</p>
+      <p className="text-xs leading-5 text-slate-600">{s('graph.outputPlacementHint')}</p>
       <button type="button" className={`${button} text-rose-700`} disabled={graph.outputs.length === 1} onClick={() => onRemove(outputNodeId(output.id))}>{s('graph.deleteOutput')}</button>
     </>}
   </div>
-  if (!node) return <p className="text-sm leading-6 text-slate-500">{s('graph.selectStep')}</p>
+  if (!node) return <p className="text-sm leading-6 text-slate-600">{s('graph.selectStep')}</p>
   const usages = graphEdges(graph).filter(edge => edge.source === node.id).length
   const operator = node.kind === 'operator' ? operators.find(item => item.name === node.operator_id) : undefined
   const description = node.kind === 'operator'
@@ -69,7 +69,7 @@ export default function IndicatorNodeInspector({ graph, selectedId, variables, o
     onNodeChange({ ...node, arguments: argumentsNext })
   }
   return <div className="space-y-4" aria-label={s('graph.stepSettings', {}, '步骤设置')}>
-    <div><h3 className="font-semibold text-slate-900">{nodeLabel(node, variables, operators)}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{description}</p></div>
+    <div><h3 className="font-semibold text-slate-900">{nodeLabel(node, variables, operators)}</h3><p className="mt-1 text-xs leading-5 text-slate-600">{description}</p></div>
     {usages > 1 && <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{s('graph.sharedHint', { count: usages })}</p>}
     <label className="block text-sm font-medium">{s('graph.note')}<input className={field} value={node.label || ''} maxLength={80} placeholder={s('graph.noteHint')} onChange={event => onNodeChange({ ...node, label: event.target.value })} /></label>
     {node.kind === 'variable' && <label className="block text-sm font-medium">{s('graph.variables')}<select className={field} value={node.variable_id} onChange={event => onNodeChange({ ...node, variable_id: event.target.value })}>{variables.map(variable => <option key={variable.name} value={variable.name} disabled={variable.availability === 'unavailable' || variable.availability === 'not_applicable'}>{graphVariableLabel(variable.name, variables)}</option>)}</select></label>}
@@ -96,21 +96,21 @@ export default function IndicatorNodeInspector({ graph, selectedId, variables, o
         const label = graphParameterLabel(parameter, index, node.operator_id)
         const upstream = binding?.source === 'node' ? graph.nodes.find(item => item.id === binding.node_id) : undefined
         return <fieldset key={parameter.name} className="rounded-xl border border-slate-200 p-3"><legend className="px-1 text-sm font-semibold">{label}</legend>
-          {parameter.description && <p className="text-xs leading-5 text-slate-500">{text(parameter.description)}</p>}
+          {parameter.description && <p className="text-xs leading-5 text-slate-600">{text(parameter.description)}</p>}
           <label className="block text-xs font-medium text-slate-600">{s('graph.inputSource')}<select aria-label={s('graph.parameterSource', { name: label })} className={field} value={binding?.source === 'node' ? nodePortKey(binding.node_id, binding.port_id) : constant ? '__constant__' : ''} onChange={event => updateBinding(parameter.name, event.target.value === '__constant__' ? { source: 'constant', value: null } : event.target.value ? { source: 'node', ...nodePortRef(event.target.value) } : undefined)}><option value="">{s(fixed ? 'graph.selectFixedConstant' : 'graph.selectInput')}</option><option value="__constant__">{s('graph.newConstant')}</option>{candidates(parameter.name).map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
           {upstream && <p aria-label={s('graph.currentInput', { name: label }, '{{name}}当前输入')} className="mt-2 break-words text-xs leading-5 text-slate-600">{s('graph.connected', { name: options.find(item => item.key === (binding?.source === 'node' ? nodePortKey(binding.node_id, binding.port_id) : ''))?.label || optionLabel(upstream) })}</p>}
-          {upstream?.kind === 'parameter' && <p className="mt-2 text-xs text-cyan-800">{s('indicatorParameters.parameterNode', { code: upstream.parameter_id })}</p>}
+          {upstream?.kind === 'parameter' && <p className="mt-2 text-xs text-accent-800">{s('indicatorParameters.parameterNode', { code: upstream.parameter_id })}</p>}
           {upstream?.kind !== 'parameter' && (fixed || constant) && (typeof value === 'boolean'
             ? <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={value} onChange={event => updateConstant(event.target.checked)} />{label}</label>
             : <input aria-label={s('graph.parameterConstant', { name: label })} className={field} type="number" step={parameter.constant_kind === 'integer' ? 1 : 'any'} min={parameter.minimum} max={parameter.maximum} value={value ?? ''} onChange={event => updateConstant(event.target.value === '' ? null : Number(event.target.value))} />)}
           {constant && <p className="mt-1 text-xs text-slate-600">{s('graph.constantSync', {}, '这里修改的是相连的常量节点，画布与参数同步更新。')}</p>}
           {constantUsages > 1 && <p className="mt-1 text-xs text-amber-800">{s('graph.sharedConstant', { count: constantUsages }, '此常量被 {{count}} 处引用，修改会同步影响这些输入。')}</p>}
-          {fixed && upstream?.kind !== 'parameter' && <p className="mt-1 text-xs text-slate-500">{s(parameter.constant_kind === 'integer' ? 'graph.fixedInteger' : 'graph.fixedNumber')}{parameter.minimum !== undefined ? ` · ${s('graph.minimum', { value: parameter.minimum })}` : ''}{parameter.maximum !== undefined ? ` · ${s('graph.maximum', { value: parameter.maximum })}` : ''}</p>}
+          {fixed && upstream?.kind !== 'parameter' && <p className="mt-1 text-xs text-slate-600">{s(parameter.constant_kind === 'integer' ? 'graph.fixedInteger' : 'graph.fixedNumber')}{parameter.minimum !== undefined ? ` · ${s('graph.minimum', { value: parameter.minimum })}` : ''}{parameter.maximum !== undefined ? ` · ${s('graph.maximum', { value: parameter.maximum })}` : ''}</p>}
         </fieldset>
       })}
     </>}
-    {types[node.id] && <div className="rounded-lg bg-sky-50 p-3 text-xs leading-5 text-sky-900">{s('graph.typeChecked', { type: graphTypeLabel(types[node.id]) })}{graphAxesLabel(types[node.id]) ? ` · ${s('graph.alignment', { axes: graphAxesLabel(types[node.id]) })}` : ''}</div>}
+    {types[node.id] && <div className="rounded-lg bg-accent-50 p-3 text-xs leading-5 text-accent-900">{s('graph.typeChecked', { type: graphTypeLabel(types[node.id]) })}{graphAxesLabel(types[node.id]) ? ` · ${s('graph.alignment', { axes: graphAxesLabel(types[node.id]) })}` : ''}</div>}
     <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={() => onDuplicate(node.id)}>{s('graph.copyStep')}</button><button type="button" className={`${button} text-rose-700`} onClick={() => onRemove(node.id)}>{s('graph.deleteStep')}</button></div>
-    <p className="text-xs leading-5 text-slate-500">{s('graph.deleteHint')}</p>
+    <p className="text-xs leading-5 text-slate-600">{s('graph.deleteHint')}</p>
   </div>
 }

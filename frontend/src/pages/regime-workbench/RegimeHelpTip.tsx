@@ -47,12 +47,12 @@ export default function RegimeHelpTip({ text, label = '查看说明', dark = fal
       onFocus={show} onBlur={() => setOpen(false)}
       onClick={event => { event.preventDefault(); event.stopPropagation(); show() }}
       onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); show() } }}
-      className={`ml-1 inline-grid h-4 w-4 cursor-help place-items-center rounded-full border align-middle text-[10px] font-black leading-none outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${dark ? 'border-slate-500 text-slate-300' : 'border-slate-300 bg-white text-slate-500'}`}
+      className={`ml-1 inline-grid h-4 w-4 cursor-help place-items-center rounded-full border align-middle text-xs font-black leading-none outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${dark ? 'border-slate-500 text-slate-600' : 'border-slate-300 bg-white text-slate-600'}`}
     >?</span>
     {open && createPortal(<span
       ref={tooltip} id={tooltipId} role="tooltip" onMouseEnter={show} onMouseLeave={hideSoon}
       style={{ left: 0, top: 0, visibility: 'hidden' }}
-      className="fixed z-[200] max-h-[calc(100vh-16px)] w-[min(16rem,calc(100vw-16px))] overflow-auto whitespace-normal break-words rounded-lg bg-slate-950 px-3 py-2 text-left text-[11px] font-normal leading-5 text-white shadow-xl"
+      className="fixed z-[200] max-h-[calc(100vh-16px)] w-[min(16rem,calc(100vw-16px))] overflow-auto whitespace-normal break-words rounded-lg bg-slate-950 px-3 py-2 text-left text-xs font-normal leading-5 text-white shadow-xl"
     >{text}</span>, document.body)}
   </>
 }

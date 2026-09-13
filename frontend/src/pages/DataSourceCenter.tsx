@@ -104,22 +104,22 @@ export default function DataSourceCenter() {
 
   return <div className="space-y-5">
     <DataWorkspaceNav beforeNavigate={allowLeave} />
-    <header className="rounded-2xl border border-slate-200 bg-white p-5">
+    <header className="rounded-xl border border-slate-200 bg-white p-5">
       <h1 className="text-2xl font-bold text-slate-950">数据源与接口映射</h1>
       <p className="mt-2 text-sm leading-6 text-slate-600">告诉系统：数据从哪里来、每一列对应什么。已有接口直接选择，不必重新配置。</p>
       <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">选需要的数据 → 确认连接 → 对应字段 → 验证样本 → 去下载</p>
       <details className="mt-3 text-sm text-slate-600"><summary className="cursor-pointer font-semibold">第一次使用？三个概念就够了</summary><p className="mt-2 leading-6">数据源是供应商，例如 Tushare；接口是一类数据，例如基金净值；字段映射是把供应商的列对应到系统的列，例如 close → 收盘价。保存配置不等于下载，样本通过也不等于数据已发布。</p></details>
-      <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-indigo-700">
+      <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-accent-700">
         <Link to="/settings/data-model" onClick={event => { if (!allowLeave()) event.preventDefault() }}>查看系统标准表 →</Link>
         {interfaceRecord && source?.config.transport === 'tushare' ? <Link to="/settings/data-sources" onClick={event => { if (!allowLeave()) event.preventDefault() }}>进入 Tushare 下载与更新 →</Link> : null}
       </div>
     </header>
     {notice ? <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900">{notice}</p> : null}
     {!catalog.editing_enabled ? <p role="status" className="rounded-xl bg-amber-50 p-4 text-sm text-amber-900">当前环境为只读：可查看合同和离线验证，不允许修改配置或真实采样。</p> : null}
-    <nav aria-label="数据接入功能" className="flex flex-wrap gap-2"><button type="button" aria-pressed={tab === 'sources'} className={`${buttonClass} ${tab === 'sources' ? 'bg-indigo-50' : ''}`} onClick={() => navigateEditor(() => setTab('sources'))}>数据源与接口</button><button type="button" aria-pressed={tab === 'resolution'} className={`${buttonClass} ${tab === 'resolution' ? 'bg-indigo-50' : ''}`} onClick={() => navigateEditor(() => setTab('resolution'))}>多源取值规则</button></nav>
+    <nav aria-label="数据接入功能" className="flex flex-wrap gap-2"><button type="button" aria-pressed={tab === 'sources'} className={`${buttonClass} ${tab === 'sources' ? 'bg-accent-50' : ''}`} onClick={() => navigateEditor(() => setTab('sources'))}>数据源与接口</button><button type="button" aria-pressed={tab === 'resolution'} className={`${buttonClass} ${tab === 'resolution' ? 'bg-accent-50' : ''}`} onClick={() => navigateEditor(() => setTab('resolution'))}>多源取值规则</button></nav>
     {tab === 'sources' ? <>
     <div className="grid min-w-0 gap-5 xl:grid-cols-[280px_minmax(0,1fr)]">
-      <aside className="min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white p-4" aria-label="数据源与接口列表">
+      <aside className="min-w-0 space-y-4 rounded-xl border border-slate-200 bg-white p-4" aria-label="数据源与接口列表">
         <label className="block text-xs font-semibold text-slate-600">当前数据源<select className={inputClass} value={source?.config.id ?? ''} onChange={e => navigateEditor(() => { setSourceId(e.target.value); setInterfaceId(null); setNewKind(null); setEditingSource(false); setQuery(''); setFilter('all'); setCategory('all') })}>{catalog.sources.map(item => <option key={item.config.id} value={item.config.id}>{item.config.name}{item.config.enabled ? '' : '（已停用）'}</option>)}</select></label>
         <div className="flex flex-wrap gap-2">
           <button type="button" className={buttonClass} onClick={() => navigateEditor(() => { setInterfaceId(null); setNewKind(null); setEditingSource(false) })}>来源概览</button>
@@ -131,12 +131,12 @@ export default function DataSourceCenter() {
         <label className="block text-xs font-semibold text-slate-600">数据分类<select className={inputClass} value={category} onChange={e => setCategory(e.target.value)}><option value="all">全部分类</option>{catalog.targets.categories.map(item => <option key={item.category_id} value={item.category_id}>{item.label}</option>)}</select></label>
         <label className="block text-xs font-semibold text-slate-600">接口排序<select className={inputClass} value={sort} onChange={e => setSort(e.target.value as typeof sort)}><option value="name">按数据名称</option><option value="status">待完善优先</option></select></label>
         <button type="button" className={buttonClass} disabled={!catalog.editing_enabled || !source} onClick={addInterface}>新建接口</button>
-        <p className="text-xs text-slate-500">显示 {interfaces.length} / {sourceInterfaces.length} 个接口</p>
+        <p className="text-xs text-slate-600">显示 {interfaces.length} / {sourceInterfaces.length} 个接口</p>
         {interfaceRecord || editingSource || newKind ? <><label className="block text-xs font-semibold text-slate-600 xl:hidden">选择接口<select aria-label="选择接口" className={inputClass} value={interfaces.some(item => item.config.id === interfaceId) ? interfaceId ?? '' : ''} onChange={event => { if (event.target.value) openInterface(event.target.value) }}><option value="">选择接口查看映射</option>{interfaces.map(item => <option key={item.config.id} value={item.config.id}>{item.config.name}{item.validation?.ready ? '' : '（待完善）'}</option>)}</select></label>
-        <div className="hidden max-h-[60vh] space-y-2 overflow-y-auto xl:block">{interfaces.map(item => <button type="button" key={item.config.id} aria-pressed={interfaceId === item.config.id && !newKind} onClick={() => openInterface(item.config.id)} className={`block w-full rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${interfaceId === item.config.id && !newKind ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-          <span className="block text-sm font-semibold">{item.config.name}</span><code className="mt-1 block break-all text-xs text-slate-500">{item.config.api_name || item.config.id}</code>
+        <div className="hidden max-h-[60vh] space-y-2 overflow-y-auto xl:block">{interfaces.map(item => <button type="button" key={item.config.id} aria-pressed={interfaceId === item.config.id && !newKind} onClick={() => openInterface(item.config.id)} className={`block w-full rounded-xl border p-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${interfaceId === item.config.id && !newKind ? 'border-accent-400 bg-accent-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+          <span className="block text-sm font-semibold">{item.config.name}</span><code className="mt-1 block break-all text-xs text-slate-600">{item.config.api_name || item.config.id}</code>
           <span className={`mt-2 block text-xs ${item.config.enabled && item.validation?.ready ? 'text-slate-600' : 'text-amber-800'}`}>{item.config.enabled ? '已启用' : '已停用'} · {item.validation?.ready ? '定义已校验' : '映射待完善'}</span>
-        </button>)}{!interfaces.length ? <p className="p-3 text-sm text-slate-500">没有符合条件的接口。可切换为“全部接口”或清空搜索。</p> : null}</div></> : null}
+        </button>)}{!interfaces.length ? <p className="p-3 text-sm text-slate-600">没有符合条件的接口。可切换为“全部接口”或清空搜索。</p> : null}</div></> : null}
       </aside>
       <div className="min-w-0">{interfaceRecord && source && newKind !== 'source'
         ? <InterfaceEditor key={`${interfaceRecord.config.id}:${interfaceRecord.revision}:${refresh}`} record={interfaceRecord} source={source.config} targets={catalog.targets} editingEnabled={catalog.editing_enabled} credentialConfigured={source.credential_configured === true} onSaved={id => saved('interface', id)} onDirty={setDirty} onBusy={setOperationBusy} />
@@ -146,16 +146,16 @@ export default function DataSourceCenter() {
             : <p>请先新建数据源。</p>}
       </div>
     </div>
-    <details id="mapping-results" open={params.get('view') === 'results'} className="scroll-mt-6 rounded-2xl border border-slate-200 bg-white p-4">
+    <details id="mapping-results" open={params.get('view') === 'results'} className="scroll-mt-6 rounded-xl border border-slate-200 bg-white p-4">
       <summary className="cursor-pointer py-2 text-sm font-semibold">标准表映射结果 · {batches.length} 个最近批次</summary>
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><p className="max-w-3xl text-sm leading-6 text-slate-600">这里只显示 {source?.config.name} 的候选结果。字段校验通过后仍需跨批次去重、身份核验和版本发布，不能直接用于正式研究。</p><button type="button" className={buttonClass} onClick={() => navigateEditor(() => setRefresh(value => value + 1))}>刷新映射结果</button></div>
       <div className="mt-3 space-y-2">{batches.map(batch => <details key={batch.batch_id} className="rounded-lg border border-slate-200 p-3">
         <summary className="cursor-pointer text-sm"><strong>{catalog.interfaces.find(item => item.config.id === batch.interface_id)?.config.name ?? batch.interface_id}</strong> · {batch.status === 'REJECTED' ? '映射需要修复' : batch.status === 'EMPTY' ? '来源没有返回数据' : '字段校验通过，尚未发布'} · {batch.source_rows} 行</summary>
-        <p className="mt-2 break-all text-xs text-slate-500">记录时间：{new Date(batch.created_at).toLocaleString('zh-CN')} · 批次 {batch.batch_id}</p>
+        <p className="mt-2 break-all text-xs text-slate-600">记录时间：{new Date(batch.created_at).toLocaleString('zh-CN')} · 批次 {batch.batch_id}</p>
         {batch.tables.map((table, index) => <div key={index} className="mt-2 text-xs leading-5"><strong>{catalog.targets.tables.find(item => item.table_id === table.table_id)?.label ?? table.table_id}</strong> · 接受 {table.rows ?? 0} 行 / 拒绝 {table.rejected_rows ?? 0} 行{table.errors.map((issue, i) => <p key={i} className="text-rose-700">{issue.message}</p>)}</div>)}
         {batch.status === 'REJECTED' ? <button type="button" className={`${buttonClass} mt-3`} onClick={() => { openInterface(batch.interface_id); window.scrollTo?.({ top: 0, behavior: 'smooth' }) }}>修复此接口映射</button> : null}
       </details>)}</div>
-      {!batches.length ? <p className="mt-3 text-sm text-slate-500">暂无候选批次。保存配置、离线预览和单次采样都不会生成下载结果。</p> : null}
+      {!batches.length ? <p className="mt-3 text-sm text-slate-600">暂无候选批次。保存配置、离线预览和单次采样都不会生成下载结果。</p> : null}
     </details>
     </> : <ResolutionPanel catalog={catalog} onDirty={setDirty} />}
   </div>

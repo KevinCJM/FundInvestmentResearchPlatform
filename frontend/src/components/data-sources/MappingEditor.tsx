@@ -16,7 +16,7 @@ function ConstantField({ field, value, onChange }: {
   if (field.data_type === 'bool') return <label className="block">固定值<select aria-label={label} className={inputClass} value={value === null ? '' : String(value)} required={!field.nullable} onChange={event => onChange(event.target.value === '' ? null : event.target.value === 'true')}><option value="">未设置</option><option value="true">是</option><option value="false">否</option></select></label>
   if (field.data_type === 'json' || field.data_type.startsWith('list<')) return <JsonField label={label} value={value} objectOnly={false} onChange={item => onChange(item as FieldMapping['constant'])} />
   // Numeric text is intentionally preserved: decimal / int64 constants may exceed JS precision.
-  return <label className="block">固定值<input aria-label={label} className={inputClass} type={field.data_type === 'date32' ? 'date' : 'text'} required={!field.nullable} value={String(value ?? '')} onChange={event => onChange(event.target.value === '' ? null : event.target.value)} /><span className="mt-1 block text-slate-500">直接填写，无需 JSON 引号；类型由系统校验。</span></label>
+  return <label className="block">固定值<input aria-label={label} className={inputClass} type={field.data_type === 'date32' ? 'date' : 'text'} required={!field.nullable} value={String(value ?? '')} onChange={event => onChange(event.target.value === '' ? null : event.target.value)} /><span className="mt-1 block text-slate-600">直接填写，无需 JSON 引号；类型由系统校验。</span></label>
 }
 
 function IdentityEditor({ value, fields, sources, onChange }: {
@@ -64,7 +64,7 @@ function DatasetEditor({ value, table, sources, disabled, onChange }: {
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={disabled} checked={value.enabled} onChange={event => onChange({ ...value, enabled: event.target.checked })} />启用这张表的映射</label>
       <span className="text-xs text-slate-600">已配置 {value.fields.length} 个业务字段 · {value.identities.length} 项身份对应</span>
     </div>
-    {missing.length || missingIds.length ? <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm leading-6 text-amber-900">还需对应必填项：{[...missing, ...missingIds].map(field => field.label).join('、')}。先补齐，再到第 3 步检查。</p> : <p className="text-xs text-slate-500">必填项已分配；类型、取值和身份对照是否正确，仍以第 3 步的后端校验为准。</p>}
+    {missing.length || missingIds.length ? <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm leading-6 text-amber-900">还需对应必填项：{[...missing, ...missingIds].map(field => field.label).join('、')}。先补齐，再到第 3 步检查。</p> : <p className="text-xs text-slate-600">必填项已分配；类型、取值和身份对照是否正确，仍以第 3 步的后端校验为准。</p>}
     <div data-editor-ui className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
       <label className="text-xs font-semibold text-slate-600">搜索字段<input className={inputClass} aria-label={`${table.label} 搜索字段`} value={query} onChange={event => setQuery(event.target.value)} placeholder="例如：收盘价、日期、close" /></label>
       <label className="text-xs font-semibold text-slate-600">显示哪些字段<select className={inputClass} aria-label={`${table.label} 字段筛选`} value={filter} onChange={event => setFilter(event.target.value)}><option value="essential">必填和已配置字段</option><option value="required">只看必填字段</option><option value="unmapped">只看未配置字段</option><option value="all">全部字段（含可选）</option></select></label>
@@ -77,14 +77,14 @@ function DatasetEditor({ value, table, sources, disabled, onChange }: {
         return <tr key={field.name} hidden={!visible.has(field.name)} className="border-t border-slate-100 align-top">
           <td className="max-w-xs space-y-2 p-3">
             {binding && !['constant', 'capture_date'].includes(binding.operation) ? <select className={inputClass} aria-label={`${field.name} 来源字段`} value={binding.source_field ?? ''} required onChange={event => patch(field.name, { ...binding, source_field: event.target.value || null })}><option value="">请选择，不会自动猜测</option>{sources.map(source => <option key={source.name} value={source.name}>{source.description || source.name} · {source.name}{source.unit ? ` (${source.unit})` : ''}</option>)}</select>
-              : <span className="block pt-2 text-slate-500">{binding?.operation === 'constant' ? '不读取来源列，使用固定值' : binding?.operation === 'capture_date' ? '使用本次采集日期' : '先在右侧选择处理方式'}</span>}
-            {binding?.source_field ? <code className="block break-all text-slate-500">{binding.source_field}</code> : null}
+              : <span className="block pt-2 text-slate-600">{binding?.operation === 'constant' ? '不读取来源列，使用固定值' : binding?.operation === 'capture_date' ? '使用本次采集日期' : '先在右侧选择处理方式'}</span>}
+            {binding?.source_field ? <code className="block break-all text-slate-600">{binding.source_field}</code> : null}
           </td>
-          <td className="p-3"><strong className="text-sm">{field.label}</strong>{!field.nullable ? <span className="ml-2 text-rose-700">必填</span> : <span className="ml-2 text-slate-400">可选</span>}<code className="mt-1 block text-indigo-700">{field.name}</code>{field.unit ? <p className="mt-1 text-slate-500">系统单位：{field.unit}</p> : null}<p className="mt-1 max-w-xs leading-5 text-slate-500">{field.description}</p></td>
+          <td className="p-3"><strong className="text-sm">{field.label}</strong>{!field.nullable ? <span className="ml-2 text-rose-700">必填</span> : <span className="ml-2 text-slate-600">可选</span>}<code className="mt-1 block text-accent-700">{field.name}</code>{field.unit ? <p className="mt-1 text-slate-600">系统单位：{field.unit}</p> : null}<p className="mt-1 max-w-xs leading-5 text-slate-600">{field.description}</p></td>
           <td className="max-w-xs space-y-2 p-3">
             <select className={inputClass} aria-label={`${field.name} 转换方式`} value={binding?.operation ?? ''} onChange={event => patch(field.name, event.target.value ? newField(field.name, event.target.value as FieldMapping['operation'], binding?.source_field ?? (sources.some(source => source.name === field.name) ? field.name : null)) : null)}><option value="">暂不映射</option>{operations.filter(([operation]) => operation !== 'capture_date' || ['valid_from', 'effective_from'].includes(field.name)).map(([operation, label]) => <option key={operation} value={operation}>{label}</option>)}</select>
             {binding?.operation === 'constant' ? <ConstantField field={field} value={binding.constant} onChange={constant => patch(field.name, { ...binding, constant })} /> : null}
-            {binding?.operation === 'scale' ? <label className="block">乘数<input className={inputClass} type="number" step="any" required value={binding.factor} onChange={event => patch(field.name, { ...binding, factor: Number(event.target.value) })} /><span className="mt-1 block text-slate-500">系统值 = 来源值 × 乘数。请确认双方单位。</span></label> : null}
+            {binding?.operation === 'scale' ? <label className="block">乘数<input className={inputClass} type="number" step="any" required value={binding.factor} onChange={event => patch(field.name, { ...binding, factor: Number(event.target.value) })} /><span className="mt-1 block text-slate-600">系统值 = 来源值 × 乘数。请确认双方单位。</span></label> : null}
             {binding?.operation === 'enum' ? <ParameterEditor label={`${field.name} 枚举对应`} value={binding.enum_map} onDraftChange={() => onChange({ ...value })} onChange={enumMap => patch(field.name, { ...binding, enum_map: enumMap as FieldMapping['enum_map'] })} /> : null}
             {binding && ['date', 'timestamp'].includes(binding.operation) ? <TextField label={`${field.name} 日期格式（可留空）`} value={binding.date_format ?? ''} placeholder="例如 %Y%m%d 对应 20260908" onChange={dateFormat => patch(field.name, { ...binding, date_format: dateFormat || null })} /> : null}
             {binding?.operation === 'timestamp' ? <TextField label={`${field.name} 来源时区`} value={binding.timezone} required onChange={timezone => patch(field.name, { ...binding, timezone })} /> : null}
@@ -93,7 +93,7 @@ function DatasetEditor({ value, table, sources, disabled, onChange }: {
         </tr>
       })}</tbody>
     </table></div></fieldset>
-    {!visible.size ? <p className="text-sm text-slate-500">当前筛选下没有字段。<button type="button" className="ml-2 font-semibold text-indigo-700 underline" onClick={() => { setFilter('all'); setQuery('') }}>显示全部字段</button></p> : null}
+    {!visible.size ? <p className="text-sm text-slate-600">当前筛选下没有字段。<button type="button" className="ml-2 font-semibold text-accent-700 underline" onClick={() => { setFilter('all'); setQuery('') }}>显示全部字段</button></p> : null}
     <details className="rounded-xl border border-slate-200 p-3" open={missingIds.length > 0 || value.identities.length > 0}>
       <summary className="cursor-pointer text-sm font-semibold">产品 / 实体代码对应 · {value.identities.length} 项{missingIds.length ? `，还缺 ${missingIds.length} 项必填` : ''}</summary>
       <p className="mt-3 text-sm leading-6 text-slate-600">这一步告诉系统“这条记录属于哪个产品或实体”。不要把供应商代码直接当成内部 ID；先确认代码体系或逐项对照。</p>
@@ -104,7 +104,7 @@ function DatasetEditor({ value, table, sources, disabled, onChange }: {
         }}>添加身份解析</button>
       </fieldset>
     </details>
-    <p className="text-xs leading-5 text-slate-500">批次、哈希、修订号等审计字段由系统自动填写。这里的数量只表示是否已分配，不代替后端校验。</p>
+    <p className="text-xs leading-5 text-slate-600">批次、哈希、修订号等审计字段由系统自动填写。这里的数量只表示是否已分配，不代替后端校验。</p>
   </div>
 }
 
@@ -125,7 +125,7 @@ export default function MappingEditor({ config, tables, categories, version, dis
   ]
   const nextTarget = targets.find(table => !config.mappings.some(mapping => mapping.target_table === table.table_id))
   return <section className="space-y-4" aria-label="标准表字段映射">
-    {!config.mappings.length ? <p className="rounded-xl bg-indigo-50 p-4 text-sm leading-6 text-indigo-900">还没有选择数据存放位置。点击“添加目标表映射”，选择日行情、基金净值等系统数据表，再逐列对应。</p> : null}
+    {!config.mappings.length ? <p className="rounded-xl bg-accent-50 p-4 text-sm leading-6 text-accent-900">还没有选择数据存放位置。点击“添加目标表映射”，选择日行情、基金净值等系统数据表，再逐列对应。</p> : null}
     {config.mappings.map((mapping, index) => {
       const table = targets.find(item => item.table_id === mapping.target_table)
       return <article key={index} className="space-y-3 rounded-xl border border-slate-200 p-4">
@@ -134,7 +134,7 @@ export default function MappingEditor({ config, tables, categories, version, dis
           if ((mapping.fields.length || mapping.identities.length) && !window.confirm('更换目标表会清空这张表已配置的字段与身份对应。继续更换？')) return
           onChange({ ...config, mappings: config.mappings.map((item, i) => i === index ? { target_table: event.target.value, contract_version: version, enabled: true, fields: [], identities: [] } : item) })
         }}>{!table ? <option value={mapping.target_table}>{mapping.target_table}（目标不可用）</option> : null}{targetGroups.map(group => <optgroup key={group.id} label={`${group.label}（${group.tables.length}）`}>{group.tables.map(item => <option key={item.table_id} value={item.table_id}>{item.label} · {item.table_id}</option>)}</optgroup>)}</select></label><button type="button" disabled={disabled} className={buttonClass} onClick={() => { if (window.confirm('删除这张表的字段与身份对应？已下载的数据不会删除。')) onChange({ ...config, mappings: config.mappings.filter((_, i) => i !== index) }) }}>删除映射 {index + 1}</button></div>
-        <p className="text-xs text-slate-500">标准表版本 {mapping.contract_version}</p>
+        <p className="text-xs text-slate-600">标准表版本 {mapping.contract_version}</p>
         {table ? <DatasetEditor key={table.table_id} value={mapping} table={table} sources={config.source_fields} disabled={disabled} onChange={next => onChange({ ...config, mappings: config.mappings.map((item, i) => i === index ? next : item) })} /> : <p role="alert">只能映射到外部导入表，请重新选择目标。</p>}
       </article>
     })}

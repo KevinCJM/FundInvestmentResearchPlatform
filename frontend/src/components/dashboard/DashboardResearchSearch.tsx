@@ -33,16 +33,16 @@ export default function DashboardResearchSearch({ scope }: DashboardResearchSear
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="搜索基金代码、名称或管理人"
-          className="w-full rounded-xl border border-white/25 bg-white/10 px-4 py-2.5 text-sm text-white outline-none placeholder:text-indigo-200 focus:border-white/70 focus:ring-2 focus:ring-white/70"
+          className="w-full rounded-xl border border-white/25 bg-white/10 px-4 py-2.5 text-sm text-white outline-none placeholder:text-accent-100 focus:border-white/70 focus:ring-2 focus:ring-white/70"
         />
       </label>
       {scope === 'all' ? (
         <div className="grid shrink-0 grid-cols-2 gap-2">
-          <button type="submit" className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-indigo-800 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-white">搜 ETF</button>
+          <button type="submit" className="rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-accent-800 hover:bg-accent-50 focus:outline-none focus:ring-2 focus:ring-white">搜 ETF</button>
           <button type="button" onClick={() => openResearch('fund')} className="rounded-xl border border-white/35 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white">搜场外基金</button>
         </div>
       ) : (
-        <button type="submit" className="shrink-0 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-indigo-800 hover:bg-indigo-50 focus:outline-none focus:ring-2 focus:ring-white">
+        <button type="submit" className="shrink-0 rounded-xl bg-white px-4 py-2.5 text-sm font-semibold text-accent-800 hover:bg-accent-50 focus:outline-none focus:ring-2 focus:ring-white">
           搜索{scope === 'etf' ? 'ETF' : '场外基金'}
         </button>
       )}

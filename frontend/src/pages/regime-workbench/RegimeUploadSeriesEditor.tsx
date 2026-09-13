@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getResearchSeriesProfile, parseResearchFile, type ResearchImportFile, type ResearchInlineRow } from '../../services/researchSeries'
 import type { RegimeGraphNode } from '../../services/regimeGraph'
 
-const inputClass = 'mt-1 min-h-10 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-xs'
+const inputClass = 'mt-1 min-h-10 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-2 text-xs'
 const columnLabels = { date: '日期列', value: '数值列', available_at: '可得日期列', vintage: '修订批次列', revision: '修订序号列' }
 type Mapping = Record<keyof typeof columnLabels, string>
 
@@ -47,23 +47,23 @@ export default function RegimeUploadSeriesEditor({ node, onPatchNode }: {
     } catch (reason) { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '保存失败，请重试。') }
     finally { if (!controller.signal.aborted) setBusy(false) }
   }
-  return <details open={!node.parameters.artifact_id || Boolean(file)} className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
-    <summary className="cursor-pointer text-sm font-semibold text-indigo-950">上传新文件</summary>
+  return <details open={!node.parameters.artifact_id || Boolean(file)} className="rounded-xl border border-accent-200 bg-accent-50/40 p-3">
+    <summary className="cursor-pointer text-sm font-semibold text-accent-950">上传新文件</summary>
     <div className="mt-3 space-y-3">
       <p className="text-xs leading-5 text-slate-600">选择文件 → 确认日期和数值列 → 保存并使用。支持 CSV、Excel（.xlsx）和 JSON，最多 20,000 行、8 MB。</p>
-      <label className="inline-flex min-h-10 cursor-pointer items-center rounded-lg border border-indigo-300 bg-white px-3 text-xs font-semibold text-indigo-700">选择时序文件<input aria-label="选择时序文件" type="file" accept=".csv,.xlsx,.json" disabled={busy} className="sr-only" onChange={event => { const next = event.target.files?.[0]; if (next) void parse(next); event.target.value = '' }} /></label>
+      <label className="inline-flex min-h-10 cursor-pointer items-center rounded-lg border border-accent-300 bg-white px-3 text-xs font-semibold text-accent-700">选择时序文件<input aria-label="选择时序文件" type="file" accept=".csv,.xlsx,.json" disabled={busy} className="sr-only" onChange={event => { const next = event.target.files?.[0]; if (next) void parse(next); event.target.value = '' }} /></label>
       {file && <p className="break-all text-xs text-slate-600">已选择：{file.name}</p>}
       {parsed && <>
         {parsed.sheets.length > 1 && <label className="block text-xs">工作表<select aria-label="工作表" value={parsed.sheet || ''} className={inputClass} disabled={busy} onChange={event => file && void parse(file, event.target.value)}>{parsed.sheets.map(sheet => <option key={sheet}>{sheet}</option>)}</select></label>}
         <label className="block text-xs">序列名称<input aria-label="上传序列名称" value={name} maxLength={160} disabled={busy} onChange={event => setName(event.target.value)} className={inputClass} /></label>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{(['date', 'value'] as const).map(key => <label key={key} className="text-xs">{columnLabels[key]} *<select aria-label={columnLabels[key]} className={inputClass} value={mapping[key]} disabled={busy} onChange={event => setMapping({ ...mapping, [key]: event.target.value })}><option value="">请选择</option>{parsed.columns.map(column => <option key={column}>{column}</option>)}</select></label>)}</div>
         <details><summary className="cursor-pointer text-xs text-slate-600">发布时间与修订列（可选）</summary><div className="mt-2 space-y-2">{(['available_at', 'vintage', 'revision'] as const).map(key => <label key={key} className="block text-xs">{columnLabels[key]}<select aria-label={columnLabels[key]} className={inputClass} value={mapping[key]} disabled={busy} onChange={event => setMapping({ ...mapping, [key]: event.target.value })}><option value="">不指定</option>{parsed.columns.map(column => <option key={column}>{column}</option>)}</select></label>)}</div></details>
-        <p className="text-xs text-slate-500">未指定可得日期列时，按观察日已知处理；修订数据请指定实际发布日期。</p>
-        <div className="overflow-auto rounded-lg border border-slate-200 bg-white"><table aria-label="文件列预览" className="w-full text-left text-xs"><thead><tr><th className="p-2">日期</th><th className="p-2">数值</th></tr></thead><tbody>{parsed.rows.slice(0, 5).map((row, i) => <tr key={i}><td className="p-2">{String(row[mapping.date] ?? '—')}</td><td className="p-2">{String(row[mapping.value] ?? '—')}</td></tr>)}</tbody></table></div>
+        <p className="text-xs text-slate-600">未指定可得日期列时，按观察日已知处理；修订数据请指定实际发布日期。</p>
+        <div className="overflow-auto rounded-xl border border-slate-200 bg-white"><table aria-label="文件列预览" className="w-full text-left text-xs"><thead><tr><th scope="col" className="p-2">日期</th><th scope="col" className="p-2">数值</th></tr></thead><tbody>{parsed.rows.slice(0, 5).map((row, i) => <tr key={i}><td className="p-2">{String(row[mapping.date] ?? '—')}</td><td className="p-2">{String(row[mapping.value] ?? '—')}</td></tr>)}</tbody></table></div>
         <p className="text-xs text-slate-600">共 {parsed.rows.length} 行，以上展示前 5 行。保存为固定版本后可重复使用。</p>
-        <button type="button" onClick={() => void save()} disabled={busy || !name.trim() || !mapping.date || !mapping.value || mapping.date === mapping.value} className="min-h-10 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white disabled:opacity-40">保存并使用</button>
+        <button type="button" onClick={() => void save()} disabled={busy || !name.trim() || !mapping.date || !mapping.value || mapping.date === mapping.value} className="min-h-10 rounded-lg bg-accent-600 px-3 text-xs font-semibold text-white disabled:opacity-40">保存并使用</button>
       </>}
-      {busy && <p role="status" className="text-xs text-indigo-700">正在处理文件…</p>}
+      {busy && <p role="status" className="text-xs text-accent-700">正在处理文件…</p>}
       {error && <p role="alert" className="break-words text-xs text-rose-700">{error}</p>}
       {file && <button type="button" onClick={() => { pending.current?.abort(); setBusy(false); setFile(undefined); setParsed(undefined); setError('') }} className="min-h-9 text-xs text-slate-600">取消本次上传</button>}
     </div>

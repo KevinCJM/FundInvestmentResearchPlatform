@@ -1,6 +1,6 @@
 # 前端设计准则
 
-> **适用基线与合并依赖**：本文中“已完成”、检查预算、资产和实现路径的记录，以 [PR #12 的前端实现](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/12)（`445ea3af71e21ce861adcf45340c21056cb812df`）为基线。本次仅提交规范与 AI 阅读协议；当前目标 `Dev` 尚未包含该实现及设计检查器。合并本文档前必须先合入 #12、同步最新 Dev 并复核文档与代码一致性；不能把本页的实现记录视为当前 Dev 已就绪，也不能在缺少脚本时将检查报告为通过。新增风格条款是后续约束，不代表全部页面已验收。
+> **适用基线**：存量实现来自已合入 Dev 的 [PR #12](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/12)（合并提交 `440cb42aa79bfdf90302c0555dcdb695f095a93a`）。本次已同步最新 Dev，保留其实现与检查器；仅更新设计规范及 AI 阅读协议。历史统计以各节标注的采样时间为准，新增风格条款是后续约束，不代表全部页面已通过视觉验收。
 
 本文是本项目前端视觉与交互的规范来源。机械可查的部分由 `scripts/check_frontend_design.mjs` 执行（`npm run design:check --prefix frontend`），共享令牌由 `frontend/tailwind.config.js` 承载。三者必须一致：修改机械检查规则时同步检查器，修改检查器时同步本文。材质、装饰语义、构图和动态背景可读性等要求通过设计审查及浏览器验收验证，不能将其描述为已被静态脚本自动覆盖；新增这些要求不改变现有检查预算。
 
@@ -37,11 +37,13 @@
 
 ## 3. 令牌层（唯一真相源）
 
-所有跨页面共享的值只能来自 `frontend/tailwind.config.js`。页面内不得再出现同义的字面量。
+所有跨页面共享的值以 `frontend/tailwind.config.js` 为真相源。页面内不得新增同义字面量；首页既有 CSS 变量的有限例外和同步要求见 3.1。
 
 ### 3.1 颜色
 
-`accent` 是围绕首页 `--home-blue #1662f5` 展开的完整色阶（50-950），定义在 `frontend/tailwind.config.js`。
+`accent` 是围绕品牌蓝 `#1662f5` 展开的完整色阶（50-950），定义在 `frontend/tailwind.config.js`。
+
+**首页既有变量例外**：`homepage.css` 目前仍手写 `--home-blue`、`--home-blue-hover`、`--home-blue-soft`，分别镜像 `accent.600`、`accent.700`、`accent.100`，尚未自动派生。任意一端改色必须在同一变更同步另一端，并运行第 14 节的一致性命令；不允许新增第二套品牌色。`--home-blue-on-dark` 是深色品牌面板的对比度专用色，不能替代主操作蓝，调整时另做实际表面对比度验证。
 
 | 语义 | 令牌 | 用途 |
 | --- | --- | --- |
@@ -65,7 +67,7 @@
    - **深色表面（`slate-800` 及更深、深色渐变横幅）用 `text-slate-200`。** 在 `slate-900` 上 14.48:1，在 `slate-950` 上 16.36:1，在 `accent-950` 上 12.13:1。
    - 只写"次要文字一律 slate-600"会把横幅里的说明文字压到 1.8-2.4:1。这条正是 2026-09-12 复核查出的回归：换色脚本按行判断深浅底，而底色写在父元素那一行。**改次要文字颜色前先确认所在表面**，判断不了就跑 `frontend/e2e/contrast.spec.ts`。
 8. **文字不叠透明度，深底浅底都一样。** 深色文字：`text-amber-700/70` 压在 `bg-amber-50/60` 上只有 2.89:1，两个透明度分开写，谁也算不出结果。浅色文字同样不行：`text-white/90` 压在 `accent-600` 上 4.45:1、压在 `orange-700` 上 4.48:1，都差一点到 4.5；`bg-white/10` 还会把底色提亮，`text-white/75` 压上去只剩 3.76:1。要弱化层级用字号和字重，不要用透明度。
-9. **占位符按正文门槛处理。** Tailwind preflight 的 `input::placeholder` 默认 `gray-400`，白底 2.54:1。`index.css` 全局改为 `slate-500`（白底 4.76:1）。占位符是输入格式提示，不是装饰。注意 preflight 的选择器是 `input::placeholder, textarea::placeholder`，盖它需要同等特异性。
+9. **占位符按正文门槛并随表面选择。** `index.css` 既有全局 `slate-500` 仅适用于不透明纯白输入表面；不能把该兜底当作所有输入框的安全默认值。新增或修改输入框时，浅色表面统一显式使用 `placeholder:text-slate-600`，深色表面使用 `placeholder:text-slate-200`，均保持 `placeholder:opacity-100`；透明表面须按实际合成背景验证 ≥4.5:1。占位符是输入格式提示，不代替 label。Tailwind preflight 的选择器为 `input::placeholder, textarea::placeholder`，覆盖时须保证生效。此处规定后续修改要求，不声称全站输入框已完成迁移。
 10. **分类色不是界面色。** 图表、堆叠条、图例里的颜色承载"是哪一类"，必须单独定义（如 `app/portfolioSolutionDemoData.ts` 的 `ASSET_CLASS_COLORS`），不得跟着强调色一起改，同一组里也不得有两类同色。另外，**分段边界不能只靠色差**：堆叠条要有分隔线，图例要有色块。
 
 ### 3.1.1 阶段色调
@@ -194,7 +196,7 @@ WCAG AA：正文 ≥ 4.5:1，大号文字（≥ 18.66px 且加粗，或 ≥ 24px
 ## 6. 工作台构图
 
 1. **任务页优先展示当前任务。** `StageLayout` 仅在阶段总览显示阶段大标题、眉标和描述；子页面保留紧凑面包屑、当前上下文和必要的配置旅程。因子参考证据默认收起，业务口径与错误状态仍由工作区直接提示。
-2. **阶段内节点导航响应式展示。** ≥1280px 使用常驻左侧栏；窄屏用展开按钮，Escape 关闭并把焦点交回按钮，切换路由后收起。历史情景全幅画布保留独立布局。指标与历史情景工作台在 <1280px 通过区域页签切换，避免平板双栏内再挤三列输入。**待实施**：当前 1440px 仍是下拉，见第 13 节；这是要求，不是已验收状态。
+2. **阶段内节点导航响应式展示。** ≥1280px 使用常驻左侧栏；窄屏用展开按钮，Escape 关闭并把焦点交回按钮，切换路由后收起。历史情景全幅画布保留独立布局。指标与历史情景工作台在 <1280px 通过区域页签切换，避免平板双栏内再挤三列输入。**已实施**：#12 已将阶段侧栏、窄屏展开及区域页签合入 Dev，见第 13 节；后续修改仍需浏览器验收。
 3. **一个页面一个滚动容器。** 不做嵌套滚动区域。
 4. **容器宽度 `max-w-[1600px]`**，画布类全幅页面除外。首页用 1280/1440，两者不互相套用。
 5. **分组优先用 `divide-y` 与留白。** 只有当层级真的需要抬升时才用卡片。`VISUAL_DENSITY: 7` 下卡片套卡片是禁止的。
@@ -260,7 +262,7 @@ WCAG AA：正文 ≥ 4.5:1，大号文字（≥ 18.66px 且加粗，或 ≥ 24px
 
 ## 9. 可达性与性能
 
-1. **焦点可见**：全站 `focus-visible:ring-2 focus-visible:ring-accent`，不得 `outline: none` 而不补替代。
+1. **焦点可见**：Tailwind 控件统一 `focus-visible:ring-2 focus-visible:ring-accent-500`，不得 `outline: none` 而不补替代。既有 `index.css` 使用 `accent.DEFAULT`（600 档）绘制全局 outline，首页另有作用域 outline；这是兜底样式的现状，不是 `ring-accent-500` 的别名。修改焦点样式时检查实际可见效果。
 2. **表格语义**：`<th scope="col">` 必填。`unscoped-tables` 逐个 `<th>` 计数（按文件计数会让同一张表里漏标的表头永远查不出来），当前 0 处。
 3. **`prefers-reduced-motion`**：`MOTION_INTENSITY` 虽为 2，所有 `transition` 与 `transform` 仍需在 reduce 下退化为静态。
 4. **深色模式**：`darkMode: 'class'` 已在配置中声明。**必须先完成第 3 节令牌收敛再实现**，否则 9672 处 `className` 要改两遍。这是 P2，不是 P0。
@@ -385,6 +387,22 @@ python skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py
 npm run test:e2e --prefix frontend -- contrast.spec.ts indicator-studio.spec.ts historical-regime-workbench.spec.ts process-framework.spec.ts homepage.spec.ts --workers=2
 ```
 
+首页品牌变量一致性检查（纯 Node，修改首页变量或 `accent` 时必须通过；不替代视觉验收）：
+
+```sh
+node --input-type=module <<'JS'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import config from './frontend/tailwind.config.js'
+const css = readFileSync('frontend/src/homepage/homepage.css', 'utf8')
+for (const [name, step] of [['--home-blue', 600], ['--home-blue-hover', 700], ['--home-blue-soft', 100]]) {
+  const match = css.match(new RegExp(`${name}\\s*:\\s*(#[0-9a-fA-F]{6})\\s*;`))
+  assert.equal(match?.[1].toLowerCase(), config.theme.extend.colors.accent[step].toLowerCase(), name)
+}
+console.log('Homepage brand tokens match Tailwind accent.')
+JS
+```
+
 浏览器测试需要本机 Chrome；流程夹具需要带 uvicorn 的 Python，可用 `INDICATOR_TEST_PYTHON` 指定。测试使用隔离夹具，不向真实业务后端提交操作。
 
 ## 15. 吉祥物（卡通牛）使用规范
@@ -420,9 +438,9 @@ npm run test:e2e --prefix frontend -- contrast.spec.ts indicator-studio.spec.ts 
 3. 基金会计的对账差异、关账错误、凭证错误、双账勾稽差额。
 4. 表格内部、图表内部、图表 tooltip、画布节点。
 5. 交易计划、前置检查、订单分配相关的任何界面。
-6. `VISUAL_DENSITY: 7` 的工作区正文区域。
+6. `VISUAL_DENSITY: 7` 工作区中承载业务数据的正文区域。无数据的页面主空态和明确标记为未实现的原型横幅按下述例外处理；例外不能覆盖第 1–5 条禁区。
 
-**允许出现在：** 空态、无结果、首次进入、成功确认、404 / 错误边界、首页品牌区块、以及 34 条 `prototypePage` 的 `StaticDemoBanner`（明确标注为未实现原型的页面）。
+**允许出现在：** 无业务数据的空态、无结果、首次进入、成功确认、404 / 错误边界、首页品牌区块，以及 `prototypePage` 的 `StaticDemoBanner`（明确标注为未实现原型的页面）。工作台主空态是第 6 条的明确例外，如 `FactorResearchCenter` 尚未运行检验时；局部面板仍按 3.5 使用纯文字。第 15.3 节按文件名限制的禁区保持有效，命中这些文件的空态须设置 `mascot={false}`；静态检查不能替代位置和内容语义审查。
 
 共同点是：**这些位置都没有数据。** 有数据的地方交给数据。
 

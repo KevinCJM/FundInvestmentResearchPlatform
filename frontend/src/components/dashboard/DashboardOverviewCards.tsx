@@ -19,10 +19,10 @@ interface MetricCardProps {
 
 function MetricCard({ label, value, description }: MetricCardProps) {
   return (
-    <div className="rounded-2xl border border-white/15 bg-white/10 p-4 backdrop-blur">
-      <p className="text-xs font-semibold uppercase tracking-wide text-white/75">{label}</p>
+    <div className="rounded-xl border border-white/15 bg-white/10 p-4 backdrop-blur">
+      <p className="text-xs font-semibold uppercase tracking-wide text-white">{label}</p>
       <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
-      <p className="mt-1 text-xs leading-5 text-white/75">{description}</p>
+      <p className="mt-1 text-xs leading-5 text-white">{description}</p>
     </div>
   );
 }
@@ -61,7 +61,7 @@ export default function DashboardOverviewCards({ kind, analytics }: DashboardOve
     return (
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6" aria-label="市场概览加载中">
         {Array.from({ length: 6 }, (_, index) => (
-          <div key={index} className="h-28 animate-pulse rounded-2xl bg-white/10" />
+          <div key={index} className="h-28 animate-pulse rounded-xl bg-white/10" />
         ))}
       </div>
     );

@@ -47,9 +47,9 @@ export default function ReleaseWorkbench({ run, runs, releases, action, busy, re
     <Card title="发布目录与应用">
       <Field label="选择因子发布"><select className={inputClass} value={selected} onChange={e => { setSelected(e.target.value); setMonitor(undefined); setProfile(undefined); setImported(undefined) }}><option value="">选择发布版本</option>{releases.map(item => <option key={item.id} value={item.id}>{item.name} · {releaseState[item.state]}</option>)}</select></Field>
       {release ? <div className="mt-4 space-y-4">
-        <div className="rounded-lg bg-indigo-50 p-3 text-sm leading-6 text-indigo-950"><strong>{release.name}</strong><br />得分日 {release.as_of} · 有效期 {release.effective_from} 至 {release.effective_to}<br />{releaseState[release.state]}<p className="mt-1">{release.note}</p></div>
+        <div className="rounded-lg bg-accent-50 p-3 text-sm leading-6 text-accent-950"><strong>{release.name}</strong><br />得分日 {release.as_of} · 有效期 {release.effective_from} 至 {release.effective_to}<br />{releaseState[release.state]}<p className="mt-1">{release.note}</p></div>
         <div className="flex flex-wrap gap-2"><button className={secondaryClass} onClick={() => onViewRun(release.run_id)}>查看来源检验</button><button className={secondaryClass} disabled={busy} onClick={() => void action('检查因子发布', async () => setMonitor(await factorApi.monitor(release.id)))}>检查更新与漂移</button>{release.state !== 'retired' && <button className={secondaryClass} disabled={busy} onClick={() => void action('停用因子发布', async () => { await factorApi.retire(release.id); await refresh() })}>停用此发布</button>}</div>
-        {monitor && <div className="rounded-lg border border-slate-200 p-3 text-sm leading-6" role="status"><p>{monitor.data_changed_since_run ? '数据已更新，请重新运行研究方案。' : '最近运行与当前数据快照一致。'}</p><p>最新运行时间：{monitor.latest_run_at}</p>{monitor.comparable ? <p>同口径得分相关性 {numberText(monitor.drift?.score_correlation)} · 平均绝对变化 {numberText(monitor.drift?.mean_absolute_score_change)} · 当前覆盖 {percentText(monitor.drift?.coverage)}</p> : <p>方案或因子版本已变化，两个运行不能直接比较得分。</p>}<p>已登记 {monitor.bindings.length} 个投研引用。</p>{monitor.bindings.map((binding, i) => <p className="break-all text-xs text-slate-500" key={i}>{binding.context_type} · {binding.context_id} · {binding.note}</p>)}</div>}
+        {monitor && <div className="rounded-lg border border-slate-200 p-3 text-sm leading-6" role="status"><p>{monitor.data_changed_since_run ? '数据已更新，请重新运行研究方案。' : '最近运行与当前数据快照一致。'}</p><p>最新运行时间：{monitor.latest_run_at}</p>{monitor.comparable ? <p>同口径得分相关性 {numberText(monitor.drift?.score_correlation)} · 平均绝对变化 {numberText(monitor.drift?.mean_absolute_score_change)} · 当前覆盖 {percentText(monitor.drift?.coverage)}</p> : <p>方案或因子版本已变化，两个运行不能直接比较得分。</p>}<p>已登记 {monitor.bindings.length} 个投研引用。</p>{monitor.bindings.map((binding, i) => <p className="break-all text-xs text-slate-600" key={i}>{binding.context_type} · {binding.context_id} · {binding.note}</p>)}</div>}
         <fieldset disabled={busy || release.state !== 'active'} className="space-y-3 rounded-lg border border-slate-200 p-4">
           <h4 className="font-semibold text-slate-800">进入产品池审核</h4>
           <Field label="导入产品池"><select className={inputClass} value={poolId} onChange={e => setPoolId(e.target.value)}><option value="">新建研究候选池</option>{pools.filter(pool => pool.state !== 'archived').map(pool => <option key={pool.id} value={pool.id}>{pool.name}</option>)}</select></Field>
@@ -64,7 +64,7 @@ export default function ReleaseWorkbench({ run, runs, releases, action, busy, re
           })}>导入待审核候选</button>
         </fieldset>
         {imported && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900" role="status">已导入“{imported.name}”，保留人工准入审核。<Link className="ml-2 font-semibold underline" to="/product-research/pools">前往产品池</Link></p>}
-      </div> : <p className="mt-4 text-sm text-slate-500">完成研究检验后发布，即可被各投研环节引用。</p>}
+      </div> : <p className="mt-4 text-sm text-slate-600">完成研究检验后发布，即可被各投研环节引用。</p>}
     </Card>
     {release && <Card title="持仓因子画像">
       <p className="mb-4 text-sm text-slate-600">输入真实研究持仓权重，查看覆盖部分的加权特征；缺失持仓权重会明确显示。</p>
@@ -73,7 +73,7 @@ export default function ReleaseWorkbench({ run, runs, releases, action, busy, re
         if (rows.some(row => !Number.isFinite(row.weight))) throw new Error('每行填写完整产品代码和小数权重。')
         setProfile(await factorApi.profile(release.id, rows, asOf))
       }) }}><fieldset disabled={busy || release.state !== 'active'} className="space-y-3"><Field label="持仓代码与权重" hint="每行：产品代码,小数权重；总权重不得超过1。"><textarea className={inputClass} required rows={4} placeholder={'510300.SH,0.6\n510500.SH,0.4'} value={holdings} onChange={e => setHoldings(e.target.value)} /></Field><Field label="持仓研究日"><input className={inputClass} type="date" required value={asOf} onChange={e => setAsOf(e.target.value)} /></Field><button type="submit" className={buttonClass}>计算加权因子画像</button></fieldset></form>
-      {profile && <div className="mt-4 space-y-2">{profile.factors.map(item => <p key={item.name} className="rounded-lg bg-slate-50 p-3 text-sm">{item.name}：{numberText(item.value)} · 覆盖持仓权重 {percentText(item.covered_weight)}</p>)}<p className="text-xs text-slate-500">{profile.meaning}</p></div>}
+      {profile && <div className="mt-4 space-y-2">{profile.factors.map(item => <p key={item.name} className="rounded-lg bg-slate-50 p-3 text-sm">{item.name}：{numberText(item.value)} · 覆盖持仓权重 {percentText(item.covered_weight)}</p>)}<p className="text-xs text-slate-600">{profile.meaning}</p></div>}
     </Card>}
   </div>
 }

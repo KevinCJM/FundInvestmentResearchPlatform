@@ -4,7 +4,7 @@ import { buttonClass, inputClass, JsonField } from './EditorFields'
 export default function EtlParameterDefinitions({ value, onChange }: { value: EtlParameter[]; onChange: (value: EtlParameter[]) => void }) {
   const patch = (index: number, next: EtlParameter) => onChange(value.map((p, i) => i === index ? next : p))
   return <details className="rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-sm font-semibold">定义运行参数 · {value.length} 项</summary>
-    <p className="mt-3 text-xs leading-5 text-slate-500">这些参数决定每次运行显示哪些输入框；不同流程共用同一套表单。修改参数 ID 后，需要同步调整步骤绑定。</p>
+    <p className="mt-3 text-xs leading-5 text-slate-600">这些参数决定每次运行显示哪些输入框；不同流程共用同一套表单。修改参数 ID 后，需要同步调整步骤绑定。</p>
     <div className="mt-3 space-y-3">{value.map((p, index) => <div key={index} className="grid gap-3 rounded-lg bg-slate-50 p-3 sm:grid-cols-2">
       <label className="text-xs">参数标识<input aria-label={`参数 ${index + 1} 标识`} className={inputClass} value={p.id} onChange={e => patch(index, { ...p, id: e.target.value })} /></label>
       <label className="text-xs">显示名称<input aria-label={`参数 ${index + 1} 名称`} className={inputClass} value={p.label} onChange={e => patch(index, { ...p, label: e.target.value })} /></label>
