@@ -1,0 +1,25 @@
+name: Branch policy
+on:
+  pull_request:
+    branches: [main, Dev]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+permissions: {}
+jobs:
+  branch-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require Dev as the source of main pull requests
+        env:
+          TARGET_BRANCH: ${{ github.event.pull_request.base.ref }}
+          SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          SOURCE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [[ "$TARGET_BRANCH" == "main" ]]; then
+            if [[ "$SOURCE_BRANCH" != "Dev" || "$SOURCE_REPOSITORY" != "$TARGET_REPOSITORY" ]]; then
+              echo '::error::main only accepts pull requests from this repository’s Dev branch.'
+              exit 1
+            fi
+          fi
+          echo 'Branch direction is valid.'

@@ -16,7 +16,7 @@
       "name": "AI branch submission, review and merge protocol",
       "path": "branch_submission_rules.md",
       "kind": "submission_protocol",
-      "purpose": "Owns the documented AI submission procedure: development branches enter Dev, Dev enters main, independent AI review is mandatory without a human approval prerequisite, and merges require verified branch, review and quality gates. This module describes the agent protocol; it does not certify remote enforcement or an installed review service.",
+      "purpose": "Owns terminal-only PR submission: PR-only main/Dev, same-repository Dev into main, one native approval for ordinary mergers, and a PR-only approval exemption for owner KevinCJM. Codex comments are optional. Live deployment and permissions must be verified from GitHub.",
       "module_tags": [
         "submission",
         "branches",
@@ -35,7 +35,8 @@
       ],
       "then_check_files": [
         "AGENTS.md",
-        "docs/ai_routing_evolution_policy.json"
+        "docs/ai_routing_evolution_policy.json",
+        "docs/branch-protection.md"
       ],
       "upstream_dependencies": [
         "ai_routing_files"
@@ -49,13 +50,17 @@
       "related_tests": [],
       "related_configs": [
         "AGENTS.md",
-        "docs/ai_routing_evolution_policy.json"
+        "docs/ai_routing_evolution_policy.json",
+        ".github/workflows/branch-policy.yml",
+        ".github/branch-ruleset.json",
+        ".github/main-branch-ruleset.json",
+        ".github/approval-ruleset.json"
       ],
       "risk_flags": [
         "documented_policy_is_not_remote_enforcement",
-        "stale_head_or_base_review",
+        "author_cannot_approve_own_pr",
         "unrelated_dirty_files_in_submission",
-        "human_approval_must_not_replace_ai_review"
+        "approval_exemption_must_not_include_pr_only_or_branch_direction"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -72,7 +77,6 @@
       "routing_confidence": "high",
       "scope_flags": [
         "subtree_only",
-        "protocol_only",
         "remote_enforcement_not_certified"
       ],
       "grounding": {
@@ -80,7 +84,12 @@
         "evidence": [
           "branch_submission_rules.md",
           "AGENTS.md",
-          "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context"
+          "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
+          "docs/branch-protection.md",
+          ".github/workflows/branch-policy.yml",
+          ".github/branch-ruleset.json",
+          ".github/main-branch-ruleset.json",
+          ".github/approval-ruleset.json"
         ],
         "unsampled_paths": []
       }
