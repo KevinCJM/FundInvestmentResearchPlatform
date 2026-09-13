@@ -16,7 +16,7 @@
       "name": "AI branch submission, review and merge protocol",
       "path": "branch_submission_rules.md",
       "kind": "submission_protocol",
-      "purpose": "Owns the simplified terminal-only submission procedure: PR-only main/Dev, one valid native approval, and a branch-policy workflow allowing only same-repository Dev into main. Codex comments are optional. Live deployment and required-check state must be verified from GitHub.",
+      "purpose": "Owns terminal-only PR submission: PR-only main/Dev, same-repository Dev into main, one native approval for ordinary mergers, and a PR-only approval exemption for owner KevinCJM. Codex comments are optional. Live deployment and permissions must be verified from GitHub.",
       "module_tags": [
         "submission",
         "branches",
@@ -53,12 +53,14 @@
         "docs/ai_routing_evolution_policy.json",
         ".github/workflows/branch-policy.yml",
         ".github/branch-ruleset.json",
-        ".github/main-branch-ruleset.json"
+        ".github/main-branch-ruleset.json",
+        ".github/approval-ruleset.json"
       ],
       "risk_flags": [
         "documented_policy_is_not_remote_enforcement",
         "author_cannot_approve_own_pr",
-        "unrelated_dirty_files_in_submission"
+        "unrelated_dirty_files_in_submission",
+        "approval_exemption_must_not_include_pr_only_or_branch_direction"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -86,7 +88,8 @@
           "docs/branch-protection.md",
           ".github/workflows/branch-policy.yml",
           ".github/branch-ruleset.json",
-          ".github/main-branch-ruleset.json"
+          ".github/main-branch-ruleset.json",
+          ".github/approval-ruleset.json"
         ],
         "unsampled_paths": []
       }
