@@ -3,9 +3,8 @@
 import argparse
 import json
 import os
-from urllib.parse import quote
 
-from check_ai_review import ACTIONS_APP_ID, GitHub, REPOSITORY, TRUSTED_EVENTS, evaluate, outcome
+from check_ai_review import ACTIONS_APP_ID, GitHub, REPOSITORY, TRUSTED_EVENTS, current_pr, evaluate, outcome
 from submission_policy import QUALITY_WORKFLOW, branch_decision, quality_decision, quality_title, trusted_quality_run
 
 
@@ -16,17 +15,6 @@ class PolicyChanged(RuntimeError):
 def ensure_current_policy(gh, policy_sha):
     if gh.api(f"repos/{REPOSITORY}/git/ref/heads/main")["object"]["sha"] != policy_sha:
         raise PolicyChanged("Publisher is no longer the current protected main commit")
-
-
-def current_pr(gh, number):
-    pr = gh.api(f"repos/{REPOSITORY}/pulls/{number}")
-    # PR metadata can lag a base push. Resolve the actual branch ref explicitly.
-    latest_base = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(pr['base']['ref'], safe='')}")["object"]["sha"]
-    pr["base"]["sha"] = latest_base
-    latest_source = None
-    if (pr["head"].get("repo") or {}).get("full_name") == REPOSITORY:
-        latest_source = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(pr['head']['ref'], safe='')}")["object"]["sha"]
-    return pr, latest_base, latest_source
 
 
 def quality_evidence(gh, pr):

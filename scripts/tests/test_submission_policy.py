@@ -192,6 +192,19 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertNotEqual(run.returncode,0)
             self.assertIn('Protected contract suite is empty',run.stderr)
 
+    def test_candidate_step_rejects_empty_test_suite(self):
+        import yaml
+        workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        script=next(step['run'] for step in workflow['jobs']['policy-tests']['steps']
+                    if step.get('name')=='Run nonempty candidate test suite')
+        with tempfile.TemporaryDirectory() as directory:
+            tests=Path(directory)/'scripts/tests'; tests.mkdir(parents=True)
+            run=subprocess.run(['bash','-ec',script],cwd=directory,capture_output=True,text=True)
+            self.assertNotEqual(run.returncode,0)
+            self.assertIn('Candidate test suite is empty',run.stderr)
+            (tests/'test_basic.py').write_text('import unittest\nclass Basic(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n')
+            self.assertEqual(subprocess.run(['bash','-ec',script],cwd=directory,capture_output=True).returncode,0)
+
     def test_candidate_routing_syntax_error_fails_the_actual_workflow_step(self):
         import yaml
         workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)

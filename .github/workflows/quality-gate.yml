@@ -89,9 +89,16 @@ jobs:
           ref: ${{ needs.prepare.outputs.head }}
           persist-credentials: false
           fetch-depth: 0
-      - run: |
-          python3 -m pip install PyYAML==6.0.3
-          python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+      - run: python3 -m pip install PyYAML==6.0.3
+      - name: Run nonempty candidate test suite
+        run: |
+          python3 - <<'PYTEST'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('scripts/tests', pattern='test_*.py')
+          assert suite.countTestCases() > 0, 'Candidate test suite is empty'
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() else 1)
+          PYTEST
       - name: Exercise candidate routing executables in their isolated runner
         env:
           BASE_SHA: ${{ needs.prepare.outputs.base }}

@@ -46,6 +46,18 @@ def is_app_comment(item):
     return is_bot(item) and (item.get("performed_via_github_app") or {}).get("id") == CODEX_APP_ID
 
 
+def current_pr(gh, number):
+    pr = gh.api(f"repos/{REPOSITORY}/pulls/{number}")
+    # PR metadata can lag a base push. Resolve the actual branch ref explicitly.
+    latest_base = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(pr['base']['ref'], safe='')}")["object"]["sha"]
+    pr["base"]["sha"] = latest_base
+    latest_source = None
+    if (pr["head"].get("repo") or {}).get("full_name") == REPOSITORY:
+        latest_source = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(pr['head']['ref'], safe='')}")["object"]["sha"]
+    return pr, latest_base, latest_source
+
+
+
 def request_body(pr):
     pair = {"repository": REPOSITORY, "pr_number": pr["number"],
             "head_sha": pr["head"]["sha"], "base_sha": pr["base"]["sha"], "base_ref": pr["base"]["ref"]}
@@ -392,8 +404,12 @@ def main():
     if args.request_body:
         if not args.pr:
             parser.error("--request-body requires --pr")
-        pr = gh.api(f"repos/{REPOSITORY}/pulls/{args.pr}")
-        pr["base"]["sha"] = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(pr['base']['ref'], safe='')}")["object"]["sha"]
+        pr, _, actual_head = current_pr(gh, args.pr)
+        if actual_head != pr["head"]["sha"]:
+            parser.error("PR metadata has not caught up with its source ref; refresh before requesting review")
+        if ((args.expected_head and args.expected_head != actual_head)
+                or (args.expected_base and args.expected_base != pr["base"]["sha"])):
+            parser.error("Expected HEAD/base no longer matches; do not post a stale request")
         print(request_body(pr))
         return 0
     numbers = [args.pr] if args.pr else [p["number"] for p in gh.pages(f"repos/{REPOSITORY}/pulls?state=open") if p["base"]["ref"] in {"main", "Dev"}]

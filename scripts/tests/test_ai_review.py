@@ -299,6 +299,17 @@ class GitHubContractTests(unittest.TestCase):
             self.assertNotIn("check-runs", str(pages.call_args_list))
             self.assertIn("--job", logs.call_args.args[0])
 
+    def test_review_request_rejects_lagging_pr_metadata(self):
+        gh=gate.GitHub(); s, _=fixture()
+        with mock.patch.object(gate,'GitHub',return_value=gh), \
+                mock.patch('sys.argv',['check_ai_review.py','--pr','12','--request-body']), \
+                mock.patch.object(gh,'api',side_effect=[s['pr'],{'object':{'sha':BASE}},{'object':{'sha':'c'*40}}]), \
+                mock.patch('sys.stderr'), mock.patch('builtins.print') as output:
+            with self.assertRaises(SystemExit) as failure:
+                gate.main()
+            self.assertEqual(failure.exception.code,2)
+            output.assert_not_called()
+
     def test_one_pr_api_failure_does_not_skip_other_prs(self):
         gh = gate.GitHub(); s, c = fixture()
         with mock.patch.object(gate, "GitHub", return_value=gh), mock.patch("sys.argv", ["check_ai_review.py"]), \
