@@ -36,10 +36,9 @@ Ruleset 将三个检查绑定 GitHub Actions 的实际 integration ID（当前�
 
 `scripts/check_ai_review.py` 使用已由真实 API 核实的身份：Codex App ID `1144995`、bot user ID `199175422`、login `chatgpt-codex-connector[bot]`。Issue comment 还须验证 `performed_via_github_app.id`；显示名、任意 bot 或作者复制的 PASS 不是可信证据。
 
-每次观察上下文记录 PR、base_ref、base_sha、head_sha、policy_sha、observed_at，仓库为固定常量。HEAD、base 或 main 策略变化后，旧上下文不复用。支持以下两类通过证据：
+每次观察上下文记录 PR、base_ref、base_sha、head_sha、policy_sha、observed_at，仓库为固定常量。HEAD、base 或 main 策略变化后，旧上下文不复用。自动门禁只接受仓库已实际使用并验证的官方原生输出：当前 HEAD 的 Code Review 摘要 Completed，短 SHA 经 GitHub API 唯一解析；并有晚于本次精确版本完整审核请求的新官方 👍，或未经编辑、明确绑定当前提交的官方 “Didn't find any major issues” 评论。摘要和正面结论须晚于最新请求、观察边界及最新问题，且无更晚的阻断审核。
 
-1. 官方 Codex 发布的 `codex-review/v1` 结构化报告：唯一顶层 JSON 代码块、字段和完整版本精确匹配、PASS、findings 和 limitations 均为空；reviewer_identity 必须为官方 bot login，并包含非空 review_run_id、reviewed_scope 和 evidence 列表。每条 evidence 必须精确对应 GitHub API 已抓取的本仓库、本 PR 官方 review/comment，核对当前提交及时间；issue comment 还必须未经编辑并在正文绑定当前版本。任意 HTTPS、外部网站、不存在记录、其他 PR、过期审核及可变摘要链接不作为结构化审核证据。引用中的报告、多份矛盾报告、被编辑的 issue comment 或与 CHANGES_REQUESTED 冲突的 PASS 不放行。
-2. 官方原生输出：当前 HEAD 的 Code Review 摘要 Completed，短 SHA 经 GitHub API 唯一解析；并有晚于本次精确版本审核请求的新官方 👍，或未经编辑、明确绑定当前提交的官方 “Didn't find any major issues” 评论。摘要和正面结论须晚于最新请求、观察边界及最新问题，且无更晚的阻断审核。
+不支持以自由文本 scope 或自报文件清单授予结构化 PASS。当前观察与请求边界之后、绑定当前 HEAD/base 的官方 codex-review/v1 JSON 报告，无论 PASS/BLOCKED/INCOMPLETE 均阻断，不能回落到旧的原生通过证据；必须发出新的完整审核请求并完成原生复审。机器验证的是官方证据、完整审核请求与版本的绑定，不能从一段范围声明证明 AI 实际完整阅读了代码。提交规范中的 JSON 是审计记录模板，不是向自动门禁提交 PASS 的接口。
 
 Completed 本身、旧 👍、普通 PR reaction、无评论、超时均不代表通过。所有官方行内问题须处理并复核，outdated 不豁免；仅关闭讨论不构成新审核结论。格式无法识别时失败关闭，不靠宽泛关键词猜测。
 
@@ -50,7 +49,7 @@ python3 scripts/check_ai_review.py --pr 123 --request-body > /tmp/codex-review-r
 gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tmp/codex-review-request.md
 ```
 
-生成器先比对 PR 元数据和实际来源 ref；刚 push 后元数据滞后会拒绝输出，刷新后再执行，不得发布旧请求。请求带 `@codex review`、完整 HEAD/base 和不可编辑的隐藏版本标记。版本变化时发布新请求，禁止编辑旧请求。生产工作流不自动发送评论或请求模型，避免重复消耗审核额度；定时补查只读取证据。
+请求识别仅允许末尾 CR/LF 差异，以兼容 CLI 输出和 --body-file；正文、版本与不可编辑约束不变。生成器先比对 PR 元数据和实际来源 ref；刚 push 后元数据滞后会拒绝输出，刷新后再执行，不得发布旧请求。请求带 `@codex review`、完整 HEAD/base 和不可编辑的隐藏版本标记。版本变化时发布新请求，禁止编辑旧请求。生产工作流不自动发送评论或请求模型，避免重复消耗审核额度；定时补查只读取证据。
 
 只读查询使用 `python3 scripts/check_ai_review.py --pr 123`，默认建立新的观察时间。复核已有证据时，从真实受保护发布 job 日志读取 observed_at、HEAD/base，传给 `--observed-at`、`--expected-head`、`--expected-base`。此脚本不能发布检查；唯一发布入口是受保护的 `scripts/check_submission.py --publish`。正式合并前使用下文 `--verify`，不手填观察时间替代生产证据。
 

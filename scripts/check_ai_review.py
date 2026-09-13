@@ -67,58 +67,20 @@ def request_body(pr):
             + REQUEST_MARKER + json.dumps(pair, sort_keys=True) + " -->")
 
 
+def matches_request(body, pr):
+    # CLI stdout and gh --body-file preserve a final line ending.
+    return isinstance(body, str) and body.rstrip("\r\n") == request_body(pr)
+
+
 def bound_request(comment, pr, observed_at):
     # A later edit could otherwise turn a thumbs-up on an old request into a new verdict.
-    return (comment.get("body") == request_body(pr)
+    return (matches_request(comment.get("body"), pr)
             and comment.get("created_at") == comment.get("updated_at")
             and timestamp(comment["created_at"]) >= timestamp(observed_at))
 
 
 def outcome(state, reason, evidence=None):
     return {"state": state, "reason": reason, "evidence": evidence or []}
-
-
-def complete_report(report):
-    def text_field(name):
-        value = report.get(name)
-        return isinstance(value, str) and bool(value.strip()) and not value.strip().startswith("<")
-
-    evidence = report.get("evidence")
-    return (report.get("reviewer_identity") == BOT_LOGIN
-            and all(text_field(name) for name in ("review_run_id", "reviewed_scope"))
-            and isinstance(evidence, list) and bool(evidence)
-            and all(isinstance(url, str) and bool(url) for url in evidence))
-
-
-def verified_report_evidence(report, records, comments, snapshot, boundary):
-    """Accept only API-resolved official review records for this exact PR version."""
-    pr = snapshot["pr"]
-    prefix = f"https://github.com/{REPOSITORY}/pull/{pr['number']}#"
-    urls = set()
-    for record in records:
-        if (timestamp(record["submitted_at"]) >= boundary
-                and re.fullmatch(re.escape(prefix) + r"pullrequestreview-\d+", record.get("html_url", ""))):
-            urls.add(record["html_url"])
-    for comment in comments:
-        if (comment.get("created_at") != comment.get("updated_at")
-                or not comment.get("created_at") or timestamp(comment["created_at"]) < boundary
-                or not re.fullmatch(re.escape(prefix) + r"issuecomment-\d+", comment.get("html_url", ""))):
-            continue
-        match = NATIVE_CLEAN.fullmatch(comment.get("body", ""))
-        bound = bool(match and snapshot["resolved_commits"].get(match[1]) == pr["head"]["sha"])
-        block = re.fullmatch(r"\s*```json\s*\n(.*?)\n```\s*", comment.get("body", ""), re.S)
-        if block:
-            try:
-                data = json.loads(block[1])
-            except ValueError:
-                continue
-            bound = isinstance(data, dict) and all(data.get(k) == v for k, v in {
-                "schema": SCHEMA, "repository": REPOSITORY, "pr_number": pr["number"],
-                "base_ref": pr["base"]["ref"], "base_sha": pr["base"]["sha"], "head_sha": pr["head"]["sha"],
-            }.items())
-        if bound:
-            urls.add(comment["html_url"])
-    return bool(report.get("evidence")) and all(url in urls for url in report["evidence"])
 
 
 def evaluate(snapshot, context):
@@ -153,11 +115,11 @@ def evaluate(snapshot, context):
     latest_review = max(records, key=lambda r: r["submitted_at"]) if records else None
     changes_requested = latest_review and latest_review.get("state") == "CHANGES_REQUESTED"
     comments = [c for c in snapshot["comments"] if is_app_comment(c)]
-    requests = [c for c in snapshot["comments"] if c.get("body") == request_body(pr)
+    requests = [c for c in snapshot["comments"] if matches_request(c.get("body"), pr)
                 and timestamp(c["created_at"]) >= started]
     request = max(requests, key=lambda c: (c["created_at"], c["id"])) if requests else None
     requested_at = timestamp(request["created_at"]) if request else started
-    # A structured verdict can carry exact HEAD/base and explicit limitations.
+    # Unsupported structured reports must never grant success or fall back to old native evidence.
     reports = []
     for record in records + comments:
         body = record.get("body", "")
@@ -174,28 +136,11 @@ def evaluate(snapshot, context):
                 "base_sha": base, "base_ref": pr["base"]["ref"],
             }.items()):
                 continue
-            # A rewritten issue comment must not retroactively attest a new base.
-            if "submitted_at" not in record and record.get("created_at") != record.get("updated_at"):
-                continue
-            at = timestamp(record.get("submitted_at") or record["created_at"])
-            if at < max(started, requested_at):
-                continue
-            # A PASS quoted in an explanation is not a verdict. Exactly one
-            # top-level report is accepted; ambiguous reports fail closed.
-            if len(blocks) != 1 or not re.fullmatch(r"\s*```json\s*\n.*?\n```\s*", body, re.S):
-                report = {"conclusion": "INCOMPLETE", "limitations": ["Ambiguous or quoted structured report"]}
-            reports.append((at, report, record["html_url"], record.get("state")))
+            at = timestamp(record.get("submitted_at") or record["updated_at"])
+            if at >= max(started, requested_at):
+                reports.append(record["html_url"])
     if reports:
-        at, report, url, review_state = max(reports, key=lambda r: (r[0], r[1].get("conclusion") != "PASS"))
-        if (complete_report(report)
-                and verified_report_evidence(report, records, comments, snapshot, max(started, requested_at, latest_finding))
-                and report.get("conclusion") == "PASS" and report.get("findings") == [] and report.get("limitations") == []
-                and review_state != "CHANGES_REQUESTED" and at >= latest_finding
-                and not any(timestamp(r["submitted_at"]) > at or
-                            (r.get("state") == "CHANGES_REQUESTED" and timestamp(r["submitted_at"]) == at)
-                            for r in records)):
-            return outcome("success", "Current Codex structured review passed", [url])
-        return outcome("failure", "Codex report is blocked, incomplete, or contains findings/limitations", [url])
+        return outcome("failure", "Unsupported Codex report; request a fresh complete native review", reports)
     review_pending = "failure" if changes_requested else "pending"
     if not requests:
         return outcome(review_pending, "Waiting for an exact HEAD/base review request")
@@ -295,7 +240,7 @@ class GitHub:
         reactions = []
         # Manual review requests may receive the positive reaction instead of the PR.
         for comment in comments:
-            if comment.get("body") == request_body(pr):
+            if matches_request(comment.get("body"), pr):
                 for reaction in self.pages(f"{prefix}/issues/comments/{comment['id']}/reactions"):
                     reactions.append({**reaction, "request_comment_id": comment["id"]})
         resolved = {}
