@@ -147,6 +147,17 @@ class ReviewDecisionTests(unittest.TestCase):
             bad = copy.deepcopy(s); bad["comments"][-1][field] = value
             self.assertNotEqual(self.state(bad, c), "success")
 
+    def test_observed_native_no_findings_variants(self):
+        for ending in ["Can't wait for the next one!", ""]:
+            s, c = fixture(); s["reactions"] = []; clean=self.clean_comment()
+            clean["body"] = clean["body"].replace("You're on a roll.", ending)
+            s["comments"].append(clean)
+            self.assertEqual(self.state(s,c),"success")
+        s,c=fixture();s["reactions"]=[];clean=self.clean_comment()
+        clean["body"]=clean["body"].replace("You're on a roll.","Only reviewed README.")
+        s["comments"].append(clean)
+        self.assertNotEqual(self.state(s,c),"success")
+
     def test_clean_comment_wrong_head_or_old_request(self):
         s, c = fixture(); s["reactions"] = []; s["comments"].append(self.clean_comment())
         s["resolved_commits"]["aaaaaaa"] = "c" * 40

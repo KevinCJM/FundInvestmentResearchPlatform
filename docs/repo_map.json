@@ -69,7 +69,9 @@
       "related_tests": [
         "scripts/tests/test_ai_review.py",
         "scripts/tests/test_submission_policy.py",
-        ".github/workflows/ai-review-tests.yml"
+        ".github/workflows/ai-review-tests.yml",
+        "scripts/protected_tests/worker.py",
+        "scripts/protected_tests/test_gate_contracts.py"
       ],
       "related_configs": [
         "AGENTS.md",
@@ -99,7 +101,8 @@
       "minimum_regression": [
         "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
         "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
-        "python3 -m unittest discover -s scripts/tests -v"
+        "python3 -m unittest discover -s scripts/tests -v",
+        "python3 -m unittest discover -s scripts/protected_tests -v"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -129,7 +132,10 @@
           "python3 -m unittest discover -s scripts/tests -v",
           ".github/branch-ruleset.json",
           ".github/workflow-contracts.json",
-          ".github/workflows/review-events.yml"
+          ".github/workflows/review-events.yml",
+          "scripts/protected_tests/worker.py",
+          "scripts/protected_tests/test_gate_contracts.py",
+          "python3 -m unittest discover -s scripts/protected_tests -v"
         ],
         "unsampled_paths": [
           ".github/workflows/ai-review.yml",

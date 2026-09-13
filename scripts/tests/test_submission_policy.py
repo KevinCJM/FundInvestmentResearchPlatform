@@ -148,7 +148,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn('unittest',governance)
         self.assertIn('unittest',json.dumps(quality['jobs']['policy-tests']))
         protected=json.dumps(quality['jobs']['protected-policy-tests'])
-        self.assertIn('trusted/scripts/tests',protected)
+        self.assertIn('trusted/scripts/protected_tests',protected)
         self.assertIn('FIRP_GATE_ROOT',protected)
         self.assertIn('countTestCases',protected)
         candidate=json.dumps(quality['jobs']['policy-tests'])
@@ -217,15 +217,15 @@ class WorkflowContractTests(unittest.TestCase):
             ("import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\n",True),
             ("import unittest\n@unittest.skip('skip')\nclass T(unittest.TestCase):\n def test_ok(self): pass\n",False),
             ("import unittest\nclass T(unittest.TestCase):\n @unittest.expectedFailure\n def test_bad(self): self.fail()\n",False)]
-        for job,source in [('policy-tests','scripts/tests'),('protected-policy-tests','trusted/scripts/tests')]:
-            step=workflow['jobs'][job]['steps'][-1]['run']
+        for name,source in [('Run nonempty candidate test suite','scripts/tests'),('Exercise candidate protected contracts','scripts/protected_tests')]:
+            step=next(item['run'] for item in workflow['jobs']['policy-tests']['steps'] if item.get('name')==name)
             self.assertIn('python3 -I',step)
             with tempfile.TemporaryDirectory() as directory:
                 root=Path(directory); tests=root/source;tests.mkdir(parents=True)
                 for code,passed in cases:
                     (tests/'test_candidate.py').write_text(code)
                     run=subprocess.run(['bash','-ec',step],cwd=root,capture_output=True,text=True)
-                    self.assertEqual(run.returncode==0,passed,(job,code,run.stderr))
+                    self.assertEqual(run.returncode==0,passed,(name,code,run.stderr))
 
     def test_actual_integrity_step_rejects_configuration_changes_and_invalid_next_contract(self):
         import shutil, yaml
@@ -274,7 +274,7 @@ class WorkflowContractTests(unittest.TestCase):
         workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
         script=workflow['jobs']['protected-policy-tests']['steps'][-1]['run']
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); tests=root/'trusted/scripts/tests'; tests.mkdir(parents=True)
+            root=Path(directory); tests=root/'trusted/scripts/protected_tests'; tests.mkdir(parents=True)
             candidate=root/'candidate'; candidate.mkdir()
             contract=tests/'test_contract.py'
             contract.write_text("import os, unittest\nfrom pathlib import Path\nclass Contract(unittest.TestCase):\n def test_behavior(self):\n  self.assertEqual((Path(os.environ['FIRP_GATE_ROOT'])/'result.txt').read_text(), 'correct')\n")
@@ -286,6 +286,27 @@ class WorkflowContractTests(unittest.TestCase):
             run=subprocess.run(['bash','-ec',script],cwd=root,env=os.environ|{'FIRP_GATE_ROOT':str(candidate)},capture_output=True,text=True)
             self.assertNotEqual(run.returncode,0)
             self.assertIn('Test suite is empty',run.stderr)
+
+    def test_actual_protected_step_rejects_candidate_monkeypatch_and_early_exit(self):
+        import shutil, yaml
+        workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        script=workflow['jobs']['protected-policy-tests']['steps'][-1]['run']
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); candidate=root/'candidate'
+            shutil.copytree(ROOT/'scripts/protected_tests',root/'trusted/scripts/protected_tests')
+            shutil.copytree(ROOT/'scripts',candidate/'scripts',ignore=shutil.ignore_patterns('__pycache__','tests','protected_tests'))
+            shutil.copytree(ROOT/'.github',candidate/'.github')
+            def run():
+                return subprocess.run(['bash','-ec',script],cwd=root,
+                    env=os.environ|{'FIRP_GATE_ROOT':str(candidate)},capture_output=True,text=True,timeout=60)
+            normal=run(); self.assertEqual(normal.returncode,0,normal.stderr)
+            path=candidate/'scripts/submission_policy.py'; original=path.read_text()
+            path.write_text(original + "\nimport unittest\nunittest.TestCase.assertEqual=lambda *a,**k:None\nunittest.TestSuite.countTestCases=lambda *a:99\ndef branch_decision(*a,**k): return ['success','fabricated']\n")
+            fabricated=run(); self.assertNotEqual(fabricated.returncode,0)
+            self.assertIn('FAIL: test_branch_matrix',fabricated.stderr)
+            path.write_text('import os; os._exit(0)\n')
+            early=run(); self.assertNotEqual(early.returncode,0)
+            self.assertIn('Protected contracts failed',early.stderr)
 
     def test_candidate_step_rejects_empty_test_suite(self):
         import yaml

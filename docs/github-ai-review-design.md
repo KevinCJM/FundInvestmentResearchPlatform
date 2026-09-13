@@ -67,9 +67,9 @@ gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tm
 
 工作流固定包含 prepare、governance、policy-tests、protected-policy-tests、frontend、backend、e2e、quality-result 八个 job。汇总实际执行并核对所有适用 job 成功；缺失、失败、取消、超时或意外跳过均阻断。仅可信计划判定不适用的三个业务子任务可 skipped；三项顶层检查不能 skipped/neutral。
 
-protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行且同样必须非空，防止合入空套件后锁死后续提交。在导入候选代码或运行任何候选测试之前，protected-policy-tests 先由受保护工作流步骤读取 base 的 .github/workflow-contracts.json，校验三份候选生产工作流（发布器、质量测试、审核事件通知）以及可部署 branch-ruleset.json 的完整规范化配置 SHA256，覆盖事件、权限、ref、计划、测试、汇总、运行目录、环境、条件及失败传播；YAML 使用 BaseLoader 解析，规则文件使用 JSON 解析，再统一按排序键的紧凑 JSON 计算指纹；注释和无语义的排版不影响指纹。不能用 true、echo、if:false 或 continue-on-error 绕过业务、治理或契约测试。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 先对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，并在任何候选单元测试之前执行这些检查，避免测试修改受检文件；不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
+protected-policy-tests 从受保护 base 读取 scripts/protected_tests 中的黑盒契约：父进程持有测试、断言与预期结果，通过固定 FIRP_GATE_ROOT 启动独立子进程执行候选门禁。受保护 worker 源码和规则配置在启动任何候选进程前读入内存；子进程只返回业务结果，不提供测试数或通过结论。父进程不导入候选模块，避免候选 monkeypatch 改写 unittest 断言。契约覆盖分支、原生审核、审核 API 一致性、真实发布日志、质量来源、不可变计划、合并前验证与过期发布器停止写入。在导入候选代码或运行任何候选测试之前，protected-policy-tests 先由受保护工作流步骤读取 base 的 .github/workflow-contracts.json，校验三份候选生产工作流（发布器、质量测试、审核事件通知）以及可部署 branch-ruleset.json 的完整规范化配置 SHA256，覆盖事件、权限、ref、计划、测试、汇总、运行目录、环境、条件及失败传播；YAML 使用 BaseLoader 解析，规则文件使用 JSON 解析，再统一按排序键的紧凑 JSON 计算指纹；注释和无语义的排版不影响指纹。不能用 true、echo、if:false 或 continue-on-error 绕过业务、治理或契约测试。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 先对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，并在任何候选单元测试之前执行这些检查，避免测试修改受检文件；不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
 
-两套策略测试均由工作流内受保护的 Python -I 父进程启动独立子进程；每次使用全新临时完成文件，父进程同时要求正常退出、完成文件存在、非零测试数、执行数与发现数相等、全部成功且无 skipped/expectedFailures，并限制 300 秒。导入期 os._exit(0)、空套件、测试失败或未完成均不能提供通过结果。父进程不导入候选模块；这用于检测提前退出和未完成，不是同 UID 恶意代码的安全隔离。规则文件另有固定不变量回归：目标分支、PR-only、三个检查及 App 来源、strict、空 bypass、禁止删除/强推与零人类审批。
+候选内部单元测试以及候选新增黑盒契约在 policy-tests 的独立 runner 分别执行；控制器要求正常退出、全新完成文件、非零测试数、执行数与发现数相等、全部成功且无 skipped/expectedFailures，并限制 300 秒。它们验证候选测试可用性，不能代替 base 所有的黑盒断言。受保护父进程独立判断子进程业务输出，非零退出、空输出、非 JSON、多份 JSON 和超时均失败；候选的提前退出或篡改 unittest 不能生成通过结论。回归实际执行工作流步骤，覆盖正常候选通过、恒定返回成功并 monkeypatch 断言的候选失败，以及导入期 os._exit(0) 失败。这是进程分离的契约测试，不是同 UID 恶意代码的完整安全沙箱。规则文件另有父进程固定不变量回归：目标分支、PR-only、三个检查及 App 来源、strict、空 bypass、禁止删除/强推与零人类审批。
 
 CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与 `.github/requirements-ci.txt` 共同安装。后端单元测试禁止外网 socket，允许本地回环和 Unix socket；数据及 Numba 缓存使用临时目录，Tushare token 为空。Playwright 使用本地测试服务，同时设置 INDICATOR_TEST_PYTHON 与 TEST_PYTHON；真实数据写入用例仍按其既有显式授权开关跳过，不能报告为正式数据验收。首次真实运行暴露的环境或既有失败必须调查，不能新增跳过来换取绿色。
 
@@ -135,6 +135,7 @@ gh pr view "$submission_pr" --repo "$submission_repo" --json state,mergedAt,merg
 ```bash
 python3 -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+python3 -m unittest discover -s scripts/protected_tests -p 'test_*.py' -v
 python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py
 python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context
 python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --diff-range origin/Dev...HEAD --json

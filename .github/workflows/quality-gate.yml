@@ -117,6 +117,23 @@ jobs:
               assert result['success'] is True and result['skipped'] == 0 and result['expectedFailures'] == 0, 'Tests did not all pass'
               print('All', result['testsRun'], 'policy tests completed successfully')
           CONTROLLER
+      - name: Exercise candidate protected contracts
+        run: |
+          python3 -I - <<'CONTROLLER'
+          import json, subprocess, sys, tempfile
+          from pathlib import Path
+          child = "import json, sys, unittest\nfrom pathlib import Path\nsuite = unittest.defaultTestLoader.discover(sys.argv[2], pattern='test_*.py')\ncount = suite.countTestCases()\nresult = unittest.TextTestRunner(verbosity=2).run(suite)\nPath(sys.argv[1]).write_text(json.dumps({'count': count, 'testsRun': result.testsRun,\n    'success': result.wasSuccessful(), 'skipped': len(result.skipped), 'expectedFailures': len(result.expectedFailures)}))\n"
+          with tempfile.TemporaryDirectory() as directory:
+              report = Path(directory, 'completed.json')
+              run = subprocess.run([sys.executable, '-E', '-P', '-c', child, str(report), 'scripts/protected_tests'], timeout=300)
+              assert run.returncode == 0 and report.is_file(), 'Test process did not complete'
+              result = json.loads(report.read_text())
+              assert set(result) == {'count', 'testsRun', 'success', 'skipped', 'expectedFailures'}
+              assert type(result['count']) is int and result['count'] > 0, 'Test suite is empty'
+              assert type(result['testsRun']) is int and result['testsRun'] == result['count'], 'Test suite was incomplete'
+              assert result['success'] is True and result['skipped'] == 0 and result['expectedFailures'] == 0, 'Tests did not all pass'
+              print('All', result['testsRun'], 'policy tests completed successfully')
+          CONTROLLER
   protected-policy-tests:
     needs: prepare
     runs-on: ubuntu-latest
@@ -128,7 +145,7 @@ jobs:
           persist-credentials: false
           path: trusted
           sparse-checkout: |
-            scripts/tests
+            scripts/protected_tests
             .github/workflow-contracts.json
           sparse-checkout-cone-mode: false
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -159,21 +176,15 @@ jobs:
         env:
           FIRP_GATE_ROOT: ${{ github.workspace }}/candidate
         run: |
-          python3 -I - <<'CONTROLLER'
-          import json, subprocess, sys, tempfile
-          from pathlib import Path
-          child = "import json, sys, unittest\nfrom pathlib import Path\nsuite = unittest.defaultTestLoader.discover(sys.argv[2], pattern='test_*.py')\ncount = suite.countTestCases()\nresult = unittest.TextTestRunner(verbosity=2).run(suite)\nPath(sys.argv[1]).write_text(json.dumps({'count': count, 'testsRun': result.testsRun,\n    'success': result.wasSuccessful(), 'skipped': len(result.skipped), 'expectedFailures': len(result.expectedFailures)}))\n"
-          with tempfile.TemporaryDirectory() as directory:
-              report = Path(directory, 'completed.json')
-              run = subprocess.run([sys.executable, '-E', '-P', '-c', child, str(report), 'trusted/scripts/tests'], timeout=300)
-              assert run.returncode == 0 and report.is_file(), 'Test process did not complete'
-              result = json.loads(report.read_text())
-              assert set(result) == {'count', 'testsRun', 'success', 'skipped', 'expectedFailures'}
-              assert type(result['count']) is int and result['count'] > 0, 'Test suite is empty'
-              assert type(result['testsRun']) is int and result['testsRun'] == result['count'], 'Test suite was incomplete'
-              assert result['success'] is True and result['skipped'] == 0 and result['expectedFailures'] == 0, 'Tests did not all pass'
-              print('All', result['testsRun'], 'policy tests completed successfully')
-          CONTROLLER
+          python3 -I - <<'CONTRACTS'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('trusted/scripts/protected_tests', pattern='test_*.py')
+          count = suite.countTestCases()
+          assert count > 0, 'Test suite is empty'
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.testsRun == count, 'Test suite was incomplete'
+          assert result.wasSuccessful() and not result.skipped and not result.expectedFailures, 'Protected contracts failed'
+          CONTRACTS
   frontend:
     needs: prepare
     if: needs.prepare.outputs.frontend == 'true'

@@ -24,7 +24,7 @@ REQUEST_MARKER = "<!-- codex-review-request/v1 "
 SCHEMA = "codex-review/v1"
 TRUSTED_EVENTS = {"pull_request_target", "issue_comment", "push", "schedule", "workflow_dispatch", "workflow_run"}
 NATIVE_CLEAN = re.compile(
-    r"\ACodex Review: Didn't find any major issues\. You're on a roll\.\s*"
+    r"\ACodex Review: Didn't find any major issues\.(?: You're on a roll\.| Can't wait for the next one!)?\s*"
     r"\*\*Reviewed commit:\*\* `([0-9a-f]{7,40})`\s*"
     r"(?:<details>\s*<summary>ℹ️ About Codex in GitHub</summary>.*?</details>\s*)?\Z", re.S)
 
