@@ -6,6 +6,8 @@ import { Button } from '../components/ui'
 import { Empty, Feedback, Field, inputClass, percentText, sectionClass, today } from '../components/risk-models/ResearchUI'
 import AssumptionEditor from '../components/strategic-allocation/AssumptionEditor'
 import PolicyCandidates from '../components/strategic-allocation/PolicyCandidates'
+import { GoalCandidateSummary } from '../components/investment-mandate/MandateResults'
+import { amountText, objectiveLabels } from '../components/investment-mandate/model'
 import {
   completeCma, getCma, getStrategicCatalog, previewCma, previewPolicy, publishCma, publishPolicy, riskReference,
   type CmaDraft, type CmaPreview, type CmaVersion, type PolicyCandidate, type PolicyPreview,
@@ -54,6 +56,7 @@ function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocat
   const [candidate, setCandidate] = useState<PolicyCandidate | null>(null)
   const [savedPolicy, setSavedPolicy] = useState<TaaBaseline | null>(null)
   const generation = useRef(0)
+  const previousClock = useRef(platformDay)
   const heading = useRef<HTMLHeadingElement>(null)
   const mandate = catalog?.mandates.find(value => value.id === editor.mandateId)
   const allocation = catalog?.allocations.find(value => value.alloc_name === editor.allocationName)
@@ -72,8 +75,24 @@ function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocat
   useEffect(() => () => { generation.current += 1 }, [])
   useEffect(() => { heading.current?.focus() }, [step])
   useEffect(() => {
+    if (previousClock.current === platformDay) return
+    previousClock.current = platformDay
+    generation.current += 1
+    setBusy(false)
+    setError('')
+    if (savedPolicy) {
+      setNotice('当前展示已保存的历史政策；知识截止日已变化，不代表该政策在新截止日下可用。')
+      return
+    }
+    setPolicyPreview(null)
+    setCandidate(null)
+    if (!cmaVersion) setCmaPreview(null)
+    setStep(current => current > 2 ? 2 : current)
+    setNotice('知识截止日已变化，未保存的政策候选已失效，请核对日期后重新比较。')
+  }, [platformDay, savedPolicy, cmaVersion])
+  useEffect(() => {
     if (!allocation || !mandate || editor.assumptions) return
-    const day = platformDay ?? today()
+    const day = mandate.definition.as_of
     const names = allocation.assets.map(asset => asset.id)
     const assumptions: CmaDraft = {
       name: `${allocation.alloc_name} · 长期假设`.slice(0, 120), alloc_name: allocation.alloc_name,
@@ -84,7 +103,7 @@ function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocat
     }
     setEditor(current => ({ ...current, assumptions, policyName: `${allocation.alloc_name} · 长期政策`.slice(0, 120),
       reference: { alloc_name: allocation.alloc_name, as_of: day, start_date: allocation.coverage?.start_date ?? '', end_date: [day, allocation.coverage?.end_date].filter(Boolean).sort()[0]!, shrinkage: .1, periods_per_year: 252 },
-      settings: { ...current.settings, constraints: Object.fromEntries(names.map(id => [id, { min_weight: 0, max_weight: 1, max_abs_tilt: .1 }])), group_limits: [] } }))
+      settings: { ...current.settings, constraints: Object.fromEntries(names.map(id => [id, { min_weight: mandate.definition.asset_limits?.[id]?.min_weight ?? 0, max_weight: mandate.definition.asset_limits?.[id]?.max_weight ?? 1, max_abs_tilt: mandate.definition.max_tracking_error === 0 ? 0 : mandate.definition.asset_limits?.[id]?.max_abs_tilt ?? .1 }])), group_limits: [] } }))
   }, [allocation, mandate, editor.assumptions, platformDay])
 
   function invalidate(assumptions = false) {
@@ -142,7 +161,7 @@ function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocat
     })
   }
   function adopt() {
-    if (!candidate || !policyPreview || !editor.reason.trim() || !editor.policyName.trim()) return
+    if (dateIssue || !candidate || !policyPreview || candidate.goal_check?.within_limits === false || !editor.reason.trim() || !editor.policyName.trim()) return
     void run(() => publishPolicy(policyRequest, policyPreview.preview_hash, candidate.id, editor.policyName, editor.reason), value => {
       setSavedPolicy(value)
       updateAllocationJourney({ allocationName: value.alloc_name, universeId: value.universe_snapshot_id ?? undefined, baselineId: value.id, taaRunId: undefined })
@@ -164,7 +183,7 @@ function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocat
           <Field label="已保存的大类配置"><select className={inputClass} value={editor.allocationName} onChange={e => changeScope({ allocationName: e.target.value })}><option value="">选择大类与代理产品</option>{catalog.allocations.map(value => <option key={value.alloc_name} value={value.alloc_name}>{value.alloc_name}</option>)}</select></Field>
         </div>
         <div className="flex flex-wrap gap-4 text-sm"><Link className="inline-flex min-h-10 items-center text-accent-800 underline" to="/pre-investment/objectives">建立或复核投资目标</Link><Link className="inline-flex min-h-10 items-center text-accent-800 underline" to="/pre-investment/saa/asset-classes">构建与检查大类</Link></div>
-        {mandate && <p className="rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-700">目标：预期年收益至少 {percentText(mandate.definition.target_return)}，预期波动不超过 {percentText(mandate.definition.max_volatility)}，流动性资产至少 {percentText(mandate.definition.min_liquid_weight)}；政策于 {mandate.definition.review_date} 复核。</p>}
+        {mandate && <p className="rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-700">目标：{objectiveLabels[mandate.definition.objective_kind ?? 'absolute_return']}{mandate.definition.funding_plan ? `，期末保有${amountText(mandate.definition.funding_plan.terminal_target)} ${mandate.definition.currency}` : mandate.definition.benchmark ? `，相对${mandate.definition.benchmark.name}预期超额至少${percentText(mandate.definition.benchmark.target_excess_return)}` : `，预期年收益至少${percentText(mandate.definition.target_return)}`}；预期波动不超过 {percentText(mandate.definition.max_volatility)}，流动性资产至少 {percentText(mandate.definition.min_liquid_weight)}；政策于 {mandate.definition.review_date} 复核。</p>}
         {allocation && <p className="text-sm leading-6 text-slate-600">大类：{allocation.assets.map(asset => asset.name).join('、')}。后续保留原产品映射，不自动从名称推断经济角色。</p>}
         <Button tone="primary" disabled={!draft || !mandate || !allocation} onClick={() => setStep(1)}>填写长期假设</Button>
         <Field label="或者使用已保存的长期假设"><select className={inputClass} value={cmaVersion?.id ?? ''} disabled={!mandate || !allocation || busy} onChange={e => loadAssumptions(e.target.value)}><option value="">选择假设版本</option>{catalog.assumptions.filter(value => value.alloc_name === editor.allocationName).map(value => <option key={value.id} value={value.id}>{value.name} · {value.as_of} · {value.currency}</option>)}</select></Field>
@@ -176,17 +195,19 @@ function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocat
           {cmaPreview && <><p role="status" className="text-sm text-accent-800">资产轴和风险矩阵已通过校验；确认保存前不会写入研究库。</p><details><summary className="cursor-pointer text-sm text-slate-700">查看假设依据与限制</summary>{cmaPreview.warnings.map((warning, index) => <p className="mt-2 text-xs leading-5 text-slate-600" key={index}>{warning}</p>)}</details></>}
         </section>
       </>}
-      {step === 2 && draft && cmaVersion && <PolicyCandidates value={policyRequest} assets={draft.assets.map(asset => asset.id)} result={policyPreview} busy={busy}
+      {step === 2 && draft && cmaVersion && <PolicyCandidates value={policyRequest} assets={draft.assets.map(asset => asset.id)} result={policyPreview} busy={busy} compareDisabled={Boolean(dateIssue)}
         onChange={value => { invalidate(); const { mandate_id: _mandate, cma_id: _cma, ...settings } = value; setEditor(current => ({ ...current, settings })) }}
         onCompare={() => { if (!dateIssue) void run(() => previewPolicy(policyRequest), value => { setPolicyPreview(value); setCandidate(null) }) }}
         onSelect={value => { setCandidate(value); setStep(3) }} />}
       {step === 3 && candidate && policyPreview && <section className={`${sectionClass} space-y-5`} aria-label="政策采纳确认">
         <h2 className="text-lg font-semibold">这份长期政策是否符合你的判断？</h2><p className="text-sm leading-6 text-slate-600">{candidate.name} · 预期年收益 {percentText(candidate.metrics.expected_return)} · 预期年波动 {percentText(candidate.metrics.volatility)}。这些是冻结假设下的计算，不是业绩预测保证。</p>
+        <GoalCandidateSummary candidate={candidate} />
+        {policyPreview.current_application_eligible === false && <p className="text-sm text-amber-800">此政策按历史研究日评价，可以保存研究，已到复核日则不能直接用于当前产品应用。</p>}
         <dl className="grid gap-3 sm:grid-cols-3">{Object.entries(candidate.weights).map(([asset, weight]) => <div key={asset} className="rounded-lg bg-slate-50 p-3"><dt className="text-sm text-slate-600">{asset}</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{percentText(weight)}</dd></div>)}</dl>
         <Field label="政策版本名称"><input className={inputClass} maxLength={120} value={editor.policyName} disabled={busy} onChange={e => { setSavedPolicy(null); setEditor(current => ({ ...current, policyName: e.target.value })) }} /></Field>
         <Field label="采纳理由与复核关注点" hint="记录为何采用、哪些假设变化会触发复核。"><textarea rows={3} className={inputClass} value={editor.reason} disabled={busy} onChange={e => { setSavedPolicy(null); setEditor(current => ({ ...current, reason: e.target.value })) }} /></Field>
         <p className="text-xs leading-5 text-slate-600">确认后生成不可变 SAA 基线，TAA 继承目标、资产映射、权重及约束。政策再平衡约定与 TAA 日频研究回测并非同一执行规则。</p>
-        <div className="flex flex-wrap gap-3"><Button tone="primary" disabled={busy || Boolean(savedPolicy) || editor.reason.trim().length < 5 || !editor.policyName.trim()} onClick={adopt}>{savedPolicy ? '长期政策已确认' : '确认采用此长期政策'}</Button>
+        <div className="flex flex-wrap gap-3"><Button tone="primary" disabled={busy || Boolean(dateIssue) || Boolean(savedPolicy) || candidate.goal_check?.within_limits === false || editor.reason.trim().length < 5 || !editor.policyName.trim()} onClick={adopt}>{savedPolicy ? '长期政策已确认' : '确认采用此长期政策'}</Button>
           {savedPolicy && <Button tone="primary" onClick={() => navigate(allocationJourneyPath('taa', { ...readAllocationJourney(), baselineId: savedPolicy.id, taaRunId: undefined }))}>进入 TAA，研究是否需要偏离 →</Button>}</div>
       </section>}
       <details className={`${sectionClass} text-sm`}><summary className="cursor-pointer font-medium">已保存政策与历史研究工具</summary><div className="mt-3 space-y-2">{catalog.policies.length ? catalog.policies.map(value => <Link key={value.id} className="flex min-h-10 items-center text-accent-800 underline" to={`/pre-investment/taa?baseline=${encodeURIComponent(value.id)}`}>{value.name} · {value.as_of}</Link>) : <p className="text-slate-600">尚无已确认政策。</p>}<Link className="inline-flex min-h-10 items-center text-accent-800 underline" to={`/pre-investment/saa/allocation-lab?alloc=${encodeURIComponent(editor.allocationName)}`}>历史有效前沿、风险预算与策略回测</Link><p className="text-xs leading-5 text-slate-600">历史实验保留原功能；不能将历史最优权重直接当成长期前瞻政策。</p></div></details>

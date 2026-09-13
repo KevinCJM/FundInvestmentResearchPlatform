@@ -1095,12 +1095,15 @@
         "backend/strategy.py",
         "backend/fit.py",
         "backend/optimizer.py",
-        "backend/trading_calendar.py"
+        "backend/trading_calendar.py",
+        "backend/frontier_sampling.py"
       ],
       "then_check_files": [
         "backend/backtest_api_spec.json",
         "backend/backtest_example.json",
-        "docs/research/frontier-grid-round4-design-2026-09-12.md"
+        "docs/research/frontier-grid-round4-design-2026-09-12.md",
+        "docs/research/frontier-restoration-design-2026-09-13.md",
+        "docs/research/frontier-restoration-acceptance-2026-09-13.md"
       ],
       "upstream_dependencies": [
         "data_ingestion_config",
@@ -1129,7 +1132,8 @@
         "backend/tests/test_strategy_api.py",
         "backend/tests/test_analytics_routes.py",
         "backend/tests/test_frontier_grid.py",
-        "backend/tests/test_strategy_research_dates.py"
+        "backend/tests/test_strategy_research_dates.py",
+        "backend/tests/test_frontier_sampling.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -1152,11 +1156,13 @@
         "P04",
         "P05",
         "P08",
-        "P15"
+        "P15",
+        "P21"
       ],
       "minimum_regression": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
-        "python3 -m pytest backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_strategy_research_dates.py -q"
+        "python3 -m pytest backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_strategy_research_dates.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -1341,7 +1347,8 @@
         "asset-class metric tables"
       ],
       "pitfall_ids": [
-        "P05"
+        "P05",
+        "P21"
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_research_input_checks.py -q",
@@ -3762,7 +3769,8 @@
         "docs/research/allocation-journey-optimization-acceptance-2026-09-11.md",
         "docs/research/allocation-journey-optimization-design-2026-09-11.md",
         "docs/research/journey-saa-implementation-2026-09-11.md",
-        "docs/research/journey-upstream-implementation-2026-09-11.md"
+        "docs/research/journey-upstream-implementation-2026-09-11.md",
+        "frontend/src/components/frontier-grid/FrontierGrid.tsx"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -3788,11 +3796,13 @@
         "frontend/src/pages/ProductPoolSelection.test.tsx",
         "frontend/src/pages/ProductPools.test.tsx",
         "frontend/src/components/HorizontalMetricComparison.test.tsx",
-        "frontend/src/components/frontier-grid/FrontierGrid.test.tsx"
+        "frontend/src/components/frontier-grid/FrontierGrid.test.tsx",
+        "frontend/e2e/strategic-allocation.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
-        "frontend/vite.config.ts"
+        "frontend/vite.config.ts",
+        "frontend/playwright.strategic.config.ts"
       ],
       "risk_flags": [
         "frontend_backend_payload_coupling",
@@ -3817,7 +3827,8 @@
         "P04",
         "P07",
         "P08",
-        "P17"
+        "P17",
+        "P21"
       ],
       "minimum_regression": [
         "/bin/sh -c 'cd frontend && npm run test -- --run src/components/HorizontalMetricComparison.test.tsx src/app/allocationJourney.test.tsx src/layouts/StageLayout.test.tsx src/pages/ManualConstruction.test.tsx src/pages/ProductPoolSelection.test.tsx src/pages/ProductPools.test.tsx src/pages/ClassAllocation.test.tsx src/pages/PortfolioConstruction.test.tsx'",
@@ -4573,7 +4584,7 @@
       "name": "Investment objectives, CMA and immutable SAA policies",
       "path": "backend/strategic_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes investment objectives, explicit forward-looking CMA and policy adoption. Historical risk reference fills risk inputs without manufacturing return forecasts; locked policies carry asset mapping and ex-ante risk budgets into TAA. Historical target-grid frontier remains a separate research tool.",
+      "purpose": "Freezes investment objectives, explicit forward-looking CMA and policy adoption. Historical risk reference fills risk inputs without manufacturing return forecasts; locked policies carry asset mapping and ex-ante risk budgets into TAA. Historical target-grid frontier remains a separate research tool. Funding goals use immutable cashflow plans and CMA-linked monthly diagnosis; capital adoption gates replay the displayed cent-rounded amount on the same paths. Unsaved SAA candidates expire on clock changes while immutable saved policies remain readable.",
       "module_tags": [
         "SAA",
         "CMA",
@@ -4586,18 +4597,26 @@
         "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
         "frontend/src/pages/StrategicAllocationWorkspace.tsx",
         "frontend/src/components/strategic-allocation",
-        "frontend/src/services/strategicAllocation.ts"
+        "frontend/src/services/strategicAllocation.ts",
+        "frontend/src/components/investment-mandate"
       ],
       "key_symbols": [
         "StrategicAllocationService",
-        "build_router"
+        "build_router",
+        "funding_paths_kernel",
+        "funding_capital_successes_kernel",
+        "funding_payment_kernel"
       ],
       "child_modules": [],
       "first_read_files": [
         "docs/research/top-down-allocation-design-2026-09-12.md",
         "backend/strategic_allocation/contracts.py",
         "backend/strategic_allocation/service.py",
-        "frontend/src/pages/StrategicAllocationWorkspace.tsx"
+        "frontend/src/pages/StrategicAllocationWorkspace.tsx",
+        "docs/research/investment-mandate-research-design-2026-09-13.md",
+        "backend/strategic_allocation/planning.py",
+        "backend/strategic_allocation/goal_kernels.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx"
       ],
       "then_check_files": [
         "docs/research/saa-taa-review-response-2026-09-12.md",
@@ -4609,7 +4628,14 @@
         "backend/services/strategic_allocation_routes.py",
         "backend/tests/strategic_allocation_app.py",
         "docs/research/saa-taa-submission-2026-09-13.md",
-        "docs/research/screenshots/saa-taa-20260913"
+        "docs/research/screenshots/saa-taa-20260913",
+        "docs/research/investment-mandate-optimization-2026-09-13.md",
+        "docs/research/investment-mandate-acceptance-2026-09-13.md",
+        "investment-mandate-review-2026-09-13.md",
+        "investment-mandate-fix-recheck-2026-09-13.md",
+        "saa-frontier-history-comparison-2026-09-13.md",
+        "saa-taa-business-intent-recheck-2026-09-13.md",
+        "docs/research/screenshots/mandate-fix-20260913"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -4628,7 +4654,12 @@
         "backend/tests/test_strategic_allocation.py",
         "frontend/src/pages/StrategicAllocationWorkspace.test.tsx",
         "frontend/src/test/strategicAllocationFixtures.ts",
-        "frontend/e2e/strategic-allocation.spec.ts"
+        "frontend/e2e/strategic-allocation.spec.ts",
+        "backend/tests/test_investment_mandate.py",
+        "backend/tests/test_mandate_diagnostic_integrity.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.test.tsx",
+        "frontend/src/services/strategicAllocation.test.ts",
+        "frontend/src/test/mandateFixtures.ts"
       ],
       "related_configs": [
         "frontend/playwright.strategic.config.ts"
@@ -4637,13 +4668,16 @@
         "python3 -m pytest backend/tests/test_strategic_allocation.py backend/tests/test_tactical_walk_forward.py backend/tests/test_frontier_grid.py -q",
         "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx ClassAllocation.test.tsx FrontierGrid.test.tsx",
         "npm run build --prefix frontend",
-        "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts"
+        "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
+        "npm run test --prefix frontend -- --run InvestmentObjectivesWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx strategicAllocation.test.ts"
       ],
       "pitfall_ids": [
         "P04",
         "P05",
         "P07",
-        "P08"
+        "P08",
+        "P22"
       ],
       "risk_flags": [
         "immutable_cma_and_policy",
@@ -4664,7 +4698,9 @@
           "backend/strategic_allocation/kernels.py",
           "backend/tests/test_strategic_allocation.py",
           "frontend/src/pages/StrategicAllocationWorkspace.tsx",
-          "frontend/e2e/strategic-allocation.spec.ts"
+          "frontend/e2e/strategic-allocation.spec.ts",
+          "backend/strategic_allocation/goal_kernels.py",
+          "backend/tests/test_mandate_diagnostic_integrity.py"
         ],
         "unsampled_paths": []
       }

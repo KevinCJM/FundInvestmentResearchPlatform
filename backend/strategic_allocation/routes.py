@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException
 
 from backend.custom_indicators.errors import IndicatorDomainError
 from .contracts import (CmaRequest, MandateRequest, PolicyRequest, PublishCmaRequest,
-                        PublishPolicyRequest, RiskReferenceRequest)
+                        PublishPolicyRequest, RiskReferenceRequest,
+                        MandateStudyRequest, ConfirmMandateRequest)
 from .service import StrategicAllocationService
 
 MESSAGES = {
@@ -40,6 +41,15 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     @router.post("/mandates", status_code=201)
     def save_mandate(body: MandateRequest):
         return _call(service.save_mandate, body)
+
+    # Research-only input diagnostics and version storage; no order execution.
+    @router.post("/mandates/preview")
+    def preview_mandate(body: MandateStudyRequest):
+        return _call(service.preview_mandate, body)
+
+    @router.post("/mandates/confirm", status_code=201)
+    def confirm_mandate(body: ConfirmMandateRequest):
+        return _call(service.confirm_mandate, body)
 
     @router.get("/mandates/{identifier}")
     def get_mandate(identifier: str):

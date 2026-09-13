@@ -17,7 +17,9 @@ test('real isolated API: historical frontier stays discoverable and renders real
   await page.getByRole('button', { name: '选择该方案' }).click()
   await expect(page).toHaveURL(/\/pre-investment\/saa\/allocation-lab\?alloc=/)
   await expect(page.getByText('当前大类：浏览器离线股债 · 2 类')).toBeVisible()
-  await page.getByText('高级设置：指标口径与计算精度').click()
+  const workspace = page.getByRole('region', { name: '可配置空间与有效前沿' })
+  for (const label of ['收益指标', '风险指标', '权重量化', '随机种子', '第1轮分桶']) await expect(workspace.getByLabel(label, { exact: true })).toBeVisible()
+  await workspace.getByLabel('随机种子', { exact: true }).fill('711')
   await page.getByLabel('第0轮样本点').fill('1200')
   await page.getByLabel('权重量化').selectOption('0.002')
   await page.getByRole('checkbox', { name: '使用受约束局部精炼' }).check()
@@ -29,11 +31,30 @@ test('real isolated API: historical frontier stays discoverable and renders real
   await expect(page.getByText(/严格改善的结果会加入候选集合并重新构造前沿/)).toBeVisible()
   expect(frontierPayload?.exploration?.rounds?.[0]?.samples).toBe(1200)
   expect(frontierPayload?.quantization?.step).toBe(.002)
+  expect(frontierPayload?.exploration?.seed).toBe(711)
   expect(frontierPayload?.refine).toEqual({ enabled: true, method: 'bounded_pairwise_pattern_search_njit', iterations: 25 })
   await expect(page.getByText('有效前沿图（默认展开，可收起）')).toBeVisible()
   await expect(page.locator('canvas').first()).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
-  await page.screenshot({ path: info.outputPath('historical-frontier-real-echarts.png'), fullPage: true })
+  await page.getByLabel('散点显示', { exact: true }).selectOption('selected')
+  await expect(workspace.getByRole('table', { name: '随机探索轮次统计' })).toBeVisible()
+  for (const width of [320, 768, 1440]) {
+    await page.setViewportSize({ width, height: 1000 })
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+    const contrast = await workspace.locator('p.text-slate-600').first().evaluate(element => {
+      const rgb = getComputedStyle(element).color.match(/\d+/g)!.slice(0, 3).map(Number)
+      const linear = rgb.map(value => { const v = value / 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4 })
+      return 1.05 / (.2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2] + .05)
+    })
+    expect(contrast).toBeGreaterThanOrEqual(4.5)
+    await page.screenshot({ path: info.outputPath(`frontier-workspace-${width}.png`), fullPage: true })
+  }
+  await page.getByLabel('权重量化', { exact: true }).selectOption('0.005')
+  await page.getByLabel('股票 最低权重 (%)', { exact: true }).fill('33.1')
+  await page.getByLabel('股票 最高权重 (%)', { exact: true }).fill('33.2')
+  await page.getByRole('button', { name: '生成可配置空间与有效前沿' }).click()
+  await expect(page.getByRole('alert')).toContainText('不存在共同可行组合', { timeout: 60000 })
+  await expect(page.getByRole('table', { name: '长期配置候选' })).toHaveCount(0)
   expect(errors).toEqual([])
 })
 
@@ -54,7 +75,6 @@ test('real target grid: 20 and 200 solves change the actual frontier and preserv
   await page.getByRole('button', { name: '选择该方案' }).click()
   await expect(page.getByText('当前大类：浏览器离线股债 · 2 类')).toBeVisible()
   await page.getByRole('checkbox', { name: '按目标网格加密整条前沿' }).check()
-  await page.getByText('高级设置：指标口径与计算精度').click()
   await page.getByLabel('权重量化').selectOption('0.005')
   await expect(page.getByRole('button', { name: '生成可配置空间与有效前沿' })).toBeDisabled()
   await page.getByRole('checkbox', { name: /我确认网格采用连续权重/ }).check()
@@ -75,6 +95,10 @@ test('real target grid: 20 and 200 solves change the actual frontier and preserv
       expect(point.value[1]).toBeGreaterThanOrEqual(point.target - 1e-7)
       expect(point.weights.reduce((sum: number, value: number) => sum + value, 0)).toBeCloseTo(1, 7)
       expect(point.constraint_violation).toBeLessThanOrEqual(1e-7)
+      expect(point.adoption.status).toBe('feasible')
+      for (const weight of point.adoption.weights) expect(weight / .005).toBeCloseTo(Math.round(weight / .005), 8)
+      expect(output.scatter[point.candidate_index].weights).toEqual(point.adoption.weights)
+      expect(output.scatter[point.candidate_index].value).toEqual(point.adoption.value)
     }
     const canvas = page.locator('canvas').first()
     await expect(canvas).toBeVisible()
@@ -83,6 +107,11 @@ test('real target grid: 20 and 200 solves change the actual frontier and preserv
     firstCanvas = image
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
   }
+  await page.getByText('逐目标状态、权重与采用（200 项）').click()
+  await page.getByRole('button', { name: '采用前沿目标 1', exact: true }).click()
+  const adoptedPoint = results[results.length - 1].output.frontier_grid.points[0].adoption
+  const equityIndex = results[results.length - 1].output.asset_names.indexOf('股票')
+  await expect(page.getByLabel('前沿目标 1配置 股票 权重 (%)', { exact: true })).toHaveValue(String(Number((adoptedPoint.weights[equityIndex] * 100).toFixed(8))))
   // Exhaustion is an actual backend result, not a mock or hidden omission.
   await page.getByLabel('单点最大迭代次数', { exact: true }).fill('1')
   await page.getByRole('button', { name: '生成可配置空间与有效前沿' }).click()
@@ -90,6 +119,136 @@ test('real target grid: 20 and 200 solves change the actual frontier and preserv
   expect(results[results.length - 1].output.frontier_grid.unattempted_points).toBe(200)
   expect(errors).toEqual([])
 })
+
+for (const clockChange of [false, true]) {
+test(`real funding goal: ${clockChange ? 'clock change invalidates unsaved SAA' : 'cashflows, CMA diagnosis, confirmation and SAA gate'}`, async ({ page, request }, info) => {
+  const errors: string[] = []
+  let diagnosis: any = null
+  let adopted: any = null
+  page.on('pageerror', error => errors.push(error.message))
+  await page.route('**/api/**', async route => {
+    const url = new URL(route.request().url())
+    if (!url.pathname.startsWith('/api/strategic-allocation/')) {
+      return route.fulfill({ status: 404, json: { detail: 'Unrelated isolated service is not available.' } })
+    }
+    const result = await route.fetch({ url: `http://127.0.0.1:8118${url.pathname}${url.search}`, timeout: 60000 })
+    if (url.pathname.endsWith('/mandates/preview') && result.ok()) diagnosis = await result.json()
+    if (url.pathname.endsWith('/policies') && result.ok()) adopted = await result.json()
+    await route.fulfill({ response: result })
+  })
+  const day = new Date().toISOString().slice(0, 10)
+  const cmaInput = {
+    name: `资金诊断离线CMA-${info.project.name}-${clockChange}`, alloc_name: '浏览器离线股债', as_of: day,
+    currency: 'CNY', horizon_years: 10, return_basis: 'annual_arithmetic_total_return',
+    source: 'Offline browser acceptance fixture; not an investment forecast.', basis_confirmed: true,
+    assets: [
+      { id: '股票', role: 'growth', liquidity: 'liquid', rationale: 'Offline equity proxy', annual_return: .06, annual_volatility: .10, mean_uncertainty: .01 },
+      { id: '债券', role: 'rates', liquidity: 'liquid', rationale: 'Offline bond proxy', annual_return: .03, annual_volatility: .02, mean_uncertainty: .005 },
+    ], correlation: [[1, 0], [0, 1]], risk_origin: 'manual', risk_reference: null, risk_reference_hash: null,
+  }
+  const cmaPreviewResponse = await request.post('http://127.0.0.1:8118/api/strategic-allocation/cma/preview', { data: cmaInput })
+  expect(cmaPreviewResponse.status()).toBe(200)
+  const cmaPreview = await cmaPreviewResponse.json()
+  const cmaResponse = await request.post('http://127.0.0.1:8118/api/strategic-allocation/cma', { data: { request: cmaInput, preview_hash: cmaPreview.preview_hash } })
+  expect(cmaResponse.status()).toBe(201)
+  const cma = await cmaResponse.json()
+  await page.goto('/pre-investment/objectives')
+  await page.getByRole('combobox', { name: '这笔资金以什么为成功标准？', exact: true }).selectOption('funding_goal')
+  await page.getByLabel('目标名称', { exact: true }).fill(`资金目标-${info.project.name}`)
+  await page.getByLabel('总资金（CNY）', { exact: true }).fill('1000000')
+  await page.getByLabel('组合外储备（CNY）', { exact: false }).fill('100000')
+  await page.getByLabel('期末目标金额（CNY）', { exact: false }).fill('1000000')
+  await page.getByLabel('年费用扣减（%）', { exact: false }).fill('0.5')
+  await page.getByRole('button', { name: '添加投入或支付', exact: true }).click()
+  await page.getByLabel('现金流 1名称', { exact: true }).fill('第六个月必要支付')
+  await page.getByLabel('现金流 1金额（CNY）', { exact: true }).fill('10000')
+  await page.getByRole('combobox', { name: '现金流 1开始月', exact: true }).selectOption('6')
+  await page.getByRole('combobox', { name: '现金流 1结束月', exact: true }).selectOption('6')
+  await expect(page.getByLabel('最低预期年收益（%）')).toHaveCount(0)
+  await page.getByRole('button', { name: '下一步：风险与限制', exact: true }).click()
+  await page.getByLabel('最高预期年波动（%）', { exact: true }).fill('15')
+  await page.getByLabel('风险与流动性边界的依据', { exact: false }).fill('离线测试：必要支付已预留预算，不允许TAA额外偏离。')
+  await page.getByRole('button', { name: '下一步：量化诊断', exact: true }).click()
+  await page.getByRole('combobox', { name: /用于诊断的CMA版本/ }).selectOption(cma.id)
+  await page.getByText('模拟与不确定性设置', { exact: true }).click()
+  await page.getByLabel('模拟随机种子', { exact: true }).fill('917')
+  await page.getByRole('button', { name: '运行目标诊断', exact: true }).click()
+  await expect(page.getByRole('table', { name: '目标诊断候选对照' })).toBeVisible({ timeout: 60000 })
+  expect(diagnosis?.funding?.investable_capital).toBe(900000)
+  expect(diagnosis?.funding?.total_withdrawals).toBe(10000)
+  expect(diagnosis?.funding?.required_liquid_capital).toBe(10000)
+  expect(diagnosis?.candidates).toHaveLength(4)
+  expect(diagnosis.candidates.some((c: any) => c.goal_check.within_limits)).toBeTruthy()
+  expect(diagnosis.funding_model.paths).toBe(2000)
+  expect(diagnosis.funding_model.seed).toBe(917)
+  expect(diagnosis.funding.liquidity_payment_buffer).toBe(890000)
+  expect(diagnosis.funding.liquidity_shortfall_capital).toBe(0)
+  const goal = diagnosis.candidates[0].goal_check
+  expect(goal.central.capital_gate_status).toBe('solved')
+  expect(goal.central.gate_probability_lower).toBeGreaterThanOrEqual(goal.threshold)
+  expect(goal.central.gate_required_initial_capital).toBeGreaterThanOrEqual(goal.central.required_initial_capital)
+  await page.getByText('逐年资金余额分位数', { exact: true }).click()
+  await expect(page.getByRole('table', { name: '逐年资金余额分位数' })).toBeVisible()
+  await expect(page.getByRole('table', { name: '逐年资金余额分位数' }).getByRole('row')).toHaveCount(12)
+  await page.getByText('目标未达成时，可以比较哪些调整？', { exact: true }).click()
+  await expect(page.getByLabel('按采纳口径测算本金')).toBeVisible()
+  await expect(page.getByLabel('近期支付缓冲')).toContainText('不是可承受回撤上限')
+  await expect(page.locator('canvas').first()).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
+  await page.screenshot({ path: info.outputPath('funding-diagnosis.png'), fullPage: true })
+  if (info.project.name === 'mobile-390') {
+    await page.setViewportSize({ width: 320, height: 844 })
+    await page.screenshot({ path: info.outputPath('funding-diagnosis-320.png'), fullPage: true })
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
+    await page.screenshot({ path: info.outputPath('funding-diagnosis-320.png'), fullPage: true })
+    await page.setViewportSize({ width: 390, height: 844 })
+  }
+  await page.getByRole('button', { name: '下一步：核对与确认', exact: true }).click()
+  await expect(page.getByRole('button', { name: '保存新目标版本', exact: true })).toBeDisabled()
+  await page.getByRole('checkbox', { name: /我已核对输入/ }).check()
+  await page.getByRole('button', { name: '保存新目标版本', exact: true }).click()
+  await page.getByRole('link', { name: /使用此目标进入长期配置/ }).click()
+  await page.getByRole('combobox', { name: '已保存的大类配置', exact: true }).selectOption('浏览器离线股债')
+  await page.getByRole('combobox', { name: '或者使用已保存的长期假设', exact: true }).selectOption(cma.id)
+  await page.getByText('联合约束与候选搜索设置', { exact: true }).click()
+  await page.getByLabel('随机种子', { exact: true }).fill('19')
+  await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
+  await expect(page.getByLabel('投资目标检查')).toBeVisible({ timeout: 60000 })
+  await page.getByRole('table', { name: '长期政策候选比较' }).getByRole('button', { name: '复核此候选' }).first().click()
+  await page.getByLabel('采纳理由与复核关注点', { exact: false }).fill('离线验证资金目标诊断通过，采用该研究候选。')
+  if (clockChange) {
+    // Recover the actual provider from its initial unavailable PIT read without
+    // reloading the page; funding/CMA/policy previews still use the real API.
+    const earlier = new Date(Date.parse(day) - 86400000).toISOString().slice(0, 10)
+    await page.route('**/api/pit/settings', route => route.fulfill({ json: {
+      settings: { active_release_id: null, as_of: earlier, run_mode: 'RESEARCH', updated_at: null, note: '' },
+      effective: { as_of: earlier, as_of_source: 'explicit', run_mode: 'RESEARCH', run_mode_label: '研究模式', data_release_id: null, no_pit: false, label: `站在 ${earlier} · 研究模式` },
+      release: null, release_error: null, available_releases: [], can_apply: true,
+    } }))
+    if (info.project.name === 'mobile-390') await page.getByRole('button', { name: '菜单', exact: true }).click()
+    await page.locator('[data-testid=pit-badge]:visible').click()
+    await page.getByRole('button', { name: '重试读取 PIT 口径', exact: true }).click()
+    await expect(page.getByText('知识截止日已变化，未保存的政策候选已失效，请核对日期后重新比较。', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '关闭口径切换', exact: true }).click()
+    if (info.project.name === 'mobile-390') await page.getByRole('button', { name: '菜单', exact: true }).click()
+    await expect(page.getByRole('button', { name: '确认采用此长期政策', exact: true })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '比较符合目标的政策候选', exact: true })).toBeDisabled()
+    await expect(page.getByRole('table', { name: '长期政策候选比较' })).toHaveCount(0)
+    expect(adopted).toBeNull()
+    expect(errors).toEqual([])
+    await page.screenshot({ path: info.outputPath('saa-clock-invalidated.png'), fullPage: true })
+    return
+  }
+  await page.getByRole('button', { name: '确认采用此长期政策', exact: true }).click()
+  await expect(page.getByRole('button', { name: '长期政策已确认', exact: true })).toBeVisible()
+  expect(adopted?.policy?.selection?.goal_check?.within_limits).toBe(true)
+  expect(adopted.policy.selection_request.seed).toBe(19)
+  expect(adopted.policy.funding_model.seed).toBe(917)
+  expect(adopted.policy.funding_model.paths).toBe(diagnosis.funding_model.paths)
+  expect(adopted.assets.every((asset: any) => asset.max_abs_tilt === 0)).toBe(true)
+  expect(errors).toEqual([])
+})
+}
 
 test('real isolated API: goal, CMA, policy adoption and TAA on desktop/mobile', async ({ page, request }, info) => {
   const errors: string[] = []
@@ -108,6 +267,15 @@ test('real isolated API: goal, CMA, policy adoption and TAA on desktop/mobile', 
   await expect(page.getByRole('heading', { name: '投资目标与边界' })).toBeVisible()
   await page.getByLabel('目标名称', { exact: true }).fill(`浏览器目标-${info.project.name}`)
   await page.getByLabel('最低预期年收益（%）', { exact: false }).fill('3')
+  await page.getByRole('button', { name: '下一步：风险与限制', exact: true }).click()
+  await page.getByLabel('最高预期年波动（%）', { exact: true }).fill('15')
+  await page.getByLabel('TAA 主动风险上限（%）', { exact: false }).fill('4')
+  await page.getByLabel('风险与流动性边界的依据', { exact: false }).fill('离线研究：按必要支付及可承受损失确定风险预算。')
+  await page.getByRole('button', { name: '下一步：量化诊断', exact: true }).click()
+  await page.getByRole('button', { name: '运行目标诊断', exact: true }).click()
+  await expect(page.getByText(/只完成输入与资金测算/)).toBeVisible({ timeout: 60000 })
+  await page.getByRole('button', { name: '下一步：核对与确认', exact: true }).click()
+  await page.getByRole('checkbox', { name: /我已核对输入/ }).check()
   await page.getByRole('button', { name: '保存新目标版本', exact: true }).click()
   await page.getByRole('link', { name: /使用此目标进入长期配置/ }).click()
   await page.getByRole('combobox', { name: '已保存的大类配置', exact: true }).selectOption('浏览器离线股债')

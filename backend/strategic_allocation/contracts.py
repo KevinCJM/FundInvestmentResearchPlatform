@@ -18,6 +18,57 @@ class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, str_strip_whitespace=True)
 
 
+class FundingFlow(Contract):
+    name: Identifier
+    kind: Literal["contribution", "withdrawal"]
+    amount: Number = Field(gt=0, le=1e12)
+    first_month: int = Field(ge=1, le=360, strict=True)
+    last_month: int = Field(ge=1, le=360, strict=True)
+    every_months: Literal[1, 3, 12] = 1
+
+    @model_validator(mode="after")
+    def interval(self):
+        if self.last_month < self.first_month:
+            raise ValueError("现金流结束月不能早于开始月；单次支付请将两者设为同一月。")
+        return self
+
+
+class FundingPlan(Contract):
+    total_capital: Number = Field(gt=0, le=1e12)
+    outside_reserve: Number = Field(default=0, ge=0, le=1e12)
+    terminal_target: Number = Field(ge=0, le=1e13)
+    amount_basis: Literal["nominal", "real"] = "nominal"
+    inflation: Number = Field(default=0, ge=-0.05, le=0.20)
+    annual_fee: Number = Field(default=0, ge=0, le=0.10)
+    required_probability: Number = Field(ge=0.5, le=0.99)
+    liquidity_months: int = Field(default=12, ge=1, le=36, strict=True)
+    contribution_stress_ratio: Number = Field(default=0.5, ge=0, le=1)
+    drawdown_alert: Number = Field(default=0.2, gt=0, le=1)
+    flows: list[FundingFlow] = Field(default_factory=list, max_length=24)
+
+    @model_validator(mode="after")
+    def capital(self):
+        if self.outside_reserve >= self.total_capital:
+            raise ValueError("组合外储备必须小于总资金，须保留正的可投资本金。")
+        if self.terminal_target == 0 and not any(flow.kind == "withdrawal" for flow in self.flows):
+            raise ValueError("期末目标为0时，须至少定义一笔必要支付，不能把空目标评为成功。")
+        return self
+
+
+class BenchmarkPolicy(Contract):
+    name: Identifier
+    alloc_name: Identifier
+    weights: dict[Identifier, Number] = Field(min_length=1, max_length=30)
+    target_excess_return: Number = Field(ge=-0.5, le=1)
+    max_tracking_error: Number = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def full_investment(self):
+        if any(value < 0 or value > 1 for value in self.weights.values()) or abs(sum(self.weights.values()) - 1) > 1e-8:
+            raise ValueError("基准大类权重须非负且合计为100%。")
+        return self
+
+
 class MandateRequest(Contract):
     name: Identifier
     as_of: date
@@ -28,19 +79,60 @@ class MandateRequest(Contract):
     max_volatility: Number = Field(default=0.15, gt=0, le=2)
     min_liquid_weight: Number = Field(default=0, ge=0, le=1)
     max_illiquid_weight: Number = Field(default=0, ge=0, le=1)
-    max_tracking_error: Number = Field(default=0.10, gt=0, le=1)
+    max_tracking_error: Number = Field(default=0.10, ge=0, le=1)
     risk_aversion: Number = Field(default=5, gt=0, le=1000)
     rebalance_policy: Literal["monthly", "quarterly", "annually", "threshold"] = "quarterly"
     rebalance_note: str = Field(default="", max_length=1000)
     note: str = Field(default="", max_length=2000)
+    objective_kind: Literal["absolute_return", "funding_goal", "benchmark_relative"] = "absolute_return"
+    funding_plan: FundingPlan | None = None
+    benchmark: BenchmarkPolicy | None = None
+    boundary_reason: str = Field(default="", max_length=2000)
+    allocation_scope: Identifier | None = None
+    asset_limits: dict[str, AssetLimit] = Field(default_factory=dict, max_length=30)
+    group_limits: list[GroupLimit] = Field(default_factory=list, max_length=24)
 
     @model_validator(mode="after")
     def dates(self):
         if self.as_of > date.today() or self.review_date <= self.as_of:
             raise ValueError("研究日不能在未来，政策复核日须晚于研究日。")
+        if (self.objective_kind == "funding_goal") != (self.funding_plan is not None):
+            raise ValueError("金额目标须提供资金计划；其他目标不能残留金额计划。")
+        if (self.objective_kind == "benchmark_relative") != (self.benchmark is not None):
+            raise ValueError("相对目标须提供真实基准权重；其他目标不能残留基准设置。")
+        if self.objective_kind != "absolute_return" and self.target_return != 0:
+            raise ValueError("非绝对收益目标不使用最低算术收益字段，请清零；所需复合收益另行计算。")
+        if self.funding_plan:
+            months = self.horizon_years * 12
+            if self.funding_plan.liquidity_months > months or any(flow.last_month > months for flow in self.funding_plan.flows):
+                raise ValueError("现金流或流动性窗口超出了投资期限；不能静默截断支付计划。")
         if self.rebalance_policy == "threshold" and not self.rebalance_note:
             raise ValueError("阈值再平衡须说明触发和恢复规则；本页只记录政策，不自动交易。")
+        if (self.asset_limits or self.group_limits) and not self.allocation_scope:
+            raise ValueError("资产或分组授权必须绑定所属大类方案，不能仅按资产名称复用。")
+        if self.benchmark and self.allocation_scope and self.benchmark.alloc_name != self.allocation_scope:
+            raise ValueError("相对基准与资产授权必须属于同一个大类方案。")
+        seen_groups = set()
+        for group in self.group_limits:
+            if (group.id in seen_groups or not group.assets or len(set(group.assets)) != len(group.assets)
+                    or group.lo > group.hi):
+                raise ValueError("投资授权分组必须有唯一名称、非空不重复成员及有效上下界。")
+            seen_groups.add(group.id)
         return self
+
+
+class MandateStudyRequest(Contract):
+    definition: MandateRequest
+    cma_id: Identifier | None = None
+    simulation_paths: int = Field(default=2000, ge=500, le=10000, strict=True)
+    seed: int = Field(default=42, ge=0, le=2**32 - 1, strict=True)
+    uncertainty_penalty: Number = Field(default=1, ge=0, le=5)
+
+
+class ConfirmMandateRequest(Contract):
+    request: MandateStudyRequest
+    preview_hash: Fingerprint
+    acknowledge_limits: Literal[True]
 
 
 class RiskReferenceRequest(Contract):

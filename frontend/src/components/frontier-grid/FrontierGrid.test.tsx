@@ -27,7 +27,7 @@ describe('整条前沿目标网格', () => {
   it('禁止静默把散点取整规则当成连续前沿的约束', async () => {
     const onChange = vi.fn()
     render(<FrontierGridControls value={{ ...defaultFrontierGrid, enabled: true }} quantized busy={false} onChange={onChange} />)
-    expect(screen.getByRole('status')).toHaveTextContent('不是同一离散可行域')
+    expect(screen.getByRole('status')).toHaveTextContent('连续理论曲线与指定精度的可采用组合分开显示')
     await userEvent.click(screen.getByRole('checkbox', { name: /我确认网格采用连续权重/ }))
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ accept_continuous_weights: true }))
   })

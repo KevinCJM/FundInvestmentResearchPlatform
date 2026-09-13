@@ -145,7 +145,7 @@ export interface TaaPreview {
   execution: FixedNjitExecutionAudit
   audit: Record<string, unknown>
   walk_forward?: TaaWalkForwardResult
-  policy_check?: { within_limits: boolean; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: FixedNjitExecutionAudit }
+  policy_check?: { within_limits: boolean; goal_diagnostic_scope?: string | null; current_application_eligible?: boolean; benchmark_check?: { name: string; tracking_error: number; max_tracking_error: number } | null; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: FixedNjitExecutionAudit }
 }
 
 export interface TaaScenarioRequest {

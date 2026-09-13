@@ -1,99 +1,174 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useAllocationDraft } from '../app/allocationJourney'
+import { readAllocationDraft, useAllocationDraft } from '../app/allocationJourney'
 import { useResearchDay } from '../app/ResearchContext'
 import { Button } from '../components/ui'
-import { Empty, Feedback, Field, inputClass, NumberInput, percentText, sectionClass, today } from '../components/risk-models/ResearchUI'
-import { getStrategicCatalog, saveMandate, percentInputValue, type MandateDefinition, type MandateVersion } from '../services/strategicAllocation'
+import { Feedback, Field, inputClass, NumberInput, percentText, sectionClass, today } from '../components/risk-models/ResearchUI'
+import { GoalFields, BoundaryFields } from '../components/investment-mandate/MandateFields'
+import AssetAuthorizations from '../components/investment-mandate/AssetAuthorizations'
+import MandateResults from '../components/investment-mandate/MandateResults'
+import { amountText, mandateIssues, newMandate, objectiveLabels, studyIssue } from '../components/investment-mandate/model'
+import { confirmMandate, getMandate, getStrategicCatalog, previewMandate,
+  type MandateAssessment, type MandateDefinition, type MandateStudyRequest, type MandateVersion, type StrategicCatalog } from '../services/strategicAllocation'
 
-const defaultDefinition = (day: string): MandateDefinition => ({
-  name: '', as_of: day, review_date: new Date(Date.parse(day) + 180 * 86400000).toISOString().slice(0, 10),
-  currency: 'CNY', horizon_years: 10, target_return: NaN, max_volatility: .15,
-  min_liquid_weight: 0, max_illiquid_weight: 0, max_tracking_error: .1, risk_aversion: 5,
-  rebalance_policy: 'quarterly', rebalance_note: '', note: '',
-})
-const inputPercent = percentInputValue
+const steps = ['资金与成功标准', '风险与限制', '量化诊断', '核对与确认']
+const statusLabel = (status?: string) => status === 'diagnosed' ? '已诊断' : status === 'needs_revision' ? '需要复核' : '仅保存输入'
 
 export default function InvestmentObjectivesWorkspace() {
   const platformDay = useResearchDay()
-  const [draft, setDraft] = useAllocationDraft<MandateDefinition>('strategic-mandate:editor', () => defaultDefinition(platformDay ?? today()))
-  const [versions, setVersions] = useState<MandateVersion[]>([])
+  const cutoff = platformDay && platformDay < today() ? platformDay : today()
+  const [draft, setDraft] = useAllocationDraft<MandateStudyRequest>('mandate-study:editor', () => ({
+    definition: { ...newMandate(cutoff), ...(readAllocationDraft<MandateDefinition>('strategic-mandate:editor') ?? {}) },
+    cma_id: null, simulation_paths: 2000, seed: 42, uncertainty_penalty: 1,
+  }))
+  const [catalog, setCatalog] = useState<StrategicCatalog | null>(null)
   const [selected, setSelected] = useState<MandateVersion | null>(null)
+  const [preview, setPreview] = useState<MandateAssessment | null>(null)
+  const [step, setStep] = useState(0)
+  const [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [reload, setReload] = useState(0)
   const generation = useRef(0)
+  const operation = useRef<AbortController | null>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
+  const previousClock = useRef(cutoff)
+  const definition = draft.definition
+  const issues = mandateIssues(definition, cutoff)
+  const numericIssue = studyIssue(draft)
+  const matchingCmas = catalog?.assumptions.filter(cma => cma.currency === definition.currency && cma.as_of === definition.as_of
+    && cma.horizon_years === definition.horizon_years && (!definition.benchmark || cma.alloc_name === definition.benchmark.alloc_name)
+    && (!definition.allocation_scope || cma.alloc_name === definition.allocation_scope)) ?? []
+  const cmaIssue = !selected && draft.cma_id && catalog && !matchingCmas.some(cma => cma.id === draft.cma_id)
+    ? '已选CMA不在当前日期、币种、期限及大类范围内，请重新选择或明确改为仅资金测算。' : ''
+  const activeIssue = step === 0 ? issues[0] : step === 1 ? issues[1] : issues.find(Boolean) || numericIssue || cmaIssue
+
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
-    getStrategicCatalog(controller.signal).then(value => { if (!controller.signal.aborted) setVersions(value.mandates) })
-      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '目标版本读取失败。') })
+    getStrategicCatalog(controller.signal).then(result => { if (!controller.signal.aborted) setCatalog(result) })
+      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '目录读取失败。') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [reload])
-  useEffect(() => () => { generation.current += 1 }, [])
+  useEffect(() => { heading.current?.focus() }, [step])
+  useEffect(() => () => { generation.current += 1; operation.current?.abort() }, [])
+  useEffect(() => {
+    if (cutoff !== previousClock.current) {
+      previousClock.current = cutoff
+      generation.current += 1; operation.current?.abort(); setBusy(false); setAcknowledged(false)
+      if (selected) {
+        setNotice('知识截止日已变化；当前只读版本仍显示保存时的诊断，不代表新截止日下可用。复制为新研究后须重新核对。')
+      } else {
+        setPreview(null)
+        setNotice('知识截止日已变化，请重新核对输入并运行诊断。')
+      }
+    }
+  }, [cutoff, selected])
 
-  function update(patch: Partial<MandateDefinition>) {
-    generation.current += 1
-    setBusy(false); setSelected(null); setError(''); setDraft(value => ({ ...value, ...patch }))
+  function invalidate() {
+    generation.current += 1; operation.current?.abort(); setBusy(false)
+    setPreview(null); setSelected(null); setAcknowledged(false); setError(''); setNotice('输入已更新，请重新运行诊断。')
   }
-  const invalid = !draft.name.trim() || !draft.as_of || !draft.review_date || draft.as_of > today()
-    || draft.review_date <= draft.as_of || Boolean(platformDay && draft.as_of > platformDay)
-    || ![draft.horizon_years, draft.target_return, draft.max_volatility, draft.min_liquid_weight,
-      draft.max_illiquid_weight, draft.max_tracking_error, draft.risk_aversion].every(Number.isFinite)
-    || draft.max_volatility <= 0 || draft.max_tracking_error <= 0
-    || (draft.rebalance_policy === 'threshold' && !draft.rebalance_note.trim())
-  async function save() {
+  function update(patch: Partial<MandateDefinition>) {
+    invalidate()
+    setDraft(current => ({ ...current, definition: { ...current.definition, ...patch },
+      cma_id: ['as_of', 'currency', 'horizon_years', 'benchmark', 'allocation_scope'].some(key => key in patch) ? null : current.cma_id }))
+  }
+  function updateStudy(patch: Partial<Omit<MandateStudyRequest, 'definition'>>) {
+    invalidate(); setDraft(current => ({ ...current, ...patch }))
+  }
+  async function run<T,>(work: (signal: AbortSignal) => Promise<T>, consume: (value: T) => void) {
+    operation.current?.abort()
+    const controller = new AbortController(); operation.current = controller
     const token = ++generation.current
-    setBusy(true); setError('')
-    try {
-      const version = await saveMandate(draft)
-      if (generation.current !== token) return
-      setSelected(version); setVersions(items => [version, ...items])
-    } catch (reason) {
-      if (generation.current === token) setError(reason instanceof Error ? reason.message : '目标版本保存失败。')
-    } finally { if (generation.current === token) setBusy(false) }
+    setBusy(true); setError(''); setNotice('')
+    try { const result = await work(controller.signal); if (generation.current === token && !controller.signal.aborted) consume(result) }
+    catch (reason) { if (generation.current === token && !controller.signal.aborted) setError(reason instanceof Error ? reason.message : '研究操作失败，请重试。') }
+    finally { if (generation.current === token) setBusy(false) }
+  }
+  function diagnose() {
+    if (issues.some(Boolean) || numericIssue || cmaIssue || selected) return
+    void run(signal => previewMandate(draft, signal), result => { setPreview(result); setAcknowledged(false) })
+  }
+  function save() {
+    if (!preview || !acknowledged || selected || issues.some(Boolean) || numericIssue || cmaIssue) return
+    void run(signal => confirmMandate(draft, preview.preview_hash, signal), version => {
+      setSelected(version); setPreview(version.assessment ?? null)
+      setCatalog(current => current && ({ ...current, mandates: [version, ...current.mandates] }))
+      setNotice('已保存不可变目标版本；诊断状态与模型依据一并保留。')
+    })
+  }
+  function readVersion(id: string) {
+    void run(signal => getMandate(id, signal), version => {
+      const assessment = version.assessment?.preview_hash ? version.assessment : null
+      setDraft(assessment?.request ?? { definition: version.definition, cma_id: null,
+        simulation_paths: 2000, seed: 42, uncertainty_penalty: 1 })
+      setSelected(version); setPreview(assessment); setAcknowledged(false); setStep(assessment ? 3 : 0)
+      setNotice('正在查看已保存版本，输入只读；复制为新研究后才能修改。')
+    })
   }
 
   return <div className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
-    <header><h1 className="text-2xl font-semibold text-slate-900">投资目标与边界</h1>
-      <p className="mt-2 text-sm leading-6 text-slate-600">先明确资金的用途、期限和可承担的风险，再决定配什么。这里保存的是研究约束，不是收益承诺或外部审批。</p></header>
-    <Feedback error={error} />
-    <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(240px,1fr)]">
-      <section className={`${sectionClass} space-y-5`} aria-label="投资目标编辑">
-        <h2 className="text-lg font-semibold">这笔资金要实现什么？</h2>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="目标名称"><input className={inputClass} value={draft.name} maxLength={120} onChange={e => update({ name: e.target.value })} placeholder="例如：长期稳健配置" /></Field>
-          <Field label="计价币种" hint="后续长期假设须采用相同币种；不会自动进行汇率换算。"><select className={inputClass} value={draft.currency} onChange={e => update({ currency: e.target.value })}>{['CNY', 'USD', 'HKD', 'EUR', 'CAD'].map(value => <option key={value}>{value}</option>)}</select></Field>
-          <Field label="目标研究日"><input type="date" className={inputClass} max={platformDay ?? today()} value={draft.as_of} onChange={e => update({ as_of: e.target.value })} /></Field>
-          <Field label="政策复核日期" hint="到期后不能直接沿用，须重新研究并保存新版本。"><input type="date" className={inputClass} min={draft.as_of} value={draft.review_date} onChange={e => update({ review_date: e.target.value })} /></Field>
-          <Field label="投资期限（年）"><NumberInput className={inputClass} value={draft.horizon_years} min={1} max={30} onValueChange={value => update({ horizon_years: value })} /></Field>
-          <Field label="最低预期年收益（%）" hint="年化算术总收益假设约束，不是保底收益或 CAGR。"><NumberInput className={inputClass} value={inputPercent(draft.target_return)} onValueChange={value => update({ target_return: value / 100 })} /></Field>
-          <Field label="最高预期年波动（%）"><NumberInput className={inputClass} value={inputPercent(draft.max_volatility)} min={0} onValueChange={value => update({ max_volatility: value / 100 })} /></Field>
-          <Field label="TAA 主动风险上限（%）" hint="相对政策组合的跟踪误差上限，战术研究不能擅自扩大。"><NumberInput className={inputClass} value={inputPercent(draft.max_tracking_error)} min={0} onValueChange={value => update({ max_tracking_error: value / 100 })} /></Field>
-          <Field label="最低流动性资产占比（%）" hint="指经研究员确认可变现的资产，不等于现金余额。"><NumberInput className={inputClass} value={inputPercent(draft.min_liquid_weight)} min={0} max={100} onValueChange={value => update({ min_liquid_weight: value / 100 })} /></Field>
-          <Field label="最高非流动性资产占比（%）"><NumberInput className={inputClass} value={inputPercent(draft.max_illiquid_weight)} min={0} max={100} onValueChange={value => update({ max_illiquid_weight: value / 100 })} /></Field>
+    <header><h1 className="text-2xl font-semibold text-slate-900">投资目标与边界</h1><p className="mt-2 text-sm leading-6 text-slate-600">先明确成功标准和支付需求，再判断目标能否实现。资金测算、市场假设和当前应用资格分别核验。</p></header>
+    <nav aria-label="投资目标步骤" className="grid grid-cols-2 gap-2 border-b border-slate-200 pb-4 sm:grid-cols-4">{steps.map((label, index) => <button key={label} type="button" aria-current={index === step ? 'step' : undefined}
+      disabled={(!selected && ((index > 0 && Boolean(issues[0])) || (index > 1 && Boolean(issues[1])))) || (index === 3 && !preview)} onClick={() => setStep(index)}
+      className={`min-h-11 rounded-lg p-3 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${index === step ? 'bg-accent-50 font-semibold text-accent-900' : 'text-slate-600 hover:bg-slate-50'}`}>{index + 1}. {label}</button>)}</nav>
+    <Feedback error={error} notice={notice} />
+    {selected && <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3"><p className="text-sm text-slate-700">只读版本：{selected.name} · {statusLabel(selected.assessment?.status ?? selected.assessment_status)}</p>
+      <Button onClick={() => { invalidate(); setStep(0); setNotice('已复制输入，原版本未改变；请核对研究日期后重新诊断。') }}>复制为新研究</Button>
+      <Button onClick={() => { invalidate(); setDraft({ definition: newMandate(cutoff), cma_id: null, simulation_paths: 2000, seed: 42, uncertainty_penalty: 1 }); setStep(0); setNotice('') }}>建立新目标</Button>
+      <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-800 underline" to={`/pre-investment/saa/policy?mandate=${encodeURIComponent(selected.id)}`}>使用此目标进入长期配置 →</Link>
+    </div>}
+    <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold text-slate-900">{steps[step]}</h2>
+    <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(230px,1fr)]">
+      <section className={`${sectionClass} min-w-0 space-y-5`} aria-label="投资目标编辑">
+        {step < 2 && <fieldset disabled={Boolean(selected)} className="min-w-0 space-y-5">
+          {step === 0 ? <GoalFields value={definition} onChange={update} catalog={catalog} cutoff={cutoff} />
+            : <><BoundaryFields value={definition} onChange={update} /><AssetAuthorizations value={definition} catalog={catalog} onChange={update} /></>}
+        </fieldset>}
+        {step === 2 && <>
+          <Field label="用于诊断的CMA版本" hint="只列出同研究日、币种及投资期限的版本，不用未来假设评估过去的目标。"><select className={inputClass} value={draft.cma_id ?? ''} disabled={Boolean(selected) || loading} onChange={e => updateStudy({ cma_id: e.target.value || null })}><option value="">暂不使用CMA，只做输入与资金测算</option>{matchingCmas.map(c => <option key={c.id} value={c.id}>{c.name} · {c.alloc_name} · {c.as_of}</option>)}</select></Field>
+          {!matchingCmas.length && <p className="text-sm leading-6 text-slate-600">暂无匹配CMA。可以先运行资金测算并保存“输入版本”，再进入长期配置建立CMA；以后返回此页继续诊断，不会用示例数据补概率。</p>}
+          <details className="border-t border-slate-200 pt-4"><summary className="cursor-pointer text-sm font-medium">模拟与不确定性设置</summary><fieldset disabled={Boolean(selected)} className="mt-3 grid min-w-0 gap-4 sm:grid-cols-3">
+            <Field label="模拟路径数"><NumberInput className={inputClass} value={draft.simulation_paths} onValueChange={n => updateStudy({ simulation_paths: n })} /></Field>
+            <Field label="模拟随机种子"><NumberInput className={inputClass} value={draft.seed} onValueChange={n => updateStudy({ seed: n })} /></Field>
+            <Field label="均值不确定性惩罚倍数"><NumberInput className={inputClass} value={draft.uncertainty_penalty} onValueChange={n => updateStudy({ uncertainty_penalty: n })} /></Field>
+          </fieldset></details>
+          <Button tone="primary" disabled={busy || Boolean(selected) || issues.some(Boolean) || Boolean(numericIssue) || Boolean(cmaIssue)} onClick={diagnose}>{busy ? '正在测算资金与目标…' : '运行目标诊断'}</Button>
+          {busy && <p role="status" className="text-sm text-slate-600">正在按当前输入计算；尚无完成结果，不显示预测数值。</p>}
+          {preview ? <MandateResults key={preview.preview_hash} value={preview} /> : <p className="text-sm text-slate-600">运行后在这里查看资金要求、约束冲突和可用CMA下的量化诊断。</p>}
+        </>}
+        {step === 3 && preview && <>
+          <h3 className="text-base font-semibold">确认的是目标与边界，不是收益承诺</h3>
+          <dl className="grid gap-4 sm:grid-cols-2"><div><dt className="text-xs text-slate-600">成功标准</dt><dd className="mt-1 text-sm">{objectiveLabels[definition.objective_kind ?? 'absolute_return']} · {definition.horizon_years}年</dd></div>
+            <div><dt className="text-xs text-slate-600">硬风险边界</dt><dd className="mt-1 text-sm tabular-nums">波动 ≤ {percentText(definition.max_volatility)}；TAA ≤ {percentText(definition.max_tracking_error)}</dd></div>
+            <div><dt className="text-xs text-slate-600">诊断状态</dt><dd className="mt-1 text-sm">{statusLabel(preview.status)} · {preview.cma?.name ?? '未使用CMA'}</dd></div>
+            <div><dt className="text-xs text-slate-600">研究 / 复核日期</dt><dd className="mt-1 text-sm tabular-nums">{definition.as_of} / {definition.review_date}</dd></div></dl>
+          {preview.funding && <p className="text-sm leading-6 text-slate-700">可投资本金 {amountText(preview.funding.investable_capital)} {definition.currency}，期末名义目标 {amountText(preview.funding.nominal_terminal_target)}，所需扣费前年复合收益 {percentText(preview.funding.required_effective_return)}。这不是市场预期收益。</p>}
+          <p className="text-sm leading-6 text-slate-700">边界依据：{definition.boundary_reason}</p>
+          <p className="text-xs leading-5 text-slate-600">模型偏好：风险厌恶系数 {definition.risk_aversion}；复核方式 {({ monthly: '每月', quarterly: '每季', annually: '每年', threshold: '触及阈值' })[definition.rebalance_policy]}。只记录复核约定，不自动交易。</p>
+          {preview.status !== 'diagnosed' && <p className="text-sm leading-6 text-amber-800">此次保存仅固定输入及未通过/未诊断的状态。SAA采纳仍须实际计算并满足目标，不能凭“已保存”绕过检查。</p>}
+          {definition.review_date <= today() && <p className="text-sm text-amber-800">这是已过复核日的历史目标，可以保存研究，但不能直接用于当前应用。</p>}
+          {!selected && <label className="flex min-h-11 items-start gap-2 text-sm leading-6"><input className="mt-1.5" type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} />我已核对输入、诊断状态和模型限制；此确认不是外部审批或收益保证。</label>}
+          <Button tone="primary" disabled={busy || !acknowledged || Boolean(selected) || issues.some(Boolean) || Boolean(numericIssue) || Boolean(cmaIssue)} onClick={save}>{busy ? '正在复算并保存…' : selected ? '已锁定此目标版本' : '保存新目标版本'}</Button>
+          {!selected && !acknowledged && <p className="text-xs text-slate-600">核对后勾选确认，服务端将重新计算并检查输入是否变化。</p>}
+        </>}
+        {!selected && activeIssue && <p role="status" className="text-sm text-amber-800">{activeIssue}</p>}
+        <div className="flex flex-wrap justify-between gap-3 border-t border-slate-200 pt-4">
+          <Button disabled={step === 0} onClick={() => setStep(s => s - 1)}>上一步</Button>
+          {step < 3 && <Button tone="primary" disabled={(!selected && Boolean(activeIssue)) || (step === 2 && !preview) || busy} onClick={() => setStep(s => s + 1)}>下一步：{steps[step + 1]}</Button>}
         </div>
-        <details className="border-t border-slate-200 pt-4"><summary className="cursor-pointer text-sm font-medium">效用偏好与再平衡政策</summary>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <Field label="风险厌恶系数" hint="越大越重视方差惩罚，不自动代表风险测评结果。"><NumberInput className={inputClass} value={draft.risk_aversion} min={0} onValueChange={value => update({ risk_aversion: value })} /></Field>
-            <Field label="政策再平衡方式"><select className={inputClass} value={draft.rebalance_policy} onChange={e => update({ rebalance_policy: e.target.value as MandateDefinition['rebalance_policy'] })}><option value="monthly">每月复核</option><option value="quarterly">每季复核</option><option value="annually">每年复核</option><option value="threshold">触及阈值时复核</option></select></Field>
-          </div>
-          <Field label="再平衡触发与恢复规则" hint="记录政策约定，不自动执行调仓。"><textarea className={inputClass} value={draft.rebalance_note} rows={2} onChange={e => update({ rebalance_note: e.target.value })} /></Field>
-        </details>
-        <Field label="资金用途与其他说明"><textarea className={inputClass} rows={3} value={draft.note} onChange={e => update({ note: e.target.value })} /></Field>
-        <div className="flex flex-wrap items-center gap-3"><Button tone="primary" disabled={busy || invalid || Boolean(selected)} onClick={() => void save()}>{busy ? '正在保存…' : selected ? '已锁定此目标版本' : '保存新目标版本'}</Button>
-          {invalid && <p className="text-sm text-slate-600">请填写完整名称、日期及数值，确认目标收益与风险边界。</p>}</div>
       </section>
-      <aside className="space-y-4" aria-label="目标版本与下一步">
-        {selected ? <section className={`${sectionClass} space-y-3`}><h2 className="text-lg font-semibold">下一步：研究长期配置</h2><p className="text-sm text-slate-600">{selected.name} · {selected.definition.currency} · {selected.definition.horizon_years} 年</p><p className="text-sm text-slate-600">预期波动上限 {percentText(selected.definition.max_volatility)}；TAA 主动风险上限 {percentText(selected.definition.max_tracking_error)}。</p>
-          <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-800 underline" to={`/pre-investment/saa/policy?mandate=${encodeURIComponent(selected.id)}`}>使用此目标进入长期配置 →</Link><p className="text-xs leading-5 text-slate-600">修改输入会形成新版本，不覆盖已保存目标。</p></section>
-          : <Empty title="先确定目标，再比较权重"><p>保存目标后，选择已有大类、填写长期假设，比较符合这些边界的政策候选。</p></Empty>}
-        <section className={`${sectionClass} space-y-3`}><h2 className="text-lg font-semibold">已保存的目标</h2>
-          {loading ? <p role="status" className="text-sm text-slate-600">正在读取版本…</p> : versions.length ? <div className="max-h-96 space-y-2 overflow-auto">{versions.map(version => <button key={version.id} type="button" className="block min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-accent-600 focus-visible:outline focus-visible:outline-accent-600" onClick={() => { generation.current += 1; setBusy(false); setDraft(version.definition); setSelected(version); setError('') }}><span className="block font-medium">{version.name}</span><span className="text-xs text-slate-600">{version.definition.currency} · {version.definition.horizon_years} 年 · {version.created_at.slice(0, 10)}</span></button>)}</div> : <p className="text-sm text-slate-600">尚无目标版本。</p>}
-          <Button disabled={loading} onClick={() => { setError(''); setReload(value => value + 1) }}>重新读取版本</Button>
-        </section>
+      <aside className="min-w-0 space-y-4" aria-label="目标版本与下一步">
+        <div className={`${sectionClass} space-y-3`}><h3 className="text-base font-semibold">当前研究</h3><p className="text-sm text-slate-700">{definition.name || '尚未命名'} · {definition.currency}</p><p className="text-xs leading-5 text-slate-600">填写目标与风险 → 运行诊断 → 核对后保存。未选择CMA时仍可先保存输入，再建立长期假设。</p><Link className="inline-flex min-h-10 items-center text-sm text-accent-800 underline" to="/pre-investment/saa/asset-classes">查看或构建大类</Link></div>
+        <details className={`${sectionClass} space-y-3`}><summary className="cursor-pointer text-sm font-medium">已保存的目标（{catalog?.mandates.length ?? 0}）</summary>
+          {loading ? <p role="status" className="text-sm text-slate-600">正在读取目标与CMA目录…</p> : catalog?.mandates.length ? <div className="divide-y divide-slate-200">{catalog.mandates.map(v => <button key={v.id} type="button" className="block min-h-11 w-full py-3 text-left text-sm" disabled={busy} onClick={() => readVersion(v.id)}><span className="block font-medium text-slate-800">{v.name}</span><span className="text-xs text-slate-600">{v.definition.currency} · {v.definition.horizon_years} 年 · {statusLabel(v.assessment?.status ?? v.assessment_status)}</span></button>)}</div> : <p className="text-sm text-slate-600">尚无版本；完成诊断后可保存输入和结果。</p>}
+          <Button disabled={loading} onClick={() => setReload(n => n + 1)}>重新读取目录</Button>
+        </details>
+        {!catalog && !loading && <p className="text-sm text-amber-800">目录不可用时仍可填写目标；重新读取后再选择CMA，不能将读取失败当成不存在历史版本。</p>}
       </aside>
     </div>
   </div>

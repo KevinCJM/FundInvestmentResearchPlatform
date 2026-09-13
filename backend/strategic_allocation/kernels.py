@@ -19,7 +19,7 @@ CV = float64[::1]
 CM = float64[:, ::1]
 GM = types.uint8[:, ::1]
 _WARMED_PID: int | None = None
-VERSION = "forward-policy-moments/1.0.0"
+VERSION = "forward-policy-moments/1.1.0"
 
 
 @njit((M, float64, int64), cache=True, nogil=True)
@@ -142,15 +142,28 @@ def expected_active_risk_kernel(weights, baseline_weights, covariance):
     return np.sqrt(max(variance, 0.0))
 
 
-@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, int64, int64),
+@njit((V, V, V), cache=True, nogil=True)
+def expected_excess_return_kernel(weights, benchmark_weights, means):
+    if weights.size == 0 or weights.size != means.size or benchmark_weights.size != means.size:
+        raise ValueError("POLICY_AXIS_MISMATCH")
+    result = 0.0
+    for i in range(means.size):
+        if not np.isfinite(weights[i]) or not np.isfinite(benchmark_weights[i]) or not np.isfinite(means[i]):
+            raise ValueError("POLICY_INPUT_INVALID")
+        result += (weights[i] - benchmark_weights[i]) * means[i]
+    return result
+
+
+@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64),
       cache=True, nogil=True)
 def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
-                             aversion, penalty, min_return, max_volatility, samples, seed):
+                             aversion, penalty, min_return, max_volatility, benchmark_weights,
+                             benchmark_te_limit, target_excess, samples, seed):
     """Search a reproducible finite candidate set; this is not a global QP proof."""
     count = means.size
     if (count < 1 or count > 30 or bounds.shape != (count, 2) or groups.shape[1] != count
             or groups.shape[0] != group_low.size or group_low.size != group_high.size
-            or samples < 1 or samples > 5000):
+            or samples < 1 or samples > 5000 or benchmark_weights.size not in (0, count)):
         raise ValueError("POLICY_SEARCH_SHAPE")
     selected_weights = np.zeros((4, count), dtype=np.float64)
     selected_metrics = np.full((4, 5), np.nan)
@@ -160,13 +173,22 @@ def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, gro
     state = int(seed)
     accepted = 0
     # The local PRNG never reseeds NumPy's process/thread random generator.
-    for candidate in range(samples + count + 1):
-        if candidate == 0:
+    has_benchmark = int(benchmark_weights.size == count)
+    if has_benchmark:
+        if not np.isfinite(benchmark_te_limit) or benchmark_te_limit < 0 or not np.isfinite(target_excess):
+            raise ValueError("POLICY_PARAMETERS")
+        expected_active_risk_kernel(benchmark_weights, benchmark_weights, covariance)
+    for candidate in range(samples + count + 1 + has_benchmark):
+        offset = candidate - has_benchmark
+        if has_benchmark and candidate == 0:
+            for i in range(count):
+                raw[i] = benchmark_weights[i]
+        elif offset == 0:
             for i in range(count):
                 raw[i] = 1.0 / count
-        elif candidate <= count:
+        elif offset <= count:
             for i in range(count):
-                raw[i] = 1.0 if i == candidate - 1 else 0.0
+                raw[i] = 1.0 if i == offset - 1 else 0.0
         else:
             total = 0.0
             for i in range(count):
@@ -192,6 +214,11 @@ def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, gro
         metrics, contributions = portfolio_moments_kernel(weights, means, covariance, uncertainty, aversion, penalty)
         if metrics[0] < min_return - 1e-10 or metrics[1] > max_volatility + 1e-10:
             continue
+        if has_benchmark:
+            if expected_active_risk_kernel(weights, benchmark_weights, covariance) > benchmark_te_limit + 1e-10:
+                continue
+            if expected_excess_return_kernel(weights, benchmark_weights, means) < target_excess - 1e-10:
+                continue
         accepted += 1
         scores = (-metrics[1], metrics[3], metrics[4], metrics[0])
         for method in range(4):
@@ -204,7 +231,9 @@ def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, gro
 
 
 KERNELS = (historical_risk_kernel, cma_covariance_kernel, portfolio_moments_kernel,
-           expected_active_risk_kernel, policy_candidates_kernel)
+           expected_active_risk_kernel, expected_excess_return_kernel, policy_candidates_kernel)
+for dispatcher in KERNELS:
+    dispatcher.disable_compile()
 
 
 def execution_audit():
@@ -232,7 +261,10 @@ def warm_strategic_kernels():
     expected_active_risk_kernel(np.array([0.55, 0.45]), np.array([0.5, 0.5]), cov)
     policy_candidates_kernel(np.array([0.06, 0.03]), cov, np.array([0.02, 0.005]),
                              np.array([[0., 1.], [0., 1.]]), np.zeros((0, 2), dtype=np.uint8),
-                             np.empty(0), np.empty(0), 5., 1., 0., 1., 200, 42)
+                             np.empty(0), np.empty(0), 5., 1., 0., 1., np.empty(0), 1., 0., 200, 42)
+    expected_excess_return_kernel(np.array([0.6, 0.4]), np.array([0.5, 0.5]), np.array([0.06, 0.03]))
+    from .goal_kernels import warm_goal_kernels
+    warm_goal_kernels()
     _WARMED_PID = os.getpid()
     audit = execution_audit()
     if not audit["complete"]:

@@ -1,9 +1,10 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TacticalAllocationWorkspace from './TacticalAllocationWorkspace'
 import * as ResearchContext from '../app/ResearchContext'
+import * as ResearchUI from '../components/risk-models/ResearchUI'
 import { readAllocationJourney, updateAllocationJourney } from '../app/allocationJourney'
 import { taaBaseline, taaCatalog, taaExecution, taaPreview, taaPreflight } from '../test/tacticalAllocationFixtures'
 
@@ -32,6 +33,8 @@ async function calculate(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole('button', { name: '计算并比较方案' }))
   await screen.findByRole('region', { name: 'SAA 与战术方案对照' })
 }
+// These fixtures describe a fixed research date, not the wall clock of a future test run.
+beforeEach(() => { vi.spyOn(ResearchUI, 'today').mockReturnValue('2026-09-12') })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); sessionStorage.clear(); localStorage.clear() })
 
 describe('TacticalAllocationWorkspace', () => {

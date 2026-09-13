@@ -267,45 +267,49 @@ def post_efficient_frontier(req: FrontierRequest):
         columns=nav_wide.columns,
     )
 
-    # constraints mapping
-    asset_names = list(nav_wide.columns)
-    single_limits = []
-    if req.constraints and isinstance(req.constraints.get('single_limits', None), dict):
-        m = req.constraints['single_limits']
-        for nm in asset_names:
-            v = m.get(nm, None)
-            lo = float(v.get('lo', 0.0)) if isinstance(v, dict) else 0.0
-            hi = float(v.get('hi', 1.0)) if isinstance(v, dict) else 1.0
-            single_limits.append((max(0.0, lo), min(1.0, hi)))
-    else:
-        single_limits = [(0.0, 1.0) for _ in asset_names]
-    group_limits = {}
-    if req.constraints and isinstance(req.constraints.get('group_limits', None), list):
-        for g in req.constraints['group_limits']:
-            assets = g.get('assets', [])
-            idxs = tuple(i for i, nm in enumerate(asset_names) if nm in assets)
-            if not idxs:
-                continue
-            lo = float(g.get('lo', 0.0))
-            hi = float(g.get('hi', 1.0))
-            group_limits[idxs] = (lo, hi)
-
-    rounds = None
-    if req.exploration and isinstance(req.exploration.get('rounds', None), list):
-        rounds = []
-        for r in req.exploration['rounds']:
-            rounds.append({'samples': int(r.get('samples', 100)), 'step': float(r.get('step', 0.5)), 'buckets': int(r.get('buckets', 50))})
-    quant_step = None
-    if req.quantization:
-        v = req.quantization.get('step', None)
-        quant_step = None if v in (None, 'none') else float(v)
+    try:
+        asset_names = list(nav_wide.columns)
+        constraints = req.constraints or {}
+        singles = constraints.get('single_limits', {})
+        if not isinstance(singles, dict) or set(singles) - set(asset_names):
+            raise ValueError("单项约束包含未知资产或格式无效。")
+        single_limits = []
+        for name in asset_names:
+            limits = singles.get(name, {})
+            if not isinstance(limits, dict):
+                raise ValueError("单项约束须提供 lo / hi。")
+            single_limits.append((float(limits.get('lo', 0.0)), float(limits.get('hi', 1.0))))
+        group_limits = {}
+        configured_groups = constraints.get('group_limits', [])
+        if not isinstance(configured_groups, list):
+            raise ValueError("联合约束须为列表。")
+        for group in configured_groups:
+            if not isinstance(group, dict):
+                raise ValueError("联合约束格式无效。")
+            assets = group.get('assets', [])
+            if (not isinstance(assets, list) or not assets or any(not isinstance(name, str) for name in assets)
+                    or len(set(assets)) != len(assets) or set(assets) - set(asset_names)):
+                raise ValueError("联合约束须包含已知且不重复的资产。")
+            indices = tuple(i for i, name in enumerate(asset_names) if name in assets)
+            if indices in group_limits:
+                raise ValueError("同一资产组不能重复配置联合约束。")
+            group_limits[indices] = (float(group.get('lo', 0.0)), float(group.get('hi', 1.0)))
+        exploration = req.exploration or {}
+        rounds = exploration.get('rounds')
+        seed = exploration.get('seed', 42)
+        value = (req.quantization or {}).get('step')
+        quant_step = None if value in (None, 'none') else float(value)
+        refine_iterations = (req.refine or {}).get('iterations', 20)
+        if type(refine_iterations) is not int or not 1 <= refine_iterations <= 200:
+            raise ValueError("代表点局部精炼迭代次数须为 1 至 200 的整数。")
+    except (ValueError, TypeError) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     if req.refine and 'use_slsqp' in req.refine:
         return JSONResponse(status_code=400, content={"detail": "SLSQP 字段不再代表实际算法；整条前沿请使用 frontier_grid，分别指定 point_count 与 max_iterations。"})
     use_refine = bool(req.refine.get('enabled', False)) if req.refine else False
     refine_method = str(req.refine.get('method', 'bounded_pairwise_pattern_search_njit')) if req.refine else 'bounded_pairwise_pattern_search_njit'
     if use_refine and refine_method != 'bounded_pairwise_pattern_search_njit':
         return JSONResponse(status_code=400, content={"detail": "不支持的局部精炼算法。"})
-    refine_iterations = int(req.refine.get('iterations', 20)) if req.refine else 0
 
     try:
         results = calculate_efficient_frontier_exploration(
@@ -315,6 +319,7 @@ def post_efficient_frontier(req: FrontierRequest):
             single_limits=single_limits,
             group_limits=group_limits,
             rounds=rounds,
+            seed=seed,
             quantize_step=quant_step,
             use_local_refine=use_refine,
             refine_iterations=refine_iterations,
@@ -349,6 +354,9 @@ def post_efficient_frontier(req: FrontierRequest):
         "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
         "refinement": results.get("refinement"),
         "frontier_grid": results.get("frontier_grid"),
+        "exploration": results.get("exploration"),
+        "weight_domain": results.get("weight_domain"),
+        "quantization_step": results.get("quantization_step"),
         "grid_candidates": int(results.get("grid_candidates", 0)),
         "research_interval": {
             "requested_start": req.start_date,

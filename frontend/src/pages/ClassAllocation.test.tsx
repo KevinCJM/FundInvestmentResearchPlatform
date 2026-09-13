@@ -385,7 +385,6 @@ describe('ClassAllocation continuous research journey', () => {
     const user = userEvent.setup()
     render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab?alloc=测试方案&universe=universe-1']}><ClassAllocation /></MemoryRouter>)
     await screen.findByText('沪深300ETF')
-    await user.click(screen.getByText('高级设置：指标口径与计算精度'))
     await user.click(screen.getByRole('checkbox', { name: '使用受约束局部精炼' }))
     fireEvent.change(screen.getByLabelText('局部精炼最大迭代次数'), { target: { value: '25' } })
     await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
@@ -449,5 +448,90 @@ describe('ClassAllocation continuous research journey', () => {
     await user.click(screen.getByRole('radio', { name: '自定义权重' }))
     expect(screen.getByLabelText('固定比例策略 权益 权重 (%)')).toHaveValue(33.34)
     expect(screen.getByLabelText('固定比例策略 权益 权重 (%)')).not.toBeDisabled()
+  })
+})
+
+describe('可配置空间功能完整性', () => {
+  beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); sessionStorage.clear() })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('全部参数在同一模块可见，完整传参、保存草稿并能切换原保留点视图', async () => {
+    const points = [
+      { value: [.1, .04], weights: [.3, .6, .1] },
+      { value: [.2, .08], weights: [.6, .3, .1] },
+      { value: [.3, .10], weights: [.8, .1, .1] },
+    ]
+    const fetchMock = installFetch(execution, { '/api/efficient-frontier': {
+      asset_names: ['权益', '固收', '商品'], scatter: points, frontier: [points[1]], sampled_candidates: 3,
+      exploration: { seed: 177, selected_indices: [0, 2], rounds: [{ round: 1, requested: 3, accepted: 3, selected: 2, rejected: 0 }] },
+      max_sharpe: points[1], execution,
+    } })
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab?alloc=测试方案&universe=universe-1']}><ClassAllocation /></MemoryRouter>)
+    await screen.findByText('沪深300ETF')
+    const workspace = within(screen.getByRole('region', { name: '可配置空间与有效前沿' }))
+    for (const label of ['大类构建方案', '研究区间开始', '研究区间结束', '收益指标', '风险指标', '收益类型', '权重量化', '随机种子', '第0轮样本点', '第1轮步长', '第1轮分桶', '权益 最低权重 (%)']) {
+      expect(workspace.getByLabelText(label)).toBeVisible()
+    }
+    expect(workspace.getByLabelText('收益指标').querySelectorAll('option')).toHaveLength(5)
+    expect(workspace.getByLabelText('风险指标').querySelectorAll('option')).toHaveLength(7)
+    await user.selectOptions(workspace.getByLabelText('收益指标'), 'ewm')
+    await user.selectOptions(workspace.getByLabelText('风险指标'), 'es')
+    await user.selectOptions(workspace.getByLabelText('收益类型'), 'log')
+    await user.selectOptions(workspace.getByLabelText('权重量化'), '0.005')
+    fireEvent.change(workspace.getByLabelText('收益衰减因子'), { target: { value: '.91' } })
+    fireEvent.change(workspace.getByLabelText('收益窗口长度'), { target: { value: '90' } })
+    fireEvent.change(workspace.getByLabelText('置信度 (%)'), { target: { value: '99' } })
+    fireEvent.change(workspace.getByLabelText('随机种子'), { target: { value: '177' } })
+    await user.click(workspace.getByRole('button', { name: '+ 增加一轮' }))
+    expect(workspace.getByLabelText('第6轮样本点')).toBeVisible()
+    await user.click(workspace.getByRole('button', { name: '删除第6轮' }))
+    expect(workspace.queryByLabelText('第6轮样本点')).toBeNull()
+    await user.click(workspace.getByRole('checkbox', { name: '按目标网格加密整条前沿' }))
+    expect(workspace.getByLabelText('前沿目标点数')).toHaveValue('20')
+    expect(workspace.getByLabelText('单点最大迭代次数')).toHaveValue('300')
+    await user.click(workspace.getByRole('checkbox', { name: /我确认网格采用连续权重/ }))
+    await user.click(workspace.getByRole('button', { name: '生成可配置空间与有效前沿' }))
+    await workspace.findByRole('table', { name: '随机探索轮次统计' })
+    const request = JSON.parse(String(fetchMock.mock.calls.find(([url]) => url === '/api/efficient-frontier')![1]?.body))
+    expect(request.return_metric).toMatchObject({ metric: 'ewm', type: 'log', alpha: .91, window: 90 })
+    expect(request.risk_metric).toMatchObject({ metric: 'es', type: 'log', confidence: 99 })
+    expect(request.exploration.seed).toBe(177)
+    expect(request.exploration.rounds).toHaveLength(6)
+    expect(request.quantization.step).toBe(.005)
+    expect(readAllocationDraft<any>('saa:universe-1:测试方案')?.explorationSeed).toBe(177)
+    await user.selectOptions(workspace.getByLabelText('散点显示'), 'selected')
+    const chart = JSON.parse(screen.getByTestId('chart').getAttribute('data-option')!)
+    expect(chart.series.find((series: any) => series.name === '其他组合').data).toEqual([points[0], points[2]])
+    fireEvent.change(workspace.getByLabelText('随机种子'), { target: { value: '178' } })
+    await waitFor(() => expect(screen.queryByTestId('chart')).not.toBeInTheDocument())
+  })
+
+  it('采用前沿目标时提交指定精度的权重，保留连续参考的原始坐标', async () => {
+    const point = { target_index: 0, target: .04, value: [.12, .04], weights: [.3334, .3334, .3332],
+      status: 'converged', iterations: 5, on_frontier: true, candidate_index: 0, duplicate_of: null,
+      adoption: { status: 'feasible', step: .005, weights: [.335, .335, .33], value: [.121, .039], target_met: false, candidate_index: 0 } }
+    const failed = { ...point, target_index: 1, candidate_index: null, adoption: { ...point.adoption, status: 'search_budget' } }
+    installFetch(execution, { '/api/efficient-frontier': {
+      asset_names: ['权益', '固收', '商品'], scatter: [{ value: point.adoption.value, weights: point.adoption.weights }], frontier: [], sampled_candidates: 1,
+      weight_domain: 'discrete', execution,
+      frontier_grid: { requested_points: 2, attempted_points: 2, successful_points: 2, failed_points: 0,
+        unattempted_points: 0, duplicate_targets: 0, duplicate_solutions: 0, added_candidates: 1,
+        max_iterations: 300, adoption_weight_domain: 'discrete', points: [point, failed], curve: [point, null], endpoints: [] },
+    } })
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab?alloc=测试方案&universe=universe-1']}><ClassAllocation /></MemoryRouter>)
+    await screen.findByText('沪深300ETF')
+    await user.selectOptions(screen.getByLabelText('权重量化'), '0.005')
+    await user.click(screen.getByRole('button', { name: '生成可配置空间与有效前沿' }))
+    await screen.findByRole('region', { name: '逐目标前沿求解结果' })
+    await user.click(screen.getByText('逐目标状态、权重与采用（2 项）'))
+    expect(screen.getByText('可采用；未达到原收益目标')).toBeVisible()
+    expect(screen.getByRole('button', { name: '采用前沿目标 2' })).toBeDisabled()
+    const chart = JSON.parse(screen.getByTestId('chart').getAttribute('data-option')!)
+    expect(chart.series.find((series: any) => series.name === '连续理论前沿').data[0].value).toEqual(point.value)
+    await user.click(screen.getByRole('button', { name: '采用前沿目标 1' }))
+    expect(screen.getByLabelText('前沿目标 1配置 权益 权重 (%)')).toHaveValue(33.5)
+    expect(screen.getByLabelText('前沿目标 1配置 商品 权重 (%)')).toHaveValue(33)
   })
 })

@@ -1,9 +1,10 @@
+import { GoalCandidateSummary } from '../investment-mandate/MandateResults'
 import { Button } from '../ui'
 import { Field, inputClass, NumberInput, percentText, sectionClass } from '../risk-models/ResearchUI'
 import { percentInputValue, type PolicyCandidate, type PolicyPreview, type PolicyRequest } from '../../services/strategicAllocation'
 
-export default function PolicyCandidates({ value, assets, result, busy, onChange, onCompare, onSelect }: {
-  value: PolicyRequest; assets: string[]; result: PolicyPreview | null; busy: boolean
+export default function PolicyCandidates({ value, assets, result, busy, compareDisabled, onChange, onCompare, onSelect }: {
+  value: PolicyRequest; assets: string[]; result: PolicyPreview | null; busy: boolean; compareDisabled: boolean
   onChange: (value: PolicyRequest) => void; onCompare: () => void; onSelect: (candidate: PolicyCandidate) => void
 }) {
   return <div className="space-y-5">
@@ -27,10 +28,12 @@ export default function PolicyCandidates({ value, assets, result, busy, onChange
           </div>
         </div>
       </details>
-      <Button tone="primary" disabled={busy || !assets.length || !value.cma_id || !value.mandate_id} onClick={onCompare}>{busy ? '正在比较…' : '比较符合目标的政策候选'}</Button>
+      <Button tone="primary" disabled={busy || compareDisabled || !assets.length || !value.cma_id || !value.mandate_id} onClick={onCompare}>{busy ? '正在比较…' : '比较符合目标的政策候选'}</Button>
     </section>
     {result && <section className={`${sectionClass} space-y-4`} aria-label="政策候选结果">
       <h2 className="text-lg font-semibold">先比较，再决定采用哪个</h2>
+      {result.current_application_eligible === false && <p className="text-sm text-amber-800">当前是历史政策研究；日期已过复核日时不可直接用于当前应用。</p>}
+      {result.candidates.some(c => c.goal_check || c.benchmark_check) && <div className="space-y-3" aria-label="投资目标检查">{result.candidates.map(c => <div className="border-b border-slate-200 pb-3" key={c.id}><h3 className="text-sm font-medium">{c.name}</h3><GoalCandidateSummary candidate={c} /></div>)}</div>}
       <p className="text-sm leading-6 text-slate-600">以下来自同一组可行候选，不保证全局最优。保守收益按声明的均值不确定区间扣减，不是概率分位数。</p>
       <div className="overflow-x-auto"><table aria-label="长期政策候选比较" className="w-full min-w-[600px] text-sm"><thead><tr>{['候选方法', '预期年收益', '预期年波动', '保守年收益', ...assets, '下一步'].map(label => <th key={label} scope="col" className={`whitespace-nowrap p-3 ${label === '候选方法' || label === '下一步' ? 'text-left' : 'text-right'}`}>{label}</th>)}</tr></thead><tbody>{result.candidates.map(candidate => <tr className="border-t border-slate-200" key={candidate.id}><th scope="row" className="whitespace-nowrap p-3 text-left font-medium">{candidate.name}</th>{[candidate.metrics.expected_return, candidate.metrics.volatility, candidate.metrics.conservative_return, ...assets.map(asset => candidate.weights[asset])].map((number, i) => <td key={i} className="whitespace-nowrap p-3 text-right tabular-nums">{percentText(number)}</td>)}<td className="p-3"><Button disabled={busy} onClick={() => onSelect(candidate)}>复核此候选</Button></td></tr>)}</tbody></table></div>
       <details className="border-t border-slate-200 pt-4"><summary className="cursor-pointer text-sm font-medium">风险贡献与证据限制</summary><div className="mt-3 space-y-3">{result.candidates.map(candidate => <p className="text-sm leading-6 text-slate-600" key={candidate.id}>{candidate.name}：{assets.map(asset => `${asset} ${percentText(candidate.risk_contributions[asset])}`).join('；')}</p>)}{result.warnings.map((warning, index) => <p key={index} className="text-xs leading-5 text-slate-600">{warning}</p>)}</div></details>

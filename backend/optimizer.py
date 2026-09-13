@@ -13,10 +13,11 @@ from numba.core.registry import CPUDispatcher
 
 
 from backend.qp_numba import QP_KERNELS, feasible_qp_kernel
+from backend.frontier_sampling import SAMPLING_KERNELS, integer_weights_kernel, return_bucket_indices_kernel
 from backend.cal_indicators.typed_numba_kernels import covariance_2d
 
 
-OPTIMIZER_NUMBA_KERNEL_VERSION = "2.4.0"
+OPTIMIZER_NUMBA_KERNEL_VERSION = "3.0.0"
 _FLOAT64_1D = types.float64[::1]
 _FLOAT64_2D = types.float64[:, ::1]
 _INT64_1D = types.int64[::1]
@@ -66,7 +67,7 @@ def nav_matrix_returns_kernel(
 
 
 @njit(
-    types.float64(_FLOAT64_1D, types.int64, types.float64, types.float64),
+    types.float64(_FLOAT64_1D, types.int64, types.float64, types.float64, types.int64),
     cache=False,
     nogil=True,
 )
@@ -75,8 +76,9 @@ def calculate_return_kernel(
     metric_code: int,
     periods_per_year: float,
     decay: float,
+    window: int,
 ) -> float:
-    if returns.size == 0:
+    if returns.size == 0 or window < 0:
         return np.nan
     total = 0.0
     for value in returns:
@@ -90,8 +92,9 @@ def calculate_return_kernel(
         return mean * periods_per_year
     if metric_code == 3:
         lam = min(max(decay, 0.0), 0.999999)
-        weighted = returns[0]
-        for index in range(1, returns.size):
+        start = max(0, returns.size - window) if window > 0 else 0
+        weighted = returns[start]
+        for index in range(start + 1, returns.size):
             weighted = lam * weighted + (1.0 - lam) * returns[index]
         return weighted
     return mean
@@ -295,8 +298,8 @@ def repair_weights_kernel(
         return output, 2
 
     if quantize_step > 0.0:
-        for asset_index in range(asset_count):
-            output[asset_index] = np.round(output[asset_index] / quantize_step) * quantize_step
+        return integer_weights_kernel(raw_weights, single_bounds, group_membership,
+                                      group_lows, group_highs, quantize_step, 50000)
     for asset_index in range(asset_count):
         value = output[asset_index]
         if not np.isfinite(value):
@@ -472,7 +475,7 @@ def representative_indices_kernel(
         _INT64_1D, _FLOAT64_1D, _INT64_1D, types.float64, types.int64,
         types.int64, types.int64, types.float64, types.float64, types.float64,
         types.float64, types.int64, types.float64, types.float64, types.int64,
-        types.float64, types.float64,
+        types.float64, types.float64, types.int64,
     ),
     cache=False,
     nogil=True,
@@ -500,55 +503,51 @@ def explore_portfolios_kernel(
     target_code: int,
     target_return: float,
     target_risk: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray, int, np.ndarray, int]:
-    requested_count = 0
-    for value in round_samples:
-        if value > 0:
-            requested_count += value
+    return_window: int,
+):
+    requested_count = np.sum(round_samples)
     asset_count = asset_returns.shape[1]
     weights_output = np.full((requested_count, asset_count), np.nan, dtype=np.float64)
     risks = np.full(requested_count, np.nan, dtype=np.float64)
     returns = np.full(requested_count, np.nan, dtype=np.float64)
     frontier_indices = np.full(requested_count, -1, dtype=np.int64)
     special_indices = np.full(4, -1, dtype=np.int64)
+    # Columns: start, end, accepted, selected, rejected, search-budget failures.
+    round_stats = np.zeros((round_samples.size, 6), dtype=np.int64)
+    selected_mask = np.zeros(requested_count, dtype=np.bool_)
+    parents = np.full(requested_count, -1, dtype=np.int64)
     if requested_count <= 0 or asset_count <= 0 or asset_returns.shape[0] <= 0:
-        return weights_output, risks, returns, 0, frontier_indices, 0, special_indices, 1
+        return weights_output, risks, returns, 0, frontier_indices, 0, special_indices, round_stats, selected_mask, parents, 1
 
     np.random.seed(seed)
     accepted = 0
-    attempted = 0
+    seed_indices = np.full(requested_count, -1, dtype=np.int64)
+    seed_count = 0
     for round_index in range(round_samples.size):
-        samples = max(round_samples[round_index], 0)
-        step = min(max(round_steps[round_index], 0.0), 1.0)
-        bucket_span = max(round_buckets[round_index], 1) * 4
+        samples = round_samples[round_index]
+        step = round_steps[round_index]
+        round_start = accepted
         for _ in range(samples):
             raw = np.empty(asset_count, dtype=np.float64)
-            if attempted == 0:
+            raw_total = 0.0
+            for asset_index in range(asset_count):
+                raw[asset_index] = -np.log(max(np.random.random(), 1e-15))
+                raw_total += raw[asset_index]
+            raw /= raw_total
+            base_index = -1
+            if round_index > 0 and seed_count > 0:
+                base_index = seed_indices[min(int(np.random.random() * seed_count), seed_count - 1)]
                 for asset_index in range(asset_count):
-                    raw[asset_index] = 1.0
-            else:
-                raw_total = 0.0
-                for asset_index in range(asset_count):
-                    uniform = max(np.random.random(), 1e-15)
-                    raw[asset_index] = -np.log(uniform)
-                    raw_total += raw[asset_index]
-                if raw_total <= 0.0:
-                    return weights_output, risks, returns, accepted, frontier_indices, 0, special_indices, 2
-                raw /= raw_total
-                if round_index > 0 and accepted > 0:
-                    span = min(accepted, bucket_span)
-                    offset = int(np.random.random() * span)
-                    base_index = accepted - 1 - min(offset, span - 1)
-                    for asset_index in range(asset_count):
-                        raw[asset_index] = (1.0 - step) * weights_output[base_index, asset_index] + step * raw[asset_index]
-            attempted += 1
+                    raw[asset_index] = (1.0 - step) * weights_output[base_index, asset_index] + step * raw[asset_index]
             repaired, repair_status = repair_weights_kernel(
                 raw, single_bounds, group_membership, group_lows, group_highs, quantize_step
             )
             if repair_status != 0:
+                if quantize_step > 0.0 and repair_status == 2:
+                    round_stats[round_index, 5] += 1
                 continue
             portfolio_returns = portfolio_returns_kernel(asset_returns, repaired)
-            return_value = calculate_return_kernel(portfolio_returns, return_metric_code, return_periods, return_decay)
+            return_value = calculate_return_kernel(portfolio_returns, return_metric_code, return_periods, return_decay, return_window)
             risk_value = calculate_risk_kernel(
                 portfolio_returns, risk_metric_code, risk_periods, risk_decay, risk_window, confidence
             )
@@ -557,10 +556,26 @@ def explore_portfolios_kernel(
             weights_output[accepted] = repaired
             risks[accepted] = risk_value
             returns[accepted] = return_value
+            parents[accepted] = base_index
             accepted += 1
+        if round_index == 0:
+            chosen, count = np.arange(accepted, dtype=np.int64), accepted
+        else:
+            chosen, count = return_bucket_indices_kernel(
+                risks, returns, round_start, accepted, round_buckets[round_index])
+        if count > 0:
+            seed_count = count
+            for slot in range(count):
+                seed_indices[slot] = chosen[slot]
+                selected_mask[chosen[slot]] = True
+        round_stats[round_index, 0] = round_start
+        round_stats[round_index, 1] = accepted
+        round_stats[round_index, 2] = accepted - round_start
+        round_stats[round_index, 3] = count
+        round_stats[round_index, 4] = samples - (accepted - round_start)
 
     if accepted == 0:
-        return weights_output, risks, returns, 0, frontier_indices, 0, special_indices, 3
+        return weights_output, risks, returns, 0, frontier_indices, 0, special_indices, round_stats, selected_mask, parents, 3
 
     frontier_indices, frontier_count = pareto_frontier_indices_kernel(risks, returns, accepted)
     maximum_sharpe_index, minimum_risk_index, maximum_return_index = representative_indices_kernel(
@@ -598,13 +613,13 @@ def explore_portfolios_kernel(
     special_indices[2] = maximum_return_index
     special_indices[3] = target_index
     status = 4 if target_code >= 0 and target_index < 0 else 0
-    return weights_output, risks, returns, accepted, frontier_indices, frontier_count, special_indices, status
+    return weights_output, risks, returns, accepted, frontier_indices, frontier_count, special_indices, round_stats, selected_mask, parents, status
 
 
 @njit(
     (_FLOAT64_2D, _FLOAT64_1D, types.int64, types.int64, types.float64,
      types.float64, types.float64, types.float64, types.int64, types.float64,
-     types.float64, types.int64),
+     types.float64, types.int64, types.int64),
     cache=False,
     nogil=True,
 )
@@ -621,9 +636,10 @@ def refine_objective_kernel(
     confidence: float,
     risk_free_rate: float,
     objective_code: int,
+    return_window: int,
 ) -> tuple[float, float, float]:
     portfolio_returns = portfolio_returns_kernel(asset_returns, weights)
-    return_value = calculate_return_kernel(portfolio_returns, return_metric_code, return_periods, return_decay)
+    return_value = calculate_return_kernel(portfolio_returns, return_metric_code, return_periods, return_decay, return_window)
     risk_value = calculate_risk_kernel(
         portfolio_returns, risk_metric_code, risk_periods, risk_decay, risk_window, confidence
     )
@@ -642,7 +658,7 @@ def refine_objective_kernel(
     (_FLOAT64_2D, _FLOAT64_2D, _FLOAT64_2D, _UINT8_2D, _FLOAT64_1D,
      _FLOAT64_1D, types.float64, types.int64, types.int64, types.float64,
      types.float64, types.float64, types.float64, types.int64, types.float64,
-     types.float64, types.int64),
+     types.float64, types.int64, types.int64),
     cache=False,
     nogil=True,
 )
@@ -664,6 +680,7 @@ def refine_special_candidates_kernel(
     confidence: float,
     risk_free_rate: float,
     max_iterations: int,
+    return_window: int,
 ):
     """Deterministic pairwise-transfer local refinement for three frontier landmarks."""
     row_count, asset_count = initial_weights.shape
@@ -688,6 +705,8 @@ def refine_special_candidates_kernel(
                     or value < single_bounds[asset_index, 0] - 1e-7
                     or value > single_bounds[asset_index, 1] + 1e-7):
                 feasible = False
+            if quantize_step > 0.0 and abs(value / quantize_step - np.round(value / quantize_step)) > 1e-7:
+                feasible = False
             total += value
         if abs(total - 1.0) > 1e-7:
             feasible = False
@@ -700,14 +719,12 @@ def refine_special_candidates_kernel(
                 feasible = False
         if not feasible:
             continue
-        # The exploration candidate is already repaired and quantized.  Preserve
-        # it exactly as the comparison baseline; repairing it again is not
-        # idempotent under quantization + group bounds and can lower the objective.
+        # Keep the original feasible candidate as the unchanged score baseline.
         current = raw.copy()
         return_value, risk_value, score = refine_objective_kernel(
             asset_returns, current, return_metric_code, risk_metric_code,
             return_periods, risk_periods, return_decay, risk_decay, risk_window,
-            confidence, risk_free_rate, objective_code,
+            confidence, risk_free_rate, objective_code, return_window,
         )
         if not np.isfinite(score):
             continue
@@ -741,7 +758,7 @@ def refine_special_candidates_kernel(
                     candidate_return, candidate_risk, candidate_score = refine_objective_kernel(
                         asset_returns, candidate, return_metric_code, risk_metric_code,
                         return_periods, risk_periods, return_decay, risk_decay, risk_window,
-                        confidence, risk_free_rate, objective_code,
+                        confidence, risk_free_rate, objective_code, return_window,
                     )
                     if candidate_score > best_score + 1e-12:
                         best_score = candidate_score
@@ -777,7 +794,7 @@ def frontier_grid_model_kernel(values, bounds, groups, group_lows, group_highs,
     for j in range(assets):
         for t in range(rows):
             series[t] = values[t, j]
-        means[j] = calculate_return_kernel(series, return_code, settings[0], settings[2])
+        means[j] = calculate_return_kernel(series, return_code, settings[0], settings[2], int(settings[6]) if settings.size > 6 else 0)
     if risk_code <= 1:
         covariance = covariance_2d(values)
         if risk_code == 1:
@@ -923,7 +940,7 @@ def solve_frontier_grid_kernel(values, bounds, groups, group_lows, group_highs,
     if (not 1 <= n <= 30 or values.shape[0] < 2 or values.shape[1] != n
             or bounds.shape != (n, 2) or groups.shape[1] != n
             or groups.shape[0] != group_lows.size or group_lows.size != group_highs.size
-            or settings.size != 6 or not 2 <= point_count <= 200
+            or (settings.size != 6 and settings.size != 7) or not 2 <= point_count <= 200
             or not 1 <= max_iterations <= 1000 or not 0 <= return_code <= 3
             or not 0 <= risk_code <= 6):
         raise ValueError("FRONTIER_GRID_INPUT_AXIS")
@@ -962,7 +979,7 @@ def solve_frontier_grid_kernel(values, bounds, groups, group_lows, group_highs,
             if status == 2:
                 status = 3  # An infeasible numerical starting point is not an infeasibility proof.
             portfolio = portfolio_returns_kernel(values, solution)
-            actual_return = calculate_return_kernel(portfolio, return_code, settings[0], settings[2])
+            actual_return = calculate_return_kernel(portfolio, return_code, settings[0], settings[2], int(settings[6]) if settings.size > 6 else 0)
             actual_risk = calculate_risk_kernel(portfolio, risk_code, settings[1], settings[3],
                                                 int(settings[4]), settings[5])
             slack = matrix @ solution - limits
@@ -1024,6 +1041,35 @@ def grid_curve_membership_kernel(metrics, statuses, risks, returns, frontier_ind
     return output
 
 
+@njit((_FLOAT64_2D, _FLOAT64_2D, _FLOAT64_2D, _UINT8_2D,
+       _FLOAT64_1D, _FLOAT64_1D, _INT64_1D, _FLOAT64_1D,
+       types.float64, types.int64, types.int64, _FLOAT64_1D), cache=False, nogil=True)
+def project_grid_weights_kernel(asset_returns, grid_weights, bounds, groups, lows, highs,
+                                statuses, targets, step, return_code, risk_code, settings):
+    """Produce adoptable integer portfolios without altering continuous grid evidence."""
+    weights = np.full_like(grid_weights, np.nan)
+    metrics = np.full((grid_weights.shape[0], 2), np.nan)
+    result_status = np.full(grid_weights.shape[0], 4, dtype=np.int64)
+    target_met = np.zeros(grid_weights.shape[0], dtype=np.bool_)
+    for i in range(grid_weights.shape[0]):
+        if statuses[i] != 0:
+            continue
+        repaired, status = integer_weights_kernel(grid_weights[i], bounds, groups, lows, highs, step, 50000)
+        result_status[i] = status
+        if status != 0:
+            continue
+        values = portfolio_returns_kernel(asset_returns, repaired)
+        risk = calculate_risk_kernel(values, risk_code, settings[1], settings[3], int(settings[4]), settings[5])
+        ret = calculate_return_kernel(values, return_code, settings[0], settings[2], int(settings[6]) if settings.size > 6 else 0)
+        if not np.isfinite(risk) or not np.isfinite(ret):
+            result_status[i] = 3
+            continue
+        weights[i] = repaired
+        metrics[i, 0], metrics[i, 1] = risk, ret
+        target_met[i] = ret >= targets[i] - 1e-7
+    return weights, metrics, result_status, target_met
+
+
 OPTIMIZER_NUMBA_KERNELS: tuple[CPUDispatcher, ...] = (
     get_log_returns,
     get_simple_returns,
@@ -1046,6 +1092,8 @@ OPTIMIZER_NUMBA_KERNELS: tuple[CPUDispatcher, ...] = (
     append_grid_candidates_kernel,
     grid_curve_membership_kernel,
     *QP_KERNELS,
+    *SAMPLING_KERNELS,
+    project_grid_weights_kernel,
 )
 for _dispatcher in OPTIMIZER_NUMBA_KERNELS:
     _dispatcher.disable_compile()
@@ -1116,7 +1164,7 @@ def warm_optimizer_numba_kernels() -> dict[str, Any]:
     get_log_returns(nav)
     get_simple_returns(nav)
     nav_matrix_returns_kernel(returns, np.int64(0))
-    calculate_return_kernel(nav, np.int64(0), np.float64(252.0), np.float64(0.94))
+    calculate_return_kernel(nav, np.int64(3), np.float64(252.0), np.float64(0.94), np.int64(2))
     calculate_risk_kernel(nav, np.int64(0), np.float64(252.0), np.float64(0.94), np.int64(60), np.float64(0.95))
     compute_portfolio_performance(weights, means, covariance)
     generate_random_portfolios(np.int64(2), np.int64(2), means, covariance)
@@ -1135,25 +1183,29 @@ def warm_optimizer_numba_kernels() -> dict[str, Any]:
         np.float64(0.0), np.int64(42), np.int64(0), np.int64(0),
         np.float64(252.0), np.float64(252.0), np.float64(0.94), np.float64(0.94),
         np.int64(60), np.float64(0.95), np.float64(0.0), np.int64(-1),
-        np.float64(0.0), np.float64(0.0),
+        np.float64(0.0), np.float64(0.0), np.int64(0),
     )
     refine_objective_kernel(
         returns, weights, np.int64(0), np.int64(0), np.float64(252.0),
         np.float64(252.0), np.float64(0.94), np.float64(0.94), np.int64(60),
-        np.float64(0.95), np.float64(0.0), np.int64(0),
+        np.float64(0.95), np.float64(0.0), np.int64(0), np.int64(0),
     )
     refine_special_candidates_kernel(
         returns, np.ascontiguousarray(np.vstack((weights, weights, weights))), bounds,
         groups, empty_float, empty_float, np.float64(0.0), np.int64(0), np.int64(0),
         np.float64(252.0), np.float64(252.0), np.float64(0.94), np.float64(0.94),
-        np.int64(60), np.float64(0.95), np.float64(0.0), np.int64(2),
+        np.int64(60), np.float64(0.95), np.float64(0.0), np.int64(2), np.int64(0),
     )
-    grid_settings = np.array([252.0, 252.0, .94, .94, 60.0, .95])
+    grid_settings = np.array([252.0, 252.0, .94, .94, 60.0, .95, 2.0])
     for risk_code in (0, 2, 6):
         grid = solve_frontier_grid_kernel(
             returns, bounds, groups, empty_float, empty_float, weights,
             np.int64(2), np.int64(risk_code), grid_settings, np.int64(2),
             np.int64(10), False, np.float64(0.0), np.float64(0.0))
+    integer_weights_kernel(weights, bounds, groups, empty_float, empty_float, np.float64(.005), np.int64(50000))
+    return_bucket_indices_kernel(means, means, np.int64(0), np.int64(2), np.int64(2))
+    project_grid_weights_kernel(returns, grid[1], bounds, groups, empty_float, empty_float,
+                                grid[3], grid[0], np.float64(.005), np.int64(2), np.int64(6), grid_settings)
     scratch_weights = np.empty((2, 2))
     scratch_risks, scratch_returns = np.empty(2), np.empty(2)
     count, _, _ = append_grid_candidates_kernel(scratch_weights, scratch_risks, scratch_returns,
@@ -1186,6 +1238,17 @@ def _risk_metric_code(config: Dict[str, Any]) -> int:
     return mapping[metric]
 
 
+def _return_window(config: Dict[str, Any]) -> int:
+    if _return_metric_code(config) != 3:
+        return 0
+    window = config.get("window", 0)
+    if window is None:
+        return 0
+    if type(window) is not int or window < 0:
+        raise ValueError("收益指数加权窗口须为非负整数；0 表示全部样本。")
+    return window
+
+
 def calculate_return(returns: np.ndarray, config: Dict[str, Any]) -> float:
     values = np.ascontiguousarray(np.asarray(returns, dtype=np.float64).reshape(-1))
     metric_code = _return_metric_code(config)
@@ -1200,6 +1263,7 @@ def calculate_return(returns: np.ndarray, config: Dict[str, Any]) -> float:
         np.int64(metric_code),
         np.float64(periods),
         np.float64(decay),
+        np.int64(_return_window(config)),
     )
     if not np.isfinite(value):
         raise ValueError("收益序列包含非有限值，无法计算收益指标")
@@ -1283,20 +1347,27 @@ def _constraint_arrays(
 def _round_arrays(
     rounds: Optional[List[Dict[str, Any]]],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    configured = rounds or [{"samples": 100, "step": 0.99, "buckets": 50}]
+    if rounds is not None and (not isinstance(rounds, list) or not rounds):
+        raise ValueError("至少配置一轮随机探索")
+    configured = rounds if rounds is not None else [{"samples": 100, "step": 0.99, "buckets": 50}]
     samples: list[int] = []
     steps: list[float] = []
     buckets: list[int] = []
     for item in configured:
-        count = int(item.get("samples", 100))
-        if count <= 0:
-            raise ValueError("每轮候选数量必须大于 0")
+        if not isinstance(item, dict):
+            raise ValueError("探索轮次必须为参数对象")
+        count = item.get("samples", 100)
+        bucket_count = item.get("buckets", 50)
+        if type(count) is not int or count <= 0:
+            raise ValueError("每轮候选数量必须为正整数")
+        if type(bucket_count) is not int or not 1 <= bucket_count <= 200000:
+            raise ValueError("每轮收益分桶数必须为 1 至 200000 的整数")
         step = float(item.get("step", 0.5))
         if not 0.0 <= step <= 1.0:
             raise ValueError("候选搜索步长必须位于 [0, 1] 区间")
         samples.append(count)
         steps.append(step)
-        buckets.append(max(1, int(item.get("buckets", 50))))
+        buckets.append(bucket_count)
     if sum(samples) > 200_000:
         raise ValueError("候选组合总数不能超过 200000")
     return (
@@ -1339,11 +1410,20 @@ def _run_exploration(
         raise ValueError("收益矩阵必须至少包含一个观察值和一个资产")
     if not np.all(np.isfinite(values)):
         raise ValueError("收益矩阵包含非有限值")
-    if seed < 0 or seed > 2**32 - 1:
+    if type(seed) is not int or seed < 0 or seed > 2**32 - 1:
         raise ValueError("随机种子必须位于 0 至 2^32-1 之间")
-    if quantize_step is not None and quantize_step <= 0.0:
+    if quantize_step is not None and (not np.isfinite(quantize_step) or quantize_step <= 0.0):
         raise ValueError("权重量化步长必须大于 0")
     bounds, membership, group_lows, group_highs = _constraint_arrays(values.shape[1], single_limits, group_limits)
+    if quantize_step is not None:
+        _, quant_status = integer_weights_kernel(
+            np.ones(values.shape[1]), bounds, membership, group_lows, group_highs,
+            np.float64(quantize_step), np.int64(50000))
+        if quant_status != 0:
+            messages = {1: "指定权重精度与单项／联合约束不存在共同可行组合。",
+                        2: "离散权重可行性搜索预算耗尽，尚未确认可行；请调整约束或精度。",
+                        3: "权重精度须为可整除 100% 的有限正数，且不小于 0.0000001%。"}
+            raise ValueError(messages[int(quant_status)])
     samples, steps, buckets = _round_arrays(rounds)
     confidence = float(95 if risk_config.get("confidence") is None else risk_config["confidence"])
     if confidence > 1.0:
@@ -1378,6 +1458,7 @@ def _run_exploration(
         np.float64(return_decay), np.float64(risk_decay),
         np.int64(risk_window), np.float64(confidence), np.float64(risk_free_rate),
         np.int64(code), np.float64(target_return or 0.0), np.float64(target_risk or 0.0),
+        np.int64(_return_window(return_config)),
     )
     status = int(result[-1])
     if status == 1:
@@ -1442,7 +1523,7 @@ def calculate_efficient_frontier_exploration(
         quantize_step=quantize_step, risk_free_rate=risk_free_rate, seed=seed,
         target=None, target_return=None, target_risk=None,
     )
-    weights, risks, returns, accepted, _frontier_indices, _frontier_count, special_indices, _ = result
+    weights, risks, returns, accepted, _frontier_indices, _frontier_count, special_indices, round_stats, selected_mask, parents, _ = result
     sampled_candidates = int(accepted)
     combined_weights = np.empty((sampled_candidates + 3 + grid_count, len(asset_names)), dtype=np.float64)
     combined_risks = np.empty(sampled_candidates + 3 + grid_count, dtype=np.float64)
@@ -1483,6 +1564,7 @@ def calculate_efficient_frontier_exploration(
             np.float64(0.94 if risk_config.get("alpha") is None else risk_config["alpha"]),
             np.int64(60 if risk_config.get("window") is None else risk_config["window"]),
             np.float64(confidence), np.float64(risk_free_rate), np.int64(refine_iterations),
+            np.int64(_return_window(return_config)),
         )
         refined_weights, refined_returns, refined_risks, before_scores, after_scores, iterations, statuses = refined
         keys = ("max_sharpe", "min_variance", "max_return")
@@ -1525,15 +1607,22 @@ def calculate_efficient_frontier_exploration(
             .94 if return_config.get("alpha") is None else return_config["alpha"],
             .94 if risk_config.get("alpha") is None else risk_config["alpha"],
             60 if risk_config.get("window") is None else risk_config["window"], confidence,
+            _return_window(return_config),
         ], dtype=np.float64)
         grid_result = solve_frontier_grid_kernel(
             asset_values, bounds, membership, group_lows, group_highs, weights[0],
             np.int64(_return_metric_code(return_config)), np.int64(_risk_metric_code(risk_config)),
             settings, np.int64(grid_count), np.int64(grid_iterations), target_start is not None,
             np.float64(target_start or 0.0), np.float64(target_end or 0.0))
+        adopt_weights, adopt_metrics, adopt_statuses = grid_result[1:4]
+        if quantize_step:
+            adopt_weights, adopt_metrics, adopt_statuses, adopt_target_met = project_grid_weights_kernel(
+                asset_values, grid_result[1], bounds, membership, group_lows, group_highs,
+                grid_result[3], grid_result[0], np.float64(quantize_step),
+                np.int64(_return_metric_code(return_config)), np.int64(_risk_metric_code(risk_config)), settings)
         combined_count, grid_indices, grid_duplicates = append_grid_candidates_kernel(
             combined_weights, combined_risks, combined_returns, np.int64(combined_count),
-            grid_result[1], grid_result[2], grid_result[3])
+            adopt_weights, adopt_metrics, adopt_statuses)
 
     final_frontier_indices, final_frontier_count = pareto_frontier_indices_kernel(
         combined_risks, combined_returns, np.int64(combined_count)
@@ -1565,8 +1654,19 @@ def calculate_efficient_frontier_exploration(
     grid_payload = None
     if grid_result is not None:
         targets, grid_weights, metrics, statuses, iterations, residuals, violations = grid_result[:7]
-        plot_mask = grid_curve_membership_kernel(metrics, statuses, combined_risks, combined_returns,
-                                                 final_frontier_indices, final_frontier_count)
+        if quantize_step:
+            # Reference curve belongs to the continuous domain. Compact only grid outputs.
+            reference_weights = np.empty_like(grid_weights)
+            reference_risks, reference_returns = np.empty(grid_count), np.empty(grid_count)
+            reference_count, _, continuous_duplicates = append_grid_candidates_kernel(
+                reference_weights, reference_risks, reference_returns, np.int64(0), grid_weights, metrics, statuses)
+            reference_indices, reference_frontier_count = pareto_frontier_indices_kernel(
+                reference_risks, reference_returns, reference_count)
+            plot_mask = grid_curve_membership_kernel(metrics, statuses, reference_risks, reference_returns,
+                                                     reference_indices, reference_frontier_count)
+        else:
+            plot_mask = grid_curve_membership_kernel(metrics, statuses, combined_risks, combined_returns,
+                                                     final_frontier_indices, final_frontier_count)
         status_names = ("converged", "max_iterations", "infeasible_target", "numerical_failure",
                         "line_search_failed", "range_unresolved")
         finite = lambda value: float(value) if np.isfinite(value) else None
@@ -1577,15 +1677,26 @@ def calculate_efficient_frontier_exploration(
                      "status": status_names[int(statuses[i])], "iterations": int(iterations[i]),
                      "optimality_residual": finite(residuals[i]), "constraint_violation": finite(violations[i]),
                      "candidate_index": candidate_index if candidate_index >= 0 else None,
-                     "duplicate_of": int(grid_duplicates[i]) if grid_duplicates[i] >= 0 else None,
+                     "duplicate_of": (int(continuous_duplicates[i]) if continuous_duplicates[i] >= 0 else None) if quantize_step else (int(grid_duplicates[i]) if grid_duplicates[i] >= 0 else None),
                      "on_frontier": bool(plot_mask[i]),
                      "value": [finite(metrics[i, 0]), finite(metrics[i, 1])],
                      "weights": [finite(value) for value in grid_weights[i]]}
+            if quantize_step:
+                point["adoption"] = {
+                    "weight_domain": "discrete", "step": quantize_step,
+                    "status": ("feasible", "infeasible", "search_budget", "numerical_failure", "grid_failed")[int(adopt_statuses[i])],
+                    "weights": [finite(value) for value in adopt_weights[i]],
+                    "value": [finite(value) for value in adopt_metrics[i]],
+                    "target_met": bool(adopt_target_met[i]),
+                    "candidate_index": point["candidate_index"],
+                    "duplicate_of": int(grid_duplicates[i]) if grid_duplicates[i] >= 0 else None,
+                }
             points.append(point)
         success = sum(point["status"] == "converged" for point in points)
         grid_payload = {
             "algorithm": "target_return_grid_sqp_njit", "target_axis": "return",
             "subproblem": "minimum_risk_given_return_floor", "weight_domain": "continuous",
+            "adoption_weight_domain": "discrete" if quantize_step else "continuous",
             "risk_solver": "active_set_qp" if _risk_metric_code(risk_config) <= 2 else "feasible_bfgs_sqp",
             "optimality_scope": "convex_quadratic_kkt" if _risk_metric_code(risk_config) <= 2 else "local_numerical_stationarity",
             "requested_points": grid_count, "attempted_points": int(grid_result[11]),
@@ -1595,6 +1706,7 @@ def calculate_efficient_frontier_exploration(
             "unattempted_points": grid_count - int(grid_result[11]),
             "duplicate_targets": sum(points[i]["target"] == points[i - 1]["target"] for i in range(1, grid_count)),
             "duplicate_solutions": sum(point["duplicate_of"] is not None for point in points),
+            "adoption_duplicate_solutions": sum(point.get("adoption", {}).get("duplicate_of") is not None for point in points),
             "added_candidates": int(combined_count) - grid_start_index,
             "max_iterations": grid_iterations, "constraint_tolerance": 1e-7,
             "stationarity_tolerance": 1e-9 if _risk_metric_code(risk_config) <= 2 else 1e-6,
@@ -1610,6 +1722,19 @@ def calculate_efficient_frontier_exploration(
         "scatter": scatter,
         "frontier": frontier,
         "sampled_candidates": sampled_candidates,
+        "weight_domain": "discrete" if quantize_step else "continuous",
+        "quantization_step": quantize_step,
+        "exploration": {
+            "algorithm": "return_bucket_minimum_risk_random_walk_njit", "seed": seed,
+            "selected_indices": [i for i in range(sampled_candidates) if selected_mask[i]],
+            "parent_indices": [int(value) for value in parents[:sampled_candidates]],
+            "rounds": [{"round": i, "requested": int(row[2] + row[4]),
+                        "start_index": int(row[0]), "end_index": int(row[1]),
+                        "accepted": int(row[2]), "selected": int(row[3]), "rejected": int(row[4]),
+                        "search_budget_failures": int(row[5]),
+                        "status": "completed" if row[2] else "no_candidates_previous_seeds_retained"}
+                       for i, row in enumerate(round_stats)],
+        },
         "refined_candidates": refined_candidates,
         "grid_candidates": int(combined_count) - grid_start_index,
         "frontier_grid": grid_payload,
@@ -1662,7 +1787,7 @@ def select_target_weights(
         risk_free_rate=risk_free_rate, seed=seed, target=target,
         target_return=target_return, target_risk=target_risk,
     )
-    weights, _, _, _, _, _, special_indices, _ = result
+    weights, special_indices = result[0], result[6]
     selected_index = int(special_indices[3])
     if selected_index < 0:
         raise ValueError("没有满足优化目标的可行组合")

@@ -20,10 +20,10 @@ import { FrontierGridControls, FrontierGridResults, defaultFrontierGrid, frontie
 import { allocationJourneyPath, readAllocationDraft, readAllocationJourney, updateAllocationJourney, writeAllocationDraft } from '../app/allocationJourney'
 
 // Helper component for section titles
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, plain = false }: { title: string; children: React.ReactNode; plain?: boolean }) {
   return (
-    <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4 sm:p-6">
-      <h2 className="text-lg font-semibold text-slate-800">{title}</h2>
+    <div className={plain ? "border-t border-slate-200 py-5" : "mt-6 rounded-xl border border-slate-200 bg-white p-4 sm:p-6"}>
+      {plain ? <h3 className="text-base font-semibold text-slate-800">{title}</h3> : <h2 className="text-lg font-semibold text-slate-800">{title}</h2>}
       <div className="mt-4">{children}</div>
     </div>
   );
@@ -80,6 +80,7 @@ type AllocationDraft = {
   returnMetric?: string; riskMetric?: string; returnType?: string; riskFreePct?: number;
   annualDaysRet?: number; ewmAlpha?: number; ewmWindow?: number; annualDaysRisk?: number;
   ewmAlphaRisk?: number; ewmWindowRisk?: number; confidence?: number;
+  explorationSeed?: number;
   rounds?: RoundConf[]; quantStep?: 'none' | '0.001' | '0.002' | '0.005'; useRefine?: boolean; refineCount?: number;
   historicalRegime?: HistoricalRegimeBacktestReference | null;
   frontierGrid?: FrontierGridSettings;
@@ -138,6 +139,8 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
     { id: 'r4', samples: 5000, step: 0.15, buckets: 40 },
     { id: 'r5', samples: 5000, step: 0.1, buckets: 50 },
   ]);
+  const [explorationSeed, setExplorationSeed] = useState(initialDraft.explorationSeed ?? 42);
+  const [scatterView, setScatterView] = useState<'all' | 'selected'>('all');
   // 权重量化
   const [quantStep, setQuantStep] = useState<'none' | '0.001' | '0.002' | '0.005'>(initialDraft.quantStep ?? 'none');
   // 固定签名 NJIT 受约束局部精炼
@@ -201,13 +204,13 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
   const draftInput: AllocationDraft = { startDate, endDate, btStart, researchGoal, assetNames,
     strategies: strategies.map(strategy => strategy.type === 'fixed' ? strategy : { ...strategy, rows: strategy.rows.map(row => ({ ...row, weight: null })) }),
     singleLimits, groupLimits, returnMetric, riskMetric, returnType, riskFreePct, annualDaysRet, ewmAlpha,
-    ewmWindow, annualDaysRisk, ewmAlphaRisk, ewmWindowRisk, confidence, rounds, quantStep, useRefine, refineCount, historicalRegime, frontierGrid };
+    ewmWindow, annualDaysRisk, ewmAlphaRisk, ewmWindowRisk, confidence, rounds, explorationSeed, quantStep, useRefine, refineCount, historicalRegime, frontierGrid };
   const draftKey = stableStringify(draftInput);
   useEffect(() => {
     if (loadedAllocation === requestedAllocation && loadedAllocation) writeAllocationDraft(draftScope, draftInput);
   }, [draftScope, draftKey, loadedAllocation, requestedAllocation]);
 
-  const frontierInputKey = stableStringify({ selectedAlloc, startDate, endDate, singleLimits, groupLimits, returnMetric, riskMetric, returnType, riskFreePct, annualDaysRet, ewmAlpha, ewmWindow, annualDaysRisk, ewmAlphaRisk, ewmWindowRisk, confidence, rounds, quantStep, useRefine, refineCount, frontierGrid });
+  const frontierInputKey = stableStringify({ selectedAlloc, startDate, endDate, singleLimits, groupLimits, returnMetric, riskMetric, returnType, riskFreePct, annualDaysRet, ewmAlpha, ewmWindow, annualDaysRisk, ewmAlphaRisk, ewmWindowRisk, confidence, rounds, explorationSeed, quantStep, useRefine, refineCount, frontierGrid });
   latestFrontierKey.current = frontierInputKey;
   const backtestInputKey = stableStringify({ selectedAlloc, btStart, endDate, strategies, historicalRegime, singleLimits, groupLimits, riskFreePct });
   useEffect(() => {
@@ -766,7 +769,8 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         group_limits: groupLimits.map(g => ({ assets: g.assets, lo: g.lo, hi: g.hi }))
       },
       exploration: {
-        rounds: rounds.map((r, idx) => idx === 0 ? ({ samples: r.samples, step: r.step }) : ({ samples: r.samples, step: r.step, buckets: r.buckets }))
+        seed: explorationSeed,
+        rounds: rounds.map(r => ({ samples: r.samples, step: r.step, buckets: r.buckets }))
       },
       quantization: { step: quantStep === 'none' ? 'none' : Number(quantStep) },
       refine: { enabled: useRefine, method: 'bounded_pairwise_pattern_search_njit', iterations: refineCount },
@@ -821,7 +825,10 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       {draftNotice && <p role="status" className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">已保留研究输入。历史结果需在当前数据口径下重新计算。</p>}
       {error && <p role="alert" className="sticky top-2 z-40 mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
 
-      <Section title="选择大类构建方案">
+      <section aria-labelledby="frontier-workspace-title" className="mt-6 min-w-0 rounded-xl border border-slate-200 bg-white p-4 sm:p-6 [&_button]:min-h-10 [&_input:not([type=checkbox])]:min-h-10 [&_select]:min-h-10">
+      <h2 id="frontier-workspace-title" className="text-lg font-semibold text-slate-800">可配置空间与有效前沿</h2>
+      <p className="my-3 text-sm leading-6 text-slate-600">在同一处配置指标、单项与联合约束、多轮随机游走、权重精度和前沿目标，再查看并采用结果。</p>
+      <Section plain title="选择大类构建方案">
         {loading && <p>正在加载方案列表...</p>}
         {!loading && (
           <div className="flex flex-wrap items-center gap-3">
@@ -869,23 +876,19 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         )}
       </Section>
 
-      <Section title="长期配置目标与研究区间">
+      <Section plain title="长期配置目标与研究区间">
         <div className="grid gap-3 sm:grid-cols-3">
           <label className="text-sm">我想先做什么<select aria-label="长期配置目标" value={researchGoal} onChange={event => setResearchGoal(event.target.value)} className="mt-1 w-full rounded-lg border p-2"><option value="manual">填写长期权重</option><option value="compare">比较不同收益与风险的候选</option></select></label>
           <label className="text-sm">研究区间开始<input aria-label="研究区间开始" type="date" value={startDate} max={endDate} onChange={event => { setStartDate(event.target.value); setBtStart(event.target.value); }} className="mt-1 w-full rounded-lg border p-2" /></label>
           <label className="text-sm">方案日期 / 构建区间结束<input aria-label="研究区间结束" type="date" value={endDate} min={startDate} onChange={event => setEndDate(event.target.value)} className="mt-1 w-full rounded-lg border p-2" /></label>
         </div>
         <p className="mt-2 text-xs text-slate-600">候选、目标网格和策略回测共享上述结束日，实际样本受数据覆盖限制；不是正式 PIT 认证。</p>
-        <div className="mt-4 border-t border-slate-200 pt-4"><FrontierGridControls value={frontierGrid} quantized={quantStep !== 'none'} busy={isCalculating} onChange={setFrontierGrid} /></div>
-        <div className="mt-4 flex flex-wrap gap-3">
-          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || equalWeightLoading || isCalculating || (researchGoal !== 'manual' && Boolean(gridIssue))} onClick={researchGoal === 'manual' ? addFixedStrategy : onCalculate} className="rounded-lg bg-accent-600 px-4 py-2 text-sm text-white disabled:opacity-50">{researchGoal === 'manual' ? '填写一组长期权重' : '计算并比较候选'}</button>
-          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || isCalculating || Boolean(gridIssue)} onClick={onCalculate} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">生成可配置空间与有效前沿</button>
-        </div>
+
       </Section>
-      <Section title="大类资金边界（占整个组合的 %）">
+      <Section plain title="大类资金边界（占整个组合的 %）">
         {/* 权重约束设置 */}
         <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
-          <div className="rounded-lg border p-4">
+          <div className="min-w-0 space-y-3">
             <h3 className="font-medium text-slate-700">单个大类资金范围</h3>
             {assetNames.length === 0 ? (
               <p className="text-sm text-slate-600 mt-2">请先选择并加载方案</p>
@@ -909,12 +912,12 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
             )}
           </div>
 
-          <div className="rounded-lg border p-4">
+          <div className="min-w-0 space-y-3">
             <h3 className="font-medium text-slate-700">多个大类合计范围</h3>
             <p className="mt-1 text-xs text-slate-600">例如：权益与商品合计不超过 60%。不需要时留空。</p>
             <div className="mt-2 space-y-3">
               {groupLimits.map((g, idx) => (
-                <div key={g.id} className="rounded-lg border p-2">
+                <div key={g.id} className="border-b border-slate-200 py-3">
                   <div className="flex flex-wrap gap-2">
                     {assetNames.map(n => (
                       <label key={n} className="flex items-center gap-1 text-xs">
@@ -938,15 +941,15 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         </div>
 
       </Section>
-      <details className="mt-5 rounded-xl border bg-white p-4"><summary className="cursor-pointer font-medium">高级设置：指标口径与计算精度</summary><div className="mt-4">
+      <Section plain title="收益、风险与随机探索参数">
         <div className="grid grid-cols-1 gap-x-8 gap-y-6 md:grid-cols-2">
           {/* 收益指标 */}
-          <div className="space-y-3 rounded-lg border p-4">
-            <h3 className="font-medium text-slate-700">📈 收益指标</h3>
-            <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <h3 className="font-medium text-slate-700">收益指标</h3>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-slate-600">收益指标</label>
-                <select onChange={e => setReturnMetric(e.target.value)} value={returnMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
+                <select aria-label="收益指标" onChange={e => setReturnMetric(e.target.value)} value={returnMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
                   <option value="annual">年化收益率</option>
                   <option value="annual_mean">年化收益率均值</option>
                   <option value="cumulative">累计收益率</option>
@@ -956,7 +959,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-600">收益类型</label>
-                <select value={returnType} onChange={e => setReturnType(e.target.value)} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
+                <select aria-label="收益类型" value={returnType} onChange={e => setReturnType(e.target.value)} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
                   <option value="simple">普通收益率</option>
                   <option value="log">对数收益率</option>
                 </select>
@@ -965,30 +968,30 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
             {(returnMetric === 'annual' || returnMetric === 'annual_mean') && (
               <div>
                 <label className="block text-sm font-medium text-slate-600">年化天数</label>
-                <input type="number" value={annualDaysRet} onChange={e => setAnnualDaysRet(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                <input aria-label="收益年化天数" type="number" value={annualDaysRet} onChange={e => setAnnualDaysRet(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
               </div>
             )}
             {returnMetric === 'ewm' && (
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <label className="block text-sm font-medium text-slate-600">衰减因子 λ</label>
-                  <input type="number" step="0.01" value={ewmAlpha} onChange={e => setEwmAlpha(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                  <input aria-label="收益衰减因子" type="number" step="0.01" value={ewmAlpha} onChange={e => setEwmAlpha(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600">窗口长度</label>
-                  <input type="number" value={ewmWindow} onChange={e => setEwmWindow(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                  <input aria-label="收益窗口长度" type="number" value={ewmWindow} onChange={e => setEwmWindow(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                 </div>
               </div>
             )}
           </div>
 
           {/* 风险指标 */}
-          <div className="space-y-3 rounded-lg border p-4">
-            <h3 className="font-medium text-slate-700">⚠️ 风险指标</h3>
-            <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <h3 className="font-medium text-slate-700">风险指标</h3>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                     <label className="block text-sm font-medium text-slate-600">风险指标</label>
-                    <select onChange={e => setRiskMetric(e.target.value)} value={riskMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
+                    <select aria-label="风险指标" onChange={e => setRiskMetric(e.target.value)} value={riskMetric} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
                         <option value="vol">波动率</option>
                         <option value="annual_vol">年化波动率</option>
                         <option value="ewm_vol">指数加权波动率</option>
@@ -1001,36 +1004,37 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                 {(riskMetric === 'var' || riskMetric === 'es') && (
                     <div>
                         <label className="block text-sm font-medium text-slate-600">置信度 %</label>
-                        <input type="number" value={confidence} onChange={e => setConfidence(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                        <input aria-label="置信度 (%)" type="number" value={confidence} onChange={e => setConfidence(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                     </div>
                 )}
             </div>
             {(riskMetric === 'annual_vol') && (
                 <div>
                     <label className="block text-sm font-medium text-slate-600">年化天数</label>
-                    <input type="number" value={annualDaysRisk} onChange={e => setAnnualDaysRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                    <input aria-label="风险年化天数" type="number" value={annualDaysRisk} onChange={e => setAnnualDaysRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                 </div>
             )}
             {(riskMetric === 'ewm_vol') && (
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
                         <label className="block text-sm font-medium text-slate-600">衰减因子 λ</label>
-                        <input type="number" step="0.01" value={ewmAlphaRisk} onChange={e => setEwmAlphaRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                        <input aria-label="风险衰减因子" type="number" step="0.01" value={ewmAlphaRisk} onChange={e => setEwmAlphaRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-600">窗口长度</label>
-                    <input type="number" value={ewmWindowRisk} onChange={e => setEwmWindowRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
+                    <input aria-label="风险窗口长度" type="number" value={ewmWindowRisk} onChange={e => setEwmWindowRisk(Number(e.target.value))} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm" />
                     </div>
                 </div>
             )}
           </div>
 
           {/* 夏普比率参数 */}
-          <div className="space-y-3 rounded-lg border p-4 md:col-span-2">
-            <h3 className="font-medium text-slate-700">📊 夏普比率参数</h3>
+          <div className="space-y-3 md:col-span-2">
+            <h3 className="font-medium text-slate-700">夏普比率参数</h3>
             <div>
               <label className="block text-sm font-medium text-slate-600">年化无风险收益率(%)</label>
               <input
+                aria-label="无风险收益率 (%)"
                 type="number"
                 step="0.1"
                 value={riskFreePct}
@@ -1046,35 +1050,39 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         </div>
 
         {/* 随机探索设置 */}
-        <div className="mt-6 rounded-lg border p-4">
-          <h3 className="font-medium text-slate-700">🎲 随机探索设置</h3>
-          <p className="text-xs text-slate-600 mt-1">默认提供第0至第5轮，样本点从 1000~5000，步长从 0.5~0.1，分桶从 10~50（第0轮不分桶，可删除第1-5轮）。</p>
+        <div className="mt-6 border-t border-slate-200 pt-4">
+          <h3 className="font-medium text-slate-700">多轮随机游走</h3>
+          <p className="text-xs text-slate-600 mt-1">首轮随机采样；后续各轮从上轮保留点扰动，投影到约束空间，再按收益分桶选取最低风险点作为下一轮种子。步长越小越靠近种子，不保证每一点都改善。样本点数为尝试预算，实际可行数量见结果。</p>
+          <label className="mt-3 block max-w-xs text-sm text-slate-700">随机种子
+            <input aria-label="随机种子" type="number" min={0} max={4294967295} step={1} value={explorationSeed} onChange={event => setExplorationSeed(Number(event.target.value))} className="mt-1 w-full rounded-lg border-slate-300 p-2" />
+            <span className="mt-1 block text-xs text-slate-600">相同参数和种子可复现；修改种子生成另一组随机探索。</span>
+          </label>
           <div className="mt-2 space-y-2">
             {rounds.map((r, idx) => (
-              <div key={r.id} className="grid grid-cols-12 items-center gap-2">
+              <div key={r.id} className="grid grid-cols-2 items-end gap-3 border-b border-slate-100 py-2 sm:grid-cols-12">
                 <div className="col-span-2 text-sm text-slate-600">第{idx}轮</div>
-                <label className="col-span-3 text-xs text-slate-600 flex items-center gap-1">
+                <label className="min-w-0 text-xs text-slate-600 sm:col-span-3">
                   <span className="whitespace-nowrap">样本点</span>
-                  <input aria-label={`第${idx}轮样本点`} type="number" min={1} value={r.samples} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, samples: Number(e.target.value) } : x))} className="ml-1 w-full rounded-lg border-slate-300 px-2 py-1 text-xs" />
+                  <input aria-label={`第${idx}轮样本点`} type="number" min={1} value={r.samples} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, samples: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
                 </label>
-                <label className="col-span-3 text-xs text-slate-600 flex items-center gap-1">
+                <label className="min-w-0 text-xs text-slate-600 sm:col-span-3">
                   <span className="whitespace-nowrap">步长</span>
-                  <input aria-label={`第${idx}轮步长`} type="number" step={0.01} min={0} max={1} value={r.step} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, step: Number(e.target.value) } : x))} className="ml-1 w-full rounded-lg border-slate-300 px-2 py-1 text-xs" />
+                  <input aria-label={`第${idx}轮步长`} disabled={idx === 0} title={idx === 0 ? '首轮直接随机采样，不使用扰动步长' : undefined} type="number" step={0.01} min={0} max={1} value={r.step} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, step: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 {idx > 0 && (
-                  <label className="col-span-3 text-xs text-slate-600 flex items-center gap-1">
+                  <label className="min-w-0 text-xs text-slate-600 sm:col-span-3">
                     <span className="whitespace-nowrap">分桶</span>
-                    <input aria-label={`第${idx}轮分桶`} type="number" min={1} value={(r as any).buckets ?? 50} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, buckets: Number(e.target.value) } : x))} className="ml-1 w-full rounded-lg border-slate-300 px-2 py-1 text-xs" />
+                    <input aria-label={`第${idx}轮分桶`} type="number" min={1} value={(r as any).buckets ?? 50} onChange={e => setRounds(prev => prev.map(x => x.id===r.id ? { ...x, buckets: Number(e.target.value) } : x))} className="mt-1 min-w-0 w-full rounded-lg border-slate-300 px-2 py-1 text-sm" />
                   </label>
                 )}
                 {idx > 0 && (
-                  <button onClick={() => setRounds(prev => prev.filter(x => x.id !== r.id))} className="col-span-1 rounded-lg bg-red-50 text-red-700 text-xs px-2">删</button>
+                  <button onClick={() => setRounds(prev => prev.filter(x => x.id !== r.id))} aria-label={`删除第${idx}轮`} className="rounded-lg bg-rose-50 text-rose-800 text-xs px-2 sm:col-span-1">删</button>
                 )}
               </div>
             ))}
             <button onClick={() => setRounds(prev => [...prev, { id: `r${Date.now()}`, samples: 200, step: 0.5, buckets: 50 }])} className="rounded-lg bg-slate-100 px-3 py-1 text-xs">+ 增加一轮</button>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-4">
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-sm font-medium text-slate-600">权重量化</label>
               <select aria-label="权重量化" value={quantStep} onChange={e => setQuantStep(e.target.value as any)} className="mt-1 block w-full rounded-lg border-slate-300 shadow-sm">
@@ -1084,7 +1092,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                 <option value="0.005">0.5%</option>
               </select>
             </div>
-            <div className="flex items-end gap-2">
+            <div className="flex flex-wrap items-end gap-2">
               <label className="flex items-center gap-2 text-sm text-slate-700">
                 <input type="checkbox" checked={useRefine} onChange={e => setUseRefine(e.target.checked)} /> 使用受约束局部精炼
               </label>
@@ -1094,20 +1102,38 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
             </div>
           </div>
         </div>
-        <p className="mt-3 text-xs leading-5 text-slate-600">此处局部精炼只额外改善三个代表候选；整条曲线的 20／200 个目标请在上方启用目标网格。采样取整后还会修复约束，不保证权重严格落在整数格点。</p>
-        </div></details>
+        <p className="mt-3 text-xs leading-5 text-slate-600">局部精炼改善三个代表候选；下方 20／200 个收益目标用于加密整条前沿。选定精度时，散点与最终可采用权重均须同时满足精度、单项及联合约束。</p>
+        <div className="mt-4 border-t border-slate-200 pt-4"><FrontierGridControls value={frontierGrid} quantized={quantStep !== 'none'} busy={isCalculating} onChange={setFrontierGrid} /></div>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || equalWeightLoading || isCalculating || (researchGoal !== 'manual' && Boolean(gridIssue))} onClick={researchGoal === 'manual' ? addFixedStrategy : onCalculate} className="rounded-lg bg-accent-600 px-4 py-2 text-sm text-white disabled:opacity-50">{researchGoal === 'manual' ? '填写一组长期权重' : '计算并比较候选'}</button>
+          <button disabled={!loadedAllocation || loadedAllocation !== selectedAlloc || isCalculating || Boolean(gridIssue)} onClick={onCalculate} className="rounded-lg border px-4 py-2 text-sm disabled:opacity-50">生成可配置空间与有效前沿</button>
+        </div>
+        <p className="mt-3 text-xs text-slate-600">采样尝试预算 {rounds.reduce((sum, round) => sum + round.samples, 0).toLocaleString()} 个 · 权重精度 {quantStep === 'none' ? '连续' : `${Number(quantStep) * 100}%`}{frontierGrid.enabled ? ` · 前沿目标 ${frontierGrid.point_count} 个` : ''}</p>
+        {isCalculating && <p role="status" className="mt-2 text-sm text-slate-600">正在生成随机探索候选与前沿，请稍候…</p>}
+      </Section>
 
       {frontierData && (
-        <Section title="比较候选，采用长期配置">
+        <Section plain title="比较候选，采用长期配置">
           <p className="mb-3 text-sm text-slate-600">以下是同一区间与约束下的历史候选。采用后可改权重并回测，不代表未来最优。</p>
           {/* 这张前沿图挑出来的就是权重本身，它按哪天、哪个产品域算的必须跟着它走。 */}
           <PitDecisionNotice lineage={frontierData.pit} />
           {frontierData.research_interval && <p className="mb-3 text-xs leading-5 text-slate-600">实际样本：{frontierData.research_interval.actual_start} 至 {frontierData.research_interval.actual_end} · 净值 {frontierData.research_interval.nav_observations} 期 / 收益 {frontierData.research_interval.return_observations} 期 · 采样候选 {frontierData.sampled_candidates ?? frontierData.accepted_candidates ?? frontierData.scatter?.length ?? 0} 个{Number(frontierData.refined_candidates ?? 0) > 0 ? ` + 精炼新增 ${frontierData.refined_candidates} 个` : ''}{Number(frontierData.grid_candidates ?? 0) > 0 ? ` + 网格优化新增 ${frontierData.grid_candidates} 个` : ''} · 当前候选合计 {frontierData.accepted_candidates ?? frontierData.scatter?.length ?? 0} 个 · 有效前沿 {frontierData.frontier_candidates ?? frontierData.frontier?.length ?? 0} 个。</p>}
           {frontierData.refinement?.requested && <p role="status" className="mb-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">局部精炼仅处理最大夏普、最小风险、最大收益 3 个代表候选，并以原始可行候选为不可退化基准；严格改善的结果会加入候选集合并重新构造前沿。{frontierData.refinement.items?.map((item: any) => `${item.candidate} ${item.status} / ${item.iterations} 次${item.applied ? ' / 已采用' : ' / 未替换原候选'}`).join('；')}。不声明整条前沿的连续求解或全局最优。</p>}
-          <div className="overflow-x-auto"><table className="min-w-full text-sm" aria-label="长期配置候选"><thead className="bg-slate-50"><tr><th scope="col" className="p-2 text-left">候选</th>{(frontierData.asset_names ?? []).map((name: string) => <th scope="col" key={name} className="p-2">{name}</th>)}<th scope="col" className="p-2">{returnLabel}</th><th scope="col" className="p-2">{riskLabel}</th><th scope="col" className="p-2">操作</th></tr></thead><tbody>{candidates.map(({ label, key }) => {
+          <div className="overflow-x-auto"><table className="min-w-[640px] w-full text-sm" aria-label="长期配置候选"><thead className="bg-slate-50"><tr><th scope="col" className="p-2 text-left">候选</th>{(frontierData.asset_names ?? []).map((name: string) => <th scope="col" key={name} className="p-2">{name}</th>)}<th scope="col" className="p-2">{returnLabel}</th><th scope="col" className="p-2">{riskLabel}</th><th scope="col" className="p-2">操作</th></tr></thead><tbody>{candidates.map(({ label, key }) => {
             const point = frontierData[key]; const value = point.value ?? point;
             return <tr key={key} className="border-t"><td className="p-2">{label}</td>{(point.weights ?? []).map((weight: number, index: number) => <td key={index} className="p-2 text-center">{(weight * 100).toFixed(2)}%</td>)}<td className="p-2 text-center">{Number.isFinite(value[1]) ? `${(value[1] * 100).toFixed(2)}%` : '—'}</td><td className="p-2 text-center">{Number.isFinite(value[0]) ? `${(value[0] * 100).toFixed(2)}%` : '—'}</td><td className="p-2"><button onClick={() => adoptCandidate(label, point)} className="whitespace-nowrap rounded-lg border border-emerald-700 px-3 py-1 text-emerald-800">采用{label}</button></td></tr>;
           })}</tbody></table></div>
+          {frontierData.exploration && <div className="mt-4 space-y-3">
+            <label className="block max-w-sm text-sm">散点显示
+              <select aria-label="散点显示" value={scatterView} onChange={event => setScatterView(event.target.value as 'all' | 'selected')} className="mt-1 w-full rounded-lg border-slate-300 p-2">
+                <option value="all">全部可行候选（含精炼）</option><option value="selected">首轮与各轮分桶保留点</option>
+              </select>
+            </label>
+            <div className="overflow-x-auto"><table aria-label="随机探索轮次统计" className="w-full min-w-[480px] text-sm">
+              <thead><tr>{['轮次', '尝试预算', '可行点', '保留点', '失败点'].map(label => <th scope="col" key={label} className="p-2 text-left">{label}</th>)}</tr></thead>
+              <tbody>{frontierData.exploration.rounds.map((round: any, index: number) => <tr key={round.round} className="border-t border-slate-200"><th scope="row" className="p-2 text-left">第{index}轮</th><td className="p-2">{round.requested}</td><td className="p-2">{round.accepted}</td><td className="p-2">{round.selected}</td><td className="p-2">{round.rejected}{round.search_budget_failures > 0 ? `（搜索预算耗尽 ${round.search_budget_failures}）` : ''}{round.accepted === 0 ? '；沿用上一有效轮种子' : ''}</td></tr>)}</tbody>
+            </table></div>
+          </div>}
           {frontierData.frontier_grid && <FrontierGridResults result={frontierData.frontier_grid} assetNames={frontierData.asset_names} riskLabel={riskLabel} returnLabel={returnLabel} onAdopt={point => adoptCandidate(`前沿目标 ${point.target_index + 1}`, point)} />}
           <details open className="mt-4"><summary className="cursor-pointer text-sm">有效前沿图（默认展开，可收起）</summary><ReactECharts
             style={{ height: 500 }}
@@ -1116,6 +1142,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
               animation: false,
               title: {
                 text: '可配置空间与有效前沿',
+                textStyle: { fontSize: 16 },
                 left: 'center'
               },
               tooltip: {
@@ -1140,27 +1167,29 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
               dataZoom: [
                 { type: 'inside', xAxisIndex: 0, filterMode: 'none' },
                 { type: 'inside', yAxisIndex: 0, filterMode: 'none' },
-                { type: 'slider', xAxisIndex: 0, filterMode: 'none' },
-                { type: 'slider', yAxisIndex: 0, filterMode: 'none' },
+                { type: 'slider', xAxisIndex: 0, filterMode: 'none', bottom: 12, height: 18 },
+                { type: 'slider', yAxisIndex: 0, filterMode: 'none', right: 0, width: 12 },
               ],
               legend: {
+                type: 'scroll',
                 top: 36,
+                right: 0,
                 left: 'center',
-                data: ['其他组合', '有效前沿', ...(frontierData.frontier_grid ? ['候选非支配点'] : []), '最大夏普率', '最小方差', '最大收益']
+                data: ['其他组合', frontierData.weight_domain === 'discrete' && frontierData.frontier_grid ? '连续理论前沿' : '有效前沿', ...(frontierData.frontier_grid ? [frontierData.weight_domain === 'discrete' ? '指定精度前沿' : '候选非支配点'] : []), '最大夏普率', '最小风险', '最大收益']
               },
-              grid: { top: 80 },
-              xAxis: { type: 'value', name: riskLabel, nameLocation: 'middle', nameGap: 28, scale: true, axisLabel: { formatter: (value: number) => `${(value * 100).toFixed(1)}%` } },
-              yAxis: { type: 'value', name: returnLabel, scale: true, axisLabel: { formatter: (value: number) => `${(value * 100).toFixed(1)}%` } },
+              grid: { top: 80, bottom: 80, left: 12, right: 30, containLabel: true },
+              xAxis: { type: 'value', name: riskLabel, nameLocation: 'middle', nameGap: 28, scale: true, splitNumber: 3, axisLabel: { hideOverlap: true, fontSize: 12, formatter: (value: number) => `${(value * 100).toFixed(1)}%` } },
+              yAxis: { type: 'value', name: returnLabel, nameLocation: 'middle', nameGap: 42, scale: true, axisLabel: { hideOverlap: true, fontSize: 12, formatter: (value: number) => `${(value * 100).toFixed(1)}%` } },
               series: [
                 ...(frontierData.scatter ? [{
                   name: '其他组合',
                   type: 'scatter',
                   symbolSize: 3,
-                  data: frontierData.frontier_grid ? frontierData.scatter.slice(0, frontierData.sampled_candidates) : frontierData.scatter,
+                  data: scatterView === 'selected' && frontierData.exploration ? frontierData.exploration.selected_indices.map((index: number) => frontierData.scatter[index]) : frontierData.scatter,
                   itemStyle: { color: 'rgba(128, 128, 128, 0.35)' }
                 }] : []),
                 ...(frontierData.frontier ? [{
-                  name: '有效前沿',
+                  name: frontierData.weight_domain === 'discrete' && frontierData.frontier_grid ? '连续理论前沿' : '有效前沿',
                   type: frontierData.frontier_grid ? 'line' : 'scatter',
                   connectNulls: false,
                   smooth: false,
@@ -1169,7 +1198,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   itemStyle: { color: '#2563eb' } // Tailwind indigo-600
                 }] : []),
                 ...(frontierData.frontier_grid ? [{
-                  name: '候选非支配点', type: 'scatter', symbolSize: 3, data: frontierData.frontier,
+                  name: frontierData.weight_domain === 'discrete' ? '指定精度前沿' : '候选非支配点', type: 'scatter', symbolSize: 3, data: frontierData.frontier,
                 }] : []),
                 ...(frontierData.max_sharpe ? [{
                   name: '最大夏普率',
@@ -1178,7 +1207,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   data: [frontierData.max_sharpe]
                 }] : []),
                 ...(frontierData.min_variance ? [{
-                  name: '最小方差',
+                  name: '最小风险',
                   type: 'scatter',
                   symbolSize: 10,
                   data: [frontierData.min_variance]
@@ -1194,6 +1223,8 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
           /></details>
         </Section>
       )}
+
+      </section>
 
       {/* 大类资产策略制定与回测 */}
       <Section title="长期权重与历史验证">

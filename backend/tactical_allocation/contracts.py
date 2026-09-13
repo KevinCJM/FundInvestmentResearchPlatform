@@ -53,7 +53,7 @@ class PreviewRequest(Contract):
     max_abs_tilt: float = Field(default=.1, ge=0, le=1)
     transaction_cost_bps: float = Field(default=10, ge=0, le=1000)
     risk_penalty: float = Field(default=3, ge=0, le=1000)
-    max_tracking_error: float = Field(default=.1, gt=0, le=10)
+    max_tracking_error: float = Field(default=.1, ge=0, le=10)
     max_turnover: float = Field(default=1, gt=0, le=1)
     confidence_floor: float = Field(default=.6, ge=0, le=1)
     max_signal_age_days: int = Field(default=31, ge=1, le=3650)
