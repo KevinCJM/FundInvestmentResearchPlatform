@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 REPOSITORY = "KevinCJM/FundInvestmentResearchPlatform"
 BOT_ID = 199175422
@@ -70,12 +70,25 @@ def complete_report(report):
         value = report.get(name)
         return isinstance(value, str) and bool(value.strip()) and not value.strip().startswith("<")
 
+    def evidence_url(value):
+        if not isinstance(value, str) or re.search(r"[\s<>]", value):
+            return False
+        try:
+            parsed = urlsplit(value)
+            parsed.port  # Reject malformed or out-of-range ports.
+            host = parsed.hostname or ""
+            return (parsed.scheme == "https" and bool(host) and len(host) <= 253
+                    and parsed.username is None and parsed.password is None
+                    and all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                            for label in host.split(".")))
+        except ValueError:
+            return False
+
     evidence = report.get("evidence")
     return (report.get("reviewer_identity") == BOT_LOGIN
             and all(text_field(name) for name in ("review_run_id", "reviewed_scope"))
             and isinstance(evidence, list) and bool(evidence)
-            and all(isinstance(url, str) and url.startswith("https://") and not re.search(r"\s", url)
-                    for url in evidence))
+            and all(evidence_url(url) for url in evidence))
 
 
 def evaluate(snapshot, context):

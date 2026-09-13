@@ -46,6 +46,15 @@ class ReviewDecisionTests(unittest.TestCase):
                     "body": "```json\n" + json.dumps(report) + "\n```"})
                 self.assertEqual(self.state(s, c), "failure", (key, value))
 
+    def test_structured_report_rejects_placeholder_or_malformed_evidence_urls(self):
+        for value in ['https://', 'https://<evidence>', 'https://example.com:bad', 'https://example.com:99999',
+                      'http://example.com/run', 'https://bad host/run', 'https://a..com/run', 'https://-bad.com/run', None]:
+            s, c = fixture(); report = valid_report(c); report['evidence'] = [value]
+            s['comments'].append({'user': BOT, 'performed_via_github_app': {'id': gate.CODEX_APP_ID},
+                'created_at': END, 'updated_at': END, 'html_url': 'report',
+                'body': '```json\n' + json.dumps(report) + '\n```'})
+            self.assertEqual(self.state(s, c), 'failure', value)
+
     def test_generic_pr_thumb_is_not_version_bound(self):
         s, c = fixture(); del s["reactions"][0]["request_comment_id"]
         self.assertEqual(self.state(s, c), "pending")
