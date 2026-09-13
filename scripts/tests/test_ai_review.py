@@ -14,6 +14,13 @@ START, END = "2026-09-11T10:00:00Z", "2026-09-11T10:10:00Z"
 BOT = {"id": gate.BOT_ID, "login": gate.BOT_LOGIN, "type": "Bot"}
 
 
+def valid_report(context):
+    return {**context, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": [],
+            "reviewer_identity": gate.BOT_LOGIN, "review_run_id": "codex-review-1",
+            "reviewed_scope": "Complete PR diff and necessary callers, contracts and tests",
+            "evidence": [f"https://github.com/{gate.REPOSITORY}/pull/12#issuecomment-1"]}
+
+
 def fixture():
     context = {"schema": gate.SCHEMA, "pr_number": 12, "head_sha": HEAD, "base_sha": BASE, "base_ref": "Dev", "observed_at": START}
     repo = {"full_name": gate.REPOSITORY}
@@ -29,6 +36,15 @@ def fixture():
 class ReviewDecisionTests(unittest.TestCase):
     def state(self, snapshot, context):
         return gate.evaluate(snapshot, context)["state"]
+
+    def test_structured_pass_requires_complete_review_attestation(self):
+        for key in ["reviewer_identity", "review_run_id", "reviewed_scope", "evidence"]:
+            for value in [None, "", [], "<placeholder>"]:
+                s, c = fixture(); report = valid_report(c); report[key] = value
+                s["comments"].append({"user": BOT, "performed_via_github_app": {"id": gate.CODEX_APP_ID},
+                    "created_at": END, "updated_at": END, "html_url": "report",
+                    "body": "```json\n" + json.dumps(report) + "\n```"})
+                self.assertEqual(self.state(s, c), "failure", (key, value))
 
     def test_generic_pr_thumb_is_not_version_bound(self):
         s, c = fixture(); del s["reactions"][0]["request_comment_id"]
@@ -48,20 +64,20 @@ class ReviewDecisionTests(unittest.TestCase):
 
     def test_dismissed_pass_is_not_evidence(self):
         s, c = fixture(); s["reactions"] = []
-        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        report = valid_report(c)
         s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "DISMISSED", "submitted_at": END, "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}]
         self.assertNotEqual(self.state(s, c), "success")
 
     def test_changes_requested_after_structured_pass_is_blocked(self):
         s, c = fixture()
-        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        report = valid_report(c)
         s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"},
                         {"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": "2026-09-11T10:11:00Z", "body": "blocking", "html_url": "y"}]
         self.assertEqual(self.state(s, c), "failure")
 
     def test_new_official_report_can_supersede_old_changes_requested(self):
         s, c = fixture()
-        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        report = valid_report(c)
         s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": START, "body": "blocking", "html_url": "old"}]
         s["comments"].append({"user": BOT, "performed_via_github_app": {"id": gate.CODEX_APP_ID}, "created_at": END, "updated_at": END, "html_url": "new", "body": "```json\n" + json.dumps(report) + "\n```"})
         self.assertEqual(self.state(s, c), "success")
@@ -105,14 +121,14 @@ class ReviewDecisionTests(unittest.TestCase):
 
     def test_contradictory_structured_pass_is_blocked(self):
         s, c = fixture()
-        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        report = valid_report(c)
         s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": END,
                          "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}]
         self.assertEqual(self.state(s, c), "failure")
 
     def test_quoted_or_multiple_structured_reports_never_pass(self):
         s, c = fixture()
-        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        report = valid_report(c)
         block = "```json\n" + json.dumps(report) + "\n```"
         for body in ["This is an unsafe example:\n" + block, block + "\n" + block,
                      block + "\n```json\n" + json.dumps({**report,"conclusion":"BLOCKED"}) + "\n```"]:
@@ -181,7 +197,7 @@ class ReviewDecisionTests(unittest.TestCase):
 
     def test_structured_pass_must_match_both_shas(self):
         s, c = fixture(); s["comments"] = []; s["reactions"] = []
-        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        report = valid_report(c)
         review = {"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}
         s["reviews"] = [review]
         self.assertEqual(self.state(s, c), "success")

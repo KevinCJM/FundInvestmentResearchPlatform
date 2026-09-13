@@ -65,6 +65,19 @@ def outcome(state, reason, evidence=None):
     return {"state": state, "reason": reason, "evidence": evidence or []}
 
 
+def complete_report(report):
+    def text_field(name):
+        value = report.get(name)
+        return isinstance(value, str) and bool(value.strip()) and not value.strip().startswith("<")
+
+    evidence = report.get("evidence")
+    return (report.get("reviewer_identity") == BOT_LOGIN
+            and all(text_field(name) for name in ("review_run_id", "reviewed_scope"))
+            and isinstance(evidence, list) and bool(evidence)
+            and all(isinstance(url, str) and url.startswith("https://") and not re.search(r"\s", url)
+                    for url in evidence))
+
+
 def evaluate(snapshot, context):
     """Pure, fail-closed decision; context must predate the reviewed evidence."""
     pr = snapshot["pr"]
@@ -131,7 +144,7 @@ def evaluate(snapshot, context):
             reports.append((at, report, record["html_url"], record.get("state")))
     if reports:
         at, report, url, review_state = max(reports, key=lambda r: (r[0], r[1].get("conclusion") != "PASS"))
-        if (report.get("conclusion") == "PASS" and report.get("findings") == [] and report.get("limitations") == []
+        if (complete_report(report) and report.get("conclusion") == "PASS" and report.get("findings") == [] and report.get("limitations") == []
                 and review_state != "CHANGES_REQUESTED" and at >= latest_finding
                 and not any(timestamp(r["submitted_at"]) > at or
                             (r.get("state") == "CHANGES_REQUESTED" and timestamp(r["submitted_at"]) == at)

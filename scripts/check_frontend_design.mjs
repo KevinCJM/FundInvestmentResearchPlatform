@@ -209,6 +209,18 @@ const contrast = (a, b) => {
 // disabled: 变体不计：WCAG 1.4.3 把失效控件排除在对比度要求之外。
 const BG_TOKEN = /(?<!disabled:)\b(?:bg|from|via|to)-(white|black|[a-z]+)(?:-(\d{2,3}))?(?![\w/-])/g
 const TEXT_TOKEN = /(?<!disabled:)\btext-(white|black|[a-z]+)(?:-(\d{2,3}))?(?![\w/-])/g
+const inadequateContrast = (segment) => {
+  const backgrounds = [...segment.matchAll(BG_TOKEN)].map((m) => hexOf(m[1], m[2])).filter(Boolean)
+  if (!backgrounds.length) return []
+  return [...segment.matchAll(TEXT_TOKEN)].flatMap((m) => {
+    const foreground = hexOf(m[1], m[2])
+    if (!foreground) return []
+    // 最坏底色取决于文字色：白字应检查浅色标，深字应检查深色标。
+    const worst = backgrounds.map((bg) => ({ bg, ratio: contrast(bg, foreground) }))
+      .reduce((a, b) => a.ratio <= b.ratio ? a : b)
+    return worst.ratio < 4.5 ? [{ token: m[0], ...worst }] : []
+  })
+}
 let sameElement = 0
 const sameElementDetail = []
 for (const f of files) {
@@ -217,16 +229,10 @@ for (const f of files) {
     // 静态部分与每个三元分支各算各的，不互相配对。
     const segments = [cls.replace(/['"`][^'"`]*['"`]/g, ''), ...[...cls.matchAll(/['"`]([^'"`]*)['"`]/g)].map((m) => m[1])]
     for (const seg of segments) {
-      const bgs = [...seg.matchAll(BG_TOKEN)].map((m) => hexOf(m[1], m[2])).filter(Boolean)
-      if (!bgs.length) continue
-      // 渐变取最暗处：最坏情况才是要守住的那个。
-      const bg = bgs.reduce((a, b) => (luminance(a) < luminance(b) ? a : b))
-      for (const m of seg.matchAll(TEXT_TOKEN)) {
-        const fg = hexOf(m[1], m[2])
-        if (!fg || contrast(bg, fg) >= 4.5) continue
+      for (const { token, bg, ratio } of inadequateContrast(seg)) {
         sameElement += 1
         const line = f.text.slice(0, attr.index).split('\n').length
-        if (sameElementDetail.length < 8) sameElementDetail.push(`${f.path.split('/').pop()}:${line} ${m[0]} on ${bg} = ${contrast(bg, fg).toFixed(2)}`)
+        if (sameElementDetail.length < 8) sameElementDetail.push(`${f.path.split('/').pop()}:${line} ${token} on ${bg} = ${ratio.toFixed(2)}`)
       }
     }
   }
@@ -274,6 +280,12 @@ detail['duplicate-category-color'] = dupDetail.join('；')
 // duplicate-category-color 只认数组里直写的颜色串，unscoped-tables 曾按文件计数。
 // 反例留在这里，规则退化时先在这里炸，而不是等复核时再被人找出来。
 const SELFTEST = [
+  ['浅字检查渐变最浅色标', () => inadequateContrast('bg-gradient-to-r from-accent-600 to-accent-400 text-white').length, 1],
+  ['渐变中间色标也需检查', () => inadequateContrast('from-accent-600 via-accent-400 to-accent-700 text-white').length, 1],
+  ['深字检查渐变最深色标', () => inadequateContrast('from-slate-50 to-slate-900 text-slate-900').length, 1],
+  ['深底白字不误报', () => inadequateContrast('from-accent-700 to-slate-900 text-white').length, 0],
+  ['浅底深字不误报', () => inadequateContrast('from-white to-slate-50 text-slate-900').length, 0],
+  ['悬停底色不能被较深默认色掩盖', () => inadequateContrast('bg-accent-600 text-white hover:bg-accent-400').length, 1],
   ['tiny-font 认得没有整数位的小数', () => tinyFont('<p className="text-[.5rem]">过小</p>'), 1],
   ['tiny-font 认得 px 与 rem', () => tinyFont('text-[8px] text-[0.5rem] text-[12px] text-[1rem]'), 2],
   ['duplicate-category-color 认得分类色映射自身的重复', () => duplicateCategoryColor(

@@ -308,7 +308,7 @@ export default function Dashboard() {
         {overview.error && (
           <div role="alert" className="flex flex-col gap-3 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700 sm:flex-row sm:items-center sm:justify-between">
             <span>{overview.error}</span>
-            <button type="button" onClick={reload} className="self-start rounded-lg bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-500">重试</button>
+            <button type="button" onClick={reload} className="self-start rounded-lg bg-rose-700 px-4 py-2 font-semibold text-white hover:bg-rose-800">重试</button>
           </div>
         )}
 

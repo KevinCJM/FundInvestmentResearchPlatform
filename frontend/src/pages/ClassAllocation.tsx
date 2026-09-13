@@ -808,10 +808,10 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
               <table className="min-w-full divide-y divide-slate-200">
               <thead className="bg-slate-50">
                 <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">大类名称</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">产品代码</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">产品名称</th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide r text-slate-600">类内权重</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">大类名称</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">产品代码</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">产品名称</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium tracking-wide text-slate-600">类内权重</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">

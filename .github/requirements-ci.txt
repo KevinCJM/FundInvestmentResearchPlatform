@@ -14,3 +14,4 @@ tushare==1.4.21
 networkx==3.4.2
 pytest==8.4.1
 pytest-socket==0.7.0
+PyYAML==6.0.3

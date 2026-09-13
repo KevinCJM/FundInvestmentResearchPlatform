@@ -347,7 +347,7 @@ function DefinitionBar(
             type="button"
             disabled={!runnable || Boolean(busy)}
             onClick={onRun}
-            className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-bold text-white hover:bg-accent-500 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="min-h-11 rounded-xl bg-accent-600 px-4 text-sm font-bold text-white hover:bg-accent-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             {busy === "run" ? "运行中…" : "按当前版本运行"}
           </button>

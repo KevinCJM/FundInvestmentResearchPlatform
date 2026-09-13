@@ -1349,7 +1349,7 @@ export default function HistoricalRegimeCenter() {
           <div><p className="text-xs font-bold uppercase tracking-[0.2em] text-accent-300">Historical regime research</p><h2 className="mt-1 text-2xl font-bold">历史情景识别</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-200">从真实原始数据出发，自定义指标与模型，把历史拆成牛熊震荡、经济周期或风格轮动区间，并发布为可复用版本。</p></div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" disabled={!draft.id || convertingV2} onClick={() => void copyCurrentToV2()} className="min-h-9 rounded-lg border border-accent-300 px-3 text-xs font-bold text-accent-100 disabled:opacity-40">{convertingV2 ? '正在复制…' : '复制当前 V1 为 V2 图谱'}</button>
-            <button type="button" onClick={() => { setWorkbenchInitialDefinition(undefined); setWorkbenchOpen(true) }} className="min-h-9 rounded-lg bg-accent-600 px-3 text-xs font-bold text-white shadow hover:bg-accent-400">进入 V2 自由工作台</button>
+            <button type="button" onClick={() => { setWorkbenchInitialDefinition(undefined); setWorkbenchOpen(true) }} className="min-h-9 rounded-lg bg-accent-600 px-3 text-xs font-bold text-white shadow hover:bg-accent-700">进入 V2 自由工作台</button>
             <CausalityBadge run={currentRun} />
             <span className={cx('rounded-full px-3 py-1 text-xs font-bold', resultStale ? 'bg-amber-300 text-amber-950' : 'bg-white/10 text-slate-200')}>{resultStale ? '结果已过期' : currentRun ? '结果已同步' : '待运行'}</span>
           </div>

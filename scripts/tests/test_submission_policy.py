@@ -136,6 +136,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('../trusted/skills/',governance)
         self.assertNotIn('unittest',governance)
         self.assertIn('unittest',json.dumps(quality['jobs']['policy-tests']))
+        candidate=json.dumps(quality['jobs']['policy-tests'])
+        for command in ['compileall -q skills','validate_ai_routing.py','route_task.py','evolve_ai_routing.py']:
+            self.assertIn(command,candidate)
         for workflow in [quality,publisher]:
             for job in workflow['jobs'].values():
                 for step in job.get('steps',[]):
@@ -155,6 +158,17 @@ class WorkflowContractTests(unittest.TestCase):
             changed=copy.deepcopy(jobs);changed['backend']['result']=state
             run=subprocess.run([sys.executable,'-c',script],env=os.environ|{'NEEDS':json.dumps(changed)},capture_output=True)
             self.assertEqual(run.returncode==0,state=='success')
+
+    def test_candidate_routing_syntax_error_fails_the_actual_workflow_step(self):
+        import yaml
+        workflow=yaml.load((Path(__file__).parents[2]/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        command=workflow['jobs']['policy-tests']['steps'][-1]['run'].splitlines()[0]
+        with tempfile.TemporaryDirectory() as directory:
+            scripts=Path(directory)/'skills'; scripts.mkdir()
+            (scripts/'route_task.py').write_text('def broken(:\n')
+            result=subprocess.run(['bash','-ec',command],cwd=directory,capture_output=True,text=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('SyntaxError',result.stdout)
 
 
 class EvidenceCollectionTests(unittest.TestCase):

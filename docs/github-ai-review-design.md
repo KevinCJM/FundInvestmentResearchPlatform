@@ -34,7 +34,7 @@
 
 每次观察上下文记录 PR、base_ref、base_sha、head_sha、policy_sha、observed_at，仓库为固定常量。HEAD、base 或 main 策略变化后，旧上下文不复用。支持以下两类通过证据：
 
-1. 官方 Codex 发布的 `codex-review/v1` 结构化报告：唯一顶层 JSON 代码块、字段和完整版本精确匹配、PASS、findings 和 limitations 均为空。引用中的报告、多份矛盾报告、被编辑的 issue comment 或与 CHANGES_REQUESTED 冲突的 PASS 不放行。
+1. 官方 Codex 发布的 `codex-review/v1` 结构化报告：唯一顶层 JSON 代码块、字段和完整版本精确匹配、PASS、findings 和 limitations 均为空；reviewer_identity 必须为官方 bot login，并包含非空 review_run_id、reviewed_scope 和 HTTPS evidence 列表。引用中的报告、多份矛盾报告、被编辑的 issue comment 或与 CHANGES_REQUESTED 冲突的 PASS 不放行。
 2. 官方原生输出：当前 HEAD 的 Code Review 摘要 Completed，短 SHA 经 GitHub API 唯一解析；并有晚于本次精确版本审核请求的新官方 👍，或未经编辑、明确绑定当前提交的官方 “Didn't find any major issues” 评论。摘要和正面结论须晚于最新请求、观察边界及最新问题，且无更晚的阻断审核。
 
 Completed 本身、旧 👍、普通 PR reaction、无评论、超时均不代表通过。所有官方行内问题须处理并复核，outdated 不豁免；仅关闭讨论不构成新审核结论。格式无法识别时失败关闭，不靠宽泛关键词猜测。
@@ -64,7 +64,7 @@ gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tm
 
 工作流固定包含 prepare、governance、policy-tests、frontend、backend、e2e、quality-result 七个 job。汇总实际执行并核对所有适用 job 成功；缺失、失败、取消、超时或意外跳过均阻断。仅可信计划判定不适用的三个业务子任务可 skipped；三项顶层检查不能 skipped/neutral。
 
-治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
+治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 还对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
 
 CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与 `.github/requirements-ci.txt` 共同安装。后端单元测试禁止外网 socket，允许本地回环和 Unix socket；数据及 Numba 缓存使用临时目录，Tushare token 为空。Playwright 使用本地测试服务，同时设置 INDICATOR_TEST_PYTHON 与 TEST_PYTHON；真实数据写入用例仍按其既有显式授权开关跳过，不能报告为正式数据验收。首次真实运行暴露的环境或既有失败必须调查，不能新增跳过来换取绿色。
 
@@ -85,7 +85,10 @@ CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与
 
 ## 本地验证
 
+按项目要求选择 Python 环境，先安装已声明的 CI 测试依赖（包含 PyYAML），再执行验证：
+
 ```bash
+python3 -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py
 python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context

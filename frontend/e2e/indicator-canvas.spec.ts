@@ -130,7 +130,8 @@ test('真实接口：画布编辑、保护旧结果、公式往返、保存和�
   const reloaded = await (await page.request.get(`${apiRoot}/api/custom-indicators/${saved.id}`)).json()
   expect(reloaded.revision).toBe(saved.revision)
   await page.keyboard.press('Escape')
-  const previewTab = mobile ? page.getByRole('tab', { name: '预览', exact: true }) : page.getByRole('tab', { name: /校验与预览/ })
+  // 工作台导航在 1280px 收起；画布本身的手机节点样式仍以 768px 为界。
+  const previewTab = page.getByRole('tab', { name: /^预览$|^校验与预览/ })
   await previewTab.click()
   await expect(page.getByRole('region', { name: '指标定义校验' })).toBeVisible()
   await expect(page.getByText('层级计算 DAG', { exact: true })).toHaveCount(0)
@@ -199,7 +200,7 @@ test('多通道共享计算、下拉选择上游、原生资源拖放与端口�
     await page.keyboard.press('Escape')
   }
   const validated = page.waitForResponse(response => response.url().endsWith('/api/custom-indicators/validate'))
-  await (mobile ? page.getByRole('tab', { name: '预览', exact: true }) : page.getByRole('tab', { name: /校验与预览/ })).click()
+  await page.getByRole('tab', { name: /^预览$|^校验与预览/ }).click()
   const checked = await (await validated).json()
   expect(checked.valid, JSON.stringify(checked.diagnostics)).toBe(true)
   expect(Object.keys(checked.dag.roots)).toEqual(['value', 'shared_sharpe'])
