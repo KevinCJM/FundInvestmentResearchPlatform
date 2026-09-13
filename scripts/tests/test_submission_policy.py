@@ -162,6 +162,65 @@ class WorkflowContractTests(unittest.TestCase):
                         if step['uses'].startswith('actions/checkout@'):
                             self.assertEqual(step['with']['persist-credentials'],'false')
 
+    def test_workflow_trust_boundaries_use_the_expected_refs_and_planner(self):
+        import yaml
+        quality=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        publishing=yaml.load((ROOT/'.github/workflows/ai-review.yml').read_text(),Loader=yaml.BaseLoader)
+        prepare=quality['jobs']['prepare']['steps']
+        self.assertEqual(prepare[0]['with']['ref'],'${{ github.event.pull_request.base.sha || inputs.base_sha }}')
+        self.assertEqual(prepare[0]['with']['path'],'trusted')
+        self.assertEqual(prepare[1]['run'],'python3 trusted/scripts/ci_quality.py')
+        self.assertEqual(prepare[1]['id'],'plan')
+        for key, expression in {'PR_NUMBER':'github.event.pull_request.number || inputs.pr',
+                'PR_HEAD':'github.event.pull_request.head.sha || inputs.head_sha',
+                'PR_BASE':'github.event.pull_request.base.sha || inputs.base_sha'}.items():
+            self.assertEqual(prepare[1]['env'][key],'${{ '+expression+' }}')
+        for key in ['head','base','frontend','backend','e2e']:
+            self.assertEqual(quality['jobs']['prepare']['outputs'][key],'${{ steps.plan.outputs.'+key+' }}')
+        for name in ['governance','protected-policy-tests']:
+            steps=quality['jobs'][name]['steps']
+            self.assertEqual(steps[0]['with']['ref'],'${{ needs.prepare.outputs.base }}')
+            self.assertEqual(steps[0]['with']['path'],'trusted')
+            self.assertEqual(steps[1]['with']['ref'],'${{ needs.prepare.outputs.head }}')
+            self.assertEqual(steps[1]['with']['path'],'candidate')
+        self.assertEqual(quality['jobs']['policy-tests']['steps'][0]['with']['ref'],'${{ needs.prepare.outputs.head }}')
+        self.assertEqual(set(quality['jobs']['quality-result']['needs']),policy.QUALITY_JOBS-{'quality-result'})
+        self.assertEqual(publishing['jobs']['publish']['steps'][0]['with']['ref'],'${{ github.workflow_sha }}')
+
+    def test_business_jobs_keep_required_executable_regressions(self):
+        import yaml
+        workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        expected = {
+            'frontend': ["npm ci\nnpm exec vitest -- run\nnpm exec tsc -- --noEmit\nnpm run build\nnpm run i18n:check\nnpm run design:check"],
+            'backend': ["python -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt",
+                        "python -m pytest backend/tests -q --disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,::1"],
+            'e2e': ["python -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt",
+                    'npm ci\nnpm exec playwright -- install --with-deps chrome\nexport INDICATOR_TEST_PYTHON="$(command -v python)"\nexport TEST_PYTHON="$INDICATOR_TEST_PYTHON"\nnpm exec playwright -- test --workers=2'],
+        }
+        self.assertEqual(workflow['env'], {'CUSTOM_INDICATOR_DATA_DIR':'/tmp/firp-ci-indicator-data',
+            'NUMBA_CACHE_DIR':'/tmp/firp-ci-numba-cache','TUSHARE_TOKEN':'','CI':'true'})
+        self.assertNotIn('defaults',workflow)
+        for name, commands in expected.items():
+            job=workflow['jobs'][name]
+            self.assertEqual(job['needs'],'prepare')
+            self.assertEqual(job['if'],f"needs.prepare.outputs.{name} == 'true'")
+            self.assertEqual(job['runs-on'],'ubuntu-latest')
+            for key in ['env','defaults','continue-on-error','strategy','container']:
+                self.assertNotIn(key,job)
+            self.assertEqual([step['run'].strip() for step in job['steps'] if 'run' in step],commands)
+            actions=[step for step in job['steps'] if 'uses' in step]
+            self.assertEqual([step['uses'].split('@')[0] for step in actions],
+                ['actions/checkout'] + (['actions/setup-node'] if name in {'frontend','e2e'} else [])
+                + (['actions/setup-python'] if name in {'backend','e2e'} else []))
+            self.assertEqual(actions[0]['with']['ref'],'${{ needs.prepare.outputs.head }}')
+            self.assertNotIn('path',actions[0]['with'])
+            self.assertNotIn('sparse-checkout',actions[0]['with'])
+            for step in job['steps']:
+                for key in ['if','continue-on-error','env','shell']:
+                    self.assertNotIn(key,step)
+                expected_directory='frontend' if 'run' in step and (name=='frontend' or 'npm ci' in step['run']) else None
+                self.assertEqual(step.get('working-directory'),expected_directory)
+
     def test_aggregate_script_rejects_unexpected_skip_failure_and_cancellation(self):
         import yaml
         path=ROOT/'.github/workflows/quality-gate.yml'
