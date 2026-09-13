@@ -207,24 +207,33 @@ const contrast = (a, b) => {
 }
 // 带透明度的底色（bg-x-400/10）压在未知底上，不能当作有效底色。
 // disabled: 变体不计：WCAG 1.4.3 把失效控件排除在对比度要求之外。
-const COLOR_TOKEN = /^((?:[a-z0-9-]+:)*)(bg|from|via|to|text)-(white|black|[a-z]+)(?:-(\d{2,3}))?$/
+const COLOR_TOKEN = /^(white|black|[a-z]+)(?:-(\d{2,3}))?$/
+const COLOR_DECLARATION = /^((?:[a-z0-9-]+:)*)(bg|from|via|to|text)-(.+)$/
+const COLOR_VALUE = /^(?:(?:white|black)(?:\/.+)?|transparent|current|inherit|[a-z]+-\d{2,3}(?:\/.+)?|\[.+\](?:\/.+)?)$/
 const inadequateContrast = (segment) => {
-  const states = new Map([['', { backgrounds: [], foregrounds: [] }]])
+  const emptyState = () => ({ backgrounds: [], foregrounds: [], unknown: { backgrounds: false, foregrounds: false } })
+  const states = new Map([['', emptyState()]])
   for (const token of segment.split(/\s+/)) {
-    const match = COLOR_TOKEN.exec(token)
-    if (!match || match[1].split(':').includes('disabled')) continue
-    const color = hexOf(match[3], match[4])
-    if (!color) continue
-    const state = states.get(match[1]) ?? { backgrounds: [], foregrounds: [] }
-    state[match[2] === 'text' ? 'foregrounds' : 'backgrounds'].push({ token, color })
-    states.set(match[1], state)
+    // 任意变体不能靠冒号切分重建 CSS 级联，交由浏览器核验该段。
+    if (/(?:^|:)[^:\s]*\[[^\]]*\]:/.test(token)) return []
+    const declaration = COLOR_DECLARATION.exec(token)
+    if (!declaration || !COLOR_VALUE.test(declaration[3]) || declaration[1].split(':').includes('disabled')) continue
+    if (declaration[2] === 'text' && /^\[(?:length:)?(?:[\d.]+(?:px|rem|em|%|vw|vh)|(?:clamp|min|max|calc)\(.+\))\]$/.test(declaration[3])) continue
+    const state = states.get(declaration[1]) ?? emptyState()
+    const property = declaration[2] === 'text' ? 'foregrounds' : 'backgrounds'
+    const match = COLOR_TOKEN.exec(declaration[3])
+    const color = match && hexOf(match[1], match[2])
+    if (color) state[property].push({ token, color })
+    else state.unknown[property] = true
+    states.set(declaration[1], state)
   }
   const defaults = states.get('')
   return [...states].flatMap(([variant, state]) => {
     // 同一变体同时改变前景/底色时只能相互配对，不能与默认状态交叉。
     // 仅一侧改变时，只有其他变体未声明另一侧，才能证明继承默认色。
     // 多断点、dark/交互叠加和任意变体的级联由浏览器用例验证。
-    const inherited = (property) => ![...states].some(([key, value]) => key && key !== variant && value[property].length)
+    if (state.unknown.backgrounds || state.unknown.foregrounds) return []
+    const inherited = (property) => !defaults.unknown[property] && ![...states].some(([key, value]) => key && key !== variant && (value[property].length || value.unknown[property]))
       ? defaults[property] : []
     const backgrounds = state.backgrounds.length ? state.backgrounds : inherited('backgrounds')
     const foregrounds = state.foregrounds.length ? state.foregrounds : inherited('foregrounds')
@@ -309,6 +318,14 @@ const SELFTEST = [
   ['只改变悬停文字仍检查默认底色', () => inadequateContrast('bg-white text-slate-900 hover:text-white').length, 1],
   ['失效的组合变体不计对比度', () => inadequateContrast('bg-white text-slate-900 hover:disabled:bg-white hover:disabled:text-white').length, 0],
   ['跨断点继承不按默认白底猜测', () => inadequateContrast('bg-white text-slate-900 md:bg-slate-900 lg:text-white').length, 0],
+  ['透明变体底色不误继承白底', () => inadequateContrast('bg-white text-slate-900 hover:bg-black/90 hover:text-white').length, 0],
+  ['任意底色不误继承白底', () => inadequateContrast('bg-white text-slate-900 hover:bg-[#000000] hover:text-white').length, 0],
+  ['透明变体前景不误继承白字', () => inadequateContrast('bg-black text-white hover:bg-white hover:text-black/90').length, 0],
+  ['任意变体不猜测级联', () => inadequateContrast('bg-white text-slate-900 [&:hover]:bg-black hover:text-white').length, 0],
+  ['未知变体颜色也阻止其他状态默认继承', () => inadequateContrast('bg-white text-slate-900 md:bg-black/90 lg:text-white').length, 0],
+  ['任意字号不会屏蔽已知颜色问题', () => inadequateContrast('bg-white text-white text-[12px]').length, 1],
+  ['任意透明底色也保持未知状态', () => inadequateContrast('bg-white text-slate-900 hover:bg-[#000000]/90 hover:text-white').length, 0],
+  ['任意透明前景也保持未知状态', () => inadequateContrast('bg-black text-white hover:bg-white hover:text-[#000000]/90').length, 0],
   ['tiny-font 认得没有整数位的小数', () => tinyFont('<p className="text-[.5rem]">过小</p>'), 1],
   ['tiny-font 认得 px 与 rem', () => tinyFont('text-[8px] text-[0.5rem] text-[12px] text-[1rem]'), 2],
   ['duplicate-category-color 认得分类色映射自身的重复', () => duplicateCategoryColor(
