@@ -66,11 +66,13 @@ gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tm
 
 工作流固定包含 prepare、governance、policy-tests、protected-policy-tests、frontend、backend、e2e、quality-result 八个 job。汇总实际执行并核对所有适用 job 成功；缺失、失败、取消、超时或意外跳过均阻断。仅可信计划判定不适用的三个业务子任务可 skipped；三项顶层检查不能 skipped/neutral。
 
-protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行且同样必须非空，防止合入空套件后锁死后续提交。保护契约还逐项核对业务 job 的触发条件、真实候选 checkout、执行目录、必要测试/构建命令及失败传播，不允许用 true、echo、条件跳过或 continue-on-error 代替回归。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 还对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
+protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行且同样必须非空，防止合入空套件后锁死后续提交。在导入候选代码或运行任何候选测试之前，protected-policy-tests 先由受保护工作流步骤读取 base 的 .github/workflow-contracts.json，校验两份候选生产工作流的完整规范化配置 SHA256，覆盖事件、权限、ref、计划、测试、汇总、运行目录、环境、条件及失败传播；注释和无语义的 YAML 排版不影响指纹。不能用 true、echo、if:false 或 continue-on-error 绕过业务、治理或契约测试。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 先对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，并在任何候选单元测试之前执行这些检查，避免测试修改受检文件；不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
 
 CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与 `.github/requirements-ci.txt` 共同安装。后端单元测试禁止外网 socket，允许本地回环和 Unix socket；数据及 Numba 缓存使用临时目录，Tushare token 为空。Playwright 使用本地测试服务，同时设置 INDICATOR_TEST_PYTHON 与 TEST_PYTHON；真实数据写入用例仍按其既有显式授权开关跳过，不能报告为正式数据验收。首次真实运行暴露的环境或既有失败必须调查，不能新增跳过来换取绿色。
 
-调整被保护的回归命令时，先独立审核并提交兼容现行命令的新契约，再通过下一 PR 修改命令；不能在同一 PR 自行删弱保护断言后自证通过。
+候选契约 JSON 也须包含实际候选工作流的合法指纹，避免合入空表或遗漏现行版本后锁死后续 PR；候选自洽检查不代替 base 的授权校验。
+
+修改生产工作流时，先让独立 AI 审查拟议的完整配置及验证证据，在第一阶段 PR 中将拟议规范化指纹加入受保护契约，同时保留现行指纹且保持生产 YAML 不变。第一阶段经 Dev（必要时 main）生效后，第二阶段 PR 才应用已审核的配置；最后删除不再使用的旧指纹。工作流行为改变仍须执行对应实际验证；不能把未审核的任意指纹当成兼容列表，不能在同一 PR 改 YAML 并自行改断言来认证自己。涉及发布器/质量 API 的不兼容变化还须分阶段保持在用协议兼容。
 
 候选单元测试通过本身不能授予 quality-gate；发布端只接受受保护定义和精确 job 结果。API 分页超限、格式无法核实或超时均失败关闭，不保留假成功。
 

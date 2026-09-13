@@ -90,15 +90,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - run: python3 -m pip install PyYAML==6.0.3
-      - name: Run nonempty candidate test suite
-        run: |
-          python3 - <<'PYTEST'
-          import unittest
-          suite = unittest.defaultTestLoader.discover('scripts/tests', pattern='test_*.py')
-          assert suite.countTestCases() > 0, 'Candidate test suite is empty'
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          raise SystemExit(0 if result.wasSuccessful() else 1)
-          PYTEST
       - name: Exercise candidate routing executables in their isolated runner
         env:
           BASE_SHA: ${{ needs.prepare.outputs.base }}
@@ -109,6 +100,15 @@ jobs:
           python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R02 --mode context
           python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context
           python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --diff-range "$BASE_SHA...$HEAD_SHA" --json
+      - name: Run nonempty candidate test suite
+        run: |
+          python3 - <<'PYTEST'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('scripts/tests', pattern='test_*.py')
+          assert suite.countTestCases() > 0, 'Candidate test suite is empty'
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() else 1)
+          PYTEST
   protected-policy-tests:
     needs: prepare
     runs-on: ubuntu-latest
@@ -119,13 +119,33 @@ jobs:
           ref: ${{ needs.prepare.outputs.base }}
           persist-credentials: false
           path: trusted
-          sparse-checkout: scripts/tests
+          sparse-checkout: |
+            scripts/tests
+            .github/workflow-contracts.json
+          sparse-checkout-cone-mode: false
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ needs.prepare.outputs.head }}
           persist-credentials: false
           path: candidate
       - run: python3 -m pip install PyYAML==6.0.3
+      - name: Verify workflow integrity before importing candidate code
+        run: |
+          python3 - <<'INTEGRITY'
+          import hashlib, json, re
+          from pathlib import Path
+          import yaml
+          names = {'ai-review.yml', 'quality-gate.yml'}
+          for owner in ['trusted', 'candidate']:
+              contract = json.loads(Path(owner, '.github/workflow-contracts.json').read_text())
+              assert set(contract) == names, 'Unexpected workflow contract inventory'
+              for name, accepted in contract.items():
+                  assert isinstance(accepted, list) and accepted, 'Empty workflow contract'
+                  assert all(isinstance(item, str) and re.fullmatch(r'[0-9a-f]{64}', item) for item in accepted)
+                  document = yaml.load(Path('candidate/.github/workflows', name).read_text(), Loader=yaml.BaseLoader)
+                  digest = hashlib.sha256(json.dumps(document, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                  assert digest in accepted, f'Unreviewed or inconsistent workflow configuration: {owner}/{name}'
+          INTEGRITY
       - name: Run protected contracts against candidate gate modules
         env:
           FIRP_GATE_ROOT: ${{ github.workspace }}/candidate

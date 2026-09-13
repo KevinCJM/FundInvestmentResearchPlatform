@@ -78,7 +78,8 @@
         ".github/workflows/ai-review-tests.yml",
         ".github/workflows/quality-gate.yml",
         ".github/requirements-ci.txt",
-        ".github/branch-ruleset.json"
+        ".github/branch-ruleset.json",
+        ".github/workflow-contracts.json"
       ],
       "risk_flags": [
         "documented_policy_is_not_remote_enforcement",
@@ -125,7 +126,8 @@
           "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
           "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
           "python3 -m unittest discover -s scripts/tests -v",
-          ".github/branch-ruleset.json"
+          ".github/branch-ruleset.json",
+          ".github/workflow-contracts.json"
         ],
         "unsampled_paths": [
           ".github/workflows/ai-review.yml",

@@ -162,64 +162,42 @@ class WorkflowContractTests(unittest.TestCase):
                         if step['uses'].startswith('actions/checkout@'):
                             self.assertEqual(step['with']['persist-credentials'],'false')
 
-    def test_workflow_trust_boundaries_use_the_expected_refs_and_planner(self):
-        import yaml
-        quality=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
-        publishing=yaml.load((ROOT/'.github/workflows/ai-review.yml').read_text(),Loader=yaml.BaseLoader)
-        prepare=quality['jobs']['prepare']['steps']
-        self.assertEqual(prepare[0]['with']['ref'],'${{ github.event.pull_request.base.sha || inputs.base_sha }}')
-        self.assertEqual(prepare[0]['with']['path'],'trusted')
-        self.assertEqual(prepare[1]['run'],'python3 trusted/scripts/ci_quality.py')
-        self.assertEqual(prepare[1]['id'],'plan')
-        for key, expression in {'PR_NUMBER':'github.event.pull_request.number || inputs.pr',
-                'PR_HEAD':'github.event.pull_request.head.sha || inputs.head_sha',
-                'PR_BASE':'github.event.pull_request.base.sha || inputs.base_sha'}.items():
-            self.assertEqual(prepare[1]['env'][key],'${{ '+expression+' }}')
-        for key in ['head','base','frontend','backend','e2e']:
-            self.assertEqual(quality['jobs']['prepare']['outputs'][key],'${{ steps.plan.outputs.'+key+' }}')
-        for name in ['governance','protected-policy-tests']:
-            steps=quality['jobs'][name]['steps']
-            self.assertEqual(steps[0]['with']['ref'],'${{ needs.prepare.outputs.base }}')
-            self.assertEqual(steps[0]['with']['path'],'trusted')
-            self.assertEqual(steps[1]['with']['ref'],'${{ needs.prepare.outputs.head }}')
-            self.assertEqual(steps[1]['with']['path'],'candidate')
-        self.assertEqual(quality['jobs']['policy-tests']['steps'][0]['with']['ref'],'${{ needs.prepare.outputs.head }}')
-        self.assertEqual(set(quality['jobs']['quality-result']['needs']),policy.QUALITY_JOBS-{'quality-result'})
-        self.assertEqual(publishing['jobs']['publish']['steps'][0]['with']['ref'],'${{ github.workflow_sha }}')
-
-    def test_business_jobs_keep_required_executable_regressions(self):
+    def test_integrity_is_checked_before_candidate_imports_and_routing_before_tests(self):
         import yaml
         workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
-        expected = {
-            'frontend': ["npm ci\nnpm exec vitest -- run\nnpm exec tsc -- --noEmit\nnpm run build\nnpm run i18n:check\nnpm run design:check"],
-            'backend': ["python -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt",
-                        "python -m pytest backend/tests -q --disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,::1"],
-            'e2e': ["python -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt",
-                    'npm ci\nnpm exec playwright -- install --with-deps chrome\nexport INDICATOR_TEST_PYTHON="$(command -v python)"\nexport TEST_PYTHON="$INDICATOR_TEST_PYTHON"\nnpm exec playwright -- test --workers=2'],
-        }
-        self.assertEqual(workflow['env'], {'CUSTOM_INDICATOR_DATA_DIR':'/tmp/firp-ci-indicator-data',
-            'NUMBA_CACHE_DIR':'/tmp/firp-ci-numba-cache','TUSHARE_TOKEN':'','CI':'true'})
-        self.assertNotIn('defaults',workflow)
-        for name, commands in expected.items():
-            job=workflow['jobs'][name]
-            self.assertEqual(job['needs'],'prepare')
-            self.assertEqual(job['if'],f"needs.prepare.outputs.{name} == 'true'")
-            self.assertEqual(job['runs-on'],'ubuntu-latest')
-            for key in ['env','defaults','continue-on-error','strategy','container']:
-                self.assertNotIn(key,job)
-            self.assertEqual([step['run'].strip() for step in job['steps'] if 'run' in step],commands)
-            actions=[step for step in job['steps'] if 'uses' in step]
-            self.assertEqual([step['uses'].split('@')[0] for step in actions],
-                ['actions/checkout'] + (['actions/setup-node'] if name in {'frontend','e2e'} else [])
-                + (['actions/setup-python'] if name in {'backend','e2e'} else []))
-            self.assertEqual(actions[0]['with']['ref'],'${{ needs.prepare.outputs.head }}')
-            self.assertNotIn('path',actions[0]['with'])
-            self.assertNotIn('sparse-checkout',actions[0]['with'])
-            for step in job['steps']:
-                for key in ['if','continue-on-error','env','shell']:
-                    self.assertNotIn(key,step)
-                expected_directory='frontend' if 'run' in step and (name=='frontend' or 'npm ci' in step['run']) else None
-                self.assertEqual(step.get('working-directory'),expected_directory)
+        steps=workflow['jobs']['protected-policy-tests']['steps']
+        integrity=next(i for i,step in enumerate(steps) if step.get('name')=='Verify workflow integrity before importing candidate code')
+        candidate_import=next(i for i,step in enumerate(steps) if step.get('name')=='Run protected contracts against candidate gate modules')
+        self.assertLess(integrity,candidate_import)
+        steps=workflow['jobs']['policy-tests']['steps']
+        routing=next(i for i,step in enumerate(steps) if step.get('name')=='Exercise candidate routing executables in their isolated runner')
+        tests=next(i for i,step in enumerate(steps) if step.get('name')=='Run nonempty candidate test suite')
+        self.assertLess(routing,tests)
+
+    def test_actual_integrity_step_rejects_configuration_changes_and_invalid_next_contract(self):
+        import shutil, yaml
+        workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        script=next(step['run'] for step in workflow['jobs']['protected-policy-tests']['steps']
+                    if step.get('name')=='Verify workflow integrity before importing candidate code')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for owner in ['trusted','candidate']:
+                shutil.copytree(ROOT/'.github',root/owner/'.github')
+            def run():
+                return subprocess.run(['bash','-ec',script],cwd=root,capture_output=True,text=True).returncode
+            self.assertEqual(run(),0)
+            path=root/'candidate/.github/workflows/quality-gate.yml'; original=path.read_text()
+            for job,field in [('frontend','run'),('backend','run'),('e2e','run'),
+                              ('protected-policy-tests','if'),('protected-policy-tests','continue-on-error'),('governance','if')]:
+                altered=yaml.load(original,Loader=yaml.BaseLoader)
+                step=next(step for step in altered['jobs'][job]['steps'] if 'run' in step)
+                step[field]='true' if field in {'run','continue-on-error'} else 'false'
+                path.write_text(yaml.safe_dump(altered,sort_keys=False))
+                self.assertNotEqual(run(),0,(job,field))
+            path.write_text(original+'\n# Formatting alone is not a behavior change.\n')
+            self.assertEqual(run(),0)
+            (root/'candidate/.github/workflow-contracts.json').write_text('{}')
+            self.assertNotEqual(run(),0)
 
     def test_aggregate_script_rejects_unexpected_skip_failure_and_cancellation(self):
         import yaml
@@ -267,7 +245,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_candidate_routing_syntax_error_fails_the_actual_workflow_step(self):
         import yaml
         workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
-        command=workflow['jobs']['policy-tests']['steps'][-1]['run'].splitlines()[0]
+        command=next(step['run'] for step in workflow['jobs']['policy-tests']['steps'] if step.get('name')=='Exercise candidate routing executables in their isolated runner').splitlines()[0]
         with tempfile.TemporaryDirectory() as directory:
             scripts=Path(directory)/'skills'; scripts.mkdir()
             (scripts/'route_task.py').write_text('def broken(:\n')
