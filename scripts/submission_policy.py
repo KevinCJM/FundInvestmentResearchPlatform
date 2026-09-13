@@ -4,11 +4,11 @@ import re
 
 REPOSITORY = "KevinCJM/FundInvestmentResearchPlatform"
 QUALITY_WORKFLOW = ".github/workflows/quality-gate.yml"
-QUALITY_JOBS = {"prepare", "governance", "policy-tests", "frontend", "backend", "e2e", "quality-result"}
+QUALITY_JOBS = {"prepare", "governance", "policy-tests", "protected-policy-tests", "frontend", "backend", "e2e", "quality-result"}
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
-def branch_decision(pr, *, base_is_ancestor, latest_base, latest_source, duplicate_heads=()):
+def branch_decision(pr, *, base_is_ancestor, latest_base, latest_source, duplicate_heads=(), latest_main=None, main_is_ancestor=False):
     if pr.get("state") != "open" or pr.get("draft"):
         return "failure", "PR must be open and ready for review"
     if any((pr[side].get("repo") or {}).get("full_name") != REPOSITORY for side in ("head", "base")):
@@ -26,6 +26,8 @@ def branch_decision(pr, *, base_is_ancestor, latest_base, latest_source, duplica
         return "failure", "The source or target ref changed; revalidate the latest commits"
     if not base_is_ancestor:
         return "failure", "Source must include the latest target branch"
+    if head["ref"].startswith("codex/sync-main-") and (not SHA.fullmatch(latest_main or "") or not main_is_ancestor):
+        return "failure", "Synchronization source must include the current main commit"
     if duplicate_heads:
         return "failure", "Multiple open protected-target PRs share the same HEAD"
     return "success", "Repository, branch direction and current source/target commits verified"
@@ -89,7 +91,7 @@ def quality_decision(runs, jobs_by_run, pr):
         return "failure", "Trusted quality job set is incomplete or ambiguous", run
     if any(job.get("status") != "completed" or job.get("run_attempt") != run.get("run_attempt", 1) for job in jobs):
         return "failure", "Quality jobs are not from the completed current attempt", run
-    if any(job.get("conclusion") != "success" for job in jobs if job["name"] in {"prepare", "governance", "policy-tests", "quality-result"}):
+    if any(job.get("conclusion") != "success" for job in jobs if job["name"] in {"prepare", "governance", "policy-tests", "protected-policy-tests", "quality-result"}):
         return "failure", "Required quality aggregation or governance did not succeed", run
     # The trusted quality-result job verifies each optional job against the trusted plan.
     if any(job.get("conclusion") not in {"success", "skipped"} for job in jobs):

@@ -11,7 +11,8 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
+ROOT = Path(os.environ.get("FIRP_GATE_ROOT", Path(__file__).parents[2]))
+sys.path.insert(0, str(ROOT / "scripts"))
 import submission_policy as policy
 import check_submission as publisher
 import ci_quality
@@ -61,6 +62,13 @@ class BranchPolicyTests(unittest.TestCase):
 
     def test_invalid_identity_rejected(self):
         self.assertEqual(self.decision(pr_fixture(), latest_source='a'), 'failure')
+
+    def test_sync_branch_must_include_current_main(self):
+        pr = pr_fixture(); pr['head']['ref'] = 'codex/sync-main-release'
+        self.assertEqual(self.decision(pr), 'failure')
+        self.assertEqual(self.decision(pr, latest_main=BASE, main_is_ancestor=False), 'failure')
+        self.assertEqual(self.decision(pr, latest_main=BASE, main_is_ancestor=True), 'success')
+
 
 
 class QualityDecisionTests(unittest.TestCase):
@@ -119,7 +127,7 @@ class QualityDecisionTests(unittest.TestCase):
 class WorkflowContractTests(unittest.TestCase):
     def test_test_workflow_has_no_publisher_credentials_or_privileged_pr_trigger(self):
         import yaml
-        root=Path(__file__).parents[2]
+        root=ROOT
         quality=yaml.load((root/'.github/workflows/quality-gate.yml').read_text(), Loader=yaml.BaseLoader)
         publisher=yaml.load((root/'.github/workflows/ai-review.yml').read_text(), Loader=yaml.BaseLoader)
         self.assertIn('pull_request',quality['on']); self.assertNotIn('pull_request_target',quality['on'])
@@ -139,6 +147,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('../trusted/skills/',governance)
         self.assertNotIn('unittest',governance)
         self.assertIn('unittest',json.dumps(quality['jobs']['policy-tests']))
+        protected=json.dumps(quality['jobs']['protected-policy-tests'])
+        self.assertIn('trusted/scripts/tests',protected)
+        self.assertIn('FIRP_GATE_ROOT',protected)
+        self.assertIn('countTestCases',protected)
         candidate=json.dumps(quality['jobs']['policy-tests'])
         for command in ['compileall -q skills','validate_ai_routing.py','route_task.py','evolve_ai_routing.py']:
             self.assertIn(command,candidate)
@@ -152,7 +164,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_aggregate_script_rejects_unexpected_skip_failure_and_cancellation(self):
         import yaml
-        path=Path(__file__).parents[2]/'.github/workflows/quality-gate.yml'
+        path=ROOT/'.github/workflows/quality-gate.yml'
         workflow=yaml.load(path.read_text(),Loader=yaml.BaseLoader)
         script=workflow['jobs']['quality-result']['steps'][0]['run'].split("python3 - <<'PY'\n",1)[1].rsplit('\nPY',1)[0]
         jobs={name:{'result':'success'} for name in policy.QUALITY_JOBS-{'quality-result'}}
@@ -162,9 +174,27 @@ class WorkflowContractTests(unittest.TestCase):
             run=subprocess.run([sys.executable,'-c',script],env=os.environ|{'NEEDS':json.dumps(changed)},capture_output=True)
             self.assertEqual(run.returncode==0,state=='success')
 
+    def test_protected_contract_step_detects_broken_candidate_with_no_candidate_tests(self):
+        import yaml
+        workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        script=workflow['jobs']['protected-policy-tests']['steps'][-1]['run']
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); tests=root/'trusted/scripts/tests'; tests.mkdir(parents=True)
+            candidate=root/'candidate'; candidate.mkdir()
+            contract=tests/'test_contract.py'
+            contract.write_text("import os, unittest\nfrom pathlib import Path\nclass Contract(unittest.TestCase):\n def test_behavior(self):\n  self.assertEqual((Path(os.environ['FIRP_GATE_ROOT'])/'result.txt').read_text(), 'correct')\n")
+            for behavior in ['correct','broken']:
+                (candidate/'result.txt').write_text(behavior)
+                run=subprocess.run(['bash','-ec',script],cwd=root,env=os.environ|{'FIRP_GATE_ROOT':str(candidate)},capture_output=True,text=True)
+                self.assertEqual(run.returncode==0,behavior=='correct')
+            contract.unlink()
+            run=subprocess.run(['bash','-ec',script],cwd=root,env=os.environ|{'FIRP_GATE_ROOT':str(candidate)},capture_output=True,text=True)
+            self.assertNotEqual(run.returncode,0)
+            self.assertIn('Protected contract suite is empty',run.stderr)
+
     def test_candidate_routing_syntax_error_fails_the_actual_workflow_step(self):
         import yaml
-        workflow=yaml.load((Path(__file__).parents[2]/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
         command=workflow['jobs']['policy-tests']['steps'][-1]['run'].splitlines()[0]
         with tempfile.TemporaryDirectory() as directory:
             scripts=Path(directory)/'skills'; scripts.mkdir()

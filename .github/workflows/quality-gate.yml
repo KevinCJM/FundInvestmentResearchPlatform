@@ -102,6 +102,34 @@ jobs:
           python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R02 --mode context
           python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context
           python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --diff-range "$BASE_SHA...$HEAD_SHA" --json
+  protected-policy-tests:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+          path: trusted
+          sparse-checkout: scripts/tests
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          persist-credentials: false
+          path: candidate
+      - run: python3 -m pip install PyYAML==6.0.3
+      - name: Run protected contracts against candidate gate modules
+        env:
+          FIRP_GATE_ROOT: ${{ github.workspace }}/candidate
+        run: |
+          python3 - <<'PYTEST'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('trusted/scripts/tests', pattern='test_*.py')
+          assert suite.countTestCases() > 0, 'Protected contract suite is empty'
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() else 1)
+          PYTEST
   frontend:
     needs: prepare
     if: needs.prepare.outputs.frontend == 'true'
@@ -163,7 +191,7 @@ jobs:
           export TEST_PYTHON="$INDICATOR_TEST_PYTHON"
           npm exec playwright -- test --workers=2
   quality-result:
-    needs: [prepare, governance, policy-tests, frontend, backend, e2e]
+    needs: [prepare, governance, policy-tests, protected-policy-tests, frontend, backend, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -177,6 +205,7 @@ jobs:
           assert jobs['prepare']['result'] == 'success'
           assert jobs['governance']['result'] == 'success'
           assert jobs['policy-tests']['result'] == 'success'
+          assert jobs['protected-policy-tests']['result'] == 'success'
           for name in ['frontend', 'backend', 'e2e']:
               wanted = 'success' if jobs['prepare']['outputs'][name] == 'true' else 'skipped'
               assert jobs[name]['result'] == wanted, (name, wanted, jobs[name]['result'])

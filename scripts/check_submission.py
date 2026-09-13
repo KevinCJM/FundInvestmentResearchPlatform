@@ -78,7 +78,8 @@ def verify_submission(gh, number, expected_head, expected_base):
         raise ValueError("Protected publisher has not passed all three gates")
     snapshot = gh.collect(pr)
     state, reason = branch_decision(pr, base_is_ancestor=snapshot["base_is_ancestor"],
-        latest_base=base, latest_source=source, duplicate_heads=snapshot["other_prs_with_same_head"])
+        latest_base=base, latest_source=source, duplicate_heads=snapshot["other_prs_with_same_head"],
+        latest_main=snapshot.get("latest_main"), main_is_ancestor=snapshot.get("main_is_ancestor", False))
     ai = evaluate(snapshot, context)
     quality, qreason, _ = quality_evidence(gh, pr)
     if state != "success" or ai["state"] != "success" or quality != "success":
@@ -140,7 +141,8 @@ def main():
             duplicate = [p["number"] for p in prs if p["number"] != pr["number"]
                          and p["head"]["sha"] == pr["head"]["sha"] and p["base"]["ref"] in {"main", "Dev"}]
             state, reason = branch_decision(pr, base_is_ancestor=snapshot["base_is_ancestor"],
-                latest_base=latest_base, latest_source=latest_source, duplicate_heads=duplicate)
+                latest_base=latest_base, latest_source=latest_source, duplicate_heads=duplicate, latest_main=snapshot.get("latest_main"),
+                main_is_ancestor=snapshot.get("main_is_ancestor", False))
             results["branch-policy"] = outcome(state, reason)
             if state != "success":
                 results.update({name: outcome("failure", "Branch policy must pass first") for name in ("ai-review", "quality-gate")})

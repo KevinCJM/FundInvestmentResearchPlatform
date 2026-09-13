@@ -292,6 +292,10 @@ class GitHub:
                                             or NATIVE_CLEAN.fullmatch(comment.get("body", ""))):
                 for short in re.findall(r"`([0-9a-f]{7,40})`", comment["body"]):
                     resolved[short] = self.api(f"{prefix}/commits/{short}")["sha"]
+        latest_main, main_is_ancestor = None, False
+        if pr["head"]["ref"].startswith("codex/sync-main-"):
+            latest_main = self.api(f"{prefix}/git/ref/heads/main")["object"]["sha"]
+            main_is_ancestor = self.api(f"{prefix}/compare/{latest_main}...{head}")["merge_base_commit"]["sha"] == latest_main
         comparison = self.api(f"{prefix}/compare/{base}...{head}")
         shared_head = [p["number"] for p in self.pages(f"{prefix}/pulls?state=open")
                        if p["number"] != number and p["head"]["sha"] == head
@@ -299,7 +303,7 @@ class GitHub:
         return {"pr": pr, "comments": comments, "reactions": reactions, "resolved_commits": resolved,
                 "reviews": self.pages(f"{prefix}/pulls/{number}/reviews"), "findings": self.findings(number),
                 "base_is_ancestor": comparison["merge_base_commit"]["sha"] == base,
-                "other_prs_with_same_head": shared_head}
+                "other_prs_with_same_head": shared_head, "latest_main": latest_main, "main_is_ancestor": main_is_ancestor}
 
     @staticmethod
     def trusted_publisher_run(run, policy_sha):

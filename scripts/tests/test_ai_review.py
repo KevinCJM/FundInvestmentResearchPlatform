@@ -2,11 +2,13 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import unittest
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("check_ai_review", Path(__file__).parents[1] / "check_ai_review.py")
+ROOT = Path(os.environ.get("FIRP_GATE_ROOT", Path(__file__).parents[2]))
+SPEC = importlib.util.spec_from_file_location("check_ai_review", ROOT / "scripts/check_ai_review.py")
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 HEAD, BASE = "a" * 40, "b" * 40
@@ -246,6 +248,21 @@ class GitHubContractTests(unittest.TestCase):
                 {"data": {"repository": {"pullRequest": {"reviewThreads": threads}}}},
                 {"user": BOT, "html_url": "finding", "updated_at": END}]):
             self.assertEqual(gh.findings(12), [{"resolved": False, "url": "finding", "updated_at": END}])
+
+    def test_sync_collection_reads_current_main_and_its_ancestry(self):
+        gh = gate.GitHub(); s, _ = fixture(); pr = s["pr"]; pr["head"]["ref"] = "codex/sync-main-release"
+        for included in [True, False]:
+            def response(path):
+                if '/git/ref/heads/main' in path:
+                    return {"object": {"sha": "c" * 40}}
+                if '/compare/' + 'c' * 40 in path:
+                    return {"merge_base_commit": {"sha": "c" * 40 if included else BASE}}
+                return {"merge_base_commit": {"sha": BASE}}
+            with mock.patch.object(gh, "api", side_effect=response), \
+                    mock.patch.object(gh, "pages", return_value=[]), mock.patch.object(gh, "findings", return_value=[]):
+                snapshot = gh.collect(pr)
+                self.assertEqual(snapshot["latest_main"], "c" * 40)
+                self.assertEqual(snapshot["main_is_ancestor"], included)
 
     def test_later_evidence_pages_are_read(self):
         gh = gate.GitHub()

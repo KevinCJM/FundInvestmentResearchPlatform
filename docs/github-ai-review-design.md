@@ -25,7 +25,7 @@ Ruleset 将三个检查绑定 GitHub Actions 的实际 integration ID（当前�
 
 - PR 为 open、非 Draft，同一仓库；普通开发或同步分支只能进入 Dev。
 - main 仅接受本仓库 Dev；`main → Dev`、`release/* → main` 等方向均拒绝。
-- PR HEAD 等于实时来源 ref，来源包含实时目标 SHA。
+- PR HEAD 等于实时来源 ref，来源包含实时目标 SHA；codex/sync-main-* 同步分支还须包含实时 main，不能用只包含 Dev 的空同步通过。
 - 同一 HEAD 不得同时被多个面向 main/Dev 的 open PR 使用。GitHub 检查按 commit 绑定，不能让一个 PR 的 success 覆盖另一个 PR 的 failure。
 
 合并执行者仍须最后核对 HEAD/base，并使用 HEAD 匹配接口。事件与 API 更新不是原子操作；strict required checks 补充最新基线约束。本设计不支持 merge queue。
@@ -58,15 +58,15 @@ gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tm
 
 | 改动 | 必须执行 |
 | --- | --- |
-| 所有 PR | 受保护版本的 AI Hermes 校验、R03 路由、覆盖检查、diff 格式检查；候选门禁单元测试 |
+| 所有 PR | 受保护版本的 AI Hermes 校验、R03 路由、覆盖检查、diff 格式检查；候选门禁单元测试及受保护版本的契约测试 |
 | 纯文档、路由 JSON、门禁治理 | 上述治理检查；业务任务由可信计划明确标记不适用 |
 | 前端或设计/i18n 检查器 | 全量 Vitest、TypeScript、构建、i18n、设计检查，以及全部 Playwright |
 | 后端或 .github/requirements-ci.txt 依赖锁定 | 后端全量 pytest、全部 Playwright |
 | 未归类的执行代码/配置/数据，或包含业务变更的 Dev → main | 前后端及 Playwright 全部执行 |
 
-工作流固定包含 prepare、governance、policy-tests、frontend、backend、e2e、quality-result 七个 job。汇总实际执行并核对所有适用 job 成功；缺失、失败、取消、超时或意外跳过均阻断。仅可信计划判定不适用的三个业务子任务可 skipped；三项顶层检查不能 skipped/neutral。
+工作流固定包含 prepare、governance、policy-tests、protected-policy-tests、frontend、backend、e2e、quality-result 八个 job。汇总实际执行并核对所有适用 job 成功；缺失、失败、取消、超时或意外跳过均阻断。仅可信计划判定不适用的三个业务子任务可 skipped；三项顶层检查不能 skipped/neutral。
 
-治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 还对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
+protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 还对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
 
 CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与 `.github/requirements-ci.txt` 共同安装。后端单元测试禁止外网 socket，允许本地回环和 Unix socket；数据及 Numba 缓存使用临时目录，Tushare token 为空。Playwright 使用本地测试服务，同时设置 INDICATOR_TEST_PYTHON 与 TEST_PYTHON；真实数据写入用例仍按其既有显式授权开关跳过，不能报告为正式数据验收。首次真实运行暴露的环境或既有失败必须调查，不能新增跳过来换取绿色。
 
