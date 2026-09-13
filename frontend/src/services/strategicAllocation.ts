@@ -208,7 +208,6 @@ function checkedAssessment(value: MandateAssessment): MandateAssessment {
 }
 
 export const getStrategicCatalog = (signal?: AbortSignal) => request<StrategicCatalog>('/catalog', undefined, signal)
-export const saveMandate = (body: MandateDefinition, signal?: AbortSignal) => request<MandateVersion>('/mandates', body, signal)
 export const previewMandate = async (body: MandateStudyRequest, signal?: AbortSignal) => checkedAssessment(await request<MandateAssessment>('/mandates/preview', body, signal))
 export const confirmMandate = async (body: MandateStudyRequest, previewHash: string, signal?: AbortSignal) => {
   const value = await request<MandateVersion>('/mandates/confirm', { request: body, preview_hash: previewHash, acknowledge_limits: true }, signal)

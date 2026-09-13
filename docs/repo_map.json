@@ -4584,7 +4584,7 @@
       "name": "Investment objectives, CMA and immutable SAA policies",
       "path": "backend/strategic_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes investment objectives, explicit forward-looking CMA and policy adoption. Historical risk reference fills risk inputs without manufacturing return forecasts; locked policies carry asset mapping and ex-ante risk budgets into TAA. Historical target-grid frontier remains a separate research tool. Funding goals use immutable cashflow plans and CMA-linked monthly diagnosis; capital adoption gates replay the displayed cent-rounded amount on the same paths. Unsaved SAA candidates expire on clock changes while immutable saved policies remain readable.",
+      "purpose": "Freezes investment objectives, explicit forward-looking CMA and policy adoption. Historical risk reference fills risk inputs without manufacturing return forecasts; locked policies carry asset mapping and ex-ante risk budgets into TAA. Historical target-grid frontier remains a separate research tool. Funding goals use immutable cashflow plans and CMA-linked monthly diagnosis; capital adoption gates replay the displayed cent-rounded amount on the same paths. Unsaved SAA candidates expire on clock changes while immutable saved policies remain readable. Unknown research clocks block calculations and writes. Mandates must be previewed and explicitly confirmed; unconfirmed history is read-only for new policy use. TAA returns to an exact server-held SAA baseline rather than reconstructing evidence from a browser draft.",
       "module_tags": [
         "SAA",
         "CMA",
@@ -4635,7 +4635,9 @@
         "investment-mandate-fix-recheck-2026-09-13.md",
         "saa-frontier-history-comparison-2026-09-13.md",
         "saa-taa-business-intent-recheck-2026-09-13.md",
-        "docs/research/screenshots/mandate-fix-20260913"
+        "docs/research/screenshots/mandate-fix-20260913",
+        "docs/research/pr14-merge-review-2026-09-13.md",
+        "docs/research/screenshots/pr14-merge-review"
       ],
       "upstream_dependencies": [
         "backend_quant_core",

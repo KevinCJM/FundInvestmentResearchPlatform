@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { allocationJourneyPath } from '../../app/allocationJourney'
+import { allocationJourneyPath, readAllocationJourney } from '../../app/allocationJourney'
 import { createTaaBaseline, type TaaBaseline, type TaaCatalog } from '../../services/tacticalAllocation'
 import { buttonClass, Empty, Feedback, Field, inputClass, NumberInput, primaryClass, sectionClass, today } from '../risk-models/ResearchUI'
 
@@ -39,7 +39,7 @@ export default function BaselineSetup({ catalog, selectedId, loading, onSelect, 
   }
 
   return <section className={sectionClass} aria-label="SAA 基准选择"><details open={!selectedId || creating}><summary className="cursor-pointer text-sm font-medium text-slate-800">{selectedId ? `长期组合：${catalog?.baselines.find(item => item.id === selectedId)?.name ?? '读取中'} · 更换 / 新建` : '选择长期配置基准'}</summary><div className="mt-3">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold text-slate-950">从哪个长期组合出发？</h2><p className="mt-1 text-sm text-slate-600">锁定 SAA 权重和资产范围，再研究临时调整。</p></div><Link to={allocationJourneyPath('saa')} className="min-h-11 py-2 text-sm font-medium text-accent-800 underline underline-offset-4">去 SAA 选择方案</Link></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold text-slate-950">从哪个长期组合出发？</h2><p className="mt-1 text-sm text-slate-600">锁定 SAA 权重和资产范围，再研究临时调整。</p></div><Link to={allocationJourneyPath('saa', { ...readAllocationJourney(), baselineId: selectedId })} className="min-h-11 py-2 text-sm font-medium text-accent-800 underline underline-offset-4">去 SAA 选择方案</Link></div>
     {loading ? <p role="status" className="mt-4 text-sm text-slate-600">正在读取 SAA 基准…</p> : <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end"><div className="min-w-0 flex-1"><Field label="SAA 基准版本"><select className={inputClass} value={selectedId} onChange={event => onSelect(event.target.value)}><option value="">请选择已保存的 SAA 基准</option>{catalog?.baselines.map(item => <option key={item.id} value={item.id}>{item.name} · {item.as_of}</option>)}</select></Field></div><button type="button" className={buttonClass} onClick={() => setCreating(value => !value)}>{creating ? '收起新建基准' : '新建研究基准'}</button></div>}
     {!loading && !catalog?.baselines.length && !creating && <div className="mt-4"><Empty title="先确定长期配置，再讨论偏离"><p>在 SAA 选择组合并带入，或从已有资产分类新建研究基准。这里不会预填合成收益。</p></Empty></div>}
     {creating && <div className="mt-5 space-y-4 border-t border-slate-200 pt-5"><Feedback error={error} /><p className="text-sm text-slate-600">手动确定长期权重。保存后将冻结真实资产数据与产品映射；这一步不代表通过历史 PIT 验证。</p>
@@ -48,5 +48,5 @@ export default function BaselineSetup({ catalog, selectedId, loading, onSelect, 
         <button type="button" className={primaryClass} disabled={!valid || !name.trim() || !asOf || busy} onClick={() => void save()}>{busy ? '正在冻结基准与数据…' : '保存并使用此基准'}</button>
       </fieldset>}
     </div>}
-  </div></details>{selectedId && <Link to={allocationJourneyPath('saa')} className="mt-2 inline-block text-xs text-accent-800 underline">返回本次 SAA 方案</Link>}</section>
+  </div></details>{selectedId && <Link to={allocationJourneyPath('saa', { ...readAllocationJourney(), baselineId: selectedId })} className="mt-2 inline-block text-xs text-accent-800 underline">返回本次 SAA 方案</Link>}</section>
 }

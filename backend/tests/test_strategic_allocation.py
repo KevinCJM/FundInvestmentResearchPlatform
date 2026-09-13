@@ -12,7 +12,7 @@ from pydantic import ValidationError as InputError
 from backend.custom_indicators.errors import ConflictError, ValidationError
 from backend.strategic_allocation import kernels
 from backend.strategic_allocation.contracts import (
-    CmaRequest, MandateRequest, PolicyRequest, PublishCmaRequest,
+    CmaRequest, MandateRequest, MandateStudyRequest, ConfirmMandateRequest, PolicyRequest, PublishCmaRequest,
     PublishPolicyRequest, RiskReferenceRequest,
 )
 from backend.strategic_allocation.policy_gate import check_policy, require_policy_application
@@ -62,8 +62,16 @@ def definition():
         correlation=[[1., -0.1], [-0.1, 1.]])
 
 
+def confirmed_mandate(service, definition):
+    request = MandateStudyRequest(definition=definition.model_copy(update={
+        "boundary_reason": definition.boundary_reason or "离线夹具已确认的风险与流动性边界"}))
+    preview = service.preview_mandate(request)
+    return service.confirm_mandate(ConfirmMandateRequest(
+        request=request, preview_hash=preview["preview_hash"], acknowledge_limits=True))
+
+
 def saved_inputs(service):
-    mandate = service.save_mandate(MandateRequest(name="长期配置目标", as_of=date.today(),
+    mandate = confirmed_mandate(service, MandateRequest(name="长期配置目标", as_of=date.today(),
         review_date=date.today() + timedelta(days=180), target_return=0.0, max_volatility=0.2,
         min_liquid_weight=0.2, max_tracking_error=0.04))
     request = definition()
@@ -184,7 +192,7 @@ def test_robustness_zero_penalty_and_candidate_determinism(workspace):
 def test_source_changes_and_currency_mismatch_fail_closed(workspace):
     service, _ = workspace
     _, cma, request = saved_inputs(service)
-    wrong = service.save_mandate(MandateRequest(name="美元目标", as_of=date.today(), review_date=date.today()+timedelta(days=90), currency="USD"))
+    wrong = confirmed_mandate(service, MandateRequest(name="美元目标", as_of=date.today(), review_date=date.today()+timedelta(days=90), currency="USD"))
     with pytest.raises(ValidationError, match="币种"):
         service.preview_policy(request.model_copy(update={"mandate_id": wrong["id"]}))
     path = service.data.data_dir / "asset_nv.parquet"
@@ -308,3 +316,43 @@ def test_service_fails_until_worker_is_warm(workspace, monkeypatch):
     monkeypatch.setattr(kernels, "_WARMED_PID", None)
     with pytest.raises(RuntimeError, match="预热"):
         service.preview_cma(definition())
+
+
+
+def test_raw_mandate_write_is_removed_and_confirmation_is_required(workspace):
+    service, _ = workspace
+    app = FastAPI()
+    app.include_router(build_router(service))
+    client = TestClient(app)
+    definition = MandateRequest(name="核验确认流程", as_of=date.today(),
+        review_date=date.today()+timedelta(days=90))
+    assert client.post("/api/strategic-allocation/mandates", json=definition.model_dump(mode="json")).status_code in (404, 405)
+    request = MandateStudyRequest(definition=definition)
+    preview = client.post("/api/strategic-allocation/mandates/preview", json=request.model_dump(mode="json"))
+    assert preview.status_code == 200
+    body = {"request": request.model_dump(mode="json"), "preview_hash": preview.json()["preview_hash"]}
+    assert client.post("/api/strategic-allocation/mandates/confirm", json=body).status_code == 422
+    rejected = client.post("/api/strategic-allocation/mandates/confirm", json={**body, "acknowledge_limits": True})
+    assert rejected.status_code == 422 and rejected.json()["detail"]["code"] == "MANDATE_BOUNDARY_REASON"
+    assert service.catalog()["mandates"] == []
+    request.definition.boundary_reason = "已经核对必要资金与风险限制"
+    payload = request.model_dump(mode="json")
+    preview = client.post("/api/strategic-allocation/mandates/preview", json=payload).json()
+    saved = client.post("/api/strategic-allocation/mandates/confirm", json={
+        "request": payload, "preview_hash": preview["preview_hash"], "acknowledge_limits": True})
+    assert saved.status_code == 201 and saved.json()["assessment"]["preview_hash"] == preview["preview_hash"]
+
+
+def test_unconfirmed_history_is_readable_but_cannot_drive_a_policy(workspace):
+    service, _ = workspace
+    mandate, _, request = saved_inputs(service)
+    legacy = service.artifacts.save("series", {"artifact_type": "investment_mandate",
+        "name": "未确认的旧目标", "definition": mandate["definition"], "research_only": True,
+        "assessment": {"status": "inputs_only", "candidates": []}})
+    assert service.get_mandate(legacy["id"])["name"] == "未确认的旧目标"
+    request.mandate_id = legacy["id"]
+    with pytest.raises(ValidationError, match="诊断与确认记录"):
+        service.preview_policy(request)
+    with pytest.raises(ValidationError, match="诊断与确认记录"):
+        service.publish_policy(PublishPolicyRequest(request=request, preview_hash="a"*64,
+            candidate_id="minimum-risk", name="不能保存", reason="不能跳过确认流程"))

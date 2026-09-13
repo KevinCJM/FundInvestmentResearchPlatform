@@ -9,9 +9,9 @@ import { cmaDefinition, cmaPreview, cmaVersion, mandateVersion, policyBaseline, 
 import { taaExecution } from '../test/tacticalAllocationFixtures'
 import { assessment, fundingStudy } from '../test/mandateFixtures'
 import { completeCma, previewCma } from '../services/strategicAllocation'
-import { writeAllocationDraft } from '../app/allocationJourney'
+import { allocationJourneyPath, writeAllocationDraft } from '../app/allocationJourney'
 
-const researchClock = vi.hoisted(() => ({ day: '2026-09-12' }))
+const researchClock = vi.hoisted(() => ({ day: '2026-09-12' as string | null | undefined }))
 vi.mock('../app/ResearchContext', () => ({ useResearchDay: () => researchClock.day }))
 const response = (value: unknown, status = 200) => Promise.resolve({ ok: status < 400, status, json: async () => value } as Response)
 const root = '/api/strategic-allocation'
@@ -231,4 +231,41 @@ describe('真实自上而下操作顺序', () => {
     expect(screen.getByRole('table', { name: '分段样本外结果' })).toHaveTextContent('训练收益可得时点未知')
     expect(screen.queryByText('验证未超限')).not.toBeInTheDocument()
   })
+})
+
+
+it('未知时钟禁止SAA比较，明确无PIT允许比较，重新未知后丢弃候选', async () => {
+  researchClock.day = undefined
+  const fetch = install(); const user = userEvent.setup(); const view = renderPolicy()
+  await loadCma(user)
+  expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeDisabled()
+  expect(screen.getByRole('alert')).toHaveTextContent('平台知识截止日尚未确认')
+  researchClock.day = null
+  view.rerender(policyTree())
+  await user.click(screen.getByRole('button', { name: '比较符合目标的政策候选' }))
+  await user.click(await screen.findByRole('button', { name: '复核此候选' }))
+  researchClock.day = undefined
+  view.rerender(policyTree())
+  expect(screen.queryByRole('button', { name: '确认采用此长期政策' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeDisabled()
+  expect(fetch.mock.calls.some(([url]) => String(url) === `${root}/policies`)).toBe(false)
+})
+
+it('从TAA返回精确的已保存SAA版本，不依赖其他目标的本地草稿', async () => {
+  const fetch = install({ '/api/tactical-allocation/baselines/POLICY-1': () => response(policyBaseline) })
+  const path = allocationJourneyPath('saa', { allocationName: '股债分类', baselineId: 'POLICY-1', universeId: 'one' })
+  render(<MemoryRouter initialEntries={[path]}><StrategicAllocationWorkspace /></MemoryRouter>)
+  expect(await screen.findByRole('heading', { name: policyBaseline.name })).toBeInTheDocument()
+  expect(screen.getByText(`采纳理由：${policyBaseline.policy.reason}`)).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: '使用此目标建立新政策' }).getAttribute('href')).toContain('mandate=mandate-1')
+  expect(screen.getByRole('link', { name: '返回此政策的 TAA 研究' })).toHaveAttribute('href', '/pre-investment/taa?baseline=POLICY-1')
+  expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
+  expect(screen.queryByRole('button', { name: '确认采用此长期政策' })).not.toBeInTheDocument()
+})
+
+it('SAA返回链接不会把另一个版本的响应当成所选政策', async () => {
+  install({ '/api/tactical-allocation/baselines/POLICY-1': () => response({ ...policyBaseline, id: 'other' }) })
+  render(<MemoryRouter initialEntries={['/pre-investment/saa/policy?baseline=POLICY-1']}><StrategicAllocationWorkspace /></MemoryRouter>)
+  expect(await screen.findByRole('alert')).toHaveTextContent('读取的政策与所选版本不一致')
+  expect(screen.queryByRole('link', { name: '返回此政策的 TAA 研究' })).not.toBeInTheDocument()
 })

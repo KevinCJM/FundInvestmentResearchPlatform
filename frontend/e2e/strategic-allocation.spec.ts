@@ -121,14 +121,16 @@ test('real target grid: 20 and 200 solves change the actual frontier and preserv
 })
 
 for (const clockChange of [false, true]) {
-test(`real funding goal: ${clockChange ? 'clock change invalidates unsaved SAA' : 'cashflows, CMA diagnosis, confirmation and SAA gate'}`, async ({ page, request }, info) => {
+test(`real funding goal: ${clockChange ? 'unknown PIT blocks goals until retry' : 'cashflows, CMA diagnosis, confirmation and SAA gate'}`, async ({ page, request }, info) => {
   const errors: string[] = []
   let diagnosis: any = null
   let adopted: any = null
+  let pitUnknown = clockChange
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url())
-    if (!url.pathname.startsWith('/api/strategic-allocation/')) {
+    if (url.pathname === '/api/pit/settings' && pitUnknown) return route.fulfill({ status: 503, json: { detail: 'PIT fixture temporarily unavailable' } })
+    if (!url.pathname.startsWith('/api/strategic-allocation/') && url.pathname !== '/api/pit/settings') {
       return route.fulfill({ status: 404, json: { detail: 'Unrelated isolated service is not available.' } })
     }
     const result = await route.fetch({ url: `http://127.0.0.1:8118${url.pathname}${url.search}`, timeout: 60000 })
@@ -153,6 +155,17 @@ test(`real funding goal: ${clockChange ? 'clock change invalidates unsaved SAA' 
   expect(cmaResponse.status()).toBe(201)
   const cma = await cmaResponse.json()
   await page.goto('/pre-investment/objectives')
+  if (clockChange) {
+    await expect(page.getByRole('alert').filter({ hasText: '平台知识截止日尚未确认' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '下一步：风险与限制', exact: true })).toBeDisabled()
+    pitUnknown = false
+    if (info.project.name === 'mobile-390') await page.getByRole('button', { name: '菜单', exact: true }).click()
+    await page.locator('[data-testid=pit-badge]:visible').click()
+    await page.getByRole('button', { name: '重试读取 PIT 口径', exact: true }).click()
+    await expect(page.getByRole('alert').filter({ hasText: '平台知识截止日尚未确认' })).toHaveCount(0)
+    await page.getByRole('button', { name: '关闭口径切换', exact: true }).click()
+    if (info.project.name === 'mobile-390') await page.getByRole('button', { name: '菜单', exact: true }).click()
+  }
   await page.getByRole('combobox', { name: '这笔资金以什么为成功标准？', exact: true }).selectOption('funding_goal')
   await page.getByLabel('目标名称', { exact: true }).fill(`资金目标-${info.project.name}`)
   await page.getByLabel('总资金（CNY）', { exact: true }).fill('1000000')
@@ -216,29 +229,6 @@ test(`real funding goal: ${clockChange ? 'clock change invalidates unsaved SAA' 
   await expect(page.getByLabel('投资目标检查')).toBeVisible({ timeout: 60000 })
   await page.getByRole('table', { name: '长期政策候选比较' }).getByRole('button', { name: '复核此候选' }).first().click()
   await page.getByLabel('采纳理由与复核关注点', { exact: false }).fill('离线验证资金目标诊断通过，采用该研究候选。')
-  if (clockChange) {
-    // Recover the actual provider from its initial unavailable PIT read without
-    // reloading the page; funding/CMA/policy previews still use the real API.
-    const earlier = new Date(Date.parse(day) - 86400000).toISOString().slice(0, 10)
-    await page.route('**/api/pit/settings', route => route.fulfill({ json: {
-      settings: { active_release_id: null, as_of: earlier, run_mode: 'RESEARCH', updated_at: null, note: '' },
-      effective: { as_of: earlier, as_of_source: 'explicit', run_mode: 'RESEARCH', run_mode_label: '研究模式', data_release_id: null, no_pit: false, label: `站在 ${earlier} · 研究模式` },
-      release: null, release_error: null, available_releases: [], can_apply: true,
-    } }))
-    if (info.project.name === 'mobile-390') await page.getByRole('button', { name: '菜单', exact: true }).click()
-    await page.locator('[data-testid=pit-badge]:visible').click()
-    await page.getByRole('button', { name: '重试读取 PIT 口径', exact: true }).click()
-    await expect(page.getByText('知识截止日已变化，未保存的政策候选已失效，请核对日期后重新比较。', { exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '关闭口径切换', exact: true }).click()
-    if (info.project.name === 'mobile-390') await page.getByRole('button', { name: '菜单', exact: true }).click()
-    await expect(page.getByRole('button', { name: '确认采用此长期政策', exact: true })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: '比较符合目标的政策候选', exact: true })).toBeDisabled()
-    await expect(page.getByRole('table', { name: '长期政策候选比较' })).toHaveCount(0)
-    expect(adopted).toBeNull()
-    expect(errors).toEqual([])
-    await page.screenshot({ path: info.outputPath('saa-clock-invalidated.png'), fullPage: true })
-    return
-  }
   await page.getByRole('button', { name: '确认采用此长期政策', exact: true }).click()
   await expect(page.getByRole('button', { name: '长期政策已确认', exact: true })).toBeVisible()
   expect(adopted?.policy?.selection?.goal_check?.within_limits).toBe(true)
@@ -256,7 +246,7 @@ test('real isolated API: goal, CMA, policy adoption and TAA on desktop/mobile', 
   page.on('pageerror', error => errors.push(error.message))
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
-    if (!path.startsWith('/api/strategic-allocation/') && !path.startsWith('/api/tactical-allocation/')) {
+    if (!path.startsWith('/api/strategic-allocation/') && !path.startsWith('/api/tactical-allocation/') && path !== '/api/pit/settings') {
       return route.fulfill({ status: 404, json: { detail: 'Isolated browser acceptance: unrelated service not provided.' } })
     }
     if (route.request().method() === 'POST') writes.push(path)
@@ -319,6 +309,15 @@ test('real isolated API: goal, CMA, policy adoption and TAA on desktop/mobile', 
   await page.screenshot({ path: info.outputPath('taa-validation.png'), fullPage: true })
   const catalog = await (await request.get('http://127.0.0.1:8118/api/strategic-allocation/catalog')).json()
   expect(catalog.policies.length).toBeGreaterThan(0)
+  expect(writes.filter(path => path === '/api/strategic-allocation/policies')).toHaveLength(1)
+  const returnLink = page.getByRole('link', { name: '返回本次 SAA 方案' })
+  await expect(returnLink).toHaveAttribute('href', /baseline=/)
+  await returnLink.click()
+  await expect(page.getByRole('region', { name: '已保存的 SAA 政策' })).toBeVisible()
+  await expect(page.getByText('采纳理由：采用稳健候选，定期复核前瞻假设与风险预算。')).toBeVisible()
+  await expect(page.getByRole('link', { name: '使用此目标建立新政策' })).toHaveAttribute('href', /mandate=/)
+  await page.screenshot({ path: info.outputPath('saved-policy-return.png'), fullPage: true })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
   expect(writes.filter(path => path === '/api/strategic-allocation/policies')).toHaveLength(1)
   expect(errors).toEqual([])
 })

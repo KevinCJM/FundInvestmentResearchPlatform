@@ -1,6 +1,6 @@
 # SAA / TAA 开发分支提交记录
 
-日期：2026-09-13。开发分支 `codex/saa-taa-frontier-grid` → `Dev`；更新现有 [PR #14](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/14)，本轮不合并。
+日期：2026-09-13。开发分支 `codex/saa-taa-frontier-grid` → `Dev`；更新现有 [PR #14](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/14)。最初提交阶段不合并；用户后续已授权审核并合并，最新修复与验收见 [合并审核记录](pr14-merge-review-2026-09-13.md)，实际合并状态以 GitHub 为准。
 
 ## 当前范围
 

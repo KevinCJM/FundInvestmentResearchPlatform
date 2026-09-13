@@ -104,3 +104,12 @@ def save_decision(body: SaveDecisionRequest):
 @app.get('/api/tactical-allocation/decisions/{identifier}')
 def get_decision(identifier: str):
     return _call(tactical.repository.get_decision, identifier)
+
+
+@app.get('/api/pit/settings')
+def pit_settings():
+    # Explicit no-PIT fixture state; unavailable settings must never mean no-PIT.
+    return {"settings": {"active_release_id": None, "as_of": None, "run_mode": "RESEARCH", "updated_at": None, "note": ""},
+            "effective": {"as_of": None, "as_of_source": "none", "run_mode": "RESEARCH", "run_mode_label": "研究模式",
+                "data_release_id": None, "no_pit": True, "label": "离线夹具明确关闭 PIT"},
+            "release": None, "release_error": None, "available_releases": [], "can_apply": True}

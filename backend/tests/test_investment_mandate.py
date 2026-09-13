@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError as InputError
 
-from backend.tests.test_strategic_allocation import workspace, warm, definition, saved_inputs
+from backend.tests.test_strategic_allocation import confirmed_mandate, workspace, warm, definition, saved_inputs
 from backend.strategic_allocation import goal_kernels as goals, kernels
 from backend.strategic_allocation.contracts import (
     MandateRequest, MandateStudyRequest, ConfirmMandateRequest, PublishCmaRequest,
@@ -181,7 +181,7 @@ def test_real_cma_diagnosis_and_saa_consume_the_same_goal_gate(workspace):
 def test_missed_goal_cannot_be_adopted_via_direct_api(workspace):
     service, _ = workspace
     _, cma, _ = saved_inputs(service)
-    saved = service.save_mandate(mandate(funding_plan=plan(terminal_target=40_000_000.)))
+    saved = confirmed_mandate(service, mandate(funding_plan=plan(terminal_target=40_000_000.)))
     request = PolicyRequest(mandate_id=saved["id"], cma_id=cma["id"])
     result = service.preview_policy(request)
     assert all(not c["goal_check"]["within_limits"] for c in result["candidates"])
@@ -197,7 +197,7 @@ def test_benchmark_and_mandate_bounds_are_consumed_not_just_stored(workspace):
     definition_data.update(objective_kind="benchmark_relative", funding_plan=None, benchmark={
         "name": "股债六四政策基准", "alloc_name": "股债", "weights": {"股票": .6, "债券": .4},
         "target_excess_return": 0., "max_tracking_error": 0.})
-    saved = service.save_mandate(MandateRequest.model_validate(definition_data))
+    saved = confirmed_mandate(service, MandateRequest.model_validate(definition_data))
     request = PolicyRequest(mandate_id=saved["id"], cma_id=cma["id"])
     result = service.preview_policy(request)
     for item in result["candidates"]:
@@ -205,7 +205,7 @@ def test_benchmark_and_mandate_bounds_are_consumed_not_just_stored(workspace):
         assert item["benchmark_check"]["tracking_error"] == pytest.approx(0.)
     definition_data.update(objective_kind="absolute_return", benchmark=None, allocation_scope="股债",
         asset_limits={"股票": {"min_weight": .1, "max_weight": .2, "max_abs_tilt": .01}})
-    saved = service.save_mandate(MandateRequest.model_validate(definition_data))
+    saved = confirmed_mandate(service, MandateRequest.model_validate(definition_data))
     result = service.preview_policy(request.model_copy(update={"mandate_id": saved["id"]}))
     assert all(.1 - 1e-8 <= c["weights"]["股票"] <= .2 + 1e-8 for c in result["candidates"])
 
@@ -214,7 +214,7 @@ def test_historical_research_is_not_rejected_by_today_but_application_is(workspa
     service, days = workspace
     historical_day = days[-30].date()
     review_day = days[-10].date()
-    saved = service.save_mandate(MandateRequest(name="历史目标", as_of=historical_day, review_date=review_day))
+    saved = confirmed_mandate(service, MandateRequest(name="历史目标", as_of=historical_day, review_date=review_day))
     cma_req = definition().model_copy(update={"as_of": historical_day})
     cma_preview = service.preview_cma(cma_req)
     cma = service.publish_cma(PublishCmaRequest(request=cma_req, preview_hash=cma_preview["preview_hash"]))
@@ -329,7 +329,7 @@ def test_taa_zero_budget_can_be_researched_without_allowing_weight_tilts(workspa
     from backend.tactical_allocation.contracts import PreviewRequest
     service, days = workspace
     _, cma, _ = saved_inputs(service)
-    saved = service.save_mandate(MandateRequest(name="不允许战术偏离", as_of=date.today(),
+    saved = confirmed_mandate(service, MandateRequest(name="不允许战术偏离", as_of=date.today(),
         review_date=date.today()+timedelta(days=180), max_tracking_error=0.))
     request = PolicyRequest(mandate_id=saved["id"], cma_id=cma["id"])
     preview = service.preview_policy(request)

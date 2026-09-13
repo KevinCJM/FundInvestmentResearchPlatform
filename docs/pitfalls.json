@@ -1294,7 +1294,12 @@
         "backend/strategic_allocation/planning.py",
         "frontend/src/pages/StrategicAllocationWorkspace.tsx",
         "backend/tests/test_mandate_diagnostic_integrity.py",
-        "frontend/src/pages/StrategicAllocationWorkspace.test.tsx"
+        "frontend/src/pages/StrategicAllocationWorkspace.test.tsx",
+        "backend/strategic_allocation/routes.py",
+        "backend/strategic_allocation/service.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
+        "frontend/src/app/allocationJourney.ts",
+        "frontend/src/components/tactical-allocation/BaselineSetup.tsx"
       ],
       "affected_modules": [
         "strategic_allocation_policy"
@@ -1307,7 +1312,10 @@
       "check_before_edit": [
         "Replay the displayed cent-rounded gate capital on the original draws and original payment/terminal success conditions; derive every reported probability from the actual count. Inverse capital rankings alone do not prove the floating-point gate.",
         "Keep the saved funding simulation seed and path count separate from SAA candidate-search settings.",
-        "Invalidate unsaved policy previews and late responses on cutoff changes, guard adoption, and preserve already saved historical snapshots."
+        "Invalidate unsaved policy previews and late responses on cutoff changes, guard adoption, and preserve already saved historical snapshots.",
+        "Treat an undefined research day as unknown and block goal/CMA/policy calculations and writes; null is only an explicitly confirmed no-cutoff view. Transitions between these states invalidate unsaved results and late replies.",
+        "Only preview/confirm may create mandate versions; unconfirmed historical inputs remain readable but cannot drive a new policy. Input-only confirmations still freeze their simulation settings.",
+        "Return from TAA with the selected baseline ID and read its immutable server snapshot. Do not replace adopted policy evidence with an allocation-only browser draft."
       ],
       "safe_observation_methods": [
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_mandate_diagnostic_integrity.py -q",

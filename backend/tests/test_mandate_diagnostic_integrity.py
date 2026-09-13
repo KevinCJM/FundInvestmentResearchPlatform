@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError as InputError
 
 from backend.tests.test_investment_mandate import mandate, plan
-from backend.tests.test_strategic_allocation import workspace, warm, saved_inputs
+from backend.tests.test_strategic_allocation import confirmed_mandate, workspace, warm, saved_inputs
 from backend.strategic_allocation import goal_kernels as goals
 from backend.strategic_allocation.contracts import (
     MandateStudyRequest, ConfirmMandateRequest, PolicyRequest, PublishPolicyRequest,
@@ -132,7 +132,7 @@ def test_payment_buffer_is_zero_return_cash_coverage_not_a_new_cash_deduction():
 def test_policy_application_rejects_missing_or_inconsistent_goal_evidence(workspace, monkeypatch, malformation):
     service, _ = workspace
     _, cma, _ = saved_inputs(service)
-    saved = service.save_mandate(mandate(funding_plan=plan(terminal_target=30_000_000.)))
+    saved = confirmed_mandate(service, mandate(funding_plan=plan(terminal_target=30_000_000.)))
     request = PolicyRequest(mandate_id=saved["id"], cma_id=cma["id"])
     preview = service.preview_policy(request)
     candidate = preview["candidates"][0]
@@ -197,19 +197,19 @@ def test_saa_search_seed_does_not_replace_confirmed_goal_simulation_seed(workspa
     assert service.get_mandate(saved["id"]) == saved
 
 
-def test_input_only_goal_retains_explicit_policy_simulation_settings(workspace):
+def test_confirmed_input_only_goal_retains_its_frozen_simulation_settings(workspace):
     service, _ = workspace
     _, cma, _ = saved_inputs(service)
-    saved = service.save_mandate(mandate())
+    saved = confirmed_mandate(service, mandate())
     result = service.preview_policy(PolicyRequest(mandate_id=saved["id"], cma_id=cma["id"], seed=19))
-    assert result["funding_model"]["seed"] == 19
+    assert result["funding_model"]["seed"] == saved["planning_settings"]["seed"] == 42
     assert result["funding_model"]["paths"] == 2000
 
 
 def test_same_asset_names_do_not_authorize_another_allocation(workspace):
     service, _ = workspace
     _, cma, _ = saved_inputs(service)
-    saved = service.save_mandate(mandate(allocation_scope="另一股债方案",
+    saved = confirmed_mandate(service, mandate(allocation_scope="另一股债方案",
         asset_limits={"股票": {"max_weight": .3}}))
     with pytest.raises(ValidationError, match="大类方案"):
         service.preview_policy(PolicyRequest(mandate_id=saved["id"], cma_id=cma["id"]))

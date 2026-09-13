@@ -13,7 +13,7 @@ import {
   type CmaDraft, type CmaPreview, type CmaVersion, type PolicyCandidate, type PolicyPreview,
   type PolicyRequest, type RiskReferenceRequest, type StrategicCatalog,
 } from '../services/strategicAllocation'
-import type { TaaBaseline } from '../services/tacticalAllocation'
+import { getTaaBaseline, type TaaBaseline } from '../services/tacticalAllocation'
 
 interface Draft {
   mandateId: string; allocationName: string; assumptions: CmaDraft | null
@@ -31,9 +31,45 @@ const historicalLabPath = (allocationName: string) => {
 
 export default function StrategicAllocationWorkspace() {
   const [params] = useSearchParams()
+  const baselineId = params.get('baseline')
   const allocationName = params.get('alloc') ?? readAllocationJourney().allocationName ?? ''
   const mandateId = params.get('mandate') ?? ''
+  if (baselineId) return <SavedPolicy key={baselineId} id={baselineId} />
   return <StrategicEditor key={`${allocationName}:${mandateId}`} initialAllocation={allocationName} initialMandate={mandateId} />
+}
+
+/** A return from TAA reads its exact immutable baseline, never a browser draft. */
+function SavedPolicy({ id }: { id: string }) {
+  const [baseline, setBaseline] = useState<TaaBaseline | null>(null)
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
+  useEffect(() => {
+    const controller = new AbortController()
+    setError(''); setBaseline(null)
+    getTaaBaseline(id, controller.signal).then(value => {
+      if (controller.signal.aborted) return
+      if (value.id !== id) throw new Error('读取的政策与所选版本不一致，请重新读取。')
+      setBaseline(value)
+    }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '政策读取失败。') })
+    return () => controller.abort()
+  }, [id, retry])
+  const query = new URLSearchParams()
+  if (baseline) {
+    query.set('alloc', baseline.alloc_name)
+    if (baseline.policy) query.set('mandate', baseline.policy.mandate_id)
+    if (baseline.universe_snapshot_id) query.set('universe', baseline.universe_snapshot_id)
+  }
+  return <section className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6" aria-label="已保存的 SAA 政策">
+    <h1 className="text-2xl font-semibold text-slate-900">已保存的 SAA 政策</h1>
+    <Feedback error={error} />
+    {error ? <Button onClick={() => setRetry(value => value + 1)}>重新读取政策</Button> : !baseline ? <p role="status">正在读取政策版本…</p> : <>
+      <h2 className="text-lg font-semibold">{baseline.name}</h2>
+      <p className="text-sm text-slate-600">研究日：{baseline.as_of}。以下为不可变历史记录，当前应用资格须在 TAA 另行核验。</p>
+      <dl className="grid gap-3 sm:grid-cols-3">{baseline.assets.map(asset => <div key={asset.id} className="rounded-lg bg-slate-50 p-3"><dt className="text-sm text-slate-600">{asset.name}</dt><dd className="mt-1 text-lg font-semibold tabular-nums">{percentText(asset.base_weight)}</dd></div>)}</dl>
+      {baseline.policy && <><p className="text-sm leading-6 text-slate-700">采纳理由：{baseline.policy.reason}</p><details className="text-sm"><summary className="cursor-pointer">目标与假设版本</summary><p className="break-all">目标：{baseline.policy.mandate_id}；CMA：{baseline.policy.cma_id}</p></details></>}
+      <div className="flex flex-wrap gap-4 text-sm"><Link className="inline-flex min-h-10 items-center text-accent-800 underline" to={`/pre-investment/saa/policy?${query}`}>使用此目标建立新政策</Link><Link className="inline-flex min-h-10 items-center text-accent-800 underline" to={`/pre-investment/taa?baseline=${encodeURIComponent(id)}`}>返回此政策的 TAA 研究</Link></div>
+    </>}
+  </section>
 }
 
 function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocation: string; initialMandate: string }) {
@@ -62,7 +98,7 @@ function StrategicEditor({ initialAllocation, initialMandate }: { initialAllocat
   const allocation = catalog?.allocations.find(value => value.alloc_name === editor.allocationName)
   const draft = editor.assumptions
   const policyRequest: PolicyRequest = { ...editor.settings, mandate_id: editor.mandateId, cma_id: cmaVersion?.id ?? '' }
-  const dateIssue = draft && ((platformDay && draft.as_of > platformDay) || draft.as_of > today()) ? '假设研究日晚于平台知识截止或今天，请调整研究日；草稿会保留。' : ''
+  const dateIssue = platformDay === undefined ? '平台知识截止日尚未确认，请先恢复 PIT 设置；暂不能计算或保存。' : draft && ((platformDay && draft.as_of > platformDay) || draft.as_of > today()) ? '假设研究日晚于平台知识截止或今天，请调整研究日；草稿会保留。' : ''
 
   useEffect(() => {
     const controller = new AbortController()

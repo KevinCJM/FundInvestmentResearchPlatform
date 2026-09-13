@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException
 
 from backend.custom_indicators.errors import IndicatorDomainError
-from .contracts import (CmaRequest, MandateRequest, PolicyRequest, PublishCmaRequest,
+from .contracts import (CmaRequest, PolicyRequest, PublishCmaRequest,
                         PublishPolicyRequest, RiskReferenceRequest,
                         MandateStudyRequest, ConfirmMandateRequest)
 from .service import StrategicAllocationService
@@ -37,10 +37,6 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     @router.get("/catalog")
     def catalog():
         return _call(service.catalog)
-
-    @router.post("/mandates", status_code=201)
-    def save_mandate(body: MandateRequest):
-        return _call(service.save_mandate, body)
 
     # Research-only input diagnostics and version storage; no order execution.
     @router.post("/mandates/preview")

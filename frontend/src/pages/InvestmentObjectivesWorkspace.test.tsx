@@ -9,7 +9,7 @@ import { mandateVersion, strategicCatalog } from '../test/strategicAllocationFix
 import { mandateIssues, modelMonthLabel } from '../components/investment-mandate/model'
 import type { MandateStudyRequest } from '../services/strategicAllocation'
 
-const researchClock = vi.hoisted(() => ({ day: '2026-09-12' }))
+const researchClock = vi.hoisted(() => ({ day: '2026-09-12' as string | null | undefined }))
 vi.mock('../app/ResearchContext', () => ({ useResearchDay: () => researchClock.day }))
 vi.mock('echarts-for-react', () => ({ default: ({ option }: { option: { series: unknown[] } }) => <div data-testid="funding-chart" data-series={option.series.length} /> }))
 const root = '/api/strategic-allocation'
@@ -195,4 +195,25 @@ it('空值、联合边界和资金预留冲突保持明确的输入错误', () =
   expect(mandateIssues({ ...fundingStudy.definition, funding_plan: { ...fundingStudy.definition.funding_plan!, outside_reserve: 1_000_000 } }, '2026-09-12')[0]).toContain('组合外储备')
   expect(mandateIssues({ ...fundingStudy.definition, group_limits: [{ id: 'x', assets: [], lo: 0, hi: 1 }] }, '2026-09-12')[1]).toContain('联合约束')
   expect(mandateIssues({ ...fundingStudy.definition, allocation_scope: null, asset_limits: { equity: { min_weight: 0, max_weight: .3, max_abs_tilt: .1 } } }, '2026-09-12')[1]).toContain('绑定所属大类')
+})
+
+
+it('未知研究时钟阻止诊断与保存，明确无PIT仍可诊断，恢复为未知使旧结果失效', async () => {
+  researchClock.day = undefined
+  const fetch = install(); const user = userEvent.setup(); const view = ready()
+  expect(screen.getByRole('alert')).toHaveTextContent('平台知识截止日尚未确认')
+  await user.click(screen.getByRole('button', { name: '3. 量化诊断' }))
+  expect(screen.getByRole('button', { name: '运行目标诊断' })).toBeDisabled()
+  expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/mandates/preview'))).toBe(false)
+  researchClock.day = null
+  view.rerender(<MemoryRouter><InvestmentObjectivesWorkspace /></MemoryRouter>)
+  await user.click(screen.getByRole('button', { name: '运行目标诊断' }))
+  await screen.findByLabelText('目标可行性诊断结果')
+  await user.click(screen.getByRole('button', { name: '下一步：核对与确认' }))
+  await user.click(screen.getByRole('checkbox', { name: /我已核对输入/ }))
+  expect(screen.getByRole('button', { name: '保存新目标版本' })).toBeEnabled()
+  researchClock.day = undefined
+  view.rerender(<MemoryRouter><InvestmentObjectivesWorkspace /></MemoryRouter>)
+  expect(screen.queryByRole('button', { name: '保存新目标版本' })).not.toBeInTheDocument()
+  expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/mandates/confirm'))).toBe(false)
 })

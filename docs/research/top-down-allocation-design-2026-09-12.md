@@ -50,7 +50,7 @@
 新增 `backend/strategic_allocation/{contracts,kernels,service}.py` 及服务路由。复用 `ArtifactRepository`，复用 `TacticalAllocationData` 作为分类/净值来源，复用 `TacticalAllocationRepository.save_baseline` 保存可被 TAA 直接消费的政策基线。
 
 - `GET /api/strategic-allocation/catalog`：已有分类、目标版本、CMA版本、政策版本摘要。
-- `POST /mandates`：保存目标版本；不写示例数据。
+- `POST /mandates/preview` 与 `POST /mandates/confirm`：先诊断，确认时复算并核对 hash、限制声明与边界依据，再保存目标版本。原始 `POST /mandates` 写入口已移除；缺少确认记录的历史目标只读，不能用于新政策。
 - `POST /risk-reference`：仅计算真实历史风险参考和来源指纹，不持久化。
 - `POST /cma/preview`：验证完整资产轴、角色/币种、年化算术口径、风险矩阵和数据来源，返回预览及 hash。
 - `POST /cma`：确认后复算并核对预览 hash，保存不可变假设和来源/数组。

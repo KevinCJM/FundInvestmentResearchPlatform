@@ -16,6 +16,7 @@ const statusLabel = (status?: string) => status === 'diagnosed' ? '已诊断' : 
 
 export default function InvestmentObjectivesWorkspace() {
   const platformDay = useResearchDay()
+  const clockIssue = platformDay === undefined ? '平台知识截止日尚未确认，请先恢复 PIT 设置；草稿保留，暂不能诊断或保存。' : ''
   const cutoff = platformDay && platformDay < today() ? platformDay : today()
   const [draft, setDraft] = useAllocationDraft<MandateStudyRequest>('mandate-study:editor', () => ({
     definition: { ...newMandate(cutoff), ...(readAllocationDraft<MandateDefinition>('strategic-mandate:editor') ?? {}) },
@@ -34,7 +35,7 @@ export default function InvestmentObjectivesWorkspace() {
   const generation = useRef(0)
   const operation = useRef<AbortController | null>(null)
   const heading = useRef<HTMLHeadingElement>(null)
-  const previousClock = useRef(cutoff)
+  const previousClock = useRef(platformDay)
   const definition = draft.definition
   const issues = mandateIssues(definition, cutoff)
   const numericIssue = studyIssue(draft)
@@ -43,7 +44,7 @@ export default function InvestmentObjectivesWorkspace() {
     && (!definition.allocation_scope || cma.alloc_name === definition.allocation_scope)) ?? []
   const cmaIssue = !selected && draft.cma_id && catalog && !matchingCmas.some(cma => cma.id === draft.cma_id)
     ? '已选CMA不在当前日期、币种、期限及大类范围内，请重新选择或明确改为仅资金测算。' : ''
-  const activeIssue = step === 0 ? issues[0] : step === 1 ? issues[1] : issues.find(Boolean) || numericIssue || cmaIssue
+  const activeIssue = clockIssue || (step === 0 ? issues[0] : step === 1 ? issues[1] : issues.find(Boolean) || numericIssue || cmaIssue)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -56,8 +57,8 @@ export default function InvestmentObjectivesWorkspace() {
   useEffect(() => { heading.current?.focus() }, [step])
   useEffect(() => () => { generation.current += 1; operation.current?.abort() }, [])
   useEffect(() => {
-    if (cutoff !== previousClock.current) {
-      previousClock.current = cutoff
+    if (platformDay !== previousClock.current) {
+      previousClock.current = platformDay
       generation.current += 1; operation.current?.abort(); setBusy(false); setAcknowledged(false)
       if (selected) {
         setNotice('知识截止日已变化；当前只读版本仍显示保存时的诊断，不代表新截止日下可用。复制为新研究后须重新核对。')
@@ -66,7 +67,7 @@ export default function InvestmentObjectivesWorkspace() {
         setNotice('知识截止日已变化，请重新核对输入并运行诊断。')
       }
     }
-  }, [cutoff, selected])
+  }, [platformDay, selected])
 
   function invalidate() {
     generation.current += 1; operation.current?.abort(); setBusy(false)
@@ -90,11 +91,11 @@ export default function InvestmentObjectivesWorkspace() {
     finally { if (generation.current === token) setBusy(false) }
   }
   function diagnose() {
-    if (issues.some(Boolean) || numericIssue || cmaIssue || selected) return
+    if (clockIssue || issues.some(Boolean) || numericIssue || cmaIssue || selected) return
     void run(signal => previewMandate(draft, signal), result => { setPreview(result); setAcknowledged(false) })
   }
   function save() {
-    if (!preview || !acknowledged || selected || issues.some(Boolean) || numericIssue || cmaIssue) return
+    if (clockIssue || !preview || !acknowledged || selected || issues.some(Boolean) || numericIssue || cmaIssue) return
     void run(signal => confirmMandate(draft, preview.preview_hash, signal), version => {
       setSelected(version); setPreview(version.assessment ?? null)
       setCatalog(current => current && ({ ...current, mandates: [version, ...current.mandates] }))
@@ -116,7 +117,7 @@ export default function InvestmentObjectivesWorkspace() {
     <nav aria-label="投资目标步骤" className="grid grid-cols-2 gap-2 border-b border-slate-200 pb-4 sm:grid-cols-4">{steps.map((label, index) => <button key={label} type="button" aria-current={index === step ? 'step' : undefined}
       disabled={(!selected && ((index > 0 && Boolean(issues[0])) || (index > 1 && Boolean(issues[1])))) || (index === 3 && !preview)} onClick={() => setStep(index)}
       className={`min-h-11 rounded-lg p-3 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${index === step ? 'bg-accent-50 font-semibold text-accent-900' : 'text-slate-600 hover:bg-slate-50'}`}>{index + 1}. {label}</button>)}</nav>
-    <Feedback error={error} notice={notice} />
+    <Feedback error={error || clockIssue} notice={notice} />
     {selected && <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3"><p className="text-sm text-slate-700">只读版本：{selected.name} · {statusLabel(selected.assessment?.status ?? selected.assessment_status)}</p>
       <Button onClick={() => { invalidate(); setStep(0); setNotice('已复制输入，原版本未改变；请核对研究日期后重新诊断。') }}>复制为新研究</Button>
       <Button onClick={() => { invalidate(); setDraft({ definition: newMandate(cutoff), cma_id: null, simulation_paths: 2000, seed: 42, uncertainty_penalty: 1 }); setStep(0); setNotice('') }}>建立新目标</Button>
@@ -137,7 +138,7 @@ export default function InvestmentObjectivesWorkspace() {
             <Field label="模拟随机种子"><NumberInput className={inputClass} value={draft.seed} onValueChange={n => updateStudy({ seed: n })} /></Field>
             <Field label="均值不确定性惩罚倍数"><NumberInput className={inputClass} value={draft.uncertainty_penalty} onValueChange={n => updateStudy({ uncertainty_penalty: n })} /></Field>
           </fieldset></details>
-          <Button tone="primary" disabled={busy || Boolean(selected) || issues.some(Boolean) || Boolean(numericIssue) || Boolean(cmaIssue)} onClick={diagnose}>{busy ? '正在测算资金与目标…' : '运行目标诊断'}</Button>
+          <Button tone="primary" disabled={busy || Boolean(clockIssue) || Boolean(selected) || issues.some(Boolean) || Boolean(numericIssue) || Boolean(cmaIssue)} onClick={diagnose}>{busy ? '正在测算资金与目标…' : '运行目标诊断'}</Button>
           {busy && <p role="status" className="text-sm text-slate-600">正在按当前输入计算；尚无完成结果，不显示预测数值。</p>}
           {preview ? <MandateResults key={preview.preview_hash} value={preview} /> : <p className="text-sm text-slate-600">运行后在这里查看资金要求、约束冲突和可用CMA下的量化诊断。</p>}
         </>}
@@ -153,7 +154,7 @@ export default function InvestmentObjectivesWorkspace() {
           {preview.status !== 'diagnosed' && <p className="text-sm leading-6 text-amber-800">此次保存仅固定输入及未通过/未诊断的状态。SAA采纳仍须实际计算并满足目标，不能凭“已保存”绕过检查。</p>}
           {definition.review_date <= today() && <p className="text-sm text-amber-800">这是已过复核日的历史目标，可以保存研究，但不能直接用于当前应用。</p>}
           {!selected && <label className="flex min-h-11 items-start gap-2 text-sm leading-6"><input className="mt-1.5" type="checkbox" checked={acknowledged} onChange={e => setAcknowledged(e.target.checked)} />我已核对输入、诊断状态和模型限制；此确认不是外部审批或收益保证。</label>}
-          <Button tone="primary" disabled={busy || !acknowledged || Boolean(selected) || issues.some(Boolean) || Boolean(numericIssue) || Boolean(cmaIssue)} onClick={save}>{busy ? '正在复算并保存…' : selected ? '已锁定此目标版本' : '保存新目标版本'}</Button>
+          <Button tone="primary" disabled={busy || Boolean(clockIssue) || !acknowledged || Boolean(selected) || issues.some(Boolean) || Boolean(numericIssue) || Boolean(cmaIssue)} onClick={save}>{busy ? '正在复算并保存…' : selected ? '已锁定此目标版本' : '保存新目标版本'}</Button>
           {!selected && !acknowledged && <p className="text-xs text-slate-600">核对后勾选确认，服务端将重新计算并检查输入是否变化。</p>}
         </>}
         {!selected && activeIssue && <p role="status" className="text-sm text-amber-800">{activeIssue}</p>}

@@ -114,6 +114,7 @@ export function allocationJourneyPath(step: AllocationJourneyStep, journey = rea
   }
   const query = new URLSearchParams()
   if (step === 'pool' && !journey.universeId && journey.poolVersionIds?.length === 1) query.set('version', journey.poolVersionIds[0])
+  if (step === 'saa' && journey.baselineId) query.set('baseline', journey.baselineId)
   if (step === 'saa' && journey.allocationName) query.set('alloc', journey.allocationName)
   if (['pool', 'classes', 'saa', 'products'].includes(step) && journey.universeId) query.set('universe', journey.universeId)
   if (step === 'products' && journey.taaRunId) query.set('decision', journey.taaRunId)

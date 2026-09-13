@@ -24,7 +24,7 @@ from backend.tactical_allocation.repository import TacticalAllocationRepository
 from . import kernels, goal_kernels
 from .planning import funding_inputs, diagnose_funding, require_goal_checks, LIMITATIONS
 from .contracts import (
-    CmaRequest, MandateRequest, PolicyRequest, PublishCmaRequest,
+    CmaRequest, PolicyRequest, PublishCmaRequest,
     PublishPolicyRequest, RiskReferenceRequest, MandateStudyRequest, ConfirmMandateRequest,
 )
 
@@ -82,11 +82,6 @@ class StrategicAllocationService:
         policies = [{key: item[key] for key in ("id", "name", "as_of", "created_at", "content_hash", "alloc_name")}
                     for item in self.baselines.list_baselines() if item.get("policy")]
         return {**self.data.catalog(), "mandates": mandates, "assumptions": assumptions, "policies": policies}
-
-    def save_mandate(self, request: MandateRequest) -> dict:
-        return self.artifacts.save("series", {"artifact_type": "investment_mandate", "name": request.name,
-            "definition": request.model_dump(mode="json"), "research_only": True,
-            "assessment": {"status": "inputs_only", "candidates": []}})
 
     def preview_mandate(self, request: MandateStudyRequest) -> dict:
         kernels.require_ready()
@@ -339,6 +334,9 @@ class StrategicAllocationService:
     def preview_policy(self, request: PolicyRequest) -> dict:
         kernels.require_ready()
         mandate_artifact, cma = self.get_mandate(request.mandate_id), self.get_cma(request.cma_id)
+        assessment = mandate_artifact.get("assessment", {})
+        if not assessment.get("preview_hash") or not assessment.get("request"):
+            raise ValidationError("MANDATE_CONFIRMATION_REQUIRED", "此目标缺少诊断与确认记录；请复制为新研究，诊断并确认后再建立政策。")
         mandate, definition = mandate_artifact["definition"], cma["definition"]
         if mandate["currency"] != definition["currency"] or mandate["horizon_years"] != definition["horizon_years"]:
             raise ValidationError("SAA_MANDATE_CMA_BASIS", "投资目标与长期假设的计价币种、投资期限须一致。")
