@@ -1,0 +1,14 @@
+name: Review evidence changed
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+permissions: {}
+jobs:
+  signal:
+    if: github.event.pull_request.base.ref == 'main' || github.event.pull_request.base.ref == 'Dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo 'Review evidence changed; protected main will revalidate.'

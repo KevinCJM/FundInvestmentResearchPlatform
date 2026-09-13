@@ -135,7 +135,7 @@ jobs:
           import hashlib, json, re
           from pathlib import Path
           import yaml
-          names = {'ai-review.yml', 'quality-gate.yml'}
+          names = {'ai-review.yml', 'quality-gate.yml', 'review-events.yml'}
           for owner in ['trusted', 'candidate']:
               contract = json.loads(Path(owner, '.github/workflow-contracts.json').read_text())
               assert set(contract) == names, 'Unexpected workflow contract inventory'

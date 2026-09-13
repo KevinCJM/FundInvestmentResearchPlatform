@@ -11,6 +11,8 @@
 5. 发布端核验质量运行的仓库、事件、工作流路径、精确 PR/HEAD/base 标题、完整 job 集合、最新 attempt，以及工作流 Git blob 与受保护目标版本一致。修改了质量工作流的 PR 不可自证；改由受保护目标分支 dispatch 相同 HEAD/base 的测试。
 6. 发布结果写到 PR 的真实 HEAD，不使用 Actions 测试 merge SHA。最后重新读取 PR、源/目标 ref 和 main 策略 SHA，版本变化时不发布旧成功。旧 main 任务停止写入，由当前 main 重新检查。
 
+`.github/workflows/review-events.yml` 接收 pull_request_review（submitted/edited/dismissed）与 pull_request_review_comment（created/edited/deleted）。该通知工作流 permissions 为空、不检出/执行候选代码、不读写审核数据；完成事件仅唤醒 main 的发布器，由 main 重新读取实际证据。它覆盖普通 issue_comment 不包含的行内审核变更，不能把通知成功当作 AI 审核通过。事件仍有排队延迟，合并前必须执行终端复验，不能把异步通知宣称为原子撤销旧绿灯。
+
 发布 job 仅使用 GitHub Actions 内置的短期 `GITHUB_TOKEN`，权限为 contents/read、pull-requests/read、issues/read、checks/write、actions/write；后者用于 dispatch 受保护测试工作流。不需要新建 App、私钥、额外 secret、Environment 或浏览器登录，禁止上传个人管理员 PAT。已有官方 Codex App 继续负责独立审核。
 
 Ruleset 将三个检查绑定 GitHub Actions 的实际 integration ID（当前为 `15368`）。GitHub 原生规则只能识别 App 和检查名称，不能区分同一 App 下的工作流；有仓库写权限的人可以提交另一个申请 checks/write 的工作流。因此不能仅凭检查颜色、details_url、external_id 或 output 声称防止伪造。
@@ -66,7 +68,7 @@ gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tm
 
 工作流固定包含 prepare、governance、policy-tests、protected-policy-tests、frontend、backend、e2e、quality-result 八个 job。汇总实际执行并核对所有适用 job 成功；缺失、失败、取消、超时或意外跳过均阻断。仅可信计划判定不适用的三个业务子任务可 skipped；三项顶层检查不能 skipped/neutral。
 
-protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行且同样必须非空，防止合入空套件后锁死后续提交。在导入候选代码或运行任何候选测试之前，protected-policy-tests 先由受保护工作流步骤读取 base 的 .github/workflow-contracts.json，校验两份候选生产工作流的完整规范化配置 SHA256，覆盖事件、权限、ref、计划、测试、汇总、运行目录、环境、条件及失败传播；注释和无语义的 YAML 排版不影响指纹。不能用 true、echo、if:false 或 continue-on-error 绕过业务、治理或契约测试。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 先对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，并在任何候选单元测试之前执行这些检查，避免测试修改受检文件；不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
+protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行且同样必须非空，防止合入空套件后锁死后续提交。在导入候选代码或运行任何候选测试之前，protected-policy-tests 先由受保护工作流步骤读取 base 的 .github/workflow-contracts.json，校验三份候选生产工作流（发布器、质量测试、审核事件通知）的完整规范化配置 SHA256，覆盖事件、权限、ref、计划、测试、汇总、运行目录、环境、条件及失败传播；注释和无语义的 YAML 排版不影响指纹。不能用 true、echo、if:false 或 continue-on-error 绕过业务、治理或契约测试。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 先对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，并在任何候选单元测试之前执行这些检查，避免测试修改受检文件；不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
 
 CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与 `.github/requirements-ci.txt` 共同安装。后端单元测试禁止外网 socket，允许本地回环和 Unix socket；数据及 Numba 缓存使用临时目录，Tushare token 为空。Playwright 使用本地测试服务，同时设置 INDICATOR_TEST_PYTHON 与 TEST_PYTHON；真实数据写入用例仍按其既有显式授权开关跳过，不能报告为正式数据验收。首次真实运行暴露的环境或既有失败必须调查，不能新增跳过来换取绿色。
 
@@ -137,6 +139,6 @@ python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode
 python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --diff-range origin/Dev...HEAD --json
 ```
 
-另使用官方 actionlint 验证三个 YAML 的表达式、事件和语法。离线测试不证明 GitHub 安装或业务回归通过；当前远端阶段、SHA、审核与运行证据记录在安装 PR，不把易过期状态作为永久规范。
+另使用官方 actionlint 验证四个 YAML 的表达式、事件和语法。离线测试不证明 GitHub 安装或业务回归通过；当前远端阶段、SHA、审核与运行证据记录在安装 PR，不把易过期状态作为永久规范。
 
 官方依据：[内置工作流授权](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)、[Checks API](https://docs.github.com/en/rest/checks/runs)、[必需检查来源](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)、[工作流事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)。

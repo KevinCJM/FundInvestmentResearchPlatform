@@ -162,6 +162,19 @@ class WorkflowContractTests(unittest.TestCase):
                         if step['uses'].startswith('actions/checkout@'):
                             self.assertEqual(step['with']['persist-credentials'],'false')
 
+    def test_review_event_relay_has_no_privileges_or_candidate_execution(self):
+        import yaml
+        relay=yaml.load((ROOT/'.github/workflows/review-events.yml').read_text(),Loader=yaml.BaseLoader)
+        publisher=yaml.load((ROOT/'.github/workflows/ai-review.yml').read_text(),Loader=yaml.BaseLoader)
+        self.assertEqual(relay['on'],{'pull_request_review':{'types':['submitted','edited','dismissed']},
+            'pull_request_review_comment':{'types':['created','edited','deleted']}})
+        self.assertEqual(relay['permissions'],{})
+        self.assertEqual(relay['jobs']['signal']['steps'],[{'run':"echo 'Review evidence changed; protected main will revalidate.'"}])
+        self.assertNotIn('environment',relay['jobs']['signal'])
+        self.assertNotIn('permissions',relay['jobs']['signal'])
+        self.assertIn(relay['name'],publisher['on']['workflow_run']['workflows'])
+        self.assertEqual(publisher['on']['workflow_run']['types'],['completed'])
+
     def test_integrity_is_checked_before_candidate_imports_and_routing_before_tests(self):
         import yaml
         workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)

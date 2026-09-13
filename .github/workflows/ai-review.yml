@@ -8,7 +8,7 @@ on:
   push:
     branches: [main, Dev]
   workflow_run:
-    workflows: [PR quality validation]
+    workflows: [PR quality validation, Review evidence changed]
     types: [completed]
   schedule:
     - cron: '*/10 * * * *'
