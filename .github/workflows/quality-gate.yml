@@ -102,13 +102,21 @@ jobs:
           python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --diff-range "$BASE_SHA...$HEAD_SHA" --json
       - name: Run nonempty candidate test suite
         run: |
-          python3 - <<'PYTEST'
-          import unittest
-          suite = unittest.defaultTestLoader.discover('scripts/tests', pattern='test_*.py')
-          assert suite.countTestCases() > 0, 'Candidate test suite is empty'
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          raise SystemExit(0 if result.wasSuccessful() else 1)
-          PYTEST
+          python3 -I - <<'CONTROLLER'
+          import json, subprocess, sys, tempfile
+          from pathlib import Path
+          child = "import json, sys, unittest\nfrom pathlib import Path\nsuite = unittest.defaultTestLoader.discover(sys.argv[2], pattern='test_*.py')\ncount = suite.countTestCases()\nresult = unittest.TextTestRunner(verbosity=2).run(suite)\nPath(sys.argv[1]).write_text(json.dumps({'count': count, 'testsRun': result.testsRun,\n    'success': result.wasSuccessful(), 'skipped': len(result.skipped), 'expectedFailures': len(result.expectedFailures)}))\n"
+          with tempfile.TemporaryDirectory() as directory:
+              report = Path(directory, 'completed.json')
+              run = subprocess.run([sys.executable, '-E', '-P', '-c', child, str(report), 'scripts/tests'], timeout=300)
+              assert run.returncode == 0 and report.is_file(), 'Test process did not complete'
+              result = json.loads(report.read_text())
+              assert set(result) == {'count', 'testsRun', 'success', 'skipped', 'expectedFailures'}
+              assert type(result['count']) is int and result['count'] > 0, 'Test suite is empty'
+              assert type(result['testsRun']) is int and result['testsRun'] == result['count'], 'Test suite was incomplete'
+              assert result['success'] is True and result['skipped'] == 0 and result['expectedFailures'] == 0, 'Tests did not all pass'
+              print('All', result['testsRun'], 'policy tests completed successfully')
+          CONTROLLER
   protected-policy-tests:
     needs: prepare
     runs-on: ubuntu-latest
@@ -135,14 +143,15 @@ jobs:
           import hashlib, json, re
           from pathlib import Path
           import yaml
-          names = {'ai-review.yml', 'quality-gate.yml', 'review-events.yml'}
+          names = {'ai-review.yml', 'quality-gate.yml', 'review-events.yml', 'branch-ruleset.json'}
           for owner in ['trusted', 'candidate']:
               contract = json.loads(Path(owner, '.github/workflow-contracts.json').read_text())
               assert set(contract) == names, 'Unexpected workflow contract inventory'
               for name, accepted in contract.items():
                   assert isinstance(accepted, list) and accepted, 'Empty workflow contract'
                   assert all(isinstance(item, str) and re.fullmatch(r'[0-9a-f]{64}', item) for item in accepted)
-                  document = yaml.load(Path('candidate/.github/workflows', name).read_text(), Loader=yaml.BaseLoader)
+                  document = (json.loads(Path('candidate/.github', name).read_text()) if name.endswith('.json')
+                              else yaml.load(Path('candidate/.github/workflows', name).read_text(), Loader=yaml.BaseLoader))
                   digest = hashlib.sha256(json.dumps(document, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
                   assert digest in accepted, f'Unreviewed or inconsistent workflow configuration: {owner}/{name}'
           INTEGRITY
@@ -150,13 +159,21 @@ jobs:
         env:
           FIRP_GATE_ROOT: ${{ github.workspace }}/candidate
         run: |
-          python3 - <<'PYTEST'
-          import unittest
-          suite = unittest.defaultTestLoader.discover('trusted/scripts/tests', pattern='test_*.py')
-          assert suite.countTestCases() > 0, 'Protected contract suite is empty'
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
-          raise SystemExit(0 if result.wasSuccessful() else 1)
-          PYTEST
+          python3 -I - <<'CONTROLLER'
+          import json, subprocess, sys, tempfile
+          from pathlib import Path
+          child = "import json, sys, unittest\nfrom pathlib import Path\nsuite = unittest.defaultTestLoader.discover(sys.argv[2], pattern='test_*.py')\ncount = suite.countTestCases()\nresult = unittest.TextTestRunner(verbosity=2).run(suite)\nPath(sys.argv[1]).write_text(json.dumps({'count': count, 'testsRun': result.testsRun,\n    'success': result.wasSuccessful(), 'skipped': len(result.skipped), 'expectedFailures': len(result.expectedFailures)}))\n"
+          with tempfile.TemporaryDirectory() as directory:
+              report = Path(directory, 'completed.json')
+              run = subprocess.run([sys.executable, '-E', '-P', '-c', child, str(report), 'trusted/scripts/tests'], timeout=300)
+              assert run.returncode == 0 and report.is_file(), 'Test process did not complete'
+              result = json.loads(report.read_text())
+              assert set(result) == {'count', 'testsRun', 'success', 'skipped', 'expectedFailures'}
+              assert type(result['count']) is int and result['count'] > 0, 'Test suite is empty'
+              assert type(result['testsRun']) is int and result['testsRun'] == result['count'], 'Test suite was incomplete'
+              assert result['success'] is True and result['skipped'] == 0 and result['expectedFailures'] == 0, 'Tests did not all pass'
+              print('All', result['testsRun'], 'policy tests completed successfully')
+          CONTROLLER
   frontend:
     needs: prepare
     if: needs.prepare.outputs.frontend == 'true'

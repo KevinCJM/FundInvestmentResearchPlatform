@@ -187,6 +187,46 @@ class WorkflowContractTests(unittest.TestCase):
         tests=next(i for i,step in enumerate(steps) if step.get('name')=='Run nonempty candidate test suite')
         self.assertLess(routing,tests)
 
+    def test_deployable_ruleset_preserves_submission_requirements(self):
+        config=json.loads((ROOT/'.github/branch-ruleset.json').read_text())
+        self.assertEqual(config['target'],'branch')
+        self.assertEqual(config['enforcement'],'active')
+        self.assertEqual(config['bypass_actors'],[])
+        self.assertEqual(config['conditions'],{'ref_name':{'include':['refs/heads/main','refs/heads/Dev'],'exclude':[]}})
+        rules={rule['type']:rule for rule in config['rules']}
+        self.assertEqual(len(rules),len(config['rules']))
+        self.assertEqual(set(rules),{'deletion','non_fast_forward','pull_request','required_status_checks'})
+        pr=rules['pull_request']['parameters']
+        self.assertEqual(pr['required_approving_review_count'],0)
+        self.assertEqual(pr['required_reviewers'],[])
+        self.assertEqual(pr['allowed_merge_methods'],['merge'])
+        for name in ['dismiss_stale_reviews_on_push','required_review_thread_resolution','require_extra_approval_for_unattributed_changes']:
+            self.assertIs(pr[name],True)
+        for name in ['require_code_owner_review','require_last_push_approval']:
+            self.assertIs(pr[name],False)
+        checks=rules['required_status_checks']['parameters']
+        self.assertIs(checks['strict_required_status_checks_policy'],True)
+        self.assertIs(checks['do_not_enforce_on_create'],False)
+        self.assertEqual(checks['required_status_checks'],[
+            {'context':name,'integration_id':15368} for name in ['branch-policy','ai-review','quality-gate']])
+
+    def test_test_controllers_reject_early_exit_skips_and_expected_failures(self):
+        import yaml
+        workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
+        cases=[("import os; os._exit(0)\n",False),
+            ("import unittest\nclass T(unittest.TestCase):\n def test_ok(self): pass\n",True),
+            ("import unittest\n@unittest.skip('skip')\nclass T(unittest.TestCase):\n def test_ok(self): pass\n",False),
+            ("import unittest\nclass T(unittest.TestCase):\n @unittest.expectedFailure\n def test_bad(self): self.fail()\n",False)]
+        for job,source in [('policy-tests','scripts/tests'),('protected-policy-tests','trusted/scripts/tests')]:
+            step=workflow['jobs'][job]['steps'][-1]['run']
+            self.assertIn('python3 -I',step)
+            with tempfile.TemporaryDirectory() as directory:
+                root=Path(directory); tests=root/source;tests.mkdir(parents=True)
+                for code,passed in cases:
+                    (tests/'test_candidate.py').write_text(code)
+                    run=subprocess.run(['bash','-ec',step],cwd=root,capture_output=True,text=True)
+                    self.assertEqual(run.returncode==0,passed,(job,code,run.stderr))
+
     def test_actual_integrity_step_rejects_configuration_changes_and_invalid_next_contract(self):
         import shutil, yaml
         workflow=yaml.load((ROOT/'.github/workflows/quality-gate.yml').read_text(),Loader=yaml.BaseLoader)
@@ -209,6 +249,11 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertNotEqual(run(),0,(job,field))
             path.write_text(original+'\n# Formatting alone is not a behavior change.\n')
             self.assertEqual(run(),0)
+            rules_path=root/'candidate/.github/branch-ruleset.json'; original_rules=rules_path.read_text()
+            for field,value in [('enforcement','disabled'),('bypass_actors',[{'actor_id':1,'bypass_mode':'always'}]),('rules',[])]:
+                config=json.loads(original_rules);config[field]=value;rules_path.write_text(json.dumps(config))
+                self.assertNotEqual(run(),0,field)
+            rules_path.write_text(original_rules)
             (root/'candidate/.github/workflow-contracts.json').write_text('{}')
             self.assertNotEqual(run(),0)
 
@@ -240,7 +285,7 @@ class WorkflowContractTests(unittest.TestCase):
             contract.unlink()
             run=subprocess.run(['bash','-ec',script],cwd=root,env=os.environ|{'FIRP_GATE_ROOT':str(candidate)},capture_output=True,text=True)
             self.assertNotEqual(run.returncode,0)
-            self.assertIn('Protected contract suite is empty',run.stderr)
+            self.assertIn('Test suite is empty',run.stderr)
 
     def test_candidate_step_rejects_empty_test_suite(self):
         import yaml
@@ -251,7 +296,7 @@ class WorkflowContractTests(unittest.TestCase):
             tests=Path(directory)/'scripts/tests'; tests.mkdir(parents=True)
             run=subprocess.run(['bash','-ec',script],cwd=directory,capture_output=True,text=True)
             self.assertNotEqual(run.returncode,0)
-            self.assertIn('Candidate test suite is empty',run.stderr)
+            self.assertIn('Test suite is empty',run.stderr)
             (tests/'test_basic.py').write_text('import unittest\nclass Basic(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n')
             self.assertEqual(subprocess.run(['bash','-ec',script],cwd=directory,capture_output=True).returncode,0)
 

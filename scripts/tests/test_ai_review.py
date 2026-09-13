@@ -39,6 +39,8 @@ def fixture():
 
 class ReviewDecisionTests(unittest.TestCase):
     def state(self, snapshot, context):
+        for review in snapshot["reviews"]:
+            review.setdefault("updated_at", review.get("submitted_at"))
         return gate.evaluate(snapshot, context)["state"]
 
     def test_structured_pass_requires_complete_review_attestation(self):
@@ -265,6 +267,16 @@ class ReviewDecisionTests(unittest.TestCase):
         s["comments"][0]["updated_at"] = s["reactions"][0]["created_at"] = "2026-09-11T10:12:00Z"
         self.assertEqual(self.state(s, c), "success")
 
+    def test_review_edit_after_native_pass_revokes_old_verdict(self):
+        for body in ["A new blocking finding", "```json\n" + json.dumps(valid_report(fixture()[1])) + "\n```"]:
+            s, c = fixture()
+            s["comments"][1].update(created_at="2026-09-11T10:11:00Z", updated_at="2026-09-11T10:11:00Z")
+            s["comments"][0]["body"] = s["comments"][0]["body"].replace(END, "2026-09-11T10:12:00Z")
+            s["comments"][0]["updated_at"] = s["reactions"][0]["created_at"] = "2026-09-11T10:12:00Z"
+            s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END,
+                "updated_at": "2026-09-11T10:13:00Z", "html_url": REVIEW_URL, "body": body}]
+            self.assertNotEqual(self.state(s, c), "success")
+
     def test_structured_incomplete_never_falls_back_to_thumb(self):
         s, c = fixture()
         report = {**c, "repository": gate.REPOSITORY, "conclusion": "INCOMPLETE", "findings": [], "limitations": ["truncated"]}
@@ -277,6 +289,29 @@ class ReviewDecisionTests(unittest.TestCase):
 
 
 class GitHubContractTests(unittest.TestCase):
+    def test_collect_review_activity_uses_authenticated_paginated_edit_times(self):
+        gh = gate.GitHub()
+        record = {"id": 12, "user": BOT, "state": "COMMENTED", "submitted_at": START, "body": "review", "html_url": REVIEW_URL, "commit_id": HEAD}
+        node = {"databaseId": 12, "updatedAt": END, "submittedAt": START, "body": "review", "state": "COMMENTED", "url": REVIEW_URL, "commit": {"oid": HEAD}}
+        def page(nodes, more):
+            return {"data": {"repository": {"pullRequest": {"reviews": {
+                "pageInfo": {"hasNextPage": more, "endCursor": "next"}, "nodes": nodes}}}}}
+        with mock.patch.object(gh, "pages", return_value=[record]), mock.patch.object(gh, "api", side_effect=[
+                page([], True), page([node], False)]):
+            self.assertEqual(gh.reviews(12)[0]["updated_at"], END)
+        with mock.patch.object(gh, "pages", return_value=[record]), mock.patch.object(gh, "api", return_value=page([{**node, "body": "edited"}], False)):
+            with self.assertRaises(RuntimeError):
+                gh.reviews(12)
+        for records in [[{**record, "state": "PENDING"}], [record, {**record, "id": 13, "state": "PENDING"}]]:
+            nodes = [dict(node, databaseId=r["id"], state="CHANGES_REQUESTED" if r["state"] == "PENDING" else r["state"]) for r in records]
+            with mock.patch.object(gh, "pages", return_value=records), mock.patch.object(gh, "api", return_value=page(nodes, False)):
+                with self.assertRaises(RuntimeError):
+                    gh.reviews(12)
+        for nodes in [[], [node, {**node, "databaseId": 13, "state": "CHANGES_REQUESTED"}], [node, node], [{**node, "databaseId": None}]]:
+            with mock.patch.object(gh, "pages", return_value=[record]), mock.patch.object(gh, "api", return_value=page(nodes, False)):
+                with self.assertRaises(RuntimeError):
+                    gh.reviews(12)
+
     def test_null_author_does_not_hide_later_bot_finding(self):
         gh = gate.GitHub()
         threads = {"pageInfo": {"hasNextPage": False}, "nodes": [

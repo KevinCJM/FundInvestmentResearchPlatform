@@ -83,6 +83,10 @@ def outcome(state, reason, evidence=None):
     return {"state": state, "reason": reason, "evidence": evidence or []}
 
 
+def review_activity(review):
+    return max(timestamp(review["submitted_at"]), timestamp(review["updated_at"]))
+
+
 def evaluate(snapshot, context):
     """Pure, fail-closed decision; context must predate the reviewed evidence."""
     pr = snapshot["pr"]
@@ -112,7 +116,7 @@ def evaluate(snapshot, context):
     latest_finding = max([timestamp(f["updated_at"]) for f in findings] + [started])
     records = [r for r in snapshot["reviews"] if is_bot(r) and r.get("commit_id") == head
                and r.get("state") not in {"DISMISSED", "PENDING"}]
-    latest_review = max(records, key=lambda r: r["submitted_at"]) if records else None
+    latest_review = max(records, key=review_activity) if records else None
     changes_requested = latest_review and latest_review.get("state") == "CHANGES_REQUESTED"
     comments = [c for c in snapshot["comments"] if is_app_comment(c)]
     requests = [c for c in snapshot["comments"] if matches_request(c.get("body"), pr)
@@ -136,7 +140,7 @@ def evaluate(snapshot, context):
                 "base_sha": base, "base_ref": pr["base"]["ref"],
             }.items()):
                 continue
-            at = timestamp(record.get("submitted_at") or record["updated_at"])
+            at = review_activity(record) if "submitted_at" in record else timestamp(record["updated_at"])
             if at >= max(started, requested_at):
                 reports.append(record["html_url"])
     if reports:
@@ -177,8 +181,8 @@ def evaluate(snapshot, context):
         return outcome(review_pending, "Waiting for an authenticated Codex no-findings verdict after the latest request")
     # A later review with suggestions must never be overridden by an old reaction.
     newest_positive = max(timestamp(r["created_at"]) for r in positives)
-    if any(timestamp(r["submitted_at"]) > newest_positive or
-           (r.get("state") == "CHANGES_REQUESTED" and timestamp(r["submitted_at"]) == newest_positive)
+    if any(review_activity(r) > newest_positive or
+           (r.get("state") == "CHANGES_REQUESTED" and review_activity(r) == newest_positive)
            for r in records):
         return outcome(review_pending, "A newer Codex review requires a fresh no-findings verdict")
     return outcome("success", "Current Codex summary and fresh no-findings verdict verified",
@@ -233,6 +237,52 @@ class GitHub:
             cursor = threads["pageInfo"]["endCursor"]
         raise RuntimeError("Review-thread pagination limit reached")
 
+    def reviews(self, number):
+        records = self.pages(f"repos/{REPOSITORY}/pulls/{number}/reviews")
+        ids = [record.get("id") for record in records]
+        if any(not isinstance(value, int) or value <= 0 for value in ids) or len(set(ids)) != len(ids):
+            raise RuntimeError("Invalid or duplicate review IDs")
+        official = [record for record in records if is_bot(record)]
+        if not official:
+            return records
+        query = '''query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+          repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(first:100,after:$cursor){
+            pageInfo{hasNextPage endCursor} nodes{databaseId updatedAt submittedAt body state url commit{oid}}}}}}'''
+        cursor, edited = None, {}
+        for _ in range(100):
+            data = self.api("graphql", {"query": query, "variables": {"owner": "KevinCJM",
+                "name": "FundInvestmentResearchPlatform", "number": number, "cursor": cursor}})
+            if data.get("errors"):
+                raise RuntimeError("Incomplete review activity query")
+            page = data["data"]["repository"]["pullRequest"]["reviews"]
+            for node in page["nodes"]:
+                review_id = node["databaseId"]
+                if not isinstance(review_id, int) or review_id <= 0 or review_id in edited:
+                    raise RuntimeError("Invalid or duplicate review activity IDs")
+                edited[review_id] = node
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            cursor = page["pageInfo"]["endCursor"]
+        else:
+            raise RuntimeError("Review activity pagination limit reached")
+        if set(edited) != set(ids):
+            raise RuntimeError("Review set changed during evidence collection; retry")
+        if any(edited[record["id"]]["state"] != record["state"] for record in records):
+            raise RuntimeError("Review state changed during evidence collection; retry")
+        for record in official:
+            if record["state"] == "PENDING":
+                continue
+            node = edited[record["id"]]
+            if (node["body"] != record["body"] or node["state"] != record["state"]
+                    or node["url"] != record["html_url"] or node["commit"]["oid"] != record["commit_id"]
+                    or timestamp(node["submittedAt"]) != timestamp(record["submitted_at"])):
+                raise RuntimeError("Review changed during evidence collection; retry")
+            record["updated_at"] = node["updatedAt"]
+            # Missing/malformed edit timestamps fail closed instead of treating
+            # an edited review as if it predated the current native verdict.
+            review_activity(record)
+        return records
+
     def collect(self, pr):
         prefix = f"repos/{REPOSITORY}"
         number, head, base = pr["number"], pr["head"]["sha"], pr["base"]["sha"]
@@ -258,7 +308,7 @@ class GitHub:
                        if p["number"] != number and p["head"]["sha"] == head
                        and p["base"]["ref"] in {"main", "Dev"}]
         return {"pr": pr, "comments": comments, "reactions": reactions, "resolved_commits": resolved,
-                "reviews": self.pages(f"{prefix}/pulls/{number}/reviews"), "findings": self.findings(number),
+                "reviews": self.reviews(number), "findings": self.findings(number),
                 "base_is_ancestor": comparison["merge_base_commit"]["sha"] == base,
                 "other_prs_with_same_head": shared_head, "latest_main": latest_main, "main_is_ancestor": main_is_ancestor}
 

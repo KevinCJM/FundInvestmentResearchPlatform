@@ -36,7 +36,7 @@ Ruleset 将三个检查绑定 GitHub Actions 的实际 integration ID（当前�
 
 `scripts/check_ai_review.py` 使用已由真实 API 核实的身份：Codex App ID `1144995`、bot user ID `199175422`、login `chatgpt-codex-connector[bot]`。Issue comment 还须验证 `performed_via_github_app.id`；显示名、任意 bot 或作者复制的 PASS 不是可信证据。
 
-每次观察上下文记录 PR、base_ref、base_sha、head_sha、policy_sha、observed_at，仓库为固定常量。HEAD、base 或 main 策略变化后，旧上下文不复用。自动门禁只接受仓库已实际使用并验证的官方原生输出：当前 HEAD 的 Code Review 摘要 Completed，短 SHA 经 GitHub API 唯一解析；并有晚于本次精确版本完整审核请求的新官方 👍，或未经编辑、明确绑定当前提交的官方 “Didn't find any major issues” 评论。摘要和正面结论须晚于最新请求、观察边界及最新问题，且无更晚的阻断审核。
+每次观察上下文记录 PR、base_ref、base_sha、head_sha、policy_sha、observed_at，仓库为固定常量。HEAD、base 或 main 策略变化后，旧上下文不复用。自动门禁只接受仓库已实际使用并验证的官方原生输出：当前 HEAD 的 Code Review 摘要 Completed，短 SHA 经 GitHub API 唯一解析；并有晚于本次精确版本完整审核请求的新官方 👍，或未经编辑、明确绑定当前提交的官方 “Didn't find any major issues” 评论。摘要和正面结论须晚于最新请求、观察边界及最新问题，且无更晚的阻断审核。PR review 的最后活动时间使用 REST submitted_at 与 GraphQL updatedAt 的较晚值；编辑后重新判定，编辑时间缺失或取证不完整时失败关闭。
 
 不支持以自由文本 scope 或自报文件清单授予结构化 PASS。当前观察与请求边界之后、绑定当前 HEAD/base 的官方 codex-review/v1 JSON 报告，无论 PASS/BLOCKED/INCOMPLETE 均阻断，不能回落到旧的原生通过证据；必须发出新的完整审核请求并完成原生复审。机器验证的是官方证据、完整审核请求与版本的绑定，不能从一段范围声明证明 AI 实际完整阅读了代码。提交规范中的 JSON 是审计记录模板，不是向自动门禁提交 PASS 的接口。
 
@@ -67,13 +67,15 @@ gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tm
 
 工作流固定包含 prepare、governance、policy-tests、protected-policy-tests、frontend、backend、e2e、quality-result 八个 job。汇总实际执行并核对所有适用 job 成功；缺失、失败、取消、超时或意外跳过均阻断。仅可信计划判定不适用的三个业务子任务可 skipped；三项顶层检查不能 skipped/neutral。
 
-protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行且同样必须非空，防止合入空套件后锁死后续提交。在导入候选代码或运行任何候选测试之前，protected-policy-tests 先由受保护工作流步骤读取 base 的 .github/workflow-contracts.json，校验三份候选生产工作流（发布器、质量测试、审核事件通知）的完整规范化配置 SHA256，覆盖事件、权限、ref、计划、测试、汇总、运行目录、环境、条件及失败传播；注释和无语义的 YAML 排版不影响指纹。不能用 true、echo、if:false 或 continue-on-error 绕过业务、治理或契约测试。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 先对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，并在任何候选单元测试之前执行这些检查，避免测试修改受检文件；不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
+protected-policy-tests 从受保护 base 读取不可由本 PR 删改的测试源，通过固定 FIRP_GATE_ROOT 指向候选门禁模块及配置，并拒绝空测试集；候选新增测试另行执行且同样必须非空，防止合入空套件后锁死后续提交。在导入候选代码或运行任何候选测试之前，protected-policy-tests 先由受保护工作流步骤读取 base 的 .github/workflow-contracts.json，校验三份候选生产工作流（发布器、质量测试、审核事件通知）以及可部署 branch-ruleset.json 的完整规范化配置 SHA256，覆盖事件、权限、ref、计划、测试、汇总、运行目录、环境、条件及失败传播；YAML 使用 BaseLoader 解析，规则文件使用 JSON 解析，再统一按排序键的紧凑 JSON 计算指纹；注释和无语义的排版不影响指纹。不能用 true、echo、if:false 或 continue-on-error 绕过业务、治理或契约测试。这样删除候选测试不能使回归缺陷被零测试成功掩盖。治理校验器来自受保护 base，并与候选单元测试分处不同 runner，防止候选测试修改校验器。候选 policy-tests runner 先对 skills 中全部 Python 文件做编译检查，并实际执行候选 validate、R02/R03 route 和 evolve 覆盖回归，并在任何候选单元测试之前执行这些检查，避免测试修改受检文件；不能只测试旧版路由工具。业务测试执行待合入 HEAD；来源必须包含 base，因此该 HEAD 已包含目标代码。
+
+两套策略测试均由工作流内受保护的 Python -I 父进程启动独立子进程；每次使用全新临时完成文件，父进程同时要求正常退出、完成文件存在、非零测试数、执行数与发现数相等、全部成功且无 skipped/expectedFailures，并限制 300 秒。导入期 os._exit(0)、空套件、测试失败或未完成均不能提供通过结果。父进程不导入候选模块；这用于检测提前退出和未完成，不是同 UID 恶意代码的安全隔离。规则文件另有固定不变量回归：目标分支、PR-only、三个检查及 App 来源、strict、空 bypass、禁止删除/强推与零人类审批。
 
 CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与 `.github/requirements-ci.txt` 共同安装。后端单元测试禁止外网 socket，允许本地回环和 Unix socket；数据及 Numba 缓存使用临时目录，Tushare token 为空。Playwright 使用本地测试服务，同时设置 INDICATOR_TEST_PYTHON 与 TEST_PYTHON；真实数据写入用例仍按其既有显式授权开关跳过，不能报告为正式数据验收。首次真实运行暴露的环境或既有失败必须调查，不能新增跳过来换取绿色。
 
-候选契约 JSON 也须包含实际候选工作流的合法指纹，避免合入空表或遗漏现行版本后锁死后续 PR；候选自洽检查不代替 base 的授权校验。
+候选契约 JSON 也须包含实际候选工作流及规则文件的合法指纹，避免合入空表或遗漏现行版本后锁死后续 PR；候选自洽检查不代替 base 的授权校验。
 
-修改生产工作流时，先让独立 AI 审查拟议的完整配置及验证证据，在第一阶段 PR 中将拟议规范化指纹加入受保护契约，同时保留现行指纹且保持生产 YAML 不变。第一阶段经 Dev（必要时 main）生效后，第二阶段 PR 才应用已审核的配置；最后删除不再使用的旧指纹。工作流行为改变仍须执行对应实际验证；不能把未审核的任意指纹当成兼容列表，不能在同一 PR 改 YAML 并自行改断言来认证自己。涉及发布器/质量 API 的不兼容变化还须分阶段保持在用协议兼容。
+修改生产工作流或可部署规则文件时，先让独立 AI 审查拟议的完整配置及验证证据，在第一阶段 PR 中将拟议规范化指纹加入受保护契约，同时保留现行指纹且保持生产 YAML/规则文件不变。第一阶段经 Dev（必要时 main）生效后，第二阶段 PR 才应用已审核的配置；最后删除不再使用的旧指纹。工作流行为改变仍须执行对应实际验证；不能把未审核的任意指纹当成兼容列表，不能在同一 PR 改配置并自行改断言来认证自己。涉及发布器/质量 API 的不兼容变化还须分阶段保持在用协议兼容。
 
 候选单元测试通过本身不能授予 quality-gate；发布端只接受受保护定义和精确 job 结果。API 分页超限、格式无法核实或超时均失败关闭，不保留假成功。
 

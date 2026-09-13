@@ -142,7 +142,7 @@ font-sans: Avenir Next, -apple-system, BlinkMacSystemFont, Segoe UI,
 | `bare-chart-hex` | 散落的十六进制色字面量种数 | 57 | 57 | 0 |
 | `homepage-accent-variants` | 首页饱和蓝变体数（令牌 3 档） | 3 | 3 | 3 |
 | `mascot-in-forbidden-zone` | 吉祥物出现在禁区文件中（含 `EmptyState` 间接引用） | 0 | 0 | 0 |
-| `same-element-contrast` | 同一元素/同一三元分支内底色与文字色不足 4.5:1；按文字色逐一检查已解析的渐变色标和交互状态底色，取最低对比度，不能固定取最暗底色 | 37 | **0** | 0 |
+| `same-element-contrast` | 同一元素/同一三元分支内底色与文字色不足 4.5:1；保留变体前缀，只比较同一可判定状态内的前景/底色，渐变按该文字色取最差色标；不把默认、hover、dark 或断点颜色交叉配对 | 37 | **0** | 0 |
 | `duplicate-category-color` | 同一数组里重复的分类色 | 3 | **0** | 0 |
 
 以下预算保留明确边界，`target` 与预算的含义不能混淆：
@@ -150,7 +150,7 @@ font-sans: Avenir Next, -apple-system, BlinkMacSystemFont, Segoe UI,
 - `solid-button-hues` **5**：见 3.1 第 4 条。
 - `uppercase-on-cjk` 预算 **11**、目标 **0**：剩下的是英文眉标（`Data governance`、`Immutable run` 等），只因同一行上另有中文才被计入，属规则的行级近似。
 
-**静态检查够不到的部分由浏览器量。** 祖先的底色常写在三元里（`selected ? 'bg-accent-700' : 'bg-accent-50'`），
+**静态检查够不到的部分由浏览器量。** 单侧变体仅在没有其他变体改变另一侧颜色时继承默认色；复杂断点继承、任意变体和交互叠加不凭字符串猜测，修改时须在对应视口及实际交互状态验证。现有路由对比度回归主要覆盖初始状态，不代表自动穷举了全部 hover/dark 组合。 祖先的底色常写在三元里（`selected ? 'bg-accent-700' : 'bg-accent-50'`），
 纯文本扫描无法判定子元素到底压在哪一层上；渐变底色写在 `background-image` 上，连 `backgroundColor` 都读不到。
 `frontend/e2e/helpers/contrast.ts` 在渲染结果上估算纯色、渐变色标、文本与祖先分组透明度的对比度，并检查可见的表单值与占位符。
 `contrast.spec.ts` 从 `processRegistry` 派生阶段与节点路由，严格核对最终路径，使用固定的 API 离线错误态检查外壳。

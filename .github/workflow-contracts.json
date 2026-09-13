@@ -1,11 +1,14 @@
 {
   "quality-gate.yml": [
-    "5df57493581a59cc65278848140535f136b749fe15f0f0a1bee21462427c1349"
+    "d2d5f852bcddb719d9d1939c633dd849435cb4a20448dc1eadaffc5d20dce42c"
   ],
   "ai-review.yml": [
     "bb1bb4e50bd0991c49e23dd6c25994a647599cfd31acd4f76f9e0f44f2d59f8f"
   ],
   "review-events.yml": [
     "c91df84b4144f62cffe935fea374dd2f09b08d648b3a1f8a17a4a16532f4b897"
+  ],
+  "branch-ruleset.json": [
+    "efc00dff799edcbe3a166973e6e6f390d1d9e60877bf7b3008984f1d4d48ce30"
   ]
 }

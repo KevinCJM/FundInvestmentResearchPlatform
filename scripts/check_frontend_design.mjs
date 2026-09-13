@@ -207,20 +207,36 @@ const contrast = (a, b) => {
 }
 // 带透明度的底色（bg-x-400/10）压在未知底上，不能当作有效底色。
 // disabled: 变体不计：WCAG 1.4.3 把失效控件排除在对比度要求之外。
-const BG_TOKEN = /(?<!disabled:)\b(?:bg|from|via|to)-(white|black|[a-z]+)(?:-(\d{2,3}))?(?![\w/-])/g
-const TEXT_TOKEN = /(?<!disabled:)\btext-(white|black|[a-z]+)(?:-(\d{2,3}))?(?![\w/-])/g
+const COLOR_TOKEN = /^((?:[a-z0-9-]+:)*)(bg|from|via|to|text)-(white|black|[a-z]+)(?:-(\d{2,3}))?$/
 const inadequateContrast = (segment) => {
-  const backgrounds = [...segment.matchAll(BG_TOKEN)].map((m) => hexOf(m[1], m[2])).filter(Boolean)
-  if (!backgrounds.length) return []
-  return [...segment.matchAll(TEXT_TOKEN)].flatMap((m) => {
-    const foreground = hexOf(m[1], m[2])
-    if (!foreground) return []
-    // 最坏底色取决于文字色：白字应检查浅色标，深字应检查深色标。
-    const worst = backgrounds.map((bg) => ({ bg, ratio: contrast(bg, foreground) }))
-      .reduce((a, b) => a.ratio <= b.ratio ? a : b)
-    return worst.ratio < 4.5 ? [{ token: m[0], ...worst }] : []
+  const states = new Map([['', { backgrounds: [], foregrounds: [] }]])
+  for (const token of segment.split(/\s+/)) {
+    const match = COLOR_TOKEN.exec(token)
+    if (!match || match[1].split(':').includes('disabled')) continue
+    const color = hexOf(match[3], match[4])
+    if (!color) continue
+    const state = states.get(match[1]) ?? { backgrounds: [], foregrounds: [] }
+    state[match[2] === 'text' ? 'foregrounds' : 'backgrounds'].push({ token, color })
+    states.set(match[1], state)
+  }
+  const defaults = states.get('')
+  return [...states].flatMap(([variant, state]) => {
+    // 同一变体同时改变前景/底色时只能相互配对，不能与默认状态交叉。
+    // 仅一侧改变时，只有其他变体未声明另一侧，才能证明继承默认色。
+    // 多断点、dark/交互叠加和任意变体的级联由浏览器用例验证。
+    const inherited = (property) => ![...states].some(([key, value]) => key && key !== variant && value[property].length)
+      ? defaults[property] : []
+    const backgrounds = state.backgrounds.length ? state.backgrounds : inherited('backgrounds')
+    const foregrounds = state.foregrounds.length ? state.foregrounds : inherited('foregrounds')
+    if (!backgrounds.length || !foregrounds.length) return []
+    return foregrounds.flatMap(({ token, color }) => {
+      const worst = backgrounds.map(({ color: bg }) => ({ bg, ratio: contrast(bg, color) }))
+        .reduce((a, b) => a.ratio <= b.ratio ? a : b)
+      return worst.ratio < 4.5 ? [{ token, ...worst }] : []
+    })
   })
 }
+
 let sameElement = 0
 const sameElementDetail = []
 for (const f of files) {
@@ -286,6 +302,13 @@ const SELFTEST = [
   ['深底白字不误报', () => inadequateContrast('from-accent-700 to-slate-900 text-white').length, 0],
   ['浅底深字不误报', () => inadequateContrast('from-white to-slate-50 text-slate-900').length, 0],
   ['悬停底色不能被较深默认色掩盖', () => inadequateContrast('bg-accent-600 text-white hover:bg-accent-400').length, 1],
+  ['悬停前景底色同时切换不交叉配对', () => inadequateContrast('bg-white text-slate-900 hover:bg-slate-900 hover:text-white').length, 0],
+  ['深色模式前景底色同时切换不交叉配对', () => inadequateContrast('bg-white text-slate-900 dark:bg-slate-900 dark:text-white').length, 0],
+  ['响应式前景底色同时切换不交叉配对', () => inadequateContrast('bg-white text-slate-900 md:bg-slate-900 md:text-white').length, 0],
+  ['同一悬停状态内低对比度仍阻断', () => inadequateContrast('bg-white text-slate-900 hover:bg-white hover:text-white').length, 1],
+  ['只改变悬停文字仍检查默认底色', () => inadequateContrast('bg-white text-slate-900 hover:text-white').length, 1],
+  ['失效的组合变体不计对比度', () => inadequateContrast('bg-white text-slate-900 hover:disabled:bg-white hover:disabled:text-white').length, 0],
+  ['跨断点继承不按默认白底猜测', () => inadequateContrast('bg-white text-slate-900 md:bg-slate-900 lg:text-white').length, 0],
   ['tiny-font 认得没有整数位的小数', () => tinyFont('<p className="text-[.5rem]">过小</p>'), 1],
   ['tiny-font 认得 px 与 rem', () => tinyFont('text-[8px] text-[0.5rem] text-[12px] text-[1rem]'), 2],
   ['duplicate-category-color 认得分类色映射自身的重复', () => duplicateCategoryColor(
