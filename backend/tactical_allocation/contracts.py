@@ -33,6 +33,12 @@ class BaselineRequest(Contract):
     group_limits: list[GroupLimit] = Field(default_factory=list, max_length=30)
 
 
+class WalkForwardConfig(Contract):
+    window_mode: Literal["rolling", "expanding"] = "rolling"
+    training_periods: int = Field(default=126, ge=20, le=2500, strict=True)
+    validation_periods: int = Field(default=63, ge=20, le=1000, strict=True)
+
+
 class PreviewRequest(Contract):
     baseline_id: str = Field(min_length=1, max_length=120)
     start_date: date
@@ -47,7 +53,7 @@ class PreviewRequest(Contract):
     max_abs_tilt: float = Field(default=.1, ge=0, le=1)
     transaction_cost_bps: float = Field(default=10, ge=0, le=1000)
     risk_penalty: float = Field(default=3, ge=0, le=1000)
-    max_tracking_error: float = Field(default=.1, gt=0, le=10)
+    max_tracking_error: float = Field(default=.1, ge=0, le=10)
     max_turnover: float = Field(default=1, gt=0, le=1)
     confidence_floor: float = Field(default=.6, ge=0, le=1)
     max_signal_age_days: int = Field(default=31, ge=1, le=3650)
@@ -57,6 +63,7 @@ class PreviewRequest(Contract):
     current_weights: dict[str, float] | None = None
     review_days: int = Field(default=30, ge=1, le=365)
     note: str = Field(default="", max_length=2000)
+    walk_forward: WalkForwardConfig | None = None
 
     @model_validator(mode="after")
     def ordered_dates(self):

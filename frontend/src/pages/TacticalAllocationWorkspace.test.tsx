@@ -1,9 +1,10 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TacticalAllocationWorkspace from './TacticalAllocationWorkspace'
 import * as ResearchContext from '../app/ResearchContext'
+import * as ResearchUI from '../components/risk-models/ResearchUI'
 import { readAllocationJourney, updateAllocationJourney } from '../app/allocationJourney'
 import { taaBaseline, taaCatalog, taaExecution, taaPreview, taaPreflight } from '../test/tacticalAllocationFixtures'
 
@@ -32,6 +33,8 @@ async function calculate(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole('button', { name: '计算并比较方案' }))
   await screen.findByRole('region', { name: 'SAA 与战术方案对照' })
 }
+// These fixtures describe a fixed research date, not the wall clock of a future test run.
+beforeEach(() => { vi.spyOn(ResearchUI, 'today').mockReturnValue('2026-09-12') })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); sessionStorage.clear(); localStorage.clear() })
 
 describe('TacticalAllocationWorkspace', () => {
@@ -58,6 +61,36 @@ describe('TacticalAllocationWorkspace', () => {
     '/pre-investment/taa?decision=OLD')
     await screen.findByText('此结果未记录有效信号期数；重新计算会采用当前趋势口径。')
     expect(screen.queryByText(/有效趋势信号：训练 411/)).not.toBeInTheDocument()
+  })
+
+  it('政策日遇到市场数据滞后一日时，决策日保持当前研究日而观察截止停在最新行情日', async () => {
+    vi.spyOn(ResearchContext, 'useResearchDay').mockReturnValue('2026-09-12')
+    const baseline = { ...taaBaseline, as_of: '2026-09-12' }
+    const catalog = { ...taaCatalog,
+      allocations: [{ ...taaCatalog.allocations[0], coverage: { start_date: '2023-01-03', end_date: '2026-09-11' } }],
+      baselines: [baseline] }
+    const { fetchMock } = setup(path => path.endsWith('/catalog') ? ok(catalog)
+      : path.endsWith('/baselines/SAA-1') ? ok(baseline) : undefined)
+    await screen.findByText('本次准备怎么配？')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith('/preflight'))).toBe(true))
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([path]) => String(path).endsWith('/preflight'))?.[1]?.body))
+    expect(body.as_of).toBe('2026-09-12')
+    expect(body.end_date).toBe('2026-09-11')
+  })
+
+  it('旧政策可在更新研究日继续读取新观察，而不是被政策建立日封顶', async () => {
+    vi.spyOn(ResearchContext, 'useResearchDay').mockReturnValue('2026-09-12')
+    const baseline = { ...taaBaseline, as_of: '2026-08-01' }
+    const catalog = { ...taaCatalog,
+      allocations: [{ ...taaCatalog.allocations[0], coverage: { start_date: '2023-01-03', end_date: '2026-09-11' } }],
+      baselines: [baseline] }
+    const { fetchMock } = setup(path => path.endsWith('/catalog') ? ok(catalog)
+      : path.endsWith('/baselines/SAA-1') ? ok(baseline) : undefined)
+    await screen.findByText('本次准备怎么配？')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith('/preflight'))).toBe(true))
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([path]) => String(path).endsWith('/preflight'))?.[1]?.body))
+    expect(body.as_of).toBe('2026-09-12')
+    expect(body.end_date).toBe('2026-09-11')
   })
 
   it('修改 TAA 决策日期不会冒充上游范围研究日', async () => {
@@ -97,7 +130,7 @@ describe('TacticalAllocationWorkspace', () => {
     platform.mockReturnValue('2014-12-31')
     rerender()
     await screen.findByText('平台数据口径已变化。草稿输入和情景假设仍保留，请检查日期并重新计算。')
-    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-10 晚于当前 PIT 截止 2014-12-31')
+    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-12 晚于当前 PIT 截止 2014-12-31')
     expect(screen.queryByRole('region', { name: 'SAA 与战术方案对照' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
   })
@@ -109,7 +142,7 @@ describe('TacticalAllocationWorkspace', () => {
     vi.spyOn(ResearchContext, 'useResearchDay').mockReturnValue('2014-12-31')
     const second = setup()
     await screen.findByRole('region', { name: '平台 PIT 日期冲突' })
-    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-10 晚于当前 PIT 截止 2014-12-31')
+    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-12 晚于当前 PIT 截止 2014-12-31')
     expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: '按当前 PIT 调整日期' })).not.toBeInTheDocument()
     expect(second.fetchMock.mock.calls.some(([path]) => String(path).endsWith('/preflight'))).toBe(false)

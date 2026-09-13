@@ -184,7 +184,6 @@ export const prototypeConfigs: Record<string, PrototypeConfig> = {
   'product-pools': product('产品池构建', '依据准入条件、评价结论和研究标签形成可复用产品池。'),
   'pool-lifecycle': product('产品池版本与生命周期管理', '管理产品准入、观察、限制、替换、排除和版本发布。'),
 
-  objectives: allocation('投资目标与约束', '定义单个组合的收益目标、风险边界、基准、期限、流动性和投资范围。'),
   'product-pool-selection': allocation('选择产品池版本', '选择已生效产品池版本，锁定本次组合研究的产品边界。'),
   taa: allocation('战术资产配置（TAA）', '展示市场状态、情景算法和相对 SAA 中枢的权重偏离研究。', {
     metrics: [

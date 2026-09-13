@@ -170,6 +170,21 @@ def test_configuration_and_nav_changes_invalidate_baseline(data):
     assert error.value.code == "TAA_SAA_CHANGED"
 
 
+def test_append_only_market_history_extends_old_policy_without_weakening_frozen_prefix(data):
+    value = baseline(data)
+    path = data.data_dir / "asset_nv.parquet"
+    frame = pd.read_parquet(path)
+    additions = pd.DataFrame([
+        {"asset_alloc_name": "配置", "asset_name": "股票", "date": pd.Timestamp("2024-01-07"), "nv": 1.31, "as_of": None, "available_at": pd.Timestamp("2024-01-07")},
+        {"asset_alloc_name": "配置", "asset_name": "债券", "date": pd.Timestamp("2024-01-07"), "nv": 1.06, "as_of": None, "available_at": pd.Timestamp("2024-01-07")},
+    ])
+    pd.concat([frame, additions], ignore_index=True).to_parquet(path, index=False)
+    result = data.load_data(value, "2024-01-01", "2024-01-07", "2026-01-01")
+    assert result["dates"][-1] == "2024-01-07"
+    assert result["lineage"]["appended_after_baseline"] is True
+    assert result["lineage"]["policy_snapshot_end_date"] == "2024-01-06"
+
+
 def test_unrelated_allocation_append_does_not_change_baseline(data):
     value = baseline(data)
     for filename in ["asset_alloc_info.parquet", "asset_nv.parquet"]:

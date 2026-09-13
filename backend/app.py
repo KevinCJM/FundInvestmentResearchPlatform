@@ -134,6 +134,10 @@ async def lifespan(_app: FastAPI):
     tactical_status = tactical_service.warm()
     if tactical_status.get("complete") is not True:
         raise RuntimeError("战术资产配置 NJIT 启动预热未完成")
+    from services.strategic_allocation_routes import strategic_service
+    strategic_status = strategic_service.warm()
+    if strategic_status.get("complete") is not True:
+        raise RuntimeError("战略资产配置 NJIT 启动预热未完成")
     portfolio_status = warm_portfolio_numba_kernels()
     scenario_stress_status = warm_scenario_numba_kernels()
     synthetic_series_status = warm_synthetic_series_numba_kernel()
@@ -172,6 +176,7 @@ async def lifespan(_app: FastAPI):
         "regime_graph_v2_saved_plans": regime_graph_plan_status,
         "taa": taa_status,
         "tactical_allocation": tactical_status,
+        "strategic_allocation": strategic_status,
         "portfolio_research": portfolio_status,
         "scenario_stress": scenario_stress_status,
         "synthetic_product_series": synthetic_series_status,
@@ -305,6 +310,7 @@ from services.pit_routes import router as pit_router
 from services.factor_research_routes import router as factor_research_router
 from services.timing_research_routes import router as timing_research_router
 from services.tactical_allocation_routes import router as tactical_allocation_router
+from services.strategic_allocation_routes import router as strategic_allocation_router
 from services.localization_routes import router as localization_router
 
 app.include_router(data_router)
@@ -327,6 +333,7 @@ app.include_router(product_pool_router)
 app.include_router(factor_research_router)
 app.include_router(timing_research_router)
 app.include_router(tactical_allocation_router)
+app.include_router(strategic_allocation_router)
 from services.risk_model_routes import risk_model_router, transmission_router
 from services.published_scenario_routes import router as published_scenario_router
 app.include_router(risk_model_router)

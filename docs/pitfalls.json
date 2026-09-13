@@ -1224,6 +1224,104 @@
         "/bin/sh -c 'cd backend && INDICATOR_PROCESS_WORKERS=7 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1 /Users/chenjunming/Desktop/myenv_312/bin/python3.12 benchmark_indicator_engine.py <plan-id> --repeat 2'",
         "rg -n \"SharedArrayOwner|data_generation|INDICATOR_PROCESS_WORKERS|evaluation-plan-runs\" backend docker-compose.yml .env.example"
       ]
+    },
+    {
+      "id": "P21",
+      "title": "frontier_controls_preserve_sampling_precision_and_grid_domains",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "sampling_selection_regression",
+        "quantization_domain_mixing",
+        "frontier_parameter_semantics"
+      ],
+      "symptoms": [
+        "Risk selection no longer changes later random walks.",
+        "Constraint repair destroys the selected weight step.",
+        "Grid adoption uses continuous weights despite a configured discrete step."
+      ],
+      "trigger_actions": [
+        "edit frontier generation, controls, constraints, metrics or weight adoption"
+      ],
+      "related_paths": [
+        "backend/optimizer.py",
+        "backend/frontier_sampling.py",
+        "backend/tests/test_frontier_sampling.py",
+        "frontend/src/pages/ClassAllocation.tsx",
+        "frontend/src/components/frontier-grid/FrontierGrid.tsx"
+      ],
+      "affected_modules": [
+        "backend_quant_core",
+        "backend_analytics_routes",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "historical frontier exploration",
+        "selected portfolio weights",
+        "shared strategy optimization"
+      ],
+      "check_before_edit": [
+        "Keep all first-round seeds; later rounds select minimum risk per return bucket and freeze parent seeds for the next round.",
+        "All adopted weights must satisfy the selected integer step, total budget, single and overlapping group limits together.",
+        "Keep continuous grid coordinates as evidence; quantized adoption uses separately recomputed integer-feasible weights and metrics.",
+        "Keep target count independent from local refinement and per-target iterations; keep effective controls in one frontier workspace.",
+        "Return EWM window must affect sampling, refinement, grid solving and adoption under the same metric contract."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
+      ]
+    },
+    {
+      "id": "P22",
+      "title": "funding_capital_replay_and_saa_clock_consistency",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "inverse_forward_rounding_mismatch",
+        "stale_saa_candidate_adoption",
+        "lost_immutable_history"
+      ],
+      "symptoms": [
+        "Reported capital meets the adoption probability but the displayed amount fails when replayed.",
+        "A cutoff change leaves an old SAA preview adoptable."
+      ],
+      "trigger_actions": [
+        "edit investment goal numerical diagnosis",
+        "edit SAA preview, adoption or research clock handling"
+      ],
+      "related_paths": [
+        "backend/strategic_allocation/goal_kernels.py",
+        "backend/strategic_allocation/planning.py",
+        "frontend/src/pages/StrategicAllocationWorkspace.tsx",
+        "backend/tests/test_mandate_diagnostic_integrity.py",
+        "frontend/src/pages/StrategicAllocationWorkspace.test.tsx",
+        "backend/strategic_allocation/routes.py",
+        "backend/strategic_allocation/service.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
+        "frontend/src/app/allocationJourney.ts",
+        "frontend/src/components/tactical-allocation/BaselineSetup.tsx"
+      ],
+      "affected_modules": [
+        "strategic_allocation_policy"
+      ],
+      "blast_radius": [
+        "funding feasibility claims",
+        "immutable policy adoption",
+        "historical research evidence"
+      ],
+      "check_before_edit": [
+        "Replay the displayed cent-rounded gate capital on the original draws and original payment/terminal success conditions; derive every reported probability from the actual count. Inverse capital rankings alone do not prove the floating-point gate.",
+        "Keep the saved funding simulation seed and path count separate from SAA candidate-search settings.",
+        "Invalidate unsaved policy previews and late responses on cutoff changes, guard adoption, and preserve already saved historical snapshots.",
+        "Treat an undefined research day as unknown and block goal/CMA/policy calculations and writes; null is only an explicitly confirmed no-cutoff view. Transitions between these states invalidate unsaved results and late replies.",
+        "Only preview/confirm may create mandate versions; unconfirmed historical inputs remain readable but cannot drive a new policy. Input-only confirmations still freeze their simulation settings.",
+        "Return from TAA with the selected baseline ID and read its immutable server snapshot. Do not replace adopted policy evidence with an allocation-only browser draft."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_mandate_diagnostic_integrity.py -q",
+        "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts"
+      ]
     }
   ]
 }

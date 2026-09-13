@@ -520,9 +520,8 @@ export default function AssetClassConstructionPage() {
       return
     }
     if (allocList.includes(name)) {
-      if (!confirm(`配置名称 “${name}” 已存在，要覆盖吗？（此操作不可逆）`)) {
-        return
-      }
+      setActionError(`配置名称“${name}”已存在。请使用新名称保存，已有研究不会被覆盖。`)
+      return
     }
     try {
       setLoading(true)
