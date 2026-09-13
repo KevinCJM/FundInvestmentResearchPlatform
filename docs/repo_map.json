@@ -16,7 +16,7 @@
       "name": "AI branch submission, review and merge protocol",
       "path": "branch_submission_rules.md",
       "kind": "submission_protocol",
-      "purpose": "Owns the AI submission protocol and candidate three-gate implementation: development branches enter Dev, Dev enters main, independent Codex review and protected quality evidence are published by a dedicated App from current main. Local code and tests do not certify remote enforcement; live installation and required-check binding must be verified separately.",
+      "purpose": "Owns the AI submission protocol and candidate three-gate implementation: development branches enter Dev, Dev enters main, independent Codex review and protected quality evidence are published with the built-in Actions token from current main; terminal verification reads authentic publisher logs and recomputes evidence. Local code and tests do not certify remote enforcement; live installation and required-check binding must be verified separately.",
       "module_tags": [
         "submission",
         "branches",
@@ -38,7 +38,9 @@
         "GitHub.collect",
         "GitHub.context",
         "GitHub.publish",
-        "ensure_current_policy"
+        "ensure_current_policy",
+        "verify_submission",
+        "GitHub.published_records"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -75,7 +77,8 @@
         ".github/workflows/ai-review.yml",
         ".github/workflows/ai-review-tests.yml",
         ".github/workflows/quality-gate.yml",
-        ".github/requirements-ci.txt"
+        ".github/requirements-ci.txt",
+        ".github/branch-ruleset.json"
       ],
       "risk_flags": [
         "documented_policy_is_not_remote_enforcement",
@@ -121,7 +124,8 @@
           ".github/requirements-ci.txt",
           "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
           "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
-          "python3 -m unittest discover -s scripts/tests -v"
+          "python3 -m unittest discover -s scripts/tests -v",
+          ".github/branch-ruleset.json"
         ],
         "unsampled_paths": [
           ".github/workflows/ai-review.yml",

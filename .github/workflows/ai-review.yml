@@ -36,13 +36,12 @@ jobs:
       (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: ai-review-publisher
     permissions:
       contents: read
       pull-requests: read
       issues: read
       actions: write
-      checks: read
+      checks: write
     steps:
       - name: Read the trusted workflow version only
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -54,20 +53,9 @@ jobs:
             scripts/check_submission.py
             scripts/submission_policy.py
           sparse-checkout-cone-mode: false
-      - name: Create a repository-scoped check publishing token
-        id: publisher
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
-        with:
-          app-id: ${{ vars.AI_REVIEW_APP_ID }}
-          private-key: ${{ secrets.AI_REVIEW_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: FundInvestmentResearchPlatform
-          permission-checks: write
       - name: Validate and publish three gates on each PR HEAD
         env:
           GH_TOKEN: ${{ github.token }}
-          AI_REVIEW_CHECKS_TOKEN: ${{ steps.publisher.outputs.token }}
-          AI_REVIEW_APP_ID: ${{ vars.AI_REVIEW_APP_ID }}
           SUBMISSION_POLICY_SHA: ${{ github.workflow_sha }}
         shell: bash
         run: |

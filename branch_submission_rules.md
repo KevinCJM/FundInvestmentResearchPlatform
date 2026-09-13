@@ -5,6 +5,7 @@
 ## 1. 适用范围与执行边界
 
 - AI 必须先读 `AGENTS.md` 及 AI Hermes 路由，再完整阅读本文件。提交过程中规则发生变化时，重新读取相关内容。
+- GitHub 配置、审核请求、状态检查与合并必须提供终端执行路径，复用本机已有 `gh` 授权；不得把浏览器登录或新建 GitHub App 作为本流程的前置条件。禁止把个人管理员令牌上传到 Actions。
 - 本项目采用 **开发分支 → Dev → main**。没有 `Feature_Development`、`feature_development` 或额外调试集成主线。
 - 所有 PR 必须有独立 AI 审核，不要求人类 approval。人类意见可以补充审核，但不能替代必需的 AI 审核。
 - 本文件规定 AI 应遵守的流程，不证明 GitHub 已经自动强制执行。每次合并前必须现场核对仓库规则、检查及审核证据。
@@ -209,8 +210,8 @@ git rev-parse origin/Dev origin/main
 - branch-policy 读取 PR 的真实 head SHA，不能误用 Actions 生成的测试 merge commit SHA。
 - 测试证据要记录 HEAD/base，以及测试了来源代码还是待合入组合；使用 merge commit/merge queue 测试时还要记录对应 SHA。
 - HEAD、目标分支或审核结果变化时必须重新评估。使用 merge queue 的工作流须支持 `merge_group`，不能沿用排队前结果。
-- 检查的可信版本和凭据不能由被审核的 PR 改写。检查同名、任意 bot 上报或任意 GitHub Actions 工作流成功，不足以证明来自正确发布者。
-- 若固定发布者是 GitHub Actions，还需核对受控工作流身份与运行来源，不能只因其 App 名称相同就接受。
+- 发布端执行的可信版本不能由被审核的 PR 改写。检查同名、任意 bot 上报或任意 GitHub Actions 工作流成功，不足以证明来自正确发布者。
+- 固定发布者为 GitHub Actions。原生 required checks 只识别 App/名称，不能区分同一 App 下的工作流；其他持有仓库写权限的工作流可以伪造同名检查及详情链接。终端验证必须读取经 GitHub API 核验的当前 main 发布任务日志并重新采集证据，不能信任检查输出中的观察时间。终端验证属于 AI 执行协议，GitHub 不会强制网页或其他客户端调用它；本方案不宣称隔离恶意仓库写权限人。
 - 远端实际规则更严格或尚未配置时，报告具体差异，不绕过、不伪造、不自动放宽；继续完成不依赖该门禁的已授权工作。
 
 ## 9. 合并前与合并后
@@ -221,7 +222,7 @@ git rev-parse origin/Dev origin/main
 2. 刷新远端与 PR 元数据；读取完整 HEAD/base SHA。
 3. 没有冲突，满足最新基线要求；源仓库及分支来源验证通过。
 4. 三项必需检查全部真实成功，AI 结论覆盖相同版本，阻断问题已解决。
-5. 使用普通 merge，通过支持 HEAD 匹配的接口约束实际合入版本；例如 GitHub CLI 的 `--match-head-commit`。
+5. 按技术文档从远端当前 main 的隔离目录执行 `scripts/check_submission.py --verify`，核验真实主线运行日志并重新计算三类证据；通过后立即使用普通 `gh pr merge --merge --match-head-commit`。不得运行候选分支的验证器来认证自己。
 6. 合并时版本变化或被门禁拒绝，重新核对并验证；不得加绕过参数重试。
 
 ### 合并后核实
@@ -282,7 +283,7 @@ git rev-parse origin/Dev origin/main
 - 首次安装仍必须获得独立 AI 对完整当前 HEAD/base 差异的明确审核报告，修复并复核有效问题，完成所有可运行的适用测试和本地可信规则核验。记录真实运行链接、命令、SHA、限制和结论；本地报告只是初始化证据，不能自授生产 ai-review success。
 - 仅“目标尚无可信工作流/计划、发布身份尚未安装”造成的缺检查或启动失败可以明确列为初始化未就绪；测试失败、审核阻断、过期版本、错误分支或不完整业务验证均不可豁免。若 Dev → main 还包含业务变更，必须验证及独立审核全部发布差异，不能把它们算作门禁安装而跳过。
 - 初始化合并前保留现有 GitHub 强制检查，使用实际 HEAD 匹配的普通 merge。每次合并后现场核实目标 SHA。生产检查可用后立刻恢复第 8、9 节完整要求，不因仍处于安装任务而继续使用例外。
-- 三项检查均在真实 PR 上验证成功及阻断路径后，才将它们以专用发布 App 来源设为 required 并开启 strict latest-base；之后再验证约束。PR 记录从安装准备到实际启用的证据，不能把初始化合并等同于完成部署。
+- 三项检查均在真实 PR 上验证成功及阻断路径后，才将它们以 GitHub Actions App 来源设为 required 并开启 strict latest-base；之后再验证约束。PR 记录从安装准备到实际启用的证据，不能把初始化合并等同于完成部署。
 
 ### 后续自动化实施要求
 

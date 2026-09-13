@@ -11,11 +11,13 @@
 5. 发布端核验质量运行的仓库、事件、工作流路径、精确 PR/HEAD/base 标题、完整 job 集合、最新 attempt，以及工作流 Git blob 与受保护目标版本一致。修改了质量工作流的 PR 不可自证；改由受保护目标分支 dispatch 相同 HEAD/base 的测试。
 6. 发布结果写到 PR 的真实 HEAD，不使用 Actions 测试 merge SHA。最后重新读取 PR、源/目标 ref 和 main 策略 SHA，版本变化时不发布旧成功。旧 main 任务停止写入，由当前 main 重新检查。
 
-发布 job 的 `GITHUB_TOKEN` 为 contents/read、pull-requests/read、issues/read、checks/read、actions/write；最后一项用于 dispatch 受保护测试工作流。Checks write 使用独立的短期 GitHub App 安装 token。
+发布 job 仅使用 GitHub Actions 内置的短期 `GITHUB_TOKEN`，权限为 contents/read、pull-requests/read、issues/read、checks/write、actions/write；后者用于 dispatch 受保护测试工作流。不需要新建 App、私钥、额外 secret、Environment 或浏览器登录，禁止上传个人管理员 PAT。已有官方 Codex App 继续负责独立审核。
 
-专用 App 仅安装到本仓库，仅启用 Checks write 和必需的 Metadata read。Environment `ai-review-publisher` 仅允许 **branch 类型的精确 main**，无 tag、开发分支或人类 reviewer。App ID 存变量 `AI_REVIEW_APP_ID`，PEM 存 secret `AI_REVIEW_APP_PRIVATE_KEY`；不能复制到仓库级 secrets，也不能用管理员 PAT 替代。
+Ruleset 将三个检查绑定 GitHub Actions 的实际 integration ID（当前为 `15368`）。GitHub 原生规则只能识别 App 和检查名称，不能区分同一 App 下的工作流；有仓库写权限的人可以提交另一个申请 checks/write 的工作流。因此不能仅凭检查颜色、details_url、external_id 或 output 声称防止伪造。
 
-现有 Codex App 负责审核，发布 App 只认证并写入检查。Ruleset 的三项检查必须绑定专用发布 App 的实际 integration ID，不能绑定通用 GitHub Actions App `15368`。修改受保护工作流、App 配置和 ruleset 的管理员权限属于系统信任边界。
+`scripts/check_ai_review.py` 通过 Actions API 选择当前 main SHA、固定路径、允许事件的真实已完成发布运行，从对应 attempt 的 `publish` job 日志读取上下文与结果，不从 check output 继承 observed_at。其他工作流不能把内容追加到这个 job 的日志。日志缺失则失败关闭；当前策略没有先前记录时创建新的观察边界。
+
+终端 `scripts/check_submission.py --verify` 校验本机三个验证脚本的 Git blob 与远端当前 main 一致，读取上述真实发布记录，再重新采集并计算分支、官方 AI 审核和质量证据，最后核对公开检查及 HEAD/base/策略未变化。执行者必须使用下文从 main 提取的隔离脚本，不能由候选 PR 自证。此命令是 AI 的执行协议，GitHub 不会强制其他客户端调用；原生保护与终端补充验证的边界必须如实报告。
 
 ## 分支检查
 
@@ -34,7 +36,7 @@
 
 每次观察上下文记录 PR、base_ref、base_sha、head_sha、policy_sha、observed_at，仓库为固定常量。HEAD、base 或 main 策略变化后，旧上下文不复用。支持以下两类通过证据：
 
-1. 官方 Codex 发布的 `codex-review/v1` 结构化报告：唯一顶层 JSON 代码块、字段和完整版本精确匹配、PASS、findings 和 limitations 均为空；reviewer_identity 必须为官方 bot login，并包含非空 review_run_id、reviewed_scope 和 HTTPS evidence 列表。引用中的报告、多份矛盾报告、被编辑的 issue comment 或与 CHANGES_REQUESTED 冲突的 PASS 不放行。
+1. 官方 Codex 发布的 `codex-review/v1` 结构化报告：唯一顶层 JSON 代码块、字段和完整版本精确匹配、PASS、findings 和 limitations 均为空；reviewer_identity 必须为官方 bot login，并包含非空 review_run_id、reviewed_scope 和 evidence 列表。每条 evidence 必须精确对应 GitHub API 已抓取的本仓库、本 PR 官方 review/comment，核对当前提交及时间；issue comment 还必须未经编辑并在正文绑定当前版本。任意 HTTPS、外部网站、不存在记录、其他 PR、过期审核及可变摘要链接不作为结构化审核证据。引用中的报告、多份矛盾报告、被编辑的 issue comment 或与 CHANGES_REQUESTED 冲突的 PASS 不放行。
 2. 官方原生输出：当前 HEAD 的 Code Review 摘要 Completed，短 SHA 经 GitHub API 唯一解析；并有晚于本次精确版本审核请求的新官方 👍，或未经编辑、明确绑定当前提交的官方 “Didn't find any major issues” 评论。摘要和正面结论须晚于最新请求、观察边界及最新问题，且无更晚的阻断审核。
 
 Completed 本身、旧 👍、普通 PR reaction、无评论、超时均不代表通过。所有官方行内问题须处理并复核，outdated 不豁免；仅关闭讨论不构成新审核结论。格式无法识别时失败关闭，不靠宽泛关键词猜测。
@@ -48,7 +50,7 @@ gh pr comment 123 --repo KevinCJM/FundInvestmentResearchPlatform --body-file /tm
 
 请求带 `@codex review`、完整 HEAD/base 和不可编辑的隐藏版本标记。版本变化时发布新请求，禁止编辑旧请求。生产工作流不自动发送评论或请求模型，避免重复消耗审核额度；定时补查只读取证据。
 
-只读查询使用 `python3 scripts/check_ai_review.py --pr 123`，默认建立新的观察时间。复核已有证据时，从可信检查读取真实 observed_at、HEAD/base，传给 `--observed-at`、`--expected-head`、`--expected-base`。此脚本不能发布检查；唯一发布入口是受保护的 `scripts/check_submission.py --publish`。
+只读查询使用 `python3 scripts/check_ai_review.py --pr 123`，默认建立新的观察时间。复核已有证据时，从真实受保护发布 job 日志读取 observed_at、HEAD/base，传给 `--observed-at`、`--expected-head`、`--expected-base`。此脚本不能发布检查；唯一发布入口是受保护的 `scripts/check_submission.py --publish`。正式合并前使用下文 `--verify`，不手填观察时间替代生产证据。
 
 ## 质量检查与适用范围
 
@@ -75,13 +77,49 @@ CI 使用 Node 22、Python 3.12，后端依赖由 `backend/requirements.txt` 与
 初始化授权和限制以提交规范第 12 节为准，本设计不另行授予例外。
 
 1. 隔离分支完成实现、失败案例、独立 AI 审核和记录；开发分支 → Dev → main 均走普通 PR，不直推、不用管理员 bypass、不关闭现有保护。
-2. 配置专用 App 和 main-only Environment。缺 App ID/私钥或 App 未安装时不得声称门禁完成，也不安装无法产出结果的占位必需检查。
+2. 使用已有终端授权检查仓库管理权限和 Actions 可用性；工作流自身使用内置 token，无须新增账号或凭据。先保证真实结果能产生，再配置必需检查。
 3. base 尚无质量工作流时，首次 PR 无法读取可信计划。只有明确授权且满足第 12 节的首次安装可以按初始化记录推进；启动失败不能伪装成生产 success，业务测试失败不得豁免。
-4. 工作流进入 main 后，真实 PR 验证正确方向/最新版本可通过，错误方向、缺审核、旧版本和不可信质量结果均阻断。分别核验普通 Actions 测试与专用 App 三项检查。
-5. 完成真实验证后，将三项检查按专用 App ID 绑定到 ruleset，开启 strict latest-base，保留 PR-only、禁止强推/删除、空 bypass、0 原生 approval、merge commit。
+4. 工作流进入 main 后，真实 PR 验证正确方向/最新版本可通过，错误方向、缺审核、旧版本和不可信质量结果均阻断。分别核验隔离测试、真实 main 发布记录与三项检查。
+5. 完成真实验证后，将三项检查按实际 GitHub Actions App ID 绑定到 ruleset，开启 strict latest-base，保留 PR-only、禁止强推/删除、空 bypass、0 原生 approval、merge commit。
 6. 重新读取远端规则、检查发布者和 PR 状态，确认 main、Dev 均命中约束。发布 merge commit 经专用同步分支和 PR 回到 Dev。
 
-创建 App 的入口为 [GitHub Apps](https://github.com/settings/apps/new)。采用 private、仅当前账户、禁用 webhook、仅 Checks write，安装时只选本仓库。私钥仅经本机受控文件/标准输入进入 GitHub Environment，不能进入聊天、Git、日志。终端仓库授权不等于浏览器已登录。
+## 终端操作
+
+所有命令使用现有 `gh` 授权，不要求浏览器登录。先读取仓库权限、当前规则及 PR：
+
+```bash
+gh api repos/KevinCJM/FundInvestmentResearchPlatform --jq '{permissions,default_branch}'
+gh api repos/KevinCJM/FundInvestmentResearchPlatform/rulesets
+gh pr view 123 --repo KevinCJM/FundInvestmentResearchPlatform --json state,isDraft,headRefOid,baseRefName,statusCheckRollup
+gh workflow run ai-review.yml --repo KevinCJM/FundInvestmentResearchPlatform --ref main
+gh run list --repo KevinCJM/FundInvestmentResearchPlatform --workflow ai-review.yml
+```
+
+首次验收完成后，复核已有 ruleset 与版本化配置的差异，保留更严格且无冲突的已有规则，再更新实际 ruleset ID（本仓库当前为 `22899065`）：
+
+```bash
+gh api repos/KevinCJM/FundInvestmentResearchPlatform/rulesets/22899065
+gh api --method PUT repos/KevinCJM/FundInvestmentResearchPlatform/rulesets/22899065 --input .github/branch-ruleset.json
+```
+
+以下示例从当前 main 提取验证器，执行完整验证并在成功后立即匹配 HEAD 合并；将 `123` 替换为实际 PR。base 在验证期间变化会失败，之后变化还受 GitHub strict latest-base 约束。失败后重新核对，不能加 `--admin` 重试。
+
+```bash
+set -e
+submission_pr=123
+submission_repo=KevinCJM/FundInvestmentResearchPlatform
+git fetch origin main Dev
+submission_dir=$(mktemp -d /tmp/firp-submit.XXXXXX)
+git archive origin/main scripts/check_submission.py scripts/check_ai_review.py scripts/submission_policy.py | tar -x -C "$submission_dir"
+submission_head=$(gh pr view "$submission_pr" --repo "$submission_repo" --json headRefOid --jq .headRefOid)
+submission_base_ref=$(gh pr view "$submission_pr" --repo "$submission_repo" --json baseRefName --jq .baseRefName)
+submission_base=$(gh api "repos/$submission_repo/git/ref/heads/$submission_base_ref" --jq .object.sha)
+python3 "$submission_dir/scripts/check_submission.py" --verify --pr "$submission_pr" --expected-head "$submission_head" --expected-base "$submission_base"
+gh pr merge "$submission_pr" --repo "$submission_repo" --merge --match-head-commit "$submission_head"
+gh pr view "$submission_pr" --repo "$submission_repo" --json state,mergedAt,mergeCommit
+```
+
+不要在启用 `set -e` 失败退出的脚本外盲目单独补跑 merge。提交 AI 仍需满足规范第 9 节的授权、范围、最新规则与合并后核实要求。
 
 ## 本地验证
 
@@ -97,4 +135,4 @@ python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --diff-range o
 
 另使用官方 actionlint 验证三个 YAML 的表达式、事件和语法。离线测试不证明 GitHub 安装或业务回归通过；当前远端阶段、SHA、审核与运行证据记录在安装 PR，不把易过期状态作为永久规范。
 
-官方依据：[Environment 分支限制](https://docs.github.com/en/rest/deployments/branch-policies)、[App token](https://github.com/actions/create-github-app-token)、[Checks API](https://docs.github.com/en/rest/checks/runs)、[必需检查来源](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)、[工作流事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)。
+官方依据：[内置工作流授权](https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication)、[Checks API](https://docs.github.com/en/rest/checks/runs)、[必需检查来源](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)、[工作流事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)。

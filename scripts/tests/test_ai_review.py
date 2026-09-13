@@ -10,6 +10,7 @@ SPEC = importlib.util.spec_from_file_location("check_ai_review", Path(__file__).
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
 HEAD, BASE = "a" * 40, "b" * 40
+REVIEW_URL = f"https://github.com/{gate.REPOSITORY}/pull/12#pullrequestreview-1"
 START, END = "2026-09-11T10:00:00Z", "2026-09-11T10:10:00Z"
 BOT = {"id": gate.BOT_ID, "login": gate.BOT_LOGIN, "type": "Bot"}
 
@@ -18,7 +19,7 @@ def valid_report(context):
     return {**context, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": [],
             "reviewer_identity": gate.BOT_LOGIN, "review_run_id": "codex-review-1",
             "reviewed_scope": "Complete PR diff and necessary callers, contracts and tests",
-            "evidence": [f"https://github.com/{gate.REPOSITORY}/pull/12#issuecomment-1"]}
+            "evidence": [REVIEW_URL]}
 
 
 def fixture():
@@ -55,6 +56,15 @@ class ReviewDecisionTests(unittest.TestCase):
                 'body': '```json\n' + json.dumps(report) + '\n```'})
             self.assertEqual(self.state(s, c), 'failure', value)
 
+    def test_report_evidence_must_resolve_to_authenticated_current_pr_record(self):
+        for url in ["https://example.com/run", "https://does-not-exist.invalid/run",
+                    f"https://github.com/{gate.REPOSITORY}/pull/99#pullrequestreview-1",
+                    f"https://github.com/{gate.REPOSITORY}/pull/12#pullrequestreview-999"]:
+            s, c = fixture(); report = valid_report(c); report["evidence"] = [url]
+            s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END,
+                             "html_url": REVIEW_URL, "body": "```json\n" + json.dumps(report) + "\n```"}]
+            self.assertEqual(self.state(s, c), "failure")
+
     def test_generic_pr_thumb_is_not_version_bound(self):
         s, c = fixture(); del s["reactions"][0]["request_comment_id"]
         self.assertEqual(self.state(s, c), "pending")
@@ -74,13 +84,13 @@ class ReviewDecisionTests(unittest.TestCase):
     def test_dismissed_pass_is_not_evidence(self):
         s, c = fixture(); s["reactions"] = []
         report = valid_report(c)
-        s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "DISMISSED", "submitted_at": END, "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}]
+        s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "DISMISSED", "submitted_at": END, "html_url": REVIEW_URL, "body": "```json\n" + json.dumps(report) + "\n```"}]
         self.assertNotEqual(self.state(s, c), "success")
 
     def test_changes_requested_after_structured_pass_is_blocked(self):
         s, c = fixture()
         report = valid_report(c)
-        s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"},
+        s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": REVIEW_URL, "body": "```json\n" + json.dumps(report) + "\n```"},
                         {"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": "2026-09-11T10:11:00Z", "body": "blocking", "html_url": "y"}]
         self.assertEqual(self.state(s, c), "failure")
 
@@ -88,7 +98,8 @@ class ReviewDecisionTests(unittest.TestCase):
         s, c = fixture()
         report = valid_report(c)
         s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": START, "body": "blocking", "html_url": "old"}]
-        s["comments"].append({"user": BOT, "performed_via_github_app": {"id": gate.CODEX_APP_ID}, "created_at": END, "updated_at": END, "html_url": "new", "body": "```json\n" + json.dumps(report) + "\n```"})
+        report["evidence"] = [f"https://github.com/{gate.REPOSITORY}/pull/12#issuecomment-3"]
+        s["comments"].append({"user": BOT, "performed_via_github_app": {"id": gate.CODEX_APP_ID}, "created_at": END, "updated_at": END, "html_url": report["evidence"][0], "body": "```json\n" + json.dumps(report) + "\n```"})
         self.assertEqual(self.state(s, c), "success")
 
     def test_new_bound_native_verdict_can_supersede_old_changes_requested(self):
@@ -132,7 +143,7 @@ class ReviewDecisionTests(unittest.TestCase):
         s, c = fixture()
         report = valid_report(c)
         s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": END,
-                         "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}]
+                         "html_url": REVIEW_URL, "body": "```json\n" + json.dumps(report) + "\n```"}]
         self.assertEqual(self.state(s, c), "failure")
 
     def test_quoted_or_multiple_structured_reports_never_pass(self):
@@ -141,7 +152,7 @@ class ReviewDecisionTests(unittest.TestCase):
         block = "```json\n" + json.dumps(report) + "\n```"
         for body in ["This is an unsafe example:\n" + block, block + "\n" + block,
                      block + "\n```json\n" + json.dumps({**report,"conclusion":"BLOCKED"}) + "\n```"]:
-            s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": "x", "body": body}]
+            s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": REVIEW_URL, "body": body}]
             self.assertEqual(self.state(s, c), "failure")
 
     def test_same_head_on_another_pr_cannot_share_success(self):
@@ -207,7 +218,7 @@ class ReviewDecisionTests(unittest.TestCase):
     def test_structured_pass_must_match_both_shas(self):
         s, c = fixture(); s["comments"] = []; s["reactions"] = []
         report = valid_report(c)
-        review = {"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}
+        review = {"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": REVIEW_URL, "body": "```json\n" + json.dumps(report) + "\n```"}
         s["reviews"] = [review]
         self.assertEqual(self.state(s, c), "success")
         report["base_sha"] = "c" * 40
@@ -217,7 +228,7 @@ class ReviewDecisionTests(unittest.TestCase):
     def test_structured_incomplete_never_falls_back_to_thumb(self):
         s, c = fixture()
         report = {**c, "repository": gate.REPOSITORY, "conclusion": "INCOMPLETE", "findings": [], "limitations": ["truncated"]}
-        s["reviews"] = [{"user": BOT, "commit_id": HEAD, "submitted_at": END, "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}]
+        s["reviews"] = [{"user": BOT, "commit_id": HEAD, "submitted_at": END, "html_url": REVIEW_URL, "body": "```json\n" + json.dumps(report) + "\n```"}]
         self.assertEqual(self.state(s, c), "failure")
 
     def test_later_suggestions_invalidate_earlier_positive(self):
@@ -249,20 +260,27 @@ class GitHubContractTests(unittest.TestCase):
             self.assertTrue(api.call_args.args[0].endswith("/9"))
             self.assertNotIn("head_sha", api.call_args.args[1])
             self.assertEqual(api.call_args.kwargs["method"], "PATCH")
-            self.assertTrue(api.call_args.kwargs["publisher"])
+            self.assertNotIn("publisher", api.call_args.kwargs)
 
-    def test_wrong_check_publisher_cannot_supply_context(self):
-        with mock.patch.dict(gate.os.environ, {"AI_REVIEW_APP_ID": "999"}):
-            self.assertFalse(gate.GitHub().trusted_check({"app": {"id": 15368}}))
+    def test_only_current_protected_publisher_run_is_accepted(self):
+        run = {"id": 1, "path": gate.WORKFLOW, "event": "pull_request_target", "head_sha": BASE,
+               "head_branch": "codex/task", "status": "completed", "repository": {"full_name": gate.REPOSITORY}}
+        self.assertTrue(gate.GitHub.trusted_publisher_run(run, BASE))
+        for key, value in [("event", "pull_request"), ("path", "fake.yml"), ("head_sha", HEAD), ("status", "in_progress")]:
+            self.assertFalse(gate.GitHub.trusted_publisher_run({**run, key: value}, BASE))
+        self.assertFalse(gate.GitHub.trusted_publisher_run({**run, "event": "workflow_dispatch"}, BASE))
 
-    def test_target_run_can_record_development_head_branch(self):
-        gh = gate.GitHub()
-        check = {"app": {"id": 999}, "details_url": f"https://github.com/{gate.REPOSITORY}/actions/runs/42"}
-        run = {"path": gate.WORKFLOW, "event": "pull_request_target", "head_branch": "codex/task", "repository": {"full_name": gate.REPOSITORY}}
-        with mock.patch.dict(gate.os.environ, {"AI_REVIEW_APP_ID": "999"}), mock.patch.object(gh, "api", return_value=run):
-            self.assertTrue(gh.trusted_check(check))
-            run["event"] = "workflow_dispatch"
-            self.assertFalse(gh.trusted_check(check))
+    def test_context_is_read_from_protected_job_logs_not_check_output(self):
+        gh = gate.GitHub(); s, c = fixture(); c["policy_sha"] = BASE
+        record = {"pr": 12, "context": c, "results": {"ai-review": {"state": "pending"}}}
+        run = {"id": 42, "path": gate.WORKFLOW, "event": "push", "head_branch": "main", "head_sha": BASE,
+               "status": "completed", "repository": {"full_name": gate.REPOSITORY}}
+        with mock.patch.dict(gate.os.environ, {"SUBMISSION_POLICY_SHA": BASE}), \
+                mock.patch.object(gh, "pages", side_effect=[[run], [{"id": 8, "name": "publish", "conclusion": "success"}]]) as pages, \
+                mock.patch.object(gate.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="publish\tstep\t2026-09-11T10:10:00Z " + json.dumps(record))) as logs:
+            self.assertEqual(gh.context(s["pr"], True)["observed_at"], START)
+            self.assertNotIn("check-runs", str(pages.call_args_list))
+            self.assertIn("--job", logs.call_args.args[0])
 
     def test_one_pr_api_failure_does_not_skip_other_prs(self):
         gh = gate.GitHub(); s, c = fixture()

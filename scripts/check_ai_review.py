@@ -12,12 +12,13 @@ import os
 import re
 import subprocess
 import time
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 REPOSITORY = "KevinCJM/FundInvestmentResearchPlatform"
 BOT_ID = 199175422
 BOT_LOGIN = "chatgpt-codex-connector[bot]"
 CODEX_APP_ID = 1144995
+ACTIONS_APP_ID = 15368
 WORKFLOW = ".github/workflows/ai-review.yml"
 REQUEST_MARKER = "<!-- codex-review-request/v1 "
 SCHEMA = "codex-review/v1"
@@ -70,25 +71,42 @@ def complete_report(report):
         value = report.get(name)
         return isinstance(value, str) and bool(value.strip()) and not value.strip().startswith("<")
 
-    def evidence_url(value):
-        if not isinstance(value, str) or re.search(r"[\s<>]", value):
-            return False
-        try:
-            parsed = urlsplit(value)
-            parsed.port  # Reject malformed or out-of-range ports.
-            host = parsed.hostname or ""
-            return (parsed.scheme == "https" and bool(host) and len(host) <= 253
-                    and parsed.username is None and parsed.password is None
-                    and all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
-                            for label in host.split(".")))
-        except ValueError:
-            return False
-
     evidence = report.get("evidence")
     return (report.get("reviewer_identity") == BOT_LOGIN
             and all(text_field(name) for name in ("review_run_id", "reviewed_scope"))
             and isinstance(evidence, list) and bool(evidence)
-            and all(evidence_url(url) for url in evidence))
+            and all(isinstance(url, str) and bool(url) for url in evidence))
+
+
+def verified_report_evidence(report, records, comments, snapshot, boundary):
+    """Accept only API-resolved official review records for this exact PR version."""
+    pr = snapshot["pr"]
+    prefix = f"https://github.com/{REPOSITORY}/pull/{pr['number']}#"
+    urls = set()
+    for record in records:
+        if (timestamp(record["submitted_at"]) >= boundary
+                and re.fullmatch(re.escape(prefix) + r"pullrequestreview-\d+", record.get("html_url", ""))):
+            urls.add(record["html_url"])
+    for comment in comments:
+        if (comment.get("created_at") != comment.get("updated_at")
+                or not comment.get("created_at") or timestamp(comment["created_at"]) < boundary
+                or not re.fullmatch(re.escape(prefix) + r"issuecomment-\d+", comment.get("html_url", ""))):
+            continue
+        match = NATIVE_CLEAN.fullmatch(comment.get("body", ""))
+        bound = bool(match and snapshot["resolved_commits"].get(match[1]) == pr["head"]["sha"])
+        block = re.fullmatch(r"\s*```json\s*\n(.*?)\n```\s*", comment.get("body", ""), re.S)
+        if block:
+            try:
+                data = json.loads(block[1])
+            except ValueError:
+                continue
+            bound = isinstance(data, dict) and all(data.get(k) == v for k, v in {
+                "schema": SCHEMA, "repository": REPOSITORY, "pr_number": pr["number"],
+                "base_ref": pr["base"]["ref"], "base_sha": pr["base"]["sha"], "head_sha": pr["head"]["sha"],
+            }.items())
+        if bound:
+            urls.add(comment["html_url"])
+    return bool(report.get("evidence")) and all(url in urls for url in report["evidence"])
 
 
 def evaluate(snapshot, context):
@@ -157,7 +175,9 @@ def evaluate(snapshot, context):
             reports.append((at, report, record["html_url"], record.get("state")))
     if reports:
         at, report, url, review_state = max(reports, key=lambda r: (r[0], r[1].get("conclusion") != "PASS"))
-        if (complete_report(report) and report.get("conclusion") == "PASS" and report.get("findings") == [] and report.get("limitations") == []
+        if (complete_report(report)
+                and verified_report_evidence(report, records, comments, snapshot, max(started, requested_at, latest_finding))
+                and report.get("conclusion") == "PASS" and report.get("findings") == [] and report.get("limitations") == []
                 and review_state != "CHANGES_REQUESTED" and at >= latest_finding
                 and not any(timestamp(r["submitted_at"]) > at or
                             (r.get("state") == "CHANGES_REQUESTED" and timestamp(r["submitted_at"]) == at)
@@ -209,13 +229,11 @@ def evaluate(snapshot, context):
 
 
 class GitHub:
-    def api(self, path, body=None, method="POST", publisher=False):
+    def api(self, path, body=None, method="POST"):
         args = ["gh", "api", path]
         if body is not None:
             args += ["--method", method, "--input", "-"]
         env = dict(os.environ)
-        if publisher:
-            env["GH_TOKEN"] = os.environ["AI_REVIEW_CHECKS_TOKEN"]
         result = subprocess.run(args, env=env, input=json.dumps(body) if body is not None else None,
                                 text=True, capture_output=True, timeout=45)
         if result.returncode:
@@ -283,18 +301,51 @@ class GitHub:
                 "base_is_ancestor": comparison["merge_base_commit"]["sha"] == base,
                 "other_prs_with_same_head": shared_head}
 
-    def trusted_check(self, check):
-        if check.get("app", {}).get("id") != int(os.environ["AI_REVIEW_APP_ID"]):
-            return False
-        match = re.fullmatch(rf"https://github.com/{re.escape(REPOSITORY)}/actions/runs/(\d+)", check.get("details_url", ""))
-        if not match:
-            return False
-        run = self.api(f"repos/{REPOSITORY}/actions/runs/{match[1]}")
-        # pull_request_target run.head_branch may identify the PR source; the
-        # dedicated App and protected Environment enforce the executable ref.
+    @staticmethod
+    def trusted_publisher_run(run, policy_sha):
         return (run.get("path") == WORKFLOW and run.get("event") in TRUSTED_EVENTS
-                and (run.get("event") == "pull_request_target" or run.get("head_branch") in {"main", "Dev"})
+                and run.get("head_sha") == policy_sha and run.get("status") == "completed"
+                and (run.get("event") == "pull_request_target" or run.get("head_branch") == "main")
                 and (run.get("repository") or {}).get("full_name") == REPOSITORY)
+
+    def published_records(self, policy_sha):
+        """Read authentic protected-run logs, never check-controlled details URLs.
+
+        A different Actions workflow can forge check output and details_url, but
+        cannot append logs to the selected current-main publisher job.
+        """
+        if getattr(self, "_published_policy", None) == policy_sha:
+            return self._published_records
+        runs = self.pages(f"repos/{REPOSITORY}/actions/workflows/ai-review.yml/runs?head_sha={policy_sha}", "workflow_runs")
+        records = {}
+        for run in sorted(runs, key=lambda item: item["id"], reverse=True):
+            if not self.trusted_publisher_run(run, policy_sha):
+                continue
+            jobs = self.pages(f"repos/{REPOSITORY}/actions/runs/{run['id']}/attempts/{run.get('run_attempt', 1)}/jobs", "jobs")
+            publishers = [job for job in jobs if job["name"] == "publish"
+                          and job.get("conclusion") in {"success", "failure"}]
+            if len(publishers) != 1:
+                continue
+            result = subprocess.run(["gh", "run", "view", str(run["id"]), "--repo", REPOSITORY,
+                                     "--attempt", str(run.get("run_attempt", 1)), "--log", "--job", str(publishers[0]["id"])],
+                                    capture_output=True, text=True, timeout=45)
+            if result.returncode or len(result.stdout) > 10_000_000:
+                raise RuntimeError("Protected publisher logs unavailable")
+            for line in result.stdout.splitlines():
+                start = line.find('{"pr":')
+                if start < 0:
+                    continue
+                try:
+                    record = json.loads(line[start:])
+                except ValueError:
+                    continue
+                context = record.get("context") or {}
+                if (context.get("policy_sha") == policy_sha and context.get("schema") == SCHEMA
+                        and context.get("pr_number") == record.get("pr") and "results" in record):
+                    records[record["pr"]] = record
+            break
+        self._published_policy, self._published_records = policy_sha, records
+        return records
 
     def context(self, pr, publish, observed_at=None):
         context = {"schema": SCHEMA, "pr_number": pr["number"], "base_ref": pr["base"]["ref"],
@@ -302,17 +353,9 @@ class GitHub:
         if not publish:
             return context
         context["policy_sha"] = os.environ["SUBMISSION_POLICY_SHA"]
-        checks = self.pages(f"repos/{REPOSITORY}/commits/{context['head_sha']}/check-runs?check_name=ai-review&filter=all", "check_runs")
-        for check in sorted(checks, key=lambda c: c["id"], reverse=True):
-            if not self.trusted_check(check):
-                continue
-            try:
-                prior = json.loads(check["output"]["text"])["context"]
-            except (ValueError, TypeError, KeyError):
-                continue
-            if all(prior.get(k) == context[k] for k in context if k != "observed_at"):
-                context["observed_at"] = prior["observed_at"]
-                break
+        prior = self.published_records(context["policy_sha"]).get(pr["number"], {}).get("context", {})
+        if all(prior.get(k) == context[k] for k in context if k != "observed_at"):
+            context["observed_at"] = prior["observed_at"]
         return context
 
     def publish(self, context, result, check_id=None, name="ai-review"):
@@ -327,7 +370,7 @@ class GitHub:
             body.update(conclusion="success" if state == "success" else "failure", completed_at=now())
         if check_id:
             body.pop("head_sha")
-        return self.api(f"repos/{REPOSITORY}/check-runs" + (f"/{check_id}" if check_id else ""), body, method="PATCH" if check_id else "POST", publisher=True)["id"]
+        return self.api(f"repos/{REPOSITORY}/check-runs" + (f"/{check_id}" if check_id else ""), body, method="PATCH" if check_id else "POST")["id"]
 
 
 def main():

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Publish three fail-closed PR gates using protected code and a dedicated App."""
+"""Publish three fail-closed PR gates using protected code and the built-in Actions token."""
 import argparse
 import json
 import os
 from urllib.parse import quote
 
-from check_ai_review import GitHub, REPOSITORY, TRUSTED_EVENTS, evaluate, outcome
+from check_ai_review import ACTIONS_APP_ID, GitHub, REPOSITORY, TRUSTED_EVENTS, evaluate, outcome
 from submission_policy import QUALITY_WORKFLOW, branch_decision, quality_decision, quality_title, trusted_quality_run
 
 
@@ -51,17 +51,75 @@ def quality_evidence(gh, pr):
     return quality_decision(verified, jobs, pr)
 
 
+def verify_submission(gh, number, expected_head, expected_base):
+    """Read-only terminal verification using current-main code and real evidence."""
+    import subprocess
+    from pathlib import Path
+
+    policy_sha = gh.api(f"repos/{REPOSITORY}/git/ref/heads/main")["object"]["sha"]
+    # The documented launcher materializes an isolated git archive of main.
+    # Reject a modified/candidate validator even when it claims the same SHA.
+    for name in ("check_ai_review.py", "check_submission.py", "submission_policy.py"):
+        path = Path(__file__).with_name(name)
+        blob = subprocess.run(["git", "hash-object", str(path)], capture_output=True, text=True, check=True).stdout.strip()
+        remote = gh.api(f"repos/{REPOSITORY}/contents/scripts/{name}?ref={policy_sha}")
+        if remote.get("type") != "file" or remote["sha"] != blob:
+            raise ValueError("Run the unmodified verifier from current origin/main")
+    pr, base, source = current_pr(gh, number)
+    if pr["head"]["sha"] != expected_head or base != expected_base:
+        raise ValueError("HEAD/base changed; refresh and verify again")
+    record = gh.published_records(policy_sha).get(number, {})
+    context = record.get("context", {})
+    if any(context.get(k) != v for k, v in {"head_sha": source, "base_sha": base,
+            "base_ref": pr["base"]["ref"], "policy_sha": policy_sha, "pr_number": number}.items()):
+        raise ValueError("No authentic publisher record for the current version")
+    names = ("branch-policy", "ai-review", "quality-gate")
+    if any(record.get("results", {}).get(name, {}).get("state") != "success" for name in names):
+        raise ValueError("Protected publisher has not passed all three gates")
+    snapshot = gh.collect(pr)
+    state, reason = branch_decision(pr, base_is_ancestor=snapshot["base_is_ancestor"],
+        latest_base=base, latest_source=source, duplicate_heads=snapshot["other_prs_with_same_head"])
+    ai = evaluate(snapshot, context)
+    quality, qreason, _ = quality_evidence(gh, pr)
+    if state != "success" or ai["state"] != "success" or quality != "success":
+        raise ValueError(f"Fresh evidence failed: {reason}; {ai['reason']}; {qreason}")
+    checks = gh.pages(f"repos/{REPOSITORY}/commits/{source}/check-runs?filter=all", "check_runs")
+    for name in names:
+        matching = [check for check in checks if check["name"] == name and check.get("app", {}).get("id") == ACTIONS_APP_ID]
+        latest = max(matching, key=lambda check: check["id"], default={})
+        if latest.get("status") != "completed" or latest.get("conclusion") != "success":
+            raise ValueError(f"Required check is not successful: {name}")
+    final, final_base, final_source = current_pr(gh, number)
+    ensure_current_policy(gh, policy_sha)
+    if (final["state"] != "open" or final.get("draft") or final["base"]["ref"] != pr["base"]["ref"]
+            or final["head"]["sha"] != source or final_base != base or final_source != source):
+        raise ValueError("PR changed during verification")
+    return {"pr": number, "head_sha": source, "base_sha": base, "policy_sha": policy_sha, "state": "success"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--publish", action="store_true")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--publish", action="store_true")
+    mode.add_argument("--verify", action="store_true")
+    parser.add_argument("--pr", type=int)
+    parser.add_argument("--expected-head")
+    parser.add_argument("--expected-base")
     args = parser.parse_args()
-    if not args.publish:
-        parser.error("Use the pure policy tests for local validation; remote publication requires --publish")
+    if args.verify:
+        if not args.pr or not args.expected_head or not args.expected_base:
+            parser.error("--verify requires --pr, --expected-head and --expected-base")
+        try:
+            print(json.dumps(verify_submission(GitHub(), args.pr, args.expected_head, args.expected_base)))
+            return 0
+        except Exception as exc:
+            print(json.dumps({"pr": args.pr, "state": "failure", "error": type(exc).__name__}))
+            return 1
     if (os.getenv("GITHUB_ACTIONS") != "true" or os.getenv("GITHUB_REPOSITORY") != REPOSITORY
             or os.getenv("GITHUB_EVENT_NAME") not in TRUSTED_EVENTS | {"workflow_run"}
             or os.getenv("GITHUB_REF") != "refs/heads/main"
-            or not os.getenv("AI_REVIEW_CHECKS_TOKEN") or not os.getenv("AI_REVIEW_APP_ID", "").isdigit()):
-        parser.error("Protected GitHub workflow and dedicated publisher identity required")
+            or not os.getenv("GH_TOKEN")):
+        parser.error("Protected GitHub workflow and built-in token required")
     gh = GitHub()
     policy_sha = os.environ["SUBMISSION_POLICY_SHA"]
     ensure_current_policy(gh, policy_sha)

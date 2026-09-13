@@ -127,7 +127,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertTrue(all(value=='read' for value in quality['permissions'].values()))
         self.assertNotIn('secrets.',json.dumps(quality))
         self.assertTrue(all('environment' not in job for job in quality['jobs'].values()))
-        self.assertEqual(publisher['jobs']['publish']['environment'],'ai-review-publisher')
+        self.assertNotIn('environment',publisher['jobs']['publish'])
+        self.assertEqual(publisher['jobs']['publish']['permissions']['checks'],'write')
+        self.assertNotIn('secrets.',json.dumps(publisher))
+        self.assertNotIn('create-github-app-token',json.dumps(publisher))
         self.assertNotIn('pull_request.head',json.dumps(publisher['jobs']))
         self.assertIn('github.workflow_sha',json.dumps(publisher['jobs']))
         self.assertIn("github.ref == 'refs/heads/main'", publisher['jobs']['publish']['if'])
@@ -203,7 +206,7 @@ class EvidenceCollectionTests(unittest.TestCase):
         gh.publish.side_effect=[1,2,3]
         env={'GITHUB_ACTIONS':'true','GITHUB_REPOSITORY':policy.REPOSITORY,
              'GITHUB_EVENT_NAME':'workflow_dispatch','GITHUB_REF':'refs/heads/main',
-             'AI_REVIEW_CHECKS_TOKEN':'test-only','AI_REVIEW_APP_ID':'123','SUBMISSION_POLICY_SHA':BASE}
+             'GH_TOKEN':'test-only','SUBMISSION_POLICY_SHA':BASE}
         with patch.dict(os.environ,env),patch.object(sys,'argv',['check_submission.py','--publish']), \
                 patch.object(publisher,'GitHub',return_value=gh), \
                 patch.object(publisher,'current_pr',return_value=(pr,BASE,HEAD)), \
@@ -214,6 +217,58 @@ class EvidenceCollectionTests(unittest.TestCase):
             self.assertEqual(publisher.main(),1)
         self.assertEqual(gh.publish.call_count,3)
         self.assertTrue(all(call.args[1]['state']=='pending' for call in gh.publish.call_args_list))
+
+
+class TerminalVerificationTests(unittest.TestCase):
+    def setup_evidence(self):
+        gh = Mock(); pr = pr_fixture()
+        context = {'pr_number': 11, 'head_sha': HEAD, 'base_sha': BASE, 'base_ref': 'Dev',
+                   'policy_sha': BASE, 'observed_at': '2026-09-13T00:00:00Z'}
+        gh.api.side_effect = lambda path: {'object': {'sha': BASE}} if '/git/ref/' in path else {'type': 'file', 'sha': 'blob'}
+        gh.published_records.return_value = {11: {'context': context, 'results': {
+            name: {'state': 'success'} for name in ('branch-policy', 'ai-review', 'quality-gate')}}}
+        gh.collect.return_value = {'base_is_ancestor': True, 'other_prs_with_same_head': []}
+        gh.pages.return_value = [{'id': i, 'name': name, 'app': {'id': publisher.ACTIONS_APP_ID},
+            'status': 'completed', 'conclusion': 'success'} for i, name in enumerate(('branch-policy', 'ai-review', 'quality-gate'))]
+        return gh, pr
+
+    def verify(self, gh, pr, ai_state='success'):
+        with patch('subprocess.run', return_value=Mock(stdout='blob\n')), \
+                patch.object(publisher, 'current_pr', return_value=(pr, BASE, HEAD)), \
+                patch.object(publisher, 'evaluate', return_value={'state': ai_state, 'reason': 'review'}), \
+                patch.object(publisher, 'quality_evidence', return_value=('success', 'quality', None)):
+            return publisher.verify_submission(gh, 11, HEAD, BASE)
+
+    def test_green_checks_alone_cannot_replace_authentic_publisher_log(self):
+        gh, pr = self.setup_evidence(); gh.published_records.return_value = {}
+        with self.assertRaisesRegex(ValueError, 'authentic publisher'):
+            self.verify(gh, pr)
+
+    def test_current_evidence_is_recomputed_after_real_success(self):
+        gh, pr = self.setup_evidence()
+        self.assertEqual(self.verify(gh, pr)['state'], 'success')
+        with self.assertRaisesRegex(ValueError, 'Fresh evidence failed'):
+            self.verify(gh, pr, 'failure')
+
+    def test_modified_local_verifier_and_changed_version_are_rejected(self):
+        gh, pr = self.setup_evidence()
+        with patch('subprocess.run', return_value=Mock(stdout='different\n')):
+            with self.assertRaisesRegex(ValueError, 'unmodified verifier'):
+                publisher.verify_submission(gh, 11, HEAD, BASE)
+        gh.published_records.return_value[11]['context']['base_sha'] = 'c' * 40
+        with self.assertRaisesRegex(ValueError, 'authentic publisher'):
+            self.verify(gh, pr)
+
+    def test_publisher_pending_and_new_check_failure_block_merge(self):
+        gh, pr = self.setup_evidence()
+        gh.published_records.return_value[11]['results']['ai-review']['state'] = 'pending'
+        with self.assertRaisesRegex(ValueError, 'not passed'):
+            self.verify(gh, pr)
+        gh, pr = self.setup_evidence()
+        gh.pages.return_value.append({'id': 99, 'name': 'ai-review', 'app': {'id': publisher.ACTIONS_APP_ID},
+                                     'status': 'completed', 'conclusion': 'failure'})
+        with self.assertRaisesRegex(ValueError, 'Required check'):
+            self.verify(gh, pr)
 
 
 if __name__=='__main__': unittest.main()
