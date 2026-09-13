@@ -14,7 +14,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Test gate decisions without network or application data
-        run: python3 -m unittest discover -s scripts/tests -p 'test_ai_review.py' -v
+        run: |
+          python3 -m pip install PyYAML==6.0.3
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Validate routing contracts
         run: |
           python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py

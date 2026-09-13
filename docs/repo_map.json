@@ -16,7 +16,7 @@
       "name": "AI branch submission, review and merge protocol",
       "path": "branch_submission_rules.md",
       "kind": "submission_protocol",
-      "purpose": "Owns the documented AI submission procedure: development branches enter Dev, Dev enters main, independent AI review is mandatory without a human approval prerequisite, and merges require verified branch, review and quality gates. This module describes the agent protocol; it does not certify remote enforcement or an installed review service. The candidate GitHub Actions adapter validates authenticated Codex review evidence; production enforcement must be checked separately.",
+      "purpose": "Owns the AI submission protocol and candidate three-gate implementation: development branches enter Dev, Dev enters main, independent Codex review and protected quality evidence are published by a dedicated App from current main. Local code and tests do not certify remote enforcement; live installation and required-check binding must be verified separately.",
       "module_tags": [
         "submission",
         "branches",
@@ -28,13 +28,17 @@
       "entry_files": [
         "branch_submission_rules.md",
         ".github/workflows/ai-review.yml",
-        "scripts/check_ai_review.py"
+        "scripts/check_submission.py"
       ],
       "key_symbols": [
+        "branch_decision",
+        "quality_plan",
+        "quality_decision",
         "evaluate",
         "GitHub.collect",
         "GitHub.context",
-        "GitHub.publish"
+        "GitHub.publish",
+        "ensure_current_policy"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -45,7 +49,11 @@
         "docs/ai_routing_evolution_policy.json",
         "docs/github-ai-review-design.md",
         "scripts/check_ai_review.py",
-        ".github/workflows/ai-review.yml"
+        ".github/workflows/ai-review.yml",
+        "scripts/check_submission.py",
+        "scripts/submission_policy.py",
+        "scripts/ci_quality.py",
+        ".github/workflows/quality-gate.yml"
       ],
       "upstream_dependencies": [
         "ai_routing_files"
@@ -58,13 +66,16 @@
       ],
       "related_tests": [
         "scripts/tests/test_ai_review.py",
+        "scripts/tests/test_submission_policy.py",
         ".github/workflows/ai-review-tests.yml"
       ],
       "related_configs": [
         "AGENTS.md",
         "docs/ai_routing_evolution_policy.json",
         ".github/workflows/ai-review.yml",
-        ".github/workflows/ai-review-tests.yml"
+        ".github/workflows/ai-review-tests.yml",
+        ".github/workflows/quality-gate.yml",
+        ".github/requirements-ci.txt"
       ],
       "risk_flags": [
         "documented_policy_is_not_remote_enforcement",
@@ -83,27 +94,38 @@
       "minimum_regression": [
         "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
         "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
-        "python3 scripts/tests/test_ai_review.py -v"
+        "python3 -m unittest discover -s scripts/tests -v"
       ],
       "routing_confidence": "high",
       "scope_flags": [
         "subtree_only",
-        "candidate_ai_review_adapter",
+        "candidate_submission_gates",
         "remote_enforcement_not_certified"
       ],
       "grounding": {
         "fact_status": "mixed",
         "evidence": [
           "branch_submission_rules.md",
-          "AGENTS.md",
-          "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
-          "scripts/check_ai_review.py",
-          "scripts/tests/test_ai_review.py",
           ".github/workflows/ai-review.yml",
-          "python3 scripts/tests/test_ai_review.py -v"
+          "scripts/check_submission.py",
+          "AGENTS.md",
+          "docs/ai_routing_evolution_policy.json",
+          "docs/github-ai-review-design.md",
+          "scripts/check_ai_review.py",
+          "scripts/submission_policy.py",
+          "scripts/ci_quality.py",
+          ".github/workflows/quality-gate.yml",
+          "scripts/tests/test_ai_review.py",
+          "scripts/tests/test_submission_policy.py",
+          ".github/workflows/ai-review-tests.yml",
+          ".github/requirements-ci.txt",
+          "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+          "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
+          "python3 -m unittest discover -s scripts/tests -v"
         ],
         "unsampled_paths": [
-          ".github/workflows/ai-review.yml"
+          ".github/workflows/ai-review.yml",
+          ".github/workflows/quality-gate.yml"
         ]
       }
     },
@@ -616,9 +638,23 @@
         "attachment_backups_are_not_verified_migration_copies"
       ],
       "edit_risk": "high",
-      "blast_radius": ["all persisted data and metadata", "download checkpoints and quotas", "snapshot readers", "local disk capacity"],
-      "pitfall_ids": ["P05", "P09", "P11", "P15"],
-      "minimum_regression": ["python3 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q", "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'", "bash -n start_services.sh"],
+      "blast_radius": [
+        "all persisted data and metadata",
+        "download checkpoints and quotas",
+        "snapshot readers",
+        "local disk capacity"
+      ],
+      "pitfall_ids": [
+        "P05",
+        "P09",
+        "P11",
+        "P15"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'",
+        "bash -n start_services.sh"
+      ],
       "routing_confidence": "high",
       "scope_flags": [
         "local_only",

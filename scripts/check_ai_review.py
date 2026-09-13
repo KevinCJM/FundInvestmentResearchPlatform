@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import time
+from urllib.parse import quote
 
 REPOSITORY = "KevinCJM/FundInvestmentResearchPlatform"
 BOT_ID = 199175422
@@ -20,7 +21,11 @@ CODEX_APP_ID = 1144995
 WORKFLOW = ".github/workflows/ai-review.yml"
 REQUEST_MARKER = "<!-- codex-review-request/v1 "
 SCHEMA = "codex-review/v1"
-TRUSTED_EVENTS = {"pull_request_target", "issue_comment", "push", "schedule", "workflow_dispatch"}
+TRUSTED_EVENTS = {"pull_request_target", "issue_comment", "push", "schedule", "workflow_dispatch", "workflow_run"}
+NATIVE_CLEAN = re.compile(
+    r"\ACodex Review: Didn't find any major issues\. You're on a roll\.\s*"
+    r"\*\*Reviewed commit:\*\* `([0-9a-f]{7,40})`\s*"
+    r"(?:<details>\s*<summary>ℹ️ About Codex in GitHub</summary>.*?</details>\s*)?\Z", re.S)
 
 
 def now():
@@ -92,10 +97,16 @@ def evaluate(snapshot, context):
     latest_review = max(records, key=lambda r: r["submitted_at"]) if records else None
     changes_requested = latest_review and latest_review.get("state") == "CHANGES_REQUESTED"
     comments = [c for c in snapshot["comments"] if is_app_comment(c)]
+    requests = [c for c in snapshot["comments"] if c.get("body") == request_body(pr)
+                and timestamp(c["created_at"]) >= started]
+    request = max(requests, key=lambda c: (c["created_at"], c["id"])) if requests else None
+    requested_at = timestamp(request["created_at"]) if request else started
     # A structured verdict can carry exact HEAD/base and explicit limitations.
     reports = []
     for record in records + comments:
-        for block in re.findall(r"```json\s*\n(.*?)\n```", record.get("body", ""), re.S):
+        body = record.get("body", "")
+        blocks = re.findall(r"```json\s*\n(.*?)\n```", body, re.S)
+        for block in blocks:
             try:
                 report = json.loads(block)
             except (ValueError, TypeError):
@@ -107,17 +118,31 @@ def evaluate(snapshot, context):
                 "base_sha": base, "base_ref": pr["base"]["ref"],
             }.items()):
                 continue
-            at = timestamp(record.get("submitted_at") or record["updated_at"])
-            if at < started:
+            # A rewritten issue comment must not retroactively attest a new base.
+            if "submitted_at" not in record and record.get("created_at") != record.get("updated_at"):
                 continue
-            reports.append((at, report, record["html_url"]))
+            at = timestamp(record.get("submitted_at") or record["created_at"])
+            if at < max(started, requested_at):
+                continue
+            # A PASS quoted in an explanation is not a verdict. Exactly one
+            # top-level report is accepted; ambiguous reports fail closed.
+            if len(blocks) != 1 or not re.fullmatch(r"\s*```json\s*\n.*?\n```\s*", body, re.S):
+                report = {"conclusion": "INCOMPLETE", "limitations": ["Ambiguous or quoted structured report"]}
+            reports.append((at, report, record["html_url"], record.get("state")))
     if reports:
-        at, report, url = max(reports, key=lambda r: r[0])
+        at, report, url, review_state = max(reports, key=lambda r: (r[0], r[1].get("conclusion") != "PASS"))
         if (report.get("conclusion") == "PASS" and report.get("findings") == [] and report.get("limitations") == []
-                and at >= latest_finding and not any(timestamp(r["submitted_at"]) > at for r in records)):
+                and review_state != "CHANGES_REQUESTED" and at >= latest_finding
+                and not any(timestamp(r["submitted_at"]) > at or
+                            (r.get("state") == "CHANGES_REQUESTED" and timestamp(r["submitted_at"]) == at)
+                            for r in records)):
             return outcome("success", "Current Codex structured review passed", [url])
         return outcome("failure", "Codex report is blocked, incomplete, or contains findings/limitations", [url])
     review_pending = "failure" if changes_requested else "pending"
+    if not requests:
+        return outcome(review_pending, "Waiting for an exact HEAD/base review request")
+    if not bound_request(request, pr, context["observed_at"]):
+        return outcome(review_pending, "Latest version-bound request was edited; submit a fresh request")
     # Native no-findings review: require ALL of current authenticated summary,
     # uniquely resolved commit, fresh official thumbs-up and no unresolved finding.
     summaries = [c for c in comments if "<!-- codex-pull-request-review-summary -->" in c.get("body", "")]
@@ -132,20 +157,29 @@ def evaluate(snapshot, context):
     completed = re.search(r'datetime="([^\"]+)"', row)
     if not commit or snapshot["resolved_commits"].get(commit[1]) != head:
         return outcome(review_pending, "Review summary does not identify the current full HEAD")
-    if not completed or timestamp(completed[1]) < latest_finding or timestamp(summary["updated_at"]) < started:
+    if not completed or timestamp(completed[1]) < max(latest_finding, requested_at) or timestamp(summary["updated_at"]) < started:
         return outcome(review_pending, "Review predates this version or the latest finding")
-    requests = [c for c in snapshot["comments"] if bound_request(c, pr, context["observed_at"])]
-    request_times = {c["id"]: timestamp(c["created_at"]) for c in requests}
     positives = [r for r in snapshot["reactions"] if is_bot(r) and r.get("content") == "+1"
-                 and r.get("request_comment_id") in request_times
-                 and timestamp(r["created_at"]) >= max(latest_finding, request_times[r["request_comment_id"]])]
+                 and r.get("request_comment_id") == request["id"]
+                 and timestamp(r["created_at"]) >= max(latest_finding, requested_at)]
+    clean_comments = []
+    for comment in comments:
+        match = NATIVE_CLEAN.fullmatch(comment.get("body", ""))
+        if (match and comment.get("created_at") == comment.get("updated_at")
+                and snapshot["resolved_commits"].get(match[1]) == head
+                and timestamp(comment["created_at"]) >= max(latest_finding, requested_at)):
+            clean_comments.append(comment)
+    positives += clean_comments
     if not positives:
-        return outcome(review_pending, "Waiting for Codex +1 on the exact HEAD/base review request; Completed alone is not PASS")
+        return outcome(review_pending, "Waiting for an authenticated Codex no-findings verdict after the latest request")
     # A later review with suggestions must never be overridden by an old reaction.
     newest_positive = max(timestamp(r["created_at"]) for r in positives)
-    if any(timestamp(r["submitted_at"]) > newest_positive for r in records):
+    if any(timestamp(r["submitted_at"]) > newest_positive or
+           (r.get("state") == "CHANGES_REQUESTED" and timestamp(r["submitted_at"]) == newest_positive)
+           for r in records):
         return outcome(review_pending, "A newer Codex review requires a fresh no-findings verdict")
-    return outcome("success", "Current Codex summary and fresh no-findings reaction verified", [summary["html_url"]])
+    return outcome("success", "Current Codex summary and fresh no-findings verdict verified",
+                   [summary["html_url"], request.get("html_url", "")] + [c["html_url"] for c in clean_comments])
 
 
 class GitHub:
@@ -161,7 +195,7 @@ class GitHub:
         if result.returncode:
             # Do not echo arbitrary API bodies, user text, or credentials into Actions logs.
             raise RuntimeError("GitHub API request failed: " + path.split("?")[0])
-        return json.loads(result.stdout)
+        return json.loads(result.stdout) if result.stdout.strip() else None
 
     def pages(self, path, key=None):
         items = []
@@ -210,7 +244,8 @@ class GitHub:
                     reactions.append({**reaction, "request_comment_id": comment["id"]})
         resolved = {}
         for comment in comments:
-            if is_app_comment(comment) and "<!-- codex-pull-request-review-summary -->" in comment.get("body", ""):
+            if is_app_comment(comment) and ("<!-- codex-pull-request-review-summary -->" in comment.get("body", "")
+                                            or NATIVE_CLEAN.fullmatch(comment.get("body", ""))):
                 for short in re.findall(r"`([0-9a-f]{7,40})`", comment["body"]):
                     resolved[short] = self.api(f"{prefix}/commits/{short}")["sha"]
         comparison = self.api(f"{prefix}/compare/{base}...{head}")
@@ -240,6 +275,7 @@ class GitHub:
                    "head_sha": pr["head"]["sha"], "base_sha": pr["base"]["sha"], "observed_at": observed_at or now()}
         if not publish:
             return context
+        context["policy_sha"] = os.environ["SUBMISSION_POLICY_SHA"]
         checks = self.pages(f"repos/{REPOSITORY}/commits/{context['head_sha']}/check-runs?check_name=ai-review&filter=all", "check_runs")
         for check in sorted(checks, key=lambda c: c["id"], reverse=True):
             if not self.trusted_check(check):
@@ -253,9 +289,9 @@ class GitHub:
                 break
         return context
 
-    def publish(self, context, result, check_id=None):
+    def publish(self, context, result, check_id=None, name="ai-review"):
         state = result["state"]
-        body = {"name": "ai-review", "head_sha": context["head_sha"],
+        body = {"name": name, "head_sha": context["head_sha"],
                 "external_id": f"{SCHEMA}:{context['pr_number']}:{context['base_sha']}:{context['head_sha']}",
                 "details_url": f"https://github.com/{REPOSITORY}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
                 "status": "in_progress" if state == "pending" else "completed",
@@ -272,62 +308,48 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr", type=int)
     parser.add_argument("--request-body", action="store_true", help="Print the exact version-bound review request; does not post it")
-    parser.add_argument("--publish", action="store_true")
     parser.add_argument("--observed-at", help="Read-only bootstrap evidence boundary; never used for publishing")
     parser.add_argument("--expected-head")
     parser.add_argument("--expected-base")
     parser.add_argument("--wait-seconds", type=int, default=0)
     args = parser.parse_args()
-    if args.publish and (args.pr or args.observed_at or args.wait_seconds or os.getenv("GITHUB_ACTIONS") != "true"
-                         or os.getenv("GITHUB_REPOSITORY") != REPOSITORY
-                         or os.getenv("GITHUB_EVENT_NAME") not in TRUSTED_EVENTS
-                         or os.getenv("GITHUB_REF") not in {"refs/heads/main", "refs/heads/Dev"}
-                         or not os.getenv("AI_REVIEW_CHECKS_TOKEN") or not os.getenv("AI_REVIEW_APP_ID", "").isdigit()):
-        parser.error("Publishing requires the trusted GitHub Actions workflow context")
     if not 0 <= args.wait_seconds <= 900:
         parser.error("Wait must be between 0 and 900 seconds")
     gh = GitHub()
     if args.request_body:
-        if not args.pr or args.publish:
-            parser.error("--request-body requires --pr and cannot publish")
-        print(request_body(gh.api(f"repos/{REPOSITORY}/pulls/{args.pr}")))
+        if not args.pr:
+            parser.error("--request-body requires --pr")
+        pr = gh.api(f"repos/{REPOSITORY}/pulls/{args.pr}")
+        pr["base"]["sha"] = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(pr['base']['ref'], safe='')}")["object"]["sha"]
+        print(request_body(pr))
         return 0
     numbers = [args.pr] if args.pr else [p["number"] for p in gh.pages(f"repos/{REPOSITORY}/pulls?state=open") if p["base"]["ref"] in {"main", "Dev"}]
     exit_code = 0
-    operational_error = False
     for number in numbers:
-        context, check_id = None, None
+        context = None
         try:
             pr = gh.api(f"repos/{REPOSITORY}/pulls/{number}")
             if pr["state"] != "open" or pr["base"]["ref"] not in {"main", "Dev"}:
                 continue
+            pr["base"]["sha"] = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(pr['base']['ref'], safe='')}")["object"]["sha"]
             if (args.expected_head and args.expected_head != pr["head"]["sha"]
                     or args.expected_base and args.expected_base != pr["base"]["sha"]):
                 raise RuntimeError("Bootstrap event SHA no longer matches the PR")
-            context = gh.context(pr, args.publish, args.observed_at)
-            if args.publish:
-                check_id = gh.publish(context, outcome("pending", "Revalidating current Codex review evidence"))
+            context = gh.context(pr, False, args.observed_at)
             deadline = time.monotonic() + args.wait_seconds
             while True:
                 snapshot = gh.collect(pr)
                 snapshot["pr"] = gh.api(f"repos/{REPOSITORY}/pulls/{number}")
+                snapshot["pr"]["base"]["sha"] = gh.api(f"repos/{REPOSITORY}/git/ref/heads/{quote(snapshot['pr']['base']['ref'], safe='')}")["object"]["sha"]
                 result = evaluate(snapshot, context)
                 if result["state"] != "pending" or time.monotonic() >= deadline:
                     break
                 time.sleep(min(20, max(0, deadline - time.monotonic())))
-            if args.publish:
-                gh.publish(context, result, check_id)
         except (RuntimeError, ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired):
-            operational_error = True
-            result = outcome("failure", f"Evidence collection or publication failed for PR #{number}; inspect the workflow")
-            if args.publish and check_id:
-                try:
-                    gh.publish(context, result, check_id)
-                except (RuntimeError, ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired):
-                    pass  # Keep its pending check; never retain or fabricate success.
+            result = outcome("failure", f"Evidence collection failed for PR #{number}; inspect the workflow")
         print(json.dumps({"context": context, "result": result}, ensure_ascii=False))
         exit_code = max(exit_code, {"success": 0, "failure": 1, "pending": 2}[result["state"]])
-    return int(operational_error) if args.publish else exit_code
+    return exit_code
 
 
 if __name__ == "__main__":

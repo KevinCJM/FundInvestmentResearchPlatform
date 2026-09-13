@@ -1,0 +1,16 @@
+# Versions used by the verified Python 3.12 development environment.
+# Keep numerical/runtime upgrades reviewable instead of floating each CI run.
+fastapi==0.137.2
+uvicorn==0.32.0
+pandas==2.3.1
+pyarrow==18.0.0
+XlsxWriter==3.2.9
+openpyxl==3.1.5
+numpy==1.26.4
+scipy==1.17.1
+numba==0.60.0
+httpx==0.28.1
+tushare==1.4.21
+networkx==3.4.2
+pytest==8.4.1
+pytest-socket==0.7.0

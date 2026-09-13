@@ -1,0 +1,173 @@
+name: PR quality validation
+run-name: 'quality PR ${{ github.event.pull_request.number || inputs.pr }} head:${{ github.event.pull_request.head.sha || inputs.head_sha }} base:${{ github.event.pull_request.base.sha || inputs.base_sha }}'
+on:
+  pull_request:
+    branches: [main, Dev]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      pr:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: quality-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+env:
+  CUSTOM_INDICATOR_DATA_DIR: /tmp/firp-ci-indicator-data
+  NUMBA_CACHE_DIR: /tmp/firp-ci-numba-cache
+  TUSHARE_TOKEN: ''
+  CI: 'true'
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      head: ${{ steps.plan.outputs.head }}
+      base: ${{ steps.plan.outputs.base }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+      backend: ${{ steps.plan.outputs.backend }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+    steps:
+      # The planner is protected code even when the workflow is triggered by a PR.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.base.sha || inputs.base_sha }}
+          persist-credentials: false
+          path: trusted
+          sparse-checkout: scripts
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha || inputs.base_sha }}
+        run: python3 trusted/scripts/ci_quality.py
+  governance:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+          path: trusted
+          sparse-checkout: skills
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: candidate
+      - working-directory: candidate
+        run: |
+          python3 ../trusted/skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py --project-root "$PWD"
+          python3 ../trusted/skills/ai-hermes-self-evolve/scripts/route_task.py --project-root "$PWD" --route-id R03 --mode context
+      - env:
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+        working-directory: candidate
+        run: |
+          python3 ../trusted/skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --project-root "$PWD" --diff-range "$BASE_SHA...$HEAD_SHA" --json
+          git diff --check "$BASE_SHA...$HEAD_SHA"
+  policy-tests:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          persist-credentials: false
+      - run: |
+          python3 -m pip install PyYAML==6.0.3
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+  frontend:
+    needs: prepare
+    if: needs.prepare.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - working-directory: frontend
+        run: |
+          npm ci
+          npm exec vitest -- run
+          npm exec tsc -- --noEmit
+          npm run build
+          npm run i18n:check
+          npm run design:check
+  backend:
+    needs: prepare
+    if: needs.prepare.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt
+      - run: python -m pytest backend/tests -q --disable-socket --allow-unix-socket --allow-hosts=127.0.0.1,::1
+  e2e:
+    needs: prepare
+    if: needs.prepare.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.prepare.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r backend/requirements.txt -r .github/requirements-ci.txt
+      - working-directory: frontend
+        run: |
+          npm ci
+          npm exec playwright -- install --with-deps chrome
+          export INDICATOR_TEST_PYTHON="$(command -v python)"
+          export TEST_PYTHON="$INDICATOR_TEST_PYTHON"
+          npm exec playwright -- test --workers=2
+  quality-result:
+    needs: [prepare, governance, policy-tests, frontend, backend, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['NEEDS'])
+          assert jobs['prepare']['result'] == 'success'
+          assert jobs['governance']['result'] == 'success'
+          assert jobs['policy-tests']['result'] == 'success'
+          for name in ['frontend', 'backend', 'e2e']:
+              wanted = 'success' if jobs['prepare']['outputs'][name] == 'true' else 'skipped'
+              assert jobs[name]['result'] == wanted, (name, wanted, jobs[name]['result'])
+          print('All applicable quality jobs succeeded on the prepared HEAD/base.')
+          PY

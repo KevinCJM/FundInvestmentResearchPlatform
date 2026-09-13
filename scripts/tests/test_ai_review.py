@@ -63,7 +63,7 @@ class ReviewDecisionTests(unittest.TestCase):
         s, c = fixture()
         report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
         s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": START, "body": "blocking", "html_url": "old"}]
-        s["comments"].append({"user": BOT, "performed_via_github_app": {"id": gate.CODEX_APP_ID}, "updated_at": END, "html_url": "new", "body": "```json\n" + json.dumps(report) + "\n```"})
+        s["comments"].append({"user": BOT, "performed_via_github_app": {"id": gate.CODEX_APP_ID}, "created_at": END, "updated_at": END, "html_url": "new", "body": "```json\n" + json.dumps(report) + "\n```"})
         self.assertEqual(self.state(s, c), "success")
 
     def test_new_bound_native_verdict_can_supersede_old_changes_requested(self):
@@ -73,6 +73,51 @@ class ReviewDecisionTests(unittest.TestCase):
 
     def test_current_native_no_findings(self):
         self.assertEqual(self.state(*fixture()), "success")
+
+    def clean_comment(self):
+        return {"id": 3, "user": BOT, "performed_via_github_app": {"id": gate.CODEX_APP_ID},
+                "created_at": END, "updated_at": END, "html_url": "clean",
+                "body": "Codex Review: Didn't find any major issues. You're on a roll.\n\n**Reviewed commit:** `aaaaaaa`"}
+
+    def test_official_pr12_no_findings_template(self):
+        s, c = fixture(); s["reactions"] = []; s["comments"].append(self.clean_comment())
+        self.assertEqual(self.state(s, c), "success")
+        for field, value in [("body", "Quoted: " + self.clean_comment()["body"]),
+                             ("updated_at", "2026-09-11T10:11:00Z"), ("user", {**BOT, "id": 1})]:
+            bad = copy.deepcopy(s); bad["comments"][-1][field] = value
+            self.assertNotEqual(self.state(bad, c), "success")
+
+    def test_clean_comment_wrong_head_or_old_request(self):
+        s, c = fixture(); s["reactions"] = []; s["comments"].append(self.clean_comment())
+        s["resolved_commits"]["aaaaaaa"] = "c" * 40
+        self.assertNotEqual(self.state(s, c), "success")
+
+    def test_latest_request_invalidates_previous_thumb(self):
+        s, c = fixture()
+        s["comments"].append({**s["comments"][1], "id": 4, "created_at": "2026-09-11T10:11:00Z", "updated_at": "2026-09-11T10:11:00Z"})
+        self.assertNotEqual(self.state(s, c), "success")
+
+    def test_summary_before_request_cannot_pass(self):
+        s, c = fixture()
+        s["comments"][1]["created_at"] = s["comments"][1]["updated_at"] = "2026-09-11T10:11:00Z"
+        s["reactions"][0]["created_at"] = "2026-09-11T10:12:00Z"
+        self.assertNotEqual(self.state(s, c), "success")
+
+    def test_contradictory_structured_pass_is_blocked(self):
+        s, c = fixture()
+        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "CHANGES_REQUESTED", "submitted_at": END,
+                         "html_url": "x", "body": "```json\n" + json.dumps(report) + "\n```"}]
+        self.assertEqual(self.state(s, c), "failure")
+
+    def test_quoted_or_multiple_structured_reports_never_pass(self):
+        s, c = fixture()
+        report = {**c, "repository": gate.REPOSITORY, "conclusion": "PASS", "findings": [], "limitations": []}
+        block = "```json\n" + json.dumps(report) + "\n```"
+        for body in ["This is an unsafe example:\n" + block, block + "\n" + block,
+                     block + "\n```json\n" + json.dumps({**report,"conclusion":"BLOCKED"}) + "\n```"]:
+            s["reviews"] = [{"user": BOT, "commit_id": HEAD, "state": "COMMENTED", "submitted_at": END, "html_url": "x", "body": body}]
+            self.assertEqual(self.state(s, c), "failure")
 
     def test_same_head_on_another_pr_cannot_share_success(self):
         s, c = fixture(); s["other_prs_with_same_head"] = [13]
@@ -198,7 +243,7 @@ class GitHubContractTests(unittest.TestCase):
         gh = gate.GitHub(); s, c = fixture()
         with mock.patch.object(gate, "GitHub", return_value=gh), mock.patch("sys.argv", ["check_ai_review.py"]), \
                 mock.patch.object(gh, "pages", return_value=[{"number": n, "base": {"ref": "Dev"}} for n in (11, 12)]), \
-                mock.patch.object(gh, "api", side_effect=[RuntimeError("offline"), s["pr"], s["pr"]]), \
+                mock.patch.object(gh, "api", side_effect=[RuntimeError("offline"), s["pr"], {"object": {"sha": c["base_sha"]}}, s["pr"], {"object": {"sha": c["base_sha"]}}]), \
                 mock.patch.object(gh, "context", return_value=c), mock.patch.object(gh, "collect", return_value=s) as collect, \
                 mock.patch("builtins.print"):
             self.assertEqual(gate.main(), 1)
