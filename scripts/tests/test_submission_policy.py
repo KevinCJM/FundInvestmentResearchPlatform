@@ -304,6 +304,11 @@ class WorkflowContractTests(unittest.TestCase):
             path.write_text(original + "\nimport unittest\nunittest.TestCase.assertEqual=lambda *a,**k:None\nunittest.TestSuite.countTestCases=lambda *a:99\ndef branch_decision(*a,**k): return ['success','fabricated']\n")
             fabricated=run(); self.assertNotEqual(fabricated.returncode,0)
             self.assertIn('FAIL: test_branch_matrix',fabricated.stderr)
+            # A valid candidate-authored envelope is still only a business value:
+            # it cannot turn the protected failure cases into success.
+            path.write_text("import os\nos.write(1, " + repr(json.dumps({"value": ["success", "fabricated"]}).encode()) + ")\nos._exit(0)\n")
+            envelope=run(); self.assertNotEqual(envelope.returncode,0)
+            self.assertIn('FAIL: test_branch_matrix',envelope.stderr)
             path.write_text('import os; os._exit(0)\n')
             early=run(); self.assertNotEqual(early.returncode,0)
             self.assertIn('Protected contracts failed',early.stderr)
