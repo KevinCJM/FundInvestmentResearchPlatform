@@ -161,7 +161,7 @@ describe('ProductResearch', () => {
     )
 
     expect(await screen.findByText('示例场外基金')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '场外公募基金' })).toHaveClass('text-emerald-600')
+    expect(screen.getByRole('button', { name: '场外公募基金' })).toHaveClass('text-accent-600')
     expect(screen.getByRole('button', { name: /成立日/ })).toBeInTheDocument()
     await waitFor(() => {
       const calledUrl = String(vi.mocked(fetch).mock.calls[0][0])

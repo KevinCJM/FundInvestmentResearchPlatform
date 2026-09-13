@@ -6,7 +6,7 @@ export default function EtlRunOptionsEditor({ definition, value, onChange, disab
   definition: EtlDefinition; value: EtlRunOptions; onChange: (value: EtlRunOptions) => void; disabled: boolean
 }) {
   const overrides = definition.steps.filter(step => ['download', 'task'].includes(step.kind) && step.mode !== 'inherit')
-  return <fieldset disabled={disabled} className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4" aria-label="本次运行设置">
+  return <fieldset disabled={disabled} className="space-y-3 rounded-xl border border-accent-200 bg-accent-50 p-4" aria-label="本次运行设置">
     <legend className="px-1 text-sm font-bold">本次运行设置（不修改已保存流程）</legend>
     <label className="block text-sm font-semibold">本次运行模式<select aria-label="本次运行模式" className={inputClass} value={value.mode} onChange={event => {
       const { auto_baseline_run_id: baseline, ...rest } = value

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { eventCategories, eventDraft, saveLibraryEvent, type LibraryEvent, type EventDraft } from '../../services/eventLibrary'
 
-const input = 'mt-1 min-h-10 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-2 text-sm font-normal'
+const input = 'mt-1 min-h-10 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-2 py-2 text-sm font-normal'
 export default function EventLibraryEditor({ current, onSaved, onCancel }: {
   current?: LibraryEvent; onSaved: (event: LibraryEvent) => void; onCancel: () => void
 }) {
@@ -16,7 +16,7 @@ export default function EventLibraryEditor({ current, onSaved, onCancel }: {
   }
   return <form onSubmit={event => void save(event)} aria-label="历史事件编辑" className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
     <h3 className="font-semibold">{current ? `修改事件 · 当前v${current.revision}` : '新建历史事件'}</h3>
-    <p className="text-xs leading-5 text-slate-500">事件事实与市场研究窗口分开记录。保存会生成新修订，不改变已有情景。</p>
+    <p className="text-xs leading-5 text-slate-600">事件事实与市场研究窗口分开记录。保存会生成新修订，不改变已有情景。</p>
     {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}</p>}
     <fieldset disabled={busy} className="space-y-4 disabled:opacity-60">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -35,19 +35,19 @@ export default function EventLibraryEditor({ current, onSaved, onCancel }: {
           <label className="text-xs sm:col-span-2">信息可得时间（含时区，可选）<input placeholder="2025-06-13T08:00:00+08:00" value={draft.known_at || ''} onChange={e => patch({ known_at: e.target.value || null })} className={input} /></label>
         </div>
       </details>
-      <section className="space-y-3" aria-label="研究窗口设置"><div className="flex items-center justify-between gap-2"><h4 className="text-sm font-semibold">市场研究窗口</h4><button type="button" disabled={draft.windows.length >= 20} onClick={() => patch({ windows: [...draft.windows, { id: 'window_' + Date.now().toString(36), label: '', start_date: '', end_date: '', rationale: '' }] })} className="min-h-10 text-xs font-semibold text-violet-700">添加研究窗口</button></div>
+      <section className="space-y-3" aria-label="研究窗口设置"><div className="flex items-center justify-between gap-2"><h4 className="text-sm font-semibold">市场研究窗口</h4><button type="button" disabled={draft.windows.length >= 20} onClick={() => patch({ windows: [...draft.windows, { id: 'window_' + Date.now().toString(36), label: '', start_date: '', end_date: '', rationale: '' }] })} className="min-h-10 text-xs font-semibold text-accent-700">添加研究窗口</button></div>
         {draft.windows.map((window, i) => <div key={window.id} className="space-y-2 rounded-lg border bg-slate-50 p-3"><label className="block text-xs">窗口名称<input required aria-label={`窗口${i + 1}名称`} maxLength={100} value={window.label} onChange={e => patch({ windows: draft.windows.map((w, j) => j === i ? { ...w, label: e.target.value } : w) })} className={input} /></label>
           <div className="grid gap-2 sm:grid-cols-2">{(['start_date', 'end_date'] as const).map(key => <label key={key} className="text-xs">{key === 'start_date' ? '开始日期' : '结束/研究截至日期'}<input required type="date" aria-label={`窗口${i + 1}${key === 'start_date' ? '开始' : '结束'}`} value={window[key]} onChange={e => patch({ windows: draft.windows.map((w, j) => j === i ? { ...w, [key]: e.target.value } : w) })} className={input} /></label>)}</div>
           <label className="block text-xs">为什么选择这段区间？<textarea required aria-label={`窗口${i + 1}理由`} maxLength={1000} value={window.rationale} onChange={e => patch({ windows: draft.windows.map((w, j) => j === i ? { ...w, rationale: e.target.value } : w) })} className={input} /></label>
           {draft.windows.length > 1 && <button type="button" onClick={() => patch({ windows: draft.windows.filter((_, j) => j !== i) })} className="min-h-9 text-xs text-rose-700">移除窗口</button>}
         </div>)}
       </section>
-      <section className="space-y-2"><div className="flex items-center justify-between"><h4 className="text-sm font-semibold">参考来源</h4><button type="button" disabled={draft.sources.length >= 20} onClick={() => patch({ sources: [...draft.sources, { title: '', url: '', published_at: null }] })} className="min-h-10 text-xs text-violet-700">添加来源</button></div>
+      <section className="space-y-2"><div className="flex items-center justify-between"><h4 className="text-sm font-semibold">参考来源</h4><button type="button" disabled={draft.sources.length >= 20} onClick={() => patch({ sources: [...draft.sources, { title: '', url: '', published_at: null }] })} className="min-h-10 text-xs text-accent-700">添加来源</button></div>
         {draft.sources.map((source, i) => <div key={i} className="space-y-2 rounded-lg border p-3"><label className="block text-xs">机构/文献标题<input required value={source.title} maxLength={200} onChange={e => patch({ sources: draft.sources.map((s, j) => j === i ? { ...s, title: e.target.value } : s) })} className={input} /></label><label className="block text-xs">来源链接<input type="url" required placeholder="https://" maxLength={2000} value={source.url} onChange={e => patch({ sources: draft.sources.map((s, j) => j === i ? { ...s, url: e.target.value } : s) })} className={input} /></label><button type="button" onClick={() => patch({ sources: draft.sources.filter((_, j) => j !== i) })} className="min-h-9 text-xs text-rose-700">移除来源</button></div>)}
         <label className="flex min-h-10 items-center gap-2 text-xs"><input type="checkbox" checked={draft.verification === 'verified'} onChange={e => patch({ verification: e.target.checked ? 'verified' : 'unreviewed' })} />已人工核对来源和区间理由（未填来源不能标记）</label>
       </section>
       <div className="flex flex-wrap items-center gap-3"><label className="inline-flex min-h-10 items-center gap-2 text-xs">颜色<input aria-label="库事件颜色" type="color" value={draft.color} onChange={e => patch({ color: e.target.value })} /></label>{current && <label className="inline-flex min-h-10 items-center gap-2 text-xs"><input type="checkbox" checked={draft.archived} onChange={e => patch({ archived: e.target.checked })} />归档（保留旧引用）</label>}</div>
     </fieldset>
-    <div className="flex gap-3"><button type="submit" disabled={busy} className="min-h-11 rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white disabled:opacity-50">{busy ? '保存中…' : '保存事件'}</button><button type="button" disabled={busy} onClick={onCancel} className="min-h-11 rounded-lg border px-4 text-sm">取消编辑</button></div>
+    <div className="flex gap-3"><button type="submit" disabled={busy} className="min-h-11 rounded-lg bg-accent-600 px-4 text-sm font-semibold text-white disabled:opacity-50">{busy ? '保存中…' : '保存事件'}</button><button type="button" disabled={busy} onClick={onCancel} className="min-h-11 rounded-lg border px-4 text-sm">取消编辑</button></div>
   </form>
 }

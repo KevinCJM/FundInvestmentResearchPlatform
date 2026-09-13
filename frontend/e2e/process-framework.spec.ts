@@ -137,23 +137,57 @@ test('会计报表页分别展示组合基金报表和管理人公司报表', as
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 })
 
+test('报表优先展示数据且阶段导航在桌面常驻、窄屏可收起', async ({ page }) => {
+  await page.goto('/fund-accounting/financial-statements')
+  const table = page.getByRole('table').first()
+  await expect(table).toBeVisible()
+  expect((await table.boundingBox())!.y).toBeLessThan(800)
+  const navigation = page.getByRole('complementary', { name: '基金会计子页面导航' })
+  const trigger = page.getByRole('button', { name: '基金会计阶段导航' })
+  if ((page.viewportSize()?.width ?? 1440) >= 1280) {
+    await expect(navigation).toBeVisible()
+    await expect(trigger).toBeHidden()
+  } else {
+    await expect(navigation).toBeHidden()
+    await trigger.click()
+    await expect(navigation).toBeVisible()
+    await navigation.getByRole('link', { name: /双主体财务报表/ }).focus()
+    await page.keyboard.press('Escape')
+    await expect(navigation).toBeHidden()
+    await expect(trigger).toBeFocused()
+  }
+  await page.getByText('报表期间、账簿与核算边界', { exact: true }).click()
+  await expect(page.getByText('基金经理和 Sleeve 不是当然的报表主体')).toBeVisible()
+  if (page.viewportSize()?.width === 320) {
+    const scroller = page.getByRole('region', { name: '资产负债表', exact: true })
+    const rowHeader = table.getByRole('rowheader', { name: '银行存款与结算备付金' })
+    const left = (await rowHeader.boundingBox())!.x
+    await scroller.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect.poll(() => scroller.evaluate(el => el.scrollLeft)).toBeGreaterThan(0)
+    expect((await rowHeader.boundingBox())!.x).toBeCloseTo(left, 0)
+  }
+})
+
 test('组合方案展示区分回测与实盘，并展示算法和情景入口', async ({ page }) => {
   await page.goto('/portfolio-solutions/profile')
 
   await expect(page.getByRole('heading', { name: '组合画像与适用范围' })).toBeVisible()
   await expect(page.getByText(/虚线左侧为历史回测，右侧为实盘跟踪示例/)).toBeVisible()
   const trigger = page.getByRole('button', { name: '方案展示阶段导航' })
-  await expect(trigger).toHaveAttribute('aria-expanded', 'false')
-  await expect(page.getByLabel('方案展示子页面导航')).toHaveCount(0)
-  if ((page.viewportSize()?.width ?? 0) >= 1024) {
+  const navigation = page.getByLabel('方案展示子页面导航')
+  if ((page.viewportSize()?.width ?? 0) >= 1280) {
+    await expect(trigger).toBeHidden()
+    await expect(navigation).toBeVisible()
     const workspaceBox = await page.getByLabel('方案展示工作区').boundingBox()
     expect(workspaceBox).not.toBeNull()
-    expect(workspaceBox!.width).toBeGreaterThan((page.viewportSize()?.width ?? 0) * 0.8)
+    expect(workspaceBox!.width).toBeGreaterThan(900)
+  } else {
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    await expect(navigation).toBeHidden()
+    await trigger.click()
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
   }
-
-  await trigger.click()
-  const navigation = page.getByLabel('方案展示子页面导航')
-  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
   await expect(navigation.getByRole('link', { name: /周期与情景模拟/ })).toBeVisible()
   await expect(navigation.getByRole('link', { name: /配置与算法说明/ })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)

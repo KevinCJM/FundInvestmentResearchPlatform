@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DownloadPolicy } from '../../services/dataSources'
 
-export const inputClass = 'mt-1 min-h-10 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-100 disabled:text-slate-500'
-export const buttonClass = 'min-h-10 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-40'
-export const primaryClass = 'min-h-10 rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-40'
+export const inputClass = 'mt-1 min-h-10 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 disabled:bg-slate-100 disabled:text-slate-600'
+export const buttonClass = 'min-h-10 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:opacity-40'
+export const primaryClass = 'min-h-10 rounded-lg bg-accent-700 px-4 py-2 text-sm font-semibold text-white hover:bg-accent-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:opacity-40'
 
 export function TextField({ label, value, onChange, disabled = false, required = false, placeholder }: {
   label: string; value: string; onChange: (value: string) => void; disabled?: boolean; required?: boolean; placeholder?: string
@@ -64,9 +64,9 @@ export function PolicyEditor({ value, onChange, effective }: {
   value: DownloadPolicy; onChange: (value: DownloadPolicy) => void; effective?: DownloadPolicy
 }) {
   return <section className="space-y-3" aria-label="下载限制">
-    <p className="text-xs leading-6 text-slate-500">数据源与接口限制共同生效，取更严格值。所有工作线程和进程共享配额；行数配额按单次上限预留。</p>
-    {effective ? <p className="rounded-lg bg-indigo-50 p-3 text-xs text-indigo-900">上次保存的有效限制：每分钟 {effective.requests_per_minute} 次请求；每次最多 {effective.max_rows_per_request} 行；最多 {effective.max_concurrency} 个并发。修改后保存以重新计算。</p> : null}
-    <p className="text-xs text-slate-500">优先核对下面三项额度。连接、重试、并发等技术参数一般不需修改。</p>
+    <p className="text-xs leading-6 text-slate-600">数据源与接口限制共同生效，取更严格值。所有工作线程和进程共享配额；行数配额按单次上限预留。</p>
+    {effective ? <p className="rounded-lg bg-accent-50 p-3 text-xs text-accent-900">上次保存的有效限制：每分钟 {effective.requests_per_minute} 次请求；每次最多 {effective.max_rows_per_request} 行；最多 {effective.max_concurrency} 个并发。修改后保存以重新计算。</p> : null}
+    <p className="text-xs text-slate-600">优先核对下面三项额度。连接、重试、并发等技术参数一般不需修改。</p>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{policyFields.slice(0, 3).map(item => <label key={item.key} className="text-xs font-semibold text-slate-600">{item.label}
       <input className={inputClass} type="number" min={item.min} max={item.max} step={item.step ?? 1} required={!item.optional} value={value[item.key] ?? ''} onChange={event => onChange({ ...value, [item.key]: event.target.value === '' && item.optional ? null : Number(event.target.value) })} />
     </label>)}</div>

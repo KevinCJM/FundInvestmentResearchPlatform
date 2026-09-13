@@ -35,7 +35,7 @@ export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocation
 
   return (
     <div
-      className={`mt-3 rounded border px-2.5 py-2 text-[11px] leading-5 ${
+      className={`mt-3 rounded-lg border px-2.5 py-2 text-xs leading-5 ${
         clean ? 'border-slate-200 bg-slate-50 text-slate-600' : 'border-amber-200 bg-amber-50 text-amber-900'
       }`}
       data-testid="pit-decision-notice"
@@ -48,12 +48,12 @@ export default function PitDecisionNotice({ lineage }: { lineage?: PitAllocation
           <span>未设研究日</span>
         )}
         {badges.map((badge) => (
-          <span key={badge.text} className={`rounded border px-1.5 py-0.5 ${badge.tone}`}>
+          <span key={badge.text} className={`rounded-lg border px-1.5 py-0.5 ${badge.tone}`}>
             {badge.text}
           </span>
         ))}
         {lineage.rows_dropped_by_as_of > 0 && (
-          <span className="tabular-nums text-slate-500">
+          <span className="tabular-nums text-slate-600">
             剔除 {lineage.rows_dropped_by_as_of.toLocaleString()} 行当时尚未可得的净值
           </span>
         )}

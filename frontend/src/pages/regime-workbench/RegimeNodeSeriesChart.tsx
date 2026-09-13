@@ -207,38 +207,38 @@ export default function RegimeNodeSeriesChart({ page, onSelectComparisons }: { p
   }
   const chart = <section aria-label="节点走势图" className="flex min-w-0 flex-1 flex-col gap-3">
     <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-      <button type="button" role="switch" aria-checked={normalized} disabled={!eligible} onClick={() => setEnabled(value => !value)} className={`min-h-9 rounded-lg border px-3 text-xs font-semibold disabled:opacity-40 ${normalized ? 'border-violet-600 bg-violet-600 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>区间归一化（首日＝1）</button>
-      {!fullscreen && <button ref={expandRef} type="button" onClick={() => setFullscreen(true)} className="min-h-9 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700">全屏展开</button>}
+      <button type="button" role="switch" aria-checked={normalized} disabled={!eligible} onClick={() => setEnabled(value => !value)} className={`min-h-9 rounded-lg border px-3 text-xs font-semibold disabled:opacity-40 ${normalized ? 'border-accent-600 bg-accent-600 text-white' : 'border-slate-300 bg-white text-slate-700'}`}>区间归一化（首日＝1）</button>
+      {!fullscreen && <button ref={expandRef} type="button" onClick={() => setFullscreen(true)} className="min-h-9 rounded-xl border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700">全屏展开</button>}
     </div>
     <details open={!fullscreen} className="shrink-0">
       <summary className={fullscreen ? 'cursor-pointer text-xs font-semibold text-slate-600' : 'hidden'}>图表设置{Object.keys(selected).length ? ` · 已叠加 ${Object.keys(selected).length} 条曲线` : ''}</summary>
       <div className="space-y-3">
-        {!fullscreen && onSelectComparisons && <button type="button" onClick={onSelectComparisons} className="min-h-9 rounded-lg border border-violet-200 px-3 text-xs font-semibold text-violet-700">添加其他节点对比</button>}
+        {!fullscreen && onSelectComparisons && <button type="button" onClick={onSelectComparisons} className="min-h-9 rounded-lg border border-accent-200 px-3 text-xs font-semibold text-accent-700">添加其他节点对比</button>}
         {overlays.length > 0 && <details className="rounded-xl border border-slate-200 p-3">
           <summary className="cursor-pointer text-xs font-semibold text-slate-700">叠加已计算节点{Object.keys(selected).length ? `（已选 ${Object.keys(selected).length}）` : ''}</summary>
-          <p className="my-2 text-xs text-slate-500">勾选后默认显示在子图。相同量纲可选同图同轴，不同量纲可选右轴或子图。</p>
+          <p className="my-2 text-xs text-slate-600">勾选后默认显示在子图。相同量纲可选同图同轴，不同量纲可选右轴或子图。</p>
           {overlays.length > 6 && <input aria-label="搜索已计算节点" placeholder="搜索节点或输出名称" value={search} onChange={event => setSearch(event.target.value)} className="mb-2 min-h-9 w-full rounded-lg border px-2 text-xs" />}
           <div className="max-h-64 space-y-2 overflow-auto">
             {options.map(item => <label key={outputKey(item)} className="flex min-h-9 items-start gap-2 rounded-lg bg-slate-50 p-2 text-xs text-slate-700">
               <input type="checkbox" className="mt-0.5" checked={!!selected[outputKey(item)]} disabled={!item.plottable} onChange={event => select(item, event.target.checked)} />
-              <span className="min-w-0 break-words">{item.node_label} · {item.port_label}<span className="ml-2 text-slate-400">{item.relationship === 'same_node' ? '同节点其他输出' : item.relationship === 'other' ? '其他节点' : item.distance === 1 ? '直接上游' : '更上游'}</span>{!item.plottable && <span className="block text-slate-500">{item.unavailable_reason}</span>}</span>
+              <span className="min-w-0 break-words">{item.node_label} · {item.port_label}<span className="ml-2 text-slate-600">{item.relationship === 'same_node' ? '同节点其他输出' : item.relationship === 'other' ? '其他节点' : item.distance === 1 ? '直接上游' : '更上游'}</span>{!item.plottable && <span className="block text-slate-600">{item.unavailable_reason}</span>}</span>
             </label>)}
-            {!options.length && <p className="text-xs text-slate-500">没有匹配的节点。</p>}
+            {!options.length && <p className="text-xs text-slate-600">没有匹配的节点。</p>}
           </div>
         </details>}
         {curves.length > 1 && <div className="space-y-2" aria-label="曲线展示设置">
           <p className="break-words text-xs font-semibold" style={{ color: mainCurve.color }}>主图：{mainCurve.label}</p>
           {curves.slice(1).map(layer => <div key={layer.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 p-2 text-xs">
             <span className="min-w-0 flex-1 basis-32 break-words font-semibold" style={{ color: layer.color }}>{layer.label}</span>
-            <select aria-label={`${layer.label}展示位置`} value={layer.placement} onChange={event => setSelected(previous => ({ ...previous, [layer.id]: event.target.value as Placement }))} className="min-h-9 max-w-full rounded-lg border border-slate-300 bg-white px-2">
+            <select aria-label={`${layer.label}展示位置`} value={layer.placement} onChange={event => setSelected(previous => ({ ...previous, [layer.id]: event.target.value as Placement }))} className="min-h-9 max-w-full rounded-xl border border-slate-300 bg-white px-2">
               <option value="left">同图同轴</option><option value="right">同图右轴</option><option value="subplot">独立子图</option>
             </select>
-            <button type="button" aria-label={`移除${layer.label}`} onClick={() => setSelected(previous => { const next = { ...previous }; delete next[layer.id]; return next })} className="min-h-9 px-2 text-slate-500">移除</button>
-            {!layer.page && <p className={`basis-full ${layer.error ? 'text-rose-700' : 'text-slate-500'}`}>{layer.error || '正在读取对比数据…'}{layer.error && <button type="button" onClick={() => setRetry(value => value + 1)} className="ml-2 underline">重试</button>}</p>}
+            <button type="button" aria-label={`移除${layer.label}`} onClick={() => setSelected(previous => { const next = { ...previous }; delete next[layer.id]; return next })} className="min-h-9 px-2 text-slate-600">移除</button>
+            {!layer.page && <p className={`basis-full ${layer.error ? 'text-rose-700' : 'text-slate-600'}`}>{layer.error || '正在读取对比数据…'}{layer.error && <button type="button" onClick={() => setRetry(value => value + 1)} className="ml-2 underline">重试</button>}</p>}
           </div>)}
-          <p className="text-xs text-slate-500">共用时间轴；按观测日期对齐，缺失值留空，不同频率保留各自观测点。展示范围以主节点为准。</p>
+          <p className="text-xs text-slate-600">共用时间轴；按观测日期对齐，缺失值留空，不同频率保留各自观测点。展示范围以主节点为准。</p>
         </div>}
-        <p className="text-xs text-slate-500">{eligible ? '各数值曲线以同一首日归一化；表格保留原值。' : '此输出不适用区间归一化。'}</p>
+        <p className="text-xs text-slate-600">{eligible ? '各数值曲线以同一首日归一化；表格保留原值。' : '此输出不适用区间归一化。'}</p>
       </div>
     </details>
     {normalized && <div role="status" className="space-y-1 text-xs text-slate-600">
@@ -250,7 +250,7 @@ export default function RegimeNodeSeriesChart({ page, onSelectComparisons }: { p
     </div>
     {!fullscreen && curves.length > 1 && <details className="shrink-0 rounded-lg border border-slate-200 p-2 text-xs">
       <summary className="cursor-pointer font-semibold text-slate-600">查看对比数据（当前区间最近100条 · 原值）</summary>
-      <div className="mt-2 max-h-64 overflow-auto"><table className="min-w-full text-left" aria-label="节点对比数据"><thead><tr><th className="whitespace-nowrap p-2">日期</th>{curves.map(layer => <th key={layer.id} className="min-w-32 p-2">{layer.label}</th>)}</tr></thead><tbody>{dates.slice(Math.max(startIndex, endIndex - 99), endIndex + 1).map(date => <tr key={date}><td className="whitespace-nowrap p-2">{date}</td>{curves.map(layer => { const index = layer.indices.get(date); return <td key={layer.id} className="p-2">{numberText(index == null ? null : layer.data?.values[index])}</td> })}</tr>)}</tbody></table></div>
+      <div className="mt-2 max-h-64 overflow-auto"><table className="min-w-full text-left" aria-label="节点对比数据"><thead><tr><th scope="col" className="whitespace-nowrap p-2">日期</th>{curves.map(layer => <th scope="col" key={layer.id} className="min-w-32 p-2">{layer.label}</th>)}</tr></thead><tbody>{dates.slice(Math.max(startIndex, endIndex - 99), endIndex + 1).map(date => <tr key={date}><td className="whitespace-nowrap p-2">{date}</td>{curves.map(layer => { const index = layer.indices.get(date); return <td key={layer.id} className="p-2">{numberText(index == null ? null : layer.data?.values[index])}</td> })}</tr>)}</tbody></table></div>
     </details>}
   </section>
   // Keep the data, axis choices and zoom state in this component while moving the chart.
