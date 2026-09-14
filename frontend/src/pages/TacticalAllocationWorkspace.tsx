@@ -21,6 +21,16 @@ const points = (value: number | undefined) => value == null || !Number.isFinite(
 const fail = (error: unknown, message: string) => error instanceof Error ? error.message : message
 const eligible = (run: HistoricalRegimeRun) => run.schema_version === '2.0' && isRegimeRunEligibleForTaa(run)
 
+function baselineJourney(value: TaaBaseline) {
+  return {
+    mandateId: value.policy?.mandate_id,
+    strategicUniverseId: value.strategic_universe_id ?? undefined,
+    implementationMappingId: value.implementation_mapping_id ?? undefined,
+    universeId: value.universe_snapshot_id ?? undefined,
+    allocationName: value.alloc_name, baselineId: value.id,
+  }
+}
+
 function validDraftRequest(value: unknown, baselineId: string): value is TaaPreviewRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const row = value as Record<string, unknown>
@@ -100,7 +110,7 @@ export default function TacticalAllocationWorkspace() {
   function showDecision(value: TaaDecision) {
     setBaseline(value.preview.baseline); setRequest(value.preview.request); setPreview(value.preview); setDecision(value)
     setDecisionName(value.name); setDecisionNote(value.note ?? ''); setExperiments(value.scenarios ?? []); setTab('versions')
-    updateAllocationJourney({ universeId: value.preview.baseline.universe_snapshot_id ?? undefined, allocationName: value.preview.baseline.alloc_name, baselineId: value.preview.baseline.id, taaRunId: value.id })
+    updateAllocationJourney({ ...baselineJourney(value.preview.baseline), taaRunId: value.id })
   }
   useEffect(() => {
     if (loading || !catalogRef.current) return
@@ -118,7 +128,7 @@ export default function TacticalAllocationWorkspace() {
       restore.current = null; setBaseline(value); setRequest(copied ?? restored?.request ?? initialRequest(value, catalogRef.current, platformRef.current))
       setExperiments((restored?.scenarios ?? []).map(scenario => ({ scenario }))); setDecisionName(restored?.name ?? `${value.name} · 战术方案`); setDecisionNote(restored?.note ?? '')
       if (restored) { setTab(restored.tab); setNotice('已恢复本次研究草稿。输入和情景假设已保留，请重新计算确认结果。') }
-      updateAllocationJourney({ universeId: value.universe_snapshot_id ?? undefined, allocationName: value.alloc_name, baselineId: value.id })
+      updateAllocationJourney(baselineJourney(value))
     }).catch(error => { if (!controller.signal.aborted) setError(fail(error, '基准读取失败。')) }).finally(() => { if (!controller.signal.aborted) setLoadingBaseline(false) })
     return () => controller.abort()
   }, [baselineId, loading])

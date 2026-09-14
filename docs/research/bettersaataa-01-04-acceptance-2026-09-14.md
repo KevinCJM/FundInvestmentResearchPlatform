@@ -121,3 +121,41 @@ npm run test:e2e --prefix frontend -- --config=playwright.taa.config.ts --worker
 `validate_ai_routing.py` 通过；R87、R86的 `route_task.py --mode context` 通过；对明确列出的91个本任务文件运行 `evolve_ai_routing.py`，结果为 `exit_code_reason=ok`、`uncovered_files=[]`、`missing_required_files=[]`、`routing_only_violations=[]`。工作区及暂存区的 `git diff --check` 通过。
 
 交付仅提交并推送 `ISSUE2609/BetterSaaTaa`，不创建或合并PR，不推主线。最终提交号由 `git log -1 --format='%H %s'` 查询；远端一致性用 `git rev-list --left-right --count origin/ISSUE2609/BetterSaaTaa...HEAD` 核对。`AGENTS.md`原有工作区修改仍排除在本任务提交之外。
+
+## 8. 提交593cb79复核后的修复验收
+
+本节记录后续修复，不替代上文开发阶段证据。基于 `593cb79898e416fc3d3b9dd25bcde754886c6a69`，完成[审核记录R16–R19](bettersaataa-review-findings-2026-09-14.md#提交593cb79复核后的修复)：组合信号有效期、TAA冻结来源恢复、PIT初始化与映射历史读取竞争、外部信号切换时JSON状态同步。没有改写已保存研究或更换数值模型。
+
+|检查|本轮最终结果|覆盖及限制|
+|---|---|---|
+|后端专项|32项通过|新增10项：独立分量年龄/明确到期/研究复核日上限、到期当日、两种调仓口径、执行滞后及产品桥接拒绝。|
+|后端扩展回归|430项通过，224.19秒|执行本文件第3节第一条pytest的24个测试文件；临时目录改为 `/private/tmp/bettersaataa-fix-regression`。不包括本轮未重跑的独立frontier_sampling命令。|
+|前端专项 / 全量|44项 / 1006项通过|专项为 `TacticalAllocationWorkspace.test.tsx StrategicScopeWorkspace.test.tsx TaaPolicySignals.test.tsx`；全量135个测试文件，90.18秒。专项已包含在全量中，不重复累计。|
+|BetterSaaTaa浏览器|15项通过，1.5分钟|原9项真实隔离API链路，加6项固定离线响应的历史恢复：基线/保存研究×320/768/1440；延迟映射响应跨PIT初始化，返回02引用正确，只读、复制和历史选择器可用。|
+|TAA浏览器|8项通过，39.4秒|原产品路径、完整信号JSON→切换类型→清空→输入不完整→补全→实际请求；缺持仓继续禁止交接。覆盖320/390/768/1440。|
+|类型、构建、设计、i18n引用|全部通过|沿用第3节前端命令；未修改检查阈值。|
+|NJIT/内存基准|通过|2000×8只读非连续输入，shares_memory=true，单一签名，python_fallback=0；5次约0.21–0.50毫秒，峰值分配1396861字节。数值内核未修改，不据此声明新增加速。|
+|AI Hermes / diff|通过|P23补充本轮隐藏契约，validate与显式变更文件evolve通过，git diff --check通过。|
+
+浏览器沿用第3节 `playwright.better-saataa.config.ts` 与 `playwright.taa.config.ts` 命令，使用临时测试服务或固定离线响应，无正式数据写入。布局、实际DOM文字对比度和受影响交互均已检查；查看了映射恢复与320px信号表单截图。截图沿用第5节输出目录。
+
+测试构造中曾出现持仓边界样本不满足应用资格、PIT徽章文字断言错误、StrictMode初始双请求计数和折叠内容对比度采样不稳定；分别修正隔离样本、核对实际可见正文、比较切换前后的读取次数，并展开历史选择器检查可见状态后取得上述完整通过结果。没有放宽业务门禁或对比度检查器。存量弃用、React act与大包警告保留。
+
+原始本轮日志保存在本机 `/private/tmp/bettersaataa-fix-*.log`；副本及代表截图保存在 `/Users/chenjunming/.codex/visualizations/2026/09/14/01a09d9b-4109-79b3-95da-9b4cbe996182/fix-593cb79/`。
+
+本节验收完成时，修复尚未提交、推送或创建PR，未合并Dev/main；原有 `AGENTS.md` 工作区修改保持不变。后续提交授权与核验见第9节。
+
+## 9. 开发分支提交与合并前复核
+
+2026-09-14，人类明确授权提交推送当前开发分支、创建PR，并在审核通过后合入Dev。本次同时纳入此前授权的 `AGENTS.md` 简明对话规则和已有功能变更边界，单独提交以便追溯。
+
+提交前重新fetch确认 `origin/Dev` 仍为 `aa8ca7a8a707ed1cc10f4ef624f1ceb5894ebada`，是当前开发分支祖先；未发现新增主线变更或重复PR。重新核对4项修复及其回归差异，未发现新的阻断问题；第8节430项后端、1006项前端和23项浏览器结果仍对应本次代码。
+
+补充执行并全部通过：
+
+- `test_tactical_allocation_clocks_signals.py` 与 `test_frontier_grid.py`：63项，49.43秒；前者32项为复核重跑，不与第8节重复累计。
+- `TacticalAllocationWorkspace.test.tsx`、`StrategicScopeWorkspace.test.tsx`、`TaaPolicySignals.test.tsx`：44项，8.62秒。
+- `playwright.strategic.config.ts`：10项，1.6分钟；`playwright.m1.config.ts`：1项，1.0分钟。均使用隔离临时数据服务。
+- AI Hermes validate、R03路由检查、相对Dev的92个明确变更文件evolve与 `git diff --check`：通过，无未覆盖文件或缺失必需文件。
+
+日志为 `/private/tmp/bettersaataa-submit-*.log`，文件哈希与路由结果同目录保存。既有第3、7、8节的提交边界是当时状态；实际提交、PR检查及合并结果以本开发分支Git记录和GitHub PR为准。本记录是代码审核和测试证据，不是独立人类Approve；批准权限按已读取的提交规范及GitHub实时规则处理，不修改远端保护设置。

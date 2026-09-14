@@ -92,7 +92,6 @@ export interface RiskReference {
 }
 export type StrategicBaseline = Omit<TaaBaseline, 'alloc_name'> & {
   alloc_name: string | null
-  strategic_universe_id?: string; implementation_mapping_id?: string | null
   implementation_status?: 'complete' | 'incomplete'; implementation_gaps?: string[]
 }
 export type StrategicSourceSnapshot = Omit<StrategicBaseline, 'id' | 'created_at' | 'content_hash'>

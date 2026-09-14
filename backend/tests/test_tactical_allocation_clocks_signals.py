@@ -137,6 +137,64 @@ def test_expired_decision_target_cannot_trade(workspace):
     assert result['recommendation']['is_saa']
 
 
+@pytest.mark.parametrize('scheduled', [False, True])
+@pytest.mark.parametrize('explicit_days,max_age,expected_days', [(60, 365, 30), (20, 365, 20), (60, 165, 5), (0, 365, 0)])
+def test_composite_recommendation_uses_component_expiry(workspace, scheduled, explicit_days, max_age, expected_days):
+    from backend.tactical_allocation.portfolio_bridge import validate_decision_application
+    service, _, request = workspace
+    component = SignalComponent(
+        id='long-lived', kind='value', weight=1, source='Offline dated research',
+        methodology='Explicit normalized scores', max_age_days=max_age,
+        observations=[{'observed_on': request.start_date, 'available_on': request.start_date,
+                       'expires_on': request.as_of + timedelta(days=explicit_days),
+                       'values': {'股票': .5, '债券': -.5}}])
+    req = request.model_copy(update={
+        'signal_mode': 'composite', 'signal_components': [component], 'search': False,
+        'decision_policy': DecisionPolicy(decision_frequency='daily') if scheduled else None,
+        'current_weights': {'股票': .6, '债券': .4}, 'current_weights_as_of': request.as_of,
+    })
+    assert req.max_signal_age_days == 31  # The old global default is irrelevant to components.
+    preview = service.preview(req)
+    assert not preview['recommendation']['is_saa']
+    assert preview['recommendation']['expires_on'] == str(req.as_of + timedelta(days=expected_days))
+    if scheduled:
+        assert preview['application']['eligible'], preview['application']['reasons']
+    saved = service.save_decision(SaveDecisionRequest(request=req, preview_hash=preview['preview_hash'], name='Composite expiry'))
+    # Date eligibility must pass, while the real missing-product-domain gate stays enforced.
+    with pytest.raises(ValidationError) as error:
+        validate_decision_application(saved, service.data)
+    assert error.value.code == 'TAA_APPLICATION_UNIVERSE'
+    expired = copy.deepcopy(saved)
+    expired['preview']['recommendation']['expires_on'] = str(req.as_of - timedelta(days=1))
+    with pytest.raises(ValidationError) as error:
+        validate_decision_application(expired, service.data)
+    assert error.value.code == 'TAA_DECISION_EXPIRED'
+
+
+@pytest.mark.parametrize('latest_expiry_days', [2, 60])
+def test_scheduled_composite_expiry_tracks_adopted_decision_not_pending_signal(workspace, latest_expiry_days):
+    service, _, request = workspace
+    component = SignalComponent(
+        id='dated', kind='value', weight=1, source='Offline dated research',
+        methodology='Explicit normalized scores', max_age_days=365,
+        observations=[
+            {'observed_on': request.start_date, 'available_on': request.start_date,
+             'expires_on': request.as_of + timedelta(days=10), 'values': {'股票': .5, '债券': -.5}},
+            {'observed_on': request.as_of, 'available_on': request.as_of,
+             'expires_on': request.as_of + timedelta(days=latest_expiry_days), 'values': {'股票': -.5, '债券': .5}},
+        ])
+    req = request.model_copy(update={
+        'signal_mode': 'composite', 'signal_components': [component], 'search': False,
+        'decision_policy': DecisionPolicy(decision_frequency='daily', execution_lag=2),
+        'current_weights': {'股票': .6, '债券': .4}, 'current_weights_as_of': request.as_of,
+    })
+    preview = service.preview(req)
+    assert preview['application']['eligible'] and preview['application']['pending_decision']
+    assert preview['recommendation']['weights']['股票'] > .6
+    assert preview['recommendation']['signal_date'] == str(request.start_date)
+    assert preview['recommendation']['expires_on'] == str(request.as_of + timedelta(days=10))
+
+
 def test_complete_holdout_is_independent_and_future_changes_do_not_select(workspace):
     service,baseline,request=workspace
     req=request.model_copy(update={'decision_policy':DecisionPolicy(decision_frequency='weekly')})

@@ -1,5 +1,7 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test'
 import { auditTextContrast } from './helpers/contrast'
+import { taaBaseline, taaCatalog, taaPreview, taaPreflight } from '../src/test/tacticalAllocationFixtures'
+import { cmaDefinition, policyBaseline } from '../src/test/strategicAllocationFixtures'
 
 const api = 'http://127.0.0.1:8118/api/strategic-allocation'
 
@@ -32,6 +34,76 @@ async function createMandate(request: APIRequestContext, name: string) {
 async function verifyLayout(page: Page) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
   await expect.poll(() => page.evaluate(auditTextContrast), { timeout: 5000 }).toEqual([])
+}
+
+for (const entry of ['baseline', 'decision']) {
+  test(`offline history restoration: ${entry} lineage and mapping survive PIT initialization`, async ({ page }, info) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    const scope = { id: 'scope-B', name: '浏览器战略范围B', content_hash: 'a'.repeat(64), created_at: '2026-09-12',
+      preview_hash: 'b'.repeat(64), implementation_status: 'unmapped', research_only: true, implementation_gaps: ['equity', 'bond'],
+      definition: { name: '浏览器战略范围B', as_of: '2026-09-12', source: '固定浏览器夹具', currency: 'CNY',
+        assets: cmaDefinition.assets.map(a => ({ id: a.id, name: a.id, currency: 'CNY', role: a.role, liquidity: a.liquidity, rationale: a.rationale, source: '离线风险定义' })) } }
+    const mapping = { id: 'map-B', name: '浏览器映射B', content_hash: 'c'.repeat(64), created_at: '2026-09-12', preview_hash: 'd'.repeat(64),
+      definition: { name: '浏览器映射B', strategic_universe_id: 'scope-B', universe_snapshot_id: 'UNIVERSE-1', alloc_name: taaBaseline.alloc_name,
+        as_of: '2026-09-12', valid_until: '2099-01-01', assignments: [] },
+      implementation_status: 'incomplete', implementation_gaps: ['equity', 'bond'],
+      coverage: scope.definition.assets.map(a => ({ strategic_asset_id: a.id, proxy_asset_id: null, status: 'missing_products' })) }
+    const baseline = { ...taaBaseline, strategic_universe_id: 'scope-B', implementation_mapping_id: 'map-B',
+      policy: { ...policyBaseline.policy, mandate_id: 'mandate-B', assumptions: cmaDefinition } }
+    const saved = { id: 'run-B', name: '浏览器历史研究B', created_at: '2026-09-12', preview: { ...taaPreview, baseline }, scenarios: [] }
+    let releasePit!: () => void, releaseMapping!: () => void
+    const pitReady = new Promise<void>(resolve => { releasePit = resolve })
+    const mappingReady = new Promise<void>(resolve => { releaseMapping = resolve })
+    let mappingReads = 0
+    await page.addInitScript(() => sessionStorage.setItem('allocation-journey:v1', JSON.stringify({ mandateId: 'mandate-A', strategicUniverseId: 'scope-A', implementationMappingId: 'map-A', universeId: 'domain-A' })))
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/pit/settings') {
+        await pitReady
+        return route.fulfill({ json: { settings: { active_release_id: null }, available_releases: [],
+          effective: { no_pit: false, as_of: '2026-09-12', run_mode: 'RESEARCH', label: '浏览器知识截止已确认' } } })
+      }
+      if (path === '/api/tactical-allocation/catalog') return route.fulfill({ json: { ...taaCatalog, baselines: [baseline], decisions: [saved] } })
+      if (path.endsWith('/baselines/SAA-1')) return route.fulfill({ json: baseline })
+      if (path.endsWith('/decisions/run-B')) return route.fulfill({ json: saved })
+      if (path.endsWith('/preflight')) return route.fulfill({ json: taaPreflight })
+      if (path === '/api/strategic-allocation/catalog') return route.fulfill({ json: { allocations: taaCatalog.allocations, mandates: [], assumptions: [], policies: [], strategic_universes: [scope], implementation_maps: [mapping] } })
+      if (path.endsWith('/universes/scope-B')) return route.fulfill({ json: scope })
+      if (path.endsWith('/implementation-maps/map-B')) { ++mappingReads; await mappingReady; return route.fulfill({ json: mapping }) }
+      return route.fulfill({ status: 404, json: { detail: 'Offline history fixture only.' } })
+    })
+    await page.goto(`/pre-investment/taa?${entry === 'baseline' ? 'baseline=SAA-1' : 'decision=run-B'}`)
+    const journey = page.getByRole('navigation', { name: '配置研究流程' })
+    const back = journey.getByRole('link', { name: '2. 产品映射', exact: true })
+    await expect(back).toHaveAttribute('href', /mandate=mandate-B.*strategic_universe=scope-B.*mapping=map-B/)
+    await back.click()
+    const editor = page.getByRole('region', { name: '战略实施映射' })
+    await expect(editor.getByText('正在读取不可变实施映射…')).toBeVisible()
+    await expect(editor.getByLabel('映射名称')).toBeDisabled()
+    // The development app uses StrictMode; compare against its initial reads.
+    const initialMappingReads = mappingReads
+    expect(initialMappingReads).toBeGreaterThan(0)
+    releasePit()
+    await expect(page.getByTestId('pit-badge')).toContainText('PIT 打开：2026-09-12')
+    releaseMapping()
+    await expect(editor.getByText(/只读映射：浏览器映射B/)).toBeVisible()
+    await expect(editor.getByText('equity：缺少产品')).toBeVisible()
+    await expect(editor.getByLabel('映射名称')).toBeDisabled()
+    expect(mappingReads).toBe(initialMappingReads)
+    await page.getByText('读取历史范围与映射', { exact: true }).click()
+    await expect(page.getByLabel('已保存的战略范围')).toHaveValue('scope-B')
+    await expect(page.getByLabel('已保存的实施映射')).toHaveValue('map-B')
+    await expect(page.getByRole('button', { name: '重试读取范围目录' })).toBeEnabled()
+    await verifyLayout(page)
+    await page.screenshot({ path: info.outputPath(`restored-${entry}-mapping.png`), fullPage: true })
+    await editor.getByRole('button', { name: '复制映射为新研究' }).click()
+    await editor.getByLabel('映射名称').fill('复制后继续研究')
+    await expect(editor.getByLabel('映射名称')).toHaveValue('复制后继续研究')
+    await expect(editor.getByRole('button', { name: '确认保存实施映射' })).toBeDisabled()
+    await verifyLayout(page)
+    expect(errors).toEqual([])
+  })
 }
 
 test('strategic-first journey: edit, preview, confirm, real SAA, visible implementation gap', async ({ page, request }, info) => {

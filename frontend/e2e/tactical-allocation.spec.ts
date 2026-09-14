@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { taaBaseline, taaCatalog, taaExecution, taaPreview, taaPreflight } from '../src/test/tacticalAllocationFixtures'
+import { auditTextContrast } from './helpers/contrast'
 
 test('TAA真实界面在桌面和手机完成观点、候选、情景与保存交接', async ({ page }, testInfo) => {
   const errors: string[] = []; const writes: Array<{ path: string; body: any }> = []
@@ -90,6 +91,23 @@ for (const width of [320, 768, 1440]) {
     await page.getByRole('radio', { name: /多信号组合/ }).check()
     await expect(page.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
     await page.getByRole('button', { name: '添加信号分量' }).click()
+    await page.getByLabel('信号 1 来源类型').selectOption('value')
+    await page.getByLabel('信号 1 研究来源').fill('浏览器固定研究输入')
+    await page.getByLabel('信号 1 标准化方法与依据').fill('离线资产标准值')
+    const signalInput = page.getByLabel('日期化标准值（JSON 数组）')
+    const observations = JSON.stringify([{ observed_on: '2026-01-01', available_on: '2026-01-01', expires_on: '2099-01-01', values: { equity: 1, bond: -1 } }])
+    await signalInput.fill(observations)
+    await expect(page.getByRole('button', { name: '计算并比较方案' })).toBeEnabled()
+    await page.getByLabel('信号 1 来源类型').selectOption('carry')
+    await expect(signalInput).toHaveValue('')
+    await expect(page.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
+    await page.getByLabel('信号 1 研究来源').fill('浏览器持有收益输入')
+    await page.getByLabel('信号 1 标准化方法与依据').fill('明确研究口径')
+    await signalInput.fill('[{"observed_on":')
+    await expect(signalInput).toHaveValue('[{"observed_on":')
+    await expect(page.getByText('JSON 尚不完整，补全后才能计算。')).toBeVisible()
+    await expect(page.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
+    await signalInput.fill(observations)
     await page.getByRole('combobox', { name: '决策频率', exact: true }).selectOption('weekly')
     await page.getByRole('combobox', { name: '执行机会', exact: true }).selectOption('monthly')
     await page.getByText('执行滞后、阈值与实际持仓时点', { exact: true }).click()
@@ -97,12 +115,14 @@ for (const width of [320, 768, 1440]) {
     await page.getByLabel('单资产偏离阈值（百分点）').fill('3')
     await expect(page.getByLabel('信号 1 权重（%）')).toHaveValue('100')
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
+    await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
     await page.screenshot({ path: testInfo.outputPath(`m3-controls-${width}.png`), fullPage: true })
     await page.getByRole('button', { name: '计算并比较方案' }).click()
     await expect(page.getByRole('heading', { name: '不可交接', exact: true })).toBeVisible()
     await page.getByRole('tab', { name: '版本与审计' }).click()
     await expect(page.getByRole('button', { name: '带入产品配置' })).toBeDisabled()
     expect(writes.find(r => r.path.endsWith('/preview'))?.body.decision_policy).toMatchObject({ decision_frequency: 'weekly', execution_frequency: 'monthly', execution_lag: 2, deviation_threshold: .03 })
+    expect(writes.find(r => r.path.endsWith('/preview'))?.body.signal_components[0]).toMatchObject({ kind: 'carry', observations: JSON.parse(observations) })
     expect(writes.filter(r => r.path.endsWith('/product-allocation') || r.path.endsWith('/decisions'))).toHaveLength(0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
     await page.screenshot({ path: testInfo.outputPath(`m3-gate-${width}.png`), fullPage: true })

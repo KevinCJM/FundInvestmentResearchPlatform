@@ -310,13 +310,15 @@ class TacticalAllocationService:
             warnings.append(signals["fallback_reason"])
         chart, weights = [], []
         expires = request.as_of + timedelta(days=request.review_days)
-        if request.signal_mode != "manual" and not recommendation["is_saa"] and signals["current_date"]:
-            signal_expiry = date.fromisoformat(signals["current_date"][:10]) + timedelta(days=request.max_signal_age_days)
-            expires = min(expires, signal_expiry)
-        if signals.get("current_expires_on") and not recommendation["is_saa"]:
-            expires = min(expires, date.fromisoformat(signals["current_expires_on"]))
-        if plan is not None and decision_index >= 0 and not recommendation["is_saa"]:
-            expires = min(expires, date(1970, 1, 1) + timedelta(days=int(plan["valid_until"][decision_index]))) if request.signal_mode != "manual" else expires
+        if request.signal_mode != "manual" and not recommendation["is_saa"]:
+            # Expiry belongs to the adopted decision, which may precede the
+            # latest observation while execution lag is still pending.
+            if plan is not None and decision_index >= 0:
+                expires = min(expires, date(1970, 1, 1) + timedelta(days=int(plan["valid_until"][decision_index])))
+            elif request.signal_mode == "composite":
+                expires = min(expires, date.fromisoformat(signals["current_expires_on"]))
+            elif signals["current_date"]:
+                expires = min(expires, date.fromisoformat(signals["current_date"][:10]) + timedelta(days=request.max_signal_age_days))
         offset = len(assets) * 2
         for segment, dates, path in [
             ("train", data["dates"][:split], result["selected_train_path"]),

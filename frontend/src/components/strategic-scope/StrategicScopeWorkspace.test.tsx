@@ -4,9 +4,10 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import ProductPoolSelection from '../../pages/ProductPoolSelection'
 import StrategicAllocationWorkspace from '../../pages/StrategicAllocationWorkspace'
+import ImplementationMappingEditor from './ImplementationMappingEditor'
 import { writeAllocationDraft, readAllocationJourney, updateAllocationJourney } from '../../app/allocationJourney'
 import { cmaPreview, cmaVersion, strategicCatalog } from '../../test/strategicAllocationFixtures'
-import type { UniverseDefinition, UniverseVersion } from '../../services/strategicScope'
+import type { MappingVersion, UniverseDefinition, UniverseVersion } from '../../services/strategicScope'
 
 const clock = vi.hoisted(() => ({ day: '2026-09-12' as string | null | undefined }))
 vi.mock('../../app/ResearchContext', () => ({ useResearchDay: () => clock.day }))
@@ -16,6 +17,12 @@ const definition: UniverseDefinition = { name: '独立战略范围', as_of: '202
 ] }
 const version: UniverseVersion = { id: 'scope-one', name: definition.name, definition, content_hash: 'a'.repeat(64), created_at: '2026-09-12', preview_hash: 'b'.repeat(64), research_only: true, implementation_status: 'unmapped', implementation_gaps: ['equity', 'cash'] }
 const catalog = { ...strategicCatalog, allocations: [], assumptions: [], policies: [], strategic_universes: [version], implementation_maps: [] }
+const mapping: MappingVersion = {
+  id: 'map-one', name: '已有映射', content_hash: 'c'.repeat(64), created_at: '2026-09-12', preview_hash: 'd'.repeat(64),
+  definition: { name: '已有映射', strategic_universe_id: version.id, universe_snapshot_id: 'domain-one', alloc_name: '真实方案', as_of: '2026-09-12', valid_until: '2027-01-01', assignments: [] },
+  implementation_status: 'incomplete', implementation_gaps: ['equity', 'cash'],
+  coverage: [{ strategic_asset_id: 'equity', proxy_asset_id: null, status: 'missing_products' }],
+}
 const response = (body: unknown, status = 200) => Promise.resolve({ ok: status < 400, status, json: async () => body } as Response)
 const root = '/api/strategic-allocation'
 function install(overrides: Record<string, (init?: RequestInit) => Promise<Response>> = {}) {
@@ -38,6 +45,49 @@ function scopePage(url = '/pre-investment/product-pool?scope=strategic') {
 }
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); clock.day = '2026-09-12'; vi.clearAllMocks() })
 afterEach(() => { vi.unstubAllGlobals() })
+
+it.each([false, true])('映射历史读取独立于知识时钟初始化（切换=%s），只读证据保留且复制可编辑', async changeClock => {
+  clock.day = undefined
+  let resolve!: (r: Response) => void
+  const fetch = install({ [`${root}/implementation-maps/map-one`]: () => new Promise(done => { resolve = done }) })
+  const tree = () => <MemoryRouter><ImplementationMappingEditor universe={version} catalog={catalog} domainId="domain-one" requestedMapping="map-one" onSaved={() => {}} /></MemoryRouter>
+  const view = render(tree())
+  await screen.findByText('正在读取不可变实施映射…')
+  expect(screen.getByLabelText('映射名称')).toBeDisabled()
+  if (changeClock) { clock.day = '2026-09-12'; view.rerender(tree()) }
+  await act(async () => resolve(await response(mapping)))
+  await screen.findByText(/只读映射/)
+  expect(screen.getByLabelText('映射名称')).toHaveValue(mapping.name)
+  expect(screen.getByLabelText('映射名称')).toBeDisabled()
+  expect(readAllocationJourney().implementationMappingId).toBe(mapping.id)
+  clock.day = '2026-09-13'; view.rerender(tree())
+  expect(screen.getByText('equity：缺少产品')).toBeInTheDocument()
+  expect(fetch.mock.calls.filter(([url]) => String(url).includes('implementation-maps'))).toHaveLength(1)
+  await userEvent.click(screen.getByRole('button', { name: '复制映射为新研究' }))
+  fireEvent.change(screen.getByLabelText('映射名称'), { target: { value: '新的映射研究' } })
+  expect(screen.getByLabelText('映射名称')).toHaveValue('新的映射研究')
+  expect(screen.queryByText(/只读映射/)).not.toBeInTheDocument()
+  expect(mapping.definition.name).toBe('已有映射')
+})
+
+it('映射历史失败可重试，旧响应不能覆盖后来选择的版本', async () => {
+  let resolveOld!: (r: Response) => void
+  let attempts = 0
+  const other = { ...mapping, id: 'map-two', name: '第二映射', definition: { ...mapping.definition, name: '第二映射' } }
+  install({
+    [`${root}/implementation-maps/map-one`]: () => new Promise(done => { resolveOld = done }),
+    [`${root}/implementation-maps/map-two`]: () => ++attempts === 1 ? response({ detail: { message: '映射读取暂时失败' } }, 503) : response(other),
+  })
+  const tree = (id: string) => <MemoryRouter><ImplementationMappingEditor universe={version} catalog={catalog} domainId="domain-one" requestedMapping={id} onSaved={() => {}} /></MemoryRouter>
+  const view = render(tree('map-one'))
+  view.rerender(tree('map-two'))
+  await screen.findByText('映射读取暂时失败')
+  await userEvent.click(screen.getByRole('button', { name: '重试读取实施映射' }))
+  await screen.findByText(/只读映射：第二映射/)
+  await act(async () => resolveOld(await response(mapping)))
+  expect(screen.getByLabelText('映射名称')).toHaveValue('第二映射')
+  expect(readAllocationJourney().implementationMappingId).toBe('map-two')
+})
 
 it('无产品即可预览确认战略范围，保留缺口且确认前不调用保存', async () => {
   const fetch = install(); const user = userEvent.setup()

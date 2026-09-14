@@ -78,7 +78,7 @@ export function TaaPolicySignals({ request, assets, update }: { request: TaaPrev
           <Field label={`信号 ${i + 1} 最长观察年龄（天）`}><NumberInput className={inputClass} value={c.max_age_days} min={1} max={3650} onValueChange={v => change(i, { max_age_days: v })} /></Field>
           <Field label={`信号 ${i + 1} 研究来源`}><input className={inputClass} value={c.source} onChange={e => change(i, { source: e.target.value })} /></Field>
           <Field label={`信号 ${i + 1} 标准化方法与依据`}><input className={inputClass} value={c.methodology} onChange={e => change(i, { methodology: e.target.value })} /></Field>
-        </div>{c.kind !== 'momentum' && <DatedInput component={c} update={patch => change(i, patch)} />}
+        </div>{c.kind !== 'momentum' && <DatedInput key={c.kind} component={c} update={patch => change(i, patch)} />}
       </div>)}</div>
       <Button tone="secondary" disabled={components.length >= 8} onClick={() => update({ signal_components: [...components, { id: `signal-${Date.now()}`, kind: 'momentum', weight: components.length ? 0 : 1, source: '本次冻结净值窗口', methodology: '窗口收益中心化后按最大绝对偏差标准化；相同收益视为中性', unit: 'standardized_score_minus1_plus1', lookback: 60, max_age_days: 31, observations: [] }] })}>添加信号分量</Button>
       {components.length >= 8 && <p className="text-xs text-slate-600">最多组合 8 个分量。</p>}

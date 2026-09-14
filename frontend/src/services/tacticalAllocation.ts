@@ -18,6 +18,8 @@ export interface TaaBaseline {
   alloc_name: string
   as_of: string
   universe_snapshot_id?: string | null
+  strategic_universe_id?: string | null
+  implementation_mapping_id?: string | null
   data_release_id?: string | null
   assets: TaaAsset[]
   group_limits?: Array<{ id: string; assets: string[]; lo: number; hi: number }>
