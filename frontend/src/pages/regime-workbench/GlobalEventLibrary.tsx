@@ -1,9 +1,10 @@
+import { eventStudyHref, MANUAL_EVENT_TEMPLATE } from './regimeWorkspace'
 import { useEffect, useRef, useState } from 'react'
 import { createRegimeGraphDefinition, instantiateRegimeTemplate, listRegimeGraphDefinitions, type ManualHistoricalEvent, type RegimeGraphDefinition } from '../../services/regimeGraph'
 import { eventCategories, listLibraryEvents, listEventPacks, getEventPack, resolveLibraryEvents, importLibraryDefinition, getLibraryEventHistory, type EventSelection, type LibraryEvent, type EventPack, type EventPage } from '../../services/eventLibrary'
 import EventLibraryEditor from './EventLibraryEditor'
 
-const control = 'min-h-10 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-2 text-sm'
+const control = 'min-h-10 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-2 text-sm placeholder:text-slate-600 placeholder:opacity-100'
 const identity = (e: EventSelection) => `${e.event_id}:${e.revision}:${e.window_id}`
 const message = (error: unknown) => error instanceof Error ? error.message : '操作未完成，请重试。'
 export default function GlobalEventLibrary({ onSelect, onCancel }: { onSelect?: (events: ManualHistoricalEvent[]) => void; onCancel?: () => void }) {
@@ -28,7 +29,7 @@ export default function GlobalEventLibrary({ onSelect, onCancel }: { onSelect?: 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [createdId, setCreatedId] = useState('')
+  const [createdStudy, setCreatedStudy] = useState<{ id: string; revision: number } | null>(null)
   const [refresh, setRefresh] = useState(0)
   const action = useRef<AbortController | null>(null)
   const detailGeneration = useRef(0)
@@ -80,19 +81,20 @@ export default function GlobalEventLibrary({ onSelect, onCancel }: { onSelect?: 
     const response = await resolveLibraryEvents(selected, signal)
     if (signal.aborted) return
     if (onSelect) { onSelect(response.events); return }
-    const definition = await instantiateRegimeTemplate('manual-historical-events-v1', signal)
+    const definition = await instantiateRegimeTemplate(MANUAL_EVENT_TEMPLATE, signal)
     definition.name = '我的历史事件研究'
     const node = definition.graph.nodes.find(n => n.type === 'annotation.manual_events')
     if (!node) throw new Error('人工历史事件模板不可用。')
     node.parameters = { ...node.parameters, events: response.events }
     const saved = await createRegimeGraphDefinition(definition, signal)
-    if (!signal.aborted) { setCreatedId(saved.id || ''); setNotice('已创建事后情景。观察序列默认沪深300，可进入算法定义更换。') }
+    if (!saved.id || !saved.revision) throw new Error('保存结果缺少事件研究版本，请重新读取。')
+    if (!signal.aborted) { setCreatedStudy({ id: saved.id, revision: saved.revision }); setNotice('已创建人工事件研究。观察序列默认沪深300，可在事件工作区更换。') }
   })
   return <section aria-label={onSelect ? '选择库中历史事件' : '全球历史事件库'} className="min-w-0 space-y-4 rounded-xl border border-slate-200 bg-white p-3 sm:p-5">
     <header className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">全球历史事件库</h2><p className="mt-1 text-xs leading-5 text-slate-600">先选事件，再选研究窗口。加入情景时锁定版本；库更新不会改变旧结果。</p></div><div className="flex gap-2"><button type="button" disabled={busy} onClick={() => setEditing('new')} className="min-h-10 rounded-lg border border-accent-200 px-3 text-sm text-accent-700">新建事件</button>{onCancel && <button type="button" onClick={() => { action.current?.abort(); onCancel() }} className="min-h-10 rounded-lg border px-3 text-sm">取消选择</button>}</div></header>
     {error && <div role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{error}<button onClick={() => setRefresh(v => v + 1)} className="ml-3 min-h-9 underline">重新读取</button></div>}
     {notice && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</p>}
-    {createdId && <a href={`/settings/scenario-algorithms/workbench?definition=${encodeURIComponent(createdId)}&mode=retrospective`} className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-700 underline">打开新建的事后情景</a>}
+    {createdStudy && <a href={eventStudyHref(createdStudy)} className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-700 underline">打开人工事件研究</a>}
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><label className="text-xs font-semibold sm:col-span-2">搜索事件<input aria-label="事件库搜索" type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="名称、英文名或说明" className={'mt-1 ' + control} /></label><label className="text-xs font-semibold">类别<select aria-label="事件库类别" value={category} onChange={e => setCategory(e.target.value)} className={'mt-1 ' + control}><option value="">全部类别</option>{Object.entries(eventCategories).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label><label className="text-xs font-semibold">核验状态<select aria-label="事件核验状态" value={verification} onChange={e => setVerification(e.target.value)} className={'mt-1 ' + control}><option value="">全部状态</option><option value="verified">已人工核验</option><option value="unreviewed">待核验</option></select></label></div>
     <details className="rounded-lg border p-3"><summary className="cursor-pointer text-xs font-semibold">地区、时间与归档筛选</summary><div className="mt-3 grid gap-3 sm:grid-cols-3"><label className="text-xs">地区<input aria-label="事件库地区" value={region} onChange={e => setRegion(e.target.value)} className={control} /></label><label className="text-xs">研究窗口开始<input type="date" value={start} onChange={e => setStart(e.target.value)} className={control} /></label><label className="text-xs">研究窗口结束<input type="date" value={end} onChange={e => setEnd(e.target.value)} className={control} /></label></div><label className="mt-2 flex min-h-9 items-center gap-2 text-xs"><input type="checkbox" checked={archived} onChange={e => setArchived(e.target.checked)} />包含归档事件（只能查阅，不可新加入）</label></details>
     <div className="flex flex-wrap gap-2" aria-label="事件包">{packs.filter(p => p.count > 0).map(pack => <button type="button" key={pack.id} disabled={busy} onClick={() => void work(async signal => { const data = await getEventPack(pack.id, signal); if (!signal.aborted) add(data.selections, data.labels) })} className="min-h-9 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs">{pack.name} · {pack.count}</button>)}</div>
@@ -110,7 +112,7 @@ export default function GlobalEventLibrary({ onSelect, onCancel }: { onSelect?: 
       </article> : <div className="rounded-xl border border-dashed p-6 text-sm text-slate-600">点击事件名称查看事实、来源与可选研究窗口。</div>}</div>
     </div>
     {selected.length > 0 && <details className="rounded-xl border p-3"><summary className="cursor-pointer text-xs font-semibold">查看已选窗口（可逐项移除）</summary><div className="mt-2 max-h-48 space-y-2 overflow-auto">{selected.map(item => <div key={identity(item)} className="flex items-start justify-between gap-2 text-xs"><span className="break-words">{selectionLabels[identity(item)] || item.event_id} · v{item.revision}</span><button type="button" disabled={busy} onClick={() => setSelected(items => items.filter(e => identity(e) !== identity(item)))} className="min-h-9 shrink-0 text-rose-700">移除</button></div>)}</div></details>}
-    <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent-200 bg-white p-3 shadow-sm" role="region" aria-label="已选事件"><div className="text-sm">已选 <strong>{selected.length}</strong> 个窗口<span className="ml-2 text-xs text-slate-500">每个事件独立保留，可重叠</span></div><div className="flex gap-2"><button type="button" disabled={busy || !selected.length} onClick={() => setSelected([])} className="min-h-10 rounded-lg border px-3 text-xs disabled:opacity-40">清空选择</button><button type="button" disabled={busy || !selected.length} onClick={finish} className="min-h-10 rounded-lg bg-accent-600 px-3 text-sm font-semibold text-white disabled:opacity-40">{busy ? '处理中…' : onSelect ? '加入当前情景' : '创建事后情景'}</button></div></div>
+    <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-accent-200 bg-white p-3 shadow-sm" role="region" aria-label="已选事件"><div className="text-sm">已选 <strong>{selected.length}</strong> 个窗口<span className="ml-2 text-xs text-slate-600">每个事件独立保留，可重叠</span></div><div className="flex gap-2"><button type="button" disabled={busy || !selected.length} onClick={() => setSelected([])} className="min-h-10 rounded-lg border px-3 text-xs disabled:opacity-40">清空选择</button><button type="button" disabled={busy || !selected.length} onClick={finish} className="min-h-10 rounded-lg bg-accent-600 px-3 text-sm font-semibold text-white disabled:opacity-40">{busy ? '处理中…' : onSelect ? '加入当前情景' : '创建人工事件研究'}</button></div></div>
     {!onSelect && <details className="rounded-lg border p-3"><summary className="cursor-pointer text-xs font-semibold" onClick={() => { if (!definitions.length) void listRegimeGraphDefinitions().then(items => setDefinitions(items.filter(d => d.graph.nodes.some(n => n.type === 'annotation.manual_events')))).catch(reason => setError(message(reason))) }}>导入已有人工事件情景</summary><p className="my-3 text-xs leading-5 text-slate-600">复制事件为待核验库条目；不更改原情景，重复导入不会覆盖已维护的事件。</p><div className="flex flex-wrap gap-2"><select aria-label="待导入事件情景" value={importId} onChange={e => setImportId(e.target.value)} className={control + ' sm:flex-1'}><option value="">选择已保存情景</option>{definitions.map(d => <option key={d.id} value={d.id}>{d.name} · v{d.revision}</option>)}</select><button type="button" disabled={!importId || busy} onClick={() => void work(async signal => { const d = definitions.find(d => d.id === importId)!; const result = await importLibraryDefinition(importId, d.revision!); if (!signal.aborted) { setNotice(`导入 ${result.imported} 项，跳过已有 ${result.skipped} 项；待人工核验。`); setRefresh(n => n + 1) } })} className="min-h-10 rounded-lg border px-3 text-xs disabled:opacity-40">导入事件</button></div></details>}
   </section>
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
 import PublishedScenarioCenter from './PublishedScenarioCenter'
-import GlobalEventLibrary from './regime-workbench/GlobalEventLibrary'
+import GlobalEventCenter from './regime-workbench/GlobalEventCenter'
 
 type CenterId = 'historical' | 'simulation' | 'events'
 
@@ -28,7 +28,14 @@ export default function ScenarioCenters() {
   useEffect(() => { setVisited(previous => previous[activeCenter] ? previous : { ...previous, [activeCenter]: true }) }, [activeCenter])
   const activateCenter = (id: CenterId) => {
     setVisited(previous => ({ ...previous, [id]: true }))
-    setParams(previous => { const next = new URLSearchParams(previous); next.set('center', id); return next })
+    setParams(previous => {
+      const next = new URLSearchParams(previous)
+      next.set('center', id)
+      // A deep link belongs to one workspace; switching centers keeps drafts,
+      // but must not load that target into another workspace.
+      for (const key of ['definition', 'revision', 'template', 'mode']) next.delete(key)
+      return next
+    })
   }
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
@@ -73,7 +80,7 @@ export default function ScenarioCenters() {
       </section>
 
       <section role="tabpanel" hidden={activeCenter !== 'historical'} id="scenario-center-panel-historical" aria-labelledby="scenario-center-tab-historical">{visited.historical && <HistoricalRegimeWorkbench />}</section>
-      <section role="tabpanel" hidden={activeCenter !== 'events'} id="scenario-center-panel-events" aria-labelledby="scenario-center-tab-events">{visited.events && <GlobalEventLibrary />}</section>
+      <section role="tabpanel" hidden={activeCenter !== 'events'} id="scenario-center-panel-events" aria-labelledby="scenario-center-tab-events">{visited.events && <GlobalEventCenter />}</section>
       <section role="tabpanel" hidden={activeCenter !== 'simulation'} id="scenario-center-panel-simulation" aria-labelledby="scenario-center-tab-simulation">{visited.simulation && <PublishedScenarioCenter />}</section>
     </div>
   )

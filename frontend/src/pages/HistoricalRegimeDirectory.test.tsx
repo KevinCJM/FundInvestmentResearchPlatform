@@ -108,7 +108,7 @@ it('事后模板仅放入事后识别分组，并携带正确模式进入工作�
   await screen.findByRole('region', { name: '事后识别' })
   const offline = screen.getByRole('region', { name: '事后识别' })
   expect(within(offline).getByRole('link', { name: '使用模板：峰谷定界法' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?template=peak-trough-ps-v2&mode=retrospective')
-  expect(within(offline).getByRole('link', { name: '使用模板：人工历史事件区间' })).toHaveAttribute('href', '/settings/scenario-algorithms/workbench?template=manual-historical-events-v1&mode=retrospective')
+  expect(screen.queryByRole('link', { name: '使用模板：人工历史事件区间' })).not.toBeInTheDocument()
   const realtime = screen.getByRole('region', { name: '实时识别' })
   expect(within(realtime).queryByText('峰谷定界法')).not.toBeInTheDocument()
   expect(within(realtime).queryByText('人工历史事件区间')).not.toBeInTheDocument()

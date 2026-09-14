@@ -61,9 +61,11 @@ export default function RegimeFormulaEditor({ definition, mode, schemas, outputI
         const positions = new Map(definition.graph.nodes.map(node => [node.id, node.position]))
         const next = { ...result.definition, id: definition.id, revision: definition.revision,
           graph: { ...result.definition.graph, nodes: result.definition.graph.nodes.map(node => ({ ...node, position: positions.get(node.id) })) } }
+        // The workspace can reject a graph outside its domain. Keep the
+        // unapplied draft and pending state until that boundary accepts it.
+        onApply(next)
         dirtyRef.current = false
         setSource(result.source); setBaseline(result.source); onPending(false); setStale(false)
-        onApply(next)
       }
     } catch (reason) {
       if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : '公式校验失败。')
