@@ -159,7 +159,8 @@ def test_multi_channel_shared_subgraphs_are_not_repeated(definitions, indicator_
 def test_partial_window_minimum_and_mask_are_general_not_kdj_specific():
     plan = compose_typed_series_bundle({'value': 'rolling_apply(mean_where(market_close,finite_mask(market_close)),width,minimum)'},
         variable_types={**variable_types('single_product', '2.4.0'), 'width': ValueType.scalar(semantic_dimension='count'),
-                        'minimum': ValueType.scalar(semantic_dimension='count')})
+                        'minimum': ValueType.scalar(semantic_dimension='count')},
+        parameter_names=frozenset({'width', 'minimum'}))
     compiled = compile_numba_series_plan(plan)
     context = inputs(size=8)
     context.update(width=3., minimum=1., market_close=np.array([1., np.nan, 3., np.inf, 5., 0., 7., 8.]))

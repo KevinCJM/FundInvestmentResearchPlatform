@@ -329,20 +329,23 @@ def test_p0_operator_inference_exposes_type_and_semantics(
 
 
 @pytest.mark.parametrize(
-    "expression",
+    "expression,code",
     [
-        "quantile(returns, 0)",
-        "quantile(returns, 1)",
-        "lag(returns, 1.5)",
-        "difference(returns, 0)",
-        "std(returns, periods_per_year)",
+        ("quantile(returns, 0)", "INVALID_PARAMETER"),
+        ("quantile(returns, 1)", "INVALID_PARAMETER"),
+        ("lag(returns, 1.5)", "INVALID_PARAMETER"),
+        ("difference(returns, 0)", "INVALID_PARAMETER"),
+        # A data-context scalar is not a declared calculation parameter, so it
+        # cannot stand in for a definition-level configuration constant.
+        ("std(returns, periods_per_year)", "SERIES_CONFIGURATION_MUST_BE_CONSTANT"),
+        ("rolling_mean(returns, periods_per_year)", "SERIES_CONFIGURATION_MUST_BE_CONSTANT"),
     ],
 )
-def test_v2_1_control_parameters_must_be_valid_constants(expression: str) -> None:
+def test_v2_1_control_parameters_must_be_valid_constants(expression: str, code: str) -> None:
     with pytest.raises(TypedDslError) as caught:
         compose_typed_expression(expression)
 
-    assert caught.value.code == "INVALID_PARAMETER"
+    assert caught.value.code == code
 
 
 def test_legacy_20_compilation_keeps_old_operator_surface() -> None:
@@ -378,3 +381,20 @@ def test_dsl_and_operator_registry_versions_cannot_be_mixed(
         )
 
     assert caught.value.code == "OPERATOR_VERSION_MISMATCH"
+
+
+@pytest.mark.parametrize("version", ["2.1.0", "2.2.0", "2.3.0", "2.4.0"])
+@pytest.mark.parametrize("expression", ["mean(clip(returns, -1 / 2, 1 / 2))", "mean(clip(returns, -1, mean(returns)))"])
+def test_historical_scalar_input_contract_still_compiles(version, expression):
+    plan = compose_typed_expression(expression, dsl_version=version, operator_registry_version=version)
+    assert plan.operator_registry_version == version
+
+
+def test_current_contract_folds_arithmetic_but_rejects_dynamic_configuration():
+    plan = compose_typed_expression("mean(clip(returns, -1 / 2, 1 / 2))")
+    assert plan.operator_registry_version == "2.4.1"
+    with pytest.raises(TypedDslError, match="定义级"):
+        compose_typed_expression("mean(clip(returns, -1, mean(returns)))")
+    for expression in ("quantile(returns, 1 / 0)", "quantile(returns, 10 ** 1000)"):
+        with pytest.raises(TypedDslError):
+            compose_typed_expression(expression)

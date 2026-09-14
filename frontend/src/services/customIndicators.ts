@@ -123,6 +123,8 @@ export interface IndicatorTemplateOrigin {
 export type SeriesHistoryPolicy = 'lookback' | 'full_history'
 
 export interface SeriesParameterDefinition {
+  exclusive_minimum?: boolean
+  exclusive_maximum?: boolean
   id: string
   label: string
   type: 'integer' | 'number'

@@ -7,6 +7,7 @@ formula text, variable names or function names into executable source.
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict, deque
 import hashlib
 import json
 import math
@@ -14,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Mapping, Sequence, TYPE_CHECKING
 
 import numba
 import numpy as np
@@ -636,6 +637,14 @@ class CompiledNumbaBatchPlan:
     source_parallel: str
     compile_ms: float
     sharing: dict[str, Any]
+    parameter_slots: tuple[tuple[str, ...], ...] = ()
+
+    @property
+    def parameter_width(self) -> int:
+        return sum(len(names) for names in self.parameter_slots)
+
+    def parameter_offset(self, metric: int) -> int:
+        return sum(len(names) for names in self.parameter_slots[:metric])
 
     @property
     def compiled_signatures(self) -> dict[str, list[str]]:
@@ -682,6 +691,7 @@ class CompiledNumbaBatchPlan:
         elapsed_days: np.ndarray,
         output: np.ndarray,
         statuses: np.ndarray,
+        params: np.ndarray,
         *,
         parallel: bool,
         enabled: np.ndarray | None = None,
@@ -689,8 +699,11 @@ class CompiledNumbaBatchPlan:
         selected = np.ones(self.metric_count, dtype=np.uint8) if enabled is None else np.ascontiguousarray(enabled, dtype=np.uint8)
         if selected.shape != (self.metric_count,):
             raise ValueError("Selected roots do not match the prepared execution plan")
+        vector = np.ascontiguousarray(params, dtype=np.float64)
+        if vector.shape != (self.parameter_width,):
+            raise ValueError("Parameter vector does not match the prepared slot layout")
         dispatcher = self.parallel_dispatcher if parallel else self.serial_dispatcher
-        dispatcher(values, starts, ends, elapsed_days, output, statuses, selected)
+        dispatcher(values, starts, ends, elapsed_days, output, statuses, selected, vector)
 
 
 @dataclass(frozen=True)
@@ -706,12 +719,21 @@ class SelectedNumbaBatchPlan:
     def metadata(self):
         return {**self.prepared.metadata(), "selected_roots": list(self.indices), "selected_root_count": len(self.indices)}
 
-    def compute(self, values, starts, ends, elapsed_days, output, statuses, *, parallel):
+    def compute(self, values, starts, ends, elapsed_days, output, statuses, params, *, parallel):
         selected = np.zeros(self.prepared.metric_count, dtype=np.uint8)
         selected[np.asarray(self.indices, dtype=np.int64)] = 1
+        # ``params`` is packed for the selected metrics; the prepared kernel
+        # reads the superset layout, so scatter each metric to its own slots.
+        full_params = np.zeros(self.prepared.parameter_width, dtype=np.float64)
+        cursor = 0
+        for metric in self.indices:
+            width = len(self.prepared.parameter_slots[metric])
+            start = self.prepared.parameter_offset(metric)
+            full_params[start:start + width] = params[cursor:cursor + width]
+            cursor += width
         full_values = np.empty((starts.size, self.prepared.metric_count), dtype=np.float64)
         full_status = np.empty(full_values.shape, dtype=np.int16)
-        self.prepared.compute(values, starts, ends, elapsed_days, full_values, full_status,
+        self.prepared.compute(values, starts, ends, elapsed_days, full_values, full_status, full_params,
                               parallel=parallel, enabled=selected)
         np.take(full_values, self.indices, axis=1, out=output)
         np.take(full_status, self.indices, axis=1, out=statuses)
@@ -738,11 +760,54 @@ def _risk_free_scalars(definition: dict[str, Any]) -> tuple[float, float]:
     return _risk_free_scalars_kernel(annual_percent)
 
 
+# Definition-level scalars that a batch reads from ``params`` rather than
+# baking into generated source. Baking them would specialise one compiled plan
+# per value, which the prewarmed fixed-signature contract forbids.
+_RISK_FREE_SLOTS = ("annual_risk_free_rate_decimal", "risk_free_rate_per_observation")
+
+
+def batch_parameter_names(definition: dict[str, Any]) -> tuple[str, ...]:
+    """Slot layout for one metric. Depends on the definition's shape, never on
+    its values, so a metric keeps the same layout in every batch it joins."""
+
+    return _RISK_FREE_SLOTS + tuple(
+        sorted(str(item["id"]) for item in definition.get("parameter_schema") or [])
+    )
+
+
+def batch_parameter_vector(
+    definitions: tuple[dict[str, Any], ...],
+    values: Sequence[Mapping[str, float] | None] | None = None,
+) -> np.ndarray:
+    """Pack one batch's runtime scalars in slot order.
+
+    ``values`` overrides a metric's opened parameters; ``None`` for a metric
+    means its saved defaults.
+    """
+
+    chosen = list(values or []) + [None] * (len(definitions) - len(values or []))
+    vector: list[float] = []
+    for definition, override in zip(definitions, chosen):
+        annual, per_observation = _risk_free_scalars(definition)
+        resolved = dict(override) if override is not None else {
+            str(item["id"]): float(item["default"])
+            for item in definition.get("parameter_schema") or []
+        }
+        vector.append(annual)
+        vector.append(per_observation)
+        for name in batch_parameter_names(definition)[len(_RISK_FREE_SLOTS):]:
+            if name not in resolved:
+                raise ValueError(f"batch parameter value missing: {name}")
+            vector.append(float(resolved[name]))
+    return np.ascontiguousarray(vector, dtype=np.float64)
+
+
 def _batch_variable_expression(
     name: str,
     *,
     column_index: dict[str, int],
     definition: dict[str, Any],
+    offset: int = 0,
 ) -> str:
     if name == "returns":
         return "returns_view"
@@ -754,13 +819,16 @@ def _batch_variable_expression(
         return "elapsed_days[row]"
     if name == "periods_per_year":
         return "252.0"
-    annual, per_observation = _risk_free_scalars(definition)
-    if name == "annual_risk_free_rate_decimal":
-        return repr(annual)
-    if name in {"risk_free_rate_per_observation", "risk_free_rate_per_period"}:
-        return repr(per_observation)
+    slots = batch_parameter_names(definition)
+    if name == "risk_free_rate_per_period":
+        name = "risk_free_rate_per_observation"
     if name == "risk_free_return_window":
-        return f"({repr(max(0.0, 1.0 + annual))} ** (elapsed_days[row] / 365.0) - 1.0)"
+        return (
+            f"(max(0.0, 1.0 + params[{offset + slots.index(_RISK_FREE_SLOTS[0])}])"
+            " ** (elapsed_days[row] / 365.0) - 1.0)"
+        )
+    if name in slots:
+        return f"params[{offset + slots.index(name)}]"
     if name not in column_index:
         raise ValueError(f"batch physical variable unavailable: {name}")
     return f"values[{column_index[name]}, start:end]"
@@ -790,7 +858,9 @@ def _batch_plan_id(
     key_payload = {
         "sharing_version": SHARED_GRAPH_VERSION,
         "plans": [_plan_id(plan) for plan in plans],
-        "risk_free": [definition.get("annual_risk_free_rate_percent", 0.0) for definition in definitions],
+        # The slot layout, not the values: one warm plan serves every risk-free
+        # rate and every parameter setting of the same metrics.
+        "parameters": [list(batch_parameter_names(definition)) for definition in definitions],
         "columns": list(physical_columns),
         "kernel": kernels.NUMERIC_KERNEL_VERSION,
     }
@@ -812,11 +882,14 @@ def get_cached_numba_batch_plan(
         if exact is not None:
             return exact
         candidates = [(len(metrics), key, metrics) for key, (columns, metrics) in _BATCH_PLAN_INPUTS.items()
-                      if columns == physical_columns and set(keys).issubset(metrics)]
+                      if columns == physical_columns and not (Counter(keys) - Counter(metrics))]
         if not candidates:
             return None
         _, key, metrics = min(candidates)
-        return SelectedNumbaBatchPlan(_BATCH_PLAN_CACHE[key], tuple(metrics.index(item) for item in keys))
+        slots = defaultdict(deque)
+        for index, metric in enumerate(metrics):
+            slots[metric].append(index)
+        return SelectedNumbaBatchPlan(_BATCH_PLAN_CACHE[key], tuple(slots[item].popleft() for item in keys))
 
 
 def compile_numba_batch_plan(
@@ -837,13 +910,13 @@ def compile_numba_batch_plan(
     exec(compile(row_source, f"<typed-numba-row:{plan_id}>", "exec"), row_namespace)
     row_dispatcher = numba.njit(cache=False, nogil=True)(row_namespace["generated_row"])
     row_dispatcher.compile((types.float64[:, ::1], types.int64, types.int64, types.float64,
-                            types.float64[::1], types.int16[::1], types.uint8[::1]))
+                            types.float64[::1], types.int16[::1], types.uint8[::1], types.float64[::1]))
     row_dispatcher.disable_compile()
     for parallel in (False, True):
         source = (
-            "def generated_batch(values, starts, ends, elapsed_days, output, statuses, enabled):\n"
+            "def generated_batch(values, starts, ends, elapsed_days, output, statuses, enabled, params):\n"
             "    for row in loop(starts.size):\n"
-            "        row_kernel(values, starts[row], ends[row], elapsed_days[row], output[row], statuses[row], enabled)\n"
+            "        row_kernel(values, starts[row], ends[row], elapsed_days[row], output[row], statuses[row], enabled, params)\n"
         )
         namespace = {"loop": numba.prange if parallel else range, "row_kernel": row_dispatcher}
         exec(compile(source, f"<typed-numba-batch:{plan_id}>", "exec"), namespace)
@@ -858,6 +931,7 @@ def compile_numba_batch_plan(
             types.float64[:, ::1],
             types.int16[:, ::1],
             types.uint8[::1],
+            types.float64[::1],
         )
         dispatcher.compile(signature)
         dispatcher.disable_compile()
@@ -874,6 +948,7 @@ def compile_numba_batch_plan(
         source_parallel=sources[1],
         compile_ms=round((time.perf_counter() - started) * 1000.0, 3),
         sharing=sharing,
+        parameter_slots=tuple(batch_parameter_names(definition) for definition in definitions),
     )
     with _PLAN_CACHE_LOCK:
         _BATCH_PLAN_CACHE[plan_id] = compiled
@@ -902,6 +977,8 @@ def persist_numba_batch_plan(
 
 __all__ = [
     "CompiledNumbaPlan",
+    "batch_parameter_names",
+    "batch_parameter_vector",
     "CompiledNumbaSeriesPlan",
     "NumbaPlanCompileError",
     "compile_numba_plan",

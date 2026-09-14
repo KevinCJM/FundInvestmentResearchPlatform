@@ -99,6 +99,8 @@ class SeriesParameterDefinition(BaseModel):
     default: StrictFloat
     minimum: StrictFloat
     maximum: StrictFloat
+    exclusive_minimum: bool = False
+    exclusive_maximum: bool = False
     step: StrictFloat = Field(default=1.0, gt=0)
     description: str = Field(default="", max_length=300)
 
@@ -276,6 +278,7 @@ class AvailabilityRequest(BaseModel):
 class IndicatorReference(IndependentRequest):
     indicator_id: str = Field(min_length=1, max_length=120)
     indicator_revision: Optional[int] = Field(default=None, ge=1)
+    parameters: dict[str, StrictFloat] = Field(default_factory=dict)
 
 
 class PrepareEvaluationRequest(IndependentRequest):
@@ -294,6 +297,9 @@ class EvaluateRequest(IndependentRequest):
     period: str
     as_of: Optional[str] = None
     include_series: bool = False
+    # Applies to inline_definition only; a saved indicator carries its values
+    # on its own indicator_refs entry.
+    parameters: dict[str, StrictFloat] = Field(default_factory=dict)
 
 
 class SeriesIndicatorInstance(BaseModel):
@@ -326,6 +332,7 @@ class SnapshotIndicatorItem(IndependentRequest):
     indicator_id: str = Field(min_length=1, max_length=120)
     indicator_revision: int = Field(ge=1)
     period: str = Field(min_length=1, max_length=12)
+    parameters: dict[str, StrictFloat] = Field(default_factory=dict)
     channel_id: Optional[str] = Field(default=None, min_length=1, max_length=80)
     reducer: Optional[Literal["last_finite"]] = None
 
@@ -348,6 +355,9 @@ class PlanIndicatorInput(IndependentRequest):
     period: str
     weight: float = Field(ge=0)
     direction: Optional[Direction] = None
+    # Saved once with the plan and never overridden at run time, so the same
+    # plan revision reproduces the same numbers.
+    parameters: dict[str, StrictFloat] = Field(default_factory=dict)
 
 
 class PlanProductSelectionFilters(BaseModel):
@@ -513,6 +523,7 @@ def evaluate_custom_indicators(request: EvaluateRequest):
         as_of=pit_as_of(request.as_of),
         include_series=request.include_series,
         compile_token=request.compile_token,
+        parameters=request.parameters,
     )
 
 

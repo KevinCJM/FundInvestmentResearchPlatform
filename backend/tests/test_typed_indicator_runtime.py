@@ -191,6 +191,8 @@ def test_std_and_variance_validate_ddof_at_runtime() -> None:
                 "std(returns, invalid_ddof)",
                 {"returns": returns, "invalid_ddof": invalid_ddof},
                 variable_types={"invalid_ddof": ValueType.scalar()},
+                # A declared parameter compiles; its value is checked at runtime.
+                parameter_names=frozenset({"invalid_ddof"}),
             )
         assert caught.value.code == "INVALID_PARAMETER"
 

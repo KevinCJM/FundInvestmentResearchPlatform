@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:net'
 import path from 'node:path'
@@ -336,4 +337,64 @@ test('内置时序迁移：v3目录、KDJ短窗口、画布与Excel', async ({ p
   await page.screenshot({ path: info.outputPath('builtin-v3-kdj-preview.png'), fullPage: true })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
   expect(errors).toEqual([])
+})
+
+test('标量概率参数：开放、保存、覆盖与端点校验', async ({ page, request }, info) => {
+  test.setTimeout(150_000)
+  const created = await request.post(`${api}/api/custom-indicators`, { data: {
+    name: '浏览器高精度分位收益', expression: 'quantile(returns, 0.995)', result_kind: 'scalar',
+    dsl_version: '2.4.0', operator_registry_version: '2.4.1', context_kind: 'single_product',
+  } })
+  expect(created.ok(), await created.text()).toBe(true)
+  const original = await created.json()
+  await page.goto('/settings/indicators-models')
+  await page.getByRole('button', { name: /^浏览器高精度分位收益/ }).click()
+  await page.getByRole('button', { name: '识别可调输入' }).click()
+  await page.getByRole('button', { name: '开放为参数' }).click()
+  await expect(page.getByLabel('默认值', { exact: true })).toHaveValue('0.995')
+  await page.getByRole('tab', { name: '高级公式模式' }).click()
+  const validating = page.waitForResponse(response => response.url().endsWith('/validate'))
+  await page.getByRole('button', { name: '解析并校验公式', exact: true }).click()
+  expect((await (await validating).json()).valid).toBe(true)
+  const saving = page.waitForResponse(response => response.url().endsWith(`/api/custom-indicators/${original.id}`) && response.request().method() === 'PUT')
+  await page.getByRole('button', { name: '保存修改', exact: true }).first().click()
+  const saved = await (await saving).json()
+  expect(saved.parameter_schema[0]).toMatchObject({ default: .995, minimum: 0, maximum: 1, exclusive_minimum: true, exclusive_maximum: true })
+  const preview = page.locator('#workspace-tab-preview')
+  if (await preview.isVisible()) await preview.click()
+  else await page.locator('#indicator-tab-preview').click()
+  await page.getByLabel('搜索产品', { exact: true }).fill('510050')
+  await page.getByLabel('搜索产品', { exact: true }).press('Enter')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await page.locator('#indicator-panel-preview select:has(option[value="ALL"])').selectOption('ALL')
+  await page.locator('summary').filter({ hasText: '本次计算参数' }).click()
+  await expect(page.getByLabel('概率', { exact: true })).toHaveValue('0.995')
+  for (const endpoint of ['0', '1']) {
+    await page.getByLabel('概率', { exact: true }).fill(endpoint)
+    await page.getByRole('button', { name: '应用参数', exact: true }).click()
+    await expect(page.locator('details').filter({ hasText: '本次计算参数' }).getByRole('alert')).toBeVisible()
+  }
+  await page.getByLabel('概率', { exact: true }).fill('0.005')
+  await page.getByRole('button', { name: '应用参数', exact: true }).click()
+  const calculating = page.waitForResponse(response => response.url().endsWith('/evaluate'))
+  await page.getByRole('button', { name: '预览指标', exact: true }).click()
+  const response = await calculating
+  expect(response.ok(), await response.text()).toBe(true)
+  expect(response.request().postDataJSON().parameters).toEqual({ probability_1: .005 })
+  const computed = await response.json()
+  expect(computed.results[0].value).toBeCloseTo(-.2, 10)
+  expect(computed.execution.python_fallback).toBe(0)
+  const exporting = page.waitForRequest(request => request.url().includes('/export-excel'))
+  const downloading = page.waitForEvent('download')
+  await page.getByRole('button', { name: '下载 Excel 计算逻辑' }).click()
+  expect((await exporting).postDataJSON().parameters).toEqual({ probability_1: .005 })
+  expect(await (await downloading).failure()).toBeNull()
+  const probabilityInput = await page.getByLabel('概率', { exact: true }).boundingBox()
+  expect(probabilityInput?.width).toBeGreaterThan(120)
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  await page.screenshot({ path: info.outputPath('scalar-probability.png'), fullPage: true })
+  await page.getByRole('button', { name: '恢复默认', exact: true }).click()
+  await expect(page.getByLabel('概率', { exact: true })).toHaveValue('0.995')
+  await expect(page.getByText('-0.20', { exact: true })).toHaveCount(0)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
 })

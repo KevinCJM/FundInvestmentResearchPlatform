@@ -7,12 +7,6 @@ const AXIS_LABELS: Record<string, string> = {
   time: '时间', asset: '资产', factor: '因子', scenario: '情景', group: '分组',
   observation: '观察值', window: '窗口内观察', component: '分量', row: '行', column: '列',
 }
-const PARAMETER_LABELS: Record<string, string> = {
-  x: '输入值', a: '输入 A', b: '输入 B', left: '输入 A', right: '输入 B',
-  numerator: '分子', denominator: '分母', base: '底数', exponent: '指数',
-  window: '窗口期数', ddof: '自由度修正', min_periods: '最少有效观察数',
-  mask: '判断条件', condition: '判断条件', axis: '计算维度',
-}
 const TYPE_TOKEN = /\b(?:scalar|series|vector|matrix|window|mask|tensor|tuple|float64|bool|boolean|unknown)\b(?:\s*<[^>]*>)?(?:\s*\[[^\]]*\])?/gi
 const typeText = (key: string, fallback: string) => businessText(`valueTypes.${key}`, fallback)
 
@@ -78,14 +72,19 @@ export function graphOperatorLabel(id: string, operators: IndicatorOperator[]): 
 }
 
 export function graphParameterLabel(parameter: Pick<IndicatorOperatorParameter, 'name' | 'label'>, index?: number, operatorId?: string): string {
-  const fallback = parameter.label?.replace(/\s*[（(](?:ddof|min_periods)[）)]/gi, '') || PARAMETER_LABELS[parameter.name] || (index === undefined ? systemText('graph.parameter', {}, '输入参数') : systemText('graph.inputNumber', { index: index + 1 }, '输入 {{index}}'))
+  const fallback = parameter.label || (index === undefined ? systemText('graph.parameter', {}, '输入参数') : systemText('graph.inputNumber', { index: index + 1 }, '输入 {{index}}'))
   const generic = businessText(`parameters.${parameter.name}.label`, fallback)
   return operatorId ? businessText(`operators.${operatorId}.parameters.${parameter.name}.label`, generic) : generic
 }
 
 /** Translate metadata prose, not formulas, user names or user-authored step notes. */
 export function createGraphTextFormatter(variables: IndicatorVariable[], operators: IndicatorOperator[]) {
-  const labels = new Map<string, string>(Object.keys(PARAMETER_LABELS).map(name => [name, graphParameterLabel({ name })]))
+  const labels = new Map<string, string>()
+  for (const operator of operators) {
+    for (const parameter of operator.parameters || []) {
+      if (parameter.label) labels.set(parameter.name, graphParameterLabel(parameter))
+    }
+  }
   for (const variable of variables) {
     const label = graphVariableLabel(variable.name, variables)
     labels.set(variable.name, label)
@@ -99,7 +98,6 @@ export function createGraphTextFormatter(variables: IndicatorVariable[], operato
   return (value: unknown): string => {
     if (value === null || value === undefined || value === '') return ''
     const raw = String(value)
-      .replace(/\s*[（(](?:ddof|min_periods)[）)]/gi, '')
       .replace(/same\([^)]*\)/gi, '与输入相同的数据类型')
       .replace(/one_dimensional/gi, '一维数组')
       .replace(TYPE_TOKEN, token => graphTypeLabel(token))

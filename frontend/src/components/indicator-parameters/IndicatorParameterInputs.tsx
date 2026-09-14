@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from 'react'
 import { useI18n } from '../../i18n/runtime'
 import type { SeriesParameterDefinition } from '../../services/customIndicators'
-import { parameterInputIssue } from '../../services/indicatorParameters'
+import { parameterInputIssue, parameterRangeLabel } from '../../services/indicatorParameters'
 
 interface Props {
   schema: SeriesParameterDefinition[]
@@ -34,14 +34,14 @@ export default function IndicatorParameterInputs({ schema, values, onApply, disa
       {s('indicatorParameters.runtimeTitle')}<span className="ml-3 break-words text-xs font-normal text-slate-600">{summary}</span>
     </summary>
     <p className="mt-2 text-xs leading-5 text-slate-600">{s('indicatorParameters.runtimeHint')}</p>
-    <fieldset disabled={disabled} className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <fieldset disabled={disabled} className="mt-3 grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] gap-3">
       {schema.map(item => <div key={item.id}>
         <label htmlFor={`${id}-${item.id}`} className="block text-sm font-medium text-slate-700">{item.label}</label>
         <input id={`${id}-${item.id}`} type="number" min={item.minimum} max={item.maximum} step={item.step}
           value={text[item.id] ?? ''} onChange={event => setText(current => ({ ...current, [item.id]: event.target.value }))}
           aria-invalid={submitted && Boolean(issues[item.id])} aria-describedby={`${id}-${item.id}-help`}
           className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-500" />
-        <p id={`${id}-${item.id}-help`} className="mt-1 text-xs text-slate-600">{item.minimum}–{item.maximum} · {s('indicatorParameters.defaultValue')} {item.default} · {s('indicatorParameters.step')} {item.step}</p>
+        <p id={`${id}-${item.id}-help`} className="mt-1 text-xs text-slate-600">{parameterRangeLabel(item)} · {s('indicatorParameters.defaultValue')} {item.default} · {s('indicatorParameters.step')} {item.step}</p>
         {submitted && issues[item.id] && <p role="alert" className="mt-1 text-xs text-rose-700">{s(`indicatorParameters.error.${issues[item.id]}`)}</p>}
       </div>)}
     </fieldset>

@@ -51,18 +51,28 @@ def normalized_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
         reducer = "last_finite"
     if reducer not in {None, "last_finite"}:
         reducer = str(reducer)
+    parameters = {
+        str(key): float(value)
+        for key, value in sorted((item.get("parameters") or {}).items())
+    }
     payload = {
         "indicator_id": indicator_id,
         "indicator_revision": revision,
         "period": period,
         "channel_id": channel_id,
         "reducer": reducer,
+        "parameters": parameters,
     }
     field = str(item.get("field") or "").strip()
     if not field:
         if channel_id is None:
-            # Preserve the established scalar snapshot field contract.
+            # Preserve the established scalar snapshot field contract; only a
+            # non-default parameter set needs a column of its own.
             field = snapshot_field_name(indicator_id, revision, period)
+            if parameters:
+                field += "_" + hashlib.sha256(
+                    json.dumps(parameters, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()[:8]
         else:
             readable = re.sub(
                 r"[^a-z0-9]+",

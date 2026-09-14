@@ -380,38 +380,14 @@ class PlanRepository:
             for item in plan.get("indicators", [])
         )
 
-    def archive_and_reset(self, archive_directory: Path, marker: str) -> dict[str, Any]:
-        """Atomically archive active plans once, then create an empty store."""
-
+    def record_compile_contract(self, marker: str) -> dict[str, Any]:
+        """Record artifact invalidation without rewriting business plans/history."""
         with self.store.locked():
             payload = self.store.read_unlocked()
-            migration = payload.get("migration") or {}
-            if migration.get("marker") == marker:
-                return {**dict(migration), "applied": False}
-            archive_path: Path | None = None
-            if payload.get("items"):
-                archive_directory.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-                archive_path = archive_directory / f"evaluation_plans.pre-{marker}.{timestamp}.json"
-                archive_store = AtomicJsonStore(archive_path)
-                archive_store.write_unlocked(
-                    {
-                        **payload,
-                        "archived_at": utc_now(),
-                        "archive_reason": marker,
-                    }
-                )
-            migration = {
-                "marker": marker,
-                "migrated_at": utc_now(),
-                "archived_file": str(archive_path) if archive_path else None,
-                "applied": True,
-            }
-            self.store.write_unlocked(
-                {
-                    "schema_version": 2,
-                    "items": [],
-                    "migration": migration,
-                }
-            )
-            return dict(migration)
+            previous = payload.get("migration") or {}
+            if previous.get("marker") == marker:
+                return {**dict(previous), "applied": False}
+            migration = {"marker": marker, "migrated_at": utc_now(),
+                         "archived_file": None, "applied": True}
+            self.store.write_unlocked({**payload, "migration": migration})
+            return migration

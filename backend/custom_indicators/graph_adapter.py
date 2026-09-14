@@ -4,8 +4,8 @@ from __future__ import annotations
 from cal_indicators.typed_operators import get_typed_operator_registry
 from .errors import ValidationError
 from .graph_contracts import AuthoringGraph
+from cal_indicators.parameter_policy import configuration_arguments
 from .typed_service import _validate_fixed_constant_arguments
-from .series_parameters import PARAMETER_CAPABILITIES
 
 _BINARY = {"add": "+", "subtract": "-", "multiply": "*", "divide": "/", "power": "**"}
 
@@ -72,6 +72,7 @@ def graph_expressions(graph: AuthoringGraph, registry_version: str, result_kind:
             if arity not in spec.arities:
                 raise graph_error("MISSING_ARGUMENT", "输入尚未完整，请检查节点的必需参数。", node_id)
             names = spec.argument_names(arity)
+            configuration = configuration_arguments(spec, arity)
             missing = set(names) - set(node.arguments)
             unknown = set(node.arguments) - set(names)
             if missing or unknown:
@@ -88,7 +89,7 @@ def graph_expressions(graph: AuthoringGraph, registry_version: str, result_kind:
                     child = nodes[binding.node_id]
                     fixed = child.kind == "constant"
                     fixed_value = child.value if fixed else value
-                    if child.kind == "parameter" and (node.operator_id, name) in PARAMETER_CAPABILITIES:
+                    if child.kind == "parameter" and name in configuration:
                         fixed = True
                         fixed_value = parameters[child.parameter_id]["default"]
                 values.append(value)

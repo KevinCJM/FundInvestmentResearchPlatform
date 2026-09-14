@@ -21,6 +21,8 @@ from .typed_types import TypedDslError, ValueType
 SCOPE_VERSION = "interval-rolling-1.5"
 SCOPE_OPERATOR = "rolling_apply"
 MAX_WINDOW = 5000
+# The window cap belongs to the kernel, so the signature quotes it directly.
+_WIDTH = f"scalar<count:1..{MAX_WINDOW}>"
 MAX_WORK = 100_000_000
 MAX_SCRATCH_BYTES = 64 * 1024 * 1024
 SCALAR_CONTEXT = frozenset({
@@ -167,10 +169,10 @@ def _scope_reference(*args: Any) -> Any:
 def rolling_scope_spec(version: str):
     from .typed_operators import OperatorSignature, TypedOperatorSpec
     return TypedOperatorSpec(SCOPE_OPERATOR, version, "rolling", (
-        OperatorSignature(("scalar", "scalar<count>"), "series<time>[T]", "execute scalar subgraph independently in each complete trailing window"),
-        OperatorSignature(("scalar", "scalar<count>", "scalar<count>"), "series<time>[T]", "minimum jointly finite observations; raw window views retain missing positions for explicit body handling"),
-        OperatorSignature(("scalar", "scalar<count>", "series<time>[T]<date>", "scalar"), "series<time>[T]", "explicit date and annual-rate context bindings"),
-        OperatorSignature(("scalar", "scalar<count>", "series<time>[T]<date>", "scalar", "scalar<count>"), "series<time>[T]", "explicit context and minimum observations; no row compression or filling"),
+        OperatorSignature(("scalar", _WIDTH), "series<time>[T]", "execute scalar subgraph independently in each complete trailing window"),
+        OperatorSignature(("scalar", _WIDTH, _WIDTH), "series<time>[T]", "minimum jointly finite observations; raw window views retain missing positions for explicit body handling"),
+        OperatorSignature(("scalar", _WIDTH, "series<time>[T]<date>", "scalar"), "series<time>[T]", "explicit date and annual-rate context bindings"),
+        OperatorSignature(("scalar", _WIDTH, "series<time>[T]<date>", "scalar", _WIDTH), "series<time>[T]", "explicit context and minimum observations; no row compression or filling"),
     ), "将整个区间聚合计算逐窗口执行；不是先计算全样本标量再重复。", _infer_scope, _scope_reference,
        cost_model="rolling_scope", interval_policy="scope")
 

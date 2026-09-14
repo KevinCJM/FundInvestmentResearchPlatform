@@ -29,12 +29,17 @@ from cal_indicators.typed_operators import (
     TYPED_OPERATOR_REGISTRY_VERSION,
     get_typed_operator_registry,
 )
+from cal_indicators.parameter_policy import (
+    ARGUMENT_DEFAULTS,
+    argument_label,
+    configuration_arguments,
+    contract_policy,
+)
 from cal_indicators.typed_numba_plan import NumbaPlanCompileError, compile_numba_plan
 
 from .errors import ValidationError
 from .formula_source import canonical_formula_source, editable_formula_latex
 from .series_definitions import normalize_parameter_schema, parameter_variable_types
-from .series_parameters import PARAMETER_CAPABILITIES
 from .variable_registry import (
     CONTEXT_SCHEMA_VERSION,
     DATA_CONTRACT_VERSION,
@@ -297,212 +302,6 @@ PARAMETER_NAMES: dict[str, tuple[str, ...]] = {
 }
 
 
-_FIXED_CONSTANT_OPERATOR_PARAMETERS: dict[str, frozenset[str]] = {
-    "rolling_window": frozenset({"window", "min_periods"}),
-    "rolling_mean": frozenset({"window", "min_periods"}),
-    "rolling_std": frozenset({"window", "ddof", "min_periods"}),
-    "rolling_min": frozenset({"window", "min_periods"}),
-    "rolling_max": frozenset({"window", "min_periods"}),
-    "recursive_smooth": frozenset({"periods", "initial"}),
-    "divide_or_default": frozenset({"default"}),
-    "lag": frozenset({"periods"}),
-    "difference": frozenset({"periods"}),
-    "variance": frozenset({"ddof"}),
-    "std": frozenset({"ddof"}),
-    "quantile": frozenset({"probability"}),
-    "quantile_where": frozenset({"probability"}),
-    "clip": frozenset({"lower", "upper"}),
-    "power": frozenset({"exponent"}),
-}
-
-PARAMETER_LABELS = {
-    "calculation": "区间计算内容",
-    "dates": "观察日期（自动绑定）",
-    "annual_rate": "年度配置（自动绑定）",
-    "default": "分母无效时的默认值",
-    "initial": "递推初始值",
-    "values": "输入值",
-    "levels": "净值或价格序列",
-    "lhs": "输入 A",
-    "rhs": "输入 B",
-    "A": "输入 A",
-    "B": "输入 B",
-    "numerator": "分子",
-    "denominator": "分母",
-    "base": "底数",
-    "exponent": "指数",
-    "lower": "下界",
-    "upper": "上界",
-    "ddof": "自由度修正（ddof）",
-    "matrix": "矩阵",
-    "lhs_matrix": "左侧矩阵",
-    "rhs_matrix": "右侧矩阵",
-    "vector": "向量",
-    "asset_returns": "多资产收益矩阵",
-    "x": "自变量 X",
-    "y": "因变量 Y",
-    "mask": "布尔条件",
-    "if_true": "条件成立值",
-    "if_false": "条件不成立值",
-    "periods": "间隔期数",
-    "window": "窗口期数",
-    "min_periods": "最少有效观察数",
-    "initial": "递归初始值",
-    "default": "分母为零时的默认值",
-    "probability": "概率",
-}
-
-
-_FIXED_CONSTANT_PARAMETER_POLICIES: dict[tuple[str, str], dict[str, Any]] = {
-    ("rolling_apply", "window"): {"source_policy": "fixed_constant", "constant_kind": "integer", "default": 20, "minimum": 1, "maximum": 5000},
-    ("rolling_apply", "min_periods"): {"source_policy": "fixed_constant", "constant_kind": "integer", "default": 1, "minimum": 1, "maximum": 5000},
-    ("rolling_window", "window"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_window", "min_periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_mean", "window"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_mean", "min_periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_std", "window"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_std", "ddof"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 0,
-        "minimum": 0,
-        "maximum": 19_999,
-    },
-    ("rolling_std", "min_periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_min", "window"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_min", "min_periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_max", "window"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("rolling_max", "min_periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 20,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("recursive_smooth", "periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 3,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("recursive_smooth", "initial"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "number",
-        "default": 50,
-    },
-    ("lag", "periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 1,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("difference", "periods"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 1,
-        "minimum": 1,
-        "maximum": 20_000,
-    },
-    ("variance", "ddof"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 1,
-        "minimum": 0,
-    },
-    ("std", "ddof"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "integer",
-        "default": 1,
-        "minimum": 0,
-    },
-    ("quantile", "probability"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "number",
-        "default": 0.5,
-        "minimum": 0.0,
-        "maximum": 1.0,
-    },
-    ("quantile_where", "probability"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "number",
-        "default": 0.5,
-        "minimum": 0.0,
-        "maximum": 1.0,
-    },
-    ("clip", "lower"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "number",
-        "default": 0.0,
-    },
-    ("clip", "upper"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "number",
-        "default": 1.0,
-    },
-    ("divide_or_default", "default"): {
-        "source_policy": "fixed_constant",
-        "constant_kind": "number",
-        "default": 0.0,
-    },
-}
-
-
 @dataclass(frozen=True)
 class TemplateSpec:
     template_id: str
@@ -746,16 +545,12 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
         result: list[dict[str, Any]] = []
         for index, contract in enumerate(inputs):
             name = names[index] if index < len(names) else f"arg{index + 1}"
-            policy = copy.deepcopy(
-                _FIXED_CONSTANT_PARAMETER_POLICIES.get((operator_id, name), {})
-            )
-            default = policy.get(
-                "default",
-                1
-                if operator_id in {"std", "variance", "lag", "difference"}
-                and name in {"ddof", "periods"}
-                else None,
-            )
+            # The contract is the only source: a configuration tag on the
+            # signature is what makes a position a definition-level constant.
+            policy = contract_policy(contract) or {}
+            if policy:
+                policy["default"] = ARGUMENT_DEFAULTS.get((operator_id, name))
+            default = policy.get("default")
             lowered = contract.lower()
             if "mask" in lowered:
                 allowed_shapes = ["mask"]
@@ -775,7 +570,7 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
                     allowed_shapes = ["scalar", "series", "vector", "matrix"]
             parameter_meta = {
                 "name": name,
-                "label": {"start_date": "开始日期", "end_date": "结束日期", "drawdowns": "回撤序列"}.get(name, PARAMETER_LABELS.get(name, name)),
+                "label": argument_label(operator_id, name),
                 "description": (
                     "定义级固定常量；保存后成为指标版本的一部分。"
                     if policy.get("source_policy") == "fixed_constant"
@@ -789,21 +584,18 @@ def _operator_meta(entry: dict[str, Any]) -> dict[str, Any]:
                 "requires_mask": "mask" in lowered,
             }
             parameter_meta.update(policy)
-            parameter_meta["parameterizable"] = (operator_id, name) in PARAMETER_CAPABILITIES
+            # Every definition-level constant can be opened as a parameter; the
+            # user decides which ones to open and which to leave at default.
+            parameter_meta["parameterizable"] = bool(policy)
             if parameter_meta["parameterizable"]:
-                parameter_meta["description"] = "数值常量；可在时序指标的计算参数面板中开放为可调参数。"
+                parameter_meta["description"] = "数值常量；可在计算参数面板中开放为可调参数。"
             parameter_meta["default"] = default
             if name == "fit":
-                parameter_meta["label"] = "线性拟合结果"
                 parameter_meta["intermediate_kind"] = "linear_fit"
             elif name == "interval":
-                parameter_meta["label"] = "最大回撤区间"
                 parameter_meta["intermediate_kind"] = "drawdown_interval"
             elif name == "position":
-                parameter_meta["label"] = "观察位置（从0开始）"
                 parameter_meta["allowed_semantic_roles"] = ["count", "numeric_constant", "dimensionless"]
-            if operator_id == "value_at" and name == "values":
-                parameter_meta["label"] = "数值或日期序列"
             result.append(parameter_meta)
         return result
 
@@ -1065,6 +857,7 @@ def _validate_fixed_constant_arguments(
     if arity not in spec.arities:
         return
     canonical_names = spec.argument_names(arity)
+    configuration = configuration_arguments(spec, arity)
     legacy_names = _operator_parameter_names(operator_id, arity)
     by_name = {str(item.get("parameter") or ""): item for item in arguments}
     for index, canonical_name in enumerate(canonical_names):
@@ -1075,15 +868,13 @@ def _validate_fixed_constant_arguments(
         argument = next((by_name[name] for name in candidates if name in by_name), None)
         if argument is None:
             continue
-        policy = _FIXED_CONSTANT_PARAMETER_POLICIES.get(
-            (spec.operator_id, canonical_name)
-        )
+        policy = configuration.get(canonical_name)
         if not policy:
             continue
         if str(argument.get("source") or "") != "constant":
             raise ValidationError(
                 "SERIES_CONFIGURATION_MUST_BE_CONSTANT",
-                f"{spec.operator_id} 的 {PARAMETER_LABELS.get(canonical_name, canonical_name)}必须是定义级固定常量。",
+                f"{spec.operator_id} 的 {argument_label(spec.operator_id, canonical_name)}必须是定义级固定常量。",
                 f"arguments.{canonical_name}",
             )
         try:
@@ -1103,7 +894,7 @@ def _validate_fixed_constant_arguments(
         if policy.get("constant_kind") == "integer" and not value.is_integer():
             raise ValidationError(
                 "SERIES_CONFIGURATION_MUST_BE_INTEGER",
-                f"{PARAMETER_LABELS.get(canonical_name, canonical_name)}必须是整数常量。",
+                f"{argument_label(spec.operator_id, canonical_name)}必须是整数常量。",
                 f"arguments.{canonical_name}",
             )
         minimum = policy.get("minimum")
@@ -1111,13 +902,13 @@ def _validate_fixed_constant_arguments(
         if minimum is not None and value < float(minimum):
             raise ValidationError(
                 "SERIES_CONFIGURATION_OUT_OF_RANGE",
-                f"{PARAMETER_LABELS.get(canonical_name, canonical_name)}不能小于 {minimum:g}。",
+                f"{argument_label(spec.operator_id, canonical_name)}不能小于 {minimum:g}。",
                 f"arguments.{canonical_name}",
             )
         if maximum is not None and value > float(maximum):
             raise ValidationError(
                 "SERIES_CONFIGURATION_OUT_OF_RANGE",
-                f"{PARAMETER_LABELS.get(canonical_name, canonical_name)}不能大于 {maximum:g}。",
+                f"{argument_label(spec.operator_id, canonical_name)}不能大于 {maximum:g}。",
                 f"arguments.{canonical_name}",
             )
 
@@ -1230,6 +1021,7 @@ def infer_expression(
         plan = infer_typed_expression(
             normalized_expression,
             variable_types=extended_variable_types,
+            parameter_names=frozenset(additional_variable_types or {}),
             allow_non_scalar_root=not scalar_required,
             dsl_version=dsl_version,
             operator_registry_version=operator_registry_version,

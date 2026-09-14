@@ -69,7 +69,7 @@ describe('画布中文展示，不改变计算协议', () => {
 
   it('未知元数据不回显代码名，也不改变用户自己填写的步骤备注', () => {
     expect(graphVariableLabel('future_variable', variables)).toBe('输入数据（名称待补充）')
-    expect(graphParameterLabel({ name: 'ddof', label: '自由度修正（ddof）' })).toBe('自由度修正')
+    expect(graphParameterLabel({ name: 'ddof', label: '自由度修正' })).toBe('自由度修正')
     expect(graphParameterLabel({ name: 'future_parameter' }, 2)).toBe('输入 3')
     expect(nodeLabel({ ...graph.nodes[0], label: 'My returns 研究' }, variables, operators)).toBe('My returns 研究')
     expect(graphConstantLabel(true)).toBe('是')

@@ -19,7 +19,7 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
 
     assert catalog["dsl_version"] == "2.4.0"
     assert catalog["compiler_version"] == "typed-numba-5"
-    assert catalog["operator_registry_version"] == "2.4.0"
+    assert catalog["operator_registry_version"] == "2.4.1"
     operators = {item["id"]: item for item in catalog["operators"]}
     assert {
         "add",
@@ -49,7 +49,7 @@ def test_catalog_is_explicit_versioned_and_contains_core_categories() -> None:
         "path",
     }
     assert "inverse" not in operators
-    assert all(item["version"] == "2.4.0" for item in operators.values())
+    assert all(item["version"] == "2.4.1" for item in operators.values())
     assert {"rolling_mean", "rolling_std", "rolling_min", "rolling_max"}.isdisjoint(operators)
     assert operators["rolling_window"]["execution_lane"] == "compiler_fused_no_materialization"
     assert all(item["njit_supported"] is True for item in operators.values())
