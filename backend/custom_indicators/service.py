@@ -54,6 +54,7 @@ from cal_indicators.typed_numba_kernels import (
     warm_numba_kernel_registry,
 )
 from cal_indicators.typed_numba_plan import (
+    batch_parameter_vector,
     NumbaPlanCompileError,
     compile_numba_batch_plan,
     compile_numba_plan,
@@ -73,6 +74,7 @@ from cal_indicators.typed_operators import (
     ROLLING_TYPED_DSL_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
+    WINDOW_OPERATOR_REGISTRY_VERSION,
 )
 
 from .errors import ConflictError, IndicatorDomainError, ValidationError
@@ -126,9 +128,20 @@ from .rolling_scalar import (
 from .series_definitions import (
     TIME_SERIES_OUTPUT_CONTRACT,
     TIME_SERIES_RESULT_KIND,
+    normalize_parameter_schema,
+    normalize_series_parameters,
     normalize_time_series_definition,
+    parameter_variable_types,
     series_output_measure_catalog,
     time_series_builtin_indicators,
+)
+from .series_parameters import (
+    bind_parameter_input,
+    resolve_parameter_values,
+    PARAMETER_CONTRACT_VERSION,
+    parameter_hash,
+    raise_on_configuration_violations,
+    validate_parameter_definition,
 )
 from .series_service import (
     TimeSeriesIndicatorService,
@@ -177,7 +190,8 @@ LEGACY_TYPED_OPERATOR_REGISTRY_VERSION = "2.0.0"
 COMPAT_TYPED_OPERATOR_REGISTRY_VERSION = COMPAT_OPERATOR_REGISTRY_VERSION
 PREVIOUS_TYPED_OPERATOR_REGISTRY_VERSION = PREVIOUS_OPERATOR_REGISTRY_VERSION
 ROLLING_TYPED_OPERATOR_REGISTRY_VERSION = ROLLING_OPERATOR_REGISTRY_VERSION
-NUMBA_V3_MIGRATION_MARKER = "typed-numba-3"
+# Compilation artifacts are rebuilt during warmup; business revisions survive.
+PLAN_COMPILE_CONTRACT_MARKER = "batch-parameter-vector-1"
 MAX_FORMULA_LENGTH = 1000
 MAX_DAG_NODES = 128
 MAX_DAG_DEPTH = 20
@@ -202,8 +216,17 @@ PLAN_PRODUCT_CONDITION_OPERATORS = {"gte", "lte", "gt", "lt", "eq"}
 
 _TYPED_PLAN_LOCK = threading.RLock()
 _WARMED_TYPED_PLANS: dict[
-    tuple[str, str, str, str], TypedExpressionPlan
+    tuple[str, str, str, str, tuple[tuple[str, str], ...]], TypedExpressionPlan
 ] = {}
+
+
+def _parameter_signature(definition: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Hashable plan-key fragment: opened parameters become context variables."""
+
+    return tuple(
+        (str(item["id"]), str(item.get("type") or "number"))
+        for item in definition.get("parameter_schema") or []
+    )
 
 
 @numba.njit(numba.int8(numba.float64), cache=True, nogil=True)
@@ -249,19 +272,29 @@ def _compile_typed_plan(
     context_kind: str,
     dsl_version: str,
     operator_registry_version: str,
+    parameters: tuple[tuple[str, str], ...] = (),
 ) -> TypedExpressionPlan:
     """Cache immutable typed plans; each request still gets its own trace runtime."""
 
+    parameter_types = parameter_variable_types(
+        {"parameter_schema": [{"id": name, "type": kind} for name, kind in parameters]}
+    )
     plan = compose_typed_expression(
         expression,
-        variable_types=variable_types(context_kind, dsl_version),  # type: ignore[arg-type]
+        variable_types={**variable_types(context_kind, dsl_version), **parameter_types},  # type: ignore[arg-type]
+        parameter_names=frozenset(parameter_types),
         output_contract="scalar",
         dsl_version=dsl_version,
         operator_registry_version=operator_registry_version,
         max_nodes=MAX_DAG_NODES,
         max_depth=MAX_DAG_DEPTH,
     )
-    key = (expression, context_kind, dsl_version, operator_registry_version)
+    # An opened parameter may only sit on a configuration input; anything else
+    # would let a saved formula change shape at run time.
+    raise_on_configuration_violations(
+        plan.nodes, (plan.root_id,), plan.operator_registry_version, set(parameter_types)
+    )
+    key = (expression, context_kind, dsl_version, operator_registry_version, parameters)
     with _TYPED_PLAN_LOCK:
         _WARMED_TYPED_PLANS[key] = plan
     return plan
@@ -272,10 +305,11 @@ def _get_warmed_typed_plan(
     context_kind: str,
     dsl_version: str,
     operator_registry_version: str,
+    parameters: tuple[tuple[str, str], ...] = (),
 ) -> TypedExpressionPlan:
     """Resolve an immutable typed AST without parsing/compiling on a run path."""
 
-    key = (expression, context_kind, dsl_version, operator_registry_version)
+    key = (expression, context_kind, dsl_version, operator_registry_version, parameters)
     with _TYPED_PLAN_LOCK:
         plan = _WARMED_TYPED_PLANS.get(key)
     if plan is None:
@@ -855,7 +889,7 @@ class CustomIndicatorService:
             ),
         )
         self.run_results.cleanup()
-        self.migration = self._apply_numba_v3_migration()
+        self.migration = self._apply_plan_contract_migration()
 
     def warm_numba_plans(self) -> dict[str, Any]:
         """Compile every persisted indicator plan without starting workers.
@@ -901,6 +935,7 @@ class CustomIndicatorService:
                     context_kind,
                     adapted_dsl_version,
                     registry_version,
+                    _parameter_signature(definition),
                 )
                 persist_numba_plan(compile_numba_plan(plan), runtime_root)
                 indicator_plan_count += 1
@@ -1038,6 +1073,7 @@ class CustomIndicatorService:
                 context_kind,
                 dsl_version,
                 registry_version,
+                _parameter_signature(definition),
             )
             compiled = compile_numba_plan(plan)
             persist_numba_plan(
@@ -1172,14 +1208,8 @@ class CustomIndicatorService:
         combined["verified_lanes"] = len(verified)
         return combined
 
-    def _apply_numba_v3_migration(self) -> dict[str, Any]:
-        migration = self.plans.archive_and_reset(
-            self.workspace_data_dir / "archive",
-            NUMBA_V3_MIGRATION_MARKER,
-        )
-        if migration.get("applied"):
-            self.run_results.clear()
-        return migration
+    def _apply_plan_contract_migration(self) -> dict[str, Any]:
+        return self.plans.record_compile_contract(PLAN_COMPILE_CONTRACT_MARKER)
 
     def meta(self) -> dict[str, Any]:
         variable_path = Path(__file__).resolve().parents[1] / "cal_indicators" / "variable_latex.json"
@@ -1439,7 +1469,16 @@ class CustomIndicatorService:
         decorated["catalog_status"] = catalog_status(decorated)
         decorated["ui_exposed"] = ui_exposed(decorated)
         decorated["presentation"] = metric_presentation(decorated)
-        if (
+        if decorated.get("parameter_contract_version") == PARAMETER_CONTRACT_VERSION and decorated.get(
+            "parameter_schema"
+        ):
+            decorated["rolling_series_compatibility"] = {
+                "supported": False,
+                "protocol_version": "1.0.0",
+                "code": "ROLLING_SOURCE_PARAMETERS_UNSUPPORTED",
+                "message": "已开放计算参数的指标暂不支持派生滚动时序指标；请先固定参数。",
+            }
+        elif (
             decorated.get("result_kind", "scalar") == "scalar"
             and decorated.get("context_kind", "single_product") == "single_product"
             and str(decorated.get("dsl_version") or "").startswith("2.")
@@ -1501,6 +1540,21 @@ class CustomIndicatorService:
         expression = str(fields.get("expression", "")).strip()
         if not expression:
             raise ValidationError("EMPTY_EXPRESSION", "指标公式不能为空。", field="expression")
+        parameters = normalize_parameter_schema(
+            fields.get("parameter_schema")
+            if "parameter_schema" in fields
+            else protocol_defaults.get("parameter_schema") or []
+        )
+        parameter_contract_version = fields.get(
+            "parameter_contract_version", protocol_defaults.get("parameter_contract_version")
+        )
+        if parameter_contract_version not in (None, PARAMETER_CONTRACT_VERSION):
+            raise ValidationError("INVALID_PARAMETER_CONTRACT", "不支持的参数契约版本。",
+                                  field="parameter_contract_version")
+        if parameters and parameter_contract_version != PARAMETER_CONTRACT_VERSION:
+            raise ValidationError("INVALID_PARAMETER_CONTRACT",
+                                  "开放计算参数需要 parameter_contract_version=1.0。",
+                                  field="parameter_contract_version")
         if len(expression) > MAX_FORMULA_LENGTH:
             raise ValidationError(
                 "FORMULA_TOO_LONG",
@@ -1583,7 +1637,8 @@ class CustomIndicatorService:
             or registry_default
         )
         expected_registry = CustomIndicatorService._typed_registry_for_dsl(dsl_version)
-        if dsl_version.startswith("2.") and operator_registry_version != expected_registry:
+        if (dsl_version.startswith("2.") and operator_registry_version != expected_registry
+                and not (dsl_version == TYPED_DSL_VERSION and operator_registry_version == WINDOW_OPERATOR_REGISTRY_VERSION)):
             raise ValidationError(
                 "UNSUPPORTED_OPERATOR_REGISTRY_VERSION",
                 f"typed {dsl_version} 仅支持算子注册表 {expected_registry}。",
@@ -1670,6 +1725,12 @@ class CustomIndicatorService:
         previous_expression = protocol_defaults.get("expression")
         if origin and previous_expression and expression != previous_expression:
             origin["detached"] = True
+        if parameter_contract_version == PARAMETER_CONTRACT_VERSION:
+            validate_parameter_definition({
+                "result_kind": "scalar", "expression": expression,
+                "parameter_schema": parameters,
+                "operator_registry_version": operator_registry_version,
+            })
         return {
             "name": name,
             "description": description,
@@ -1703,6 +1764,8 @@ class CustomIndicatorService:
             "variable_registry_version": protocol_versions["variable_registry_version"],
             "data_contract_version": protocol_versions["data_contract_version"],
             "context_schema_version": protocol_versions["context_schema_version"],
+            "parameter_schema": parameters,
+            "parameter_contract_version": parameter_contract_version,
         }
 
     @staticmethod
@@ -1768,8 +1831,14 @@ class CustomIndicatorService:
                 field="indicator_id",
             )
         registry_version = str(definition.get("operator_registry_version") or "")
+        # Composition expands a locked revision into an independent formula.
+        # Bind its locked defaults before expansion so parameter names cannot
+        # collide with the destination draft.
+        composed = definition
+        for parameter in definition.get("parameter_schema") or []:
+            composed = bind_parameter_input(composed, fixed_parameter_id=parameter["id"])
         result = infer_expression(
-            str(definition.get("expression") or ""),
+            str(composed.get("expression") or ""),
             context_kind,  # type: ignore[arg-type]
             scalar_required=True,
             dsl_version=dsl_version,
@@ -1780,6 +1849,8 @@ class CustomIndicatorService:
             "indicator_revision": int(definition["revision"]),
             "name": definition["name"],
             "source": definition["source"],
+            **({"parameters": resolve_parameter_values(definition, {})}
+               if definition.get("parameter_schema") else {}),
         }
         return result
 
@@ -1843,12 +1914,27 @@ class CustomIndicatorService:
                 }
             )
         try:
+            (
+                parameter_schema,
+                parameter_types,
+                parameter_latex_symbols,
+                _parameter_semantics,
+            ) = parameter_composition_context(fields.get("parameter_schema") or [])
+            if fields.get("parameter_contract_version") == PARAMETER_CONTRACT_VERSION:
+                validate_parameter_definition({**fields, "parameter_schema": parameter_schema,
+                                               "operator_registry_version": registry_version})
+            elif parameter_schema:
+                raise ValidationError("INVALID_PARAMETER_CONTRACT",
+                                      "开放计算参数需要 parameter_contract_version=1.0。",
+                                      field="parameter_contract_version")
             inferred = infer_expression(
                 expression,
                 context_kind,  # type: ignore[arg-type]
                 scalar_required=True,
                 dsl_version=dsl_version,
                 operator_registry_version=registry_version,
+                additional_variable_types=parameter_types,
+                additional_latex_symbols=parameter_latex_symbols,
             )
         except ValidationError as exc:
             diagnostics = exc.diagnostics or [
@@ -1869,6 +1955,7 @@ class CustomIndicatorService:
                 context_kind,
                 dsl_version,
                 registry_version,
+                _parameter_signature({"parameter_schema": parameter_schema}),
             )
             compiled = compile_numba_plan(plan)
             runtime_root = self.workspace_data_dir / ".indicator_runtime"
@@ -1896,7 +1983,7 @@ class CustomIndicatorService:
                 )
                 compiled_batch = compile_numba_batch_plan(
                     (plan,),
-                    (fields,),
+                    ({**fields, "parameter_schema": parameter_schema},),
                     physical_columns,
                 )
                 persist_numba_batch_plan(compiled_batch, runtime_root)
@@ -2410,10 +2497,11 @@ class CustomIndicatorService:
                 str(item.get("period") or "").upper(),
                 str(item.get("channel_id") or ""),
                 str(item.get("reducer") or ""),
+                parameter_hash(item.get("parameters") or {}),
             ): str(item.get("field") or "")
             for item in self.snapshot_config.get().get("items", [])
         }
-        seen_keys: set[tuple[str, int, str, str, str]] = set()
+        seen_keys: set[tuple[str, int, str, str, str, str]] = set()
         seen_fields: set[str] = set()
         revisions_by_indicator: dict[str, int] = {}
         for index, raw in enumerate(items):
@@ -2424,9 +2512,7 @@ class CustomIndicatorService:
                 str(raw.get("channel_id") or "").strip(),
                 str(raw.get("reducer") or "").strip(),
             )
-            item = normalized_snapshot_item(
-                {**raw, "field": raw.get("field") or current_fields.get(raw_key)}
-            )
+            item = normalized_snapshot_item({**raw, "field": raw.get("field")})
             if not item["indicator_id"] or int(item["indicator_revision"]) < 1:
                 raise ValidationError(
                     "INVALID_SNAPSHOT_INDICATOR",
@@ -2439,17 +2525,30 @@ class CustomIndicatorService:
                     f"不支持快照周期 {item['period']}。",
                     field=f"items.{index}.period",
                 )
+            definition = self.indicators.get(
+                item["indicator_id"], int(item["indicator_revision"])
+            )
+            # Store the complete resolved set, so the column name, the snapshot
+            # job and the run-time lookup all compare the same numbers.
+            resolved_parameters = normalize_series_parameters(definition, item["parameters"])
+            item = normalized_snapshot_item({
+                **raw,
+                "parameters": resolved_parameters,
+                "field": raw.get("field")
+                or current_fields.get(raw_key + (parameter_hash(resolved_parameters),)),
+            })
             key = (
                 item["indicator_id"],
                 int(item["indicator_revision"]),
                 item["period"],
                 str(item.get("channel_id") or ""),
                 str(item.get("reducer") or ""),
+                parameter_hash(item.get("parameters") or {}),
             )
             if key in seen_keys:
                 raise ValidationError(
                     "DUPLICATE_SNAPSHOT_INDICATOR",
-                    "同一指标版本、周期、通道和归约方式不能重复配置。",
+                    "同一指标版本、周期、通道、归约方式和参数取值不能重复配置。",
                     field=f"items.{index}",
                 )
             previous_revision = revisions_by_indicator.get(item["indicator_id"])
@@ -2465,9 +2564,6 @@ class CustomIndicatorService:
                     "快照字段发生冲突，请重新选择指标或周期。",
                     field=f"items.{index}",
                 )
-            definition = self.indicators.get(
-                item["indicator_id"], int(item["indicator_revision"])
-            )
             if definition.get("context_kind", "single_product") != "single_product":
                 raise ValidationError(
                     "SNAPSHOT_CONTEXT_MISMATCH",
@@ -2668,6 +2764,8 @@ class CustomIndicatorService:
         inline_definition: Optional[dict[str, Any]],
         indicator_versions: Optional[dict[str, int]] = None,
         compile_token: Optional[str] = None,
+        parameters_by_indicator: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        inline_parameters: Optional[Mapping[str, Any]] = None,
     ) -> list[dict[str, Any]]:
         if bool(indicator_ids) == bool(inline_definition):
             raise ValidationError(
@@ -2706,6 +2804,7 @@ class CustomIndicatorService:
                     context_kind,
                     dsl_version,
                     registry_version,
+                    _parameter_signature(normalized),
                 )
             except TypedDslError as exc:
                 raise ValidationError(
@@ -2776,7 +2875,8 @@ class CustomIndicatorService:
                     "compile_token 与当前未保存公式或已预热计划不匹配；请重新校验编译。",
                     field="compile_token",
                 )
-            return [{**normalized, "id": None, "revision": None, "source": "inline"}]
+            return [{**normalized, "id": None, "revision": None, "source": "inline",
+                     "parameter_values": normalize_series_parameters(normalized, inline_parameters)}]
         unique_ids = list(dict.fromkeys(indicator_ids))
         if not unique_ids or len(unique_ids) > MAX_INDICATORS:
             raise ValidationError(
@@ -2785,12 +2885,18 @@ class CustomIndicatorService:
                 field="indicator_ids",
             )
         versions = indicator_versions or {}
-        definitions = [
-            self._decorate_definition(
+        supplied = parameters_by_indicator or {}
+        definitions = []
+        for indicator_id in unique_ids:
+            definition = self._decorate_definition(
                 self.indicators.get(indicator_id, versions.get(indicator_id))
             )
-            for indicator_id in unique_ids
-        ]
+            # Resolve and range-check once, here; every consumer downstream
+            # reads the resolved values instead of the raw request.
+            definition["parameter_values"] = normalize_series_parameters(
+                definition, supplied.get(indicator_id)
+            )
+            definitions.append(definition)
         series_names = [
             str(item.get("name") or item.get("id"))
             for item in definitions
@@ -2803,6 +2909,22 @@ class CustomIndicatorService:
                 field="indicator_ids",
             )
         return definitions
+
+    @staticmethod
+    def _parameter_values(definition: Mapping[str, Any]) -> dict[str, float]:
+        """Runtime values chosen for this run, or the definition's own defaults.
+
+        ``parameter_values`` is attached when a caller resolves and validates an
+        override; its absence means nobody overrode anything.
+        """
+
+        values = definition.get("parameter_values")
+        if values is None:
+            return {
+                str(item["id"]): float(item["default"])
+                for item in definition.get("parameter_schema") or []
+            }
+        return {str(name): float(value) for name, value in values.items()}
 
     @staticmethod
     def _definition_cache_key(definition: dict[str, Any]) -> str:
@@ -2822,6 +2944,13 @@ class CustomIndicatorService:
             "data_contract_version": definition.get("data_contract_version"),
             "context_schema_version": definition.get("context_schema_version"),
             "required_variables": definition.get("required_variables"),
+            "parameter_schema": definition.get("parameter_schema"),
+            "parameter_contract_version": definition.get("parameter_contract_version"),
+            # Two runs of one indicator at different parameter values are two
+            # different results, so they must not share a cache entry.
+            "parameters": parameter_hash(
+                CustomIndicatorService._parameter_values(definition)
+            ),
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -2867,6 +2996,7 @@ class CustomIndicatorService:
         target_name: str,
         period: str,
     ) -> dict[str, Any]:
+        parameters = CustomIndicatorService._parameter_values(definition)
         return {
             "indicator_id": definition.get("id"),
             "indicator_revision": definition.get("revision"),
@@ -2878,6 +3008,8 @@ class CustomIndicatorService:
             "unit": definition.get("unit", ""),
             "display_format": definition.get("display_format", "number"),
             "presentation": metric_presentation(definition),
+            "parameters": parameters,
+            "parameter_hash": parameter_hash(parameters),
         }
 
     def _snapshot_data_dir(self) -> Path:
@@ -2900,6 +3032,7 @@ class CustomIndicatorService:
                 str(item.get("indicator_id")),
                 int(item.get("indicator_revision") or 0),
                 str(item.get("period") or "").upper(),
+                parameter_hash(item.get("parameters") or {}),
             ): str(item.get("field") or "")
             for item in config.get("items", [])
         }
@@ -2909,6 +3042,7 @@ class CustomIndicatorService:
                 str(definition.get("id") or ""),
                 int(definition.get("revision") or 0),
                 period,
+                parameter_hash(self._parameter_values(definition)),
             )
             field = configured.get(key)
             if not field:
@@ -3356,6 +3490,7 @@ class CustomIndicatorService:
                     "single_product",
                     dsl_version,
                     registry_version,
+                    _parameter_signature(definition),
                 )
                 return TypedIndicatorRuntime.from_warmed_plan(plan)
             except TypedDslError as exc:
@@ -3380,6 +3515,7 @@ class CustomIndicatorService:
                 "single_product",
                 LEGACY_TYPED_DSL_VERSION,
                 LEGACY_TYPED_OPERATOR_REGISTRY_VERSION,
+                _parameter_signature(definition),
             )
             return TypedIndicatorRuntime.from_warmed_plan(plan)
         except TypedDslError as exc:
@@ -3431,6 +3567,7 @@ class CustomIndicatorService:
                 "single_product",
                 adapted_dsl,
                 registry_version,
+                _parameter_signature(definition),
             )
             compiled = compile_numba_plan(plan)
             persist_numba_plan(
@@ -3541,6 +3678,7 @@ class CustomIndicatorService:
                 "log_returns": window.log_returns,
             }
         context.update(cls._risk_free_context(definition, elapsed_days))
+        context.update(cls._parameter_values(definition))
         with np.errstate(all="ignore"):
             raw = runtime.compute(context)
         if isinstance(raw, (bool, np.bool_)) or not np.isscalar(raw):
@@ -3693,6 +3831,7 @@ class CustomIndicatorService:
                 "single_product",
                 dsl_version,
                 registry_version,
+                _parameter_signature(definition),
             )
         except TypedDslError as exc:
             if exc.code == "TYPED_PLAN_NOT_WARMED":
@@ -4070,6 +4209,8 @@ class CustomIndicatorService:
         prefer_snapshot: bool = True,
         compile_token: Optional[str] = None,
         indicator_refs: Optional[list[dict[str, Any]]] = None,
+        parameters_by_indicator: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        parameters: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         period = period.upper()
         if period not in SUPPORTED_PERIODS:
@@ -4082,12 +4223,16 @@ class CustomIndicatorService:
                 raise ValidationError("DUPLICATE_INDICATOR", "同一请求不能重复选择指标。")
             versions = {str(item["indicator_id"]): int(item["indicator_revision"]) for item in indicator_refs if item.get("indicator_revision") is not None}
             return self.evaluate(indicator_ids=ids, inline_definition=None, targets=targets, period=period,
-                                 as_of=as_of, include_series=include_series, indicator_versions=versions, prefer_snapshot=prefer_snapshot)
+                                 as_of=as_of, include_series=include_series, indicator_versions=versions, prefer_snapshot=prefer_snapshot,
+                                 parameters_by_indicator={str(item["indicator_id"]): dict(item.get("parameters") or {})
+                                                          for item in indicator_refs if item.get("parameters")})
         definitions = self._resolve_evaluation_definitions(
             indicator_ids,
             inline_definition,
             indicator_versions=indicator_versions,
             compile_token=compile_token,
+            parameters_by_indicator=parameters_by_indicator,
+            inline_parameters=parameters,
         )
         normalized_targets = self._validate_targets(targets)
         combinations = len(definitions) * len(normalized_targets)
@@ -4483,6 +4628,8 @@ class CustomIndicatorService:
             indicator_ids,
             inline_definition,
             compile_token=compile_token,
+            parameters_by_indicator={indicator_id: dict(parameters or {}) for indicator_id in indicator_ids},
+            inline_parameters=parameters,
         )
         if len(definitions) != 1:
             raise ValidationError(
@@ -4567,6 +4714,7 @@ class CustomIndicatorService:
                 )
                 complete_context = dict(window.context)
                 complete_context.update(self._risk_free_context(definition, elapsed_days))
+                complete_context.update(self._parameter_values(definition))
                 for variable_id in runtime.compiled_plan.context_names:
                     if variable_id not in complete_context:
                         raise ValidationError(
@@ -4760,6 +4908,7 @@ class CustomIndicatorService:
                     "portfolio",
                     dsl_version,
                     registry_version,
+                    _parameter_signature(definition),
                 )
                 runtime = TypedIndicatorRuntime.from_warmed_plan(plan)
             except TypedDslError as exc:
@@ -4814,6 +4963,7 @@ class CustomIndicatorService:
                 )
             try:
                 context = self._portfolio_context(snapshot, definition)
+                context.update(self._parameter_values(definition))
                 with np.errstate(all="ignore"):
                     raw = runtime.compute(context)
                 value = float(raw) if np.isscalar(raw) and not isinstance(raw, (bool, np.bool_)) else None
@@ -5369,6 +5519,11 @@ class CustomIndicatorService:
             direction = str(item.get("direction") or definition["direction"])
             if direction not in {"higher_better", "lower_better"}:
                 raise ValidationError("INVALID_DIRECTION", "不支持的优劣方向。", field="indicators")
+            # D2: saved parameters are locked. A plan revision that cannot be
+            # replayed at the same values is not a saved evaluation at all.
+            definition["parameter_values"] = normalize_series_parameters(
+                definition, item.get("parameters")
+            )
             indicator_key = (indicator_id, int(definition["revision"]), period)
             if indicator_key in indicator_keys:
                 raise ValidationError(
@@ -5391,6 +5546,7 @@ class CustomIndicatorService:
                 "weight": weight,
                 "direction": direction,
                 "compiled_plan_id": runtime.compiled_plan.plan_id,
+                "parameters": dict(definition["parameter_values"]),
             }
             indicators.append(normalized_item)
             compiled_entries.append((normalized_item, definition, runtime))
@@ -5773,6 +5929,12 @@ class CustomIndicatorService:
 
                 plans = tuple(entry["runtime"].plan for entry in entries)
                 definitions = tuple(entry["definition"] for entry in entries)
+                # Values ride in an array, so the same warm plan serves every
+                # risk-free rate and every parameter setting of these metrics.
+                parameter_values = batch_parameter_vector(
+                    definitions,
+                    [self._parameter_values(definition) for definition in definitions],
+                )
                 warmed_fused = get_cached_numba_batch_plan(
                     plans,
                     definitions,
@@ -5849,6 +6011,7 @@ class CustomIndicatorService:
                             elapsed_contiguous,
                             output,
                             statuses,
+                            parameter_values,
                             parallel=use_parallel,
                         )
                     except Exception:
@@ -5863,6 +6026,7 @@ class CustomIndicatorService:
                             elapsed_contiguous,
                             output,
                             statuses,
+                            parameter_values,
                             parallel=False,
                         )
                         use_parallel = False
@@ -5977,6 +6141,9 @@ class CustomIndicatorService:
             definition = self.indicators.get(
                 item["indicator_id"], int(item["indicator_revision"])
             )
+            definition["parameter_values"] = normalize_series_parameters(
+                definition, item.get("parameters")
+            )
             runtime = self._compile_runtime(definition, item["period"])
             if not isinstance(runtime, TypedIndicatorRuntime):
                 raise ValidationError(
@@ -6006,6 +6173,7 @@ class CustomIndicatorService:
                     str(item.get("indicator_id")),
                     int(item.get("indicator_revision") or 0),
                     str(item.get("period") or "").upper(),
+                    parameter_hash(item.get("parameters") or {}),
                 )
                 for item in self.snapshot_config.get().get("items", [])
             }
@@ -6035,6 +6203,7 @@ class CustomIndicatorService:
                         str(entry["item"]["indicator_id"]),
                         int(entry["item"]["indicator_revision"]),
                         str(entry["item"]["period"]).upper(),
+                        parameter_hash(self._parameter_values(entry["definition"])),
                     )
                     for entry in snapshot_entries
                 }

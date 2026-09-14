@@ -41,7 +41,8 @@ def expand_operator(
     # contract. Current authoring accepts them only as syntax compatibility and
     # lowers them to one logical window node plus an ordinary reduction.
     if operator_id in ROLLING_COMPAT_OPERATOR_IDS:
-        if operator_registry_version != "2.4.0":
+        from .typed_operators import WINDOW_OPERATOR_REGISTRY_VERSIONS
+        if operator_registry_version not in WINDOW_OPERATOR_REGISTRY_VERSIONS:
             return None
         args = tuple(f"({argument})" for argument in arguments)
         first = args[0]

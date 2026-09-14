@@ -6,7 +6,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from test_custom_indicator_time_series import _service, _as_float
+import tempfile
+from pathlib import Path
+
+from test_custom_indicator_time_series import _service, _as_float, _write_market_data
+from cal_indicators.parameter_policy import configuration_arguments
+from cal_indicators.typed_dsl import TYPED_DSL_VERSION
+from cal_indicators.typed_operators import (
+    TYPED_OPERATOR_REGISTRY_VERSION,
+    get_typed_operator_registry,
+)
+from custom_indicators.service import CustomIndicatorService
 from custom_indicators.errors import ValidationError
 from custom_indicators.series_parameters import (
     bind_parameter_input, inspect_parameter_inputs, resolve_parameter_values,
@@ -29,17 +39,60 @@ def opened(expression="rolling_mean(market_close, 20)"):
     return bind_parameter_input(value, candidate_id=candidate["id"])
 
 
-def test_current_authoring_owns_window_parameter_on_rolling_window_only():
-    value = draft("std(rolling_window(market_close, 20), 1)")
+def test_every_configuration_input_is_offered_including_aliases():
+    """The contract decides; the user picks. No operator or argument whitelist."""
+
+    value = draft("sequence_std(rolling_window(market_close, 20), 1)")
     candidates = inspect_parameter_inputs(value)["candidates"]
     assert [(item["operator_id"], item["argument"], item["value"]) for item in candidates] == [
-        ("rolling_window", "window", 20)
+        ("sequence_std", "ddof", 1), ("rolling_window", "window", 20)
     ]
-    opened_value = bind_parameter_input(value, candidate_id=candidates[0]["id"])
+    window = next(item for item in candidates if item["argument"] == "window")
+    opened_value = bind_parameter_input(value, candidate_id=window["id"])
     assert opened_value["series_outputs"][0]["expression"] == (
-        "std(rolling_window(market_close, window_1), 1)"
+        "sequence_std(rolling_window(market_close, window_1), 1)"
     )
     assert opened_value["parameter_schema"][0]["default"] == 20
+
+
+def test_candidates_and_ranges_follow_the_operator_contract():
+    value = draft("clip(quantile(rolling_window(market_close, 20), 0.9), 0.0, 1.0)")
+    candidates = {item["argument"]: item for item in inspect_parameter_inputs(value)["candidates"]}
+    assert candidates["probability"]["minimum"] == 0 and candidates["probability"]["maximum"] == 1
+    assert candidates["probability"]["exclusive_minimum"] is True
+    assert candidates["probability"]["exclusive_maximum"] is True
+    assert candidates["lower"]["type"] == "number" and candidates["window"]["type"] == "integer"
+    # Data and expression positions stay closed because they hold no literal.
+    assert "values" not in candidates
+
+
+def test_configuration_inputs_have_exactly_one_source():
+    """The operator signature decides; /meta, the composer and the parameter
+    panel only read it.  A reintroduced whitelist breaks this test."""
+
+    registry = get_typed_operator_registry(TYPED_OPERATOR_REGISTRY_VERSION)
+    derived = {
+        (spec.operator_id, name): policy
+        for spec in {id(item): item for item in registry.values()}.values()
+        for arity in sorted(spec.arities)
+        for name, policy in configuration_arguments(spec, arity).items()
+    }
+    assert {key[0] for key in derived} == {
+        "clip", "difference", "divide_or_default", "lag", "quantile", "quantile_where",
+        "recursive_smooth", "rolling_apply", "rolling_max", "rolling_mean", "rolling_min",
+        "rolling_std", "rolling_window", "std", "variance",
+    }
+    assert derived[("rolling_apply", "window")]["maximum"] == 5000, "kernel cap is quoted by the signature"
+    assert derived[("rolling_std", "ddof")]["minimum"] == 0, "ddof is a count that may be zero"
+    assert ("power", "exponent") not in derived, "an ordinary scalar value is not configuration"
+
+    operators = {item["name"]: item for item in CustomIndicatorService(Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())).meta()["operators"]}
+    for operator_id, name in derived:
+        parameters = {item["name"]: item for item in operators.get(operator_id, {}).get("parameters") or []}
+        if name not in parameters:
+            continue
+        assert parameters[name]["source_policy"] == "fixed_constant"
+        assert parameters[name]["parameterizable"] is True
 
 
 def test_position_aware_binding_shared_parameters_and_unbinding():
@@ -240,3 +293,131 @@ def test_api_parameter_contract_and_strict_numeric_inputs(tmp_path, monkeypatch)
                 "target": {"kind": "etf", "product_id": "510300.SH"}, "period": "ALL",
             })
             assert response.status_code == 422, response.text
+
+
+def _scalar_service(tmp_path):
+    """The scalar lane warms on demand, so only the kernels are prepared here."""
+
+    from cal_indicators.typed_numba_kernels import warm_numba_kernel_registry
+
+    frame = _write_market_data(tmp_path)
+    warm_numba_kernel_registry()
+    return CustomIndicatorService(tmp_path, tmp_path), frame
+
+
+def _scalar_draft(expression="quantile(returns, 0.9)"):
+    return {"name": "分位收益", "result_kind": "scalar", "expression": expression,
+            "dsl_version": TYPED_DSL_VERSION, "direction": "higher_better"}
+
+
+def test_scalar_indicator_opens_the_same_configuration_inputs_as_a_series():
+    """Result kind is not part of the rule; the operator contract is."""
+
+    candidates = inspect_parameter_inputs(_scalar_draft("clip(quantile(returns, 0.9), 0.0, 1.0)"))["candidates"]
+    assert {(item["operator_id"], item["argument"]) for item in candidates} == {
+        ("quantile", "probability"), ("clip", "lower"), ("clip", "upper")
+    }
+    draft_definition = _scalar_draft()
+    opened = bind_parameter_input(
+        draft_definition,
+        candidate_id=inspect_parameter_inputs(draft_definition)["candidates"][0]["id"],
+    )
+    assert opened["expression"] == "quantile(returns, probability_1)"
+    assert opened["parameter_contract_version"] == "1.0"
+    # Nothing may be opened on a position the contract calls an ordinary value.
+    with pytest.raises(ValidationError):
+        validate_parameter_definition({**_scalar_draft("power(returns_total, p_1)"),
+                                       "parameter_schema": [{"id": "p_1", "label": "指数", "type": "number",
+                                                             "default": 2.0, "minimum": 0.0, "maximum": 5.0, "step": 0.1}]})
+
+
+def test_scalar_parameter_values_run_on_one_prewarmed_batch_plan(tmp_path):
+    """Phase 3-5 end to end: values travel in the parameter vector, so a single
+    warm fused NJIT plan serves every value instead of one plan per value."""
+
+    service, frame = _scalar_service(tmp_path)
+    draft_definition = _scalar_draft()
+    candidate = inspect_parameter_inputs(draft_definition)["candidates"][0]
+    saved = service.create_indicator(bind_parameter_input(draft_definition, candidate_id=candidate["id"]))
+
+    def run(probability):
+        refs = [{"indicator_id": saved["id"], "indicator_revision": saved["revision"],
+                 "parameters": {"probability_1": probability}}]
+        service.prepare_evaluation(indicator_ids=[], indicator_refs=refs)
+        return service.evaluate(indicator_ids=[], inline_definition=None, indicator_refs=refs,
+                                targets=[{"kind": "etf", "product_id": "510300.SH"}], period="ALL")
+
+    nav = frame["adj_nav"].to_numpy(dtype=np.float64)
+    returns = nav[1:] / nav[:-1] - 1.0
+    plan_ids = set()
+    hashes = set()
+    for probability in (0.5, 0.9):
+        response = run(probability)
+        record = response["results"][0]
+        assert record["status"] == "ok"
+        assert record["value"] == pytest.approx(float(np.quantile(returns, probability)), rel=1e-12)
+        assert record["parameters"] == {"probability_1": probability}
+        plan_ids.update(response["execution"]["compiled_plan_ids"])
+        hashes.add(record["parameter_hash"])
+    assert len(plan_ids) == 1, "a parameter value must not specialise a compiled plan"
+    assert len(hashes) == 2, "two values must not share a result cache entry"
+
+    with pytest.raises(ValidationError):
+        run(1.5)
+
+
+def test_saved_plan_locks_and_replays_its_parameter_values(tmp_path):
+    """D2: a plan revision that cannot be replayed is not a saved evaluation."""
+
+    service, frame = _scalar_service(tmp_path)
+    draft_definition = _scalar_draft()
+    candidate = inspect_parameter_inputs(draft_definition)["candidates"][0]
+    saved = service.create_indicator(bind_parameter_input(draft_definition, candidate_id=candidate["id"]))
+    plan = service.create_plan({
+        "name": "分位方案", "product_kind": "etf",
+        "targets": [{"kind": "etf", "product_id": "510300.SH"}],
+        "indicators": [{"indicator_id": saved["id"], "indicator_revision": saved["revision"],
+                        "period": "ALL", "weight": 1.0, "parameters": {"probability_1": 0.25}}],
+    })
+    assert plan["indicators"][0]["parameters"] == {"probability_1": 0.25}
+    nav = frame["adj_nav"].to_numpy(dtype=np.float64)
+    row = service.run_plan(plan["id"])["rows"][0]
+    assert row["values"][0]["value"] == pytest.approx(
+        float(np.quantile(nav[1:] / nav[:-1] - 1.0, 0.25)), rel=1e-12
+    )
+
+
+@pytest.mark.parametrize("probability", [0.995, 0.005, 0.9995])
+def test_probability_open_interval_survives_bind_save_and_runtime(tmp_path, probability):
+    service, _ = _scalar_service(tmp_path)
+    value = _scalar_draft()
+    value["expression"] = f"quantile(returns, {probability})"
+    candidate = inspect_parameter_inputs(value)["candidates"][0]
+    bound = bind_parameter_input(value, candidate_id=candidate["id"])
+    saved = service.create_indicator(bound)
+    assert saved["parameter_schema"][0]["exclusive_minimum"] is True
+    assert resolve_parameter_values(saved, {}) == {"probability_1": probability}
+    for invalid in (0, 1):
+        with pytest.raises(ValidationError):
+            resolve_parameter_values(saved, {"probability_1": invalid})
+    result = service.compose({"indicator_id": saved["id"], "indicator_revision": saved["revision"]})
+    assert "probability_1" not in result["expression"]
+    assert str(probability) in result["expression"]
+    assert result["indicator_origin"]["parameters"] == {"probability_1": probability}
+    assert service.indicators.get(saved["id"])["expression"] == saved["expression"]
+
+
+def test_snapshot_series_parameter_instances_compute_separately(tmp_path):
+    from custom_indicators.snapshot_execution import _records
+    service, frame = _scalar_service(tmp_path)
+    saved = service.create_indicator(opened())
+    refs = [{"indicator_id": saved["id"], "indicator_revision": saved["revision"], "channel_id": "ma",
+             "reducer": "last_finite", "period": "ALL", "parameters": {"window_1": n}} for n in (5, 20)]
+    config = service.update_snapshot_config(service.get_snapshot_config()["revision"], refs)
+    records = list(_records(service, config["items"], [{"kind": "etf", "product_id": "510300.SH"}]))
+    assert len(records) == 2
+    assert len({item["field"] for item, _ in records}) == 2
+    for item, record in records:
+        n = int(item["parameters"]["window_1"])
+        assert record["parameters"]["window_1"] == n
+        assert record["value"] == pytest.approx(frame["close"].iloc[-n:].mean())

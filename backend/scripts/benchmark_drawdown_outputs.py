@@ -15,7 +15,7 @@ import numpy as np
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(Path(__file__).resolve().parents[1])]
 from cal_indicators.typed_dsl import compose_typed_expression  # noqa: E402
-from cal_indicators.typed_numba_plan import compile_numba_batch_plan  # noqa: E402
+from cal_indicators.typed_numba_plan import batch_parameter_vector, compile_numba_batch_plan  # noqa: E402
 from custom_indicators.variable_registry import variable_types  # noqa: E402
 
 
@@ -43,11 +43,11 @@ def benchmark(products: int, observations: int, repeats: int) -> dict:
     signature_before = tuple(shared.serial_dispatcher.signatures)
 
     def run_shared():
-        shared.compute(values, starts, ends, elapsed, output, statuses, parallel=False)
+        shared.compute(values, starts, ends, elapsed, output, statuses, batch_parameter_vector(({},) * len(plans)), parallel=False)
 
     def run_independent():
         for index, plan in enumerate(singles):
-            plan.compute(values, starts, ends, elapsed, single_outputs[index], single_statuses[index], parallel=False)
+            plan.compute(values, starts, ends, elapsed, single_outputs[index], single_statuses[index], batch_parameter_vector(({},)), parallel=False)
 
     run_shared()
     run_independent()

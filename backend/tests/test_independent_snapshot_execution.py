@@ -35,7 +35,7 @@ def test_mixed_scalar_date_and_two_channels_use_separate_paths(tmp_path, monkeyp
     service = CustomIndicatorService(tmp_path, tmp_path)
     try:
         series_id = "builtin-kdj-series"
-        series = service.get_indicator(series_id)
+        series = service.get_indicator(series_id, 1)
         channel_ids = [item["id"] for item in series["series_outputs"]][:2]
         scalar_id = "builtin-total-return-v2"
         date_id = "builtin-maximum-drawdown-start-date"
@@ -45,7 +45,7 @@ def test_mixed_scalar_date_and_two_channels_use_separate_paths(tmp_path, monkeyp
             *[{"indicator_id": series_id, "indicator_revision": 1, "period": "ALL", "field": f"channel_{index}",
                "channel_id": channel_id, "reducer": "last_finite"} for index, channel_id in enumerate(channel_ids)],
         ])
-        expected = service.evaluate_series(indicator_instances=[{"indicator_id": series_id}], target=TARGET, period="ALL")["results"][0]
+        expected = service.evaluate_series(indicator_instances=[{"indicator_id": series_id, "indicator_revision": 1}], target=TARGET, period="ALL")["results"][0]
         expected_values = {item["id"]: next(value for value in reversed(item["values"]) if value is not None) for item in expected["channels"]}
         calls = []
         original = service.series_service.evaluate

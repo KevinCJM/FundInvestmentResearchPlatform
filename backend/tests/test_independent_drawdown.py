@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from cal_indicators.drawdown_interval import last_drawdown_interval_kernel
 from cal_indicators.typed_dsl import compose_typed_expression, TypedDslError
-from cal_indicators.typed_numba_plan import compile_numba_batch_plan
+from cal_indicators.typed_numba_plan import batch_parameter_vector, compile_numba_batch_plan
 from custom_indicators.variable_registry import variable_types
 
 INTERVAL = 'last_drawdown_interval(drawdown_series(adjusted_nav))'
@@ -50,7 +50,8 @@ def test_independent_batch_has_one_drawdown_and_one_interval(parallel):
     output = np.full((1,5),np.nan)
     statuses = np.full((1,5),-1,dtype=np.int16)
     before = tuple(batch.serial_dispatcher.signatures), tuple(batch.parallel_dispatcher.signatures)
-    batch.compute(np.array([nav, dates]),np.array([0],dtype=np.int64),np.array([7],dtype=np.int64),np.array([10.]),output,statuses,parallel=parallel)
+    batch.compute(np.array([nav, dates]),np.array([0],dtype=np.int64),np.array([7],dtype=np.int64),np.array([10.]),output,statuses,
+                  batch_parameter_vector(({},)*len(plans)),parallel=parallel)
     np.testing.assert_allclose(output[0], [.2,20003.,20009.,6.,20010.])
     assert (statuses==0).all()
     audit=batch.metadata()

@@ -121,3 +121,28 @@ describe('使用页面参数隔离', () => {
     expect(screen.getByText(/实际计算参数: 窗口期数=60/)).toBeInTheDocument()
   })
 })
+
+
+describe('概率开区间', () => {
+  const probability: SeriesParameterDefinition = { id: 'probability_1', label: '概率', type: 'number',
+    default: .995, minimum: 0, maximum: 1, step: .001, exclusive_minimum: true, exclusive_maximum: true }
+  it('允许高精度概率覆盖，拒绝端点，恢复锁定默认值', () => {
+    const apply = vi.fn()
+    render(<IndicatorParameterInputs schema={[probability]} values={{}} onApply={apply} />)
+    expect(screen.getByLabelText('概率')).toHaveValue(.995)
+    expect(screen.getByText(/\(0, 1\)/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('概率'), { target: { value: '.005' } })
+    fireEvent.click(screen.getByText('应用参数'))
+    expect(apply).toHaveBeenLastCalledWith({ probability_1: .005 })
+    for (const value of ['0', '1']) {
+      apply.mockClear()
+      fireEvent.change(screen.getByLabelText('概率'), { target: { value } })
+      fireEvent.click(screen.getByText('应用参数'))
+      expect(apply).not.toHaveBeenCalled()
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+    }
+    fireEvent.click(screen.getByText('恢复默认'))
+    expect(screen.getByLabelText('概率')).toHaveValue(.995)
+    expect(apply).toHaveBeenLastCalledWith({})
+  })
+})

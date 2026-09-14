@@ -9,7 +9,7 @@ import json
 from typing import Any, Callable
 
 
-SHARED_GRAPH_VERSION = "independent-metrics-cse-2"
+SHARED_GRAPH_VERSION = "independent-metrics-cse-3"
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,10 @@ class SharedBatchGraph:
 
 
 def merge_metric_plans(plans, definitions, variable_expression: Callable[..., str], column_index) -> SharedBatchGraph:
+    # Parameter slots are per-metric, so a metric's variable bindings carry its
+    # own offset. Two metrics never share a parameter node even at equal values.
+    from .typed_numba_plan import batch_parameter_names
+
     if not plans or len(plans) != len(definitions):
         raise ValueError("Expected matching independent plans and definitions")
     nodes = []
@@ -43,6 +47,7 @@ def merge_metric_plans(plans, definitions, variable_expression: Callable[..., st
     variables: dict[int, str] = {}
     seen: dict[tuple[Any, ...], int] = {}
     total = 0
+    offset = 0
     for plan, definition in zip(plans, definitions):
         local = {}
         for node in plan.nodes:
@@ -53,7 +58,8 @@ def merge_metric_plans(plans, definitions, variable_expression: Callable[..., st
             if node.kind == "constant":
                 binding = float(node.label).hex()  # Preserve signed zero.
             elif node.kind == "variable":
-                binding = variable_expression(node.label, column_index=column_index, definition=definition)
+                binding = variable_expression(node.label, column_index=column_index,
+                                              definition=definition, offset=offset)
             key = ("operator" if node.operator_id else node.kind, node.operator_id, node.operator_version, structural_type, inputs, binding)
             # Do not equate old/new operator semantics just because their names match.
             if node.operator_id:
@@ -67,6 +73,7 @@ def merge_metric_plans(plans, definitions, variable_expression: Callable[..., st
                     variables[index] = binding
             local[node.node_id] = seen[key]
         roots.append(local[plan.root_id])
+        offset += len(batch_parameter_names(definition))
     needed = [set() for _ in nodes]
     for metric, root in enumerate(roots):
         pending = [root]
@@ -87,7 +94,7 @@ def build_batch_source(plans, definitions, column_index, *, parallel, variable_e
     import numpy as np
     graph = merge_metric_plans(plans, definitions, variable_expression, column_index)
     namespace = {"np": np, "loop": numba.prange if parallel else range, "isfinite": math.isfinite, "math_log": math.log}
-    lines = ["def generated_batch(values, starts, ends, elapsed_days, output, statuses, enabled):",
+    lines = ["def generated_batch(values, starts, ends, elapsed_days, output, statuses, enabled, params):",
              "    for row in loop(starts.size):", "        start = starts[row]", "        end = ends[row]",
              "        if start < 0 or end - start < 2:", "            for metric in range(output.shape[1]):",
              "                output[row, metric] = np.nan", "                statuses[row, metric] = 1",
@@ -174,7 +181,7 @@ def build_batch_source(plans, definitions, column_index, *, parallel, variable_e
                       f"        statuses[row, {metric}] = s{root} if enabled[{metric}] else 8"])
     # Keep exception isolation inside a separately compiled row kernel. A
     # prange loop containing try/except cannot be parallelized by Numba.
-    row_lines = ["def generated_row(values, start, end, elapsed_day, output, statuses, enabled):"]
+    row_lines = ["def generated_row(values, start, end, elapsed_day, output, statuses, enabled, params):"]
     for line in lines[4:]:
         row_lines.append(line[4:].replace("elapsed_days[row]", "elapsed_day")
                          .replace("output[row, ", "output[").replace("statuses[row, ", "statuses[")

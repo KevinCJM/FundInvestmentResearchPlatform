@@ -233,8 +233,8 @@ function indicatorCategory(indicator: IndicatorDefinition) {
 }
 
 function parameterAcceptsIndicator(parameter: IndicatorOperatorParameter) {
-  if (!acceptedShapes(parameter).some((shape) => shape === 'scalar' || shape === 'unknown')) return false
-  return !['ddof', 'periods', 'probability'].includes(parameter.name)
+  if (parameterRequiresFixedConstant(parameter)) return false
+  return acceptedShapes(parameter).some((shape) => shape === 'scalar' || shape === 'unknown')
 }
 
 const FALLBACK_VARIABLES: IndicatorVariable[] = [
@@ -804,52 +804,16 @@ function operatorDisplayLabel(operatorId: string | undefined, fallback?: string)
   return operatorId ? businessText(`operators.${operatorId}.label`, original) : original
 }
 
-const OPERATOR_PARAMETER_LABELS: Record<string, string[]> = {
-  rolling_apply: ['区间计算内容', '窗口期数', '观察日期（自动绑定）', '年度配置（自动绑定）'],
-  rolling_window: ['待处理数值', '窗口期数', '最少有效观察数'],
-  rolling_mean: ['待处理数值', '窗口期数', '最少有效观察数'],
-  rolling_std: ['待处理数值', '窗口期数', '自由度修正', '最少有效观察数'],
-  rolling_min: ['待处理数值', '窗口期数', '最少有效观察数'],
-  rolling_max: ['待处理数值', '窗口期数', '最少有效观察数'],
-  recursive_smooth: ['待处理数值', '平滑期数', '递归初始值'],
-  divide_or_default: ['分子', '分母', '分母为零时的默认值'],
-}
-
-function parameterLabel(parameter: string | undefined, fallback: string) {
-  if (!parameter) return fallback
-  if (fallback && fallback !== parameter && /[^\u0000-\u007f]/.test(fallback)) return fallback
-  return ({
-    lhs: '输入 A', rhs: '输入 B', left: '输入 A', right: '输入 B',
-    values: '待处理数值', value: '待处理数值', x: '输入数值', y: '参考数值',
-    numerator: '分子', denominator: '分母', default: '分母为零时的默认值',
-    lower: '允许的最小值', upper: '允许的最大值', threshold: '比较阈值',
-    q: '分位点', ddof: '自由度修正', axis: '计算维度', periods: '间隔期数',
-    window: '窗口期数', min_periods: '最少有效观察数', initial: '递归初始值',
-    matrix: '输入矩阵', vector: '输入向量', mask: '判断条件', condition: '判断条件',
-  } as Record<string, string>)[parameter] || fallback
-}
-
-function operatorParameterLabel(
-  operatorId: string | undefined,
-  index: number,
-  parameter: string | undefined,
-  fallback: string,
-) {
-  const contextual = operatorId ? OPERATOR_PARAMETER_LABELS[operatorId]?.[index] : undefined
-  return parameterLabel(parameter, contextual || fallback)
-}
-
 function parameterDescription(parameter: IndicatorOperatorParameter) {
   const description = humanizeTechnicalTypes(parameter.description || '')
   if (description && !/^允许类型\s*[:：]/i.test(description)) return description
-  const label = parameterLabel(parameter.name, parameter.label || parameter.name)
-  return `${label}在当前数学运算中的数值。`
+  return `${parameter.label || parameter.name}在当前数学运算中的数值。`
 }
 
 function operatorContractDescription(item: ComposerItem) {
   const inputs = item.parameters.map((parameter) => {
     const types = acceptedShapes(parameter).map((shape) => shapeLabel(shape)).join('、') || '由上下文决定'
-    return `${parameterLabel(parameter.name, parameter.label || parameter.name)}支持${types}`
+    return `${parameter.label || parameter.name}支持${types}`
   }).join('；')
   return `${inputs || '无需输入参数'}；返回${shapeLabel(item.outputShape, item.outputType)}。`
 }
@@ -1096,9 +1060,9 @@ function normalizeDraft(draft: IndicatorDraft): IndicatorDraft {
     result_kind: 'scalar',
     output_contract: 'scalar',
     output_measure: draft.output_measure || 'dimensionless',
-    parameter_contract_version: null,
-    parameter_schema: [],
-    fixed_parameters: [],
+    parameter_contract_version: draft.parameter_contract_version ?? null,
+    parameter_schema: draft.parameter_contract_version === '1.0' ? draft.parameter_schema ?? [] : [],
+    fixed_parameters: draft.fixed_parameters ?? [],
     series_outputs: [],
     axis_anchor: null,
     history_policy: null,
@@ -1317,6 +1281,7 @@ export default function IndicatorStudio() {
   const parameterSchemaKey = JSON.stringify(draft.parameter_schema ?? [])
   useEffect(() => {
     setRuntimeParameters({})
+    setResults([])
     setSeriesResults([])
     previewRequestRef.current += 1
     setPreviewing(false)
@@ -1324,6 +1289,7 @@ export default function IndicatorStudio() {
   const applyRuntimeParameters = (values: Record<string, number>) => {
     previewRequestRef.current += 1
     setPreviewing(false)
+    setResults([])
     setSeriesResults([])
     setRuntimeParameters(values)
   }
@@ -2277,6 +2243,7 @@ export default function IndicatorStudio() {
         const response = await evaluateCustomIndicators({
           inline_definition: normalized,
           compile_token: checked.compile_token ?? undefined,
+          ...(normalized.parameter_contract_version === '1.0' ? { parameters: runtimeParameters } : {}),
           targets: targets.map(({ name: _name, ...target }) => target),
           period: calculationPeriod,
           as_of: asOf || undefined,
@@ -2318,7 +2285,7 @@ export default function IndicatorStudio() {
       const downloaded = await exportCustomIndicatorExcel({
         inline_definition: normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT }),
         compile_token: checked.compile_token ?? undefined,
-        ...(isTimeSeries && draft.parameter_contract_version === '1.0' ? { parameters: runtimeParameters } : {}),
+        ...(draft.parameter_contract_version === '1.0' ? { parameters: runtimeParameters } : {}),
         targets: targets.map(({ name: _name, ...target }) => target),
         period: activePeriod,
         as_of: asOf || undefined,
@@ -2442,7 +2409,7 @@ export default function IndicatorStudio() {
           <div className="mb-5 hidden rounded-xl border border-slate-200 bg-white p-2 shadow-sm xl:block" role="tablist" aria-label="指标工作台">
             <div className="grid grid-cols-2 gap-2">
               <button id="workspace-tab-editor" type="button" role="tab" aria-controls="indicator-panel-editor" aria-selected={workspaceTab === 'editor'} tabIndex={workspaceTab === 'editor' ? 0 : -1} onClick={() => activateWorkspaceTab('editor')} onKeyDown={(event) => handleWorkspaceTabKeyDown(event, 'editor')} className={`rounded-xl px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-accent-500 ${workspaceTab === 'editor' ? 'bg-accent-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}><span className="block text-sm font-semibold">{s('indicator.editor')}</span><span className={`mt-0.5 block text-xs ${workspaceTab === 'editor' ? 'text-white' : 'text-slate-600'}`}>编辑指标信息、构建公式并完成校验</span></button>
-              <button id="workspace-tab-preview" type="button" role="tab" aria-controls="indicator-panel-preview" aria-selected={workspaceTab === 'preview'} tabIndex={workspaceTab === 'preview' ? 0 : -1} onClick={() => activateWorkspaceTab('preview')} onKeyDown={(event) => handleWorkspaceTabKeyDown(event, 'preview')} className={`rounded-xl px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-accent-500 ${workspaceTab === 'preview' ? 'bg-accent-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}><span className="flex items-center justify-between gap-2 text-sm font-semibold">{s('indicator.preview')}{targets.length > 0 && <span aria-hidden="true" className={`rounded-full px-2 py-0.5 text-xs ${workspaceTab === 'preview' ? 'bg-white/20 text-white' : 'bg-accent-50 text-accent-700'}`}>{targets.length} 个产品</span>}</span><span className={`mt-0.5 block text-xs ${workspaceTab === 'preview' ? 'text-white' : 'text-slate-600'}`}>校验定义、选择运行条件，查看真实计算结果</span></button>
+              <button id="workspace-tab-preview" type="button" role="tab" aria-controls="indicator-panel-preview" aria-selected={workspaceTab === 'preview'} tabIndex={workspaceTab === 'preview' ? 0 : -1} onClick={() => activateWorkspaceTab('preview')} onKeyDown={(event) => handleWorkspaceTabKeyDown(event, 'preview')} className={`rounded-xl px-4 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-accent-500 ${workspaceTab === 'preview' ? 'bg-accent-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}><span className="flex items-center justify-between gap-2 text-sm font-semibold">{s('indicator.preview')}{targets.length > 0 && <span aria-hidden="true" className={`rounded-full px-2 py-0.5 text-xs ${workspaceTab === 'preview' ? 'bg-accent-800 text-white' : 'bg-accent-50 text-accent-700'}`}>{targets.length} 个产品</span>}</span><span className={`mt-0.5 block text-xs ${workspaceTab === 'preview' ? 'text-white' : 'text-slate-600'}`}>校验定义、选择运行条件，查看真实计算结果</span></button>
             </div>
           </div>
 
@@ -2547,7 +2514,7 @@ export default function IndicatorStudio() {
               <div className="mt-2 flex items-center justify-between gap-3"><button type="button" onClick={() => void openFormulaBuilder()} disabled={formulaBuilderOpening || (isTimeSeries && !activeSeriesOutput)} aria-busy={formulaBuilderOpening} className="rounded-lg border border-accent-200 px-3 py-2 text-sm font-semibold text-accent-700 hover:bg-accent-50 disabled:cursor-wait disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-accent-500">{formulaBuilderOpening ? '正在载入当前计算逻辑…' : '浏览公式构建资源'}</button><span className="text-xs text-slate-600">{currentExpression.length} / {isTimeSeries ? 4000 : 1000}</span></div>
             </div>)}
             {editorMode !== 'canvas' && <>
-            {isTimeSeries && <IndicatorParameterEditor key={`${selectedId ?? 'new'}-${canvasSession}`} draft={draft} disabled={canvasPending || saving || validating} onPendingChange={setParameterPending} onPatch={patchDraft} />}
+            <IndicatorParameterEditor key={`${selectedId ?? 'new'}-${canvasSession}`} draft={draft} disabled={canvasPending || saving || validating} onPendingChange={setParameterPending} onPatch={patchDraft} />
             <button type="button" onClick={() => void validate()} disabled={loading || !meta || validating || !hasDefinitionFormula} className="mt-3 w-full rounded-lg border border-accent-200 bg-accent-50 px-4 py-2.5 text-sm font-semibold text-accent-700 hover:bg-accent-100 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-accent-500">{validating ? '解析与校验中…' : isTimeSeries ? '解析并校验全部通道' : '解析并校验公式'}</button>
             <div className="mt-4 rounded-xl border border-accent-100 bg-accent-50/50 p-4"><p className="text-xs font-semibold tracking-wide text-accent-700">数学排版预览{isTimeSeries && activeSeriesOutput ? ` · ${activeSeriesOutput.label}` : ''}</p><div data-testid="formula-preview" className="mt-3 overflow-x-auto text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /></div>
             {displayedInference && <InferencePanel inference={displayedInference} resourceLabels={resourceLabels} />}
@@ -2563,9 +2530,9 @@ export default function IndicatorStudio() {
               <div className="mt-4 flex gap-2"><select aria-label="产品类型" value={searchKind} onChange={(event) => { setSearchKind(event.target.value as ProductKind | 'all'); setSearchResults([]) }} className="rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部</option><option value="etf">ETF</option><option value="fund">公募基金</option></select><SearchDropdown label="搜索产品" value={searchText} items={searchResults} onChange={setSearchText} onSearch={lookupProducts} loading={searching} placeholder="名称或代码" className="flex-1" getItemKey={(item, index) => `${item.code ?? item.ts_code ?? index}-${item.instrument_type ?? ''}`} renderItem={(item) => { const target = targetFromItem(item); const selected = Boolean(target && targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)); const atLimit = targets.length >= MAX_PREVIEW_TARGETS; return <div className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0 text-sm text-slate-700"><span className="font-medium">{item.name || target?.product_id}</span><span className="ml-2 text-xs text-slate-600">{target?.product_id}</span></span><button type="button" onClick={() => addTarget(item)} disabled={!target || selected || atLimit} title={!selected && atLimit ? `最多选择 ${MAX_PREVIEW_TARGETS} 个产品` : undefined} className="shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-accent-700 hover:bg-accent-50 disabled:text-slate-600 focus:outline-none focus:ring-2 focus:ring-accent-500">{selected ? '已添加' : atLimit ? '已达上限' : '添加'}</button></div> }} /></div>
               <div className="mt-4"><p className="text-sm font-medium text-slate-700">已选产品 <span aria-live="polite" className="text-slate-600">{targets.length} / {MAX_PREVIEW_TARGETS}</span></p><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((target) => <span key={`${target.kind}-${target.product_id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-3 pr-1 text-xs text-slate-700"><span>{target.name}</span><span className="text-slate-600">{target.product_id !== target.name ? target.product_id : ''}</span><button type="button" aria-label={`移除 ${target.name}`} onClick={() => { setTargets((current) => current.filter((item) => item.kind !== target.kind || item.product_id !== target.product_id)); setResults([]); setMessage('预览产品已移除，请重新计算。') }} className="rounded-full px-1.5 py-0.5 text-slate-600 hover:bg-white hover:text-rose-600">×</button></span>) : <p className="text-sm text-slate-600">尚未选择产品</p>}</div></div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setSeriesResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setSeriesResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" /></label></div>
-              {isTimeSeries && (draft.parameter_contract_version === '1.0' && draft.parameter_schema?.length
+              {draft.parameter_contract_version === '1.0' && draft.parameter_schema?.length
                 ? <IndicatorParameterInputs schema={draft.parameter_schema} values={runtimeParameters} onApply={applyRuntimeParameters} disabled={parameterPending || canvasPending || saving} />
-                : <p className="mt-3 rounded-lg border border-accent-100 bg-accent-50 px-3 py-2 text-xs text-accent-800">{s('indicatorParameters.fixedHint')}</p>)}
+                : <p className="mt-3 rounded-lg border border-accent-100 bg-accent-50 px-3 py-2 text-xs text-accent-800">{s('indicatorParameters.fixedHint')}</p>}
               <p className="mt-2 text-xs text-slate-500">选择产品并执行预览后，系统会根据实际数据判断是否可计算，并在结果中说明数据缺失、样本不足等原因。</p><button type="button" onClick={() => void preview()} disabled={previewing || excelExporting || periods.length === 0 || !targets.length || !hasDefinitionFormula} className="mt-3 w-full rounded-lg bg-accent-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-accent-500">{previewing ? '计算中…' : '预览指标'}</button><button type="button" onClick={() => void downloadExcel()} disabled={excelExporting || previewing || periods.length === 0 || !targets.length || !hasDefinitionFormula} className="mt-2 w-full rounded-lg border border-accent-200 bg-white px-4 py-2.5 text-sm font-semibold text-accent-700 hover:bg-accent-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-accent-500">{excelExporting ? '正在生成 Excel…' : '下载 Excel 计算逻辑'}</button>
           </div>
 
@@ -2799,7 +2766,7 @@ function TypedCatalog({ tabsValue, onTabChange, variables, operators, indicators
     {selectedComposer && <article className={`mt-4 rounded-xl border p-4 ${selectedSupported ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50 opacity-60'}`}>
       <div className="flex items-start justify-between gap-3"><div><h4 className="text-base font-semibold text-slate-900">{selectedComposer.label}</h4><p className="mt-1 text-xs text-slate-600">{humanizeTechnicalTypes(selectedComposer.essence)}</p></div><ShapeBadge shape={selectedComposer.outputShape} valueType={selectedComposer.outputType} /></div>
       <p className="mt-3 text-sm leading-6 text-slate-600">{humanizeTechnicalTypes(selectedComposer.semantic)}</p><p className="mt-3 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600" aria-label="算子输入输出说明">{operatorContractDescription(selectedComposer)}</p>
-      <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[440px] text-left text-xs"><caption className="sr-only">{selectedComposer.label} 参数要求</caption><thead><tr className="border-b border-slate-200 text-slate-600"><th scope="col" className="pb-2 pr-3">参数</th><th scope="col" className="pb-2 pr-3">支持的数据</th><th scope="col" className="pb-2">参数含义</th></tr></thead><tbody>{selectedComposer.parameters.map((parameter) => <tr key={parameter.name} className="border-b border-slate-100 align-top last:border-0"><td className="py-2 pr-3 font-semibold text-slate-700">{parameterLabel(parameter.name, parameter.label || parameter.name)}{parameter.optional ? '（可选）' : ''}</td><td className="py-2 pr-3 text-slate-600">{acceptedShapes(parameter).map((shape) => shapeLabel(shape)).join(' / ')}</td><td className="py-2 text-slate-600">{parameterDescription(parameter)}</td></tr>)}</tbody></table></div>
+      <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[440px] text-left text-xs"><caption className="sr-only">{selectedComposer.label} 参数要求</caption><thead><tr className="border-b border-slate-200 text-slate-600"><th scope="col" className="pb-2 pr-3">参数</th><th scope="col" className="pb-2 pr-3">支持的数据</th><th scope="col" className="pb-2">参数含义</th></tr></thead><tbody>{selectedComposer.parameters.map((parameter) => <tr key={parameter.name} className="border-b border-slate-100 align-top last:border-0"><td className="py-2 pr-3 font-semibold text-slate-700">{parameter.label || parameter.name}{parameter.optional ? '（可选）' : ''}</td><td className="py-2 pr-3 text-slate-600">{acceptedShapes(parameter).map((shape) => shapeLabel(shape)).join(' / ')}</td><td className="py-2 text-slate-600">{parameterDescription(parameter)}</td></tr>)}</tbody></table></div>
       <dl className="mt-4 grid gap-2 text-xs text-slate-600 sm:grid-cols-2"><div><dt className="font-semibold text-slate-700">返回结果</dt><dd className="mt-1">{shapeLabel(selectedComposer.outputShape, selectedComposer.outputType)}</dd></div><div><dt className="font-semibold text-slate-700">计算特点</dt><dd className="mt-1">{costEstimateLabel(selectedComposer.costEstimate)}</dd></div><div><dt className="font-semibold text-slate-700">所属分类</dt><dd className="mt-1">{selectedComposer.categoryLabel}</dd></div><div><dt className="font-semibold text-slate-700">执行方式</dt><dd className="mt-1">{executionBackendLabel(selectedComposer.executionBackend)}</dd></div>{selectedComposer.displayTemplate && <div className="sm:col-span-2"><dt className="font-semibold text-slate-700">数学符号示例</dt><dd className="mt-1 rounded-lg border border-accent-100 bg-accent-50/40 px-3 py-2"><MathNotation latex={selectedComposer.displayTemplate} label={`${selectedComposer.label}的数学符号示例`} /></dd></div>}</dl>
       <button type="button" disabled={!selectedSupported} onClick={() => onOpenComposer(selectedComposer)} className="mt-4 w-full rounded-lg bg-accent-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-accent-700 disabled:cursor-not-allowed disabled:bg-slate-300">{selectedSupported ? '配置算子参数' : '不适用于单产品指标'}</button>
     </article>}
@@ -2953,12 +2920,9 @@ function FormulaExplanation({ dag, variables, operators, compact = false }: { da
         const stepFormula = mathFormulaForDisplay(node.latex_fragment, node.formula_fragment) || operator?.displayTemplate
         return <li key={node.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="flex items-start gap-3"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-600 text-xs font-bold text-white">{index + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-slate-800">使用“{nodeName(node)}”</p><span className="text-xs text-slate-600">得到{shapeLabel(dagNodeShape(node), dagNodeValueType(node))}</span></div>{stepFormula && <div className="mt-2 rounded-lg bg-white px-2 py-1"><MathNotation latex={stepFormula} label={`第 ${index + 1} 步的数学公式`} /></div>}{inputs.length > 0 && <ul className="mt-2 space-y-1 text-xs text-slate-600">{inputs.map((edge, inputIndex) => {
           const source = nodeById.get(String(edge.source))
-          const parameter = operatorParameterLabel(
-            operator?.id || dagNodeOperatorId(node),
-            inputIndex,
-            edge.parameter || edge.parameter_name || edge.input_name || operator?.parameters[inputIndex]?.name,
-            operator?.parameters[inputIndex]?.label || `输入 ${inputIndex + 1}`,
-          )
+          const parameter = operator?.parameters[inputIndex]?.label
+            || edge.parameter || edge.parameter_name || edge.input_name
+            || `输入 ${inputIndex + 1}`
           return <li key={`${edge.source}-${inputIndex}`}><span className="font-semibold text-accent-700">{parameter}</span>：{nodeName(source)}</li>
         })}</ul>}</div></div></li>
       })}</ol>
@@ -2980,7 +2944,7 @@ function ComposerNodeFields({ node, path, variables, operators, indicators, cont
       const compatibleIndicators = fixedConstant ? [] : parameterAcceptsIndicator(argument.parameter) ? indicators : []
       const constantAllowed = fixedConstant || needs.includes('scalar') || needs.includes('unknown')
       const nestedAllowed = !fixedConstant && depth < 3 && compatibleOperators.length > 0
-      const label = parameterLabel(argument.parameter.name, argument.parameter.label || argument.parameter.name)
+      const label = argument.parameter.label || argument.parameter.name
       const source = fixedConstant ? 'constant' : argument.source
       return <fieldset key={`${argument.parameter.name}-${argumentPath.join('-')}`} className={`rounded-xl border p-3 ${depth > 0 ? 'border-accent-100 bg-accent-50/30' : 'border-slate-200'}`}>
         <legend className="px-1 text-sm font-semibold text-slate-800">{label} <span className="font-normal text-slate-600">· {needs.map((shape) => shapeLabel(shape)).join(' / ')}</span></legend>

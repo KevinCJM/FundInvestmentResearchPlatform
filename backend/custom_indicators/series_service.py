@@ -41,7 +41,7 @@ from .excel_export import (
     build_series_indicator_excel_workbook,
 )
 from .presentation import metric_presentation
-from .series_parameters import parameter_hash
+from .series_parameters import parameter_hash, raise_on_configuration_violations
 from cal_indicators.rolling_scope import analyze_interval
 from cal_indicators.typed_operators import get_typed_operator_registry
 from .repository import IndicatorRepository
@@ -88,29 +88,6 @@ _SERIES_PLAN_LOCK = threading.RLock()
 _WARMED_SERIES_PLANS: dict[
     str, tuple[TypedSeriesBundlePlan, CompiledNumbaSeriesPlan]
 ] = {}
-
-
-_SERIES_FIXED_ARGUMENTS: dict[str, frozenset[str]] = {
-    "rolling_apply": frozenset({"window", "min_periods"}),
-    "rolling_window": frozenset({"window", "min_periods"}),
-    "rolling_mean": frozenset({"window", "min_periods"}),
-    "rolling_std": frozenset({"window", "ddof", "min_periods"}),
-    "rolling_min": frozenset({"window", "min_periods"}),
-    "rolling_max": frozenset({"window", "min_periods"}),
-    "recursive_smooth": frozenset({"periods", "initial"}),
-    "divide_or_default": frozenset({"default"}),
-    "lag": frozenset({"periods"}),
-    "difference": frozenset({"periods"}),
-    "variance": frozenset({"ddof"}),
-    "std": frozenset({"ddof"}),
-    "quantile": frozenset({"probability"}),
-    "quantile_where": frozenset({"probability"}),
-    "clip": frozenset({"lower", "upper"}),
-    "power": frozenset({"exponent"}),
-}
-_SERIES_CONSTANT_OPERATORS = frozenset(
-    {"negate", "add", "subtract", "multiply", "divide", "power"}
-)
 
 
 def _array_context_names(
@@ -185,71 +162,6 @@ def _build_series_runtime_context(
             frame[name].to_numpy(dtype=np.float64, copy=False)
         )
     return context
-
-
-def _constant_series_node(
-    node_id: int,
-    nodes: Mapping[int, Any],
-    memo: dict[int, bool],
-) -> bool:
-    cached = memo.get(node_id)
-    if cached is not None:
-        return cached
-    node = nodes[node_id]
-    if node.kind == "constant":
-        memo[node_id] = True
-        return True
-    constant = bool(
-        node.operator_id in _SERIES_CONSTANT_OPERATORS
-        and node.inputs
-        and all(_constant_series_node(int(child), nodes, memo) for child in node.inputs)
-    )
-    memo[node_id] = constant
-    return constant
-
-
-def _validate_fixed_series_configuration(
-    plan: TypedSeriesBundlePlan, parameter_ids: set[str] | None = None,
-) -> None:
-    """Reject data-dependent algorithm configuration before NJIT compilation."""
-
-    nodes = {int(node.node_id): node for node in plan.nodes}
-    memo: dict[int, bool] = {}
-    diagnostics: list[dict[str, Any]] = []
-    from cal_indicators.rolling_scope import outside_nodes
-    for node in outside_nodes(plan.nodes, tuple(plan.roots.values())):
-        fixed_names = _SERIES_FIXED_ARGUMENTS.get(str(node.operator_id or ""))
-        if not fixed_names:
-            continue
-        for parameter_name, input_node_id in node.arguments:
-            if parameter_name not in fixed_names:
-                continue
-            input_node = nodes[int(input_node_id)]
-            if input_node.kind == "variable" and str(input_node.label) in (parameter_ids or set()):
-                continue
-            if _constant_series_node(int(input_node_id), nodes, memo):
-                continue
-            diagnostics.append(
-                {
-                    "code": "SERIES_CONFIGURATION_MUST_BE_CONSTANT",
-                    "message": (
-                        f"{node.operator_id} 的参数 {parameter_name} 必须是定义级有限数值常量；"
-                        "修改该参数应创建新的指标公式或版本。"
-                    ),
-                    "field": "series_outputs",
-                    "node_id": int(node.node_id),
-                    "operator": node.operator_id,
-                    "parameter": parameter_name,
-                }
-            )
-    if diagnostics:
-        first = diagnostics[0]
-        raise ValidationError(
-            str(first["code"]),
-            str(first["message"]),
-            field="series_outputs",
-            diagnostics=diagnostics,
-        )
 
 
 def _definition_key(definition: Mapping[str, Any]) -> str:
@@ -348,10 +260,12 @@ def _compile_definition(
                 for channel_id, expression in series_expressions(definition).items()
             },
             variable_types=context_types,
+            parameter_names=frozenset(parameter_types),
             dsl_version=str(definition["dsl_version"]),
             operator_registry_version=str(definition["operator_registry_version"]),
         )
-        _validate_fixed_series_configuration(plan, set(parameter_types))
+        raise_on_configuration_violations(plan.nodes, tuple(plan.roots.values()),
+                                          plan.operator_registry_version, set(parameter_types))
         compiled = compile_numba_series_plan(plan)
     except (NumbaPlanCompileError, TypedDslError) as exc:
         diagnostics = [

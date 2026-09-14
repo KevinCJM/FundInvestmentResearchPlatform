@@ -14,6 +14,7 @@ from cal_indicators.typed_operators import (
     ROLLING_OPERATOR_REGISTRY_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
+    WINDOW_OPERATOR_REGISTRY_VERSION,
 )
 from cal_indicators.typed_types import ValueType
 
@@ -612,7 +613,7 @@ def time_series_builtin_indicators(
                 },
                 variable_types=variable_types("single_product", TYPED_DSL_VERSION),
                 dsl_version=TYPED_DSL_VERSION,
-                operator_registry_version=TYPED_OPERATOR_REGISTRY_VERSION,
+                operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
             )
             canonical = dict(plan.python_expressions)
             for output in current.get("series_outputs") or []:
@@ -622,7 +623,7 @@ def time_series_builtin_indicators(
             {
                 "revision": 2,
                 "dsl_version": TYPED_DSL_VERSION,
-                "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+                "operator_registry_version": WINDOW_OPERATOR_REGISTRY_VERSION,
                 "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
                 "variable_registry_version": VARIABLE_REGISTRY_VERSION,
                 "data_contract_version": DATA_CONTRACT_VERSION,
@@ -661,7 +662,7 @@ def time_series_builtin_indicators(
             plan = compose_typed_series_bundle(
                 scoped_formulas[previous["id"]],
                 variable_types=variable_types("single_product", TYPED_DSL_VERSION),
-                dsl_version=TYPED_DSL_VERSION, operator_registry_version=TYPED_OPERATOR_REGISTRY_VERSION,
+                dsl_version=TYPED_DSL_VERSION, operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
             )
             canonical = dict(plan.python_expressions)
             for output in current["series_outputs"]:
@@ -819,6 +820,7 @@ def _normalized_parameter_schema(items: Any) -> list[dict[str, Any]]:
                 "maximum": int(maximum) if parameter_type == "integer" else maximum,
                 "step": int(step) if parameter_type == "integer" else step,
                 "description": str(raw.get("description") or "").strip()[:300],
+                **{key: True for key in ("exclusive_minimum", "exclusive_maximum") if raw.get(key) is True},
             }
         )
     return normalized
@@ -1091,6 +1093,7 @@ def normalize_time_series_definition(
     supported_protocol_pairs = {
         (ROLLING_TYPED_DSL_VERSION, ROLLING_OPERATOR_REGISTRY_VERSION),
         (TYPED_DSL_VERSION, TYPED_OPERATOR_REGISTRY_VERSION),
+        (TYPED_DSL_VERSION, WINDOW_OPERATOR_REGISTRY_VERSION),
     }
     if (dsl_version, operator_registry_version) not in supported_protocol_pairs:
         raise ValidationError(

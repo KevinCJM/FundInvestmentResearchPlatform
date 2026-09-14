@@ -38,19 +38,25 @@ def typed_node_expressions(node, registry):
         return {"value": shared_expression(node, registry)}
     if metadata.get("available") is False:
         raise ValueError(metadata["unavailable_reason"])
-    if (definition.get("result_kind") or "scalar") == "scalar":
-        expression = canonical_formula_source(str(definition.get("expression") or ""))
-        return {"value": transform_scalar_expression(expression, node.parameters.get("window", 20)).expression}
-    values = resolve_parameter_values(definition, node.parameters)
+    scalar = (definition.get("result_kind") or "scalar") == "scalar"
+    # A scalar source has no parameter UI here, so it runs at its own defaults;
+    # a series source carries the values the regime node selected.
+    if scalar:
+        values = resolve_parameter_values(definition, None) if definition.get("parameter_schema") else {}
+    else:
+        values = resolve_parameter_values(definition, node.parameters)
 
     class BindParameters(ast.NodeTransformer):
         def visit_Name(self, item):  # noqa: N802
             return ast.copy_location(ast.Constant(values[item.id]), item) if item.id in values else item
 
-    return {
-        channel["id"]: ast.unparse(BindParameters().visit(ast.parse(canonical_formula_source(channel["expression"]), mode="eval")))
-        for channel in definition["series_outputs"]
-    }
+    def bound(expression: str) -> str:
+        return ast.unparse(BindParameters().visit(ast.parse(canonical_formula_source(expression), mode="eval")))
+
+    if scalar:
+        return {"value": transform_scalar_expression(
+            bound(str(definition.get("expression") or "")), node.parameters.get("window", 20)).expression}
+    return {channel["id"]: bound(channel["expression"]) for channel in definition["series_outputs"]}
 
 
 def typed_node_expression(node, registry, port=None):

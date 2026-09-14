@@ -31,6 +31,7 @@ from cal_indicators.typed_numba_kernels import (
 from cal_indicators.typed_numba_plan import (
     _risk_free_scalars,
     _risk_free_scalars_kernel,
+    batch_parameter_vector,
     compile_numba_batch_plan,
     compile_numba_plan,
     get_cached_numba_batch_plan,
@@ -185,6 +186,7 @@ def test_fused_batch_plan_matches_single_formula_njit_runtime(parallel: bool) ->
         elapsed,
         output,
         statuses,
+        batch_parameter_vector(definitions),
         parallel=parallel,
     )
 
@@ -245,8 +247,46 @@ def test_runtime_does_not_call_python_operator_registry() -> None:
     assert kernel_registry_status()["operator_coverage"] == f"{count}/{count}"
 
 
+def test_pruned_superset_plan_scatters_each_metric_to_its_own_parameter_slots() -> None:
+    """A subset selection packs values in its own order; the prepared kernel
+    reads the superset layout, so the slots must be re-addressed, not copied."""
+
+    formulas = ("annual_risk_free_rate_decimal", "mean(returns)", "annual_risk_free_rate_decimal * 2")
+    plans = tuple(compose_typed_expression(formula) for formula in formulas)
+    definitions = tuple({"annual_risk_free_rate_percent": rate} for rate in (1.0, 0.0, 4.0))
+    columns = ("adjusted_nav",)
+    compile_numba_batch_plan(plans, definitions, columns)
+    selection = (2, 0)
+    pruned = get_cached_numba_batch_plan(
+        tuple(plans[index] for index in selection),
+        tuple(definitions[index] for index in selection),
+        columns,
+    )
+    assert pruned is not None and pruned.metadata()["selected_roots"] == list(selection)
+
+    values = np.ascontiguousarray([[1.0, 1.02, 1.04]], dtype=np.float64)
+    output = np.full((1, len(selection)), np.nan, dtype=np.float64)
+    statuses = np.full((1, len(selection)), -1, dtype=np.int16)
+    pruned.compute(
+        values,
+        np.asarray([0], dtype=np.int64),
+        np.asarray([3], dtype=np.int64),
+        np.asarray([2.0], dtype=np.float64),
+        output,
+        statuses,
+        batch_parameter_vector(tuple(definitions[index] for index in selection)),
+        parallel=False,
+    )
+    assert np.all(statuses == 0)
+    # Metric 2 must read its own 4% slot, not metric 0's 1%.
+    assert output[0, 0] == pytest.approx(0.08)
+    assert output[0, 1] == pytest.approx(0.01)
+
+
 def test_batch_plan_cache_lookup_never_compiles_on_miss() -> None:
-    plan = compose_typed_expression("mean(returns)")
+    # A formula no other test compiles: the cache is process-wide, and a plan
+    # id no longer varies with the risk-free rate.
+    plan = compose_typed_expression("mean(returns) * 7.25")
     definitions = ({"annual_risk_free_rate_percent": 12.3456789},)
     columns = ("adjusted_nav",)
 
@@ -291,56 +331,57 @@ def test_batch_plan_audit_includes_risk_free_conversion_kernel() -> None:
     ]
 
 
-def test_numba_v3_migration_archives_plans_once_and_clears_run_cache(
-    tmp_path: Path,
-) -> None:
-    old_plan_payload = {
-        "schema_version": 1,
-        "items": [
-            {
-                "current": {"id": "plan-old", "revision": 1},
-                "history": [],
-            }
-        ],
-    }
-    indicator_payload = {"schema_version": 1, "items": []}
-    (tmp_path / "evaluation_plans.json").write_text(
-        json.dumps(old_plan_payload), encoding="utf-8"
-    )
-    indicator_path = tmp_path / "custom_indicators.json"
-    indicator_path.write_text(json.dumps(indicator_payload), encoding="utf-8")
-    run_cache = tmp_path / ".evaluation_run_cache"
-    run_cache.mkdir()
-    (run_cache / "deadbeef.json").write_text("{}", encoding="utf-8")
-    (run_cache / "deadbeef.parquet").write_bytes(b"old-result")
-
+@pytest.mark.parametrize("old_marker", [None, "typed-numba-3", "batch-parameter-vector-1"])
+def test_compile_upgrade_preserves_plans_history_and_run_results(tmp_path, old_marker):
+    payload = {"schema_version": 2, "items": [{"current": {"id": "plan-old", "revision": 2},
+               "history": [{"id": "plan-old", "revision": 1}]}]}
+    if old_marker:
+        payload["migration"] = {"marker": old_marker}
+    path = tmp_path / "evaluation_plans.json"
+    path.write_text(json.dumps(payload))
+    cache = tmp_path / ".evaluation_run_cache"
+    cache.mkdir()
+    (cache / "deadbeef.parquet").write_bytes(b"locked-result")
     first = CustomIndicatorService(tmp_path, tmp_path)
-    archives = list(
-        (tmp_path / "archive").glob(
-            "evaluation_plans.pre-typed-numba-3.*.json"
-        )
-    )
-    active = json.loads(
-        (tmp_path / "evaluation_plans.json").read_text(encoding="utf-8")
-    )
-
-    assert first.migration["applied"] is True
-    assert len(archives) == 1
-    assert json.loads(archives[0].read_text(encoding="utf-8"))["items"] == (
-        old_plan_payload["items"]
-    )
-    assert active["items"] == []
-    assert active["migration"]["marker"] == "typed-numba-3"
-    assert not list(run_cache.iterdir())
-    assert json.loads(indicator_path.read_text(encoding="utf-8")) == indicator_payload
-
+    assert json.loads(path.read_text())["items"] == payload["items"]
+    assert (cache / "deadbeef.parquet").read_bytes() == b"locked-result"
+    assert not (tmp_path / "archive").exists()
+    assert first.migration["applied"] == (old_marker != "batch-parameter-vector-1")
+    before = path.read_bytes()
     second = CustomIndicatorService(tmp_path, tmp_path)
-
     assert second.migration["applied"] is False
-    assert len(
-        list(
-            (tmp_path / "archive").glob(
-                "evaluation_plans.pre-typed-numba-3.*.json"
-            )
-        )
-    ) == 1
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_repeated_formula_instances_keep_distinct_slots_in_pruned_batch(parallel):
+    formulas = ("annual_risk_free_rate_decimal + 0.0123",) * 2 + ("mean(returns) * 1.2345",)
+    plans = tuple(compose_typed_expression(formula) for formula in formulas)
+    definitions = tuple({"annual_risk_free_rate_percent": rate} for rate in (1., 4., 0.))
+    columns = ("adjusted_nav",)
+    prepared = compile_numba_batch_plan(plans, definitions, columns)
+    signatures = tuple(prepared.serial_dispatcher.nopython_signatures)
+    pruned = get_cached_numba_batch_plan(plans[:2], definitions[:2], columns)
+    assert pruned.indices == (0, 1)
+    output = np.empty((1, 2)); statuses = np.empty((1, 2), dtype=np.int16)
+    pruned.compute(np.array([[1., 1.02, 1.04]]), np.array([0], dtype=np.int64),
+                   np.array([3], dtype=np.int64), np.array([2.]), output, statuses,
+                   batch_parameter_vector(definitions[:2]), parallel=parallel)
+    np.testing.assert_allclose(output, [[.0223, .0523]])
+    assert (statuses == 0).all()
+    assert tuple(prepared.serial_dispatcher.nopython_signatures) == signatures
+    # A superset with only two occurrences cannot serve three identical roots.
+    assert get_cached_numba_batch_plan((plans[0],) * 3, (definitions[0],) * 3, columns) is None
+
+
+@pytest.mark.parametrize("version", ["2.2.0", "2.3.0", "2.4.0"])
+def test_historical_dynamic_scalar_bounds_run_through_warmed_njit(version):
+    plan = compose_typed_expression("mean(clip(returns, -1 / 2, mean(returns)))",
+                                    dsl_version=version, operator_registry_version=version)
+    compiled = compile_numba_plan(plan)
+    runtime = TypedIndicatorRuntime.from_warmed_plan(plan)
+    before = tuple(compiled.dispatcher.signatures)
+    values = np.array([-.6, -.1, .2, .5], dtype=np.float64)
+    assert runtime.compute({"returns": values}) == pytest.approx(np.clip(values, -.5, values.mean()).mean())
+    assert tuple(compiled.dispatcher.signatures) == before
+    assert runtime.trace_payload()["python_fallback"] == 0
