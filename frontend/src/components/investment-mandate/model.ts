@@ -1,3 +1,4 @@
+import { institutionalIssue } from '../../services/institutionalContext'
 import type { FundingPlan, MandateDefinition, MandateStudyRequest, ObjectiveKind } from '../../services/strategicAllocation'
 
 export const objectiveLabels: Record<ObjectiveKind, string> = {
@@ -48,9 +49,9 @@ export function mandateIssues(value: MandateDefinition, cutoff: string): [string
   else if (Object.values(value.asset_limits ?? {}).some(x => !finite(x.min_weight, 0, 1) || !finite(x.max_weight, x.min_weight, 1) || !finite(x.max_abs_tilt, 0, 1))) boundary = '请核对资产上下限，最低权重不能大于最高权重。'
   else if ((value.group_limits ?? []).some(g => !g.id.trim() || !g.assets.length || new Set(g.assets).size !== g.assets.length || !finite(g.lo, 0, 1) || !finite(g.hi, g.lo, 1))
     || new Set((value.group_limits ?? []).map(g => g.id)).size !== (value.group_limits ?? []).length) boundary = '联合约束须有唯一名称和不重复成员，比例在0%至100%之间且最低不高于最高。'
-  else if ((Object.keys(value.asset_limits ?? {}).length || (value.group_limits ?? []).length) && !value.allocation_scope) boundary = '资产和联合约束须绑定所属大类方案，不能仅按资产同名复用授权。'
+  else if ((Object.keys(value.asset_limits ?? {}).length || (value.group_limits ?? []).length) && !(value.allocation_scope || value.strategic_universe_id)) boundary = '资产和联合约束须绑定所属大类方案，不能仅按资产同名复用授权。'
   else if (value.benchmark && value.allocation_scope && value.benchmark.alloc_name !== value.allocation_scope) boundary = '基准与授权边界须使用同一个大类方案。'
-  return [fact, boundary]
+  return [fact || institutionalIssue(value.institutional_context, value.as_of, value.currency), boundary]
 }
 export function studyIssue(value: MandateStudyRequest): string {
   return !integer(value.simulation_paths, 500, 10000) || !integer(value.seed, 0, 2 ** 32 - 1) || !finite(value.uncertainty_penalty, 0, 5)

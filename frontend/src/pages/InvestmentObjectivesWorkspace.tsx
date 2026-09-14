@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { readAllocationDraft, useAllocationDraft } from '../app/allocationJourney'
+import { readAllocationDraft, useAllocationDraft, updateAllocationJourney, allocationJourneyPath } from '../app/allocationJourney'
 import { useResearchDay } from '../app/ResearchContext'
 import { Button } from '../components/ui'
 import { Feedback, Field, inputClass, NumberInput, percentText, sectionClass, today } from '../components/risk-models/ResearchUI'
 import { GoalFields, BoundaryFields } from '../components/investment-mandate/MandateFields'
+import InstitutionalFields from '../components/investment-mandate/InstitutionalFields'
+import InstitutionalResults from '../components/investment-mandate/InstitutionalResults'
 import AssetAuthorizations from '../components/investment-mandate/AssetAuthorizations'
 import MandateResults from '../components/investment-mandate/MandateResults'
 import { amountText, mandateIssues, newMandate, objectiveLabels, studyIssue } from '../components/investment-mandate/model'
@@ -41,7 +43,8 @@ export default function InvestmentObjectivesWorkspace() {
   const numericIssue = studyIssue(draft)
   const matchingCmas = catalog?.assumptions.filter(cma => cma.currency === definition.currency && cma.as_of === definition.as_of
     && cma.horizon_years === definition.horizon_years && (!definition.benchmark || cma.alloc_name === definition.benchmark.alloc_name)
-    && (!definition.allocation_scope || cma.alloc_name === definition.allocation_scope)) ?? []
+    && (!definition.allocation_scope || cma.alloc_name === definition.allocation_scope)
+    && (!definition.strategic_universe_id || cma.strategic_universe_id === definition.strategic_universe_id)) ?? []
   const cmaIssue = !selected && draft.cma_id && catalog && !matchingCmas.some(cma => cma.id === draft.cma_id)
     ? '已选CMA不在当前日期、币种、期限及大类范围内，请重新选择或明确改为仅资金测算。' : ''
   const activeIssue = clockIssue || (step === 0 ? issues[0] : step === 1 ? issues[1] : issues.find(Boolean) || numericIssue || cmaIssue)
@@ -76,7 +79,7 @@ export default function InvestmentObjectivesWorkspace() {
   function update(patch: Partial<MandateDefinition>) {
     invalidate()
     setDraft(current => ({ ...current, definition: { ...current.definition, ...patch },
-      cma_id: ['as_of', 'currency', 'horizon_years', 'benchmark', 'allocation_scope'].some(key => key in patch) ? null : current.cma_id }))
+      cma_id: ['as_of', 'currency', 'horizon_years', 'benchmark', 'allocation_scope', 'strategic_universe_id'].some(key => key in patch) ? null : current.cma_id }))
   }
   function updateStudy(patch: Partial<Omit<MandateStudyRequest, 'definition'>>) {
     invalidate(); setDraft(current => ({ ...current, ...patch }))
@@ -98,6 +101,7 @@ export default function InvestmentObjectivesWorkspace() {
     if (clockIssue || !preview || !acknowledged || selected || issues.some(Boolean) || numericIssue || cmaIssue) return
     void run(signal => confirmMandate(draft, preview.preview_hash, signal), version => {
       setSelected(version); setPreview(version.assessment ?? null)
+      updateAllocationJourney({ mandateId: version.id })
       setCatalog(current => current && ({ ...current, mandates: [version, ...current.mandates] }))
       setNotice('已保存不可变目标版本；诊断状态与模型依据一并保留。')
     })
@@ -107,6 +111,7 @@ export default function InvestmentObjectivesWorkspace() {
       const assessment = version.assessment?.preview_hash ? version.assessment : null
       setDraft(assessment?.request ?? { definition: version.definition, cma_id: null,
         simulation_paths: 2000, seed: 42, uncertainty_penalty: 1 })
+      updateAllocationJourney({ mandateId: version.id })
       setSelected(version); setPreview(assessment); setAcknowledged(false); setStep(assessment ? 3 : 0)
       setNotice('正在查看已保存版本，输入只读；复制为新研究后才能修改。')
     })
@@ -121,13 +126,14 @@ export default function InvestmentObjectivesWorkspace() {
     {selected && <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3"><p className="text-sm text-slate-700">只读版本：{selected.name} · {statusLabel(selected.assessment?.status ?? selected.assessment_status)}</p>
       <Button onClick={() => { invalidate(); setStep(0); setNotice('已复制输入，原版本未改变；请核对研究日期后重新诊断。') }}>复制为新研究</Button>
       <Button onClick={() => { invalidate(); setDraft({ definition: newMandate(cutoff), cma_id: null, simulation_paths: 2000, seed: 42, uncertainty_penalty: 1 }); setStep(0); setNotice('') }}>建立新目标</Button>
+      <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-800 underline" to={allocationJourneyPath('pool')}>下一步：确定投资范围 →</Link>
       <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-800 underline" to={`/pre-investment/saa/policy?mandate=${encodeURIComponent(selected.id)}`}>使用此目标进入长期配置 →</Link>
     </div>}
     <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold text-slate-900">{steps[step]}</h2>
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(230px,1fr)]">
       <section className={`${sectionClass} min-w-0 space-y-5`} aria-label="投资目标编辑">
         {step < 2 && <fieldset disabled={Boolean(selected)} className="min-w-0 space-y-5">
-          {step === 0 ? <GoalFields value={definition} onChange={update} catalog={catalog} cutoff={cutoff} />
+          {step === 0 ? <><InstitutionalFields value={definition} onChange={update} /><GoalFields value={definition} onChange={update} catalog={catalog} cutoff={cutoff} /></>
             : <><BoundaryFields value={definition} onChange={update} /><AssetAuthorizations value={definition} catalog={catalog} onChange={update} /></>}
         </fieldset>}
         {step === 2 && <>
@@ -142,6 +148,7 @@ export default function InvestmentObjectivesWorkspace() {
           {busy && <p role="status" className="text-sm text-slate-600">正在按当前输入计算；尚无完成结果，不显示预测数值。</p>}
           {preview ? <MandateResults key={preview.preview_hash} value={preview} /> : <p className="text-sm text-slate-600">运行后在这里查看资金要求、约束冲突和可用CMA下的量化诊断。</p>}
         </>}
+        {preview?.institutional_diagnostics && step >= 2 && <InstitutionalResults value={preview.institutional_diagnostics} />}
         {step === 3 && preview && <>
           <h3 className="text-base font-semibold">确认的是目标与边界，不是收益承诺</h3>
           <dl className="grid gap-4 sm:grid-cols-2"><div><dt className="text-xs text-slate-600">成功标准</dt><dd className="mt-1 text-sm">{objectiveLabels[definition.objective_kind ?? 'absolute_return']} · {definition.horizon_years}年</dd></div>

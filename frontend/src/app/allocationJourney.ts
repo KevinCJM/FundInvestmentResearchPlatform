@@ -3,6 +3,9 @@ import { useCallback, useMemo, useState, useSyncExternalStore, type Dispatch, ty
 /** Browser drafts contain inputs and saved-object references, never calculated evidence. */
 export interface AllocationJourney {
   name?: string
+  mandateId?: string
+  strategicUniverseId?: string
+  implementationMappingId?: string
   researchDate?: string
   universeId?: string
   poolVersionIds?: string[]
@@ -49,7 +52,7 @@ function decode<T>(raw: string | null, fallback: T): T {
 function journeyFrom(raw: string | null): AllocationJourney {
   const value = decode<Record<string, unknown>>(raw, {})
   const journey: AllocationJourney = {}
-  for (const key of ['name', 'researchDate', 'universeId', 'allocationName', 'baselineId', 'taaRunId'] as const) {
+  for (const key of ['name', 'researchDate', 'universeId', 'allocationName', 'baselineId', 'taaRunId', 'mandateId', 'strategicUniverseId', 'implementationMappingId'] as const) {
     if (typeof value[key] === 'string' && value[key].trim()) journey[key] = value[key]
   }
   if (Array.isArray(value.poolVersionIds) && value.poolVersionIds.every(id => typeof id === 'string' && id.trim())) journey.poolVersionIds = value.poolVersionIds
@@ -79,9 +82,18 @@ export function updateAllocationJourney(patch: Partial<AllocationJourney>): Allo
   const next = { ...current }
   if ('universeId' in patch && patch.universeId !== current.universeId) {
     delete next.name; delete next.researchDate; delete next.poolVersionIds
-    delete next.allocationName; delete next.baselineId; delete next.taaRunId
+    delete next.allocationName
+    if (!current.strategicUniverseId || current.implementationMappingId) { delete next.baselineId; delete next.taaRunId }
+    delete next.implementationMappingId
   }
   if ('allocationName' in patch && patch.allocationName !== current.allocationName) {
+    delete next.baselineId; delete next.taaRunId
+  }
+  if ('mandateId' in patch && patch.mandateId !== current.mandateId) { delete next.baselineId; delete next.taaRunId }
+  if ('strategicUniverseId' in patch && patch.strategicUniverseId !== current.strategicUniverseId) {
+    delete next.implementationMappingId; delete next.baselineId; delete next.taaRunId
+  }
+  if ('implementationMappingId' in patch && patch.implementationMappingId !== current.implementationMappingId) {
     delete next.baselineId; delete next.taaRunId
   }
   if ('baselineId' in patch && patch.baselineId !== current.baselineId) delete next.taaRunId
@@ -115,8 +127,14 @@ export function allocationJourneyPath(step: AllocationJourneyStep, journey = rea
   const query = new URLSearchParams()
   if (step === 'pool' && !journey.universeId && journey.poolVersionIds?.length === 1) query.set('version', journey.poolVersionIds[0])
   if (step === 'saa' && journey.baselineId) query.set('baseline', journey.baselineId)
-  if (step === 'saa' && journey.allocationName) query.set('alloc', journey.allocationName)
+  if (step === 'saa' && !journey.strategicUniverseId && journey.allocationName) query.set('alloc', journey.allocationName)
   if (['pool', 'classes', 'saa', 'products'].includes(step) && journey.universeId) query.set('universe', journey.universeId)
+  if (['pool', 'saa'].includes(step) && journey.mandateId) query.set('mandate', journey.mandateId)
+  if (['pool', 'saa'].includes(step) && journey.strategicUniverseId) {
+    query.set('strategic_universe', journey.strategicUniverseId)
+    if (step === 'pool') query.set('scope', 'strategic')
+    if (journey.implementationMappingId) query.set('mapping', journey.implementationMappingId)
+  }
   if (step === 'products' && journey.taaRunId) query.set('decision', journey.taaRunId)
   if (step === 'taa') {
     if (journey.taaRunId) query.set('decision', journey.taaRunId)

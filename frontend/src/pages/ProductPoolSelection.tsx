@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import StrategicScopeWorkspace from '../components/strategic-scope/StrategicScopeWorkspace'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useResearchDay } from '../app/ResearchContext'
 import { updateAllocationJourney, useAllocationDraft, useAllocationJourney, writeAllocationDraft } from '../app/allocationJourney'
@@ -19,6 +20,24 @@ function messageOf(reason: unknown, fallback: string) {
 }
 
 export default function ProductPoolSelection() {
+  const [params] = useSearchParams()
+  const strategic = params.get('scope') === 'strategic'
+  const query = new URLSearchParams(params)
+  query.set('scope', 'strategic')
+  const products = new URLSearchParams(params)
+  products.delete('scope'); products.delete('strategic_universe'); products.delete('mapping')
+  return <div className="space-y-4">
+    <nav aria-label="投资范围路径" className="flex flex-wrap gap-3 px-4 pt-4 text-sm sm:px-6">
+      <Link aria-current={!strategic ? 'page' : undefined} className="inline-flex min-h-10 items-center rounded-lg px-3 font-semibold text-accent-800 underline" to={`?${products}`}>已有产品：选择产品池</Link>
+      <Link aria-current={strategic ? 'page' : undefined} className="inline-flex min-h-10 items-center rounded-lg px-3 font-semibold text-accent-800 underline" to={`?${query}`}>先做战略研究：独立资产范围</Link>
+    </nav>
+    {strategic ? <div className="mx-auto max-w-6xl p-4 sm:p-6"><StrategicScopeWorkspace /></div> : <ProductPoolWorkspace />}
+  </div>
+}
+
+function ProductPoolWorkspace() {
+  const generation = useRef(0)
+  useEffect(() => () => { ++generation.current }, [])
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const [journey] = useAllocationJourney()
@@ -30,8 +49,8 @@ export default function ProductPoolSelection() {
   const name = draft.name
   const selectedIds = draft.selectedIds
   const [showHistory, setShowHistory] = useState(false)
-  const setName = (value: string) => setDraft(current => ({ ...current, name: value }))
-  const setResearchDate = (value: string) => { setDraft(current => ({ ...current, researchDate: value, snapshotId: '', selectedIds: [], selectionEdited: true })); setSnapshot(null) }
+  const setName = (value: string) => { ++generation.current; setCreating(false); setDraft(current => ({ ...current, name: value })) }
+  const setResearchDate = (value: string) => { ++generation.current; setCreating(false); setDraft(current => ({ ...current, researchDate: value, snapshotId: '', selectedIds: [], selectionEdited: true })); setSnapshot(null) }
   const [versions, setVersions] = useState<ProductPoolVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -81,6 +100,7 @@ export default function ProductPoolSelection() {
   }, [restoreId])
 
   const toggle = (versionId: string) => {
+    ++generation.current; setCreating(false)
     const target = versions.find(item => item.id === versionId)
     setDraft(current => ({ ...current, snapshotId: '', selectionEdited: true, selectedIds: current.selectedIds.includes(versionId)
       ? current.selectedIds.filter(id => id !== versionId)
@@ -94,6 +114,7 @@ export default function ProductPoolSelection() {
       setError('请填写名称并至少选择一个产品池版本。')
       return
     }
+    const token = ++generation.current
     setCreating(true); setError('')
     try {
       const result = await createInvestableUniverseSnapshot({
@@ -101,6 +122,7 @@ export default function ProductPoolSelection() {
         research_date: researchDate,
         version_ids: selectedIds,
       })
+      if (token !== generation.current) return
       setSnapshot(result)
       const savedDraft = { ...draft, snapshotId: result.id, selectionEdited: false, researchDate: result.research_date, selectedIds: result.version_ids ?? selectedIds }
       if (requestedUniverse && requestedUniverse !== result.id) {
@@ -109,9 +131,9 @@ export default function ProductPoolSelection() {
       } else setDraft(savedDraft)
       updateAllocationJourney({ name: result.name, researchDate: result.research_date, universeId: result.id, poolVersionIds: result.version_ids })
     } catch (reason) {
-      setError(messageOf(reason, '生成可投资域快照失败。'))
+      if (token === generation.current) setError(messageOf(reason, '生成可投资域快照失败。'))
     } finally {
-      setCreating(false)
+      if (token === generation.current) setCreating(false)
     }
   }
 

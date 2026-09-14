@@ -28,6 +28,7 @@ test('TAA真实界面在桌面和手机完成观点、候选、情景与保存�
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
   await page.evaluate(() => window.scrollTo(0, 0))
   await page.screenshot({ path: testInfo.outputPath('taa-initial.png'), fullPage: true })
+  await page.getByLabel('调仓口径').selectOption('daily_target')
   await page.getByRole('radio', { name: /研究员观点/ }).check()
   const equity = page.getByRole('spinbutton', { name: /权益偏离/ }); const bond = page.getByRole('spinbutton', { name: /债券偏离/ })
   await equity.fill('5'); await expect(page.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
@@ -67,3 +68,43 @@ test('TAA真实界面在桌面和手机完成观点、候选、情景与保存�
   expect(writes.filter(item => item.path.endsWith('/product-allocation'))).toHaveLength(1)
   expect(errors).toEqual([])
 })
+
+for (const width of [320, 768, 1440]) {
+  test(`M3 决策时钟、多信号和无持仓交接门禁 ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 1000 })
+    const writes: Array<{ path: string; body: any }> = []
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      const body = route.request().method() === 'POST' ? route.request().postDataJSON() : null
+      if (body) writes.push({ path, body })
+      const application = { state: 'ineligible', eligible: false, reasons: ['缺少研究日实际持仓，不能判断阈值或交接交易。'], threshold_triggered: null, decision_date: '2026-09-01', execution_opportunity: true, actual_execution: false }
+      let value: unknown
+      if (path.endsWith('/catalog')) value = taaCatalog
+      else if (path.endsWith('/baselines/SAA-1')) value = taaBaseline
+      else if (path.endsWith('/preflight')) value = taaPreflight
+      else if (path.endsWith('/preview')) value = { ...taaPreview, request: body, application }
+      else return route.fulfill({ status: 404, json: { detail: 'Offline fixture only.' } })
+      return route.fulfill({ json: value })
+    })
+    await page.goto('/pre-investment/taa?baseline=SAA-1')
+    await page.getByRole('radio', { name: /多信号组合/ }).check()
+    await expect(page.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
+    await page.getByRole('button', { name: '添加信号分量' }).click()
+    await page.getByRole('combobox', { name: '决策频率', exact: true }).selectOption('weekly')
+    await page.getByRole('combobox', { name: '执行机会', exact: true }).selectOption('monthly')
+    await page.getByText('执行滞后、阈值与实际持仓时点', { exact: true }).click()
+    await page.getByLabel('执行滞后（共同观察期）').fill('2')
+    await page.getByLabel('单资产偏离阈值（百分点）').fill('3')
+    await expect(page.getByLabel('信号 1 权重（%）')).toHaveValue('100')
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
+    await page.screenshot({ path: testInfo.outputPath(`m3-controls-${width}.png`), fullPage: true })
+    await page.getByRole('button', { name: '计算并比较方案' }).click()
+    await expect(page.getByRole('heading', { name: '不可交接', exact: true })).toBeVisible()
+    await page.getByRole('tab', { name: '版本与审计' }).click()
+    await expect(page.getByRole('button', { name: '带入产品配置' })).toBeDisabled()
+    expect(writes.find(r => r.path.endsWith('/preview'))?.body.decision_policy).toMatchObject({ decision_frequency: 'weekly', execution_frequency: 'monthly', execution_lag: 2, deviation_threshold: .03 })
+    expect(writes.filter(r => r.path.endsWith('/product-allocation') || r.path.endsWith('/decisions'))).toHaveLength(0)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
+    await page.screenshot({ path: testInfo.outputPath(`m3-gate-${width}.png`), fullPage: true })
+  })
+}

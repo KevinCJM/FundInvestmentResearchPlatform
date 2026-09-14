@@ -180,7 +180,11 @@
         "最优偏离",
         "TAA preflight",
         "TAA 研究预检",
-        "情景实验留存"
+        "情景实验留存",
+        "decision_policy",
+        "TAA决策频率",
+        "执行时钟",
+        "多信号组合"
       ],
       "negative_keywords": [],
       "route_priority": 100,
@@ -196,7 +200,8 @@
       "pitfall_ids": [
         "P07",
         "P14",
-        "P15"
+        "P15",
+        "P23"
       ],
       "expand_search_codes": [
         "read_frontend_backend_pair",
@@ -1132,7 +1137,16 @@
         "长期政策",
         "投资目标",
         "前瞻假设",
-        "SAA政策"
+        "SAA政策",
+        "BetterSaaTaa",
+        "投前01–04",
+        "战略机会集",
+        "实施映射",
+        "机构资金背景",
+        "Black-Litterman",
+        "black_litterman",
+        "scenario_mixture",
+        "风险预算候选"
       ],
       "negative_keywords": [],
       "route_priority": 101,
@@ -1148,7 +1162,8 @@
         "P04",
         "P05",
         "P07",
-        "P08"
+        "P08",
+        "P23"
       ],
       "expand_search_codes": [
         "read_frontend_backend_pair"

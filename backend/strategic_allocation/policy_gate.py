@@ -4,7 +4,10 @@ from datetime import date
 import numpy as np
 
 from backend.custom_indicators.errors import ValidationError
-from . import kernels
+from . import kernels, institution_kernels
+from .institution import review_blockers
+from .sources import verify_strategic_snapshot
+from .cma_application import frozen_policy_assumptions
 
 
 def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str) -> dict | None:
@@ -13,7 +16,7 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
         return None  # Historical baselines do not acquire fabricated policy evidence.
     kernels.require_ready()
     mandate = policy["mandate"]
-    assumptions = policy["assumptions"]
+    assumptions = frozen_policy_assumptions(policy)
     names = [asset["id"] for asset in baseline["assets"]]
     if set(weights) != set(names) or [a["id"] for a in assumptions["assets"]] != names:
         raise ValidationError("SAA_POLICY_AXIS", "目标权重与冻结政策的资产轴不一致。")
@@ -51,14 +54,37 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
             violations.append("当前目标在冻结CMA下相对授权基准的预期超额低于目标。")
         if benchmark_te > benchmark["max_tracking_error"] + 1e-10:
             violations.append("当前目标相对投资授权基准的主动风险超过上限。")
+    institution = mandate.get("institutional_context")
+    cash_check = None
+    if institution is not None:
+        institution_kernels.require_ready()
+        eligible = np.asarray([a["role"] == "liquidity" and a["liquidity"] == "liquid" for a in assumptions["assets"]], dtype=np.bool_)
+        values.flags.writeable = False
+        eligible.flags.writeable = False
+        cash_weight = institution_kernels.cash_weight_kernel(values, eligible)
+        floor = institution["cash_reserve_weight"]
+        cash_check = {"weight": float(cash_weight), "minimum": floor}
+        if cash_weight < floor - 1e-10:
+            violations.append("当前目标低于冻结的现金用途下限；可交易风险资产不能替代现金储备。")
+    reviews = review_blockers(mandate, as_of)
+    current_reviews = review_blockers(mandate, str(date.today()))
+    mapping_blockers = []
+    if baseline.get("strategic_universe_id"):
+        scope = verify_strategic_snapshot(baseline, require_complete=False)
+        mapping_blockers.extend(scope["apply_reasons"])
+        mapping = scope.get("implementation_mapping_snapshot")
+        if mapping and not mapping["definition"]["as_of"] <= str(date.today()) < mapping["definition"]["valid_until"]:
+            mapping_blockers.append("实施映射尚未生效或已到复核日。")
     expires = policy["expires_on"]
     if as_of < baseline["as_of"] or as_of >= expires:
         violations.append("政策尚未适用于本研究日或已到复核日期，请重新确认长期政策。")
     return {"within_limits": not violations, "violations": violations,
-            "current_application_eligible": str(date.today()) < expires and not violations,
+            "current_application_eligible": str(date.today()) < expires and not violations and not reviews and not current_reviews and not mapping_blockers,
+            "implementation_blockers": mapping_blockers,
+            "manual_review_blockers": reviews, "current_manual_review_blockers": current_reviews, "cash_reserve_check": cash_check,
             "benchmark_check": benchmark_check,
             "goal_diagnostic_scope": "strategic_plan_only_not_tactical_probability_guarantee" if mandate.get("funding_plan") else None,
-            "expected_volatility": float(metrics[1]), "max_volatility": mandate["max_volatility"],
+            "expected_return": float(metrics[0]), "expected_volatility": float(metrics[1]), "max_volatility": mandate["max_volatility"],
             "expected_tracking_error": float(expected_tracking_error),
             "requested_tracking_error_limit": float(tracking_error_limit) if np.isfinite(tracking_error_limit) else None,
             "max_tracking_error": mandate["max_tracking_error"], "expires_on": expires,
@@ -69,5 +95,9 @@ def require_policy_application(baseline: dict, weights: dict, tracking_error_lim
     check = check_policy(baseline, weights, tracking_error_limit, as_of)
     if check and not check["within_limits"]:
         raise ValidationError("SAA_POLICY_LIMIT", "；".join(check["violations"]))
+    if check and (check["manual_review_blockers"] or check["current_manual_review_blockers"]):
+        raise ValidationError("SAA_MANUAL_REVIEW_REQUIRED", "；".join(dict.fromkeys(check["manual_review_blockers"] + check["current_manual_review_blockers"])))
+    if check and check["implementation_blockers"]:
+        raise ValidationError("SAA_IMPLEMENTATION_INCOMPLETE", "；".join(check["implementation_blockers"]))
     if check and str(date.today()) >= check["expires_on"]:
         raise ValidationError("SAA_POLICY_EXPIRED", "历史研究可以保留，但政策已到复核日，不能直接用于当前产品应用。")

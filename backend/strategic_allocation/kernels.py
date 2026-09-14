@@ -19,7 +19,7 @@ CV = float64[::1]
 CM = float64[:, ::1]
 GM = types.uint8[:, ::1]
 _WARMED_PID: int | None = None
-VERSION = "forward-policy-moments/1.1.0"
+VERSION = "forward-policy-moments/1.2.0"
 
 
 @njit((M, float64, int64), cache=True, nogil=True)
@@ -154,21 +154,49 @@ def expected_excess_return_kernel(weights, benchmark_weights, means):
     return result
 
 
-@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64),
+@njit((V, V), cache=True, nogil=True)
+def risk_budget_error_kernel(contributions, budget):
+    """Squared distance between signed Euler risk shares and declared targets."""
+    if contributions.size == 0 or contributions.size != budget.size:
+        raise ValueError("POLICY_AXIS_MISMATCH")
+    error, total = 0.0, 0.0
+    for i in range(budget.size):
+        if not np.isfinite(budget[i]) or budget[i] < 0 or not np.isfinite(contributions[i]):
+            raise ValueError("POLICY_RISK_BUDGET_INVALID")
+        total += budget[i]
+        difference = contributions[i] - budget[i]
+        error += difference * difference
+    if abs(total - 1.0) > 1e-8:
+        raise ValueError("POLICY_RISK_BUDGET_INVALID")
+    return error
+
+
+@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V),
       cache=True, nogil=True)
-def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
-                             aversion, penalty, min_return, max_volatility, benchmark_weights,
-                             benchmark_te_limit, target_excess, samples, seed):
-    """Search a reproducible finite candidate set; this is not a global QP proof."""
+def policy_candidates_with_budget_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
+                                         aversion, penalty, min_return, max_volatility, benchmark_weights,
+                                         benchmark_te_limit, target_excess, samples, seed, risk_budget):
+    """One finite search for all objectives; optional risk-budget fit is not an exact solution."""
     count = means.size
     if (count < 1 or count > 30 or bounds.shape != (count, 2) or groups.shape[1] != count
             or groups.shape[0] != group_low.size or group_low.size != group_high.size
-            or samples < 1 or samples > 5000 or benchmark_weights.size not in (0, count)):
+            or samples < 1 or samples > 5000 or benchmark_weights.size not in (0, count)
+            or risk_budget.size not in (0, count)):
         raise ValueError("POLICY_SEARCH_SHAPE")
-    selected_weights = np.zeros((4, count), dtype=np.float64)
-    selected_metrics = np.full((4, 5), np.nan)
-    selected_contributions = np.full((4, count), np.nan)
-    best = np.full(4, -np.inf)
+    has_budget = int(risk_budget.size == count)
+    if has_budget:
+        budget_total = 0.0
+        for i in range(count):
+            if not np.isfinite(risk_budget[i]) or risk_budget[i] < 0:
+                raise ValueError("POLICY_RISK_BUDGET_INVALID")
+            budget_total += risk_budget[i]
+        if abs(budget_total - 1.0) > 1e-8:
+            raise ValueError("POLICY_RISK_BUDGET_INVALID")
+    method_count = 4 + has_budget
+    selected_weights = np.zeros((method_count, count), dtype=np.float64)
+    selected_metrics = np.full((method_count, 5), np.nan)
+    selected_contributions = np.full((method_count, count), np.nan)
+    best = np.full(method_count, -np.inf)
     raw = np.empty(count, dtype=np.float64)
     state = int(seed)
     accepted = 0
@@ -227,11 +255,38 @@ def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, gro
                 selected_weights[method, :] = weights
                 selected_metrics[method, :] = metrics
                 selected_contributions[method, :] = contributions
+        if has_budget:
+            # A zero-variance portfolio has undefined Euler risk shares. Do not
+            # manufacture zero contributions or a successful budget fit.
+            defined = True
+            for i in range(count):
+                if not np.isfinite(contributions[i]):
+                    defined = False
+                    break
+            squared_error = risk_budget_error_kernel(contributions, risk_budget) if defined else np.inf
+            if -squared_error > best[4] + 1e-14:
+                best[4] = -squared_error
+                selected_weights[4, :] = weights
+                selected_metrics[4, :] = metrics
+                selected_contributions[4, :] = contributions
     return selected_weights, selected_metrics, selected_contributions, accepted
 
 
+@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64),
+      cache=True, nogil=True)
+def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
+                             aversion, penalty, min_return, max_volatility, benchmark_weights,
+                             benchmark_te_limit, target_excess, samples, seed):
+    """Preserve the existing four-candidate ABI via the single current search."""
+    return policy_candidates_with_budget_kernel(
+        means, covariance, uncertainty, bounds, groups, group_low, group_high,
+        aversion, penalty, min_return, max_volatility, benchmark_weights,
+        benchmark_te_limit, target_excess, samples, seed, np.empty(0, dtype=np.float64))
+
+
 KERNELS = (historical_risk_kernel, cma_covariance_kernel, portfolio_moments_kernel,
-           expected_active_risk_kernel, expected_excess_return_kernel, policy_candidates_kernel)
+           expected_active_risk_kernel, expected_excess_return_kernel,
+           policy_candidates_with_budget_kernel, policy_candidates_kernel, risk_budget_error_kernel)
 for dispatcher in KERNELS:
     dispatcher.disable_compile()
 
@@ -262,6 +317,11 @@ def warm_strategic_kernels():
     policy_candidates_kernel(np.array([0.06, 0.03]), cov, np.array([0.02, 0.005]),
                              np.array([[0., 1.], [0., 1.]]), np.zeros((0, 2), dtype=np.uint8),
                              np.empty(0), np.empty(0), 5., 1., 0., 1., np.empty(0), 1., 0., 200, 42)
+    policy_candidates_with_budget_kernel(np.array([0.06, 0.03]), cov, np.array([0.02, 0.005]),
+                             np.array([[0., 1.], [0., 1.]]), np.zeros((0, 2), dtype=np.uint8),
+                             np.empty(0), np.empty(0), 5., 1., 0., 1., np.empty(0), 1., 0., 200, 42,
+                             np.array([0.5, 0.5]))
+    risk_budget_error_kernel(np.array([0.6, 0.4]), np.array([0.5, 0.5]))
     expected_excess_return_kernel(np.array([0.6, 0.4]), np.array([0.5, 0.5]), np.array([0.06, 0.03]))
     from .goal_kernels import warm_goal_kernels
     warm_goal_kernels()

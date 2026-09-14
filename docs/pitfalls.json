@@ -3,6 +3,31 @@
   "scope_mode": "subtree_only",
   "pitfalls": [
     {
+      "id": "P23",
+      "title": "strategic_scope_effective_models_and_execution_evidence",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": ["implementation_scope_conflation", "stale_effective_cma", "cash_liquidity_conflation", "execution_clock_leakage", "direct_bridge_bypass"],
+      "symptoms": ["Pure forward SAA is blocked by product-only navigation, or missing products erase strategic budgets.", "Model output is displayed while funding or TAA consumes old manual moments.", "Changing execution frequency changes cost basis or hides actual holding-budget breaches."],
+      "trigger_actions": ["change mandates, strategic universes, implementation maps or CMA generation", "change SAA policy consumption, TAA signals, clocks or product handoff"],
+      "related_paths": ["backend/strategic_allocation/cma_application.py", "backend/strategic_allocation/sources.py", "backend/strategic_allocation/institution.py", "backend/tactical_allocation/clocks.py", "backend/tactical_allocation/signals.py", "backend/tactical_allocation/portfolio_bridge.py", "frontend/src/layouts/StageLayout.tsx"],
+      "affected_modules": ["strategic_allocation_policy", "tactical_allocation_workbench", "frontend_allocation_workflows"],
+      "blast_radius": ["policy validity", "funding diagnosis", "tactical costs and timing", "immutable source lineage", "product budget preservation"],
+      "check_before_edit": [
+        "Preserve product-first workflows. Independent strategic definitions may support CMA/SAA without NAV; missing maps remain explicit and block TAA/product implementation. Completing a map creates new versions, never rewrites old policies.",
+        "Consume frozen effective moments through cma_application in search, funding and policy risk. Preserve raw model identity and hashes; posterior mean uncertainty is not asset-return risk. Never refit historical artifacts.",
+        "Cash-purpose floors require explicit liquid liquidity-role assets. Institutional manual evidence retains every topic, date and reason; researcher records are not independent approval.",
+        "Preserve original four-candidate and daily-target outputs. Risk budgets compare signed Euler shares over finite candidates; zero variance is unavailable. New kernels require actual invocation, fixed signatures and PID-bound warmup.",
+        "Separate observation, decision and execution clocks. Preserve drift, lag, explicit cost basis, actual-path budget diagnostics and training-only selection. Fixed-target stress is not strategy replay.",
+        "Every positive-weight signal component must be known, complete and unexpired, without missing-component renormalization. External value/carry/macro labels do not license fabricating scores from NAV.",
+        "Use actual dated holdings for thresholds and recheck current holdings at the shared product bridge. Policy/mapping expiry needs explicit reasons. Navigation references are not current eligibility proofs."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_cma_model_integration.py backend/tests/test_bettersaataa_m1.py backend/tests/test_tactical_allocation_clocks_signals.py backend/tests/test_bettersaataa_final_audit.py -q",
+        "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1"
+      ]
+    },
+    {
       "id": "P20",
       "title": "published_sensitivity_and_scenario_boundaries",
       "severity": "high",

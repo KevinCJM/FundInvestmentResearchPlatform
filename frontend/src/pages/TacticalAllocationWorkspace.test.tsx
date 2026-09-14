@@ -29,6 +29,8 @@ function setup(handler?: (path: string, body: any) => Promise<Response> | Respon
 }
 async function calculate(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText('本次准备怎么配？')
+  // Existing fixture assertions exercise the preserved original daily-target mode.
+  await user.selectOptions(screen.getByLabelText('调仓口径'), 'daily_target')
   await waitFor(() => expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: '计算并比较方案' }))
   await screen.findByRole('region', { name: 'SAA 与战术方案对照' })
