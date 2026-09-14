@@ -118,6 +118,39 @@ const toPreview = (user: ReturnType<typeof userEvent.setup>) => user.click(works
 describe('HistoricalRegimeWorkbench', () => {
   afterEach(() => { window.history.replaceState({}, '', '/'); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
+  it.each(['historical', 'events'] as const)('工作区 %s 只列出所属模板和已保存方案，历史识别没有人工事件节点', async workspace => {
+    const manual: RegimeGraphDefinition = { ...templateDefinition, id: 'saved-manual', revision: 3, name: '已保存人工事件', graph: { nodes: [
+      templateDefinition.graph.nodes[0],
+      { id: 'events', type: 'annotation.manual_events', inputs: {}, parameters: { events: [] } },
+    ], outputs: { state: { node_id: 'events', port: 'state' } } } }
+    const base = makeFetch()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/nodes')) return ok({ items: [...schemas, { ...retrospectiveSchema, id: 'annotation.manual_events', label: '人工历史事件区间' }] })
+      if (path.endsWith('/templates/v2')) return ok({ items: [
+        { id: 'manual-historical-events-v1', name: '人工历史事件区间', definition: manual },
+        { id: 'bull-bear-v2', name: '牛熊震荡计算图', definition: templateDefinition },
+      ] })
+      if (path.endsWith('/v2/definitions')) return ok({ items: [manual, { ...templateDefinition, id: 'saved-regime', revision: 1 }] })
+      return base(input, init)
+    }))
+    const user = userEvent.setup()
+    render(<HistoricalRegimeWorkbench workspace={workspace} initialDefinition={workspace === 'events' ? manual : templateDefinition} />)
+    const eventScope = workspace === 'events'
+    await screen.findByRole('button', { name: '选择算法：' + (eventScope ? '人工历史事件区间' : '牛熊震荡计算图') })
+    expect(screen.queryByRole('button', { name: '选择算法：' + (eventScope ? '牛熊震荡计算图' : '人工历史事件区间') })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '选择算法：' + (eventScope ? templateDefinition.name : '已保存人工事件') })).not.toBeInTheDocument()
+    if (!eventScope) {
+      await user.click(screen.getByRole('button', { name: '添加节点' }))
+      expect(screen.queryByRole('button', { name: '添加人工历史事件区间' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '添加研究序列' })).toBeInTheDocument()
+    } else {
+      await toPreview(user)
+      expect(screen.getByRole('radio', { name: '实时识别' })).toBeDisabled()
+      expect(screen.getByRole('radio', { name: '事后研究' })).toHaveAttribute('aria-checked', 'true')
+    }
+  })
+
   async function ready(fetchMock = makeFetch(), initialDefinition = templateDefinition) {
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
@@ -214,6 +247,50 @@ describe('HistoricalRegimeWorkbench', () => {
     await waitFor(() => expect(screen.getByText('与服务端版本一致')).toBeInTheDocument())
     expect(screen.getByText('与服务端版本一致')).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([path]) => String(path).includes('/v2/definitions/saved-query?revision=4'))).toBe(true)
+  })
+
+  it('深链接加载中切换中心会解除加载锁，迟到的版本不覆盖草稿', async () => {
+    const base = makeFetch()
+    let finish!: (value: Response) => void
+    const pending = new Promise<Response>(resolve => { finish = resolve })
+    let signal: AbortSignal | undefined
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/v2/definitions/saved-query?revision=4')) { signal = init?.signal as AbortSignal; return pending }
+      return base(input, init)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState({}, '', '/settings/scenario-algorithms?center=historical&definition=saved-query&revision=4')
+    const { rerender } = render(<HistoricalRegimeWorkbench initialDefinition={templateDefinition} />)
+    await waitFor(() => expect(signal).toBeDefined())
+    expect(screen.getByRole('button', { name: '新建情景算法' })).toBeDisabled()
+    window.history.replaceState({}, '', '/settings/scenario-algorithms?center=simulation')
+    rerender(<HistoricalRegimeWorkbench initialDefinition={templateDefinition} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: '新建情景算法' })).toBeEnabled())
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { finish(ok({ ...templateDefinition, name: '不应载入的旧版本' })); await pending })
+    expect(screen.getByLabelText('研究名称')).toHaveValue(templateDefinition.name)
+  })
+
+  it('历史识别拒绝高级公式中的人工事件，保留未应用草稿', async () => {
+    const base = makeFetch()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/authoring/resolve')) {
+        const body = JSON.parse(String(init?.body))
+        if (body.source_kind === 'formula') return ok({ valid: true, source: body.source, diagnostics: [], definition: { ...templateDefinition, graph: { ...templateDefinition.graph, nodes: [...templateDefinition.graph.nodes, { id: 'manual', type: 'annotation.manual_events', parameters: { events: [] }, inputs: {} }] } } })
+      }
+      return base(input, init)
+    })
+    const { user } = await ready(fetchMock)
+    await user.click(screen.getByRole('tab', { name: '高级公式' }))
+    const source = await screen.findByRole('textbox', { name: '情景计算公式' })
+    await waitFor(() => expect(source).toBeEnabled())
+    fireEvent.change(source, { target: { value: 'manual = annotation_manual_events()' } })
+    await user.click(screen.getByRole('button', { name: '检查并应用公式' }))
+    await screen.findByText('请到“全球历史事件库 → 人工历史事件”编辑事件区间。')
+    expect(source).toHaveValue('manual = annotation_manual_events()')
+    expect(screen.getByText('存在未应用公式，保存和运行已暂停。')).toBeInTheDocument()
+    const bodies = fetchMock.mock.calls.filter(([path]) => String(path).endsWith('/infer')).map(([, init]) => JSON.parse(String(init?.body)))
+    expect(bodies.every(body => !body.definition.graph.nodes.some((node: { type: string }) => node.type === 'annotation.manual_events'))).toBe(true)
   })
 
   it('从模板开始，并通过引导和画板无损修改同一份计算图', async () => {

@@ -177,7 +177,6 @@ function manualEventResults(value: unknown, total: number): RegimeManualEventRes
 }
 
 function manualEventSummary(value: unknown, eventCount: number, total: number): RegimeManualEventSummary {
-  if (value == null) return { event_count: 0, covered_observations: 0, overlap_observations: 0, max_concurrent_events: 0 }
   const row = record(value, '人工事件摘要格式错误')
   const result = {
     event_count: count(row.event_count, '人工事件摘要缺少事件数'),
@@ -251,8 +250,10 @@ export function adaptRegimeOverview(value: unknown, runId: string, runKind: 'pre
   if (classified + unknown !== total || summary.denominator !== 'all_observations') return invalid('统计分母不一致')
   const stateCounts = Object.fromEntries(Object.entries(record(summary.state_counts, '缺少状态数量')).map(([id, n]) => [id, count(n, '状态数量错误')]))
   const resultKind = data.result_kind === 'manual_events' ? 'manual_events' as const : 'regime_states' as const
-  const manualEvents = manualEventResults(data.manual_events, total)
-  const manualSummary = manualEventSummary(data.manual_event_summary, manualEvents.length, total)
+  const manualEvents = resultKind === 'manual_events' ? manualEventResults(data.manual_events, total) : []
+  const manualSummary = resultKind === 'manual_events'
+    ? manualEventSummary(data.manual_event_summary, manualEvents.length, total)
+    : { event_count: 0, covered_observations: 0, overlap_observations: 0, max_concurrent_events: 0 }
   if (resultKind === 'manual_events' && !manualEvents.length && manualSummary.event_count !== 0) return invalid('人工事件结果缺少事件列表')
   const states = list(data.states, '缺少冻结状态字典').map(value => {
     const state = record(value, '状态字典格式错误')

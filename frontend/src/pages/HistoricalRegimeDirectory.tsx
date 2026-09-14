@@ -1,3 +1,4 @@
+import { eventStudyHref, isManualEventDefinition, isManualEventTemplate, type RegimeWorkspace } from './regime-workbench/regimeWorkspace'
 import { useEffect, useMemo, useState } from 'react'
 import { EmptyState } from '../components/ui'
 import { Link, useNavigate } from 'react-router-dom'
@@ -24,6 +25,7 @@ function definitionHref(definitionId: string, revision: number) {
 }
 
 function templateHref(template: RegimeGraphTemplate) {
+  if (isManualEventTemplate(template)) return eventStudyHref({ template: template.id })
   const query = new URLSearchParams({ template: template.id })
   if (template.default_mode === 'retrospective') query.set('mode', 'retrospective')
   return `${workbenchPath}?${query.toString()}`
@@ -62,7 +64,7 @@ function DefinitionCard({ definition, runs }: { definition: RegimeGraphDefinitio
       </div>
       <div className="flex shrink-0 items-end gap-2">
         <label className="text-xs font-bold text-slate-600">精确 revision<input aria-label={`${definition.name} 精确 revision`} type="number" min={1} value={revisionText} onChange={(event) => setRevisionText(event.target.value)} onBlur={() => { if (!revisionValid) setRevisionText(String(definition.revision || 1)) }} className="mt-1 block min-h-9 w-20 rounded-lg border border-slate-300 px-2 text-xs font-normal" /></label>
-        <Link aria-disabled={!revisionValid} to={revisionValid ? definitionHref(definition.id || '', parsedRevision) : '#'} className={`inline-flex min-h-9 items-center rounded-lg bg-slate-950 px-3 text-xs font-bold text-white ${revisionValid ? '' : 'pointer-events-none opacity-40'}`}>打开精确版本</Link>
+        <Link aria-disabled={!revisionValid} to={revisionValid ? (isManualEventDefinition(definition) ? eventStudyHref({ id: definition.id, revision: parsedRevision }) : definitionHref(definition.id || '', parsedRevision)) : '#'} className={`inline-flex min-h-9 items-center rounded-lg bg-slate-950 px-3 text-xs font-bold text-white ${revisionValid ? '' : 'pointer-events-none opacity-40'}`}>打开精确版本</Link>
       </div>
     </div>
     <dl className="mt-4 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
@@ -75,7 +77,7 @@ function DefinitionCard({ definition, runs }: { definition: RegimeGraphDefinitio
   </article>
 }
 
-export default function HistoricalRegimeDirectory() {
+export default function HistoricalRegimeDirectory({ workspace = 'historical' }: { workspace?: RegimeWorkspace }) {
   const navigate = useNavigate()
   const [definitions, setDefinitions] = useState<RegimeGraphDefinition[]>([])
   const [templates, setTemplates] = useState<RegimeGraphTemplate[]>([])
@@ -97,10 +99,10 @@ export default function HistoricalRegimeDirectory() {
       listHistoricalRegimeDefinitions(),
     ]).then((results) => {
       if (!active) return
-      if (results[0].status === 'fulfilled') setDefinitions(results[0].value)
-      if (results[1].status === 'fulfilled') setTemplates(results[1].value)
+      if (results[0].status === 'fulfilled') setDefinitions(results[0].value.filter(item => isManualEventDefinition(item) === (workspace === 'events')))
+      if (results[1].status === 'fulfilled') setTemplates(results[1].value.filter(item => isManualEventTemplate(item) === (workspace === 'events')))
       if (results[2].status === 'fulfilled') setRuns(results[2].value)
-      if (results[3].status === 'fulfilled') setLegacyDefinitions(results[3].value)
+      if (results[3].status === 'fulfilled') setLegacyDefinitions(workspace === 'events' ? [] : results[3].value)
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       setError(failures.length ? failures.map((result) => readableError(result.reason, '目录数据加载失败。')).join('；') : '')
     }).finally(() => { if (active) setLoading(false) })
@@ -138,8 +140,8 @@ export default function HistoricalRegimeDirectory() {
   return <div className="space-y-5" data-testid="historical-regime-directory">
     <section className="overflow-hidden rounded-xl bg-slate-950 p-5 text-white shadow-lg sm:p-7">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-        <div className="max-w-3xl"><p className="text-xs font-bold uppercase tracking-[0.2em] text-accent-300">Historical regime graph directory</p><h2 className="mt-2 text-2xl font-black sm:text-3xl">历史情景识别</h2><p className="mt-3 text-sm leading-6 text-slate-200">识别牛熊、波动或宏观状态，检查不同情景下的市场与产品表现。从模板开始，逐步调整为自己的研究规则。</p><Link to="/settings/research-data-lab" className="mt-3 inline-flex min-h-9 items-center text-xs font-semibold text-accent-200 underline">研究数据实验室</Link></div>
-        <div className="grid gap-2 sm:grid-cols-3 lg:w-[450px]"><a href="#regime-templates" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-accent-600 px-4 text-sm font-bold text-white">从模板开始</a><a href="#regime-saved" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/20 px-4 text-sm font-bold text-white">继续已有研究</a><Link to={workbenchPath} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/20 px-4 text-sm font-bold text-white">自由构建</Link></div>
+        <div className="max-w-3xl"><p className="text-xs font-bold uppercase tracking-[0.2em] text-accent-300">Historical regime graph directory</p><h2 className="mt-2 text-2xl font-black sm:text-3xl">{workspace === 'events' ? '人工历史事件版本' : '历史情景识别'}</h2><p className="mt-3 text-sm leading-6 text-slate-200">{workspace === 'events' ? '查看和打开人工事件研究的精确版本；历史区间与运行结果保留原始快照。' : '识别牛熊、波动或宏观状态，检查不同情景下的市场与产品表现。从模板开始，逐步调整为自己的研究规则。'}</p><Link to="/settings/research-data-lab" className="mt-3 inline-flex min-h-9 items-center text-xs font-semibold text-accent-200 underline">研究数据实验室</Link></div>
+        <div className="grid gap-2 sm:grid-cols-3 lg:w-[450px]"><a href="#regime-templates" className="inline-flex min-h-11 items-center justify-center rounded-xl bg-accent-600 px-4 text-sm font-bold text-white">从模板开始</a><a href="#regime-saved" className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/20 px-4 text-sm font-bold text-white">继续已有研究</a><Link to={workspace === 'events' ? eventStudyHref() : workbenchPath} className="inline-flex min-h-11 items-center justify-center rounded-xl border border-white/20 px-4 text-sm font-bold text-white">自由构建</Link></div>
       </div>
     </section>
 
@@ -159,7 +161,7 @@ export default function HistoricalRegimeDirectory() {
           <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{items.map(template => <article key={template.id} className="flex min-h-40 flex-col rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap gap-1">{(template.tags || []).slice(0, 3).map((tag) => <span key={tag} className="rounded-lg bg-slate-100 px-1.5 py-0.5 text-xs font-bold text-slate-600">{tag}</span>)}</div><h3 className="mt-2 text-sm font-bold text-slate-950">{template.name}</h3><p className="mt-1 flex-1 text-xs leading-5 text-slate-600">{template.description || '从这套识别规则开始，按研究需要调整。'}</p><Link to={templateHref(template)} aria-label={`使用模板：${template.name}`} className="mt-3 inline-flex min-h-9 items-center justify-center rounded-lg border border-accent-300 px-3 text-xs font-bold text-accent-700">使用此模板</Link></article>)}</div>
         </section>
       })}
-      {!loading && !templates.length ? <p className="mt-4 rounded-xl bg-slate-50 p-4 text-xs text-slate-600">当前没有可用模板。可以<Link to={workbenchPath} className="font-bold text-accent-700 underline">从空白画板自由构建</Link>，或继续已有研究。</p> : null}
+      {!loading && !templates.length ? <p className="mt-4 rounded-xl bg-slate-50 p-4 text-xs text-slate-600">当前没有可用模板。可以<Link to={workspace === 'events' ? eventStudyHref() : workbenchPath} className="font-bold text-accent-700 underline">从空白画板自由构建</Link>，或继续已有研究。</p> : null}
     </section>
 
     <section id="regime-saved" tabIndex={-1} aria-labelledby="saved-v2-heading" className="scroll-mt-5 focus:outline-accent-500">

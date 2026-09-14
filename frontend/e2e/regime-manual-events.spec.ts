@@ -1,3 +1,4 @@
+import { auditTextContrast } from './helpers/contrast'
 import { test, expect } from '@playwright/test'
 
 const fixedExecution = {
@@ -69,7 +70,10 @@ const overview = {
   capabilities: { observation: { available: true }, effective: { available: false, reason: '人工事件仅用于事后研究。' }, probabilities: { available: false }, confidence: { available: false }, evidence: { available: true } },
 }
 
-test('人工历史事件可重叠编辑，并在事后预览中显示独立事件轨道', async ({ page }, testInfo) => {
+for (const entry of [
+  { label: '旧模板链接', url: '/settings/scenario-algorithms/workbench?template=manual-historical-events-v1' },
+  { label: '旧精确版本链接', url: '/settings/scenario-algorithms/workbench?definition=manual-saved&revision=4' },
+]) test(entry.label + '：人工事件迁移后可编辑重叠区间并预览', async ({ page }, testInfo) => {
   const errors: string[] = []
   let submittedDefinition: typeof manualDefinition | undefined
   page.on('pageerror', error => errors.push(error.message))
@@ -82,6 +86,7 @@ test('人工历史事件可重叠编辑，并在事后预览中显示独立事�
     if (path.endsWith('/nodes')) value = { items: schemas }
     else if (path.endsWith('/templates/v2')) value = { items: [{ id: 'manual-historical-events-v1', name: '人工历史事件区间', description: '人类定义可重叠历史事件', default_mode: 'retrospective', supported_modes: ['retrospective'] }] }
     else if (path.endsWith('/templates/manual-historical-events-v1/instantiate')) value = { definition: manualDefinition }
+    else if (path.endsWith('/v2/definitions/manual-saved')) { expect(url.searchParams.get('revision')).toBe('4'); value = { ...manualDefinition, id: 'manual-saved', revision: 4 } }
     else if (path.endsWith('/v2/definitions')) value = { items: [] }
     else if (path.endsWith('/v2/graph-assets') || path.endsWith('/v2/experiments')) value = { items: [] }
     else if (path.endsWith('/research-series/catalog')) value = { items: [], total: 0, offset: 0, limit: 100 }
@@ -96,7 +101,10 @@ test('人工历史事件可重叠编辑，并在事后预览中显示独立事�
     return route.fulfill({ json: value })
   })
 
-  await page.goto('/settings/scenario-algorithms/workbench?template=manual-historical-events-v1')
+  await page.goto(entry.url)
+  await expect(page).toHaveURL(/center=events.*event_view=manual/ )
+  await expect(page.getByRole('tab', { name: '全球历史事件库' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('heading', { name: '人工历史事件', exact: true })).toBeVisible()
   await expect(page.getByLabel('研究名称')).toHaveValue('人工历史事件区间')
   await page.getByRole('tab', { name: '构建向导', exact: true }).click()
   await expect(page.getByLabel('结果类型')).toHaveValue('历史事件区间')
@@ -129,6 +137,14 @@ test('人工历史事件可重叠编辑，并在事后预览中显示独立事�
     ['次贷危机', '2020-01-03', '2020-01-06'], ['流动性冲击', '2020-01-05', '2020-01-08'],
   ])
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy()
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
   await page.screenshot({ path: testInfo.outputPath('manual-events.png'), fullPage: true })
+  await page.getByRole('tab', { name: '历史情景识别' }).click()
+  await expect(page).not.toHaveURL(/definition=|template=/)
+  await expect(page.getByRole('heading', { name: '历史情景识别', exact: true })).toBeVisible()
+  if (testInfo.project.name !== 'desktop-1440') await page.getByRole('tab', { name: '算法库', exact: true }).click()
+  await expect(page.getByRole('button', { name: '选择算法：人工历史事件区间' })).toHaveCount(0)
+  await page.getByRole('tab', { name: '全球历史事件库' }).click()
+  await expect(page.getByLabel('人工历史事件结果')).toBeVisible()
   expect(errors).toEqual([])
 })

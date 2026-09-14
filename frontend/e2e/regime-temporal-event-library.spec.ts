@@ -33,8 +33,8 @@ test('事件库能选择窗口创建冻结引用，事实未核验清晰可见',
   await expect(detail).toContainText('尚未核实')
   await expect(detail).toContainText('待核验，不是官方标准区间')
   await detail.getByRole('button', { name: '选择此窗口' }).first().click()
-  await page.getByRole('button', { name: '创建事后情景' }).click()
-  await expect(page.getByRole('link', { name: '打开新建的事后情景' })).toHaveAttribute('href', /definition=saved-events.*mode=retrospective/)
+  await page.getByRole('button', { name: '创建人工事件研究' }).click()
+  await expect(page.getByRole('link', { name: '打开人工事件研究' })).toHaveAttribute('href', /center=events.*event_view=manual.*definition=saved-events.*revision=1.*mode=retrospective/)
   expect(saved.graph.nodes[1].parameters.events[0].library_reference.revision).toBe(1)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
   expect(errors).toEqual([])
@@ -58,7 +58,7 @@ test('时点审计使用后端报告，参数改变后旧证据失效', async ({
     else if (path.endsWith('/prepare')) data = { plan_id: 'p', compile_token: 't', graph_hash: 'g', runtime_audit: execution }
     else if (path.endsWith('/preview-runs')) { requested = route.request().postDataJSON().audit_temporal; data = { id: 'audit-preview', status: 'queued' } }
     else if (path.endsWith('/preview-runs/audit-preview')) data = { id: 'audit-preview', status: 'completed', execution, result: { temporal_capability: report } }
-    else if (path.endsWith('/preview-runs/audit-preview/overview')) data = { ...overview, temporal_capability: report }
+    else if (path.endsWith('/preview-runs/audit-preview/overview')) data = { ...overview, manual_event_summary: {}, temporal_capability: report }
     else if (path.endsWith('/preview-runs/audit-preview/series')) data = { run_id: 'audit-preview', items: rows, total: rows.length, offset: 0, limit: 5000 }
     return route.fulfill({ json: data })
   })
