@@ -48,6 +48,7 @@ def mature_training_kernel(available, flags, start, stop, cutoff):
 def warm_walk_forward_kernels() -> dict:
     global _WARMED_PID
     _WARMED_PID = None
+    mature_training_kernel.disable_compile()
     mature_training_kernel(np.zeros((40, 2), dtype=np.int64), np.ones(40, dtype=np.uint8), 0, 20, 1)
     complete = len(mature_training_kernel.signatures) == 1 and bool(mature_training_kernel.nopython_signatures)
     if not complete:
@@ -79,12 +80,19 @@ def evaluate_walk_forward(request, data, signals, base, lower, upper, caps, grou
                   if size - start >= 20]
     if len(boundaries) > 40:
         raise ValidationError("TAA_WALK_FORWARD_BUDGET", "单次最多验证 40 段，请增大每段验证期数或缩短研究区间。")
+    plan = None
+    if request.decision_policy:
+        from .clocks import simulation_clock, decision_signal_flags_kernel
+        plan = simulation_clock(request, data, signals)
+        selection_flags = decision_signal_flags_kernel(flags, plan["decisions"])
+    else:
+        selection_flags = flags
     folds = []
     for number, (validation_start, end) in enumerate(boundaries, start=1):
         start = 0 if config.window_mode == "expanding" else validation_start - config.training_periods
         cutoff = (date.fromisoformat(data["period_starts"][validation_start]) - date(1970, 1, 1)).days
         mature_end, unknown, future, signal_count = mature_training_kernel(
-            data["available_at"], flags, start, validation_start, cutoff)
+            data["available_at"], selection_flags, start, validation_start, cutoff)
         fold = {"fold": number, "train_start": data["period_starts"][start],
                 "train_end": data["dates"][mature_end - 1] if mature_end > start else None,
                 "validation_start": data["dates"][validation_start], "validation_end": data["dates"][end - 1],
@@ -113,7 +121,10 @@ def evaluate_walk_forward(request, data, signals, base, lower, upper, caps, grou
             max_tracking_error=request.max_tracking_error, max_turnover=request.max_turnover,
             objective=request.objective, selected_candidate_id=None if request.search else "scale-1",
             validation_start_index=validation_start - start,
-            allow_infeasible_selected=not request.search, **group_args)
+            allow_infeasible_selected=not request.search,
+            decision_policy=request.decision_policy,
+            clock=None if plan is None else {k: v[start:end] for k, v in plan.items()},
+            direct_tilts=None if signals.get("direct_tilts") is None else signals["direct_tilts"][start:end], **group_args)
         selected = next(item for item in result["candidates"] if item["id"] == result["selected_id"])
         if not selected["feasible"]:
             folds.append({**fold, "status": "blocked",

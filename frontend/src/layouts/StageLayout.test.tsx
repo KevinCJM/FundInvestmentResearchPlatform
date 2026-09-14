@@ -38,3 +38,22 @@ it('does not mark downstream steps complete when no product range has been locke
   expect(flow.queryByRole('link', { name: '4. 战术研究 TAA' })).not.toBeInTheDocument()
   expect(flow.queryByText('已保存，可返回')).not.toBeInTheDocument()
 })
+
+it('allows independent strategic research without pretending products or mappings exist', () => {
+  updateAllocationJourney({ mandateId: 'm1', strategicUniverseId: 's1' })
+  render(<MemoryRouter initialEntries={['/pre-investment/product-pool?scope=strategic']}><StageLayout stageId="pre-investment" /></MemoryRouter>)
+  expect(screen.getByText('战略范围已载入（名称待确认）')).toBeInTheDocument()
+  const flow = within(screen.getByRole('navigation', { name: '配置研究流程' }))
+  expect(flow.getByRole('link', { name: '3. 长期配置 SAA' })).toHaveAttribute('href', '/pre-investment/saa/policy?mandate=m1&strategic_universe=s1')
+  expect(flow.getByRole('link', { name: '2. 产品映射' })).toHaveAttribute('href', '/pre-investment/product-pool?mandate=m1&strategic_universe=s1&scope=strategic')
+  expect(flow.queryByRole('link', { name: '4. 战术研究 TAA' })).not.toBeInTheDocument()
+})
+
+it('highlights saved strategic policy and only links TAA after an explicit mapping reference', () => {
+  updateAllocationJourney({ strategicUniverseId: 's1', baselineId: 'b1', implementationMappingId: 'map1' })
+  render(<MemoryRouter initialEntries={['/pre-investment/saa/policy?baseline=b1']}><StageLayout stageId="pre-investment" /></MemoryRouter>)
+  const flow = within(screen.getByRole('navigation', { name: '配置研究流程' }))
+  expect(flow.getByRole('link', { name: '3. 长期配置 SAA' })).toHaveAttribute('aria-current', 'step')
+  expect(flow.getByRole('link', { name: '4. 战术研究 TAA' })).toHaveAttribute('href', '/pre-investment/taa?baseline=b1')
+  expect(flow.queryByRole('link', { name: '5. 产品配置' })).not.toBeInTheDocument()
+})

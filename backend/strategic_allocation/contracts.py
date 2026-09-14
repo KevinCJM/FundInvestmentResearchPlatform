@@ -2,20 +2,15 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
 from backend.tactical_allocation.contracts import AssetLimit, GroupLimit
+from .institution_contracts import InstitutionalContext
 
-Number = Annotated[float, Field(strict=True)]
-Identifier = Annotated[str, Field(min_length=1, max_length=120)]
-Fingerprint = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-Currency = Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
-
-
-class Contract(BaseModel):
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, str_strip_whitespace=True)
+from .common_contracts import Contract, Number, Identifier, Fingerprint, Currency
+from .cma_model_contracts import CmaModelRequest
 
 
 class FundingFlow(Contract):
@@ -88,6 +83,8 @@ class MandateRequest(Contract):
     funding_plan: FundingPlan | None = None
     benchmark: BenchmarkPolicy | None = None
     boundary_reason: str = Field(default="", max_length=2000)
+    institutional_context: InstitutionalContext | None = None
+    strategic_universe_id: Identifier | None = None
     allocation_scope: Identifier | None = None
     asset_limits: dict[str, AssetLimit] = Field(default_factory=dict, max_length=30)
     group_limits: list[GroupLimit] = Field(default_factory=list, max_length=24)
@@ -108,7 +105,15 @@ class MandateRequest(Contract):
                 raise ValueError("现金流或流动性窗口超出了投资期限；不能静默截断支付计划。")
         if self.rebalance_policy == "threshold" and not self.rebalance_note:
             raise ValueError("阈值再平衡须说明触发和恢复规则；本页只记录政策，不自动交易。")
-        if (self.asset_limits or self.group_limits) and not self.allocation_scope:
+        if self.strategic_universe_id and self.allocation_scope:
+            raise ValueError("战略范围与产品大类授权只能显式选择一种来源。")
+        if self.institutional_context:
+            context = self.institutional_context
+            if context.balance_sheet and (context.balance_sheet.as_of != self.as_of or context.balance_sheet.currency != self.currency):
+                raise ValueError("经济状况快照须与目标同研究日、同本位币；不自动折算或滚动。")
+            if any(item.reviewed_on and item.reviewed_on > self.as_of for item in context.review_items):
+                raise ValueError("人工核验日不得晚于目标研究日。")
+        if (self.asset_limits or self.group_limits) and not (self.allocation_scope or self.strategic_universe_id):
             raise ValueError("资产或分组授权必须绑定所属大类方案，不能仅按资产名称复用。")
         if self.benchmark and self.allocation_scope and self.benchmark.alloc_name != self.allocation_scope:
             raise ValueError("相对基准与资产授权必须属于同一个大类方案。")
@@ -155,14 +160,16 @@ class AssetAssumption(Contract):
     role: Literal["growth", "rates", "inflation", "credit", "liquidity", "diversifier"]
     liquidity: Literal["liquid", "illiquid"]
     rationale: str = Field(min_length=3, max_length=1000)
-    annual_return: Number = Field(ge=-0.5, le=2)
-    annual_volatility: Number = Field(gt=0, le=3)
+    annual_return: Number | None = Field(default=None, ge=-0.5, le=2)
+    annual_volatility: Number | None = Field(default=None, gt=0, le=3)
     mean_uncertainty: Number = Field(ge=0, le=1)
 
 
 class CmaRequest(Contract):
     name: Identifier
-    alloc_name: Identifier
+    alloc_name: Identifier | None = None
+    strategic_universe_id: Identifier | None = None
+    implementation_mapping_id: Identifier | None = None
     as_of: date
     currency: Currency = "CNY"
     horizon_years: int = Field(default=10, ge=1, le=30, strict=True)
@@ -170,19 +177,38 @@ class CmaRequest(Contract):
     source: str = Field(min_length=3, max_length=2000)
     basis_confirmed: Literal[True]
     assets: list[AssetAssumption] = Field(min_length=1, max_length=30)
-    correlation: list[list[Number]] = Field(min_length=1, max_length=30)
+    correlation: list[list[Number]] | None = Field(default=None, min_length=1, max_length=30)
+    model: CmaModelRequest | None = None
     risk_origin: Literal["manual", "historical_reference"] = "manual"
     risk_reference: RiskReferenceRequest | None = None
     risk_reference_hash: Fingerprint | None = None
 
     @model_validator(mode="after")
     def shape(self):
+        if bool(self.alloc_name) == bool(self.strategic_universe_id):
+            raise ValueError("须明确选择真实大类方案或不可变战略范围，不能混用来源。")
+        if self.implementation_mapping_id and not self.strategic_universe_id:
+            raise ValueError("实施映射必须绑定独立战略范围。")
+        if self.strategic_universe_id and self.risk_origin != "manual":
+            raise ValueError("战略先行使用显式前瞻风险假设；历史风险参考请在真实代理研究中核验后人工引用。")
         if self.as_of > date.today():
             raise ValueError("长期假设的研究日不能位于未来。")
         count = len(self.assets)
         if len({a.id for a in self.assets}) != count:
             raise ValueError("每个资产类别只能有一条假设。")
-        if len(self.correlation) != count or any(len(row) != count for row in self.correlation):
+        if self.model is None:
+            if any(a.annual_return is None or a.annual_volatility is None for a in self.assets):
+                raise ValueError("人工模式须填写每项资产的预期收益与波动率。")
+            if self.correlation is None:
+                raise ValueError("人工模式须填写完整相关矩阵。")
+        else:
+            model = self.model
+            if (model.asset_ids != [a.id for a in self.assets] or model.as_of != self.as_of
+                    or model.currency != self.currency or model.return_basis != self.return_basis):
+                raise ValueError("模型须与长期假设采用完全相同的资产顺序、研究日、币种及收益口径。")
+            if self.risk_origin != "manual" or self.risk_reference is not None or self.risk_reference_hash is not None:
+                raise ValueError("模型风险使用其显式来源，不能沿用无关历史风险参考认证。")
+        if self.correlation is not None and (len(self.correlation) != count or any(len(row) != count for row in self.correlation)):
             raise ValueError("相关矩阵行列须与资产列表完全一致。")
         if self.risk_origin == "historical_reference":
             if not self.risk_reference or not self.risk_reference_hash:
@@ -205,13 +231,22 @@ class PolicyRequest(Contract):
     constraints: dict[str, AssetLimit] = Field(default_factory=dict)
     group_limits: list[GroupLimit] = Field(default_factory=list, max_length=28)
     uncertainty_penalty: Number = Field(default=1, ge=0, le=5)
+    risk_budget: dict[Identifier, Number] | None = Field(default=None, min_length=1, max_length=30)
     candidate_count: int = Field(default=2000, ge=200, le=5000, strict=True)
     seed: int = Field(default=42, ge=0, le=2**32 - 1, strict=True)
+
+
+    @model_validator(mode="after")
+    def budget(self):
+        if self.risk_budget is not None and (any(v < 0 for v in self.risk_budget.values())
+                or abs(sum(self.risk_budget.values()) - 1) > 1e-8):
+            raise ValueError("风险预算须非负且合计100%；未提供时保留原四类候选。")
+        return self
 
 
 class PublishPolicyRequest(Contract):
     request: PolicyRequest
     preview_hash: Fingerprint
-    candidate_id: Literal["minimum-risk", "nominal-utility", "robust-utility", "maximum-return"]
+    candidate_id: Literal["minimum-risk", "nominal-utility", "robust-utility", "maximum-return", "risk-budget"]
     name: Identifier
     reason: str = Field(min_length=5, max_length=2000)

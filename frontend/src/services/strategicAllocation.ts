@@ -1,3 +1,6 @@
+import { cmaModelInputError, type CmaModelRequest } from './cmaModelTypes'
+import type { InstitutionalContext, InstitutionalDiagnostics } from "./institutionalContext"
+import type { UniverseVersion, MappingVersion } from "./strategicScope"
 import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
 import type { TaaBaseline, TaaCatalog } from './tacticalAllocation'
 
@@ -22,6 +25,7 @@ export interface MandateDefinition {
   max_tracking_error: number; risk_aversion: number
   rebalance_policy: 'monthly' | 'quarterly' | 'annually' | 'threshold'; rebalance_note: string; note: string
   objective_kind?: ObjectiveKind; funding_plan?: FundingPlan | null; benchmark?: BenchmarkPolicy | null
+  institutional_context?: InstitutionalContext | null; strategic_universe_id?: string | null
   boundary_reason?: string; allocation_scope?: string | null
   asset_limits?: PolicyRequest['constraints']; group_limits?: PolicyRequest['group_limits']
 }
@@ -33,43 +37,75 @@ export interface MandateVersion {
 export type EconomicRole = 'growth' | 'rates' | 'inflation' | 'credit' | 'liquidity' | 'diversifier'
 export interface AssetAssumption {
   id: string; role: EconomicRole; liquidity: 'liquid' | 'illiquid'; rationale: string
-  annual_return: number; annual_volatility: number; mean_uncertainty: number
+  annual_return?: number | null; annual_volatility?: number | null; mean_uncertainty: number
 }
 export interface RiskReferenceRequest {
   alloc_name: string; as_of: string; start_date: string; end_date: string
   shrinkage: number; periods_per_year: number
 }
 export interface CmaDefinition {
-  name: string; alloc_name: string; as_of: string; currency: string; horizon_years: number
+  name: string; alloc_name: string | null; strategic_universe_id?: string | null; implementation_mapping_id?: string | null
+  as_of: string; currency: string; horizon_years: number
   return_basis: 'annual_arithmetic_total_return'; source: string; basis_confirmed: boolean
-  assets: AssetAssumption[]; correlation: number[][]
+  assets: AssetAssumption[]; correlation?: number[][] | null; model?: CmaModelRequest | null
   risk_origin: 'manual' | 'historical_reference'
   risk_reference: RiskReferenceRequest | null; risk_reference_hash: string | null
 }
-export type CmaDraft = Omit<CmaDefinition, 'assets'> & {
-  assets: Array<Omit<AssetAssumption, 'role' | 'liquidity'> & { role: EconomicRole | ''; liquidity: 'liquid' | 'illiquid' | '' }>
+export type CmaDraft = Omit<CmaDefinition, 'assets' | 'correlation'> & {
+  correlation: number[][]
+  assets: Array<Omit<AssetAssumption, 'role' | 'liquidity' | 'annual_return' | 'annual_volatility'> & {
+    role: EconomicRole | ''; liquidity: 'liquid' | 'illiquid' | ''; annual_return: number; annual_volatility: number
+  }>
 }
-export function completeCma(value: CmaDraft): value is CmaDefinition {
-  return Boolean(value.name.trim() && value.source.trim().length >= 3 && value.as_of && value.basis_confirmed
+export function cmaDraftFromDefinition(value: CmaDefinition): CmaDraft {
+  return { ...value, assets: value.assets.map(a => ({ ...a, annual_return: a.annual_return ?? NaN, annual_volatility: a.annual_volatility ?? NaN })),
+    correlation: value.correlation ?? value.assets.map((_, i) => value.assets.map((__, j) => i === j ? 1 : NaN)) }
+}
+export function completeCma(value: CmaDraft | CmaDefinition): value is CmaDraft & CmaDefinition {
+  const model = value.model
+  const validModel = !model || !cmaModelInputError(model) && model.as_of === value.as_of && model.currency === value.currency
+    && JSON.stringify(model.asset_ids) === JSON.stringify(value.assets.map(a => a.id))
+    && (model.return_basis ?? 'annual_arithmetic_total_return') === value.return_basis
+    && value.risk_origin === 'manual' && !value.risk_reference && !value.risk_reference_hash
+  return Boolean(value.name.trim() && value.source.trim().length >= 3 && value.as_of && value.basis_confirmed && validModel
     && value.assets.length && value.assets.every(asset => asset.role && asset.liquidity && asset.rationale.trim().length >= 3
-      && [asset.annual_return, asset.annual_volatility, asset.mean_uncertainty].every(Number.isFinite)
-      && asset.annual_volatility > 0 && asset.mean_uncertainty >= 0)
-    && value.correlation.length === value.assets.length && value.correlation.every(row => row.length === value.assets.length && row.every(Number.isFinite)))
+      && Number.isFinite(asset.mean_uncertainty) && asset.mean_uncertainty >= 0 && asset.mean_uncertainty <= 1
+      && (model || Number.isFinite(asset.annual_return) && Number.isFinite(asset.annual_volatility)
+        && typeof asset.annual_return === 'number' && typeof asset.annual_volatility === 'number' && asset.annual_return >= -.5 && asset.annual_return <= 2 && asset.annual_volatility > 0 && asset.annual_volatility <= 3))
+    && (model || value.correlation && value.correlation.length === value.assets.length && value.correlation.every(row => row.length === value.assets.length && row.every(Number.isFinite))))
+}
+/** Model inputs supply the numbers; no fake manual values are sent to the API. */
+function cmaRequest(value: CmaDefinition): CmaDefinition {
+  return !value.model ? value : { ...value, correlation: undefined,
+    assets: value.assets.map(({ annual_return: _mean, annual_volatility: _risk, ...asset }) => asset) }
+}
+export interface CmaModelResult {
+  asset_ids: string[]; method: CmaModelRequest['method']; definition: CmaModelRequest
+  effective_returns: number[]; effective_covariance: number[][]; posterior_mean_covariance: number[][] | null
+  content_hash: string; execution: FixedNjitExecutionAudit
+  model_audit: { limitations: string[]; [key: string]: unknown }
 }
 export interface RiskReference {
   preview_hash: string; request: RiskReferenceRequest; assets: string[]; volatility: number[]
   correlation: number[][]; historical_mean: number[]; observations: number; source_hash: string
   lineage: { start_date: string; end_date: string }; warnings: string[]; execution: FixedNjitExecutionAudit
 }
+export type StrategicBaseline = Omit<TaaBaseline, 'alloc_name'> & {
+  alloc_name: string | null
+  implementation_status?: 'complete' | 'incomplete'; implementation_gaps?: string[]
+}
+export type StrategicSourceSnapshot = Omit<StrategicBaseline, 'id' | 'created_at' | 'content_hash'>
 export interface CmaPreview {
-  preview_hash: string; definition: CmaDefinition; source_snapshot: Omit<TaaBaseline, 'id' | 'created_at' | 'content_hash'>
+  preview_hash: string; definition: CmaDefinition; source_snapshot: StrategicSourceSnapshot
   covariance: number[][]; warnings: string[]; execution: FixedNjitExecutionAudit
+  effective_assumptions?: CmaDefinition; effective_returns?: number[]; effective_covariance?: number[][]; model_result?: CmaModelResult
 }
 export interface CmaVersion extends CmaPreview {
   id: string; name: string; created_at: string; content_hash: string
 }
 export interface PolicyRequest {
   mandate_id: string; cma_id: string
+  risk_budget?: Record<string, number> | null
   constraints: Record<string, { min_weight: number; max_weight: number; max_abs_tilt: number }>
   group_limits: Array<{ id: string; assets: string[]; lo: number; hi: number }>
   uncertainty_penalty: number; candidate_count: number; seed: number
@@ -100,12 +136,14 @@ export interface MandateAssessment {
   preview_hash: string; request: MandateStudyRequest; definition: MandateDefinition
   funding: FundingSummary | null; candidates: PolicyCandidate[]; status: 'inputs_only' | 'diagnosed' | 'needs_revision'
   cma: { id: string; name: string; as_of: string; content_hash: string } | null
+  institutional_diagnostics?: InstitutionalDiagnostics | null
   blockers: string[]; warnings: string[]; execution: FixedNjitExecutionAudit
   funding_model?: { version: string; paths: number; seed: number; frequency: string }
   funding_execution?: FixedNjitExecutionAudit
 }
 export interface PolicyCandidate {
-  id: 'minimum-risk' | 'nominal-utility' | 'robust-utility' | 'maximum-return'
+  id: 'minimum-risk' | 'nominal-utility' | 'robust-utility' | 'maximum-return' | 'risk-budget'
+  available?: true; risk_budget?: Record<string, number>; risk_budget_distance?: number; distance_basis?: string
   name: string; weights: Record<string, number>; risk_contributions: Record<string, number | null>
   goal_check?: { within_limits: boolean; threshold: number; gate_basis: string; central: FundingMetrics
     conservative: FundingMetrics | null; stress_contribution_ratio: number }
@@ -113,22 +151,31 @@ export interface PolicyCandidate {
     target_excess_return: number; max_tracking_error: number }
   metrics: { expected_return: number; volatility: number; conservative_return: number; nominal_utility: number; robust_utility: number }
 }
+export interface UnavailablePolicyCandidate {
+  id: 'risk-budget'; name: string; available: false; unavailable_reason: string
+  weights: Record<string, never>; risk_contributions: Record<string, never>
+  risk_budget: Record<string, number>; risk_budget_distance: null
+  metrics: Record<keyof PolicyCandidate['metrics'], null>
+}
 export interface PolicyPreview {
+  unavailable_candidates?: UnavailablePolicyCandidate[]
   preview_hash: string; request: PolicyRequest; mandate: MandateDefinition; assumptions: CmaDefinition
-  source_snapshot: Omit<TaaBaseline, 'id' | 'created_at' | 'content_hash'>; candidates: PolicyCandidate[]; accepted_candidates: number
+  source_snapshot: StrategicSourceSnapshot; candidates: PolicyCandidate[]; accepted_candidates: number
   warnings: string[]; execution: FixedNjitExecutionAudit
-  funding?: FundingSummary | null; current_application_eligible?: boolean
+  funding?: FundingSummary | null; current_application_eligible?: boolean; application_blockers?: string[]
   funding_model?: MandateAssessment['funding_model'] | null
   funding_execution?: FixedNjitExecutionAudit
 }
 export interface StrategicCatalog {
   allocations: TaaCatalog['allocations']; mandates: MandateVersion[]
-  assumptions: Array<{ id: string; name: string; alloc_name: string; as_of: string; currency: string; horizon_years: number }>
-  policies: Array<{ id: string; name: string; as_of: string; alloc_name: string }>
+  strategic_universes?: Pick<UniverseVersion, 'id' | 'name' | 'created_at' | 'content_hash' | 'definition'>[]
+  implementation_maps?: Pick<MappingVersion, 'id' | 'name' | 'created_at' | 'content_hash' | 'definition' | 'implementation_status' | 'implementation_gaps'>[]
+  assumptions: Array<{ id: string; name: string; alloc_name: string | null; strategic_universe_id?: string | null; implementation_mapping_id?: string | null; as_of: string; currency: string; horizon_years: number }>
+  policies: Array<{ id: string; name: string; as_of: string; alloc_name: string | null }>
 }
 
 /** Display-only percent conversion; the saved fractional assumption is unchanged. */
-export const percentInputValue = (value: number): number => Number.isFinite(value) ? Number((value * 100).toPrecision(12)) : NaN
+export const percentInputValue = (value: number | null | undefined): number => typeof value === 'number' && Number.isFinite(value) ? Number((value * 100).toPrecision(12)) : NaN
 
 const root = '/api/strategic-allocation'
 async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -191,6 +238,11 @@ function checkGoalCandidates(definition: MandateDefinition, candidates: PolicyCa
 
 function checkedAssessment(value: MandateAssessment): MandateAssessment {
   verified(value)
+  if (value.definition?.institutional_context) {
+    const institutional = value.institutional_diagnostics
+    if (!institutional || institutional.automated_compliance !== 'not_modelled' || institutional.independent_approval !== false) throw new Error('机构诊断缺少明确的人工核验边界。')
+    assertFixedNjitExecution(institutional.execution, '经济状况诊断')
+  }
   if (!value.definition || !value.request || !Array.isArray(value.blockers) || !Array.isArray(value.warnings)
     || !['inputs_only', 'diagnosed', 'needs_revision'].includes(value.status)) throw missingDiagnosis()
   checkGoalCandidates(value.definition, value.candidates)
@@ -203,6 +255,15 @@ function checkedAssessment(value: MandateAssessment): MandateAssessment {
     assertFixedNjitExecution(value.funding_execution, '资金目标诊断')
     const passing = value.candidates.some(candidate => candidate.goal_check?.within_limits === true)
     if ((value.status === 'diagnosed') !== passing) throw missingDiagnosis()
+  }
+  return value
+}
+
+function checkedCma<T extends CmaPreview>(value: T): T {
+  verified(value)
+  if (value.definition.model) {
+    if (!value.model_result || !value.effective_assumptions || !value.effective_returns || !value.effective_covariance) throw new Error('模型版本缺少冻结的有效假设，不能用于政策研究。')
+    assertFixedNjitExecution(value.model_result.execution, '长期假设模型')
   }
   return value
 }
@@ -221,11 +282,14 @@ export const getMandate = async (id: string, signal?: AbortSignal) => {
   return value
 }
 export const riskReference = async (body: RiskReferenceRequest, signal?: AbortSignal) => verified(await request<RiskReference>('/risk-reference', body, signal))
-export const previewCma = async (body: CmaDefinition, signal?: AbortSignal) => verified(await request<CmaPreview>('/cma/preview', body, signal))
-export const publishCma = async (body: CmaDefinition, previewHash: string, signal?: AbortSignal) => verified(await request<CmaVersion>('/cma', { request: body, preview_hash: previewHash }, signal))
-export const getCma = async (id: string, signal?: AbortSignal) => verified(await request<CmaVersion>(`/cma/${encodeURIComponent(id)}`, undefined, signal))
+export const previewCma = async (body: CmaDefinition, signal?: AbortSignal) => checkedCma(await request<CmaPreview>('/cma/preview', cmaRequest(body), signal))
+export const publishCma = async (body: CmaDefinition, previewHash: string, signal?: AbortSignal) => checkedCma(await request<CmaVersion>('/cma', { request: cmaRequest(body), preview_hash: previewHash }, signal))
+export const getCma = async (id: string, signal?: AbortSignal) => checkedCma(await request<CmaVersion>(`/cma/${encodeURIComponent(id)}`, undefined, signal))
 export const previewPolicy = async (body: PolicyRequest, signal?: AbortSignal) => {
-  const value = verified(await request<PolicyPreview>('/policy/preview', body, signal))
+  const wire = verified(await request<Omit<PolicyPreview, 'candidates'> & { candidates: Array<PolicyCandidate | UnavailablePolicyCandidate> }>('/policy/preview', body, signal))
+  const unavailable = wire.candidates.filter((c): c is UnavailablePolicyCandidate => c.available === false)
+  if (unavailable.some(c => c.id !== 'risk-budget' || !c.unavailable_reason || Object.keys(c.weights).length)) throw new Error('不可用候选的状态不完整，请重新比较。')
+  const value: PolicyPreview = { ...wire, candidates: wire.candidates.filter((c): c is PolicyCandidate => c.available !== false), unavailable_candidates: unavailable }
   checkGoalCandidates(value.mandate, value.candidates)
   if (value.mandate.funding_plan) {
     if (!value.funding_execution) throw missingDiagnosis()
@@ -234,8 +298,10 @@ export const previewPolicy = async (body: PolicyRequest, signal?: AbortSignal) =
   return value
 }
 export const publishPolicy = async (body: PolicyRequest, hash: string, candidate: PolicyCandidate['id'], name: string, reason: string, signal?: AbortSignal) => {
-  const result = await request<TaaBaseline>('/policies', { request: body, preview_hash: hash, candidate_id: candidate, name, reason }, signal)
+  const result = await request<StrategicBaseline>('/policies', { request: body, preview_hash: hash, candidate_id: candidate, name, reason }, signal)
   if (!result.policy) throw new Error('返回的版本缺少政策与目标引用，已停止交接。')
   assertFixedNjitExecution(result.policy.execution, '政策采纳')
   return result
 }
+
+export { request as strategicRequest }

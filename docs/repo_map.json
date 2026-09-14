@@ -99,7 +99,7 @@
       "name": "SAA-linked tactical decision workbench",
       "path": "backend/tactical_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes SAA class budgets and group constraints from real local configuration, reads strict common NAV intervals, compares causal momentum/manual/published-regime tilts using one TAA numerical core, selects strengths on mature training returns only, validates on a separate holdout, compares explicit shocks or historical replay and saves immutable decisions with frozen inputs. Shared application gates and server-owned product mappings preserve budgets in portfolio research. Research-only provenance never certifies historical deployment or formal PIT. Preflight reports common coverage, training/holdout counts, immature and unknown knowledge dates, and NAV scale findings; suggested date boundaries use clocks only and fixed-hypothesis comparison is explicit. Named scenario inputs are recomputed on save and restored with immutable decisions. Momentum algorithm available-window-relative-momentum/2.0.0 uses the latest contiguous complete window whose endpoints are known by each decision cutoff; unknown and expired windows cannot emit a signal, and preflight reports effective training/holdout signal counts and blocks strength selection when training has none. Policies carry forward-looking covariance and active-risk budgets into the TAA gate. Optional expanding-window folds select only on training data, preserve failed fold diagnostics and evaluate the holdout separately.",
+      "purpose": "SAA-linked tactical research over frozen budgets and explicit product mappings. Momentum, manual hypotheses, published regimes and dated composite scores share one recursive engine. Optional decision/execution clocks add frequency, lag, minimum holdings and thresholds; non-trading weights drift and observed holding-budget breaches affect feasibility. Missing decision_policy preserves original daily-target outputs without copying expanded paths. Cost basis is explicit and independent of frequency. Only mature training labels select strength; holdout and expanding folds remain independent. Unknown or expired positive-weight components invalidate the composite without renormalization. Preflight reports common coverage, signal readiness, outcome maturity and NAV quality. Current application uses actual dated holdings and the shared portfolio bridge. Saved inputs, scenarios, mapping and policy evidence remain immutable and research-only. Fixed-target stress is not execution-strategy replay. New signal/clock kernels and batch direction validation participate in PID-bound readiness without request compilation.",
       "entry_files": [
         "backend/tactical_allocation",
         "backend/services/tactical_allocation_routes.py",
@@ -139,7 +139,11 @@
         "frontend/src/app/allocationJourney.ts",
         "docs/research/journey-taa-implementation-2026-09-11.md",
         "docs/research/taa-human-journey-audit-2026-09-11.md",
-        "docs/research/tactical-allocation-product-analysis-2026-09-10.md"
+        "docs/research/tactical-allocation-product-analysis-2026-09-10.md",
+        "backend/tactical_allocation/clocks.py",
+        "backend/tactical_allocation/signals.py",
+        "docs/research/bettersaataa-01-04-design-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md"
       ],
       "child_modules": [],
       "upstream_dependencies": [
@@ -172,7 +176,12 @@
         "frontend/e2e/tactical-allocation.spec.ts",
         "backend/tests/test_research_input_checks.py",
         "frontend/src/app/allocationJourney.test.tsx",
-        "backend/tests/test_tactical_walk_forward.py"
+        "backend/tests/test_tactical_walk_forward.py",
+        "backend/tests/test_tactical_allocation_clocks_signals.py",
+        "backend/tests/test_bettersaataa_final_audit.py",
+        "backend/tests/benchmark_taa_clocks.py",
+        "frontend/src/components/tactical-allocation/TaaPolicySignals.test.tsx",
+        "frontend/e2e/better-saataa-01-04.spec.ts"
       ],
       "related_configs": [
         "backend/app.py",
@@ -185,12 +194,15 @@
         "npm run test --prefix frontend -- --run TacticalAllocationWorkspace.test.tsx ClassAllocation.test.tsx PortfolioConstruction.test.tsx portfolioResearch.test.ts",
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.taa.config.ts --workers=1",
-        "python3 -m pytest backend/tests/test_tactical_walk_forward.py -q"
+        "python3 -m pytest backend/tests/test_tactical_walk_forward.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_tactical_allocation_clocks_signals.py backend/tests/test_bettersaataa_final_audit.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 backend/tests/benchmark_taa_clocks.py"
       ],
       "pitfall_ids": [
         "P07",
         "P14",
-        "P15"
+        "P15",
+        "P23"
       ],
       "edit_risk": "high",
       "routing_confidence": "high",
@@ -217,7 +229,10 @@
           "backend/tests/test_tactical_allocation_bridge.py",
           "backend/research_input_checks.py",
           "backend/tests/test_research_input_checks.py",
-          "backend/tests/test_tactical_allocation_service.py"
+          "backend/tests/test_tactical_allocation_service.py",
+          "backend/tests/test_tactical_allocation_clocks_signals.py",
+          "backend/tests/test_bettersaataa_final_audit.py",
+          "frontend/e2e/better-saataa-01-04.spec.ts"
         ],
         "unsampled_paths": []
       }
@@ -3709,7 +3724,7 @@
       "name": "Manual ETF/public-fund construction, class allocation, strategy, and backtest UI",
       "path": "frontend/src/pages/ClassAllocation.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "Manual ETF/public-fund-to-class construction, class allocation and strategy workflows, plus real-product evaluation plans that lock custom-indicator revisions and run strict-complete weighted rankings. Shared allocationJourney preserves browser input drafts and saved references by explicit universe/allocation/baseline scope, carries the product-pool-to-SAA-to-TAA navigation context and invalidates results after input or research-clock changes; a browser draft is not saved calculation or PIT evidence. AllocationMetricsReview gives ManualConstruction and ClassAllocation an opt-in core-metric view with annual detail and research charts expanded on demand, while the base comparison table keeps its existing full-row default. Active journey metadata is isolated per browser tab in sessionStorage, initially seeded from the latest local record; cross-tab storage events cannot replace navigation. Explicit universe changes clear old range metadata, and pool return links restore the named immutable universe rather than another selection draft.",
+      "purpose": "Manual ETF/public-fund-to-class construction, allocation strategies and real-product evaluation with locked indicator revisions. allocationJourney keeps per-tab input drafts and immutable references, invalidating dependent results after source or clock changes; browser drafts are not calculation or PIT evidence. Independent strategic-universe and mandate references can resume pure forward SAA without a product domain; product changes preserve independent strategy definitions but invalidate dependent mapping/baseline references. StageLayout preserves the product-first flow and permits strategic-first SAA while missing maps block TAA links; navigation is not backend eligibility. AllocationMetricsReview retains opt-in core metrics and annual detail; the original comparison table keeps full rows. Session isolation and exact saved-universe restoration remain enforced.",
       "module_tags": [
         "frontend",
         "allocation",
@@ -4584,7 +4599,7 @@
       "name": "Investment objectives, CMA and immutable SAA policies",
       "path": "backend/strategic_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes investment objectives, explicit forward-looking CMA and policy adoption. Historical risk reference fills risk inputs without manufacturing return forecasts; locked policies carry asset mapping and ex-ante risk budgets into TAA. Historical target-grid frontier remains a separate research tool. Funding goals use immutable cashflow plans and CMA-linked monthly diagnosis; capital adoption gates replay the displayed cent-rounded amount on the same paths. Unsaved SAA candidates expire on clock changes while immutable saved policies remain readable. Unknown research clocks block calculations and writes. Mandates must be previewed and explicitly confirmed; unconfirmed history is read-only for new policy use. TAA returns to an exact server-held SAA baseline rather than reconstructing evidence from a browser draft.",
+      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The product-first path and historical frontier remain. cma_application supplies frozen effective moments from manual, Black-Litterman or explicit probability-scenario assumptions to one policy search, funding diagnosis and TAA risk checks. Posterior mean uncertainty is not asset-return risk. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Saved research does not certify current implementation eligibility.",
       "module_tags": [
         "SAA",
         "CMA",
@@ -4598,7 +4613,11 @@
         "frontend/src/pages/StrategicAllocationWorkspace.tsx",
         "frontend/src/components/strategic-allocation",
         "frontend/src/services/strategicAllocation.ts",
-        "frontend/src/components/investment-mandate"
+        "frontend/src/components/investment-mandate",
+        "frontend/src/components/strategic-scope",
+        "frontend/src/services/strategicScope.ts",
+        "frontend/src/services/institutionalContext.ts",
+        "frontend/src/services/cmaModelTypes.ts"
       ],
       "key_symbols": [
         "StrategicAllocationService",
@@ -4639,7 +4658,21 @@
         "docs/research/pr14-merge-review-2026-09-13.md",
         "local-dev-diff-review-2026-09-13.md",
         "local-dev-fix-recheck-2026-09-14.md",
-        "docs/research/screenshots/pr14-merge-review"
+        "docs/research/screenshots/pr14-merge-review",
+        "backend/strategic_allocation/cma_application.py",
+        "backend/strategic_allocation/cma_models.py",
+        "backend/strategic_allocation/sources.py",
+        "backend/strategic_allocation/institution.py",
+        "backend/strategic_allocation/universes.py",
+        "docs/research/bettersaataa-01-04-research-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-requirements-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-design-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md",
+        "docs/research/bettersaataa-review-findings-2026-09-14.md",
+        "docs/research/bettersaataa-M1-report-2026-09-14.md",
+        "docs/research/bettersaataa-M2-kernels-report-2026-09-14.md",
+        "docs/research/bettersaataa-M2-integration-report-2026-09-14.md",
+        "docs/research/bettersaataa-M3-report-2026-09-14.md"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -4663,10 +4696,30 @@
         "backend/tests/test_mandate_diagnostic_integrity.py",
         "frontend/src/pages/InvestmentObjectivesWorkspace.test.tsx",
         "frontend/src/services/strategicAllocation.test.ts",
-        "frontend/src/test/mandateFixtures.ts"
+        "frontend/src/test/mandateFixtures.ts",
+        "backend/tests/test_bettersaataa_m1.py",
+        "backend/tests/test_bettersaataa_scope_journey.py",
+        "backend/tests/test_bettersaataa_final_audit.py",
+        "backend/tests/test_cma_models.py",
+        "backend/tests/test_cma_model_integration.py",
+        "backend/tests/test_strategic_risk_budget.py",
+        "frontend/src/pages/StrategicAllocationModels.test.tsx",
+        "frontend/src/services/strategicAllocationModels.test.ts",
+        "frontend/src/components/strategic-allocation/CmaModelEditor.test.tsx",
+        "frontend/src/components/strategic-allocation/PolicyCandidatesM2.test.tsx",
+        "frontend/src/components/strategic-allocation/RiskBudgetEditor.test.tsx",
+        "frontend/src/components/strategic-scope/StrategicScopeWorkspace.test.tsx",
+        "frontend/src/components/investment-mandate/InstitutionalFields.test.tsx",
+        "frontend/src/app/allocationJourney.m1.test.tsx",
+        "frontend/src/layouts/StageLayout.test.tsx",
+        "frontend/e2e/better-saataa-01-04.spec.ts",
+        "frontend/e2e/bettersaataa-m1.spec.ts"
       ],
       "related_configs": [
-        "frontend/playwright.strategic.config.ts"
+        "frontend/playwright.strategic.config.ts",
+        "frontend/playwright.better-saataa.config.ts",
+        "frontend/playwright.m1.config.ts",
+        "backend/tests/bettersaataa_m1_app.py"
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_strategic_allocation.py backend/tests/test_tactical_walk_forward.py backend/tests/test_frontier_grid.py -q",
@@ -4674,14 +4727,19 @@
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts",
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
-        "npm run test --prefix frontend -- --run InvestmentObjectivesWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx strategicAllocation.test.ts"
+        "npm run test --prefix frontend -- --run InvestmentObjectivesWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx strategicAllocation.test.ts",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_bettersaataa_m1.py backend/tests/test_bettersaataa_scope_journey.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_risk_budget.py backend/tests/test_bettersaataa_final_audit.py -q",
+        "npm run test --prefix frontend -- --run StrategicAllocationModels.test.tsx CmaModelEditor.test.tsx PolicyCandidatesM2.test.tsx StrategicScopeWorkspace.test.tsx InstitutionalFields.test.tsx StageLayout.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1",
+        "npm run test:e2e --prefix frontend -- --config=playwright.m1.config.ts --workers=1"
       ],
       "pitfall_ids": [
         "P04",
         "P05",
         "P07",
         "P08",
-        "P22"
+        "P22",
+        "P23"
       ],
       "risk_flags": [
         "immutable_cma_and_policy",
@@ -4704,7 +4762,12 @@
           "frontend/src/pages/StrategicAllocationWorkspace.tsx",
           "frontend/e2e/strategic-allocation.spec.ts",
           "backend/strategic_allocation/goal_kernels.py",
-          "backend/tests/test_mandate_diagnostic_integrity.py"
+          "backend/tests/test_mandate_diagnostic_integrity.py",
+          "backend/strategic_allocation/cma_application.py",
+          "backend/tests/test_cma_model_integration.py",
+          "backend/tests/test_bettersaataa_m1.py",
+          "backend/tests/test_bettersaataa_final_audit.py",
+          "frontend/e2e/better-saataa-01-04.spec.ts"
         ],
         "unsampled_paths": []
       }

@@ -18,6 +18,8 @@ export interface TaaBaseline {
   alloc_name: string
   as_of: string
   universe_snapshot_id?: string | null
+  strategic_universe_id?: string | null
+  implementation_mapping_id?: string | null
   data_release_id?: string | null
   assets: TaaAsset[]
   group_limits?: Array<{ id: string; assets: string[]; lo: number; hi: number }>
@@ -27,6 +29,7 @@ export interface TaaBaseline {
   lineage: Record<string, unknown>
   policy?: {
     mandate_id: string; cma_id: string; expires_on: string; reason: string
+    assumptions: import('./strategicAllocation').CmaDefinition
     mandate: { max_tracking_error: number; max_volatility: number; currency: string; horizon_years: number }
     independent_approval: boolean; execution: FixedNjitExecutionAudit
   }
@@ -53,7 +56,7 @@ export interface TaaPreviewRequest {
   end_date: string
   as_of: string
   train_end_date: string
-  signal_mode: 'momentum' | 'manual' | 'regime'
+  signal_mode: 'momentum' | 'manual' | 'regime' | 'composite'
   lookback: number
   manual_tilts: Record<string, number>
   regime_run_id?: string
@@ -72,6 +75,34 @@ export interface TaaPreviewRequest {
   note: string
   selected_candidate_id?: string
   walk_forward?: TaaWalkForwardConfig | null
+  decision_policy?: TaaDecisionPolicy | null
+  signal_components?: TaaSignalComponent[]
+  current_weights_as_of?: string | null
+  last_execution_date?: string | null
+}
+
+export interface TaaDecisionPolicy {
+  mode: 'scheduled'
+  cost_basis: 'half_turnover' | 'gross_traded_weight'
+  decision_frequency: 'daily' | 'weekly' | 'monthly' | 'quarterly'
+  execution_frequency: 'daily' | 'weekly' | 'monthly' | 'quarterly'
+  execution_lag: number
+  min_holding_periods: number
+  deviation_threshold: number
+}
+export interface TaaDatedSignal {
+  observed_on: string; available_on: string; expires_on: string; values: Record<string, number>
+}
+export interface TaaSignalComponent {
+  id: string; kind: 'momentum' | 'value' | 'carry' | 'macro' | 'risk_sentiment'; weight: number
+  source: string; methodology: string; unit: 'standardized_score_minus1_plus1'
+  lookback: number; max_age_days: number; observations: TaaDatedSignal[]
+}
+export interface TaaApplication {
+  state: 'maintain' | 'waiting_execution' | 'adjustment_proposal' | 'ineligible'
+  eligible: boolean; reasons: string[]; threshold_triggered: boolean | null
+  latest_decision_date?: string; pending_decision?: boolean
+  decision_date: string | null; execution_opportunity: boolean; actual_execution: false
 }
 
 export interface TaaWalkForwardConfig {
@@ -106,6 +137,7 @@ export interface TaaCandidate {
   strength: number
   feasible: boolean
   validation_feasible?: boolean
+  holding_budget_breaches?: { train: number; validation: number }
   train: TaaMetrics
   validation: TaaMetrics
 }
@@ -140,7 +172,8 @@ export interface TaaPreview {
     signal_details?: Array<{ asset_id: string; value: number | null; signal_date: string | null; window?: { window_start: string | null; window_end: string | null; available_at: string | null; lag_days: number | null; status: string }; direction: string; raw_tilt: number; applied_tilt: number; constraint_reason: string | null }>
   }
   chart: Array<{ date: string; baseline: number; taa: number; segment: 'train' | 'validation' }>
-  weight_path: Array<{ date: string; weights: Record<string, number>; turnover: number }>
+  weight_path: Array<{ date: string; weights: Record<string, number>; turnover: number; cost?: number; two_way_turnover?: number; decision?: boolean; execution_opportunity?: boolean; traded?: boolean; no_trade_reason?: string; research_target?: Record<string, number> }>
+  application?: TaaApplication
   warnings: string[]
   execution: FixedNjitExecutionAudit
   audit: Record<string, unknown>

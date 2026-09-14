@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -69,6 +69,21 @@ describe('ProductPoolSelection', () => {
     expect(screen.getByText('沪深300ETF')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '进入手动构建大类' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '进入自动构建大类' })).toBeInTheDocument()
+  })
+
+  it('修改范围后忽略旧快照请求的迟到响应', async () => {
+    let resolve!: (value: typeof universe) => void
+    vi.mocked(createInvestableUniverseSnapshot).mockReturnValue(new Promise(done => { resolve = done }))
+    render(<MemoryRouter><ProductPoolSelection /></MemoryRouter>)
+    const choice = await screen.findByRole('checkbox', { name: /核心产品池/ })
+    fireEvent.click(choice)
+    fireEvent.click(screen.getByRole('button', { name: '生成锁定快照' }))
+    await waitFor(() => expect(createInvestableUniverseSnapshot).toHaveBeenCalledOnce())
+    fireEvent.click(choice)
+    await act(async () => resolve(universe))
+    expect(screen.queryByText('可投资域快照已锁定')).not.toBeInTheDocument()
+    expect(choice).not.toBeChecked()
+    expect(readAllocationJourney().universeId).toBeUndefined()
   })
 
   // The hand-off used to point at a route that does not exist and at a query key
