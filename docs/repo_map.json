@@ -4637,6 +4637,8 @@
         "saa-taa-business-intent-recheck-2026-09-13.md",
         "docs/research/screenshots/mandate-fix-20260913",
         "docs/research/pr14-merge-review-2026-09-13.md",
+        "local-dev-diff-review-2026-09-13.md",
+        "local-dev-fix-recheck-2026-09-14.md",
         "docs/research/screenshots/pr14-merge-review"
       ],
       "upstream_dependencies": [
