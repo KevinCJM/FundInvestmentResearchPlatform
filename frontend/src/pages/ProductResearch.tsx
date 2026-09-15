@@ -27,6 +27,8 @@ import {
   assertFixedNjitExecution,
   type FixedNjitExecutionAudit,
 } from '../utils/fixedNjitExecution';
+import { Badge, Button, Card, EmptyState } from '../components/ui';
+import { systemText as s, useI18n } from '../i18n/runtime';
 
 interface ProductItem {
   ts_code?: string | null;
@@ -159,35 +161,35 @@ const formatDate = (value?: string | null) => {
 
 const formatText = (value?: string | null) => {
   if (!value) {
-    return '未知';
+    return s('productResearch.unknown');
   }
   return value;
 };
 
-const statusTone = (status?: string | null) => {
+/** 状态用状态色阶。品牌蓝只表示链接与选中，不表示"这只基金还活着"。 */
+const statusTone = (status?: string | null): 'neutral' | 'success' | 'danger' => {
   if (!status) {
-    return 'bg-slate-100 text-slate-600';
+    return 'neutral';
   }
-  const clean = status.toLowerCase();
-  if (clean.includes('终止') || clean.includes('退市') || clean.includes('清盘') || clean.includes('暂停')) {
-    return 'bg-rose-100 text-rose-700';
+  if (/终止|退市|清盘|暂停/.test(status)) {
+    return 'danger';
   }
-  if (clean.includes('存续') || clean.includes('上市')) {
-    return 'bg-accent-100 text-accent-700';
+  if (/存续|上市/.test(status)) {
+    return 'success';
   }
-  return 'bg-slate-100 text-slate-600';
+  return 'neutral';
 };
 
-const filterLabels: Record<string, string> = {
-  fund_type: '投资类型',
-  type: '基金类型',
-  invest_type: '投资风格',
-  qdii_type: 'QDII 属性',
-  market: '交易市场',
-  status: '产品状态',
-  management: '管理人',
-  custodian: '托管人',
-};
+const filterLabels = (): Record<string, string> => ({
+  fund_type: s('productResearch.filterFundType'),
+  type: s('productResearch.filterType'),
+  invest_type: s('productResearch.filterInvestType'),
+  qdii_type: s('productResearch.filterQdiiType'),
+  market: s('productResearch.filterMarket'),
+  status: s('productResearch.filterStatus'),
+  management: s('productResearch.filterManagement'),
+  custodian: s('productResearch.filterCustodian'),
+});
 
 type FilterState = {
   fund_type: string[];
@@ -256,6 +258,7 @@ const fallbackConditionFields = (kind: 'etf' | 'fund'): ProductConditionField[] 
 }];
 
 export default function ProductResearch() {
+  useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const [productKind, setProductKind] = useState<'etf' | 'fund'>(() => readProductKind(searchParams.get('kind')));
   const [response, setResponse] = useState<ProductsResponse | null>(null);
@@ -286,6 +289,8 @@ export default function ProductResearch() {
   const [researchError, setResearchError] = useState<string | null>(null);
   const [researchAsOf, setResearchAsOf] = useState('');
   const [definitionIndicator, setDefinitionIndicator] = useState<IndicatorDefinition | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [pageInput, setPageInput] = useState('1');
   const [researchPreference, setResearchPreference] = useMetricDisplayPreference(
     'product-research',
     'single_product',
@@ -367,11 +372,11 @@ export default function ProductResearch() {
         if (!resp.ok) {
           if (resp.status === 404) {
             setResponse(null);
-            setError(`未找到${productKind === 'etf' ? 'ETF' : '场外公募基金'}产品信息，请先在主页更新对应数据模块。`);
+            setError(s('productResearch.errorNotFound', { kind: productKind === 'etf' ? s('productResearch.kindEtf') : s('productResearch.kindFund') }));
             return;
           }
           const payload = await resp.json().catch(() => null) as { detail?: string } | null;
-          throw new Error(payload?.detail || '加载产品列表失败');
+          throw new Error(payload?.detail || s('productResearch.errorLoadFailed'));
         }
         const data = (await resp.json()) as ProductsResponse;
         assertFixedNjitExecution(data.execution, '产品研究统计');
@@ -381,14 +386,14 @@ export default function ProductResearch() {
           return;
         }
         console.error('Failed to load products', err);
-        setError(err instanceof Error ? err.message : '产品数据加载失败，请稍后重试。');
+        setError(err instanceof Error ? err.message : s('productResearch.errorGeneric'));
       } finally {
         setLoading(false);
       }
     };
     fetchData();
     return () => controller.abort();
-  }, [conditions, page, pageSize, sortKey, sortDir, searchKeyword, filters, productKind, snapshotMetrics]);
+  }, [conditions, page, pageSize, sortKey, sortDir, searchKeyword, filters, productKind, snapshotMetrics, reloadToken]);
 
   useEffect(() => {
     let active = true;
@@ -401,7 +406,7 @@ export default function ProductResearch() {
       const periods = metadata.periods.map((item) => item.value);
       setResearchPeriods(periods);
       setResearchPreference((current) => normalizeMetricPeriods(current, periods, '1Y'));
-    }).catch(() => { if (active) setResearchError('指标目录暂时不可用。'); });
+    }).catch(() => { if (active) setResearchError(s('productResearch.errorCatalog')); });
     return () => { active = false; };
   }, [productKind]);
 
@@ -432,7 +437,7 @@ export default function ProductResearch() {
         as_of: researchAsOf || undefined,
       })
     ))).then((responses) => { if (active) setResearchResults(responses.flatMap(({ results }) => results)); })
-      .catch(() => { if (active) { setResearchResults([]); setResearchError('当前页指标计算失败，请检查真实数据与样本窗口。'); } })
+      .catch(() => { if (active) { setResearchResults([]); setResearchError(s('productResearch.errorMetrics')); } })
       .finally(() => { if (active) setResearchLoading(false); });
     return () => { active = false; };
   }, [currentPageTargets, researchAsOf, researchPreference.periodsByIndicator, selectedResearchIndicators, viewMode]);
@@ -471,6 +476,7 @@ export default function ProductResearch() {
   const clearAllFilters = () => {
     setFilters(initialFilterState);
     setConditions([]);
+    setSearchInput('');
     setSelectedProducts({});
     setAllMatchingSelected(false);
     setExcludedProductIds(new Set());
@@ -546,18 +552,22 @@ export default function ProductResearch() {
   });
   const conditionOperators = response?.condition_operators ?? [];
   const selectHeaderRef = useRef<HTMLTableCellElement | null>(null);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const [selectColOffset, setSelectColOffset] = useState<number>(0);
+  const [tableOverflowing, setTableOverflowing] = useState(false);
 
   useLayoutEffect(() => {
     const updateOffset = () => {
       if (selectHeaderRef.current) {
         setSelectColOffset(selectHeaderRef.current.offsetWidth);
       }
+      const box = tableScrollRef.current;
+      setTableOverflowing(Boolean(box && box.scrollWidth > box.clientWidth + 1));
     };
     updateOffset();
     window.addEventListener('resize', updateOffset);
     return () => window.removeEventListener('resize', updateOffset);
-  }, [response, pageSize, sortKey, sortDir]);
+  }, [response, pageSize, sortKey, sortDir, snapshotMetrics]);
 
   const productLeft = selectColOffset || selectHeaderRef.current?.offsetWidth || 0;
 
@@ -645,144 +655,129 @@ export default function ProductResearch() {
 
   const canCompareSelection = !allMatchingSelected && selectedCount > 0 && selectedCount <= 10;
   const selectionActionHint = allMatchingSelected
-    ? '全选筛选结果是逻辑选择；请取消全选后手动选择最多 10 个产品进行对比。'
+    ? s('productResearch.compareHintAll')
     : selectedCount > 10
-      ? '产品对比最多支持 10 个产品。'
+      ? s('productResearch.compareHintLimit')
       : undefined;
 
+  const kindLabel = productKind === 'etf' ? s('productResearch.kindEtf') : s('productResearch.kindFund');
+  const labels = filterLabels();
+  const dateColumnKey = productKind === 'etf' ? 'list_date' : 'found_date';
+  const pageSelectRef = useRef<HTMLInputElement | null>(null);
+  const pageSelectionPartial = !currentPageAllSelected
+    && currentPageSelectableProducts.some((item) => isProductSelected(item.id));
+  // indeterminate 只能用 DOM 属性设置，React 没有对应的 prop。
+  useEffect(() => {
+    if (pageSelectRef.current) {
+      pageSelectRef.current.indeterminate = pageSelectionPartial;
+    }
+  });
+  useEffect(() => { setPageInput(String(page)); }, [page]);
+
+  const commitPageInput = () => {
+    const next = Number(pageInput);
+    if (Number.isInteger(next) && next >= 1 && next <= totalPages) {
+      setPage(next);
+      return;
+    }
+    setPageInput(String(page));
+  };
+  const clearSelection = () => {
+    setSelectedProducts({});
+    setAllMatchingSelected(false);
+    setExcludedProductIds(new Set());
+  };
+  const reload = () => setReloadToken((current) => current + 1);
+  const ariaSort = (columnKey: string): 'ascending' | 'descending' | 'none' => (
+    sortKey === columnKey ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'
+  );
+  const headerBase = 'px-5 py-3 text-xs font-semibold whitespace-nowrap';
+  const headerCell = `${headerBase} bg-slate-50 text-left text-slate-600`;
+  const headerCellNumeric = `${headerBase} bg-slate-50 text-right text-slate-600`;
+  const headerCellSnapshot = `${headerBase} bg-accent-50 text-right text-accent-700`;
+  const toggleClass = (active: boolean) => `min-h-10 rounded-lg px-4 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${
+    active ? 'bg-accent-600 text-white' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+  }`;
+
   return (
-    <div className="mx-auto max-w-6xl px-6 py-10">
-      <div className="mb-8 space-y-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">产品研究</h1>
-            <p className="mt-2 text-base text-slate-600">
-              分别研究 ETF 与场外公募基金的规模、费率、投资风格和管理人，为统一资产配置提供候选池。
-            </p>
-          </div>
-          <div className="inline-flex self-start rounded-xl bg-slate-100 p-1">
-            {(['etf', 'fund'] as const).map((kind) => (
-              <button
-                key={kind}
-                type="button"
-                onClick={() => switchProductKind(kind)}
-                className={`rounded-lg px-5 py-2 text-sm font-semibold transition ${
-                  productKind === kind ? 'bg-white text-accent-600 shadow-sm' : 'text-slate-600 hover:text-slate-700'
-                }`}
-              >
-                {kind === 'etf' ? 'ETF' : '场外公募基金'}
-              </button>
-            ))}
-          </div>
+    // 宽度、外边距和面包屑都由 StageLayout 提供，这里不再套第二层容器。
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-slate-900 sm:text-3xl">{s('productResearch.title')}</h1>
+          <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">{s('productResearch.description')}</p>
         </div>
-        <div className="inline-flex self-start rounded-xl border border-slate-200 bg-white p-1" aria-label="产品研究视图">
-          <button type="button" onClick={() => setViewMode('basic')} className={`min-h-11 rounded-lg px-5 text-sm font-semibold ${viewMode === 'basic' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>基础资料</button>
-          <button type="button" aria-label="切换到研究指标视图" onClick={() => setViewMode('metrics')} className={`min-h-11 rounded-lg px-5 text-sm font-semibold ${viewMode === 'metrics' ? 'bg-accent-600 text-white' : 'text-slate-600'}`}><span aria-hidden="true">指标分析</span></button>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            title="当前筛选产品"
-            value={summary ? `${integerFormatter.format(summary.filtered_total)} / ${integerFormatter.format(summary.universe_total)}` : '--'}
-            description={`筛选结果 / 全部${productKind === 'etf' ? 'ETF' : '场外公募基金'}产品代码`}
-          />
-          <MetricCard
-            title="有效存续产品"
-            value={summary?.active_count !== undefined && summary?.active_count !== null ? integerFormatter.format(summary.active_count) : '--'}
-            description={summary?.active_rate !== undefined && summary?.active_rate !== null
-              ? `占比 ${formatSnapshotValue(summary.active_rate, 'ratio')}`
-              : '存续状态不可用'}
-          />
-          <MetricCard
-            title="筛选合计发行规模（非AUM）"
-            value={formatIssueAmount(summary?.total_issue_amount)}
-            description="单位：按万转亿换算"
-          />
-          <MetricCard
-            title="平均管理费 / 托管费"
-            value={`${formatPercent(summary?.avg_m_fee)} · ${formatPercent(summary?.avg_c_fee)}`}
-            description="费用率均值按当前筛选样本统计"
-          />
+        <div role="group" aria-label={s('productResearch.kindGroup')} className="inline-flex shrink-0 self-start rounded-xl border border-slate-200 bg-white p-1">
+          {(['etf', 'fund'] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              aria-pressed={productKind === kind}
+              onClick={() => switchProductKind(kind)}
+              className={toggleClass(productKind === kind)}
+            >
+              {kind === 'etf' ? s('productResearch.kindEtf') : s('productResearch.kindFund')}
+            </button>
+          ))}
         </div>
       </div>
 
-      <section className="mb-8 space-y-4 rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-100">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex w-full max-w-xl items-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2">
-            <svg className="h-5 w-5 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          title={s('productResearch.summaryFiltered')}
+          value={summary ? `${integerFormatter.format(summary.filtered_total)} / ${integerFormatter.format(summary.universe_total)}` : '--'}
+          description={s('productResearch.summaryFilteredHint', { kind: kindLabel })}
+        />
+        <MetricCard
+          title={s('productResearch.summaryActive')}
+          value={summary?.active_count !== undefined && summary?.active_count !== null ? integerFormatter.format(summary.active_count) : '--'}
+          description={summary?.active_rate !== undefined && summary?.active_rate !== null
+            ? s('productResearch.summaryActiveRate', { rate: formatSnapshotValue(summary.active_rate, 'ratio') })
+            : s('productResearch.summaryActiveUnavailable')}
+        />
+        <MetricCard
+          title={s('productResearch.summaryIssue')}
+          value={formatIssueAmount(summary?.total_issue_amount)}
+          description={s('productResearch.summaryIssueHint')}
+        />
+        <MetricCard
+          title={s('productResearch.summaryFee')}
+          value={`${formatPercent(summary?.avg_m_fee)} · ${formatPercent(summary?.avg_c_fee)}`}
+          description={s('productResearch.summaryFeeHint')}
+        />
+      </div>
+
+      <Card className="space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <label className="flex w-full max-w-xl items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 focus-within:border-accent-500 focus-within:ring-1 focus-within:ring-accent-500">
+            <span className="sr-only">{s('productResearch.searchLabel')}</span>
+            <svg aria-hidden="true" className="h-5 w-5 shrink-0 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
               <line x1="20" y1="20" x2="16.65" y2="16.65" />
             </svg>
             <input
               value={searchInput}
               onChange={(event) => setSearchInput(event.target.value)}
-              placeholder="按代码、名称或管理人搜索"
-              className="ml-3 w-full bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-600"
+              placeholder={s('productResearch.searchPlaceholder')}
+              className="min-h-10 w-full bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-600 placeholder:opacity-100"
             />
-          </div>
+          </label>
           <div className="flex flex-wrap items-center gap-3">
-            <span className="rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-600">
-              已选条件 {appliedFiltersCount}
-            </span>
+            <Badge>{s('productResearch.appliedCount', { count: appliedFiltersCount })}</Badge>
             {appliedFiltersCount > 0 && (
-              <button
-                type="button"
-                onClick={clearAllFilters}
-                className="text-sm font-medium text-accent-600 hover:text-accent-600"
-              >
-                重置全部筛选
-              </button>
+              <Button onClick={clearAllFilters}>{s('productResearch.resetFilters')}</Button>
             )}
           </div>
         </div>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <FilterDropdown
-            label="投资类型"
-            options={response?.available_filters?.fund_type ?? []}
-            selected={filters.fund_type}
-            onChange={handleFilterChange('fund_type')}
-          />
-          <FilterDropdown
-            label="基金类型"
-            options={response?.available_filters?.type ?? []}
-            selected={filters.type}
-            onChange={handleFilterChange('type')}
-          />
-          <FilterDropdown
-            label="投资风格"
-            options={response?.available_filters?.invest_type ?? []}
-            selected={filters.invest_type}
-            onChange={handleFilterChange('invest_type')}
-          />
-          <FilterDropdown
-            label="QDII 属性"
-            options={response?.available_filters?.qdii_type ?? []}
-            selected={filters.qdii_type}
-            onChange={handleFilterChange('qdii_type')}
-          />
-          <FilterDropdown
-            label="交易市场"
-            options={response?.available_filters?.market ?? []}
-            selected={filters.market}
-            onChange={handleFilterChange('market')}
-          />
-          <FilterDropdown
-            label="产品状态"
-            options={response?.available_filters?.status ?? []}
-            selected={filters.status}
-            onChange={handleFilterChange('status')}
-          />
-          <FilterDropdown
-            label="管理人"
-            options={response?.available_filters?.management ?? []}
-            selected={filters.management}
-            onChange={handleFilterChange('management')}
-          />
-          <FilterDropdown
-            label="托管人"
-            options={response?.available_filters?.custodian ?? []}
-            selected={filters.custodian}
-            onChange={handleFilterChange('custodian')}
-          />
+          <FilterDropdown label={labels.fund_type} options={response?.available_filters?.fund_type ?? []} selected={filters.fund_type} onChange={handleFilterChange('fund_type')} />
+          <FilterDropdown label={labels.type} options={response?.available_filters?.type ?? []} selected={filters.type} onChange={handleFilterChange('type')} />
+          <FilterDropdown label={labels.invest_type} options={response?.available_filters?.invest_type ?? []} selected={filters.invest_type} onChange={handleFilterChange('invest_type')} />
+          <FilterDropdown label={labels.qdii_type} options={response?.available_filters?.qdii_type ?? []} selected={filters.qdii_type} onChange={handleFilterChange('qdii_type')} />
+          <FilterDropdown label={labels.market} options={response?.available_filters?.market ?? []} selected={filters.market} onChange={handleFilterChange('market')} />
+          <FilterDropdown label={labels.status} options={response?.available_filters?.status ?? []} selected={filters.status} onChange={handleFilterChange('status')} />
+          <FilterDropdown label={labels.management} options={response?.available_filters?.management ?? []} selected={filters.management} onChange={handleFilterChange('management')} />
+          <FilterDropdown label={labels.custodian} options={response?.available_filters?.custodian ?? []} selected={filters.custodian} onChange={handleFilterChange('custodian')} />
         </div>
         <ProductConditionBuilder
           fields={conditionFields}
@@ -792,8 +787,7 @@ export default function ProductResearch() {
           onAdd={addCondition}
           onRemove={removeCondition}
         />
-        {/* The研究 surfaces recompute under the研究日; this screening table reads
-            the全历史 snapshot, so the difference has to be visible here. */}
+        {/* 研究页面按研究日重算；这张筛选表读的是全历史快照，差异必须写在界面上。 */}
         {response?.pit?.snapshot_is_hindsight && (
           <p
             className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"
@@ -803,352 +797,360 @@ export default function ProductResearch() {
           </p>
         )}
         {activeFilterChips.length > 0 && (
-          <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+          <div className="flex flex-wrap gap-2 border-t border-slate-200 pt-4">
             {activeFilterChips.map((chip) => (
               <button
                 key={`${chip.key}-${chip.value}`}
                 type="button"
                 onClick={() => removeChip(chip.key, chip.value)}
-                className="inline-flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-700 hover:bg-accent-100"
+                aria-label={s('productResearch.removeFilter', { label: `${labels[chip.key] ?? chip.key} ${chip.label}` })}
+                className="inline-flex min-h-10 items-center gap-2 rounded-full bg-slate-100 px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
               >
-                <span className="rounded-lg bg-white px-2 py-0.5 text-xs font-semibold text-accent-600">
-                  {filterLabels[chip.key] ?? chip.key}
-                </span>
+                <span className="text-slate-600">{labels[chip.key] ?? chip.key}</span>
                 {chip.label}
-                <svg className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
-                  <path
-                    fillRule="evenodd"
-                    d="M10 8.586l3.182-3.182a1 1 0 011.414 1.414L11.414 10l3.182 3.182a1 1 0 01-1.414 1.414L10 11.414l-3.182 3.182a1 1 0 01-1.414-1.414L8.586 10l-3.182-3.182a1 1 0 011.414-1.414L10 8.586z"
-                    clipRule="evenodd"
-                  />
-                </svg>
+                <span aria-hidden="true" className="text-slate-600">×</span>
               </button>
             ))}
           </div>
         )}
-      </section>
+      </Card>
 
-      <section className="rounded-xl bg-white shadow-sm ring-1 ring-slate-100">
-        <div className="flex flex-col gap-3 border-b border-slate-100 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">{viewMode === 'basic' ? '产品列表' : '当前页指标矩阵'}</h2>
-            <div className="mt-1 text-xs text-slate-600">
+      {/* 与 Card 同一组令牌；这里不用 Card 是因为表格要贴边，而 Card 的内距不可覆盖。 */}
+      <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-slate-900">
+              {viewMode === 'basic' ? s('productResearch.resultTitleBasic') : s('productResearch.resultTitleMetrics')}
+            </h2>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
               {viewMode === 'basic' ? (
                 <>
-                  <span className="font-medium text-accent-600">提示：点击产品名称可进入单产品研究页面</span>
-                  <span aria-hidden="true" className="mx-1 text-slate-600">·</span>
-                  <span>支持本页全选和当前筛选结果全选；产品对比最多使用 10 个产品</span>
+                  <span className="font-semibold text-accent-700">{s('productResearch.basicHintLink')}</span>
+                  <span aria-hidden="true" className="mx-1">·</span>
+                  <span>{s('productResearch.basicHintSelection')}</span>
                 </>
-              ) : '只批量计算当前分页产品；每个指标可独立选择计算区间'}
-            </div>
-            {selectionActionHint && selectedCount > 0 && (
-              <div className="mt-2 max-w-xl text-xs font-medium text-amber-700" role="status">{selectionActionHint}</div>
-            )}
+              ) : s('productResearch.metricsHint')}
+            </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
-            {viewMode === 'basic' && (
-              <SnapshotMetricSelector
-                options={snapshotMetricFields}
-                selected={snapshotMetrics}
-                onChange={(metrics) => {
-                  setSnapshotMetrics(metrics.slice(0, 8));
-                  setPage(1);
-                }}
-                maxSelected={8}
+          <div role="group" aria-label={s('productResearch.viewGroup')} className="inline-flex shrink-0 self-start rounded-xl border border-slate-200 bg-white p-1">
+            <button type="button" aria-pressed={viewMode === 'basic'} onClick={() => setViewMode('basic')} className={toggleClass(viewMode === 'basic')}>
+              {s('productResearch.viewBasic')}
+            </button>
+            <button type="button" aria-pressed={viewMode === 'metrics'} onClick={() => setViewMode('metrics')} className={toggleClass(viewMode === 'metrics')}>
+              {s('productResearch.viewMetrics')}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-slate-200 bg-slate-50 px-5 py-3 text-sm text-slate-600">
+          {viewMode === 'basic' && (
+            <SnapshotMetricSelector
+              options={snapshotMetricFields}
+              selected={snapshotMetrics}
+              onChange={(metrics) => {
+                setSnapshotMetrics(metrics.slice(0, 8));
+                setPage(1);
+              }}
+              maxSelected={8}
+            />
+          )}
+          {viewMode === 'metrics' && (
+            <>
+              <MetricSelector
+                indicators={researchIndicators}
+                selectedIds={researchPreference.indicatorIds}
+                onChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))}
+                maxSelected={5}
+                label={s('productResearch.metricSelectorLabel')}
               />
-            )}
-            {viewMode === 'metrics' && <>
-              <MetricSelector indicators={researchIndicators} selectedIds={researchPreference.indicatorIds} onChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))} maxSelected={5} label="选择展示指标" />
-              <label className="text-xs font-medium text-slate-600">截止日<input type="date" value={researchAsOf} onChange={(event) => setResearchAsOf(event.target.value)} className="ml-2 min-h-11 rounded-lg border border-slate-200 px-3 text-sm" /></label>
-            </>}
-            <span>每页</span>
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-600">
+                {s('productResearch.asOfLabel')}
+                <input
+                  type="date"
+                  value={researchAsOf}
+                  onChange={(event) => setResearchAsOf(event.target.value)}
+                  className="min-h-10 rounded-lg border border-slate-200 px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+                />
+              </label>
+            </>
+          )}
+          <span className="ml-auto inline-flex items-center gap-2">
+            <span>{s('productResearch.pageSizeLabel')}</span>
             <select
-              aria-label="产品研究每页产品数量"
+              aria-label={s('productResearch.pageSizeAria')}
               value={pageSize}
               onChange={(event) => {
                 setPageSize(Number(event.target.value));
                 setPage(1);
               }}
-              className="rounded-lg border border-slate-200 px-3 py-1 text-sm text-slate-600 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+              className="min-h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
             >
               {PAGE_SIZE_OPTIONS.map((size) => (
-                <option key={size} value={size}>
-                  {size}
-                </option>
+                <option key={size} value={size}>{size}</option>
               ))}
             </select>
-            <span className="text-slate-600">共 {response?.total ?? 0} 条</span>
-            <button
-              type="button"
-              onClick={toggleCurrentPageSelection}
-              disabled={currentPageSelectableProducts.length === 0}
-              className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-600 hover:border-accent-400 hover:text-accent-600 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {currentPageAllSelected ? '取消本页全选' : '本页全选'}
-            </button>
-            <button
-              type="button"
-              onClick={toggleAllMatchingSelection}
-              disabled={!response || response.total === 0}
-              className={`rounded-lg border px-3 py-1 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${allMatchingSelected ? 'border-accent-500 bg-accent-50 text-accent-700' : 'border-slate-200 text-slate-600 hover:border-accent-400 hover:text-accent-600'}`}
-            >
-              {allMatchingSelected ? '取消全选' : `全选 ${integerFormatter.format(response?.total ?? 0)} 条`}
-            </button>
-            <div className="flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-600">
-              已选 {integerFormatter.format(selectedCount)}
-            </div>
-            <button
-              type="button"
-              onClick={goToComparison}
-              disabled={!canCompareSelection}
-              title={selectionActionHint}
-              className="inline-flex items-center gap-2 rounded-lg bg-accent-600 px-3 py-1 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-accent-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
-            >
-              产品对比
-              {selectedCount > 0 && <span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-accent-600">{selectedCount}</span>}
-            </button>
-          </div>
+          </span>
+          <span role="status" className="tabular-nums">{s('productResearch.totalCount', { count: integerFormatter.format(response?.total ?? 0) })}</span>
         </div>
 
         {viewMode === 'metrics' ? (
           <div className="p-4">
-            {loading || researchLoading ? <div className="py-20 text-center text-slate-600">正在计算当前页指标…</div> : error || researchError ? <div className="py-20 text-center text-rose-600">{error ?? researchError}</div> : currentPageTargets.length === 0 ? <div className="py-20 text-center text-slate-600">当前页没有可计算产品。</div> : <MetricMatrix indicators={selectedResearchIndicators} targets={currentPageTargets} results={researchResults} periodsByIndicator={researchPreference.periodsByIndicator} periodOptions={researchPeriods} onPeriodChange={(indicatorId, period) => setResearchPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))} onDefinition={setDefinitionIndicator} />}
+            {loading || researchLoading ? (
+              <TableSkeleton columns={Math.max(2, selectedResearchIndicators.length + 1)} label={s('productResearch.metricsLoading')} />
+            ) : error || researchError ? (
+              <ResultError message={error ?? researchError ?? ''} onRetry={reload} />
+            ) : currentPageTargets.length === 0 ? (
+              <p className="py-16 text-center text-sm text-slate-600">{s('productResearch.metricsEmpty')}</p>
+            ) : (
+              <MetricMatrix
+                indicators={selectedResearchIndicators}
+                targets={currentPageTargets}
+                results={researchResults}
+                periodsByIndicator={researchPreference.periodsByIndicator}
+                periodOptions={researchPeriods}
+                onPeriodChange={(indicatorId, period) => setResearchPreference((current) => ({ ...current, periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period } }))}
+                onDefinition={setDefinitionIndicator}
+              />
+            )}
           </div>
         ) : loading ? (
-          <div className="flex items-center justify-center px-6 py-24 text-slate-600">
-            <div className="flex items-center gap-3">
-              <svg className="h-5 w-5 animate-spin text-accent-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle className="opacity-25" cx="12" cy="12" r="10" />
-                <path className="opacity-75" d="M4 12a8 8 0 018-8" />
-              </svg>
-              加载中...
-            </div>
-          </div>
+          <TableSkeleton columns={6 + selectedSnapshotMetricFields.length} label={s('productResearch.loading')} />
         ) : error ? (
-          <div className="px-6 py-24 text-center">
-            <div className="mx-auto max-w-md space-y-4">
-              <div className="inline-flex rounded-full bg-rose-50 px-4 py-1 text-sm font-semibold text-rose-700">提示</div>
-              <p className="text-lg font-semibold text-slate-800">{error}</p>
-              <p className="text-sm text-slate-600">请检查数据目录或稍后重试，如需帮助可联系系统管理员。</p>
-            </div>
-          </div>
+          <ResultError message={error} onRetry={reload} />
         ) : response && response.items.length === 0 ? (
-          <div className="px-6 py-24 text-center text-slate-600">暂无符合筛选条件的{productKind === 'etf' ? 'ETF' : '场外公募基金'}。</div>
-        ) : (
-          <div className="h-[520px] w-full overflow-auto">
-            <table className="products-table min-w-[1280px] divide-y divide-slate-100">
-              <thead className="bg-slate-50">
-                <tr>
-                  <th
-                    scope="col"
-                    ref={selectHeaderRef}
-                    className="sticky left-0 top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap w-[120px] min-w-[120px]"
-                  >
-                    选择
-                  </th>
-                  <th
-                    scope="col"
-                    className="sticky top-0 z-50 border-r border-slate-100 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap"
-                    style={{ left: productLeft }}
-                  >
-                    产品
-                  </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
-                    基金类型 / 投资类型 / QDII
-                  </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
-                    风格 / 市场
-                  </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
-                    管理 / 托管
-                  </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
-                    <SortButton label="发行规模" activeKey={sortKey} columnKey="issue_amount" direction={sortDir} onClick={toggleSort} />
-                  </th>
-                  {selectedSnapshotMetricFields.map((field) => (
-                    <th
-                      key={field.field}
-                      scope="col"
-                      title={field.description}
-                      className="sticky top-0 z-40 bg-accent-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-accent-700 whitespace-nowrap"
-                    >
-                      {field.label}
-                      <span className="ml-1 font-normal text-accent-600">快照</span>
-                    </th>
-                  ))}
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
-                    <SortButton label="费用 / 基准" activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
-                  </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
-                    <SortButton label={productKind === 'etf' ? '上市日' : '成立日'} activeKey={sortKey} columnKey={productKind === 'etf' ? 'list_date' : 'found_date'} direction={sortDir} onClick={toggleSort} />
-                  </th>
-                  <th scope="col" className="sticky top-0 z-40 bg-slate-50 px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600 whitespace-nowrap">
-                    状态
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 bg-white">
-                {response?.items.map((item) => {
-                  const code = item.ts_code ?? item.code ?? '--';
-                  const detailPath = code && code !== '--'
-                    ? `/product-research/products/${encodeURIComponent(code)}?kind=${productKind}`
-                    : undefined;
-                  const selectionId = item.ts_code ?? item.code ?? null;
-                  const isSelected = selectionId ? isProductSelected(selectionId) : false;
-                  return (
-                    <tr key={`${code}-${item.name}`} className="group hover:bg-accent-50/40">
-                      <td
-                        className="sticky left-0 z-40 border-r border-slate-100 bg-white px-6 py-4 whitespace-nowrap group-hover:bg-accent-50/40 w-[120px] min-w-[120px]"
-                      >
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4 rounded-lg border-slate-300 text-accent-600 focus:ring-accent-500"
-                          checked={isSelected}
-                          disabled={!selectionId}
-                          aria-label={`选择 ${item.name ?? code}`}
-                          onChange={() => toggleProductSelection(selectionId, item.name, code)}
-                        />
-                      </td>
-                      <td
-                        className="sticky z-40 border-r border-slate-100 bg-white px-6 py-4 group-hover:bg-accent-50/40"
-                        style={{ left: productLeft }}
-                      >
-                        {detailPath ? (
-                          <Link
-                            to={detailPath}
-                            target="_blank"
-                            rel="noreferrer"
-                            aria-label={`进入${item.name ?? code}的单产品研究页面`}
-                            title="点击进入单产品研究页面"
-                            className="group block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2"
-                          >
-                            <div className="text-sm font-semibold text-accent-600 group-hover:text-accent-700">
-                              {item.name ?? '--'}
-                            </div>
-                            <div className="mt-1 text-xs text-accent-600 group-hover:text-accent-600">{code}</div>
-                          </Link>
-                        ) : (
-                          <div>
-                            <div className="text-sm font-semibold text-slate-900">{item.name ?? '--'}</div>
-                            <div className="mt-1 text-xs text-slate-600">{code}</div>
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-slate-600">
-                        <div className="font-medium text-slate-700">{formatText(item.type)}</div>
-                        <div className="flex items-center gap-2 text-xs text-slate-600">
-                          <span>{formatText(item.fund_type)}</span>
-                          {item.qdii_type && (
-                            <span className={`rounded-full px-2 py-0.5 font-semibold ${item.qdii_type === 'QDII' ? 'bg-accent-100 text-accent-700' : 'bg-slate-100 text-slate-600'}`}>
-                              {item.qdii_type}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-slate-600">
-                        <div className="font-medium text-slate-700">{formatText(item.invest_type)}</div>
-                        <div className="text-xs text-slate-600">{formatText(item.market)}</div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-slate-600">
-                        <div className="font-medium text-slate-700">{formatText(item.management)}</div>
-                        <div className="text-xs text-slate-600">{formatText(item.custodian)}</div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-slate-600">
-                        <div className="font-semibold text-slate-800">{formatIssueAmount(item.issue_amount)}</div>
-                        <div className="text-xs text-slate-600">发行披露口径（非当前 AUM）</div>
-                      </td>
-                      {selectedSnapshotMetricFields.map((field) => {
-                        const value = item.snapshot_values?.[field.field];
-                        const asOf = item.snapshot_value_dates?.[field.field];
-                        const snapshotStatus = item.snapshot_statuses?.[field.field];
-                        const snapshotWarning = item.snapshot_warnings?.[field.field];
-                        return (
-                          <td key={field.field} className="bg-accent-50/30 px-6 py-4 text-sm text-slate-600">
-                            <div className="font-semibold text-slate-800">
-                              {formatSnapshotValue(value, field.unit)}
-                            </div>
-                            <div className="text-xs text-slate-600">
-                              {snapshotWarning
-                                ? snapshotWarning
-                                : asOf
-                                  ? `快照截至 ${formatDate(asOf)}`
-                                  : snapshotStatus === 'unavailable'
-                                    ? '该产品当前不可计算此指标'
-                                    : '快照暂无可用值'}
-                            </div>
-                          </td>
-                        );
-                      })}
-                      <td className="px-6 py-4 text-sm text-slate-600">
-                        <div className="font-medium text-slate-700">管理费 {formatPercent(item.m_fee)} / 托管费 {formatPercent(item.c_fee)}</div>
-                        <div className="text-xs text-slate-600">基准 {formatText(item.benchmark)} · 产品类型 {formatText(item.fund_type)}</div>
-                      </td>
-                      <td className="px-6 py-4 text-sm text-slate-600">
-                        <div className="font-medium text-slate-700">{formatDate(productKind === 'etf' ? item.list_date : item.found_date)}</div>
-                        <div className="text-xs text-slate-600">{productKind === 'etf' ? `成立：${formatDate(item.found_date ?? item.issue_date)}` : `发行：${formatDate(item.issue_date)}`}</div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusTone(item.status)}`}>
-                          {formatText(item.status)}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="px-5 py-10">
+            <EmptyState
+              mascot={false}
+              title={s('productResearch.emptyTitle', { kind: kindLabel })}
+              hint={s('productResearch.emptyHint')}
+              action={appliedFiltersCount > 0 || searchKeyword
+                ? <Button tone="primary" onClick={clearAllFilters}>{s('productResearch.emptyAction')}</Button>
+                : undefined}
+            />
           </div>
+        ) : (
+          <>
+            {tableOverflowing && <p className="px-5 pt-3 text-xs text-slate-600">{s('productResearch.scrollHint')}</p>}
+            <div ref={tableScrollRef} className="w-full overflow-x-auto">
+              <table className="w-full min-w-[1120px] divide-y divide-slate-200">
+                <caption className="sr-only">
+                  {s('productResearch.tableCaption', { kind: kindLabel, count: integerFormatter.format(response?.total ?? 0), page })}
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col" ref={selectHeaderRef} className={`sticky left-0 z-20 w-[64px] min-w-[64px] border-r border-slate-200 ${headerCell}`}>
+                      <input
+                        ref={pageSelectRef}
+                        type="checkbox"
+                        className="h-4 w-4 rounded-lg border-slate-300 text-accent-600 focus:ring-accent-500"
+                        aria-label={s('productResearch.selectAllPage')}
+                        checked={currentPageAllSelected}
+                        disabled={currentPageSelectableProducts.length === 0}
+                        onChange={toggleCurrentPageSelection}
+                      />
+                    </th>
+                    <th scope="col" style={{ left: productLeft }} className={`sticky z-20 border-r border-slate-200 ${headerCell}`}>
+                      {s('productResearch.colProduct')}
+                    </th>
+                    <th scope="col" className={headerCell}>{s('productResearch.colType')}</th>
+                    <th scope="col" className={headerCell}>{s('productResearch.colStyle')}</th>
+                    <th scope="col" className={headerCell}>{s('productResearch.colManager')}</th>
+                    <th scope="col" aria-sort={ariaSort('issue_amount')} className={headerCellNumeric}>
+                      <SortButton label={s('productResearch.colIssue')} activeKey={sortKey} columnKey="issue_amount" direction={sortDir} onClick={toggleSort} />
+                    </th>
+                    {selectedSnapshotMetricFields.map((field) => (
+                      <th key={field.field} scope="col" title={field.description} className={headerCellSnapshot}>
+                        {field.label}
+                        <span className="ml-1 font-normal">{s('productResearch.snapshotTag')}</span>
+                      </th>
+                    ))}
+                    <th scope="col" aria-sort={ariaSort('m_fee')} className={headerCell}>
+                      <SortButton label={s('productResearch.colFee')} activeKey={sortKey} columnKey="m_fee" direction={sortDir} onClick={toggleSort} />
+                    </th>
+                    <th scope="col" aria-sort={ariaSort(dateColumnKey)} className={headerCell}>
+                      <SortButton
+                        label={productKind === 'etf' ? s('productResearch.colListDate') : s('productResearch.colFoundDate')}
+                        activeKey={sortKey}
+                        columnKey={dateColumnKey}
+                        direction={sortDir}
+                        onClick={toggleSort}
+                      />
+                    </th>
+                    <th scope="col" className={headerCell}>{s('productResearch.colStatus')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 bg-white">
+                  {response?.items.map((item) => {
+                    const code = item.ts_code ?? item.code ?? '--';
+                    const detailPath = code && code !== '--'
+                      ? `/product-research/products/${encodeURIComponent(code)}?kind=${productKind}`
+                      : undefined;
+                    const selectionId = item.ts_code ?? item.code ?? null;
+                    const isSelected = selectionId ? isProductSelected(selectionId) : false;
+                    return (
+                      <tr key={`${code}-${item.name}`} className={`group ${isSelected ? 'bg-accent-50' : 'hover:bg-slate-50'}`}>
+                        <td className={`sticky left-0 z-10 w-[64px] min-w-[64px] border-r border-slate-200 px-5 py-4 whitespace-nowrap ${isSelected ? 'bg-accent-50' : 'bg-white group-hover:bg-slate-50'}`}>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded-lg border-slate-300 text-accent-600 focus:ring-accent-500"
+                            checked={isSelected}
+                            disabled={!selectionId}
+                            aria-label={s('productResearch.selectRow', { name: item.name ?? code })}
+                            onChange={() => toggleProductSelection(selectionId, item.name, code)}
+                          />
+                        </td>
+                        <td
+                          className={`sticky z-10 border-r border-slate-200 px-5 py-4 ${isSelected ? 'bg-accent-50' : 'bg-white group-hover:bg-slate-50'}`}
+                          style={{ left: productLeft }}
+                        >
+                          {detailPath ? (
+                            <Link
+                              to={detailPath}
+                              target="_blank"
+                              rel="noreferrer"
+                              aria-label={s('productResearch.productLinkAria', { name: item.name ?? code })}
+                              title={s('productResearch.productLinkTitle')}
+                              className="block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2"
+                            >
+                              <span className="block text-sm font-semibold text-accent-700 underline-offset-2 group-hover:underline">{item.name ?? '--'}</span>
+                              <span className="mt-1 block text-xs tabular-nums text-slate-600">{code}</span>
+                            </Link>
+                          ) : (
+                            <div>
+                              <div className="text-sm font-semibold text-slate-900">{item.name ?? '--'}</div>
+                              <div className="mt-1 text-xs tabular-nums text-slate-600">{code}</div>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-5 py-4 text-sm text-slate-600">
+                          <div className="font-medium text-slate-700">{formatText(item.type)}</div>
+                          <div className="mt-1 flex items-center gap-2 text-xs text-slate-600">
+                            <span>{formatText(item.fund_type)}</span>
+                            {item.qdii_type && <Badge>{item.qdii_type}</Badge>}
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-sm text-slate-600">
+                          <div className="font-medium text-slate-700">{formatText(item.invest_type)}</div>
+                          <div className="text-xs text-slate-600">{formatText(item.market)}</div>
+                        </td>
+                        <td className="px-5 py-4 text-sm text-slate-600">
+                          <div className="font-medium text-slate-700">{formatText(item.management)}</div>
+                          <div className="text-xs text-slate-600">{formatText(item.custodian)}</div>
+                        </td>
+                        <td className="px-5 py-4 text-right text-sm text-slate-600">
+                          <div className="font-semibold tabular-nums text-slate-800">{formatIssueAmount(item.issue_amount)}</div>
+                          <div className="text-xs text-slate-600">{s('productResearch.issueHint')}</div>
+                        </td>
+                        {selectedSnapshotMetricFields.map((field) => {
+                          const value = item.snapshot_values?.[field.field];
+                          const asOf = item.snapshot_value_dates?.[field.field];
+                          const snapshotStatus = item.snapshot_statuses?.[field.field];
+                          const snapshotWarning = item.snapshot_warnings?.[field.field];
+                          return (
+                            <td key={field.field} className="px-5 py-4 text-right text-sm text-slate-600">
+                              <div className="font-semibold tabular-nums text-slate-800">{formatSnapshotValue(value, field.unit)}</div>
+                              <div className="text-xs text-slate-600">
+                                {snapshotWarning
+                                  ? snapshotWarning
+                                  : asOf
+                                    ? s('productResearch.snapshotAsOf', { date: formatDate(asOf) })
+                                    : snapshotStatus === 'unavailable'
+                                      ? s('productResearch.snapshotUnavailable')
+                                      : s('productResearch.snapshotEmpty')}
+                              </div>
+                            </td>
+                          );
+                        })}
+                        <td className="px-5 py-4 text-sm text-slate-600">
+                          <div className="font-medium tabular-nums text-slate-700">
+                            {s('productResearch.feeCell', { management: formatPercent(item.m_fee), custody: formatPercent(item.c_fee) })}
+                          </div>
+                          <div className="text-xs text-slate-600">
+                            {s('productResearch.feeBenchmark', { benchmark: formatText(item.benchmark), type: formatText(item.fund_type) })}
+                          </div>
+                        </td>
+                        <td className="px-5 py-4 text-sm text-slate-600">
+                          <div className="font-medium tabular-nums text-slate-700">{formatDate(productKind === 'etf' ? item.list_date : item.found_date)}</div>
+                          <div className="text-xs tabular-nums text-slate-600">
+                            {productKind === 'etf'
+                              ? s('productResearch.foundedOn', { date: formatDate(item.found_date ?? item.issue_date) })
+                              : s('productResearch.issuedOn', { date: formatDate(item.issue_date) })}
+                          </div>
+                        </td>
+                        <td className="px-5 py-4">
+                          <Badge tone={statusTone(item.status)}>{formatText(item.status)}</Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
 
         {response && response.items.length > 0 && (
-          <div className="flex flex-col gap-4 border-t border-slate-100 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-slate-600">
-              第 {page} / {totalPages} 页
+          <nav aria-label={s('productResearch.paginationLabel')} className="flex flex-col gap-3 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm tabular-nums text-slate-600">{s('productResearch.pageStatus', { page, total: totalPages })}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={() => setPage(1)} disabled={page === 1}>{s('productResearch.firstPage')}</Button>
+              <Button onClick={() => setPage((prev) => Math.max(1, prev - 1))} disabled={page === 1}>{s('productResearch.prevPage')}</Button>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                inputMode="numeric"
+                aria-label={s('productResearch.gotoPage')}
+                value={pageInput}
+                onChange={(event) => setPageInput(event.target.value)}
+                onBlur={commitPageInput}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitPageInput(); } }}
+                className="min-h-10 w-20 rounded-lg border border-slate-200 px-3 text-sm tabular-nums text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+              />
+              <Button onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))} disabled={page >= totalPages}>{s('productResearch.nextPage')}</Button>
+              <Button onClick={() => setPage(totalPages)} disabled={page >= totalPages}>{s('productResearch.lastPage')}</Button>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
-                disabled={page === 1}
-                className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 hover:border-accent-400 hover:text-accent-600"
-              >
-                上一页
-              </button>
-              <button
-                type="button"
-                onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
-                disabled={page >= totalPages}
-                className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 hover:border-accent-400 hover:text-accent-600"
-              >
-                下一页
-              </button>
-            </div>
-          </div>
+          </nav>
         )}
+
         {selectedCount > 0 && (
-          <div className="flex flex-wrap gap-2 border-t border-slate-100 px-6 py-4 text-xs text-accent-600">
-            {allMatchingSelected ? (
-              <span className="rounded-full bg-accent-50 px-3 py-1 font-semibold">
-                已选择全部符合筛选条件的产品{excludedProductIds.size > 0 ? `，排除 ${excludedProductIds.size} 个` : ''}
-              </span>
-            ) : (
-              <>
-                {selectedList.slice(0, 20).map((item) => (
-                  <span key={item.id} className="inline-flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1">
-                    {item.name}
-                    <button
-                      type="button"
-                      aria-label={`取消选择 ${item.name}`}
-                      className="text-accent-600 hover:text-accent-700"
-                      onClick={() => toggleProductSelection(item.id, item.name, item.code)}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-                {selectedList.length > 20 && <span className="px-2 py-1">另有 {selectedList.length - 20} 个已选产品</span>}
-              </>
-            )}
+          // 选中反馈只保留这一处：跟随滚动，不需要翻到表尾才看得到已选了什么。
+          <div
+            role="region"
+            aria-label={s('productResearch.selectionBarLabel')}
+            className="sticky bottom-0 z-10 flex flex-col gap-3 rounded-b-xl border-t border-slate-200 bg-white px-5 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-600">
+              <Badge>{s('productResearch.selectedCount', { count: integerFormatter.format(selectedCount) })}</Badge>
+              {allMatchingSelected ? (
+                <span>
+                  {excludedProductIds.size > 0
+                    ? s('productResearch.selectionAllMatchingExcluded', { count: excludedProductIds.size })
+                    : s('productResearch.selectionAllMatching')}
+                </span>
+              ) : (
+                <span className="min-w-0 truncate">
+                  {selectedList.slice(0, 3).map((item) => item.name).join('、')}
+                  {selectedList.length > 3 ? s('productResearch.selectionMore', { count: selectedList.length - 3 }) : ''}
+                </span>
+              )}
+              {selectionActionHint && <span role="status" className="text-amber-800">{selectionActionHint}</span>}
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {allMatchingSelected ? (
+                <Button onClick={toggleAllMatchingSelection}>{s('productResearch.clearAllMatching')}</Button>
+              ) : (
+                <>
+                  <Button onClick={toggleAllMatchingSelection} disabled={!response || response.total === 0}>
+                    {s('productResearch.selectAllMatching', { count: integerFormatter.format(response?.total ?? 0) })}
+                  </Button>
+                  <Button onClick={clearSelection}>{s('productResearch.clearSelection')}</Button>
+                </>
+              )}
+              <Button tone="primary" onClick={goToComparison} disabled={!canCompareSelection} title={selectionActionHint}>
+                {s('productResearch.compare')}
+              </Button>
+            </div>
           </div>
         )}
       </section>
@@ -1157,12 +1159,42 @@ export default function ProductResearch() {
   );
 }
 
-const defaultConditionOperators: ProductConditionOperatorOption[] = [
-  { value: 'gte', label: '大于等于', symbol: '≥' },
-  { value: 'lte', label: '小于等于', symbol: '≤' },
-  { value: 'gt', label: '大于', symbol: '>' },
-  { value: 'lt', label: '小于', symbol: '<' },
-  { value: 'eq', label: '等于', symbol: '=' },
+/** 骨架屏的行列数跟随真实表格，避免加载完成时布局跳一下。 */
+function TableSkeleton({ columns, label }: { columns: number; label: string }) {
+  return (
+    <div role="status" aria-live="polite" className="space-y-3 px-5 py-5">
+      <span className="sr-only">{label}</span>
+      {Array.from({ length: 6 }).map((_, row) => (
+        <div key={row} className="flex animate-pulse items-center gap-4 motion-reduce:animate-none">
+          {Array.from({ length: columns }).map((_, column) => (
+            <div key={column} className={`h-9 rounded-lg bg-slate-100 ${column === 0 ? 'w-16 shrink-0' : 'flex-1'}`} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 请求失败必须给重试入口，只说"请稍后再试"等于把重试交给整页刷新。 */
+function ResultError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="px-5 py-16">
+      <div className="mx-auto max-w-md space-y-3 text-center">
+        <p className="text-base font-semibold text-slate-900">{s('productResearch.errorTitle')}</p>
+        <p className="text-sm leading-6 text-slate-600">{message}</p>
+        <p className="text-sm leading-6 text-slate-600">{s('productResearch.errorHelp')}</p>
+        <Button tone="primary" onClick={onRetry}>{s('productResearch.retry')}</Button>
+      </div>
+    </div>
+  );
+}
+
+const defaultConditionOperators = (): ProductConditionOperatorOption[] => [
+  { value: 'gte', label: s('productResearch.operatorGte'), symbol: '≥' },
+  { value: 'lte', label: s('productResearch.operatorLte'), symbol: '≤' },
+  { value: 'gt', label: s('productResearch.operatorGt'), symbol: '>' },
+  { value: 'lt', label: s('productResearch.operatorLt'), symbol: '<' },
+  { value: 'eq', label: s('productResearch.operatorEq'), symbol: '=' },
 ];
 
 interface ProductConditionBuilderProps {
@@ -1193,7 +1225,7 @@ function ProductConditionBuilder({
   onRemove,
 }: ProductConditionBuilderProps) {
   const availableFields = useMemo(() => fields.filter((field) => field.available), [fields]);
-  const resolvedOperators = operators.length > 0 ? operators : defaultConditionOperators;
+  const resolvedOperators = operators.length > 0 ? operators : defaultConditionOperators();
   const [fieldName, setFieldName] = useState('');
   const [operator, setOperator] = useState<ProductConditionOperator>('gte');
   const [value, setValue] = useState('');
@@ -1212,43 +1244,46 @@ function ProductConditionBuilder({
     onAdd({ field: selectedField.field, operator, value: value.trim() });
     setValue('');
   };
+  const controlClass = 'min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 placeholder:text-slate-600 placeholder:opacity-100 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500';
 
   return (
-    <div className="space-y-4 border-t border-slate-100 pt-4">
+    <div className="space-y-4 border-t border-slate-200 pt-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-slate-800">日期与快照指标筛选</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-600">
-            指标直接读取已生成的分析快照，不实时扫描完整净值历史；指标为空的产品不会按 0 处理。
-          </p>
+          <h3 className="text-sm font-semibold text-slate-800">{s('productResearch.conditionTitle')}</h3>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-600">{s('productResearch.conditionHint')}</p>
         </div>
-        <span className={`self-start rounded-full px-3 py-1 text-xs font-semibold ${snapshotReady ? 'bg-accent-50 text-accent-700' : 'bg-amber-50 text-amber-700'}`}>
-          指标快照：{snapshotReady ? '可用' : '未就绪'}
+        <span className="shrink-0 self-start">
+          <Badge tone={snapshotReady ? 'success' : 'warning'}>
+            {snapshotReady ? s('productResearch.snapshotReady') : s('productResearch.snapshotNotReady')}
+          </Badge>
         </span>
       </div>
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
         <label className="space-y-1 text-xs font-medium text-slate-600">
-          筛选字段
+          {s('productResearch.conditionField')}
           <select
-            aria-label="筛选字段"
+            aria-label={s('productResearch.conditionField')}
             value={fieldName}
             onChange={(event) => { setFieldName(event.target.value); setValue(''); }}
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+            className={controlClass}
           >
             {fields.map((field) => (
               <option key={field.field} value={field.field} disabled={!field.available}>
-                {field.label}{field.source === 'instrument_metrics_snapshot' ? '（快照）' : ''}{!field.available ? ' · 未就绪' : ''}
+                {field.label}
+                {field.source === 'instrument_metrics_snapshot' ? s('productResearch.conditionSnapshotSuffix') : ''}
+                {!field.available ? s('productResearch.conditionUnavailableSuffix') : ''}
               </option>
             ))}
           </select>
         </label>
         <label className="space-y-1 text-xs font-medium text-slate-600">
-          比较方式
+          {s('productResearch.conditionOperator')}
           <select
-            aria-label="比较方式"
+            aria-label={s('productResearch.conditionOperator')}
             value={operator}
             onChange={(event) => setOperator(event.target.value as ProductConditionOperator)}
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+            className={controlClass}
           >
             {resolvedOperators.map((item) => (
               <option key={item.value} value={item.value}>{item.label}（{item.symbol}）</option>
@@ -1256,9 +1291,11 @@ function ProductConditionBuilder({
           </select>
         </label>
         <label className="space-y-1 text-xs font-medium text-slate-600">
-          筛选值{selectedField?.unit_label ? `（${selectedField.unit_label}）` : ''}
+          {selectedField?.unit_label
+            ? s('productResearch.conditionValueUnit', { unit: selectedField.unit_label })
+            : s('productResearch.conditionValue')}
           <input
-            aria-label="筛选值"
+            aria-label={s('productResearch.conditionValue')}
             type={selectedField?.data_type === 'date' ? 'date' : 'number'}
             step={selectedField?.data_type === 'number' ? 'any' : undefined}
             value={value}
@@ -1266,31 +1303,32 @@ function ProductConditionBuilder({
             onKeyDown={(event) => {
               if (event.key === 'Enter') { event.preventDefault(); addCondition(); }
             }}
-            placeholder={selectedField?.unit_label === '%' ? '如 10 表示 10%' : '请输入数值'}
-            className="min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
+            placeholder={selectedField?.unit_label === '%' ? s('productResearch.conditionPlaceholderPercent') : s('productResearch.conditionPlaceholderNumber')}
+            className={controlClass}
           />
         </label>
-        <button
-          type="button"
+        <Button
+          tone="primary"
+          className="self-end"
           onClick={addCondition}
           disabled={!selectedField || !value.trim()}
-          className="min-h-11 self-end rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500"
+          title={!selectedField || !value.trim() ? s('productResearch.conditionValue') : undefined}
         >
-          添加条件
-        </button>
+          {s('productResearch.conditionAdd')}
+        </Button>
       </div>
       {conditions.length > 0 && (
-        <div className="flex flex-wrap gap-2" aria-label="已添加的日期与指标条件">
+        <div className="flex flex-wrap gap-2" aria-label={s('productResearch.conditionListLabel')}>
           {conditions.map((condition, index) => (
             <button
               key={`${condition.field}-${condition.operator}-${condition.value}-${index}`}
               type="button"
               onClick={() => onRemove(index)}
-              aria-label={`移除条件 ${formatProductCondition(condition, fields, resolvedOperators)}`}
-              className="inline-flex items-center gap-2 rounded-full bg-accent-50 px-3 py-1 text-xs font-semibold text-accent-700 hover:bg-accent-100"
+              aria-label={s('productResearch.conditionRemove', { condition: formatProductCondition(condition, fields, resolvedOperators) })}
+              className="inline-flex min-h-10 items-center gap-2 rounded-full bg-slate-100 px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             >
               {formatProductCondition(condition, fields, resolvedOperators)}
-              <span aria-hidden="true">×</span>
+              <span aria-hidden="true" className="text-slate-600">×</span>
             </button>
           ))}
         </div>
@@ -1313,15 +1351,15 @@ function SortButton({ label, columnKey, activeKey, direction, onClick }: SortBut
     <button
       type="button"
       onClick={() => onClick(columnKey)}
-      className={`inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wider whitespace-nowrap ${isActive ? 'text-accent-600' : 'text-slate-600'}`}
+      aria-label={s('productResearch.sortAria', { label })}
+      className={`inline-flex min-h-10 items-center gap-1 whitespace-nowrap rounded-lg text-xs font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${isActive ? 'text-accent-700' : 'text-slate-600 hover:text-slate-900'}`}
     >
       {label}
-      <svg className={`h-3 w-3 ${isActive ? 'text-accent-600' : 'text-slate-600'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M8 15l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M16 9l-4-4-4 4" strokeLinecap="round" strokeLinejoin="round" />
-        {isActive && (
-          <path d={direction === 'asc' ? 'M12 5v14' : 'M12 5v14'} strokeLinecap="round" strokeLinejoin="round" />
-        )}
+      {/* 升序和降序必须是两个不同的图形；只换颜色等于没有方向指示。 */}
+      <svg aria-hidden="true" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {isActive
+          ? <path d={direction === 'asc' ? 'M12 19V5m-5 5l5-5 5 5' : 'M12 5v14m-5-5l5 5 5-5'} />
+          : <path d="M8 10l4-4 4 4M8 14l4 4 4-4" />}
       </svg>
     </button>
   );
@@ -1335,10 +1373,10 @@ interface MetricCardProps {
 
 function MetricCard({ title, value, description }: MetricCardProps) {
   return (
-    <div className="rounded-xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-accent-50 p-5 shadow-sm">
-      <div className="text-xs font-semibold uppercase tracking-wide text-accent-600">{title}</div>
-      <div className="mt-2 text-2xl font-bold text-slate-900">{value}</div>
-      {description && <div className="mt-1 text-xs text-slate-600">{description}</div>}
-    </div>
+    <Card as="div">
+      <p className="text-xs font-semibold text-slate-600">{title}</p>
+      <p className="mt-2 text-2xl font-bold tabular-nums text-slate-900">{value}</p>
+      {description && <p className="mt-1 text-xs leading-5 text-slate-600">{description}</p>}
+    </Card>
   );
 }
