@@ -3570,7 +3570,8 @@
         "frontend/src/pages/ProductDetail.test.tsx",
         "frontend/src/pages/ProductCompare.test.tsx",
         "frontend/e2e/product-scenario.spec.ts",
-        "frontend/e2e/metric-display.spec.ts"
+        "frontend/e2e/metric-display.spec.ts",
+        "frontend/e2e/product-research.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
