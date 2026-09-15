@@ -510,3 +510,56 @@ export async function analyzeProduct(
   }
   return result
 }
+
+export type ChartPriceBasis = 'adjusted_nav' | 'adjusted_kline' | 'raw_kline'
+
+export interface PricePoint {
+  date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number
+  volume: number | null
+}
+
+export interface ChartBasisOption {
+  id: ChartPriceBasis
+  label: string
+  description: string
+  available: boolean
+  reason: string | null
+}
+
+export interface ProductPriceSeries {
+  product_id: string
+  kind: 'etf' | 'fund'
+  basis: ChartPriceBasis
+  label: string
+  available: boolean
+  reason: string | null
+  points: PricePoint[]
+  warnings: string[]
+  bases: ChartBasisOption[]
+  execution: FixedNjitExecutionAudit
+}
+
+export async function fetchProductPriceSeries(
+  productId: string,
+  kind: 'etf' | 'fund',
+  basis: ChartPriceBasis,
+  signal?: AbortSignal,
+): Promise<ProductPriceSeries> {
+  const response = await fetch(
+    `/api/instruments/products/${encodeURIComponent(productId)}/price-series?kind=${kind}&basis=${basis}`,
+    { signal },
+  )
+  if (!response.ok) {
+    let message = `走势数据加载失败（${response.status}）`
+    try {
+      const payload = await response.json()
+      if (typeof payload?.detail === 'string') message = payload.detail
+    } catch { /* retain stable fallback */ }
+    throw new ProductAnalysisApiError(response.status, message)
+  }
+  return await response.json() as ProductPriceSeries
+}

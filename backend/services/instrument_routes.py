@@ -32,6 +32,7 @@ from services.instrument_analytics import (
     snapshot_etf_only_metrics,
     snapshot_metric_definitions,
 )
+from research_series.numba_kernels import adjusted_price_kernel
 from services.product_analysis import build_product_analysis_response
 from pit.context import resolve_request_context
 from services.product_compare import build_product_compare_response
@@ -756,6 +757,148 @@ def _load_timeseries(kind: str, ts_code: str) -> list[dict[str, Any]]:
         load_price_points(kind, ts_code, _current_data_dir(), preserve_missing=True),
         _pit_as_of(),
     )
+
+
+CHART_BASES: dict[str, dict[str, str]] = {
+    "adjusted_nav": {
+        "label": "复权净值走势",
+        "description": "复权净值折线；分红再投资后的真实收益路径，没有开高低与成交量。",
+    },
+    "adjusted_kline": {
+        "label": "后复权 K 线",
+        "description": "原始开高低收乘以复权因子，基准固定在 1.0；成交量保持原始披露值。",
+    },
+    "raw_kline": {
+        "label": "不复权 K 线（原始行情）",
+        "description": "交易所原始开高低收与成交量；技术类时序指标就定义在这个口径上。",
+    },
+}
+NAV_FILES = {"etf": "etf_daily_df.parquet", "fund": "fund_nav_df.parquet"}
+ADJUSTMENT_FILE = "fund_adj_factor_df.parquet"
+_MISSING_FACTOR_REASON = (
+    "该产品缺少复权因子数据，无法生成复权 K 线；请在数据中心同步「基金复权因子」后重试。"
+)
+
+
+def _chart_bases(kind: str) -> list[str]:
+    return ["adjusted_nav", "adjusted_kline", "raw_kline"] if kind == "etf" else ["adjusted_nav"]
+
+
+def _adjustment_factors(ts_code: str) -> dict[str, float]:
+    """Exact-date adjustment factors for one code, empty when the dataset is absent."""
+    path = _product_research_data_path(ADJUSTMENT_FILE)
+    if path is None or not path.exists():
+        return {}
+    try:
+        frame = pd.read_parquet(path, filters=[("ts_code", "==", ts_code)])
+    except Exception:
+        return {}
+    date_column = next((name for name in ("date", "trade_date") if name in frame.columns), None)
+    if frame.empty or date_column is None or "adj_factor" not in frame.columns:
+        return {}
+    frame = frame[[date_column, "adj_factor"]].copy()
+    frame[date_column] = _date_values(frame[date_column])
+    frame["adj_factor"] = pd.to_numeric(frame["adj_factor"], errors="coerce")
+    frame = frame.dropna(subset=[date_column]).sort_values(date_column, kind="stable")
+    frame = frame.drop_duplicates(date_column, keep="last")
+    return {
+        row[0].strftime("%Y-%m-%d"): float(row[1]) if pd.notna(row[1]) else float("nan")
+        for row in frame.itertuples(index=False, name=None)
+    }
+
+
+def _adjusted_nav_points(kind: str, ts_code: str) -> list[dict[str, Any]]:
+    path = _product_research_data_path(NAV_FILES[kind])
+    if path is None or not path.exists():
+        raise ValueError("缺少复权净值数据；请先同步净值数据集。")
+    try:
+        frame = pd.read_parquet(path, filters=[("ts_code", "==", ts_code)])
+    except Exception as exc:
+        raise ValueError("无法读取复权净值数据。") from exc
+    date_column = next((name for name in ("nav_date", "date") if name in frame.columns), None)
+    if frame.empty or date_column is None or "adj_nav" not in frame.columns:
+        raise ValueError("该产品没有可用的复权净值数据。")
+    frame = frame[[date_column, "adj_nav"]].copy()
+    frame[date_column] = _date_values(frame[date_column])
+    frame["adj_nav"] = pd.to_numeric(frame["adj_nav"], errors="coerce")
+    frame = frame.dropna(subset=[date_column, "adj_nav"]).sort_values(date_column, kind="stable")
+    frame = frame.drop_duplicates(date_column, keep="last")
+    if frame.empty:
+        raise ValueError("该产品没有可用的复权净值数据。")
+    return [
+        {
+            "date": row[0].strftime("%Y-%m-%d"),
+            "open": None,
+            "high": None,
+            "low": None,
+            "close": float(row[1]),
+            "volume": None,
+        }
+        for row in frame.itertuples(index=False, name=None)
+    ]
+
+
+def _adjusted_kline_points(ts_code: str) -> list[dict[str, Any]]:
+    """Back-adjusted OHLC. Fails closed: a missing factor is never replaced by 1.0."""
+    points = _load_timeseries("etf", ts_code)
+    if not points:
+        raise ValueError("该产品没有可用的原始行情数据。")
+    factors_by_date = _adjustment_factors(ts_code)
+    if not factors_by_date:
+        raise ValueError(_MISSING_FACTOR_REASON)
+    factors = np.array(
+        [factors_by_date.get(str(point["date"]), float("nan")) for point in points],
+        dtype=np.float64,
+    )
+    adjusted: dict[str, np.ndarray] = {}
+    for field in ("open", "high", "low", "close"):
+        values = np.array(
+            [
+                float(point[field]) if point[field] is not None else float("nan")
+                for point in points
+            ],
+            dtype=np.float64,
+        )
+        try:
+            adjusted[field] = adjusted_price_kernel(values, factors, np.int64(0))
+        except ValueError as exc:
+            raise ValueError(
+                "所选区间缺少有效复权因子，无法生成复权 K 线；不会用 1 或相邻因子补齐。"
+            ) from exc
+    return [
+        {
+            "date": point["date"],
+            **{
+                field: None if not np.isfinite(adjusted[field][index]) else float(adjusted[field][index])
+                for field in ("open", "high", "low", "close")
+            },
+            "volume": point["volume"],
+        }
+        for index, point in enumerate(points)
+    ]
+
+
+def _chart_basis_availability(kind: str, ts_code: str, basis: str) -> tuple[bool, Optional[str]]:
+    if basis == "adjusted_nav":
+        path = _product_research_data_path(NAV_FILES[kind])
+        return (True, None) if path is not None and path.exists() else (False, "缺少复权净值数据集。")
+    if basis == "raw_kline":
+        path = _product_research_data_path("etf_daily_candle_df.parquet")
+        return (True, None) if path is not None and path.exists() else (False, "缺少原始行情数据集。")
+    return (True, None) if _adjustment_factors(ts_code) else (False, _MISSING_FACTOR_REASON)
+
+
+def _chart_series(kind: str, ts_code: str, basis: str) -> tuple[list[dict[str, Any]], list[str]]:
+    if basis == "raw_kline":
+        return _load_timeseries("etf", ts_code), []
+    if basis == "adjusted_nav":
+        return _pit_cut(_adjusted_nav_points(kind, ts_code), _pit_as_of()), [
+            "复权净值按净值所属日期排列，未按公告日期还原当时可得信息。",
+        ]
+    return _pit_cut(_adjusted_kline_points(ts_code), _pit_as_of()), [
+        "后复权价格用于相对走势研究，数值不是当时的实际报价。",
+        "成交量保持原始披露值，未按复权因子折算份数。",
+    ]
 
 
 def _product_research_data_path(filename: str) -> Path | None:
@@ -1493,6 +1636,7 @@ def instrument_product_compare_analysis(
 def instrument_product_detail(
     product_id: str,
     kind: Literal["etf", "fund"] = Query(default="etf"),
+    include_timeseries: bool = Query(default=True),
 ):
     df = _load_instruments(kind)
     if df.empty:
@@ -1537,7 +1681,56 @@ def instrument_product_detail(
         "status": _serialize(record.get("status")),
         "base_info": base_info,
         "metrics": metrics,
-        "timeseries": _load_timeseries(kind, ts_code),
+        "timeseries": _load_timeseries(kind, ts_code) if include_timeseries else [],
         "kind": kind,
+        "execution": _instrument_execution_audit(),
+    }
+
+
+@router.get("/products/{product_id}/price-series")
+def instrument_product_price_series(
+    product_id: str,
+    kind: Literal["etf", "fund"] = Query(default="etf"),
+    basis: str = Query(default="raw_kline"),
+):
+    """One product's price path in one explicit basis, for the research chart."""
+    allowed = _chart_bases(kind)
+    if basis not in allowed:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": f"{kind} 不支持 {basis} 口径；可用口径：{'、'.join(allowed)}。"},
+        )
+    df = _load_instruments(kind)
+    record = None if df.empty else _match_instrument(df, product_id)
+    if record is None:
+        return JSONResponse(status_code=404, content={"detail": f"未找到编号为 {product_id} 的产品"})
+    ts_code = str(record.get("ts_code") or product_id)
+    bases = [
+        {
+            "id": item,
+            "label": CHART_BASES[item]["label"],
+            "description": CHART_BASES[item]["description"],
+            **dict(zip(("available", "reason"), _chart_basis_availability(kind, ts_code, item))),
+        }
+        for item in allowed
+    ]
+    try:
+        points, warnings = _chart_series(kind, ts_code, basis)
+    except ValueError as error:
+        points, warnings, available, reason = [], [], False, str(error)
+    else:
+        available, reason = True, None
+        if not points:
+            available, reason = False, "该口径在当前研究日之前没有数据。"
+    return {
+        "product_id": ts_code,
+        "kind": kind,
+        "basis": basis,
+        "label": CHART_BASES[basis]["label"],
+        "available": available,
+        "reason": reason,
+        "points": points,
+        "warnings": warnings if available else [],
+        "bases": bases,
         "execution": _instrument_execution_audit(),
     }

@@ -3238,7 +3238,6 @@
         "frontend/src/components/indicator-outputs/ScalarOutputEditor.tsx",
         "frontend/src/components/indicator-parameters/IndicatorParameterEditor.tsx",
         "frontend/src/components/indicator-parameters/IndicatorParameterInputs.tsx",
-        "frontend/src/components/indicator-parameters/TimeSeriesIndicatorPanel.tsx",
         "frontend/src/services/indicatorGraph.ts",
         "frontend/src/services/indicatorParameters.ts"
       ],
@@ -3333,6 +3332,8 @@
       ],
       "entry_files": [
         "frontend/src/components/metrics/MetricDisplay.tsx",
+        "frontend/src/components/metrics/ResearchIndicatorPanel.tsx",
+        "frontend/src/components/product-research/ProductTrendChart.tsx",
         "frontend/src/components/metrics/useMetricDisplayPreference.ts",
         "frontend/src/utils/indicatorDiagnostics.ts",
         "frontend/src/utils/indicatorPeriods.ts",

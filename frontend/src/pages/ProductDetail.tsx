@@ -1,19 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import TimeSeriesIndicatorPanel from '../components/indicator-parameters/TimeSeriesIndicatorPanel';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
-import FactorEvidencePanel from '../components/FactorEvidencePanel';
 import PublishedRiskPanel from '../components/risk-models/PublishedRiskPanel';
 import ProductScenarioPanel from '../components/product-research/ProductScenarioPanel';
+import ProductTrendChart from '../components/product-research/ProductTrendChart';
 import {
   evaluateCustomIndicators,
-  evaluateTimeSeriesIndicators,
   getCustomIndicatorMeta,
   indicatorsForContext,
   listCustomIndicators,
   type EvaluationResult,
   type IndicatorDefinition,
-  type TimeSeriesIndicatorResult,
 } from '../services/customIndicators';
 import { latestProductResearchPublication, researchVersionChoices } from '../services/regimeResearchVersions';
 import {
@@ -21,11 +18,8 @@ import {
   listHistoricalRegimeRuns,
   type HistoricalRegimeRun,
 } from '../services/historicalRegimes';
-import {
-  MetricDefinitionDrawer,
-  MetricResultCard,
-  MetricSelector,
-} from '../components/metrics/MetricDisplay';
+import { MetricDefinitionDrawer } from '../components/metrics/MetricDisplay';
+import ResearchIndicatorPanel from '../components/metrics/ResearchIndicatorPanel';
 import {
   groupIndicatorsByPeriod,
   metricPeriodFor,
@@ -58,21 +52,8 @@ import {
 import { useResearchDay } from '../app/ResearchContext';
 import { readReturnNavigationState, returnToOrigin } from '../utils/returnNavigation';
 
-interface TimeSeriesPoint {
-  date: string;
-  open: number | null;
-  close: number;
-  high: number | null;
-  low: number | null;
-  volume: number | null;
-}
-
-const SERIES_INDICATOR_IDS = {
-  PRICE_MA: 'builtin-close-moving-average-series',
-  VOLUME_MA: 'builtin-volume-moving-average-series',
-  BOLL: 'builtin-bollinger-bands-series',
-  KDJ: 'builtin-kdj-series',
-} as const;
+/** Stable identity so a card without overrides does not re-render on every pass. */
+const EMPTY_PARAMETERS: Record<string, number> = {};
 
 const CORE_RESEARCH_INDICATOR_IDS = [
   'builtin-total-return-v2',
@@ -99,34 +80,7 @@ interface ProductDetailResponse {
     m_fee?: number | null;
     c_fee?: number | null;
   };
-  timeseries: TimeSeriesPoint[];
 }
-
-interface RegimeMarkAreaBoundary {
-  name?: string;
-  xAxis: string;
-  itemStyle?: {
-    color: string;
-    opacity: number;
-  };
-}
-
-type RegimeMarkArea = [RegimeMarkAreaBoundary, RegimeMarkAreaBoundary];
-
-type OverlayId = 'PRICE_MA' | 'VOLUME_MA' | 'BOLL' | 'KDJ';
-
-interface OverlayOption {
-  id: OverlayId;
-  label: string;
-  description: string;
-}
-
-const overlayOptions: OverlayOption[] = [
-  { id: 'PRICE_MA', label: '20 日收盘价均线', description: '固定 20 个交易日窗口观察价格趋势' },
-  { id: 'VOLUME_MA', label: '10 日成交量均线', description: '固定 10 个交易日窗口观察量能节奏' },
-  { id: 'BOLL', label: '20 日布林带', description: '20 日均值加减 2 倍总体标准差' },
-  { id: 'KDJ', label: 'KDJ（9, 3, 3）', description: '固定 9 日 RSV、3 日 K 与 D 平滑' },
-];
 
 const histogramBinWidthOptions = [
   { label: '0.05%', value: 0.05 },
@@ -250,63 +204,6 @@ const formatDate = (value?: string | number | null) => {
     return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
   }
   return text.slice(0, 10);
-};
-
-const normalizeDateKey = (value: string) => {
-  const text = value.trim();
-  if (/^\d{8}$/.test(text)) {
-    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
-  }
-  const date = text.slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
-};
-
-const buildRegimeMarkAreas = (run: HistoricalRegimeRun | undefined, dates: string[]): RegimeMarkArea[] => {
-  if (!run || dates.length === 0) {
-    return [];
-  }
-
-  const datedCategories = dates
-    .map((date) => ({ date, key: normalizeDateKey(date) }))
-    .filter((item): item is { date: string; key: string } => item.key !== null);
-  const statesById = new Map(run.states.map((state) => [state.id, state]));
-
-  return run.segments.flatMap((segment): RegimeMarkArea[] => {
-    const state = statesById.get(segment.state_id);
-    const startDate = normalizeDateKey(segment.start_date);
-    const endDate = normalizeDateKey(segment.end_date);
-    if (!state?.label || !state.color || !startDate || !endDate || startDate > endDate) {
-      return [];
-    }
-
-    const intersectingDates = datedCategories.filter(({ key }) => key >= startDate && key <= endDate);
-    if (intersectingDates.length === 0) {
-      return [];
-    }
-
-    return [[
-      {
-        name: state.label,
-        xAxis: intersectingDates[0].date,
-        itemStyle: { color: state.color, opacity: 0.12 },
-      },
-      { xAxis: intersectingDates[intersectingDates.length - 1].date },
-    ]];
-  });
-};
-
-const alignedChannelValues = (
-  result: TimeSeriesIndicatorResult | undefined,
-  channelId: string,
-  dates: string[],
-): Array<number | null> => {
-  if (!result) return dates.map(() => null);
-  const channel = result.channels.find((item) => item.id === channelId);
-  if (!channel) return dates.map(() => null);
-  const valuesByDate = new Map(
-    result.dates.map((date, index) => [normalizeDateKey(date) ?? date, channel.values[index] ?? null]),
-  );
-  return dates.map((date) => valuesByDate.get(normalizeDateKey(date) ?? date) ?? null);
 };
 
 function MetricCard({ title, value, description }: { title: string; value: string; description?: string }) {
@@ -504,15 +401,17 @@ export default function ProductDetail() {
   const [analysis, setAnalysis] = useState<ProductAnalysisResponse | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [overlayResults, setOverlayResults] = useState<TimeSeriesIndicatorResult[]>([]);
-  const [overlayLoading, setOverlayLoading] = useState(false);
-  const [overlayError, setOverlayError] = useState<string | null>(null);
-  const [selectedOverlays, setSelectedOverlays] = useState<OverlayId[]>(['PRICE_MA', 'VOLUME_MA']);
   const [histogramBinWidth, setHistogramBinWidth] = useState<number>(0.2);
   const [researchIndicators, setResearchIndicators] = useState<IndicatorDefinition[]>([]);
-  const [seriesIndicators, setSeriesIndicators] = useState<IndicatorDefinition[]>([]);
   const [researchPeriods, setResearchPeriods] = useState<string[]>(['1Y']);
   const [researchResults, setResearchResults] = useState<EvaluationResult[]>([]);
+  /**
+   * Runtime overrides for the opened parameters of a saved revision, per page
+   * visit. Deliberately not persisted: the selection and period are "what I
+   * usually look at", a parameter value is "what I am asking right now", and a
+   * remembered window read as a bug the next time the page opened.
+   */
+  const [researchParameters, setResearchParameters] = useState<Record<string, Record<string, number>>>({});
   const [researchAsOf, setResearchAsOf] = useState('');
   const platformAsOf = useResearchDay();
   const [researchLoading, setResearchLoading] = useState(false);
@@ -574,36 +473,14 @@ export default function ProductDetail() {
     }
   }, [params.productId]);
 
-  const selectedResearchIndicators = useMemo(
+  // Series indicators own their own request; only scalars go through the batch.
+  const selectedScalarIndicators = useMemo(
     () => researchPreference.indicatorIds
       .map((id) => researchIndicators.find((item) => item.id === id))
-      .filter((item): item is IndicatorDefinition => Boolean(item)),
+      .filter((item): item is IndicatorDefinition => Boolean(item) && (item!.result_kind ?? 'scalar') === 'scalar'),
     [researchIndicators, researchPreference.indicatorIds],
   );
-
-  const toggleOverlay = (overlayId: OverlayId) => {
-    setSelectedOverlays((prev) => {
-      if (prev.includes(overlayId)) {
-        return prev.filter((item) => item !== overlayId);
-      }
-      return [...prev, overlayId];
-    });
-  };
-
-  const restoreDefaultOverlays = () => {
-    setSelectedOverlays(['PRICE_MA', 'VOLUME_MA']);
-  };
-
-  const renderOverlayControls = (optionId: OverlayId) => {
-    const definition = overlayOptions.find((item) => item.id === optionId);
-    return (
-      <div className="rounded-xl border border-accent-100 bg-accent-50 px-3 py-2 text-xs leading-5 text-accent-800">
-        <p><span className="font-semibold">固定指标版本：</span>{definition?.description}</p>
-        <p className="mt-1">窗口、倍数和平滑周期不能在展示页面临时覆盖。需要其他参数时，请在指标中心复制并保存为另一个时序指标。</p>
-        <Link to="/settings/indicators-models" className="mt-2 inline-flex font-semibold text-accent-700 underline decoration-accent-300 underline-offset-4">前往指标中心</Link>
-      </div>
-    );
-  };
+  const scalarParameterKey = JSON.stringify(selectedScalarIndicators.map((indicator) => researchParameters[indicator.id] ?? null));
 
   useEffect(() => {
     if (!productId) {
@@ -616,7 +493,7 @@ export default function ProductDetail() {
       try {
         setLoading(true);
         setError(null);
-        const detailUrl = `/api/instruments/products/${encodeURIComponent(productId)}?kind=${productKind}`;
+        const detailUrl = `/api/instruments/products/${encodeURIComponent(productId)}?kind=${productKind}&include_timeseries=false`;
         const resp = await fetch(detailUrl, { signal: controller.signal });
         if (!resp.ok) {
           console.warn('Product detail request responded with non-OK status', resp.status);
@@ -628,9 +505,7 @@ export default function ProductDetail() {
           setDetail(null);
           return;
         }
-        const data = (await resp.json()) as ProductDetailResponse;
-        if (!Array.isArray(data.timeseries)) data.timeseries = [];
-        setDetail(data);
+        setDetail((await resp.json()) as ProductDetailResponse);
       } catch (err) {
         if ((err as DOMException).name === 'AbortError') {
           return;
@@ -696,9 +571,9 @@ export default function ProductDetail() {
     Promise.all([listCustomIndicators({ contextKind: 'single_product', productKind }), getCustomIndicatorMeta()])
       .then(([{ items }, metadata]) => {
         if (!active) return;
-        const singleProductIndicators = indicatorsForContext(items, 'single_product');
-        setResearchIndicators(singleProductIndicators);
-        setSeriesIndicators(items.filter(item => item.result_kind === 'time_series'));
+        setResearchIndicators(indicatorsForContext(items, 'single_product').filter((item) => (
+          !item.applicable_product_kinds?.length || item.applicable_product_kinds.includes(productKind)
+        )));
         const runtimePeriods = metadata.periods.map((item) => item.value);
         setResearchPeriods(runtimePeriods);
         setResearchPreference((current) => normalizeMetricPeriods(current, runtimePeriods, '1Y'));
@@ -710,20 +585,28 @@ export default function ProductDetail() {
   }, [productKind]);
 
   useEffect(() => {
-    if (selectedResearchIndicators.length === 0 || !productId) {
+    if (selectedScalarIndicators.length === 0 || !productId) {
       setResearchResults([]);
       return;
     }
     let active = true;
     setResearchLoading(true);
     setResearchError(null);
+    const byId = new Map(selectedScalarIndicators.map((indicator) => [indicator.id, indicator]));
     const selectedPreference = {
       ...researchPreference,
-      indicatorIds: selectedResearchIndicators.map((indicator) => indicator.id),
+      indicatorIds: selectedScalarIndicators.map((indicator) => indicator.id),
     };
+    // Refs, not bare ids: they pin the revision that was on screen and carry
+    // this page's parameter overrides. Bare ids let a concurrent catalog edit
+    // swap the algorithm between preparation and execution.
     Promise.all(groupIndicatorsByPeriod(selectedPreference, '1Y').map(({ indicatorIds, period }) => (
       evaluateCustomIndicators({
-        indicator_ids: indicatorIds,
+        indicator_refs: indicatorIds.map((indicatorId) => ({
+          indicator_id: indicatorId,
+          indicator_revision: byId.get(indicatorId)?.revision,
+          ...(Object.keys(researchParameters[indicatorId] ?? {}).length ? { parameters: researchParameters[indicatorId] } : {}),
+        })),
         targets: [{ kind: productKind, product_id: productId }],
         period,
         as_of: researchAsOf || undefined,
@@ -740,7 +623,7 @@ export default function ProductDetail() {
       })
       .finally(() => { if (active) setResearchLoading(false); });
     return () => { active = false; };
-  }, [productId, productKind, researchAsOf, researchPreference.periodsByIndicator, selectedResearchIndicators]);
+  }, [productId, productKind, researchAsOf, researchPreference.periodsByIndicator, scalarParameterKey, selectedScalarIndicators]);
 
   const metrics = detail?.metrics ?? {};
   const baseInfo = detail?.base_info ?? {};
@@ -780,59 +663,10 @@ export default function ProductDetail() {
   );
   const selectedSegment = analysis?.regimeAnalysis?.segments.find(item => item.id === selectedSegmentId);
   const selectedState = selectedHistoricalRegimeRun?.states.find(item => item.id === selectedStateId);
-  const historicalRegimeMarkAreas = useMemo(() => {
-    const windowStart = analysis?.researchContext?.windowStartDate ?? analysis?.researchContext?.startDate;
-    const windowEnd = analysis?.researchContext?.windowEndDate ?? analysis?.researchContext?.endDate;
-    const dates = (detail?.timeseries ?? []).filter(item => (!windowStart || item.date >= windowStart) && (!windowEnd || item.date <= windowEnd)).map(item => item.date);
-    const run = selectedHistoricalRegimeRun;
-    if (!run) return [];
-    return buildRegimeMarkAreas({ ...run, segments: run.segments.filter(segment => (
-      (!selectedStateId || segment.state_id === selectedStateId)
-      && (!selectedSegment || (segment.start_date <= selectedSegment.endDate && segment.end_date >= selectedSegment.startDate))
-    )) }, dates);
-  }, [detail?.timeseries, selectedHistoricalRegimeRun, selectedStateId, selectedSegment, analysis?.researchContext]);
   const selectState = (id: string) => { setSelectedStateId(id); setSelectedSegmentId(''); };
   const selectSegment = (segment: ProductRegimeSegment) => { setSelectedStateId(segment.stateId); setSelectedSegmentId(segment.id); };
   const changeRegime = (id: string) => { setSelectedHistoricalRegimeRunId(id); setSelectedStateId(''); setSelectedSegmentId(''); };
   useEffect(() => { changeRegime(''); setActiveTab('chart'); setAnalysisBasis('adjusted_nav'); setAnalysisSettingsOpen(false); }, [productId, productKind]);
-  useEffect(() => {
-    if (!productId || productKind !== 'etf' || selectedOverlays.length === 0) {
-      setOverlayResults([]);
-      setOverlayLoading(false);
-      setOverlayError(productKind === 'fund' ? '场外公募基金没有交易所 OHLCV，技术时序指标不可用。' : null);
-      return undefined;
-    }
-    let active = true;
-    const indicatorInstances = selectedOverlays.map((overlayId) => ({
-      indicator_id: SERIES_INDICATOR_IDS[overlayId],
-    }));
-    setOverlayLoading(true);
-    setOverlayError(null);
-    setOverlayResults([]);
-    evaluateTimeSeriesIndicators({
-      indicator_instances: indicatorInstances,
-      target: { kind: 'etf', product_id: productId },
-      period: 'ALL',
-      max_points: 5000,
-    })
-      .then((response) => {
-        if (!active) return;
-        setOverlayResults(response.results);
-        const failed = response.results.filter((item) => item.status === 'unavailable' || item.status === 'error');
-        if (failed.length > 0) {
-          setOverlayError(failed.flatMap((item) => item.warnings.map((warning) => warning.message)).join('；'));
-        }
-      })
-      .catch((requestError) => {
-        if (!active) return;
-        setOverlayResults([]);
-        setOverlayError(requestError instanceof Error ? requestError.message : '技术时序指标计算失败。');
-      })
-      .finally(() => {
-        if (active) setOverlayLoading(false);
-      });
-    return () => { active = false; };
-  }, [productId, productKind, selectedOverlays]);
 
   const analysisRequest = useMemo<ProductAnalysisRequest>(() => ({
     statistics_period: statisticsPeriod,
@@ -916,329 +750,6 @@ export default function ProductDetail() {
       .finally(() => { if (active) setAnalysisLoading(false); });
     return () => { active = false; controller.abort(); };
   }, [detail, productId, productKind, analysisRequest]);
-  const rawTechnicalAvailability = useMemo(() => {
-    const points = detail?.timeseries ?? [];
-    return {
-      ohlc: points.length > 0 && points.every((item) => (
-        item.open !== null
-        && item.high !== null
-        && item.low !== null
-        && Number.isFinite(item.open)
-        && Number.isFinite(item.high)
-        && Number.isFinite(item.low)
-        && Number.isFinite(item.close)
-      )),
-      volume: points.some((item) => item.volume !== null && Number.isFinite(item.volume)),
-    };
-  }, [detail?.timeseries]);
-
-  const chartOption = useMemo(() => {
-    if (!detail?.timeseries || detail.timeseries.length === 0) {
-      return undefined;
-    }
-
-    const dates = detail.timeseries.map((item) => item.date);
-    const findOverlayResult = (indicatorId: string) => overlayResults.find((item) => (
-      item.indicator_id === indicatorId
-    ));
-    const { ohlc: hasOhlc, volume: hasVolume } = rawTechnicalAvailability;
-    const totalPoints = dates.length;
-    const defaultWindow = 252;
-    const startIndex = Math.max(0, totalPoints - defaultWindow);
-    const requestedStart = selectedSegment?.startDate ?? analysis?.researchContext?.windowStartDate;
-    const requestedEnd = selectedSegment?.endDate ?? analysis?.researchContext?.windowEndDate;
-    const startValue = requestedStart ? dates.find(date => date >= requestedStart) ?? dates[startIndex] : dates[startIndex];
-    const endValue = requestedEnd ? dates.filter(date => date <= requestedEnd).pop() ?? dates[totalPoints - 1] : dates[totalPoints - 1];
-    const klineValues = detail.timeseries.map((item) => [item.open, item.close, item.low, item.high]);
-    const volumes = detail.timeseries.map((item) => ({
-      value: item.volume,
-      itemStyle: {
-        color: item.open !== null && item.close >= item.open ? '#34d399' : '#94a3b8',
-      },
-    }));
-    const priceMASeries = selectedOverlays.includes('PRICE_MA')
-      ? [{
-          name: '20 日收盘价均线',
-          type: 'line',
-          data: alignedChannelValues(
-            findOverlayResult(SERIES_INDICATOR_IDS.PRICE_MA),
-            'ma',
-            dates,
-          ),
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.5 },
-          emphasis: { focus: 'series' },
-        }]
-      : [];
-
-    const volumeMASeries = selectedOverlays.includes('VOLUME_MA') && hasVolume
-      ? [{
-          name: '10 日成交量均线',
-          type: 'line',
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: alignedChannelValues(
-            findOverlayResult(SERIES_INDICATOR_IDS.VOLUME_MA),
-            'volume_ma',
-            dates,
-          ),
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1 },
-          emphasis: { focus: 'series' },
-        }]
-      : [];
-
-    const bollingerResult = findOverlayResult(SERIES_INDICATOR_IDS.BOLL);
-    const bollingerSeries = selectedOverlays.includes('BOLL')
-      ? [
-            {
-              name: '布林上轨（20 日，2σ）',
-              type: 'line',
-              data: alignedChannelValues(bollingerResult, 'upper', dates),
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1, color: '#f97316' },
-            },
-            {
-              name: '布林中轨',
-              type: 'line',
-              data: alignedChannelValues(bollingerResult, 'middle', dates),
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1, color: '#0ea5e9', type: 'dashed' },
-            },
-            {
-              name: '布林下轨',
-              type: 'line',
-              data: alignedChannelValues(bollingerResult, 'lower', dates),
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1, color: '#10b981' },
-            },
-          ]
-      : [];
-
-    const kdjResult = findOverlayResult(SERIES_INDICATOR_IDS.KDJ);
-    const hasKDJ = selectedOverlays.includes('KDJ')
-      && Boolean(kdjResult)
-      && kdjResult?.status !== 'unavailable'
-      && kdjResult?.status !== 'error';
-    const kValues = hasKDJ ? alignedChannelValues(kdjResult, 'k', dates) : [];
-    const dValues = hasKDJ ? alignedChannelValues(kdjResult, 'd', dates) : [];
-    const jValues = hasKDJ ? alignedChannelValues(kdjResult, 'j', dates) : [];
-
-    const primaryTop = 50;
-    const klineHeight = 260;
-    const volumeHeight = 120;
-    const extraPanelHeight = 110;
-    const gridGap = 20;
-
-    const grid = [
-      { left: 12, right: 18, top: primaryTop, height: klineHeight, containLabel: true },
-      { left: 12, right: 18, top: primaryTop + klineHeight + gridGap, height: volumeHeight, containLabel: true },
-    ];
-    const xAxis: any[] = [
-      {
-        type: 'category',
-        data: dates,
-        boundaryGap: false,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true, showMinLabel: false, showMaxLabel: false },
-      },
-      {
-        type: 'category',
-        gridIndex: 1,
-        data: dates,
-        boundaryGap: false,
-        axisTick: { show: false },
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisLabel: { show: false },
-      },
-    ];
-    const yAxis: any[] = [
-      {
-        scale: true,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        splitLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      },
-      {
-        gridIndex: 1,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisTick: { show: false },
-        splitLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      },
-    ];
-
-    if (hasKDJ) {
-      grid.push({ left: 12, right: 18, top: primaryTop + klineHeight + gridGap + volumeHeight + gridGap, height: extraPanelHeight, containLabel: true });
-      xAxis.push({
-        type: 'category',
-        gridIndex: 2,
-        data: dates,
-        boundaryGap: false,
-        axisTick: { show: false },
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      });
-      yAxis.push({
-        gridIndex: 2,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        splitLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      });
-    }
-
-    const dataZoom: any[] = [
-      {
-        type: 'inside',
-        xAxisIndex: hasKDJ ? [0, 1, 2] : [0, 1],
-        startValue,
-        endValue,
-      },
-      {
-        show: true,
-        xAxisIndex: hasKDJ ? [0, 1, 2] : [0, 1],
-        type: 'slider',
-        height: 18,
-        bottom: hasKDJ ? 50 : 40,
-        startValue,
-        endValue,
-      },
-    ];
-
-    const historicalBackground = historicalRegimeMarkAreas.length > 0 ? {
-          markArea: {
-            silent: true,
-            label: {
-              show: true,
-              position: 'insideTop',
-              color: '#334155',
-              fontSize: 10,
-            },
-            data: historicalRegimeMarkAreas,
-          },
-        } : {};
-    const priceSeries = hasOhlc
-      ? {
-          name: '价格',
-          type: 'candlestick',
-          data: klineValues,
-          itemStyle: {
-            color: '#0ea5e9',
-            color0: '#f87171',
-            borderColor: '#0284c7',
-            borderColor0: '#dc2626',
-          },
-          ...historicalBackground,
-        }
-      : {
-          name: '价格',
-          type: 'line',
-          data: detail.timeseries.map((item) => item.close),
-          showSymbol: false,
-          lineStyle: { width: 1.6, color: '#0ea5e9' },
-          ...historicalBackground,
-        };
-    const series: any[] = [
-      priceSeries,
-      {
-        name: '成交量',
-        type: 'bar',
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: hasVolume ? volumes : [],
-        barWidth: '60%',
-      },
-      ...priceMASeries,
-      ...volumeMASeries,
-      ...bollingerSeries,
-    ];
-
-    if (hasKDJ) {
-      series.push(
-        {
-          name: 'K值',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: kValues,
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.2, color: '#34d399' },
-        },
-        {
-          name: 'D值',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: dValues,
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.2, color: '#3b82f6' },
-        },
-        {
-          name: 'J值',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: jValues,
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.2, color: '#f97316' },
-        }
-      );
-    }
-
-    return {
-      backgroundColor: '#ffffff',
-      animation: false,
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: {
-          type: 'cross',
-          crossStyle: { color: '#94a3b8' },
-        },
-      },
-      axisPointer: {
-        link: [{ xAxisIndex: 'all' }],
-      },
-      legend: {
-        type: 'scroll',
-        top: 10,
-        left: 'center',
-        icon: 'roundRect',
-        textStyle: { color: '#475569', fontSize: 12 },
-      },
-      grid,
-      xAxis,
-      yAxis,
-      dataZoom,
-      series,
-    };
-  }, [
-    detail?.timeseries,
-    historicalRegimeMarkAreas,
-    analysis?.researchContext,
-    selectedSegment,
-    overlayResults,
-    rawTechnicalAvailability,
-    selectedOverlays,
-  ]);
-
-  const kdjOverlayAvailable = useMemo(() => overlayResults.some((item) => (
-    item.indicator_id === SERIES_INDICATOR_IDS.KDJ
-    && item.status !== 'unavailable'
-    && item.status !== 'error'
-  )), [overlayResults]);
-
-  const chartHeight = useMemo(() => (
-    selectedOverlays.includes('KDJ') && kdjOverlayAvailable ? 700 : 540
-  ), [kdjOverlayAvailable, selectedOverlays]);
-
   const statisticsWindow = analysis?.window ?? {
     complete: false,
     requested_start_date: null,
@@ -1974,178 +1485,54 @@ export default function ProductDetail() {
             {context && <span>{context.startDate ?? '—'} — {context.endDate ?? '—'} · {context.basisLabel}</span>}
             {activeTab === 'chart' && <button type="button" onClick={() => setActiveTab('regime')} className="min-h-10 font-medium text-accent-700 hover:underline">调整情景</button>}
           </div>}
-          {activeTab !== 'risk' && analysisError && <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700"><strong>产品数值分析未完成</strong><p className="mt-1 text-xs">{analysisError}{productKind === 'etf' && analysisBasis === 'adjusted_nav' ? '；可检查复权净值数据，或在收益统计的“分析设置”中切换为交易价格。' : ''}</p></div>}
+          {activeTab !== 'risk' && analysisError && <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700"><strong>产品数值分析未完成</strong><p className="mt-1 text-xs">{analysisError}{productKind === 'etf' && analysisBasis === 'adjusted_nav' ? '；可检查复权净值数据，或在收益统计的“分析设置”中切换为交易价格。' : ''}；页面不会退回浏览器本地计算。</p></div>}
           {activeTab === 'risk' && <section role="tabpanel" id="product-panel-risk" aria-labelledby="product-tab-risk">
             <PublishedRiskPanel key={`${productKind}:${tsCode || productId}`} productKey={`${productKind}:${tsCode || productId}`} productName={detail.name ?? String(tsCode || productId)} />
           </section>}
           <div hidden={activeTab !== 'chart'} role="tabpanel" id="product-panel-chart" aria-labelledby="product-tab-chart" className="min-w-0 space-y-5">
-          <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-3 sm:p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">价格与成交量</h2>
-              </div>
-              <div className="flex flex-wrap gap-2 text-xs text-slate-600">
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
-                  <span className="h-2 w-2 rounded-full bg-accent-500" />
-                  {rawTechnicalAvailability.ohlc ? 'K 线' : '真实收盘价 / 净值'}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
-                  <span className={`h-2 w-2 rounded-full ${rawTechnicalAvailability.volume ? 'bg-emerald-400' : 'bg-slate-300'}`} />
-                  {rawTechnicalAvailability.volume ? '成交量' : '成交量未披露'}
-                </span>
-              </div>
-            </div>
-            {chartOption ? (
-              <ReactECharts option={chartOption} style={{ height: chartHeight }} notMerge lazyUpdate />
-            ) : (
-              <div className="h-[320px] rounded-xl bg-slate-50 text-center text-slate-600">暂无可视化数据</div>
-            )}
-            {detail && (!rawTechnicalAvailability.ohlc || !rawTechnicalAvailability.volume) && (
-              <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800" role="status">
-                原始数据未完整披露
-                {!rawTechnicalAvailability.ohlc ? ' OHLC' : ''}
-                {!rawTechnicalAvailability.volume ? ' 成交量' : ''}
-                ；页面保留真实收盘价 / 净值，不使用 close 或 0 伪造缺失字段。相关 KDJ、成交量均线会保持不可用。
-              </p>
-            )}
-            {overlayLoading && (
-              <p className="rounded-xl bg-accent-50 px-4 py-3 text-xs text-accent-700" role="status">
-                正在通过指标中心的固定签名 NJIT 计划计算技术时序指标…
-              </p>
-            )}
-            {overlayError && (
-              <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800" role="alert">
-                {overlayError}
-              </p>
-            )}
-            <details className="rounded-xl bg-slate-50 p-4"><summary className="cursor-pointer text-sm font-semibold text-slate-700">技术辅助线设置</summary><div className="mt-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-slate-900">技术时序指标</h3>
-                  <p className="text-sm text-slate-600">来自指标中心的内置时序指标；参数变化只重算辅助线，不重跑统计与模拟。</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={restoreDefaultOverlays}
-                  disabled={productKind !== 'etf'}
-                  className="inline-flex items-center justify-center rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-accent-400 hover:text-accent-600 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  恢复默认
-                </button>
-              </div>
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                {overlayOptions.map((option) => {
-                  const active = selectedOverlays.includes(option.id);
-                  return (
-                    <div
-                      key={option.id}
-                      className={`flex flex-col rounded-xl border px-5 py-4 transition ${
-                        active ? 'border-emerald-400 bg-white shadow-sm' : 'border-transparent bg-white/70 hover:border-accent-200'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        disabled={productKind !== 'etf'}
-                        onClick={() => toggleOverlay(option.id)}
-                        className="flex items-center justify-between text-left disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <div>
-                          <span className={`text-sm font-semibold ${active ? 'text-emerald-600' : 'text-slate-700'}`}>{option.label}</span>
-                          <p className="mt-1 text-xs text-slate-600">{option.description}</p>
-                        </div>
-                        <span
-                          className={`inline-flex h-5 w-10 items-center rounded-full border px-1 transition ${
-                            active ? 'border-emerald-400 bg-emerald-500' : 'border-slate-200 bg-slate-200'
-                          }`}
-                        >
-                          <span className={`h-3.5 w-3.5 rounded-full bg-white transition-transform ${active ? 'translate-x-4' : ''}`} />
-                        </span>
-                      </button>
-                      {active && <div className="mt-4 space-y-3 text-sm text-slate-600">{renderOverlayControls(option.id)}</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            </details>
-          </section>
+          <ProductTrendChart
+            productId={productId}
+            productKind={productKind}
+            indicators={researchIndicators}
+            regimeRun={selectedHistoricalRegimeRun}
+            regimeStateId={selectedStateId}
+            regimeSegment={selectedSegment}
+            windowStart={analysis?.researchContext?.windowStartDate ?? analysis?.researchContext?.startDate}
+            windowEnd={analysis?.researchContext?.windowEndDate ?? analysis?.researchContext?.endDate}
+            onDefinition={setDefinitionIndicator}
+            studioHref={`/settings/indicators-models?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
+          />
 
 
-          <section className="rounded-xl border border-slate-200 bg-white p-5" aria-labelledby="custom-research-indicators-title">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 id="custom-research-indicators-title" className="text-lg font-semibold text-slate-900">自定义研究指标</h2>
-                <p className="mt-1 max-w-2xl text-sm text-slate-600">
-                  使用指标中心的保存版本。连续时间轴指标保留各自计算窗口；情景筛选用于走势高亮，以下指标不作为情景条件统计。
-                </p>
-              </div>
-              <Link
-                to={`/settings/indicators-models?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
-                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-accent-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2"
-              >
-                在指标中心分析
-              </Link>
-            </div>
-            {researchIndicators.length > 0 && (
-              <div className="mt-4 rounded-xl border border-accent-100 bg-white p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                  <MetricSelector
-                    indicators={researchIndicators}
-                    selectedIds={researchPreference.indicatorIds}
-                    onChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))}
-                    maxSelected={8}
-                    label="选择研究指标"
-                  />
-                  <div className="grid gap-3">
-                    <label className="text-sm font-medium text-slate-700">截止日（可选）
-                      <input type="date" value={researchAsOf} onChange={(event) => setResearchAsOf(event.target.value)} className="mt-1 block min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm" />
-                      {/* 未填不等于"用全部数据"——它跟随平台研究日。说出来，
-                          否则被截断的数字看起来像 bug。 */}
-                      <span className="mt-1 block text-xs font-normal text-slate-600">
-                        {researchAsOf
-                          ? '仅本页生效，覆盖平台研究日。'
-                          : platformAsOf === undefined
-                            ? '平台 PIT 口径尚未确认；未填时仍由服务端确定口径。'
-                          : platformAsOf
-                            ? `未填则跟随平台研究日 ${platformAsOf}。`
-                            : '未填则使用磁盘上的全部数据。'}
-                      </span>
-                    </label>
-                  </div>
-                </div>
-                <p className="mt-3 text-xs text-slate-600">每个指标可独立选择计算区间；系统会按区间分组计算。</p>
-                <div className="mt-4" aria-live="polite">
-                  {researchLoading && <p className="mb-3 text-sm text-slate-600">正在基于真实数据批量计算…</p>}
-                  {researchError ? <p className="text-sm text-rose-600">{researchError}</p> : (
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {selectedResearchIndicators.map((indicator) => <MetricResultCard
-                        key={indicator.id}
-                        indicator={indicator}
-                        result={researchResults.find((result) => result.indicator_id === indicator.id)}
-                        period={metricPeriodFor(researchPreference, indicator.id, '1Y')}
-                        periodOptions={researchPeriods}
-                        onPeriodChange={(period) => setResearchPreference((current) => ({
-                          ...current,
-                          periodsByIndicator: { ...current.periodsByIndicator, [indicator.id]: period },
-                        }))}
-                        onRemove={() => setResearchPreference((current) => withSelectedIndicators(
-                          current,
-                          current.indicatorIds.filter((id) => id !== indicator.id),
-                          '1Y',
-                        ))}
-                        onDefinition={() => setDefinitionIndicator(indicator)}
-                      />)}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            {researchIndicators.length === 0 && !researchError && <div className="mt-4 rounded-xl border border-dashed border-accent-200 bg-white px-4 py-3 text-sm text-slate-600">工作区尚无保存的自定义指标。请先在指标中心新建或复制内置指标。</div>}
-            {researchIndicators.length === 0 && researchError && <p className="mt-4 text-sm text-rose-600" role="status">{researchError}</p>}
-          </section>
-
-          <TimeSeriesIndicatorPanel key={`${productKind}:${productId}`} indicators={seriesIndicators} productId={productId} productKind={productKind} periods={researchPeriods} />
-            {productId && <FactorEvidencePanel contextType="product_research" contextId={`${productKind}:${productId}`} productId={String(tsCode || productId)} />}
+          <ResearchIndicatorPanel
+            indicators={researchIndicators}
+            selectedIds={researchPreference.indicatorIds}
+            onSelectedIdsChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))}
+            periodFor={(indicatorId) => metricPeriodFor(researchPreference, indicatorId, '1Y')}
+            onPeriodChange={(indicatorId, period) => setResearchPreference((current) => ({
+              ...current,
+              periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period },
+            }))}
+            periodOptions={researchPeriods}
+            parametersFor={(indicatorId) => researchParameters[indicatorId] ?? EMPTY_PARAMETERS}
+            onParametersChange={(indicatorId, values) => setResearchParameters((current) => ({ ...current, [indicatorId]: values }))}
+            results={researchResults}
+            loading={researchLoading}
+            error={researchError}
+            asOf={researchAsOf}
+            onAsOfChange={setResearchAsOf}
+            /* 未填不等于"用全部数据"——它跟随平台研究日。说出来，
+               否则被截断的数字看起来像 bug。 */
+            asOfHint={researchAsOf
+              ? '仅本页生效，覆盖平台研究日。'
+              : platformAsOf === undefined
+                ? '平台 PIT 口径尚未确认；未填时仍由服务端确定口径。'
+              : platformAsOf
+                ? `未填则跟随平台研究日 ${platformAsOf}。`
+                : '未填则使用磁盘上的全部数据。'}
+            onDefinition={setDefinitionIndicator}
+            studioHref={`/settings/indicators-models?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
+          />
           </div>
           {activeTab === 'regime' && <div role="tabpanel" id="product-panel-regime" aria-labelledby="product-tab-regime">
             {historicalRegimeLoading ? <p role="status" className="rounded-xl bg-white p-10 text-center text-sm text-slate-600">正在读取已保存的情景版本…</p>
@@ -2636,7 +2023,6 @@ export default function ProductDetail() {
                   </p>
                 </div>
           </div>}
-          <details data-testid="product-analysis-execution" className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600"><summary className="cursor-pointer">{analysisLoading ? '正在计算研究结果…' : analysisError ? '计算详情 · 分析未完成' : analysis ? '高性能计算已验证' : '计算详情'}</summary><div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">{analysis ? <><span>固定签名 NJIT</span><span>内核覆盖 {analysis.execution.kernel_coverage}</span><span>{analysis.execution.nopython ? 'nopython' : '执行模式异常'}</span><span>Object mode {analysis.execution.object_mode}</span><span>Python 回退 {analysis.execution.python_fallback}</span><span title={analysis.execution.kernel_fingerprint}>指纹 {analysis.execution.kernel_fingerprint.slice(0, 12)}</span></> : <span>{analysisError ?? '等待产品分析任务。'}；页面不会退回浏览器本地计算。</span>}</div></details>
           <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
         </>
       )}

@@ -532,6 +532,110 @@ def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypa
     assert response["metrics"]["current_unit_nav"] == 3.2
 
 
+def _write_chart_fixture(data_dir: Path, *, with_factors: bool = True) -> None:
+    _write_info_files(data_dir)
+    pd.DataFrame(
+        [
+            {"ts_code": "510050.SH", "name": "上证50ETF", "trade_date": "20260827",
+             "date": pd.Timestamp("2026-08-27"), "open": 2.0, "high": 2.2, "low": 1.9,
+             "close": 2.1, "vol": 1000.0},
+            {"ts_code": "510050.SH", "name": "上证50ETF", "trade_date": "20260828",
+             "date": pd.Timestamp("2026-08-28"), "open": 2.1, "high": 2.4, "low": 2.05,
+             "close": 2.3, "vol": 1200.0},
+        ]
+    ).to_parquet(data_dir / "etf_daily_candle_df.parquet", index=False)
+    pd.DataFrame(
+        [
+            {"ts_code": "510050.SH", "name": "上证50ETF", "nav_date": "20260827",
+             "date": pd.Timestamp("2026-08-27"), "adj_nav": 3.0},
+            {"ts_code": "510050.SH", "name": "上证50ETF", "nav_date": "20260828",
+             "date": pd.Timestamp("2026-08-28"), "adj_nav": 3.3},
+        ]
+    ).to_parquet(data_dir / "etf_daily_df.parquet", index=False)
+    if with_factors:
+        pd.DataFrame(
+            [
+                {"ts_code": "510050.SH", "trade_date": "20260827",
+                 "date": pd.Timestamp("2026-08-27"), "adj_factor": 1.0},
+                {"ts_code": "510050.SH", "trade_date": "20260828",
+                 "date": pd.Timestamp("2026-08-28"), "adj_factor": 2.0},
+            ]
+        ).to_parquet(data_dir / "fund_adj_factor_df.parquet", index=False)
+
+
+def _use_data_dir(monkeypatch, data_dir: Path) -> None:
+    monkeypatch.setattr(instrument_routes, "DATA_DIR", data_dir)
+    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+        "etf": data_dir / "etf_info_df.parquet",
+        "fund": data_dir / "fund_info_df.parquet",
+    })
+
+
+def test_price_series_serves_each_chart_basis_from_its_own_dataset(monkeypatch, tmp_path: Path) -> None:
+    """Three bases, three datasets. Mixing them up silently would be unreadable on a chart."""
+    _write_chart_fixture(tmp_path)
+    _use_data_dir(monkeypatch, tmp_path)
+
+    raw = instrument_routes.instrument_product_price_series("510050.SH", kind="etf", basis="raw_kline")
+    adjusted = instrument_routes.instrument_product_price_series("510050.SH", kind="etf", basis="adjusted_kline")
+    nav = instrument_routes.instrument_product_price_series("510050.SH", kind="etf", basis="adjusted_nav")
+
+    assert [point["close"] for point in raw["points"]] == [2.1, 2.3]
+    # Back adjustment: price x factor, anchor fixed at 1.0, volume untouched.
+    assert [point["close"] for point in adjusted["points"]] == [2.1, 4.6]
+    assert [point["high"] for point in adjusted["points"]] == [2.2, 4.8]
+    assert [point["volume"] for point in adjusted["points"]] == [1000.0, 1200.0]
+    assert [point["close"] for point in nav["points"]] == [3.0, 3.3]
+    # A NAV path has no candles; the chart must not draw a box out of one number.
+    assert [point["open"] for point in nav["points"]] == [None, None]
+    assert all(item["available"] for item in raw["bases"])
+    assert raw["execution"]["python_fallback"] == 0
+
+
+def test_price_series_fails_closed_when_the_adjustment_factor_is_missing(monkeypatch, tmp_path: Path) -> None:
+    """No factor means no adjusted candle. Substituting 1.0 would look like a real price."""
+    _write_chart_fixture(tmp_path, with_factors=False)
+    _use_data_dir(monkeypatch, tmp_path)
+
+    response = instrument_routes.instrument_product_price_series(
+        "510050.SH", kind="etf", basis="adjusted_kline",
+    )
+
+    assert response["available"] is False
+    assert response["points"] == []
+    assert "复权因子" in response["reason"]
+    assert [item["available"] for item in response["bases"]] == [True, False, True]
+    # The other two bases stay usable, so the page can fall back by itself.
+    assert instrument_routes.instrument_product_price_series(
+        "510050.SH", kind="etf", basis="raw_kline",
+    )["available"] is True
+
+
+def test_price_series_rejects_a_basis_the_product_kind_cannot_have(monkeypatch, tmp_path: Path) -> None:
+    _write_chart_fixture(tmp_path)
+    _use_data_dir(monkeypatch, tmp_path)
+
+    rejected = instrument_routes.instrument_product_price_series(
+        "000001.OF", kind="fund", basis="raw_kline",
+    )
+
+    assert rejected.status_code == 422
+    assert [item["id"] for item in instrument_routes.instrument_product_price_series(
+        "000001.OF", kind="fund", basis="adjusted_nav",
+    )["bases"]] == ["adjusted_nav"]
+
+
+def test_product_detail_can_skip_the_timeseries_it_no_longer_owns(monkeypatch, tmp_path: Path) -> None:
+    """The research chart reads price-series; sending the same rows twice is pure weight."""
+    _write_chart_fixture(tmp_path)
+    _use_data_dir(monkeypatch, tmp_path)
+
+    assert instrument_routes.instrument_product_detail(
+        "510050.SH", kind="etf", include_timeseries=False,
+    )["timeseries"] == []
+    assert instrument_routes.instrument_product_detail("510050.SH", kind="etf")["timeseries"] != []
+
+
 def test_fund_detail_does_not_substitute_net_asset_for_share_times_unit_nav(monkeypatch, tmp_path: Path) -> None:
     _write_info_files(tmp_path)
     pd.DataFrame(

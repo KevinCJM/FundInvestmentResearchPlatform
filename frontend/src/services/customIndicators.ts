@@ -177,6 +177,8 @@ export interface SeriesOutputInference {
 export interface IndicatorReference {
   indicator_id: string
   indicator_revision?: number
+  /** Per-indicator overrides of explicitly opened parameters; omitted keys use revision defaults. */
+  parameters?: Record<string, number>
 }
 
 export interface IndicatorDraft {
@@ -763,6 +765,9 @@ export interface EvaluationResult {
   input_requirements?: InputRequirements | null
   target_data?: TargetDataSummary | null
   series?: EvaluationSeriesPoint[]
+  /** Values the server actually resolved, not the values the page asked for. */
+  parameters?: Record<string, number>
+  parameter_hash?: string
 }
 
 export interface EvaluateIndicatorsRequest {
