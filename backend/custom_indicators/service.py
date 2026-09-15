@@ -2754,8 +2754,13 @@ class CustomIndicatorService:
             compiled = compile_numba_batch_plan(tuple(runtime.plan for _, runtime in entries), tuple(item for item, _ in entries), columns)
             persist_numba_batch_plan(compiled, self.workspace_data_dir / ".indicator_runtime")
             audits.append(compiled.metadata())
+        # The caller replaces its own refs with these, so runtime parameters have
+        # to survive the round trip; values never enter a compiled plan id.
+        supplied = {str(item["indicator_id"]): dict(item.get("parameters") or {}) for item in references}
         return {"prepared": True, "plans": audits, "indicator_refs": [
-            {"indicator_id": item["id"], "indicator_revision": item["revision"]} for item in definitions if item.get("id")
+            {"indicator_id": item["id"], "indicator_revision": item["revision"],
+             **({"parameters": supplied[item["id"]]} if supplied.get(item["id"]) else {})}
+            for item in definitions if item.get("id")
         ]}
 
     def _resolve_evaluation_definitions(

@@ -366,6 +366,35 @@ def test_scalar_parameter_values_run_on_one_prewarmed_batch_plan(tmp_path):
         run(1.5)
 
 
+def test_prepare_evaluation_returns_the_parameters_it_was_given(tmp_path):
+    """The client swaps its refs for the prepared ones, so parameters must survive.
+
+    Dropping them here is silent: every indicator falls back to its locked
+    default and still reports ``ok``.
+    """
+
+    service, frame = _scalar_service(tmp_path)
+    candidate = inspect_parameter_inputs(_scalar_draft())["candidates"][0]
+    bound = bind_parameter_input(_scalar_draft(), candidate_id=candidate["id"])
+    low = service.create_indicator(bound)
+    high = service.create_indicator({**bound, "name": "分位收益（高）"})
+    refs = [{"indicator_id": low["id"], "indicator_revision": low["revision"], "parameters": {"probability_1": 0.25}},
+            {"indicator_id": high["id"], "indicator_revision": high["revision"], "parameters": {"probability_1": 0.75}}]
+    prepared = service.prepare_evaluation(indicator_ids=[], indicator_refs=refs)["indicator_refs"]
+    assert [item.get("parameters") for item in prepared] == [{"probability_1": 0.25}, {"probability_1": 0.75}]
+    response = service.evaluate(indicator_ids=[], inline_definition=None, indicator_refs=prepared,
+                                targets=[{"kind": "etf", "product_id": "510300.SH"}], period="ALL")
+    nav = frame["adj_nav"].to_numpy(dtype=np.float64)
+    returns = nav[1:] / nav[:-1] - 1.0
+    assert [record["value"] for record in response["results"]] == [
+        pytest.approx(float(np.quantile(returns, 0.25)), rel=1e-12),
+        pytest.approx(float(np.quantile(returns, 0.75)), rel=1e-12),
+    ]
+    # An indicator with no override keeps a bare ref; nothing invents an empty map.
+    plain = service.prepare_evaluation(indicator_ids=[], indicator_refs=[{"indicator_id": low["id"], "indicator_revision": low["revision"]}])
+    assert plain["indicator_refs"] == [{"indicator_id": low["id"], "indicator_revision": low["revision"]}]
+
+
 def test_saved_plan_locks_and_replays_its_parameter_values(tmp_path):
     """D2: a plan revision that cannot be replayed is not a saved evaluation."""
 

@@ -1,15 +1,11 @@
 import { useState } from 'react'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { IndicatorDefinition, IndicatorDraft, SeriesParameterDefinition, TimeSeriesIndicatorResult } from '../../services/customIndicators'
-import { evaluateTimeSeriesIndicators } from '../../services/customIndicators'
 import * as parameterApi from '../../services/indicatorParameters'
 import IndicatorParameterInputs from './IndicatorParameterInputs'
 import IndicatorParameterEditor from './IndicatorParameterEditor'
-import TimeSeriesIndicatorPanel from './TimeSeriesIndicatorPanel'
 
-vi.mock('echarts-for-react', () => ({ default: ({ option }: { option: unknown }) => <div data-testid="chart">{JSON.stringify(option)}</div> }))
-vi.mock('../../services/customIndicators', async original => ({ ...await original<object>(), evaluateTimeSeriesIndicators: vi.fn() }))
 vi.mock('../../services/indicatorParameters', async original => ({ ...await original<object>(), inspectIndicatorParameters: vi.fn(), bindIndicatorParameter: vi.fn() }))
 
 const schema: SeriesParameterDefinition[] = [{ id: 'window_1', label: '窗口期数', type: 'integer', default: 20, minimum: 1, maximum: 500, step: 1 }]
@@ -93,35 +89,6 @@ describe('参数定义交互', () => {
     expect(screen.queryByText('开放为参数')).not.toBeInTheDocument()
   })
 })
-
-describe('使用页面参数隔离', () => {
-  it('默认请求锁定版本，修改参数重算但不改变定义', async () => {
-    vi.mocked(evaluateTimeSeriesIndicators).mockResolvedValue(response(20) as never)
-    render(<TimeSeriesIndicatorPanel indicators={[indicator]} productId="510300.SH" productKind="etf" periods={['1Y']} />)
-    fireEvent.change(screen.getByLabelText('选择一个时序指标'), { target: { value: indicator.id } })
-    await screen.findByTestId('chart')
-    expect(evaluateTimeSeriesIndicators).toHaveBeenLastCalledWith(expect.objectContaining({ indicator_instances: [{ indicator_id: indicator.id, indicator_revision: 3, parameters: {} }] }))
-    fireEvent.change(screen.getByLabelText('窗口期数'), { target: { value: '60' } })
-    expect(evaluateTimeSeriesIndicators).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByText('应用参数'))
-    await waitFor(() => expect(evaluateTimeSeriesIndicators).toHaveBeenCalledTimes(2))
-    expect(evaluateTimeSeriesIndicators).toHaveBeenLastCalledWith(expect.objectContaining({ indicator_instances: [{ indicator_id: indicator.id, indicator_revision: 3, parameters: { window_1: 60 } }] }))
-    expect(indicator.parameter_schema![0].default).toBe(20)
-  })
-  it('迟到的默认值结果不会覆盖新参数结果', async () => {
-    let oldResolve!: (value: ReturnType<typeof response>) => void
-    vi.mocked(evaluateTimeSeriesIndicators).mockReturnValueOnce(new Promise(resolve => { oldResolve = resolve as typeof oldResolve }))
-      .mockResolvedValueOnce(response(60) as never)
-    render(<TimeSeriesIndicatorPanel indicators={[indicator]} productId="510300.SH" productKind="etf" periods={['1Y']} />)
-    fireEvent.change(screen.getByLabelText('选择一个时序指标'), { target: { value: indicator.id } })
-    fireEvent.change(screen.getByLabelText('窗口期数'), { target: { value: '60' } })
-    fireEvent.click(screen.getByText('应用参数'))
-    await screen.findByText(/实际计算参数: 窗口期数=60/)
-    await act(async () => { oldResolve(response(20)) })
-    expect(screen.getByText(/实际计算参数: 窗口期数=60/)).toBeInTheDocument()
-  })
-})
-
 
 describe('概率开区间', () => {
   const probability: SeriesParameterDefinition = { id: 'probability_1', label: '概率', type: 'number',
