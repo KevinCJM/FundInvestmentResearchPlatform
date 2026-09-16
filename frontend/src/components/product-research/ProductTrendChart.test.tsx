@@ -155,4 +155,29 @@ describe('叠加时序指标', () => {
     expect(screen.getByTestId('chart')).toHaveAttribute('data-grid-count', '2')
     expect(JSON.parse(screen.getByTestId('chart').dataset.axis ?? '{}')).toEqual({ 价格: 0, 均线: 1 })
   })
+
+  it('复权口径指标只能和后复权 K 线共轴，不能和未复权行情共轴', async () => {
+    const adjustedBases = priceSeries('raw_kline').bases.map(item => ({ ...item, available: true, reason: null }))
+    vi.mocked(fetchProductPriceSeries).mockImplementation(async (_id, _kind, basis) => (
+      { ...priceSeries(basis), bases: adjustedBases }
+    ))
+    const adjusted = result(20)
+    adjusted.channels = [{ ...adjusted.channels[0], output_measure: 'adjusted_market_price',
+      semantic_dimension: 'adjusted_market_price', price_basis: 'adjusted_market' }]
+    vi.mocked(evaluateTimeSeriesIndicators).mockResolvedValue({ ...response(20), results: [adjusted] } as never)
+    renderChart()
+    await screen.findByTestId('chart')
+    await addIndicator()
+
+    const placement = await screen.findByRole('combobox', { name: '可调均线的显示位置' })
+    // Default basis is the unadjusted candle: an adjusted series must not share it.
+    await waitFor(() => expect(placement).toHaveValue('panel'))
+    expect(within(placement).getByRole('option', { name: '同轴同图' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('radio', { name: '后复权 K 线' }))
+
+    await waitFor(() => expect(within(placement).getByRole('option', { name: '同轴同图' })).not.toBeDisabled())
+    fireEvent.change(placement, { target: { value: 'native' } })
+    await waitFor(() => expect(JSON.parse(screen.getByTestId('chart').dataset.axis ?? '{}')).toEqual({ 价格: 0, 成交量: 1, 均线: 0 }))
+  })
 })

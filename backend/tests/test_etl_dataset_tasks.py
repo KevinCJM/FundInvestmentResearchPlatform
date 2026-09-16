@@ -72,10 +72,12 @@ def fake_worker(payload, check, lock):
 
 def test_full_template_covers_every_action_and_api_without_single_codes(store):
     definition = tushare_all_data_workflow(store)
-    assert len(definition.steps) == 31
+    assert len(definition.steps) == 32
     assert {s.task_id for s in definition.steps} == set(task_specs())
     assert set().union(*(set(v) for v in ACTION_APIS.values())) == set(API_SPECS)
     assert [p.id for p in definition.parameters] == ['start_date','end_date']
+    adjust = next(s for s in definition.steps if s.task_id == 'tushare.price_adjustment')
+    assert adjust.parameter_bindings == {} and adjust.params == {}
     assert definition.steps[-1].task_id == 'local.analytics_snapshot'
     assert all(s.mode == 'inherit' for s in definition.steps)
     assert all(set(s.params).isdisjoint({'limit','ts_code','symbol'}) for s in definition.steps)
@@ -167,7 +169,7 @@ def test_modified_successful_files_refuse_resume(store, monkeypatch):
 
 def test_task_catalog_and_request_forms_are_configuration_driven(store, monkeypatch):
     payload = catalog(store)
-    assert len(payload['etl_tasks']) == 31
+    assert len(payload['etl_tasks']) == 32
     config = next(c for c in payload['interfaces'] if c['config']['id'] == 'tushare.trade_cal')
     assert {f['name'] for f in config['request_fields']} == {'exchange','start_date','end_date'}
     assert all('handler' not in task and 'action' not in task for task in payload['etl_tasks'])
@@ -178,9 +180,9 @@ def test_task_catalog_and_request_forms_are_configuration_driven(store, monkeypa
     monkeypatch.setattr(etl_routes,'get_store',lambda:store)
     app = FastAPI(); app.include_router(etl_routes.router)
     client = TestClient(app)
-    assert len(client.get('/api/data-sources/etl/tasks').json()['tasks']) == 31
+    assert len(client.get('/api/data-sources/etl/tasks').json()['tasks']) == 32
     templates = client.get('/api/data-sources/etl/templates').json()
-    assert len(templates[0]['definition']['steps']) == 31
+    assert len(templates[0]['definition']['steps']) == 32
     assert 'offline-test-credential' not in json.dumps(templates)
 
 

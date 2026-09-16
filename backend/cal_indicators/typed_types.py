@@ -23,6 +23,7 @@ SUPPORTED_SEMANTIC_DIMENSIONS = frozenset(
         "return_decimal",
         "rate_decimal",
         "adjusted_nav",
+        "adjusted_market_price",
         "reported_nav",
         "raw_market_price",
         "volume",

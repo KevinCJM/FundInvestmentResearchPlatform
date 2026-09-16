@@ -534,7 +534,7 @@ def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypa
 
 def _write_chart_fixture(data_dir: Path, *, with_factors: bool = True) -> None:
     _write_info_files(data_dir)
-    pd.DataFrame(
+    candle = pd.DataFrame(
         [
             {"ts_code": "510050.SH", "name": "上证50ETF", "trade_date": "20260827",
              "date": pd.Timestamp("2026-08-27"), "open": 2.0, "high": 2.2, "low": 1.9,
@@ -543,7 +543,15 @@ def _write_chart_fixture(data_dir: Path, *, with_factors: bool = True) -> None:
              "date": pd.Timestamp("2026-08-28"), "open": 2.1, "high": 2.4, "low": 2.05,
              "close": 2.3, "vol": 1200.0},
         ]
-    ).to_parquet(data_dir / "etf_daily_candle_df.parquet", index=False)
+    )
+    if with_factors:
+        # The ETL materialises the adjusted columns; the chart never multiplies again.
+        factor = [1.0, 2.0]
+        for field in ("open", "high", "low", "close"):
+            candle[f"adj_{field}"] = candle[field] * factor
+        candle["adj_factor"] = factor
+        candle["adj_factor_source"] = "source"
+    candle.to_parquet(data_dir / "etf_daily_candle_df.parquet", index=False)
     pd.DataFrame(
         [
             {"ts_code": "510050.SH", "name": "上证50ETF", "nav_date": "20260827",

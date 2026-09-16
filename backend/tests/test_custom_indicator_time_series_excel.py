@@ -7,6 +7,7 @@ import openpyxl
 import pandas as pd
 
 from custom_indicators.service import CustomIndicatorService
+from data_sources.price_adjustment import attach_adjusted_prices
 
 
 def _write_market_data(data_dir: Path) -> None:
@@ -20,7 +21,7 @@ def _write_market_data(data_dir: Path) -> None:
             for index, date in enumerate(dates)
         ]
     ).to_parquet(data_dir / "etf_daily_df.parquet", index=False)
-    pd.DataFrame(
+    candle = pd.DataFrame(
         [
             {
                 "ts_code": "510050.SH",
@@ -33,7 +34,12 @@ def _write_market_data(data_dir: Path) -> None:
             }
             for index, date in enumerate(dates)
         ]
-    ).to_parquet(data_dir / "etf_daily_candle_df.parquet", index=False)
+    )
+    # One ex-dividend day so the adjusted columns are not a copy of the raw ones.
+    candle["pre_close"] = candle["close"].shift(1).fillna(candle["close"].iloc[0])
+    candle.loc[40, "pre_close"] -= 0.05
+    candle, _ = attach_adjusted_prices(candle, None, policy="pre_close")
+    candle.to_parquet(data_dir / "etf_daily_candle_df.parquet", index=False)
     pd.DataFrame(
         [{"exchange": "SSE", "cal_date": date.strftime("%Y%m%d"), "is_open": 1} for date in dates]
     ).to_parquet(data_dir / "trade_day_df.parquet", index=False)
@@ -98,7 +104,7 @@ def test_time_series_validation_returns_math_latex_measure_and_named_root_dag(tm
         output = result["output_inferences"][channel_id]
         assert output["display_latex"]
         assert "rolling_mean" not in output["display_latex"]
-        assert output["resolved_output_measure"] == "raw_market_price"
+        assert output["resolved_output_measure"] == "adjusted_market_price"
     assert result["lookback_observations"] == 20
     assert all(edge.get("parameter") and isinstance(edge.get("order"), int) for edge in result["dag"]["edges"])
     assert "chart_panel" not in definition

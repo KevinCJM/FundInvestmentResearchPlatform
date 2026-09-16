@@ -84,6 +84,8 @@ def acquire(payload: dict, spec: dict, output: Path) -> dict:
     if 'fund_nav' in client.interfaces:
         args.fund_nav_page_size = min(args.fund_nav_page_size, client.interfaces['fund_nav'].pagination.page_size)
     args.limit = None
+    # Declared calculation contracts travel as parameters, never as argv paths.
+    args.adjust_factor_policy = payload['params'].get('factor_policy', args.adjust_factor_policy)
     automatic = payload.get('auto_step')
     if payload['mode'] == 'auto_incremental' and (not automatic or not payload.get('has_baseline')):
         raise CenterError('AUTO_BASELINE_REQUIRED', '自动增量缺少已冻结基线，拒绝全量回退。')

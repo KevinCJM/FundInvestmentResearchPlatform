@@ -634,18 +634,18 @@ def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
         # ETF 行情与成交（5）
         ("average-volume-v2", "平均成交量", "mean(volume)", ["volume"], "ETF 窗口内日成交量算术平均值。", "", "number", 2, "higher_better", ["etf"]),
         ("volume-volatility-v2", "成交量波动率", "std(volume, 1)", ["volume"], "ETF 窗口内日成交量样本标准差。", "", "number", 2, "lower_better", ["etf"]),
-        ("highest-market-price-v2", "最高价", "max_value(market_high)", ["market_high"], "ETF 窗口内原始日最高价的最大值。", "", "number", 4, "higher_better", ["etf"]),
-        ("lowest-market-price-v2", "最低价", "min_value(market_low)", ["market_low"], "ETF 窗口内原始日最低价的最小值。", "", "number", 4, "higher_better", ["etf"]),
-        ("market-high-low-range-v2", "高低价区间", "max_value(market_high) - min_value(market_low)", ["market_high", "market_low"], "ETF 窗口最高价与最低价之差。", "", "number", 4, "lower_better", ["etf"]),
+        ("highest-adjusted-price-v3", "复权最高价", "max_value(adjusted_high)", ["adjusted_high"], "ETF 窗口内后复权日最高价的最大值。", "", "number", 4, "higher_better", ["etf"]),
+        ("lowest-adjusted-price-v3", "复权最低价", "min_value(adjusted_low)", ["adjusted_low"], "ETF 窗口内后复权日最低价的最小值。", "", "number", 4, "higher_better", ["etf"]),
+        ("adjusted-high-low-range-v3", "复权高低价区间", "max_value(adjusted_high) - min_value(adjusted_low)", ["adjusted_high", "adjusted_low"], "ETF 窗口后复权最高价与最低价之差。", "", "number", 4, "lower_better", ["etf"]),
     )
     measure_overrides = {
         "positive-return-ratio-v2": "dimensionless",
         "new-high-ratio-v2": "dimensionless",
         "average-volume-v2": "volume",
         "volume-volatility-v2": "volume",
-        "highest-market-price-v2": "raw_market_price",
-        "lowest-market-price-v2": "raw_market_price",
-        "market-high-low-range-v2": "raw_market_price",
+        "highest-adjusted-price-v3": "adjusted_market_price",
+        "lowest-adjusted-price-v3": "adjusted_market_price",
+        "adjusted-high-low-range-v3": "adjusted_market_price",
         "adjusted-nav-slope-v2": "derived:adjusted_nav/count",
     }
     minimum_observations = {
@@ -692,9 +692,9 @@ def _typed_builtin_indicators(timestamp: str) -> list[dict[str, Any]]:
         "adjusted-nav-r-squared-v2": "path",
         "average-volume-v2": "market_liquidity",
         "volume-volatility-v2": "market_liquidity",
-        "highest-market-price-v2": "market_liquidity",
-        "lowest-market-price-v2": "market_liquidity",
-        "market-high-low-range-v2": "market_liquidity",
+        "highest-adjusted-price-v3": "market_liquidity",
+        "lowest-adjusted-price-v3": "market_liquidity",
+        "adjusted-high-low-range-v3": "market_liquidity",
     }
     return [
         {

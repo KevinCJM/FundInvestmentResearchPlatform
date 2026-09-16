@@ -50,6 +50,7 @@ from .runtime_context import (
     single_product_scalar_context,
 )
 from .series_definitions import (
+    SEMANTIC_DEFAULT_MEASURE,
     TIME_SERIES_RESULT_KIND,
     normalize_series_parameters,
     normalize_time_series_definition,
@@ -1097,20 +1098,9 @@ def _measure_from_semantics_and_range(
 
 
 def _semantic_default_measure(semantic_dimension: str) -> str:
-    direct = {
-        "raw_market_price": "raw_market_price",
-        "adjusted_nav": "adjusted_nav",
-        "reported_nav": "reported_nav",
-        "return_decimal": "return_decimal",
-        "rate_decimal": "rate_decimal",
-        "volume": "volume",
-        "currency_amount": "currency_amount",
-        "count": "count",
-        "calendar_days": "calendar_days",
-        "dimensionless": "dimensionless",
-    }
-    if semantic_dimension in direct:
-        return direct[semantic_dimension]
+    # One table, owned by series_definitions; a local copy would drift from it.
+    if semantic_dimension in SEMANTIC_DEFAULT_MEASURE:
+        return SEMANTIC_DEFAULT_MEASURE[semantic_dimension]
     if semantic_dimension.startswith(("derived:", "squared:", "inverse:")):
         return "derived"
     return "dimensionless"

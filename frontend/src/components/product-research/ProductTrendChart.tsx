@@ -24,6 +24,11 @@ type Placement = 'native' | 'right' | 'panel'
 
 export const MAX_TREND_OVERLAYS = 6
 
+const PRICE_SEMANTIC_BY_BASIS: Record<string, string> = {
+  raw_kline: 'raw_market_price',
+  adjusted_kline: 'adjusted_market_price',
+  adjusted_nav: 'adjusted_nav',
+}
 const PLACEMENT_LABELS: Record<Placement, string> = {
   native: '同轴同图',
   right: '右轴同图',
@@ -199,7 +204,7 @@ export default function ProductTrendChart({
    * on an adjusted candle would be a different number pretending to be the
    * same one.
    */
-  const priceSemantic = basis === 'raw_kline' ? 'raw_market_price' : basis === 'adjusted_nav' ? 'adjusted_nav' : null
+  const priceSemantic = PRICE_SEMANTIC_BY_BASIS[basis] ?? null
   const nativeAxisOf = (channels: TimeSeriesChannelResult[]): 'price' | 'volume' | null => {
     if (channels.length === 0) return null
     if (priceSemantic && channels.every((item) => item.semantic_dimension === priceSemantic)) return 'price'

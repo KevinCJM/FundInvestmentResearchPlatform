@@ -57,8 +57,8 @@ def test_scalar_roundtrip_and_shared_named_arguments(graph_service, expression):
 
 def test_multiple_series_outputs_share_one_window_and_one_mean(graph_service):
     first = assert_valid(formula(graph_service, {
-        "average": "rolling_mean(market_close, 20)",
-        "deviation": "market_close / rolling_mean(market_close, 20) - 1",
+        "average": "rolling_mean(adjusted_close, 20)",
+        "deviation": "adjusted_close / rolling_mean(adjusted_close, 20) - 1",
     }, result_kind="time_series"))
     windows = [node for node in first["graph"]["nodes"] if node.get("operator_id") == "rolling_window"]
     means = [node for node in first["graph"]["nodes"] if node.get("operator_id") == "mean"]

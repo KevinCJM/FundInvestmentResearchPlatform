@@ -81,7 +81,7 @@ ROLLING_COMPAT_OPERATOR_IDS = frozenset(
 )
 PUBLIC_OPERATOR_EXCLUSIONS = COMPOSITE_OPERATOR_IDS | ROLLING_COMPAT_OPERATOR_IDS
 PRICE_SEMANTIC_DIMENSIONS = frozenset(
-    {"adjusted_nav", "reported_nav", "raw_market_price"}
+    {"adjusted_nav", "adjusted_market_price", "reported_nav", "raw_market_price"}
 )
 PATH_LEVEL_SEMANTIC_DIMENSIONS = PRICE_SEMANTIC_DIMENSIONS | frozenset(
     {"dimensionless"}

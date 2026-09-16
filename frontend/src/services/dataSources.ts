@@ -58,8 +58,9 @@ export interface DatasetMapping {
 }
 
 export interface RequestField {
-  name: string; label: string; data_type: 'text' | 'date' | 'number'; required?: boolean
+  name: string; label: string; data_type: 'text' | 'date' | 'number' | 'choice'; required?: boolean
   date_format?: 'compact' | 'iso'; description?: string; placeholder?: string; default?: string
+  choices?: { value: string; label: string; description?: string }[]
 }
 export interface EtlTaskSpec {
   auto_incremental_supported?: boolean

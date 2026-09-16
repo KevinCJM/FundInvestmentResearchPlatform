@@ -922,7 +922,7 @@ def test_refresh_status_exposes_index_scopes_and_datasets(tmp_path: Path) -> Non
         "cycle", "money_credit", "rates", "release_calendar"
     ]
     assert status["default_index_scopes"] == ["catalog", "domestic", "industry", "global"]
-    assert status["default_module_scopes"]["etf"] == ["info", "nav", "share", "candle"]
+    assert status["default_module_scopes"]["etf"] == ["info", "nav", "share", "candle", "adjust"]
     assert status["available_module_scopes"]["base"] == [
         "calendar", "stock_basic", "fund_company"
     ]

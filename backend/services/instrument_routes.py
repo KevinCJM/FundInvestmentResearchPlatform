@@ -13,12 +13,14 @@ from typing import Annotated, Any, Literal, Optional
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from custom_indicators.errors import NotFoundError
 from custom_indicators.series_provider import _date_values, load_price_points
+from data_sources.price_adjustment import ADJUSTED_COLUMNS
 from series_quality import load_sse_open_dates
 from historical_regimes.repository import RegimeRunRepository
 from services.instrument_analytics import (
@@ -32,7 +34,6 @@ from services.instrument_analytics import (
     snapshot_etf_only_metrics,
     snapshot_metric_definitions,
 )
-from research_series.numba_kernels import adjusted_price_kernel
 from services.product_analysis import build_product_analysis_response
 from pit.context import resolve_request_context
 from services.product_compare import build_product_compare_response
@@ -766,7 +767,7 @@ CHART_BASES: dict[str, dict[str, str]] = {
     },
     "adjusted_kline": {
         "label": "后复权 K 线",
-        "description": "原始开高低收乘以复权因子，基准固定在 1.0；成交量保持原始披露值。",
+        "description": "ETL 产出的后复权开高低收，基准固定在各标的首个交易日；成交量保持原始披露值。",
     },
     "raw_kline": {
         "label": "不复权 K 线（原始行情）",
@@ -774,9 +775,9 @@ CHART_BASES: dict[str, dict[str, str]] = {
     },
 }
 NAV_FILES = {"etf": "etf_daily_df.parquet", "fund": "fund_nav_df.parquet"}
-ADJUSTMENT_FILE = "fund_adj_factor_df.parquet"
+CANDLE_FILE = "etf_daily_candle_df.parquet"
 _MISSING_FACTOR_REASON = (
-    "该产品缺少复权因子数据，无法生成复权 K 线；请在数据中心同步「基金复权因子」后重试。"
+    "该产品没有复权 OHLC；请在数据中心运行「ETF 复权价格」并选择可用的复权因子口径后重试。"
 )
 
 
@@ -784,27 +785,34 @@ def _chart_bases(kind: str) -> list[str]:
     return ["adjusted_nav", "adjusted_kline", "raw_kline"] if kind == "etf" else ["adjusted_nav"]
 
 
-def _adjustment_factors(ts_code: str) -> dict[str, float]:
-    """Exact-date adjustment factors for one code, empty when the dataset is absent."""
-    path = _product_research_data_path(ADJUSTMENT_FILE)
+def _adjusted_candle_frame(ts_code: str) -> pd.DataFrame:
+    """Materialised back-adjusted OHLC for one code; empty when the ETL step has not run."""
+    path = _product_research_data_path(CANDLE_FILE)
     if path is None or not path.exists():
-        return {}
+        return pd.DataFrame()
     try:
-        frame = pd.read_parquet(path, filters=[("ts_code", "==", ts_code)])
+        columns = set(pq.ParquetFile(path).schema.names)
     except Exception:
-        return {}
-    date_column = next((name for name in ("date", "trade_date") if name in frame.columns), None)
-    if frame.empty or date_column is None or "adj_factor" not in frame.columns:
-        return {}
-    frame = frame[[date_column, "adj_factor"]].copy()
-    frame[date_column] = _date_values(frame[date_column])
-    frame["adj_factor"] = pd.to_numeric(frame["adj_factor"], errors="coerce")
-    frame = frame.dropna(subset=[date_column]).sort_values(date_column, kind="stable")
-    frame = frame.drop_duplicates(date_column, keep="last")
-    return {
-        row[0].strftime("%Y-%m-%d"): float(row[1]) if pd.notna(row[1]) else float("nan")
-        for row in frame.itertuples(index=False, name=None)
-    }
+        return pd.DataFrame()
+    if not set(ADJUSTED_COLUMNS) <= columns:
+        return pd.DataFrame()
+    date_column = "date" if "date" in columns else "trade_date" if "trade_date" in columns else None
+    if date_column is None:
+        return pd.DataFrame()
+    wanted = [date_column, *ADJUSTED_COLUMNS, *(["vol"] if "vol" in columns else [])]
+    try:
+        frame = pd.read_parquet(path, columns=wanted, filters=[("ts_code", "==", ts_code)])
+    except Exception:
+        return pd.DataFrame()
+    if frame.empty:
+        return frame
+    frame = frame.rename(columns={date_column: "date", "vol": "volume"})
+    frame["date"] = _date_values(frame["date"])
+    for column in (*ADJUSTED_COLUMNS, *(["volume"] if "volume" in frame.columns else [])):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["date"]).sort_values("date", kind="stable")
+    frame = frame.drop_duplicates("date", keep="last")
+    return frame[frame["adj_close"].notna()]
 
 
 def _adjusted_nav_points(kind: str, ts_code: str) -> list[dict[str, Any]]:
@@ -839,42 +847,20 @@ def _adjusted_nav_points(kind: str, ts_code: str) -> list[dict[str, Any]]:
 
 
 def _adjusted_kline_points(ts_code: str) -> list[dict[str, Any]]:
-    """Back-adjusted OHLC. Fails closed: a missing factor is never replaced by 1.0."""
-    points = _load_timeseries("etf", ts_code)
-    if not points:
-        raise ValueError("该产品没有可用的原始行情数据。")
-    factors_by_date = _adjustment_factors(ts_code)
-    if not factors_by_date:
+    """Back-adjusted OHLC read from the ETL-materialised columns; no factor is invented here."""
+    frame = _adjusted_candle_frame(ts_code)
+    if frame.empty:
         raise ValueError(_MISSING_FACTOR_REASON)
-    factors = np.array(
-        [factors_by_date.get(str(point["date"]), float("nan")) for point in points],
-        dtype=np.float64,
-    )
-    adjusted: dict[str, np.ndarray] = {}
-    for field in ("open", "high", "low", "close"):
-        values = np.array(
-            [
-                float(point[field]) if point[field] is not None else float("nan")
-                for point in points
-            ],
-            dtype=np.float64,
-        )
-        try:
-            adjusted[field] = adjusted_price_kernel(values, factors, np.int64(0))
-        except ValueError as exc:
-            raise ValueError(
-                "所选区间缺少有效复权因子，无法生成复权 K 线；不会用 1 或相邻因子补齐。"
-            ) from exc
     return [
         {
-            "date": point["date"],
-            **{
-                field: None if not np.isfinite(adjusted[field][index]) else float(adjusted[field][index])
-                for field in ("open", "high", "low", "close")
-            },
-            "volume": point["volume"],
+            "date": row.date.strftime("%Y-%m-%d"),
+            "open": None if pd.isna(row.adj_open) else float(row.adj_open),
+            "high": None if pd.isna(row.adj_high) else float(row.adj_high),
+            "low": None if pd.isna(row.adj_low) else float(row.adj_low),
+            "close": float(row.adj_close),
+            "volume": None if getattr(row, "volume", None) is None or pd.isna(row.volume) else float(row.volume),
         }
-        for index, point in enumerate(points)
+        for row in frame.itertuples(index=False)
     ]
 
 
@@ -885,7 +871,7 @@ def _chart_basis_availability(kind: str, ts_code: str, basis: str) -> tuple[bool
     if basis == "raw_kline":
         path = _product_research_data_path("etf_daily_candle_df.parquet")
         return (True, None) if path is not None and path.exists() else (False, "缺少原始行情数据集。")
-    return (True, None) if _adjustment_factors(ts_code) else (False, _MISSING_FACTOR_REASON)
+    return (True, None) if not _adjusted_candle_frame(ts_code).empty else (False, _MISSING_FACTOR_REASON)
 
 
 def _chart_series(kind: str, ts_code: str, basis: str) -> tuple[list[dict[str, Any]], list[str]]:
