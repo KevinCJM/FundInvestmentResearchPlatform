@@ -160,6 +160,6 @@ export default function RegimeTimelineChart({ result, selectedId, onSelect }: { 
       <ReactECharts option={peakOption} notMerge lazyUpdate style={{ height: 300 }} />
       <p className="px-2 text-xs text-slate-600">圆点为保留的高低点。拐点需要后续数据确认；首尾未完成区间保留未分类，不能作为当时的交易信号。</p>
     </section> : null}
-    {probabilityOption ? <section aria-label="状态概率"><p className="px-2 text-xs text-slate-600">状态概率描述模型对当前分类的判断，不等于投资获利概率。</p><ReactECharts option={probabilityOption} notMerge lazyUpdate style={{ height: 220 }} /></section> : null}
+    {probabilityOption ? <section aria-label="状态概率"><p className="px-2 text-xs text-slate-600">原始状态输出尚未校准；规则编码为 1 不代表 100% 可信。模型后验与投票比例也不等同于参考匹配概率。</p><ReactECharts option={probabilityOption} notMerge lazyUpdate style={{ height: 220 }} /></section> : null}
   </div>
 }

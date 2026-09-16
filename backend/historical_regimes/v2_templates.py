@@ -212,6 +212,14 @@ TEMPLATES_V2: list[dict[str, Any]] = [
 ]
 
 
+# The original one-way style rotation rules remain loadable for immutable
+# historical definitions, but actual 2010-2026 paired-reference research did
+# not show robust enough realtime agreement for new Market State authoring.
+for _style_template in TEMPLATES_V2:
+    if _style_template["id"] in {"size-rotation-v2", "growth-value-rotation-v2"}:
+        _style_template["authoring_hidden"] = True
+
+
 def _legacy_daily_peak_template() -> dict[str, Any]:
     item = copy.deepcopy(TEMPLATES_V2[0])
     item.update(id="peak-trough-daily-legacy-v1", name="峰谷定界法 · 旧版日频兼容", version=1,
@@ -224,6 +232,11 @@ def _legacy_daily_peak_template() -> dict[str, Any]:
     nodes[2]["inputs"]["value"] = _ref("market")
     nodes[2]["parameters"]["sideways_min_duration"] = 20
     definition["graph"]["exposed_node_ids"] = ["market", "dating"]
+    # Real CSI300 data switches roughly eleven times per year with median
+    # bull/bear phases near eighteen trading days. Keep exact retrieval for
+    # immutable historical studies, but do not offer this compatibility rule
+    # as a default Market State reference for new research.
+    item["authoring_hidden"] = True
     return item
 
 
@@ -238,6 +251,7 @@ def _daily_peak_template() -> dict[str, Any]:
         {"id": "classifier", "type": "model.range_threshold", "inputs": {"value": _ref("change"), "upper_bound": _ref("upper"), "lower_bound": _ref("lower")}},
     ]
     return {"id": "peak-trough-daily-v2", "name": "峰谷定界法 · 日频牛熊震荡", "version": 2,
+            "authoring_hidden": True,
             "tags": ["事后识别", "峰谷定界", "独立算子", "日频"],
             "description": "峰谷定位、区间涨跌幅、上下门槛独立配置；单个小幅完整波段即可判断震荡，不默认合并或过滤。",
             "definition": {"schema_version": "2.0", "name": "沪深300日频峰谷牛熊震荡", "template_id": "peak-trough-daily-v2",
@@ -248,6 +262,151 @@ def _daily_peak_template() -> dict[str, Any]:
 
 TEMPLATES_V2.insert(1, _daily_peak_template())
 TEMPLATES_V2.append(_legacy_daily_peak_template())
+
+
+def _market_trend_reference_template() -> dict[str, Any]:
+    """Editable retrospective reference labels for primary CSI 300 trends."""
+    nodes = [
+        {"id": "market", "type": "source.index", "parameters": {"ts_code": "000300.SH", "name": "沪深300", "source_api": "index_daily", "field": "close"}},
+        {"id": "monthly", "type": "align.resample", "parameters": {"frequency": "monthly", "aggregation": "last"}, "inputs": {"value": _ref("market")}},
+        {"id": "pivots", "type": "pivot.local_extrema", "parameters": {"left_window": 3, "right_window": 3, "head_window": 2, "tail_window": 2}, "inputs": {"value": _ref("monthly")}},
+        {"id": "filtered", "type": "pivot.ps_filter", "parameters": {"min_phase": 3, "min_cycle": 12, "amplitude_exception": .5}, "inputs": {"value": _ref("monthly"), "pivot": _ref("pivots", "pivot")}},
+        {"id": "segments", "type": "segment.between_pivots", "inputs": {"pivot": _ref("filtered", "pivot")}},
+        {"id": "change", "type": "segment.change", "inputs": {"value": _ref("monthly"), "start": _ref("segments", "start"), "end": _ref("segments", "end")}},
+        {"id": "upper", "type": "source.constant", "label": "牛市最小波段涨幅", "parameters": {"value": .15}, "inputs": {"anchor": _ref("monthly")}},
+        {"id": "lower", "type": "source.constant", "label": "熊市最小波段跌幅", "parameters": {"value": -.15}, "inputs": {"anchor": _ref("monthly")}},
+        {"id": "classifier", "type": "model.range_threshold", "inputs": {"value": _ref("change"), "upper_bound": _ref("upper"), "lower_bound": _ref("lower")}},
+    ]
+    description = (
+        "月频寻找主趋势转折点并做Pagan-Sossounov式持续期/周期筛选；"
+        "完整波段涨幅超过15%标记牛市、跌幅低于-15%标记熊市，其余标记震荡。"
+        "仅作为可编辑的事后Reference Regime研究起点，不代表唯一牛熊定义，也不产生实时信号。"
+    )
+    return {
+        "id": "market-trend-reference-csi300-v1",
+        "name": "沪深300主趋势牛熊震荡 · 事后参考",
+        "version": 1,
+        "default_mode": "retrospective",
+        "tags": ["事后识别", "Regime Definition", "牛熊震荡", "主趋势", "月频", "可编辑计算步骤"],
+        "description": description,
+        "definition": {
+            "schema_version": "2.0",
+            "name": "沪深300主趋势牛熊震荡 · 事后参考 v1",
+            "description": description,
+            "template_id": "market-trend-reference-csi300-v1",
+            "default_mode": "retrospective",
+            "graph": {
+                "nodes": nodes,
+                "outputs": {"state": _ref("classifier", "state")},
+                "exposed_node_ids": [node["id"] for node in nodes],
+            },
+            "states": copy.deepcopy(MARKET_STATES),
+            "evaluation_targets": [{"id": "csi300", "name": "沪深300", "source": {"kind": "index", "ts_code": "000300.SH", "source_api": "index_daily", "field": "close"}, "primary": True}],
+            "validation": {"walk_forward": False, "folds": 4},
+            "usage_intent": "research_display",
+        },
+    }
+
+
+TEMPLATES_V2.append(_market_trend_reference_template())
+
+
+def _csi300_realtime_reference_template(
+    identifier: str,
+    *,
+    window: int,
+    band: float,
+    version: int,
+    preferred: bool,
+) -> dict[str, Any]:
+    """Editable causal SMA classifier; historical IDs remain immutable."""
+    average_label = f"{window}月单边均线"
+    nodes = [
+        {"id": "market", "type": "source.index", "parameters": {"ts_code": "000300.SH", "name": "沪深300", "source_api": "index_daily", "field": "close"}},
+        {"id": "monthly", "type": "align.resample", "parameters": {"frequency": "monthly", "aggregation": "last"}, "inputs": {"value": _ref("market")}},
+        {"id": "average", "type": "filter.sma", "label": average_label, "parameters": {"window": window}, "inputs": {"value": _ref("monthly")}},
+        {"id": "relative", "type": "math.divide", "inputs": {"left": _ref("monthly"), "right": _ref("average")}},
+        {"id": "one", "type": "source.constant", "label": "比例转乖离率的固定常数", "parameters": {"value": 1.0, "parameter_role": "structural"}, "inputs": {"anchor": _ref("monthly")}},
+        {"id": "distance", "type": "math.subtract", "label": "价格相对均线的乖离率", "inputs": {"left": _ref("relative"), "right": _ref("one")}},
+        {"id": "upper", "type": "source.constant", "label": "牛市进入门槛", "parameters": {"value": band}, "inputs": {"anchor": _ref("monthly")}},
+        {"id": "lower", "type": "source.constant", "label": "熊市进入门槛", "parameters": {"value": -band}, "inputs": {"anchor": _ref("monthly")}},
+        {"id": "classifier", "type": "model.range_threshold", "inputs": {"value": _ref("distance"), "upper_bound": _ref("upper"), "lower_bound": _ref("lower")}},
+    ]
+    pct = f"{band * 100:g}%"
+    description = (
+        (
+            f"闭合月末价格相对{window}月单边均线高于{pct}为牛、低于-{pct}为熊，其余为震荡。"
+            "只使用当时已闭合月份，不使用未来峰谷；需绑定精确历史参考并做校准验证。"
+            "该参数组合来自三段扩展式时间验证，面向CMA研究时只接受高置信状态，低置信回退无条件CMA。"
+        )
+        if preferred
+        else (
+            "闭合月末价格相对10月单边均线高于5%为牛、低于-5%为熊，其余为震荡。"
+            "识别沪深300主趋势事后参考，不使用未来峰谷；需选择精确历史参考后运行校验。"
+            "固定参数研究基线，不预先保证通过；规则命中不代表100%可信。"
+        )
+    )
+    display_name = "沪深300主趋势 · 实时识别（CMA研究）" if preferred else "沪深300主趋势 · 实时均线识别（月频）"
+    item = {
+        "id": identifier, "name": display_name, "version": version,
+        "default_mode": "realtime", "tags": ["实时识别", "沪深300", "月频", "单边均线", "参考校验", *( ["CMA研究"] if preferred else [] )],
+        "description": description,
+        "definition": {
+            "schema_version": "2.0", "template_id": identifier,
+            "name": display_name, "description": description,
+            "default_mode": "realtime", "study": {"purpose": "realtime_recognition", "family": "market_trend"},
+            "graph": {"nodes": nodes, "outputs": {"state": _ref("classifier", "state"),
+                "price": _ref("monthly"), "average": _ref("average"), "distance": _ref("distance")},
+                "channel_metadata": {"price": {"label": "闭合月末收盘价"},
+                    "average": {"label": average_label}, "distance": {"label": "相对均线乖离率"}},
+                "exposed_node_ids": [node["id"] for node in nodes]},
+            "states": copy.deepcopy(MARKET_STATES),
+            "evaluation_targets": [{"id": "csi300", "name": "沪深300", "source": {"kind": "index", "ts_code": "000300.SH", "source_api": "index_daily", "field": "close"}, "primary": True}],
+            "validation": {"walk_forward": True, "folds": 4}, "usage_intent": "research_display",
+        },
+    }
+    if not preferred:
+        item["authoring_hidden"] = True
+    return item
+
+
+TEMPLATES_V2.extend([
+    _csi300_realtime_reference_template(
+        "csi300-maintrend-sma10-realtime-v1", window=10, band=.05, version=2, preferred=False
+    ),
+    _csi300_realtime_reference_template(
+        "csi300-maintrend-sma9-realtime-v2", window=9, band=.04, version=1, preferred=True
+    ),
+])
+
+
+def _csi300_realtime_taa_template() -> dict[str, Any]:
+    """New authoring identity after realtime recognition was removed from LTCMA."""
+    legacy = next(item for item in TEMPLATES_V2 if item["id"] == "csi300-maintrend-sma9-realtime-v2")
+    legacy["authoring_hidden"] = True
+    item = copy.deepcopy(legacy)
+    item.pop("authoring_hidden", None)
+    item.update(
+        id="csi300-maintrend-sma9-realtime-v3",
+        name="沪深300主趋势 · 实时SMA9（4%缓冲）",
+        version=1,
+        tags=["实时识别", "沪深300", "月频", "单边均线", "参考校验", "TAA"],
+        description=(
+            "闭合月末价格相对9月单边均线高于4%为牛、低于-4%为熊，其余为震荡。"
+            "只使用当时已闭合月份，不使用未来峰谷；需绑定精确历史参考并做校准验证。"
+            "通过状态级验证后的识别结果服务TAA、产品PIT研究与监控，不作为LTCMA输入。"
+        ),
+    )
+    item["definition"].update(
+        template_id=item["id"],
+        name=item["name"],
+        description=item["description"],
+        usage_intent="taa",
+    )
+    return item
+
+
+TEMPLATES_V2.append(_csi300_realtime_taa_template())
 
 
 def _macro_clock_template() -> dict[str, Any]:
@@ -274,6 +433,9 @@ def _macro_clock_template() -> dict[str, Any]:
 
 TEMPLATES_V2.append(_macro_clock_template())
 
+from .completion_templates import completion_templates
+TEMPLATES_V2.extend(completion_templates())
+
 
 def _versioned_template(item: dict[str, Any]) -> dict[str, Any]:
     from .v2_registry import NODE_REGISTRY
@@ -284,7 +446,12 @@ def _versioned_template(item: dict[str, Any]) -> dict[str, Any]:
     temporal = analyze_temporal(parse_definition_v2(result["definition"]), NODE_REGISTRY)
     causal = temporal["realtime_supported"]
     result["temporal_capability"] = temporal
-    result["supported_modes"] = ["realtime", "retrospective"] if causal else ["retrospective"]
+    study = result["definition"].get("study") or {}
+    historical_study = study.get("purpose") == "historical_reference"
+    result["supported_modes"] = (
+        ["realtime"] if study.get("purpose") == "realtime_recognition" else
+        ["realtime", "retrospective"] if causal and not historical_study else ["retrospective"]
+    )
     result["default_mode"] = item.get("default_mode", "realtime" if causal else "retrospective")
     encoded = json.dumps(
         result["definition"],

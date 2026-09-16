@@ -1,6 +1,7 @@
 """Contracts for reusable factor scenarios and applications of published models."""
 from datetime import date
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, model_validator
 
@@ -37,6 +38,7 @@ class ScenarioFields(Contract):
 
 
 class ScenarioPublish(Contract):
+    publication_request_id: UUID | None = None
     definition: ScenarioFields
     preview_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     note: str = Field(default="", max_length=1000)

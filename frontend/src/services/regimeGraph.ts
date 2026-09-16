@@ -1,3 +1,4 @@
+import type { RegimeStabilityPolicy, RegimeBootstrapPolicy, RegimeStabilityResult, RegimeConfidenceInterval, RegimeProbabilityEvidence, RegimeQualityRequest, RegimeQualityPreview, SavedRegimeQuality, RegimeQualityCatalogItem } from './regimeDiagnostics'
 import {
   assertCompliantExecutionGraph,
   assertCompliantNumericalExecution,
@@ -145,7 +146,17 @@ export interface RegimeStateDefinition {
   order?: number
 }
 
+export interface RegimeStudy {
+  purpose: 'historical_reference' | 'realtime_recognition'
+  family: 'market_trend' | 'macro_growth_inflation' | 'risk' | 'financial_conditions' | 'custom'
+  reference?: { run_id: string; publication_id: string; content_hash: string }
+  state_mapping?: Record<string, string>
+  calibration_id?: string
+  qualification_id?: string
+}
+
 export interface RegimeGraphDefinition {
+  study?: RegimeStudy
   /** Read-only catalog presentation; never part of a saved definition. */
   temporal_capability?: TemporalCapability
   default_mode?: RegimeMode
@@ -547,6 +558,8 @@ function errorDiagnostics(body: unknown): RegimeGraphDiagnostic[] {
     }) : []
 }
 
+export { request as regimeRequest }
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -936,6 +949,7 @@ export async function listRegimeFormalRuns(definitionId?: string, signal?: Abort
 }
 
 export interface RegimeResearchVersion {
+  historical_reference?: RegimeStudy['reference'] | null
   run_id: string
   publication_id: string
   definition_id: string
@@ -975,4 +989,176 @@ export async function publishRegimeFormalRun(runId: string, usage: RegimePublica
     body: JSON.stringify({ usage, ...(note ? { note } : {}) }),
     signal,
   })
+}
+
+export interface HistoricalReference extends NonNullable<RegimeStudy['reference']> {
+  definition_id: string
+  definition_revision: number
+  name: string
+  frequency: string | null
+  states: RegimeStateDefinition[]
+  as_of: string | null
+  created_at: string
+  series_summary: { row_count?: number; first_observation_date?: string; last_observation_date?: string } | null
+}
+export async function listHistoricalReferences(signal?: AbortSignal) {
+  return (await request<{ items: HistoricalReference[] }>('/api/historical-regimes/references', { signal })).items
+}
+
+export interface RegimeReliabilityPolicy {
+  stability?: RegimeStabilityPolicy
+  bootstrap?: RegimeBootstrapPolicy
+  calibration_end: string
+  validation_end?: string | null
+  test_end?: string | null
+  minimum_samples?: number
+  minimum_class_samples?: number
+  minimum_segments?: number
+  minimum_state_episodes?: number
+  minimum_state_predictions?: number
+  minimum_state_precision?: number
+  bins?: number
+  transition_tolerance?: number
+  confidence_floor?: number
+  calibration_method?: 'auto' | 'temperature' | 'class_frequency'
+}
+export interface RegimeReliabilityRequest {
+  definition_id: string
+  revision: number
+  reference: NonNullable<RegimeStudy['reference']>
+  policy: RegimeReliabilityPolicy
+}
+export interface ReliabilityClassification {
+  confusion: number[][]
+  rows: string[]
+  columns: string[]
+  per_state: Array<{ state_id: string; support: number; precision: number | null; recall: number | null; f1: number | null; iou: number | null }>
+  accuracy: number | null
+  balanced_accuracy: number | null
+  macro_f1: number | null
+  accepted_coverage: number | null
+  accepted_error: number | null
+}
+export interface RegimeStateVerification {
+  state_id: string
+  status: 'verified' | 'insufficient_evidence' | 'failed'
+  reference_observations: number
+  independent_complete_episodes: number
+  accepted_predictions: number
+  matches: number
+  precision: number | null
+  recall: number | null
+  reasons: string[]
+}
+export interface RegimeVerification {
+  status: 'verified' | 'partially_verified' | 'insufficient_evidence' | 'failed'
+  scope: string
+  purpose: 'recognition_state_evidence' | 'cma_research_state_evidence'
+  states: RegimeStateVerification[]
+  verified_states: string[]
+  fallback_states: string[]
+  probability_improves_class_base: boolean
+  recognition_ready?: boolean
+  /** Legacy immutable reports only; new realtime reports do not authorize LTCMA use. */
+  cma_research_ready?: boolean
+  production_eligible: boolean
+  reasons: string[]
+  policy: { minimum_state_episodes: number; minimum_state_predictions: number; minimum_state_precision: number; confidence_floor: number }
+  unverified_state_policy?: string
+  fallback_policy?: string
+}
+export interface ReliabilityProbability {
+  samples: number
+  brier: number | null
+  logloss: number | null
+  ece: number | null
+  reason: string | null
+  bins: Array<{ index: number; samples: number; mean_confidence: number | null; match_rate: number | null }>
+}
+export interface RegimeReliabilityReport {
+  schema_version: '1.0'
+  status: 'retrospective_only' | 'insufficient_evidence' | 'eligible'
+  warnings: string[]
+  states: RegimeStateDefinition[]
+  sample: {
+    input: number; matched: number; unknown_reference: number; prediction_abstentions: number
+    missing_prediction: number; invalid_prediction_labels: number
+    excluded_dates: { reference_after_cutoff: number; prediction_without_reference: number }
+    blocks: Record<string, { start: string | null; end: string | null; samples: number; per_class: Record<string, number>; complete_segments: number; sufficient: boolean }>
+  }
+  classification: ReliabilityClassification
+  selective_classification?: ReliabilityClassification
+  intervals: { reference_segments: number; predicted_segments: number; matches: number; misses: number; false_events: number; complete_reference_segments: number; equal_reference_segment_iou: number | null }
+  transitions: { reference_events: number; predicted_events: number; matches: number; misses: number; false_events: number; delay_median: number | null; delay_p90: number | null; delay_unit: string; tolerance: number }
+  verification?: RegimeVerification
+  probability: { raw_type: string; blocks: Record<string, { raw: ReliabilityProbability; calibrated: ReliabilityProbability; class_base: ReliabilityProbability; classification: ReliabilityClassification }> }
+  calibration: {
+    method: string; evidence_type: string; fitted: boolean; reason: string | null
+    calibration_end: string; validation_end: string | null; test_end: string; label_known_at: string
+    deployment_eligible: boolean; reasons: string[]; available_from: string; expires_on: string
+    parameters: Record<string, unknown>
+  } | null
+  lineage: Record<string, unknown>
+  stability?: { status: string; reason?: string; temporal_audit?: unknown; parameter_sensitivity?: RegimeStabilityResult }
+  confidence_interval?: RegimeConfidenceInterval
+  points: Array<{ probability_evidence?: RegimeProbabilityEvidence | null; observation_date: string; data_available_at?: string | null; recognized_at?: string | null; reference_state: string | null; predicted_state: string | null; block: string; raw_probabilities: Record<string, number | null> | null; calibrated_probabilities: Record<string, number | null> | null; calibrated_confidence: number | null; decision_status: string }>
+}
+export interface RegimeReliabilityPreview {
+  preview_hash: string
+  request: RegimeReliabilityRequest
+  report: RegimeReliabilityReport
+}
+export interface SavedRegimeReliability extends RegimeReliabilityPreview {
+  id: string
+  calibration_id: string | null
+  created_at: string
+  immutable: true
+  content_hash: string
+}
+export interface RegimeReliabilityCatalogItem {
+  id: string
+  calibration_id: string | null
+  created_at: string
+  definition_id: string
+  revision: number
+  reference: NonNullable<RegimeStudy['reference']>
+  status: RegimeReliabilityReport['status']
+  calibration: RegimeReliabilityReport['calibration']
+  verification?: { status: RegimeVerification['status']; recognition_ready: boolean; verified_states: string[]; unverified_states: string[] } | null
+}
+export function previewRegimeReliability(body: RegimeReliabilityRequest, compileToken: string, signal?: AbortSignal) {
+  return request<RegimeReliabilityPreview>('/api/historical-regimes/reliability/preview', { method: 'POST', body: JSON.stringify({ ...body, compile_token: compileToken }), signal })
+}
+export function confirmRegimeReliability(preview: Pick<RegimeReliabilityPreview, 'request' | 'preview_hash'>, signal?: AbortSignal) {
+  return request<SavedRegimeReliability>('/api/historical-regimes/reliability/confirm', { method: 'POST', body: JSON.stringify({ request: preview.request, preview_hash: preview.preview_hash }), signal })
+}
+export async function listRegimeReliability(signal?: AbortSignal) {
+  return (await request<{ items: RegimeReliabilityCatalogItem[] }>('/api/historical-regimes/reliability/catalog', { signal })).items
+}
+export function getRegimeReliability(id: string, signal?: AbortSignal) {
+  return request<SavedRegimeReliability>(`/api/historical-regimes/reliability/reports/${encodeURIComponent(id)}`, { signal })
+}
+export interface RegimeRecognitionEvidence {
+  schema_version: '1.0'; kind: 'regime_recognition_evidence'; report_id: string; calibration_id: string | null
+  model: { definition_id: string; revision: number; model_binding_hash: string | null }
+  reference: NonNullable<RegimeStudy['reference']>; evaluation_scope: string
+  status: RegimeVerification['status']; research_ready: boolean; production_eligible: boolean
+  confidence_floor: number | null; verified_states: string[]; unverified_states: string[]; unverified_state_policy: string
+  states: Array<RegimeStateVerification & { label: string }>; probability_improves_class_base: boolean; limitations: string[]
+}
+export function getRegimeRecognitionEvidence(id: string, signal?: AbortSignal) {
+  return request<RegimeRecognitionEvidence>(`/api/historical-regimes/reliability/reports/${encodeURIComponent(id)}/recognition-evidence`, { signal })
+}
+
+export function previewRegimeQuality(body: RegimeQualityRequest, compileToken: string, signal?: AbortSignal) {
+  return request<RegimeQualityPreview>('/api/historical-regimes/reference-quality/preview', { method: 'POST', body: JSON.stringify({ ...body, compile_token: compileToken }), signal })
+}
+export function confirmRegimeQuality(preview: Pick<RegimeQualityPreview, 'request' | 'preview_hash'>, signal?: AbortSignal) {
+  return request<SavedRegimeQuality>('/api/historical-regimes/reference-quality/confirm', { method: 'POST', body: JSON.stringify({ request: preview.request, preview_hash: preview.preview_hash }), signal })
+}
+export async function listRegimeQuality(signal?: AbortSignal) {
+  return (await request<{ items: RegimeQualityCatalogItem[] }>('/api/historical-regimes/reference-quality/catalog', { signal })).items
+}
+export function getRegimeQuality(id: string, signal?: AbortSignal) {
+  return request<SavedRegimeQuality>(`/api/historical-regimes/reference-quality/reports/${encodeURIComponent(id)}`, { signal })
 }

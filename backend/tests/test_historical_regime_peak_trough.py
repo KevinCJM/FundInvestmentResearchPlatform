@@ -199,6 +199,14 @@ def test_realtime_rejected_before_source_reads_and_catalog_marks_correct_mode(tm
     template = get_template_v2('peak-trough-ps-v2')
     assert template['supported_modes'] == ['retrospective']
     assert template['default_mode'] == 'retrospective'
+    reference = get_template_v2('market-trend-reference-csi300-v1')
+    assert reference['supported_modes'] == ['retrospective']
+    assert reference['default_mode'] == 'retrospective'
+    reference_nodes = {node['id']: node for node in reference['definition']['graph']['nodes']}
+    assert reference_nodes['monthly']['type'] == 'align.resample'
+    assert reference_nodes['upper']['parameters']['value'] == pytest.approx(.15)
+    assert reference_nodes['lower']['parameters']['value'] == pytest.approx(-.15)
+    assert reference['definition']['graph']['outputs']['state'] == {'node_id': 'classifier', 'port': 'state'}
     assert get_template_v2('bull-bear-causal-v2')['default_mode'] == 'realtime'
 
 

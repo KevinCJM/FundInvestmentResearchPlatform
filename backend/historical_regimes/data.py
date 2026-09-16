@@ -55,7 +55,12 @@ def _parse_date(value: Any, field: str) -> pd.Timestamp:
         raise ValidationError("INVALID_DATE", f"{field} 必须是有效日期。", field)
     if result.tzinfo is not None:
         result = result.tz_localize(None)
-    return result.normalize()
+    try:
+        normalized = result.normalize()
+        normalized.value  # Validate the nanosecond execution boundary here.
+    except (OverflowError, ValueError) as exc:
+        raise ValidationError("DATE_OUT_OF_RANGE", "日期必须位于 1677-09-22 至 2262-04-11。", field) from exc
+    return normalized
 
 
 def _hash_frame(frame: pd.DataFrame) -> str:
@@ -210,6 +215,7 @@ def _index_bundle(
     mode: str,
     as_of: Optional[str],
     market_data_dir: Path,
+    *, resolved_data_dir: bool = False,
 ) -> DataBundle:
     source_api = str(spec.get("source_api") or "index_daily")
     filename = INDEX_HISTORY_FILES.get(source_api)
@@ -218,7 +224,7 @@ def _index_bundle(
     ts_code = str(spec.get("ts_code") or spec.get("code") or "").strip()
     if not ts_code:
         raise ValidationError("MISSING_INDEX_CODE", "指数数据源必须配置 ts_code。", "target.ts_code")
-    root = resolve_tushare_data_dir(market_data_dir)
+    root = market_data_dir if resolved_data_dir else resolve_tushare_data_dir(market_data_dir)
     path = root / filename
     if not path.exists():
         raise NotFoundError("INDEX_DATA_NOT_FOUND", f"指数数据文件 {filename} 不存在。")
@@ -287,9 +293,9 @@ def _index_bundle(
     return DataBundle(frame=frame, snapshot=snapshot)
 
 
-def _product_bundle(spec: dict[str, Any], mode: str, as_of: Optional[str], market_data_dir: Path) -> DataBundle:
+def _product_bundle(spec: dict[str, Any], mode: str, as_of: Optional[str], market_data_dir: Path, *, resolved_data_dir: bool = False) -> DataBundle:
     kind = str(spec["kind"])
-    root = resolve_tushare_data_dir(market_data_dir)
+    root = market_data_dir if resolved_data_dir else resolve_tushare_data_dir(market_data_dir)
     try:
         raw = read_product_observations(root, kind, spec, mode)
     except ProductSourceError as exc:
@@ -377,6 +383,7 @@ def resolve_target(
     as_of: Optional[str],
     market_data_dir: Path,
     indicator_service: Any = None,
+    *, resolved_data_dir: bool = False,
 ) -> DataBundle:
     """Resolve point-in-time inline, index, indicator or relative data."""
 
@@ -384,9 +391,9 @@ def resolve_target(
     if kind == "inline":
         return _inline_bundle(spec, mode, as_of)
     if kind == "index":
-        return _index_bundle(spec, mode, as_of, market_data_dir)
+        return _index_bundle(spec, mode, as_of, market_data_dir, resolved_data_dir=resolved_data_dir)
     if kind in PRODUCT_SOURCES:
-        return _product_bundle(spec, mode, as_of, market_data_dir)
+        return _product_bundle(spec, mode, as_of, market_data_dir, resolved_data_dir=resolved_data_dir)
     if kind == "indicator":
         return _indicator_bundle(spec, mode, as_of, indicator_service)
     if kind != "relative":
@@ -400,10 +407,12 @@ def resolve_target(
     numerator_spec = {**numerator, **({"availability_mode": availability_mode} if availability_mode and "availability_mode" not in numerator else {})}
     denominator_spec = {**denominator, **({"availability_mode": availability_mode} if availability_mode and "availability_mode" not in denominator else {})}
     numerator_bundle = resolve_target(
-        numerator_spec, mode, as_of, market_data_dir, indicator_service
+        numerator_spec, mode, as_of, market_data_dir, indicator_service,
+        resolved_data_dir=resolved_data_dir,
     )
     denominator_bundle = resolve_target(
-        denominator_spec, mode, as_of, market_data_dir, indicator_service
+        denominator_spec, mode, as_of, market_data_dir, indicator_service,
+        resolved_data_dir=resolved_data_dir,
     )
     left = numerator_bundle.frame[["observation_date", "available_at", "value", "is_final"]].rename(
         columns={"available_at": "available_at_num", "value": "numerator", "is_final": "final_num"}

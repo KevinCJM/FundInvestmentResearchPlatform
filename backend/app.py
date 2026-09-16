@@ -129,6 +129,9 @@ async def lifespan(_app: FastAPI):
     auto_class_status = warm_auto_class_numba_kernels()
     historical_regime_status = warm_historical_regime_numba_kernels()
     regime_graph_status = warm_regime_graph_numba_kernels()
+    from historical_regimes.reliability.kernels import warm as warm_reliability
+    reliability_status = warm_reliability()
+    prospective_status = regime_graph_v2_service.prospective.warm()
     taa_status = warm_taa_numba_kernels()
     from services.tactical_allocation_routes import tactical_service
     tactical_status = tactical_service.warm()
@@ -173,6 +176,8 @@ async def lifespan(_app: FastAPI):
         "auto_asset_class": auto_class_status,
         "historical_regimes": historical_regime_status,
         "regime_graph_v2": regime_graph_status,
+        "regime_reliability": reliability_status,
+        "regime_prospective": prospective_status,
         "regime_graph_v2_saved_plans": regime_graph_plan_status,
         "taa": taa_status,
         "tactical_allocation": tactical_status,

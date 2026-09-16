@@ -6,15 +6,16 @@ import { alignRegimeBinaryInputs } from './regimeGraphEditing'
 import { regimePortLabel } from './regimeDisplay'
 import RegimeResultDock from './RegimeResultDock'
 
-export default function RegimeNodePreviewPanel({ definition, schemas, initialNodeId, initialMode, initialAsOf, onChange }: {
-  definition: RegimeGraphDefinition; schemas: RegimeNodeSchema[]; initialNodeId?: string | null; initialMode: RegimeMode; initialAsOf: string; onChange?: (next: RegimeGraphDefinition) => void
+export default function RegimeNodePreviewPanel({ fixedMode, definition, schemas, initialNodeId, initialMode, initialAsOf, onChange }: {
+  fixedMode?: RegimeMode; definition: RegimeGraphDefinition; schemas: RegimeNodeSchema[]; initialNodeId?: string | null; initialMode: RegimeMode; initialAsOf: string; onChange?: (next: RegimeGraphDefinition) => void
 }) {
   const [nodeId, setNodeId] = useState(initialNodeId || definition.graph.nodes[0]?.id || '')
   const node = definition.graph.nodes.find(item => item.id === nodeId)
   const schema = schemas.find(item => [item.id, item.type, item.type_id].includes(node?.type))
   const [port, setPort] = useState('')
   const outputPort = port || schema?.outputs.find(item => item.id === 'value')?.id || schema?.outputs[0]?.id || ''
-  const [mode, setMode] = useState(initialMode)
+  const [legacyMode, setMode] = useState(initialMode)
+  const mode = fixedMode || legacyMode
   const [asOf, setAsOf] = useState(initialAsOf)
   const [comparisons, setComparisons] = useState<RegimeGraphConnection[]>([])
   const comparisonChoices = useMemo(() => comparisonOptions(definition, schemas, { node_id: nodeId, port: outputPort }, mode), [definition, schemas, nodeId, outputPort, mode])
@@ -106,7 +107,7 @@ export default function RegimeNodePreviewPanel({ definition, schemas, initialNod
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="text-xs font-semibold text-slate-600">预览节点<select aria-label="待预览节点" value={nodeId} onChange={event => { setNodeId(event.target.value); setPort('') }} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2">{definition.graph.nodes.map(item => <option key={item.id} value={item.id}>{item.label || schemas.find(s => [s.id, s.type, s.type_id].includes(item.type))?.label || item.id}</option>)}</select></label>
       <label className="text-xs font-semibold text-slate-600">输出数据<select aria-label="预览输出端口" value={outputPort} onChange={event => setPort(event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2">{schema?.outputs.map(item => <option key={item.id} value={item.id}>{regimePortLabel(item)}</option>)}</select></label>
-      <label className="text-xs font-semibold text-slate-600">分析方式<select aria-label="节点预览分析方式" value={mode} onChange={event => setMode(event.target.value as RegimeMode)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2"><option value="realtime">实时分析</option><option value="retrospective">事后研究</option></select></label>
+      {!fixedMode && <label className="text-xs font-semibold text-slate-600">分析方式<select aria-label="节点预览分析方式" value={mode} onChange={event => setMode(event.target.value as RegimeMode)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2"><option value="realtime">实时分析</option><option value="retrospective">事后研究</option></select></label>}
       <label className="text-xs font-semibold text-slate-600">截至日<input aria-label="节点预览截至日" type="date" value={asOf} onChange={event => setAsOf(event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2" /></label>
     </div>
     <RegimeComparisonPicker detailsRef={comparisonPickerRef} options={comparisonChoices} selected={comparisonTargets} onChange={setComparisons} disabled={busy} />

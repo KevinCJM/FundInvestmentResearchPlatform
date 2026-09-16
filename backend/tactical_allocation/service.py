@@ -155,15 +155,24 @@ class TacticalAllocationService:
         if self.regime_resolver is None:
             raise ValidationError("TAA_REGIME_UNAVAILABLE", "市场状态服务不可用，请稍后重试。")
         run, gate = self.regime_resolver(request.regime_run_id)
+        if gate.get("passed") is False:
+            raise ValidationError("TAA_RUN_NOT_PUBLISHED", "历史情景运行必须先发布到 TAA 或正式回测。", "run_id")
         # Resolve the immutable analytical run through the same server gate as the
         # compatibility backtest. Metadata alignment is an input-boundary operation.
-        states = [str(item["id"]) for item in run["states"]]
+        from historical_regimes.reliability.consumer import calibrated_output, consumer_states, allocation_probabilities
+        states = consumer_states(run)
         if set(request.state_tilts) != set(states):
             raise ValidationError("TAA_STATE_AXIS_MISMATCH", "请为每个已发布状态设置一组偏离。")
         tilts = np.asarray([_vector(request.state_tilts[state], assets, "状态偏离") for state in states])
         if any(abs(float(row.sum())) > 1e-8 for row in tilts):
             raise ValidationError("TAA_TILTS_NOT_ZERO_SUM", "每个市场状态的偏离合计必须为 0。")
-        from backend.historical_regimes.taa import _regime_points, _validated_probabilities
+        qualification = (run.get("_reliability") or {}).get("qualification")
+        qualified = qualification.get("qualified_states") if qualification else None
+        if qualified is not None:
+            for state_index, state in enumerate(states):
+                if state not in qualified:
+                    tilts[state_index] = 0.0
+        from historical_regimes.taa import _regime_points
         points = _regime_points(run)
         axes = list(data["period_starts"]) + [str(request.as_of)]
         probabilities = np.zeros((len(axes), len(states)))
@@ -177,24 +186,31 @@ class TacticalAllocationService:
                 point_index += 1
             reason = "没有可用状态"
             confidence = None
+            probs = None
+            allocation = None
             if latest:
-                probs, invalid_reason = _validated_probabilities(latest.get("probabilities"), states)
-                confidence = latest.get("confidence")
+                probs, confidence, invalid_reason = calibrated_output(run, latest, start, states)
                 if max(latest["observation_date"], latest["recognized_at"], latest["effective_date"]) > start:
                     reason = "状态在本期开始时尚不可得"
                 elif _day(start) - _day(latest["effective_date"]) > request.max_signal_age_days:
                     reason = "市场状态已过期"
+                elif invalid_reason and (run.get("definition") or {}).get("study"):
+                    reason = invalid_reason
                 elif confidence is None or not np.isfinite(confidence) or not request.confidence_floor <= confidence <= 1:
                     reason = "状态置信度不足"
                 elif invalid_reason:
                     reason = invalid_reason
                 else:
+                    allocation = allocation_probabilities(run, probs)
+                    # Keep the numerical kernel's normalized distribution contract;
+                    # zero tilts leave unverified probability mass in the baseline.
                     probabilities[index] = [probs[state] for state in states]
                     use[index] = 1
                     reason = None
             audit_rows.append({"period_start": start, "signal_date": latest["effective_date"] if latest else None,
                                "recognized_at": latest["recognized_at"] if latest else None,
-                               "fallback_reason": reason, "confidence": confidence})
+                               "fallback_reason": reason, "confidence": confidence,
+                               "probabilities": probs, "allocation_probabilities": allocation})
         return {"probabilities": probabilities[:-1], "use_signal": use[:-1], "state_tilts": tilts,
                 "current_probabilities": probabilities[-1], "current_use_signal": int(use[-1]),
                 "current_date": audit_rows[-1]["signal_date"], "confidence": audit_rows[-1]["confidence"],

@@ -435,6 +435,7 @@ def test_regime_conditioned_is_seeded_and_reports_state_probabilities() -> None:
     second = execute(normalize_definition(definition))
     assert first == second
     result = first["results"][0]
+    assert result['summary']['worst_step_return'] is None
     assert result["distribution"]["sample_state_paths"]
     assert len(result["distribution"]["state_probabilities"]) == definition["horizon"]
     assert sum(result["distribution"]["state_probabilities"][0].values()) == pytest.approx(1)

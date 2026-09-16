@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 
-from backend.custom_indicators.errors import ValidationError
+from backend.custom_indicators.errors import IndicatorDomainError, ValidationError
 from backend.custom_indicators.portfolio_repository import PortfolioRunRepository
 from backend.data_storage import guard_path
 from backend.sensitivity.catalog import UNIT_CODES
@@ -17,7 +18,7 @@ from backend.sensitivity.kernels import (
 )
 from backend.sensitivity.repository import ArtifactRepository, digest_json
 from backend.sensitivity.service import ModelResearchService, ROOT_DATA, _timestamp, query_time, release_status
-from .numba_kernels import factor_to_asset_kernel, portfolio_weight_summary_kernel
+from .numba_kernels import factor_to_asset_kernel, horizon_tail_evidence_kernel, horizon_level_evidence_kernel, portfolio_weight_summary_kernel
 from .published_contracts import ImpactRequest, ScenarioFields, ScenarioPublish
 
 
@@ -32,8 +33,8 @@ def _match_columns(required, supplied):
     return indices
 
 
-def _valid_path(path, variables):
-    if path.ndim != 2 or path.shape[1] != len(variables) or not 1 <= path.shape[0] <= 1200:
+def _valid_path(path, variables, *, max_periods=1200):
+    if path.ndim != 2 or path.shape[1] != len(variables) or not 1 <= path.shape[0] <= max_periods:
         raise ValidationError("SCENARIO_PATH_SHAPE", "情景路径维度与所选变量不一致。")
     # Small public-boundary validation, not a numerical transform or fit.
     for column, variable in enumerate(variables):
@@ -60,10 +61,11 @@ class PublishedScenarioService:
         ordered = np.ascontiguousarray(path[:, indices])
         arrays = self.models.artifacts.arrays(run["id"], names=("coefficients",))
         output = transmission_kernel(ordered, arrays["coefficients"], np.int64(run["model"]["lags"]))
-        _valid_path(output, run["outputs"])
+        _valid_path(output, run["outputs"], max_periods=1212)
         return output, run["outputs"], {"release_id": release["id"], "release_hash": release["content_hash"],
             "run_id": run["id"], "run_hash": run["content_hash"], "stage": expected_stage,
             "name": run["name"], "inputs": run["inputs"], "outputs": run["outputs"],
+            "model_lags": int(run["model"].get("lags", 0)),
             "path": output.tolist(), "expires_at": release["expires_at"],
             "interpretation": "conditional_statistical_response_not_identified_causality"}
 
@@ -90,6 +92,13 @@ class PublishedScenarioService:
         )
         _valid_path(path, inputs)
         source_path = path
+        periods = len(path)
+        # Two distributed-lag stages, each bounded to six lags. No new shock
+        # after the horizon does not imply a recovered cumulative level.
+        if request.entry != "market":
+            extended = np.zeros((periods + 12, path.shape[1]), dtype=np.float64)
+            extended[:periods] = path
+            path = extended
         current_variables = inputs
         lineage = []
         if request.entry == "event":
@@ -110,6 +119,44 @@ class PublishedScenarioService:
                 "macro_market",
             )
             lineage.append(step)
+        cumulative, pending = horizon_level_evidence_kernel(
+            path, np.asarray([int(v["unit"] == "return") for v in current_variables], dtype=np.int64), np.int64(periods),
+        )
+        if not np.isfinite(cumulative).all() or not np.isfinite(pending):
+            raise ValidationError("SCENARIO_PATH_INVALID", "累计路径或剩余传导产生非有限数值。")
+        path = path[:periods]
+        for step in lineage:
+            step["path"] = step["path"][:periods]
+        source_last, factor_last, source_zero_tail, factor_zero_tail = horizon_tail_evidence_kernel(
+            np.ascontiguousarray(source_path, dtype=np.float64),
+            np.ascontiguousarray(path, dtype=np.float64),
+            np.float64(1e-12),
+        )
+        terminal_status = (
+            "increments_zero"
+            if np.isfinite(source_last) and np.isfinite(factor_last) and source_last <= 1e-12 and factor_last <= 1e-12
+            else "open_at_horizon"
+        )
+        horizon_evidence = {
+            "method": "explicit_path_horizon_evidence_v2",
+            "remaining_response_status": "zero" if pending <= 1e-12 else "pending",
+            "remaining_response_max_abs": float(pending),
+            "remaining_response_assumption": "zero_new_input_after_horizon",
+            "cumulative_level_status": "recovered" if all(abs(value) <= 1e-12 for value in cumulative) else "not_recovered",
+            "cumulative_market_changes": {v["id"]: float(cumulative[i]) for i, v in enumerate(current_variables)},
+            "frequency": request.frequency,
+            "periods": int(path.shape[0]),
+            "terminal_status": terminal_status,
+            "source_terminal_max_abs": float(source_last),
+            "market_terminal_max_abs": float(factor_last),
+            "source_baseline_tail_periods": int(source_zero_tail),
+            "market_baseline_tail_periods": int(factor_zero_tail),
+            "maximum_transmission_lags": max((int(step.get("model_lags", 0)) for step in lineage), default=0),
+            "economic_horizon_status": "not_empirically_established",
+            "interpretation": (
+                "Terminal increments, remaining finite-lag response under zero new input, and cumulative market levels are distinct. None establishes an economic duration or portfolio wealth recovery."
+            ),
+        }
         fields = {
             "name": request.name,
             "entry": request.entry,
@@ -121,6 +168,7 @@ class PublishedScenarioService:
             "path": path.tolist(),
             "lineage": lineage,
             "horizon": path.shape[0],
+            "horizon_evidence": horizon_evidence,
             "market": "CN",
             "currency": "CNY",
             "execution": execution_audit(),
@@ -128,6 +176,7 @@ class PublishedScenarioService:
                 "这是每期变动的假设路径，不是情景发生概率或预测。",
                 "宏观传导为已验证的条件统计关系，未认定经济因果；未加入额外金融反馈。",
                 "传导截距不作为额外冲击，路径表示相对无冲击基线的变化。",
+                "频率×期数定义模拟网格；末期增量、零新增输入下的剩余传导和累计市场水平分别衡量，不代表经济持续期或产品财富恢复。",
             ],
         }
         preview_hash = digest_json(fields)
@@ -137,6 +186,7 @@ class PublishedScenarioService:
             "preview_hash": preview_hash,
             "content_hash": preview_hash,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "publication_request_id": str(uuid4()),
             "immutable": False,
             "transient": True,
         }
@@ -162,10 +212,16 @@ class PublishedScenarioService:
             if release["content_hash"] != step["release_hash"]:
                 raise ValidationError("SCENARIO_LINEAGE_CHANGED", "传导成果引用发生变化，请重新预览。")
             expires = min(expires, _timestamp(release["expires_at"]))
-        key = digest_json({"preview_hash": preview["preview_hash"], "valid_days": request.valid_days})
+        key = (digest_json({"publication_request_id": str(request.publication_request_id)})
+               if request.publication_request_id else
+               digest_json({"preview_hash": preview["preview_hash"], "valid_days": request.valid_days}))
         with self.artifacts.governance_lock.locked():
             existing = self.artifacts.find("release", key)
             if existing:
+                if (existing["preview_hash"] != preview["preview_hash"]
+                        or existing.get("valid_days", request.valid_days) != request.valid_days
+                        or existing.get("note", "") != request.note):
+                    raise ValidationError("SCENARIO_PUBLICATION_CONFLICT", "同一次发布请求的输入或说明已改变，请重新预览后发布。")
                 status = release_status(existing, self.artifacts.list("retirement"), now)
                 if status != "active":
                     raise ValidationError("SCENARIO_ALREADY_INACTIVE", "该预览对应的情景已停用或到期，请重新研究并预览。")
@@ -175,7 +231,7 @@ class PublishedScenarioService:
             if persisted_preview is None:
                 persisted = {
                     key: value for key, value in preview.items()
-                    if key not in {"id", "created_at", "content_hash", "immutable", "transient"}
+                    if key not in {"id", "created_at", "content_hash", "immutable", "transient", "publication_request_id"}
                 }
                 persisted["cache_key"] = preview_key
                 persisted_preview = self.artifacts.save("preview", persisted, arrays)
@@ -188,11 +244,14 @@ class PublishedScenarioService:
                 "frequency": persisted_preview["frequency"],
                 "factors": persisted_preview["factors"],
                 "horizon": persisted_preview["horizon"],
+                "horizon_evidence": persisted_preview["horizon_evidence"],
                 "lineage": persisted_preview["lineage"],
                 "effective_at": now.isoformat(),
                 "expires_at": expires.isoformat(),
                 "usage": "research_only",
                 "note": request.note,
+                "valid_days": request.valid_days,
+                "publication_request_id": str(request.publication_request_id) if request.publication_request_id else None,
                 "cache_key": key,
             })
 
@@ -207,7 +266,7 @@ class PublishedScenarioService:
                 try:
                     for step in item["lineage"]:
                         self.models.resolve_release(step["release_id"], as_of)
-                except ValidationError as exc:
+                except IndicatorDomainError as exc:
                     item["status"], item["reason"] = "dependency_unavailable", exc.message
             items.append(item)
         return {"items": items}
@@ -233,7 +292,10 @@ class PublishedScenarioService:
             self.artifacts.get(identifier, "release")
             old = next((item for item in self.artifacts.list("retirement") if item["release_id"] == identifier), None)
             if old:
-                return self.artifacts.get(old["id"], "retirement")
+                previous = self.artifacts.get(old["id"], "retirement")
+                if previous.get("note", "") != note:
+                    raise ValidationError("SCENARIO_RETIREMENT_CONFLICT", "该情景已停用，本次说明与原停用记录不同。")
+                return previous
             return self.artifacts.save("retirement", {"release_id": identifier, "note": note})
 
     def portfolio_choices(self):

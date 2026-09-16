@@ -1,3 +1,4 @@
+import type { RegimeStudy } from './regimeGraph'
 import {
   assertCompliantExecutionGraph,
   assertFixedNjitExecution,
@@ -373,7 +374,7 @@ export interface HistoricalRegimeRun {
     [key: string]: unknown
   }
   data_snapshot?: Record<string, unknown>
-  definition?: HistoricalRegimeDefinition
+  definition?: HistoricalRegimeDefinition & { study?: RegimeStudy }
   algorithm?: HistoricalRegimeDefinition['algorithm']
   states: RegimeStateDefinition[]
   series: RegimeSeriesPoint[]

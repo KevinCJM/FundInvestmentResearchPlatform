@@ -164,12 +164,15 @@ class ScenarioStressService:
     def _resolve_definition(self, requested: dict[str, Any]) -> tuple[dict[str, Any], str]:
         if not isinstance(requested, dict):
             raise ValidationError("INVALID_DEFINITION", "run.definition 必须是情景定义或版本引用。", "definition")
+        revision = requested.get("revision")
+        if revision is not None and (type(revision) is not int or revision < 1):
+            raise ValidationError("INVALID_SCENARIO_REVISION", "修订号必须是正整数。", "definition.revision")
         definition_id = requested.get("id")
         if definition_id:
             revision = requested.get("revision")
             only_reference = not any(key in requested for key in ("name", "method", "type", "assets", "scenario"))
             if only_reference:
-                persisted = self.get_definition(str(definition_id), int(revision) if revision is not None else None)
+                persisted = self.get_definition(str(definition_id), revision)
                 if persisted.get("archived"):
                     raise ValidationError("SCENARIO_DEFINITION_ARCHIVED", "情景定义已归档，不能发起新运行。", "definition.id")
                 return persisted, "repository_reference"
@@ -178,7 +181,7 @@ class ScenarioStressService:
             for key in ("id", "revision", "created_at", "updated_at", "archived", "archived_at"):
                 trial.pop(key, None)
             try:
-                persisted = self.get_definition(str(definition_id), int(revision) if revision is not None else None)
+                persisted = self.get_definition(str(definition_id), revision)
             except IndicatorDomainError:
                 return trial, "inline_trial"
             if _content_hash(_business_definition(supplied)) == _content_hash(_business_definition(persisted)):

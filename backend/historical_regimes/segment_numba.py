@@ -4,6 +4,8 @@ from numba import float64, int64, njit, types
 
 F = float64[::1]
 I = int64[::1]
+READONLY_F = types.Array(float64, 1, "A", readonly=True)
+READONLY_I = types.Array(int64, 1, "A", readonly=True)
 
 
 @njit(types.Tuple((F, F))(F, int64, int64, int64, int64), cache=True)
@@ -148,6 +150,119 @@ def phase_direction_kernel(pivots, starts, ends):
     return result
 
 
+@njit(I(READONLY_I, READONLY_F, READONLY_I, READONLY_I, float64), cache=True)
+def drawdown_cycle_reference_kernel(phases, changes, starts, ends, stress_drawdown):
+    """Retrospective normal/recovery/stress labels over complete pivot segments.
+
+    The kernel does not discover pivots or recompute interval returns. It only
+    carries one piece of cross-segment state: an up-phase is Recovery iff the
+    immediately preceding down-phase breached the configured drawdown.
+    Open head/tail regions stay unclassified.
+    """
+    n = phases.size
+    result = np.full(n, -1, dtype=np.int64)
+    if changes.size != n or starts.size != n or ends.size != n or not 0.0 < stress_drawdown < 1.0:
+        return result
+    prior_stress = False
+    t = 0
+    while t < n:
+        left, right = starts[t], ends[t]
+        if left != t or right <= left or right >= n:
+            t += 1
+            continue
+        coherent = True
+        for j in range(left, right):
+            coherent = coherent and starts[j] == left and ends[j] == right
+        phase = phases[t]
+        change = changes[t]
+        if not coherent or phase not in (0, 1) or not np.isfinite(change):
+            prior_stress = False
+            t = right
+            continue
+        # A shared pivot keeps the completed preceding segment's label. Only
+        # the first classified segment has no preceding environment to retain.
+        if result[left] == -1:
+            result[left] = 0
+        for j in range(left + 1, right + 1):
+            result[j] = 0
+        if phase == 1:
+            prior_stress = change <= -stress_drawdown
+            if prior_stress:
+                # The peak itself belongs to the preceding environment; the
+                # decline becomes Stress from the first month after the peak.
+                for j in range(left + 1, right + 1):
+                    result[j] = 2
+        else:
+            if prior_stress:
+                # The shared trough belongs to the completed Stress decline;
+                # Recovery begins only with the first observation after it.
+                result[left] = 2
+                for j in range(left + 1, right + 1):
+                    result[j] = 1
+            prior_stress = False
+        t = right
+    return result
+
+
+@njit(I(READONLY_F, int64, float64, float64, float64), cache=True)
+def drawdown_cycle_realtime_kernel(prices, lookback, stress_drawdown, recovery_rebound, recovery_exit_drawdown):
+    """Causal monthly drawdown state machine: Normal=0, Recovery=1, Stress=2."""
+    n = prices.size
+    result = np.full(n, -1, dtype=np.int64)
+    if lookback < 2 or not 0.0 <= recovery_exit_drawdown < stress_drawdown < 1.0 or not 0.0 < recovery_rebound < 1.0:
+        return result
+    state = 0
+    trough = np.nan
+    for i in range(n):
+        price = prices[i]
+        if not np.isfinite(price) or price <= 0.0:
+            result[i] = -1
+            state = -1
+            trough = np.nan
+            continue
+        start = max(0, i - lookback + 1)
+        high = price
+        valid = True
+        for j in range(start, i + 1):
+            if not np.isfinite(prices[j]) or prices[j] <= 0.0:
+                valid = False
+                break
+            high = max(high, prices[j])
+        if not valid or high <= 0.0:
+            result[i] = -1
+            state = -1
+            trough = np.nan
+            continue
+        drawdown = price / high - 1.0
+        if state == -1:
+            # After a gap the hysteresis band cannot establish an environment.
+            # Wait for an observed entry/exit boundary instead of inventing Normal.
+            if drawdown <= -stress_drawdown:
+                state = 2
+                trough = price
+            elif drawdown >= -recovery_exit_drawdown:
+                state = 0
+                trough = price
+        elif state == 0:
+            if drawdown <= -stress_drawdown:
+                state = 2
+                trough = price
+        elif state == 2:
+            if not np.isfinite(trough) or price < trough:
+                trough = price
+            elif price / trough - 1.0 >= recovery_rebound:
+                state = 1
+        else:
+            if not np.isfinite(trough) or price < trough:
+                trough = price
+                state = 2
+            elif drawdown >= -recovery_exit_drawdown:
+                state = 0
+                trough = price
+        result[i] = state
+    return result
+
+
 @njit(F(F, I, I), cache=True)
 def boundary_line_kernel(prices, starts, ends):
     """Interpolate complete boundaries, including the terminal boundary price."""
@@ -176,6 +291,8 @@ SEGMENT_KERNELS = {
     "between_pivots": between_pivots_kernel,
     "interval_statistic": interval_statistic_kernel,
     "range_threshold": range_threshold_kernel,
+    "drawdown_cycle_reference": drawdown_cycle_reference_kernel,
+    "drawdown_cycle_realtime": drawdown_cycle_realtime_kernel,
 }
 for _kernel in SEGMENT_KERNELS.values():
     _kernel.disable_compile()

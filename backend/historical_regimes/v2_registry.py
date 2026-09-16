@@ -570,7 +570,15 @@ NODE_REGISTRY: dict[str, dict[str, Any]] = {
         [_port("value", SERIES)],
         {
             "type": "object",
-            "properties": {"value": {"type": "number", "default": 0.0}},
+            "properties": {
+                "value": {"type": "number", "default": 0.0},
+                "parameter_role": {
+                    "type": "string", "enum": ["tunable", "structural"],
+                    "enum_labels": ["研究参数（参与扰动）", "结构常数（不参与扰动）"],
+                    "default": "tunable", "title": "参数用途",
+                    "description": "只控制稳定性诊断。公式中的1、单位换算等可标为结构常数；不改变计算值或免除因果检查。",
+                },
+            },
             "additionalProperties": False,
         },
     ),

@@ -151,6 +151,26 @@ describe('HistoricalRegimeWorkbench', () => {
     }
   })
 
+
+  it.each([['historical_reference', 'retrospective', '生成历史区间'], ['realtime_recognition', 'realtime', '运行识别']] as const)('新任务 %s 固定模式并向真实请求传 study', async (purpose, mode, action) => {
+    const base = makeFetch()
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/references') || String(input).endsWith('/reliability/catalog')) return ok({ items: [] })
+      return base(input, init)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<HistoricalRegimeWorkbench purpose={purpose} initialDefinition={templateDefinition} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: action, hidden: true })).toBeEnabled())
+    await toPreview(user)
+    expect(screen.queryByRole('radiogroup', { name: 'V2 识别模式' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('算法库识别方式')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: action }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/preview-runs') && init?.method === 'POST')).toBe(true))
+    const call = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/preview-runs') && init?.method === 'POST')!
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({ mode, definition: { study: { purpose, family: 'custom' } } })
+  })
+
   async function ready(fetchMock = makeFetch(), initialDefinition = templateDefinition) {
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
@@ -535,4 +555,35 @@ it('峰谷模板自动进入事后模式，参数可编辑，切回实时后禁�
   await user.click(screen.getByRole('radio', { name: '实时识别' }))
   expect(screen.getByRole('button', { name: '运行识别', hidden: true })).toBeDisabled()
   expect(await screen.findByText(/实时识别已禁用事后分析算法/)).toBeInTheDocument()
+})
+
+describe('audit regression: exact reference handoff', () => {
+  afterEach(() => { window.history.replaceState({}, '', '/'); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+  it.each([false, true])('hands off the new reference while preserving existing binding: %s', async alreadyBound => {
+    const incoming = { run_id: 'new-run', publication_id: 'new-publication', content_hash: 'new-hash' }
+    const old = { run_id: 'old-run', publication_id: 'old-publication', content_hash: 'old-hash' }
+    const base = makeFetch()
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/references')) return Promise.resolve(ok({ items: [incoming, old].map((reference, index) => ({ ...reference, name: `参考${index}`, definition_id: `ref-${index}`, definition_revision: 1, states: templateDefinition.states })) }))
+      if (path.includes('/v2/definitions/ref-')) return Promise.resolve(ok(templateDefinition))
+      if (path.endsWith('/reliability/catalog')) return Promise.resolve(ok({ items: [] }))
+      return base(input, init)
+    }))
+    const initial: RegimeGraphDefinition = { ...templateDefinition, ...(alreadyBound ? { id: 'existing-model', revision: 1 } : {}),
+      study: { purpose: 'realtime_recognition', family: 'market_trend', ...(alreadyBound ? { reference: old } : {}) } }
+    const user = userEvent.setup()
+    render(<HistoricalRegimeWorkbench purpose="realtime_recognition" initialDefinition={initial} incomingReference={incoming} />)
+    const select = await screen.findByLabelText('历史参考版本')
+    await waitFor(() => expect(select).toHaveValue(JSON.stringify(Object.values(alreadyBound ? old : incoming))))
+    if (alreadyBound) {
+      await user.click(screen.getByRole('button', { name: '使用刚保存的参考' }))
+      expect(select).toHaveValue(JSON.stringify(Object.values(incoming)))
+    }
+    await user.selectOptions(select, '')
+    // Explicit clearing is respected across the next rerender.
+    expect(select).toHaveValue('')
+    await settle(400)
+    expect(select).toHaveValue('')
+  })
 })

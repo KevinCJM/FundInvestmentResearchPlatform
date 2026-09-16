@@ -8,7 +8,10 @@ from .condition_numba import (
     condition_logic_kernel, select_state_kernel,
 )
 from .peak_trough_numba import ps_filter_pivots_kernel, peak_trough_sideways_kernel
-from .segment_numba import phase_direction_kernel, boundary_line_kernel
+from .segment_numba import (
+    phase_direction_kernel, boundary_line_kernel,
+    drawdown_cycle_reference_kernel, drawdown_cycle_realtime_kernel,
+)
 from .v2_numba import state_probabilities_kernel, state_confidence_kernel
 
 EMPTY_FLOAT = np.empty(0, dtype=np.float64)
@@ -48,6 +51,18 @@ def execute_granular_node(node_type, parameters, inputs, state_count):
         return {"phase": phase_direction_kernel(floating("pivot"), integer("start"), integer("end"))}
     if node_type == "segment.boundary_line":
         return {"value": boundary_line_kernel(floating("value"), integer("start"), integer("end"))}
+    if node_type == "post.drawdown_cycle_reference":
+        return {"state": drawdown_cycle_reference_kernel(
+            integer("phase"), floating("change"), integer("start"), integer("end"),
+            np.float64(parameters.get("stress_drawdown", .12)),
+        )}
+    if node_type == "model.drawdown_cycle_realtime":
+        return {"state": drawdown_cycle_realtime_kernel(
+            floating("value"), np.int64(parameters.get("lookback", 9)),
+            np.float64(parameters.get("stress_drawdown", .12)),
+            np.float64(parameters.get("recovery_rebound", .05)),
+            np.float64(parameters.get("recovery_exit_drawdown", .08)),
+        )}
     if node_type == "post.peak_sideways":
         result = peak_trough_sideways_kernel(floating("value"), integer("phase"), integer("start"), integer("end"),
             np.int64(parameters.get("sideways_enabled", False)), np.int64(2 if state_count == 3 else 1),

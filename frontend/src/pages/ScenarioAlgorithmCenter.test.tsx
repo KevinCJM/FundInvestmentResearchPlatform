@@ -635,8 +635,8 @@ describe("ScenarioAlgorithmCenter", () => {
     await act(async () => {
       await user.click(screen.getByRole("button", { name: "02 期限与路径" }));
     });
-    expect(screen.getByLabelText("模拟路径数")).toHaveValue(2000);
-    expect(screen.getByLabelText("随机种子")).toHaveValue(20260903);
+    expect(screen.getByLabelText("模拟路径数")).toHaveValue("2000");
+    expect(screen.getByLabelText("随机种子")).toHaveValue("20260903");
     await act(async () => {
       await user.click(screen.getByRole("tab", { name: /结果与归因/ }));
     });
@@ -933,7 +933,7 @@ describe("ScenarioAlgorithmCenter", () => {
       await user.click(screen.getByRole("tab", { name: /批量压测与发布/ }));
     });
     const productCheckbox = within(
-      screen.getByText("产品研究").closest("label") as HTMLLabelElement,
+      screen.getByRole("checkbox", { name: "产品研究" }).closest("label") as HTMLLabelElement,
     ).getByRole("checkbox");
     await act(async () => {
       await user.click(productCheckbox);
@@ -959,3 +959,89 @@ describe("ScenarioAlgorithmCenter", () => {
       .toBeInTheDocument();
   });
 });
+
+describe('audit regression: drafts and request ordering', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+  it.each(['success', 'failure'])('ignores stale %s after selecting a newer definition', async outcome => {
+    const base = makeFetch()
+    const a = { ...definition, id: 'SCN-A', name: '旧请求' }
+    const b = { ...definition, id: 'SCN-B', name: '最后选择' }
+    let finishA!: (value: Response) => void
+    let finishB!: (value: Response) => void
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input)
+      if (path.endsWith('/definitions') && !init?.method) return Promise.resolve(ok({ items: [definition, a, b] }))
+      if (path.endsWith('/definitions/SCN-A')) return new Promise<Response>(resolve => { finishA = resolve })
+      if (path.endsWith('/definitions/SCN-B')) return new Promise<Response>(resolve => { finishB = resolve })
+      return base(input, init)
+    }))
+    render(<ScenarioAlgorithmCenter />)
+    const select = await screen.findByLabelText('已保存情景定义')
+    fireEvent.change(select, { target: { value: 'SCN-A' } })
+    fireEvent.change(select, { target: { value: 'SCN-B' } })
+    await act(async () => { finishA(outcome === 'success' ? ok(a) : { ok: false, status: 400, json: async () => ({ detail: { message: '旧请求错误' } }) } as Response) })
+    expect(select).toHaveValue('SCN-1')
+    expect(screen.queryByText('旧请求错误')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存新修订' })).toBeDisabled()
+    await act(async () => { finishB(ok(b)) })
+    expect(select).toHaveValue('SCN-B')
+    expect(screen.getByLabelText('定义名称')).toHaveValue('最后选择')
+  })
+  it('keeps unapplied JSON on unrelated parent changes and applies exact edited content', async () => {
+    const fetch = makeFetch()
+    vi.stubGlobal('fetch', fetch)
+    const user = userEvent.setup()
+    render(<ScenarioAlgorithmCenter />)
+    await screen.findByLabelText('已保存情景定义')
+    await user.click(screen.getByRole('button', { name: '02 期限与路径' }))
+    const editor = screen.getByLabelText('可选逐期冲击路径 JSON')
+    const text = '[{"step":1,"shocks":{"growth":-2,"rate":20}}]'
+    fireEvent.change(editor, { target: { value: text } })
+    fireEvent.change(screen.getByLabelText('情景严重度'), { target: { value: '2' } })
+    expect(editor).toHaveValue(text)
+    await user.click(screen.getByRole('button', { name: '解析并应用' }))
+    await user.click(screen.getByRole('button', { name: '保存新修订' }))
+    const saved = fetch.mock.calls.find(([, init]) => init?.method === 'PUT')
+    expect(JSON.parse(String(saved?.[1]?.body)).scenario.factor_path).toEqual(JSON.parse(text))
+    expect(JSON.parse(String(saved?.[1]?.body)).scenario.severity).toBe(2)
+  })
+})
+
+it('keeps unapplied JSON and the selected portfolio across save, steps, and workspace tabs', async () => {
+  vi.stubGlobal('fetch', makeFetch())
+  const user = userEvent.setup()
+  render(<ScenarioAlgorithmCenter />)
+  await screen.findByLabelText('已保存情景定义')
+  await user.click(screen.getByRole('button', { name: '02 期限与路径' }))
+  const text = '[{"step":1,"shocks":{"growth":-2,"rate":20}}]'
+  fireEvent.change(screen.getByLabelText('可选逐期冲击路径 JSON'), { target: { value: text } })
+  fireEvent.change(screen.getByLabelText('情景严重度'), { target: { value: '2' } })
+  await user.click(screen.getByRole('button', { name: '保存新修订' }))
+  await screen.findByText(/已保存.*修订版 R2/)
+  expect(screen.getByLabelText('可选逐期冲击路径 JSON')).toHaveValue(text)
+  await user.click(screen.getByRole('button', { name: '03 对象与映射' }))
+  await user.click(screen.getByRole('button', { name: /添加.*组合/ }))
+  const selected = screen.getByRole('textbox', { name: /组合名称/ })
+  expect(selected).toHaveValue('研究组合 2')
+  await user.click(screen.getByRole('button', { name: '04 约束与阈值' }))
+  await user.click(screen.getByRole('button', { name: '03 对象与映射' }))
+  expect(screen.getByRole('textbox', { name: /组合名称/ })).toHaveValue('研究组合 2')
+  await user.click(screen.getByRole('tab', { name: /结果/ }))
+  await user.click(screen.getByRole('tab', { name: /情景定义/ }))
+  expect(screen.getByRole('textbox', { name: /组合名称/ })).toHaveValue('研究组合 2')
+  await user.click(screen.getByRole('button', { name: '02 期限与路径' }))
+  expect(screen.getByLabelText('可选逐期冲击路径 JSON')).toHaveValue(text)
+  for (const tab of screen.getAllByRole('tab').filter(item => item.hasAttribute('aria-controls'))) expect(document.getElementById(tab.getAttribute('aria-controls')!)).not.toBeNull()
+})
+
+it.each(['', '-', '1e309'])('does not save incomplete or nonfinite numeric input: %s', async raw => {
+  const fetch = makeFetch(); vi.stubGlobal('fetch', fetch)
+  const user = userEvent.setup(); render(<ScenarioAlgorithmCenter />)
+  await screen.findByLabelText('已保存情景定义')
+  await user.click(screen.getByRole('button', { name: '02 期限与路径' }))
+  fireEvent.change(screen.getByLabelText('情景严重度'), { target: { value: raw } })
+  expect(screen.getByLabelText('情景严重度')).toHaveAttribute('aria-invalid', 'true')
+  await user.click(screen.getByRole('button', { name: '保存新修订' }))
+  await screen.findByRole('alert')
+  expect(fetch.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+})
