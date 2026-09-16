@@ -18,6 +18,7 @@ from custom_indicators.excel_formula import (
 from custom_indicators.service import CustomIndicatorService
 from custom_indicators.typed_service import typed_product_meta
 from custom_indicators.variable_registry import variable_catalog, variable_types
+from data_sources.price_adjustment import attach_adjusted_prices
 from services import custom_indicator_routes
 
 
@@ -66,7 +67,8 @@ def _write_etf_data(data_dir: Path) -> None:
         data_dir / "etf_daily_df.parquet",
         index=False,
     )
-    pd.DataFrame(candle_rows).to_parquet(
+    candle, _ = attach_adjusted_prices(pd.DataFrame(candle_rows), None, policy="pre_close")
+    candle.to_parquet(
         data_dir / "etf_daily_candle_df.parquet",
         index=False,
     )
@@ -91,7 +93,7 @@ def _inline_draft(name: str, expression: str) -> dict[str, object]:
         "annual_risk_free_rate_percent": 1.5,
         "dsl_version": "2.2.0",
         "operator_registry_version": "2.2.0",
-        "variable_registry_version": "2.1.0",
+        "variable_registry_version": "3.0.0",
         "data_contract_version": "tushare-eod-v2",
         "context_schema_version": "typed-context-v2",
         "period_policy": "all_supported",

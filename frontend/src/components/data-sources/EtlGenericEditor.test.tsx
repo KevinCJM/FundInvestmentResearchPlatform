@@ -39,6 +39,21 @@ describe('通用合同驱动表单', () => {
     fireEvent.change(screen.getByLabelText('统计日期取值方式'),{target:{value:'report_day'}})
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({parameter_bindings:{cutoff:'report_day'}}))
   })
+  it('登记为选项的任务参数渲染成下拉并说明每个口径的含义', () => {
+    const onChange = vi.fn()
+    const choices = [
+      { value: 'source', label: '仅数据源因子', description: '数据源没有覆盖的标的不产出复权价格。' },
+      { value: 'pre_close', label: '全部由前收盘价推导', description: '忽略数据源因子。' },
+    ]
+    const withChoice = { ...catalog, etl_tasks: [{ ...(catalog as any).etl_tasks[0],
+      parameters: [{ name: 'factor_policy', label: '复权因子口径', data_type: 'choice', default: 'source', choices }] }] } as unknown as SourceCatalog
+    render(<EtlTaskFields catalog={withChoice} step={{...blankStep('task'),task_id:'warehouse.orders',source_id:'warehouse'}} parameters={[]} onChange={onChange} />)
+    const select = screen.getByLabelText('复权因子口径')
+    expect(select).toHaveValue('source')
+    expect(screen.getByText('数据源没有覆盖的标的不产出复权价格。')).toBeInTheDocument()
+    fireEvent.change(select, { target: { value: 'pre_close' } })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ params: { factor_policy: 'pre_close' } }))
+  })
   it('运行参数来自任意流程定义，不绑定 ETF 或基金标识', () => {
     render(<EtlRunOptionsEditor definition={{name:'任意流程',description:'',max_runtime_seconds:60,steps:[],parameters:[{id:'report_day',label:'报表截止日',data_type:'date',default:'',required:true,date_format:'iso',description:''}]}} value={{mode:'full',parameters:{}}} disabled={false} onChange={()=>{}} />)
     expect(screen.getByLabelText('报表截止日')).toBeVisible()

@@ -103,7 +103,7 @@ STAGING_COPY_EXCLUDES = {
 INDEX_SCOPE_FLAGS = {scope: f"--index-{scope}" for scope in INDEX_SCOPES}
 MODULE_SCOPES = {
     "base": ("calendar", "stock_basic", "fund_company"),
-    "etf": ("info", "nav", "share", "candle"),
+    "etf": ("info", "nav", "share", "candle", "adjust"),
     "fund": ("info", "nav", "manager", "scale", "portfolio", "dividend", "adjustment", "benchmark"),
     "index": INDEX_SCOPES,
     "macro": ("cycle", "money_credit", "rates", "release_calendar"),
@@ -126,6 +126,7 @@ MODULE_SCOPE_FLAGS = {
         "nav": "--nav",
         "share": "--etf-share",
         "candle": "--candle",
+        "adjust": "--price-adjustment",
     },
     "fund": {
         "info": "--fund-info",
@@ -146,7 +147,7 @@ MODULE_SCOPE_FLAGS = {
     },
 }
 MODULE_SCOPE_DEPENDENCIES = {
-    "etf": {"nav": ("info",), "share": ("info",), "candle": ("info",)},
+    "etf": {"nav": ("info",), "share": ("info",), "candle": ("info",), "adjust": ("info", "candle")},
     "fund": {
         "nav": ("info",),
         "manager": ("info",),

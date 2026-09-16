@@ -45,6 +45,7 @@ from .variable_registry import (
     DATA_CONTRACT_VERSION,
     VARIABLE_REGISTRY_VERSION,
     allowed_variables,
+    retired_variable_message,
     canonical_variable_id,
     get_variable,
     normalize_variable_latex,
@@ -814,9 +815,10 @@ def _argument_expressions(
                 continue
             variable = canonical_variable_id(requested_variable)
             if variable not in _allowed_variables(context):
+                retired = retired_variable_message([variable])
                 raise ValidationError(
-                    "VARIABLE_CONTEXT_MISMATCH",
-                    f"变量 {requested_variable} 不适用于 {context} 域。",
+                    "VARIABLE_RETIRED" if retired else "VARIABLE_CONTEXT_MISMATCH",
+                    retired or f"变量 {requested_variable} 不适用于 {context} 域。",
                     f"arguments.{parameter}",
                 )
             expressions[parameter] = _latex_for_variable(variable)
@@ -995,9 +997,10 @@ def _ensure_context(
     allowed = _allowed_variables(context) | set(additional_variables or {})
     unavailable = sorted(set(plan.context_requirements) - allowed)
     if unavailable:
+        retired = retired_variable_message(unavailable)
         raise ValidationError(
-            "CONTEXT_VARIABLE_UNAVAILABLE",
-            f"{context} 域不提供变量: {', '.join(unavailable)}。",
+            "VARIABLE_RETIRED" if retired else "CONTEXT_VARIABLE_UNAVAILABLE",
+            retired or f"{context} 域不提供变量: {', '.join(unavailable)}。",
             "expression",
         )
 

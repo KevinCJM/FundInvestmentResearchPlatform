@@ -16,7 +16,12 @@ from custom_indicators.series_provider import (
 )
 from custom_indicators.service import CustomIndicatorService, SUPPORTED_PERIODS
 from custom_indicators.errors import ValidationError
-from custom_indicators.variable_registry import variable_catalog
+from custom_indicators.variable_registry import (
+    allowed_variables,
+    retired_variable_message,
+    variable_catalog,
+    variable_types,
+)
 from services import custom_indicator_routes
 
 
@@ -194,17 +199,24 @@ def test_variable_catalog_exposes_product_contract_fields() -> None:
     assert catalog["log_returns"]["label"] == "复权净值对数收益率"
     assert "相邻复权净值" in catalog["returns"]["description"]
     assert "相邻复权净值" in catalog["log_returns"]["description"]
-    assert {
-        catalog[variable_id]["label"]
-        for variable_id in ("market_open", "market_high", "market_low", "market_close")
-    } == {"开盘价", "最高价", "最低价", "收盘价"}
+    adjusted_quotes = ("adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close")
+    assert {catalog[variable_id]["label"] for variable_id in adjusted_quotes} == {
+        "复权开盘价", "复权最高价", "复权最低价", "复权收盘价",
+    }
+    assert all(catalog[variable_id]["category_label"] == "净值与价格" for variable_id in adjusted_quotes)
     assert all(
-        catalog[variable_id]["category_label"] == "净值与价格"
-        for variable_id in ("market_open", "market_high", "market_low", "market_close")
+        catalog[variable_id]["type"]["semantic_dimension"] == "adjusted_market_price"
+        and catalog[variable_id]["price_basis"] == "adjusted_market"
+        for variable_id in adjusted_quotes
     )
-    assert catalog["price_change"]["type"]["semantic_dimension"] == "raw_market_price"
-    assert catalog["market_close"]["type"]["semantic_dimension"] == "raw_market_price"
-    assert catalog["previous_close"]["type"]["semantic_dimension"] == "raw_market_price"
+    # Unadjusted quotes and reported NAV levels are retired: still executable for
+    # stored definitions, never offered as an input for a new one.
+    retired = ("market_open", "market_high", "market_low", "market_close",
+               "previous_close", "price_change", "price_return", "unit_nav", "accumulated_nav")
+    assert not set(retired) & set(catalog)
+    assert not set(retired) & allowed_variables("single_product")
+    assert set(retired) <= set(variable_types("single_product"))
+    assert "复权收盘价(adjusted_close)" in (retired_variable_message(["market_close"]) or "")
     assert catalog["risk_free_rate_per_observation"]["structural_type"] == "scalar"
     assert "risk_free_rate_per_period" in catalog["risk_free_rate_per_observation"]["aliases"]
     for item in catalog.values():
@@ -222,12 +234,35 @@ def test_variable_catalog_exposes_product_contract_fields() -> None:
         } <= item.keys()
     assert catalog["adjusted_nav"]["source_bindings"]["etf"]["configured"] is True
     assert catalog["adjusted_nav"]["source_bindings"]["fund"]["configured"] is True
-    assert catalog["market_high"]["source_bindings"]["etf"]["source_field"] == "high"
-    assert catalog["market_high"]["source_bindings"]["fund"]["configured"] is False
-    assert catalog["market_high"]["alternative_variables"] == [
-        "adjusted_nav",
-        "returns",
-    ]
+    assert catalog["adjusted_high"]["source_bindings"]["etf"]["source_field"] == "adj_high"
+    assert catalog["adjusted_high"]["source_bindings"]["fund"]["configured"] is False
+    assert catalog["adjusted_high"]["availability_tier"] == "conditional"
+
+
+def test_new_formulas_must_use_an_adjusted_price_basis(tmp_path: Path) -> None:
+    from cal_indicators.typed_operators import TYPED_DSL_VERSION, TYPED_OPERATOR_REGISTRY_VERSION
+
+    service = CustomIndicatorService(tmp_path, tmp_path)
+
+    def check(expression: str) -> dict:
+        return service.validate({
+            "name": "t", "expression": expression, "periods": ["1Y"],
+            "dsl_version": TYPED_DSL_VERSION,
+            "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        })
+
+    retired = check("mean(market_close)")
+    assert retired["valid"] is False
+    assert retired["diagnostics"][0]["code"] == "VARIABLE_RETIRED"
+    assert "adjusted_close" in retired["diagnostics"][0]["message"]
+
+    # Exchange price and NAV are both dividend-inclusive but differ by the
+    # premium/discount; one formula may not treat them as the same quantity.
+    mixed = check("mean(adjusted_close - adjusted_nav)")
+    assert mixed["valid"] is False
+    assert mixed["diagnostics"][0]["code"] == "SEMANTIC_DIMENSION_MISMATCH"
+
+    assert check("mean(adjusted_close)")["valid"] is True
 
 
 def test_meta_exposes_versioned_operator_contract(tmp_path: Path) -> None:
@@ -311,7 +346,7 @@ def test_variable_availability_route_reports_partial_fields(
     windows = {item["variable_id"]: item["window"] for item in body["items"]}
     assert windows["adjusted_nav"]["observation_count"] == 5
     assert windows["volume"]["observation_count"] == 5
-    assert body["variable_registry_version"] == "2.1.0"
+    assert body["variable_registry_version"] == "3.0.0"
     assert body["source_fingerprints"]
 
 

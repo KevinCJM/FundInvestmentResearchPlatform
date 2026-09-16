@@ -28,12 +28,12 @@ from custom_indicators.graph_contracts import FormulaResolveRequest, CanvasResol
 from services import custom_indicator_routes
 
 
-def draft(expression="rolling_mean(market_close, 20)"):
-    return {"name": "可调均线", "result_kind": "time_series", "axis_anchor": "market_close",
+def draft(expression="rolling_mean(adjusted_close, 20)"):
+    return {"name": "可调均线", "result_kind": "time_series", "axis_anchor": "adjusted_close",
             "series_outputs": [{"id": "ma", "label": "均线", "expression": expression, "output_measure": "auto"}]}
 
 
-def opened(expression="rolling_mean(market_close, 20)"):
+def opened(expression="rolling_mean(adjusted_close, 20)"):
     value = draft(expression)
     candidate = inspect_parameter_inputs(value)["candidates"][0]
     return bind_parameter_input(value, candidate_id=candidate["id"])
@@ -42,7 +42,7 @@ def opened(expression="rolling_mean(market_close, 20)"):
 def test_every_configuration_input_is_offered_including_aliases():
     """The contract decides; the user picks. No operator or argument whitelist."""
 
-    value = draft("sequence_std(rolling_window(market_close, 20), 1)")
+    value = draft("sequence_std(rolling_window(adjusted_close, 20), 1)")
     candidates = inspect_parameter_inputs(value)["candidates"]
     assert [(item["operator_id"], item["argument"], item["value"]) for item in candidates] == [
         ("sequence_std", "ddof", 1), ("rolling_window", "window", 20)
@@ -50,13 +50,13 @@ def test_every_configuration_input_is_offered_including_aliases():
     window = next(item for item in candidates if item["argument"] == "window")
     opened_value = bind_parameter_input(value, candidate_id=window["id"])
     assert opened_value["series_outputs"][0]["expression"] == (
-        "sequence_std(rolling_window(market_close, window_1), 1)"
+        "sequence_std(rolling_window(adjusted_close, window_1), 1)"
     )
     assert opened_value["parameter_schema"][0]["default"] == 20
 
 
 def test_candidates_and_ranges_follow_the_operator_contract():
-    value = draft("clip(quantile(rolling_window(market_close, 20), 0.9), 0.0, 1.0)")
+    value = draft("clip(quantile(rolling_window(adjusted_close, 20), 0.9), 0.0, 1.0)")
     candidates = {item["argument"]: item for item in inspect_parameter_inputs(value)["candidates"]}
     assert candidates["probability"]["minimum"] == 0 and candidates["probability"]["maximum"] == 1
     assert candidates["probability"]["exclusive_minimum"] is True
@@ -96,7 +96,7 @@ def test_configuration_inputs_have_exactly_one_source():
 
 
 def test_position_aware_binding_shared_parameters_and_unbinding():
-    value = draft("rolling_mean(market_close, 20) + rolling_mean(market_close, 20)")
+    value = draft("rolling_mean(adjusted_close, 20) + rolling_mean(adjusted_close, 20)")
     candidates = inspect_parameter_inputs(value)["candidates"]
     assert len(candidates) == 2
     first = bind_parameter_input(value, candidate_id=candidates[0]["id"])
@@ -108,7 +108,7 @@ def test_position_aware_binding_shared_parameters_and_unbinding():
     fixed = bind_parameter_input(shared, fixed_parameter_id="window_1")
     assert not fixed["parameter_schema"]
     assert "window_1" not in fixed["series_outputs"][0]["expression"]
-    assert value == draft("rolling_mean(market_close, 20) + rolling_mean(market_close, 20)")
+    assert value == draft("rolling_mean(adjusted_close, 20) + rolling_mean(adjusted_close, 20)")
 
 
 def test_defaults_partial_overrides_and_schema_survive_normalization():
@@ -128,7 +128,7 @@ def test_invalid_runtime_values_fail_closed(value):
 
 
 def test_unknown_keys_step_and_relations():
-    value = opened("rolling_std(market_close, 20, 1, 10)")
+    value = opened("rolling_std(adjusted_close, 20, 1, 10)")
     with pytest.raises(ValidationError):
         resolve_parameter_values(value, {"ddof": 0})
     with pytest.raises(ValidationError):
@@ -140,9 +140,9 @@ def test_unknown_keys_step_and_relations():
 
 
 def test_cannot_parameterize_data_or_structural_literals():
-    assert not inspect_parameter_inputs(draft("3 * market_close - 2"))["candidates"]
+    assert not inspect_parameter_inputs(draft("3 * adjusted_close - 2"))["candidates"]
     value = opened()
-    value["series_outputs"][0]["expression"] = "market_close * window_1"
+    value["series_outputs"][0]["expression"] = "adjusted_close * window_1"
     with pytest.raises(ValidationError):
         validate_parameter_definition(value)
     value = opened()
@@ -154,7 +154,7 @@ def test_cannot_parameterize_data_or_structural_literals():
 def test_stale_candidate_is_not_rebound_to_another_constant():
     value = draft()
     candidate = inspect_parameter_inputs(value)["candidates"][0]
-    value["series_outputs"][0]["expression"] = "rolling_mean(market_close, 30)"
+    value["series_outputs"][0]["expression"] = "rolling_mean(adjusted_close, 30)"
     with pytest.raises(ValidationError, match="重新识别"):
         bind_parameter_input(value, candidate_id=candidate["id"])
 
@@ -172,7 +172,7 @@ def test_njit_default_override_cache_and_history_are_instance_scoped(tmp_path):
     assert left["lookback_observations"] == 20
     assert right["lookback_observations"] == 5
     for item, window in ((left, 20), (right, 5)):
-        expected = frame["close"].rolling(window).mean().to_numpy()[-len(item["dates"]):]
+        expected = frame["adj_close"].rolling(window).mean().to_numpy()[-len(item["dates"]):]
         np.testing.assert_allclose(_as_float(item["channels"][0]["values"]), expected, rtol=1e-12)
     assert len(result["execution"]["compiled_plan_ids"]) == 1
     assert result["execution"]["request_time_compilation"] == 0
@@ -186,7 +186,7 @@ def test_njit_default_override_cache_and_history_are_instance_scoped(tmp_path):
 def test_nested_windows_and_no_request_compilation(tmp_path, monkeypatch):
     from custom_indicators import series_service
     service, frame = _service(tmp_path)
-    definition = opened("rolling_mean(rolling_mean(market_close, 20), 3)")
+    definition = opened("rolling_mean(rolling_mean(adjusted_close, 20), 3)")
     # The first candidate is the outer window; both input positions remain distinct.
     saved = service.create_indicator(definition)
     monkeypatch.setattr(series_service, "_compile_definition", lambda *_args, **_kwargs: pytest.fail("request-time compilation"))
@@ -194,16 +194,16 @@ def test_nested_windows_and_no_request_compilation(tmp_path, monkeypatch):
         "indicator_id": saved["id"], "parameters": {"window_1": 5},
     }], target={"kind": "etf", "product_id": "510300.SH"}, period="1M")["results"][0]
     assert result["lookback_observations"] == 24
-    expected = frame["close"].rolling(20).mean().rolling(5).mean().to_numpy()[-len(result["dates"]):]
+    expected = frame["adj_close"].rolling(20).mean().rolling(5).mean().to_numpy()[-len(result["dates"]):]
     np.testing.assert_allclose(_as_float(result["channels"][0]["values"]), expected, rtol=1e-12)
 
 
 def test_kdj_three_outputs_share_explicit_runtime_parameters(tmp_path):
     from backend.product_analysis_numba import kdj_kernel
     service, frame = _service(tmp_path)
-    low = "rolling_min(market_low, n, 1)"
-    high = "rolling_max(market_high, n, 1)"
-    rsv = f"clip(100 * divide_or_default(market_close - {low}, {high} - {low}, 0.5), 0, 100)"
+    low = "rolling_min(adjusted_low, n, 1)"
+    high = "rolling_max(adjusted_high, n, 1)"
+    rsv = f"clip(100 * divide_or_default(adjusted_close - {low}, {high} - {low}, 0.5), 0, 100)"
     k_value = f"recursive_smooth({rsv}, k, 50)"
     d_value = f"recursive_smooth({k_value}, d, 50)"
     definition = {**draft(), "parameter_contract_version": "1.0",
@@ -218,14 +218,14 @@ def test_kdj_three_outputs_share_explicit_runtime_parameters(tmp_path):
                                      target={"kind": "etf", "product_id": "510300.SH"}, period="1M")["results"][0]
     assert result["parameters"] == {"n": 14, "k": 5, "d": 3}
     assert result["history_policy"] == "full_history"
-    reference = kdj_kernel(*(np.ascontiguousarray(frame[key].to_numpy(dtype=np.float64)) for key in ("high", "low", "close")), 14, 5, 3)
+    reference = kdj_kernel(*(np.ascontiguousarray(frame[key].to_numpy(dtype=np.float64)) for key in ("adj_high", "adj_low", "adj_close")), 14, 5, 3)
     for index, channel in enumerate(result["channels"]):
         np.testing.assert_allclose(_as_float(channel["values"]), reference[index, -len(result["dates"]):], rtol=1e-12)
 
 
 def test_runtime_clip_range_does_not_reuse_default_range(tmp_path):
     service, _ = _service(tmp_path)
-    definition = draft("clip(market_close / market_close, 0, 1)")
+    definition = draft("clip(adjusted_close / adjusted_close, 0, 1)")
     candidate = next(item for item in inspect_parameter_inputs(definition)["candidates"] if item["argument"] == "upper")
     saved = service.create_indicator(bind_parameter_input(definition, candidate_id=candidate["id"]))
     result = service.evaluate_series(indicator_instances=[{"indicator_id": saved["id"], "parameters": {"upper_1": 2}}],
@@ -449,4 +449,4 @@ def test_snapshot_series_parameter_instances_compute_separately(tmp_path):
     for item, record in records:
         n = int(item["parameters"]["window_1"])
         assert record["parameters"]["window_1"] == n
-        assert record["value"] == pytest.approx(frame["close"].iloc[-n:].mean())
+        assert record["value"] == pytest.approx(frame["adj_close"].iloc[-n:].mean())

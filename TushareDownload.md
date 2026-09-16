@@ -400,9 +400,16 @@ flowchart TD
 | `fund_portfolio` | `fund_portfolio` | `fund_portfolio_df.parquet` | 季报股票持仓；`available_at,ts_code,end_date,symbol` |
 | `fund_dividend` | `fund_div` | `fund_dividend_df.parquet` | 分红事件；`available_at,ts_code,ex_date,pay_date` |
 | `fund_adjustment` | `fund_adj` | `fund_adj_factor_df.parquet` | ETF 市价复权因子，输入 ETF 目录；`ts_code,date` |
+| `price_adjustment` | 从 `etf_daily_candle_df.parquet` + `fund_adj_factor_df.parquet` 派生 | `etf_daily_candle_df.parquet`（就地补列） | 新增 `adj_factor,adj_factor_source,adj_open,adj_high,adj_low,adj_close`；`ts_code,trade_date` |
 | `fund_benchmark` | `mkt_idx_bmk` | `fund_benchmark_df.parquet` | 标准基准目录；`ts_code` |
 
 注意：`fund_portfolio` 只是公开披露的股票持仓，不是含债券、现金、基金和衍生品的完整资产配置；`mkt_idx_bmk` 也不自动等于每只基金合同中的业绩比较基准。
+
+`price_adjustment` 是本地派生，必填参数 `factor_policy`（CLI `--adjust-factor-policy`）决定因子来源：
+`source` 只用 `fund_adj_factor_df.parquet`（默认，当前只覆盖 2 只 ETF，其余不产出复权价格）；
+`source_then_pre_close` 对没有数据源因子的标的按 `close[t-1]/pre_close[t]` 累乘推导；
+`pre_close` 全部推导，用于核验两条路径。没有可用因子的标的复权列留空，依赖复权口径的指标据此报不可计算，
+不用未复权价格冒充。因子是累乘量，每次运行整表重算，不做增量拼接。详见 `docs/adjusted_price_indicator_design.md`。
 
 ### 4.2 宏观数据
 
@@ -463,6 +470,7 @@ GDP、CPI、PPI、PMI、货币和社融当前没有可靠的逐期首次发布�
 | `fund_portfolio` | `--fund-portfolio` | `fund_portfolio` | `fund_portfolio_df.parquet` |
 | `fund_dividend` | `--fund-dividend` | `fund_div` | `fund_dividend_df.parquet` |
 | `fund_adjustment` | `--fund-adjustment` | `fund_adj` | `fund_adj_factor_df.parquet` |
+| `price_adjustment` | `--price-adjustment` | 本地派生 | `etf_daily_candle_df.parquet` 就地补复权列 |
 | `fund_benchmark` | `--fund-benchmark` | `mkt_idx_bmk` | `fund_benchmark_df.parquet` |
 
 ### 5.2 指数与宏观

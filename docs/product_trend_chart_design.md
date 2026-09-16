@@ -50,23 +50,27 @@
 | basis | 来源 | OHLC | 成交量 | 适用 |
 | --- | --- | --- | --- | --- |
 | `adjusted_nav` | `etf_daily_df.parquet` / `fund_nav_df.parquet` 的 `adj_nav` | 无（只有 close） | 无 | etf + fund |
-| `adjusted_kline` | `etf_daily_candle_df.parquet` OHLC × `fund_adj_factor_df.parquet` 的 `adj_factor`，复用既有 NJIT `adjusted_price_kernel(prices, factors, forward=0)` | 有 | 有（不复权，见下） | etf |
+| `adjusted_kline` | `etf_daily_candle_df.parquet` 的 `adj_open/adj_high/adj_low/adj_close`，由「ETF 复权价格」ETL 落盘（见 `adjusted_price_indicator_design.md`） | 有 | 有（不复权，见下） | etf |
 | `raw_kline` | `etf_daily_candle_df.parquet`，即现有 `_load_timeseries` | 有 | 有 | etf |
 
 口径规则：
 
-- 采用**后复权**（`forward=0`，基准固定为 1.0）。前复权的基准是区间内最后一根 K 线，换个截止日整条历史都会变，本仓库对这种「未来锚」的用法有明确告警；展示图不需要为此付代价。
+- 采用**后复权**，基准固定在每只标的自己的首个交易日。前复权的基准是区间内最后一根 K 线，换个截止日整条历史都会变，本仓库对这种「未来锚」的用法有明确告警；展示图不需要为此付代价。
 - **成交量不复权**，与 `backend/timing_research/data.py` 的既有约定一致，并在 warnings 里说明。
-- **缺因子即失败，不补 1**：`adjusted_price_kernel` 遇到缺失或非正因子直接抛错，端点转成 `available:false` + 原因，绝不用 1.0 顶替。当前快照里只有 2/1778 个 ETF 有复权因子，所以这条路径在真实数据上大多数时候会明确不可用——这正是要显式说出来的事。
+- **缺因子即失败，不补 1**：复权列缺失或为空时端点转成 `available:false` + 原因，绝不用 1.0 顶替。覆盖多少取决于 ETL 选的因子口径：默认只用数据源因子（当前快照 2/1778），显式选择前收盘价推导后可覆盖全部 1778 个。
 - PIT：三种口径都经过 `_pit_cut(points, _pit_as_of())`。
 
-`bases` 里的可得性是**廉价探测**（文件是否存在、该代码是否有因子行），真正的覆盖完整性要到实际计算时才知道；所选口径算不出来时由 `available/reason` 说明。
+`bases` 里的可得性是**廉价探测**（文件是否存在、该代码是否有非空复权列），真正的覆盖完整性要到实际计算时才知道；所选口径算不出来时由 `available/reason` 说明。
 
 ### 3.2 不做的事
 
-- 不改指标引擎的价格口径。`market_close` 等变量仍是不复权行情，`adjusted_nav` 仍是复权净值——正因为契约里分得清，前端才能判断哪条曲线能和主图共轴。
-- 不新增「复权行情」变量。目录里没有，就不假装有。
+- 不动 `raw_kline` 口径。它展示的是真实成交价，与指标入参是两回事。
 - 不动 `/products/{id}` 的既有返回结构（`ProductCompare` 还在用 `timeseries`）。
+
+> 2026-09-16 更新：原文这里写的是「不改指标引擎的价格口径、不新增复权行情变量」。
+> 该决定已被 `adjusted_price_indicator_design.md` 取代：变量目录新增了
+> `adjusted_open/high/low/close`（`price_basis = adjusted_market`），未复权行情变量
+> 已停用；第 4.3 节的语义表同步更新。
 
 ## 4. 前端设计
 
@@ -105,7 +109,7 @@
 | --- | --- | --- |
 | 主图价格轴 | `raw_market_price` | `raw_kline` |
 | 主图价格轴 | `adjusted_nav` | `adjusted_nav` |
-| 主图价格轴 | （无匹配语义） | `adjusted_kline`：复权行情在变量目录里没有对应语义，任何指标都不能共轴 |
+| 主图价格轴 | `adjusted_market_price` | `adjusted_kline` |
 | 成交量图 | `volume` | `raw_kline` / `adjusted_kline` |
 
 - **同轴同图**：通道语义与某条原生轴一致时可选，落到那条轴（价格语义→价格轴，成交量语义→成交量图）。不一致时该选项 `disabled`，并说明「口径与主图不同」。
@@ -118,8 +122,8 @@
 
 | 指标 | 通道 | unit | semantic_dimension | price_basis |
 | --- | --- | --- | --- | --- |
-| 20 日收盘价均线 | ma | 元 | raw_market_price | raw_market |
-| 20 日布林带 | upper/middle/lower | 元 | raw_market_price | raw_market |
+| 20 日复权收盘价均线（v4） | ma | 元 | adjusted_market_price | adjusted_market |
+| 20 日布林带（复权，v4） | upper/middle/lower | 元 | adjusted_market_price | adjusted_market |
 | 10 日成交量均线 | volume_ma | 份 | volume | — |
 | KDJ | k/d/j | — | dimensionless | — |
 | 滚动波动率 | value | % | return_decimal | adjusted_nav |

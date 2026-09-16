@@ -31,7 +31,8 @@ def test_product_catalog_exposes_math_operators_and_hides_deprecated_templates()
     assert variables["asset_weights"]["shape"] == "vector"
     assert variables["weight_path"]["symbolic_shape"] == ["T", "N"]
     assert variables["adjusted_nav"]["latex"] == r"\mathbf{p}_{\mathrm{adj}}"
-    assert variables["previous_close"]["latex"] == r"\mathbf{c}_{\mathrm{prev}}"
+    assert variables["adjusted_close"]["latex"] == r"\mathbf{c}_{\mathrm{adj}}"
+    assert "previous_close" not in variables
     assert all(
         item["name"] not in item["display_latex_template"]
         for item in meta["operators"]
