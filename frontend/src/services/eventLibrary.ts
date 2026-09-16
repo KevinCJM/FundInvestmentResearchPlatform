@@ -22,12 +22,22 @@ export interface EventPack { id: string; name: string; count: number }
 const prefix = '/api/historical-regimes/event-library'
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(prefix + path, { ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } })
-  const body = await response.json()
-  if (!response.ok) throw new Error(body?.detail?.message || (typeof body?.detail === 'string' ? body.detail : '事件库操作失败，请检查内容后重试。'))
+  let body
+  try { body = await response.json() }
+  catch { throw new Error(`事件库服务未返回可读取的数据（HTTP ${response.status}），请检查后端连接后重试。`) }
+  if (!response.ok) {
+    const detail = body?.detail
+    const diagnostics = Array.isArray(detail) ? detail : detail?.diagnostics
+    const fields = Array.isArray(diagnostics) ? diagnostics.map((item: { field?: string; loc?: Array<string | number>; message?: string; msg?: string }) => {
+      const field = item.field ?? item.loc?.join('.')
+      return [field, item.message ?? item.msg].filter(Boolean).join('：')
+    }).filter(Boolean).join('；') : ''
+    throw new Error(fields || detail?.message || (typeof detail === 'string' ? detail : '事件库操作失败，请检查内容后重试。'))
+  }
   return body
 }
 export function listLibraryEvents(filters: Record<string, string | number | boolean>, signal?: AbortSignal) {
-  const params = new URLSearchParams(Object.entries(filters).map(([key, value]) => [key, String(value)]))
+  const params = new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== '').map(([key, value]) => [key, String(value)]))
   return request<EventPage>('/events?' + params, { signal })
 }
 export const getLibraryEvent = (id: string, revision?: number, signal?: AbortSignal) => request<LibraryEvent>('/events/' + encodeURIComponent(id) + (revision ? '?revision=' + revision : ''), { signal })

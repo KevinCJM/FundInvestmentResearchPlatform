@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from functools import lru_cache
 from typing import Any
 
@@ -24,8 +25,9 @@ except ImportError:  # pragma: no cover - package-style backend import
     from backend.compute_policy import validate_execution_audit
 
 
-SCENARIO_STRESS_KERNEL_VERSION = "1.3.0"
+SCENARIO_STRESS_KERNEL_VERSION = "1.5.0"
 SCENARIO_STRESS_ENGINE = "numba_njit_fixed_signature"
+_WARMED_PID = None
 
 _F64_1D = types.Array(types.float64, 1, "C")
 _F64_2D = types.Array(types.float64, 2, "C")
@@ -37,6 +39,55 @@ _U8_2D = types.Array(types.uint8, 2, "C")
 _WEIGHT_SUMMARY_RESULT = types.Tuple(
     (types.float64, types.float64, types.float64, types.int64)
 )
+_HORIZON_TAIL_RESULT = types.Tuple(
+    (types.float64, types.float64, types.int64, types.int64)
+)
+
+
+@njit(_HORIZON_TAIL_RESULT(_F64_2D, _F64_2D, types.float64), cache=True, nogil=True)
+def horizon_tail_evidence_kernel(source_path, factor_path, tolerance):
+    """Measure terminal increments, not cumulative levels or delayed responses.
+
+    This proves only a terminal property of the supplied path. It deliberately
+    does not infer that the economic shock duration is correct.
+    """
+    if source_path.shape[0] == 0 or factor_path.shape[0] == 0 or source_path.shape[0] != factor_path.shape[0] or tolerance < 0.0:
+        return np.nan, np.nan, 0, 0
+    source_last = 0.0
+    factor_last = 0.0
+    for j in range(source_path.shape[1]):
+        if not np.isfinite(source_path[-1, j]):
+            source_last = np.inf
+        else:
+            source_last = max(source_last, abs(source_path[-1, j]))
+    for j in range(factor_path.shape[1]):
+        if not np.isfinite(factor_path[-1, j]):
+            factor_last = np.inf
+        else:
+            factor_last = max(factor_last, abs(factor_path[-1, j]))
+    source_tail = 0
+    for i in range(source_path.shape[0] - 1, -1, -1):
+        row_zero = True
+        for j in range(source_path.shape[1]):
+            value = source_path[i, j]
+            if not np.isfinite(value) or abs(value) > tolerance:
+                row_zero = False
+                break
+        if not row_zero:
+            break
+        source_tail += 1
+    factor_tail = 0
+    for i in range(factor_path.shape[0] - 1, -1, -1):
+        row_zero = True
+        for j in range(factor_path.shape[1]):
+            value = factor_path[i, j]
+            if not np.isfinite(value) or abs(value) > tolerance:
+                row_zero = False
+                break
+        if not row_zero:
+            break
+        factor_tail += 1
+    return source_last, factor_last, source_tail, factor_tail
 
 
 @njit(
@@ -141,12 +192,17 @@ def coverage_weights_kernel(
     if ratio + 1e-12 < minimum_coverage:
         return effective, ratio, 2, missing
     needs_scale = abs(ratio - 1.0) > 1e-12
-    if needs_scale and abs(covered_net) <= 1e-12:
+    if needs_scale and covered_net <= 1e-12:
         return effective, ratio, 3, missing
     scale = 1.0 / covered_net if needs_scale else 1.0
     for asset_index in range(asset_count):
         if available[asset_index] == 1:
             effective[asset_index] = weights[asset_index] * scale
+    _, _, _, constraint_status = portfolio_weight_summary_kernel(
+        effective, 1.0, 1e-8, 2.0, 3.0,
+    )
+    if constraint_status != 0:
+        return effective, ratio, 4, missing
     return effective, ratio, 0, missing
 
 
@@ -1332,7 +1388,29 @@ def reverse_stress_kernel(
     )
 
 
+@njit(types.Tuple((_F64_1D, types.float64))(_F64_2D, _I64_1D, types.int64), cache=True, nogil=True)
+def horizon_level_evidence_kernel(path, return_units, periods):
+    """Compound returns, sum other changes, and measure the untruncated response."""
+    if periods < 0 or periods > path.shape[0] or len(return_units) != path.shape[1]:
+        raise ValueError("Invalid horizon evidence dimensions")
+    levels = np.zeros(path.shape[1], dtype=np.float64)
+    pending = 0.0
+    for j in range(path.shape[1]):
+        level = 1.0 if return_units[j] else 0.0
+        for i in range(periods):
+            if return_units[j]:
+                level *= 1.0 + path[i, j]
+            else:
+                level += path[i, j]
+        levels[j] = level - 1.0 if return_units[j] else level
+        for i in range(periods, path.shape[0]):
+            pending = max(pending, abs(path[i, j]))
+    return levels, pending
+
+
 SCENARIO_STRESS_NUMBA_KERNELS: tuple[CPUDispatcher, ...] = (
+    horizon_level_evidence_kernel,
+    horizon_tail_evidence_kernel,
     portfolio_weight_summary_kernel,
     coverage_weights_kernel,
     deterministic_paths_kernel,
@@ -1403,7 +1481,7 @@ def scenario_stress_numba_status(*, warmed: bool | None = None) -> dict[str, Any
         for dispatcher in SCENARIO_STRESS_NUMBA_KERNELS
     )
     if warmed is None:
-        warmed = warm_scenario_stress_numba_kernels.cache_info().currsize > 0
+        warmed = warm_scenario_stress_numba_kernels.cache_info().currsize > 0 and _WARMED_PID == os.getpid()
     return {
         "kernel": "scenario_stress_numeric_core",
         "engine": SCENARIO_STRESS_ENGINE,
@@ -1418,10 +1496,12 @@ def scenario_stress_numba_status(*, warmed: bool | None = None) -> dict[str, Any
         "kernel_code_hashes": _kernel_code_hashes(),
         "kernel_coverage": f"{ready}/{len(signatures)}",
         "fully_warmed": bool(warmed and ready == len(signatures)),
+        "worker_pid": os.getpid(),
+        "warmed_pid": _WARMED_PID,
         "fingerprint": _kernel_fingerprint(signatures),
         "python_fallback": 0,
-        "object_mode": 0,
-        "request_time_compilation": 0,
+        "object_mode": int(not nopython),
+        "request_time_compilation": int(any(dispatcher._can_compile for dispatcher in SCENARIO_STRESS_NUMBA_KERNELS)),
         "optimized_third_party_model": None,
         "random_generation": {
             "provider": "numba.random",
@@ -1434,6 +1514,8 @@ def scenario_stress_numba_status(*, warmed: bool | None = None) -> dict[str, Any
 def assert_scenario_stress_numba_ready() -> None:
     status = scenario_stress_numba_status()
     validate_execution_audit(status)
+    if not status["fully_warmed"]:
+        raise RuntimeError("scenario stress NJIT warmup incomplete in current process")
     expected = len(SCENARIO_STRESS_NUMBA_KERNELS)
     if status["kernel_coverage"] != f"{expected}/{expected}":
         raise RuntimeError("scenario stress NJIT fixed-signature coverage incomplete")
@@ -1445,6 +1527,7 @@ def assert_scenario_stress_numba_ready() -> None:
 def warm_scenario_stress_numba_kernels() -> dict[str, Any]:
     """Exercise every production kernel before FastAPI readiness opens."""
 
+    global _WARMED_PID
     weights = np.ascontiguousarray([0.6, 0.4], dtype=np.float64)
     portfolio_weight_summary_kernel(
         weights,
@@ -1509,6 +1592,11 @@ def warm_scenario_stress_numba_kernels() -> dict[str, Any]:
     state_path_returns_kernel(state_paths, state_returns)
     state_contributions = np.ascontiguousarray([[0.006, 0.004], [-0.012, -0.008]], dtype=np.float64)
     state_weighted_contributions_kernel(state_paths, state_contributions)
+    horizon_tail_evidence_kernel(
+        np.ascontiguousarray([[1.0], [0.0]], dtype=np.float64),
+        np.ascontiguousarray([[0.5], [0.0]], dtype=np.float64),
+        np.float64(1e-12),
+    )
     historical_levels = np.ascontiguousarray(
         [[100.0, 100.0], [101.0, 99.0], [100.0, 101.0], [102.0, 100.0]],
         dtype=np.float64,
@@ -1560,6 +1648,8 @@ def warm_scenario_stress_numba_kernels() -> dict[str, Any]:
         np.float64(0.1),
         np.float64(1.0),
     )
+    horizon_level_evidence_kernel(raw_path, np.asarray([1, 0], dtype=np.int64), np.int64(1))
+    _WARMED_PID = os.getpid()
     status = scenario_stress_numba_status(warmed=True)
     status = validate_execution_audit(status)
     expected = len(SCENARIO_STRESS_NUMBA_KERNELS)
@@ -1570,6 +1660,16 @@ def warm_scenario_stress_numba_kernels() -> dict[str, Any]:
 
 # Public startup hook kept deliberately short for app lifespan integration.
 warm_scenario_numba_kernels = warm_scenario_stress_numba_kernels
+
+
+def _reset_worker_warmup():
+    global _WARMED_PID
+    _WARMED_PID = None
+    warm_scenario_stress_numba_kernels.cache_clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_worker_warmup)
 
 
 __all__ = [
@@ -1584,6 +1684,7 @@ __all__ = [
     "expand_factor_path_kernel",
     "factor_to_asset_kernel",
     "fan_statistics_kernel",
+    "horizon_tail_evidence_kernel",
     "limit_evaluation_kernel",
     "monte_carlo_projection_kernel",
     "metric_deltas_kernel",

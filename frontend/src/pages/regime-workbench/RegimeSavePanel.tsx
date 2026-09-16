@@ -2,12 +2,14 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   createRegimeGraphDefinition, definitionForRequest, enableRegimeResearchVersion,
   prepareRegimeGraph, updateRegimeGraphDefinition,
-  type RegimeGraphDefinition, type RegimeMode, type RegimeResearchVersion,
+  type RegimeGraphDefinition, type RegimeStudy, type RegimeMode, type RegimeResearchVersion,
 } from '../../services/regimeGraph'
 
 const signature = (definition: RegimeGraphDefinition) => JSON.stringify(definitionForRequest(definition))
 
-export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, onSaved, onBusy, onViewResult, children }: {
+export default function RegimeSavePanel({ contextKey = '', purpose, definition, dirty, valid, mode, asOf, onSaved, onBusy, onViewResult, onResearchReady, children }: {
+  contextKey?: string
+  purpose?: RegimeStudy['purpose']
   definition: RegimeGraphDefinition
   dirty: boolean
   valid: boolean
@@ -16,6 +18,7 @@ export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, 
   onSaved: (saved: RegimeGraphDefinition) => void
   onBusy: (busy: boolean) => void
   onViewResult: (runId: string) => void
+  onResearchReady?: (version: RegimeResearchVersion) => void
   children: ReactNode
 }) {
   const [name, setName] = useState(definition.name)
@@ -25,6 +28,8 @@ export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, 
   const [result, setResult] = useState<RegimeResearchVersion | null>(null)
   const [advanced, setAdvanced] = useState(false)
   const saved = useRef<RegimeGraphDefinition | null>(definition.id && !dirty ? definition : null)
+  const live = useRef({ definition: signature(definition), mode, asOf, contextKey })
+  live.current = { definition: signature(definition), mode, asOf, contextKey }
   const inFlight = useRef(false)
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
@@ -32,12 +37,14 @@ export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, 
     if (inFlight.current) return
     setName(definition.name); setDescription(definition.description); setResult(null); setError('')
     saved.current = definition.id && !dirty ? definition : null
-  }, [definition, dirty, mode, asOf])
+  }, [definition, dirty, mode, asOf, contextKey])
 
   const save = async () => {
     if (inFlight.current || !valid || !name.trim()) return
     inFlight.current = true; onBusy(true); setError(''); setResult(null)
+    const startingSignature = signature(definition)
     let stored = saved.current
+    const isCurrent = () => mounted.current && live.current.mode === mode && live.current.asOf === asOf && live.current.contextKey === contextKey && (live.current.definition === startingSignature || Boolean(stored && live.current.definition === signature(stored)))
     try {
       setStep('正在保存算法…')
       const draft = { ...definition, name: name.trim(), description: description.trim(), default_mode: mode }
@@ -46,16 +53,17 @@ export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, 
         stored = draft.id && draft.revision
           ? await updateRegimeGraphDefinition(draft)
           : await createRegimeGraphDefinition(draft)
+        if (!isCurrent()) throw new Error('当前定义或研究口径已变化，已保存版本未覆盖当前草稿。')
         saved.current = stored
-        if (mounted.current) onSaved(stored)
+        onSaved(stored)
       }
-      if (!stored || !mounted.current) return
+      if (!stored || !isCurrent()) return
       setStep('正在准备计算…')
       const plan = await prepareRegimeGraph(stored)
-      if (!mounted.current) return
+      if (!isCurrent()) return
       setStep('正在生成研究结果…')
       const version = await enableRegimeResearchVersion(stored, plan.compile_token, mode, asOf)
-      if (mounted.current) setResult(version)
+      if (isCurrent()) { setResult(version); onResearchReady?.(version) }
     } catch (reason) {
       if (mounted.current) setError(`${stored ? `算法已保存为 v${stored.revision}，尚未完成研究准备。` : ''}${reason instanceof Error ? reason.message : '保存失败，请重试。'}`)
     } finally {
@@ -65,7 +73,7 @@ export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, 
   }
 
   return <section aria-label="保存情景供研究使用" className="min-w-0 space-y-5">
-    <p className="text-sm leading-6 text-slate-600">保存这套计算逻辑后，可在单产品等研究页面直接选择它。</p>
+    <p className="text-sm leading-6 text-slate-600">{purpose === 'historical_reference' ? '确认保存定义与历史运行，供实时识别选择为固定参考。' : '保存这套计算逻辑后，可在单产品等研究页面直接选择它。'}</p>
     <fieldset disabled={Boolean(step)} className="min-w-0 space-y-4 disabled:opacity-70">
       <label className="block text-sm font-semibold text-slate-700">情景名称<input autoComplete="off" value={name} maxLength={80} onChange={event => { setName(event.target.value); setResult(null) }} className="mt-2 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal" /></label>
       <label className="block text-sm font-semibold text-slate-700">说明（可选）<textarea value={description} maxLength={1000} rows={2} onChange={event => { setDescription(event.target.value); setResult(null) }} className="mt-2 block w-full resize-y rounded-xl border border-slate-300 bg-white p-3 font-normal" /></label>
@@ -79,11 +87,11 @@ export default function RegimeSavePanel({ definition, dirty, valid, mode, asOf, 
     {!valid && !result && !step && <p role="alert" className="text-sm text-amber-800">请先完成公式检查，再保存情景。</p>}
     {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm leading-6 text-rose-800">{error}</p>}
     {step && <p role="status" className="text-sm font-medium text-accent-700">{step}</p>}
-    <button type="button" disabled={!valid || !name.trim() || Boolean(step) || Boolean(result)} onClick={() => void save()} className="min-h-11 w-full rounded-xl bg-accent-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-40">{step ? '正在保存…' : result ? '已保存，可用于研究' : error && saved.current ? '重试生成研究结果' : '保存并用于研究'}</button>
+    <button type="button" disabled={!valid || !name.trim() || Boolean(step) || Boolean(result)} onClick={() => void save()} className="min-h-11 w-full rounded-xl bg-accent-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-40">{step ? '正在保存…' : result ? '已保存，可用于研究' : error && saved.current ? '重试生成研究结果' : purpose === 'historical_reference' ? '保存为历史参考' : '保存并用于研究'}</button>
     {result && <div role="status" className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
       <p className="font-semibold">{result.name} · v{result.revision} 已可选用</p>
       <p>{result.series_summary.first_observation_date} — {result.series_summary.last_observation_date} · {result.series_summary.row_count} 个观测</p>
-      <p>在产品页的“情景方案”中选择此版本即可开始研究。</p>
+      <p>{purpose === 'historical_reference' ? '已确认历史参考，可在实时状态识别中选择此版本。' : '在产品页的“情景方案”中选择此版本即可开始研究。'}</p>
       <div className="flex flex-wrap gap-3"><button type="button" onClick={() => onViewResult(result.run_id)} className="min-h-10 rounded-lg border border-emerald-300 bg-white px-3 font-semibold">查看情景结果</button><a href="/product-research/products" className="inline-flex min-h-10 items-center rounded-lg bg-emerald-800 px-3 font-semibold text-white">前往产品研究</a></div>
     </div>}
     <details open={advanced} onToggle={event => setAdvanced(event.currentTarget.open)} className="border-t border-slate-200 pt-4">

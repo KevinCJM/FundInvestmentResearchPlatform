@@ -143,7 +143,8 @@
         "backend/tactical_allocation/clocks.py",
         "backend/tactical_allocation/signals.py",
         "docs/research/bettersaataa-01-04-design-2026-09-14.md",
-        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md"
+        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md",
+        "docs/research/scenario-audit-followup-2026-09-16.md"
       ],
       "child_modules": [],
       "upstream_dependencies": [
@@ -304,7 +305,8 @@
         "frontend/src/pages/ScenarioCenters.tsx",
         "frontend/src/App.tsx",
         "frontend/src/app/processRegistry.ts",
-        "frontend/src/test/publishedRiskFixtures.ts"
+        "frontend/src/test/publishedRiskFixtures.ts",
+        "docs/research/scenario-audit-followup-2026-09-16.md"
       ],
       "upstream_dependencies": [
         "factor_research_center",
@@ -2467,7 +2469,38 @@
         "docs/research/regime-save-for-research-design-2026-09-10.md",
         "docs/research/manual-historical-event-intervals-design-2026-09-10.md",
         "docs/research/regime-operator-granularity-design-2026-09-09.md",
-        "docs/research/temporal-capability-event-library-design-2026-09-10.md"
+        "docs/research/temporal-capability-event-library-design-2026-09-10.md",
+        "backend/historical_regimes/indicator_sources.py",
+        "backend/historical_regimes/reliability/prospective.py",
+        "backend/historical_regimes/reliability/source_versions.py",
+        "docs/research/regime-prospective-api-2026-09-15.md",
+        "docs/research/regime-source-continuation-design-2026-09-15.md",
+        "docs/research/scenario-center-horizon-and-market-state-research-2026-09-16.md",
+        "docs/research/scenario-audit-remediation-2026-09-16.md",
+        "docs/research/scenario-audit-followup-2026-09-16.md",
+        "docs/research/regime-completion-design-2026-09-15.md",
+        "backend/scripts/csi300_recognition_search.py",
+        "backend/scripts/csi300_reference_study.py",
+        "backend/tests/benchmark_regime_completion.py",
+        "backend/tests/benchmark_regime_reliability.py",
+        "backend/tests/regime_completion_app.py",
+        "docs/research/Market Regime Detection Framework.md",
+        "docs/research/assets/csi300-market-trend-reference-v1.png",
+        "docs/research/csi300-reference-recognition-study-2026-09-15.md",
+        "docs/research/regime-completion-api-2026-09-15.md",
+        "docs/research/regime-completion-backend-acceptance-2026-09-15.md",
+        "docs/research/regime-completion-final-audit-2026-09-15.md",
+        "docs/research/regime-prospective-acceptance-2026-09-15.md",
+        "docs/research/regime-reference-confidence-api-2026-09-14.md",
+        "docs/research/regime-reference-confidence-backend-acceptance-2026-09-14.md",
+        "docs/research/regime-reference-confidence-design-2026-09-14.md",
+        "docs/research/regime-reference-confidence-final-audit-2026-09-14.md",
+        "docs/research/regime-source-continuation-acceptance-2026-09-15.md",
+        "docs/research/scenario-center-dev-comparison-audit-2026-09-16.md",
+        "docs/research/scenario-center-market-state-integration-final-2026-09-16.md",
+        "docs/research/scenario-regime-research-best-practices-and-center-optimization-2026-09-15.md",
+        "docs/research/scenario-regime-state-evidence-acceptance-2026-09-15.md",
+        "docs/research/scenario-center-submission-2026-09-17.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -2513,7 +2546,21 @@
         "backend/tests/test_regime_research_versions.py",
         "backend/tests/test_manual_historical_events.py",
         "backend/tests/test_regime_event_library.py",
-        "backend/tests/test_regime_temporal_capability.py"
+        "backend/tests/test_regime_temporal_capability.py",
+        "backend/tests/test_scenario_audit_remediation.py",
+        "backend/tests/test_recommended_prospective_workflow.py",
+        "backend/tests/test_regime_completion_bootstrap.py",
+        "backend/tests/test_regime_completion_quality.py",
+        "backend/tests/test_regime_reliability_consumer.py",
+        "backend/tests/test_csi300_reference_recognition.py",
+        "backend/tests/test_regime_completion_audit.py",
+        "backend/tests/test_regime_completion_stability.py",
+        "backend/tests/test_regime_prospective.py",
+        "backend/tests/test_regime_prospective_integration.py",
+        "backend/tests/test_regime_reliability_contracts.py",
+        "backend/tests/test_regime_reliability_math.py",
+        "backend/tests/test_regime_reliability_service.py",
+        "backend/tests/test_regime_source_continuation.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
@@ -2576,7 +2623,10 @@
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_product_sources.py -q'",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_merrill_clock.py -q",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_regime_research_versions.py -q",
-        "python3 -m pytest backend/tests/test_manual_historical_events.py backend/tests/test_regime_event_library.py backend/tests/test_regime_temporal_capability.py -q"
+        "python3 -m pytest backend/tests/test_manual_historical_events.py backend/tests/test_regime_event_library.py backend/tests/test_regime_temporal_capability.py -q",
+        "python3 -m pytest backend/tests/test_scenario_audit_remediation.py backend/tests/test_recommended_prospective_workflow.py -q",
+        "python3 -m pytest backend/tests/test_regime_completion_quality.py backend/tests/test_regime_completion_bootstrap.py backend/tests/test_regime_reliability_consumer.py -q",
+        "python3 -m pytest backend/tests/test_csi300_reference_recognition.py backend/tests/test_regime_completion_audit.py backend/tests/test_regime_completion_stability.py backend/tests/test_regime_prospective.py backend/tests/test_regime_prospective_integration.py backend/tests/test_regime_reliability_contracts.py backend/tests/test_regime_reliability_math.py backend/tests/test_regime_reliability_service.py backend/tests/test_regime_source_continuation.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -2730,7 +2780,15 @@
         "frontend/src/components/computation-graph/GraphCanvas.tsx",
         "frontend/src/pages/ScenarioCenters.tsx",
         "frontend/src/pages/regime-workbench/GlobalEventLibrary.tsx",
-        "frontend/src/pages/regime-workbench/regimeResultAdapter.ts"
+        "frontend/src/pages/regime-workbench/regimeResultAdapter.ts",
+        "frontend/src/pages/MarketStateResearchCenter.tsx",
+        "frontend/src/services/regimeDiagnostics.ts",
+        "backend/tests/scenario_remediation_app.py",
+        "docs/research/scenario-audit-followup-2026-09-16.md",
+        "docs/research/regime-completion-frontend-acceptance-2026-09-15.md",
+        "docs/research/regime-prospective-frontend-acceptance-2026-09-15.md",
+        "docs/research/regime-reference-confidence-frontend-acceptance-2026-09-14.md",
+        "frontend/src/services/regimeProspective.ts"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -2779,11 +2837,24 @@
         "frontend/src/services/regimeResearchVersions.test.ts",
         "frontend/e2e/regime-manual-events.spec.ts",
         "frontend/e2e/regime-temporal-event-library.spec.ts",
-        "frontend/src/test/eventLibraryFixtures.ts"
+        "frontend/src/test/eventLibraryFixtures.ts",
+        "frontend/src/services/eventLibrary.test.ts",
+        "frontend/e2e/scenario-remediation.spec.ts",
+        "frontend/e2e/csi300-reference-study.spec.ts",
+        "frontend/e2e/market-state-research-center.spec.ts",
+        "frontend/e2e/regime-full-stack.spec.ts",
+        "frontend/e2e/regime-prospective.spec.ts",
+        "frontend/e2e/regime-reference-confidence.spec.ts",
+        "frontend/src/services/regimeProspective.test.ts",
+        "frontend/src/services/regimeReliability.test.ts"
       ],
       "related_configs": [
         "frontend/package.json",
-        "frontend/vite.config.ts"
+        "frontend/vite.config.ts",
+        "frontend/e2e/scenario-remediation.config.ts",
+        "frontend/e2e/regime-offline.config.ts",
+        "frontend/e2e/regime-prospective.config.ts",
+        "frontend/playwright.regime-integration.config.ts"
       ],
       "risk_flags": [
         "realtime_disables_retrospective_node_selection_and_blocks_existing_graph_runs",
@@ -2834,7 +2905,10 @@
         "npm run test --prefix frontend -- --run RegimeSourceForms.test.tsx RegimeResearchSeriesPicker.test.tsx",
         "npm run test --prefix frontend -- --run RegimeResourceLibrary.test.tsx",
         "npm run test --prefix frontend -- --run RegimeSavePanel.test.tsx regimeResearchVersions.test.ts ProductDetail.test.tsx",
-        "npm run test:e2e --prefix frontend -- regime-manual-events.spec.ts regime-temporal-event-library.spec.ts --workers=1"
+        "npm run test:e2e --prefix frontend -- regime-manual-events.spec.ts regime-temporal-event-library.spec.ts --workers=1",
+        "npm run test --prefix frontend -- --run eventLibrary.test.ts RegimeQualityPanel.test.tsx HistoricalRegimeWorkbench.test.tsx ScenarioAlgorithmCenter.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=e2e/scenario-remediation.config.ts",
+        "npm run test --prefix frontend -- --run regimeProspective.test.ts regimeReliability.test.ts"
       ],
       "routing_confidence": "high",
       "scope_flags": [

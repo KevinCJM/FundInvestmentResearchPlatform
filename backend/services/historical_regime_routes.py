@@ -539,3 +539,15 @@ def compare_historical_regime_runs(request: CompareRequest):
         except NotFoundError:
             runs.append(_call(historical_regime_service.get_run, run_id))
     return _call(regime_graph_v2_service.compare_snapshots, runs, request.reference_run_id)
+
+
+from historical_regimes.reliability.routes import install as install_reliability_routes
+
+install_reliability_routes(router, lambda: regime_graph_v2_service.reliability, _call)
+
+from historical_regimes.reliability.prospective import install as install_prospective_routes
+
+install_prospective_routes(router, lambda: regime_graph_v2_service.prospective, _call)
+
+from historical_regimes.reliability.routes import install_quality
+install_quality(router, lambda: regime_graph_v2_service.reference_quality, _call)

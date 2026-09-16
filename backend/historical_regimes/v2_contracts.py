@@ -11,6 +11,8 @@ from datetime import date
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationInfo, ValidationError as PydanticValidationError, model_validator, model_serializer
+
+from .reliability.contracts import Study
 from computation_graph.series_contracts import ChannelPresentation
 from .indicator_nodes import validate_typed_series_node
 
@@ -207,6 +209,7 @@ class RegimeDefinitionV2(BaseModel):
     description: str = Field(default="", max_length=1000)
     template_id: str | None = Field(default=None, max_length=100)
     source_v1: dict[str, Any] | None = None
+    study: Study | None = None
     default_mode: Literal["realtime", "retrospective"] | None = None
     graph: RegimeGraphV2
     states: list[RegimeStateV2] = Field(min_length=2, max_length=12)
@@ -217,12 +220,21 @@ class RegimeDefinitionV2(BaseModel):
     @model_serializer(mode="wrap")
     def serialize_optional_mode(self, handler):
         result = handler(self)
+        if self.study is None:
+            result.pop("study", None)
         if self.default_mode is None:
             result.pop("default_mode", None)
         return result
 
     @model_validator(mode="after")
     def validate_identifiers(self) -> "RegimeDefinitionV2":
+        if self.study is not None:
+            mode = "retrospective" if self.study.purpose == "historical_reference" else "realtime"
+            if self.default_mode is not None and self.default_mode != mode:
+                raise ValueError("study.purpose 与 default_mode 不一致")
+            self.default_mode = mode
+            if self.study.state_mapping is not None and set(self.study.state_mapping) != {state.id for state in self.states}:
+                raise ValueError("state_mapping 必须覆盖全部实时状态 ID")
         state_ids = [state.id for state in self.states]
         if len(state_ids) != len(set(state_ids)):
             raise ValueError("states.id 必须唯一")
@@ -270,8 +282,8 @@ class RegimeDefinitionV2(BaseModel):
             raise ValueError("validation.stability_perturbation 必须在 0 到 0.5 之间")
         rate_defaults = {
             "min_classified_ratio": 0.5,
-            "min_walk_forward_classified_ratio": 0.25,
-            "min_parameter_agreement": 0.5,
+            "min_walk_forward_classified_ratio": 0.5,
+            "min_parameter_agreement": 0.7,
             "max_prefix_revision_rate": 0.0,
             "max_label_flip_rate": 0.5,
         }
@@ -600,6 +612,9 @@ def _manual_event_diagnostics(node: RegimeGraphNodeV2, state_count: int) -> list
             if parsed is None or value != parsed.isoformat():
                 diagnostics.append({"code": "INVALID_MANUAL_EVENT_DATE", "path": f"{path}.{field_name}",
                                     "message": f"{label_text}必须使用 YYYY-MM-DD。", "severity": "error"})
+            elif not date(1677, 9, 22) <= parsed <= date(2262, 4, 11):
+                diagnostics.append({"code": "MANUAL_EVENT_DATE_OUT_OF_RANGE", "path": f"{path}.{field_name}",
+                                    "message": f"{label_text}必须位于 1677-09-22 至 2262-04-11。", "severity": "error"})
             else:
                 parsed_dates[field_name] = parsed
         if ("start_date" in parsed_dates and "end_date" in parsed_dates
@@ -728,10 +743,19 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                                     "path": f"graph.nodes.{node.id}.parameters",
                                     "message": "快速期数必须小于慢速期数。" if node.type == "filter.kama"
                                     else "震荡斜率上限必须小于趋势进入门槛。"})
-        if node.type in {"model.trend_regime", "post.merge_short_regimes", "model.range_threshold"} and [state.role for state in definition.states] != ["positive", "neutral", "negative"]:
+        if node.type in {"model.trend_regime", "post.merge_short_regimes", "model.range_threshold", "post.drawdown_cycle_reference", "model.drawdown_cycle_realtime"} and [state.role for state in definition.states] != ["positive", "neutral", "negative"]:
             diagnostics.append({"code": "INVALID_MARKET_STATE_COUNT", "severity": "error",
-                                "path": "states", "message": "牛熊震荡算法要求按顺序配置正向、中性、负向三个状态。"})
-        if (node.type.startswith("segment.") and node.type != "segment.between_pivots") or node.type == "post.peak_sideways":
+                                "path": "states", "message": "该三状态算法要求按顺序配置正向、中性、负向三个状态。"})
+        if node.type == "model.drawdown_cycle_realtime":
+            stress = node.parameters.get("stress_drawdown", .12)
+            exit_drawdown = node.parameters.get("recovery_exit_drawdown", .08)
+            if (not isinstance(stress, (int, float)) or isinstance(stress, bool)
+                    or not isinstance(exit_drawdown, (int, float)) or isinstance(exit_drawdown, bool)
+                    or not 0 <= exit_drawdown < stress):
+                diagnostics.append({"code": "INVALID_DRAWDOWN_CYCLE_PARAMETERS", "severity": "error",
+                                    "path": f"graph.nodes.{node.id}.parameters",
+                                    "message": "修复退出剩余回撤必须不小于0且严格小于进入压力的回撤门槛。"})
+        if (node.type.startswith("segment.") and node.type != "segment.between_pivots") or node.type in {"post.peak_sideways", "post.drawdown_cycle_reference"}:
             start_ref, end_ref = node.inputs.get("start"), node.inputs.get("end")
             if start_ref and end_ref and (start_ref.node_id != end_ref.node_id or
                     start_ref.port != "start" or end_ref.port != "end" or
@@ -758,7 +782,7 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                     diagnostics.append({"code": "STATE_SELECTION_OUT_OF_RANGE", "severity": "error",
                         "path": f"graph.nodes.{node.id}.parameters.{parameter_name}",
                         "message": "请选择已定义的市场状态，或选择未分类（-1）。"})
-        if node.type in {"segment.phase_direction", "post.peak_sideways"}:
+        if node.type in {"segment.phase_direction", "post.peak_sideways", "post.drawdown_cycle_reference"}:
             start_ref = node.inputs.get("start")
             if start_ref and start_ref.node_id in nodes:
                 boundary = nodes[start_ref.node_id]
@@ -770,7 +794,16 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                 if phase_node and (phase_node.type != "segment.phase_direction" or
                         phase_node.inputs.get("start") != start_ref or phase_node.inputs.get("end") != node.inputs.get("end")):
                     diagnostics.append({"code": "SEGMENT_PHASE_MISMATCH", "severity": "error",
-                        "path": f"graph.nodes.{node.id}.inputs.phase", "message": "波段方向与震荡合并必须使用同一组区间边界。"})
+                        "path": f"graph.nodes.{node.id}.inputs.phase", "message": "波段方向与状态标记必须使用同一组区间边界。"})
+                if node.type == "post.drawdown_cycle_reference":
+                    change_ref = node.inputs.get("change")
+                    change_node = nodes.get(change_ref.node_id) if change_ref else None
+                    if change_node and (change_node.type != "segment.change" or change_ref.port != "value" or
+                            change_node.inputs.get("start") != start_ref or
+                            change_node.inputs.get("end") != node.inputs.get("end")):
+                        diagnostics.append({"code": "SEGMENT_CHANGE_MISMATCH", "severity": "error",
+                            "path": f"graph.nodes.{node.id}.inputs.change",
+                            "message": "波段涨跌幅与回撤周期标记必须使用同一组区间边界。"})
         if node.type == "model.threshold":
             lower_value = node.parameters.get("lower", -0.001)
             upper_value = node.parameters.get("upper", 0.001)

@@ -40,3 +40,8 @@ describe('已发布研究客户端契约', () => {
     await expect(riskCatalog('product')).rejects.toThrow('数据磁盘离线')
   })
 })
+
+it('preserves a plain-string FastAPI error detail', async () => {
+  response({ detail: '该发布版本已停用，请重新选择。' }, 409)
+  await expect(riskCatalog('product')).rejects.toThrow('该发布版本已停用，请重新选择。')
+})

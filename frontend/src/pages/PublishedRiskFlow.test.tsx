@@ -14,7 +14,7 @@ vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="risk-char
 vi.mock('./ScenarioAlgorithmCenter', () => ({ default: () => <div data-testid="advanced-experiments" /> }))
 vi.mock('../services/riskModels', async importOriginal => {
   const actual = await importOriginal<typeof api>()
-  return { ...actual, riskCatalog: vi.fn(), riskReleases: vi.fn(), getRiskRun: vi.fn(), scenarioReleases: vi.fn(), riskPortfolios: vi.fn(), runRiskImpact: vi.fn(), previewRiskModel: vi.fn(), publishRiskPreview: vi.fn(), previewCashflow: vi.fn(), publishCashflowPreview: vi.fn(), previewScenario: vi.fn(), publishScenario: vi.fn(), getRiskImpact: vi.fn() }
+  return { ...actual, riskCatalog: vi.fn(), riskReleases: vi.fn(), getRiskRun: vi.fn(), scenarioReleases: vi.fn(), riskPortfolios: vi.fn(), runRiskImpact: vi.fn(), previewRiskModel: vi.fn(), publishRiskPreview: vi.fn(), previewCashflow: vi.fn(), publishCashflowPreview: vi.fn(), previewScenario: vi.fn(), publishScenario: vi.fn(), getRiskImpact: vi.fn(), getScenarioPreview: vi.fn() }
 })
 const mount = (node: ReactNode, url = '/') => render(<MemoryRouter initialEntries={[url]}>{node}</MemoryRouter>)
 const copy = <T,>(value: T): T => structuredClone(value)
@@ -32,6 +32,7 @@ beforeEach(() => {
   vi.mocked(api.publishRiskPreview).mockResolvedValue(copy(riskReleaseFixture))
   vi.mocked(api.previewScenario).mockImplementation(async definition => ({ ...copy(scenarioPreviewFixture), name: definition.name, definition }))
   vi.mocked(api.publishScenario).mockResolvedValue(copy(scenarioReleaseFixture))
+  vi.mocked(api.getScenarioPreview).mockResolvedValue(copy(scenarioPreviewFixture))
   vi.mocked(api.getRiskImpact).mockResolvedValue(copy(impactFixture))
 })
 
@@ -238,7 +239,7 @@ describe('三个入口的情景工作台', () => {
     expect(api.publishScenario).not.toHaveBeenCalled()
     await user.click(screen.getByRole('checkbox', { name: /我已核对单位/ }))
     await user.click(screen.getByRole('button', { name: '确认发布情景' }))
-    await waitFor(() => expect(api.publishScenario).toHaveBeenCalledWith(expect.objectContaining({ name: '股市下跌', rows: [[-10]] }), scenarioPreviewFixture.preview_hash, 90, ''))
+    await waitFor(() => expect(api.publishScenario).toHaveBeenCalledWith(expect.objectContaining({ name: '股市下跌', rows: [[-10]] }), scenarioPreviewFixture.preview_hash, 90, '', scenarioPreviewFixture.publication_request_id))
     expect(screen.getByRole('link', { name: '应用到产品或组合' })).toHaveAttribute('href', expect.stringContaining(scenarioReleaseFixture.id))
   })
   it.each(['发生一件大事', '经济指标变化'])('%s 没有已发布模型时解释缺少哪段，不使用内置假系数', async entry => {
@@ -254,4 +255,40 @@ describe('三个入口的情景工作台', () => {
     expect(screen.getByRole('button', { name: '去研究传导模型' })).toBeEnabled()
     expect(api.previewScenario).not.toHaveBeenCalled()
   })
+})
+
+describe('audit regression: published horizon compatibility', () => {
+  it('opens a saved scenario with no horizon evidence without changing its artifact', async () => {
+    const legacy = copy(scenarioPreviewFixture); delete legacy.horizon_evidence
+    const release = copy(scenarioReleaseFixture); delete release.horizon_evidence
+    vi.mocked(api.getScenarioPreview).mockResolvedValue(legacy)
+    vi.mocked(api.scenarioReleases).mockResolvedValue([release])
+    const user = userEvent.setup()
+    mount(<PublishedScenarioCenter />)
+    await user.click(await screen.findByRole('button', { name: '查看路径' }))
+    expect(await screen.findByText('此版本未提供 Horizon 证据。')).toBeVisible()
+    expect(screen.getByText(/市场风险因子路径/)).toBeVisible()
+    expect(legacy.horizon_evidence).toBeUndefined()
+    expect(api.previewScenario).not.toHaveBeenCalled()
+    expect(api.publishScenario).not.toHaveBeenCalled()
+  })
+  it('does not reinterpret old terminal-zero evidence as economic recovery', async () => {
+    vi.mocked(api.getScenarioPreview).mockResolvedValue({ ...copy(scenarioPreviewFixture), horizon_evidence: {
+      ...scenarioPreviewFixture.horizon_evidence!, terminal_status: 'returned_to_baseline',
+    } })
+    const user = userEvent.setup()
+    mount(<PublishedScenarioCenter />)
+    await user.click(await screen.findByRole('button', { name: '查看路径' }))
+    expect(await screen.findByText(/此版本只记录末期增量/)).toBeVisible()
+    expect(screen.queryByText(/^已回到基线$/)).not.toBeInTheDocument()
+  })
+})
+
+it('clears the scenario catalog error after a successful reload', async () => {
+  vi.mocked(api.scenarioReleases).mockRejectedValueOnce(new Error('情景目录暂不可用'))
+  const user = userEvent.setup(); mount(<PublishedScenarioCenter />)
+  await screen.findByText('情景目录暂不可用')
+  await user.click(screen.getByRole('button', { name: /重新加载|重试|刷新/ }))
+  await screen.findByText(scenarioReleaseFixture.name)
+  expect(screen.queryByText('情景目录暂不可用')).not.toBeInTheDocument()
 })

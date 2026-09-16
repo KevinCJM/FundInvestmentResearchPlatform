@@ -88,7 +88,6 @@ from .numba_kernels import (
     markov_filtered_posterior_kernel,
     markov_fit_kernel,
     markov_smoothed_posterior_kernel,
-    perturb_scalar_kernel,
     prefix_stability_kernel,
     posterior_assignment_kernel,
     standardize_fit_kernel,
@@ -221,6 +220,7 @@ def _macro_bundle(
     mode: str,
     as_of: str | None,
     market_data_dir: Path,
+    *, resolved_data_dir: bool = False,
 ) -> DataBundle:
     dataset_id = str(spec.get("dataset") or spec.get("series_id") or "").strip()
     filename = _expected_source_filename("source.macro", spec)
@@ -229,7 +229,7 @@ def _macro_bundle(
     field = str(spec.get("field") or "").strip()
     if not field:
         raise ValidationError("MISSING_MACRO_FIELD", "宏观数据源必须指定 field。", "parameters.field")
-    root = resolve_tushare_data_dir(market_data_dir)
+    root = market_data_dir if resolved_data_dir else resolve_tushare_data_dir(market_data_dir)
     path = root / filename
     if not path.exists():
         raise NotFoundError("MACRO_DATA_NOT_FOUND", f"宏观数据文件 {filename} 不存在。")
@@ -860,6 +860,13 @@ class RegimeGraphV2Service:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         self.startup_prewarm = self.prewarm_saved_definitions()
+        from .reliability.service import ReliabilityService
+        self.reliability = ReliabilityService(self)
+        from .reliability.quality import QualityService
+        self.reference_quality = QualityService(self)
+        from .reliability.prospective import ProspectiveService
+        self.prospective = ProspectiveService(self, self.reliability)
+        self.prospective.warm()
 
     def catalog(self) -> dict[str, Any]:
         register_indicator_nodes(self.indicator_service, NODE_REGISTRY)
@@ -1184,7 +1191,7 @@ class RegimeGraphV2Service:
         if not any(present):
             if node_type in {"source.etf", "source.fund"}:
                 self._active_snapshot_binding(node_type, parameters)
-            return self.market_data_dir
+            return resolve_tushare_data_dir(self.market_data_dir)
         if not all(present):
             raise ValidationError(
                 "SOURCE_SNAPSHOT_BINDING_INCOMPLETE",
@@ -1199,7 +1206,9 @@ class RegimeGraphV2Service:
                 "graph.nodes.parameters.snapshot_generation",
             )
         base = Path(self.market_data_dir).expanduser().resolve()
-        candidate = (base / generation).resolve()
+        # A definition saved before versioned activation may pin the data root
+        # itself. It remains readable after a later snapshot becomes active.
+        candidate = base if generation == base.name else (base / generation).resolve()
         active = resolve_tushare_data_dir(base)
         if active.name == generation:
             candidate = active
@@ -1328,14 +1337,9 @@ class RegimeGraphV2Service:
                     )
                 except ResearchSeriesError as exc:
                     raise ValidationError(exc.code, exc.message, exc.field or "artifact_id") from exc
-            if node_type == "source.indicator" and not parameters.get("data_fingerprint"):
-                bundle = resolve_target(
-                    _source_spec(node_type, parameters),
-                    "realtime",
-                    None,
-                    self.market_data_dir,
-                    self.indicator_service,
-                )
+            if node_type == "source.indicator" and not (parameters.get("indicator_data_snapshot") or {}).get("frozen_series"):
+                from .indicator_sources import resolve_unfrozen
+                bundle = resolve_unfrozen(_source_spec(node_type, parameters), "realtime", self.market_data_dir, self.indicator_service)
                 fingerprint = str(bundle.snapshot.get("fingerprint") or "")
                 if not fingerprint:
                     raise ValidationError(
@@ -1344,7 +1348,8 @@ class RegimeGraphV2Service:
                         f"graph.nodes.{node.get('id')}.parameters.data_fingerprint",
                     )
                 parameters["data_fingerprint"] = fingerprint
-                parameters["indicator_data_snapshot"] = _json_safe(bundle.snapshot)
+                from .indicator_sources import freeze
+                parameters["indicator_data_snapshot"] = freeze(_source_spec(node_type, parameters), bundle, self.workspace_data_dir)
         targets = frozen.get("evaluation_targets")
         for target_index, target in enumerate(targets if isinstance(targets, list) else []):
             if not isinstance(target, dict) or not isinstance(target.get("source"), dict):
@@ -1377,14 +1382,9 @@ class RegimeGraphV2Service:
                         exc.message,
                         exc.field or f"evaluation_targets.{target_index}.source",
                     ) from exc
-            elif source_kind == "indicator" and not source.get("data_fingerprint"):
-                bundle = resolve_target(
-                    source,
-                    "realtime",
-                    None,
-                    self.market_data_dir,
-                    self.indicator_service,
-                )
+            elif source_kind == "indicator" and not (source.get("indicator_data_snapshot") or {}).get("frozen_series"):
+                from .indicator_sources import resolve_unfrozen
+                bundle = resolve_unfrozen(source, "realtime", self.market_data_dir, self.indicator_service)
                 fingerprint = str(bundle.snapshot.get("fingerprint") or "")
                 if not fingerprint:
                     raise ValidationError(
@@ -1393,7 +1393,8 @@ class RegimeGraphV2Service:
                         f"evaluation_targets.{target_index}.source.data_fingerprint",
                     )
                 source["data_fingerprint"] = fingerprint
-                source["indicator_data_snapshot"] = _json_safe(bundle.snapshot)
+                from .indicator_sources import freeze
+                source["indicator_data_snapshot"] = freeze(source, bundle, self.workspace_data_dir)
             elif source_kind in {"inline", "relative"}:
                 continue
         return frozen
@@ -1646,7 +1647,8 @@ class RegimeGraphV2Service:
         return result
 
     def prepare(self, payload: Mapping[str, Any], *, preview_target: Mapping[str, Any] | None = None,
-                comparison_targets: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                comparison_targets: list[Mapping[str, Any]] | None = None,
+                persist_manifest: bool = True) -> dict[str, Any]:
         if comparison_targets and preview_target is None:
             raise ValidationError("INVALID_NODE_PREVIEW", "请先选择主预览节点。", "preview_target")
         definition = node_preview_definition(payload, preview_target, comparison_targets) if preview_target is not None else parse_definition_v2(payload)
@@ -1701,12 +1703,11 @@ class RegimeGraphV2Service:
             existing_token = self._plans_by_graph_hash.get(preparation_hash)
             existing = self._plans.get(existing_token or "")
             if existing is not None and existing["expires_at"] > _utc_now():
-                self._persist_plan_manifest(
-                    definition,
-                    existing["public"],
-                    runtime,
-                    formula_plans,
-                )
+                if persist_manifest:
+                    self._persist_plan_manifest(
+                        definition, existing["public"], runtime, formula_plans,
+                    )
+                    existing["persistent"] = True
                 return copy.deepcopy(existing["public"])
             if existing_token:
                 self._plans.pop(existing_token, None)
@@ -1744,12 +1745,15 @@ class RegimeGraphV2Service:
                 "request_time_compilation": 0,
                 "python_fallback": 0,
             }
-            self._persist_plan_manifest(definition, public, runtime, formula_plans)
+            if persist_manifest:
+                self._persist_plan_manifest(definition, public, runtime, formula_plans)
             self._plans[token] = {
                 "public": public,
                 "graph_hash": graph_hash,
                 "preparation_hash": preparation_hash,
                 "expires_at": now + timedelta(hours=8),
+                "persistent": persist_manifest,
+                "diagnostic_leases": 0,
             }
             self._plans_by_graph_hash[preparation_hash] = token
             return copy.deepcopy(public)
@@ -1967,6 +1971,8 @@ class RegimeGraphV2Service:
                 node.type == "source.etf"
                 and ETF_ADJUSTED_FIELDS.get(node.parameters.get("field"), (None, None))[1] == "qfq"
             ) else None
+            if node.type == "source.indicator":
+                resolver_as_of = None
             cache_key = _canonical_source_cache_key(
                 _source_spec(node.type, node.parameters),
                 mode,
@@ -1976,10 +1982,16 @@ class RegimeGraphV2Service:
             if full_bundle is None:
                 if node.type == "source.upload":
                     full_bundle = self._upload_bundle(node.parameters, mode, resolver_as_of)
+                elif node.type == "source.indicator":
+                    from .indicator_sources import read, resolve_unfrozen
+                    spec = _source_spec(node.type, node.parameters)
+                    full_bundle = read(spec, self.workspace_data_dir)
+                    if full_bundle is None:
+                        full_bundle = resolve_unfrozen(spec, mode, self.market_data_dir, self.indicator_service)
                 elif node.type == "source.macro":
                     try:
                         data_root = self._bound_source_root(node.type, node.parameters)
-                        full_bundle = _macro_bundle(node.parameters, mode, resolver_as_of, data_root)
+                        full_bundle = _macro_bundle(node.parameters, mode, resolver_as_of, data_root, resolved_data_dir=True)
                     except IndicatorDomainError as exc:
                         name = node.label or str(node.parameters.get("name") or node.id)
                         hint = " 请在数据下载工作台运行“宏观增长、通胀与景气”通用ETL任务，并选择包含这些数据的版本。" if exc.code in {"SOURCE_DATA_NOT_FOUND", "MACRO_DATA_NOT_FOUND", "TUSHARE_DATA_NOT_FOUND"} else ""
@@ -1997,6 +2009,7 @@ class RegimeGraphV2Service:
                         resolver_as_of,
                         data_root,
                         self.indicator_service,
+                        resolved_data_dir=True,
                     )
                 run_cache[cache_key] = full_bundle
             if resolver_as_of is not None:
@@ -2792,6 +2805,8 @@ class RegimeGraphV2Service:
                 target_kind == "etf"
                 and ETF_ADJUSTED_FIELDS.get(target.source.get("field"), (None, None))[1] == "qfq"
             ) else None
+            if target_kind == "indicator":
+                resolver_as_of = None
             cache_key = _canonical_source_cache_key(
                 target.source,
                 mode,
@@ -2801,9 +2816,14 @@ class RegimeGraphV2Service:
             if full_bundle is None:
                 if target_kind == "upload":
                     full_bundle = self._upload_bundle(target.source, mode, resolver_as_of)
+                elif target_kind == "indicator":
+                    from .indicator_sources import read, resolve_unfrozen
+                    full_bundle = read(target.source, self.workspace_data_dir)
+                    if full_bundle is None:
+                        full_bundle = resolve_unfrozen(target.source, mode, self.market_data_dir, self.indicator_service)
                 elif target_kind == "macro":
                     data_root = self._bound_source_root("source.macro", target.source)
-                    full_bundle = _macro_bundle(target.source, mode, resolver_as_of, data_root)
+                    full_bundle = _macro_bundle(target.source, mode, resolver_as_of, data_root, resolved_data_dir=True)
                 else:
                     data_root = (
                         self._bound_source_root(f"source.{target_kind}", target.source)
@@ -2816,6 +2836,7 @@ class RegimeGraphV2Service:
                         resolver_as_of,
                         data_root,
                         self.indicator_service,
+                        resolved_data_dir=True,
                     )
                 cache[cache_key] = full_bundle
             if resolver_as_of is not None:
@@ -2858,6 +2879,8 @@ class RegimeGraphV2Service:
 
     @staticmethod
     def _validate_realtime_graph(definition: RegimeDefinitionV2, mode: str) -> None:
+        if definition.study is not None and mode != definition.default_mode:
+            raise ValidationError("STUDY_MODE_MISMATCH", "运行模式必须匹配研究用途。", "mode")
         if mode != "realtime":
             return
         report = analyze_temporal(definition, NODE_REGISTRY, mode)
@@ -3703,73 +3726,9 @@ class RegimeGraphV2Service:
         perturbation: float,
         maximum_candidates: int,
     ) -> list[tuple[RegimeDefinitionV2, dict[str, Any]]]:
-        if perturbation <= 0.0:
-            return []
-        payload = definition.model_dump(mode="json")
-        candidates: list[tuple[RegimeDefinitionV2, dict[str, Any]]] = []
-        preferred_parameters = (
-            "upper",
-            "lower",
-            "upper_enter",
-            "lower_enter",
-            "threshold",
-            "min_move",
-            "window",
-            "periods",
-            "confirmation",
-            "min_duration",
-            "process_variance",
-            "measurement_variance",
-        )
-        for node_index, node in enumerate(definition.graph.nodes):
-            schema = NODE_REGISTRY[node.type].get("parameter_schema", {})
-            properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
-            for parameter_name in preferred_parameters:
-                if parameter_name not in node.parameters:
-                    continue
-                raw_value = node.parameters[parameter_name]
-                if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
-                    continue
-                field_schema = properties.get(parameter_name, {})
-                field_type = str(field_schema.get("type") or "number")
-                minimum = float(field_schema.get("minimum", -1.0e300))
-                changed = float(
-                    perturb_scalar_kernel(
-                        np.float64(raw_value),
-                        np.float64(perturbation),
-                        np.float64(minimum),
-                        np.uint8(1 if field_type == "integer" else 0),
-                    )
-                )
-                maximum = field_schema.get("maximum")
-                if maximum is not None and changed > float(maximum):
-                    continue
-                if changed == float(raw_value):
-                    continue
-                candidate_payload = copy.deepcopy(payload)
-                candidate_parameters = candidate_payload["graph"]["nodes"][node_index].setdefault(
-                    "parameters", {}
-                )
-                candidate_parameters[parameter_name] = (
-                    int(changed) if field_type == "integer" else changed
-                )
-                candidate = parse_definition_v2(candidate_payload)
-                validate_definition_v2(candidate)
-                candidates.append(
-                    (
-                        candidate,
-                        {
-                            "node_id": node.id,
-                            "parameter": parameter_name,
-                            "base_value": raw_value,
-                            "candidate_value": candidate_parameters[parameter_name],
-                            "perturbation": perturbation,
-                        },
-                    )
-                )
-                if len(candidates) >= maximum_candidates:
-                    return candidates
-        return candidates
+        from .reliability.diagnostics import perturb_definitions
+
+        return perturb_definitions(definition, perturbation, maximum_candidates)
 
     def _validation_reports(
         self,
@@ -3849,14 +3808,13 @@ class RegimeGraphV2Service:
             maximum_candidates,
         ):
             try:
-                candidate_execution = self._execute_graph(
-                    None,
-                    candidate,
-                    mode,
-                    as_of,
-                    plan=plan,
-                    source_cache=source_cache,
-                )
+                from .reliability.diagnostics import prepared_plan
+
+                with prepared_plan(self, candidate) as candidate_plan:
+                    candidate_execution = self._execute_graph(
+                        None, candidate, mode, as_of,
+                        plan=candidate_plan, source_cache=source_cache,
+                    )
                 candidate_codes = self._series_codes(
                     candidate,
                     candidate_execution["series"],
@@ -4512,6 +4470,13 @@ class RegimeGraphV2Service:
                 "name": run["name"], "mode": mode, "as_of": as_of,
                 "series_summary": run.get("series_summary", {}),
                 "available_for": sorted(usages),
+                "historical_reference": next(({
+                    "run_id": run["id"], "publication_id": item["id"],
+                    "content_hash": run["content_hash"],
+                } for item in updated["publications"]
+                    if item.get("usage") == "research_display"
+                    and item.get("run_content_hash") == run["content_hash"]), None)
+                    if definition.study and definition.study.purpose == "historical_reference" else None,
             }
 
     def list_runs(self, definition_id: str | None = None) -> list[dict[str, Any]]:
@@ -4910,6 +4875,7 @@ class RegimeGraphV2Service:
             and item.get("definition_revision") == raw.get("definition_revision")
             and item.get("gate") == "comprehensive_formal_gate_passed"
         ]
+        new_study = bool((raw.get("definition") or {}).get("study"))
         if not accepted:
             raise ValidationError(
                 "TAA_RUN_NOT_PUBLISHED",
@@ -4925,7 +4891,10 @@ class RegimeGraphV2Service:
             "publication_ids": sorted(str(item["id"]) for item in accepted),
             "run_content_hash": raw["content_hash"],
         }
-        return self._hydrate_run(raw), gate
+        from .reliability.consumer import attach_calibration
+        if new_study:
+            gate["calibration_required"] = True
+        return attach_calibration(self._hydrate_run(raw), self.reliability, publication_eligible=bool(accepted)), gate
 
     def compare(self, run_ids: list[str], reference_run_id: str | None = None) -> dict[str, Any]:
         unique_ids = list(dict.fromkeys(str(item) for item in run_ids))

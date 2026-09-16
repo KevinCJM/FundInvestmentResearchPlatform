@@ -444,3 +444,50 @@ describe('TacticalAllocationWorkspace', () => {
   })
 
 })
+
+it.each([
+  ['research_display', false], ['product_research', false], ['formal_backtest', false], ['taa', false], ['research_display', true],
+])('uses the pinned reference state axis for nonidentity mapping (%s, invalid binding=%s)', async (usage, invalid) => {
+  const hash = 'a'.repeat(64), refHash = 'b'.repeat(64)
+  const run = {
+    id: 'mapped-run', schema_version: '2.0', definition_id: 'model', definition_revision: 1,
+    name: '映射后的实时模型', immutable: true, mode: 'realtime', content_hash: hash, definition_snapshot_hash: hash,
+    states: [{ id: 'model_on', label: '模型正向' }, { id: 'model_off', label: '模型负向' }],
+    definition: { study: { purpose: 'realtime_recognition', family: 'market_trend',
+      reference: { run_id: 'reference-run', publication_id: 'ref-publication', content_hash: refHash },
+      state_mapping: { model_on: 'BullRef', model_off: 'BearRef' } } },
+    causality: { is_causal: true, uses_future_data: false, repaints: false, realtime_eligible: true },
+    governance: { formal_gate_passed: true, publish_eligible_usages: ['taa'] },
+    publications: [{ id: 'model-pub', usage: 'taa', run_id: 'mapped-run', definition_revision: 1, run_content_hash: hash, gate: 'comprehensive_formal_gate_passed' }],
+    calculation_audit: taaExecution,
+  }
+  const reference = { id: 'reference-run', content_hash: invalid ? 'c'.repeat(64) : refHash, immutable: true, mode: 'retrospective', definition_revision: 1,
+    states: [{ id: 'BearRef', label: '参考压力' }, { id: 'BullRef', label: '参考正常' }],
+    publications: [{ id: 'ref-publication', usage, run_id: 'reference-run', definition_revision: 1, run_content_hash: refHash }], calculation_audit: taaExecution }
+  const { user, fetchMock } = setup(path => {
+    if (path === '/api/historical-regimes/runs') return ok({ items: [run] })
+    if (path.endsWith('/runs/mapped-run')) return ok(run)
+    if (path.endsWith('/runs/reference-run')) return ok(reference)
+  }, '/pre-investment/taa?baseline=SAA-1')
+  await screen.findByText('本次准备怎么配？')
+  for (const tab of screen.getAllByRole('tab')) {
+    expect(document.getElementById(tab.getAttribute('aria-controls')!)).not.toBeNull()
+  }
+  await user.selectOptions(screen.getByLabelText('调仓口径'), 'daily_target')
+  await user.click(screen.getByRole('radio', { name: /已发布市场状态/ }))
+  await screen.findByRole('option', { name: /映射后的实时模型/ })
+  await user.selectOptions(screen.getByLabelText('已发布的实时情景版本'), 'mapped-run')
+  if (invalid) {
+    await screen.findByText(/历史参考的状态轴与绑定版本不一致/)
+    expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
+    return
+  }
+  await screen.findByRole('spinbutton', { name: '参考压力 · 权益偏离（百分点）' })
+  expect(screen.queryByRole('spinbutton', { name: /模型正向/ })).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '计算并比较方案' }))
+  const call = fetchMock.mock.calls.find(([path]) => String(path).endsWith('/preview'))
+  const request = JSON.parse(String(call?.[1]?.body))
+  expect(Object.keys(request.state_tilts)).toEqual(['BearRef', 'BullRef'])
+  expect(request.state_tilts).toEqual({ BearRef: { equity: 0, bond: 0 }, BullRef: { equity: 0, bond: 0 } })
+})

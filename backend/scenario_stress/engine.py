@@ -216,7 +216,14 @@ def _raise_coverage_status(
     if status == 3:
         raise ValidationError(
             "DEGRADED_WEIGHT_NORMALIZATION_FAILED",
-            "覆盖资产的净权重为 0，无法在不伪造缺失收益的前提下降级计算。",
+            "覆盖资产的净权重不为正，归一化会反转多空方向或无法计算。",
+            field,
+        )
+
+    if status == 4:
+        raise ValidationError(
+            "DEGRADED_WEIGHT_LIMIT_EXCEEDED",
+            "降级后的有效权重超过单资产 2 倍或总敞口 3 倍约束，阻断计算。",
             field,
         )
 
@@ -1175,7 +1182,7 @@ def _regime_results(definition: dict[str, Any]) -> tuple[list[dict[str, Any]], d
             "terminal_nav": terminal["p50"],
             "terminal_return": terminal["return_p50"],
             "max_drawdown": terminal["p95_max_drawdown"],
-            "worst_step_return": float(state_summary_values[3]),
+            "worst_step_return": None,
             "var_95": terminal["var_95"],
             "es_95": terminal["es_95"],
             "loss_probability": terminal["loss_probability"],

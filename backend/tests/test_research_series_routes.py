@@ -622,6 +622,12 @@ def test_main_app_mounts_research_series_and_warms_njit_against_index_only_snaps
         }
     ).to_parquet(service.data_dir / "macro_cn_cpi_df.parquet", index=False)
 
+    # The app lifespan takes a storage lease before warming kernels. Keep that
+    # lease in this fixture rather than opening the developer's external disk.
+    from backend import data_storage
+    isolated_project = tmp_path / "storage-project"
+    (isolated_project / "data").mkdir(parents=True)
+    monkeypatch.setattr(data_storage, "_manager", data_storage.StorageManager(isolated_project))
     main_app = importlib.import_module("app")
     app_routes = importlib.import_module("services.research_series_routes")
     monkeypatch.setattr(app_routes, "research_series_service", service)
@@ -688,6 +694,9 @@ def test_main_app_mounts_research_series_and_warms_njit_against_index_only_snaps
 
         startup = main_app.app.state.numba_warmup
         assert startup["complete"] is True
+        assert startup["regime_reliability"]["complete"] is True
+        assert startup["regime_reliability"]["request_time_compilation"] == 0
+        assert startup["regime_reliability"]["python_fallback"] == 0
         assert startup["research_series"]["fully_warmed"] is True
         assert startup["research_series"]["execution_backend"] == "numba_njit_fixed_signature"
         assert startup["research_series"]["request_time_compilation"] == 0

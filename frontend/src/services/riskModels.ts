@@ -64,16 +64,28 @@ export interface ScenarioDraft {
 }
 export interface TransmissionStep {
   release_id: string; name: string; stage: ModelStage; inputs: RiskVariable[]; outputs: RiskVariable[]; path: number[][]
+  model_lags?: number
+}
+export interface ScenarioHorizonEvidence {
+  method: 'explicit_path_terminal_evidence' | 'explicit_path_horizon_evidence_v2'; frequency: Frequency; periods: number
+  terminal_status: 'returned_to_baseline' | 'increments_zero' | 'open_at_horizon'
+  remaining_response_status?: 'zero' | 'pending'
+  cumulative_level_status?: 'recovered' | 'not_recovered'
+  source_terminal_max_abs: number; market_terminal_max_abs: number
+  source_baseline_tail_periods: number; market_baseline_tail_periods: number
+  maximum_transmission_lags: number
+  economic_horizon_status: 'not_empirically_established'
+  interpretation: string
 }
 export interface ScenarioPreview {
   id: string; name: string; entry: ScenarioDraft['entry']; definition: ScenarioDraft; definition_hash: string
   frequency: Frequency; input_variables: RiskVariable[]; factors: RiskVariable[]; path: number[][]
-  horizon: number; lineage: TransmissionStep[]; limitations: string[]; execution: FixedNjitExecutionAudit
-  preview_hash?: string; transient?: boolean
+  horizon: number; horizon_evidence?: ScenarioHorizonEvidence; lineage: TransmissionStep[]; limitations: string[]; execution: FixedNjitExecutionAudit
+  preview_hash?: string; transient?: boolean; publication_request_id?: string
 }
 export interface ScenarioRelease {
   id: string; name: string; entry: ScenarioDraft['entry']; preview_id: string; frequency: Frequency
-  factors: RiskVariable[]; horizon: number; lineage: TransmissionStep[]; status: string; reason?: string
+  factors: RiskVariable[]; horizon: number; horizon_evidence?: ScenarioHorizonEvidence; lineage: TransmissionStep[]; status: string; reason?: string
   effective_at: string; expires_at: string; created_at: string; note: string
 }
 export interface ImpactRequest {
@@ -105,7 +117,7 @@ export async function riskRequest<T>(url: string, options: RequestInit = {}): Pr
     const detail = payload?.detail
     const message = Array.isArray(detail)
       ? detail.map((item: { msg?: string; loc?: string[] }) => item.msg ?? '输入格式无效').join('；')
-      : detail?.message ?? payload?.message ?? '研究操作未完成，请检查输入与数据。'
+      : (typeof detail === 'string' ? detail : detail?.message) ?? payload?.message ?? '研究操作未完成，请检查输入与数据。'
     throw new Error(message)
   }
   return payload as T
@@ -132,7 +144,7 @@ export const importRiskSeries = (domain: ResearchDomain, fields: SeriesImport) =
 export const scenarioReleases = (as_of?: string, signal?: AbortSignal) => items<ScenarioRelease>(`/api/published-scenarios/releases${as_of ? `?${new URLSearchParams({ as_of })}` : ''}`, signal)
 export const previewScenario = async (fields: ScenarioDraft) => audit(await post<ScenarioPreview>('/api/published-scenarios/previews', fields), '情景传导预览')
 export const getScenarioPreview = async (id: string, signal?: AbortSignal) => audit(await riskRequest<ScenarioPreview>(`/api/published-scenarios/previews/${encodeURIComponent(id)}`, { signal }), '已保存情景路径')
-export const publishScenario = (definition: ScenarioDraft, preview_hash: string, valid_days: number, note: string) => post<ScenarioRelease>('/api/published-scenarios/releases', { definition, preview_hash, valid_days, note, acknowledge_limitations: true })
+export const publishScenario = (definition: ScenarioDraft, preview_hash: string, valid_days: number, note: string, publication_request_id?: string) => post<ScenarioRelease>('/api/published-scenarios/releases', { definition, preview_hash, valid_days, note, publication_request_id, acknowledge_limitations: true })
 export const retireScenario = (id: string, note: string) => post(`/api/published-scenarios/releases/${encodeURIComponent(id)}/retire`, { note })
 export const riskPortfolios = (signal?: AbortSignal) => items<PortfolioChoice>('/api/published-scenarios/portfolios', signal)
 export const runRiskImpact = async (fields: ImpactRequest) => audit(await post<RiskImpact>('/api/published-scenarios/impacts', fields), '已发布模型情景压测')

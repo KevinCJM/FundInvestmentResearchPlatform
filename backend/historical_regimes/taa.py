@@ -689,6 +689,7 @@ def _regime_points(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "recognized_at": _iso_date(source.get("recognized_at"), f"run.series.{index}.recognized_at"),
                 "probabilities": source.get("probabilities"),
                 "probability_source": source.get("probability_source", "unspecified"),
+                "state_id": source.get("state_id"),
                 "confidence": source.get("confidence"),
             }
         )
@@ -840,8 +841,11 @@ def run_taa_backtest(
 ) -> dict[str, Any]:
     """Run a probability-weighted TAA overlay without mutating the source run."""
 
+    if gate.get("passed") is False:
+        raise ValidationError("TAA_RUN_NOT_PUBLISHED", "历史情景运行必须先发布到 TAA 或正式回测。", "run_id")
     assets, base = _validate_base_weights(request.get("base_weights"))
-    states = [str(item.get("id")) for item in run.get("states") or [] if item.get("id")]
+    from .reliability.consumer import calibrated_output, consumer_states, allocation_probabilities as tilt_probabilities
+    states = consumer_states(run)
     if not states:
         raise ValidationError(
             "MISSING_REGIME_STATES",
@@ -926,9 +930,8 @@ def run_taa_backtest(
         elif latest_point is None:
             fallback_reason = "no_effective_regime"
         else:
-            probabilities, fallback_reason = _validated_probabilities(latest_point.get("probabilities"), states)
+            probabilities, raw_confidence, fallback_reason = calibrated_output(run, latest_point, period_start, states)
             source_probabilities = dict(probabilities) if probabilities is not None else None
-            raw_confidence = latest_point.get("confidence")
             if probabilities is not None:
                 if raw_confidence is None:
                     fallback_reason = "missing_confidence"
@@ -955,6 +958,7 @@ def run_taa_backtest(
             if signal_age_days > max_signal_age_days:
                 fallback_reason = "stale_regime_signal"
                 probabilities = None
+        probabilities = tilt_probabilities(run, probabilities)
         if probabilities is not None:
             use_signal[period_index] = np.uint8(1)
             for state_index, state in enumerate(states):
