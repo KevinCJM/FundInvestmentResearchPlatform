@@ -2147,7 +2147,8 @@
         "docs/rolling_window_operator_split_acceptance.md",
         "docs/rolling_window_operator_split_design.md",
         "backend/scripts/benchmark_drawdown_outputs.py",
-        "docs/indicator_parameter_contract_design.md"
+        "docs/indicator_parameter_contract_design.md",
+        "docs/adjusted_price_indicator_design.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -3372,7 +3373,8 @@
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
         "frontend/src/pages/EvaluationPlan.tsx",
-        "frontend/src/pages/HoldingDiagnosis.tsx"
+        "frontend/src/pages/HoldingDiagnosis.tsx",
+        "docs/product_trend_chart_design.md"
       ],
       "upstream_dependencies": [
         "backend_custom_indicator_service"
@@ -3395,7 +3397,8 @@
         "frontend/src/pages/ProductDetail.test.tsx",
         "frontend/src/pages/ProductCompare.test.tsx",
         "frontend/src/pages/EvaluationPlan.test.tsx",
-        "frontend/src/pages/HoldingDiagnosis.test.tsx"
+        "frontend/src/pages/HoldingDiagnosis.test.tsx",
+        "frontend/src/components/product-research/ProductTrendChart.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -4322,6 +4325,7 @@
         "backend/tests/test_etl_executor.py",
         "backend/tests/etl_lifecycle_fixture.py",
         "backend/tests/test_etl_dataset_tasks.py",
+        "backend/tests/test_price_adjustment.py",
         "backend/tests/test_etl_graph.py",
         "backend/tests/test_etl_workflows.py",
         "backend/tests/test_multi_source_resolution.py",
