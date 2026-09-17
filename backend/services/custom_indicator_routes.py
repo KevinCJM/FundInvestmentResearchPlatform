@@ -15,7 +15,13 @@ from custom_indicators.errors import IndicatorDomainError
 from custom_indicators.graph_contracts import EditorStateUpdate, GraphResolveRequest
 from custom_indicators.graph_service import IndicatorGraphService
 from custom_indicators.series_parameters import inspect_parameter_inputs, bind_parameter_input
-from custom_indicators.service import CustomIndicatorService, MAX_PLAN_TARGETS, SUPPORTED_PERIODS
+from custom_indicators.series_service import MAX_SERIES_INSTANCES
+from custom_indicators.service import (
+    CustomIndicatorService,
+    MAX_EVALUATION_INDICATORS,
+    MAX_PLAN_TARGETS,
+    SUPPORTED_PERIODS,
+)
 from cal_indicators.typed_operators import TYPED_DSL_VERSION
 from pit.context import resolve_request_context
 
@@ -282,15 +288,15 @@ class IndicatorReference(IndependentRequest):
 
 
 class PrepareEvaluationRequest(IndependentRequest):
-    indicator_ids: list[str] = Field(default_factory=list, max_length=10)
-    indicator_refs: list[IndicatorReference] = Field(default_factory=list, max_length=10)
+    indicator_ids: list[str] = Field(default_factory=list, max_length=MAX_EVALUATION_INDICATORS)
+    indicator_refs: list[IndicatorReference] = Field(default_factory=list, max_length=MAX_EVALUATION_INDICATORS)
     inline_definition: Optional[IndicatorDraft] = None
     compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
 
 
 class EvaluateRequest(IndependentRequest):
-    indicator_ids: list[str] = Field(default_factory=list, max_length=10)
-    indicator_refs: list[IndicatorReference] = Field(default_factory=list, max_length=10)
+    indicator_ids: list[str] = Field(default_factory=list, max_length=MAX_EVALUATION_INDICATORS)
+    indicator_refs: list[IndicatorReference] = Field(default_factory=list, max_length=MAX_EVALUATION_INDICATORS)
     inline_definition: Optional[IndicatorDraft] = None
     compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
     targets: list[EvaluationTarget] = Field(min_length=1, max_length=50)
@@ -308,10 +314,14 @@ class SeriesIndicatorInstance(BaseModel):
     inline_definition: Optional[IndicatorDraft] = None
     compile_token: Optional[str] = Field(default=None, min_length=64, max_length=64)
     parameters: dict[str, StrictFloat] = Field(default_factory=dict)
+    # Caller-owned name echoed on the matching result. The same indicator may be
+    # requested several times with different parameters, so indicator_id alone
+    # no longer identifies which result belongs to which instance.
+    instance_key: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class EvaluateSeriesRequest(BaseModel):
-    indicator_instances: list[SeriesIndicatorInstance] = Field(min_length=1, max_length=10)
+    indicator_instances: list[SeriesIndicatorInstance] = Field(min_length=1, max_length=MAX_SERIES_INSTANCES)
     target: EvaluationTarget
     period: str
     as_of: Optional[str] = None

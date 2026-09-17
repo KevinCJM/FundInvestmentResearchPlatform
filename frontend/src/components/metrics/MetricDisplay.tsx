@@ -255,13 +255,14 @@ export function MetricSelector({
   indicators,
   selectedIds,
   onChange,
-  maxSelected = 10,
+  maxSelected,
   label = '选择指标',
   disabledReasons = {},
 }: {
   indicators: IndicatorDefinition[]
   selectedIds: string[]
   onChange: (ids: string[]) => void
+  /** Left out where there is no cap: the count then reads as a count, not a quota. */
   maxSelected?: number
   label?: string
   disabledReasons?: Record<string, string>
@@ -330,19 +331,21 @@ export function MetricSelector({
     }
   }, [open, updatePosition])
 
+  const quota = maxSelected === undefined ? '' : `/${maxSelected}`
+  const atLimit = maxSelected !== undefined && selectedIds.length >= maxSelected
   const toggle = (indicatorId: string) => {
     if (selectedIds.includes(indicatorId)) {
       onChange(selectedIds.filter((id) => id !== indicatorId))
       return
     }
-    if (selectedIds.length < maxSelected && !disabledReasons[indicatorId]) {
+    if (!atLimit && !disabledReasons[indicatorId]) {
       onChange([...selectedIds, indicatorId])
     }
   }
 
   return <div className="relative">
-    <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)} className="flex min-h-11 cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
-      <span>{label}</span><span className="text-xs text-slate-600">已选 {selectedIds.length}/{maxSelected}</span>
+    <button ref={triggerRef} type="button" aria-expanded={open} aria-controls={panelId} aria-haspopup="dialog" onClick={() => setOpen((current) => !current)} className="flex min-h-11 cursor-pointer items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
+      <span>{label}</span><span className="text-xs text-slate-600">已选 {selectedIds.length}{quota}</span>
     </button>
     {open && position && createPortal(<div ref={panelRef} id={panelId} role="dialog" aria-label={`${label}面板`} style={position} className="fixed z-[70] flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
       <div className="grid shrink-0 gap-2 border-b border-slate-100 p-3 sm:grid-cols-[9rem_9rem_minmax(12rem,1fr)]"><label className="block text-xs font-medium text-slate-600">指标类型<select aria-label="按指标类型筛选" value={indicatorType} onChange={(event) => setIndicatorType(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部类型</option>{indicatorTypes.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">指标来源<select aria-label="按指标来源筛选" value={indicatorSource} onChange={(event) => setIndicatorSource(event.target.value as 'all' | 'built_in' | 'custom')} className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部</option><option value="built_in">内置指标</option><option value="custom">工作区指标</option></select></label><label className="block text-xs font-medium text-slate-600">搜索指标
@@ -353,13 +356,13 @@ export function MetricSelector({
           const disabledReason = disabledReasons[indicator.id]
           const checked = selectedIds.includes(indicator.id)
           return <label key={indicator.id} className={`flex min-h-11 gap-3 border-b border-slate-100 px-2 py-2 last:border-0 ${disabledReason ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-accent-50'}`}>
-            <input type="checkbox" checked={checked} disabled={Boolean(disabledReason) || (!checked && selectedIds.length >= maxSelected)} onChange={() => toggle(indicator.id)} />
+            <input type="checkbox" checked={checked} disabled={Boolean(disabledReason) || (!checked && atLimit)} onChange={() => toggle(indicator.id)} />
             <span className="min-w-0"><span className="block text-sm font-medium text-slate-800">{indicatorOptionLabel(indicator)}</span><span className="block text-xs text-slate-600">{disabledReason ?? indicator.product_kind_hint?.message ?? indicator.presentation?.category_label ?? indicator.category_label ?? '未分类'}</span></span>
           </label>
         })}
         {filtered.length === 0 && <p className="px-2 py-6 text-center text-sm text-slate-600">没有匹配的指标。</p>}
       </div>
-      <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-4 py-2 text-xs text-slate-600"><span>显示 {filtered.length} 项 · 已选 {selectedIds.length}/{maxSelected}</span><button type="button" onClick={() => setOpen(false)} className="min-h-9 px-2 font-medium text-accent-700 hover:underline">完成</button></div>
+      <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-4 py-2 text-xs text-slate-600"><span>显示 {filtered.length} 项 · 已选 {selectedIds.length}{quota}</span><button type="button" onClick={() => setOpen(false)} className="min-h-9 px-2 font-medium text-accent-700 hover:underline">完成</button></div>
     </div>, document.body)}
   </div>
 }
@@ -387,7 +390,7 @@ export function MetricDefinitionDrawer({
   return <div className="fixed inset-0 z-[100] flex justify-end bg-slate-950/35" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
     <aside role="dialog" aria-modal="true" aria-labelledby="metric-definition-title" className="h-full w-full max-w-lg overflow-auto bg-white p-6 shadow-2xl">
       <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold text-accent-600">{presentation.category_label}</p><h2 id="metric-definition-title" className="mt-1 text-2xl font-semibold text-slate-900">{presentation.name}</h2><p className="mt-1 text-sm text-slate-600">{indicatorOptionLabel(indicator)}</p></div><button type="button" onClick={onClose} className="min-h-11 rounded-lg px-3 text-sm text-slate-600 hover:bg-slate-100">关闭</button></div>
-      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? '仅展示，不判断优劣' : presentation.direction === 'higher_better' ? '数值高优先' : '数值低优先'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-accent-100 bg-accent-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-accent-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
+      <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? '仅展示，不判断优劣' : presentation.direction === 'higher_better' ? '数值越高越好' : '数值越低越好'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-accent-100 bg-accent-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-accent-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
     </aside>
   </div>
 }
