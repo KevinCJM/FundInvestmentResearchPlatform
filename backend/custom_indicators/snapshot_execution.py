@@ -16,6 +16,7 @@ import pandas as pd
 from numba import types
 
 from .errors import ValidationError
+from .series_parameters import parameter_hash
 from .series_provider import market_data_generation
 
 _F1 = types.Array(types.float64, 1, "C", readonly=True)
@@ -37,20 +38,24 @@ last_finite_snapshot_value.disable_compile()
 
 
 def _records(service: Any, configured: list[dict], targets: list[dict]) -> Iterator[tuple[dict, dict]]:
-    scalars: dict[str, list[dict]] = defaultdict(list)
-    series: dict[tuple[str, str, int], list[dict]] = defaultdict(list)
+    scalars: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    series: dict[tuple[str, str, int, str], list[dict]] = defaultdict(list)
     for item in configured:
         if item.get("channel_id"):
             if item.get("reducer") != "last_finite":
                 raise ValidationError("SNAPSHOT_SERIES_REDUCER_REQUIRED", "时序快照必须明确使用末个有限值归约。")
-            series[(item["period"], item["indicator_id"], item["indicator_revision"])].append(item)
+            series[(item["period"], item["indicator_id"], item["indicator_revision"],
+                    parameter_hash(item.get("parameters") or {}))].append(item)
         else:
-            scalars[item["period"]].append(item)
+            # One indicator may appear twice at different parameter values, so
+            # values join the bucket key that a batch of refs must keep unique.
+            scalars[(item["period"], parameter_hash(item.get("parameters") or {}))].append(item)
 
-    for period, items in scalars.items():
+    for (period, _values), items in scalars.items():
         for start in range(0, len(items), 10):
             batch = items[start:start + 10]
-            refs = [{"indicator_id": item["indicator_id"], "indicator_revision": item["indicator_revision"]} for item in batch]
+            refs = [{"indicator_id": item["indicator_id"], "indicator_revision": item["indicator_revision"],
+                     "parameters": dict(item.get("parameters") or {})} for item in batch]
             # Snapshot jobs have an explicit preparation stage, just like the UI.
             # Prepare the exact slice: unrelated dependency groups may otherwise
             # be chunked differently by the overall workspace warmup.
@@ -65,11 +70,12 @@ def _records(service: Any, configured: list[dict], targets: list[dict]) -> Itera
                 for record in response["results"]:
                     yield by_id[record["indicator_id"]], record
 
-    for (period, indicator_id, revision), items in series.items():
+    for (period, indicator_id, revision, _values), items in series.items():
         for target in targets:
             # All configured channels of this instance share one sequence plan.
             response = service.series_service.evaluate(
-                indicator_instances=[{"indicator_id": indicator_id, "indicator_revision": revision}],
+                indicator_instances=[{"indicator_id": indicator_id, "indicator_revision": revision,
+                                      "parameters": dict(items[0].get("parameters") or {})}],
                 target=target, period=period, _snapshot_only=True,
             )
             record = response["results"][0]
@@ -140,7 +146,7 @@ def configured_snapshot_values(output: pd.DataFrame, service: Any) -> tuple[pd.D
         "data_generation": generation, "config_revision": config.get("revision"),
         "configured_count": len(configured),
         "items": [{key: item.get(key) for key in (
-            "field", "indicator_id", "indicator_revision", "period", "channel_id", "reducer", "name", "source", "presentation",
+            "field", "indicator_id", "indicator_revision", "period", "channel_id", "reducer", "parameters", "name", "source", "presentation",
         )} for item in configured],
         "status_counts": status_counts,
         "failures": [{"indicator_id": str(item.get("indicator_id")), "message": str(item.get("status_message") or "指标版本不存在。")}

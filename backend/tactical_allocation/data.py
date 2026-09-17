@@ -199,6 +199,15 @@ class TacticalAllocationData:
         Reading and membership validation share one atomic snapshot, without
         creating directories or lock files during this check.
         """
+        if baseline.get("strategic_universe_id"):
+            from backend.strategic_allocation.sources import verify_strategic_snapshot
+            verify_strategic_snapshot(baseline)
+            mapping = baseline["implementation_mapping_snapshot"]
+            if not mapping["definition"]["as_of"] <= str(date.today()) < mapping["definition"]["valid_until"]:
+                raise ValidationError("SAA_MAPPING_EXPIRED", "实施映射尚未生效或已过复核日，不能用于当前产品应用。")
+            _, _, config = self._configuration(mapping["definition"]["alloc_name"])
+            if config["config_hash"] != mapping["source_snapshot"]["lineage"]["config_hash"]:
+                raise ValidationError("SAA_MAPPING_SOURCE_CHANGED", "真实代理配置已变化，请重新确认映射。")
         expected = baseline.get("lineage", {}).get("universe") or {}
         identifier = baseline.get("universe_snapshot_id")
         if not identifier or not expected.get("snapshot_hash") or expected.get("id") != identifier:
@@ -284,8 +293,13 @@ class TacticalAllocationData:
                     product["kind"] = member["kind"]
                     product["product_id"] = member["product_id"]
         lineage["universe"] = universe
-        _, nav_file_hash, nav_hash = self._nav_version(alloc_name, lineage["as_of"])
-        lineage.update(nav_file_hash=nav_file_hash, nav_hash=nav_hash)
+        nav_frame, nav_file_hash, nav_hash = self._nav_version(alloc_name, lineage["as_of"])
+        snapshot_dates = pd.to_datetime(nav_frame["date"], errors="coerce")
+        if snapshot_dates.isna().any() or snapshot_dates.empty:
+            raise ValidationError("TAA_NAV_DATE", "SAA 类别净值缺少可冻结的有效日期。")
+        lineage.update(nav_file_hash=nav_file_hash, nav_hash=nav_hash,
+                       nav_snapshot_end_date=snapshot_dates.max().strftime("%Y-%m-%d"),
+                       nav_snapshot_rows=int(len(nav_frame)))
         reasons = ["SAA 分类净值不保留完整历史修订版本；此基线用于研究，不构成历史 PIT 认证。"]
         if not lineage["as_of"]:
             reasons.append("资产类别由全历史口径构建，历史回放含事后产品选择风险。")
@@ -304,6 +318,19 @@ class TacticalAllocationData:
         start, end, cutoff = _date(start_date, "开始日期"), _date(end_date, "结束日期"), _date(as_of, "研究日")
         if start >= end or end > cutoff:
             raise ValidationError("TAA_DATA_DATES", "开始日期须早于结束日期，结束日期不得晚于研究日。")
+        strategic = baseline.get("strategic_universe_id")
+        if strategic:
+            from backend.strategic_allocation.sources import verify_strategic_snapshot
+            verify_strategic_snapshot(baseline)
+            mapping = baseline["implementation_mapping_snapshot"]
+            if not mapping["definition"]["as_of"] <= cutoff < mapping["definition"]["valid_until"]:
+                raise ValidationError("SAA_MAPPING_EXPIRED", "实施映射不适用于本次TAA研究日。")
+            # Recheck the immutable domain without applying today's expiry to historical research.
+            expected_domain = mapping["source_snapshot"]["lineage"]["universe"]
+            products = [p for a in baseline["assets"] for p in a["products"]]
+            current_domain, domain_reasons = self._universe(baseline["universe_snapshot_id"], products)
+            if not current_domain or current_domain.get("snapshot_hash") != expected_domain.get("snapshot_hash") or domain_reasons:
+                raise ValidationError("SAA_MAPPING_DOMAIN", "冻结产品域已变化或成员不可用，请确认新的实施映射。")
         alloc_name = baseline["alloc_name"]
         _, _, config = self._configuration(alloc_name)
         if config["config_hash"] != baseline.get("lineage", {}).get("config_hash"):
@@ -311,9 +338,23 @@ class TacticalAllocationData:
         # Pick and verify the exact NAV version frozen with the SAA baseline.
         variant = config.get("as_of") or ""
         frame, source_file_hash, nav_hash = self._nav_version(alloc_name, variant)
-        if nav_hash != baseline.get("lineage", {}).get("nav_hash"):
-            raise ValidationError("TAA_NAV_CHANGED", "SAA 类别净值已变更，请重新保存基线；旧决策可读取冻结结果。")
-        frame = frame.copy()
+        frozen_lineage = baseline.get("lineage", {})
+        frozen_hash = frozen_lineage.get("nav_hash")
+        appended_after_baseline = False
+        if nav_hash != frozen_hash:
+            snapshot_end = frozen_lineage.get("nav_snapshot_end_date")
+            if snapshot_end:
+                parsed_dates = pd.to_datetime(frame["date"], errors="coerce")
+                prefix = frame.loc[parsed_dates <= pd.Timestamp(snapshot_end)]
+                prefix_hash = digest_json(_records(prefix.sort_values(["asset_name", "date"])))
+                if prefix_hash == frozen_hash and len(prefix) == int(frozen_lineage.get("nav_snapshot_rows", len(prefix))):
+                    appended_after_baseline = True
+                else:
+                    raise ValidationError("TAA_NAV_CHANGED", "SAA 基线建立前的类别净值历史已被修订；请保存新基线，旧决策继续读取原冻结结果。")
+            else:
+                raise ValidationError("TAA_NAV_CHANGED", "SAA 类别净值已变更，请重新保存基线；旧决策可读取冻结结果。")
+        if not strategic:
+            frame = frame.copy()
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
         if frame["date"].isna().any():
             raise ValidationError("TAA_NAV_DATE", "类别净值含无效日期，无法对齐。")
@@ -322,7 +363,13 @@ class TacticalAllocationData:
         if not (frame["date"] == frame["date"].dt.normalize()).all():
             raise ValidationError("TAA_NAV_DATE", "类别净值含盘中时间，不能将同日多条数据解释为多个日频收益期。")
         names = [item["id"] for item in baseline["assets"]]
-        frame = frame.loc[frame["asset_name"].isin(names) & (frame["date"] >= start) & (frame["date"] <= end)]
+        selected_names = [item["proxy_asset_id"] for item in baseline["assets"]] if strategic else names
+        frame = frame.loc[frame["asset_name"].isin(selected_names) & (frame["date"] >= start) & (frame["date"] <= end)]
+        if strategic:
+            # One selection at the decoding boundary, then metadata-only renaming
+            # before the shared pivot. No per-node numerical reordering or fake NAV.
+            proxy_ids = dict(zip(selected_names, names, strict=True))
+            frame["asset_name"] = frame["asset_name"].map(proxy_ids)
         if frame.duplicated(["asset_name", "date"]).any():
             raise ValidationError("TAA_NAV_DUPLICATE", "同一资产同一日期存在多条净值；请先解决重复数据。")
         if len(frame) > MAX_OBSERVATIONS * MAX_ASSETS:
@@ -379,11 +426,19 @@ class TacticalAllocationData:
         lineage = {"alloc_name": alloc_name, "config_hash": config["config_hash"],
                    "source_file": "asset_nv.parquet", "file_hash": source_file_hash,
                    "series_as_of": variant or None, "requested_as_of": cutoff,
+                   "policy_snapshot_end_date": frozen_lineage.get("nav_snapshot_end_date"),
+                   "appended_after_baseline": appended_after_baseline,
                    "alignment": "strict_intersection", "excluded_incomplete_dates": excluded_incomplete,
                    "knowledge_time_granularity": "day", "price_basis": "saved_class_nav",
                    "intraday_execution_verified": False,
                    "excluded_not_yet_available_rows": excluded_future, "missing_availability_rows": missing_availability,
                    "observation_count": len(dates), "start_date": dates[0], "end_date": dates[-1]}
+        if strategic:
+            lineage.update(strategic_universe_id=baseline["strategic_universe_id"],
+                strategic_universe_hash=baseline["lineage"]["strategic_universe_hash"],
+                implementation_mapping_id=baseline["implementation_mapping_id"],
+                implementation_mapping_hash=baseline["lineage"]["implementation_mapping_hash"],
+                axis_adaptation="explicit_proxy_ids_at_single_io_pivot")
         digest = hashlib.sha256()
         digest.update(digest_json({"lineage": lineage, "assets": names, "dates": dates}).encode())
         digest.update(memoryview(returns).cast("B"))

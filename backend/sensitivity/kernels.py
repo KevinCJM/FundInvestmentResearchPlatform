@@ -11,7 +11,10 @@ from numba import float64, int64, njit, types
 
 from backend.compute_policy import validate_execution_audit
 from backend.factor_research.numba_kernels import attribution_kernel
-from backend.scenario_stress.numba_kernels import factor_to_asset_kernel
+from backend.scenario_stress.numba_kernels import (
+    factor_to_asset_kernel, assert_scenario_stress_numba_ready,
+    warm_scenario_stress_numba_kernels, SCENARIO_STRESS_KERNEL_VERSION,
+)
 
 F1 = types.Array(float64, 1, "C")
 F2 = types.Array(float64, 2, "C")
@@ -346,19 +349,22 @@ for dispatcher in KERNELS:
 
 
 def execution_audit():
+    assert_scenario_stress_numba_ready()
     used = (*KERNELS, attribution_kernel, factor_to_asset_kernel)
     if not _READY or any(not fn.nopython_signatures or len(fn.signatures) != len(fn.nopython_signatures) for fn in used):
         raise RuntimeError("敏感性计算内核未完成预热，禁止请求期编译或 Python 回退")
     return validate_execution_audit({
         "execution_backend": "numba_njit_fixed_signature", "engine_version": ENGINE_VERSION,
         "nopython": True, "python_fallback": 0, "python_operator_calls": 0,
-        "request_time_compilation": 0,
+        "request_time_compilation": int(any(fn._can_compile for fn in used)),
+        "shared_scenario_kernel_version": SCENARIO_STRESS_KERNEL_VERSION,
         "kernel_signatures": {fn.py_func.__name__: [str(s) for s in fn.nopython_signatures] for fn in used},
     })
 
 
 def warm_sensitivity_kernels():
     global _READY
+    warm_scenario_stress_numba_kernels()
     grid = np.arange(50, dtype=np.int64)
     values = np.arange(50, dtype=np.float64) + 100.0
     resample_transform_kernel(grid, grid, grid, values, grid, grid, np.int64(50), np.int64(0), np.int64(1))

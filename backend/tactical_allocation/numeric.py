@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from datetime import date, timedelta
 
 import numpy as np
 from numba import float64, int64, njit, types, uint8
@@ -15,6 +16,7 @@ from backend.historical_regimes.taa import (
     _performance_kernel,
     _taa_output_validation_kernel,
     _taa_path_kernel,
+    _taa_recursive_kernel,
     _weight_vector_validation_kernel,
     taa_numba_execution_audit,
     warm_taa_numba_kernels,
@@ -38,6 +40,19 @@ METRIC_NAMES = (
 )
 
 
+@njit(int64(M, float64), cache=True, nogil=True)
+def tilt_rows_status_kernel(tilts, tolerance):
+    """Validate all zero-budget directions in one compiled scan of input views."""
+    for row in range(tilts.shape[0]):
+        _, status = _weight_vector_validation_kernel(tilts[row], 0.0, tolerance, -1.0, 1.0)
+        if status != 0:
+            return status
+    return 0
+
+
+tilt_rows_status_kernel.disable_compile()
+
+
 @njit(int64(M, M, U, F, M, F, F, F), cache=True, nogil=True)
 def input_status_kernel(returns, probabilities, use_signal, base, tilts, lower, upper, caps):
     """Validate shared axes, finite returns and probability/weight budgets."""
@@ -56,10 +71,8 @@ def input_status_kernel(returns, probabilities, use_signal, base, tilts, lower, 
                 or lower[j] > base[j] + 1e-10 or upper[j] < base[j] - 1e-10
                 or caps[j] < 0.0 or caps[j] > 1.0):
             return 3
-    for k in range(s):
-        _, status = _weight_vector_validation_kernel(tilts[k], 0.0, 1e-6, -1.0, 1.0)
-        if status != 0:
-            return 4
+    if tilt_rows_status_kernel(tilts, 1e-6) != 0:
+        return 4
     for t in range(n):
         for j in range(a):
             if not np.isfinite(returns[t, j]) or returns[t, j] <= -1.0:
@@ -172,12 +185,41 @@ def path_metrics_kernel(path, asset_count, periods_per_year, penalty, objective)
 @njit(int64(M, U), cache=True, nogil=True)
 def select_candidate_kernel(metrics, feasible):
     """Select only from training scores; deterministic ties prefer zero tilt."""
-    winner = 0
-    score = metrics[0, 13]
-    for k in range(1, metrics.shape[0]):
+    winner = -1
+    score = -np.inf
+    for k in range(metrics.shape[0]):
         if feasible[k] == 1 and metrics[k, 13] > score + 1e-12:
             winner, score = k, metrics[k, 13]
     return winner
+
+
+@njit(int64(M, M, F, F, F, F, UM, F, F), cache=True, nogil=True)
+def holding_breaches_kernel(path, returns, base, lower, upper, caps, groups, group_lower, group_upper):
+    """Count observed periods whose actual pretrade or closing holdings breach budgets."""
+    breaches = 0
+    a = base.size
+    current = np.empty(a)
+    for t in range(path.shape[0]):
+        invalid = False
+        for phase in range(2):
+            for j in range(a):
+                current[j] = (path[t, a + j] if phase == 0 else
+                              path[t, j] * (1 + returns[t, j]) / (1 + path[t, 2*a + 6]))
+                if (current[j] < lower[j] - 1e-8 or current[j] > upper[j] + 1e-8
+                        or abs(current[j] - base[j]) > caps[j] + 1e-8):
+                    invalid = True
+            for g in range(groups.shape[0]):
+                weight = 0.0
+                for j in range(a):
+                    weight += groups[g, j] * current[j]
+                if weight < group_lower[g] - 1e-8 or weight > group_upper[g] + 1e-8:
+                    invalid = True
+        if invalid:
+            breaches += 1
+    return breaches
+
+
+holding_breaches_kernel.disable_compile()
 
 
 @njit(uint8(F, float64, float64), cache=True, nogil=True)
@@ -483,13 +525,17 @@ KERNELS = (input_status_kernel, constrained_tilts_kernel, path_metrics_kernel,
            momentum_windows_kernel, momentum_signals_kernel, signal_counts_kernel, compose_product_weights_kernel,
            scenario_contributions_kernel, target_tilt_kernel,
            recommendation_details_kernel, aggregate_class_weights_kernel,
-           knowledge_window_status_kernel, current_signal_tilt_kernel)
+           knowledge_window_status_kernel, current_signal_tilt_kernel, holding_breaches_kernel,
+           tilt_rows_status_kernel)
 
 
 def execution_audit() -> dict[str, Any]:
     inherited = taa_numba_execution_audit()
+    from .signals import KERNELS as signal_kernels
+    from .clocks import period_mask_kernel, decision_signal_flags_kernel, threshold_kernel
+    all_kernels = (*KERNELS, *signal_kernels, period_mask_kernel, decision_signal_flags_kernel, threshold_kernel, _taa_recursive_kernel)
     complete = all(len(k.signatures) == 1 and k.nopython_signatures
-                   and not any(v.objectmode for v in k.overloads.values()) for k in KERNELS)
+                   and not any(v.objectmode for v in k.overloads.values()) for k in all_kernels)
     warmed = _WARMED_PID == os.getpid()
     return {
         "engine": "tactical-allocation-njit/1.1.0", "backend": "numba_njit_fixed_signature",
@@ -497,7 +543,7 @@ def execution_audit() -> dict[str, Any]:
         "complete": bool(complete and inherited["complete"] and warmed),
         "nopython": bool(complete), "python_fallback": 0, "object_mode": 0,
         "request_time_compilation": 0, "shared_portfolio_engine": inherited["engine"],
-        "kernel_signatures": {k.__name__: [str(s) for s in k.signatures] for k in KERNELS},
+        "kernel_signatures": {k.__name__: [str(s) for s in k.signatures] for k in all_kernels},
     }
 
 
@@ -536,8 +582,21 @@ def _groups(asset_count, membership, lower, upper):
     return _array(membership, np.uint8, 2), _array(lower, np.float64, 1), _array(upper, np.float64, 1)
 
 
-def _checked_path(returns, probabilities, flags, tilts, base, cost):
-    path, _, _, _ = _taa_path_kernel(returns, probabilities, flags, tilts, base, 0.0, 1.0, 1.0, cost)
+def _checked_path(returns, probabilities, flags, tilts, base, cost, clock=None, policy=None, direct=None, gross_cost=False):
+    if policy is None and direct is None and not gross_cost:
+        path, _, _, _ = _taa_path_kernel(returns, probabilities, flags, tilts, base, 0.0, 1.0, 1.0, cost)
+    else:
+        daily = np.ones(returns.shape[0], dtype=np.uint8)
+        path, _, _, _ = _taa_recursive_kernel(
+            returns, probabilities, flags, tilts, base, 0.0, 1.0, 1.0, cost,
+            clock['decisions'] if clock is not None else daily,
+            clock['executions'] if clock is not None else daily,
+            policy.execution_lag if policy else 0, policy.min_holding_periods if policy else 0,
+            policy.deviation_threshold if policy else 0.0, policy is None,
+            direct if direct is not None else np.empty((0, base.size)),
+            clock.get("valid_until", np.empty(0, dtype=np.int64)) if clock else np.empty(0, dtype=np.int64),
+            clock.get("period_days", np.empty(0, dtype=np.int64)) if clock else np.empty(0, dtype=np.int64),
+            gross_cost or (policy is not None and policy.cost_basis == "gross_traded_weight"))
     if _taa_output_validation_kernel(path, base.size, 1e-6) != 0:
         raise ValueError("Non-finite or invalid TAA portfolio path.")
     return path
@@ -548,7 +607,8 @@ def evaluate_candidates(
     max_abs_tilts, train_end_index, strengths=DEFAULT_STRENGTHS, cost=0.0,
     periods_per_year=252, risk_penalty=3.0, max_tracking_error=1.0,
     max_turnover=1.0, objective="active_utility", selected_candidate_id=None,
-    group_membership=None, group_min=None, group_max=None,
+    group_membership=None, group_min=None, group_max=None, validation_start_index=None,
+    allow_infeasible_selected=False, decision_policy=None, clock=None, direct_tilts=None,
 ):
     """Freeze a training-only selected strength, then evaluate its holdout path."""
     _require_ready()
@@ -565,7 +625,11 @@ def evaluate_candidates(
     if isinstance(train_end_index, bool) or int(train_end_index) != train_end_index:
         raise ValueError("Training split must be an integer observation index.")
     split = int(train_end_index)
-    if split < 20 or returns.shape[0] - split < 20:
+    validation_start = split if validation_start_index is None else validation_start_index
+    if isinstance(validation_start, bool) or int(validation_start) != validation_start or validation_start < split:
+        raise ValueError("Validation must begin at or after the mature training boundary.")
+    validation_start = int(validation_start)
+    if split < 20 or returns.shape[0] - validation_start < 20:
         raise ValueError("Training and untouched validation each require at least 20 observations.")
     strength_values = _array(strengths, np.float64, 1)
     if tuple(strength_values) not in (DEFAULT_STRENGTHS, (0.0, 1.0)):
@@ -584,38 +648,63 @@ def evaluate_candidates(
         raise ValueError("Unknown training objective.")
     train_metrics = np.empty((strength_values.size, len(METRIC_NAMES)), dtype=np.float64)
     feasible = np.zeros(strength_values.size, dtype=np.uint8)
-    bounded, scales = [], []
+    bounded, scales, direct_paths, train_breaches = [], [], [], []
+    if decision_policy is not None and (clock is None or any(len(clock[k]) != len(returns) for k in ('decisions', 'executions'))):
+        raise ValueError("TAA_CLOCK_AXIS")
+    direct_input = None if direct_tilts is None else _array(direct_tilts, np.float64, 2)
+    if direct_input is not None:
+        if direct_input.shape != returns.shape or not np.isfinite(direct_input).all():
+            raise ValueError("TAA_DIRECT_SIGNAL_AXIS")
+        if tilt_rows_status_kernel(direct_input, 1e-8):
+            raise ValueError("TAA_DIRECT_SIGNAL_BUDGET")
+    def interval_path(start, end, index):
+        interval_clock = None if clock is None else {k: v[start:end] for k, v in clock.items()}
+        direct = direct_paths[index]
+        return _checked_path(returns[start:end], probabilities[start:end], flags[start:end], bounded[index], base,
+                             float(cost), interval_clock, decision_policy, None if direct is None else direct[start:end])
     # Each half is a view. Candidate-specific tilts and returned paths are outputs.
     for index, strength in enumerate(strength_values):
         effective, scale = constrained_tilts_kernel(base, tilts, lower, upper, caps, float(strength), groups, group_lower, group_upper)
         bounded.append(effective)
         scales.append(scale)
-        path = _checked_path(returns[:split], probabilities[:split], flags[:split], effective, base, float(cost))
+        direct_paths.append(None if direct_input is None else constrained_tilts_kernel(
+            base, direct_input, lower, upper, caps, float(strength), groups, group_lower, group_upper)[0])
+        path = interval_path(0, split, index)
         train_metrics[index] = path_metrics_kernel(path, base.size, float(periods_per_year), float(risk_penalty), objectives[objective])
-        feasible[index] = candidate_feasibility_kernel(train_metrics[index], float(max_tracking_error), float(max_turnover))
+        breaches = holding_breaches_kernel(path, returns[:split], base, lower, upper, caps, groups, group_lower, group_upper) if decision_policy else 0
+        train_breaches.append(breaches)
+        feasible[index] = candidate_feasibility_kernel(train_metrics[index], float(max_tracking_error), float(max_turnover)) if breaches == 0 else 0
     # SAA is always an available fallback, even if its drift rebalancing exceeds
     # a requested tactical turnover cap; this exemption is explicitly reported.
-    feasible[0] = 1
+    feasible[0] = int(train_breaches[0] == 0)
     auto_selected = int(select_candidate_kernel(train_metrics, feasible))
+    if auto_selected < 0:
+        if allow_infeasible_selected and selected_candidate_id is not None:
+            auto_selected = 0
+        else:
+            raise ValueError("实际持仓漂移超出资产、分组或偏离预算，所有候选均不可行；请调整执行规则或明确作固定假设诊断。")
     selected = auto_selected
     if selected_candidate_id is not None:
         ids = [f"scale-{index}" for index in range(strength_values.size)]
         if selected_candidate_id not in ids:
             raise ValueError("Unknown candidate selection.")
         selected = ids.index(selected_candidate_id)
-        if not feasible[selected]:
+        if not feasible[selected] and not allow_infeasible_selected:
             raise ValueError("Selected candidate violates training constraints.")
-    selected_train_path = _checked_path(returns[:split], probabilities[:split], flags[:split], bounded[selected], base, float(cost))
+    selected_train_path = interval_path(0, split, selected)
     selected_train_path.setflags(write=False)
     candidates, selected_path = [], None
     for index, strength in enumerate(strength_values):
-        path = _checked_path(returns[split:], probabilities[split:], flags[split:], bounded[index], base, float(cost))
+        # An explicit maturity gap is skipped through views, never concatenated.
+        path = interval_path(validation_start, len(returns), index)
         validation = path_metrics_kernel(path, base.size, float(periods_per_year), float(risk_penalty), objectives[objective])
+        validation_breaches = holding_breaches_kernel(path, returns[validation_start:], base, lower, upper, caps, groups, group_lower, group_upper) if decision_policy else 0
         candidates.append({
             "id": f"scale-{index}", "strength": float(strength), "feasible": bool(feasible[index]),
-            "validation_feasible": bool(candidate_feasibility_kernel(validation, float(max_tracking_error), float(max_turnover))),
+            "validation_feasible": bool(candidate_feasibility_kernel(validation, float(max_tracking_error), float(max_turnover))) and validation_breaches == 0,
+            "holding_budget_breaches": {"train": int(train_breaches[index]), "validation": int(validation_breaches)},
             "constraint_scales": scales[index].tolist(), "train": _metrics(train_metrics[index]),
-            "validation": _metrics(validation), "baseline_fallback_exemption": index == 0,
+            "validation": _metrics(validation), "baseline_fallback_exemption": index == 0 and train_breaches[0] == 0,
         })
         if index == selected:
             selected_path = path
@@ -635,8 +724,10 @@ def evaluate_candidates(
         "selected_nav": selected_path[:, offset + 9], "selected_weights": selected_path[:, :base.size],
         "selected_state_tilts": selected_tilts, "execution": execution_audit(),
         "selection_policy": {"scope": "predeclared_direction_and_strength_grid", "objective": objective,
-                             "training_observations": split, "validation_observations": returns.shape[0] - split,
+                             "training_observations": split, "validation_observations": returns.shape[0] - validation_start,
+                             **({"purged_training_tail": validation_start - split} if validation_start_index is not None else {}),
                              "holdout_used_for_selection": False, "independently_funded_intervals": True,
+                             "selected_training_feasible": bool(feasible[selected]),
                              "future_optimality_claim": False, "baseline_fallback_exemption": True},
     }
 
@@ -702,7 +793,7 @@ def recommend_weights(probabilities, use_signal, base, state_tilts, lo, hi, max_
             "has_deviation": bool(has_deviation), "is_saa": not bool(has_deviation)}
 
 
-def stress_compare(returns, base, target, cost=0.0, periods_per_year=252):
+def stress_compare(returns, base, target, cost=0.0, periods_per_year=252, cost_basis="half_turnover"):
     _require_ready()
     values = _array(returns, np.float64, 2)
     base, target = _array(base, np.float64, 1), _array(target, np.float64, 1)
@@ -716,7 +807,9 @@ def stress_compare(returns, base, target, cost=0.0, periods_per_year=252):
     probabilities, flags = np.ones((values.shape[0], 1)), np.ones(values.shape[0], dtype=np.uint8)
     if input_status_kernel(values, probabilities, flags, base, tilts, np.zeros(base.size), np.ones(base.size), np.ones(base.size)):
         raise ValueError("Invalid scenario returns or weights.")
-    path = _checked_path(values, probabilities, flags, tilts, base, float(cost))
+    if cost_basis not in ("half_turnover", "gross_traded_weight"):
+        raise ValueError("Unknown explicit transaction cost basis.")
+    path = _checked_path(values, probabilities, flags, tilts, base, float(cost), gross_cost=cost_basis == "gross_traded_weight")
     metrics = path_metrics_kernel(path, base.size, float(periods_per_year), 0.0, 0)
     baseline_contribution, target_contribution, excess_contribution = scenario_contributions_kernel(values, path, base)
     baseline_performance = _performance_kernel(path[:, base.size * 2 + 5], path[:, base.size * 2 + 8], float(periods_per_year))
@@ -731,7 +824,7 @@ def stress_compare(returns, base, target, cost=0.0, periods_per_year=252):
         "total_return_difference": float(metrics[15]),
         "relative_excess_return": float(metrics[2]),
         "baseline_cost": float(metrics[12]), "target_cost": float(metrics[10]),
-        "holding_policy": "rebalance_to_target_each_observation", "execution": execution_audit(),
+        "holding_policy": "rebalance_to_target_each_observation", "cost_basis": cost_basis, "execution": execution_audit(),
     }
 
 
@@ -754,6 +847,10 @@ def warm_tactical_allocation_kernels():
         from backend.research_input_checks import warm_research_input_checks
         warm_research_input_checks()
         warm_taa_numba_kernels()
+        from .clocks import warm_clock_kernels
+        from .signals import warm_signal_kernels
+        if not warm_clock_kernels() or not warm_signal_kernels():
+            raise RuntimeError("TAA signal/clock warmup incomplete")
         returns = np.zeros((40, 2), dtype=np.float64)
         starts = np.arange(40, dtype=np.int64)
         available = np.broadcast_to((starts + 1)[:, None], returns.shape).copy()
@@ -770,6 +867,13 @@ def warm_tactical_allocation_kernels():
                           signals["state_tilts"], np.zeros(2), np.ones(2), np.ones(2), 1.0)
         stress_compare(returns[:2], base, base)
         knowledge_window_status(available, 40)
+        from .contracts import DecisionPolicy
+        from .clocks import clock_plan
+        policy = DecisionPolicy()
+        plan = clock_plan([str(date(2025, 1, 1) + timedelta(days=i)) for i in range(40)], policy)
+        evaluate_candidates(returns, signals["probabilities"], signals["use_signal"], base,
+                            signals["state_tilts"], np.zeros(2), np.ones(2), np.ones(2), 20,
+                            decision_policy=policy, clock=plan, direct_tilts=np.zeros((40, 2)))
         _WARMED_PID = os.getpid()
         audit = execution_audit()
         if not audit["fully_warmed"]:

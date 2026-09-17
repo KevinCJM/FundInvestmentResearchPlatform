@@ -29,7 +29,7 @@ export interface IndicatorEditorState {
   definition_fingerprint?: string; state: GraphDocument | null
 }
 export const graphContext = (draft: IndicatorDraft) => ({
-  ...(draft.result_kind === 'time_series' && draft.parameter_contract_version === '1.0'
+  ...(draft.parameter_contract_version === '1.0'
     ? { parameter_contract_version: draft.parameter_contract_version, parameter_schema: draft.parameter_schema ?? [] }
     : {}),
   context_kind: draft.context_kind || 'single_product', result_kind: draft.result_kind || 'scalar',

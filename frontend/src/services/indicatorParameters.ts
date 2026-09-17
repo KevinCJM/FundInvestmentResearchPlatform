@@ -11,6 +11,8 @@ export interface ParameterCandidate {
   parameter_id: string | null
   source_expression?: string
   position?: number
+  exclusive_minimum?: boolean
+  exclusive_maximum?: boolean
   type: 'integer' | 'number'
   minimum: number
   maximum: number
@@ -18,7 +20,8 @@ export interface ParameterCandidate {
 }
 export interface ParameterInspection { contract_version: '1.0'; candidates: ParameterCandidate[] }
 export const parameterDefinitionKey = (draft: IndicatorDraft) => JSON.stringify({
-  outputs: draft.series_outputs, schema: draft.parameter_schema,
+  kind: draft.result_kind, expression: draft.expression, outputs: draft.series_outputs,
+  schema: draft.parameter_schema,
   version: draft.parameter_contract_version, registry: draft.operator_registry_version,
 })
 const requestDefinition = (draft: IndicatorDraft) => ({ ...draft, name: draft.name || '未保存指标' })
@@ -35,8 +38,13 @@ export function parameterInputIssue(spec: SeriesParameterDefinition, raw: string
   const value = Number(raw)
   if (!Number.isFinite(value)) return 'number'
   if (spec.type === 'integer' && !Number.isInteger(value)) return 'integer'
-  if (value < spec.minimum || value > spec.maximum) return 'range'
+  if (value < spec.minimum || value > spec.maximum
+    || (spec.exclusive_minimum && value === spec.minimum)
+    || (spec.exclusive_maximum && value === spec.maximum)) return 'range'
   const units = (value - spec.minimum) / spec.step
   if (!Number.isFinite(units) || Math.abs(units - Math.round(units)) > 1e-6) return 'step'
   return null
 }
+
+export const parameterRangeLabel = (spec: SeriesParameterDefinition) =>
+  `${spec.exclusive_minimum ? '(' : '['}${spec.minimum}, ${spec.maximum}${spec.exclusive_maximum ? ')' : ']'}`

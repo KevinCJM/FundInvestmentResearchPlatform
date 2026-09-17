@@ -15,6 +15,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
+from cal_indicators.parameter_policy import constant_number as _literal, ARGUMENT_DEFAULTS, configuration_violations, parameter_policy
 from cal_indicators.typed_operators import get_typed_operator_registry, TYPED_OPERATOR_REGISTRY_VERSION
 from cal_indicators.typed_types import TypedDslError
 from .errors import ValidationError
@@ -22,45 +23,40 @@ from .formula_source import canonical_formula_source
 from .variable_registry import get_variable
 
 PARAMETER_CONTRACT_VERSION = "1.0"
-_COUNT = {"type": "integer", "minimum": 1, "maximum": 20_000, "step": 1}
-_NUMBER = {"type": "number", "minimum": -1_000_000, "maximum": 1_000_000, "step": 0.01}
-PARAMETER_CAPABILITIES: dict[tuple[str, str], dict[str, Any]] = {
-    ("rolling_apply", "window"): {**_COUNT, "maximum": 5000, "label": "窗口期数"},
-    ("rolling_apply", "min_periods"): {**_COUNT, "maximum": 5000, "label": "最少有效观察数"},
-    # Current authoring owns window parameters on one dedicated primitive.
-    ("rolling_window", "window"): {**_COUNT, "label": "窗口期数"},
-    ("rolling_window", "min_periods"): {**_COUNT, "label": "最少有效观察数"},
-    # Historical 2.3 definitions remain editable/reproducible without rewriting.
-    **{(op, "window"): {**_COUNT, "label": "窗口期数"}
-       for op in ("rolling_mean", "rolling_std", "rolling_min", "rolling_max")},
-    **{(op, "min_periods"): {**_COUNT, "label": "最少有效观察数"}
-       for op in ("rolling_mean", "rolling_std", "rolling_min", "rolling_max")},
-    ("recursive_smooth", "periods"): {**_COUNT, "label": "平滑周期"},
-    ("lag", "periods"): {**_COUNT, "label": "滞后期数"},
-    ("difference", "periods"): {**_COUNT, "label": "差分期数"},
-    ("clip", "lower"): {**_NUMBER, "label": "裁剪下界"},
-    ("clip", "upper"): {**_NUMBER, "label": "裁剪上界"},
-}
+TIME_SERIES_RESULT_KIND = "time_series"
 
 
 def _error(message: str, field: str = "parameters", code: str = "INVALID_SERIES_PARAMETER") -> ValidationError:
     return ValidationError(code, message, field=field)
 
 
+def _channels(definition: Mapping[str, Any]) -> tuple[str, Any]:
+    """One formula channel per output. A scalar indicator has exactly one, so
+    every rule below is written once and applies to both result kinds."""
+
+    if definition.get("result_kind") == TIME_SERIES_RESULT_KIND:
+        return "series_outputs", definition.get("series_outputs") or []
+    return "expression", [{
+        "id": "result",
+        "label": definition.get("name") or "结果",
+        "expression": definition.get("expression") or "",
+    }]
+
+
 def _trees(definition: Mapping[str, Any]):
-    outputs = definition.get("series_outputs") or []
+    field, outputs = _channels(definition)
     if not isinstance(outputs, list) or not 1 <= len(outputs) <= 8:
-        raise _error("需要 1 至 8 个时序输出。", "series_outputs")
+        raise _error("需要 1 至 8 个时序输出。", field)
     for index, output in enumerate(outputs):
         expression = str(output.get("expression") or "")
         if not expression or len(expression) > 4000:
-            raise _error("请先完成公式，单个通道公式不超过 4000 字符。", "series_outputs")
+            raise _error("请先完成公式，单个通道公式不超过 4000 字符。", field)
         try:
             tree = ast.parse(canonical_formula_source(expression), mode="eval")
         except (SyntaxError, ValueError, RecursionError, TypedDslError) as exc:
-            raise _error("请先修正公式语法，再设置计算参数。", "series_outputs") from exc
+            raise _error("请先修正公式语法，再设置计算参数。", field) from exc
         if sum(1 for _ in ast.walk(tree)) > 4096:
-            raise _error("公式节点过多。", "series_outputs")
+            raise _error("公式节点过多。", field)
         yield index, output, tree
 
 
@@ -79,19 +75,7 @@ def _calls(tree: ast.Expression, registry_version: str | None):
             names = spec.argument_names(len(node.args))
         except (ValueError, KeyError, TypedDslError):
             continue
-        yield ordinal, node, names
-
-
-def _literal(node: ast.AST) -> int | float | None:
-    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
-        try:
-            return node.value if math.isfinite(node.value) else None
-        except OverflowError:
-            return None
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        value = _literal(node.operand)
-        return None if value is None else (-value if isinstance(node.op, ast.USub) else value)
-    return None
+        yield ordinal, node, names, spec
 
 
 def _candidate_id(output_id: str, ordinal: int, name: str, tree: ast.AST) -> str:
@@ -100,14 +84,12 @@ def _candidate_id(output_id: str, ordinal: int, name: str, tree: ast.AST) -> str
 
 
 def inspect_parameter_inputs(definition: Mapping[str, Any]) -> dict[str, Any]:
-    if definition.get("result_kind") != "time_series":
-        raise _error("可变参数仅适用于时序指标。", "result_kind")
     schema = {item["id"]: item for item in definition.get("parameter_schema") or []}
     candidates: list[dict[str, Any]] = []
     for _, output, tree in _trees(definition):
-        for ordinal, call, names in _calls(tree, definition.get("operator_registry_version")):
+        for ordinal, call, names, spec in _calls(tree, definition.get("operator_registry_version")):
             for index, name in enumerate(names):
-                policy = PARAMETER_CAPABILITIES.get((call.func.id, name))
+                policy = parameter_policy(spec, len(call.args), name)
                 if policy is None:
                     continue
                 argument = call.args[index]
@@ -155,7 +137,9 @@ def resolve_parameter_values(definition: Mapping[str, Any], supplied: Mapping[st
         value = _valid_number(values[name] if name in values else item["default"], field)
         if item["type"] == "integer" and not value.is_integer():
             raise _error(f"{item['label']} 必须是整数。", field)
-        if not item["minimum"] <= value <= item["maximum"]:
+        if (not item["minimum"] <= value <= item["maximum"]
+                or (item.get("exclusive_minimum") and value == item["minimum"])
+                or (item.get("exclusive_maximum") and value == item["maximum"])):
             raise _error(f"{item['label']} 必须在 {item['minimum']} 至 {item['maximum']} 之间。", field)
         if not _on_step(value, item["minimum"], item["step"]):
             raise _error(f"{item['label']} 必须从最小值起按步长 {item['step']} 取值。", field)
@@ -165,31 +149,39 @@ def resolve_parameter_values(definition: Mapping[str, Any], supplied: Mapping[st
 
 
 def validate_parameter_relations(definition: Mapping[str, Any], values: Mapping[str, Any]) -> None:
+    """Cross-argument maths that no single contract can express.
+
+    Keyed by argument name, not by operator id: any operator that accepts both
+    of a pair inherits the rule without being listed anywhere.
+    """
+
+    def resolve(node: ast.AST | None) -> Any:
+        if node is None:
+            return None
+        return values.get(node.id) if isinstance(node, ast.Name) else _literal(node)
+
     for _, _, tree in _trees(definition):
-        for _, call, names in _calls(tree, definition.get("operator_registry_version")):
-            arguments = {name: values.get(node.id) if isinstance(node, ast.Name) else _literal(node)
-                         for name, node in zip(names, call.args)}
-            op = call.func.id
-            window = arguments.get("window")
-            if op in {"rolling_window", "rolling_mean", "rolling_std", "rolling_min", "rolling_max"} and window is not None:
-                minimum = arguments.get("min_periods", window)
-                ddof = arguments.get("ddof", 0)
-                if minimum is not None and minimum > window:
-                    raise _error("最少有效观察数不能大于窗口期数。")
-                if op == "rolling_std" and ddof is not None and ddof >= window:
-                    raise _error("自由度修正必须小于窗口期数。")
-            if op in {"std", "variance"} and call.args and isinstance(call.args[0], ast.Call):
-                window_call = call.args[0]
-                if isinstance(window_call.func, ast.Name) and window_call.func.id == "rolling_window" and len(window_call.args) >= 2:
-                    rolling_width = values.get(window_call.args[1].id) if isinstance(window_call.args[1], ast.Name) else _literal(window_call.args[1])
-                    ddof_node = call.args[1] if len(call.args) >= 2 else None
-                    degrees = values.get(ddof_node.id) if isinstance(ddof_node, ast.Name) else _literal(ddof_node) if ddof_node is not None else 1
-                    if rolling_width is not None and degrees is not None and degrees >= rolling_width:
-                        raise _error("自由度修正必须小于窗口期数。")
-            if op == "clip":
-                lower, upper = arguments.get("lower"), arguments.get("upper")
-                if lower is not None and upper is not None and lower > upper:
-                    raise _error("裁剪下界不能大于上界。")
+        for _, call, names, _spec in _calls(tree, definition.get("operator_registry_version")):
+            arguments = {name: resolve(node) for name, node in zip(names, call.args)}
+            # A window reduction carries its width on the rolling_window it reduces.
+            source = call.args[0] if call.args else None
+            if "window" not in arguments and isinstance(source, ast.Call) and isinstance(source.func, ast.Name):
+                inner = source.func.id
+                if inner == "rolling_window" and len(source.args) >= 2:
+                    arguments["window"] = resolve(source.args[1])
+            if "ddof" not in arguments and "window" in arguments:
+                # Omitted ddof still applies; its declared default is the contract.
+                arguments["ddof"] = ARGUMENT_DEFAULTS.get((_spec.operator_id, "ddof"))
+            for left, right, message, strict in (
+                ("min_periods", "window", "最少有效观察数不能大于窗口期数。", False),
+                ("ddof", "window", "自由度修正必须小于窗口期数。", True),
+                ("lower", "upper", "裁剪下界不能大于上界。", False),
+            ):
+                first, second = arguments.get(left), arguments.get(right)
+                if first is None or second is None:
+                    continue
+                if first >= second if strict else first > second:
+                    raise _error(message)
 
 
 def validate_parameter_definition(definition: Mapping[str, Any]) -> None:
@@ -205,17 +197,21 @@ def validate_parameter_definition(definition: Mapping[str, Any]) -> None:
     used: set[str] = set()
     for _, _, tree in _trees(definition):
         allowed: set[int] = set()
-        for _, call, names in _calls(tree, definition.get("operator_registry_version")):
+        for _, call, names, spec in _calls(tree, definition.get("operator_registry_version")):
             for index, argument_name in enumerate(names):
                 node = call.args[index]
                 if not isinstance(node, ast.Name) or node.id not in schema:
                     continue
-                policy = PARAMETER_CAPABILITIES.get((call.func.id, argument_name))
+                policy = parameter_policy(spec, len(call.args), argument_name)
                 if policy is None:
                     raise _error(f"{call.func.id} 的 {argument_name} 不允许参数化。", "series_outputs")
                 item = schema[node.id]
                 if item["type"] != policy["type"] or item["minimum"] < policy["minimum"] or item["maximum"] > policy["maximum"]:
                     raise _error(f"{item['label']} 的类型或范围超出该输入允许的范围。", f"parameter_schema.{node.id}")
+                for bound in ("minimum", "maximum"):
+                    if (policy.get(f"exclusive_{bound}") and item[bound] == policy[bound]
+                            and not item.get(f"exclusive_{bound}")):
+                        raise _error(f"{item['label']} 不能包含该输入的边界值。", f"parameter_schema.{node.id}")
                 allowed.add(id(node))
                 used.add(node.id)
         for node in ast.walk(tree):
@@ -232,8 +228,6 @@ def bind_parameter_input(definition: Mapping[str, Any], *, candidate_id: str | N
     if bool(candidate_id) == bool(fixed_parameter_id) or (parameter_id and not candidate_id):
         raise _error("请选择一个输入进行关联，或选择一个参数固定，不能同时操作。", "candidate_id")
     output = copy.deepcopy(dict(definition))
-    if output.get("result_kind") != "time_series":
-        raise _error("可变参数仅适用于时序指标。", "result_kind")
     # Old parameter metadata is not an authorization to open historical inputs.
     if output.get("parameter_schema") and output.get("parameter_contract_version") != PARAMETER_CONTRACT_VERSION:
         raise _error("请先按原版本默认值载入并保存固定公式，再开放参数。", "parameter_schema")
@@ -272,9 +266,10 @@ def bind_parameter_input(definition: Mapping[str, Any], *, candidate_id: str | N
                 step = min(step, 10.0 ** -decimal_places)
             schema.append({"id": parameter_id, "label": candidate["label"], "type": candidate["type"],
                            "default": candidate["value"], "minimum": candidate["minimum"],
-                           "maximum": candidate["maximum"], "step": step, "description": ""})
+                           "maximum": candidate["maximum"], "step": step, "description": "",
+                           **{key: candidate[key] for key in ("exclusive_minimum", "exclusive_maximum") if candidate.get(key)}})
         for _, channel, tree in trees:
-            for ordinal, call, names in _calls(tree, output.get("operator_registry_version")):
+            for ordinal, call, names, _spec in _calls(tree, output.get("operator_registry_version")):
                 for index, name in enumerate(names):
                     if _candidate_id(str(channel["id"]), ordinal, name, tree) == candidate_id:
                         call.args[index] = ast.copy_location(ast.Name(id=parameter_id, ctx=ast.Load()), call.args[index])
@@ -284,7 +279,9 @@ def bind_parameter_input(definition: Mapping[str, Any], *, candidate_id: str | N
     for _, channel, tree in trees:
         channel["expression"] = ast.unparse(ast.fix_missing_locations(tree).body)
         channel.pop("editable_latex", None)
-    output["expression"] = output["series_outputs"][0]["expression"]
+    # A scalar channel is synthetic, so the rewritten formula is read back from
+    # the channel rather than from ``series_outputs``.
+    output["expression"] = trees[0][1]["expression"]
     output["parameter_contract_version"] = PARAMETER_CONTRACT_VERSION
     if output.get("rolling_source"):
         output["rolling_source"]["detached"] = True
@@ -297,3 +294,14 @@ def bind_parameter_input(definition: Mapping[str, Any], *, candidate_id: str | N
 
 def parameter_hash(parameters: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(dict(parameters), sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def raise_on_configuration_violations(nodes, roots, operator_registry_version, parameter_ids=()) -> None:
+    """Fail a compile whose configuration input is fed by data, not a constant."""
+
+    diagnostics = configuration_violations(nodes, roots, operator_registry_version, parameter_ids)
+    if not diagnostics:
+        return
+    first = diagnostics[0]
+    raise ValidationError(str(first["code"]), str(first["message"]), field="series_outputs",
+                          diagnostics=[{**item, "field": "series_outputs"} for item in diagnostics])

@@ -18,6 +18,12 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from numba import float64, njit, uint8
 
+from cal_indicators.parameter_policy import (
+    CONFIGURATION_MUST_BE_CONSTANT,
+    constant_number as _literal_number,
+    configuration_arguments,
+    configuration_constant_message,
+)
 from cal_indicators.typed_operators import (
     COMPAT_OPERATOR_REGISTRY_VERSION,
     COMPAT_TYPED_COMPILER_VERSION,
@@ -35,6 +41,7 @@ from cal_indicators.typed_operators import (
     TYPED_COMPILER_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
+    WINDOW_OPERATOR_REGISTRY_VERSION,
     TypedOperatorSpec,
     get_typed_operator_catalog,
     get_typed_operator_registry,
@@ -172,12 +179,18 @@ def runtime_validation_execution_audit() -> dict[str, Any]:
     )
 
 
-def _literal_number(node: ast.AST) -> float | None:
-    """Return a finite numeric literal without evaluating arbitrary AST."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
-        value = float(node.value)
-        return value if math.isfinite(value) else None
-    return None
+def _range_requirement(low: float | None, high: float | None, exclusive: bool) -> str:
+    """Say the contract's bound the way a person reads it, open ends included."""
+
+    def number(limit: float) -> str:
+        return format(limit, "g")
+
+    if low is not None and high is not None:
+        return (f"必须大于 {number(low)} 且小于 {number(high)}" if exclusive
+                else f"必须在 {number(low)} 至 {number(high)} 之间")
+    if low is not None:
+        return f"必须大于 {number(low)}" if exclusive else f"必须不小于 {number(low)}"
+    return f"必须小于 {number(high)}" if exclusive else f"必须不大于 {number(high)}"
 
 
 @dataclass(frozen=True)
@@ -330,6 +343,58 @@ _VARIABLE_SPECS = (
         "按当前产品复权口径计算的净值时间序列。",
         ("single_asset",),
         "adjusted_nav_series",
+        "series_provider",
+    ),
+    VariableSpec(
+        "adjusted_open",
+        r"\mathbf{o}_{\mathrm{adj}}",
+        ValueType.series(
+            semantic_dimension="adjusted_market_price",
+            price_basis="adjusted_market",
+        ),
+        "复权开盘价",
+        "按复权因子还原的后复权市场开盘价。",
+        ("single_asset",),
+        "adjusted_open_price",
+        "series_provider",
+    ),
+    VariableSpec(
+        "adjusted_high",
+        r"\mathbf{h}_{\mathrm{adj}}",
+        ValueType.series(
+            semantic_dimension="adjusted_market_price",
+            price_basis="adjusted_market",
+        ),
+        "复权最高价",
+        "按复权因子还原的后复权市场最高价。",
+        ("single_asset",),
+        "adjusted_high_price",
+        "series_provider",
+    ),
+    VariableSpec(
+        "adjusted_low",
+        r"\mathbf{l}_{\mathrm{adj}}",
+        ValueType.series(
+            semantic_dimension="adjusted_market_price",
+            price_basis="adjusted_market",
+        ),
+        "复权最低价",
+        "按复权因子还原的后复权市场最低价。",
+        ("single_asset",),
+        "adjusted_low_price",
+        "series_provider",
+    ),
+    VariableSpec(
+        "adjusted_close",
+        r"\mathbf{c}_{\mathrm{adj}}",
+        ValueType.series(
+            semantic_dimension="adjusted_market_price",
+            price_basis="adjusted_market",
+        ),
+        "复权收盘价",
+        "按复权因子还原的后复权市场收盘价。",
+        ("single_asset",),
+        "adjusted_close_price",
         "series_provider",
     ),
     VariableSpec(
@@ -603,6 +668,10 @@ class TypedExpressionParser:
             (r"\mathbf{n}_{unit}", "unit_nav"),
             (r"\mathbf{n}_{\mathrm{acc}}", "accumulated_nav"),
             (r"\mathbf{n}_{acc}", "accumulated_nav"),
+            (r"\mathbf{o}_{\mathrm{adj}}", "adjusted_open"),
+            (r"\mathbf{h}_{\mathrm{adj}}", "adjusted_high"),
+            (r"\mathbf{l}_{\mathrm{adj}}", "adjusted_low"),
+            (r"\mathbf{c}_{\mathrm{adj}}", "adjusted_close"),
             (r"\mathbf{o}", "market_open"),
             (r"\mathbf{h}", "market_high"),
             (r"\mathbf{l}", "market_low"),
@@ -816,8 +885,12 @@ class _TypedDagBuilder:
         *,
         max_nodes: int,
         max_depth: int,
+        parameter_names: frozenset[str] = frozenset(),
     ) -> None:
         self.variable_types = variable_types
+        # Only an explicitly declared calculation parameter may stand in for a
+        # configuration constant. A data-context scalar never may.
+        self.parameter_names = parameter_names
         self.registry = registry
         self.max_nodes = max_nodes
         self.max_depth = max_depth
@@ -990,96 +1063,79 @@ class _TypedDagBuilder:
                 PREVIOUS_OPERATOR_REGISTRY_VERSION,
                 ROLLING_OPERATOR_REGISTRY_VERSION,
                 TYPED_OPERATOR_REGISTRY_VERSION,
+                WINDOW_OPERATOR_REGISTRY_VERSION,
             }:
-                probability_index = {
-                    "quantile": 1,
-                    "quantile_where": 2,
-                }.get(spec.operator_id)
-                if probability_index is not None and len(node.args) > probability_index:
-                    probability = _literal_number(node.args[probability_index])
-                    if probability is None or not 0.0 < probability < 1.0:
-                        raise TypedDslError(
-                            "INVALID_PARAMETER",
-                            f"{spec.operator_id} 的 probability 必须是 0 与 1 之间的有限常数。",
-                            node_id=len(self.nodes),
-                            details={
-                                "operator": spec.operator_id,
-                                "parameter": "probability",
-                                "expected": "finite constant in (0, 1)",
-                                "actual": ast.unparse(node.args[probability_index]),
-                            },
-                        )
-                integer_parameters: dict[str, tuple[tuple[int, int], ...]] = {
-                    "lag": ((1, 0),),
-                    "difference": ((1, 1),),
-                    "rolling_window": ((1, 1), (2, 1)),
-                    "rolling_apply": ((1, 1), (4, 1)),
-                    "rolling_mean": ((1, 1), (2, 1)),
-                    "rolling_min": ((1, 1), (2, 1)),
-                    "rolling_max": ((1, 1), (2, 1)),
-                    "rolling_std": ((1, 1), (2, 0), (3, 1)),
-                    "recursive_smooth": ((1, 1),),
+                # Configuration inputs come from the signature contract, so a
+                # new operator or a changed range needs no edit here.
+                configuration = configuration_arguments(spec, len(node.args))
+                runtime_parameters_allowed = spec.version in {
+                    ROLLING_OPERATOR_REGISTRY_VERSION,
+                    TYPED_OPERATOR_REGISTRY_VERSION,
+                    WINDOW_OPERATOR_REGISTRY_VERSION,
                 }
-                for parameter_index, minimum in integer_parameters.get(
-                    spec.operator_id, ()
-                ):
-                    if len(node.args) <= parameter_index:
+                for index, parameter_name in enumerate(spec.argument_names(len(node.args))):
+                    policy = configuration.get(parameter_name)
+                    if policy is None:
                         continue
-                    argument_node = node.args[parameter_index]
-                    parameter = _literal_number(argument_node)
-                    runtime_scalar = False
+                    argument_node = node.args[index]
                     if (
-                        spec.version in {ROLLING_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION}
+                        runtime_parameters_allowed
                         and isinstance(argument_node, ast.Name)
+                        and argument_node.id in self.parameter_names
                     ):
                         parameter_type = self.variable_types.get(argument_node.id)
-                        runtime_scalar = bool(
+                        if (
                             parameter_type is not None
                             and parameter_type.is_scalar
                             and parameter_type.is_numeric
-                            and parameter_type.semantic_dimension
-                            in {"count", "dimensionless"}
-                        )
-                    if not runtime_scalar and (
-                        parameter is None
-                        or not parameter.is_integer()
-                        or parameter < minimum
-                    ):
-                        comparator = "非负" if minimum == 0 else "正"
-                        parameter_name = spec.argument_names(len(node.args))[
-                            parameter_index
-                        ]
+                            and parameter_type.semantic_dimension in {"count", "dimensionless"}
+                        ):
+                            continue
+                    value = _literal_number(argument_node)
+                    integer = policy["constant_kind"] == "integer"
+                    low, high = policy["minimum"], policy["maximum"]
+                    exclusive = bool(policy.get("exclusive"))
+                    brackets = "()" if exclusive else "[]"
+                    expected = (
+                        f"{'integer' if integer else 'finite'} constant in "
+                        f"{brackets[0]}{low}, {high}{brackets[1]}"
+                    )
+                    if value is None:
                         raise TypedDslError(
-                            "INVALID_PARAMETER",
-                            f"{spec.operator_id} 的 {parameter_name} 必须是{comparator}整数常数或已声明标量参数。",
+                            CONFIGURATION_MUST_BE_CONSTANT,
+                            configuration_constant_message(spec.operator_id, parameter_name),
                             node_id=len(self.nodes),
                             details={
                                 "operator": spec.operator_id,
                                 "parameter": parameter_name,
-                                "expected": (
-                                    f"{comparator} integer constant or declared scalar parameter"
-                                ),
+                                "expected": expected,
                                 "actual": ast.unparse(argument_node),
                             },
                         )
-                if spec.operator_id == "rolling_apply" and len(node.args) == 5:
-                    width, minimum = _literal_number(node.args[1]), _literal_number(node.args[4])
-                    if minimum is not None and (minimum > 5000 or (width is not None and minimum > width)):
-                        raise TypedDslError("INVALID_MIN_PERIODS", "最少有效观察数不能大于窗口观察数。", details={"parameter": "min_periods"})
-                if spec.operator_id in {"variance", "std"} and len(node.args) == 2:
-                    ddof = _literal_number(node.args[1])
-                    if ddof is None or not ddof.is_integer() or ddof < 0:
+                    problem = None
+                    if integer and not value.is_integer():
+                        problem = "必须是整数"
+                    elif (low is not None and (value <= low if exclusive else value < low)) or (
+                        high is not None and (value >= high if exclusive else value > high)
+                    ):
+                        problem = _range_requirement(low, high, exclusive)
+                    if problem is not None:
                         raise TypedDslError(
                             "INVALID_PARAMETER",
-                            f"{spec.operator_id} 的 ddof 必须是非负整数常数。",
+                            f"{spec.operator_id} 的 {parameter_name} {problem}。",
                             node_id=len(self.nodes),
                             details={
                                 "operator": spec.operator_id,
-                                "parameter": "ddof",
-                                "expected": "non-negative integer constant",
-                                "actual": ast.unparse(node.args[1]),
+                                "parameter": parameter_name,
+                                "expected": expected,
+                                "actual": ast.unparse(argument_node),
                             },
                         )
+                # Cross-argument relation; no single contract can state it.
+                if spec.operator_id == "rolling_apply" and len(node.args) == 5:
+                    width, minimum = _literal_number(node.args[1]), _literal_number(node.args[4])
+                    if minimum is not None and width is not None and minimum > width:
+                        raise TypedDslError("INVALID_MIN_PERIODS", "最少有效观察数不能大于窗口观察数。", details={"parameter": "min_periods"})
             from .operator_lowering import expand_operator
             expanded = expand_operator(
                 spec.operator_id,
@@ -1232,6 +1288,7 @@ def compose_typed_expression(
     operator_registry_version: str | None = None,
     max_nodes: int = DEFAULT_MAX_NODES,
     max_depth: int = DEFAULT_MAX_DEPTH,
+    parameter_names: frozenset[str] = frozenset(),
 ) -> TypedExpressionPlan:
     """Compile an expression and enforce the requested public output contract."""
 
@@ -1250,7 +1307,9 @@ def compose_typed_expression(
     }[dsl_version]
     if operator_registry_version is None:
         operator_registry_version = expected_registry_version
-    elif operator_registry_version != expected_registry_version:
+    elif operator_registry_version != expected_registry_version and not (
+        dsl_version == TYPED_DSL_VERSION and operator_registry_version == WINDOW_OPERATOR_REGISTRY_VERSION
+    ):
         raise TypedDslError(
             "OPERATOR_VERSION_MISMATCH",
             f"DSL {dsl_version} 必须使用算子注册表 {expected_registry_version}。",
@@ -1270,6 +1329,7 @@ def compose_typed_expression(
         registry,
         max_nodes=max_nodes,
         max_depth=max_depth,
+        parameter_names=parameter_names,
     )
     root_id = builder.build(ast_root)
     output_type = builder.nodes[root_id].inferred_type
@@ -1326,6 +1386,7 @@ def compose_typed_series_bundle(
     operator_registry_version: str | None = None,
     max_nodes: int = DEFAULT_MAX_NODES,
     max_depth: int = DEFAULT_MAX_DEPTH,
+    parameter_names: frozenset[str] = frozenset(),
 ) -> TypedSeriesBundlePlan:
     """Compile homogeneous named outputs; expression semantics remain unchanged."""
 
@@ -1360,7 +1421,9 @@ def compose_typed_series_bundle(
     }[dsl_version]
     if operator_registry_version is None:
         operator_registry_version = expected_registry_version
-    elif operator_registry_version != expected_registry_version:
+    elif operator_registry_version != expected_registry_version and not (
+        dsl_version == TYPED_DSL_VERSION and operator_registry_version == WINDOW_OPERATOR_REGISTRY_VERSION
+    ):
         raise TypedDslError(
             "OPERATOR_VERSION_MISMATCH",
             f"DSL {dsl_version} 必须使用算子注册表 {expected_registry_version}。",
@@ -1378,6 +1441,7 @@ def compose_typed_series_bundle(
         registry,
         max_nodes=max_nodes,
         max_depth=max_depth,
+        parameter_names=parameter_names,
     )
     roots: dict[str, int] = {}
     python_expressions: list[tuple[str, str]] = []
@@ -1538,6 +1602,7 @@ class TypedIndicatorRuntime:
             "operator_registry_version",
             "max_nodes",
             "max_depth",
+            "parameter_names",
         }
         compile_options = {
             key: kwargs.pop(key) for key in tuple(kwargs) if key in compile_keys

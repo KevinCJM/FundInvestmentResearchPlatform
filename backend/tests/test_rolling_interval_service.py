@@ -129,7 +129,7 @@ def test_immutable_old_transform_versions_and_builtin_revision_two(service):
 
 
 def test_ineligible_shape_or_history_is_explained_and_not_derived(service):
-    item = service.create_indicator({"name": "窗口外状态测试", "expression": "mean(recursive_smooth(market_close,3,50))"})
+    item = service.create_indicator({"name": "窗口外状态测试", "expression": "mean(recursive_smooth(adjusted_close,3,50))"})
     assert not item["rolling_series_compatibility"]["supported"]
     assert item["rolling_series_compatibility"]["code"] == "ROLLING_INTERVAL_POLICY_REQUIRED"
     from custom_indicators.errors import ValidationError

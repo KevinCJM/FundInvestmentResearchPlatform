@@ -22,6 +22,16 @@ const fixedExecution = {
   kernel_signatures: { product_summary_kernel: ['fixed'] },
 }
 
+const minimalPayload = (overrides: Record<string, unknown> = {}) => ({
+  items: [{ ts_code: '510300.SH', name: '沪深300ETF', list_date: '2012-05-28' }],
+  page: 1, page_size: 10, total: 1,
+  summary: { universe_total: 1, filtered_total: 1, active_count: 1, active_rate: 1 },
+  available_filters: { fund_type: [], type: [], invest_type: [], market: [], status: [], management: [], custodian: [] },
+  sort_by: 'issue_amount', sort_dir: 'desc',
+  execution: fixedExecution,
+  ...overrides,
+})
+
 function CurrentLocation() {
   const location = useLocation()
   return <output data-testid="location">{location.pathname}{location.search}</output>
@@ -73,7 +83,7 @@ describe('ProductResearch', () => {
 
     await screen.findByText('沪深300ETF')
     expect(screen.getByText('占比 100%')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '切换到研究指标视图' }))
+    await user.click(screen.getByRole('button', { name: '指标分析' }))
     expect(await screen.findByText('1.83%')).toBeInTheDocument()
     expect(evaluateCustomIndicators).toHaveBeenCalledWith({
       indicator_ids: ['page-return'],
@@ -161,7 +171,7 @@ describe('ProductResearch', () => {
     )
 
     expect(await screen.findByText('示例场外基金')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '场外公募基金' })).toHaveClass('text-emerald-600')
+    expect(screen.getByRole('button', { name: '场外公募基金' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: /成立日/ })).toBeInTheDocument()
     await waitFor(() => {
       const calledUrl = String(vi.mocked(fetch).mock.calls[0][0])
@@ -228,7 +238,7 @@ describe('ProductResearch', () => {
     render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
 
     await screen.findByText('产品一')
-    await user.click(screen.getByRole('button', { name: '本页全选' }))
+    await user.click(screen.getByRole('checkbox', { name: '本页全选' }))
     expect(screen.getByRole('checkbox', { name: '选择 产品一' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: '选择 产品二' })).toBeChecked()
     expect(screen.getByText('已选 2')).toBeInTheDocument()
@@ -242,5 +252,48 @@ describe('ProductResearch', () => {
     await user.click(screen.getByRole('checkbox', { name: '选择 产品一' }))
     expect(screen.getByText('已选 11')).toBeInTheDocument()
     expect(screen.getByText('已选择全部符合筛选条件的产品，排除 1 个')).toBeInTheDocument()
+  })
+
+  it('加载失败时给出重试入口，点击后重新请求', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ detail: '后端暂时不可用' }) })
+      .mockResolvedValue({ ok: true, json: async () => minimalPayload() })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('后端暂时不可用')
+    await user.click(screen.getByRole('button', { name: '重试' }))
+
+    expect(await screen.findByText('沪深300ETF')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('筛选无结果时说明原因并给出清空筛选的下一步', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => minimalPayload({ items: [], total: 0, summary: { universe_total: 8, filtered_total: 0 } }),
+    }))
+    render(<MemoryRouter initialEntries={['/research?q=%E6%97%A0%E6%AD%A4%E4%BA%A7%E5%93%81']}><ProductResearch /></MemoryRouter>)
+
+    expect(await screen.findByText('没有符合当前筛选条件的ETF')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '清空筛选条件' })).toBeInTheDocument()
+  })
+
+  it('表头声明排序方向，并支持直接跳转页码', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => minimalPayload({ total: 25 }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/research']}><ProductResearch /></MemoryRouter>)
+
+    await screen.findByText('沪深300ETF')
+    expect(screen.getByRole('columnheader', { name: /发行规模/ })).toHaveAttribute('aria-sort', 'descending')
+    await user.click(screen.getByRole('button', { name: '按发行规模排序' }))
+    expect(screen.getByRole('columnheader', { name: /发行规模/ })).toHaveAttribute('aria-sort', 'ascending')
+
+    const jump = screen.getByLabelText('跳转到页码')
+    await user.clear(jump)
+    await user.type(jump, '3{Enter}')
+    await waitFor(() => expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('page=3'))).toBe(true))
   })
 })

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from cal_indicators.typed_dsl import TypedIndicatorRuntime, compose_typed_expression
-from cal_indicators.typed_numba_plan import compile_numba_batch_plan
+from cal_indicators.typed_numba_plan import batch_parameter_vector, compile_numba_batch_plan
 from cal_indicators.typed_operators import get_typed_operator_catalog
 from cal_indicators.operator_lowering import COMPOSITE_OPERATOR_IDS
 from cal_indicators.primitive_access import value_at_kernel
@@ -57,7 +57,7 @@ def test_shared_execution_preserves_scalar_error_and_other_root(expression, stat
     statuses = np.empty((1, 2), dtype=np.int16)
     signatures = batch.serial_dispatcher.signatures[:]
     batch.compute(values, np.array([0], dtype=np.int64), np.array([3], dtype=np.int64),
-                  np.array([2.]), output, statuses, parallel=False)
+                  np.array([2.]), output, statuses, batch_parameter_vector(({}, {})), parallel=False)
     assert statuses.tolist() == [[status, 0]]
     assert np.isnan(output[0, 0]) and output[0, 1] == 1.
     assert batch.serial_dispatcher.signatures == signatures
@@ -134,7 +134,7 @@ def test_independent_regression_metrics_fit_once_and_isolate_missing_statistics(
     for values in (np.array([1., 2., 1.5, 3.]), np.array([2., 2., 2.]), np.array([1., 2.])):
         output = np.full((1, 4), np.nan)
         statuses = np.full((1, 4), -1, dtype=np.int16)
-        compiled.compute(np.ascontiguousarray([values]), np.array([0], dtype=np.int64), np.array([values.size], dtype=np.int64), np.array([3.]), output, statuses, parallel=False)
+        compiled.compute(np.ascontiguousarray([values]), np.array([0], dtype=np.int64), np.array([values.size], dtype=np.int64), np.array([3.]), output, statuses, batch_parameter_vector(({},) * len(plans)), parallel=False)
         assert np.all(statuses[0, :2] == 0)
         if np.ptp(values) == 0:
             assert statuses[0, 2] != 0

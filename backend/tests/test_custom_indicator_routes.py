@@ -135,7 +135,7 @@ def test_time_series_builder_requires_fixed_constants_and_runtime_cannot_overrid
             "operator_id": "rolling_mean",
             "context": "single_product",
             "arguments": [
-                {"parameter": "values", "source": "variable", "value": "market_close"},
+                {"parameter": "values", "source": "variable", "value": "adjusted_close"},
                 {"parameter": "window", "source": "variable", "value": "observation_count"},
             ],
         },
@@ -146,7 +146,7 @@ def test_time_series_builder_requires_fixed_constants_and_runtime_cannot_overrid
             "operator_id": "rolling_mean",
             "context": "single_product",
             "arguments": [
-                {"parameter": "values", "source": "variable", "value": "market_close"},
+                {"parameter": "values", "source": "variable", "value": "adjusted_close"},
                 {"parameter": "window", "source": "constant", "value": 20},
             ],
         },
@@ -263,7 +263,7 @@ def test_batch_availability_reports_each_selected_product_and_field(
         "/api/custom-indicators/variables/availability",
         json={
             "targets": [{"kind": "fund", "product_id": "000001.OF"}],
-            "variable_ids": ["adjusted_nav", "market_high", "market_low"],
+            "variable_ids": ["adjusted_nav", "adjusted_high", "adjusted_low"],
             "period": "1W",
         },
     )
@@ -273,11 +273,11 @@ def test_batch_availability_reports_each_selected_product_and_field(
     assert body["summary"] == {"target_count": 1, "variable_count": 3}
     availability = {item["variable_id"]: item for item in body["items"]}
     assert availability["adjusted_nav"]["status"] == "available"
-    assert availability["market_high"]["status"] == "source_unavailable"
-    assert availability["market_low"]["status"] == "source_unavailable"
-    assert availability["market_high"]["target_statuses"][0]["target"]["name"] == "华夏成长"
+    assert availability["adjusted_high"]["status"] == "source_unavailable"
+    assert availability["adjusted_low"]["status"] == "source_unavailable"
+    assert availability["adjusted_high"]["target_statuses"][0]["target"]["name"] == "华夏成长"
     assert "1/1" in availability["adjusted_nav"]["reason"]["message"]
-    assert "0/1" in availability["market_high"]["reason"]["message"]
+    assert "0/1" in availability["adjusted_high"]["reason"]["message"]
 
 
 def test_batch_availability_rejects_conflicting_or_more_than_ten_targets(
@@ -312,7 +312,7 @@ def test_fund_market_range_reports_both_missing_inputs(
     response = client.post(
         "/api/custom-indicators/evaluate",
         json={
-            "indicator_ids": ["builtin-market-high-low-range-v2"],
+            "indicator_ids": ["builtin-adjusted-high-low-range-v3"],
             "targets": [{"kind": "fund", "product_id": "000001.OF"}],
             "period": "1W",
         },
@@ -323,9 +323,9 @@ def test_fund_market_range_reports_both_missing_inputs(
     assert result["value"] is None
     assert result["status"] == "unavailable"
     blocking = result["input_requirements"]["blocking_inputs"]
-    assert [item["label"] for item in blocking] == ["最高价", "最低价"]
+    assert [item["label"] for item in blocking] == ["复权最高价", "复权最低价"]
     assert all(item["status"] == "source_unavailable" for item in blocking)
-    assert "最高价、最低价" in result["warnings"][0]["message"]
+    assert "复权最高价、复权最低价" in result["warnings"][0]["message"]
 
 
 def test_typed_compose_infer_and_portfolio_snapshot_evaluation(monkeypatch, tmp_path: Path) -> None:

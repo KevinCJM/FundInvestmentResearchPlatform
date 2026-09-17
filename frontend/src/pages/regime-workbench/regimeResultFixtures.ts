@@ -2,6 +2,9 @@ import type { RegimeResultOverview } from './regimeResultAdapter'
 
 // Captured from build_result_overview via backend/tests/test_historical_regime_overview.py.
 export const backendOverviewFixture = {
+  "result_kind": "regime_states",
+  "manual_events": [],
+  "manual_event_summary": {},
   "as_of": null,
   "calendar": null,
   "capabilities": {

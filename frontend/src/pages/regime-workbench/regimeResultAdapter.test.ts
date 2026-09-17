@@ -6,6 +6,18 @@ import { buildManualEventLaneOption } from './RegimeManualEventResult'
 import { backendOverviewFixture, resultFixture } from './regimeResultFixtures'
 
 describe('完整情景结果契约与图层', () => {
+  it.each([{}, null, undefined])('普通情景不要求人工事件摘要：%s', summary => {
+    const raw = { ...backendOverviewFixture, manual_event_summary: summary }
+    const snapshot = JSON.stringify(raw)
+    expect(adaptRegimeOverview(raw, 'preview-test', 'preview').result_kind).toBe('regime_states')
+    expect(adaptRegimeFormalOverview({ id: 'preview-test', overview: { ...raw, run_kind: 'saved' } }, 'preview-test').result_kind).toBe('regime_states')
+    expect(JSON.stringify(raw)).toBe(snapshot)
+  })
+
+  it.each([{}, null, undefined, { event_count: 1, covered_observations: 0, overlap_observations: 0, max_concurrent_events: 0 }])('真实人工事件仍拒绝缺失或不一致的摘要：%s', summary => {
+    expect(() => adaptRegimeOverview({ ...backendOverviewFixture, result_kind: 'manual_events', manual_event_summary: summary }, 'preview-test', 'preview')).toThrow('人工事件摘要')
+  })
+
   it('直接接受后端真实serializer响应，不猜测版本字段和区间时点', () => {
     const overview = adaptRegimeOverview(backendOverviewFixture, 'preview-test', 'preview')
     const dates = ['2026-09-04', '2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11']

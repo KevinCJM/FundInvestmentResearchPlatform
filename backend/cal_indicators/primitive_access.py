@@ -78,7 +78,7 @@ def _infer_finite_mask(inputs):
 
 
 def access_operator_specs(version):
-    from .typed_operators import OperatorSignature, TypedOperatorSpec, TYPED_OPERATOR_REGISTRY_VERSION
+    from .typed_operators import OperatorSignature, TypedOperatorSpec, WINDOW_OPERATOR_REGISTRY_VERSIONS
 
     specs = [TypedOperatorSpec(
         "value_at", version, "sequence",
@@ -91,7 +91,7 @@ def access_operator_specs(version):
             name, version, "basic", (OperatorSignature(("scalar",), "scalar", "validate domain without changing the value"),),
             label, _infer_guard, ACCESS_KERNELS[name], cost_model="constant", interval_policy="local",
         ))
-    if version == TYPED_OPERATOR_REGISTRY_VERSION:
+    if version in WINDOW_OPERATOR_REGISTRY_VERSIONS:
         specs.append(TypedOperatorSpec(
             "finite_mask", version, "comparison",
             (OperatorSignature(("series<time>[T]",), "mask<time>[T]", "true for finite observations; false for NaN and positive/negative infinity"),),

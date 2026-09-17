@@ -36,6 +36,11 @@ from backend.data_sources.legacy_bridge import (
     configuration_fingerprint, create_client, page_size as configured_page_size,
 )
 from backend.data_sources.models import CenterError, DownloadPolicy
+from backend.data_sources.price_adjustment import (
+    DEFAULT_FACTOR_POLICY,
+    FACTOR_POLICIES,
+    attach_adjusted_prices,
+)
 from backend.data_sources.transport import TransientSourceError
 from backend.data_sources.fund_events import FundEventDownload
 from backend.data_sources.index_checkpoints import read_empty_evidence, write_empty_evidence
@@ -327,6 +332,7 @@ ACTION_LABELS = {
     "fund_portfolio": "公募基金季度股票持仓披露",
     "fund_dividend": "公募基金分红",
     "fund_adjustment": "ETF 复权因子",
+    "price_adjustment": "ETF 复权价格",
     "fund_benchmark": "公募基金业绩基准库",
     "stock_basic": "股票目录",
     "index_info": "指数基础信息",
@@ -4113,6 +4119,35 @@ def save_fund_scale(output_dir: Path) -> None:
     save_dataframe(frame, output_dir / "fund_scale_df.parquet")
 
 
+def save_price_adjustment(output_dir: Path, policy: str) -> None:
+    """Materialise the daily adjustment factor and back-adjusted OHLC in place."""
+
+    source = output_dir / "etf_daily_candle_df.parquet"
+    if not source.exists():
+        raise FileNotFoundError("缺少 etf_daily_candle_df.parquet，无法计算 ETF 复权价格。")
+    official_path = output_dir / "fund_adj_factor_df.parquet"
+    official: Optional[pd.DataFrame] = None
+    if official_path.exists():
+        official = pd.read_parquet(official_path, columns=["ts_code", "trade_date", "adj_factor"])
+        official["date"] = date_series(official["trade_date"])
+    elif policy == "source":
+        raise FileNotFoundError(
+            "缺少 fund_adj_factor_df.parquet；复权因子口径为 source 时不从其他字段推导。"
+        )
+    else:
+        print("[WARN] 缺少 fund_adj_factor_df.parquet，本次全部复权因子由前收盘价推导。")
+    frame = pd.read_parquet(source)
+    frame["date"] = date_series(frame["date"]) if "date" in frame.columns else date_series(frame["trade_date"])
+    frame, stats = attach_adjusted_prices(frame, official, policy=policy)
+    print(f"[INFO] 复权因子口径 {policy}：{json.dumps(stats, ensure_ascii=False, default=str)}")
+    if stats["rows_without_factor"]:
+        print(
+            f"[WARN] {stats['rows_without_factor']} 行没有复权因子，复权 OHLC 留空；"
+            "依赖复权口径的指标对这些标的不可计算。"
+        )
+    save_dataframe(frame, source)
+
+
 def _event_dates(args: argparse.Namespace, out_path: Path) -> list[str]:
     if args.smoke:
         return [args.end_date]
@@ -4892,6 +4927,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--fund-dividend", action="store_true", help="更新公募基金分红记录。")
     parser.add_argument("--fund-adjustment", action="store_true", help="更新公募基金复权因子。")
     parser.add_argument("--fund-benchmark", action="store_true", help="更新公募基金业绩基准库。")
+    parser.add_argument(
+        "--price-adjustment",
+        action="store_true",
+        help="按复权因子在 data/etf_daily_candle_df.parquet 内生成 adj_factor 与复权 OHLC。",
+    )
+    parser.add_argument(
+        "--adjust-factor-policy",
+        choices=FACTOR_POLICIES,
+        default=DEFAULT_FACTOR_POLICY,
+        help="复权因子来源：source 只用数据源因子；source_then_pre_close 缺失时由前收盘价推导；pre_close 全部推导。",
+    )
     parser.add_argument("--fund-company", action="store_true", help="更新 data/fund_company_df.parquet。")
     parser.add_argument("--index-catalog", action="store_true", help="更新指数原始目录与统一目录。")
     parser.add_argument("--index-domestic", action="store_true", help="更新境内指数日线。")
@@ -4978,6 +5024,7 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
             "fund_dividend",
             "fund_adjustment",
             "fund_benchmark",
+            "price_adjustment",
             *INDEX_SCOPE_ACTIONS.values(),
             "index_coverage",
             "macro_cycle",
@@ -5013,6 +5060,7 @@ def selected_actions(args: argparse.Namespace) -> list[str]:
         ("fund_dividend", "fund_dividend"),
         ("fund_adjustment", "fund_adjustment"),
         ("fund_benchmark", "fund_benchmark"),
+        ("price_adjustment", "price_adjustment"),
         ("macro_cycle", "macro_cycle"),
         ("macro_money_credit", "macro_money_credit"),
         ("macro_rates", "macro_rates"),
@@ -5111,6 +5159,7 @@ def _run_actions(args: argparse.Namespace, actions: list[str], *, client: Any = 
             "fund_dividend",
             "fund_adjustment",
             "fund_benchmark",
+            "price_adjustment",
             "macro_cycle",
             "macro_money_credit",
             "macro_rates",
@@ -5239,6 +5288,14 @@ def _run_actions(args: argparse.Namespace, actions: list[str], *, client: Any = 
             "fund_benchmark",
             lambda: save_fund_benchmark(pro, args.output_dir, limiter, args),
         )
+    if "price_adjustment" in actions:
+        run_action(
+            "price_adjustment",
+            lambda: save_price_adjustment(
+                args.output_dir,
+                getattr(args, "adjust_factor_policy", DEFAULT_FACTOR_POLICY),
+            ),
+        )
     if "stock_basic" in actions:
         run_action(
             "stock_basic", lambda: save_stock_basic(pro, args.output_dir, limiter, args)
@@ -5300,7 +5357,7 @@ def _modules_for_actions(actions: list[str]) -> list[str]:
     modules = []
     if selected & {"calendar", "stock_basic", "index_info", "fund_company"}:
         modules.append("base")
-    if selected & {"etf_info", "nav", "etf_share", "candle", "etf_index"}:
+    if selected & {"etf_info", "nav", "etf_share", "candle", "etf_index", "price_adjustment"}:
         modules.append("etf")
     if selected & {
         "fund_info", "fund_nav", "fund_manager", "fund_scale", "fund_portfolio",
@@ -5338,6 +5395,7 @@ def _module_scopes_for_actions(actions: list[str]) -> dict[str, list[str]]:
             ("nav", "nav"),
             ("share", "etf_share"),
             ("candle", "candle"),
+            ("adjust", "price_adjustment"),
         )
         if action in selected
     ]

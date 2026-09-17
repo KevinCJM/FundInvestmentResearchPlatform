@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
 
 const meta = {
   engine_version: 'e2e',
@@ -105,8 +106,27 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('button', { name: /平均单期收益率/ })).toBeVisible()
 })
 
+test('指标库、编辑与预览切换后保持可读且平板表单有足够宽度', async ({ page }) => {
+  const narrow = (page.viewportSize()?.width ?? 1440) < 1280
+  if (narrow) await page.getByRole('tab', { name: '编辑', exact: true }).click()
+  else await page.getByRole('tab', { name: /定义与公式/ }).click()
+  await expect(page.getByRole('heading', { name: '指标定义', exact: true })).toBeVisible()
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+  if (page.viewportSize()?.width === 768) {
+    const input = page.getByLabel('名称', { exact: true })
+    expect((await input.boundingBox())!.width).toBeGreaterThan(200)
+  }
+  await page.getByRole('tab', { name: narrow ? '预览' : /校验与预览/, exact: narrow }).click()
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+  if (narrow) {
+    await page.getByRole('tab', { name: '指标库', exact: true }).click()
+    await expect(page.getByRole('button', { name: /平均单期收益率/ }).first()).toBeVisible()
+  }
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+})
+
 test('指标定义无周期选择，资源目录可键盘搜索', async ({ page }, testInfo) => {
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await page.getByRole('tab', { name: '编辑' }).click()
   }
   await expect(page.getByText('指标定义默认支持全部计算周期')).toBeVisible()
@@ -126,7 +146,7 @@ test('指标定义无周期选择，资源目录可键盘搜索', async ({ page 
 })
 
 test('移动端三区切换、桌面双栏工作台无关键水平溢出', async ({ page }, testInfo) => {
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await expect(page.getByRole('tablist', { name: '指标中心区域' })).toBeVisible()
     await expect(page.getByRole('heading', { name: '校验与预览' })).toBeHidden()
     await page.getByRole('tab', { name: '预览' }).click()
@@ -143,7 +163,7 @@ test('移动端三区切换、桌面双栏工作台无关键水平溢出', async
 })
 
 test('在校验与预览中选择指标不会跳回定义页', async ({ page }, testInfo) => {
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await page.getByRole('tab', { name: '预览' }).click()
     await page.getByRole('tab', { name: '指标库' }).click()
   } else {
@@ -156,7 +176,7 @@ test('在校验与预览中选择指标不会跳回定义页', async ({ page }, 
   await expect(page.getByLabel('当前预览指标')).toContainText('我的平均收益指标')
   await expect(page.getByRole('region', { name: '指标定义校验' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '层级计算 DAG' })).toHaveCount(0)
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await expect(page.getByRole('tab', { name: '预览' })).toHaveAttribute('aria-selected', 'true')
   } else {
     await expect(page.getByRole('tablist', { name: '指标工作台' }).getByRole('tab', { name: /校验与预览/ })).toHaveAttribute('aria-selected', 'true')
@@ -164,7 +184,7 @@ test('在校验与预览中选择指标不会跳回定义页', async ({ page }, 
 })
 
 test('内置指标可查看变量和算子的数学符号说明', async ({ page }, testInfo) => {
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await page.getByRole('tab', { name: '编辑' }).click()
   }
   await page.getByRole('button', { name: '浏览公式构建资源' }).click()
@@ -182,7 +202,7 @@ test('内置指标可查看变量和算子的数学符号说明', async ({ page 
 
 test('已有指标通过统一入口编辑当前逻辑并另存为新指标', async ({ page }, testInfo) => {
   await page.getByRole('button', { name: /我的平均收益指标/ }).click()
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await page.getByRole('tab', { name: '编辑' }).click()
   }
 
@@ -205,7 +225,7 @@ test('校验与预览保留多个深链产品且最多选择十个', async ({ pa
   const ids = Array.from({ length: 12 }, (_, index) => `TEST${String(index + 1).padStart(2, '0')}.SH`)
   await page.goto(`/indicator-studio?kind=etf&ids=${encodeURIComponent(ids.join(','))}`)
   await expect(page.getByRole('button', { name: /平均单期收益率/ })).toBeVisible()
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await page.getByRole('tab', { name: '预览' }).click()
   }
 
@@ -217,7 +237,7 @@ test('校验与预览保留多个深链产品且最多选择十个', async ({ pa
 
 test('校验成功后可展示数组形式的数据规模且页面不白屏', async ({ page }, testInfo) => {
   await page.getByRole('button', { name: /平均单期收益率/ }).click()
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await page.getByRole('tab', { name: '编辑' }).click()
   }
   await page.getByRole('button', { name: '解析并校验公式' }).click()
@@ -229,7 +249,7 @@ test('校验成功后可展示数组形式的数据规模且页面不白屏', as
   await expect(page.getByRole('region', { name: '公式计算说明' })).toContainText('全元素算术平均值')
   await expect(page.getByRole('region', { name: '公式计算说明' })).toContainText('复权净值普通收益率')
 
-  if (testInfo.project.name === 'mobile-320') {
+  if ((page.viewportSize()?.width ?? 1440) < 1280) {
     await page.getByRole('tab', { name: '预览' }).click()
   } else {
     await page.getByRole('tablist', { name: '指标工作台' }).getByRole('tab', { name: /校验与预览/ }).click()

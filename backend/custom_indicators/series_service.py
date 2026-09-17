@@ -41,7 +41,7 @@ from .excel_export import (
     build_series_indicator_excel_workbook,
 )
 from .presentation import metric_presentation
-from .series_parameters import parameter_hash
+from .series_parameters import parameter_hash, raise_on_configuration_violations
 from cal_indicators.rolling_scope import analyze_interval
 from cal_indicators.typed_operators import get_typed_operator_registry
 from .repository import IndicatorRepository
@@ -50,6 +50,7 @@ from .runtime_context import (
     single_product_scalar_context,
 )
 from .series_definitions import (
+    SEMANTIC_DEFAULT_MEASURE,
     TIME_SERIES_RESULT_KIND,
     normalize_series_parameters,
     normalize_time_series_definition,
@@ -61,6 +62,7 @@ from .series_definitions import (
 from .series_provider import (
     DEFAULT_DATA_DIR,
     ProductChartSeries,
+    input_date_context,
     load_product_chart_series,
     market_data_generation,
     select_chart_window,
@@ -87,29 +89,6 @@ _SERIES_PLAN_LOCK = threading.RLock()
 _WARMED_SERIES_PLANS: dict[
     str, tuple[TypedSeriesBundlePlan, CompiledNumbaSeriesPlan]
 ] = {}
-
-
-_SERIES_FIXED_ARGUMENTS: dict[str, frozenset[str]] = {
-    "rolling_apply": frozenset({"window", "min_periods"}),
-    "rolling_window": frozenset({"window", "min_periods"}),
-    "rolling_mean": frozenset({"window", "min_periods"}),
-    "rolling_std": frozenset({"window", "ddof", "min_periods"}),
-    "rolling_min": frozenset({"window", "min_periods"}),
-    "rolling_max": frozenset({"window", "min_periods"}),
-    "recursive_smooth": frozenset({"periods", "initial"}),
-    "divide_or_default": frozenset({"default"}),
-    "lag": frozenset({"periods"}),
-    "difference": frozenset({"periods"}),
-    "variance": frozenset({"ddof"}),
-    "std": frozenset({"ddof"}),
-    "quantile": frozenset({"probability"}),
-    "quantile_where": frozenset({"probability"}),
-    "clip": frozenset({"lower", "upper"}),
-    "power": frozenset({"exponent"}),
-}
-_SERIES_CONSTANT_OPERATORS = frozenset(
-    {"negate", "add", "subtract", "multiply", "divide", "power"}
-)
 
 
 def _array_context_names(
@@ -184,71 +163,6 @@ def _build_series_runtime_context(
             frame[name].to_numpy(dtype=np.float64, copy=False)
         )
     return context
-
-
-def _constant_series_node(
-    node_id: int,
-    nodes: Mapping[int, Any],
-    memo: dict[int, bool],
-) -> bool:
-    cached = memo.get(node_id)
-    if cached is not None:
-        return cached
-    node = nodes[node_id]
-    if node.kind == "constant":
-        memo[node_id] = True
-        return True
-    constant = bool(
-        node.operator_id in _SERIES_CONSTANT_OPERATORS
-        and node.inputs
-        and all(_constant_series_node(int(child), nodes, memo) for child in node.inputs)
-    )
-    memo[node_id] = constant
-    return constant
-
-
-def _validate_fixed_series_configuration(
-    plan: TypedSeriesBundlePlan, parameter_ids: set[str] | None = None,
-) -> None:
-    """Reject data-dependent algorithm configuration before NJIT compilation."""
-
-    nodes = {int(node.node_id): node for node in plan.nodes}
-    memo: dict[int, bool] = {}
-    diagnostics: list[dict[str, Any]] = []
-    from cal_indicators.rolling_scope import outside_nodes
-    for node in outside_nodes(plan.nodes, tuple(plan.roots.values())):
-        fixed_names = _SERIES_FIXED_ARGUMENTS.get(str(node.operator_id or ""))
-        if not fixed_names:
-            continue
-        for parameter_name, input_node_id in node.arguments:
-            if parameter_name not in fixed_names:
-                continue
-            input_node = nodes[int(input_node_id)]
-            if input_node.kind == "variable" and str(input_node.label) in (parameter_ids or set()):
-                continue
-            if _constant_series_node(int(input_node_id), nodes, memo):
-                continue
-            diagnostics.append(
-                {
-                    "code": "SERIES_CONFIGURATION_MUST_BE_CONSTANT",
-                    "message": (
-                        f"{node.operator_id} 的参数 {parameter_name} 必须是定义级有限数值常量；"
-                        "修改该参数应创建新的指标公式或版本。"
-                    ),
-                    "field": "series_outputs",
-                    "node_id": int(node.node_id),
-                    "operator": node.operator_id,
-                    "parameter": parameter_name,
-                }
-            )
-    if diagnostics:
-        first = diagnostics[0]
-        raise ValidationError(
-            str(first["code"]),
-            str(first["message"]),
-            field="series_outputs",
-            diagnostics=diagnostics,
-        )
 
 
 def _definition_key(definition: Mapping[str, Any]) -> str:
@@ -347,10 +261,12 @@ def _compile_definition(
                 for channel_id, expression in series_expressions(definition).items()
             },
             variable_types=context_types,
+            parameter_names=frozenset(parameter_types),
             dsl_version=str(definition["dsl_version"]),
             operator_registry_version=str(definition["operator_registry_version"]),
         )
-        _validate_fixed_series_configuration(plan, set(parameter_types))
+        raise_on_configuration_violations(plan.nodes, tuple(plan.roots.values()),
+                                          plan.operator_registry_version, set(parameter_types))
         compiled = compile_numba_series_plan(plan)
     except (NumbaPlanCompileError, TypedDslError) as exc:
         diagnostics = [
@@ -1182,20 +1098,9 @@ def _measure_from_semantics_and_range(
 
 
 def _semantic_default_measure(semantic_dimension: str) -> str:
-    direct = {
-        "raw_market_price": "raw_market_price",
-        "adjusted_nav": "adjusted_nav",
-        "reported_nav": "reported_nav",
-        "return_decimal": "return_decimal",
-        "rate_decimal": "rate_decimal",
-        "volume": "volume",
-        "currency_amount": "currency_amount",
-        "count": "count",
-        "calendar_days": "calendar_days",
-        "dimensionless": "dimensionless",
-    }
-    if semantic_dimension in direct:
-        return direct[semantic_dimension]
+    # One table, owned by series_definitions; a local copy would drift from it.
+    if semantic_dimension in SEMANTIC_DEFAULT_MEASURE:
+        return SEMANTIC_DEFAULT_MEASURE[semantic_dimension]
     if semantic_dimension.startswith(("derived:", "squared:", "inverse:")):
         return "derived"
     return "dimensionless"
@@ -1838,33 +1743,35 @@ class TimeSeriesIndicatorService:
             axis_anchor = str(definition["axis_anchor"])
             source = sources[axis_anchor]
             dependencies = set(_array_context_names(plan, parameters))
-            missing = [
+            missing = sorted(
                 name
                 for name in dependencies
                 if name in source.unavailable_variables
                 or name not in source.frame.columns
-            ]
+            )
             if source.frame.empty or missing:
                 labels = "、".join(
                     str(get_variable(name).label if get_variable(name) else name)
                     for name in missing
                 )
-                results.append(
-                    _unavailable_result(
-                        definition,
-                        public_target,
-                        normalized_period,
-                        parameters,
-                        code="VARIABLE_UNAVAILABLE",
-                        message=(
-                            f"缺少时序指标输入：{labels}。"
-                            if labels
-                            else "时序指标日期轴没有可用真实数据。"
-                        ),
-                        as_of=as_of,
-                        data_latest_date=source.data_latest_date,
-                    )
+                details = [source.unavailable_variables[name] for name in missing if name in source.unavailable_variables]
+                if not details and source.frame.empty:
+                    details = list(source.unavailable_variables.values())
+                reason = details[0] if details else None
+                message = "；".join(dict.fromkeys(item["message"] for item in details))
+                if not message:
+                    message = f"缺少时序指标输入：{labels}。" if labels else "时序指标日期轴没有可用真实数据。"
+                record = _unavailable_result(
+                    definition,
+                    public_target,
+                    normalized_period,
+                    parameters,
+                    code=reason["code"] if reason else "VARIABLE_UNAVAILABLE",
+                    message=message,
+                    as_of=as_of,
+                    data_latest_date=source.data_latest_date,
                 )
+                results.append(record)
                 continue
             key = _series_cache_key(
                 definition,
@@ -1975,6 +1882,11 @@ class TimeSeriesIndicatorService:
                 status = "ok" if has_finite and not warnings else (
                     "warning" if has_finite else "unavailable"
                 )
+                if not has_finite and not warnings:
+                    warnings.append(_warning(
+                        "NO_FINITE_SERIES_RESULT",
+                        "输入数据已读取，但当前窗口没有有效指标结果。请检查窗口所需样本数，以及公式是否存在除零、缺失值或不满足的计算条件。",
+                    ))
                 record = {
                     **_result_base(
                         definition,
@@ -2026,6 +1938,9 @@ class TimeSeriesIndicatorService:
                 self.cache.put(key, record)
             cache_misses += 1
             results.append(record)
+
+        for record in results:
+            record["data_context"] = input_date_context(sources[record["axis_anchor"]], as_of)
 
         summary = {
             "total": len(results),

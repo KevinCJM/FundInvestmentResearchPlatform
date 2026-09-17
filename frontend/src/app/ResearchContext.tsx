@@ -160,3 +160,14 @@ export function useResearchDay(): string | null | undefined {
   if (!context || context.noPit === null || context.runMode === null) return undefined
   return context.asOf
 }
+
+/** Read-only identity for discarding late research results; does not create defaults. */
+export function useResearchContextIdentity(): string {
+  const context = useContext(ResearchContextContext)
+  return JSON.stringify(context ? {
+    known: context.noPit !== null && context.runMode !== null,
+    asOf: context.asOf, noPit: context.noPit, runMode: context.runMode,
+    release: context.overrideRelease || context.settings?.settings.active_release_id,
+    override: context.override, effective: context.settings?.effective,
+  } : { known: false })
+}

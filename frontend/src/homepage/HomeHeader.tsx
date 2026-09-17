@@ -40,7 +40,6 @@ export function HomeHeader({ onSearch, onWorkspace }: { onSearch: () => void; on
         </div>
       </nav>
       <div className="home-header-actions">
-        <span className="home-preview-label">{s('landing.researchPlatform')}</span>
         <button type="button" className="home-icon-button home-search-trigger" aria-label={s('landing.searchOpen')} onClick={onSearch}><MagnifyingGlassIcon aria-hidden="true" /></button>
         <label className="home-language"><HomeIcon name="globe" /><span className="sr-only">{s('i18n.language')}</span><select aria-label={s('i18n.language')} value={locale} onChange={event => void chooseLocale(event.target.value)}>{availableLanguages().filter(item => item.enabled).map(item => <option key={item.id} value={item.id}>{item.id === 'zh-CN' ? '中文' : item.label}</option>)}</select></label>
         <button type="button" className="home-avatar" aria-label={s('landing.workspaceOpen')} onClick={onWorkspace}>K</button>

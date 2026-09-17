@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .models import CenterError
+from .price_adjustment import DEFAULT_FACTOR_POLICY
 
 ROOT = Path(__file__).resolve().parents[2]
 # Acquisition adapters own these endpoint groups; the browser never interprets them.
@@ -23,12 +24,16 @@ ACTION_APIS = {
     'index_constituents': ['index_member_all', 'index_weight', 'ci_index_member', 'ths_member', 'dc_member', 'tdx_member'], 'index_coverage': [],
     'macro_cycle': ['cn_gdp', 'cn_cpi', 'cn_ppi', 'cn_pmi'], 'macro_money_credit': ['cn_m', 'sf_month'],
     'macro_rates': ['shibor', 'shibor_lpr', 'repo_daily'], 'macro_release_calendar': ['cn_schedule'],
+    'price_adjustment': [],
 }
 REQUIRES = {
     'nav': ['etf_info', 'calendar'], 'etf_share': ['etf_info', 'calendar'],
     'candle': ['etf_info', 'calendar'], 'fund_nav': ['fund_info', 'calendar'],
     'fund_manager': ['fund_info'], 'fund_scale': ['fund_nav'], 'fund_portfolio': ['fund_info'],
     'fund_dividend': ['fund_info'], 'fund_adjustment': ['etf_info', 'calendar'],
+    # The factor table is an input, not merely an earlier step: the workspace a
+    # task receives is built from `requires`, so omitting it starves the node.
+    'price_adjustment': ['candle', 'fund_adjustment'],
     **{name: ['index_catalog', 'calendar'] for name in (
         'index_domestic', 'index_industry', 'index_concept', 'index_global',
         'index_futures', 'index_valuation', 'index_constituents', 'index_coverage')},
@@ -37,6 +42,20 @@ DATE_FIELDS = [
     {'name': 'start_date', 'label': '历史开始日期', 'data_type': 'date', 'required': True, 'default': '20100101', 'description': '指定数据范围的起点；并非只下载单个产品。'},
     {'name': 'end_date', 'label': '本次截止日期', 'data_type': 'date', 'required': True, 'default': '', 'description': '选择已经完成披露的日期。'},
 ]
+# Derived datasets declare their own calculation contract. The browser renders
+# the choices; the collector owns what each one means.
+ACTION_FIELDS = {
+    'price_adjustment': [{
+        'name': 'factor_policy', 'label': '复权因子口径', 'data_type': 'choice', 'required': True,
+        'default': DEFAULT_FACTOR_POLICY, 'cli_flag': '--adjust-factor-policy',
+        'choices': [
+            {'value': 'source', 'label': '仅数据源因子', 'description': '只使用已下载的复权因子；数据源没有覆盖的标的不产出复权价格。'},
+            {'value': 'source_then_pre_close', 'label': '数据源优先，缺失由前收盘价推导', 'description': '数据源覆盖的标的用数据源因子，其余用 close[t-1]/pre_close[t] 累乘推导。'},
+            {'value': 'pre_close', 'label': '全部由前收盘价推导', 'description': '忽略数据源因子，全部由前收盘价推导；用于核验两条路径是否一致。'},
+        ],
+        'description': '没有选定口径可用时不计算复权 OHLC，依赖复权口径的指标对该标的报为不可计算。',
+    }],
+}
 
 
 @lru_cache(maxsize=1)
@@ -52,13 +71,13 @@ def task_specs() -> dict[str, dict]:
         category = ('指数与基准' if action.startswith('index_') or action == 'etf_index' else
                     '宏观与利率' if action.startswith('macro_') else
                     '公募基金' if action.startswith('fund_') and action not in {'fund_info', 'fund_company', 'fund_adjustment'} else
-                    'ETF' if action in {'nav', 'candle', 'etf_share', 'fund_adjustment'} else '基础信息')
+                    'ETF' if action in {'nav', 'candle', 'etf_share', 'fund_adjustment', 'price_adjustment'} else '基础信息')
         identifier = 'tushare.' + action
         tasks[identifier] = {
             'id': identifier, 'name': label, 'category': category, 'transport': 'tushare',
             'handler': 'tushare_dataset', 'action': action, 'api_slots': ACTION_APIS[action],
             'requires': REQUIRES.get(action, []), 'provides': [action],
-            'parameters': DATE_FIELDS if ACTION_APIS[action] else [],
+            'parameters': DATE_FIELDS if ACTION_APIS[action] else ACTION_FIELDS.get(action, []),
             'output_type': 'market_files_v1', 'network': bool(ACTION_APIS[action]),
             'description': '遍历该数据集全部适用标的，复用采集器的分页、日期分片和断点；未设置标的数量限制。' if ACTION_APIS[action] else '使用明确的前置工作区计算本地派生数据，不访问外部接口。',
         }
@@ -110,12 +129,14 @@ def inspect_task(store, step, capabilities: set[str], *, require_values: bool = 
         value = step.params.get(name, field['default'])
         if not value and require_values:
             raise CenterError('ETL_TASK_PARAMS', f'请填写 {field["label"]}。', 422)
-        if value:
+        if value and field['data_type'] == 'date':
             try:
                 datetime.strptime(str(value), '%Y%m%d')
             except ValueError:
                 raise CenterError('ETL_TASK_PARAMS', '数据集日期必须是有效 YYYYMMDD。', 422) from None
-    if step.params.get('start_date') and step.params.get('end_date') and step.params['start_date'] > step.params['end_date']:
+        if value and field['data_type'] == 'choice' and str(value) not in {c['value'] for c in field['choices']}:
+            raise CenterError('ETL_TASK_PARAMS', f'{field["label"]}不是已登记的选项。', 422)
+    if {'start_date', 'end_date'} <= fields.keys() and step.params.get('start_date') and step.params.get('end_date') and step.params['start_date'] > step.params['end_date']:
         raise CenterError('ETL_TASK_PARAMS', '开始日期不能晚于截止日期。', 422)
     record = {'spec': spec, 'source': None, 'interfaces': {}}
     if spec['transport']:

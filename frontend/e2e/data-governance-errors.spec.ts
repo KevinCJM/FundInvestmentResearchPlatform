@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
 
 const execution = { execution_backend: 'numba_njit_fixed_signature', nopython: true, object_mode: 0, python_fallback: 0, request_time_compilation: 0, kernel_signatures: { coverage_ratio_kernel: ['fixed'] } }
 const quality = {
@@ -12,6 +13,19 @@ const strictSettings = {
   effective: { as_of: '2026-09-01', as_of_source: 'explicit', run_mode: 'STRICT_PIT', run_mode_label: '严格 PIT', data_release_id: null, no_pit: false, label: '站在 2026-09-01 · 严格 PIT' },
   release: null, release_error: null, available_releases: [], can_apply: true,
 }
+
+test('PIT 关闭状态在桌面和平板手机深色导航中保持可读', async ({ page }) => {
+  await page.route('**/api/**', route => new URL(route.request().url()).pathname === '/api/pit/settings'
+    ? route.fulfill({ json: { ...strictSettings, effective: {
+      ...strictSettings.effective, no_pit: true, as_of: null, run_mode: 'RESEARCH', label: '无 PIT 口径 · 使用全部磁盘数据',
+    } } })
+    : route.fulfill({ status: 503, json: { detail: '离线环境' } }))
+  await page.goto('/product-research')
+  if (page.viewportSize()!.width < 1280) await page.locator('button[aria-controls="mobile-navigation"]').click()
+  const badge = page.locator('[data-testid="pit-badge"]:visible')
+  await expect(badge).toHaveText('PIT 关闭')
+  await expect.poll(async () => (await page.evaluate(auditTextContrast)).filter(item => item.text.includes('PIT 关闭'))).toEqual([])
+})
 
 test('质量接口失败不会把未知卡片标绿，重试后真实零值可通过', async ({ page }, testInfo) => {
   let unavailable = true

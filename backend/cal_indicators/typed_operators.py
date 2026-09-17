@@ -50,7 +50,9 @@ ROLLING_OPERATOR_REGISTRY_VERSION = "2.3.0"
 ROLLING_TYPED_COMPILER_VERSION = "typed-numba-4"
 TYPED_DSL_VERSION = "2.4.0"
 TYPED_COMPILER_VERSION = "typed-numba-5"
-TYPED_OPERATOR_REGISTRY_VERSION = "2.4.0"
+WINDOW_OPERATOR_REGISTRY_VERSION = "2.4.0"
+TYPED_OPERATOR_REGISTRY_VERSION = "2.4.1"
+WINDOW_OPERATOR_REGISTRY_VERSIONS = frozenset({WINDOW_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION})
 SUPPORTED_TYPED_DSL_VERSIONS = frozenset(
     {
         LEGACY_TYPED_DSL_VERSION,
@@ -62,6 +64,7 @@ SUPPORTED_TYPED_DSL_VERSIONS = frozenset(
 )
 SUPPORTED_OPERATOR_REGISTRY_VERSIONS = frozenset(
     {
+        WINDOW_OPERATOR_REGISTRY_VERSION,
         LEGACY_OPERATOR_REGISTRY_VERSION,
         COMPAT_OPERATOR_REGISTRY_VERSION,
         PREVIOUS_OPERATOR_REGISTRY_VERSION,
@@ -78,7 +81,7 @@ ROLLING_COMPAT_OPERATOR_IDS = frozenset(
 )
 PUBLIC_OPERATOR_EXCLUSIONS = COMPOSITE_OPERATOR_IDS | ROLLING_COMPAT_OPERATOR_IDS
 PRICE_SEMANTIC_DIMENSIONS = frozenset(
-    {"adjusted_nav", "reported_nav", "raw_market_price"}
+    {"adjusted_nav", "adjusted_market_price", "reported_nav", "raw_market_price"}
 )
 PATH_LEVEL_SEMANTIC_DIMENSIONS = PRICE_SEMANTIC_DIMENSIONS | frozenset(
     {"dimensionless"}
@@ -1522,6 +1525,9 @@ def _difference(value: Any, periods: Any = 1.0) -> np.ndarray:
 
 
 def _probability(value: Any) -> float:
+    """Runtime echo of the ``scalar<probability>`` contract, which is declared
+    exclusive; this only keeps a bad value out of the numeric kernel."""
+
     probability = float(value)
     if not math.isfinite(probability) or not 0.0 < probability < 1.0:
         raise TypedDslError(
@@ -1894,7 +1900,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
                 "basic",
                 (
                     _signature(
-                        (any_numeric, any_numeric),
+                        (any_numeric, "scalar<dimensionless>" if operator_id == "power" else any_numeric),
                         same_numeric,
                         "scalar broadcast; otherwise axes and shape must match",
                     ),
@@ -1930,7 +1936,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
             "basic",
             (
                 _signature(
-                    (any_numeric, "scalar", "scalar"),
+                    (any_numeric, "scalar<const>", "scalar<const>"),
                     same_numeric,
                     "preserve first input",
                 ),
@@ -1947,7 +1953,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
             "basic",
             (
                 _signature(
-                    (series_t, series_t, "scalar"),
+                    (series_t, series_t, "scalar<const>"),
                     series_t,
                     "matching time axes; denominator zero uses default",
                 ),
@@ -2143,7 +2149,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
                 (
                     reduction,
                     _signature(
-                        (reducible_numeric, "scalar"),
+                        (reducible_numeric, "scalar<count:0..>"),
                         "scalar",
                         "reduce all named axes with explicit ddof",
                     ),
@@ -2242,7 +2248,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
             (
                 _signature((series_t, "scalar<count>"), series_t, "preserve time axis"),
                 _signature(
-                    (series_t, "scalar<count>", "scalar<count>"),
+                    (series_t, "scalar<count>", "scalar<count:0..19999>"),
                     series_t,
                     "preserve time axis with explicit ddof",
                 ),
@@ -2250,7 +2256,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
                     (
                         series_t,
                         "scalar<count>",
-                        "scalar<count>",
+                        "scalar<count:0..19999>",
                         "scalar<count>",
                     ),
                     series_t,
@@ -2271,7 +2277,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
             "rolling",
             (
                 _signature(
-                    (series_t, "scalar<count>", "scalar"),
+                    (series_t, "scalar<count>", "scalar<const>"),
                     series_t,
                     "causal recurrence preserving time axis",
                 ),
@@ -2311,7 +2317,10 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
                 (
                     _signature((f"{series_t} | {vector_n}",), output, shape_rule),
                     _signature(
-                        (f"{series_t} | {vector_n}", "scalar<count>"),
+                        # A zero-period lag is the series itself; a zero-period
+                        # difference is not, so only lag opens the lower bound.
+                        (f"{series_t} | {vector_n}",
+                         "scalar<count:0..20000>" if operator_id == "lag" else "scalar<count>"),
                         output,
                         shape_rule,
                     ),
@@ -2361,7 +2370,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
         _spec(
             "quantile",
             "statistics",
-            (_signature((reducible_numeric, "scalar"), "scalar", "reduce all axes"),),
+            (_signature((reducible_numeric, "scalar<probability>"), "scalar", "reduce all axes"),),
             "计算给定概率的分位数。",
             _quantile_type,
             _quantile,
@@ -2428,7 +2437,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
                 "mask",
                 (
                     _signature(
-                        (reducible_numeric, "same-shape mask", "scalar"),
+                        (reducible_numeric, "same-shape mask", "scalar<probability>"),
                         "scalar",
                         "select then quantile",
                     ),
@@ -2824,7 +2833,7 @@ def _canonical_specs() -> tuple[TypedOperatorSpec, ...]:
     return tuple(specs)
 
 
-@lru_cache(maxsize=5)
+@lru_cache(maxsize=6)
 def get_typed_operator_registry(
     version: str = TYPED_OPERATOR_REGISTRY_VERSION,
 ) -> Mapping[str, TypedOperatorSpec]:
@@ -2850,14 +2859,29 @@ def get_typed_operator_registry(
         "cumulative_return": _cumulative_return,
     }
     for spec in _canonical_specs():
+        if version != TYPED_OPERATOR_REGISTRY_VERSION:
+            # Historical protocol adapter: only signatures differ. Every version
+            # still delegates to the same current numeric implementation.
+            def historical_input(contract: str) -> str:
+                if contract == "scalar<const>":
+                    return "scalar"
+                if contract == "scalar<count>":
+                    return "scalar<count:1..>"
+                if contract in {"scalar<count:0..20000>", "scalar<count:0..19999>"}:
+                    return "scalar<count:0..>"
+                return contract
+            spec = replace(spec, version=version, signatures=tuple(
+                replace(signature, inputs=tuple(historical_input(value) for value in signature.inputs))
+                for signature in spec.signatures
+            ))
         if version in {
             LEGACY_OPERATOR_REGISTRY_VERSION,
             COMPAT_OPERATOR_REGISTRY_VERSION,
         } and spec.operator_id in V22_OPERATOR_IDS:
             continue
-        if version not in {ROLLING_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION} and spec.operator_id in V23_OPERATOR_IDS:
+        if version not in {ROLLING_OPERATOR_REGISTRY_VERSION, *WINDOW_OPERATOR_REGISTRY_VERSIONS} and spec.operator_id in V23_OPERATOR_IDS:
             continue
-        if version != TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in V24_OPERATOR_IDS:
+        if version not in WINDOW_OPERATOR_REGISTRY_VERSIONS and spec.operator_id in V24_OPERATOR_IDS:
             continue
         if version == LEGACY_OPERATOR_REGISTRY_VERSION:
             if spec.operator_id not in LEGACY_OPERATOR_IDS:
@@ -2892,7 +2916,7 @@ def get_typed_operator_registry(
                 infer=_reduce_all,
                 evaluate=historical_reducers[spec.operator_id],
             )
-        elif version == TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in {
+        elif version in WINDOW_OPERATOR_REGISTRY_VERSIONS and spec.operator_id in {
             "mean", "min_value", "max_value"
         }:
             spec = replace(
@@ -2905,7 +2929,7 @@ def get_typed_operator_registry(
                     ),
                 ),
             )
-        elif version == TYPED_OPERATOR_REGISTRY_VERSION and spec.operator_id in {"variance", "std"}:
+        elif version in WINDOW_OPERATOR_REGISTRY_VERSIONS and spec.operator_id in {"variance", "std"}:
             spec = replace(
                 spec,
                 signatures=spec.signatures + (
@@ -2915,7 +2939,7 @@ def get_typed_operator_registry(
                         "reduce each logical rolling window with default ddof",
                     ),
                     _signature(
-                        ("window<time,window>[T,W]", "scalar<count>"),
+                        ("window<time,window>[T,W]", "scalar<count:0..>"),
                         "series<time>[T]",
                         "reduce each logical rolling window with explicit ddof",
                     ),
@@ -2930,11 +2954,11 @@ def get_typed_operator_registry(
     from .regression_state import fit_operator_specs
     for spec in (*access_operator_specs(version), *fit_operator_specs(version)):
         registry[spec.operator_id] = spec
-    if version == TYPED_OPERATOR_REGISTRY_VERSION:
+    if version in WINDOW_OPERATOR_REGISTRY_VERSIONS:
         from .rolling_scope import rolling_scope_spec
         scope = rolling_scope_spec(version)
         registry[scope.operator_id] = scope
-    if version in {ROLLING_OPERATOR_REGISTRY_VERSION, TYPED_OPERATOR_REGISTRY_VERSION}:
+    if version in {ROLLING_OPERATOR_REGISTRY_VERSION, *WINDOW_OPERATOR_REGISTRY_VERSIONS}:
         from .drawdown_interval import interval_operator_specs
         for spec in interval_operator_specs(version):
             registry[spec.operator_id] = spec
@@ -2946,7 +2970,7 @@ def get_typed_operator_catalog(
 ) -> dict[str, Any]:
     registry = get_typed_operator_registry(version)
     historical_ids = {spec.operator_id for spec in _canonical_specs()}
-    exclusions = PUBLIC_OPERATOR_EXCLUSIONS if version == TYPED_OPERATOR_REGISTRY_VERSION else frozenset({
+    exclusions = PUBLIC_OPERATOR_EXCLUSIONS if version in WINDOW_OPERATOR_REGISTRY_VERSIONS else frozenset({
         "cumulative_return", "total_return", "annualized_return", "portfolio_returns", "active_returns",
     })
     canonical = sorted(
@@ -2954,7 +2978,7 @@ def get_typed_operator_catalog(
             spec.operator_id: spec
             for spec in registry.values()
             if spec.operator_id not in exclusions
-            and (version == TYPED_OPERATOR_REGISTRY_VERSION or spec.operator_id in historical_ids)
+            and (version in WINDOW_OPERATOR_REGISTRY_VERSIONS or spec.operator_id in historical_ids)
         }.values(),
         key=lambda item: (item.category, item.operator_id),
     )
@@ -2964,6 +2988,7 @@ def get_typed_operator_catalog(
             COMPAT_OPERATOR_REGISTRY_VERSION: COMPAT_TYPED_DSL_VERSION,
             PREVIOUS_OPERATOR_REGISTRY_VERSION: PREVIOUS_TYPED_DSL_VERSION,
             ROLLING_OPERATOR_REGISTRY_VERSION: ROLLING_TYPED_DSL_VERSION,
+            WINDOW_OPERATOR_REGISTRY_VERSION: TYPED_DSL_VERSION,
             TYPED_OPERATOR_REGISTRY_VERSION: TYPED_DSL_VERSION,
         }[version],
         "compiler_version": {
@@ -2971,6 +2996,7 @@ def get_typed_operator_catalog(
             COMPAT_OPERATOR_REGISTRY_VERSION: COMPAT_TYPED_COMPILER_VERSION,
             PREVIOUS_OPERATOR_REGISTRY_VERSION: PREVIOUS_TYPED_COMPILER_VERSION,
             ROLLING_OPERATOR_REGISTRY_VERSION: ROLLING_TYPED_COMPILER_VERSION,
+            WINDOW_OPERATOR_REGISTRY_VERSION: TYPED_COMPILER_VERSION,
             TYPED_OPERATOR_REGISTRY_VERSION: TYPED_COMPILER_VERSION,
         }[version],
         "operator_registry_version": version,

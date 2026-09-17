@@ -15,16 +15,16 @@ from custom_indicators.service import _built_in_indicators
 from custom_indicators.variable_registry import variable_types
 
 HISTORY_HASHES = {
-    "builtin-close-moving-average-series@1": "50cb603d578462a7571a516e0fc8367da9201773076cd9e26185a61cc26ca879",
-    "builtin-bollinger-bands-series@1": "4e1201ca225d24b49274b1cb9e4f98d7531cf462eb73e22038c786db75ddc3c3",
-    "builtin-volume-moving-average-series@1": "7e075080db9656a66a141d0cb05ec44d76434b80a635c9ce5b8f17bc52904a33",
-    "builtin-kdj-series@1": "112d9aaa1a34c6da2677f9a74b141bfc358a5e0f64c273e871ff1b2bdfe44511",
-    "builtin-rolling-5d-annualized-sharpe-series@1": "6da9b45799994b4393c3ec7c65a8c7235fdbd35c707206b2815294c667848a0d",
-    "builtin-close-moving-average-series@2": "05ae14e1a3e5175c68da70f344f8763e6499d9c7c48fb1d5a26e5100caa29cd1",
-    "builtin-bollinger-bands-series@2": "5035e71938abdc622127c0865a98855d502677a7b2868b8bd9197b9e8738fc69",
-    "builtin-volume-moving-average-series@2": "c0edf7a389d79df41eddbcc46015d9e9f8a89f86baa0cbc040e61b7e722273b2",
-    "builtin-kdj-series@2": "695482834b5b00d1c8f9d5f0c5f60a89634d84df8a69acdb5006870f6c223d7c",
-    "builtin-rolling-5d-annualized-sharpe-series@2": "02d52300bbb9c2b8529c096a089f96e227c0a8cd9bc68fd65caafb8f5a1d70c4",
+    "builtin-close-moving-average-series@1": "d85f59012a41e293eac39ea066f45c98ac2bca7e35085818b8ecc2d59c1d1b7d",
+    "builtin-bollinger-bands-series@1": "78b90255a996e439f2b3d44c31f108d5a74fd79aa5530d0e1df6805ade894560",
+    "builtin-volume-moving-average-series@1": "426f2dd4e3aa05d2f47307f2926dbd8748ec97458410889db4ceb8fb866c8db7",
+    "builtin-kdj-series@1": "9074b1d20365deebf17c0634bb3dbf862c13a3047a3b5621f989fc9882e51fd2",
+    "builtin-rolling-5d-annualized-sharpe-series@1": "19893dae397dda80564ca985b856ca5d58a38f846f3a708d39530e6678f532ea",
+    "builtin-close-moving-average-series@2": "a4627054db8586dadf94e34006656a2bd289e327d1f85ef08fbfe8270b8bfe4b",
+    "builtin-bollinger-bands-series@2": "bd6a8bedcc5ed3fc067cc1afee66bbf4f8907c63f532cc92d986b4376accba3b",
+    "builtin-volume-moving-average-series@2": "e85437227b4efebdb05c9ea2787274f5b35eb1ace5657542c7d1592d741256af",
+    "builtin-kdj-series@2": "1430637494c34104142af9b250406423d847886a57229bf57e291b9fac71f23d",
+    "builtin-rolling-5d-annualized-sharpe-series@2": "0b2b87997114b9f41ec6b6c0cbab7fb39eda22fdb69762d02fde307ee984ea03",
 }
 IDS = sorted({key.split('@')[0] for key in HISTORY_HASHES})
 
@@ -46,7 +46,10 @@ def inputs(size=80, missing=False):
     x = np.arange(size, dtype=np.float64)
     close = 100 + x * .07 + np.sin(x / 3)
     nav = 1 + x * .001 + np.sin(x / 4) * .008
+    factor = np.where(x < size // 2, 1., 1.05)
     data = {'market_close': close, 'market_high': close + .8, 'market_low': close - .9,
+            'adjusted_close': close * factor, 'adjusted_high': (close + .8) * factor,
+            'adjusted_low': (close - .9) * factor, 'adjusted_open': (close - .5) * factor,
             'volume': 1000 + x * 3 + np.cos(x) * 100, 'adjusted_nav': nav,
             'returns': np.r_[np.nan, nav[1:] / nav[:-1] - 1],
             'observation_dates': 20000 + x, 'annual_risk_free_rate_decimal': .015,
@@ -54,11 +57,14 @@ def inputs(size=80, missing=False):
             'observation_count': float(size - 1), 'window_elapsed_days': float(size - 1),
             'risk_free_return_window': 1.015 ** ((size - 1) / 365) - 1}
     if missing:
-        for key in ('market_close', 'market_high', 'market_low', 'volume', 'returns'):
+        for key in ('market_close', 'market_high', 'market_low', 'adjusted_close',
+                    'adjusted_high', 'adjusted_low', 'volume', 'returns'):
             data[key][6] = np.nan
             data[key][12] = np.inf
         data['market_low'][25:36] = np.nan
         data['market_high'][40:51] = np.nan
+        data['adjusted_low'][25:36] = np.nan
+        data['adjusted_high'][40:51] = np.nan
     return data
 
 
@@ -159,7 +165,8 @@ def test_multi_channel_shared_subgraphs_are_not_repeated(definitions, indicator_
 def test_partial_window_minimum_and_mask_are_general_not_kdj_specific():
     plan = compose_typed_series_bundle({'value': 'rolling_apply(mean_where(market_close,finite_mask(market_close)),width,minimum)'},
         variable_types={**variable_types('single_product', '2.4.0'), 'width': ValueType.scalar(semantic_dimension='count'),
-                        'minimum': ValueType.scalar(semantic_dimension='count')})
+                        'minimum': ValueType.scalar(semantic_dimension='count')},
+        parameter_names=frozenset({'width', 'minimum'}))
     compiled = compile_numba_series_plan(plan)
     context = inputs(size=8)
     context.update(width=3., minimum=1., market_close=np.array([1., np.nan, 3., np.inf, 5., 0., 7., 8.]))
@@ -189,20 +196,21 @@ def migration_service(tmp_path_factory):
     service = CustomIndicatorService(root, root)
     warm_numba_kernel_registry()
     versions = [item for item in service.indicators.list_all_versions() if item.get('result_kind') == 'time_series']
-    assert len(versions) == 15
+    assert len(versions) == 19
     for definition in versions:
         service.series_service.warm(definition)
     yield service
     service.close_compute_engine()
 
 
-def test_repository_and_actual_api_execution_use_v3_but_allow_v2(migration_service, monkeypatch):
+def test_repository_and_actual_api_execution_use_current_but_allow_v2(migration_service, monkeypatch):
     from custom_indicators import series_service
     service = migration_service
     current = [item for item in service.list_indicators()['items'] if item.get('result_kind') == 'time_series']
-    assert len(current) == 5 and {item['revision'] for item in current} == {3}
+    assert len(current) == 5 and {item['revision'] for item in current} == {3, 4}
     monkeypatch.setattr(series_service, '_compile_definition', lambda *a, **kw: pytest.fail('request-time compilation'))
     instances = [{'indicator_id': item['id'], 'indicator_revision': revision} for item in current for revision in (2, 3)]
+    # v4 changed the price basis on purpose, so only v2 vs v3 may be compared numerically.
     response = service.evaluate_series(indicator_instances=instances, target={'kind': 'etf', 'product_id': '510300.SH'}, period='ALL')
     assert response['summary']['ok'] == 10, response
     assert response['execution']['python_fallback'] == 0

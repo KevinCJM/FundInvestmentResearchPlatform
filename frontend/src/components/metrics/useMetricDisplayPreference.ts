@@ -131,3 +131,69 @@ export function useMetricDisplayPreference(
 
   return [preference, setPreference] as const
 }
+
+const columnsKey = (page: string, contextKind: IndicatorContextDomain) =>
+  `indicator-period-columns:v1:${page}:${contextKind}`
+
+const readColumns = (key: string, legacyKey: string): string[] | null => {
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string')
+    }
+    // First visit after the per-indicator period select became shared columns:
+    // the distinct periods the reader had chosen are exactly the columns they
+    // were already looking at.
+    const legacy = window.localStorage.getItem(legacyKey)
+    if (!legacy) return null
+    const parsed = JSON.parse(legacy) as Partial<MetricDisplayPreference>
+    const periods = Object.values(parsed.periodsByIndicator ?? {}).filter((item): item is string => typeof item === 'string')
+    return periods.length ? [...new Set(periods)] : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Which periods the metric board shows as columns.
+ *
+ * Kept apart from `useMetricDisplayPreference`: the comparison pages ask one
+ * period of every indicator, this board asks every column of every indicator.
+ * Folding both into one stored shape would give three pages a field they never
+ * read.
+ */
+export function useMetricPeriodColumns(
+  page: string,
+  contextKind: IndicatorContextDomain,
+  defaultPeriod: string,
+  availablePeriods: string[],
+  maxColumns: number,
+) {
+  const key = useMemo(() => columnsKey(page, contextKind), [contextKind, page])
+  const legacyKey = useMemo(() => storageKey(2, page, contextKind), [contextKind, page])
+  const [columns, setColumns] = useState<string[]>([defaultPeriod])
+
+  useEffect(() => {
+    const stored = readColumns(key, legacyKey)
+    if (stored?.length) setColumns(stored)
+  }, [key, legacyKey])
+
+  useEffect(() => {
+    if (availablePeriods.length === 0) return
+    setColumns((current) => {
+      const allowed = new Set(availablePeriods)
+      const kept = [...new Set(current.filter((item) => allowed.has(item)))].slice(0, maxColumns)
+      const next = kept.length > 0
+        ? kept
+        : [allowed.has(defaultPeriod) ? defaultPeriod : availablePeriods[0]]
+      return next.join('|') === current.join('|') ? current : next
+    })
+  }, [availablePeriods.join('|'), defaultPeriod, maxColumns])
+
+  useEffect(() => {
+    window.localStorage.setItem(key, JSON.stringify(columns))
+  }, [columns, key])
+
+  return [columns, setColumns] as const
+}

@@ -111,10 +111,10 @@ def test_all_35_fused_builtins_match_typed_runtime(tmp_path: Path) -> None:
     )
     nav = np.concatenate((np.asarray([1.0]), np.cumprod(1.0 + returns)))
     volume = np.linspace(1000.0, 2000.0, nav.size)
-    market_high = nav * 10.2
-    market_low = nav * 9.8
+    adjusted_high = nav * 10.2
+    adjusted_low = nav * 9.8
     values = np.ascontiguousarray(
-        np.vstack((nav, volume, market_high, market_low)), dtype=np.float64
+        np.vstack((nav, volume, adjusted_high, adjusted_low)), dtype=np.float64
     )
     definitions = [
         definition
@@ -171,8 +171,8 @@ def test_all_35_fused_builtins_match_typed_runtime(tmp_path: Path) -> None:
             "log_returns": np.log1p(returns),
             "adjusted_nav": nav,
             "volume": volume,
-            "market_high": market_high,
-            "market_low": market_low,
+            "adjusted_high": adjusted_high,
+            "adjusted_low": adjusted_low,
             "observation_count": float(returns.size),
             "window_elapsed_days": elapsed_days,
             **service._risk_free_context(definition, elapsed_days),

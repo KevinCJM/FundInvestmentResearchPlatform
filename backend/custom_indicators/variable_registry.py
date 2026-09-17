@@ -14,7 +14,7 @@ from typing import Any, Iterable, Literal
 from cal_indicators.typed_types import ValueType
 
 
-VARIABLE_REGISTRY_VERSION = "2.1.0"
+VARIABLE_REGISTRY_VERSION = "3.0.0"
 DATA_CONTRACT_VERSION = "tushare-eod-v2"
 CONTEXT_SCHEMA_VERSION = "typed-context-v2"
 
@@ -25,6 +25,10 @@ SEMANTIC_ROLES = {
     "returns": "ordinary_return",
     "log_returns": "log_return",
     "adjusted_nav": "adjusted_nav_level",
+    "adjusted_open": "adjusted_open_price",
+    "adjusted_high": "adjusted_high_price",
+    "adjusted_low": "adjusted_low_price",
+    "adjusted_close": "adjusted_close_price",
     "market_open": "raw_open_price",
     "market_high": "raw_high_price",
     "market_low": "raw_low_price",
@@ -74,6 +78,9 @@ class VariableDefinition:
     aliases: tuple[str, ...] = ()
     conditional: bool = False
     alternative_variables: tuple[str, ...] = ()
+    # Retired inputs stay executable so saved definitions and frozen built-in
+    # revisions replay unchanged; they are no longer offered for new formulas.
+    retired: bool = False
 
     def value_type(self) -> ValueType:
         kwargs = {
@@ -184,6 +191,7 @@ def _series(
     conditional: bool = False,
     alternatives: tuple[str, ...] = (),
     shape: str = "T",
+    retired: bool = False,
 ) -> VariableDefinition:
     return VariableDefinition(
         variable_id,
@@ -206,6 +214,7 @@ def _series(
         aliases,
         conditional,
         alternatives,
+        retired,
     )
 
 
@@ -253,6 +262,58 @@ _VARIABLES = (
         shape="L",
     ),
     _series(
+        "adjusted_open",
+        "复权开盘价",
+        r"\mathbf{o}_{\mathrm{adj}}",
+        "adjusted_market_price",
+        "adjusted_market",
+        "price",
+        "ETF 后复权日 K 开盘价＝未复权开盘价 × 当日复权因子；无复权因子时不可计算。",
+        products=("etf",),
+        dataset="candle",
+        field="adj_open",
+        conditional=True,
+    ),
+    _series(
+        "adjusted_high",
+        "复权最高价",
+        r"\mathbf{h}_{\mathrm{adj}}",
+        "adjusted_market_price",
+        "adjusted_market",
+        "price",
+        "ETF 后复权日 K 最高价；无复权因子时不可计算。",
+        products=("etf",),
+        dataset="candle",
+        field="adj_high",
+        conditional=True,
+    ),
+    _series(
+        "adjusted_low",
+        "复权最低价",
+        r"\mathbf{l}_{\mathrm{adj}}",
+        "adjusted_market_price",
+        "adjusted_market",
+        "price",
+        "ETF 后复权日 K 最低价；无复权因子时不可计算。",
+        products=("etf",),
+        dataset="candle",
+        field="adj_low",
+        conditional=True,
+    ),
+    _series(
+        "adjusted_close",
+        "复权收盘价",
+        r"\mathbf{c}_{\mathrm{adj}}",
+        "adjusted_market_price",
+        "adjusted_market",
+        "price",
+        "ETF 后复权日 K 收盘价；技术类指标的价格口径，与复权净值同为含分红再投资的路径，但两者数值不同，不能混用。",
+        products=("etf",),
+        dataset="candle",
+        field="adj_close",
+        conditional=True,
+    ),
+    _series(
         "market_open",
         "开盘价",
         r"\mathbf{o}",
@@ -264,7 +325,8 @@ _VARIABLES = (
         dataset="candle",
         field="open",
         aliases=("open_price",),
-        alternatives=("adjusted_nav", "returns"),
+        alternatives=("adjusted_open",),
+        retired=True,
     ),
     _series(
         "market_high",
@@ -278,7 +340,8 @@ _VARIABLES = (
         dataset="candle",
         field="high",
         aliases=("high_price",),
-        alternatives=("adjusted_nav", "returns"),
+        alternatives=("adjusted_high",),
+        retired=True,
     ),
     _series(
         "market_low",
@@ -292,7 +355,8 @@ _VARIABLES = (
         dataset="candle",
         field="low",
         aliases=("low_price",),
-        alternatives=("adjusted_nav", "returns"),
+        alternatives=("adjusted_low",),
+        retired=True,
     ),
     _series(
         "market_close",
@@ -306,7 +370,8 @@ _VARIABLES = (
         dataset="candle",
         field="close",
         aliases=("close_price",),
-        alternatives=("adjusted_nav", "returns"),
+        alternatives=("adjusted_close",),
+        retired=True,
     ),
     _series(
         "previous_close",
@@ -320,7 +385,8 @@ _VARIABLES = (
         dataset="candle",
         field="pre_close",
         aliases=("pre_close_price",),
-        alternatives=("adjusted_nav", "returns"),
+        alternatives=("adjusted_close",),
+        retired=True,
     ),
     _series(
         "price_change",
@@ -333,7 +399,8 @@ _VARIABLES = (
         products=("etf",),
         dataset="candle",
         field="change",
-        alternatives=("returns",),
+        alternatives=("adjusted_close", "returns"),
+        retired=True,
     ),
     _series(
         "price_return",
@@ -349,6 +416,7 @@ _VARIABLES = (
         transform="pct_chg / 100",
         aliases=("pct_change", "pct_change_decimal"),
         alternatives=("returns", "log_returns"),
+        retired=True,
     ),
     _series(
         "volume",
@@ -413,6 +481,8 @@ _VARIABLES = (
         dataset="nav",
         field="unit_nav",
         conditional=True,
+        alternatives=("adjusted_nav",),
+        retired=True,
     ),
     _series(
         "accumulated_nav",
@@ -426,6 +496,8 @@ _VARIABLES = (
         field="accum_nav",
         aliases=("accum_nav",),
         conditional=True,
+        alternatives=("adjusted_nav",),
+        retired=True,
     ),
     _series(
         "accumulated_dividend",
@@ -638,7 +710,33 @@ def allowed_variables(context: ContextKind) -> set[str]:
         item.variable_id
         for item in _VARIABLES
         if context in item.domains
+        if not item.retired
     }
+
+
+def retired_variable_replacement(variable_id: str) -> tuple[str, ...] | None:
+    """Replacements for a retired input, or None when the input is still open."""
+
+    definition = VARIABLES_BY_ID.get(canonical_variable_id(variable_id))
+    if definition is None or not definition.retired:
+        return None
+    return definition.alternative_variables
+
+
+def retired_variable_message(variable_ids: Iterable[str]) -> str | None:
+    """One sentence naming each retired input and what replaces it."""
+
+    parts = []
+    for variable_id in variable_ids:
+        replacements = retired_variable_replacement(variable_id)
+        if replacements is None:
+            continue
+        definition = VARIABLES_BY_ID[canonical_variable_id(variable_id)]
+        names = "、".join(
+            f"{VARIABLES_BY_ID[item].label}({item})" for item in replacements if item in VARIABLES_BY_ID
+        )
+        parts.append(f"{definition.label}({definition.variable_id}) 不再作为指标入参，请改用 {names}")
+    return "；".join(parts) + "。" if parts else None
 
 
 def variable_catalog(context: ContextKind | None = None) -> list[dict[str, Any]]:
@@ -646,11 +744,15 @@ def variable_catalog(context: ContextKind | None = None) -> list[dict[str, Any]]
         item.to_catalog_entry()
         for item in _VARIABLES
         if context is None or context in item.domains
+        if not item.retired
     ]
 
 
 def variable_latex_symbols(context: ContextKind | None = None) -> dict[str, str]:
-    """Return the canonical mathematical symbol for each executable variable."""
+    """Return the canonical mathematical symbol for each executable variable.
+
+    Retired inputs keep their symbol so persisted formulas still round-trip.
+    """
 
     return {
         item.variable_id: item.latex
@@ -698,6 +800,8 @@ __all__ = [
     "canonicalize_variables",
     "get_variable",
     "normalize_variable_latex",
+    "retired_variable_message",
+    "retired_variable_replacement",
     "variable_latex_symbols",
     "variable_catalog",
     "variable_semantic_role",

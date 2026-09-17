@@ -41,9 +41,9 @@ BUILTIN_METRIC_IDS = (
     "builtin-adjusted-nav-r-squared-v2",
     "builtin-average-volume-v2",
     "builtin-volume-volatility-v2",
-    "builtin-highest-market-price-v2",
-    "builtin-lowest-market-price-v2",
-    "builtin-market-high-low-range-v2",
+    "builtin-highest-adjusted-price-v3",
+    "builtin-lowest-adjusted-price-v3",
+    "builtin-adjusted-high-low-range-v3",
 )
 BUILTIN_METRIC_CODE = {
     indicator_id: code for code, indicator_id in enumerate(BUILTIN_METRIC_IDS)

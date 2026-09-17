@@ -33,7 +33,7 @@ export default function VariableImport({ domain, onImported }: { domain: Researc
     finally { setBusy(false) }
   }
   return <section className={`${sectionClass} space-y-4`}>
-    <div><h3 className="font-semibold">导入自有因子或宏观时序</h3><p className="mt-1 text-sm text-slate-500">只有缺少所需标准时序时才需要导入。结果保存到统一数据磁盘，原始数值不变。</p></div>
+    <div><h3 className="font-semibold">导入自有因子或宏观时序</h3><p className="mt-1 text-sm text-slate-600">只有缺少所需标准时序时才需要导入。结果保存到统一数据磁盘，原始数值不变。</p></div>
     <Feedback error={error} notice={notice} />
     <fieldset disabled={busy} className="grid min-w-0 gap-4 sm:grid-cols-2">
       <Field label="时序名称"><input className={inputClass} value={fields.name} onChange={event => patch({ name: event.target.value })} /></Field>
@@ -43,7 +43,7 @@ export default function VariableImport({ domain, onImported }: { domain: Researc
       {(fields.transform === 'difference' || fields.transform === 'identity') && <Field label="变动量单位"><select className={inputClass} value={fields.unit} onChange={event => patch({ unit: event.target.value as SeriesImport['unit'] })}>{fields.transform === 'identity' && <option value="return">简单收益率（小数）</option>}<option value="bp">利率基点（bp）</option><option value="pp">百分点</option><option value="points">点</option></select></Field>}
       <fieldset className="min-w-0"><legend className="text-sm font-medium text-slate-800">用于哪一层</legend><div className="mt-2 flex flex-wrap gap-3">{([['driver', '事件驱动'], ['macro', '宏观变量'], ['market', '市场风险因子']] as const).map(([id, label]) => <label key={id} className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={fields.roles.includes(id)} onChange={event => patch({ roles: event.target.checked ? [...fields.roles, id] : fields.roles.filter(role => role !== id) })} />{label}</label>)}</div></fieldset>
       <div className="sm:col-span-2"><p className="rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">{meanings[fields.transform].hint}<br />CSV 表头：<code>date,value,available_at</code>。日期使用 YYYY-MM-DD。available_at 可省略，但省略后只视为导入时才可得，不伪造历史发布时间。自有数据不认证为完整历史 PIT。</p></div>
-      <Field label="CSV 时序文件"><input type="file" accept=".csv,text/csv" className={`${inputClass} file:mr-3 file:rounded file:border-0 file:bg-slate-100 file:px-3 file:py-1`} onChange={event => void selectFile(event.target.files?.[0])} />{fileName && <span className="mt-1 block break-all text-xs text-slate-500">已选择：{fileName}</span>}</Field>
+      <Field label="CSV 时序文件"><input type="file" accept=".csv,text/csv" className={`${inputClass} file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1`} onChange={event => void selectFile(event.target.files?.[0])} />{fileName && <span className="mt-1 block break-all text-xs text-slate-600">已选择：{fileName}</span>}</Field>
     </fieldset>
     <div className="flex flex-wrap gap-3"><button type="button" className={primaryClass} disabled={busy || !fields.csv_text || !fields.name.trim() || !fields.source_label.trim() || !fields.roles.length} onClick={() => void submit()}>{busy ? '校验并保存中…' : '校验并保存时序'}</button>{fields.csv_text && <button type="button" className={buttonClass} disabled={busy} onClick={() => { patch({ csv_text: '' }); setFileName('') }}>清除选择</button>}</div>
   </section>

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
 
 const presentation = {
   indicator_id: 'builtin-total-return-v2', revision: 1, name: '累计收益率', source: 'built_in',
@@ -186,14 +187,34 @@ async function mockMetricDisplayApi(page: Page) {
           ts_code: '510300.SH', fund_type: 'ETF', list_date: '2012-05-28', delist_date: '2026-12-31',
         },
         metrics: { issue_amount: 100, m_fee: 0.5, c_fee: 0.1 },
-        timeseries: Array.from({ length: 25 }, (_, index) => {
+        timeseries: [],
+      } })
+    }
+    if (url.pathname === '/api/instruments/products/510300.SH/price-series') {
+      const basis = url.searchParams.get('basis') ?? 'raw_kline'
+      return route.fulfill({ json: {
+        product_id: '510300.SH', kind: 'etf', basis,
+        label: basis === 'adjusted_nav' ? '复权净值走势' : basis === 'adjusted_kline' ? '后复权 K 线' : '不复权 K 线（原始行情）',
+        available: true, reason: null, warnings: [],
+        points: Array.from({ length: 25 }, (_, index) => {
           const close = 3 + index * 0.002 + ((index % 5) - 2) * 0.005
-          return {
-            date: new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10),
-            open: close - 0.002, high: close + 0.01, low: close - 0.01, close,
-            volume: 1000 + index * 10,
-          }
+          return basis === 'adjusted_nav'
+            ? { date: new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10), open: null, high: null, low: null, close, volume: null }
+            : {
+              date: new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10),
+              open: close - 0.002, high: close + 0.01, low: close - 0.01, close, volume: 1000 + index * 10,
+            }
         }),
+        bases: [
+          { id: 'adjusted_nav', label: '复权净值走势', description: '复权净值折线；分红再投资后的真实收益路径。', available: true, reason: null },
+          { id: 'adjusted_kline', label: '后复权 K 线', description: '原始开高低收乘以复权因子。', available: false, reason: '该产品缺少复权因子数据。' },
+          { id: 'raw_kline', label: '不复权 K 线（原始行情）', description: '交易所原始开高低收与成交量。', available: true, reason: null },
+        ],
+        execution: {
+          execution_backend: 'numba_njit_fixed_signature', nopython: true,
+          object_mode: 0, python_fallback: 0, request_time_compilation: 0,
+          kernel_signatures: { ui_contract_fixture: ['fixed'] },
+        },
       } })
     }
     if (url.pathname === '/api/historical-regimes/runs') {
@@ -243,7 +264,7 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   await mockMetricDisplayApi(page)
   await page.goto('/product-research/products/510300.SH?kind=etf')
 
-  await expect(page.getByRole('heading', { name: '自定义研究指标' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '研究指标' })).toBeVisible()
   await page.getByText('产品资料与规模口径', { exact: true }).click()
   await expect(page.getByLabel('上市日期：2012-05-28')).toBeVisible()
   await expect(page.getByLabel('退市日期：2026-12-31')).toBeVisible()
@@ -271,11 +292,26 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   await page.getByRole('button', { name: '分析设置', exact: true }).click()
   await expect(page.getByLabel('收益数据口径')).not.toBeVisible()
   await page.getByRole('tab', { name: '走势与指标', exact: true }).click()
+  await expect(page.getByRole('radio', { name: '不复权 K 线（原始行情）' })).toBeChecked()
+  await expect(page.getByRole('radio', { name: '后复权 K 线' })).toBeDisabled()
+  await page.getByRole('radio', { name: '复权净值走势' }).check()
+  await expect(page.getByText('复权净值折线；分红再投资后的真实收益路径。')).toBeVisible()
   await expect(page.getByText('1.83%')).toBeVisible()
-  await expect(page.getByText(/1Y · 2025-01-06 至 2026-01-06 · 250 个观察值/)).toBeVisible()
-  await page.getByLabel('累计收益率计算区间').selectOption('1M')
-  await expect(page.getByLabel('累计收益率计算区间')).toHaveValue('1M')
-  await expect(page.getByText(/1M · 2025-12-06 至 2026-01-06 · 21 个观察值/)).toBeVisible()
+  const metricTable = page.getByRole('table', { name: '研究指标计算结果', exact: true })
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toContainText('2025-01-06 至 2026-01-06')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toContainText('250 个观察值')
+  await expect(page.getByRole('button', { name: '移除区间 近 1 年' })).toBeDisabled()
+  await page.getByLabel('添加计算区间').selectOption('1M')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 月/ })).toContainText('2025-12-06 至 2026-01-06')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 月/ })).toContainText('21 个观察值')
+  await expect(metricTable.getByText('1.83%')).toHaveCount(2)
+  const researchPanel = page.getByRole('region', { name: '研究指标', exact: true })
+  await researchPanel.screenshot({ path: testInfo.outputPath('metric-period-columns.png') })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  await page.getByRole('button', { name: '移除区间 近 1 年' }).click()
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '移除区间 近 1 月' })).toBeDisabled()
   await page.getByRole('button', { name: /选择研究指标/ }).click()
   const selectorPanel = page.getByRole('dialog', { name: '选择研究指标面板' })
   await expect(selectorPanel).toBeVisible()
@@ -287,7 +323,7 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   expect(panelBox!.x).toBeGreaterThanOrEqual(15)
   expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(viewportWidth - 15)
   await page.getByRole('button', { name: '完成' }).click()
-  await page.getByRole('button', { name: '查看定义与口径' }).click()
+  await metricTable.getByRole('button', { name: '累计收益率', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '累计收益率' })).toBeVisible()
   await expect(page.getByText('真实数据、严格窗口、缺失不填充')).toBeVisible()
   await expect(page.getByTestId('metric-formula-latex').locator('.katex')).toBeVisible()

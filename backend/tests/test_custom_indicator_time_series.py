@@ -36,11 +36,17 @@ from custom_indicators.service import CustomIndicatorService  # noqa: E402
 from custom_indicators.variable_registry import variable_types  # noqa: E402
 from services import custom_indicator_routes  # noqa: E402
 
+from data_sources.price_adjustment import attach_adjusted_prices
+
 
 def _write_market_data(root: Path, count: int = 80) -> pd.DataFrame:
     dates = pd.bdate_range("2025-01-02", periods=count)
     positions = np.arange(count, dtype=np.float64)
     close = 10.0 + positions * 0.04 + np.sin(positions / 4.0) * 0.25
+    # One ex-dividend day, so adjusted and unadjusted prices actually differ.
+    previous_close = np.r_[close[0], close[:-1]]
+    dividend_index = min(40, count - 1)
+    previous_close[dividend_index] -= 0.30
     frame = pd.DataFrame(
         {
             "ts_code": "510300.SH",
@@ -49,13 +55,14 @@ def _write_market_data(root: Path, count: int = 80) -> pd.DataFrame:
             "high": close + 0.20,
             "low": close - 0.20,
             "close": close,
-            "pre_close": np.r_[close[0], close[:-1]],
-            "change": np.r_[0.0, np.diff(close)],
-            "pct_chg": np.r_[0.0, np.diff(close) / close[:-1] * 100.0],
+            "pre_close": previous_close,
+            "change": close - previous_close,
+            "pct_chg": (close / previous_close - 1.0) * 100.0,
             "vol": 1_000.0 + positions * 10.0,
             "amount": (1_000.0 + positions * 10.0) * close,
         }
     )
+    frame, _ = attach_adjusted_prices(frame, None, policy="pre_close")
     frame.to_parquet(root / "etf_daily_candle_df.parquet", index=False)
     adjusted_nav = close / close[0]
     pd.DataFrame(
@@ -99,7 +106,7 @@ def _warm_series(service: CustomIndicatorService) -> None:
     warm_numba_kernel_registry()
     definitions = [item for item in service.indicators.list_all_versions()
                    if item.get("result_kind") == "time_series"]
-    assert len(definitions) == 15
+    assert len(definitions) == 19
     for definition in definitions:
         service.series_service.warm(definition)
 
@@ -154,7 +161,7 @@ def test_five_builtin_time_series_indicators_use_fixed_formulas_and_match_refere
         if item.get("result_kind") == "time_series"
     }
     assert all(not item.get("parameter_schema") for item in definitions.values())
-    assert definitions["builtin-close-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(market_close), 20, observation_dates, annual_risk_free_rate_decimal)"
+    assert definitions["builtin-close-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(adjusted_close), 20, observation_dates, annual_risk_free_rate_decimal)"
     assert definitions["builtin-volume-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(volume), 10, observation_dates, annual_risk_free_rate_decimal)"
     rolling_definition = definitions["builtin-rolling-5d-annualized-sharpe-series"]
     assert rolling_definition["series_outputs"][0]["expression"] == (
@@ -196,8 +203,11 @@ def test_five_builtin_time_series_indicators_use_fixed_formulas_and_match_refere
     assert response["execution"]["python_operator_calls"] == 0
     assert response["execution"]["request_time_compilation"] == 0
     by_id = {item["indicator_id"]: item for item in response["results"]}
-    close = frame["close"].to_numpy(dtype=np.float64)
+    # Current built-ins run on the back-adjusted quote basis, so the references
+    # must come from the adjusted columns, not the raw ones.
+    close = frame["adj_close"].to_numpy(dtype=np.float64)
     volume = frame["vol"].to_numpy(dtype=np.float64)
+    assert not np.allclose(close, frame["close"].to_numpy(dtype=np.float64))
 
     ma = by_id["builtin-close-moving-average-series"]
     expected_ma = pd.Series(close).rolling(20, min_periods=20).mean().to_numpy()
@@ -220,8 +230,8 @@ def test_five_builtin_time_series_indicators_use_fixed_formulas_and_match_refere
 
     kdj = by_id["builtin-kdj-series"]
     expected_kdj = kdj_kernel(
-        np.ascontiguousarray(frame["high"].to_numpy(dtype=np.float64)),
-        np.ascontiguousarray(frame["low"].to_numpy(dtype=np.float64)),
+        np.ascontiguousarray(frame["adj_high"].to_numpy(dtype=np.float64)),
+        np.ascontiguousarray(frame["adj_low"].to_numpy(dtype=np.float64)),
         np.ascontiguousarray(close),
         9,
         3,
@@ -288,7 +298,7 @@ def test_rolling_sharpe_zero_volatility_is_missing_not_a_full_plan_failure(
     )
     result = response["results"][0]
     assert result["status"] == "unavailable"
-    assert result["warnings"] == []
+    assert result["warnings"][0]["code"] == "NO_FINITE_SERIES_RESULT"
     assert len(result["channels"]) == 1
     assert set(result["channels"][0]["values"]) == {None}
     assert response["execution"]["python_fallback"] == 0
@@ -431,8 +441,8 @@ def test_validation_exposes_true_math_latex_measure_and_inferred_history(tmp_pat
         assert "rolling_mean" not in latex
         assert r"\begin{cases}" not in latex
         assert r"\mathrm{NaN}" not in latex
-        assert item["resolved_output_measure"] == "raw_market_price"
-        assert item["semantic_dimension"] == "raw_market_price"
+        assert item["resolved_output_measure"] == "adjusted_market_price"
+        assert item["semantic_dimension"] == "adjusted_market_price"
     assert r"\mathcal{R}_{20}" in validation["output_inferences"]["middle"]["display_latex"]
     assert r"\mathcal{R}_{20}" in validation["output_inferences"]["upper"]["display_latex"]
     assert all("latex_fragment" in node for node in validation["dag"]["nodes"])
@@ -514,7 +524,7 @@ def test_time_series_excel_export_uses_raw_data_fixed_literals_and_formulas(tmp_
         assert any("AVERAGE(" in formula for formula in formulas)
         # The reused scalar std compiler writes sqrt(DEVSQ/(COUNT-ddof)).
         assert any("SQRT(DEVSQ(" in formula and "-(0)" in formula for formula in formulas)
-        assert any("直接入参 · 收盘价" in text for text in texts)
+        assert any("直接入参 · 复权收盘价" in text for text in texts)
         assert any("原生 Excel 公式（可复制）" in text for text in texts)
         assert not any("直接入参 · window" in text for text in texts)
         assert not any(
@@ -635,7 +645,7 @@ def test_time_series_excel_route_returns_xlsx_without_runtime_parameters(
     assert "AGGREGATE(" not in worksheet_xml
     assert "rolling_mean(" not in worksheet_xml
     assert "S01_" not in worksheet_xml
-    assert "直接入参 · 收盘价" in worksheet_xml
+    assert "直接入参 · 复权收盘价" in worksheet_xml
     assert "直接入参 · window" not in worksheet_xml
 
 
@@ -841,7 +851,7 @@ def test_rolling_scalar_draft_route_returns_locked_provenance(
 
 def test_missing_ohlc_is_unavailable_and_never_filled(tmp_path: Path) -> None:
     frame = _write_market_data(tmp_path)
-    frame.drop(columns=["high", "low"]).to_parquet(
+    frame.drop(columns=["high", "low", "adj_high", "adj_low"]).to_parquet(
         tmp_path / "etf_daily_candle_df.parquet", index=False
     )
     service = CustomIndicatorService(tmp_path, tmp_path)
@@ -853,7 +863,7 @@ def test_missing_ohlc_is_unavailable_and_never_filled(tmp_path: Path) -> None:
     )
     assert response["results"][0]["status"] == "unavailable"
     assert response["results"][0]["dates"] == []
-    assert response["results"][0]["warnings"][0]["code"] == "VARIABLE_UNAVAILABLE"
+    assert response["results"][0]["warnings"][0]["code"] == "SOURCE_FIELD_MISSING"
 
 
 def test_output_measure_catalog_and_incompatible_override_are_fail_closed(tmp_path: Path) -> None:
@@ -1055,7 +1065,7 @@ def test_history_required_scalar_indicator_fails_closed(
 ) -> None:
     service, _frame = _service(tmp_path)
     source = service.create_indicator({
-        "name": "需要窗口外平滑状态", "expression": "mean(recursive_smooth(market_close, 3, 50))",
+        "name": "需要窗口外平滑状态", "expression": "mean(recursive_smooth(adjusted_close, 3, 50))",
     })
     with pytest.raises(ValidationError) as error:
         service.derive_rolling_series(

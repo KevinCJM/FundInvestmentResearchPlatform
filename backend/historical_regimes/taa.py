@@ -23,7 +23,7 @@ WEIGHT_TOLERANCE = 1e-6
 MAX_ASSETS = 100
 MAX_RETURN_ROWS = 20000
 TAA_ENGINE_VERSION = "taa-njit-1.0.0"
-TAA_KERNEL_VERSION = "1.1.0"
+TAA_KERNEL_VERSION = "2.0.0"
 
 _READONLY_VECTOR = types.Array(float64, 1, "A", readonly=True)
 _READONLY_MATRIX = types.Array(float64, 2, "A", readonly=True)
@@ -44,8 +44,15 @@ _TAA_CORE_SIGNATURE = types.Tuple(
 )
 
 
-@njit(_TAA_CORE_SIGNATURE, cache=True, nogil=True)
-def _taa_path_kernel(
+_TAA_RECURSIVE_SIGNATURE = types.Tuple(
+    (float64[:, ::1], float64[:, ::1], float64[:, ::1], float64[::1])
+)(_READONLY_MATRIX, _READONLY_MATRIX, _READONLY_FLAGS, _READONLY_MATRIX,
+  _READONLY_VECTOR, float64, float64, float64, float64,
+  _READONLY_FLAGS, _READONLY_FLAGS, types.int64, types.int64, float64, types.boolean, _READONLY_MATRIX, types.Array(types.int64, 1, "A", readonly=True), types.Array(types.int64, 1, "A", readonly=True), types.boolean)
+
+
+@njit(_TAA_RECURSIVE_SIGNATURE, cache=True, nogil=True)
+def _taa_recursive_kernel(
     asset_returns: np.ndarray,
     probabilities: np.ndarray,
     use_signal: np.ndarray,
@@ -55,13 +62,24 @@ def _taa_path_kernel(
     maximum_weight: float,
     maximum_absolute_tilt: float,
     transaction_cost_bps: float,
+    decisions: np.ndarray,
+    executions: np.ndarray,
+    lag: int,
+    minimum_holding: int,
+    threshold: float,
+    daily_target: bool,
+    direct_tilts: np.ndarray,
+    valid_until: np.ndarray,
+    period_days: np.ndarray,
+    gross_cost: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Advance both SAA and TAA with one fixed-signature nopython kernel."""
 
     period_count, asset_count = asset_returns.shape
     state_count = state_tilts.shape[0]
     # target[A], pretrade[A], scale/turnover/cost/returns/nav and baseline cost.
-    path = np.empty((period_count, asset_count * 2 + 14), dtype=np.float64)
+    detailed = not daily_target or direct_tilts.shape[0] > 0
+    path = np.empty((period_count, asset_count * 3 + 19 if detailed else asset_count * 2 + 14), dtype=np.float64)
     contributions = np.zeros((period_count, state_count), dtype=np.float64)
     state_summary = np.zeros((state_count, 3), dtype=np.float64)
     totals = np.zeros(10, dtype=np.float64)
@@ -70,16 +88,31 @@ def _taa_path_kernel(
     taa_nav = 1.0
     baseline_nav = 1.0
     delta = np.empty(asset_count, dtype=np.float64)
+    held_target = base_weights.copy()
+    baseline_target = base_weights.copy()
+    last_decision, last_trade, baseline_last_trade = -1, -minimum_holding, -minimum_holding
+    if (period_count == 0 or decisions.size != period_count or executions.size != period_count
+            or (direct_tilts.shape[0] > 0 and direct_tilts.shape != asset_returns.shape)
+            or (valid_until.size > 0 and (valid_until.size != period_count or period_days.size != period_count))
+            or lag < 0 or minimum_holding < 0 or not np.isfinite(threshold) or threshold < 0):
+        raise ValueError("TAA_CLOCK_AXIS")
 
     for period in range(period_count):
         for asset in range(asset_count):
             delta[asset] = 0.0
         tilt_scale = 0.0
-        if use_signal[period] == 1:
+        source = period if daily_target else period - lag
+        if source >= 0 and decisions[source] == 1:
+            last_decision = source
+        source = period if daily_target else last_decision
+        if source >= 0 and use_signal[source] == 1 and (valid_until.size == 0 or period_days[period] <= valid_until[source]):
             for state in range(state_count):
-                probability = probabilities[period, state]
+                probability = probabilities[source, state]
                 for asset in range(asset_count):
                     delta[asset] += probability * state_tilts[state, asset]
+            if direct_tilts.shape[0] > 0:
+                for asset in range(asset_count):
+                    delta[asset] = direct_tilts[source, asset]
             tilt_scale = 1.0
             for asset in range(asset_count):
                 value = delta[asset]
@@ -101,24 +134,56 @@ def _taa_path_kernel(
             elif tilt_scale > 1.0:
                 tilt_scale = 1.0
 
+        for asset in range(asset_count):
+            held_target[asset] = base_weights[asset] + tilt_scale * delta[asset]
+        deviation, baseline_deviation = 0.0, 0.0
+        for asset in range(asset_count):
+            deviation = max(deviation, abs(held_target[asset] - taa_pretrade[asset]))
+            baseline_deviation = max(baseline_deviation, abs(base_weights[asset] - baseline_pretrade[asset]))
+        reason = 0
+        if not daily_target:
+            if last_decision < 0:
+                reason = 1  # waiting for a lag-mature decision
+            elif executions[period] == 0:
+                reason = 2  # no execution opportunity
+            elif period - last_trade < minimum_holding:
+                reason = 3
+            elif deviation < threshold or deviation <= 1e-14:
+                reason = 4
+        trade = daily_target or reason == 0
+        baseline_trade = daily_target or (last_decision >= 0 and executions[period] == 1
+            and period - baseline_last_trade >= minimum_holding and baseline_deviation >= threshold)
         taa_turnover = 0.0
         baseline_turnover = 0.0
         for asset in range(asset_count):
-            target = base_weights[asset] + tilt_scale * delta[asset]
+            target = held_target[asset] if trade else taa_pretrade[asset]
+            baseline_target[asset] = base_weights[asset] if baseline_trade else baseline_pretrade[asset]
             path[period, asset] = target
             path[period, asset_count + asset] = taa_pretrade[asset]
             taa_turnover += abs(target - taa_pretrade[asset])
-            baseline_turnover += abs(base_weights[asset] - baseline_pretrade[asset])
+            baseline_turnover += abs(baseline_target[asset] - baseline_pretrade[asset])
+            if detailed:
+                path[period, asset_count * 2 + 19 + asset] = held_target[asset]
+        if taa_turnover > 1e-14:
+            last_trade = period
+        if baseline_turnover > 1e-14:
+            baseline_last_trade = period
+        if detailed:
+            path[period, asset_count * 2 + 14] = decisions[period]
+            path[period, asset_count * 2 + 15] = executions[period]
+            path[period, asset_count * 2 + 16] = 1.0 if taa_turnover > 1e-14 else 0.0
+            path[period, asset_count * 2 + 17] = reason
+            path[period, asset_count * 2 + 18] = last_decision
         taa_turnover *= 0.5
         baseline_turnover *= 0.5
-        taa_cost_rate = taa_turnover * transaction_cost_bps / 10000.0
-        baseline_cost_rate = baseline_turnover * transaction_cost_bps / 10000.0
+        taa_cost_rate = taa_turnover * transaction_cost_bps / 10000.0 * (2.0 if gross_cost else 1.0)
+        baseline_cost_rate = baseline_turnover * transaction_cost_bps / 10000.0 * (2.0 if gross_cost else 1.0)
 
         gross_taa_return = 0.0
         gross_baseline_return = 0.0
         for asset in range(asset_count):
             gross_taa_return += path[period, asset] * asset_returns[period, asset]
-            gross_baseline_return += base_weights[asset] * asset_returns[period, asset]
+            gross_baseline_return += baseline_target[asset] * asset_returns[period, asset]
         net_taa_return = (1.0 - taa_cost_rate) * (1.0 + gross_taa_return) - 1.0
         net_baseline_return = (1.0 - baseline_cost_rate) * (1.0 + gross_baseline_return) - 1.0
         taa_cost_amount = taa_nav * taa_cost_rate
@@ -146,7 +211,7 @@ def _taa_path_kernel(
         totals[2] += baseline_turnover
         totals[3] += baseline_cost_amount
 
-        if use_signal[period] == 1:
+        if daily_target and use_signal[period] == 1:
             for state in range(state_count):
                 state_active_return = 0.0
                 for asset in range(asset_count):
@@ -169,7 +234,7 @@ def _taa_path_kernel(
                 / (1.0 + gross_taa_return)
             )
             baseline_pretrade[asset] = (
-                base_weights[asset]
+                baseline_target[asset]
                 * (1.0 + asset_returns[period, asset])
                 / (1.0 + gross_baseline_return)
             )
@@ -178,6 +243,21 @@ def _taa_path_kernel(
     totals[6] = taa_nav - baseline_nav
     totals[7] = taa_nav / baseline_nav - 1.0
     return path, contributions, state_summary, totals
+
+
+@njit(_TAA_CORE_SIGNATURE, cache=True, nogil=True)
+def _taa_path_kernel(asset_returns, probabilities, use_signal, state_tilts, base_weights,
+                     minimum_weight, maximum_weight, maximum_absolute_tilt, transaction_cost_bps):
+    """Genuine daily-target ABI adapter; recursion lives only in the shared core."""
+    daily = np.ones(asset_returns.shape[0], dtype=np.uint8)
+    path, contributions, summary, totals = _taa_recursive_kernel(
+        asset_returns, probabilities, use_signal, state_tilts, base_weights,
+        minimum_weight, maximum_weight, maximum_absolute_tilt, transaction_cost_bps,
+        daily, daily, 0, 0, 0.0, True, np.empty((0, base_weights.size)), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64), False)
+    return path, contributions, summary, totals
+
+
+_taa_recursive_kernel.disable_compile()
 
 
 _PERFORMANCE_SIGNATURE = float64[::1](_READONLY_VECTOR, _READONLY_VECTOR, float64)
@@ -609,6 +689,7 @@ def _regime_points(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "recognized_at": _iso_date(source.get("recognized_at"), f"run.series.{index}.recognized_at"),
                 "probabilities": source.get("probabilities"),
                 "probability_source": source.get("probability_source", "unspecified"),
+                "state_id": source.get("state_id"),
                 "confidence": source.get("confidence"),
             }
         )
@@ -703,7 +784,8 @@ def taa_numba_execution_audit() -> dict[str, Any]:
             "object_mode": 0,
             "python_fallback": 0,
             "typed_indicator_dag": False,
-            "fully_warmed": all(len(values) == 1 for values in signature_map.values()),
+            "fully_warmed": all(len(values) == 1 for values in signature_map.values()) and len(_taa_recursive_kernel.signatures) == 1,
+            "recursive_core_signatures": [str(s) for s in _taa_recursive_kernel.signatures],
             "note": (
                 "业务解析与序列化留在 Python；权重校验、收益、成本、归因、"
                 "净值、路径完整性、回撤与绩效均由固定签名 NJIT 内核执行。"
@@ -759,8 +841,11 @@ def run_taa_backtest(
 ) -> dict[str, Any]:
     """Run a probability-weighted TAA overlay without mutating the source run."""
 
+    if gate.get("passed") is False:
+        raise ValidationError("TAA_RUN_NOT_PUBLISHED", "历史情景运行必须先发布到 TAA 或正式回测。", "run_id")
     assets, base = _validate_base_weights(request.get("base_weights"))
-    states = [str(item.get("id")) for item in run.get("states") or [] if item.get("id")]
+    from .reliability.consumer import calibrated_output, consumer_states, allocation_probabilities as tilt_probabilities
+    states = consumer_states(run)
     if not states:
         raise ValidationError(
             "MISSING_REGIME_STATES",
@@ -845,9 +930,8 @@ def run_taa_backtest(
         elif latest_point is None:
             fallback_reason = "no_effective_regime"
         else:
-            probabilities, fallback_reason = _validated_probabilities(latest_point.get("probabilities"), states)
+            probabilities, raw_confidence, fallback_reason = calibrated_output(run, latest_point, period_start, states)
             source_probabilities = dict(probabilities) if probabilities is not None else None
-            raw_confidence = latest_point.get("confidence")
             if probabilities is not None:
                 if raw_confidence is None:
                     fallback_reason = "missing_confidence"
@@ -874,6 +958,7 @@ def run_taa_backtest(
             if signal_age_days > max_signal_age_days:
                 fallback_reason = "stale_regime_signal"
                 probabilities = None
+        probabilities = tilt_probabilities(run, probabilities)
         if probabilities is not None:
             use_signal[period_index] = np.uint8(1)
             for state_index, state in enumerate(states):

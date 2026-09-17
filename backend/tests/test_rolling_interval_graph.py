@@ -18,8 +18,11 @@ from custom_indicators.variable_registry import variable_types
 
 
 def build(body, window="3", extra=None):
+    # Extra scalars stand in for declared calculation parameters; only a
+    # declared name may take a configuration position.
     return compose_typed_series_bundle({"value": f"rolling_apply({body}, {window})"},
-        variable_types={**variable_types("single_product", "2.4.0"), **(extra or {})})
+        variable_types={**variable_types("single_product", "2.4.0"), **(extra or {})},
+        parameter_names=frozenset(extra or {}))
 
 
 def evaluate(plan, values, *, readonly=False):

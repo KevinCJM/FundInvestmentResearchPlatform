@@ -11,11 +11,18 @@ def tushare_all_data_workflow(store: SourceStore, source_id: str = 'tushare') ->
     source = store.get('source', source_id)
     if source['config']['transport'] != 'tushare':
         raise CenterError('ETL_TEMPLATE_SOURCE', '所选来源没有此采集适配器。')
+    run_parameters = [
+        EtlParameter(id='start_date', label='历史开始日期', data_type='date', date_format='compact', default='2010-01-01'),
+        EtlParameter(id='end_date', label='本次截止日期', data_type='date', date_format='compact', description='选择已完成披露的日期。全量和增量共用此流程。'),
+    ]
+    # Only run-level parameters can be bound; a task parameter the flow does not
+    # ask for at runtime (a declared calculation contract) keeps its own default.
+    declared = {parameter.id for parameter in run_parameters}
     steps = []
     previous = None
     for spec in task_specs().values():
         identifier = 'dataset_' + (spec['action'] or 'analytics_snapshot')
-        bindings = {p['name']: p['name'] for p in spec['parameters']}
+        bindings = {p['name']: p['name'] for p in spec['parameters'] if p['name'] in declared}
         steps.append(EtlStep(id=identifier, name=spec['name'], kind='task', task_id=spec['id'],
                              source_id=source_id if spec['transport'] else None,
                              inputs=[previous] if previous else [], parameter_bindings=bindings,
@@ -24,10 +31,7 @@ def tushare_all_data_workflow(store: SourceStore, source_id: str = 'tushare') ->
     from .etl_dependencies import plan_dependencies
     return plan_dependencies(EtlDefinition(name=source['config']['name'] + ' 全数据同步',
         description='覆盖项目已接入的全部数据集：基础信息、全部 ETF、公募基金、指数及宏观数据，最后计算私有指标快照。不是供应商全站所有 API。无需单产品代码；可自由增删任务、重排依赖及修改快照位置。标准映射候选需单独核验，不自动发布。',
-        max_runtime_seconds=86400, steps=steps, parameters=[
-            EtlParameter(id='start_date', label='历史开始日期', data_type='date', date_format='compact', default='2010-01-01'),
-            EtlParameter(id='end_date', label='本次截止日期', data_type='date', date_format='compact', description='选择已完成披露的日期。全量和增量共用此流程。'),
-        ]))
+        max_runtime_seconds=86400, steps=steps, parameters=run_parameters))
 
 
 def template_catalog(store: SourceStore) -> list[dict]:

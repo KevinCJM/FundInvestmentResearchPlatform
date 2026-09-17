@@ -11,6 +11,16 @@ vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" />
 afterEach(() => { vi.clearAllMocks() })
 
 describe('RegimeResultView frozen run loading', () => {
+  it('后端普通识别返回空人工事件摘要时仍显示完整结果', async () => {
+    const { overview, rows } = resultFixture('ordinary-result', 10)
+    vi.mocked(getRegimePreviewOverview).mockResolvedValue({ ...overview, manual_event_summary: {} })
+    vi.mocked(getRegimePreviewSeries).mockResolvedValue({ run_id: overview.run_id, items: rows, total: rows.length, offset: 0, limit: 5000 })
+    render(<RegimeResultView runId={overview.run_id} />)
+    await screen.findByRole('region', { name: '完整历史情景结果' })
+    expect(screen.queryByText('结果暂不可用')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '人工历史事件结果' })).not.toBeInTheDocument()
+  })
+
   it('旧overview慢返回不能覆盖新run，草稿过期提示不改变冻结颜色或名称', async () => {
     const a = resultFixture('A', 600)
     const b = resultFixture('B', 600)

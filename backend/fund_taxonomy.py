@@ -67,6 +67,10 @@ _ASSET_CLASS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Equity sector funds that borrow commodity vocabulary.
     ("权益类", ("黄金股", "黄金产业", "有色金属", "稀土", "煤炭", "石油石化", "油气开采")),
     ("商品类", ("黄金", "白银", "贵金属", "原油", "能源化工", "豆粕", "农产品期货", "商品期货", "大宗商品")),
+    # Bond/commodity exposure takes precedence over implementation geography. A
+    # US Treasury QDII is fixed income first, while overseas equities still keep
+    # their overseas class so the existing regional equity taxonomy remains intact.
+    ("固收类", ("债", "利率", "信用", "同业存单", "存单", "短融", "政金", "国开", "农发")),
     (
         "海外类",
         (
@@ -74,7 +78,6 @@ _ASSET_CLASS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "中概", "海外", "亚太", "全球", "美国", "越南", "印度", "沙特", "东南亚", "新兴市场",
         ),
     ),
-    ("固收类", ("债", "利率", "信用", "同业存单", "存单", "短融", "政金", "国开", "农发")),
     (
         "权益类",
         (

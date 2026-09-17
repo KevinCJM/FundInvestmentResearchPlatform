@@ -473,39 +473,54 @@ const makeHistoricalRegimeRun = (
   }],
 })
 
+const makePricePoints = (fields: Partial<{ open: null; high: null; low: null; volume: null }> = {}) => (
+  Array.from({ length: 25 }, (_, index) => {
+    const close = 3 + index * 0.002 + ((index % 5) - 2) * 0.005
+    return {
+      date: new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10),
+      open: close - 0.002, high: close + 0.01, low: close - 0.01, close, volume: 1000 + index * 10,
+      ...fields,
+    }
+  })
+)
+
+const makePriceSeries = (overrides: Record<string, unknown> = {}) => ({
+  product_id: '510300.SH', kind: 'etf', basis: 'raw_kline', label: '不复权 K 线（原始行情）',
+  available: true, reason: null, warnings: [], points: makePricePoints(),
+  bases: [
+    { id: 'adjusted_nav', label: '复权净值走势', description: '复权净值折线', available: true, reason: null },
+    { id: 'adjusted_kline', label: '后复权 K 线', description: '原始开高低收乘以复权因子', available: true, reason: null },
+    { id: 'raw_kline', label: '不复权 K 线（原始行情）', description: '交易所原始开高低收', available: true, reason: null },
+  ],
+  execution: fixedIndicatorExecution,
+  ...overrides,
+})
+
 describe('ProductDetail custom indicators', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
     realizedFuture = null
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => ({
       ok: true,
-      json: async () => ({
-        product_id: '510300.SH', name: '沪深300ETF', management: '测试管理人', status: '上市',
-        base_info: { ts_code: '510300.SH', fund_type: 'ETF', list_date: '2012-05-28', delist_date: '2026-12-31' },
-        metrics: {
-          issue_amount: 100,
-          current_size: 123456.78,
-          current_size_as_of: '2026-06-30',
-          current_size_source: 'instrument_metrics_snapshot',
-          current_share: 100000,
-          current_unit_nav: 1.2345678,
-          m_fee: 0.5,
-          c_fee: 0.1,
-        },
-        timeseries: Array.from({ length: 25 }, (_, index) => {
-          const close = 3 + index * 0.002 + ((index % 5) - 2) * 0.005
-          return {
-            date: new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10),
-            open: close - 0.002,
-            high: close + 0.01,
-            low: close - 0.01,
-            close,
-            volume: 1000 + index * 10,
-          }
+      json: async () => (String(url).includes('/price-series')
+        ? makePriceSeries()
+        : {
+          product_id: '510300.SH', name: '沪深300ETF', management: '测试管理人', status: '上市',
+          base_info: { ts_code: '510300.SH', fund_type: 'ETF', list_date: '2012-05-28', delist_date: '2026-12-31' },
+          metrics: {
+            issue_amount: 100,
+            current_size: 123456.78,
+            current_size_as_of: '2026-06-30',
+            current_size_source: 'instrument_metrics_snapshot',
+            current_share: 100000,
+            current_unit_nav: 1.2345678,
+            m_fee: 0.5,
+            c_fee: 0.1,
+          },
+          timeseries: [],
         }),
-      }),
-    }))
+    })))
     vi.mocked(listCustomIndicators).mockResolvedValue({ items: [percentIndicator, portfolioIndicator], total: 2 })
     vi.mocked(getCustomIndicatorMeta).mockResolvedValue({ periods: [{ value: '1M', label: '近 1 月', description: '运行周期' }, { value: '1Y', label: '近 1 年', description: '运行周期' }] } as any)
     vi.mocked(evaluateTimeSeriesIndicators).mockImplementation(async (request) => (
@@ -539,12 +554,12 @@ describe('ProductDetail custom indicators', () => {
     const user = userEvent.setup()
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 
-    expect(await screen.findByText('自定义研究指标')).toBeInTheDocument()
-    expect(await screen.findByText('高性能计算已验证')).toBeInTheDocument()
-    expect(screen.getByTestId('product-analysis-execution')).toHaveTextContent('内核覆盖 21/21')
-    expect(screen.getByTestId('product-analysis-execution')).toHaveTextContent('Python 回退 0')
+    expect(await screen.findByRole('heading', { name: '研究指标' })).toBeInTheDocument()
+    // 执行审计与因子证据是后端口径，不再占用研究主路径。
+    expect(screen.queryByTestId('product-analysis-execution')).not.toBeInTheDocument()
+    expect(screen.queryByText('因子研究证据')).not.toBeInTheDocument()
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
-      '/api/instruments/products/510300.SH?kind=etf',
+      '/api/instruments/products/510300.SH?kind=etf&include_timeseries=false',
       expect.objectContaining({ signal: expect.anything() }),
     ))
     expect(await screen.findByText('12.34%')).toBeInTheDocument()
@@ -613,18 +628,28 @@ describe('ProductDetail custom indicators', () => {
     expect(normalQqChart).toHaveAttribute('data-y-axis-type', 'value')
     expect(screen.queryByText('组合波动率')).not.toBeInTheDocument()
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith({
-      indicator_ids: ['total-return'], targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1Y',
+      indicator_refs: [{ indicator_id: 'total-return', indicator_revision: 2 }],
+      targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1Y',
       as_of: undefined,
     }))
     await user.click(screen.getByRole('tab', { name: '走势与指标' }))
-    expect(screen.getByText(/1Y · 2025-01-06 至 2026-01-06 · 250 个观察值/)).toBeInTheDocument()
-    expect(screen.getByLabelText('区间累计收益计算区间')).toHaveValue('1Y')
-    await user.selectOptions(screen.getByLabelText('区间累计收益计算区间'), '1M')
+    // 窗口与观察值是这一列的属性，写在列头，不再逐个指标复述一遍。
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('2025-01-06 至 2026-01-06')
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('250 个观察值')
+    expect(screen.queryByLabelText('区间累计收益计算区间')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('添加计算区间'), '1M')
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith({
-      indicator_ids: ['total-return'], targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1M',
+      indicator_refs: [{ indicator_id: 'total-return', indicator_revision: 2 }],
+      targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1M',
       as_of: undefined,
     }))
-    expect(screen.getByLabelText('区间累计收益计算区间')).toHaveValue('1M')
+    expect(await screen.findByRole('columnheader', { name: /近 1 月/ })).toBeInTheDocument()
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('indicator-period-columns:v1:product-detail:single_product') ?? '[]')).toEqual(['1Y', '1M']))
+
+    await user.click(screen.getByRole('button', { name: '移除区间 近 1 年' }))
+    expect(screen.queryByRole('columnheader', { name: /近 1 年/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /近 1 月/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '在指标中心分析' })).toHaveAttribute('href', '/settings/indicators-models?kind=etf&ids=510300.SH')
 
     await user.click(screen.getByRole('button', { name: '移除指标 区间累计收益' }))
@@ -650,6 +675,86 @@ describe('ProductDetail custom indicators', () => {
     await user.click(screen.getByRole('tab', { name: '收益统计' }))
     expect(await screen.findByText(/要求产品完整覆盖所选区间/)).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '未来虚拟净值模拟' })).not.toBeInTheDocument()
+  })
+
+  it('标量参数随请求下发并回显实际取值，时序指标只属于走势图', async () => {
+    const user = userEvent.setup()
+    const parameterised: IndicatorDefinition = {
+      ...percentIndicator, id: 'quantile-return', name: '分位收益', display_format: 'number', unit: '',
+      parameter_contract_version: '1.0',
+      parameter_schema: [{ id: 'probability_1', label: '概率', type: 'number', default: 0.9, minimum: 0, maximum: 1, step: 0.01, exclusive_minimum: true, exclusive_maximum: true }],
+    }
+    const seriesIndicator: IndicatorDefinition = {
+      ...percentIndicator, id: 'moving-average', name: '可调均线', result_kind: 'time_series',
+      display_format: 'number', unit: '', axis_anchor: 'market_close',
+    }
+    vi.mocked(listCustomIndicators).mockResolvedValue({ items: [percentIndicator, parameterised, seriesIndicator, portfolioIndicator], total: 4 })
+    vi.mocked(evaluateCustomIndicators).mockImplementation(async (request) => ({
+      results: (request.indicator_refs ?? []).map((ref) => {
+        const opened = ref.indicator_id === parameterised.id
+        return {
+          indicator_id: ref.indicator_id, indicator_revision: ref.indicator_revision ?? 2,
+          indicator_name: opened ? parameterised.name : percentIndicator.name,
+          target: { kind: 'etf' as const, product_id: '510300.SH', name: '沪深300ETF' }, period: request.period,
+          value: ref.parameters?.probability_1 ?? 0.9, status: 'ok' as const, warnings: [],
+          ...(opened ? { parameters: { probability_1: ref.parameters?.probability_1 ?? 0.9 } } : {}),
+          window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' },
+          presentation: { indicator_id: ref.indicator_id, revision: 2, name: opened ? parameterised.name : percentIndicator.name,
+            source: 'custom', category: 'return', category_label: '收益',
+            context_kind: 'single_product' as const, catalog_status: 'current', display_format: 'number' as const, precision: 2, unit: '', notation: 'standard' as const,
+            value_scale: 1, output_measure: 'return', direction: 'higher_better' as const, description: '', methodology: '', data_basis: '真实净值',
+            minimum_observations: 2, applicable_product_kinds: ['etf' as const, 'fund' as const],
+            ...(opened ? { parameter_schema: parameterised.parameter_schema } : {}) },
+        }
+      }),
+      summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 }, execution: fixedIndicatorExecution,
+    }))
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+    await screen.findByRole('heading', { name: '研究指标' })
+
+    await user.click(screen.getByRole('button', { name: /选择研究指标/ }))
+    const panel = await screen.findByRole('dialog', { name: '选择研究指标面板' })
+    await user.click(within(panel).getByRole('checkbox', { name: /分位收益/ }))
+    // A time-series indicator is drawn on the trend chart, so the scalar picker
+    // must not offer it: selecting one used to fail the whole period batch.
+    expect(within(panel).queryByRole('checkbox', { name: /可调均线/ })).not.toBeInTheDocument()
+    await user.click(within(panel).getByRole('button', { name: '完成' }))
+
+    await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith(expect.objectContaining({
+      indicator_refs: expect.arrayContaining([{ indicator_id: 'quantile-return', indicator_revision: 2 }]),
+    })))
+
+    await user.clear(screen.getByLabelText('概率'))
+    await user.type(screen.getByLabelText('概率'), '0.25')
+    await user.click(screen.getAllByRole('button', { name: '应用参数' })[0])
+    await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith(expect.objectContaining({
+      indicator_refs: expect.arrayContaining([{ indicator_id: 'quantile-return', indicator_revision: 2, parameters: { probability_1: 0.25 } }]),
+    })))
+    // The card reports what the server resolved, not the draft in the input.
+    expect(await screen.findByText(/实际计算参数: 概率=0.25/)).toBeInTheDocument()
+    expect(vi.mocked(evaluateCustomIndicators).mock.calls.every(([request]) =>
+      (request.indicator_refs ?? []).every((ref) => ref.indicator_id !== 'moving-average'))).toBe(true)
+  })
+
+  it('走势图可以叠加时序指标并选择画在哪条轴上', async () => {
+    const user = userEvent.setup()
+    const seriesIndicator: IndicatorDefinition = {
+      ...percentIndicator, id: 'moving-average', name: '可调均线', result_kind: 'time_series',
+      display_format: 'number', unit: '', axis_anchor: 'market_close', applicable_product_kinds: ['etf'],
+    }
+    vi.mocked(listCustomIndicators).mockResolvedValue({ items: [percentIndicator, seriesIndicator], total: 2 })
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: /选择时序指标/ }))
+    const panel = await screen.findByRole('dialog', { name: '选择时序指标面板' })
+    await user.click(within(panel).getByRole('checkbox', { name: /可调均线/ }))
+    await user.click(within(panel).getByRole('button', { name: '完成' }))
+
+    expect(await screen.findByRole('combobox', { name: '可调均线的显示位置' })).toBeInTheDocument()
+    await waitFor(() => expect(evaluateTimeSeriesIndicators).toHaveBeenCalledWith(expect.objectContaining({
+      indicator_instances: [{ indicator_id: 'moving-average', indicator_revision: 2 }],
+      period: 'ALL',
+    })))
   })
 
   const openSimulation = async (user: ReturnType<typeof userEvent.setup>) => {
@@ -810,18 +915,23 @@ describe('ProductDetail custom indicators', () => {
 
   it('场外公募基金展示成立日期，并仅在披露时展示到期日期', async () => {
     const user = userEvent.setup()
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => ({
       ok: true,
-      json: async () => ({
-        product_id: '000001.OF', name: '示例场外基金', management: '测试管理人', status: '存续',
-        base_info: { ts_code: '000001.OF', found_date: '20010101', due_date: '2030-12-31' },
-        metrics: { issue_amount: 100, m_fee: 0.5, c_fee: 0.1 },
-        timeseries: [
-          { date: '2026-01-05', open: 1, high: 1, low: 1, close: 1, volume: 0 },
-          { date: '2026-01-06', open: 1.01, high: 1.01, low: 1.01, close: 1.01, volume: 0 },
-        ],
-      }),
-    }))
+      json: async () => (String(url).includes('/price-series')
+        ? makePriceSeries({
+          product_id: '000001.OF', kind: 'fund', basis: 'adjusted_nav', label: '复权净值走势',
+          points: [
+            { date: '2026-01-05', open: null, high: null, low: null, close: 1, volume: null },
+            { date: '2026-01-06', open: null, high: null, low: null, close: 1.01, volume: null },
+          ],
+          bases: [{ id: 'adjusted_nav', label: '复权净值走势', description: '复权净值折线', available: true, reason: null }],
+        })
+        : {
+          product_id: '000001.OF', name: '示例场外基金', management: '测试管理人', status: '存续',
+          base_info: { ts_code: '000001.OF', found_date: '20010101', due_date: '2030-12-31' },
+          metrics: { issue_amount: 100, m_fee: 0.5, c_fee: 0.1 }, timeseries: [],
+        }),
+    })))
 
     render(<MemoryRouter initialEntries={['/product/000001.OF?kind=fund']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 
@@ -839,39 +949,31 @@ describe('ProductDetail custom indicators', () => {
 
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 
-    expect(await screen.findByText('产品数值分析未完成')).toBeInTheDocument()
-    expect(screen.getByTestId('product-analysis-execution')).toHaveTextContent('NJIT 预热未完成')
-    expect(screen.getByTestId('product-analysis-execution')).toHaveTextContent('不会退回浏览器本地计算')
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('产品数值分析未完成')
+    expect(alert).toHaveTextContent('NJIT 预热未完成')
+    expect(alert).toHaveTextContent('不会退回浏览器本地计算')
     expect(screen.queryByRole('heading', { name: '未来虚拟净值模拟' })).not.toBeInTheDocument()
   })
 
   it('原始 OHLC 与成交量缺失时只展示真实净值且不伪造字段', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => ({
       ok: true,
-      json: async () => ({
-        product_id: '510300.SH', name: '沪深300ETF', management: '测试管理人', status: '上市',
-        base_info: { ts_code: '510300.SH', fund_type: 'ETF', list_date: '2012-05-28' },
-        metrics: {},
-        timeseries: Array.from({ length: 25 }, (_, index) => ({
-          date: new Date(Date.UTC(2026, 0, 2 + index)).toISOString().slice(0, 10),
-          open: null,
-          high: null,
-          low: null,
-          close: 3 + index * 0.002,
-          volume: null,
-        })),
-      }),
-    }))
+      json: async () => (String(url).includes('/price-series')
+        ? makePriceSeries({ points: makePricePoints({ open: null, high: null, low: null, volume: null }) })
+        : {
+          product_id: '510300.SH', name: '沪深300ETF', management: '测试管理人', status: '上市',
+          base_info: { ts_code: '510300.SH', fund_type: 'ETF', list_date: '2012-05-28' },
+          metrics: {}, timeseries: [],
+        }),
+    })))
 
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 
-    expect(await screen.findByText('真实收盘价 / 净值')).toBeInTheDocument()
-    expect(screen.getByText('成交量未披露')).toBeInTheDocument()
-    const missingFieldNotice = screen.getAllByRole('status').find((element) => (
-      element.textContent?.includes('不使用 close 或 0 伪造缺失字段')
-    ))
-    expect(missingFieldNotice).toHaveTextContent('不使用 close 或 0 伪造缺失字段')
-    expect(missingFieldNotice).toHaveTextContent('KDJ、成交量均线会保持不可用')
+    const missingFieldNotice = await screen.findByText(/不使用 close 或 0 伪造缺失字段/)
+    expect(missingFieldNotice).toHaveTextContent('开高低价')
+    expect(missingFieldNotice).toHaveTextContent('成交量')
+    expect(missingFieldNotice).toHaveTextContent('缺开高低价时退回收盘价折线')
   })
 
   it('只展示已发布到产品研究的不可变版本，并将所选区间映射为主价格图背景', async () => {
@@ -1027,14 +1129,18 @@ describe('ProductDetail custom indicators', () => {
   })
 
   it('行情为空时保留产品资料与研究入口', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({
-      product_id: '510300.SH', name: '暂无行情的产品', management: '示例管理人',
-      base_info: { ts_code: '510300.SH', list_date: '20120528' }, metrics: {}, timeseries: [],
-    }) }))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => ({ ok: true, json: async () => (
+      String(url).includes('/price-series')
+        ? makePriceSeries({ available: false, points: [], reason: '该产品还没有可用的行情数据。' })
+        : {
+          product_id: '510300.SH', name: '暂无行情的产品', management: '示例管理人',
+          base_info: { ts_code: '510300.SH', list_date: '20120528' }, metrics: {}, timeseries: [],
+        }
+    ) })))
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
     expect(await screen.findByRole('heading', { name: '暂无行情的产品' })).toBeInTheDocument()
     expect(screen.queryByLabelText('分析样本')).not.toBeInTheDocument()
-    expect(screen.getByText('暂无可视化数据')).toBeInTheDocument()
+    expect(screen.getByText('这个口径暂时没有数据')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: '情景表现' })).toBeInTheDocument()
   })
 

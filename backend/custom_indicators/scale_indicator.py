@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from cal_indicators.typed_numba_kernels import NUMERIC_KERNEL_VERSION
-from cal_indicators.typed_operators import TYPED_DSL_VERSION, TYPED_OPERATOR_REGISTRY_VERSION
+from cal_indicators.typed_operators import TYPED_DSL_VERSION, WINDOW_OPERATOR_REGISTRY_VERSION
 from .periods import SUPPORTED_PERIODS
 from .variable_registry import CONTEXT_SCHEMA_VERSION, DATA_CONTRACT_VERSION, VARIABLE_REGISTRY_VERSION
 
@@ -30,7 +30,7 @@ def scale_indicators():
         # 场外基金没有 etf_share_size 数据源，份额与规模在那里不可算。
         "applicable_product_kinds": ["etf"],
         "availability_policy": "runtime_required", "availability_status": "runtime_check",
-        "dsl_version": TYPED_DSL_VERSION, "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+        "dsl_version": TYPED_DSL_VERSION, "operator_registry_version": WINDOW_OPERATOR_REGISTRY_VERSION,
         "numeric_kernel_version": NUMERIC_KERNEL_VERSION, "variable_registry_version": VARIABLE_REGISTRY_VERSION,
         "data_contract_version": DATA_CONTRACT_VERSION, "context_schema_version": CONTEXT_SCHEMA_VERSION,
         "template_origin": None,

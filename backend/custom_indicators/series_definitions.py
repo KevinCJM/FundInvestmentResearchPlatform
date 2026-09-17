@@ -14,6 +14,7 @@ from cal_indicators.typed_operators import (
     ROLLING_OPERATOR_REGISTRY_VERSION,
     TYPED_DSL_VERSION,
     TYPED_OPERATOR_REGISTRY_VERSION,
+    WINDOW_OPERATOR_REGISTRY_VERSION,
 )
 from cal_indicators.typed_types import ValueType
 
@@ -66,6 +67,15 @@ _SERIES_OUTPUT_MEASURE_CATALOG: tuple[dict[str, Any], ...] = (
         "label": "原始市价",
         "description": "未复权开盘价、最高价、最低价、收盘价及其同量纲变换。",
         "semantic_dimensions": ["raw_market_price"],
+        "range": None,
+        "default_unit": "元",
+        "default_display_format": "number",
+    },
+    {
+        "id": "adjusted_market_price",
+        "label": "复权市价",
+        "description": "后复权开盘价、最高价、最低价、收盘价及其同量纲变换。",
+        "semantic_dimensions": ["adjusted_market_price"],
         "range": None,
         "default_unit": "元",
         "default_display_format": "number",
@@ -209,8 +219,9 @@ _SERIES_OUTPUT_MEASURE_CATALOG: tuple[dict[str, Any], ...] = (
 _SERIES_OUTPUT_MEASURE_BY_ID = {
     str(item["id"]): item for item in _SERIES_OUTPUT_MEASURE_CATALOG
 }
-_SEMANTIC_DEFAULT_MEASURE = {
+SEMANTIC_DEFAULT_MEASURE = {
     "raw_market_price": "raw_market_price",
+    "adjusted_market_price": "adjusted_market_price",
     "adjusted_nav": "adjusted_nav",
     "reported_nav": "reported_nav",
     "return_decimal": "return_decimal",
@@ -246,7 +257,7 @@ def infer_series_output_measure(
             return "oscillator_0_100"
     if _derived_semantic_dimension(semantic_dimension):
         return "derived"
-    return _SEMANTIC_DEFAULT_MEASURE.get(semantic_dimension, "dimensionless")
+    return SEMANTIC_DEFAULT_MEASURE.get(semantic_dimension, "dimensionless")
 
 
 def _measure_accepts_semantic_dimension(
@@ -612,7 +623,7 @@ def time_series_builtin_indicators(
                 },
                 variable_types=variable_types("single_product", TYPED_DSL_VERSION),
                 dsl_version=TYPED_DSL_VERSION,
-                operator_registry_version=TYPED_OPERATOR_REGISTRY_VERSION,
+                operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
             )
             canonical = dict(plan.python_expressions)
             for output in current.get("series_outputs") or []:
@@ -622,7 +633,7 @@ def time_series_builtin_indicators(
             {
                 "revision": 2,
                 "dsl_version": TYPED_DSL_VERSION,
-                "operator_registry_version": TYPED_OPERATOR_REGISTRY_VERSION,
+                "operator_registry_version": WINDOW_OPERATOR_REGISTRY_VERSION,
                 "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
                 "variable_registry_version": VARIABLE_REGISTRY_VERSION,
                 "data_contract_version": DATA_CONTRACT_VERSION,
@@ -661,7 +672,7 @@ def time_series_builtin_indicators(
             plan = compose_typed_series_bundle(
                 scoped_formulas[previous["id"]],
                 variable_types=variable_types("single_product", TYPED_DSL_VERSION),
-                dsl_version=TYPED_DSL_VERSION, operator_registry_version=TYPED_OPERATOR_REGISTRY_VERSION,
+                dsl_version=TYPED_DSL_VERSION, operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
             )
             canonical = dict(plan.python_expressions)
             for output in current["series_outputs"]:
@@ -671,7 +682,61 @@ def time_series_builtin_indicators(
             current["methodology"] += " 区间统计由通用滚动计算执行；递推状态保持在作用域外。"
         current["revision"] = 3
         scoped_items.append(current)
-    return legacy_items + current_items + scoped_items
+    # v4 moves the technical built-ins onto the back-adjusted quote basis, the
+    # only price path that carries dividends and share conversions. v1-v3 keep
+    # the unadjusted basis so stored results still replay unchanged.
+    adjusted_middle = "rolling_apply(mean(adjusted_close), 20)"
+    adjusted_deviation = "rolling_apply(std(adjusted_close, 0), 20)"
+    adjusted_lowest = "rolling_apply(min_where(adjusted_low, finite_mask(adjusted_low)), 9, 1)"
+    adjusted_highest = "rolling_apply(max_where(adjusted_high, finite_mask(adjusted_high)), 9, 1)"
+    adjusted_rsv = (
+        f"divide_or_default((adjusted_close - {adjusted_lowest}) * 100, "
+        f"{adjusted_highest} - {adjusted_lowest}, 50)"
+    )
+    adjusted_k = f"recursive_smooth({adjusted_rsv}, 3, 50)"
+    adjusted_d = f"recursive_smooth({adjusted_k}, 3, 50)"
+    adjusted_formulas = {
+        "builtin-close-moving-average-series": {"ma": adjusted_middle},
+        "builtin-bollinger-bands-series": {
+            "upper": f"{adjusted_middle} + 2 * {adjusted_deviation}", "middle": adjusted_middle,
+            "lower": f"{adjusted_middle} - 2 * {adjusted_deviation}",
+        },
+        "builtin-volume-moving-average-series": {"volume_ma": "rolling_apply(mean(volume), 10)"},
+        "builtin-kdj-series": {"k": adjusted_k, "d": adjusted_d,
+                               "j": f"3 * ({adjusted_k}) - 2 * ({adjusted_d})"},
+    }
+    adjusted_labels = {
+        "builtin-close-moving-average-series": ("20 日复权收盘价均线", "对 ETF 后复权收盘价计算固定 20 个交易日的简单移动平均。"),
+        "builtin-bollinger-bands-series": ("20 日布林带（复权）", "后复权收盘价固定 20 日均值上下叠加 2 倍总体标准差。"),
+        "builtin-volume-moving-average-series": ("10 日成交量均线", "对 ETF 日成交量计算固定 10 个交易日的简单移动平均；日期轴由成交量自身决定，不依赖复权因子。"),
+        "builtin-kdj-series": ("KDJ（9, 3, 3，复权）", "以后复权高低区间计算 RSV，并按固定 3 日参数递归平滑得到 K、D、J。"),
+    }
+    adjusted_items = []
+    for previous in scoped_items:
+        if previous["id"] not in adjusted_formulas:
+            continue
+        current = copy.deepcopy(previous)
+        plan = compose_typed_series_bundle(
+            adjusted_formulas[previous["id"]],
+            variable_types=variable_types("single_product", TYPED_DSL_VERSION),
+            dsl_version=TYPED_DSL_VERSION, operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
+        )
+        canonical = dict(plan.python_expressions)
+        for output in current["series_outputs"]:
+            output["expression"] = canonical[output["id"]]
+            output["label"] = output["label"].replace("收盘价", "复权收盘价")
+        current["expression"] = current["series_outputs"][0]["expression"]
+        current["required_variables"] = list(plan.context_requirements)
+        current["name"], current["description"] = adjusted_labels[previous["id"]]
+        # Volume carries no adjustment, so anchoring it on the adjusted close
+        # would make it uncomputable wherever a factor is missing.
+        current["axis_anchor"] = "volume" if previous["id"].endswith("volume-moving-average-series") else "adjusted_close"
+        if any(name.startswith("adjusted_") for name in plan.context_requirements):
+            current["data_basis"] = "ETF 后复权日 K 行情；按日期对齐，缺失保留为空，不前向填充"
+            current["methodology"] += " 价格输入为后复权 OHLC，含分红再投资与份额折算。"
+        current["revision"] = 4
+        adjusted_items.append(current)
+    return legacy_items + current_items + scoped_items + adjusted_items
 
 def parameter_variable_types(definition: Mapping[str, Any]) -> dict[str, ValueType]:
     """Stable scalar types for explicitly declared algorithm parameters."""
@@ -819,6 +884,7 @@ def _normalized_parameter_schema(items: Any) -> list[dict[str, Any]]:
                 "maximum": int(maximum) if parameter_type == "integer" else maximum,
                 "step": int(step) if parameter_type == "integer" else step,
                 "description": str(raw.get("description") or "").strip()[:300],
+                **{key: True for key in ("exclusive_minimum", "exclusive_maximum") if raw.get(key) is True},
             }
         )
     return normalized
@@ -1091,6 +1157,7 @@ def normalize_time_series_definition(
     supported_protocol_pairs = {
         (ROLLING_TYPED_DSL_VERSION, ROLLING_OPERATOR_REGISTRY_VERSION),
         (TYPED_DSL_VERSION, TYPED_OPERATOR_REGISTRY_VERSION),
+        (TYPED_DSL_VERSION, WINDOW_OPERATOR_REGISTRY_VERSION),
     }
     if (dsl_version, operator_registry_version) not in supported_protocol_pairs:
         raise ValidationError(
@@ -1261,6 +1328,7 @@ def normalize_time_series_definition(
 _PUBLIC_SERIES_OUTPUT_MEASURES: tuple[dict[str, Any], ...] = (
     {"id": "auto", "label": "自动推断", "description": "根据公式类型、价格基准和可证明数值范围推断。", "compatible_semantic_dimensions": []},
     {"id": "raw_market_price", "label": "原始市价", "description": "未复权开高低收及其同量纲变换。", "compatible_semantic_dimensions": ["raw_market_price"], "default_unit": "元", "default_display_format": "number"},
+    {"id": "adjusted_market_price", "label": "复权市价", "description": "后复权开高低收及其同量纲变换。", "compatible_semantic_dimensions": ["adjusted_market_price"], "default_unit": "元", "default_display_format": "number"},
     {"id": "adjusted_nav", "label": "复权净值", "description": "包含复权处理的净值水平。", "compatible_semantic_dimensions": ["adjusted_nav"], "default_unit": "净值", "default_display_format": "number"},
     {"id": "reported_nav", "label": "披露净值", "description": "基金披露单位净值或累计净值。", "compatible_semantic_dimensions": ["reported_nav"], "default_unit": "净值", "default_display_format": "number"},
     {"id": "virtual_nav", "label": "虚拟净值（起点 1）", "description": "由收益累计形成、起点归一为 1 的财富路径。", "compatible_semantic_dimensions": ["dimensionless", "adjusted_nav"], "default_unit": "净值", "default_display_format": "number"},
@@ -1289,6 +1357,7 @@ def series_output_measure_ids() -> frozenset[str]:
     return frozenset(str(item["id"]) for item in _PUBLIC_SERIES_OUTPUT_MEASURES)
 
 __all__ = [
+    "SEMANTIC_DEFAULT_MEASURE",
     "series_output_measure_ids",
     "MAX_SERIES_CHANNELS",
     "MAX_SERIES_EXPRESSION_LENGTH",

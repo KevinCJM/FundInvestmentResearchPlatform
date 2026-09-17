@@ -91,6 +91,8 @@ def validate_execution_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
             raise ComputePolicyError("NJIT 链路必须证明 nopython=true")
         if audit.get("object_mode", 0) != 0:
             raise ComputePolicyError("NJIT 链路禁止 object mode")
+        if audit.get("request_time_compilation", 0) != 0:
+            raise ComputePolicyError("NJIT 链路禁止请求期间编译")
         signatures = _signature_groups(audit)
         if not signatures or any(
             not isinstance(values, (list, tuple))

@@ -21,7 +21,7 @@ DAILY = {
 REFERENCE = {'etf_info', 'fund_info', 'fund_company', 'calendar', 'stock_basic',
              'index_info', 'etf_index', 'index_catalog', 'fund_manager',
              'fund_benchmark', 'macro_cycle', 'macro_money_credit', 'macro_release_calendar'}
-DERIVED = {'fund_scale', 'index_coverage', ''}
+DERIVED = {'fund_scale', 'index_coverage', 'price_adjustment', ''}
 HISTORY = {
     **{key: [value] for key, value in DAILY.items()},
     'index_domestic': [('index_daily_df.parquet', 'trade_date')],

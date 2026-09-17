@@ -147,6 +147,8 @@ def synthetic_panel(
     low = np.minimum(open_, close) * (1.0 - spread)
     volume = np.abs(rng.lognormal(12.0, 0.35, size=periods))
     turnover_amount = volume * close
+    # 一次除权：因子在中段跳变一次，复权价才和未复权价真的不同。
+    adjustment_factor = np.where(np.arange(periods) < periods // 2, 1.0, 1.06)
 
     variables: dict[str, Any] = {
         "observation_dates": np.arange(periods + 1, dtype=np.float64) + 20_000.0,
@@ -164,6 +166,10 @@ def synthetic_panel(
         "adjusted_nav": adjusted_nav,
         "unit_nav": unit_nav,
         "accumulated_nav": accumulated_nav,
+        "adjusted_open": open_ * adjustment_factor,
+        "adjusted_high": high * adjustment_factor,
+        "adjusted_low": low * adjustment_factor,
+        "adjusted_close": close * adjustment_factor,
         "market_open": open_,
         "market_high": high,
         "market_low": low,

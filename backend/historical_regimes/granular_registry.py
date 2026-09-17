@@ -34,6 +34,8 @@ COUPLED_REASONS = {
     "model.hmm": "转移与观测参数共同拟合并推断隐状态。",
     "model.markov": "状态转移和分量参数联合拟合。",
     "model.gmm": "分量责任度与参数联合迭代拟合。",
+    "post.drawdown_cycle_reference": "是否进入修复期取决于上一完整下跌波段是否达到压力门槛，属于跨波段状态语义。",
+    "model.drawdown_cycle_realtime": "压力、修复和正常状态依赖滚动高点、活动谷底和上一状态，必须按时间递推。",
     "model.external_optimized": "仅允许显式登记的隔离模型拟合与推断。",
 }
 
@@ -109,6 +111,18 @@ def register_granular_nodes(registry, numeric_node, port):
         [{**port("phase", PHASE_CODES), "label": "完整波段方向"}], {}, ["phase_direction"], "谷到峰为上行，峰到谷为下行；这是波段方向，不是牛熊震荡标签。", causal=False)
     add("segment.boundary_line", "峰谷边界连线", "segmentation", [port("value", series), *copy.deepcopy(boundaries)],
         [port("value", series)], {}, ["boundary_line"], "只连接完整区间的首尾价格；包含末端拐点，不延伸未完成尾段。", causal=False)
+    add("post.drawdown_cycle_reference", "回撤周期事后标记", "postprocess",
+        [{**port("phase", PHASE_CODES), "label": "完整波段方向"}, port("change", series), *copy.deepcopy(boundaries)],
+        [port("state", states)], {
+            "stress_drawdown": parameter("number", 0.12, "压力波段最小跌幅", minimum=0.01, maximum=0.9,
+                                         description="完整峰到谷跌幅达到该绝对值时标为压力；随后完整谷到峰波段标为修复。"),
+        }, ["drawdown_cycle_reference"], "只做跨完整波段状态归属；峰谷与区间涨跌幅由独立算子提供，首尾未完成区间保持未分类。", causal=False)
+    add("model.drawdown_cycle_realtime", "回撤周期实时状态机", "model", [port("value", series)], [port("state", states)], {
+        "lookback": parameter("integer", 9, "滚动高点窗口", minimum=2, maximum=120),
+        "stress_drawdown": parameter("number", 0.12, "进入压力的回撤", minimum=0.01, maximum=0.9),
+        "recovery_rebound": parameter("number", 0.05, "进入修复的谷底反弹", minimum=0.005, maximum=0.9),
+        "recovery_exit_drawdown": parameter("number", 0.08, "退出修复的剩余回撤", minimum=0.0, maximum=0.89),
+    }, ["drawdown_cycle_realtime"], "只用当期及过去价格：跌破滚动高点门槛进入压力，从活动谷底反弹进入修复，回撤收窄后回到正常。")
     sideways_outputs = [copy.deepcopy(item) for item in registry["model.peak_trough"]["outputs"]
                         if item["name"] == "state" or item["name"].startswith("sideways_")]
     add("post.peak_sideways", "小波段震荡合并", "postprocess", [port("value", series), {**port("phase", PHASE_CODES), "label": "完整波段方向"}, *copy.deepcopy(boundaries)],

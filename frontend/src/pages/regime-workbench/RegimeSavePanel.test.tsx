@@ -80,3 +80,41 @@ it('保存时阻止重复提交和修改输入', async () => {
   finish(saved)
   await screen.findByText('美林时钟 · v1 已可选用')
 })
+
+it('历史参考确认复用原研究发布路径，不另建存储', async () => {
+  const definition = { ...saved, study: { purpose: 'historical_reference' as const, family: 'custom' as const } }
+  render(<RegimeSavePanel purpose="historical_reference" definition={definition} dirty={false} valid mode="retrospective" asOf="" onSaved={vi.fn()} onBusy={vi.fn()} onViewResult={vi.fn()}>{null}</RegimeSavePanel>)
+  fireEvent.click(screen.getByRole('button', { name: '保存为历史参考' }))
+  expect(await screen.findByText('已确认历史参考，可在实时状态识别中选择此版本。')).toBeVisible()
+  expect(api.enableRegimeResearchVersion).toHaveBeenCalledWith(definition, 'token', 'retrospective', '')
+  expect(api.createRegimeGraphDefinition).not.toHaveBeenCalled()
+  expect(api.updateRegimeGraphDefinition).not.toHaveBeenCalled()
+})
+
+it('PIT 口径变化后迟到保存不覆盖草稿，也不继续发布', async () => {
+  let finish!: (value: api.RegimeGraphDefinition) => void
+  vi.mocked(api.createRegimeGraphDefinition).mockReturnValue(new Promise(resolve => { finish = resolve }))
+  const onSaved = vi.fn()
+  const props = { definition: draft, dirty: true, valid: true, mode: 'retrospective' as const, asOf: '', onSaved, onBusy: vi.fn(), onViewResult: vi.fn(), children: null }
+  const { rerender } = render(<RegimeSavePanel {...props} contextKey="pit-a" />)
+  fireEvent.click(screen.getByRole('button', { name: '保存并用于研究' }))
+  rerender(<RegimeSavePanel {...props} contextKey="pit-b" />)
+  finish(saved)
+  await screen.findByRole('alert')
+  expect(onSaved).not.toHaveBeenCalled()
+  expect(api.enableRegimeResearchVersion).not.toHaveBeenCalled()
+})
+
+it('only hands off the exact historical reference after research publication completes', async () => {
+  const reference = { run_id: 'history-run', publication_id: 'history-publication', content_hash: 'history-hash' }
+  const ready = vi.fn()
+  let finish!: (value: api.RegimeResearchVersion) => void
+  vi.mocked(api.enableRegimeResearchVersion).mockReturnValue(new Promise(resolve => { finish = resolve }))
+  const user = userEvent.setup()
+  render(<RegimeSavePanel purpose="historical_reference" definition={saved} dirty={false} valid mode="retrospective" asOf="" onBusy={() => {}} onSaved={() => {}} onViewResult={() => {}} onResearchReady={ready}>{null}</RegimeSavePanel>)
+  await user.click(screen.getByRole('button', { name: '保存为历史参考' }))
+  await waitFor(() => expect(api.enableRegimeResearchVersion).toHaveBeenCalled())
+  expect(ready).not.toHaveBeenCalled()
+  finish({ ...version, historical_reference: reference })
+  await waitFor(() => expect(ready).toHaveBeenCalledWith(expect.objectContaining({ historical_reference: reference })))
+})

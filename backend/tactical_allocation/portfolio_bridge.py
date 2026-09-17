@@ -17,8 +17,16 @@ from backend.tactical_allocation.repository import TacticalAllocationRepository
 def validate_decision_application(decision: dict, data: TacticalAllocationData, frozen_returns=None) -> None:
     """The same application gate protects export and direct portfolio writes."""
     preview = decision["preview"]
+    # Export and direct product writes share the new-clock gate as well.
+    # Missing decision_policy keeps the historical request contract unchanged.
+    if preview.get("request", {}).get("decision_policy"):
+        from backend.tactical_allocation.clocks import validate_clock_application
+        validate_clock_application(preview)
     baseline = preview["baseline"]
     request, recommendation = preview["request"], preview["recommendation"]
+    if baseline.get("policy"):
+        from backend.strategic_allocation.policy_gate import require_policy_application
+        require_policy_application(baseline, recommendation["weights"], request["max_tracking_error"], request["as_of"])
     try:
         expires = date.fromisoformat(recommendation["expires_on"])
         as_of = date.fromisoformat(request["as_of"])

@@ -3,6 +3,34 @@
   "scope_mode": "subtree_only",
   "pitfalls": [
     {
+      "id": "P23",
+      "title": "strategic_scope_effective_models_and_execution_evidence",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": ["implementation_scope_conflation", "stale_effective_cma", "cash_liquidity_conflation", "execution_clock_leakage", "direct_bridge_bypass"],
+      "symptoms": ["Pure forward SAA is blocked by product-only navigation, or missing products erase strategic budgets.", "Model output is displayed while funding or TAA consumes old manual moments.", "Changing execution frequency changes cost basis or hides actual holding-budget breaches."],
+      "trigger_actions": ["change mandates, strategic universes, implementation maps or CMA generation", "change SAA policy consumption, TAA signals, clocks or product handoff"],
+      "related_paths": ["backend/strategic_allocation/cma_application.py", "backend/strategic_allocation/sources.py", "backend/strategic_allocation/institution.py", "backend/tactical_allocation/clocks.py", "backend/tactical_allocation/signals.py", "backend/tactical_allocation/portfolio_bridge.py", "frontend/src/layouts/StageLayout.tsx", "backend/tactical_allocation/service.py", "frontend/src/pages/TacticalAllocationWorkspace.tsx", "frontend/src/components/strategic-scope/ImplementationMappingEditor.tsx", "frontend/src/components/tactical-allocation/TaaPolicySignals.tsx"],
+      "affected_modules": ["strategic_allocation_policy", "tactical_allocation_workbench", "frontend_allocation_workflows"],
+      "blast_radius": ["policy validity", "funding diagnosis", "tactical costs and timing", "immutable source lineage", "product budget preservation"],
+      "check_before_edit": [
+        "Preserve product-first workflows. Independent strategic definitions may support CMA/SAA without NAV; missing maps remain explicit and block TAA/product implementation. Completing a map creates new versions, never rewrites old policies.",
+        "Consume frozen effective moments through cma_application in search, funding and policy risk. Preserve raw model identity and hashes; posterior mean uncertainty is not asset-return risk. Never refit historical artifacts.",
+        "Cash-purpose floors require explicit liquid liquidity-role assets. Institutional manual evidence retains every topic, date and reason; researcher records are not independent approval.",
+        "Preserve original four-candidate and daily-target outputs. Risk budgets compare signed Euler shares over finite candidates; zero variance is unavailable. New kernels require actual invocation, fixed signatures and PID-bound warmup.",
+        "Separate observation, decision and execution clocks. Preserve drift, lag, explicit cost basis, actual-path budget diagnostics and training-only selection. Fixed-target stress is not strategy replay.",
+        "Every positive-weight signal component must be known, complete and unexpired, without missing-component renormalization. External value/carry/macro labels do not license fabricating scores from NAV.",
+        "Use actual dated holdings for thresholds and recheck current holdings at the shared product bridge. Policy/mapping expiry needs explicit reasons. Navigation references are not current eligibility proofs.",
+        "Composite recommendation expiry uses each positive component age/expiry at the adopted lag-mature decision, capped by research and policy review dates; never reuse the old momentum/regime global age or a pending signal expiry.",
+        "Restoring a TAA baseline or saved decision atomically restores its frozen mandate, strategic universe and mapping references, explicitly clearing absent references. Immutable mapping reads are independent of PIT initialization; clock changes invalidate computations, not saved history.",
+        "Changing an external signal kind resets both its visible JSON and submitted observations; preserve incomplete JSON while typing and block calculation until it is valid."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_cma_model_integration.py backend/tests/test_bettersaataa_m1.py backend/tests/test_tactical_allocation_clocks_signals.py backend/tests/test_bettersaataa_final_audit.py -q",
+        "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1"
+      ]
+    },
+    {
       "id": "P20",
       "title": "published_sensitivity_and_scenario_boundaries",
       "severity": "high",
@@ -571,29 +599,31 @@
     },
     {
       "id": "P10",
-      "title": "legacy_etf_detail_endpoint_still_has_a_synthetic_price_series_fallback",
+      "title": "etf_detail_compatibility_must_preserve_real_series_and_missing_values",
       "severity": "medium",
       "confidence": "high",
       "risk_codes": [
         "synthetic_data_misread_as_market_data",
-        "today_dependent_output",
+        "compatibility_route_drift",
         "chart_contract"
       ],
       "symptoms": [
-        "A new caller uses legacy /api/etf/products/{product_id} and receives plausible synthetic prices when no real series is loaded.",
-        "Legacy endpoint output changes over time because synthetic dates are generated to the current business day.",
-        "The active ProductDetail and ProductCompare flows regress from /api/instruments/products back to the legacy endpoint."
+        "An ETF compatibility-route change bypasses instrument_product_detail and diverges from the unified product response.",
+        "A change replaces an empty real-data timeseries with generated prices or fills missing OHLC/volume fields with invented values.",
+        "A chart assumes every product has prices even though the unified and compatibility detail endpoints preserve missing data."
       ],
       "trigger_actions": [
         "edit /api/etf/products/{product_id}",
         "edit ProductDetail or ProductCompare data-loading logic",
-        "replace synthetic fallback with real candle parquet data",
+        "change the unified price loader or missing-series handling",
         "change ETF product fields or date handling"
       ],
       "related_paths": [
         "backend/app.py",
         "backend/services/instrument_routes.py",
         "backend/custom_indicators/series_provider.py",
+        "backend/tests/test_legacy_etf_njit.py",
+        "backend/tests/test_instrument_routes.py",
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
         "docs/requirements.md"
@@ -608,13 +638,15 @@
         "user interpretation of ETF price history"
       ],
       "check_before_edit": [
-        "Keep active research pages on /api/instruments/products so missing data is empty instead of synthetic.",
+        "Keep /api/etf/products/{product_id} as a thin adapter to instrument_product_detail(kind='etf'); both routes use the same real-data implementation.",
+        "Preserve empty timeseries when prices are unavailable and null for missing OHLC/volume fields; do not restore synthetic price generation.",
+        "Set CUSTOM_INDICATOR_DATA_DIR to a temporary directory before running compatibility tests: importing backend.app initializes CustomIndicatorService before per-test monkeypatches and may migrate workspace files.",
         "Verify chart code accepts the unified real-series response shape after backend changes.",
         "Cover both ETF and public-fund detail series plus missing-parquet behavior with tmp fixtures."
       ],
       "safe_observation_methods": [
-        "rg -n \"_generate_synthetic_price_series|/api/etf/products|/api/instruments/products\" backend/app.py frontend/src/pages",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q"
+        "codegraph explore 'etf_product_detail instrument_product_detail'",
+        "env CUSTOM_INDICATOR_DATA_DIR=\"$(mktemp -d)\" python3 -m pytest backend/tests/test_legacy_etf_njit.py backend/tests/test_instrument_routes.py -q"
       ]
     },
     {
@@ -1219,6 +1251,104 @@
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_indicator_parallel_engine.py tests/test_evaluation_run_results.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py -q'",
         "/bin/sh -c 'cd backend && INDICATOR_PROCESS_WORKERS=7 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1 /Users/chenjunming/Desktop/myenv_312/bin/python3.12 benchmark_indicator_engine.py <plan-id> --repeat 2'",
         "rg -n \"SharedArrayOwner|data_generation|INDICATOR_PROCESS_WORKERS|evaluation-plan-runs\" backend docker-compose.yml .env.example"
+      ]
+    },
+    {
+      "id": "P21",
+      "title": "frontier_controls_preserve_sampling_precision_and_grid_domains",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "sampling_selection_regression",
+        "quantization_domain_mixing",
+        "frontier_parameter_semantics"
+      ],
+      "symptoms": [
+        "Risk selection no longer changes later random walks.",
+        "Constraint repair destroys the selected weight step.",
+        "Grid adoption uses continuous weights despite a configured discrete step."
+      ],
+      "trigger_actions": [
+        "edit frontier generation, controls, constraints, metrics or weight adoption"
+      ],
+      "related_paths": [
+        "backend/optimizer.py",
+        "backend/frontier_sampling.py",
+        "backend/tests/test_frontier_sampling.py",
+        "frontend/src/pages/ClassAllocation.tsx",
+        "frontend/src/components/frontier-grid/FrontierGrid.tsx"
+      ],
+      "affected_modules": [
+        "backend_quant_core",
+        "backend_analytics_routes",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "historical frontier exploration",
+        "selected portfolio weights",
+        "shared strategy optimization"
+      ],
+      "check_before_edit": [
+        "Keep all first-round seeds; later rounds select minimum risk per return bucket and freeze parent seeds for the next round.",
+        "All adopted weights must satisfy the selected integer step, total budget, single and overlapping group limits together.",
+        "Keep continuous grid coordinates as evidence; quantized adoption uses separately recomputed integer-feasible weights and metrics.",
+        "Keep target count independent from local refinement and per-target iterations; keep effective controls in one frontier workspace.",
+        "Return EWM window must affect sampling, refinement, grid solving and adoption under the same metric contract."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
+      ]
+    },
+    {
+      "id": "P22",
+      "title": "funding_capital_replay_and_saa_clock_consistency",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "inverse_forward_rounding_mismatch",
+        "stale_saa_candidate_adoption",
+        "lost_immutable_history"
+      ],
+      "symptoms": [
+        "Reported capital meets the adoption probability but the displayed amount fails when replayed.",
+        "A cutoff change leaves an old SAA preview adoptable."
+      ],
+      "trigger_actions": [
+        "edit investment goal numerical diagnosis",
+        "edit SAA preview, adoption or research clock handling"
+      ],
+      "related_paths": [
+        "backend/strategic_allocation/goal_kernels.py",
+        "backend/strategic_allocation/planning.py",
+        "frontend/src/pages/StrategicAllocationWorkspace.tsx",
+        "backend/tests/test_mandate_diagnostic_integrity.py",
+        "frontend/src/pages/StrategicAllocationWorkspace.test.tsx",
+        "backend/strategic_allocation/routes.py",
+        "backend/strategic_allocation/service.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
+        "frontend/src/app/allocationJourney.ts",
+        "frontend/src/components/tactical-allocation/BaselineSetup.tsx"
+      ],
+      "affected_modules": [
+        "strategic_allocation_policy"
+      ],
+      "blast_radius": [
+        "funding feasibility claims",
+        "immutable policy adoption",
+        "historical research evidence"
+      ],
+      "check_before_edit": [
+        "Replay the displayed cent-rounded gate capital on the original draws and original payment/terminal success conditions; derive every reported probability from the actual count. Inverse capital rankings alone do not prove the floating-point gate.",
+        "Keep the saved funding simulation seed and path count separate from SAA candidate-search settings.",
+        "Invalidate unsaved policy previews and late responses on cutoff changes, guard adoption, and preserve already saved historical snapshots.",
+        "Treat an undefined research day as unknown and block goal/CMA/policy calculations and writes; null is only an explicitly confirmed no-cutoff view. Transitions between these states invalidate unsaved results and late replies.",
+        "Only preview/confirm may create mandate versions; unconfirmed historical inputs remain readable but cannot drive a new policy. Input-only confirmations still freeze their simulation settings.",
+        "Return from TAA with the selected baseline ID and read its immutable server snapshot. Do not replace adopted policy evidence with an allocation-only browser draft."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_mandate_diagnostic_integrity.py -q",
+        "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts"
       ]
     }
   ]

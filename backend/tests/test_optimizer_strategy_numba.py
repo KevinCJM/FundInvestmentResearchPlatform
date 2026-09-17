@@ -134,6 +134,159 @@ def test_risk_budget_is_njit_and_invalid_inputs_fail_explicitly() -> None:
         )
 
 
+def test_local_refinement_is_deterministic_constrained_and_non_worsening() -> None:
+    nav = _nav_frame()
+    return_values, status = strategy.nav_to_returns_kernel(
+        np.ascontiguousarray(nav.to_numpy(dtype=np.float64))
+    )
+    assert status == 0
+    returns = pd.DataFrame(return_values, columns=nav.columns)
+    kwargs = dict(
+        asset_returns=returns,
+        return_config={"metric": "annual", "days": 252},
+        risk_config={"metric": "annual_vol", "days": 252},
+        single_limits=[(0.10, 0.75)] * 3,
+        group_limits={(0, 1): (0.45, 0.85)},
+        rounds=[{"samples": 1000, "step": 1.0, "buckets": 40}],
+        use_local_refine=True,
+        refine_iterations=30,
+        risk_free_rate=0.01,
+        seed=19,
+    )
+    first = optimizer.calculate_efficient_frontier_exploration(**kwargs)
+    second = optimizer.calculate_efficient_frontier_exploration(**kwargs)
+    assert first == second
+    assert first["refinement"]["algorithm"] == "bounded_pairwise_pattern_search_njit"
+    assert first["refinement"]["global_optimum_claim"] is False
+    assert all(item["non_worsening"] for item in first["refinement"]["items"])
+    for key in ("max_sharpe", "min_variance", "max_return"):
+        _assert_constraints(first[key]["weights"])
+    assert first["execution"]["python_fallback"] == 0
+    assert "refine_special_candidates_kernel" in first["execution"]["kernel_signatures"]
+
+
+def test_quantized_refinement_never_worsens_the_original_sampled_candidate() -> None:
+    rng = np.random.default_rng(1461)
+    values = rng.normal(0.0, 0.01, (80, 3)) + rng.uniform(0.0, 0.001, 3)
+    lows = rng.uniform(0.001, 0.2, 3)
+    highs = rng.uniform(0.5, 0.9, 3)
+    kwargs = dict(
+        asset_returns=pd.DataFrame(values, columns=["A", "B", "C"]),
+        return_config={"metric": "annual", "days": 252},
+        risk_config={"metric": "annual_vol", "days": 252},
+        single_limits=list(zip(lows, highs, strict=True)),
+        group_limits={(0, 1): (0.431, 0.763)},
+        rounds=[{"samples": 100, "step": 1.0, "buckets": 40}],
+        quantize_step=0.005,
+        risk_free_rate=0.0,
+        seed=42,
+    )
+    original = optimizer.calculate_efficient_frontier_exploration(
+        **kwargs, use_local_refine=False, refine_iterations=20,
+    )
+    refined = optimizer.calculate_efficient_frontier_exploration(
+        **kwargs, use_local_refine=True, refine_iterations=20,
+    )
+
+    def independent_sharpe(point: dict) -> float:
+        portfolio = values @ np.asarray(point["weights"], dtype=np.float64)
+        return float(portfolio.mean() * 252 / (portfolio.std(ddof=1) * np.sqrt(252)))
+
+    before = independent_sharpe(original["max_sharpe"])
+    after = independent_sharpe(refined["max_sharpe"])
+    item = refined["refinement"]["items"][0]
+    assert item["before_score"] == pytest.approx(before, rel=1e-12, abs=1e-12)
+    assert item["non_worsening"] is True
+    assert after >= before - 1e-12
+
+
+def test_representative_selector_uses_one_finite_set_and_stable_tie_rules() -> None:
+    risks = np.ascontiguousarray([0.0, 0.10, 0.10, 0.20], dtype=np.float64)
+    returns = np.ascontiguousarray([1.0, 0.03, 0.04, 0.05], dtype=np.float64)
+    max_sharpe, min_risk, max_return = optimizer.representative_indices_kernel(
+        risks, returns, np.int64(4), np.float64(0.01)
+    )
+    assert max_sharpe == 2  # zero-risk point is ineligible for Sharpe selection
+    assert min_risk == 0
+    assert max_return == 0
+
+    tied_returns = np.ascontiguousarray([0.03, 0.03], dtype=np.float64)
+    tied_risks = np.ascontiguousarray([0.10, 0.10], dtype=np.float64)
+    assert optimizer.representative_indices_kernel(
+        tied_risks, tied_returns, np.int64(2), np.float64(0.0)
+    ) == (0, 0, 0)
+    zero_risks = np.ascontiguousarray([0.0, 0.0], dtype=np.float64)
+    assert optimizer.representative_indices_kernel(
+        zero_risks, tied_returns, np.int64(2), np.float64(0.0)
+    ) == (-1, 0, 0)
+
+
+def test_final_representatives_are_selected_from_the_complete_returned_candidate_set() -> None:
+    cases = [
+        (17, 42, None, None, 0.01),
+        (1, 19, None, None, 0.0),
+        (1461, 19, 0.005, {(0, 1): (0.431, 0.763)}, 0.005),
+    ]
+    for data_seed, optimizer_seed, quantize_step, group_limits, risk_free_rate in cases:
+        rng = np.random.default_rng(data_seed)
+        values = rng.normal(0.0, 0.01, (120, 3)) + rng.uniform(-0.001, 0.002, 3)
+        kwargs = dict(
+            asset_returns=pd.DataFrame(values, columns=["A", "B", "C"]),
+            return_config={"metric": "annual", "days": 252},
+            risk_config={"metric": "annual_vol", "days": 252},
+            rounds=[{"samples": 100, "step": 1.0, "buckets": 40}],
+            quantize_step=quantize_step,
+            group_limits=group_limits,
+            risk_free_rate=risk_free_rate,
+            seed=optimizer_seed,
+        )
+        for refine_iterations in (0, 1, 20):
+            result = optimizer.calculate_efficient_frontier_exploration(
+                **kwargs,
+                use_local_refine=refine_iterations > 0,
+                refine_iterations=refine_iterations,
+            )
+            risks = np.asarray([point["value"][0] for point in result["scatter"]], dtype=np.float64)
+            expected_returns = np.asarray([point["value"][1] for point in result["scatter"]], dtype=np.float64)
+            valid_sharpe = np.where(risks > 1e-12, (expected_returns - risk_free_rate) / risks, -np.inf)
+            assert result["max_sharpe"]["value"] == pytest.approx(
+                result["scatter"][int(np.argmax(valid_sharpe))]["value"], abs=1e-12
+            )
+            assert result["min_variance"]["value"] == pytest.approx(
+                result["scatter"][int(np.argmin(risks))]["value"], abs=1e-12
+            )
+            assert result["max_return"]["value"] == pytest.approx(
+                result["scatter"][int(np.argmax(expected_returns))]["value"], abs=1e-12
+            )
+
+
+def test_refined_candidates_are_included_when_rebuilding_the_frontier() -> None:
+    rng = np.random.default_rng(1)
+    values = rng.normal(0.0, 0.01, (160, 3)) + np.array([0.001, 0.0001, 0.0005])
+    result = optimizer.calculate_efficient_frontier_exploration(
+        pd.DataFrame(values, columns=["A", "B", "C"]),
+        {"metric": "annual", "days": 252},
+        {"metric": "annual_vol", "days": 252},
+        rounds=[{"samples": 100, "step": 1.0, "buckets": 40}],
+        use_local_refine=True,
+        refine_iterations=20,
+        seed=42,
+    )
+    assert result["refined_candidates"] >= 1
+    for point in result["frontier"]:
+        risk, expected_return = point["value"]
+        for candidate in result["scatter"]:
+            candidate_risk, candidate_return = candidate["value"]
+            dominates = (
+                candidate_risk <= risk + 1e-12
+                and candidate_return >= expected_return - 1e-12
+                and (candidate_risk < risk - 1e-9 or candidate_return > expected_return + 1e-9)
+            )
+            assert not dominates, f"candidate {candidate['value']} dominates returned frontier point {point['value']}"
+    assert result["accepted_candidates"] == len(result["scatter"])
+    assert result["accepted_candidates"] == result["sampled_candidates"] + result["refined_candidates"]
+
+
 def test_requests_do_not_add_signatures_and_no_scipy_solver_remains() -> None:
     optimizer.warm_optimizer_numba_kernels()
     strategy.warm_strategy_numba_kernels()

@@ -35,6 +35,7 @@ def _infer(expressions: dict[str, str], context: dict[str, Any]):
         raise graph_error("INVALID_SCALAR_OUTPUT", "标量指标必须只有一个 result 输出。")
     kwargs = {
         "variable_types": {**variable_types(context["context_kind"], context["dsl_version"]), **parameter_variable_types(context)},
+        "parameter_names": frozenset(parameter_variable_types(context)),
         "dsl_version": context["dsl_version"],
         "operator_registry_version": context["operator_registry_version"],
     }
@@ -112,10 +113,13 @@ class IndicatorGraphService:
         # Reuse the existing version gate without compiling or requiring a complete graph.
         normalized = self.indicators._normalize_definition({
             **fields, "name": "画布解析", "expression": "1", "result_kind": "scalar", "output_contract": "scalar",
+            # A placeholder formula cannot carry the real parameter contract;
+            # that is checked against the authored expressions just below.
+            "parameter_schema": [], "parameter_contract_version": None,
         })
         schema = normalize_parameter_schema(fields.get("parameter_schema") or [])
-        if schema and (fields["result_kind"] != "time_series" or fields.get("parameter_contract_version") != PARAMETER_CONTRACT_VERSION):
-            raise graph_error("INVALID_PARAMETER_CONTRACT", "画布可变参数需要当前时序参数契约。")
+        if schema and fields.get("parameter_contract_version") != PARAMETER_CONTRACT_VERSION:
+            raise graph_error("INVALID_PARAMETER_CONTRACT", "画布可变参数需要当前参数契约。")
         return {**{key: normalized.get(key) for key in GraphContext.model_fields},
                 "result_kind": fields["result_kind"], "parameter_schema": schema,
                 "parameter_contract_version": fields.get("parameter_contract_version")}

@@ -1,19 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import TimeSeriesIndicatorPanel from '../components/indicator-parameters/TimeSeriesIndicatorPanel';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
-import FactorEvidencePanel from '../components/FactorEvidencePanel';
 import PublishedRiskPanel from '../components/risk-models/PublishedRiskPanel';
 import ProductScenarioPanel from '../components/product-research/ProductScenarioPanel';
+import ProductTrendChart from '../components/product-research/ProductTrendChart';
 import {
   evaluateCustomIndicators,
-  evaluateTimeSeriesIndicators,
   getCustomIndicatorMeta,
   indicatorsForContext,
   listCustomIndicators,
   type EvaluationResult,
   type IndicatorDefinition,
-  type TimeSeriesIndicatorResult,
 } from '../services/customIndicators';
 import { latestProductResearchPublication, researchVersionChoices } from '../services/regimeResearchVersions';
 import {
@@ -21,16 +18,11 @@ import {
   listHistoricalRegimeRuns,
   type HistoricalRegimeRun,
 } from '../services/historicalRegimes';
+import { MetricDefinitionDrawer } from '../components/metrics/MetricDisplay';
+import ResearchIndicatorPanel, { MAX_RESEARCH_PERIODS } from '../components/metrics/ResearchIndicatorPanel';
 import {
-  MetricDefinitionDrawer,
-  MetricResultCard,
-  MetricSelector,
-} from '../components/metrics/MetricDisplay';
-import {
-  groupIndicatorsByPeriod,
-  metricPeriodFor,
-  normalizeMetricPeriods,
   useMetricDisplayPreference,
+  useMetricPeriodColumns,
   withSelectedIndicators,
 } from '../components/metrics/useMetricDisplayPreference';
 import {
@@ -58,21 +50,8 @@ import {
 import { useResearchDay } from '../app/ResearchContext';
 import { readReturnNavigationState, returnToOrigin } from '../utils/returnNavigation';
 
-interface TimeSeriesPoint {
-  date: string;
-  open: number | null;
-  close: number;
-  high: number | null;
-  low: number | null;
-  volume: number | null;
-}
-
-const SERIES_INDICATOR_IDS = {
-  PRICE_MA: 'builtin-close-moving-average-series',
-  VOLUME_MA: 'builtin-volume-moving-average-series',
-  BOLL: 'builtin-bollinger-bands-series',
-  KDJ: 'builtin-kdj-series',
-} as const;
+/** Stable identity so a card without overrides does not re-render on every pass. */
+const EMPTY_PARAMETERS: Record<string, number> = {};
 
 const CORE_RESEARCH_INDICATOR_IDS = [
   'builtin-total-return-v2',
@@ -99,34 +78,7 @@ interface ProductDetailResponse {
     m_fee?: number | null;
     c_fee?: number | null;
   };
-  timeseries: TimeSeriesPoint[];
 }
-
-interface RegimeMarkAreaBoundary {
-  name?: string;
-  xAxis: string;
-  itemStyle?: {
-    color: string;
-    opacity: number;
-  };
-}
-
-type RegimeMarkArea = [RegimeMarkAreaBoundary, RegimeMarkAreaBoundary];
-
-type OverlayId = 'PRICE_MA' | 'VOLUME_MA' | 'BOLL' | 'KDJ';
-
-interface OverlayOption {
-  id: OverlayId;
-  label: string;
-  description: string;
-}
-
-const overlayOptions: OverlayOption[] = [
-  { id: 'PRICE_MA', label: '20 日收盘价均线', description: '固定 20 个交易日窗口观察价格趋势' },
-  { id: 'VOLUME_MA', label: '10 日成交量均线', description: '固定 10 个交易日窗口观察量能节奏' },
-  { id: 'BOLL', label: '20 日布林带', description: '20 日均值加减 2 倍总体标准差' },
-  { id: 'KDJ', label: 'KDJ（9, 3, 3）', description: '固定 9 日 RSV、3 日 K 与 D 平滑' },
-];
 
 const histogramBinWidthOptions = [
   { label: '0.05%', value: 0.05 },
@@ -252,69 +204,12 @@ const formatDate = (value?: string | number | null) => {
   return text.slice(0, 10);
 };
 
-const normalizeDateKey = (value: string) => {
-  const text = value.trim();
-  if (/^\d{8}$/.test(text)) {
-    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
-  }
-  const date = text.slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
-};
-
-const buildRegimeMarkAreas = (run: HistoricalRegimeRun | undefined, dates: string[]): RegimeMarkArea[] => {
-  if (!run || dates.length === 0) {
-    return [];
-  }
-
-  const datedCategories = dates
-    .map((date) => ({ date, key: normalizeDateKey(date) }))
-    .filter((item): item is { date: string; key: string } => item.key !== null);
-  const statesById = new Map(run.states.map((state) => [state.id, state]));
-
-  return run.segments.flatMap((segment): RegimeMarkArea[] => {
-    const state = statesById.get(segment.state_id);
-    const startDate = normalizeDateKey(segment.start_date);
-    const endDate = normalizeDateKey(segment.end_date);
-    if (!state?.label || !state.color || !startDate || !endDate || startDate > endDate) {
-      return [];
-    }
-
-    const intersectingDates = datedCategories.filter(({ key }) => key >= startDate && key <= endDate);
-    if (intersectingDates.length === 0) {
-      return [];
-    }
-
-    return [[
-      {
-        name: state.label,
-        xAxis: intersectingDates[0].date,
-        itemStyle: { color: state.color, opacity: 0.12 },
-      },
-      { xAxis: intersectingDates[intersectingDates.length - 1].date },
-    ]];
-  });
-};
-
-const alignedChannelValues = (
-  result: TimeSeriesIndicatorResult | undefined,
-  channelId: string,
-  dates: string[],
-): Array<number | null> => {
-  if (!result) return dates.map(() => null);
-  const channel = result.channels.find((item) => item.id === channelId);
-  if (!channel) return dates.map(() => null);
-  const valuesByDate = new Map(
-    result.dates.map((date, index) => [normalizeDateKey(date) ?? date, channel.values[index] ?? null]),
-  );
-  return dates.map((date) => valuesByDate.get(normalizeDateKey(date) ?? date) ?? null);
-};
-
 function MetricCard({ title, value, description }: { title: string; value: string; description?: string }) {
   return (
-    <div className="rounded-2xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-5 shadow-sm">
+    <div className="rounded-xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-5 shadow-sm">
       <div className="text-xs font-semibold uppercase tracking-wide text-emerald-500">{title}</div>
       <div className="mt-2 text-2xl font-bold text-slate-900">{value}</div>
-      {description && <div className="mt-1 text-xs text-slate-500">{description}</div>}
+      {description && <div className="mt-1 text-xs text-slate-600">{description}</div>}
     </div>
   );
 }
@@ -385,12 +280,12 @@ function RealizedFutureStrip({
     <section
       data-testid="realized-future-strip"
       aria-label="研究日之后的实际走势回看"
-      className="mt-4 overflow-hidden rounded-2xl border border-slate-900/15 bg-slate-50"
+      className="mt-4 overflow-hidden rounded-xl border border-slate-900/15 bg-slate-50"
     >
       <div className="flex flex-col gap-1 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-baseline sm:justify-between">
         <h4 className="text-sm font-semibold text-slate-900">
           研究日之后实际发生了什么
-          <span className="ml-2 text-xs font-normal text-slate-500">
+          <span className="ml-2 text-xs font-normal text-slate-600">
             {realized.baseDate} → {realized.endDate}
           </span>
         </h4>
@@ -416,9 +311,9 @@ function RealizedFutureStrip({
           },
         ].map((item) => (
           <div key={item.label}>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">{item.label}</dt>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-600">{item.label}</dt>
             <dd className="mt-1 text-2xl font-bold tabular-nums text-slate-900">{item.value}</dd>
-            <dd className="mt-0.5 text-xs text-slate-500">{item.note}</dd>
+            <dd className="mt-0.5 text-xs text-slate-600">{item.note}</dd>
           </div>
         ))}
       </dl>
@@ -459,7 +354,7 @@ function DistributionMetricCard({
   interpretation: DistributionInterpretation;
 }) {
   return (
-    <div className="rounded-2xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-5 shadow-sm">
+    <div className="rounded-xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-5 shadow-sm">
       <div className="text-xs font-semibold uppercase tracking-wide text-emerald-500">{title}</div>
       <div className="mt-2 text-2xl font-bold text-slate-900">{value}</div>
       <div className="mt-3 inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
@@ -471,22 +366,22 @@ function DistributionMetricCard({
 }
 
 function ExtremesCard({ best, worst }: { best: string; worst: string }) {
-  const bestClass = best === '--' ? 'text-slate-400' : 'text-emerald-600';
-  const worstClass = worst === '--' ? 'text-slate-400' : 'text-rose-500';
+  const bestClass = best === '--' ? 'text-slate-600' : 'text-emerald-600';
+  const worstClass = worst === '--' ? 'text-slate-600' : 'text-rose-500';
   return (
-    <div className="rounded-2xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-amber-50 p-5 shadow-sm">
-      <div className="text-xs font-semibold uppercase tracking-wide text-emerald-500">单日极值</div>
+    <div className="rounded-xl border border-transparent bg-gradient-to-br from-white via-slate-50 to-amber-50 p-5 shadow-sm">
+      <div className="text-xs font-semibold tracking-wide text-emerald-500">单日极值</div>
       <div className="mt-4 grid grid-cols-2 gap-4">
         <div>
-          <div className="text-xs text-slate-500">最佳日</div>
+          <div className="text-xs text-slate-600">最佳日</div>
           <div className={`mt-1 text-xl font-bold ${bestClass}`}>{best}</div>
         </div>
         <div>
-          <div className="text-xs text-slate-500">最差日</div>
+          <div className="text-xs text-slate-600">最差日</div>
           <div className={`mt-1 text-xl font-bold ${worstClass}`}>{worst}</div>
         </div>
       </div>
-      <p className="mt-3 text-xs text-slate-500">观察收益极值，评估潜在的尾部风险。</p>
+      <p className="mt-3 text-xs text-slate-600">观察收益极值，评估潜在的尾部风险。</p>
     </div>
   );
 }
@@ -504,15 +399,17 @@ export default function ProductDetail() {
   const [analysis, setAnalysis] = useState<ProductAnalysisResponse | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [overlayResults, setOverlayResults] = useState<TimeSeriesIndicatorResult[]>([]);
-  const [overlayLoading, setOverlayLoading] = useState(false);
-  const [overlayError, setOverlayError] = useState<string | null>(null);
-  const [selectedOverlays, setSelectedOverlays] = useState<OverlayId[]>(['PRICE_MA', 'VOLUME_MA']);
   const [histogramBinWidth, setHistogramBinWidth] = useState<number>(0.2);
   const [researchIndicators, setResearchIndicators] = useState<IndicatorDefinition[]>([]);
-  const [seriesIndicators, setSeriesIndicators] = useState<IndicatorDefinition[]>([]);
   const [researchPeriods, setResearchPeriods] = useState<string[]>(['1Y']);
   const [researchResults, setResearchResults] = useState<EvaluationResult[]>([]);
+  /**
+   * Runtime overrides for the opened parameters of a saved revision, per page
+   * visit. Deliberately not persisted: the selection and period are "what I
+   * usually look at", a parameter value is "what I am asking right now", and a
+   * remembered window read as a bug the next time the page opened.
+   */
+  const [researchParameters, setResearchParameters] = useState<Record<string, Record<string, number>>>({});
   const [researchAsOf, setResearchAsOf] = useState('');
   const platformAsOf = useResearchDay();
   const [researchLoading, setResearchLoading] = useState(false);
@@ -561,6 +458,13 @@ export default function ProductDetail() {
     '1Y',
     researchIndicators.map((indicator) => indicator.id),
   );
+  const [researchPeriodColumns, setResearchPeriodColumns] = useMetricPeriodColumns(
+    'product-detail',
+    'single_product',
+    '1Y',
+    researchPeriods,
+    MAX_RESEARCH_PERIODS,
+  );
 
   const productId = useMemo(() => {
     if (!params.productId) {
@@ -574,36 +478,14 @@ export default function ProductDetail() {
     }
   }, [params.productId]);
 
-  const selectedResearchIndicators = useMemo(
+  // Series indicators own their own request; only scalars go through the batch.
+  const selectedScalarIndicators = useMemo(
     () => researchPreference.indicatorIds
       .map((id) => researchIndicators.find((item) => item.id === id))
-      .filter((item): item is IndicatorDefinition => Boolean(item)),
+      .filter((item): item is IndicatorDefinition => Boolean(item) && (item!.result_kind ?? 'scalar') === 'scalar'),
     [researchIndicators, researchPreference.indicatorIds],
   );
-
-  const toggleOverlay = (overlayId: OverlayId) => {
-    setSelectedOverlays((prev) => {
-      if (prev.includes(overlayId)) {
-        return prev.filter((item) => item !== overlayId);
-      }
-      return [...prev, overlayId];
-    });
-  };
-
-  const restoreDefaultOverlays = () => {
-    setSelectedOverlays(['PRICE_MA', 'VOLUME_MA']);
-  };
-
-  const renderOverlayControls = (optionId: OverlayId) => {
-    const definition = overlayOptions.find((item) => item.id === optionId);
-    return (
-      <div className="rounded-xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
-        <p><span className="font-semibold">固定指标版本：</span>{definition?.description}</p>
-        <p className="mt-1">窗口、倍数和平滑周期不能在展示页面临时覆盖。需要其他参数时，请在指标中心复制并保存为另一个时序指标。</p>
-        <Link to="/settings/indicators-models" className="mt-2 inline-flex font-semibold text-violet-700 underline decoration-violet-300 underline-offset-4">前往指标中心</Link>
-      </div>
-    );
-  };
+  const scalarParameterKey = JSON.stringify(selectedScalarIndicators.map((indicator) => researchParameters[indicator.id] ?? null));
 
   useEffect(() => {
     if (!productId) {
@@ -616,7 +498,7 @@ export default function ProductDetail() {
       try {
         setLoading(true);
         setError(null);
-        const detailUrl = `/api/instruments/products/${encodeURIComponent(productId)}?kind=${productKind}`;
+        const detailUrl = `/api/instruments/products/${encodeURIComponent(productId)}?kind=${productKind}&include_timeseries=false`;
         const resp = await fetch(detailUrl, { signal: controller.signal });
         if (!resp.ok) {
           console.warn('Product detail request responded with non-OK status', resp.status);
@@ -628,9 +510,7 @@ export default function ProductDetail() {
           setDetail(null);
           return;
         }
-        const data = (await resp.json()) as ProductDetailResponse;
-        if (!Array.isArray(data.timeseries)) data.timeseries = [];
-        setDetail(data);
+        setDetail((await resp.json()) as ProductDetailResponse);
       } catch (err) {
         if ((err as DOMException).name === 'AbortError') {
           return;
@@ -696,12 +576,10 @@ export default function ProductDetail() {
     Promise.all([listCustomIndicators({ contextKind: 'single_product', productKind }), getCustomIndicatorMeta()])
       .then(([{ items }, metadata]) => {
         if (!active) return;
-        const singleProductIndicators = indicatorsForContext(items, 'single_product');
-        setResearchIndicators(singleProductIndicators);
-        setSeriesIndicators(items.filter(item => item.result_kind === 'time_series'));
-        const runtimePeriods = metadata.periods.map((item) => item.value);
-        setResearchPeriods(runtimePeriods);
-        setResearchPreference((current) => normalizeMetricPeriods(current, runtimePeriods, '1Y'));
+        setResearchIndicators(indicatorsForContext(items, 'single_product').filter((item) => (
+          !item.applicable_product_kinds?.length || item.applicable_product_kinds.includes(productKind)
+        )));
+        setResearchPeriods(metadata.periods.map((item) => item.value));
       })
       .catch(() => {
         if (active) setResearchError('自定义指标库暂时不可用，请稍后重试。');
@@ -710,20 +588,26 @@ export default function ProductDetail() {
   }, [productKind]);
 
   useEffect(() => {
-    if (selectedResearchIndicators.length === 0 || !productId) {
+    if (selectedScalarIndicators.length === 0 || !productId) {
       setResearchResults([]);
       return;
     }
     let active = true;
     setResearchLoading(true);
     setResearchError(null);
-    const selectedPreference = {
-      ...researchPreference,
-      indicatorIds: selectedResearchIndicators.map((indicator) => indicator.id),
-    };
-    Promise.all(groupIndicatorsByPeriod(selectedPreference, '1Y').map(({ indicatorIds, period }) => (
+    // Refs, not bare ids: they pin the revision that was on screen and carry
+    // this page's parameter overrides. Bare ids let a concurrent catalog edit
+    // swap the algorithm between preparation and execution.
+    const indicatorRefs = selectedScalarIndicators.map((indicator) => ({
+      indicator_id: indicator.id,
+      indicator_revision: indicator.revision,
+      ...(Object.keys(researchParameters[indicator.id] ?? {}).length ? { parameters: researchParameters[indicator.id] } : {}),
+    }));
+    // One request per column: `period` is a single value on the wire, and the
+    // backend rejects the same indicator twice in one request.
+    Promise.all(researchPeriodColumns.map((period) => (
       evaluateCustomIndicators({
-        indicator_ids: indicatorIds,
+        indicator_refs: indicatorRefs,
         targets: [{ kind: productKind, product_id: productId }],
         period,
         as_of: researchAsOf || undefined,
@@ -740,7 +624,7 @@ export default function ProductDetail() {
       })
       .finally(() => { if (active) setResearchLoading(false); });
     return () => { active = false; };
-  }, [productId, productKind, researchAsOf, researchPreference.periodsByIndicator, selectedResearchIndicators]);
+  }, [productId, productKind, researchAsOf, researchPeriodColumns, scalarParameterKey, selectedScalarIndicators]);
 
   const metrics = detail?.metrics ?? {};
   const baseInfo = detail?.base_info ?? {};
@@ -780,59 +664,10 @@ export default function ProductDetail() {
   );
   const selectedSegment = analysis?.regimeAnalysis?.segments.find(item => item.id === selectedSegmentId);
   const selectedState = selectedHistoricalRegimeRun?.states.find(item => item.id === selectedStateId);
-  const historicalRegimeMarkAreas = useMemo(() => {
-    const windowStart = analysis?.researchContext?.windowStartDate ?? analysis?.researchContext?.startDate;
-    const windowEnd = analysis?.researchContext?.windowEndDate ?? analysis?.researchContext?.endDate;
-    const dates = (detail?.timeseries ?? []).filter(item => (!windowStart || item.date >= windowStart) && (!windowEnd || item.date <= windowEnd)).map(item => item.date);
-    const run = selectedHistoricalRegimeRun;
-    if (!run) return [];
-    return buildRegimeMarkAreas({ ...run, segments: run.segments.filter(segment => (
-      (!selectedStateId || segment.state_id === selectedStateId)
-      && (!selectedSegment || (segment.start_date <= selectedSegment.endDate && segment.end_date >= selectedSegment.startDate))
-    )) }, dates);
-  }, [detail?.timeseries, selectedHistoricalRegimeRun, selectedStateId, selectedSegment, analysis?.researchContext]);
   const selectState = (id: string) => { setSelectedStateId(id); setSelectedSegmentId(''); };
   const selectSegment = (segment: ProductRegimeSegment) => { setSelectedStateId(segment.stateId); setSelectedSegmentId(segment.id); };
   const changeRegime = (id: string) => { setSelectedHistoricalRegimeRunId(id); setSelectedStateId(''); setSelectedSegmentId(''); };
   useEffect(() => { changeRegime(''); setActiveTab('chart'); setAnalysisBasis('adjusted_nav'); setAnalysisSettingsOpen(false); }, [productId, productKind]);
-  useEffect(() => {
-    if (!productId || productKind !== 'etf' || selectedOverlays.length === 0) {
-      setOverlayResults([]);
-      setOverlayLoading(false);
-      setOverlayError(productKind === 'fund' ? '场外公募基金没有交易所 OHLCV，技术时序指标不可用。' : null);
-      return undefined;
-    }
-    let active = true;
-    const indicatorInstances = selectedOverlays.map((overlayId) => ({
-      indicator_id: SERIES_INDICATOR_IDS[overlayId],
-    }));
-    setOverlayLoading(true);
-    setOverlayError(null);
-    setOverlayResults([]);
-    evaluateTimeSeriesIndicators({
-      indicator_instances: indicatorInstances,
-      target: { kind: 'etf', product_id: productId },
-      period: 'ALL',
-      max_points: 5000,
-    })
-      .then((response) => {
-        if (!active) return;
-        setOverlayResults(response.results);
-        const failed = response.results.filter((item) => item.status === 'unavailable' || item.status === 'error');
-        if (failed.length > 0) {
-          setOverlayError(failed.flatMap((item) => item.warnings.map((warning) => warning.message)).join('；'));
-        }
-      })
-      .catch((requestError) => {
-        if (!active) return;
-        setOverlayResults([]);
-        setOverlayError(requestError instanceof Error ? requestError.message : '技术时序指标计算失败。');
-      })
-      .finally(() => {
-        if (active) setOverlayLoading(false);
-      });
-    return () => { active = false; };
-  }, [productId, productKind, selectedOverlays]);
 
   const analysisRequest = useMemo<ProductAnalysisRequest>(() => ({
     statistics_period: statisticsPeriod,
@@ -916,329 +751,6 @@ export default function ProductDetail() {
       .finally(() => { if (active) setAnalysisLoading(false); });
     return () => { active = false; controller.abort(); };
   }, [detail, productId, productKind, analysisRequest]);
-  const rawTechnicalAvailability = useMemo(() => {
-    const points = detail?.timeseries ?? [];
-    return {
-      ohlc: points.length > 0 && points.every((item) => (
-        item.open !== null
-        && item.high !== null
-        && item.low !== null
-        && Number.isFinite(item.open)
-        && Number.isFinite(item.high)
-        && Number.isFinite(item.low)
-        && Number.isFinite(item.close)
-      )),
-      volume: points.some((item) => item.volume !== null && Number.isFinite(item.volume)),
-    };
-  }, [detail?.timeseries]);
-
-  const chartOption = useMemo(() => {
-    if (!detail?.timeseries || detail.timeseries.length === 0) {
-      return undefined;
-    }
-
-    const dates = detail.timeseries.map((item) => item.date);
-    const findOverlayResult = (indicatorId: string) => overlayResults.find((item) => (
-      item.indicator_id === indicatorId
-    ));
-    const { ohlc: hasOhlc, volume: hasVolume } = rawTechnicalAvailability;
-    const totalPoints = dates.length;
-    const defaultWindow = 252;
-    const startIndex = Math.max(0, totalPoints - defaultWindow);
-    const requestedStart = selectedSegment?.startDate ?? analysis?.researchContext?.windowStartDate;
-    const requestedEnd = selectedSegment?.endDate ?? analysis?.researchContext?.windowEndDate;
-    const startValue = requestedStart ? dates.find(date => date >= requestedStart) ?? dates[startIndex] : dates[startIndex];
-    const endValue = requestedEnd ? dates.filter(date => date <= requestedEnd).pop() ?? dates[totalPoints - 1] : dates[totalPoints - 1];
-    const klineValues = detail.timeseries.map((item) => [item.open, item.close, item.low, item.high]);
-    const volumes = detail.timeseries.map((item) => ({
-      value: item.volume,
-      itemStyle: {
-        color: item.open !== null && item.close >= item.open ? '#34d399' : '#94a3b8',
-      },
-    }));
-    const priceMASeries = selectedOverlays.includes('PRICE_MA')
-      ? [{
-          name: '20 日收盘价均线',
-          type: 'line',
-          data: alignedChannelValues(
-            findOverlayResult(SERIES_INDICATOR_IDS.PRICE_MA),
-            'ma',
-            dates,
-          ),
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.5 },
-          emphasis: { focus: 'series' },
-        }]
-      : [];
-
-    const volumeMASeries = selectedOverlays.includes('VOLUME_MA') && hasVolume
-      ? [{
-          name: '10 日成交量均线',
-          type: 'line',
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: alignedChannelValues(
-            findOverlayResult(SERIES_INDICATOR_IDS.VOLUME_MA),
-            'volume_ma',
-            dates,
-          ),
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1 },
-          emphasis: { focus: 'series' },
-        }]
-      : [];
-
-    const bollingerResult = findOverlayResult(SERIES_INDICATOR_IDS.BOLL);
-    const bollingerSeries = selectedOverlays.includes('BOLL')
-      ? [
-            {
-              name: '布林上轨（20 日，2σ）',
-              type: 'line',
-              data: alignedChannelValues(bollingerResult, 'upper', dates),
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1, color: '#f97316' },
-            },
-            {
-              name: '布林中轨',
-              type: 'line',
-              data: alignedChannelValues(bollingerResult, 'middle', dates),
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1, color: '#0ea5e9', type: 'dashed' },
-            },
-            {
-              name: '布林下轨',
-              type: 'line',
-              data: alignedChannelValues(bollingerResult, 'lower', dates),
-              smooth: true,
-              showSymbol: false,
-              lineStyle: { width: 1, color: '#10b981' },
-            },
-          ]
-      : [];
-
-    const kdjResult = findOverlayResult(SERIES_INDICATOR_IDS.KDJ);
-    const hasKDJ = selectedOverlays.includes('KDJ')
-      && Boolean(kdjResult)
-      && kdjResult?.status !== 'unavailable'
-      && kdjResult?.status !== 'error';
-    const kValues = hasKDJ ? alignedChannelValues(kdjResult, 'k', dates) : [];
-    const dValues = hasKDJ ? alignedChannelValues(kdjResult, 'd', dates) : [];
-    const jValues = hasKDJ ? alignedChannelValues(kdjResult, 'j', dates) : [];
-
-    const primaryTop = 50;
-    const klineHeight = 260;
-    const volumeHeight = 120;
-    const extraPanelHeight = 110;
-    const gridGap = 20;
-
-    const grid = [
-      { left: 12, right: 18, top: primaryTop, height: klineHeight, containLabel: true },
-      { left: 12, right: 18, top: primaryTop + klineHeight + gridGap, height: volumeHeight, containLabel: true },
-    ];
-    const xAxis: any[] = [
-      {
-        type: 'category',
-        data: dates,
-        boundaryGap: false,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true, showMinLabel: false, showMaxLabel: false },
-      },
-      {
-        type: 'category',
-        gridIndex: 1,
-        data: dates,
-        boundaryGap: false,
-        axisTick: { show: false },
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisLabel: { show: false },
-      },
-    ];
-    const yAxis: any[] = [
-      {
-        scale: true,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        splitLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      },
-      {
-        gridIndex: 1,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisTick: { show: false },
-        splitLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      },
-    ];
-
-    if (hasKDJ) {
-      grid.push({ left: 12, right: 18, top: primaryTop + klineHeight + gridGap + volumeHeight + gridGap, height: extraPanelHeight, containLabel: true });
-      xAxis.push({
-        type: 'category',
-        gridIndex: 2,
-        data: dates,
-        boundaryGap: false,
-        axisTick: { show: false },
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      });
-      yAxis.push({
-        gridIndex: 2,
-        axisLine: { lineStyle: { color: '#cbd5f5' } },
-        splitLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#475569', fontSize: 10, hideOverlap: true },
-      });
-    }
-
-    const dataZoom: any[] = [
-      {
-        type: 'inside',
-        xAxisIndex: hasKDJ ? [0, 1, 2] : [0, 1],
-        startValue,
-        endValue,
-      },
-      {
-        show: true,
-        xAxisIndex: hasKDJ ? [0, 1, 2] : [0, 1],
-        type: 'slider',
-        height: 18,
-        bottom: hasKDJ ? 50 : 40,
-        startValue,
-        endValue,
-      },
-    ];
-
-    const historicalBackground = historicalRegimeMarkAreas.length > 0 ? {
-          markArea: {
-            silent: true,
-            label: {
-              show: true,
-              position: 'insideTop',
-              color: '#334155',
-              fontSize: 10,
-            },
-            data: historicalRegimeMarkAreas,
-          },
-        } : {};
-    const priceSeries = hasOhlc
-      ? {
-          name: '价格',
-          type: 'candlestick',
-          data: klineValues,
-          itemStyle: {
-            color: '#0ea5e9',
-            color0: '#f87171',
-            borderColor: '#0284c7',
-            borderColor0: '#dc2626',
-          },
-          ...historicalBackground,
-        }
-      : {
-          name: '价格',
-          type: 'line',
-          data: detail.timeseries.map((item) => item.close),
-          showSymbol: false,
-          lineStyle: { width: 1.6, color: '#0ea5e9' },
-          ...historicalBackground,
-        };
-    const series: any[] = [
-      priceSeries,
-      {
-        name: '成交量',
-        type: 'bar',
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: hasVolume ? volumes : [],
-        barWidth: '60%',
-      },
-      ...priceMASeries,
-      ...volumeMASeries,
-      ...bollingerSeries,
-    ];
-
-    if (hasKDJ) {
-      series.push(
-        {
-          name: 'K值',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: kValues,
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.2, color: '#34d399' },
-        },
-        {
-          name: 'D值',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: dValues,
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.2, color: '#3b82f6' },
-        },
-        {
-          name: 'J值',
-          type: 'line',
-          xAxisIndex: 2,
-          yAxisIndex: 2,
-          data: jValues,
-          smooth: true,
-          showSymbol: false,
-          lineStyle: { width: 1.2, color: '#f97316' },
-        }
-      );
-    }
-
-    return {
-      backgroundColor: '#ffffff',
-      animation: false,
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: {
-          type: 'cross',
-          crossStyle: { color: '#94a3b8' },
-        },
-      },
-      axisPointer: {
-        link: [{ xAxisIndex: 'all' }],
-      },
-      legend: {
-        type: 'scroll',
-        top: 10,
-        left: 'center',
-        icon: 'roundRect',
-        textStyle: { color: '#475569', fontSize: 12 },
-      },
-      grid,
-      xAxis,
-      yAxis,
-      dataZoom,
-      series,
-    };
-  }, [
-    detail?.timeseries,
-    historicalRegimeMarkAreas,
-    analysis?.researchContext,
-    selectedSegment,
-    overlayResults,
-    rawTechnicalAvailability,
-    selectedOverlays,
-  ]);
-
-  const kdjOverlayAvailable = useMemo(() => overlayResults.some((item) => (
-    item.indicator_id === SERIES_INDICATOR_IDS.KDJ
-    && item.status !== 'unavailable'
-    && item.status !== 'error'
-  )), [overlayResults]);
-
-  const chartHeight = useMemo(() => (
-    selectedOverlays.includes('KDJ') && kdjOverlayAvailable ? 700 : 540
-  ), [kdjOverlayAvailable, selectedOverlays]);
-
   const statisticsWindow = analysis?.window ?? {
     complete: false,
     requested_start_date: null,
@@ -1906,9 +1418,9 @@ export default function ProductDetail() {
   const contextLabel = selectedStateId ? `${selectedState?.label ?? context?.stateLabel ?? '所选状态'}${selectedSegmentId ? ' · 单个连续区间' : ' · 全部连续区间'}` : '完整样本';
   return (
     <div className="mx-auto min-w-0 max-w-7xl space-y-5 px-3 py-5 sm:px-6 sm:py-8">
-      <button type="button" onClick={() => returnToOrigin(navigate, location, `/product-research/products?kind=${productKind}`)} className="inline-flex min-h-10 items-center rounded-lg px-1 text-sm font-medium text-slate-500 hover:text-sky-700">← {returnNavigation?.returnLabel ?? '返回上一页'}</button>
+      <button type="button" onClick={() => returnToOrigin(navigate, location, `/product-research/products?kind=${productKind}`)} className="inline-flex min-h-10 items-center rounded-lg px-1 text-sm font-medium text-slate-600 hover:text-accent-700">← {returnNavigation?.returnLabel ?? '返回上一页'}</button>
       {loading ? (
-        <div className="flex h-96 items-center justify-center text-slate-400">
+        <div className="flex h-96 items-center justify-center text-slate-600">
           <div className="flex items-center gap-3">
             <svg className="h-5 w-5 animate-spin text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle className="opacity-25" cx="12" cy="12" r="10" />
@@ -1918,249 +1430,122 @@ export default function ProductDetail() {
           </div>
         </div>
       ) : error ? (
-        <div className="rounded-2xl bg-white p-12 text-center shadow-sm">
+        <div className="rounded-xl bg-white p-12 text-center shadow-sm">
           <div className="mx-auto max-w-xl space-y-4">
-            <div className="inline-flex rounded-full bg-rose-50 px-4 py-1 text-sm font-semibold text-rose-500">提示</div>
+            <div className="inline-flex rounded-full bg-rose-50 px-4 py-1 text-sm font-semibold text-rose-700">提示</div>
             <p className="text-lg font-semibold text-slate-800">{error}</p>
-            <p className="text-sm text-slate-500">如需进一步帮助，请联系系统管理员或返回列表重新选择产品。</p>
+            <p className="text-sm text-slate-600">如需进一步帮助，请联系系统管理员或返回列表重新选择产品。</p>
           </div>
         </div>
       ) : !detail ? (
-        <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">暂无可展示的产品详情。</div>
+        <div className="rounded-xl bg-white p-12 text-center text-slate-600 shadow-sm">暂无可展示的产品详情。</div>
       ) : (
         <>
 
-          <header className="rounded-2xl border border-slate-200 bg-white px-5 py-5 sm:px-6">
+          <header className="rounded-xl border border-slate-200 bg-white px-5 py-5 sm:px-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0"><p className="text-xs font-semibold tracking-wide text-slate-400">单产品研究 · {productKind === 'fund' ? '公募基金' : 'ETF'}</p><h1 className="mt-1 break-words text-2xl font-semibold tracking-tight text-slate-900">{detail.name ?? '--'}</h1><div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500"><span className="font-medium text-slate-700">{tsCode}</span>{baseInfo['qdii_type'] && <span className="rounded bg-slate-100 px-2 py-0.5">{String(baseInfo['qdii_type'])}</span>}<span>{detail.management}</span><span>{detail.status}</span></div></div>
-              <div className="flex gap-6 text-right"><div><p className="text-xs text-slate-500">当前规模</p><p className="mt-1 text-xl font-semibold tabular-nums text-slate-900">{formatIssueAmount(metrics.current_size)}</p></div><div><p className="text-xs text-slate-500">管理 / 托管费</p><p className="mt-2 text-sm font-medium tabular-nums text-slate-700">{formatPercent(metrics.m_fee)} / {formatPercent(metrics.c_fee)}</p></div></div>
+              <div className="min-w-0"><p className="text-xs font-semibold tracking-wide text-slate-600">单产品研究 · {productKind === 'fund' ? '公募基金' : 'ETF'}</p><h1 className="mt-1 break-words text-2xl font-semibold tracking-tight text-slate-900">{detail.name ?? '--'}</h1><div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600"><span className="font-medium text-slate-700">{tsCode}</span>{baseInfo['qdii_type'] && <span className="rounded-lg bg-slate-100 px-2 py-0.5">{String(baseInfo['qdii_type'])}</span>}<span>{detail.management}</span><span>{detail.status}</span></div></div>
+              <div className="flex gap-6 text-right"><div><p className="text-xs text-slate-600">当前规模</p><p className="mt-1 text-xl font-semibold tabular-nums text-slate-900">{formatIssueAmount(metrics.current_size)}</p></div><div><p className="text-xs text-slate-600">管理 / 托管费</p><p className="mt-2 text-sm font-medium tabular-nums text-slate-700">{formatPercent(metrics.m_fee)} / {formatPercent(metrics.c_fee)}</p></div></div>
             </div>
-            {productKind === 'etf' && <Link to={`/product-research/timing?product_id=${encodeURIComponent(String(tsCode || productId))}&kind=etf`} className="mt-4 inline-flex min-h-10 items-center rounded-lg border border-slate-200 px-3 text-sm font-medium text-sky-700 hover:bg-sky-50">研究这个 ETF 的买入与退出规则 →</Link>}
-            <details className="mt-4 border-t border-slate-100 pt-3"><summary className="cursor-pointer text-xs font-medium text-slate-500">产品资料与规模口径</summary><div className="mt-3 grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-3"><span>管理人：{formatText(detail.management)}</span><span>托管人：{formatText(detail.custodian)}</span><span aria-label={`${inceptionDateLabel}：${inceptionDateText}`}>{inceptionDateLabel}：{inceptionDateText}</span>{endDate && <span aria-label={`${endDateLabel}：${endDateText}`}>{endDateLabel}：{endDateText}</span>}<span>发行规模：{formatIssueAmount(metrics.issue_amount)}</span><span className="sm:col-span-2">{currentSizeDescription}</span></div></details>
+            {productKind === 'etf' && <Link to={`/product-research/timing?product_id=${encodeURIComponent(String(tsCode || productId))}&kind=etf`} className="mt-4 inline-flex min-h-10 items-center rounded-lg border border-slate-200 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50">研究这个 ETF 的买入与退出规则 →</Link>}
+            <details className="mt-4 border-t border-slate-100 pt-3"><summary className="cursor-pointer text-xs font-medium text-slate-600">产品资料与规模口径</summary><div className="mt-3 grid gap-3 text-xs text-slate-600 sm:grid-cols-2 lg:grid-cols-3"><span>管理人：{formatText(detail.management)}</span><span>托管人：{formatText(detail.custodian)}</span><span aria-label={`${inceptionDateLabel}：${inceptionDateText}`}>{inceptionDateLabel}：{inceptionDateText}</span>{endDate && <span aria-label={`${endDateLabel}：${endDateText}`}>{endDateLabel}：{endDateText}</span>}<span>发行规模：{formatIssueAmount(metrics.issue_amount)}</span><span className="sm:col-span-2">{currentSizeDescription}</span></div></details>
           </header>
-          <div role="tablist" aria-label="产品研究工作区" className="grid grid-cols-2 sm:grid-cols-5 rounded-xl border border-slate-200 bg-slate-100/70 p-1">{tabs.map((tab, index) => <button key={tab.id} role="tab" id={`product-tab-${tab.id}`} aria-controls={`product-panel-${tab.id}`} aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => setActiveTab(tab.id)} onKeyDown={event => { const offset = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0; const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + offset + tabs.length) % tabs.length; if (offset || event.key === 'Home' || event.key === 'End') { event.preventDefault(); setActiveTab(tabs[next].id); document.getElementById(`product-tab-${tabs[next].id}`)?.focus(); } }} className={`min-h-11 whitespace-nowrap rounded-lg px-1 py-2 text-[11px] font-semibold transition sm:px-4 sm:text-sm ${activeTab === tab.id ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/70' : 'text-slate-500 hover:text-slate-800'}`}>{tab.label}</button>)}</div>
+          <div role="tablist" aria-label="产品研究工作区" className="grid grid-cols-2 sm:grid-cols-5 rounded-xl border border-slate-200 bg-slate-100/70 p-1">{tabs.map((tab, index) => <button key={tab.id} role="tab" id={`product-tab-${tab.id}`} aria-controls={`product-panel-${tab.id}`} aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => setActiveTab(tab.id)} onKeyDown={event => { const offset = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0; const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + offset + tabs.length) % tabs.length; if (offset || event.key === 'Home' || event.key === 'End') { event.preventDefault(); setActiveTab(tabs[next].id); document.getElementById(`product-tab-${tabs[next].id}`)?.focus(); } }} className={`min-h-11 whitespace-nowrap rounded-lg px-1 py-2 text-xs font-semibold transition sm:px-4 sm:text-sm ${activeTab === tab.id ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/70' : 'text-slate-600 hover:text-slate-800'}`}>{tab.label}</button>)}</div>
           {activeTab !== 'chart' && activeTab !== 'risk' && <section aria-label="分析样本" className="min-w-0 rounded-xl border border-slate-200 bg-white px-3 py-3 sm:px-4">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-600">
                 分析样本区间
-                <select aria-label="分析样本区间" value={statisticsPeriod} onChange={event => { setStatisticsPeriod(event.target.value as StatisticsPeriod); setSelectedSegmentId(''); }} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-800 focus:ring-2 focus:ring-sky-500">
+                <select aria-label="分析样本区间" value={statisticsPeriod} onChange={event => { setStatisticsPeriod(event.target.value as StatisticsPeriod); setSelectedSegmentId(''); }} className="min-h-10 rounded-xl border border-slate-200 bg-white px-2 text-sm text-slate-800 focus:ring-2 focus:ring-accent-500">
                   {STATISTICS_PERIOD_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.value === 'ALL' ? '全部历史' : option.label}</option>)}
                 </select>
               </label>
               <div className="ml-auto flex items-center gap-3 text-xs">
-                <span aria-label="当前收益口径" className="text-slate-500">{analysisBasis === 'adjusted_nav' ? '复权净值' : '交易价格'}</span>
-                {productKind === 'etf' && <button type="button" aria-expanded={analysisSettingsOpen} aria-controls="product-analysis-settings" onClick={() => setAnalysisSettingsOpen(open => !open)} className="min-h-10 rounded-lg px-2 font-medium text-slate-600 hover:bg-slate-50 hover:text-sky-700 focus:ring-2 focus:ring-sky-500">分析设置 <span aria-hidden="true">{analysisSettingsOpen ? '−' : '+'}</span></button>}
+                <span aria-label="当前收益口径" className="text-slate-600">{analysisBasis === 'adjusted_nav' ? '复权净值' : '交易价格'}</span>
+                {productKind === 'etf' && <button type="button" aria-expanded={analysisSettingsOpen} aria-controls="product-analysis-settings" onClick={() => setAnalysisSettingsOpen(open => !open)} className="min-h-10 rounded-lg px-2 font-medium text-slate-600 hover:bg-slate-50 hover:text-accent-700 focus:ring-2 focus:ring-accent-500">分析设置 <span aria-hidden="true">{analysisSettingsOpen ? '−' : '+'}</span></button>}
               </div>
             </div>
             {productKind === 'etf' && analysisSettingsOpen && <div id="product-analysis-settings" className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
-              <label className="flex items-center gap-2 text-xs text-slate-600">收益数据口径<select aria-label="收益数据口径" value={analysisBasis} onChange={event => { setAnalysisBasis(event.target.value as 'adjusted_nav' | 'price'); setSelectedSegmentId(''); }} className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-800"><option value="adjusted_nav">复权净值</option><option value="price">交易价格</option></select></label>
-              <p className="text-xs leading-5 text-slate-500">用于情景表现、收益统计与模拟取样。指标卡片保留各自的计算口径与周期。</p>
+              <label className="flex items-center gap-2 text-xs text-slate-600">收益数据口径<select aria-label="收益数据口径" value={analysisBasis} onChange={event => { setAnalysisBasis(event.target.value as 'adjusted_nav' | 'price'); setSelectedSegmentId(''); }} className="min-h-10 rounded-xl border border-slate-200 bg-white px-2 text-sm text-slate-800"><option value="adjusted_nav">复权净值</option><option value="price">交易价格</option></select></label>
+              <p className="text-xs leading-5 text-slate-600">用于情景表现、收益统计与模拟取样。指标卡片保留各自的计算口径与周期。</p>
             </div>}
             {productResearchRegimeRuns.length > 0 && <div className="mt-3 grid min-w-0 gap-3 border-t border-slate-100 pt-3 sm:grid-cols-2 xl:grid-cols-4">
-              <label className="min-w-0 text-xs text-slate-500 sm:col-span-2">情景方案<select aria-label="历史情景背景" value={selectedHistoricalRegimeRunId} onChange={event => changeRegime(event.target.value)} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">不使用情景 · 普通研究</option>{productResearchRegimeRuns.map(run => <option key={run.id} value={run.id}>{run.name} · v{run.definition_revision ?? latestProductResearchPublication(run)?.definition_revision ?? '—'} · {run.mode === 'realtime' ? '实时识别' : '事后研究'}</option>)}</select></label>
+              <label className="min-w-0 text-xs text-slate-600 sm:col-span-2">情景方案<select aria-label="历史情景背景" value={selectedHistoricalRegimeRunId} onChange={event => changeRegime(event.target.value)} className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">不使用情景 · 普通研究</option>{productResearchRegimeRuns.map(run => <option key={run.id} value={run.id}>{run.name} · v{run.definition_revision ?? latestProductResearchPublication(run)?.definition_revision ?? '—'} · {run.mode === 'realtime' ? '实时识别' : '事后研究'}</option>)}</select></label>
               <button type="button" disabled={historicalRegimeLoading} onClick={() => setRegimeRefresh(value => value + 1)} className="min-h-10 self-end justify-self-start rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600 disabled:opacity-40">{historicalRegimeLoading ? '正在读取…' : '刷新情景'}</button>
-              {selectedHistoricalRegimeRunId && <label className="min-w-0 text-xs text-slate-500">市场状态<select aria-label="市场状态" value={selectedStateId} onChange={event => selectState(event.target.value)} disabled={!selectedHistoricalRegimeRun} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">全部状态 · 保留完整样本</option>{selectedHistoricalRegimeRun?.states.map(state => <option key={state.id} value={state.id}>{state.label}</option>)}</select></label>}
-              {selectedStateId && <label className="min-w-0 text-xs text-slate-500">连续区间<select aria-label="连续区间" value={selectedSegmentId} onChange={event => setSelectedSegmentId(event.target.value)} className="mt-1 block min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">该状态的全部连续区间</option>{analysis?.regimeAnalysis?.segments.filter(segment => segment.stateId === selectedStateId).map(segment => <option key={segment.id} value={segment.id}>{segment.startDate} 至 {segment.endDate} · {segment.returnObservations} 个有效收益</option>)}</select></label>}
+              {selectedHistoricalRegimeRunId && <label className="min-w-0 text-xs text-slate-600">市场状态<select aria-label="市场状态" value={selectedStateId} onChange={event => selectState(event.target.value)} disabled={!selectedHistoricalRegimeRun} className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">全部状态 · 保留完整样本</option>{selectedHistoricalRegimeRun?.states.map(state => <option key={state.id} value={state.id}>{state.label}</option>)}</select></label>}
+              {selectedStateId && <label className="min-w-0 text-xs text-slate-600">连续区间<select aria-label="连续区间" value={selectedSegmentId} onChange={event => setSelectedSegmentId(event.target.value)} className="mt-1 block min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800"><option value="">该状态的全部连续区间</option>{analysis?.regimeAnalysis?.segments.filter(segment => segment.stateId === selectedStateId).map(segment => <option key={segment.id} value={segment.id}>{segment.startDate} 至 {segment.endDate} · {segment.returnObservations} 个有效收益</option>)}</select></label>}
             </div>}
-            {selectedHistoricalRegimeRunId && <div className="mt-2 flex flex-wrap items-start justify-between gap-2 text-xs leading-5 text-slate-500" aria-live="polite">
+            {selectedHistoricalRegimeRunId && <div className="mt-2 flex flex-wrap items-start justify-between gap-2 text-xs leading-5 text-slate-600" aria-live="polite">
               {selectedHistoricalRegimeRun && <p className="w-full">{selectedHistoricalRegimeRun.mode === 'retrospective' ? '事后研究 · 用于解释历史表现' : '实时识别 · 按本次保存的数据范围'} · 版本 v{selectedHistoricalRegimeRun.definition_revision} · {selectedHistoricalRegimeRun.series?.[0]?.observation_date || '—'} — {selectedHistoricalRegimeRun.series?.[selectedHistoricalRegimeRun.series.length - 1]?.observation_date || '—'}</p>}
               {historicalRegimeDetailLoading && <p role="status">正在读取所选情景的状态与区间…</p>}{historicalRegimeDetailError && <p role="status" className="text-rose-700">{historicalRegimeDetailError}</p>}
               {selectedHistoricalRegimeRun && <details data-testid="historical-regime-selection-meta" className="min-w-0 flex-1"><summary className="cursor-pointer">情景来源详情</summary><p className="mt-2">不可变运行 · 定义版本 v{selectedHistoricalRegimeRun.definition_revision ?? selectedHistoricalRegimePublication?.definition_revision} · {selectedHistoricalRegimeRun.mode === 'realtime' ? '实时模式：历史研究结果，可得性以版本证据为准。' : '事后识别：用完整历史样本解释，不代表当时已知。'} · 发布于 {formatDate(selectedHistoricalRegimePublication?.published_at)}</p><dl className="mt-2 space-y-1 break-all"><div>运行 {selectedHistoricalRegimeRun.id}</div><div>发布 {selectedHistoricalRegimePublication?.id}</div><div>内容指纹 {selectedHistoricalRegimeRun.content_hash ?? '未提供'}</div></dl></details>}
-              <button type="button" onClick={() => changeRegime('')} className="shrink-0 font-medium text-sky-700 hover:underline">清除情景</button>
+              <button type="button" onClick={() => changeRegime('')} className="shrink-0 font-medium text-accent-700 hover:underline">清除情景</button>
             </div>}
           </section>}
-          {activeTab !== 'risk' && (activeTab !== 'chart' || selectedHistoricalRegimeRunId) && <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-500" aria-live="polite">
+          {activeTab !== 'risk' && (activeTab !== 'chart' || selectedHistoricalRegimeRunId) && <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-600" aria-live="polite">
             <span data-testid="product-research-scope" className="font-medium text-slate-700">{activeTab === 'chart' && selectedHistoricalRegimeRun ? `${selectedHistoricalRegimeRun.name} · ` : ''}{contextLabel}{context ? ` · ${context.returnObservations} 个有效收益${context.scope === 'full' ? '' : ` · ${context.segmentCount} 段`}` : ''}</span>
             {context && <span>{context.startDate ?? '—'} — {context.endDate ?? '—'} · {context.basisLabel}</span>}
-            {activeTab === 'chart' && <button type="button" onClick={() => setActiveTab('regime')} className="min-h-10 font-medium text-sky-700 hover:underline">调整情景</button>}
+            {activeTab === 'chart' && <button type="button" onClick={() => setActiveTab('regime')} className="min-h-10 font-medium text-accent-700 hover:underline">调整情景</button>}
           </div>}
-          {activeTab !== 'risk' && analysisError && <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700"><strong>产品数值分析未完成</strong><p className="mt-1 text-xs">{analysisError}{productKind === 'etf' && analysisBasis === 'adjusted_nav' ? '；可检查复权净值数据，或在收益统计的“分析设置”中切换为交易价格。' : ''}</p></div>}
+          {activeTab !== 'risk' && analysisError && <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-700"><strong>产品数值分析未完成</strong><p className="mt-1 text-xs">{analysisError}{productKind === 'etf' && analysisBasis === 'adjusted_nav' ? '；可检查复权净值数据，或在收益统计的“分析设置”中切换为交易价格。' : ''}；页面不会退回浏览器本地计算。</p></div>}
           {activeTab === 'risk' && <section role="tabpanel" id="product-panel-risk" aria-labelledby="product-tab-risk">
             <PublishedRiskPanel key={`${productKind}:${tsCode || productId}`} productKey={`${productKind}:${tsCode || productId}`} productName={detail.name ?? String(tsCode || productId)} />
           </section>}
           <div hidden={activeTab !== 'chart'} role="tabpanel" id="product-panel-chart" aria-labelledby="product-tab-chart" className="min-w-0 space-y-5">
-          <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-3 sm:p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">价格与成交量</h2>
-              </div>
-              <div className="flex flex-wrap gap-2 text-xs text-slate-500">
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
-                  <span className="h-2 w-2 rounded-full bg-sky-500" />
-                  {rawTechnicalAvailability.ohlc ? 'K 线' : '真实收盘价 / 净值'}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1">
-                  <span className={`h-2 w-2 rounded-full ${rawTechnicalAvailability.volume ? 'bg-emerald-400' : 'bg-slate-300'}`} />
-                  {rawTechnicalAvailability.volume ? '成交量' : '成交量未披露'}
-                </span>
-              </div>
-            </div>
-            {chartOption ? (
-              <ReactECharts option={chartOption} style={{ height: chartHeight }} notMerge lazyUpdate />
-            ) : (
-              <div className="h-[320px] rounded-2xl bg-slate-50 text-center text-slate-400">暂无可视化数据</div>
-            )}
-            {detail && (!rawTechnicalAvailability.ohlc || !rawTechnicalAvailability.volume) && (
-              <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800" role="status">
-                原始数据未完整披露
-                {!rawTechnicalAvailability.ohlc ? ' OHLC' : ''}
-                {!rawTechnicalAvailability.volume ? ' 成交量' : ''}
-                ；页面保留真实收盘价 / 净值，不使用 close 或 0 伪造缺失字段。相关 KDJ、成交量均线会保持不可用。
-              </p>
-            )}
-            {overlayLoading && (
-              <p className="rounded-xl bg-sky-50 px-4 py-3 text-xs text-sky-700" role="status">
-                正在通过指标中心的固定签名 NJIT 计划计算技术时序指标…
-              </p>
-            )}
-            {overlayError && (
-              <p className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800" role="alert">
-                {overlayError}
-              </p>
-            )}
-            <details className="rounded-2xl bg-slate-50 p-4"><summary className="cursor-pointer text-sm font-semibold text-slate-700">技术辅助线设置</summary><div className="mt-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-slate-900">技术时序指标</h3>
-                  <p className="text-sm text-slate-500">来自指标中心的内置时序指标；参数变化只重算辅助线，不重跑统计与模拟。</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={restoreDefaultOverlays}
-                  disabled={productKind !== 'etf'}
-                  className="inline-flex items-center justify-center rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500 transition hover:border-emerald-400 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  恢复默认
-                </button>
-              </div>
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                {overlayOptions.map((option) => {
-                  const active = selectedOverlays.includes(option.id);
-                  return (
-                    <div
-                      key={option.id}
-                      className={`flex flex-col rounded-2xl border px-5 py-4 transition ${
-                        active ? 'border-emerald-400 bg-white shadow-sm' : 'border-transparent bg-white/70 hover:border-emerald-200'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        disabled={productKind !== 'etf'}
-                        onClick={() => toggleOverlay(option.id)}
-                        className="flex items-center justify-between text-left disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <div>
-                          <span className={`text-sm font-semibold ${active ? 'text-emerald-600' : 'text-slate-700'}`}>{option.label}</span>
-                          <p className="mt-1 text-xs text-slate-500">{option.description}</p>
-                        </div>
-                        <span
-                          className={`inline-flex h-5 w-10 items-center rounded-full border px-1 transition ${
-                            active ? 'border-emerald-400 bg-emerald-500' : 'border-slate-200 bg-slate-200'
-                          }`}
-                        >
-                          <span className={`h-3.5 w-3.5 rounded-full bg-white transition-transform ${active ? 'translate-x-4' : ''}`} />
-                        </span>
-                      </button>
-                      {active && <div className="mt-4 space-y-3 text-sm text-slate-600">{renderOverlayControls(option.id)}</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            </details>
-          </section>
+          <ProductTrendChart
+            productId={productId}
+            productKind={productKind}
+            indicators={researchIndicators}
+            regimeRun={selectedHistoricalRegimeRun}
+            regimeStateId={selectedStateId}
+            regimeSegment={selectedSegment}
+            windowStart={analysis?.researchContext?.windowStartDate ?? analysis?.researchContext?.startDate}
+            windowEnd={analysis?.researchContext?.windowEndDate ?? analysis?.researchContext?.endDate}
+            onDefinition={setDefinitionIndicator}
+            studioHref={`/settings/indicators-models?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
+          />
 
 
-          <section className="rounded-2xl border border-slate-200 bg-white p-5" aria-labelledby="custom-research-indicators-title">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 id="custom-research-indicators-title" className="text-lg font-semibold text-slate-900">自定义研究指标</h2>
-                <p className="mt-1 max-w-2xl text-sm text-slate-600">
-                  使用指标中心的保存版本。连续时间轴指标保留各自计算窗口；情景筛选用于走势高亮，以下指标不作为情景条件统计。
-                </p>
-              </div>
-              <Link
-                to={`/settings/indicators-models?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
-                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2"
-              >
-                在指标中心分析
-              </Link>
-            </div>
-            {researchIndicators.length > 0 && (
-              <div className="mt-4 rounded-2xl border border-violet-100 bg-white p-4">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                  <MetricSelector
-                    indicators={researchIndicators}
-                    selectedIds={researchPreference.indicatorIds}
-                    onChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))}
-                    maxSelected={8}
-                    label="选择研究指标"
-                  />
-                  <div className="grid gap-3">
-                    <label className="text-sm font-medium text-slate-700">截止日（可选）
-                      <input type="date" value={researchAsOf} onChange={(event) => setResearchAsOf(event.target.value)} className="mt-1 block min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" />
-                      {/* 未填不等于"用全部数据"——它跟随平台研究日。说出来，
-                          否则被截断的数字看起来像 bug。 */}
-                      <span className="mt-1 block text-xs font-normal text-slate-500">
-                        {researchAsOf
-                          ? '仅本页生效，覆盖平台研究日。'
-                          : platformAsOf === undefined
-                            ? '平台 PIT 口径尚未确认；未填时仍由服务端确定口径。'
-                          : platformAsOf
-                            ? `未填则跟随平台研究日 ${platformAsOf}。`
-                            : '未填则使用磁盘上的全部数据。'}
-                      </span>
-                    </label>
-                  </div>
-                </div>
-                <p className="mt-3 text-xs text-slate-500">每个指标可独立选择计算区间；系统会按区间分组计算。</p>
-                <div className="mt-4" aria-live="polite">
-                  {researchLoading && <p className="mb-3 text-sm text-slate-500">正在基于真实数据批量计算…</p>}
-                  {researchError ? <p className="text-sm text-rose-600">{researchError}</p> : (
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {selectedResearchIndicators.map((indicator) => <MetricResultCard
-                        key={indicator.id}
-                        indicator={indicator}
-                        result={researchResults.find((result) => result.indicator_id === indicator.id)}
-                        period={metricPeriodFor(researchPreference, indicator.id, '1Y')}
-                        periodOptions={researchPeriods}
-                        onPeriodChange={(period) => setResearchPreference((current) => ({
-                          ...current,
-                          periodsByIndicator: { ...current.periodsByIndicator, [indicator.id]: period },
-                        }))}
-                        onRemove={() => setResearchPreference((current) => withSelectedIndicators(
-                          current,
-                          current.indicatorIds.filter((id) => id !== indicator.id),
-                          '1Y',
-                        ))}
-                        onDefinition={() => setDefinitionIndicator(indicator)}
-                      />)}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            {researchIndicators.length === 0 && !researchError && <div className="mt-4 rounded-2xl border border-dashed border-violet-200 bg-white px-4 py-3 text-sm text-slate-600">工作区尚无保存的自定义指标。请先在指标中心新建或复制内置指标。</div>}
-            {researchIndicators.length === 0 && researchError && <p className="mt-4 text-sm text-rose-600" role="status">{researchError}</p>}
-          </section>
-
-          <TimeSeriesIndicatorPanel key={`${productKind}:${productId}`} indicators={seriesIndicators} productId={productId} productKind={productKind} periods={researchPeriods} />
-            {productId && <FactorEvidencePanel contextType="product_research" contextId={`${productKind}:${productId}`} productId={String(tsCode || productId)} />}
+          <ResearchIndicatorPanel
+            indicators={researchIndicators}
+            selectedIds={researchPreference.indicatorIds}
+            onSelectedIdsChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))}
+            periods={researchPeriodColumns}
+            onPeriodsChange={setResearchPeriodColumns}
+            periodOptions={researchPeriods}
+            parametersFor={(indicatorId) => researchParameters[indicatorId] ?? EMPTY_PARAMETERS}
+            onParametersChange={(indicatorId, values) => setResearchParameters((current) => ({ ...current, [indicatorId]: values }))}
+            results={researchResults}
+            loading={researchLoading}
+            error={researchError}
+            asOf={researchAsOf}
+            onAsOfChange={setResearchAsOf}
+            /* 未填不等于"用全部数据"——它跟随平台研究日。说出来，
+               否则被截断的数字看起来像 bug。 */
+            asOfHint={researchAsOf
+              ? '仅本页生效，覆盖平台研究日。'
+              : platformAsOf === undefined
+                ? '平台 PIT 口径尚未确认；未填时仍由服务端确定口径。'
+              : platformAsOf
+                ? `未填则跟随平台研究日 ${platformAsOf}。`
+                : '未填则使用磁盘上的全部数据。'}
+            onDefinition={setDefinitionIndicator}
+            studioHref={`/settings/indicators-models?kind=${productKind}&ids=${encodeURIComponent(productId)}`}
+          />
           </div>
           {activeTab === 'regime' && <div role="tabpanel" id="product-panel-regime" aria-labelledby="product-tab-regime">
-            {historicalRegimeLoading ? <p role="status" className="rounded-xl bg-white p-10 text-center text-sm text-slate-500">正在读取已保存的情景版本…</p>
+            {historicalRegimeLoading ? <p role="status" className="rounded-xl bg-white p-10 text-center text-sm text-slate-600">正在读取已保存的情景版本…</p>
               : historicalRegimeError ? <p role="status" className="rounded-xl bg-rose-50 p-6 text-sm text-rose-700">{historicalRegimeError}</p>
-              : productResearchRegimeRuns.length === 0 ? <section className="rounded-2xl border border-dashed border-slate-300 bg-white px-5 py-12 text-center">
+              : productResearchRegimeRuns.length === 0 ? <section className="rounded-xl border border-dashed border-slate-300 bg-white px-5 py-12 text-center">
                 <h2 className="text-lg font-semibold text-slate-900">暂无可用情景</h2>
-                <button type="button" onClick={() => setRegimeRefresh(value => value + 1)} className="mt-2 min-h-10 px-3 text-sm font-medium text-sky-700">刷新情景</button>
-                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">在情景中心点击“保存情景”，即可在这里选择，并比较不同市场状态下的产品表现。</p>
-                <Link to="/settings/scenario-algorithms" className="mt-5 inline-flex min-h-10 items-center rounded-lg bg-sky-700 px-4 text-sm font-medium text-white hover:bg-sky-800">前往情景中心</Link>
+                <button type="button" onClick={() => setRegimeRefresh(value => value + 1)} className="mt-2 min-h-10 px-3 text-sm font-medium text-accent-700">刷新情景</button>
+                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-600">在情景中心点击“保存情景”，即可在这里选择，并比较不同市场状态下的产品表现。</p>
+                <Link to="/settings/scenario-algorithms" className="mt-5 inline-flex min-h-10 items-center rounded-lg bg-accent-700 px-4 text-sm font-medium text-white hover:bg-accent-800">前往情景中心</Link>
               </section>
               : <ProductScenarioPanel analysis={analysis?.regimeAnalysis ?? null} selectedStateId={selectedStateId} selectedSegmentId={selectedSegmentId} loading={analysisLoading} onStateChange={selectState} onSegmentChange={selectSegment} onLocate={segment => { selectSegment(segment); setActiveTab('chart'); }} />}
           </div>}
-          {activeTab === 'statistics' && <section role="tabpanel" id="product-panel-statistics" aria-labelledby="product-tab-statistics" className="min-w-0 space-y-5 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5"><div><h2 className="text-lg font-semibold text-slate-900">统计分析</h2><p className="mt-1 text-sm text-slate-500">{selectedStateId ? '基于所选状态连续区间内部的相邻有效收益，按观察值汇总。' : '基于研究窗口内的相邻有效收益，观察分布与波动。'}</p>{statisticsRange && <p className="mt-1 text-xs text-slate-500">{statisticsRange.start} — {statisticsRange.end} · {statisticsRange.count} 个有效收益观察值</p>}</div>
+          {activeTab === 'statistics' && <section role="tabpanel" id="product-panel-statistics" aria-labelledby="product-tab-statistics" className="min-w-0 space-y-5 rounded-xl border border-slate-200 bg-white p-4 sm:p-5"><div><h2 className="text-lg font-semibold text-slate-900">统计分析</h2><p className="mt-1 text-sm text-slate-600">{selectedStateId ? '基于所选状态连续区间内部的相邻有效收益，按观察值汇总。' : '基于研究窗口内的相邻有效收益，观察分布与波动。'}</p>{statisticsRange && <p className="mt-1 text-xs text-slate-600">{statisticsRange.start} — {statisticsRange.end} · {statisticsRange.count} 个有效收益观察值</p>}</div>
             {dailyReturns.length === 0 ? (
-              <div className="rounded-2xl bg-slate-50 p-10 text-center text-slate-500">
+              <div className="rounded-xl bg-slate-50 p-10 text-center text-slate-600">
                 {statisticsWindow.message ?? '暂无足够的收益观察值用于统计分析。'}
               </div>
             ) : (
@@ -2194,10 +1579,10 @@ export default function ProductDetail() {
                   />
                 </div>
                 <div className="grid gap-6 lg:grid-cols-2">
-                  <div className="rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                  <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-4">
                     <div className="flex items-center justify-between">
                       <h3 className="text-sm font-semibold text-slate-900">相邻收益序列</h3>
-                      <span className="text-xs text-slate-500">{context?.scope === 'full' ? '折线图' : '区间收益柱图'}</span>
+                      <span className="text-xs text-slate-600">{context?.scope === 'full' ? '折线图' : '区间收益柱图'}</span>
                     </div>
                     <div className="mt-4">
                       {returnLineOption && (
@@ -2205,16 +1590,16 @@ export default function ProductDetail() {
                       )}
                     </div>
                   </div>
-                  <div className="rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                  <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="text-sm font-semibold text-slate-900">收益率分布</h3>
-                        <p className="text-xs text-slate-500">柱状图 + 正态拟合曲线</p>
+                        <p className="text-xs text-slate-600">柱状图 + 正态拟合曲线</p>
                       </div>
-                      <label className="flex items-center gap-2 text-xs text-slate-500">
+                      <label className="flex items-center gap-2 text-xs text-slate-600">
                         区间宽度
                         <select
-                          className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm focus:border-emerald-400 focus:outline-none"
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm focus:border-accent-400 focus:outline-none"
                           value={histogramBinWidth}
                           onChange={(event) => setHistogramBinWidth(Number(event.target.value))}
                         >
@@ -2230,28 +1615,28 @@ export default function ProductDetail() {
                       {histogramOption && (
                         <ReactECharts option={histogramOption} style={{ height: 260 }} notMerge lazyUpdate />
                       )}
-                      <div className="mt-3 text-xs text-slate-500">
+                      <div className="mt-3 text-xs text-slate-600">
                         当前共 {returnStats.sampleSize} 个样本，划分 {histogramBins.length} 个区间。
                       </div>
                     </div>
                   </div>
                 </div>
                 <div data-testid="distribution-diagnostics-grid" className="grid gap-6 lg:grid-cols-2">
-                  <div className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                  <div className="min-w-0 rounded-xl border border-slate-100 bg-slate-50/60 p-4">
                     <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="text-sm font-semibold text-slate-900">箱形图</h3>
-                        <p className="text-xs text-slate-500">横向观察中位数、分位区间与离群值</p>
+                        <p className="text-xs text-slate-600">横向观察中位数、分位区间与离群值</p>
                       </div>
                       {boxPlotData && (
-                        <span className="text-xs text-slate-500">离群值：{boxPlotData.outliers.length} 个</span>
+                        <span className="text-xs text-slate-600">离群值：{boxPlotData.outliers.length} 个</span>
                       )}
                     </div>
                     <div className="mt-4">
                       {boxPlotOption ? (
                         <ReactECharts option={boxPlotOption} style={{ height: 280 }} notMerge lazyUpdate />
                       ) : (
-                        <div className="h-[280px] rounded-2xl bg-white/60 text-center text-sm leading-[280px] text-slate-400">
+                        <div className="h-[280px] rounded-xl bg-white/60 text-center text-sm leading-[280px] text-slate-400">
                           样本量不足，无法构建箱形图
                         </div>
                       )}
@@ -2259,19 +1644,19 @@ export default function ProductDetail() {
                     {boxPlotData && (
                       <dl className="mt-4 grid gap-4 text-xs text-slate-600 sm:grid-cols-3">
                         <div>
-                          <dt className="font-medium text-slate-500">中位数</dt>
+                          <dt className="font-medium text-slate-600">中位数</dt>
                           <dd className="mt-1 text-sm font-semibold text-slate-900">
                             {formatSignedPercent(boxPlotData.quartiles.median, 2)}
                           </dd>
                         </div>
                         <div>
-                          <dt className="font-medium text-slate-500">四分位距 (IQR)</dt>
+                          <dt className="font-medium text-slate-600">四分位距 (IQR)</dt>
                           <dd className="mt-1 text-sm font-semibold text-slate-900">
                             {formatSignedPercent(boxPlotData.quartiles.iqr, 2)}
                           </dd>
                         </div>
                         <div>
-                          <dt className="font-medium text-slate-500">箱须范围</dt>
+                          <dt className="font-medium text-slate-600">箱须范围</dt>
                           <dd className="mt-1 text-sm font-semibold text-slate-900">
                             {formatSignedPercent(boxPlotData.whiskers.lower, 2)} ~ {formatSignedPercent(boxPlotData.whiskers.upper, 2)}
                           </dd>
@@ -2279,11 +1664,11 @@ export default function ProductDetail() {
                       </dl>
                     )}
                   </div>
-                  <div className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50/60 p-4">
+                  <div className="min-w-0 rounded-xl border border-slate-100 bg-slate-50/60 p-4">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                       <div>
                         <h3 className="text-sm font-semibold text-slate-900">正态 Q-Q 图</h3>
-                        <p className="text-xs text-slate-500">实际收益率分位点与理论正态分位点比较</p>
+                        <p className="text-xs text-slate-600">实际收益率分位点与理论正态分位点比较</p>
                       </div>
                       <span className="w-fit rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 ring-1 ring-amber-100">
                         {skewnessInterpretation.label} · {kurtosisInterpretation.label}
@@ -2293,17 +1678,17 @@ export default function ProductDetail() {
                       {normalQqOption ? (
                         <ReactECharts option={normalQqOption} style={{ height: 280 }} notMerge lazyUpdate />
                       ) : (
-                        <div className="flex h-[280px] items-center justify-center rounded-2xl bg-white/60 text-sm text-slate-400">
+                        <div className="flex h-[280px] items-center justify-center rounded-xl bg-white/60 text-sm text-slate-400">
                           至少需要 3 个有效单期收益率才能构建 Q-Q 图
                         </div>
                       )}
                     </div>
-                    <p className="mt-4 text-xs leading-5 text-slate-500">
+                    <p className="mt-4 text-xs leading-5 text-slate-600">
                       左端低于参考线表示下行尾部更厚；右端高于参考线表示上行尾部更厚；两端同时外扩通常意味着极端涨跌多于正态分布。
                     </p>
                     {normalQqTableRows.length > 0 && (
                       <details className="mt-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
-                        <summary className="cursor-pointer font-medium text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <summary className="cursor-pointer font-medium text-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-500">
                           查看关键分位点数据
                         </summary>
                         <div className="mt-2 max-h-56 overflow-auto">
@@ -2311,9 +1696,9 @@ export default function ProductDetail() {
                             <caption className="sr-only">正态 Q-Q 图关键分位点数据表</caption>
                             <thead>
                               <tr>
-                                <th scope="col" className="px-2 py-2 text-slate-500">样本分位</th>
-                                <th scope="col" className="px-2 py-2 text-right text-slate-500">理论分位数</th>
-                                <th scope="col" className="px-2 py-2 text-right text-slate-500">实际单期收益率</th>
+                                <th scope="col" className="px-2 py-2 text-slate-600">样本分位</th>
+                                <th scope="col" className="px-2 py-2 text-right text-slate-600">理论分位数</th>
+                                <th scope="col" className="px-2 py-2 text-right text-slate-600">实际单期收益率</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
@@ -2336,15 +1721,15 @@ export default function ProductDetail() {
 
           </section>}
           {activeTab === 'simulation' && <div role="tabpanel" id="product-panel-simulation" aria-labelledby="product-tab-simulation" className="min-w-0 space-y-4">
-            <p className="rounded-xl border border-sky-100 bg-sky-50/60 px-4 py-3 text-sm leading-6 text-sky-900">{selectedStateId ? `假设未来持续处于“${selectedState?.label ?? context?.stateLabel ?? '所选状态'}”，使用${selectedSegmentId ? '所选连续区间' : '该状态'}的历史收益生成路径，不预测市场状态转换。` : '使用当前研究窗口的历史收益生成未来路径。选择市场状态，可进一步观察该状态持续时的条件结果。'}</p>
-                <div className="rounded-2xl border border-violet-100 bg-violet-50/40 p-5" aria-labelledby="future-simulation-title">
+            <p className="rounded-xl border border-accent-100 bg-accent-50/60 px-4 py-3 text-sm leading-6 text-accent-900">{selectedStateId ? `假设未来持续处于“${selectedState?.label ?? context?.stateLabel ?? '所选状态'}”，使用${selectedSegmentId ? '所选连续区间' : '该状态'}的历史收益生成路径，不预测市场状态转换。` : '使用当前研究窗口的历史收益生成未来路径。选择市场状态，可进一步观察该状态持续时的条件结果。'}</p>
+                <div className="rounded-xl border border-accent-100 bg-accent-50/40 p-5" aria-labelledby="future-simulation-title">
                   <div>
                     <div className="max-w-2xl">
                       <h2 id="future-simulation-title" className="text-base font-semibold text-slate-900">未来虚拟净值模拟</h2>
                       {/* Each model now explains itself inside its own panel, so
                           the old "how the two methods use the sample" disclosure
                           was saying it twice. */}
-                      <p className="mt-1.5 text-xs leading-5 text-slate-500">
+                      <p className="mt-1.5 text-xs leading-5 text-slate-600">
                         所有路径统一从虚拟净值 1.0000 出发；期末 0.9000 表示亏损 10%，1.1000 表示盈利 10%。
                         模拟按一个收益观察值对应一个交易日建模，非日频净值需结合数据口径解释。
                       </p>
@@ -2355,10 +1740,10 @@ export default function ProductDetail() {
                         path budget, which read as though all five applied
                         everywhere — only one of them did. */}
                     <fieldset className="mt-5" data-testid="simulation-experiment-settings">
-                      <legend className="text-[11px] font-semibold uppercase tracking-[0.08em] text-violet-800">
+                      <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-accent-800">
                         ① 实验设置 · 对所有模型一致
                       </legend>
-                      <div className="mt-2 grid min-w-0 gap-3 rounded-xl border border-violet-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="mt-2 grid min-w-0 gap-3 rounded-xl border border-accent-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-4">
                         <label className="text-xs font-medium text-slate-600">
                           模拟未来区间
                           <select
@@ -2398,36 +1783,36 @@ export default function ProductDetail() {
                               onChange={(event) => setSimulationTargetReturn(Math.max(-100, Math.min(1000, Number(event.target.value) || 0)))}
                               className="min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 pr-8 text-sm"
                             />
-                            <span className="pointer-events-none absolute right-3 top-2.5 text-sm text-slate-400">%</span>
+                            <span className="pointer-events-none absolute right-3 top-2.5 text-sm text-slate-600">%</span>
                           </span>
                         </label>
                         <button
                           type="button"
                           onClick={() => void runSimulation()}
                           disabled={analysisLoading || !analysis?.researchContext?.simulationEligible || Boolean(currentSimulation?.loading)}
-                          className="min-h-10 self-end rounded-xl bg-violet-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-2"
+                          className="min-h-10 self-end rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:ring-offset-2"
                         >
                           {currentSimulation?.loading ? '正在模拟…' : activeSimulation ? '重新模拟' : '运行模拟'}
                         </button>
                       </div>
-                      <p className="mt-1.5 text-[11px] leading-4 text-slate-500">
+                      <p className="mt-1.5 text-xs leading-4 text-slate-600">
                         一次运行同时跑完所有模型，共用同一区间、路径预算与目标收益——否则对比表与实际走势叠加都失去意义。
                       </p>
                     </fieldset>
                   </div>
                   <fieldset className="mt-4" data-testid="simulation-model-picker">
-                    <legend className="text-[11px] font-semibold uppercase tracking-[0.08em] text-violet-800">
+                    <legend className="text-xs font-semibold uppercase tracking-[0.08em] text-accent-800">
                       ② 选择模型 · 参数各自独立
                     </legend>
-                    <div className="mt-2 overflow-hidden rounded-xl border border-violet-200 bg-white">
-                      <div className="flex flex-wrap gap-1 border-b border-violet-100 bg-violet-50/70 p-1.5" role="radiogroup" aria-label="模拟方法">
+                    <div className="mt-2 overflow-hidden rounded-xl border border-accent-200 bg-white">
+                      <div className="flex flex-wrap gap-1 border-b border-accent-100 bg-accent-50/70 p-1.5" role="radiogroup" aria-label="模拟方法">
                         {simulationMethods.map((method) => {
                           const meta = SIMULATION_METHOD_META[method];
                           const active = simulationMethod === method;
                           return (
                             <label
                               key={method}
-                              className={`cursor-pointer rounded-lg px-3 py-1.5 text-xs font-semibold transition ${active ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-600 hover:bg-white'}`}
+                              className={`cursor-pointer rounded-lg px-3 py-1.5 text-xs font-semibold transition ${active ? 'bg-accent-600 text-white shadow-sm' : 'text-slate-600 hover:bg-white'}`}
                             >
                               <input
                                 className="sr-only"
@@ -2439,7 +1824,7 @@ export default function ProductDetail() {
                               />
                               {meta.tab}
                               {closestMethod === method && (
-                                <span className={`ml-1.5 rounded px-1 py-0.5 text-[10px] font-bold ${active ? 'bg-white/25' : 'bg-slate-900 text-white'}`}>
+                                <span className={`ml-1.5 rounded-lg px-1 py-0.5 text-xs font-bold ${active ? 'bg-white/25' : 'bg-slate-900 text-white'}`}>
                                   最接近
                                 </span>
                               )}
@@ -2451,7 +1836,7 @@ export default function ProductDetail() {
                         <div className="min-w-0 lg:max-w-2xl">
                           <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                             {activeSimulation?.methodLabel ?? SIMULATION_METHOD_META[simulationMethod].tab}
-                            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${SIMULATION_METHOD_META[simulationMethod].conditional ? 'border-violet-300 bg-violet-50 text-violet-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${SIMULATION_METHOD_META[simulationMethod].conditional ? 'border-accent-300 bg-accent-50 text-accent-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
                               {SIMULATION_METHOD_META[simulationMethod].conditional ? '条件模型 · 从当前波动状态出发' : '无条件模型 · 忽略当前波动状态'}
                             </span>
                           </p>
@@ -2487,14 +1872,14 @@ export default function ProductDetail() {
                               </select>
                             </label>
                           ) : (
-                            <p className="rounded-xl border border-dashed border-slate-200 px-3 py-2 text-[11px] leading-4 text-slate-500">
+                            <p className="rounded-xl border border-dashed border-slate-200 px-3 py-2 text-xs leading-4 text-slate-600">
                               本模型无可调参数：所有取值都由样本自动确定。
                             </p>
                           )}
                         </div>
                       </div>
                     </div>
-                    <p className="mt-1.5 text-[11px] leading-4 text-slate-500">
+                    <p className="mt-1.5 text-xs leading-4 text-slate-600">
                       改动任一模型的参数都会让整批结果失效，需要重新运行——五个模型必须来自同一次运行才可比。
                     </p>
                   </fieldset>
@@ -2506,7 +1891,7 @@ export default function ProductDetail() {
 
                         {simulationAssumptionNote(activeSimulation)}
                       </p>
-                      <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer">模拟样本与数据来源</summary><p className="mt-2 break-all">{simulationAnalysis?.researchContext?.scope === 'full' ? '完整样本' : simulationAnalysis?.researchContext?.stateLabel} · {simulationAnalysis?.researchContext?.returnObservations} 个有效收益 · 数据指纹 {simulationAnalysis?.researchContext?.dataFingerprint}</p>{simulationAnalysis?.researchContext?.warnings?.map((warning, index) => <p key={index} className="mt-1">{warning}</p>)}</details>
+                      <details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer">模拟样本与数据来源</summary><p className="mt-2 break-all">{simulationAnalysis?.researchContext?.scope === 'full' ? '完整样本' : simulationAnalysis?.researchContext?.stateLabel} · {simulationAnalysis?.researchContext?.returnObservations} 个有效收益 · 数据指纹 {simulationAnalysis?.researchContext?.dataFingerprint}</p>{simulationAnalysis?.researchContext?.warnings?.map((warning, index) => <p key={index} className="mt-1">{warning}</p>)}</details>
                       <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-live="polite">
                         <MetricCard title="期末 5% 分位" value={formatDecimal(activeSimulation.terminal.p05, 4)} description="偏悲观情景，不等同于最大损失" />
                         <MetricCard title="期末中位净值" value={formatDecimal(activeSimulation.terminal.p50, 4)} description="一半路径高于该值" />
@@ -2524,12 +1909,12 @@ export default function ProductDetail() {
                           simulatedAverageMaxDrawdown={activeSimulation.terminal.averageMaxDrawdown}
                         />
                       ) : (
-                        <p className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-3 text-xs leading-5 text-slate-500">
+                        <p className="mt-4 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-3 text-xs leading-5 text-slate-600">
                           {realizedStatus === 'off' ? (
                             <>
                               未启用 PIT 研究日，模拟没有可以对照的后续走势。把顶部的 PIT 标签切到历史某一天（只影响本标签页），或在
                               {' '}
-                              <Link to="/settings/pit-snapshots" className="text-sky-700 underline hover:no-underline">数据版本管理</Link>
+                              <Link to="/settings/pit-snapshots" className="text-accent-700 underline hover:no-underline">数据版本管理</Link>
                               {' '}应用一个研究日靠前的版本，这里会自动叠加那之后的实际走势并给模型评分。
                             </>
                           ) : (
@@ -2540,7 +1925,7 @@ export default function ProductDetail() {
                       <div
                         data-testid="monte-carlo-combined-chart"
                         aria-label={`${activeSimulation.methodLabel}：路径与期末净值概率分布组合图`}
-                        className="mt-4 rounded-2xl bg-white p-3"
+                        className="mt-4 rounded-xl bg-white p-3"
                       >
                         <ReactECharts
                           option={simulationOption}
@@ -2550,17 +1935,17 @@ export default function ProductDetail() {
                           onEvents={{ datazoom: handleSimulationZoom }}
                         />
                       </div>
-                      <p className="mt-2 text-xs leading-5 text-slate-500">
+                      <p className="mt-2 text-xs leading-5 text-slate-600">
                         右侧分布画的是<strong className="font-semibold text-slate-700">第 {densityFrame?.day ?? simulationHorizon} 个未来交易日</strong>：{navDensity?.sampleSize ?? 0} 条模拟路径当天的净值落点，柱状图为区间路径数，紫色曲线为同一批结果的平滑概率密度，虚线为当天的模拟中位数。
                         {' '}拖动图表下方的缩放条即可换成任意一天——分布越靠前越窄，因为路径还没来得及分开。
                         {realized && `深色实线为研究日之后的实际净值走势（第 1 — ${realized.coveredDays} 个交易日）；右侧同色横线标出当天的实际净值在模拟分布中的位置。`}
                       </p>
                       {simulationComparison && simulationInitialNav !== null && (
-                        <div data-testid="simulation-model-comparison" className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                        <div data-testid="simulation-model-comparison" className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
                           <div className="flex flex-col gap-2 border-b border-slate-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                               <h4 className="text-sm font-semibold text-slate-900">{simulationMethods.length} 个模型结果对比</h4>
-                              <p className="mt-1 text-xs text-slate-500">同一历史区间、未来周期、路径数、目标收益与随机轮次；差异只来自模型假设本身。</p>
+                              <p className="mt-1 text-xs text-slate-600">同一历史区间、未来周期、路径数、目标收益与随机轮次；差异只来自模型假设本身。</p>
                             </div>
                             <span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${simulationComparison.level === 'high' ? 'bg-rose-100 text-rose-700' : simulationComparison.level === 'medium' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
                               模型分歧度：{simulationComparison.level === 'high' ? '高' : simulationComparison.level === 'medium' ? '中' : '低'}
@@ -2569,7 +1954,7 @@ export default function ProductDetail() {
                           <div className="overflow-x-auto">
                             <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
                               <caption className="sr-only">全部模拟模型的结果对比</caption>
-                              <thead className="bg-slate-50 text-slate-500">
+                              <thead className="bg-slate-50 text-slate-600">
                                 <tr>
                                   <th scope="col" className="px-4 py-3">模型</th>
                                   <th scope="col" className="px-3 py-3 text-right">5% 分位收益</th>
@@ -2588,11 +1973,11 @@ export default function ProductDetail() {
                               </thead>
                               <tbody className="divide-y divide-slate-100 text-slate-700">
                                 {simulationMethods.map((method) => simulationAnalysis?.simulation?.byMethod[method]).filter((simulation): simulation is FuturePathSimulation => Boolean(simulation)).map((simulation) => (
-                                  <tr key={simulation.method} className={simulation.method === simulationMethod ? 'bg-violet-50/60' : undefined}>
+                                  <tr key={simulation.method} className={simulation.method === simulationMethod ? 'bg-accent-50/60' : undefined}>
                                     <th scope="row" className="whitespace-nowrap px-4 py-3 font-semibold text-slate-900">
                                       {simulation.methodLabel}
                                       {closestMethod === simulation.method && (
-                                        <span className="ml-1.5 rounded bg-slate-900 px-1 py-0.5 text-[10px] font-bold text-white">最接近</span>
+                                        <span className="ml-1.5 rounded-lg bg-slate-900 px-1 py-0.5 text-xs font-bold text-white">最接近</span>
                                       )}
                                     </th>
                                     <td className="px-3 py-3 text-right tabular-nums">{formatRatioPercent(simulation.terminal.p05Return)}</td>
@@ -2627,16 +2012,15 @@ export default function ProductDetail() {
                       )}
                     </>
                   ) : (
-                    <div role="status" className="mt-5 rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-12 text-center text-sm text-slate-500">
+                    <div role="status" className="mt-5 rounded-xl border border-dashed border-slate-200 bg-white px-5 py-12 text-center text-sm text-slate-600">
                       {currentSimulation?.loading ? '正在生成模拟路径…' : currentSimulation?.error ? <span className="text-rose-700">{currentSimulation.error}</span> : !analysis?.researchContext?.simulationEligible ? analysis?.researchContext?.simulationMessage ?? `至少需要 ${MIN_SIMULATION_OBSERVATIONS} 个有效收益观察值。` : '选择未来周期，点击“运行模拟”生成结果。修改研究条件或模拟参数后，需要重新运行。'}
                     </div>
                   )}
-                  <p className="mt-3 text-xs leading-5 text-slate-500">
+                  <p className="mt-3 text-xs leading-5 text-slate-600">
                     两种方法都是基于历史样本和模型假设的情景生成，不预测市场状态切换、结构性变化或未来事件，不构成收益预测或投资建议。
                   </p>
                 </div>
           </div>}
-          <details data-testid="product-analysis-execution" className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer">{analysisLoading ? '正在计算研究结果…' : analysisError ? '计算详情 · 分析未完成' : analysis ? '高性能计算已验证' : '计算详情'}</summary><div className="mt-3 flex flex-wrap gap-x-4 gap-y-2">{analysis ? <><span>固定签名 NJIT</span><span>内核覆盖 {analysis.execution.kernel_coverage}</span><span>{analysis.execution.nopython ? 'nopython' : '执行模式异常'}</span><span>Object mode {analysis.execution.object_mode}</span><span>Python 回退 {analysis.execution.python_fallback}</span><span title={analysis.execution.kernel_fingerprint}>指纹 {analysis.execution.kernel_fingerprint.slice(0, 12)}</span></> : <span>{analysisError ?? '等待产品分析任务。'}；页面不会退回浏览器本地计算。</span>}</div></details>
           <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
         </>
       )}

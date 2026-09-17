@@ -1,5 +1,13 @@
 # Repository Guidelines
 
+## AI 对话规则
+- 对话中必须使用直接简要、清晰明了、人类友好的语言答复用户，不回复长篇大论。
+
+## 代码变更注意事项
+- 除非得到人类明确的需求或允许，否则不得删除或修改已有的功能、流程、模型、算法及其行为契约。
+- 变更必须限定在人类明确授权的范围内；不得以重构、优化、清理冗余或统一实现为由，擅自删减、替换或停用已有能力。超出授权范围时，必须先说明影响并取得人类明确允许；已有明确授权的事项无需重复确认。
+- 本文件中的存量代码清理、实现替换与算法治理要求仅适用于已获授权的变更，不能作为擅自修改已有功能、流程或模型的依据。
+
 ## 项目结构与模块组织
 - `backend/`：FastAPI 服务入口位于 `app.py`，业务逻辑拆分在 `fit.py`、`optimizer.py` 等模块，`run.py` 提供统一 CLI。
 - `frontend/`：React + Vite 源码保存在 `src/`，Tailwind 直接写入 JSX，`dist/` 存放构建产物供后端静态托管。
@@ -17,6 +25,11 @@
 - Python 采用 PEP 8 与四空格缩进；函数、变量使用 `snake_case`，Pydantic 模型使用 `PascalCase`。
 - 前端使用函数式组件与 PascalCase 文件名，局部样式与测试与组件同目录保存。
 - 避免硬编码路径，优先复用配置和工具模块；必要注释保持简洁并解释设计意图。
+
+## 前端设计执行协议
+- 修改前端视觉、交互或图片资产前，必须完整阅读 [前端设计准则](docs/frontend-design-guidelines.md)；涉及首页时另读 [首页需求与设计](docs/homepage-design.md)。视觉细则统一维护在设计准则中，不在本文件复制另一套标准。
+- 先确认首页与工作台的适用范围，复用既有设计令牌和共享组件；参考图片、外部风格说明中的估算值不能直接成为全站规则。差异与例外必须在设计准则对应章节明确说明。
+- 页面或资产修改的验收须覆盖受影响的真实交互状态、响应式布局、文字对比度及必要的降级效果；静态检查通过不能替代浏览器验收。仅修改规范时检查文档一致性、链接和路由，不据此宣称页面已经实现或通过视觉验收。
 
 ## 代码版本与存量代码治理
 - Git 是本项目唯一的代码版本管理机制。源码目录只保留一份代表当前版本、实际参与调用、构建和发布的实现；历史版本统一通过 Git commit、tag 或 branch 追溯，不在当前代码中并行保存。
@@ -74,9 +87,9 @@
 - `SSE` 交易日日历来源 `data/trade_day_df.parquet`，新增数据时需保证 `exchange='SSE'`、`is_open=1`。
 
 ## 提交与合并请求规范
-- 提交信息遵循 `feat:`, `fix:`, `docs:` 等前缀，聚焦单一改动并描述影响面。
-- PR 需说明目的、关键变化、运行过的命令，并在涉及 UI 时附上截图或视频。
-- 关联相关 Issue 或任务编号，确认无敏感信息泄露后再发起合并。
+- AI 在创建开发分支、准备 commit/push、创建或更新 PR、执行 PR 审核、合并、发布、回滚及维护提交规则前，必须完整阅读并遵守 [branch_submission_rules.md](branch_submission_rules.md)，不能仅凭记忆或本节摘要操作。
+- 分支流向、提交范围、AI 审核、测试证据、合并条件及异常处理由该文档统一规定；不得在其他文档中维护相互冲突的提交规则。
+- 按用户已经授权的任务范围执行，不重复询问已授权动作；写文档或修改代码本身不表示已获准提交、推送、合并或修改远端仓库设置。
 
 ## 安全与配置提醒
 - 配置值由环境变量或 `.env` 读取，不要将密钥或令牌写入仓库。
@@ -118,7 +131,9 @@ Machine-first routing protocol for downstream agents operating from the current 
 2. `docs/repo_map.json`
 3. `docs/task_routes.json`
 4. `docs/pitfalls.json`
-5. Routed code, tests, and configs
+5. `branch_submission_rules.md` before branch creation, commit/push, PR creation or review, merge, release, rollback, or submission-policy maintenance
+6. `docs/frontend-design-guidelines.md` before frontend visual, interaction, or asset changes; also `docs/homepage-design.md` when the homepage is involved
+7. Routed code, tests, and configs
 
 ## Routing Ownership
 

@@ -9,6 +9,8 @@ import LegacyRedirect from './components/LegacyRedirect'
 import StageLayout from './layouts/StageLayout'
 import AutoAssetClassification from './pages/AutoAssetClassification'
 import ClassAllocation from './pages/ClassAllocation'
+import InvestmentObjectivesWorkspace from './pages/InvestmentObjectivesWorkspace'
+import StrategicAllocationWorkspace from './pages/StrategicAllocationWorkspace'
 import AccountingBookingWorkspace from './pages/AccountingBookingWorkspace'
 import AccountStatementAllocationWorkspace from './pages/AccountStatementAllocationWorkspace'
 import FinancialStatementsWorkspace from './pages/FinancialStatementsWorkspace'
@@ -51,8 +53,9 @@ const prototypePage = (pageKey: string) => <PrototypeWorkspace key={pageKey} pag
 const saaHub = (
   <ToolHubPage
     title="战略资产配置（SAA）"
-    description="研究长期大类资产中枢、权重区间、风险预算、有效前沿与不同固定配置的历史表现。"
+    description="从投资目标和长期假设形成政策权重；历史配置实验用于辅助验证，不直接冒充未来预期。"
     tools={[
+      { label: '长期政策配置', description: '投资目标 → 经济大类与资本市场假设 → 稳健候选比较 → 政策确认 → TAA。', path: '/pre-investment/saa/policy' },
       { label: '大类资产构建', description: '定义大类及 ETF/公募基金代理，完成拟合、相关性与配置保存。', path: '/pre-investment/saa/asset-classes' },
       { label: '大类资产配置与策略回测', description: '研究有效前沿、风险预算、目标权重和配置回测。', path: '/pre-investment/saa/allocation-lab' },
       { label: '自动构建大类', description: '按收益相关性、风险画像或主成分自动划分大类，并给出代表产品、类内权重与分类诊断。', path: '/pre-investment/saa/auto-classification' },
@@ -65,7 +68,7 @@ export default function App() {
     <LocalizationProvider><BrowserRouter>
       <ActualPortfolioProvider>
         <ResearchContextProvider>
-        <div className="min-h-screen bg-gray-100">
+        <div className="min-h-screen bg-slate-100">
           <Header />
           <main>
           <Routes>
@@ -88,12 +91,13 @@ export default function App() {
 
             <Route path="/pre-investment" element={<StageLayout stageId="pre-investment" />}>
               <Route index element={<StageOverview stageId="pre-investment" />} />
-              <Route path="objectives" element={prototypePage('objectives')} />
+              <Route path="objectives" element={<InvestmentObjectivesWorkspace />} />
               <Route path="product-pool" element={<ProductPoolSelection />} />
               <Route path="saa" element={saaHub} />
               <Route path="saa/asset-classes" element={<ManualConstruction />} />
               <Route path="saa/auto-classification" element={<AutoAssetClassification />} />
               <Route path="saa/allocation-lab" element={<ClassAllocation />} />
+              <Route path="saa/policy" element={<StrategicAllocationWorkspace />} />
               <Route path="taa" element={<TacticalAllocationWorkspace />} />
               <Route path="product-allocation-timing" element={prototypePage('product-allocation-timing')} />
               <Route path="product-allocation-timing/construction" element={<PortfolioConstruction />} />

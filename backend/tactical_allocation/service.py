@@ -39,7 +39,12 @@ class TacticalAllocationService:
 
     def warm(self) -> dict[str, Any]:
         warm_tactical_data()
-        return numeric.warm_tactical_allocation_kernels()
+        audit = numeric.warm_tactical_allocation_kernels()
+        from backend.tactical_allocation.walk_forward import warm_walk_forward_kernels
+        audit["walk_forward"] = warm_walk_forward_kernels()
+        if not audit["walk_forward"]["complete"]:
+            raise RuntimeError("多段样本外验证预热未完成")
+        return audit
 
     def catalog(self) -> dict[str, Any]:
         catalog = self.data.catalog()
@@ -58,11 +63,16 @@ class TacticalAllocationService:
         quality = return_quality(data["returns"], data["dates"], assets)
         reasons, guidance = [], []
         signal_counts = None
-        if request.signal_mode == "momentum":
+        if request.signal_mode in ("momentum", "composite"):
             signals = signals if signals is not None else self._signals(request, data, assets)
-            counts = numeric.signal_counts_kernel(signals["use_signal"], signals["knowledge_verified"], split)
+            flags = signals["use_signal"]
+            if request.decision_policy:
+                from .clocks import clock_plan, decision_signal_flags_kernel
+                flags = decision_signal_flags_kernel(flags, clock_plan(data["period_starts"], request.decision_policy)["decisions"])
+            counts = numeric.signal_counts_kernel(flags, signals["knowledge_verified"], split)
             signal_counts = dict(zip(("train_signal_observations", "validation_signal_observations",
                                       "train_known_observations", "validation_known_observations"), map(int, counts)))
+        strict_unknown = bool(unknown) and (request.decision_policy is not None or request.signal_mode == "composite")
         no_signals = signal_counts is not None and signal_counts["train_signal_observations"] == 0
         if no_signals:
             reasons.append("训练期没有有效趋势信号，各档强度无法形成有效比较，不能据此选出最优偏离。请检查观察窗口、信号有效期与数据公布日期。")
@@ -84,14 +94,15 @@ class TacticalAllocationService:
         return {"coverage": {"start_date": data["period_starts"][0], "end_date": data["dates"][-1]},
                 "dates": {key: str(getattr(request, key)) for key in ("start_date", "end_date", "as_of", "train_end_date")},
                 "quality": quality,
-                "training": {"eligible": enough and not bool(future) and not no_signals, "train_observations": split,
+                "training": {"eligible": enough and not bool(future) and not strict_unknown and not no_signals, "train_observations": split,
                              "validation_observations": len(days) - split, "unavailable_count": int(future),
                              "unknown_count": int(unknown), **(signal_counts or {}),
                              "earliest_available_date": str(date(1970, 1, 1) + timedelta(days=int(earliest))) if earliest >= 0 else None,
                              "reasons": reasons}, "guidance": guidance, "pit": data["pit"],
-                "can_calculate": enough and quality["status"] == "clear" and (not request.search or (not future and not no_signals))}
+                "can_calculate": enough and quality["status"] == "clear" and (not request.search or (not future and not strict_unknown and not no_signals))}
 
     def preflight(self, request: PreviewRequest) -> dict:
+        numeric._require_ready()
         baseline = self.repository.get_baseline(request.baseline_id)
         data = self.data.load_data(baseline, str(request.start_date), str(request.end_date), str(request.as_of))
         return self._preflight_data(request, baseline, data)
@@ -99,6 +110,9 @@ class TacticalAllocationService:
     def _signals(self, request: PreviewRequest, data: dict, assets: list[str]) -> dict:
         returns = data["returns"]
         starts = np.asarray([_day(value) for value in data["period_starts"]], dtype=np.int64)
+        if request.signal_mode == "composite":
+            from .signals import build_composite
+            return build_composite(request, data, assets)
         if request.signal_mode == "momentum":
             signals = numeric.build_momentum_signals(
                 returns, request.lookback, request.max_abs_tilt,
@@ -141,15 +155,24 @@ class TacticalAllocationService:
         if self.regime_resolver is None:
             raise ValidationError("TAA_REGIME_UNAVAILABLE", "市场状态服务不可用，请稍后重试。")
         run, gate = self.regime_resolver(request.regime_run_id)
+        if gate.get("passed") is False:
+            raise ValidationError("TAA_RUN_NOT_PUBLISHED", "历史情景运行必须先发布到 TAA 或正式回测。", "run_id")
         # Resolve the immutable analytical run through the same server gate as the
         # compatibility backtest. Metadata alignment is an input-boundary operation.
-        states = [str(item["id"]) for item in run["states"]]
+        from historical_regimes.reliability.consumer import calibrated_output, consumer_states, allocation_probabilities
+        states = consumer_states(run)
         if set(request.state_tilts) != set(states):
             raise ValidationError("TAA_STATE_AXIS_MISMATCH", "请为每个已发布状态设置一组偏离。")
         tilts = np.asarray([_vector(request.state_tilts[state], assets, "状态偏离") for state in states])
         if any(abs(float(row.sum())) > 1e-8 for row in tilts):
             raise ValidationError("TAA_TILTS_NOT_ZERO_SUM", "每个市场状态的偏离合计必须为 0。")
-        from backend.historical_regimes.taa import _regime_points, _validated_probabilities
+        qualification = (run.get("_reliability") or {}).get("qualification")
+        qualified = qualification.get("qualified_states") if qualification else None
+        if qualified is not None:
+            for state_index, state in enumerate(states):
+                if state not in qualified:
+                    tilts[state_index] = 0.0
+        from historical_regimes.taa import _regime_points
         points = _regime_points(run)
         axes = list(data["period_starts"]) + [str(request.as_of)]
         probabilities = np.zeros((len(axes), len(states)))
@@ -163,24 +186,31 @@ class TacticalAllocationService:
                 point_index += 1
             reason = "没有可用状态"
             confidence = None
+            probs = None
+            allocation = None
             if latest:
-                probs, invalid_reason = _validated_probabilities(latest.get("probabilities"), states)
-                confidence = latest.get("confidence")
+                probs, confidence, invalid_reason = calibrated_output(run, latest, start, states)
                 if max(latest["observation_date"], latest["recognized_at"], latest["effective_date"]) > start:
                     reason = "状态在本期开始时尚不可得"
                 elif _day(start) - _day(latest["effective_date"]) > request.max_signal_age_days:
                     reason = "市场状态已过期"
+                elif invalid_reason and (run.get("definition") or {}).get("study"):
+                    reason = invalid_reason
                 elif confidence is None or not np.isfinite(confidence) or not request.confidence_floor <= confidence <= 1:
                     reason = "状态置信度不足"
                 elif invalid_reason:
                     reason = invalid_reason
                 else:
+                    allocation = allocation_probabilities(run, probs)
+                    # Keep the numerical kernel's normalized distribution contract;
+                    # zero tilts leave unverified probability mass in the baseline.
                     probabilities[index] = [probs[state] for state in states]
                     use[index] = 1
                     reason = None
             audit_rows.append({"period_start": start, "signal_date": latest["effective_date"] if latest else None,
                                "recognized_at": latest["recognized_at"] if latest else None,
-                               "fallback_reason": reason, "confidence": confidence})
+                               "fallback_reason": reason, "confidence": confidence,
+                               "probabilities": probs, "allocation_probabilities": allocation})
         return {"probabilities": probabilities[:-1], "use_signal": use[:-1], "state_tilts": tilts,
                 "current_probabilities": probabilities[-1], "current_use_signal": int(use[-1]),
                 "current_date": audit_rows[-1]["signal_date"], "confidence": audit_rows[-1]["confidence"],
@@ -190,9 +220,12 @@ class TacticalAllocationService:
                           "publications": run.get("publications", [])}}
 
     def _calculate(self, request: PreviewRequest) -> tuple[dict, dict]:
+        numeric._require_ready()
         baseline = self.repository.get_baseline(request.baseline_id)
+        if baseline.get("policy") and request.max_tracking_error > baseline["policy"]["mandate"]["max_tracking_error"] + 1e-10:
+            raise ValidationError("SAA_POLICY_TRACKING_ERROR", "战术主动风险上限不得超过已确认政策预算；需要扩大时请回长期配置重新研究。")
         data = self.data.load_data(baseline, str(request.start_date), str(request.end_date), str(request.as_of))
-        signals = self._signals(request, data, [item["id"] for item in baseline["assets"]]) if request.signal_mode == "momentum" else None
+        signals = self._signals(request, data, [item["id"] for item in baseline["assets"]]) if request.signal_mode in ("momentum", "composite") else None
         preflight = self._preflight_data(request, baseline, data, signals)
         if preflight["quality"]["issues"]:
             raise ValidationError("TAA_NAV_SCALE_BREAK", preflight["quality"]["issues"][0]["message"], diagnostics=preflight["quality"]["issues"])
@@ -205,6 +238,8 @@ class TacticalAllocationService:
         training_knowledge = numeric.knowledge_window_status(data["available_at"], _day(request.train_end_date), 0, split)
         if request.search and training_knowledge["future_cells"]:
             raise ValidationError("TAA_TRAINING_LABEL_NOT_MATURE", "部分训练收益在训练截止日尚不可得，不能用于选优；请先检查数据可得时间，调整训练边界或明确改为固定假设比较。", diagnostics=preflight["guidance"])
+        if request.search and training_knowledge["unknown_cells"] and (request.decision_policy or request.signal_mode == "composite"):
+            raise ValidationError("TAA_TRAINING_KNOWLEDGE_UNKNOWN", "新策略训练期存在未知可得日期；请补齐证据或显式改为固定假设比较。")
         signals = signals if signals is not None else self._signals(request, data, assets)
         if request.search and preflight["training"].get("train_signal_observations") == 0:
             raise ValidationError("TAA_NO_TRAINING_SIGNAL", "训练期没有有效趋势信号，不能选择最优偏离；请调整观察窗口、信号有效期或明确改为固定假设比较。", diagnostics=preflight["guidance"])
@@ -214,24 +249,59 @@ class TacticalAllocationService:
             "group_min": np.asarray([group["lo"] for group in groups], dtype=np.float64),
             "group_max": np.asarray([group["hi"] for group in groups], dtype=np.float64),
         }
+        plan = None
+        if request.decision_policy:
+            from .clocks import simulation_clock
+            plan = simulation_clock(request, data, signals, include_current=True)
+        clock_args = {"decision_policy": request.decision_policy,
+                      "clock": None if plan is None else {k: v[:-1] for k, v in plan.items()},
+                      "direct_tilts": signals.get("direct_tilts")}
         strengths = np.asarray([0, .25, .5, .75, 1, 1.25, 1.5] if request.search else [0, 1], dtype=np.float64)
         result = numeric.evaluate_candidates(
             data["returns"], signals["probabilities"], signals["use_signal"], base, signals["state_tilts"],
             lower, upper, limits, split, strengths, request.transaction_cost_bps, 252, request.risk_penalty,
             request.max_tracking_error, request.max_turnover, request.objective,
             selected_candidate_id=request.selected_candidate_id or (None if request.search else "scale-1"),
-            **group_args,
+            allow_infeasible_selected=request.decision_policy is not None and not request.search,
+            **group_args, **clock_args,
         )
         candidate = next(item for item in result["candidates"] if item["id"] == result["selected_id"])
         current = _vector(request.current_weights, assets, "当前持仓") if request.current_weights is not None else None
+        decision_index = len(data["dates"])
+        rec_prob, rec_use, rec_tilts = signals["current_probabilities"], signals["current_use_signal"], signals["state_tilts"]
+        if plan is not None:
+            decision_index = next((i for i in range(len(plan["decisions"]) - 1 - request.decision_policy.execution_lag, -1, -1) if plan["decisions"][i]), -1)
+            if decision_index < 0:
+                rec_use = 0
+            elif decision_index < len(data["dates"]):
+                rec_prob, rec_use = signals["probabilities"][decision_index], signals["use_signal"][decision_index]
+        if plan is not None and decision_index >= 0 and plan["valid_until"][decision_index] < _day(request.as_of):
+            rec_use = 0
+        if "direct_tilts" in signals:
+            rec_tilts = (np.zeros(len(assets)) if decision_index < 0 else signals["current_direct_tilt"] if decision_index == len(data["dates"]) else signals["direct_tilts"][decision_index]).reshape(1, -1)
+            rec_prob = np.ones(1)
         recommendation = numeric.recommend_weights(
-            signals["current_probabilities"], signals["current_use_signal"], base, signals["state_tilts"],
+            rec_prob, rec_use, base, rec_tilts,
             lower, upper, limits, candidate["strength"], current_weights=current,
             **group_args,
         )
+        recommendation_signal_date = signals["current_date"]
+        recommendation_window = signals.get("current_timing")
+        if plan is not None and decision_index >= 0:
+            timing = signals["audit"].get("signal_timing")
+            if timing:
+                recommendation_window = timing[decision_index]
+                recommendation_signal_date = recommendation_window.get("window_end") or recommendation_window.get("signal_date")
+            elif request.signal_mode == "composite":
+                used = [item["timing"][decision_index] for item in signals["audit"]["components"] if item["weight"] > 0]
+                recommendation_signal_date = min((row["observed_on"] for row in used if row["observed_on"]), default=None)
+        elif plan is not None:
+            recommendation_signal_date = None
         reasons = list(dict.fromkeys([*baseline.get("pit", {}).get("reasons", []), *data.get("pit", {}).get("reasons", []),
                     "本次规则与 SAA 在当前研究中确定；历史回放不等于当时已部署，不能认定为正式 PIT 业绩。"] ))
-        warnings = [*data.get("reasons", []), "日频目标再平衡；SAA/TAA 使用相同交易成本。训练和验证分别从 SAA 起步。",
+        warnings = [*data.get("reasons", []),
+                    "按冻结决策与执行时钟推进；未交易时持仓漂移。SAA/TAA 使用同一执行规则与成本，训练和验证独立从 SAA 起步。" if request.decision_policy else
+                    "日频目标再平衡；SAA/TAA 使用相同交易成本。训练和验证分别从 SAA 起步。",
                     "候选选择只看训练区；多次查看留出结果后调参会降低验证独立性。"]
         if data["lineage"].get("excluded_incomplete_dates"):
             warnings.append("数据存在不完整日期，已采用共同净值区间；年化按 252 个观察期估算，不代表连续日频实盘收益。")
@@ -248,15 +318,23 @@ class TacticalAllocationService:
             created = str(audit.get("run_created_at") or "")[:10]
             if created > str(request.as_of) or any(value > str(request.as_of) for value in published_dates):
                 warnings.append("该市场状态模型或发布在研究时点尚不存在，本次仅为事后规则回放。")
+        if not candidate["feasible"]:
+            warnings.append("固定假设的训练实际持仓或风险预算超限；仅保留诊断，不可应用。")
         if not candidate.get("validation_feasible", True):
             warnings.append("所选候选在留出区超出风险或换手约束；请复核，不自动改选其他候选。")
         if signals["fallback_reason"]:
             warnings.append(signals["fallback_reason"])
         chart, weights = [], []
         expires = request.as_of + timedelta(days=request.review_days)
-        if request.signal_mode != "manual" and not recommendation["is_saa"] and signals["current_date"]:
-            signal_expiry = date.fromisoformat(signals["current_date"][:10]) + timedelta(days=request.max_signal_age_days)
-            expires = min(expires, signal_expiry)
+        if request.signal_mode != "manual" and not recommendation["is_saa"]:
+            # Expiry belongs to the adopted decision, which may precede the
+            # latest observation while execution lag is still pending.
+            if plan is not None and decision_index >= 0:
+                expires = min(expires, date(1970, 1, 1) + timedelta(days=int(plan["valid_until"][decision_index])))
+            elif request.signal_mode == "composite":
+                expires = min(expires, date.fromisoformat(signals["current_expires_on"]))
+            elif signals["current_date"]:
+                expires = min(expires, date.fromisoformat(signals["current_date"][:10]) + timedelta(days=request.max_signal_age_days))
         offset = len(assets) * 2
         for segment, dates, path in [
             ("train", data["dates"][:split], result["selected_train_path"]),
@@ -266,15 +344,23 @@ class TacticalAllocationService:
                 chart.append({"date": value, "baseline": float(path[index, offset + 8]),
                               "taa": float(path[index, offset + 9]), "segment": segment})
                 weights.append({"date": value, "weights": dict(zip(assets, path[index, :len(assets)].tolist())),
-                                "turnover": float(path[index, offset + 1])})
-        raw_tilts = numeric.current_signal_tilt_kernel(signals["current_probabilities"], signals["state_tilts"], int(signals["current_use_signal"]), float(candidate["strength"]))
+                                "turnover": float(path[index, offset + 1]),
+                                "cost": float(path[index, offset + 3]), "segment": segment,
+                                "two_way_turnover": float(path[index, offset + 1] * 2),
+                                **({"decision": bool(path[index, offset + 14]), "execution_opportunity": bool(path[index, offset + 15]),
+                                    "traded": bool(path[index, offset + 16]),
+                                    "target_decision_date": data["period_starts"][(0 if segment == "train" else split) + int(path[index, offset + 18])] if path[index, offset + 18] >= 0 else None,
+                                    "no_trade_reason": {0: "executed", 1: "waiting_decision_or_lag", 2: "not_execution_opportunity", 3: "minimum_holding", 4: "below_threshold"}[int(path[index, offset + 17])],
+                                    "research_target": dict(zip(assets, path[index, offset + 19:].tolist()))}
+                                   if request.decision_policy else {})})
+        raw_tilts = numeric.current_signal_tilt_kernel(rec_prob, rec_tilts, int(rec_use), float(candidate["strength"]))
         momentum = signals.get("current_momentum")
         signal_details = []
         for i, asset in enumerate(assets):
             raw, applied = float(raw_tilts[i]), float(recommendation["tilts"][i])
             signal_details.append({"asset_id": asset,
                                    "value": float(momentum[i]) if momentum is not None and np.isfinite(momentum[i]) else None,
-                                   "signal_date": signals["current_date"], "window": signals.get("current_timing"), "direction": "增配" if raw > 1e-10 else "减配" if raw < -1e-10 else "维持",
+                                   "signal_date": recommendation_signal_date, "window": recommendation_window, "direction": "增配" if raw > 1e-10 else "减配" if raw < -1e-10 else "维持",
                                    "raw_tilt": raw, "applied_tilt": applied,
                                    "constraint_reason": signals["fallback_reason"] or ("资产或分组约束缩小了偏离。" if abs(raw - applied) > 1e-8 else None)})
         payload = {
@@ -291,20 +377,45 @@ class TacticalAllocationService:
                 "tilts": dict(zip(assets, recommendation["tilts"].tolist())),
                 "trade_deltas": dict(zip(assets, recommendation["trade_deltas"].tolist())) if current is not None else None,
                 "reason": "约束与当前信号下保留 SAA 基线。" if recommendation["is_saa"] else
-                          (f"按{'研究员观点' if request.signal_mode == 'manual' else '趋势信号' if request.signal_mode == 'momentum' else '已发布市场状态'}比较预设偏离强度；留出结果仅供验证。" if request.selected_candidate_id or not request.search else
+                          (f"按{'研究员观点' if request.signal_mode == 'manual' else '趋势信号' if request.signal_mode == 'momentum' else '组合信号' if request.signal_mode == 'composite' else '已发布市场状态'}比较预设偏离强度；留出结果仅供验证。" if request.selected_candidate_id or not request.search else
                            "采用训练窗口内可行候选中得分最高的强度；按最新可得信号生成当前权重。"),
-                "signal_date": signals["current_date"], "expires_on": str(expires), "is_saa": recommendation["is_saa"],
+                "signal_date": recommendation_signal_date, "expires_on": str(expires), "is_saa": recommendation["is_saa"],
                 "confidence": signals["confidence"], "fallback_reason": signals["fallback_reason"],
                 "turnover_from_current": recommendation["turnover"] if current is not None else None,
             },
             "chart": chart, "weight_path": weights, "warnings": list(dict.fromkeys(warnings)),
             "execution": result["execution"],
-            "audit": {"signal": signals["audit"], "selection": result["selection_policy"],
+            "audit": {"signal": signals["audit"], "latest_observation_signal": {"date": signals["current_date"], "active": bool(signals["current_use_signal"])}, "selection": result["selection_policy"],
                       "training_label_knowledge": training_knowledge,
                       "auto_selected_id": result.get("auto_selected_id", result["selected_id"]),
                       "baseline_hash": baseline["content_hash"], "formal_pit_eligible": False,
-                      "decision_as_of": str(request.as_of), "rebalance": "daily_target", "periods_per_year": 252},
+                      "decision_as_of": str(request.as_of), "cost_basis": request.decision_policy.cost_basis if request.decision_policy else "half_turnover", "rebalance": request.decision_policy.model_dump(mode="json") if request.decision_policy else "daily_target", "periods_per_year": 252},
         }
+        if plan is not None:
+            from .clocks import application_status
+            payload["application"] = application_status(request, data, plan, recommendation, decision_index)
+            if not signals["current_use_signal"] and not recommendation["is_saa"]:
+                payload["application"]["eligible"] = False
+                payload["application"]["state"] = "ineligible"
+                payload["application"]["reasons"].append("当前信号已不可用，已有决策目标不能直接交接；等待下一次决策复核。")
+            if not candidate["feasible"] or not candidate.get("validation_feasible", True):
+                payload["application"]["eligible"] = False
+                payload["application"]["state"] = "ineligible"
+                payload["application"]["reasons"].append("所选路径存在实际持仓、风险或换手预算超限，不能交接。")
+            latest_decision = next(i for i in range(len(plan["decisions"]) - 1, -1, -1) if plan["decisions"][i])
+            payload["application"]["latest_decision_date"] = (data["period_starts"] + [str(request.as_of)])[latest_decision]
+            payload["application"]["pending_decision"] = latest_decision > decision_index
+            if latest_decision > decision_index:
+                payload["warnings"].append("最新决策仍在等待滞后；拟议权重采用最近已满足滞后的决策，不能把新目标当作已成交。")
+            payload["warnings"].extend(payload["application"]["reasons"])
+        if request.walk_forward is not None:
+            from backend.tactical_allocation.walk_forward import evaluate_walk_forward
+            payload["walk_forward"] = evaluate_walk_forward(request, data, signals, base, lower, upper, limits, group_args)
+        if baseline.get("policy"):
+            from backend.strategic_allocation.policy_gate import check_policy
+            payload["policy_check"] = check_policy(baseline, payload["recommendation"]["weights"], request.max_tracking_error, str(request.as_of))
+            payload["warnings"].extend(payload["policy_check"]["violations"])
+            payload["recommendation"]["expires_on"] = min(payload["recommendation"]["expires_on"], baseline["policy"]["expires_on"])
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         # Keep the eventual immutable manifest within its checked reader budget.
         # Reject before any save, rather than creating a version it cannot reopen.
@@ -350,8 +461,9 @@ class TacticalAllocationService:
                 raise ValidationError("TAA_NAV_SCALE_BREAK", quality["issues"][0]["message"], diagnostics=quality["issues"])
             snapshot = {"returns": matrix, "available_days": historical["available_at"]}
             evidence = {"dates": historical["dates"], "source_hash": historical["source_hash"]}
-        result = numeric.stress_compare(matrix, base, target, preview_request.transaction_cost_bps)
-        return {"name": scenario.name, "kind": scenario.kind,
+        result = numeric.stress_compare(matrix, base, target, preview_request.transaction_cost_bps,
+                                        cost_basis=preview_request.decision_policy.cost_basis if preview_request.decision_policy else "half_turnover")
+        return {"name": scenario.name, "kind": scenario.kind, "simulation_scope": "current_target_fixed_stress", "cost_basis": result["cost_basis"],
                 "preview_hash": preview["preview_hash"], "evidence": evidence,
                 "baseline_return": result["baseline"]["total_return"], "taa_return": result["target"]["total_return"],
                 "excess_return": result["total_return_difference"], "relative_excess_return": result["excess_return"],
@@ -386,6 +498,8 @@ class TacticalAllocationService:
         preview = decision["preview"]
         baseline = preview["baseline"]
         from backend.tactical_allocation.portfolio_bridge import validate_decision_application
+        from .clocks import validate_clock_application
+        validate_clock_application(preview)
         validate_decision_application(decision, self.data, self.repository.decision_arrays(decision_id)["returns"])
         assets = baseline["assets"]
         class_weights = _vector(preview["recommendation"]["weights"], [item["id"] for item in assets], "TAA")

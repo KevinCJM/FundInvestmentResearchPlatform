@@ -114,6 +114,10 @@ def test_unconfirmed_previews_do_not_persist(environment):
         'input_ids': [env.factor['id']], 'rows': [[-8.0]]}
     scenario = env.scenarios.preview(scenario_fields)
     assert scenario['transient'] is True and scenario['preview_hash']
+    assert scenario['horizon_evidence']['periods'] == 1
+    assert scenario['horizon_evidence']['frequency'] == 'monthly'
+    assert scenario['horizon_evidence']['terminal_status'] == 'open_at_horizon'
+    assert scenario['horizon_evidence']['economic_horizon_status'] == 'not_empirically_established'
     assert env.scenarios.artifacts.list('preview') == []
     assert env.scenarios.artifacts.list('release') == []
 
@@ -122,6 +126,25 @@ def test_unconfirmed_previews_do_not_persist(environment):
         'cashflows': [{'years': 1, 'amount': 103}], 'source_label': 'offline fixture'})
     assert cashflow['transient'] is True and cashflow['preview_hash']
     assert env.model.artifacts.list('run') == []
+
+
+def test_scenario_horizon_evidence_distinguishes_grid_from_economic_duration(environment):
+    env = environment
+    open_path = env.scenarios.preview({'name': '开放尾部', 'entry': 'market', 'frequency': 'monthly',
+        'input_ids': [env.factor['id']], 'rows': [[-8.0], [-4.0]]})
+    assert open_path['horizon_evidence']['terminal_status'] == 'open_at_horizon'
+    assert open_path['horizon_evidence']['market_baseline_tail_periods'] == 0
+    closed = env.scenarios.preview({'name': '回到基线', 'entry': 'market', 'frequency': 'monthly',
+        'input_ids': [env.factor['id']], 'rows': [[-8.0], [0.0], [0.0]]})
+    assert closed['horizon_evidence']['terminal_status'] == 'increments_zero'
+    assert closed['horizon_evidence']['cumulative_level_status'] == 'not_recovered'
+    assert closed['horizon_evidence']['remaining_response_status'] == 'zero'
+    assert closed['horizon_evidence']['source_baseline_tail_periods'] == 2
+    assert closed['horizon_evidence']['market_baseline_tail_periods'] == 2
+    assert closed['horizon_evidence']['economic_horizon_status'] == 'not_empirically_established'
+    release = env.scenarios.publish({'definition': closed['definition'], 'preview_hash': closed['preview_hash'],
+        'valid_days': 90, 'acknowledge_limitations': True})
+    assert release['horizon_evidence'] == closed['horizon_evidence']
 
 
 def test_changed_preview_cannot_publish_or_write_artifacts(environment):
@@ -559,3 +582,77 @@ def test_kernel_empty_shape_and_unsupported_layout_fail_safely():
     with pytest.raises(TypeError):
         lag_features_kernel(np.ones((4, 2))[::2], np.int64(1))
     assert lag_features_kernel.signatures == signatures
+
+
+def test_scenario_publication_request_retry_conflicts_and_new_cycle(environment):
+    env = environment
+    fields = {'name': '可重复发布周期', 'entry': 'market', 'frequency': 'monthly',
+              'input_ids': [env.factor['id']], 'rows': [[-10.], [0.]]}
+    preview = env.scenarios.preview(fields)
+    body = {'definition': fields, 'preview_hash': preview['preview_hash'],
+            'publication_request_id': preview['publication_request_id'],
+            'valid_days': 90, 'note': '第一轮说明', 'acknowledge_limitations': True}
+    release = env.scenarios.publish(body)
+    assert env.scenarios.publish(body) == release
+    with pytest.raises(ValidationError) as error:
+        env.scenarios.publish({**body, 'note': '修改后的说明'})
+    assert error.value.code == 'SCENARIO_PUBLICATION_CONFLICT'
+    retired = env.scenarios.retire(release['id'], '第一轮停用')
+    assert env.scenarios.retire(release['id'], '第一轮停用') == retired
+    with pytest.raises(ValidationError) as error:
+        env.scenarios.retire(release['id'], '另一份说明')
+    assert error.value.code == 'SCENARIO_RETIREMENT_CONFLICT'
+    with pytest.raises(ValidationError) as error:
+        env.scenarios.publish(body)
+    assert error.value.code == 'SCENARIO_ALREADY_INACTIVE'
+    fresh = env.scenarios.preview(fields)
+    assert fresh['preview_hash'] == preview['preview_hash']
+    assert fresh['publication_request_id'] != preview['publication_request_id']
+    republished = env.scenarios.publish({**body, 'publication_request_id': fresh['publication_request_id'], 'note': '第二轮说明'})
+    assert republished['id'] != release['id']
+    assert republished['preview_id'] == release['preview_id']
+    assert republished['valid_days'] == release['valid_days'] == 90
+    assert env.scenarios.resolve_release(republished['id'])[0]['note'] == '第二轮说明'
+    assert env.scenarios.artifacts.get(release['id']) == release
+
+
+def test_scenario_lagged_zero_prefix_reports_pending_model_response(environment):
+    env = environment
+    # Train a real fixed lag-2 mapping; no projection or horizon helper is mocked.
+    rng = np.random.default_rng(7)
+    driver = rng.normal(0, 1, len(env.dates))
+    market = np.r_[0., 0., .01 * driver[:-2]]
+    source = import_values(env.registry, env.dates, driver, '滞后输入', ['macro'], 'points')
+    target = import_values(env.registry, env.dates, market, '滞后市场收益', ['market'], 'return')
+    fields = {**env.fields, 'stage': 'macro_market', 'targets': [], 'inputs': [source['id']],
+              'outputs': [target['id']], 'lags': 2}
+    _, model = publish_model(env.transmission, fields)
+    base = {'name': '滞后冲击', 'entry': 'macro', 'frequency': 'monthly', 'macro_model_release_id': model['id']}
+    short = env.scenarios.preview({**base, 'rows': [[1.], [0.]]})
+    np.testing.assert_allclose(short['path'], [[0.], [0.]], atol=1e-10)
+    evidence = short['horizon_evidence']
+    assert evidence['terminal_status'] == 'increments_zero'
+    assert evidence['remaining_response_status'] == 'pending'
+    assert evidence['remaining_response_max_abs'] == pytest.approx(.01, abs=1e-8)
+    assert evidence['cumulative_level_status'] == 'recovered'
+    extended = env.scenarios.preview({**base, 'rows': [[1.], [0.], [0.]]})
+    assert extended['path'][2][0] == pytest.approx(.01, abs=1e-8)
+    assert extended['horizon_evidence']['cumulative_level_status'] == 'not_recovered'
+
+
+def test_missing_transmission_artifact_is_local_to_release_list_row(environment):
+    env = environment
+    _, healthy = direct_scenario(env)
+    _, model = publish_model(env.transmission, {**env.fields, 'stage': 'macro_market', 'targets': [],
+        'inputs': [env.macro['id']], 'outputs': [env.factor['id']]})
+    fields = {'name': '模型依赖', 'entry': 'macro', 'frequency': 'monthly', 'macro_model_release_id': model['id'], 'rows': [[1.]]}
+    preview = env.scenarios.preview(fields)
+    dependent = env.scenarios.publish({'definition': fields, 'preview_hash': preview['preview_hash'], 'acknowledge_limitations': True})
+    # Remove only this test's temporary dependency, as an offline corruption probe.
+    (env.transmission.artifacts.root / model['id'] / 'manifest.json').unlink()
+    listed = {item['id']: item for item in env.scenarios.releases()['items']}
+    assert listed[healthy['id']]['status'] == 'active'
+    assert listed[dependent['id']]['status'] == 'dependency_unavailable'
+    from backend.custom_indicators.errors import IndicatorDomainError
+    with pytest.raises(IndicatorDomainError):
+        env.scenarios.resolve_release(dependent['id'])

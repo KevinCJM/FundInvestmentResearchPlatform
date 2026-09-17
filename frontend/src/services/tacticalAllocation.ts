@@ -18,6 +18,8 @@ export interface TaaBaseline {
   alloc_name: string
   as_of: string
   universe_snapshot_id?: string | null
+  strategic_universe_id?: string | null
+  implementation_mapping_id?: string | null
   data_release_id?: string | null
   assets: TaaAsset[]
   group_limits?: Array<{ id: string; assets: string[]; lo: number; hi: number }>
@@ -25,6 +27,12 @@ export interface TaaBaseline {
   apply_reasons?: string[]
   pit: { status: string; reasons: string[] }
   lineage: Record<string, unknown>
+  policy?: {
+    mandate_id: string; cma_id: string; expires_on: string; reason: string
+    assumptions: import('./strategicAllocation').CmaDefinition
+    mandate: { max_tracking_error: number; max_volatility: number; currency: string; horizon_years: number }
+    independent_approval: boolean; execution: FixedNjitExecutionAudit
+  }
 }
 
 export interface TaaBaselineInput {
@@ -48,7 +56,7 @@ export interface TaaPreviewRequest {
   end_date: string
   as_of: string
   train_end_date: string
-  signal_mode: 'momentum' | 'manual' | 'regime'
+  signal_mode: 'momentum' | 'manual' | 'regime' | 'composite'
   lookback: number
   manual_tilts: Record<string, number>
   regime_run_id?: string
@@ -66,6 +74,50 @@ export interface TaaPreviewRequest {
   review_days: number
   note: string
   selected_candidate_id?: string
+  walk_forward?: TaaWalkForwardConfig | null
+  decision_policy?: TaaDecisionPolicy | null
+  signal_components?: TaaSignalComponent[]
+  current_weights_as_of?: string | null
+  last_execution_date?: string | null
+}
+
+export interface TaaDecisionPolicy {
+  mode: 'scheduled'
+  cost_basis: 'half_turnover' | 'gross_traded_weight'
+  decision_frequency: 'daily' | 'weekly' | 'monthly' | 'quarterly'
+  execution_frequency: 'daily' | 'weekly' | 'monthly' | 'quarterly'
+  execution_lag: number
+  min_holding_periods: number
+  deviation_threshold: number
+}
+export interface TaaDatedSignal {
+  observed_on: string; available_on: string; expires_on: string; values: Record<string, number>
+}
+export interface TaaSignalComponent {
+  id: string; kind: 'momentum' | 'value' | 'carry' | 'macro' | 'risk_sentiment'; weight: number
+  source: string; methodology: string; unit: 'standardized_score_minus1_plus1'
+  lookback: number; max_age_days: number; observations: TaaDatedSignal[]
+}
+export interface TaaApplication {
+  state: 'maintain' | 'waiting_execution' | 'adjustment_proposal' | 'ineligible'
+  eligible: boolean; reasons: string[]; threshold_triggered: boolean | null
+  latest_decision_date?: string; pending_decision?: boolean
+  decision_date: string | null; execution_opportunity: boolean; actual_execution: false
+}
+
+export interface TaaWalkForwardConfig {
+  window_mode: 'rolling' | 'expanding'; training_periods: number; validation_periods: number
+}
+export interface TaaWalkForwardResult {
+  config: TaaWalkForwardConfig; completed_folds: number; blocked_folds: number; excluded_tail_observations: number
+  primary_selection_changed: boolean; independently_funded_intervals: boolean; warnings: string[]
+  folds: Array<{
+    fold: number; status: 'complete' | 'blocked'; reasons: string[]; train_start: string; train_end: string | null
+    validation_start: string; validation_end: string; training_observations: number; validation_observations: number
+    purged_training_periods: number; strength?: number; training?: TaaMetrics; validation?: TaaMetrics
+    validation_feasible?: boolean; baseline_fallback_exemption?: boolean
+  }>
+  execution: FixedNjitExecutionAudit
 }
 
 export interface TaaMetrics {
@@ -85,6 +137,7 @@ export interface TaaCandidate {
   strength: number
   feasible: boolean
   validation_feasible?: boolean
+  holding_budget_breaches?: { train: number; validation: number }
   train: TaaMetrics
   validation: TaaMetrics
 }
@@ -119,10 +172,13 @@ export interface TaaPreview {
     signal_details?: Array<{ asset_id: string; value: number | null; signal_date: string | null; window?: { window_start: string | null; window_end: string | null; available_at: string | null; lag_days: number | null; status: string }; direction: string; raw_tilt: number; applied_tilt: number; constraint_reason: string | null }>
   }
   chart: Array<{ date: string; baseline: number; taa: number; segment: 'train' | 'validation' }>
-  weight_path: Array<{ date: string; weights: Record<string, number>; turnover: number }>
+  weight_path: Array<{ date: string; weights: Record<string, number>; turnover: number; cost?: number; two_way_turnover?: number; decision?: boolean; execution_opportunity?: boolean; traded?: boolean; no_trade_reason?: string; research_target?: Record<string, number> }>
+  application?: TaaApplication
   warnings: string[]
   execution: FixedNjitExecutionAudit
   audit: Record<string, unknown>
+  walk_forward?: TaaWalkForwardResult
+  policy_check?: { within_limits: boolean; goal_diagnostic_scope?: string | null; current_application_eligible?: boolean; benchmark_check?: { name: string; tracking_error: number; max_tracking_error: number } | null; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: FixedNjitExecutionAudit }
 }
 
 export interface TaaScenarioRequest {
@@ -213,7 +269,16 @@ export const getTaaBaseline = async (id: string, signal?: AbortSignal) => {
   return value
 }
 export const createTaaBaseline = (input: TaaBaselineInput) => post<TaaBaseline>('/baselines', input)
-export const previewTaa = async (input: TaaPreviewRequest) => audited(await post<TaaPreview>('/preview', input), '战术配置研究')
+function checkedPreview(value: TaaPreview): TaaPreview {
+  audited(value, '战术配置研究')
+  if (value.walk_forward) {
+    audited(value.walk_forward, '多段样本外验证')
+    if (value.walk_forward.primary_selection_changed !== false || value.walk_forward.independently_funded_intervals !== true || !Array.isArray(value.walk_forward.folds)) throw new Error('分段验证口径不完整，已停止展示。')
+  }
+  if (value.policy_check) audited(value.policy_check, '政策风险校验')
+  return value
+}
+export const previewTaa = async (input: TaaPreviewRequest) => checkedPreview(await post<TaaPreview>('/preview', input))
 export const preflightTaa = async (input: TaaPreviewRequest, signal?: AbortSignal) => {
   const value = await request<TaaPreflight>('/preflight', { method: 'POST', body: JSON.stringify(input), signal })
   if (!value || typeof value.can_calculate !== 'boolean' || !['clear', 'blocked'].includes(value.quality?.status)
@@ -227,7 +292,7 @@ export const preflightTaa = async (input: TaaPreviewRequest, signal?: AbortSigna
 export const simulateTaaScenario = async (input: TaaScenarioRequest) => audited(await post<TaaScenarioResult>('/scenarios', input), '战术配置情景模拟')
 export const saveTaaDecision = async (input: { request: TaaPreviewRequest; preview_hash: string; name: string; note: string; scenarios?: TaaScenario[] }) => checkedDecision(await post<TaaDecision>('/decisions', input))
 function checkedDecision(result: TaaDecision): TaaDecision {
-  audited(result.preview, '已保存战术配置研究')
+  checkedPreview(result.preview)
   if (result.scenarios && !Array.isArray(result.scenarios)) throw new Error('已保存情景格式不完整，请重新读取。')
   result.scenarios?.forEach(item => audited(item.result, '已保存情景实验'))
   return result

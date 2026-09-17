@@ -5,6 +5,7 @@ import { useI18n } from '../i18n/runtime'
 import { HomeBrand, HomeHeader } from '../homepage/HomeHeader'
 import { HomeDialog } from '../homepage/HomeDialog'
 import { HomeIcon } from '../homepage/HomeIcon'
+import Mascot from '../components/Mascot'
 import { coreModules, homeModule, homeModules, quickModules, researchExamples, workflowModules, type HomeModule } from '../homepage/catalog'
 import { clearRecentVisits, readRecentVisits } from '../homepage/history'
 import '../homepage/homepage.css'
@@ -45,7 +46,7 @@ function ResearchWorkflow({ onTour }: { onTour: () => void }) {
   const { s } = useI18n()
   return <>
     <section className="home-workflow-section" aria-labelledby="home-workflow-title">
-      <div className="home-section-heading"><div><h2 id="home-workflow-title">{s('landing.workflowTitle')}</h2><p>{s('landing.workflowDescription')}</p></div><button type="button" className="home-text-link" onClick={onTour}>{s('landing.exploreWorkflow')}<Arrow /></button></div>
+      <div className="home-section-heading"><div><h2 id="home-workflow-title">{s('landing.workflowTitle')}</h2><p>{s('landing.workflowDescription')}</p></div><button type="button" className="home-text-link" onClick={onTour}>{s('landing.tourButton')}<Arrow /></button></div>
       <div className="home-workflow-grid">{workflowModules.map((module, index) => <ModuleCard key={module.id} module={module} index={index} variant="workflow" />)}</div>
       <p className="home-workflow-note"><ArrowPathIcon className="home-icon" aria-hidden="true" />{s('landing.workflowNote')}</p>
     </section>
@@ -96,7 +97,7 @@ function SearchContent({ close }: { close: () => void }) {
   const { s } = useI18n()
   const [query, setQuery] = useState('')
   const matches = homeModules.filter(item => `${s(`landing.module.${item.id}`)} ${s(`landing.summary.${item.id}`)} ${item.id}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
-  return <><label className="home-search-label">{s('landing.searchInputLabel')}<input data-home-autofocus maxLength={100} value={query} onChange={event => setQuery(event.target.value)} placeholder={s('landing.searchPlaceholder')} type="search" /></label><p className="home-dialog-note">{s('landing.searchScope')}</p><div className="home-search-results">{matches.map(item => <Link key={item.id} to={item.path} onClick={close}><HomeIcon name={item.icon} /><span><strong>{s(`landing.module.${item.id}`)}</strong><small>{s(`landing.summary.${item.id}`)}</small></span><Arrow /></Link>)}{!matches.length && <p role="status" className="home-empty">{s('landing.noSearch')}<small>{s('landing.noSearchHelp')}</small></p>}</div></>
+  return <><label className="home-search-label">{s('landing.searchInputLabel')}<input data-home-autofocus maxLength={100} value={query} onChange={event => setQuery(event.target.value)} placeholder={s('landing.searchPlaceholder')} type="search" /></label><p className="home-dialog-note">{s('landing.searchScope')}</p><div className="home-search-results">{matches.map(item => <Link key={item.id} to={item.path} onClick={close}><HomeIcon name={item.icon} /><span><strong>{s(`landing.module.${item.id}`)}</strong><small>{s(`landing.summary.${item.id}`)}</small></span><Arrow /></Link>)}{!matches.length && <div className="home-empty-state"><Mascot state="noresult" /><p role="status" className="home-empty">{s('landing.noSearch')}<small>{s('landing.noSearchHelp')}</small></p></div>}</div></>
 }
 
 function TourContent({ close }: { close: () => void }) {

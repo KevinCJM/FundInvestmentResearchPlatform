@@ -1,11 +1,13 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TacticalAllocationWorkspace from './TacticalAllocationWorkspace'
 import * as ResearchContext from '../app/ResearchContext'
-import { readAllocationJourney, updateAllocationJourney } from '../app/allocationJourney'
+import * as ResearchUI from '../components/risk-models/ResearchUI'
+import { allocationJourneyPath, readAllocationJourney, updateAllocationJourney } from '../app/allocationJourney'
 import { taaBaseline, taaCatalog, taaExecution, taaPreview, taaPreflight } from '../test/tacticalAllocationFixtures'
+import { cmaDefinition, policyBaseline } from '../test/strategicAllocationFixtures'
 
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="taa-chart">扣费净值对照图</div> }))
 function ok(body: unknown) { return { ok: true, status: 200, json: async () => body } as Response }
@@ -28,13 +30,47 @@ function setup(handler?: (path: string, body: any) => Promise<Response> | Respon
 }
 async function calculate(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText('本次准备怎么配？')
+  // Existing fixture assertions exercise the preserved original daily-target mode.
+  await user.selectOptions(screen.getByLabelText('调仓口径'), 'daily_target')
   await waitFor(() => expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: '计算并比较方案' }))
   await screen.findByRole('region', { name: 'SAA 与战术方案对照' })
 }
+// These fixtures describe a fixed research date, not the wall clock of a future test run.
+beforeEach(() => { vi.spyOn(ResearchUI, 'today').mockReturnValue('2026-09-12') })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); sessionStorage.clear(); localStorage.clear() })
 
 describe('TacticalAllocationWorkspace', () => {
+  it.each(['baseline', 'decision'])('从 %s 恢复完整的冻结上游引用，返回02不混入另一研究', async entry => {
+    updateAllocationJourney({ mandateId: 'mandate-A', strategicUniverseId: 'scope-A', implementationMappingId: 'map-A', universeId: 'domain-A', baselineId: 'baseline-A', taaRunId: 'run-A' })
+    const baseline = { ...taaBaseline, strategic_universe_id: 'scope-B', implementation_mapping_id: 'map-B',
+      policy: { ...policyBaseline.policy, mandate_id: 'mandate-B', assumptions: cmaDefinition } }
+    const saved = { id: 'run-B', name: '冻结研究B', created_at: '2026-09-12', preview: { ...taaPreview, baseline }, scenarios: [] }
+    setup(path => path.endsWith('/baselines/SAA-1') ? ok(baseline)
+      : path.endsWith('/decisions/run-B') ? ok(saved) : undefined,
+    `/pre-investment/taa?${entry === 'baseline' ? 'baseline=SAA-1' : 'decision=run-B'}`)
+    await waitFor(() => expect(readAllocationJourney()).toMatchObject({
+      mandateId: 'mandate-B', strategicUniverseId: 'scope-B', implementationMappingId: 'map-B',
+      universeId: taaBaseline.universe_snapshot_id, allocationName: taaBaseline.alloc_name, baselineId: 'SAA-1',
+    }))
+    expect(readAllocationJourney().taaRunId).toBe(entry === 'decision' ? 'run-B' : undefined)
+    const query = new URL(allocationJourneyPath('pool'), 'http://localhost').searchParams
+    expect(Object.fromEntries(query)).toEqual({ universe: 'UNIVERSE-1', mandate: 'mandate-B', strategic_universe: 'scope-B', scope: 'strategic', mapping: 'map-B' })
+  })
+
+  it.each(['baseline', 'decision'])('从 %s 恢复原产品基线时显式清除无关的战略引用', async entry => {
+    // Same domain/allocation: upstream identity must still be cleared explicitly.
+    updateAllocationJourney({ mandateId: 'mandate-A', strategicUniverseId: 'scope-A', implementationMappingId: 'map-A', universeId: taaBaseline.universe_snapshot_id!, allocationName: taaBaseline.alloc_name, baselineId: 'baseline-A' })
+    const saved = { id: 'original', name: '原产品研究', created_at: '2026-09-12', preview: taaPreview, scenarios: [] }
+    setup(path => path.endsWith('/decisions/original') ? ok(saved) : undefined,
+      `/pre-investment/taa?${entry === 'baseline' ? 'baseline=SAA-1' : 'decision=original'}`)
+    await waitFor(() => expect(readAllocationJourney().baselineId).toBe('SAA-1'))
+    expect(readAllocationJourney().mandateId).toBeUndefined()
+    expect(readAllocationJourney().strategicUniverseId).toBeUndefined()
+    expect(readAllocationJourney().implementationMappingId).toBeUndefined()
+    expect(allocationJourneyPath('pool')).toBe('/pre-investment/product-pool?universe=UNIVERSE-1')
+  })
+
   it('显示实际有效信号期数，零信号不能搜索且固定假设必须明确选择', async () => {
     const { user, fetchMock } = setup((path, body) => path.endsWith('/preflight') ? ok({ ...taaPreflight,
       can_calculate: !body.search,
@@ -58,6 +94,36 @@ describe('TacticalAllocationWorkspace', () => {
     '/pre-investment/taa?decision=OLD')
     await screen.findByText('此结果未记录有效信号期数；重新计算会采用当前趋势口径。')
     expect(screen.queryByText(/有效趋势信号：训练 411/)).not.toBeInTheDocument()
+  })
+
+  it('政策日遇到市场数据滞后一日时，决策日保持当前研究日而观察截止停在最新行情日', async () => {
+    vi.spyOn(ResearchContext, 'useResearchDay').mockReturnValue('2026-09-12')
+    const baseline = { ...taaBaseline, as_of: '2026-09-12' }
+    const catalog = { ...taaCatalog,
+      allocations: [{ ...taaCatalog.allocations[0], coverage: { start_date: '2023-01-03', end_date: '2026-09-11' } }],
+      baselines: [baseline] }
+    const { fetchMock } = setup(path => path.endsWith('/catalog') ? ok(catalog)
+      : path.endsWith('/baselines/SAA-1') ? ok(baseline) : undefined)
+    await screen.findByText('本次准备怎么配？')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith('/preflight'))).toBe(true))
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([path]) => String(path).endsWith('/preflight'))?.[1]?.body))
+    expect(body.as_of).toBe('2026-09-12')
+    expect(body.end_date).toBe('2026-09-11')
+  })
+
+  it('旧政策可在更新研究日继续读取新观察，而不是被政策建立日封顶', async () => {
+    vi.spyOn(ResearchContext, 'useResearchDay').mockReturnValue('2026-09-12')
+    const baseline = { ...taaBaseline, as_of: '2026-08-01' }
+    const catalog = { ...taaCatalog,
+      allocations: [{ ...taaCatalog.allocations[0], coverage: { start_date: '2023-01-03', end_date: '2026-09-11' } }],
+      baselines: [baseline] }
+    const { fetchMock } = setup(path => path.endsWith('/catalog') ? ok(catalog)
+      : path.endsWith('/baselines/SAA-1') ? ok(baseline) : undefined)
+    await screen.findByText('本次准备怎么配？')
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith('/preflight'))).toBe(true))
+    const body = JSON.parse(String(fetchMock.mock.calls.find(([path]) => String(path).endsWith('/preflight'))?.[1]?.body))
+    expect(body.as_of).toBe('2026-09-12')
+    expect(body.end_date).toBe('2026-09-11')
   })
 
   it('修改 TAA 决策日期不会冒充上游范围研究日', async () => {
@@ -97,7 +163,7 @@ describe('TacticalAllocationWorkspace', () => {
     platform.mockReturnValue('2014-12-31')
     rerender()
     await screen.findByText('平台数据口径已变化。草稿输入和情景假设仍保留，请检查日期并重新计算。')
-    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-10 晚于当前 PIT 截止 2014-12-31')
+    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-12 晚于当前 PIT 截止 2014-12-31')
     expect(screen.queryByRole('region', { name: 'SAA 与战术方案对照' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
   })
@@ -109,7 +175,7 @@ describe('TacticalAllocationWorkspace', () => {
     vi.spyOn(ResearchContext, 'useResearchDay').mockReturnValue('2014-12-31')
     const second = setup()
     await screen.findByRole('region', { name: '平台 PIT 日期冲突' })
-    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-10 晚于当前 PIT 截止 2014-12-31')
+    expect(screen.getByRole('region', { name: '平台 PIT 日期冲突' })).toHaveTextContent('2026-09-12 晚于当前 PIT 截止 2014-12-31')
     expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: '按当前 PIT 调整日期' })).not.toBeInTheDocument()
     expect(second.fetchMock.mock.calls.some(([path]) => String(path).endsWith('/preflight'))).toBe(false)
@@ -377,4 +443,51 @@ describe('TacticalAllocationWorkspace', () => {
     expect(screen.getByText('所选候选在独立验证区间超出约束，请先复核。')).toBeInTheDocument()
   })
 
+})
+
+it.each([
+  ['research_display', false], ['product_research', false], ['formal_backtest', false], ['taa', false], ['research_display', true],
+])('uses the pinned reference state axis for nonidentity mapping (%s, invalid binding=%s)', async (usage, invalid) => {
+  const hash = 'a'.repeat(64), refHash = 'b'.repeat(64)
+  const run = {
+    id: 'mapped-run', schema_version: '2.0', definition_id: 'model', definition_revision: 1,
+    name: '映射后的实时模型', immutable: true, mode: 'realtime', content_hash: hash, definition_snapshot_hash: hash,
+    states: [{ id: 'model_on', label: '模型正向' }, { id: 'model_off', label: '模型负向' }],
+    definition: { study: { purpose: 'realtime_recognition', family: 'market_trend',
+      reference: { run_id: 'reference-run', publication_id: 'ref-publication', content_hash: refHash },
+      state_mapping: { model_on: 'BullRef', model_off: 'BearRef' } } },
+    causality: { is_causal: true, uses_future_data: false, repaints: false, realtime_eligible: true },
+    governance: { formal_gate_passed: true, publish_eligible_usages: ['taa'] },
+    publications: [{ id: 'model-pub', usage: 'taa', run_id: 'mapped-run', definition_revision: 1, run_content_hash: hash, gate: 'comprehensive_formal_gate_passed' }],
+    calculation_audit: taaExecution,
+  }
+  const reference = { id: 'reference-run', content_hash: invalid ? 'c'.repeat(64) : refHash, immutable: true, mode: 'retrospective', definition_revision: 1,
+    states: [{ id: 'BearRef', label: '参考压力' }, { id: 'BullRef', label: '参考正常' }],
+    publications: [{ id: 'ref-publication', usage, run_id: 'reference-run', definition_revision: 1, run_content_hash: refHash }], calculation_audit: taaExecution }
+  const { user, fetchMock } = setup(path => {
+    if (path === '/api/historical-regimes/runs') return ok({ items: [run] })
+    if (path.endsWith('/runs/mapped-run')) return ok(run)
+    if (path.endsWith('/runs/reference-run')) return ok(reference)
+  }, '/pre-investment/taa?baseline=SAA-1')
+  await screen.findByText('本次准备怎么配？')
+  for (const tab of screen.getAllByRole('tab')) {
+    expect(document.getElementById(tab.getAttribute('aria-controls')!)).not.toBeNull()
+  }
+  await user.selectOptions(screen.getByLabelText('调仓口径'), 'daily_target')
+  await user.click(screen.getByRole('radio', { name: /已发布市场状态/ }))
+  await screen.findByRole('option', { name: /映射后的实时模型/ })
+  await user.selectOptions(screen.getByLabelText('已发布的实时情景版本'), 'mapped-run')
+  if (invalid) {
+    await screen.findByText(/历史参考的状态轴与绑定版本不一致/)
+    expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeDisabled()
+    return
+  }
+  await screen.findByRole('spinbutton', { name: '参考压力 · 权益偏离（百分点）' })
+  expect(screen.queryByRole('spinbutton', { name: /模型正向/ })).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.getByRole('button', { name: '计算并比较方案' })).toBeEnabled())
+  await user.click(screen.getByRole('button', { name: '计算并比较方案' }))
+  const call = fetchMock.mock.calls.find(([path]) => String(path).endsWith('/preview'))
+  const request = JSON.parse(String(call?.[1]?.body))
+  expect(Object.keys(request.state_tilts)).toEqual(['BearRef', 'BullRef'])
+  expect(request.state_tilts).toEqual({ BearRef: { equity: 0, bond: 0 }, BullRef: { equity: 0, bond: 0 } })
 })

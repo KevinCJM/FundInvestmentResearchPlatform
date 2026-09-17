@@ -12,17 +12,101 @@
   },
   "modules": [
     {
+      "id": "branch_submission_workflow",
+      "name": "AI branch submission, review and merge protocol",
+      "path": "branch_submission_rules.md",
+      "kind": "submission_protocol",
+      "purpose": "Owns terminal-only PR submission: PR-only main/Dev, same-repository Dev into main, one native approval for ordinary mergers, and a PR-only approval exemption for owner KevinCJM. Codex comments are optional. Live deployment and permissions must be verified from GitHub.",
+      "module_tags": [
+        "submission",
+        "branches",
+        "pull-request",
+        "ai-review",
+        "release",
+        "governance"
+      ],
+      "entry_files": [
+        "branch_submission_rules.md"
+      ],
+      "key_symbols": [],
+      "child_modules": [],
+      "first_read_files": [
+        "branch_submission_rules.md"
+      ],
+      "then_check_files": [
+        "AGENTS.md",
+        "docs/ai_routing_evolution_policy.json",
+        "docs/branch-protection.md"
+      ],
+      "upstream_dependencies": [
+        "ai_routing_files"
+      ],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [
+        "Live GitHub protection rules and required-check configuration",
+        "AI review service identity, credentials and remote check publication",
+        "External deployment environments and release status"
+      ],
+      "related_tests": [],
+      "related_configs": [
+        "AGENTS.md",
+        "docs/ai_routing_evolution_policy.json",
+        ".github/workflows/branch-policy.yml",
+        ".github/branch-ruleset.json",
+        ".github/main-branch-ruleset.json",
+        ".github/approval-ruleset.json"
+      ],
+      "risk_flags": [
+        "documented_policy_is_not_remote_enforcement",
+        "author_cannot_approve_own_pr",
+        "unrelated_dirty_files_in_submission",
+        "approval_exemption_must_not_include_pr_only_or_branch_direction"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "AI commit, push, PR review, merge and release decisions"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P02"
+      ],
+      "minimum_regression": [
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "remote_enforcement_not_certified"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "branch_submission_rules.md",
+          "AGENTS.md",
+          "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
+          "docs/branch-protection.md",
+          ".github/workflows/branch-policy.yml",
+          ".github/branch-ruleset.json",
+          ".github/main-branch-ruleset.json",
+          ".github/approval-ruleset.json"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
       "id": "tactical_allocation_workbench",
       "name": "SAA-linked tactical decision workbench",
       "path": "backend/tactical_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes SAA class budgets and group constraints from real local configuration, reads strict common NAV intervals, compares causal momentum/manual/published-regime tilts using one TAA numerical core, selects strengths on mature training returns only, validates on a separate holdout, compares explicit shocks or historical replay and saves immutable decisions with frozen inputs. Shared application gates and server-owned product mappings preserve budgets in portfolio research. Research-only provenance never certifies historical deployment or formal PIT. Preflight reports common coverage, training/holdout counts, immature and unknown knowledge dates, and NAV scale findings; suggested date boundaries use clocks only and fixed-hypothesis comparison is explicit. Named scenario inputs are recomputed on save and restored with immutable decisions. Momentum algorithm available-window-relative-momentum/2.0.0 uses the latest contiguous complete window whose endpoints are known by each decision cutoff; unknown and expired windows cannot emit a signal, and preflight reports effective training/holdout signal counts and blocks strength selection when training has none.",
+      "purpose": "SAA-linked tactical research over frozen budgets and explicit product mappings. Momentum, manual hypotheses, published regimes and dated composite scores share one recursive engine. Optional decision/execution clocks add frequency, lag, minimum holdings and thresholds; non-trading weights drift and observed holding-budget breaches affect feasibility. Missing decision_policy preserves original daily-target outputs without copying expanded paths. Cost basis is explicit and independent of frequency. Only mature training labels select strength; holdout and expanding folds remain independent. Unknown or expired positive-weight components invalidate the composite without renormalization. Preflight reports common coverage, signal readiness, outcome maturity and NAV quality. Current application uses actual dated holdings and the shared portfolio bridge. Saved inputs, scenarios, mapping and policy evidence remain immutable and research-only. Fixed-target stress is not execution-strategy replay. New signal/clock kernels and batch direction validation participate in PID-bound readiness without request compilation.",
       "entry_files": [
         "backend/tactical_allocation",
         "backend/services/tactical_allocation_routes.py",
         "frontend/src/pages/TacticalAllocationWorkspace.tsx",
         "frontend/src/services/tacticalAllocation.ts",
-        "frontend/src/components/tactical-allocation"
+        "frontend/src/components/tactical-allocation",
+        "backend/tactical_allocation/walk_forward.py"
       ],
       "key_symbols": [
         "TacticalAllocationService",
@@ -55,14 +139,20 @@
         "frontend/src/app/allocationJourney.ts",
         "docs/research/journey-taa-implementation-2026-09-11.md",
         "docs/research/taa-human-journey-audit-2026-09-11.md",
-        "docs/research/tactical-allocation-product-analysis-2026-09-10.md"
+        "docs/research/tactical-allocation-product-analysis-2026-09-10.md",
+        "backend/tactical_allocation/clocks.py",
+        "backend/tactical_allocation/signals.py",
+        "docs/research/bettersaataa-01-04-design-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md",
+        "docs/research/scenario-audit-followup-2026-09-16.md"
       ],
       "child_modules": [],
       "upstream_dependencies": [
         "backend_regime_research",
         "frontend_allocation_workflows",
         "backend_data_storage",
-        "published_risk_scenario_research"
+        "published_risk_scenario_research",
+        "strategic_allocation_policy"
       ],
       "downstream_dependencies": [
         "backend_portfolio_research",
@@ -86,7 +176,13 @@
         "frontend/src/test/tacticalAllocationFixtures.ts",
         "frontend/e2e/tactical-allocation.spec.ts",
         "backend/tests/test_research_input_checks.py",
-        "frontend/src/app/allocationJourney.test.tsx"
+        "frontend/src/app/allocationJourney.test.tsx",
+        "backend/tests/test_tactical_walk_forward.py",
+        "backend/tests/test_tactical_allocation_clocks_signals.py",
+        "backend/tests/test_bettersaataa_final_audit.py",
+        "backend/tests/benchmark_taa_clocks.py",
+        "frontend/src/components/tactical-allocation/TaaPolicySignals.test.tsx",
+        "frontend/e2e/better-saataa-01-04.spec.ts"
       ],
       "related_configs": [
         "backend/app.py",
@@ -98,12 +194,16 @@
         "python3 -m pytest backend/tests/test_tactical_allocation_numeric.py backend/tests/test_tactical_allocation_data.py backend/tests/test_tactical_allocation_service.py backend/tests/test_tactical_allocation_bridge.py backend/tests/test_historical_regime_taa.py backend/tests/test_portfolio_research.py -q",
         "npm run test --prefix frontend -- --run TacticalAllocationWorkspace.test.tsx ClassAllocation.test.tsx PortfolioConstruction.test.tsx portfolioResearch.test.ts",
         "npm run build --prefix frontend",
-        "npm run test:e2e --prefix frontend -- --config=playwright.taa.config.ts --workers=1"
+        "npm run test:e2e --prefix frontend -- --config=playwright.taa.config.ts --workers=1",
+        "python3 -m pytest backend/tests/test_tactical_walk_forward.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_tactical_allocation_clocks_signals.py backend/tests/test_bettersaataa_final_audit.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend python3 backend/tests/benchmark_taa_clocks.py"
       ],
       "pitfall_ids": [
         "P07",
         "P14",
-        "P15"
+        "P15",
+        "P23"
       ],
       "edit_risk": "high",
       "routing_confidence": "high",
@@ -130,7 +230,10 @@
           "backend/tests/test_tactical_allocation_bridge.py",
           "backend/research_input_checks.py",
           "backend/tests/test_research_input_checks.py",
-          "backend/tests/test_tactical_allocation_service.py"
+          "backend/tests/test_tactical_allocation_service.py",
+          "backend/tests/test_tactical_allocation_clocks_signals.py",
+          "backend/tests/test_bettersaataa_final_audit.py",
+          "frontend/e2e/better-saataa-01-04.spec.ts"
         ],
         "unsampled_paths": []
       }
@@ -141,27 +244,155 @@
       "path": "backend/sensitivity",
       "kind": "full_stack_research_module",
       "purpose": "Separates product risk research from scenario transmission research while sharing typed variables and fixed-signature numerical kernels. OLS coefficients are estimated with independent chronological holdout validation, optional post-validation refit and explicit conditional-not-causal semantics. Fixed positive cashflows provide duration, convexity and single-step full repricing. Model, cashflow, transmission and scenario previews are transient and must not persist artifacts. Only explicit user confirmation of publication may write immutable runs, frozen arrays, scenario paths and release records to the guarded managed data disk, after recomputation and preview-hash verification. Product, portfolio, SAA and TAA consumers read published snapshots without training; portfolio inputs come from saved end holdings, not class-name guesses. Their stress-impact calculations are transient and are not newly persisted; old impact IDs remain read-only compatibility only. Original simulation methods remain real advanced experiments with their existing contracts.",
-      "module_tags": ["risk-model", "sensitivity", "macro-transmission", "published-scenario", "managed-storage", "njit"],
-      "entry_files": ["backend/sensitivity", "backend/scenario_stress/published.py", "backend/scenario_stress/published_contracts.py", "backend/services/risk_model_routes.py", "backend/services/published_scenario_routes.py", "frontend/src/services/riskModels.ts", "frontend/src/components/risk-models", "frontend/src/pages/RiskModelCenter.tsx", "frontend/src/pages/PublishedScenarioCenter.tsx", "frontend/src/pages/RiskApplicationWorkspace.tsx", "docs/research/risk-model-scenario-design-2026-09-10.md", "docs/research/risk-model-scenario-acceptance-2026-09-10.md"],
-      "key_symbols": ["ModelResearchService", "VariableRegistry", "ResearchData", "ArtifactRepository", "PublishedScenarioService", "ResearchWorkbench", "PublishedRiskPanel", "PortfolioRiskSection", "NumberInput"],
+      "module_tags": [
+        "risk-model",
+        "sensitivity",
+        "macro-transmission",
+        "published-scenario",
+        "managed-storage",
+        "njit"
+      ],
+      "entry_files": [
+        "backend/sensitivity",
+        "backend/scenario_stress/published.py",
+        "backend/scenario_stress/published_contracts.py",
+        "backend/services/risk_model_routes.py",
+        "backend/services/published_scenario_routes.py",
+        "frontend/src/services/riskModels.ts",
+        "frontend/src/components/risk-models",
+        "frontend/src/pages/RiskModelCenter.tsx",
+        "frontend/src/pages/PublishedScenarioCenter.tsx",
+        "frontend/src/pages/RiskApplicationWorkspace.tsx",
+        "docs/research/risk-model-scenario-design-2026-09-10.md",
+        "docs/research/risk-model-scenario-acceptance-2026-09-10.md"
+      ],
+      "key_symbols": [
+        "ModelResearchService",
+        "VariableRegistry",
+        "ResearchData",
+        "ArtifactRepository",
+        "PublishedScenarioService",
+        "ResearchWorkbench",
+        "PublishedRiskPanel",
+        "PortfolioRiskSection",
+        "NumberInput"
+      ],
       "child_modules": [],
-      "first_read_files": ["docs/research/risk-model-scenario-design-2026-09-10.md", "backend/sensitivity/contracts.py", "backend/sensitivity/service.py", "backend/scenario_stress/published.py", "frontend/src/components/risk-models/ResearchWorkbench.tsx", "frontend/src/pages/PublishedScenarioCenter.tsx"],
-      "then_check_files": ["backend/sensitivity/catalog.py", "backend/sensitivity/data.py", "backend/sensitivity/repository.py", "backend/sensitivity/kernels.py", "backend/services/risk_model_routes.py", "backend/services/published_scenario_routes.py", "backend/app.py", "frontend/src/services/riskModels.ts", "frontend/src/components/risk-models/PublishedRiskPanel.tsx", "frontend/src/components/risk-models/ResearchUI.tsx", "frontend/src/pages/ProductDetail.tsx", "frontend/src/pages/PortfolioConstruction.tsx", "frontend/src/pages/HoldingDiagnosis.tsx", "frontend/src/pages/ClassAllocation.tsx", "frontend/src/pages/TacticalAllocationWorkspace.tsx", "frontend/src/pages/ScenarioCenters.tsx", "frontend/src/App.tsx", "frontend/src/app/processRegistry.ts", "frontend/src/test/publishedRiskFixtures.ts"],
-      "upstream_dependencies": ["factor_research_center", "backend_data_storage", "backend_portfolio_research", "backend_regime_research"],
-      "downstream_dependencies": ["frontend_etf_research_pages", "frontend_allocation_workflows", "frontend_portfolio_research", "frontend_app_shell"],
-      "out_of_scope_dependencies": ["identified structural macro causality or calibrated SVAR/BVAR", "live holdings and automatic trading", "complete Barra covariance model", "option/credit-default pricing", "automatic class-to-product proxy inference", "historical PIT certification"],
-      "related_tests": ["backend/tests/test_published_risk_models.py", "frontend/src/pages/PublishedRiskFlow.test.tsx", "frontend/src/services/riskModels.test.ts", "frontend/src/components/risk-models/ResearchUI.test.tsx", "frontend/src/pages/ScenarioCenters.test.tsx", "frontend/e2e/published-risk.spec.ts"],
-      "related_configs": ["frontend/playwright.risk.config.ts", "frontend/package.json", "backend/requirements.txt"],
-      "risk_flags": ["period_changes_not_cumulative_levels", "conditional_response_not_identified_causality", "actual_data_end_not_requested_asof", "published_at_cannot_be_backdated", "no_manual_beta", "unconfirmed_preview_must_not_persist", "impact_is_transient", "missing_nonzero_exposure_blocks", "negative_input_must_preserve_sign", "fixed_njit_warmup", "readonly_immutable_artifacts"],
+      "first_read_files": [
+        "docs/research/risk-model-scenario-design-2026-09-10.md",
+        "backend/sensitivity/contracts.py",
+        "backend/sensitivity/service.py",
+        "backend/scenario_stress/published.py",
+        "frontend/src/components/risk-models/ResearchWorkbench.tsx",
+        "frontend/src/pages/PublishedScenarioCenter.tsx"
+      ],
+      "then_check_files": [
+        "backend/sensitivity/catalog.py",
+        "backend/sensitivity/data.py",
+        "backend/sensitivity/repository.py",
+        "backend/sensitivity/kernels.py",
+        "backend/services/risk_model_routes.py",
+        "backend/services/published_scenario_routes.py",
+        "backend/app.py",
+        "frontend/src/services/riskModels.ts",
+        "frontend/src/components/risk-models/PublishedRiskPanel.tsx",
+        "frontend/src/components/risk-models/ResearchUI.tsx",
+        "frontend/src/pages/ProductDetail.tsx",
+        "frontend/src/pages/PortfolioConstruction.tsx",
+        "frontend/src/pages/HoldingDiagnosis.tsx",
+        "frontend/src/pages/ClassAllocation.tsx",
+        "frontend/src/pages/TacticalAllocationWorkspace.tsx",
+        "frontend/src/pages/ScenarioCenters.tsx",
+        "frontend/src/App.tsx",
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/test/publishedRiskFixtures.ts",
+        "docs/research/scenario-audit-followup-2026-09-16.md"
+      ],
+      "upstream_dependencies": [
+        "factor_research_center",
+        "backend_data_storage",
+        "backend_portfolio_research",
+        "backend_regime_research"
+      ],
+      "downstream_dependencies": [
+        "frontend_etf_research_pages",
+        "frontend_allocation_workflows",
+        "frontend_portfolio_research",
+        "frontend_app_shell"
+      ],
+      "out_of_scope_dependencies": [
+        "identified structural macro causality or calibrated SVAR/BVAR",
+        "live holdings and automatic trading",
+        "complete Barra covariance model",
+        "option/credit-default pricing",
+        "automatic class-to-product proxy inference",
+        "historical PIT certification"
+      ],
+      "related_tests": [
+        "backend/tests/test_published_risk_models.py",
+        "frontend/src/pages/PublishedRiskFlow.test.tsx",
+        "frontend/src/services/riskModels.test.ts",
+        "frontend/src/components/risk-models/ResearchUI.test.tsx",
+        "frontend/src/pages/ScenarioCenters.test.tsx",
+        "frontend/e2e/published-risk.spec.ts"
+      ],
+      "related_configs": [
+        "frontend/playwright.risk.config.ts",
+        "frontend/package.json",
+        "backend/requirements.txt"
+      ],
+      "risk_flags": [
+        "period_changes_not_cumulative_levels",
+        "conditional_response_not_identified_causality",
+        "actual_data_end_not_requested_asof",
+        "published_at_cannot_be_backdated",
+        "no_manual_beta",
+        "unconfirmed_preview_must_not_persist",
+        "impact_is_transient",
+        "missing_nonzero_exposure_blocks",
+        "negative_input_must_preserve_sign",
+        "fixed_njit_warmup",
+        "readonly_immutable_artifacts"
+      ],
       "edit_risk": "high",
-      "blast_radius": ["product and portfolio risk evidence", "confirmed scenario/model releases", "transient stress impacts", "managed data disk", "SAA/TAA research consumers"],
-      "pitfall_ids": ["P14", "P15", "P19", "P20"],
-      "minimum_regression": ["python3 -m pytest backend/tests/test_published_risk_models.py -q", "npm run test --prefix frontend -- --run PublishedRiskFlow.test.tsx riskModels.test.ts ResearchUI.test.tsx ScenarioCenters.test.tsx ProductDetail.test.tsx PortfolioConstruction.test.tsx HoldingDiagnosis.test.tsx", "npm run build --prefix frontend", "npm run test:e2e --prefix frontend -- --config=playwright.risk.config.ts --workers=1"],
+      "blast_radius": [
+        "product and portfolio risk evidence",
+        "confirmed scenario/model releases",
+        "transient stress impacts",
+        "managed data disk",
+        "SAA/TAA research consumers"
+      ],
+      "pitfall_ids": [
+        "P14",
+        "P15",
+        "P19",
+        "P20"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_published_risk_models.py -q",
+        "npm run test --prefix frontend -- --run PublishedRiskFlow.test.tsx riskModels.test.ts ResearchUI.test.tsx ScenarioCenters.test.tsx ProductDetail.test.tsx PortfolioConstruction.test.tsx HoldingDiagnosis.test.tsx",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- --config=playwright.risk.config.ts --workers=1"
+      ],
       "routing_confidence": "high",
-      "scope_flags": ["subtree_only", "research_only", "persist_only_on_confirmed_publish", "transient_previews_and_impacts", "immutable_published_artifacts", "no_network_training"],
+      "scope_flags": [
+        "subtree_only",
+        "research_only",
+        "persist_only_on_confirmed_publish",
+        "transient_previews_and_impacts",
+        "immutable_published_artifacts",
+        "no_network_training"
+      ],
       "grounding": {
         "fact_status": "grounded",
-        "evidence": ["backend/tests/test_published_risk_models.py", "frontend/src/pages/PublishedRiskFlow.test.tsx", "frontend/e2e/published-risk.spec.ts", "backend/sensitivity/service.py", "backend/scenario_stress/published.py", "docs/research/risk-model-scenario-acceptance-2026-09-10.md"],
+        "evidence": [
+          "backend/tests/test_published_risk_models.py",
+          "frontend/src/pages/PublishedRiskFlow.test.tsx",
+          "frontend/e2e/published-risk.spec.ts",
+          "backend/sensitivity/service.py",
+          "backend/scenario_stress/published.py",
+          "docs/research/risk-model-scenario-acceptance-2026-09-10.md"
+        ],
         "unsampled_paths": []
       }
     },
@@ -171,27 +402,133 @@
       "path": "backend/timing_research",
       "kind": "full_stack_research_module",
       "purpose": "Editable ETF timing graphs reuse shared indicator, condition and axis kernels. Fourteen explicitly identified ETF adaptations add fixed-member basket panels, train-only mature-trade candidate selection, frozen global/state/calendar policies and causal priority quotas. Next-open T+1 execution, bounded readonly workspaces, immutable inputs and research-only releases remain mandatory; ETF adaptations do not inherit stock experiment performance or formal PIT authority.",
-      "module_tags": ["timing", "etf", "njit", "immutable-research"],
-      "entry_files": ["backend/timing_research", "backend/services/timing_research_routes.py", "frontend/src/pages/TimingResearch.tsx", "frontend/src/services/timingResearch.ts", "frontend/src/components/timing-research", "docs/research/product-timing-research-design-2026-09-10.md", "docs/research/etf-algorithm-adaptations-2026-09-10.md"],
-      "key_symbols": ["TimingResearchService", "GraphRuntime", "TimingRepository", "load_etf_bars", "simulate_kernel", "TimingResearch"],
+      "module_tags": [
+        "timing",
+        "etf",
+        "njit",
+        "immutable-research"
+      ],
+      "entry_files": [
+        "backend/timing_research",
+        "backend/services/timing_research_routes.py",
+        "frontend/src/pages/TimingResearch.tsx",
+        "frontend/src/services/timingResearch.ts",
+        "frontend/src/components/timing-research",
+        "docs/research/product-timing-research-design-2026-09-10.md",
+        "docs/research/etf-algorithm-adaptations-2026-09-10.md"
+      ],
+      "key_symbols": [
+        "TimingResearchService",
+        "GraphRuntime",
+        "TimingRepository",
+        "load_etf_bars",
+        "simulate_kernel",
+        "TimingResearch"
+      ],
       "child_modules": [],
-      "first_read_files": ["docs/research/product-timing-research-design-2026-09-10.md", "docs/research/etf-algorithm-adaptations-2026-09-10.md", "backend/timing_research/contracts.py", "backend/timing_research/service.py", "backend/timing_research/graph.py", "frontend/src/pages/TimingResearch.tsx"],
-      "then_check_files": ["backend/timing_research/catalog.py", "backend/timing_research/numeric.py", "backend/timing_research/data.py", "backend/timing_research/repository.py", "backend/services/timing_research_routes.py", "backend/historical_regimes/condition_numba.py", "backend/historical_regimes/v2_numba.py", "backend/app.py", "frontend/src/App.tsx", "frontend/src/app/processRegistry.ts", "frontend/src/pages/ProductDetail.tsx", "frontend/src/services/timingResearch.ts"],
-      "upstream_dependencies": ["backend_custom_indicator_service", "market_data_snapshot_lifecycle", "backend_api_shell", "frontend_app_shell", "frontend_investment_process_framework"],
+      "first_read_files": [
+        "docs/research/product-timing-research-design-2026-09-10.md",
+        "docs/research/etf-algorithm-adaptations-2026-09-10.md",
+        "backend/timing_research/contracts.py",
+        "backend/timing_research/service.py",
+        "backend/timing_research/graph.py",
+        "frontend/src/pages/TimingResearch.tsx"
+      ],
+      "then_check_files": [
+        "backend/timing_research/catalog.py",
+        "backend/timing_research/numeric.py",
+        "backend/timing_research/data.py",
+        "backend/timing_research/repository.py",
+        "backend/services/timing_research_routes.py",
+        "backend/historical_regimes/condition_numba.py",
+        "backend/historical_regimes/v2_numba.py",
+        "backend/app.py",
+        "frontend/src/App.tsx",
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/pages/ProductDetail.tsx",
+        "frontend/src/services/timingResearch.ts"
+      ],
+      "upstream_dependencies": [
+        "backend_custom_indicator_service",
+        "market_data_snapshot_lifecycle",
+        "backend_api_shell",
+        "frontend_app_shell",
+        "frontend_investment_process_framework"
+      ],
       "downstream_dependencies": [],
-      "out_of_scope_dependencies": ["OTC subscription settlement", "cross-border ETF execution", "stock mother-pool numerical replication", "automatic portfolio weights and live orders", "full historical revision PIT certification"],
-      "related_tests": ["backend/tests/test_timing_data.py", "backend/tests/test_timing_research_numeric.py", "backend/tests/test_timing_graph.py", "backend/tests/test_timing_repository.py", "backend/tests/test_timing_service.py", "backend/tests/test_timing_routes.py", "backend/tests/test_timing_etf_templates.py", "backend/tests/test_timing_learning.py", "backend/tests/test_timing_panel.py", "backend/tests/test_timing_training_runtime.py", "frontend/src/pages/TimingResearch.test.tsx", "frontend/e2e/timing-research.spec.ts"],
-      "related_configs": ["AGENTS.md", "frontend/package.json", "frontend/playwright.config.ts", "locales/navigation.json", "backend/scripts/benchmark_timing_research.py"],
-      "minimum_regression": ["python3 -m pytest backend/tests/test_timing_data.py backend/tests/test_timing_research_numeric.py backend/tests/test_timing_graph.py backend/tests/test_timing_repository.py backend/tests/test_timing_service.py backend/tests/test_timing_routes.py backend/tests/test_timing_etf_templates.py backend/tests/test_timing_learning.py backend/tests/test_timing_panel.py backend/tests/test_timing_training_runtime.py -q", "npm run test --prefix frontend -- --run TimingResearch.test.tsx TimingTrainingEditor.test.tsx App.test.tsx ProductDetail.test.tsx", "npm run build --prefix frontend", "npm run test:e2e --prefix frontend -- timing-research.spec.ts"],
-      "pitfall_ids": ["P07", "P12", "P13", "P14"],
-      "risk_flags": ["lag_must_preserve_trading_axis", "missing_is_unknown_not_false", "next_open_T1_no_same_day_exit", "fixed_signature_no_request_compile", "immutable_market_inputs", "research_binding_not_trade_authority", "etf_adaptation_not_stock_performance", "mature_training_labels_and_embargo", "frozen_policy_no_empty_test_fallback", "fixed_basket_identity_and_survivorship", "nominal_panel_axes_no_positional_mix"],
-      "scope_flags": ["subtree_only", "real_data_required"],
-      "blast_radius": ["indicator formula reuse", "ETF research", "pre-investment evidence"],
+      "out_of_scope_dependencies": [
+        "OTC subscription settlement",
+        "cross-border ETF execution",
+        "stock mother-pool numerical replication",
+        "automatic portfolio weights and live orders",
+        "full historical revision PIT certification"
+      ],
+      "related_tests": [
+        "backend/tests/test_timing_data.py",
+        "backend/tests/test_timing_research_numeric.py",
+        "backend/tests/test_timing_graph.py",
+        "backend/tests/test_timing_repository.py",
+        "backend/tests/test_timing_service.py",
+        "backend/tests/test_timing_routes.py",
+        "backend/tests/test_timing_etf_templates.py",
+        "backend/tests/test_timing_learning.py",
+        "backend/tests/test_timing_panel.py",
+        "backend/tests/test_timing_training_runtime.py",
+        "frontend/src/pages/TimingResearch.test.tsx",
+        "frontend/e2e/timing-research.spec.ts"
+      ],
+      "related_configs": [
+        "AGENTS.md",
+        "frontend/package.json",
+        "frontend/playwright.config.ts",
+        "locales/navigation.json",
+        "backend/scripts/benchmark_timing_research.py"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_timing_data.py backend/tests/test_timing_research_numeric.py backend/tests/test_timing_graph.py backend/tests/test_timing_repository.py backend/tests/test_timing_service.py backend/tests/test_timing_routes.py backend/tests/test_timing_etf_templates.py backend/tests/test_timing_learning.py backend/tests/test_timing_panel.py backend/tests/test_timing_training_runtime.py -q",
+        "npm run test --prefix frontend -- --run TimingResearch.test.tsx TimingTrainingEditor.test.tsx App.test.tsx ProductDetail.test.tsx",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- timing-research.spec.ts"
+      ],
+      "pitfall_ids": [
+        "P07",
+        "P12",
+        "P13",
+        "P14"
+      ],
+      "risk_flags": [
+        "lag_must_preserve_trading_axis",
+        "missing_is_unknown_not_false",
+        "next_open_T1_no_same_day_exit",
+        "fixed_signature_no_request_compile",
+        "immutable_market_inputs",
+        "research_binding_not_trade_authority",
+        "etf_adaptation_not_stock_performance",
+        "mature_training_labels_and_embargo",
+        "frozen_policy_no_empty_test_fallback",
+        "fixed_basket_identity_and_survivorship",
+        "nominal_panel_axes_no_positional_mix"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "real_data_required"
+      ],
+      "blast_radius": [
+        "indicator formula reuse",
+        "ETF research",
+        "pre-investment evidence"
+      ],
       "edit_risk": "high",
       "routing_confidence": "high",
       "grounding": {
         "fact_status": "grounded",
-        "evidence": ["backend/timing_research/service.py", "backend/tests/test_timing_service.py", "backend/tests/test_timing_routes.py", "frontend/src/pages/TimingResearch.test.tsx", "frontend/e2e/timing-research.spec.ts"],
+        "evidence": [
+          "backend/timing_research/service.py",
+          "backend/tests/test_timing_service.py",
+          "backend/tests/test_timing_routes.py",
+          "frontend/src/pages/TimingResearch.test.tsx",
+          "frontend/e2e/timing-research.spec.ts"
+        ],
         "unsampled_paths": []
       }
     },
@@ -201,25 +538,126 @@
       "path": "backend/data_storage.py",
       "kind": "data_and_config",
       "purpose": "Connects compatible checkouts to one identity- and mount-validated data directory without project ownership. Supports offline attach-existing plans without data copy, preserves local data separately, and retains verified first-relocation transactions. APIs share a data-root use lease while keeping local link-change leases; download and JSON writer locks remain on the shared physical data. Accepts unchanged legacy identity/configuration and refuses unknown formats, incomplete copies or missing disks without fallback.",
-      "module_tags": ["storage", "disk", "migration", "data", "local-only"],
-      "entry_files": ["backend/data_storage.py", "backend/storage_migration.py", "backend/services/storage_routes.py", "scripts/manage_data_storage.py", "start_services.sh", "docs/data_storage_design.md", "frontend/src/services/dataStorage.ts", "frontend/src/components/data-sources/DataStoragePanel.tsx"],
-      "key_symbols": ["StorageManager", "StorageMigration", "storage_identity", "validate_target", "data_lease", "probe_existing", "save_attachment", "guard_path", "storage_lifespan", "DataStoragePanel"],
+      "module_tags": [
+        "storage",
+        "disk",
+        "migration",
+        "data",
+        "local-only"
+      ],
+      "entry_files": [
+        "backend/data_storage.py",
+        "backend/storage_migration.py",
+        "backend/services/storage_routes.py",
+        "scripts/manage_data_storage.py",
+        "start_services.sh",
+        "docs/data_storage_design.md",
+        "frontend/src/services/dataStorage.ts",
+        "frontend/src/components/data-sources/DataStoragePanel.tsx"
+      ],
+      "key_symbols": [
+        "StorageManager",
+        "StorageMigration",
+        "storage_identity",
+        "validate_target",
+        "data_lease",
+        "probe_existing",
+        "save_attachment",
+        "guard_path",
+        "storage_lifespan",
+        "DataStoragePanel"
+      ],
       "child_modules": [],
-      "first_read_files": ["docs/data_storage_design.md", "backend/data_storage.py", "backend/storage_migration.py", "backend/services/storage_routes.py"],
-      "then_check_files": ["scripts/manage_data_storage.py", "start_services.sh", "backend/app.py", "backend/data_sources/store.py", "backend/data_sources/runtime.py", "backend/data_sources/batches.py", "backend/services/refresh_runtime.py", "backend/custom_indicators/repository.py", "backend/market_data.py", "T01_get_data.py", "frontend/src/services/dataStorage.ts", "frontend/src/components/data-sources/DataStoragePanel.tsx", "frontend/src/pages/DataManagement.tsx"],
-      "upstream_dependencies": ["data_ingestion_config", "backend_data_source_etl", "market_data_snapshot_lifecycle"],
-      "downstream_dependencies": ["frontend_data_source_center", "backend_api_shell"],
-      "out_of_scope_dependencies": ["automatic disk formatting", "second cross-disk relocation", "real external disk migration without user-selected target"],
-      "related_tests": ["backend/tests/test_data_storage.py", "frontend/src/components/data-sources/DataStoragePanel.test.tsx", "frontend/src/pages/DataManagement.test.tsx", "frontend/e2e/data-storage.spec.ts"],
-      "related_configs": [".gitignore", "AGENTS.md"],
-      "risk_flags": ["missing_disk_must_not_recreate_mount_or_fallback", "offline_migration_excludes_api_and_download_workers", "copy_is_not_space_reclamation", "first_relocation_only", "private_credentials_require_posix_permissions", "shared_directory_includes_credentials_and_research", "all_instances_must_support_shared_lease", "attachment_backups_are_not_verified_migration_copies"],
+      "first_read_files": [
+        "docs/data_storage_design.md",
+        "backend/data_storage.py",
+        "backend/storage_migration.py",
+        "backend/services/storage_routes.py"
+      ],
+      "then_check_files": [
+        "scripts/manage_data_storage.py",
+        "start_services.sh",
+        "backend/app.py",
+        "backend/data_sources/store.py",
+        "backend/data_sources/runtime.py",
+        "backend/data_sources/batches.py",
+        "backend/services/refresh_runtime.py",
+        "backend/custom_indicators/repository.py",
+        "backend/market_data.py",
+        "T01_get_data.py",
+        "frontend/src/services/dataStorage.ts",
+        "frontend/src/components/data-sources/DataStoragePanel.tsx",
+        "frontend/src/pages/DataManagement.tsx"
+      ],
+      "upstream_dependencies": [
+        "data_ingestion_config",
+        "backend_data_source_etl",
+        "market_data_snapshot_lifecycle"
+      ],
+      "downstream_dependencies": [
+        "frontend_data_source_center",
+        "backend_api_shell"
+      ],
+      "out_of_scope_dependencies": [
+        "automatic disk formatting",
+        "second cross-disk relocation",
+        "real external disk migration without user-selected target"
+      ],
+      "related_tests": [
+        "backend/tests/test_data_storage.py",
+        "frontend/src/components/data-sources/DataStoragePanel.test.tsx",
+        "frontend/src/pages/DataManagement.test.tsx",
+        "frontend/e2e/data-storage.spec.ts"
+      ],
+      "related_configs": [
+        ".gitignore",
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "missing_disk_must_not_recreate_mount_or_fallback",
+        "offline_migration_excludes_api_and_download_workers",
+        "copy_is_not_space_reclamation",
+        "first_relocation_only",
+        "private_credentials_require_posix_permissions",
+        "shared_directory_includes_credentials_and_research",
+        "all_instances_must_support_shared_lease",
+        "attachment_backups_are_not_verified_migration_copies"
+      ],
       "edit_risk": "high",
-      "blast_radius": ["all persisted data and metadata", "download checkpoints and quotas", "snapshot readers", "local disk capacity"],
-      "pitfall_ids": ["P05", "P09", "P11", "P15"],
-      "minimum_regression": ["/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q", "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'", "bash -n start_services.sh"],
+      "blast_radius": [
+        "all persisted data and metadata",
+        "download checkpoints and quotas",
+        "snapshot readers",
+        "local disk capacity"
+      ],
+      "pitfall_ids": [
+        "P05",
+        "P09",
+        "P11",
+        "P15"
+      ],
+      "minimum_regression": [
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_data_storage.py backend/tests/test_market_data.py backend/tests/test_etl_executor.py backend/tests/test_tushare_data_script.py -q",
+        "/bin/sh -c 'cd frontend && npm run test -- --run src/components/data-sources/DataStoragePanel.test.tsx src/pages/DataManagement.test.tsx'",
+        "bash -n start_services.sh"
+      ],
       "routing_confidence": "high",
-      "scope_flags": ["local_only", "offline_switch", "no_implicit_delete"],
-      "grounding": {"fact_status": "grounded", "evidence": ["backend/tests/test_data_storage.py", "frontend/src/components/data-sources/DataStoragePanel.test.tsx", "scripts/manage_data_storage.py", "docs/data_storage_design.md", "docs/qa/data-storage-attach-desktop.png"], "unsampled_paths": []}
+      "scope_flags": [
+        "local_only",
+        "offline_switch",
+        "no_implicit_delete"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/tests/test_data_storage.py",
+          "frontend/src/components/data-sources/DataStoragePanel.test.tsx",
+          "scripts/manage_data_storage.py",
+          "docs/data_storage_design.md",
+          "docs/qa/data-storage-attach-desktop.png"
+        ],
+        "unsampled_paths": []
+      }
     },
     {
       "id": "factor_research_center",
@@ -426,7 +864,19 @@
         "docs/project_audit_fixes_acceptance.md",
         "docs/project_audit_fixes_design.md",
         "docs/project_code_logic_audit_2026-09-10.md",
-        "docs/submission_fixes_acceptance_2026-09-11.md"
+        "docs/submission_fixes_acceptance_2026-09-11.md",
+        "docs/frontend-design-change-notes.md",
+        "docs/images/frontend-design-20260912/home-en-1251.png",
+        "docs/images/frontend-design-20260912/product-quadrant-tooltip.png",
+        "docs/images/frontend-design-20260912/indicator-tablet.png",
+        "docs/images/frontend-design-20260912/report-desktop.png",
+        "docs/images/frontend-design-20260912/report-mobile.png",
+        "docs/images/frontend-design-20260912/disclosure-unavailable-mobile.png",
+        "saa-taa-recheck-2026-09-12.md",
+        "saa-taa-recheck-round3-2026-09-12.md",
+        "saa-taa-recheck-round4-2026-09-12.md",
+        "saa-taa-recheck-round5-2026-09-13.md",
+        "saa-taa-review-2026-09-12.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -463,7 +913,7 @@
         "fact_status": "grounded",
         "evidence": [
           "README.md",
-      "docs/requirements.md",
+          "docs/requirements.md",
           "docs/custom_indicator_design.md",
           "docs/weight_reuse_task_plan.md"
         ],
@@ -604,7 +1054,7 @@
       "name": "Portfolio math, fitting, optimization, calendar, and backtest core",
       "path": "backend/backtest_engine.py",
       "kind": "backend_domain_core",
-      "purpose": "Core portfolio calculations: ETF-to-class NAV fitting, rolling correlation, efficient frontier exploration, risk-budget and target-weight solving, rebalance date generation, fitting-window validation, and portfolio backtests. Class NAV computation returns one request-owned ClassNavResult containing numerical outputs, lineage and availability dates; fitting APIs and allocation persistence consume that same result instead of process-global last-load state.",
+      "purpose": "Core portfolio calculations: ETF-to-class NAV fitting, rolling correlation, efficient frontier exploration, risk-budget and target-weight solving, rebalance date generation, fitting-window validation, and portfolio backtests. Class NAV computation returns one request-owned ClassNavResult containing numerical outputs, lineage and availability dates; fitting APIs and allocation persistence consume that same result instead of process-global last-load state. Historical frontier supports a continuous return-target grid with point_count distinct from max_iterations, fixed-signature QP/SQP and explicit failure diagnostics. Successful grid points join the common Pareto and representative candidate set. Duplicate exposures can exhaust the singular-QP endpoint budget; this is a known limitation, not infeasibility proof.",
       "module_tags": [
         "backend",
         "quant",
@@ -627,7 +1077,8 @@
         "backend/business_numeric_numba.py",
         "backend/compute_policy.py",
         "backend/synthetic_series_numba.py",
-        "backend/trading_calendar.py"
+        "backend/trading_calendar.py",
+        "backend/qp_numba.py"
       ],
       "key_symbols": [
         "ClassSpec",
@@ -649,7 +1100,11 @@
         "run_auto_classification",
         "classify",
         "taxonomy_tree",
-        "allocate_block_clusters_kernel"
+        "allocate_block_clusters_kernel",
+        "solve_frontier_grid_kernel",
+        "representative_indices_kernel",
+        "pareto_frontier_indices_kernel",
+        "feasible_qp_kernel"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -657,11 +1112,15 @@
         "backend/strategy.py",
         "backend/fit.py",
         "backend/optimizer.py",
-        "backend/trading_calendar.py"
+        "backend/trading_calendar.py",
+        "backend/frontier_sampling.py"
       ],
       "then_check_files": [
         "backend/backtest_api_spec.json",
-        "backend/backtest_example.json"
+        "backend/backtest_example.json",
+        "docs/research/frontier-grid-round4-design-2026-09-12.md",
+        "docs/research/frontier-restoration-design-2026-09-13.md",
+        "docs/research/frontier-restoration-acceptance-2026-09-13.md"
       ],
       "upstream_dependencies": [
         "data_ingestion_config",
@@ -688,7 +1147,10 @@
         "backend/tests/test_rebalance_window.py",
         "backend/tests/test_backtest_output.py",
         "backend/tests/test_strategy_api.py",
-        "backend/tests/test_analytics_routes.py"
+        "backend/tests/test_analytics_routes.py",
+        "backend/tests/test_frontier_grid.py",
+        "backend/tests/test_strategy_research_dates.py",
+        "backend/tests/test_frontier_sampling.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -711,10 +1173,13 @@
         "P04",
         "P05",
         "P08",
-        "P15"
+        "P15",
+        "P21"
       ],
       "minimum_regression": [
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_window_slice.py backend/tests/test_rebalance_window.py backend/tests/test_backtest_output.py backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q",
+        "python3 -m pytest backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_strategy_research_dates.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_frontier_sampling.py backend/tests/test_frontier_grid.py backend/tests/test_optimizer_strategy_numba.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -853,7 +1318,8 @@
         "post_efficient_frontier",
         "ResearchInputError",
         "require_return_quality",
-        "return_scale_breaks_kernel"
+        "return_scale_breaks_kernel",
+        "FrontierGridRequest"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -878,7 +1344,8 @@
       ],
       "related_tests": [
         "backend/tests/test_analytics_routes.py",
-        "backend/tests/test_research_input_checks.py"
+        "backend/tests/test_research_input_checks.py",
+        "backend/tests/test_frontier_grid.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -897,7 +1364,8 @@
         "asset-class metric tables"
       ],
       "pitfall_ids": [
-        "P05"
+        "P05",
+        "P21"
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_research_input_checks.py -q",
@@ -927,7 +1395,7 @@
       "name": "ETF/public-fund universe, product research, and ETF detail API",
       "path": "backend/app.py",
       "kind": "backend_api_feature",
-      "purpose": "Unified ETF/public-fund search and paged product APIs live in services/instrument_routes.py; ETF analytics, legacy search, detail lookup, and synthetic price-series fallback remain in backend/app.py.",
+      "purpose": "Unified ETF/public-fund search, paged products and product detail APIs live in services/instrument_routes.py. The compatibility ETF list/detail endpoints in backend/app.py delegate to the unified implementation; ETF analytics/trend endpoints delegate to instrument_analytics. Product detail returns real local price points, preserves missing fields as null and returns an empty timeseries when prices are unavailable; it does not generate synthetic prices.",
       "module_tags": [
         "backend",
         "etf",
@@ -944,7 +1412,6 @@
         "backend/services/product_pool_routes.py"
       ],
       "key_symbols": [
-        "_load_etf_info_df",
         "_load_universe",
         "_get_universe",
         "etf_search",
@@ -954,8 +1421,7 @@
         "instrument_search",
         "instrument_products",
         "instrument_product_detail",
-        "_match_product_by_identifier",
-        "_generate_synthetic_price_series",
+        "_match_instrument",
         "etf_product_detail"
       ],
       "child_modules": [
@@ -987,15 +1453,16 @@
         "backend/tests/test_product_pool_routes.py",
         "backend/tests/test_product_pool_service.py",
         "backend/tests/test_product_pools.py",
-        "backend/tests/test_instrument_routes.py"
+        "backend/tests/test_instrument_routes.py",
+        "backend/tests/test_legacy_etf_njit.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
       ],
       "risk_flags": [
         "large_file_feature_area",
-        "synthetic_price_series_fallback",
-        "local_parquet_or_demo_data_dependency",
+        "missing_price_data_must_remain_empty",
+        "local_parquet_data_dependency",
         "today_based_recent_listings"
       ],
       "edit_risk": "medium",
@@ -1014,7 +1481,8 @@
       ],
       "minimum_regression": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/app.py backend/services/instrument_routes.py",
-        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q"
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_instrument_routes.py -q",
+        "env CUSTOM_INDICATOR_DATA_DIR=\"$(mktemp -d)\" python3 -m pytest backend/tests/test_legacy_etf_njit.py -q"
       ],
       "routing_confidence": "medium",
       "scope_flags": [
@@ -1026,7 +1494,8 @@
         "evidence": [
           "backend/app.py",
           "backend/services/instrument_routes.py",
-          "backend/tests/test_instrument_routes.py"
+          "backend/tests/test_instrument_routes.py",
+          "backend/tests/test_legacy_etf_njit.py"
         ],
         "unsampled_paths": []
       }
@@ -1352,7 +1821,7 @@
       "name": "Custom indicator workspace service, persistence, and API",
       "path": "backend/custom_indicators/service.py",
       "kind": "backend_api_feature",
-      "purpose": "Workspace-shared indicator, snapshot-acceleration configuration, and evaluation-plan CRUD; revision history; locked-revision expansion of existing scalar indicators into independent typed formulas; atomic JSON persistence; versioned typed-variable metadata; dependency-driven field availability for batches of up to ten products; structured input and target-data diagnostics; locked metric-presentation metadata; dependency-grouped PyArrow loading; generation/data/window/result caches; shared-memory or mmap transport; persistent warmed workers; fixed-signature fused Numba built-in kernels; vectorized strict-complete scoring; and paged large-result APIs.",
+      "purpose": "Workspace-shared indicator, snapshot-acceleration configuration, and evaluation-plan CRUD; revision history; locked-revision expansion of existing scalar indicators into independent typed formulas; atomic JSON persistence; versioned typed-variable metadata; dependency-driven field availability for batches of up to ten products; structured input and target-data diagnostics; locked metric-presentation metadata; dependency-grouped PyArrow loading; generation/data/window/result caches; shared-memory or mmap transport; persistent warmed workers; fixed-signature fused Numba built-in kernels; vectorized strict-complete scoring; and paged large-result APIs. Parameterized scalar composition freezes locked defaults. Series snapshot buckets include parameter values. Compiler upgrades retain active plans, histories and run results and rebuild artifacts during warmup.",
       "module_tags": [
         "backend",
         "custom-indicators",
@@ -1440,7 +1909,8 @@
         "backend/tests/test_evaluation_run_results.py",
         "backend/tests/test_instrument_routes.py",
         "backend/benchmark_indicator_engine.py",
-        "docs/custom_indicator_design.md"
+        "docs/custom_indicator_design.md",
+        "backend/custom_indicators/series_service.py"
       ],
       "upstream_dependencies": [
         "backend_indicator_runtime",
@@ -1470,7 +1940,9 @@
         "backend/tests/test_numba_finance_indicators.py",
         "backend/tests/test_indicator_parallel_engine.py",
         "backend/tests/test_evaluation_run_results.py",
-        "backend/tests/test_audit_regressions.py"
+        "backend/tests/test_audit_regressions.py",
+        "backend/tests/test_indicator_input_date_context.py",
+        "backend/tests/test_independent_snapshot_execution.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
@@ -1559,7 +2031,7 @@
       "name": "Typed indicator primitives, shared DAG and fixed-signature NJIT runtime",
       "path": "backend/cal_indicators/typed_dsl.py",
       "kind": "backend_indicator_engine",
-      "purpose": "Typed DSL preserves nominal axes, bool masks, semantic dimensions and price-basis checks. Current authoring supports rolling_apply as a deferred complete interval-scalar subgraph: eligibility follows typed dependencies and reviewed primitive interval policies, not an indicator allowlist. A prepared NJIT loop binds aligned slice views, resets path/context state per window and collects numeric scalar results without materializing T×W data or compiling during evaluation. Scope implementation version participates in plan identity. Price/return date axes preserve existing missing observations, and return-only scopes do not discard the first supplied valid return; an extra preceding observation is requested only when level paths or elapsed-period context require it. Existing 2.3 rolling_* and 2.4 rolling_window-plus-reducer formulas retain their frozen contracts; newly derived whole-graph definitions use transform protocol 3.0.0. All five built-in time-series indicators now select revision 3 and use whole-interval scopes; explicit revision 1/2 references retain their original definitions. BOLL shares two scopes across three channels. KDJ uses optional minimum observations of 1 with finite_mask and conditional extrema, while its K/D recursion remains outside the scopes. Optional minimum-count scopes preserve raw date positions and delegate missing-value handling to the body; omitted minimum retains the complete-window contract. Generic execution costs the sum of interval computations, not guaranteed O(T), and is measurably slower than the historical specialized kernels for these small built-ins. Current formulas use mathematical and state primitives; supported historical business function spellings lower into the same current DAG rather than alternate production algorithms. Independent scalar metrics merge structurally identical nodes under matching bindings, versions and windows; selected roots prune unrelated branches. Drawdown dates share the last equally deepest interval and regression projections share a fitted state. Startup/save/explicit preparation owns fixed-signature NJIT compilation; formal evaluation fails closed without Python fallback or new signatures. Ordinary time-series multi-channel contracts remain separate from removed scalar bundles.",
+      "purpose": "Typed DSL preserves nominal axes, bool masks, semantic dimensions and price-basis checks. Current authoring supports rolling_apply as a deferred complete interval-scalar subgraph: eligibility follows typed dependencies and reviewed primitive interval policies, not an indicator allowlist. A prepared NJIT loop binds aligned slice views, resets path/context state per window and collects numeric scalar results without materializing T×W data or compiling during evaluation. Scope implementation version participates in plan identity. Price/return date axes preserve existing missing observations, and return-only scopes do not discard the first supplied valid return; an extra preceding observation is requested only when level paths or elapsed-period context require it. Existing 2.3 rolling_* and 2.4 rolling_window-plus-reducer formulas retain their frozen contracts; newly derived whole-graph definitions use transform protocol 3.0.0. All five built-in time-series indicators now select revision 3 and use whole-interval scopes; explicit revision 1/2 references retain their original definitions. BOLL shares two scopes across three channels. KDJ uses optional minimum observations of 1 with finite_mask and conditional extrema, while its K/D recursion remains outside the scopes. Optional minimum-count scopes preserve raw date positions and delegate missing-value handling to the body; omitted minimum retains the complete-window contract. Generic execution costs the sum of interval computations, not guaranteed O(T), and is measurably slower than the historical specialized kernels for these small built-ins. Current formulas use mathematical and state primitives; supported historical business function spellings lower into the same current DAG rather than alternate production algorithms. Independent scalar metrics merge structurally identical nodes under matching bindings, versions and windows; selected roots prune unrelated branches. Drawdown dates share the last equally deepest interval and regression projections share a fitted state. Startup/save/explicit preparation owns fixed-signature NJIT compilation; formal evaluation fails closed without Python fallback or new signatures. Ordinary time-series multi-channel contracts remain separate from removed scalar bundles. Opened calculation parameters are supported for both result kinds; an opened position must be a configuration input of the operator signature. Runtime values travel in a per-batch parameter vector (risk-free scalars included) so one prewarmed fused plan serves every value; only the slot layout enters the batch plan id. Registry 2.4.1 declares the new constant-input restrictions; DSL 2.4 also accepts frozen registry 2.4.0. Historical scalar input contracts delegate to the same kernels. Repeated formula roots require occurrence-aware subset selection. Probability bounds are explicitly open and independent of step.",
       "module_tags": [
         "backend",
         "indicators",
@@ -1581,6 +2053,7 @@
       "entry_files": [
         "backend/cal_indicators/typed_types.py",
         "backend/cal_indicators/typed_operators.py",
+        "backend/cal_indicators/parameter_policy.py",
         "backend/cal_indicators/operator_lowering.py",
         "backend/cal_indicators/typed_latex.py",
         "backend/cal_indicators/typed_numeric_backend.py",
@@ -1595,13 +2068,16 @@
         "backend/cal_indicators/primitive_access.py",
         "backend/cal_indicators/regression_state.py",
         "backend/cal_indicators/rolling_scope.py",
-        "backend/computation_graph/causal_series.py"
+        "backend/computation_graph/causal_series.py",
+        "backend/cal_indicators/shared_batch_graph.py"
       ],
       "key_symbols": [
         "ValueType",
         "TypedDslError",
         "SUPPORTED_SEMANTIC_DIMENSIONS",
         "get_typed_operator_registry",
+        "configuration_arguments",
+        "contract_policy",
         "expand_operator",
         "render_python_expression_latex",
         "operator_display_latex_template",
@@ -1620,7 +2096,10 @@
         "variable_catalog",
         "typed_product_meta",
         "compose_expression",
-        "infer_expression"
+        "infer_expression",
+        "configuration_violations",
+        "batch_parameter_names",
+        "batch_parameter_vector"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -1668,7 +2147,10 @@
         "docs/rolling_interval_graph_acceptance.md",
         "docs/rolling_interval_graph_design.md",
         "docs/rolling_window_operator_split_acceptance.md",
-        "docs/rolling_window_operator_split_design.md"
+        "docs/rolling_window_operator_split_design.md",
+        "backend/scripts/benchmark_drawdown_outputs.py",
+        "docs/indicator_parameter_contract_design.md",
+        "docs/adjusted_price_indicator_design.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -1698,7 +2180,9 @@
         "backend/tests/test_cross_center_rolling.py",
         "backend/tests/test_rolling_interval_graph.py",
         "backend/tests/test_rolling_interval_safety.py",
-        "backend/tests/test_rolling_interval_service.py"
+        "backend/tests/test_rolling_interval_service.py",
+        "backend/tests/test_independent_drawdown.py",
+        "backend/tests/test_operator_primitives.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -1716,7 +2200,9 @@
         "startup_warmup_must_cover_all_signatures",
         "python_operator_fallback_forbidden",
         "operator_causality_baseline_complete",
-        "logical_rolling_window_must_fuse_without_materialization"
+        "logical_rolling_window_must_fuse_without_materialization",
+        "configuration_inputs_derive_from_signature_contract_only",
+        "runtime_parameter_values_must_not_enter_a_compiled_plan_id"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -1764,7 +2250,8 @@
           "backend/tests/test_custom_indicator_routes.py",
           "backend/tests/test_series_runtime_parameters.py",
           "backend/tests/test_indicator_formula_roundtrip.py",
-          "backend/tests/test_indicator_graph.py"
+          "backend/tests/test_indicator_graph.py",
+          "backend/cal_indicators/parameter_policy.py"
         ],
         "unsampled_paths": []
       }
@@ -1982,7 +2469,38 @@
         "docs/research/regime-save-for-research-design-2026-09-10.md",
         "docs/research/manual-historical-event-intervals-design-2026-09-10.md",
         "docs/research/regime-operator-granularity-design-2026-09-09.md",
-        "docs/research/temporal-capability-event-library-design-2026-09-10.md"
+        "docs/research/temporal-capability-event-library-design-2026-09-10.md",
+        "backend/historical_regimes/indicator_sources.py",
+        "backend/historical_regimes/reliability/prospective.py",
+        "backend/historical_regimes/reliability/source_versions.py",
+        "docs/research/regime-prospective-api-2026-09-15.md",
+        "docs/research/regime-source-continuation-design-2026-09-15.md",
+        "docs/research/scenario-center-horizon-and-market-state-research-2026-09-16.md",
+        "docs/research/scenario-audit-remediation-2026-09-16.md",
+        "docs/research/scenario-audit-followup-2026-09-16.md",
+        "docs/research/regime-completion-design-2026-09-15.md",
+        "backend/scripts/csi300_recognition_search.py",
+        "backend/scripts/csi300_reference_study.py",
+        "backend/tests/benchmark_regime_completion.py",
+        "backend/tests/benchmark_regime_reliability.py",
+        "backend/tests/regime_completion_app.py",
+        "docs/research/Market Regime Detection Framework.md",
+        "docs/research/assets/csi300-market-trend-reference-v1.png",
+        "docs/research/csi300-reference-recognition-study-2026-09-15.md",
+        "docs/research/regime-completion-api-2026-09-15.md",
+        "docs/research/regime-completion-backend-acceptance-2026-09-15.md",
+        "docs/research/regime-completion-final-audit-2026-09-15.md",
+        "docs/research/regime-prospective-acceptance-2026-09-15.md",
+        "docs/research/regime-reference-confidence-api-2026-09-14.md",
+        "docs/research/regime-reference-confidence-backend-acceptance-2026-09-14.md",
+        "docs/research/regime-reference-confidence-design-2026-09-14.md",
+        "docs/research/regime-reference-confidence-final-audit-2026-09-14.md",
+        "docs/research/regime-source-continuation-acceptance-2026-09-15.md",
+        "docs/research/scenario-center-dev-comparison-audit-2026-09-16.md",
+        "docs/research/scenario-center-market-state-integration-final-2026-09-16.md",
+        "docs/research/scenario-regime-research-best-practices-and-center-optimization-2026-09-15.md",
+        "docs/research/scenario-regime-state-evidence-acceptance-2026-09-15.md",
+        "docs/research/scenario-center-submission-2026-09-17.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -2028,7 +2546,21 @@
         "backend/tests/test_regime_research_versions.py",
         "backend/tests/test_manual_historical_events.py",
         "backend/tests/test_regime_event_library.py",
-        "backend/tests/test_regime_temporal_capability.py"
+        "backend/tests/test_regime_temporal_capability.py",
+        "backend/tests/test_scenario_audit_remediation.py",
+        "backend/tests/test_recommended_prospective_workflow.py",
+        "backend/tests/test_regime_completion_bootstrap.py",
+        "backend/tests/test_regime_completion_quality.py",
+        "backend/tests/test_regime_reliability_consumer.py",
+        "backend/tests/test_csi300_reference_recognition.py",
+        "backend/tests/test_regime_completion_audit.py",
+        "backend/tests/test_regime_completion_stability.py",
+        "backend/tests/test_regime_prospective.py",
+        "backend/tests/test_regime_prospective_integration.py",
+        "backend/tests/test_regime_reliability_contracts.py",
+        "backend/tests/test_regime_reliability_math.py",
+        "backend/tests/test_regime_reliability_service.py",
+        "backend/tests/test_regime_source_continuation.py"
       ],
       "related_configs": [
         "backend/requirements.txt",
@@ -2091,7 +2623,10 @@
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_regime_product_sources.py -q'",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_merrill_clock.py -q",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_regime_research_versions.py -q",
-        "python3 -m pytest backend/tests/test_manual_historical_events.py backend/tests/test_regime_event_library.py backend/tests/test_regime_temporal_capability.py -q"
+        "python3 -m pytest backend/tests/test_manual_historical_events.py backend/tests/test_regime_event_library.py backend/tests/test_regime_temporal_capability.py -q",
+        "python3 -m pytest backend/tests/test_scenario_audit_remediation.py backend/tests/test_recommended_prospective_workflow.py -q",
+        "python3 -m pytest backend/tests/test_regime_completion_quality.py backend/tests/test_regime_completion_bootstrap.py backend/tests/test_regime_reliability_consumer.py -q",
+        "python3 -m pytest backend/tests/test_csi300_reference_recognition.py backend/tests/test_regime_completion_audit.py backend/tests/test_regime_completion_stability.py backend/tests/test_regime_prospective.py backend/tests/test_regime_prospective_integration.py backend/tests/test_regime_reliability_contracts.py backend/tests/test_regime_reliability_math.py backend/tests/test_regime_reliability_service.py backend/tests/test_regime_source_continuation.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -2144,7 +2679,7 @@
       "name": "Historical regime graph workbench, data lab, and scenario UI",
       "path": "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "Separates primitives, expandable composites and coupled kernels in the resource library. Add-and-expand and explicit expansion in canvas/guided editors create one undoable draft edit, preserve existing layout and reject stale replies; undo/redo is available in all authoring modes. State-code parameters display user-defined labels and retain integer payloads. Recommended step templates do not auto-migrate saved definitions. Lets researchers build typed historical-regime graphs through an Indicator-Studio-like same-page library, definition and preview layout with lossless guided forms or expandable canvases, open tools in non-resizing drawers, inspect frozen complete final results separately from node debugging, compare experiments, publish immutable versions, and reuse eligible versions in scenario simulation and portfolio workflows. Trend results show the identification index and filter separately from the replaceable evaluation series, with raw-risk and pre-merge phase evidence. The main scenario-center entry opens the studio directly; its library separates real-time and retrospective templates and retains the old directory for historical versions and migration; loading a retrospective graph selects retrospective mode after the catalog loads. Peak/trough evidence has an independent identification-index plot, retained extrema and complete-phase boundaries. Legacy peak/trough forms expose four independent windows and sideways controls while displaying inherited legacy values; evidence distinguishes original waves from merged sideways boundaries, width, ER and wave count. Three authoring modes share one definition: canvas, guided typed connections and full-graph formula source. Pending formula edits block running/saving/mode switching; explicit apply or restore is required, stale async responses cannot overwrite newer drafts, and original node positions survive formula apply. Resource classification uses the existing registry; CalculationSteps and SeriesOutputFields are shared with Indicator Center, whose storage and computation semantics remain unchanged. Guided configuration summarizes dependencies of the selected output and opens one selected calculation step in a drawer; output configuration supports an enum main channel and optional numeric channels. Numeric charts use frozen channel metadata and preserve missing values. Execution mode, cutoff and data controls belong to preview. Switching scenario-center tabs retains drafts; asynchronous template and saved-definition loads cannot overwrite newer selections or edits. Server-authored mathematical LaTeX is rendered with KaTeX in all three modes; preview follows the selected output and hides outdated or unapplied drafts, with dependency equations and parameters available on demand. Canvas and guided node drawers can preview a main node and search/select up to seven numeric comparison outputs from other branches before a final output exists; selected curves appear automatically, with same-axis, right-axis and synchronized subplot layouts. Node previews have separate transient job state, mode and cutoff, stale-result and cancellation handling, full paginated chart history and a recent-row table. Node charts offer a display-only first-visible-observation-equals-one switch. Slider and inside zoom select the exact category base; backend-normalized values and percentage changes preserve raw tables and zoom bounds. Late responses are ignored and nonpositive or missing bases are rejected. Node charts optionally load transitive upstream numeric outputs from the same preview with full pagination. Each overlay selects a shared left axis, shared right axis or independent subplot; all panels share date-based zoom and tooltips. Sparse calendars retain original observations and missing values. Numeric overlays normalize against the same visible date using the warmed backend endpoint; missing bases remain explicit errors. Raw comparison tables remain available. Scenario help tips render in a fixed body portal to escape drawer overflow, clamp to the viewport and flip below the trigger when necessary. Hover and keyboard access are retained; Escape dismisses the hint before the drawer, and container scrolling removes detached hints. The shared-left-axis overlay is labeled 同图同轴. Scenario source editors share single-binding controls across canvas and guided forms. Uploads support file preview, column mapping, confirmation and saved-version selection; cancelled or failed uploads preserve the old binding. Stored product-bound indicator source definitions retain their separate version and fund/ETF target choices as a compatibility contract. Index/macro/upload/indicator identity fields are read-only; replacing a source clears old identity and provenance. Indicator Center implementation remains unchanged. The node library uses one dropdown and text search, exposes Indicator Center calculations as a distinct category, and hides manual-entry and product-bound indicator creation. Native multi-output indicator nodes connect explicit upstream inputs without a second product picker. Existing inline data is read-only; the manual editor was removed. Binary arithmetic preview errors offer one user-triggered, undoable insertion of an explicit common-date alignment node followed by preview; structured server diagnostics remain visible. Unavailable adjusted source fields show their reason and cannot be selected. One ETF picker switches between market prices and downloaded adjusted NAV, rebinding field-specific files within the same frozen generation; field editing waits for catalog metadata and older generations require explicit product reselection. Adjusted NAV and market-price labels no longer imply retrospective-only use; help text explains announcement dates and the QFQ cutoff anchor. Preview settings show asynchronous run failures and progress beside Run, support source-node navigation, and honor the catalog template default mode. Save Scenario combines definition saving, plan preparation and research activation into one user action. Technical version/run/publication tools remain under collapsed advanced management. Product research chooses named algorithm versions, refreshes available scenarios and preserves selected immutable references when deduplicating results.",
+      "purpose": "Separates primitives, expandable composites and coupled kernels in the resource library. Add-and-expand and explicit expansion in canvas/guided editors create one undoable draft edit, preserve existing layout and reject stale replies; undo/redo is available in all authoring modes. State-code parameters display user-defined labels and retain integer payloads. Recommended step templates do not auto-migrate saved definitions. Lets researchers build typed historical-regime graphs through an Indicator-Studio-like same-page library, definition and preview layout with lossless guided forms or expandable canvases, open tools in non-resizing drawers, inspect frozen complete final results separately from node debugging, compare experiments, publish immutable versions, and reuse eligible versions in scenario simulation and portfolio workflows. Trend results show the identification index and filter separately from the replaceable evaluation series, with raw-risk and pre-merge phase evidence. The main scenario-center entry opens the studio directly; its library separates real-time and retrospective templates and retains the old directory for historical versions and migration; loading a retrospective graph selects retrospective mode after the catalog loads. Peak/trough evidence has an independent identification-index plot, retained extrema and complete-phase boundaries. Legacy peak/trough forms expose four independent windows and sideways controls while displaying inherited legacy values; evidence distinguishes original waves from merged sideways boundaries, width, ER and wave count. Three authoring modes share one definition: canvas, guided typed connections and full-graph formula source. Pending formula edits block running/saving/mode switching; explicit apply or restore is required, stale async responses cannot overwrite newer drafts, and original node positions survive formula apply. Resource classification uses the existing registry; CalculationSteps and SeriesOutputFields are shared with Indicator Center, whose storage and computation semantics remain unchanged. Guided configuration summarizes dependencies of the selected output and opens one selected calculation step in a drawer; output configuration supports an enum main channel and optional numeric channels. Numeric charts use frozen channel metadata and preserve missing values. Execution mode, cutoff and data controls belong to preview. Switching scenario-center tabs retains drafts; asynchronous template and saved-definition loads cannot overwrite newer selections or edits. Server-authored mathematical LaTeX is rendered with KaTeX in all three modes; preview follows the selected output and hides outdated or unapplied drafts, with dependency equations and parameters available on demand. Canvas and guided node drawers can preview a main node and search/select up to seven numeric comparison outputs from other branches before a final output exists; selected curves appear automatically, with same-axis, right-axis and synchronized subplot layouts. Node previews have separate transient job state, mode and cutoff, stale-result and cancellation handling, full paginated chart history and a recent-row table. Node charts offer a display-only first-visible-observation-equals-one switch. Slider and inside zoom select the exact category base; backend-normalized values and percentage changes preserve raw tables and zoom bounds. Late responses are ignored and nonpositive or missing bases are rejected. Node charts optionally load transitive upstream numeric outputs from the same preview with full pagination. Each overlay selects a shared left axis, shared right axis or independent subplot; all panels share date-based zoom and tooltips. Sparse calendars retain original observations and missing values. Numeric overlays normalize against the same visible date using the warmed backend endpoint; missing bases remain explicit errors. Raw comparison tables remain available. Scenario help tips render in a fixed body portal to escape drawer overflow, clamp to the viewport and flip below the trigger when necessary. Hover and keyboard access are retained; Escape dismisses the hint before the drawer, and container scrolling removes detached hints. The shared-left-axis overlay is labeled 同图同轴. Scenario source editors share single-binding controls across canvas and guided forms. Uploads support file preview, column mapping, confirmation and saved-version selection; cancelled or failed uploads preserve the old binding. Stored product-bound indicator source definitions retain their separate version and fund/ETF target choices as a compatibility contract. Index/macro/upload/indicator identity fields are read-only; replacing a source clears old identity and provenance. Indicator Center implementation remains unchanged. The node library uses one dropdown and text search, exposes Indicator Center calculations as a distinct category, and hides manual-entry and product-bound indicator creation. Native multi-output indicator nodes connect explicit upstream inputs without a second product picker. Existing inline data is read-only; the manual editor was removed. Binary arithmetic preview errors offer one user-triggered, undoable insertion of an explicit common-date alignment node followed by preview; structured server diagnostics remain visible. Unavailable adjusted source fields show their reason and cannot be selected. One ETF picker switches between market prices and downloaded adjusted NAV, rebinding field-specific files within the same frozen generation; field editing waits for catalog metadata and older generations require explicit product reselection. Adjusted NAV and market-price labels no longer imply retrospective-only use; help text explains announcement dates and the QFQ cutoff anchor. Preview settings show asynchronous run failures and progress beside Run, support source-node navigation, and honor the catalog template default mode. Save Scenario combines definition saving, plan preparation and research activation into one user action. Technical version/run/publication tools remain under collapsed advanced management. Product research chooses named algorithm versions, refreshes available scenarios and preserves selected immutable references when deduplicating results. Workspaces below 1280px switch library, definition and preview with tabs; metadata forms use two columns from 640px and three from 1536px. The shared graph canvas retains readable React Flow attribution at 12px. Manual event editing and immutable event studies belong to the Global Event Library workspace. Historical recognition filters manual templates, saved definitions and nodes; old exact manual links redirect to the event workspace. Ordinary regime overviews ignore inapplicable empty manual summaries; real manual results still require consistent event summaries.",
       "module_tags": [
         "frontend",
         "historical-regime",
@@ -2241,7 +2776,19 @@
         "docs/research/regime-indicator-nodes-2026-09-08.md",
         "docs/research/regime-product-sources-2026-09-08.md",
         "frontend/src/pages/regime-workbench/RegimeSavePanel.tsx",
-        "frontend/src/services/regimeResearchVersions.ts"
+        "frontend/src/services/regimeResearchVersions.ts",
+        "frontend/src/components/computation-graph/GraphCanvas.tsx",
+        "frontend/src/pages/ScenarioCenters.tsx",
+        "frontend/src/pages/regime-workbench/GlobalEventLibrary.tsx",
+        "frontend/src/pages/regime-workbench/regimeResultAdapter.ts",
+        "frontend/src/pages/MarketStateResearchCenter.tsx",
+        "frontend/src/services/regimeDiagnostics.ts",
+        "backend/tests/scenario_remediation_app.py",
+        "docs/research/scenario-audit-followup-2026-09-16.md",
+        "docs/research/regime-completion-frontend-acceptance-2026-09-15.md",
+        "docs/research/regime-prospective-frontend-acceptance-2026-09-15.md",
+        "docs/research/regime-reference-confidence-frontend-acceptance-2026-09-14.md",
+        "frontend/src/services/regimeProspective.ts"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -2290,11 +2837,24 @@
         "frontend/src/services/regimeResearchVersions.test.ts",
         "frontend/e2e/regime-manual-events.spec.ts",
         "frontend/e2e/regime-temporal-event-library.spec.ts",
-        "frontend/src/test/eventLibraryFixtures.ts"
+        "frontend/src/test/eventLibraryFixtures.ts",
+        "frontend/src/services/eventLibrary.test.ts",
+        "frontend/e2e/scenario-remediation.spec.ts",
+        "frontend/e2e/csi300-reference-study.spec.ts",
+        "frontend/e2e/market-state-research-center.spec.ts",
+        "frontend/e2e/regime-full-stack.spec.ts",
+        "frontend/e2e/regime-prospective.spec.ts",
+        "frontend/e2e/regime-reference-confidence.spec.ts",
+        "frontend/src/services/regimeProspective.test.ts",
+        "frontend/src/services/regimeReliability.test.ts"
       ],
       "related_configs": [
         "frontend/package.json",
-        "frontend/vite.config.ts"
+        "frontend/vite.config.ts",
+        "frontend/e2e/scenario-remediation.config.ts",
+        "frontend/e2e/regime-offline.config.ts",
+        "frontend/e2e/regime-prospective.config.ts",
+        "frontend/playwright.regime-integration.config.ts"
       ],
       "risk_flags": [
         "realtime_disables_retrospective_node_selection_and_blocks_existing_graph_runs",
@@ -2345,7 +2905,10 @@
         "npm run test --prefix frontend -- --run RegimeSourceForms.test.tsx RegimeResearchSeriesPicker.test.tsx",
         "npm run test --prefix frontend -- --run RegimeResourceLibrary.test.tsx",
         "npm run test --prefix frontend -- --run RegimeSavePanel.test.tsx regimeResearchVersions.test.ts ProductDetail.test.tsx",
-        "npm run test:e2e --prefix frontend -- regime-manual-events.spec.ts regime-temporal-event-library.spec.ts --workers=1"
+        "npm run test:e2e --prefix frontend -- regime-manual-events.spec.ts regime-temporal-event-library.spec.ts --workers=1",
+        "npm run test --prefix frontend -- --run eventLibrary.test.ts RegimeQualityPanel.test.tsx HistoricalRegimeWorkbench.test.tsx ScenarioAlgorithmCenter.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=e2e/scenario-remediation.config.ts",
+        "npm run test --prefix frontend -- --run regimeProspective.test.ts regimeReliability.test.ts"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -2437,7 +3000,8 @@
         "frontend/public/homepage/images",
         "docs/homepage-design.md",
         "docs/homepage/screenshots",
-        "design-qa.md"
+        "design-qa.md",
+        "frontend/src/components/ui.tsx"
       ],
       "key_symbols": [
         "App",
@@ -2469,7 +3033,15 @@
         "frontend/src/components/PitProvenance.tsx",
         "frontend/src/pages/PitSnapshots.tsx",
         "frontend/src/services/pit.ts",
-        "frontend/src/services/pitOverride.ts"
+        "frontend/src/services/pitOverride.ts",
+        "docs/frontend-design-guidelines.md",
+        "scripts/check_frontend_design.mjs",
+        "frontend/src/components/ui.tsx",
+        "frontend/src/components/Mascot.tsx",
+        "frontend/src/components/computation-graph/nodeAppearance.ts",
+        "frontend/src/pages/LanguageTerminology.tsx",
+        "frontend/src/components/localization/LanguageColumnsEditor.tsx",
+        "frontend/src/components/localization/TranslationMatrix.tsx"
       ],
       "upstream_dependencies": [
         "backend_api_shell"
@@ -2488,7 +3060,9 @@
         "frontend/src/pages/PitSnapshots.test.tsx",
         "frontend/src/homepage/ProcessHome.test.tsx",
         "frontend/src/homepage/history.test.tsx",
-        "frontend/e2e/homepage.spec.ts"
+        "frontend/e2e/homepage.spec.ts",
+        "frontend/e2e/contrast.spec.ts",
+        "frontend/e2e/helpers/contrast.ts"
       ],
       "related_configs": [
         "frontend/vite.config.ts",
@@ -2517,7 +3091,9 @@
       ],
       "minimum_regression": [
         "npm run test --prefix frontend -- --run",
-        "npm run build --prefix frontend"
+        "npm run build --prefix frontend",
+        "npm run design:check --prefix frontend",
+        "npm run i18n:check --prefix frontend"
       ],
       "routing_confidence": "medium",
       "scope_flags": [
@@ -2543,7 +3119,7 @@
       "name": "Investment lifecycle, actual portfolio, allocation, and accounting prototype",
       "path": "frontend/src/app/processRegistry.ts",
       "kind": "frontend_workflow_framework",
-      "purpose": "Defines the product research through feedback lifecycle, actual-portfolio registry, effective-dated external-account and portfolio-manager relationships, cross-portfolio fair allocation, source-account reconciliation, fund-accounting Booking, double-entry controls, dual-entity statements, static-demo boundaries, and legacy route redirects.",
+      "purpose": "Defines the product research through feedback lifecycle, actual-portfolio registry, effective-dated external-account and portfolio-manager relationships, cross-portfolio fair allocation, source-account reconciliation, fund-accounting Booking, double-entry controls, dual-entity statements, static-demo boundaries, and legacy route redirects. Stage child pages use compact context above the workspace, one persistent navigation sidebar from 1280px, and a keyboard-dismissible navigation panel below that width. Financial statements prioritize the table before expandable accounting explanations, preserve visible demo warnings and keep row labels fixed during horizontal scrolling.",
       "module_tags": [
         "frontend",
         "investment-lifecycle",
@@ -2688,7 +3264,7 @@
       "name": "Custom indicator studio and API client",
       "path": "frontend/src/pages/IndicatorStudio.tsx",
       "kind": "frontend_feature_page",
-      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, a reusable focus-aware remote-search dropdown, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a shared DAG with named numeric scalar results or time-series channels plus accessible result tables, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types.",
+      "purpose": "Workspace indicator library with a three-level variable/pure-math-operator/existing-indicator catalog, locked-revision formula expansion, typed and availability-aware guided composition, availability checks across every selected preview product up to ten targets, a reusable focus-aware remote-search dropdown, advanced restricted DSL/LaTeX source editing, server-canonical mathematical KaTeX preview, a shared DAG with named numeric scalar results or time-series channels plus accessible result tables, real-product preview, versioned CRUD, and mobile/desktop research workflow. Predefined calculations and arbitrary formula fragments are not discoverable catalog types. Workspaces below 1280px switch library, definition and preview with tabs; metadata forms use two columns from 640px and three from 1536px. The shared graph canvas retains readable React Flow attribution at 12px.",
       "module_tags": [
         "frontend",
         "custom-indicators",
@@ -2731,7 +3307,14 @@
         "frontend/src/App.tsx",
         "frontend/src/components/Header.tsx",
         "docs/custom_indicator_design.md",
-        "frontend/src/components/indicator-graph/indicatorGraphPresentation.ts"
+        "frontend/src/components/indicator-graph/indicatorGraphPresentation.ts",
+        "frontend/src/components/computation-graph/GraphCanvas.tsx",
+        "frontend/src/components/indicator-graph/IndicatorNodeInspector.tsx",
+        "frontend/src/components/indicator-outputs/ScalarOutputEditor.tsx",
+        "frontend/src/components/indicator-parameters/IndicatorParameterEditor.tsx",
+        "frontend/src/components/indicator-parameters/IndicatorParameterInputs.tsx",
+        "frontend/src/services/indicatorGraph.ts",
+        "frontend/src/services/indicatorParameters.ts"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -2749,7 +3332,9 @@
         "frontend/e2e/indicator-primitives.spec.ts",
         "frontend/src/App.test.tsx",
         "frontend/e2e/indicator-canvas.spec.ts",
-        "frontend/e2e/indicator-formula-roundtrip.spec.ts"
+        "frontend/e2e/indicator-formula-roundtrip.spec.ts",
+        "frontend/src/components/indicator-graph/indicatorGraphPresentation.test.tsx",
+        "frontend/src/components/indicator-parameters/IndicatorParameters.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -2822,6 +3407,9 @@
       ],
       "entry_files": [
         "frontend/src/components/metrics/MetricDisplay.tsx",
+        "frontend/src/components/metrics/ResearchIndicatorPanel.tsx",
+        "frontend/src/components/metrics/MetricPeriodTable.tsx",
+        "frontend/src/components/product-research/ProductTrendChart.tsx",
         "frontend/src/components/metrics/useMetricDisplayPreference.ts",
         "frontend/src/utils/indicatorDiagnostics.ts",
         "frontend/src/utils/indicatorPeriods.ts",
@@ -2860,7 +3448,9 @@
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
         "frontend/src/pages/EvaluationPlan.tsx",
-        "frontend/src/pages/HoldingDiagnosis.tsx"
+        "frontend/src/pages/HoldingDiagnosis.tsx",
+        "docs/product_trend_chart_design.md",
+        "docs/product_research_indicator_table_design.md"
       ],
       "upstream_dependencies": [
         "backend_custom_indicator_service"
@@ -2883,7 +3473,8 @@
         "frontend/src/pages/ProductDetail.test.tsx",
         "frontend/src/pages/ProductCompare.test.tsx",
         "frontend/src/pages/EvaluationPlan.test.tsx",
-        "frontend/src/pages/HoldingDiagnosis.test.tsx"
+        "frontend/src/pages/HoldingDiagnosis.test.tsx",
+        "frontend/src/components/product-research/ProductTrendChart.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -3058,7 +3649,8 @@
         "frontend/src/pages/ProductDetail.test.tsx",
         "frontend/src/pages/ProductCompare.test.tsx",
         "frontend/e2e/product-scenario.spec.ts",
-        "frontend/e2e/metric-display.spec.ts"
+        "frontend/e2e/metric-display.spec.ts",
+        "frontend/e2e/product-research.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -3235,7 +3827,7 @@
       "name": "Manual ETF/public-fund construction, class allocation, strategy, and backtest UI",
       "path": "frontend/src/pages/ClassAllocation.tsx",
       "kind": "frontend_feature_pages",
-      "purpose": "Manual ETF/public-fund-to-class construction, class allocation and strategy workflows, plus real-product evaluation plans that lock custom-indicator revisions and run strict-complete weighted rankings. Shared allocationJourney preserves browser input drafts and saved references by explicit universe/allocation/baseline scope, carries the product-pool-to-SAA-to-TAA navigation context and invalidates results after input or research-clock changes; a browser draft is not saved calculation or PIT evidence. AllocationMetricsReview gives ManualConstruction and ClassAllocation an opt-in core-metric view with annual detail and research charts expanded on demand, while the base comparison table keeps its existing full-row default. Active journey metadata is isolated per browser tab in sessionStorage, initially seeded from the latest local record; cross-tab storage events cannot replace navigation. Explicit universe changes clear old range metadata, and pool return links restore the named immutable universe rather than another selection draft.",
+      "purpose": "Manual ETF/public-fund-to-class construction, allocation strategies and real-product evaluation with locked indicator revisions. allocationJourney keeps per-tab input drafts and immutable references, invalidating dependent results after source or clock changes; browser drafts are not calculation or PIT evidence. Independent strategic-universe and mandate references can resume pure forward SAA without a product domain; product changes preserve independent strategy definitions but invalidate dependent mapping/baseline references. StageLayout preserves the product-first flow and permits strategic-first SAA while missing maps block TAA links; navigation is not backend eligibility. AllocationMetricsReview retains opt-in core metrics and annual detail; the original comparison table keeps full rows. Session isolation and exact saved-universe restoration remain enforced.",
       "module_tags": [
         "frontend",
         "allocation",
@@ -3257,7 +3849,8 @@
         "frontend/src/pages/Placeholder.tsx",
         "frontend/src/components/HorizontalMetricComparison.tsx",
         "frontend/src/utils/performance.ts",
-        "frontend/src/app/allocationJourney.ts"
+        "frontend/src/app/allocationJourney.ts",
+        "frontend/src/components/frontier-grid/FrontierGrid.tsx"
       ],
       "key_symbols": [
         "ManualConstruction",
@@ -3294,7 +3887,8 @@
         "docs/research/allocation-journey-optimization-acceptance-2026-09-11.md",
         "docs/research/allocation-journey-optimization-design-2026-09-11.md",
         "docs/research/journey-saa-implementation-2026-09-11.md",
-        "docs/research/journey-upstream-implementation-2026-09-11.md"
+        "docs/research/journey-upstream-implementation-2026-09-11.md",
+        "frontend/src/components/frontier-grid/FrontierGrid.tsx"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -3319,11 +3913,14 @@
         "frontend/src/layouts/StageLayout.test.tsx",
         "frontend/src/pages/ProductPoolSelection.test.tsx",
         "frontend/src/pages/ProductPools.test.tsx",
-        "frontend/src/components/HorizontalMetricComparison.test.tsx"
+        "frontend/src/components/HorizontalMetricComparison.test.tsx",
+        "frontend/src/components/frontier-grid/FrontierGrid.test.tsx",
+        "frontend/e2e/strategic-allocation.spec.ts"
       ],
       "related_configs": [
         "frontend/package.json",
-        "frontend/vite.config.ts"
+        "frontend/vite.config.ts",
+        "frontend/playwright.strategic.config.ts"
       ],
       "risk_flags": [
         "frontend_backend_payload_coupling",
@@ -3348,7 +3945,8 @@
         "P04",
         "P07",
         "P08",
-        "P17"
+        "P17",
+        "P21"
       ],
       "minimum_regression": [
         "/bin/sh -c 'cd frontend && npm run test -- --run src/components/HorizontalMetricComparison.test.tsx src/app/allocationJourney.test.tsx src/layouts/StageLayout.test.tsx src/pages/ManualConstruction.test.tsx src/pages/ProductPoolSelection.test.tsx src/pages/ProductPools.test.tsx src/pages/ClassAllocation.test.tsx src/pages/PortfolioConstruction.test.tsx'",
@@ -3803,6 +4401,7 @@
         "backend/tests/test_etl_executor.py",
         "backend/tests/etl_lifecycle_fixture.py",
         "backend/tests/test_etl_dataset_tasks.py",
+        "backend/tests/test_price_adjustment.py",
         "backend/tests/test_etl_graph.py",
         "backend/tests/test_etl_workflows.py",
         "backend/tests/test_multi_source_resolution.py",
@@ -4095,6 +4694,184 @@
           "skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py",
           "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
           "skills/ai-hermes-self-evolve/scripts/route_task.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "strategic_allocation_policy",
+      "name": "Investment objectives, CMA and immutable SAA policies",
+      "path": "backend/strategic_allocation",
+      "kind": "full_stack_research_module",
+      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The product-first path and historical frontier remain. cma_application supplies frozen effective moments from manual, Black-Litterman or explicit probability-scenario assumptions to one policy search, funding diagnosis and TAA risk checks. Posterior mean uncertainty is not asset-return risk. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Saved research does not certify current implementation eligibility.",
+      "module_tags": [
+        "SAA",
+        "CMA",
+        "policy",
+        "asset-allocation"
+      ],
+      "entry_files": [
+        "backend/strategic_allocation",
+        "backend/services/strategic_allocation_routes.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
+        "frontend/src/pages/StrategicAllocationWorkspace.tsx",
+        "frontend/src/components/strategic-allocation",
+        "frontend/src/services/strategicAllocation.ts",
+        "frontend/src/components/investment-mandate",
+        "frontend/src/components/strategic-scope",
+        "frontend/src/services/strategicScope.ts",
+        "frontend/src/services/institutionalContext.ts",
+        "frontend/src/services/cmaModelTypes.ts"
+      ],
+      "key_symbols": [
+        "StrategicAllocationService",
+        "build_router",
+        "funding_paths_kernel",
+        "funding_capital_successes_kernel",
+        "funding_payment_kernel"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "docs/research/top-down-allocation-design-2026-09-12.md",
+        "backend/strategic_allocation/contracts.py",
+        "backend/strategic_allocation/service.py",
+        "frontend/src/pages/StrategicAllocationWorkspace.tsx",
+        "docs/research/investment-mandate-research-design-2026-09-13.md",
+        "backend/strategic_allocation/planning.py",
+        "backend/strategic_allocation/goal_kernels.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx"
+      ],
+      "then_check_files": [
+        "docs/research/saa-taa-review-response-2026-09-12.md",
+        "docs/research/top-down-allocation-acceptance-2026-09-12.md",
+        "docs/research/top-down-allocation-design-2026-09-12.md",
+        "docs/research/top-down-allocation-research-2026-09-12.md",
+        "backend/strategic_allocation/kernels.py",
+        "backend/strategic_allocation/policy_gate.py",
+        "backend/services/strategic_allocation_routes.py",
+        "backend/tests/strategic_allocation_app.py",
+        "docs/research/saa-taa-submission-2026-09-13.md",
+        "docs/research/screenshots/saa-taa-20260913",
+        "docs/research/investment-mandate-optimization-2026-09-13.md",
+        "docs/research/investment-mandate-acceptance-2026-09-13.md",
+        "investment-mandate-review-2026-09-13.md",
+        "investment-mandate-fix-recheck-2026-09-13.md",
+        "saa-frontier-history-comparison-2026-09-13.md",
+        "saa-taa-business-intent-recheck-2026-09-13.md",
+        "docs/research/screenshots/mandate-fix-20260913",
+        "docs/research/pr14-merge-review-2026-09-13.md",
+        "local-dev-diff-review-2026-09-13.md",
+        "local-dev-fix-recheck-2026-09-14.md",
+        "docs/research/screenshots/pr14-merge-review",
+        "backend/strategic_allocation/cma_application.py",
+        "backend/strategic_allocation/cma_models.py",
+        "backend/strategic_allocation/sources.py",
+        "backend/strategic_allocation/institution.py",
+        "backend/strategic_allocation/universes.py",
+        "docs/research/bettersaataa-01-04-research-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-requirements-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-design-2026-09-14.md",
+        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md",
+        "docs/research/bettersaataa-review-findings-2026-09-14.md",
+        "docs/research/bettersaataa-M1-report-2026-09-14.md",
+        "docs/research/bettersaataa-M2-kernels-report-2026-09-14.md",
+        "docs/research/bettersaataa-M2-integration-report-2026-09-14.md",
+        "docs/research/bettersaataa-M3-report-2026-09-14.md"
+      ],
+      "upstream_dependencies": [
+        "backend_quant_core",
+        "frontend_allocation_workflows",
+        "backend_data_storage"
+      ],
+      "downstream_dependencies": [
+        "tactical_allocation_workbench"
+      ],
+      "out_of_scope_dependencies": [
+        "live trading",
+        "formal historical PIT certification",
+        "investment validity of assumed CMA"
+      ],
+      "related_tests": [
+        "backend/tests/test_strategic_allocation.py",
+        "frontend/src/pages/StrategicAllocationWorkspace.test.tsx",
+        "frontend/src/test/strategicAllocationFixtures.ts",
+        "frontend/e2e/strategic-allocation.spec.ts",
+        "backend/tests/test_investment_mandate.py",
+        "backend/tests/test_mandate_diagnostic_integrity.py",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.test.tsx",
+        "frontend/src/services/strategicAllocation.test.ts",
+        "frontend/src/test/mandateFixtures.ts",
+        "backend/tests/test_bettersaataa_m1.py",
+        "backend/tests/test_bettersaataa_scope_journey.py",
+        "backend/tests/test_bettersaataa_final_audit.py",
+        "backend/tests/test_cma_models.py",
+        "backend/tests/test_cma_model_integration.py",
+        "backend/tests/test_strategic_risk_budget.py",
+        "frontend/src/pages/StrategicAllocationModels.test.tsx",
+        "frontend/src/services/strategicAllocationModels.test.ts",
+        "frontend/src/components/strategic-allocation/CmaModelEditor.test.tsx",
+        "frontend/src/components/strategic-allocation/PolicyCandidatesM2.test.tsx",
+        "frontend/src/components/strategic-allocation/RiskBudgetEditor.test.tsx",
+        "frontend/src/components/strategic-scope/StrategicScopeWorkspace.test.tsx",
+        "frontend/src/components/investment-mandate/InstitutionalFields.test.tsx",
+        "frontend/src/app/allocationJourney.m1.test.tsx",
+        "frontend/src/layouts/StageLayout.test.tsx",
+        "frontend/e2e/better-saataa-01-04.spec.ts",
+        "frontend/e2e/bettersaataa-m1.spec.ts"
+      ],
+      "related_configs": [
+        "frontend/playwright.strategic.config.ts",
+        "frontend/playwright.better-saataa.config.ts",
+        "frontend/playwright.m1.config.ts",
+        "backend/tests/bettersaataa_m1_app.py"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest backend/tests/test_strategic_allocation.py backend/tests/test_tactical_walk_forward.py backend/tests/test_frontier_grid.py -q",
+        "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx ClassAllocation.test.tsx FrontierGrid.test.tsx",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
+        "npm run test --prefix frontend -- --run InvestmentObjectivesWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx strategicAllocation.test.ts",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_bettersaataa_m1.py backend/tests/test_bettersaataa_scope_journey.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_risk_budget.py backend/tests/test_bettersaataa_final_audit.py -q",
+        "npm run test --prefix frontend -- --run StrategicAllocationModels.test.tsx CmaModelEditor.test.tsx PolicyCandidatesM2.test.tsx StrategicScopeWorkspace.test.tsx InstitutionalFields.test.tsx StageLayout.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1",
+        "npm run test:e2e --prefix frontend -- --config=playwright.m1.config.ts --workers=1"
+      ],
+      "pitfall_ids": [
+        "P04",
+        "P05",
+        "P07",
+        "P08",
+        "P22",
+        "P23"
+      ],
+      "risk_flags": [
+        "immutable_cma_and_policy",
+        "forward_risk_is_distinct_from_historical_outcome",
+        "joint_constraints",
+        "fixed_signature_njit"
+      ],
+      "edit_risk": "high",
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "research_only"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/strategic_allocation/service.py",
+          "backend/strategic_allocation/kernels.py",
+          "backend/tests/test_strategic_allocation.py",
+          "frontend/src/pages/StrategicAllocationWorkspace.tsx",
+          "frontend/e2e/strategic-allocation.spec.ts",
+          "backend/strategic_allocation/goal_kernels.py",
+          "backend/tests/test_mandate_diagnostic_integrity.py",
+          "backend/strategic_allocation/cma_application.py",
+          "backend/tests/test_cma_model_integration.py",
+          "backend/tests/test_bettersaataa_m1.py",
+          "backend/tests/test_bettersaataa_final_audit.py",
+          "frontend/e2e/better-saataa-01-04.spec.ts"
         ],
         "unsampled_paths": []
       }
