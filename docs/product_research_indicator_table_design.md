@@ -244,4 +244,8 @@ Promise.all(periodColumns.map((period) => evaluateCustomIndicators({
 - 端到端：`metric-display.spec.ts`、`contrast.spec.ts`。
 - 设计检查：`npm run design:check --prefix frontend` 无回归；`node scripts/check_i18n.mjs` errors 为空。
 - 浏览器验收：1440 / 1024 / 768 / 320 四个宽度，加载/空/错误/禁用四态，键盘可达表格与展开行。
+- 列内指标窗口不一致时，单元格必须展示各自起止日期和观察值数，不能仅以“口径随指标不同”替代可追溯日期。浏览器回归使用区间列的添加/移除控件及指标名称入口，不再定位已删除的卡片控件。
+- 不可计算诊断仅在状态、警告、输入需求和数据日期说明完全相同时跨列合并；不同区间的样本不足或输入缺失原因分别展示，并标明对应区间。
+
+2026-09-17 PR #24 集成复核：前端 147 文件 / 1148 用例通过，构建、TypeScript、design:check、i18n 检查通过。更新后的 `metric-display.spec.ts` 在 320/768/1024/1440 四档通过，覆盖多区间添加/移除、最后一列禁用删除、定义抽屉、页面横向溢出和文字对比度；使用离线 API 夹具，不代表生产数据验收。列内窗口不同、跨区间诊断不同的展示由组件回归覆盖。
 - 路由记忆：`python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --diff-range <range>`。

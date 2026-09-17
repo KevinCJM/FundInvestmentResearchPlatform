@@ -118,6 +118,12 @@ export default function MetricPeriodTable({
           const unavailable = periods
             .map((period, index) => ({ period, result: rowResults[index] }))
             .filter((item) => item.result && item.result.value === null)
+          const reasonGroups = new Map<string, typeof unavailable>()
+          for (const item of unavailable) {
+            const { status, warnings, input_requirements, target_data, data_context } = item.result!
+            const key = JSON.stringify({ status, warnings, input_requirements, target_data, data_context })
+            reasonGroups.set(key, [...(reasonGroups.get(key) ?? []), item])
+          }
           const cellPadding = startsGroup ? 'pt-5 pb-3' : 'py-3'
           return <Fragment key={indicator.id}>
             <tr className="group hover:bg-slate-50">
@@ -138,7 +144,10 @@ export default function MetricPeriodTable({
                   {result
                     ? <MetricValue value={result.value} presentation={resolveMetricPresentation(result, indicator)} className="text-base font-semibold" />
                     : <span className="text-sm text-slate-600">{loading ? '计算中' : '—'}</span>}
-                  {result && !shared && <span className="mt-0.5 block text-xs text-slate-600">{result.window.observation_count} 个观察值</span>}
+                  {result && !shared && <span className="mt-0.5 block text-xs text-slate-600">
+                    {result.window.start_date ?? '—'} 至 {result.window.end_date ?? '—'}
+                    <span className="block">{result.window.observation_count} 个观察值</span>
+                  </span>}
                   {result && result.status !== 'ok' && <span className="mt-1 flex justify-end"><MetricStatus status={result.status} warnings={result.warnings} /></span>}
                 </td>
               })}
@@ -159,13 +168,13 @@ export default function MetricPeriodTable({
             </tr>}
             {unavailable.length > 0 && <tr>
               <td colSpan={columnCount} className="border-b border-slate-100 px-5 pb-4">
-                {periods.length > 1 && <p className="text-xs text-slate-600">
-                  {unavailable.map((item) => indicatorPeriodLabel(item.period)).join('、')} 无法计算：
-                </p>}
-                {/* The blocking input is a property of the product, not of the
-                    window, so the reason repeats identically per column. Print
-                    it once and name the affected columns above it. */}
-                <MetricUnavailableReason result={unavailable[0].result!} compact />
+                {[...reasonGroups].map(([key, items]) => <div key={key}>
+                  {periods.length > 1 && <p className="text-xs text-slate-600">
+                    {items.map((item) => indicatorPeriodLabel(item.period)).join('、')} 无法计算：
+                  </p>}
+                  {/* Only identical diagnostics may be shared across periods. */}
+                  <MetricUnavailableReason result={items[0].result!} compact />
+                </div>)}
               </td>
             </tr>}
           </Fragment>

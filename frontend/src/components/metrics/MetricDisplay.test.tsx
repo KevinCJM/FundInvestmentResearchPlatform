@@ -167,6 +167,18 @@ describe('统一指标展示协议', () => {
       onRemove={() => undefined} onDefinition={() => undefined}
     />)
     expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('120 个观察值')
+
+    const other = { ...metric, id: 'metric-2', name: '另一指标', presentation: presentation({ name: '另一指标' }) }
+    const shorter = { ...result('1Y', 2, 120), indicator_id: other.id,
+      presentation: other.presentation, window: { ...result('1Y', 2, 120).window, start_date: '2025-07-01' } }
+    rerender(<MetricPeriodTable
+      indicators={[metric, other]} periods={['1Y']} results={[result('1Y', 1.5, 250), shorter]}
+      loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
+      onRemove={() => undefined} onDefinition={() => undefined}
+    />)
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('口径随指标不同')
+    expect(screen.getByRole('row', { name: /测试指标.*1.50/ })).toHaveTextContent('2025-01-06 至 2026-01-06')
+    expect(screen.getByRole('row', { name: /另一指标.*2.00/ })).toHaveTextContent('2025-07-01 至 2026-01-06')
   })
 
   it('指标表按列给出状态，并只讲一次不可计算原因', () => {
@@ -191,7 +203,7 @@ describe('统一指标展示协议', () => {
       presentation: metric.presentation!,
     } as EvaluationResult)
 
-    render(<MetricPeriodTable
+    const { rerender } = render(<MetricPeriodTable
       indicators={[metric]} periods={['1Y', 'ALL']} results={[blockedResult('1Y'), blockedResult('ALL')]}
       loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
       onRemove={() => undefined} onDefinition={() => undefined}
@@ -201,6 +213,18 @@ describe('统一指标展示协议', () => {
     expect(screen.getByText('近 1 年、成立以来 无法计算：')).toBeInTheDocument()
     // 缺的是产品字段而不是窗口，两列的理由一模一样，只讲一次。
     expect(screen.getAllByText(/该指标需要 1 个输入字段/)).toHaveLength(1)
+    rerender(<MetricPeriodTable
+      indicators={[metric]} periods={['1Y', 'ALL']} results={[
+        { ...blockedResult('1Y'), input_requirements: undefined, warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '至少需要 20 个观察值' }] },
+        blockedResult('ALL'),
+      ]}
+      loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
+      onRemove={() => undefined} onDefinition={() => undefined}
+    />)
+    expect(screen.getByText('至少需要 20 个观察值')).toBeInTheDocument()
+    expect(screen.getByText(/该指标需要 1 个输入字段/)).toBeInTheDocument()
+    expect(screen.getByText('近 1 年 无法计算：')).toBeInTheDocument()
+    expect(screen.getByText('成立以来 无法计算：')).toBeInTheDocument()
   })
 
   it('不可计算原因默认展示中文字段，技术代码只在详情中出现', () => {
