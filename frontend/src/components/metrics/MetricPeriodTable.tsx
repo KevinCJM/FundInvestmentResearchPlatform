@@ -20,17 +20,19 @@ interface Props {
   onDefinition: (indicator: IndicatorDefinition) => void
 }
 
+/** Plain reading direction: "better" is what the reader is actually asking. */
 const DIRECTION_LABELS: Record<string, string> = {
-  higher_better: '高优先',
-  lower_better: '低优先',
-  neutral: '仅展示',
+  higher_better: '越高越好',
+  lower_better: '越低越好',
+  neutral: '仅展示，不判断优劣',
 }
 
 const categoryOf = (indicator: IndicatorDefinition) =>
   indicator.presentation?.category_label ?? indicator.category_label ?? '未分类'
 
+/** Keyed on exactly what the column prints, so "shared" never hides a difference. */
 const windowKey = (result?: EvaluationResult) => result
-  ? `${result.window.start_date ?? ''}|${result.window.end_date ?? ''}|${result.window.observation_count}`
+  ? `${result.window.start_date ?? ''}|${result.window.end_date ?? ''}`
   : ''
 
 const parameterSchemaOf = (indicator: IndicatorDefinition, result?: EvaluationResult) =>
@@ -42,10 +44,10 @@ const parameterSchemaOf = (indicator: IndicatorDefinition, result?: EvaluationRe
 /**
  * Rows are indicators, columns are periods.
  *
- * The window and the observation count belong to the column, not to the cell:
- * one product on one period gives every indicator the same window unless an
- * indicator's own input coverage cuts it short. So the header carries them
- * while the column agrees, and the cells carry them only once it does not.
+ * The window belongs to the column, not to the cell: one product on one period
+ * gives every indicator the same window unless an indicator's own input
+ * coverage cuts it short. So the header carries it while the column agrees,
+ * and the cells carry it only once it does not.
  */
 export default function MetricPeriodTable({
   indicators, periods, results, loading, parametersFor, onParametersChange, onRemove, onDefinition,
@@ -98,7 +100,6 @@ export default function MetricPeriodTable({
               {shared
                 ? <span className="mt-1 block text-xs font-normal text-slate-600">
                   {shared.window.start_date ?? '—'} 至 {shared.window.end_date ?? '—'}
-                  <span className="block">{shared.window.observation_count} 个观察值</span>
                 </span>
                 : <span className="mt-1 block text-xs font-normal text-slate-600">口径随指标不同</span>}
             </th>
@@ -129,12 +130,13 @@ export default function MetricPeriodTable({
             <tr className="group hover:bg-slate-50">
               <th scope="row" className={`sticky left-0 z-10 border-b border-slate-100 bg-white pl-5 pr-3 text-left align-top font-normal group-hover:bg-slate-50 ${cellPadding}`}>
                 {startsGroup && <span className="mb-1 block text-xs font-medium text-slate-600">{category}</span>}
-                <button type="button" onClick={() => onDefinition(indicator)} className="rounded text-left text-sm font-semibold text-slate-900 hover:text-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
+                <button type="button" onClick={() => onDefinition(indicator)}
+                  title={`${presentation.source === 'built_in' ? '内置' : '工作区'} v${presentation.revision}`}
+                  className="rounded text-left text-sm font-semibold text-slate-900 hover:text-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
                   {presentation.name}
                 </button>
                 <span className="mt-0.5 block text-xs text-slate-600">
-                  {presentation.source === 'built_in' ? '内置' : '工作区'} v{presentation.revision}
-                  {' · '}{DIRECTION_LABELS[presentation.direction] ?? DIRECTION_LABELS.neutral}
+                  {DIRECTION_LABELS[presentation.direction] ?? DIRECTION_LABELS.neutral}
                 </span>
               </th>
               {periods.map((period, index) => {
@@ -142,11 +144,10 @@ export default function MetricPeriodTable({
                 const shared = sharedWindow.get(period)
                 return <td key={period} className={`border-b border-slate-100 px-3 text-right align-top text-slate-900 ${cellPadding}`}>
                   {result
-                    ? <MetricValue value={result.value} presentation={resolveMetricPresentation(result, indicator)} className="text-base font-semibold" />
+                    ? <MetricValue value={result.value} presentation={resolveMetricPresentation(result, indicator)} className="text-sm" />
                     : <span className="text-sm text-slate-600">{loading ? '计算中' : '—'}</span>}
                   {result && !shared && <span className="mt-0.5 block text-xs text-slate-600">
                     {result.window.start_date ?? '—'} 至 {result.window.end_date ?? '—'}
-                    <span className="block">{result.window.observation_count} 个观察值</span>
                   </span>}
                   {result && result.status !== 'ok' && <span className="mt-1 flex justify-end"><MetricStatus status={result.status} warnings={result.warnings} /></span>}
                 </td>

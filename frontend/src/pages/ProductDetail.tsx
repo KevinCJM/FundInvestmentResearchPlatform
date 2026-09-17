@@ -19,6 +19,8 @@ import {
   type HistoricalRegimeRun,
 } from '../services/historicalRegimes';
 import { MetricDefinitionDrawer } from '../components/metrics/MetricDisplay';
+import Mascot from '../components/Mascot';
+import { Button, EmptyState } from '../components/ui';
 import ResearchIndicatorPanel, { MAX_RESEARCH_PERIODS } from '../components/metrics/ResearchIndicatorPanel';
 import {
   useMetricDisplayPreference,
@@ -394,7 +396,7 @@ export default function ProductDetail() {
   const returnNavigation = readReturnNavigationState(location.state);
   const productKind = searchParams.get('kind') === 'fund' ? 'fund' : 'etf';
   const [detail, setDetail] = useState<ProductDetailResponse | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<ProductAnalysisResponse | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -491,6 +493,7 @@ export default function ProductDetail() {
     if (!productId) {
       setError('未指定产品标识');
       setDetail(null);
+      setLoading(false);
       return;
     }
     const controller = new AbortController();
@@ -519,7 +522,9 @@ export default function ProductDetail() {
         setError('产品详情加载失败，请稍后重试。');
         setDetail(null);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
     fetchDetail();
@@ -1420,13 +1425,14 @@ export default function ProductDetail() {
     <div className="mx-auto min-w-0 max-w-7xl space-y-5 px-3 py-5 sm:px-6 sm:py-8">
       <button type="button" onClick={() => returnToOrigin(navigate, location, `/product-research/products?kind=${productKind}`)} className="inline-flex min-h-10 items-center rounded-lg px-1 text-sm font-medium text-slate-600 hover:text-accent-700">← {returnNavigation?.returnLabel ?? '返回上一页'}</button>
       {loading ? (
-        <div className="flex h-96 items-center justify-center text-slate-600">
+        <div role="status" aria-live="polite" className="flex h-96 flex-col items-center justify-center gap-3 text-slate-600">
+          <Mascot state="working" />
           <div className="flex items-center gap-3">
-            <svg className="h-5 w-5 animate-spin text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg className="h-5 w-5 animate-spin text-accent-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle className="opacity-25" cx="12" cy="12" r="10" />
               <path className="opacity-75" d="M4 12a8 8 0 018-8" />
             </svg>
-            加载产品详情...
+            正在获取产品详情…
           </div>
         </div>
       ) : error ? (
@@ -1438,7 +1444,12 @@ export default function ProductDetail() {
           </div>
         </div>
       ) : !detail ? (
-        <div className="rounded-xl bg-white p-12 text-center text-slate-600 shadow-sm">暂无可展示的产品详情。</div>
+        <EmptyState
+          mascot="noresult"
+          title="没有查到这个产品的详情"
+          hint="接口已返回，但该产品在当前口径下没有可展示的资料。可能是标识不属于当前产品类型，或该产品尚未纳入数据同步范围。"
+          action={<Button tone="primary" onClick={() => navigate(`/product-research/products?kind=${productKind}`)}>返回产品列表重新选择</Button>}
+        />
       ) : (
         <>
 

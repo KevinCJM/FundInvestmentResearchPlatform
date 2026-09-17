@@ -195,7 +195,10 @@ PLAN_COMPILE_CONTRACT_MARKER = "batch-parameter-vector-1"
 MAX_FORMULA_LENGTH = 1000
 MAX_DAG_NODES = 128
 MAX_DAG_DEPTH = 20
+# Warm-up batch width and evaluation-plan size; the per-request evaluation
+# bound is separate because a research board is a reader's own list.
 MAX_INDICATORS = 10
+MAX_EVALUATION_INDICATORS = 200
 MAX_TARGETS = 50
 MAX_COMBINATIONS = 500
 MAX_PLAN_TARGETS = 50_000
@@ -1345,7 +1348,7 @@ class CustomIndicatorService:
                 "formula_length": MAX_FORMULA_LENGTH,
                 "dag_nodes": MAX_DAG_NODES,
                 "dag_depth": MAX_DAG_DEPTH,
-                "indicators_per_request": MAX_INDICATORS,
+                "indicators_per_request": MAX_EVALUATION_INDICATORS,
                 "targets_per_request": MAX_TARGETS,
                 "combinations_per_request": MAX_COMBINATIONS,
                 "rolling_combinations": MAX_ROLLING_COMBINATIONS,
@@ -2883,10 +2886,10 @@ class CustomIndicatorService:
             return [{**normalized, "id": None, "revision": None, "source": "inline",
                      "parameter_values": normalize_series_parameters(normalized, inline_parameters)}]
         unique_ids = list(dict.fromkeys(indicator_ids))
-        if not unique_ids or len(unique_ids) > MAX_INDICATORS:
+        if not unique_ids or len(unique_ids) > MAX_EVALUATION_INDICATORS:
             raise ValidationError(
                 "INDICATOR_LIMIT_EXCEEDED",
-                f"每次计算需要 1 至 {MAX_INDICATORS} 个指标。",
+                f"每次计算需要 1 至 {MAX_EVALUATION_INDICATORS} 个指标。",
                 field="indicator_ids",
             )
         versions = indicator_versions or {}

@@ -18,22 +18,39 @@ import {
   type ProductPriceSeries,
 } from '../../services/productAnalysis'
 import type { HistoricalRegimeRun } from '../../services/historicalRegimes'
+import Mascot from '../Mascot'
 
-/** Where a selected indicator is drawn. `native` only exists when a matching axis does. */
-type Placement = 'native' | 'right' | 'panel'
+/**
+ * Where one overlay instance is drawn. `native` only exists when a matching axis
+ * does; `panel:<key>` names the instance that owns the subplot, so two instances
+ * asking for the same owner share one grid instead of getting one each.
+ */
+type Placement = string
 
-export const MAX_TREND_OVERLAYS = 6
+const PANEL_PREFIX = 'panel:'
+const panelValue = (instanceKey: string) => `${PANEL_PREFIX}${instanceKey}`
+const panelOwnerOf = (placement: Placement) => (
+  placement.startsWith(PANEL_PREFIX) ? placement.slice(PANEL_PREFIX.length) : null
+)
+
+/** One row of the overlay list. The same indicator may appear more than once. */
+interface OverlayInstance {
+  key: string
+  indicatorId: string
+  parameters: Record<string, number>
+  /** Unset until the user chooses; the default follows the channel contract. */
+  placement?: Placement
+}
+
+let instanceSequence = 0
+const nextInstanceKey = () => `ov${(instanceSequence += 1)}`
 
 const PRICE_SEMANTIC_BY_BASIS: Record<string, string> = {
   raw_kline: 'raw_market_price',
   adjusted_kline: 'adjusted_market_price',
   adjusted_nav: 'adjusted_nav',
 }
-const PLACEMENT_LABELS: Record<Placement, string> = {
-  native: '同轴同图',
-  right: '右轴同图',
-  panel: '独立子图',
-}
+const PLACEMENT_LABELS = { native: '同轴同图', right: '右轴同图', panel: '独立子图' } as const
 
 /** Only hex values already used elsewhere in the app: design:check counts distinct ones. */
 const OVERLAY_COLORS = ['#0ea5e9', '#f97316', '#10b981', '#3b82f6', '#dc2626', '#34d399', '#94a3b8']
@@ -49,6 +66,34 @@ const normalizeDateKey = (value: string) => {
   if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`
   const date = text.slice(0, 10)
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null
+}
+
+/**
+ * Names have to stay distinct: two list rows reading alike are indistinguishable,
+ * and ECharts links legend entries by name, so two series sharing one would
+ * switch on and off together.
+ */
+const ordinalNamer = () => {
+  const seen = new Map<string, number>()
+  return (name: string) => {
+    const count = (seen.get(name) ?? 0) + 1
+    seen.set(name, count)
+    return count === 1 ? name : `${name} #${count}`
+  }
+}
+
+/**
+ * What a set of channels is measured in. Two instances may share one vertical
+ * axis only when this matches: a percentage and a price on one scale would be
+ * two different numbers pretending to be the same one. `null` means the channels
+ * disagree among themselves, so the set cannot host or join a shared axis.
+ */
+const axisIdentity = (channels: TimeSeriesChannelResult[]): string | null => {
+  if (channels.length === 0) return null
+  const identities = new Set(channels.map((item) => (
+    `${item.semantic_dimension ?? ''}|${item.unit}|${item.display_format}`
+  )))
+  return identities.size === 1 ? [...identities][0] : null
 }
 
 const alignedChannelValues = (
@@ -125,17 +170,13 @@ export default function ProductTrendChart({
   const [series, setSeries] = useState<{ key: string; data?: ProductPriceSeries; error?: string } | null>(null)
   /** Kept across requests: a failed basis must not take the switch away with it. */
   const [bases, setBases] = useState<ChartBasisOption[]>([])
-  const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [parameters, setParameters] = useState<Record<string, Record<string, number>>>({})
-  const [placements, setPlacements] = useState<Record<string, Placement>>({})
+  const [instances, setInstances] = useState<OverlayInstance[]>([])
   const [overlay, setOverlay] = useState<{ key: string; results?: TimeSeriesIndicatorResult[]; error?: string } | null>(null)
 
   useEffect(() => {
     setBasis(productKind === 'etf' ? 'raw_kline' : 'adjusted_nav')
     setBases([])
-    setSelectedIds([])
-    setParameters({})
-    setPlacements({})
+    setInstances([])
   }, [productId, productKind])
 
   const seriesKey = JSON.stringify([productId, productKind, basis])
@@ -156,22 +197,31 @@ export default function ProductTrendChart({
     () => indicators.filter((item) => item.result_kind === 'time_series'),
     [indicators],
   )
-  const selected = useMemo(
-    () => selectedIds
-      .map((id) => seriesCatalog.find((item) => item.id === id))
-      .filter((item): item is IndicatorDefinition => Boolean(item)),
-    [seriesCatalog, selectedIds],
+  /** Instances whose indicator is still in the catalog, in list order. */
+  const requested = useMemo(
+    () => instances.flatMap((instance) => {
+      const indicator = seriesCatalog.find((item) => item.id === instance.indicatorId)
+      return indicator ? [{ instance, indicator }] : []
+    }),
+    [seriesCatalog, instances],
+  )
+  const selectedIds = useMemo(
+    () => [...new Set(requested.map((item) => item.indicator.id))],
+    [requested],
   )
 
-  const overlayKey = JSON.stringify(selected.map((item) => [item.id, item.revision, parameters[item.id] ?? null]))
+  const overlayKey = JSON.stringify(requested.map(({ instance, indicator }) => (
+    [instance.key, indicator.id, indicator.revision, instance.parameters]
+  )))
   useEffect(() => {
-    if (selected.length === 0) { setOverlay(null); return undefined }
+    if (requested.length === 0) { setOverlay(null); return undefined }
     let active = true
     evaluateTimeSeriesIndicators({
-      indicator_instances: selected.map((item) => ({
-        indicator_id: item.id,
-        indicator_revision: item.revision,
-        ...(Object.keys(parameters[item.id] ?? {}).length ? { parameters: parameters[item.id] } : {}),
+      indicator_instances: requested.map(({ instance, indicator }) => ({
+        instance_key: instance.key,
+        indicator_id: indicator.id,
+        indicator_revision: indicator.revision,
+        ...(Object.keys(instance.parameters).length ? { parameters: instance.parameters } : {}),
       })),
       target: { kind: productKind, product_id: productId },
       period: 'ALL',
@@ -196,7 +246,7 @@ export default function ProductTrendChart({
     () => (overlay?.key === overlayKey ? overlay.results ?? [] : []),
     [overlay, overlayKey],
   )
-  const overlayLoading = selected.length > 0 && overlay?.key !== overlayKey
+  const overlayLoading = requested.length > 0 && overlay?.key !== overlayKey
 
   /**
    * Which axis a set of channels may legitimately share. Derived from the
@@ -212,16 +262,73 @@ export default function ProductTrendChart({
     return null
   }
 
-  const rows = useMemo(() => selected.map((indicator) => {
-    const result = overlayResults.find((item) => item.indicator_id === indicator.id)
-    const channels = result?.channels ?? []
-    const native = nativeAxisOf(channels)
-    const stored = placements[indicator.id]
-    const place: Placement = stored === 'native' && !native ? 'panel' : stored ?? (native ? 'native' : 'panel')
-    const schema = indicator.parameter_contract_version === '1.0' ? indicator.parameter_schema ?? [] : []
-    return { indicator, result, channels, native, place, schema }
-  }), [selected, overlayResults, placements, priceSemantic, hasVolume])
+  const rows = useMemo(() => {
+    const repeated = new Set(requested
+      .map(({ indicator }) => indicator.id)
+      .filter((id, index, all) => all.indexOf(id) !== index))
+    const nameRow = ordinalNamer()
+    const base = requested.map(({ instance, indicator }) => {
+      // Matched by the instance's own key: one indicator can be on the chart twice.
+      const result = overlayResults.find((item) => item.instance_key === instance.key)
+      const channels = result?.channels ?? []
+      const native = nativeAxisOf(channels)
+      const own = panelValue(instance.key)
+      const stored = instance.placement
+      const place: Placement = stored === 'native' && !native ? own : stored ?? (native ? 'native' : own)
+      const schema = indicator.parameter_contract_version === '1.0' ? indicator.parameter_schema ?? [] : []
+      // Only a repeated indicator carries its parameters in the name; a lone one
+      // keeps reading exactly as before.
+      const values = result?.parameters ?? instance.parameters
+      const suffix = repeated.has(indicator.id) && schema.length > 0
+        ? ` (${schema.map((item) => `${item.label}=${values[item.id] ?? item.default}`).join(' · ')})`
+        : ''
+      return {
+        instance, indicator, result, channels, native, place, schema,
+        axisKey: axisIdentity(channels),
+        repeated: repeated.has(indicator.id),
+        label: nameRow(`${indicator.name}${suffix}`),
+      }
+    })
+    // Merging is one hop deep: only an instance that owns its own subplot can be
+    // joined, so A → B → C chains cannot form and no follower is ever orphaned.
+    const owners = new Set(base
+      .filter((item) => item.place === panelValue(item.instance.key) && item.channels.length > 0)
+      .map((item) => item.instance.key))
+    return base.map((item) => {
+      const owner = panelOwnerOf(item.place)
+      if (owner === null || owner === item.instance.key) return { ...item, group: item.instance.key }
+      const host = base.find((other) => other.instance.key === owner)
+      const shareable = owners.has(owner) && item.axisKey !== null && host?.axisKey === item.axisKey
+      return shareable
+        ? { ...item, group: owner }
+        : { ...item, place: panelValue(item.instance.key), group: item.instance.key }
+    })
+  }, [requested, overlayResults, priceSemantic, hasVolume])
 
+  const rightRows = useMemo(
+    () => rows.filter((row) => row.place === 'right' && row.channels.length > 0),
+    [rows],
+  )
+  /**
+   * The unit the right axis may claim. Sharing it is the user's own choice and
+   * the scales do give way to each other, but a percent label printed over
+   * prices would misread every tick, so a mixed axis stays unlabelled.
+   */
+  const rightChannel = useMemo(
+    () => (rightRows.length > 0 && rightRows.every((row) => row.axisKey !== null && row.axisKey === rightRows[0].axisKey)
+      ? rightRows[0].channels[0]
+      : null),
+    [rightRows],
+  )
+  const mixedRightAxis = rightRows.length > 0 && rightChannel === null
+
+  /** Subplots that another instance may join: same scale, and not merged already. */
+  const panelHosts = useMemo(
+    () => rows.filter((row) => row.group === row.instance.key
+      && row.place.startsWith(PANEL_PREFIX)
+      && row.channels.length > 0),
+    [rows],
+  )
   const regimeMarkAreas = useMemo(() => {
     if (!regimeRun) return []
     const inWindow = dates.filter((date) => (
@@ -250,28 +357,32 @@ export default function ProductTrendChart({
     }
     const priceGrid = addGrid(LAYOUT.price)
     const volumeGrid = hasVolume ? addGrid(LAYOUT.volume) : -1
-    const panelRows = rows.filter((row) => row.place === 'panel' && row.channels.length > 0)
-    const panelGrids = panelRows.map(() => addGrid(LAYOUT.panel))
+    const panelRows = rows.filter((row) => row.place.startsWith(PANEL_PREFIX) && row.channels.length > 0)
+    // One grid per group, not per instance: that is what sharing a subplot means.
+    const panelGroups = [...new Set(panelRows.map((row) => row.group))]
+    const panelGrids = panelGroups.map(() => addGrid(LAYOUT.panel))
 
     const axisFor = (gridIndex: number, options: Record<string, unknown> = {}) => {
       yAxis.push({ gridIndex, scale: true, axisLine: { lineStyle: { color: AXIS_LINE } }, splitLine: { lineStyle: { color: SPLIT_LINE } }, axisLabel: AXIS_LABEL, ...options })
       return yAxis.length - 1
     }
     const priceAxis = axisFor(priceGrid)
-    const rightRows = rows.filter((row) => row.place === 'right' && row.channels.length > 0)
     const rightAxis = rightRows.length > 0
       ? axisFor(priceGrid, {
         position: 'right',
-        name: rightRows[0].channels[0].unit || '',
+        name: rightChannel?.unit || '',
         splitLine: { show: false },
-        axisLabel: { ...AXIS_LABEL, formatter: rightRows[0].channels[0].display_format === 'percent' ? '{value}%' : '{value}' },
+        axisLabel: { ...AXIS_LABEL, formatter: rightChannel?.display_format === 'percent' ? '{value}%' : '{value}' },
       })
       : -1
     const volumeAxis = volumeGrid >= 0 ? axisFor(volumeGrid) : -1
-    const panelAxes = panelRows.map((row, index) => axisFor(panelGrids[index], {
-      name: row.channels[0].unit || '',
-      axisLabel: { ...AXIS_LABEL, formatter: row.channels[0].display_format === 'percent' ? '{value}%' : '{value}' },
-    }))
+    const panelAxes = panelGroups.map((group, index) => {
+      const channel = panelRows.find((row) => row.group === group)!.channels[0]
+      return axisFor(panelGrids[index], {
+        name: channel.unit || '',
+        axisLabel: { ...AXIS_LABEL, formatter: channel.display_format === 'percent' ? '{value}%' : '{value}' },
+      })
+    })
 
     grids.forEach((_, index) => xAxis.push({
       type: 'category',
@@ -283,23 +394,25 @@ export default function ProductTrendChart({
       axisLabel: index === grids.length - 1 ? { ...AXIS_LABEL, showMinLabel: false, showMaxLabel: false } : { show: false },
     }))
 
+    const uniqueName = ordinalNamer()
+
     const markArea = regimeMarkAreas.length > 0
       ? { markArea: { silent: true, label: { show: true, position: 'insideTop', color: '#334155', fontSize: 10 }, data: regimeMarkAreas } }
       : {}
     echartsSeries.push(hasOhlc
       ? {
-        name: '价格', type: 'candlestick',
+        name: uniqueName('价格'), type: 'candlestick',
         data: points.map((point) => [point.open, point.close, point.low, point.high]),
         itemStyle: { color: '#0ea5e9', color0: '#f87171', borderColor: '#0284c7', borderColor0: '#dc2626' },
         ...markArea,
       }
       : {
-        name: '价格', type: 'line', data: points.map((point) => point.close), showSymbol: false,
+        name: uniqueName('价格'), type: 'line', data: points.map((point) => point.close), showSymbol: false,
         lineStyle: { width: 1.6, color: '#0ea5e9' }, ...markArea,
       })
     if (volumeGrid >= 0) {
       echartsSeries.push({
-        name: '成交量', type: 'bar', xAxisIndex: volumeGrid, yAxisIndex: volumeAxis, barWidth: '60%',
+        name: uniqueName('成交量'), type: 'bar', xAxisIndex: volumeGrid, yAxisIndex: volumeAxis, barWidth: '60%',
         data: points.map((point) => ({
           value: point.volume,
           itemStyle: { color: point.open !== null && point.close >= point.open ? '#34d399' : '#94a3b8' },
@@ -309,21 +422,28 @@ export default function ProductTrendChart({
     let color = 0
     for (const row of rows) {
       if (row.channels.length === 0) continue
-      const panelIndex = panelRows.indexOf(row)
-      const gridIndex = row.place === 'panel' ? panelGrids[panelIndex]
+      const panelIndex = panelGroups.indexOf(row.group)
+      const onPanel = row.place.startsWith(PANEL_PREFIX)
+      const gridIndex = onPanel ? panelGrids[panelIndex]
         : row.place === 'native' && row.native === 'volume' ? volumeGrid
         : priceGrid
-      const axisIndex = row.place === 'panel' ? panelAxes[panelIndex]
+      const axisIndex = onPanel ? panelAxes[panelIndex]
         : row.place === 'right' ? rightAxis
         : row.native === 'volume' ? volumeAxis
         : priceAxis
       for (const channel of row.channels) {
+        const stroke = OVERLAY_COLORS[color % OVERLAY_COLORS.length]
         echartsSeries.push({
-          name: row.channels.length > 1 ? `${row.indicator.name} ${channel.label}` : channel.label,
+          name: uniqueName(row.channels.length > 1
+            ? `${row.label} ${channel.label}`
+            : row.repeated ? row.label : channel.label),
           type: 'line', xAxisIndex: gridIndex, yAxisIndex: axisIndex,
           data: alignedChannelValues(channel, row.result, dates),
           smooth: true, showSymbol: false, connectNulls: false,
-          lineStyle: { width: 1.4, color: OVERLAY_COLORS[color % OVERLAY_COLORS.length] },
+          lineStyle: { width: 1.4, color: stroke },
+          // The legend swatch reads from itemStyle: without it the key colour and
+          // the drawn line disagree, which is exactly what tells two curves apart.
+          itemStyle: { color: stroke },
         })
         color += 1
       }
@@ -351,9 +471,40 @@ export default function ProductTrendChart({
       },
       height: top - LAYOUT.gap + LAYOUT.bottom,
     }
-  }, [dates, points, hasOhlc, hasVolume, rows, regimeMarkAreas, windowStart, windowEnd])
+  }, [dates, points, hasOhlc, hasVolume, rows, rightRows, rightChannel, regimeMarkAreas, windowStart, windowEnd])
 
-  const remove = (indicatorId: string) => setSelectedIds((ids) => ids.filter((id) => id !== indicatorId))
+  const remove = (instanceKey: string) => setInstances((current) => (
+    current.filter((item) => item.key !== instanceKey)
+  ))
+
+  /** The selector adds and removes indicators; the list owns how many of each. */
+  const changeSelection = (ids: string[]) => setInstances((current) => [
+    ...current.filter((item) => ids.includes(item.indicatorId)),
+    ...ids
+      .filter((id) => !current.some((item) => item.indicatorId === id))
+      .map((id) => ({ key: nextInstanceKey(), indicatorId: id, parameters: {} })),
+  ])
+
+  /**
+   * A copy lands next to its source and inherits where it is drawn, so the two
+   * curves start out overlaid: comparing parameters is the whole point of asking
+   * for a second one. The placement select then splits them apart if wanted.
+   */
+  const duplicate = (row: { instance: OverlayInstance; place: Placement }) => setInstances((current) => {
+    const index = current.findIndex((item) => item.key === row.instance.key)
+    if (index < 0) return current
+    const copy: OverlayInstance = {
+      key: nextInstanceKey(),
+      indicatorId: row.instance.indicatorId,
+      parameters: { ...row.instance.parameters },
+      placement: row.place,
+    }
+    return [...current.slice(0, index + 1), copy, ...current.slice(index + 1)]
+  })
+
+  const updateInstance = (instanceKey: string, patch: Partial<OverlayInstance>) => setInstances((current) => (
+    current.map((item) => (item.key === instanceKey ? { ...item, ...patch } : item))
+  ))
 
   return <section className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-labelledby="product-trend-chart-title">
     <div className="flex flex-col gap-3 px-4 py-4 sm:px-5">
@@ -362,7 +513,7 @@ export default function ProductTrendChart({
         <p className="text-xs text-slate-600" aria-live="polite">
           {current
             ? payload?.available
-              ? `${payload.label} · ${dates[0] ?? '—'} 至 ${dates[dates.length - 1] ?? '—'} · ${dates.length} 个观察值`
+              ? `${payload.label} · ${dates[0] ?? '—'} 至 ${dates[dates.length - 1] ?? '—'}`
               : payload?.label ?? ''
             : '正在读取走势数据…'}
         </p>
@@ -392,17 +543,30 @@ export default function ProductTrendChart({
 
     <div className="border-t border-slate-100 px-4 py-4 sm:px-5">
       {!current
-        ? <p role="status" className="py-10 text-center text-sm text-slate-600">正在读取走势数据…</p>
+        ? <div role="status" className="flex flex-col items-center gap-3 py-10 text-center">
+          <Mascot state="working" />
+          <p className="text-sm font-semibold text-slate-700">正在读取走势数据…</p>
+          <p className="max-w-lg text-sm leading-6 text-slate-600">按所选价格口径从后端读取真实行情，不在浏览器里换算。</p>
+        </div>
         : current.error
-          ? <p role="alert" className="rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700">{current.error}</p>
+          ? <div role="alert" className="flex flex-col items-center gap-3 py-10 text-center">
+            <Mascot state="error" />
+            <p className="text-sm font-semibold text-slate-800">走势数据没能读出来</p>
+            <p className="max-w-lg rounded-lg bg-rose-50 px-4 py-2 text-sm leading-6 text-rose-700">{current.error}</p>
+          </div>
           : !payload?.available
-            ? <div className="py-10 text-center">
+            ? <div className="flex flex-col items-center gap-3 py-10 text-center">
+              <Mascot state="empty" />
               <p className="text-sm font-semibold text-slate-700">这个口径暂时没有数据</p>
-              <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-600">{payload?.reason ?? '换一个价格口径，或先在数据中心补齐对应数据集。'}</p>
+              <p className="max-w-lg text-sm leading-6 text-slate-600">{payload?.reason ?? '换一个价格口径，或先在数据中心补齐对应数据集。'}</p>
             </div>
             : chart
               ? <ReactECharts option={chart.option} style={{ height: chart.height }} notMerge lazyUpdate />
-              : <p className="py-10 text-center text-sm text-slate-600">暂无可视化数据</p>}
+              : <div className="flex flex-col items-center gap-3 py-10 text-center">
+                <Mascot state="noresult" />
+                <p className="text-sm font-semibold text-slate-700">暂无可视化数据</p>
+                <p className="max-w-lg text-sm leading-6 text-slate-600">这个口径读到了数据，但没有可以画成图的观察值。换一个价格口径或放宽时间范围再试。</p>
+              </div>}
       {payload?.available && basis !== 'adjusted_nav' && (!hasOhlc || !hasVolume) && (
         <p role="status" className="mt-3 rounded-lg bg-amber-50 px-4 py-2 text-xs leading-5 text-amber-800">
           原始数据未完整披露{!hasOhlc ? ' 开高低价' : ''}{!hasVolume ? ' 成交量' : ''}；
@@ -417,14 +581,16 @@ export default function ProductTrendChart({
     <div className="border-t border-slate-100 px-4 py-4 sm:px-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-slate-800">叠加时序指标</h3>
+          <h3 className="text-sm font-semibold text-slate-800">
+            叠加时序指标{rows.length > 0 && <span className="font-normal tabular-nums text-slate-600"> {rows.length} 条</span>}
+          </h3>
           <p className="mt-1 text-xs leading-5 text-slate-600">
-            指标中心里的时序指标都能画到这张图上；{s('indicatorParameters.runtimeHint')}
+            同一个指标可以加多条，用不同参数对比。{s('indicatorParameters.runtimeHint')}
           </p>
         </div>
         <div className="shrink-0">
-          <MetricSelector indicators={seriesCatalog} selectedIds={selectedIds} onChange={setSelectedIds}
-            maxSelected={MAX_TREND_OVERLAYS} label="选择时序指标" />
+          <MetricSelector indicators={seriesCatalog} selectedIds={selectedIds} onChange={changeSelection}
+            label="选择时序指标" />
         </div>
       </div>
       {seriesCatalog.length === 0
@@ -433,45 +599,70 @@ export default function ProductTrendChart({
         </p>
         : rows.length === 0
           ? <p className="mt-4 text-sm leading-6 text-slate-600">还没有叠加指标。点击“选择时序指标”，把滚动波动率、均线、KDJ 等画到上面这张图里。</p>
-          : <ul className="mt-3 divide-y divide-slate-100" aria-live="polite">
-            {rows.map((row) => (
-              <li key={row.indicator.id} className="min-w-0 py-3">
-                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-slate-900">{row.indicator.name}</p>
-                    <p className="mt-0.5 text-xs text-slate-600">
-                      {row.indicator.source === 'built_in' ? '内置' : '工作区'} v{row.indicator.revision}
-                      {row.channels.length > 0 ? ` · ${row.channels.map((channel) => channel.label).join(' / ')}` : ''}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <label className="flex items-center gap-2 text-xs text-slate-600">位置
-                      <select aria-label={`${row.indicator.name}的显示位置`} value={row.place}
-                        onChange={(event) => setPlacements((state) => ({ ...state, [row.indicator.id]: event.target.value as Placement }))}
-                        className="min-h-10 rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
-                        <option value="native" disabled={!row.native}>{PLACEMENT_LABELS.native}</option>
-                        <option value="right">{PLACEMENT_LABELS.right}</option>
-                        <option value="panel">{PLACEMENT_LABELS.panel}</option>
+          : <ul className="mt-3 divide-y divide-slate-100 border-t border-slate-100" aria-live="polite">
+            {rows.map((row) => {
+              const hosts = panelHosts.filter((host) => (
+                host.instance.key !== row.instance.key && row.axisKey !== null && host.axisKey === row.axisKey
+              ))
+              const repeatReason = row.schema.length === 0
+                ? '固定参数的指标再加一条也是同一条线；需要别的参数请在指标中心另存一个版本'
+                : ''
+              return <li key={row.instance.key} className="min-w-0 py-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                  {/* 版本号和通道名放在悬停提示里：列表要能一眼扫完，不重复指标名已经说过的话。 */}
+                  <p className="min-w-0 max-w-full truncate text-sm font-medium text-slate-900"
+                    title={`${row.indicator.source === 'built_in' ? '内置' : '工作区'} v${row.indicator.revision}${
+                      row.channels.length > 0 ? ` · ${row.channels.map((channel) => channel.label).join(' / ')}` : ''}`}>{row.label}</p>
+                  {/* 参数就长在指标名旁边，用的是这一行本来就空着的地方，不另占一行。 */}
+                  {row.schema.length > 0 && (
+                    <IndicatorParameterInputs schema={row.schema} values={row.instance.parameters}
+                      onApply={(values) => updateInstance(row.instance.key, { parameters: values })}
+                      effective={row.result?.parameters ?? null} />
+                  )}
+                  {/* 四个控件在窄屏换行，不留在一行里被卡片裁掉。 */}
+                  <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+                    <label className="flex min-w-0 items-center gap-2 whitespace-nowrap text-xs text-slate-600">位置
+                      <select aria-label={`${row.label}的显示位置`} value={row.place}
+                        onChange={(event) => updateInstance(row.instance.key, { placement: event.target.value })}
+                        className="min-h-10 min-w-0 flex-1 max-w-[14rem] rounded-lg border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">
+                        <optgroup label="画在主图">
+                          <option value="native" disabled={!row.native}>
+                            {PLACEMENT_LABELS.native}{row.native ? '' : '（口径与主图不同，不可选）'}
+                          </option>
+                          <option value="right">{PLACEMENT_LABELS.right}</option>
+                        </optgroup>
+                        <optgroup label="画在子图">
+                          <option value={panelValue(row.instance.key)}>{PLACEMENT_LABELS.panel}</option>
+                          {hosts.map((host) => (
+                            <option key={host.instance.key} value={panelValue(host.instance.key)}>并入「{host.label}」</option>
+                          ))}
+                        </optgroup>
                       </select>
                     </label>
+                    <button type="button" onClick={() => duplicate(row)} disabled={Boolean(repeatReason)}
+                      aria-label={`为 ${row.label} 再加一条`} title={repeatReason || '换一组参数再画一条，可以和这条放同一个子图里比'}
+                      className="inline-flex min-h-10 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-700 transition hover:border-accent-300 hover:bg-accent-50 hover:text-accent-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:cursor-not-allowed disabled:opacity-50">再加一条</button>
                     <button type="button" onClick={() => onDefinition(row.indicator)}
                       className="min-h-10 rounded-lg px-2 text-xs font-medium text-accent-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">定义</button>
-                    <button type="button" onClick={() => remove(row.indicator.id)} aria-label={`移除指标 ${row.indicator.name}`}
+                    <button type="button" onClick={() => remove(row.instance.key)} aria-label={`移除指标 ${row.label}`}
                       title="仅从这张图上移除，不会删除指标定义"
                       className="inline-flex min-h-10 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">移除</button>
                   </div>
                 </div>
-                {!row.native && <p className="mt-1 text-xs text-slate-600">口径与主图不同，不能与价格共轴；请用右轴或独立子图。</p>}
+                {row.group !== row.instance.key && (
+                  // 下拉框会把长名字截断，共用了哪一格在这里写全。
+                  <p className="mt-1 text-xs text-slate-600">
+                    与「{rows.find((host) => host.instance.key === row.group)?.label}」共用一个子图，同一条纵轴。
+                  </p>
+                )}
+                {row.place === 'right' && mixedRightAxis && (
+                  <p className="mt-1 text-xs text-slate-600">右轴上还有口径不同的指标，刻度只表示数值大小，不带单位。</p>
+                )}
                 {row.result && row.result.status !== 'ok' && row.result.warnings.map((warning, index) => (
                   <p key={`${warning.code}-${index}`} role="status" className="mt-1 text-xs text-amber-800">{warning.message}</p>
                 ))}
-                {row.schema.length > 0
-                  ? <IndicatorParameterInputs schema={row.schema} values={parameters[row.indicator.id] ?? {}}
-                    onApply={(values) => setParameters((state) => ({ ...state, [row.indicator.id]: values }))}
-                    effective={row.result?.parameters ?? null} />
-                  : <p className="mt-1 text-xs text-slate-600">{s('indicatorParameters.fixedHint')}</p>}
               </li>
-            ))}
+            })}
           </ul>}
       {overlayLoading && <p role="status" className="mt-3 text-xs text-slate-600">{s('indicatorParameters.calculating')}</p>}
       {overlay?.key === overlayKey && overlay.error && (

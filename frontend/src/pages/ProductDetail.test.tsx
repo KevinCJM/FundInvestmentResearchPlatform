@@ -137,6 +137,7 @@ const makeTimeSeriesResponse = (request: EvaluateTimeSeriesIndicatorsRequest): E
       }),
     )
     return {
+      instance_key: instance.instance_key ?? null,
       indicator_id: indicatorId,
       indicator_revision: 1,
       indicator_name: indicatorId,
@@ -633,9 +634,8 @@ describe('ProductDetail custom indicators', () => {
       as_of: undefined,
     }))
     await user.click(screen.getByRole('tab', { name: '走势与指标' }))
-    // 窗口与观察值是这一列的属性，写在列头，不再逐个指标复述一遍。
+    // 窗口是这一列的属性，写在列头，不再逐个指标复述一遍。
     expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('2025-01-06 至 2026-01-06')
-    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('250 个观察值')
     expect(screen.queryByLabelText('区间累计收益计算区间')).not.toBeInTheDocument()
 
     await user.selectOptions(screen.getByLabelText('添加计算区间'), '1M')
@@ -654,7 +654,7 @@ describe('ProductDetail custom indicators', () => {
 
     await user.click(screen.getByRole('button', { name: '移除指标 区间累计收益' }))
     expect(screen.queryByText('12.34%')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /选择研究指标/ })).toHaveTextContent('已选 0/8')
+    expect(screen.getByRole('button', { name: /选择研究指标/ })).toHaveTextContent('已选 0')
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem('indicator-display:v2:product-detail:single_product') ?? '{}')).toEqual({
       indicatorIds: [],
       periodsByIndicator: {},
@@ -726,12 +726,14 @@ describe('ProductDetail custom indicators', () => {
 
     await user.clear(screen.getByLabelText('概率'))
     await user.type(screen.getByLabelText('概率'), '0.25')
+    // The card reports what the server resolved, not the draft in the input.
+    expect(screen.getByText(/实际计算参数: 概率=/)).not.toHaveTextContent('概率=0.25')
     await user.click(screen.getAllByRole('button', { name: '应用参数' })[0])
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith(expect.objectContaining({
       indicator_refs: expect.arrayContaining([{ indicator_id: 'quantile-return', indicator_revision: 2, parameters: { probability_1: 0.25 } }]),
     })))
-    // The card reports what the server resolved, not the draft in the input.
-    expect(await screen.findByText(/实际计算参数: 概率=0.25/)).toBeInTheDocument()
+    // Once the server agrees with the box, the second copy of the number goes away.
+    await waitFor(() => expect(screen.queryByText(/实际计算参数/)).toBeNull())
     expect(vi.mocked(evaluateCustomIndicators).mock.calls.every(([request]) =>
       (request.indicator_refs ?? []).every((ref) => ref.indicator_id !== 'moving-average'))).toBe(true)
   })
@@ -752,7 +754,7 @@ describe('ProductDetail custom indicators', () => {
 
     expect(await screen.findByRole('combobox', { name: '可调均线的显示位置' })).toBeInTheDocument()
     await waitFor(() => expect(evaluateTimeSeriesIndicators).toHaveBeenCalledWith(expect.objectContaining({
-      indicator_instances: [{ indicator_id: 'moving-average', indicator_revision: 2 }],
+      indicator_instances: [{ instance_key: expect.any(String), indicator_id: 'moving-average', indicator_revision: 2 }],
       period: 'ALL',
     })))
   })
@@ -1185,5 +1187,24 @@ describe('ProductDetail custom indicators', () => {
       await user.click(screen.getByRole('button', { name: /返回手动构建大类/ }))
     })
     expect(await screen.findByText('手动构建大类来源页')).toBeInTheDocument()
+  })
+
+  it('请求进行中显示加载态，而不是"没有数据"的空态', async () => {
+    // 详情请求挂起：此时页面既没有数据也不是"查不到"，两者必须区分。
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise(() => {})))
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+
+    expect(await screen.findByText('正在获取产品详情…')).toBeInTheDocument()
+    expect(screen.queryByText('没有查到这个产品的详情')).not.toBeInTheDocument()
+  })
+
+  it('请求返回空结果时显示带吉祥物的空态并给出下一步', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => null }))
+    render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
+
+    expect(await screen.findByText('没有查到这个产品的详情')).toBeInTheDocument()
+    expect(screen.queryByText('正在获取产品详情…')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '返回产品列表重新选择' })).toBeInTheDocument()
+    expect(document.querySelector('img[src*="mascot-noresult"]')).not.toBeNull()
   })
 })

@@ -152,12 +152,11 @@ describe('统一指标展示协议', () => {
 
     const header = screen.getByRole('columnheader', { name: /近 1 年/ })
     expect(header).toHaveTextContent('2025-01-06 至 2026-01-06')
-    expect(header).toHaveTextContent('250 个观察值')
     expect(screen.getByText('1.50')).toBeInTheDocument()
     expect(screen.getByText('3.25')).toBeInTheDocument()
-    // 口径归列不归格：两列一致时格子里不再重复观察值。
-    expect(screen.queryAllByText('250 个观察值')).toHaveLength(2)
-    expect(screen.getByRole('rowheader', { name: /测试指标/ })).toHaveTextContent('高优先')
+    // 口径归列不归格：两列一致时格子里不再重复窗口。
+    expect(screen.queryAllByText('2025-01-06 至 2026-01-06')).toHaveLength(2)
+    expect(screen.getByRole('rowheader', { name: /测试指标/ })).toHaveTextContent('越高越好')
     expect(screen.getByRole('button', { name: '移除指标 测试指标' })).toBeInTheDocument()
     expect(screen.getByText('数据截至 2026-01-06')).toBeInTheDocument()
 
@@ -166,7 +165,7 @@ describe('统一指标展示协议', () => {
       loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
       onRemove={() => undefined} onDefinition={() => undefined}
     />)
-    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('120 个观察值')
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('2025-01-06 至 2026-01-06')
 
     const other = { ...metric, id: 'metric-2', name: '另一指标', presentation: presentation({ name: '另一指标' }) }
     const shorter = { ...result('1Y', 2, 120), indicator_id: other.id,

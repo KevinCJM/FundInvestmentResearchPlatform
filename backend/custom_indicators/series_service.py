@@ -75,7 +75,10 @@ from .variable_registry import (
 )
 
 
-MAX_SERIES_INSTANCES = 10
+# Request guard, not a product limit: a chart may carry as many curves as the
+# reader wants, but one request stays bounded so a bad caller cannot queue
+# unlimited evaluations.
+MAX_SERIES_INSTANCES = 50
 MAX_SERIES_DISPLAY_POINTS = 5_000
 
 
@@ -1939,6 +1942,14 @@ class TimeSeriesIndicatorService:
             cache_misses += 1
             results.append(record)
 
+        # One result per requested instance, in request order, carrying the
+        # caller's own name for it. Two instances with identical parameters share
+        # one cache entry, so each instance also gets its own dict here: the
+        # per-result fields below must not be written twice into one object.
+        results = [
+            {**record, "instance_key": instance.get("instance_key")}
+            for record, instance in zip(results, indicator_instances, strict=True)
+        ]
         for record in results:
             record["data_context"] = input_date_context(sources[record["axis_anchor"]], as_of)
 
