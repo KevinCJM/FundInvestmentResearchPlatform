@@ -78,6 +78,9 @@ def test_full_template_covers_every_action_and_api_without_single_codes(store):
     assert [p.id for p in definition.parameters] == ['start_date','end_date']
     adjust = next(s for s in definition.steps if s.task_id == 'tushare.price_adjustment')
     assert adjust.parameter_bindings == {} and adjust.params == {}
+    # The workspace a task receives is built from its inputs, so the factor file
+    # only reaches the adjustment node if the factor task is one of them.
+    assert set(adjust.inputs) == {'dataset_candle', 'dataset_fund_adjustment'}
     assert definition.steps[-1].task_id == 'local.analytics_snapshot'
     assert all(s.mode == 'inherit' for s in definition.steps)
     assert all(set(s.params).isdisjoint({'limit','ts_code','symbol'}) for s in definition.steps)

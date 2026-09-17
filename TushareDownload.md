@@ -406,8 +406,8 @@ flowchart TD
 注意：`fund_portfolio` 只是公开披露的股票持仓，不是含债券、现金、基金和衍生品的完整资产配置；`mkt_idx_bmk` 也不自动等于每只基金合同中的业绩比较基准。
 
 `price_adjustment` 是本地派生，必填参数 `factor_policy`（CLI `--adjust-factor-policy`）决定因子来源：
-`source` 只用 `fund_adj_factor_df.parquet`（默认，当前只覆盖 2 只 ETF，其余不产出复权价格）；
-`source_then_pre_close` 对没有数据源因子的标的按 `close[t-1]/pre_close[t]` 累乘推导；
+`source` 只用 `fund_adj_factor_df.parquet`（本账号只覆盖 2 只 ETF，其余不产出复权价格）；
+`source_then_pre_close`（默认）对没有数据源因子的标的按 `close[t-1]/pre_close[t]` 累乘推导；
 `pre_close` 全部推导，用于核验两条路径。没有可用因子的标的复权列留空，依赖复权口径的指标据此报不可计算，
 不用未复权价格冒充。因子是累乘量，每次运行整表重算，不做增量拼接。详见 `docs/adjusted_price_indicator_design.md`。
 

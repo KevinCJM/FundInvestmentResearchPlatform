@@ -2,6 +2,9 @@
 
 因子口径固定为后复权，每只标的首个交易日为 1.0。数据源因子与 pre_close 推导
 因子必须归一到同一基准，两条路径才可比、可交叉校验。
+
+本模块只做输入边界：读表、对齐、转成稳定 dtype 的 NumPy 数组、封装结果。
+全部数值变换与分组聚合在 price_adjustment_numba 的固定签名 NJIT 内核里完成。
 """
 from __future__ import annotations
 
@@ -10,74 +13,81 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .price_adjustment_numba import (
+    ORIGIN_NONE,
+    ORIGIN_PRE_CLOSE,
+    ORIGIN_SOURCE,
+    combine_factor_kernel,
+    divergence_kernel,
+    factor_summary_kernel,
+    pre_close_factor_kernel,
+    scale_kernel,
+    source_factor_kernel,
+)
+
 ADJUSTED_FIELDS = ("open", "high", "low", "close")
 ADJUSTED_COLUMNS = tuple(f"adj_{name}" for name in ADJUSTED_FIELDS)
 FACTOR_POLICIES = ("source", "source_then_pre_close", "pre_close")
-DEFAULT_FACTOR_POLICY = "source"
+# The vendor factor covers a handful of ETFs, so `source` alone leaves a full
+# sync with almost no adjusted prices. Prefer it where it exists and derive the
+# rest from pre_close, which is the same quantity out of a different field.
+DEFAULT_FACTOR_POLICY = "source_then_pre_close"
+
+# The kernels answer in origin codes; only this table turns them back into the
+# stored labels, so the mapping stays single-sourced and reversible.
+ORIGIN_LABELS: dict[int, str] = {
+    ORIGIN_NONE: "none",
+    ORIGIN_SOURCE: "source",
+    ORIGIN_PRE_CLOSE: "pre_close",
+}
+_STORED_LABELS = np.array([None, ORIGIN_LABELS[ORIGIN_SOURCE], ORIGIN_LABELS[ORIGIN_PRE_CLOSE]], dtype=object)
 
 
 class AdjustmentPolicyError(ValueError):
     """请求了未登记的复权因子口径。"""
 
 
-def _codes_with_full_coverage(codes: pd.Series, values: pd.Series) -> pd.Index:
-    complete = values.notna().groupby(codes).all()
-    return complete[complete].index
+def _group_codes(codes: pd.Series) -> np.ndarray:
+    """标的标识转稳定 int64 组号；调用方已按 (ts_code, date) 排序，组内连续。"""
+
+    values, _ = pd.factorize(codes, sort=False)
+    return np.ascontiguousarray(values, dtype=np.int64)
 
 
-def _normalise_by_first(codes: pd.Series, values: pd.Series) -> pd.Series:
-    base = values.groupby(codes).transform("first")
-    normalised = values / base
-    return normalised.where(np.isfinite(normalised) & (normalised > 0))
+def _floats(values: Any) -> np.ndarray:
+    return np.ascontiguousarray(pd.to_numeric(values, errors="coerce").to_numpy(dtype="float64"))
 
 
-def source_factor(frame: pd.DataFrame, official: pd.DataFrame | None) -> pd.Series:
+def source_factor(frame: pd.DataFrame, official: pd.DataFrame | None) -> np.ndarray:
     """数据源复权因子，按标的归一到首个交易日；覆盖不全的标的整体留空。"""
 
-    empty = pd.Series(np.nan, index=frame.index, dtype="float64")
     if official is None or official.empty or "adj_factor" not in official.columns:
-        return empty
+        return np.full(len(frame), np.nan)
     table = official[["ts_code", "date", "adj_factor"]].copy()
     table["date"] = pd.to_datetime(table["date"], errors="coerce")
-    table["adj_factor"] = pd.to_numeric(table["adj_factor"], errors="coerce")
     table = table.dropna(subset=["ts_code", "date"]).sort_values(["ts_code", "date"], kind="mergesort")
     table = table.drop_duplicates(["ts_code", "date"], keep="last")
+    # Key alignment, not arithmetic: the join only decides which vendor row
+    # belongs to which candle row before the values enter the kernel.
     merged = frame[["ts_code", "date"]].merge(table, on=["ts_code", "date"], how="left")
-    values = pd.Series(merged["adj_factor"].to_numpy(), index=frame.index, dtype="float64")
-    values = values.where(np.isfinite(values) & (values > 0))
-    covered = _codes_with_full_coverage(frame["ts_code"], values)
-    return _normalise_by_first(frame["ts_code"], values.where(frame["ts_code"].isin(covered)))
+    return source_factor_kernel(_group_codes(frame["ts_code"]), _floats(merged["adj_factor"]))
 
 
-def pre_close_factor(frame: pd.DataFrame) -> pd.Series:
-    """由前收盘价推导的后复权因子：F[0]=1，F[t]=F[t-1]·close[t-1]/pre_close[t]。
+def pre_close_factor(frame: pd.DataFrame) -> np.ndarray:
+    """由前收盘价推导的后复权因子；某一天比值不可用时该标的其后全部留空。"""
 
-    pre_close 是除权调整后的前收盘价，所以 close[t]/pre_close[t] 就是含分红的
-    当日真实收益，累乘即后复权因子。某一天比值不可用时该标的其后全部留空，
-    不用 1 或相邻值补齐。
-    """
-
-    close = pd.to_numeric(frame["close"], errors="coerce")
-    previous = pd.to_numeric(frame["pre_close"], errors="coerce")
-    ratio = close.groupby(frame["ts_code"]).shift(1) / previous
-    ratio = ratio.where(np.isfinite(ratio) & (ratio > 0))
-    ratio = ratio.mask(~frame["ts_code"].eq(frame["ts_code"].shift(1)), 1.0)
-    # cumprod 会跳过缺口继续累乘，等于用未除权的比值冒充复权；这里从第一个
-    # 缺口起整段作废。
-    broken = ratio.isna().groupby(frame["ts_code"]).cummax()
-    return ratio.groupby(frame["ts_code"]).cumprod().mask(broken)
+    return pre_close_factor_kernel(
+        _group_codes(frame["ts_code"]), _floats(frame["close"]), _floats(frame["pre_close"])
+    )
 
 
-def factor_divergence(left: pd.Series, right: pd.Series) -> dict[str, Any]:
+def factor_divergence(left: np.ndarray, right: np.ndarray) -> dict[str, Any]:
     """两条因子路径在同时可用的行上的相对偏离；用于暴露供应商口径差异。"""
 
-    both = left.notna() & right.notna()
-    if not bool(both.any()):
-        return {"compared_rows": 0, "max_relative_difference": None}
-    relative = ((left[both] - right[both]).abs() / right[both].abs()).replace([np.inf, -np.inf], np.nan)
+    compared, worst = divergence_kernel(left, right)
     return {
-        "compared_rows": int(both.sum()),
-        "max_relative_difference": float(relative.max()) if relative.notna().any() else None,
+        "compared_rows": int(compared),
+        "max_relative_difference": None if np.isnan(worst) else float(worst),
     }
 
 
@@ -104,34 +114,30 @@ def attach_adjusted_prices(
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
     frame = frame.sort_values(["ts_code", "date"], kind="mergesort").reset_index(drop=True)
 
-    from_source = source_factor(frame, official) if policy != "pre_close" else pd.Series(
-        np.nan, index=frame.index, dtype="float64"
-    )
-    from_pre_close = pre_close_factor(frame) if policy != "source" else pd.Series(
-        np.nan, index=frame.index, dtype="float64"
-    )
+    empty = np.full(len(frame), np.nan)
+    from_source = source_factor(frame, official) if policy != "pre_close" else empty
+    from_pre_close = pre_close_factor(frame) if policy != "source" else empty
     divergence = factor_divergence(from_source, from_pre_close)
 
-    factor = from_source.where(from_source.notna(), from_pre_close)
-    origin = pd.Series(pd.NA, index=frame.index, dtype="string")
-    origin[from_pre_close.notna()] = "pre_close"
-    origin[from_source.notna()] = "source"
-    origin[factor.isna()] = pd.NA
-
+    factor, origin = combine_factor_kernel(from_source, from_pre_close)
     frame["adj_factor"] = factor
-    frame["adj_factor_source"] = origin
+    frame["adj_factor_source"] = pd.array(_STORED_LABELS[origin], dtype="string")
     for name in ADJUSTED_FIELDS:
-        frame[f"adj_{name}"] = pd.to_numeric(frame[name], errors="coerce") * factor
+        frame[f"adj_{name}"] = scale_kernel(_floats(frame[name]), factor)
 
-    by_code = origin.groupby(frame["ts_code"]).agg(lambda values: values.dropna().iloc[0] if values.notna().any() else "none")
-    final_factor = factor.groupby(frame["ts_code"]).agg(lambda values: values.dropna().iloc[-1] if values.notna().any() else np.nan)
+    codes = _group_codes(frame["ts_code"])
+    counts, events, rows_without_factor = factor_summary_kernel(codes, origin, factor)
+    by_source = sorted(
+        ((int(count), ORIGIN_LABELS[code]) for code, count in enumerate(counts) if count),
+        key=lambda item: (-item[0], item[1]),
+    )
     stats = {
         "policy": policy,
         "rows": int(len(frame)),
-        "codes": int(frame["ts_code"].nunique()),
-        "codes_by_factor_source": {str(key): int(value) for key, value in by_code.value_counts().items()},
-        "codes_with_adjustment_events": int((final_factor.notna() & (final_factor.round(10) != 1.0)).sum()),
-        "rows_without_factor": int(factor.isna().sum()),
+        "codes": int(codes.max() + 1) if codes.size else 0,
+        "codes_by_factor_source": {label: count for count, label in by_source},
+        "codes_with_adjustment_events": int(events),
+        "rows_without_factor": int(rows_without_factor),
         "source_vs_pre_close": divergence,
     }
     return frame, stats
@@ -143,6 +149,7 @@ __all__ = [
     "AdjustmentPolicyError",
     "DEFAULT_FACTOR_POLICY",
     "FACTOR_POLICIES",
+    "ORIGIN_LABELS",
     "attach_adjusted_prices",
     "factor_divergence",
     "pre_close_factor",
