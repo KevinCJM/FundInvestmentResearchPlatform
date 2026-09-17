@@ -633,15 +633,23 @@ describe('ProductDetail custom indicators', () => {
       as_of: undefined,
     }))
     await user.click(screen.getByRole('tab', { name: '走势与指标' }))
-    expect(screen.getByText(/1Y · 2025-01-06 至 2026-01-06 · 250 个观察值/)).toBeInTheDocument()
-    expect(screen.getByLabelText('区间累计收益计算区间')).toHaveValue('1Y')
-    await user.selectOptions(screen.getByLabelText('区间累计收益计算区间'), '1M')
+    // 窗口与观察值是这一列的属性，写在列头，不再逐个指标复述一遍。
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('2025-01-06 至 2026-01-06')
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('250 个观察值')
+    expect(screen.queryByLabelText('区间累计收益计算区间')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('添加计算区间'), '1M')
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith({
       indicator_refs: [{ indicator_id: 'total-return', indicator_revision: 2 }],
       targets: [{ kind: 'etf', product_id: '510300.SH' }], period: '1M',
       as_of: undefined,
     }))
-    expect(screen.getByLabelText('区间累计收益计算区间')).toHaveValue('1M')
+    expect(await screen.findByRole('columnheader', { name: /近 1 月/ })).toBeInTheDocument()
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem('indicator-period-columns:v1:product-detail:single_product') ?? '[]')).toEqual(['1Y', '1M']))
+
+    await user.click(screen.getByRole('button', { name: '移除区间 近 1 年' }))
+    expect(screen.queryByRole('columnheader', { name: /近 1 年/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: /近 1 月/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '在指标中心分析' })).toHaveAttribute('href', '/settings/indicators-models?kind=etf&ids=510300.SH')
 
     await user.click(screen.getByRole('button', { name: '移除指标 区间累计收益' }))

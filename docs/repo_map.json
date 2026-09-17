@@ -3408,6 +3408,7 @@
       "entry_files": [
         "frontend/src/components/metrics/MetricDisplay.tsx",
         "frontend/src/components/metrics/ResearchIndicatorPanel.tsx",
+        "frontend/src/components/metrics/MetricPeriodTable.tsx",
         "frontend/src/components/product-research/ProductTrendChart.tsx",
         "frontend/src/components/metrics/useMetricDisplayPreference.ts",
         "frontend/src/utils/indicatorDiagnostics.ts",
@@ -3448,7 +3449,8 @@
         "frontend/src/pages/ProductCompare.tsx",
         "frontend/src/pages/EvaluationPlan.tsx",
         "frontend/src/pages/HoldingDiagnosis.tsx",
-        "docs/product_trend_chart_design.md"
+        "docs/product_trend_chart_design.md",
+        "docs/product_research_indicator_table_design.md"
       ],
       "upstream_dependencies": [
         "backend_custom_indicator_service"
