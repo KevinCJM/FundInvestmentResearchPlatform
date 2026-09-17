@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import katex from 'katex'
-import { useI18n } from '../../i18n/runtime'
 import 'katex/dist/katex.min.css'
 import { indicatorPeriodOptionLabel } from '../../utils/indicatorPeriods'
-import IndicatorParameterInputs from '../indicator-parameters/IndicatorParameterInputs'
 import { indicatorDiagnosticDetail } from '../../utils/indicatorDiagnostics'
 import {
   type EvaluationResult,
@@ -392,47 +390,6 @@ export function MetricDefinitionDrawer({
       <dl className="mt-6 grid gap-4 text-sm"><div><dt className="font-semibold text-slate-700">说明</dt><dd className="mt-1 text-slate-600">{presentation.description || '—'}</dd></div><div><dt className="font-semibold text-slate-700">方法</dt><dd className="mt-1 text-slate-600">{presentation.methodology || '—'}</dd></div><div><dt className="font-semibold text-slate-700">数据口径</dt><dd className="mt-1 text-slate-600">{presentation.data_basis}</dd></div><div><dt className="font-semibold text-slate-700">方向与样本</dt><dd className="mt-1 text-slate-600">{presentation.direction === 'neutral' ? '仅展示，不判断优劣' : presentation.direction === 'higher_better' ? '数值高优先' : '数值低优先'} · 至少 {presentation.minimum_observations} 个观察值</dd></div><div><dt className="font-semibold text-slate-700">公式</dt><dd className="mt-1">{formulaMarkup ? <div data-testid="metric-formula-latex" className="overflow-x-auto rounded-lg border border-accent-100 bg-accent-50/50 px-3 py-4 text-slate-900" dangerouslySetInnerHTML={formulaMarkup} /> : <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-500">该兼容指标暂未提供数学符号排版。</p>}{<details className="mt-2"><summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-accent-700">高级信息：查看公式源码</summary><code className="mt-2 block overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-emerald-200">{indicator.expression}</code></details>}</dd></div></dl>
     </aside>
   </div>
-}
-
-export function MetricResultCard({
-  result,
-  indicator,
-  onDefinition,
-  onRemove,
-  period,
-  periodOptions = [],
-  onPeriodChange,
-  parameters,
-  onParametersChange,
-}: {
-  result?: EvaluationResult
-  indicator: IndicatorDefinition
-  onDefinition?: () => void
-  onRemove?: () => void
-  period?: string
-  periodOptions?: string[]
-  onPeriodChange?: (period: string) => void
-  /** Runtime overrides for this page only; the saved revision keeps its defaults. */
-  parameters?: Record<string, number>
-  onParametersChange?: (values: Record<string, number>) => void
-}) {
-  const { s } = useI18n()
-  const presentation = resolveMetricPresentation(result, indicator)
-  // The catalog entry is the live contract; a result carries the revision that
-  // actually ran. Either one can be the first to arrive.
-  const schema = (indicator.parameter_contract_version === '1.0' ? indicator.parameter_schema : null)
-    ?? presentation.parameter_schema ?? []
-  return <article className="min-w-0 rounded-xl border border-slate-200 bg-white p-4">
-    <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-xs text-slate-600">{presentation.category_label} · {presentation.source === 'built_in' ? '内置' : '工作区'} v{presentation.revision}</p><h3 className="mt-1 font-semibold text-slate-900">{presentation.name}</h3></div>{onRemove && <button type="button" onClick={onRemove} aria-label={`移除指标 ${presentation.name}`} title="仅从当前页面移除，不会删除指标定义" className="inline-flex min-h-9 shrink-0 items-center rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">移除</button>}</div>
-    <div className="mt-4 text-2xl font-semibold text-accent-700"><MetricValue value={result?.value} presentation={presentation} /></div>
-    {result ? <p className="mt-2 text-xs text-slate-600">{result.period} · {result.window.start_date ?? '—'} 至 {result.window.end_date ?? '—'} · {result.window.observation_count} 个观察值 · 数据截至 {result.window.data_latest_date ?? '—'}</p> : <p className="mt-2 text-xs text-slate-600">等待计算</p>}
-    {result && <MetricUnavailableReason result={result} />}
-    {onPeriodChange && period && <label className="mt-4 block text-xs font-medium text-slate-600">计算区间<select aria-label={`${presentation.name}计算区间`} value={period} onChange={(event) => onPeriodChange(event.target.value)} className="mt-1 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 focus:border-accent-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"><option value={period}>{indicatorPeriodOptionLabel(period)}</option>{periodOptions.filter((item) => item !== period).map((item) => <option key={item} value={item}>{indicatorPeriodOptionLabel(item)}</option>)}</select></label>}
-    {onParametersChange && (schema.length
-      ? <IndicatorParameterInputs schema={schema} values={parameters ?? {}} onApply={onParametersChange} effective={result?.parameters ?? null} />
-      : <p className="mt-3 text-xs text-slate-600">{s('indicatorParameters.fixedHint')}</p>)}
-    {onDefinition && <button type="button" onClick={onDefinition} className="mt-3 text-sm font-medium text-accent-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-500">查看定义与口径</button>}
-  </article>
 }
 
 export function MetricMatrix({

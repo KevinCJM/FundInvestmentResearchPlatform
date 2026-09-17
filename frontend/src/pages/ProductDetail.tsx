@@ -19,12 +19,10 @@ import {
   type HistoricalRegimeRun,
 } from '../services/historicalRegimes';
 import { MetricDefinitionDrawer } from '../components/metrics/MetricDisplay';
-import ResearchIndicatorPanel from '../components/metrics/ResearchIndicatorPanel';
+import ResearchIndicatorPanel, { MAX_RESEARCH_PERIODS } from '../components/metrics/ResearchIndicatorPanel';
 import {
-  groupIndicatorsByPeriod,
-  metricPeriodFor,
-  normalizeMetricPeriods,
   useMetricDisplayPreference,
+  useMetricPeriodColumns,
   withSelectedIndicators,
 } from '../components/metrics/useMetricDisplayPreference';
 import {
@@ -460,6 +458,13 @@ export default function ProductDetail() {
     '1Y',
     researchIndicators.map((indicator) => indicator.id),
   );
+  const [researchPeriodColumns, setResearchPeriodColumns] = useMetricPeriodColumns(
+    'product-detail',
+    'single_product',
+    '1Y',
+    researchPeriods,
+    MAX_RESEARCH_PERIODS,
+  );
 
   const productId = useMemo(() => {
     if (!params.productId) {
@@ -574,9 +579,7 @@ export default function ProductDetail() {
         setResearchIndicators(indicatorsForContext(items, 'single_product').filter((item) => (
           !item.applicable_product_kinds?.length || item.applicable_product_kinds.includes(productKind)
         )));
-        const runtimePeriods = metadata.periods.map((item) => item.value);
-        setResearchPeriods(runtimePeriods);
-        setResearchPreference((current) => normalizeMetricPeriods(current, runtimePeriods, '1Y'));
+        setResearchPeriods(metadata.periods.map((item) => item.value));
       })
       .catch(() => {
         if (active) setResearchError('自定义指标库暂时不可用，请稍后重试。');
@@ -592,21 +595,19 @@ export default function ProductDetail() {
     let active = true;
     setResearchLoading(true);
     setResearchError(null);
-    const byId = new Map(selectedScalarIndicators.map((indicator) => [indicator.id, indicator]));
-    const selectedPreference = {
-      ...researchPreference,
-      indicatorIds: selectedScalarIndicators.map((indicator) => indicator.id),
-    };
     // Refs, not bare ids: they pin the revision that was on screen and carry
     // this page's parameter overrides. Bare ids let a concurrent catalog edit
     // swap the algorithm between preparation and execution.
-    Promise.all(groupIndicatorsByPeriod(selectedPreference, '1Y').map(({ indicatorIds, period }) => (
+    const indicatorRefs = selectedScalarIndicators.map((indicator) => ({
+      indicator_id: indicator.id,
+      indicator_revision: indicator.revision,
+      ...(Object.keys(researchParameters[indicator.id] ?? {}).length ? { parameters: researchParameters[indicator.id] } : {}),
+    }));
+    // One request per column: `period` is a single value on the wire, and the
+    // backend rejects the same indicator twice in one request.
+    Promise.all(researchPeriodColumns.map((period) => (
       evaluateCustomIndicators({
-        indicator_refs: indicatorIds.map((indicatorId) => ({
-          indicator_id: indicatorId,
-          indicator_revision: byId.get(indicatorId)?.revision,
-          ...(Object.keys(researchParameters[indicatorId] ?? {}).length ? { parameters: researchParameters[indicatorId] } : {}),
-        })),
+        indicator_refs: indicatorRefs,
         targets: [{ kind: productKind, product_id: productId }],
         period,
         as_of: researchAsOf || undefined,
@@ -623,7 +624,7 @@ export default function ProductDetail() {
       })
       .finally(() => { if (active) setResearchLoading(false); });
     return () => { active = false; };
-  }, [productId, productKind, researchAsOf, researchPreference.periodsByIndicator, scalarParameterKey, selectedScalarIndicators]);
+  }, [productId, productKind, researchAsOf, researchPeriodColumns, scalarParameterKey, selectedScalarIndicators]);
 
   const metrics = detail?.metrics ?? {};
   const baseInfo = detail?.base_info ?? {};
@@ -1508,11 +1509,8 @@ export default function ProductDetail() {
             indicators={researchIndicators}
             selectedIds={researchPreference.indicatorIds}
             onSelectedIdsChange={(indicatorIds) => setResearchPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))}
-            periodFor={(indicatorId) => metricPeriodFor(researchPreference, indicatorId, '1Y')}
-            onPeriodChange={(indicatorId, period) => setResearchPreference((current) => ({
-              ...current,
-              periodsByIndicator: { ...current.periodsByIndicator, [indicatorId]: period },
-            }))}
+            periods={researchPeriodColumns}
+            onPeriodsChange={setResearchPeriodColumns}
             periodOptions={researchPeriods}
             parametersFor={(indicatorId) => researchParameters[indicatorId] ?? EMPTY_PARAMETERS}
             onParametersChange={(indicatorId, values) => setResearchParameters((current) => ({ ...current, [indicatorId]: values }))}

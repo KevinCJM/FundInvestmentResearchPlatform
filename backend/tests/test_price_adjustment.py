@@ -9,8 +9,13 @@ import pytest
 
 from data_sources.price_adjustment import (
     AdjustmentPolicyError,
+    DEFAULT_FACTOR_POLICY,
     attach_adjusted_prices,
     pre_close_factor,
+)
+from data_sources.price_adjustment_numba import (
+    price_adjustment_execution_audit,
+    warm_price_adjustment_kernels,
 )
 
 
@@ -113,6 +118,24 @@ def test_factors_never_cross_product_boundaries() -> None:
     np.testing.assert_allclose(factor.tolist()[2:], [1.0, 10.0 / 9.0])
 
 
+def test_the_factor_chain_runs_on_precompiled_njit_kernels() -> None:
+    audit = warm_price_adjustment_kernels()
+    assert audit == price_adjustment_execution_audit()
+    assert audit["execution_backend"] == "numba_njit_fixed_signature"
+    assert audit["nopython"] is True and audit["fully_warmed"] is True
+    assert audit["python_fallback"] == 0 and audit["request_time_compilation"] == 0
+    # A declared signature per kernel is what keeps an ETL run out of the compiler.
+    assert audit["kernel_signatures"] and all(audit["kernel_signatures"].values())
+
+
+def test_an_unusable_previous_close_voids_the_rest_instead_of_dividing_by_it() -> None:
+    for broken in (0.0, -1.0, np.nan):
+        frame = _candle([10.0, 10.2, 9.9, 10.1], previous=[10.0, 10.0, broken, 9.9])
+        result, _ = attach_adjusted_prices(frame, None, policy="pre_close")
+        assert result["adj_factor"].notna().tolist() == [True, True, False, False]
+        assert np.isfinite(result["adj_close"].to_numpy()[:2]).all()
+
+
 def test_etl_step_writes_the_columns_back_into_the_candle_table(tmp_path: Path) -> None:
     import T01_get_data as script
 
@@ -128,3 +151,32 @@ def test_etl_step_writes_the_columns_back_into_the_candle_table(tmp_path: Path) 
     assert {"adj_factor", "adj_factor_source", "adj_open", "adj_high", "adj_low", "adj_close"} <= set(written.columns)
     assert written["amount"].notna().all()  # 原有列不丢
     np.testing.assert_allclose(written["adj_close"].to_numpy(), [10.0, 10.2, 9.9])
+
+
+def test_the_registered_default_leaves_no_product_without_an_adjusted_price(tmp_path: Path) -> None:
+    """数据源因子只覆盖少数标的，默认口径仍须让全量同步后每只标的都有复权价格。"""
+    import T01_get_data as script
+    from data_sources.task_catalog import task_specs
+
+    frame = pd.concat(
+        [_candle([10.0, 10.2, 9.9], previous=[10.0, 10.0, 10.2]),
+         _candle([3.0, 3.1, 3.2], code="159915.SZ")],
+        ignore_index=True,
+    ).assign(change=0.0, pct_chg=0.0, vol=1.0, amount=1.0, name="x")
+    frame.to_parquet(tmp_path / "etf_daily_candle_df.parquet", index=False)
+    pd.DataFrame(
+        {"ts_code": "510300.SH", "trade_date": ["20250102", "20250103", "20250106"],
+         "adj_factor": [2.0, 2.0, 2.06]}
+    ).to_parquet(tmp_path / "fund_adj_factor_df.parquet", index=False)
+
+    default = next(f for f in task_specs()["tushare.price_adjustment"]["parameters"]
+                   if f["name"] == "factor_policy")["default"]
+    assert default == DEFAULT_FACTOR_POLICY
+    script.save_price_adjustment(tmp_path, default)
+
+    written = pd.read_parquet(tmp_path / "etf_daily_candle_df.parquet")
+    assert written["adj_close"].notna().all()
+    # 有数据源因子的仍走数据源，其余才推导——默认口径不会把已有因子挤掉。
+    assert dict(written.groupby("ts_code")["adj_factor_source"].first()) == {
+        "159915.SZ": "pre_close", "510300.SH": "source",
+    }

@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import type { EvaluationResult, IndicatorDefinition, MetricPresentation } from '../../services/customIndicators'
-import { formatMetricValue, IndicatorInputDates, MetricDefinitionDrawer, MetricMatrix, MetricResultCard, MetricSelector, MetricStatus, MetricUnavailableReason, MetricValue } from './MetricDisplay'
+import { formatMetricValue, IndicatorInputDates, MetricDefinitionDrawer, MetricMatrix, MetricSelector, MetricStatus, MetricUnavailableReason, MetricValue } from './MetricDisplay'
+import MetricPeriodTable from './MetricPeriodTable'
 
 const presentation = (overrides: Partial<MetricPresentation> = {}): MetricPresentation => ({
   indicator_id: 'metric-1', revision: 1, name: '测试指标', source: 'built_in',
@@ -128,29 +129,102 @@ describe('统一指标展示协议', () => {
     expect(screen.getByText('至少需要 20 个观察值')).toBeInTheDocument()
   })
 
-  it('单产品结果卡不在移除按钮旁重复展示计算状态', () => {
+  it('指标表把区间摆成列，共享口径只写一次列头', () => {
     const metric = {
       id: 'metric-1', revision: 1, source: 'built_in', read_only: true, name: '测试指标',
       description: '测试', expression: 'mean(returns)', unit: '', display_format: 'number', precision: 2,
       direction: 'higher_better', annual_risk_free_rate_percent: 1.5, context_kind: 'single_product',
       created_at: '', updated_at: '', presentation: presentation(),
     } as IndicatorDefinition
-    const result = {
+    const result = (period: string, value: number, observation_count: number): EvaluationResult => ({
       indicator_id: metric.id, indicator_revision: metric.revision, indicator_name: metric.name,
       target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' },
-      period: '1Y', value: null, status: 'warning',
-      warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '至少需要 20 个观察值' }],
-      window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: null, observation_count: 0, data_latest_date: '2026-01-06' },
+      period, value, status: 'ok', warnings: [],
+      window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count, data_latest_date: '2026-01-06' },
       presentation: metric.presentation!,
-    } as EvaluationResult
+    } as EvaluationResult)
 
-    render(<MetricResultCard result={result} indicator={metric} onRemove={() => undefined} />)
+    const { rerender } = render(<MetricPeriodTable
+      indicators={[metric]} periods={['1Y', 'ALL']} results={[result('1Y', 1.5, 250), result('ALL', 3.25, 250)]}
+      loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
+      onRemove={() => undefined} onDefinition={() => undefined}
+    />)
 
+    const header = screen.getByRole('columnheader', { name: /近 1 年/ })
+    expect(header).toHaveTextContent('2025-01-06 至 2026-01-06')
+    expect(header).toHaveTextContent('250 个观察值')
+    expect(screen.getByText('1.50')).toBeInTheDocument()
+    expect(screen.getByText('3.25')).toBeInTheDocument()
+    // 口径归列不归格：两列一致时格子里不再重复观察值。
+    expect(screen.queryAllByText('250 个观察值')).toHaveLength(2)
+    expect(screen.getByRole('rowheader', { name: /测试指标/ })).toHaveTextContent('高优先')
     expect(screen.getByRole('button', { name: '移除指标 测试指标' })).toBeInTheDocument()
-    expect(screen.queryByText('正常')).not.toBeInTheDocument()
-    expect(screen.queryByText('样本不足')).not.toBeInTheDocument()
-    expect(screen.getByText('不可计算')).toBeInTheDocument()
+    expect(screen.getByText('数据截至 2026-01-06')).toBeInTheDocument()
+
+    rerender(<MetricPeriodTable
+      indicators={[metric]} periods={['1Y']} results={[result('1Y', 1.5, 120)]}
+      loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
+      onRemove={() => undefined} onDefinition={() => undefined}
+    />)
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('120 个观察值')
+
+    const other = { ...metric, id: 'metric-2', name: '另一指标', presentation: presentation({ name: '另一指标' }) }
+    const shorter = { ...result('1Y', 2, 120), indicator_id: other.id,
+      presentation: other.presentation, window: { ...result('1Y', 2, 120).window, start_date: '2025-07-01' } }
+    rerender(<MetricPeriodTable
+      indicators={[metric, other]} periods={['1Y']} results={[result('1Y', 1.5, 250), shorter]}
+      loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
+      onRemove={() => undefined} onDefinition={() => undefined}
+    />)
+    expect(screen.getByRole('columnheader', { name: /近 1 年/ })).toHaveTextContent('口径随指标不同')
+    expect(screen.getByRole('row', { name: /测试指标.*1.50/ })).toHaveTextContent('2025-01-06 至 2026-01-06')
+    expect(screen.getByRole('row', { name: /另一指标.*2.00/ })).toHaveTextContent('2025-07-01 至 2026-01-06')
+  })
+
+  it('指标表按列给出状态，并只讲一次不可计算原因', () => {
+    const metric = {
+      id: 'metric-1', revision: 1, source: 'built_in', read_only: true, name: '测试指标',
+      description: '测试', expression: 'mean(returns)', unit: '', display_format: 'number', precision: 2,
+      direction: 'higher_better', annual_risk_free_rate_percent: 1.5, context_kind: 'single_product',
+      created_at: '', updated_at: '', presentation: presentation(),
+    } as IndicatorDefinition
+    const blocked = {
+      variable_id: 'market_high', label: '最高价', status: 'source_unavailable',
+      reason_code: 'SOURCE_UNAVAILABLE_FOR_PRODUCT', reason: '该产品没有日线最高价数据',
+      source_dataset: 'ETF 日线行情', source_field: 'high', canonical_field: 'high',
+    }
+    const blockedResult = (period: string): EvaluationResult => ({
+      indicator_id: metric.id, indicator_revision: metric.revision, indicator_name: metric.name,
+      target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' },
+      period, value: null, status: 'unavailable',
+      warnings: [{ code: 'INDICATOR_NOT_APPLICABLE', message: '指标缺少必需输入。' }],
+      window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: null, observation_count: 0, data_latest_date: '2026-01-06' },
+      input_requirements: { status: 'blocked', required_count: 1, available_count: 0, items: [blocked], blocking_inputs: [blocked], partial_inputs: [] },
+      presentation: metric.presentation!,
+    } as EvaluationResult)
+
+    const { rerender } = render(<MetricPeriodTable
+      indicators={[metric]} periods={['1Y', 'ALL']} results={[blockedResult('1Y'), blockedResult('ALL')]}
+      loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
+      onRemove={() => undefined} onDefinition={() => undefined}
+    />)
+
+    expect(screen.getAllByText('不可计算')).toHaveLength(4)
+    expect(screen.getByText('近 1 年、成立以来 无法计算：')).toBeInTheDocument()
+    // 缺的是产品字段而不是窗口，两列的理由一模一样，只讲一次。
+    expect(screen.getAllByText(/该指标需要 1 个输入字段/)).toHaveLength(1)
+    rerender(<MetricPeriodTable
+      indicators={[metric]} periods={['1Y', 'ALL']} results={[
+        { ...blockedResult('1Y'), input_requirements: undefined, warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '至少需要 20 个观察值' }] },
+        blockedResult('ALL'),
+      ]}
+      loading={false} parametersFor={() => ({})} onParametersChange={() => undefined}
+      onRemove={() => undefined} onDefinition={() => undefined}
+    />)
     expect(screen.getByText('至少需要 20 个观察值')).toBeInTheDocument()
+    expect(screen.getByText(/该指标需要 1 个输入字段/)).toBeInTheDocument()
+    expect(screen.getByText('近 1 年 无法计算：')).toBeInTheDocument()
+    expect(screen.getByText('成立以来 无法计算：')).toBeInTheDocument()
   })
 
   it('不可计算原因默认展示中文字段，技术代码只在详情中出现', () => {

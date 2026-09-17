@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
 
 const presentation = {
   indicator_id: 'builtin-total-return-v2', revision: 1, name: '累计收益率', source: 'built_in',
@@ -296,10 +297,21 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   await page.getByRole('radio', { name: '复权净值走势' }).check()
   await expect(page.getByText('复权净值折线；分红再投资后的真实收益路径。')).toBeVisible()
   await expect(page.getByText('1.83%')).toBeVisible()
-  await expect(page.getByText(/1Y · 2025-01-06 至 2026-01-06 · 250 个观察值/)).toBeVisible()
-  await page.getByLabel('累计收益率计算区间').selectOption('1M')
-  await expect(page.getByLabel('累计收益率计算区间')).toHaveValue('1M')
-  await expect(page.getByText(/1M · 2025-12-06 至 2026-01-06 · 21 个观察值/)).toBeVisible()
+  const metricTable = page.getByRole('table', { name: '研究指标计算结果', exact: true })
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toContainText('2025-01-06 至 2026-01-06')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toContainText('250 个观察值')
+  await expect(page.getByRole('button', { name: '移除区间 近 1 年' })).toBeDisabled()
+  await page.getByLabel('添加计算区间').selectOption('1M')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 月/ })).toContainText('2025-12-06 至 2026-01-06')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 月/ })).toContainText('21 个观察值')
+  await expect(metricTable.getByText('1.83%')).toHaveCount(2)
+  const researchPanel = page.getByRole('region', { name: '研究指标', exact: true })
+  await researchPanel.screenshot({ path: testInfo.outputPath('metric-period-columns.png') })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  await page.getByRole('button', { name: '移除区间 近 1 年' }).click()
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '移除区间 近 1 月' })).toBeDisabled()
   await page.getByRole('button', { name: /选择研究指标/ }).click()
   const selectorPanel = page.getByRole('dialog', { name: '选择研究指标面板' })
   await expect(selectorPanel).toBeVisible()
@@ -311,7 +323,7 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   expect(panelBox!.x).toBeGreaterThanOrEqual(15)
   expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(viewportWidth - 15)
   await page.getByRole('button', { name: '完成' }).click()
-  await page.getByRole('button', { name: '查看定义与口径' }).click()
+  await metricTable.getByRole('button', { name: '累计收益率', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '累计收益率' })).toBeVisible()
   await expect(page.getByText('真实数据、严格窗口、缺失不填充')).toBeVisible()
   await expect(page.getByTestId('metric-formula-latex').locator('.katex')).toBeVisible()

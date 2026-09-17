@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .models import CenterError
+from .price_adjustment import DEFAULT_FACTOR_POLICY
 
 ROOT = Path(__file__).resolve().parents[2]
 # Acquisition adapters own these endpoint groups; the browser never interprets them.
@@ -30,7 +31,9 @@ REQUIRES = {
     'candle': ['etf_info', 'calendar'], 'fund_nav': ['fund_info', 'calendar'],
     'fund_manager': ['fund_info'], 'fund_scale': ['fund_nav'], 'fund_portfolio': ['fund_info'],
     'fund_dividend': ['fund_info'], 'fund_adjustment': ['etf_info', 'calendar'],
-    'price_adjustment': ['candle'],
+    # The factor table is an input, not merely an earlier step: the workspace a
+    # task receives is built from `requires`, so omitting it starves the node.
+    'price_adjustment': ['candle', 'fund_adjustment'],
     **{name: ['index_catalog', 'calendar'] for name in (
         'index_domestic', 'index_industry', 'index_concept', 'index_global',
         'index_futures', 'index_valuation', 'index_constituents', 'index_coverage')},
@@ -44,7 +47,7 @@ DATE_FIELDS = [
 ACTION_FIELDS = {
     'price_adjustment': [{
         'name': 'factor_policy', 'label': '复权因子口径', 'data_type': 'choice', 'required': True,
-        'default': 'source', 'cli_flag': '--adjust-factor-policy',
+        'default': DEFAULT_FACTOR_POLICY, 'cli_flag': '--adjust-factor-policy',
         'choices': [
             {'value': 'source', 'label': '仅数据源因子', 'description': '只使用已下载的复权因子；数据源没有覆盖的标的不产出复权价格。'},
             {'value': 'source_then_pre_close', 'label': '数据源优先，缺失由前收盘价推导', 'description': '数据源覆盖的标的用数据源因子，其余用 close[t-1]/pre_close[t] 累乘推导。'},
