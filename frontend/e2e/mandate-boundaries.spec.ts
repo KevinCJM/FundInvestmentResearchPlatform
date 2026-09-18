@@ -82,13 +82,14 @@ test('两步目标流程只收集目标、风险等级和现金，并展示双�
 
   // A saved view may load before the global PIT setting recovers.
   let pitUnavailable = true
+  await page.route(`**/api/strategic-allocation/mandates/${saved.id}`, route =>
+    route.fulfill({ status: 503, json: { detail: { message: '保存版本暂时不可读' } } }))
   await page.route('**/api/pit/settings', route => route.fulfill(pitUnavailable
     ? { status: 503, json: { detail: 'Offline PIT recovery fixture' } }
     : { json: { settings: { active_release_id: null }, available_releases: [],
       effective: { no_pit: false, as_of: fixture.today, run_mode: 'RESEARCH', label: 'Recovered PIT' } } }))
   await page.reload()
-  await expect(page.getByText('只读版本', { exact: true })).toBeVisible()
-  await expect(page.getByRole('alert').filter({ hasText: '平台知识截止日尚未确认' })).toBeVisible()
+  await expect(page.getByRole('alert').filter({ hasText: '保存版本暂时不可读' })).toBeVisible()
   pitUnavailable = false
   const menu = page.getByRole('button', { name: '菜单', exact: true })
   if (await menu.isVisible()) await menu.click()
@@ -98,6 +99,10 @@ test('两步目标流程只收集目标、风险等级和现金，并展示双�
   await page.getByRole('button', { name: '关闭口径切换', exact: true }).click()
   if (await menu.isVisible()) await menu.click()
   await expect(page).toHaveURL(new RegExp(`view=${saved.id}`))
+  await expect(page.getByLabel('目标名称', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '运行目标诊断', exact: true })).toHaveCount(0)
+  await page.unroute(`**/api/strategic-allocation/mandates/${saved.id}`)
+  await page.getByRole('button', { name: '重试', exact: true }).click()
   await expect(page.getByText('只读版本', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '运行目标诊断', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '保存新目标版本', exact: true })).toHaveCount(0)

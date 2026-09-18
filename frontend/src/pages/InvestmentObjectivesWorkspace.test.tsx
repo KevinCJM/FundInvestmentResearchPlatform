@@ -165,6 +165,34 @@ it('PIT变化仍清除可编辑草稿的旧诊断与风险引用', async () => {
   expect(draft.definition.risk_authorization?.risk_scale_ref).toBeNull()
 })
 
+it.each(['view', 'editFrom'])('版本读取失败的%s页在PIT恢复后只提供重试，不暴露本地草稿', async mode => {
+  researchClock.day = undefined
+  let unavailable = true
+  const fetch = install({ [`${root}/mandates/${savedVersion.id}`]: () => unavailable
+    ? response({ detail: { message: '保存版本暂时不可读' } }, 503) : response(savedVersion) })
+  const user = userEvent.setup()
+  const route = `/pre-investment/objectives/new?${mode}=${savedVersion.id}`
+  const tree = () => <MemoryRouter initialEntries={[route]}><InvestmentObjectivesWorkspace /></MemoryRouter>
+  writeAllocationDraft('mandate-study:editor', boundaryStudy())
+  const view = render(tree())
+  expect(await screen.findByRole('alert')).toHaveTextContent('保存版本暂时不可读')
+  researchClock.day = '2026-09-18'; view.rerender(tree())
+  expect(screen.queryByLabelText('目标名称')).not.toBeInTheDocument()
+  expect(screen.queryByRole('navigation', { name: '投资目标步骤' })).not.toBeInTheDocument()
+  expect(fetch.mock.calls.filter(([url]) => /\/mandates\/(funding|preview|confirm)$/.test(String(url)))).toHaveLength(0)
+  unavailable = false
+  await user.click(screen.getByRole('button', { name: '重试' }))
+  if (mode === 'view') {
+    expect(await screen.findByText('只读版本')).toBeInTheDocument()
+    expect(screen.getByText('当前约束下可实现')).toBeInTheDocument()
+    expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.as_of).toBe(savedVersion.definition.as_of)
+  } else {
+    expect(await screen.findByRole('heading', { name: '修改投资目标与约束' })).toBeInTheDocument()
+    expect(screen.getByLabelText('目标名称')).toBeEnabled()
+    expect(screen.getByLabelText(/目标研究日/)).toHaveValue('2026-09-18')
+  }
+})
+
 it('相对基准目标只要求超额收益，基准自动来自所选风险等级代表组合', async () => {
   install(); const user = userEvent.setup(); ready()
   const objective = screen.getByLabelText(/投资目标类型/)

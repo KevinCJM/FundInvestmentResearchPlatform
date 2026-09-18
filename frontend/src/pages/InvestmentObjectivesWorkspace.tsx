@@ -59,14 +59,16 @@ export default function InvestmentObjectivesWorkspace() {
   const [step, setStep] = useState(0), [acknowledged, setAcknowledged] = useState(false)
   const [busy, setBusy] = useState(false), [initializing, setInitializing] = useState(Boolean(editFrom || viewId))
   const [error, setError] = useState(''), [notice, setNotice] = useState('')
+  const [reload, setReload] = useState(0)
   const generation = useRef(0), operation = useRef<AbortController | null>(null)
   const heading = useRef<HTMLHeadingElement>(null), previousResearchDay = useRef(platformDay)
   const definition = draft.definition
+  const versionUnavailable = viewId ? selected?.id !== viewId : Boolean(editFrom && editSource?.id !== editFrom)
   const issues = mandateStepIssues(definition, cutoff), numericIssue = studyIssue(draft)
   // Objective and risk decide each other, so they are filled and reported on one page.
   const inputIssue = issues.find(Boolean) ?? ''
   const activeIssue = clockIssue || inputIssue || (step === 0 ? '' : numericIssue)
-  const invalid = Boolean(clockIssue || issues.some(Boolean) || numericIssue)
+  const invalid = Boolean(versionUnavailable || clockIssue || issues.some(Boolean) || numericIssue)
   const statusLabel = (status?: string) => t(status === 'diagnosed' ? 'diagnosed' : status === 'needs_revision' ? 'needsRevision' : 'inputsOnly')
 
   useEffect(() => {
@@ -79,6 +81,7 @@ export default function InvestmentObjectivesWorkspace() {
     const identifier = viewId ?? editFrom
     if (!identifier) { setEditSource(null); setSelected(null); setInitializing(false); return }
     const controller = new AbortController(); setInitializing(true); setError(''); setNotice('')
+    setSelected(null); setEditSource(null); setPreview(null)
     getMandate(identifier, controller.signal).then(version => {
       if (controller.signal.aborted) return
       const assessment = version.assessment?.preview_hash ? version.assessment : null
@@ -93,7 +96,7 @@ export default function InvestmentObjectivesWorkspace() {
     }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t('operationFailed')) })
       .finally(() => { if (!controller.signal.aborted) setInitializing(false) })
     return () => controller.abort()
-  }, [editFrom, viewId])
+  }, [editFrom, viewId, reload])
   useEffect(() => {
     if (platformDay === previousResearchDay.current) return
     previousResearchDay.current = platformDay
@@ -111,13 +114,13 @@ export default function InvestmentObjectivesWorkspace() {
 
   // 现金流改变真正需要的收益，所以填写页一边填一边回显服务端的确定性资金算术。
   useEffect(() => {
-    if (!definition.cash_budget || clockIssue || inputIssue) { setLiveFunding(null); return }
+    if (versionUnavailable || viewId || !definition.cash_budget || clockIssue || inputIssue) { setLiveFunding(null); return }
     const controller = new AbortController()
     const timer = setTimeout(() => { previewMandateFunding({ ...draft, cma_id: null }, controller.signal)
       .then(result => { if (!controller.signal.aborted) setLiveFunding(result) })
       .catch(() => { if (!controller.signal.aborted) setLiveFunding(null) }) }, 400)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [draft, clockIssue, inputIssue])
+  }, [draft, clockIssue, inputIssue, versionUnavailable, viewId])
 
   function invalidate() {
     generation.current += 1; operation.current?.abort(); setBusy(false)
@@ -160,7 +163,8 @@ export default function InvestmentObjectivesWorkspace() {
     <header className="space-y-2"><Link className={listLinkClass} to="/pre-investment/objectives">{t('backObjectiveList')}</Link>
       <h1 className="text-2xl font-bold">{selected ? t('savedObjectiveTitle') : editSource ? t('editObjectiveTitle') : t('addObjectiveTitle')}</h1><p className="text-sm leading-6 text-slate-600">{t('simpleDescription')}</p></header>
     <Feedback error={error || clockIssue} notice={notice} />
-    {initializing ? <div role="status" aria-live="polite" className="space-y-2"><p className="text-sm text-slate-600">{t('loadingObjective')}</p><div className="h-12 animate-pulse rounded-lg bg-slate-200 motion-reduce:animate-none" /><div className="h-24 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none" /></div> : <>
+    {initializing ? <div role="status" aria-live="polite" className="space-y-2"><p className="text-sm text-slate-600">{t('loadingObjective')}</p><div className="h-12 animate-pulse rounded-lg bg-slate-200 motion-reduce:animate-none" /><div className="h-24 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none" /></div>
+      : versionUnavailable ? <Button onClick={() => setReload(value => value + 1)}>{t('retry')}</Button> : <>
       <nav aria-label={t('stepNavigation')} className="grid grid-cols-2 gap-2 border-b border-slate-200 pb-4">{stepKeys.map((key, index) => {
         const disabled = !selected && (Boolean(clockIssue) || index >= 1 && Boolean(inputIssue || numericIssue))
         return <button key={key} type="button" aria-current={index === step ? 'step' : undefined} disabled={disabled} onClick={() => setStep(index)}
