@@ -201,6 +201,18 @@ class RiskScaleService:
             blockers.append(problem('CASH_ANCHOR_INVALID', '系统默认标尺须且只能包含一个有效现金大类；现金波动率与协方差必须为 0。'))
         return blockers
 
+    @staticmethod
+    def _cash_endpoint_blockers(result, cash_ids):
+        points, ids = result.get('frontier', []), result.get('ordered_asset_ids', [])
+        first = points[0] if points else {}
+        weights = first.get('weights') or []
+        if (len(cash_ids) != 1 or cash_ids[0] not in ids or len(weights) != len(ids)
+                or first.get('status') != 'optimal_to_tolerance'
+                or first.get('volatility') is None or first['volatility'] > numeric.BOUNDARY_TOL
+                or abs(float(weights[ids.index(cash_ids[0])]) - 1.) > 1e-7):
+            return [problem('CASH_CONSTRAINT_COVERAGE', '低风险端点须由合格纯现金组成，零波动市场代理不能替代现金锚。')]
+        return []
+
     def _preview(self, request):
         effective_day = self._research_day()
         if request.definition.research_as_of != effective_day:
@@ -298,6 +310,7 @@ class RiskScaleService:
                     blockers.append(problem('STABILITY_UNAVAILABLE', '200 点分档验证失败，当前自动标尺不能发布。'))
                 resets = None
                 if panel is not None:
+                    result['diagnostics']['representative_portfolio_rebalance'] = 'monthly'
                     texts = source['_dates'].astype('datetime64[D]').astype(str).tolist()
                     start = source['reference_preview']['quality']['intersection_start']
                     previous = [start, *texts[:-1]]
@@ -337,9 +350,8 @@ class RiskScaleService:
                     and raw['assets'][i].get('asset_type') == 'cash'
                     and abs(float(raw['assets'][i]['annual_volatility'])) <= numeric.BOUNDARY_TOL]
             result['diagnostics']['cash_asset_ids'] = [ids[i] for i in cash]
-            if cash and grids is not None and (grids[0][3][0] != 0 or grids[0][2][0, 0] > numeric.BOUNDARY_TOL):
-                default_blockers.append(problem('CASH_CONSTRAINT_COVERAGE', '当前参考约束排除了零风险现金端点，不能设为全范围系统默认标尺。'))
-            warnings.append(problem('RETROSPECTIVE_PORTRAITS', '非现金代表组合按各代理配置的再平衡规则回放，仅是事后画像；ES 为日频经验值，不是年度损失保证。'))
+            default_blockers.extend(self._cash_endpoint_blockers(result, [ids[i] for i in cash]))
+            warnings.append(problem('RETROSPECTIVE_PORTRAITS', '代表组合外层按月再平衡，各代理内部按各自配置回放；仅是事后画像，ES 为日频经验值，不是年度损失保证。'))
         default_blockers.extend(self._stability_default_blockers(result))
         payload = {'request_echo': request.model_dump(mode='json'),
             'resolved_refs': {'reference_inputs': d.reference_input_ref.model_dump()},
@@ -419,6 +431,8 @@ class RiskScaleService:
             _, raw, _, _, source, _ = self._resolve(d, current=True, state=state)
             if default:
                 blockers.extend(self._default_blockers(d, source, raw, clock=date.today()))
+                blockers.extend(self._cash_endpoint_blockers(item['preview']['result'],
+                    [asset['id'] for asset in source['definition']['assets'] if asset.get('asset_type') == 'cash']))
                 blockers.extend(item['preview']['default_eligibility']['blockers'])
                 # Older immutable versions may have recorded instability only as a warning.
                 blockers.extend(self._stability_default_blockers(item['preview']['result']))
