@@ -1343,7 +1343,11 @@
         "Invalidate unsaved policy previews and late responses on cutoff changes, guard adoption, and preserve already saved historical snapshots.",
         "Treat an undefined research day as unknown and block goal/CMA/policy calculations and writes; null is only an explicitly confirmed no-cutoff view. Transitions between these states invalidate unsaved results and late replies.",
         "Only preview/confirm may create mandate versions; unconfirmed historical inputs remain readable but cannot drive a new policy. Input-only confirmations still freeze their simulation settings.",
-        "Return from TAA with the selected baseline ID and read its immutable server snapshot. Do not replace adopted policy evidence with an allocation-only browser draft."
+        "Return from TAA with the selected baseline ID and read its immutable server snapshot. Do not replace adopted policy evidence with an allocation-only browser draft.",
+        "Mandate 2.0 risk levels resolve to upper caps, never minimum volatility constraints. Pending reference research may be saved but cannot silently acquire a numeric authorization. Keep original request inputs separate from resolved immutable constraints.",
+        "Separate reference search from fixed-candidate validation. A capital diagnostic after failed search is not a validated recommendation and must not authorize risk. Actual SAA adoption uses its own independent check; finite candidate failure is not an infeasibility proof.",
+        "A shared cash budget is independent of the three objective kinds. Cash protection requires the effective cash-role floor in SAA and the frozen TAA gate, not merely tradable liquid assets. Missing frozen cash evidence must fail closed.",
+        "Adding study parameters can make shared draft-shape validation discard supported earlier drafts. Adapt missing study fields at the mandate boundary without loosening the global draft guard or changing original inputs."
       ],
       "safe_observation_methods": [
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_mandate_diagnostic_integrity.py -q",

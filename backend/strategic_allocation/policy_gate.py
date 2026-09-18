@@ -8,6 +8,7 @@ from . import kernels, institution_kernels
 from .institution import review_blockers
 from .sources import verify_strategic_snapshot
 from .cma_application import frozen_policy_assumptions
+from .mandate_inputs import cash_success_required, require_resolved_authorization
 
 
 def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str) -> dict | None:
@@ -16,6 +17,7 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
         return None  # Historical baselines do not acquire fabricated policy evidence.
     kernels.require_ready()
     mandate = policy["mandate"]
+    require_resolved_authorization(mandate)
     assumptions = frozen_policy_assumptions(policy)
     names = [asset["id"] for asset in baseline["assets"]]
     if set(weights) != set(names) or [a["id"] for a in assumptions["assets"]] != names:
@@ -37,7 +39,10 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
         violations.append("当前目标在冻结 CMA 下的预期主动风险超过投资目标的政策预算。")
     if metrics[1] > mandate["max_volatility"] + 1e-10:
         violations.append("当前目标在冻结 CMA 下的预期波动超过投资目标上限。")
-    if mandate.get("objective_kind", "absolute_return") == "absolute_return" and metrics[0] < mandate["target_return"] - 1e-10:
+    return_floor = mandate.get("effective_target_return")
+    if return_floor is None and mandate.get("objective_kind", "absolute_return") == "absolute_return":
+        return_floor = mandate["target_return"]
+    if return_floor is not None and metrics[0] < return_floor - 1e-10:
         violations.append("当前目标在冻结CMA下的预期收益低于投资授权下限。")
     benchmark_check = None
     if mandate.get("benchmark"):
@@ -56,13 +61,16 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
             violations.append("当前目标相对投资授权基准的主动风险超过上限。")
     institution = mandate.get("institutional_context")
     cash_check = None
-    if institution is not None:
+    modern = mandate.get("schema_version", "1.0") == "2.0"
+    if institution is not None or modern:
         institution_kernels.require_ready()
         eligible = np.asarray([a["role"] == "liquidity" and a["liquidity"] == "liquid" for a in assumptions["assets"]], dtype=np.bool_)
         values.flags.writeable = False
         eligible.flags.writeable = False
         cash_weight = institution_kernels.cash_weight_kernel(values, eligible)
-        floor = institution["cash_reserve_weight"]
+        floor = mandate.get("effective_cash_reserve_weight") if modern else institution["cash_reserve_weight"]
+        if floor is None or not np.isfinite(floor) or floor < 0 or floor > 1:
+            raise ValidationError("SAA_CASH_EVIDENCE", "冻结政策缺少有效现金用途下限，不能按零处理。")
         cash_check = {"weight": float(cash_weight), "minimum": floor}
         if cash_weight < floor - 1e-10:
             violations.append("当前目标低于冻结的现金用途下限；可交易风险资产不能替代现金储备。")
@@ -83,7 +91,7 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
             "implementation_blockers": mapping_blockers,
             "manual_review_blockers": reviews, "current_manual_review_blockers": current_reviews, "cash_reserve_check": cash_check,
             "benchmark_check": benchmark_check,
-            "goal_diagnostic_scope": "strategic_plan_only_not_tactical_probability_guarantee" if mandate.get("funding_plan") else None,
+            "goal_diagnostic_scope": "strategic_plan_only_not_tactical_probability_guarantee" if cash_success_required(mandate) else None,
             "expected_return": float(metrics[0]), "expected_volatility": float(metrics[1]), "max_volatility": mandate["max_volatility"],
             "expected_tracking_error": float(expected_tracking_error),
             "requested_tracking_error_limit": float(tracking_error_limit) if np.isfinite(tracking_error_limit) else None,

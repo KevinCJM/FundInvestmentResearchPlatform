@@ -161,25 +161,39 @@ def funding_capital_successes_kernel(draws, drift, scale, initial, inflows, outf
     return successes
 
 
-@njit((D, F, F, F, V, V, F, F, F, F, F), cache=True, nogil=True)
-def funding_paths_kernel(draws, annual_mean, annual_volatility, initial, inflows,
-                         outflows, target, fee, required_probability, drawdown_alert, contribution_ratio):
+@njit((F, F, F, N, N), cache=True, nogil=True)
+def funding_monthly_parameters_kernel(mean, volatility, fee, method, periods):
+    """Map declared moments to model-month growth; method 0 preserves the old ABI."""
+    if (not np.isfinite(mean) or not np.isfinite(volatility) or volatility < 0
+            or not 0 <= fee < 1 or method not in (0, 1) or periods < 1 or periods > 366):
+        raise ValueError("FUNDING_DISTRIBUTION_INPUT")
+    base_mean = mean / periods if method == 1 else mean
+    base_volatility = volatility / np.sqrt(periods) if method == 1 else volatility
+    if base_mean <= -1:
+        raise ValueError("FUNDING_DISTRIBUTION_MEAN")
+    log_variance = np.log1p((base_volatility / (1.0 + base_mean)) ** 2)
+    frequency = periods if method == 1 else 1
+    drift = (frequency * (np.log1p(base_mean) - 0.5 * log_variance) + np.log1p(-fee)) / 12.0
+    scale = np.sqrt(frequency * log_variance / 12.0)
+    if not np.isfinite(drift) or not np.isfinite(scale):
+        raise ValueError("FUNDING_DISTRIBUTION_OVERFLOW")
+    return drift, scale
+
+
+@njit((D, F, F, F, V, V, F, F, F, F), cache=True, nogil=True)
+def funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows,
+                                      outflows, target, required_probability, drawdown_alert, contribution_ratio):
     months, paths, factors = draws.shape
     if (months < 1 or months % 12 or paths < 1 or factors != 1 or inflows.size != months
             or outflows.size != months or initial <= 0 or target < 0
             or not np.isfinite(initial) or not np.isfinite(target) or not 0 < drawdown_alert <= 1
-            or not np.isfinite(annual_mean) or annual_mean <= -1
-            or not np.isfinite(annual_volatility) or annual_volatility < 0
-            or not 0 <= fee < 1 or not 0 <= required_probability <= 1 or not 0 <= contribution_ratio <= 1):
+            or not np.isfinite(drift) or not np.isfinite(scale) or scale < 0
+            or not 0 <= required_probability <= 1 or not 0 <= contribution_ratio <= 1):
         raise ValueError("FUNDING_PATH_INPUT")
     for i in range(months):
         if (not np.isfinite(inflows[i]) or not np.isfinite(outflows[i])
                 or inflows[i] < 0 or outflows[i] < 0):
             raise ValueError("FUNDING_PATH_INPUT")
-    # Match annual SIMPLE-return moments, rather than treating mu as log drift.
-    log_variance = np.log1p((annual_volatility / (1.0 + annual_mean)) ** 2)
-    drift = (np.log1p(annual_mean) - 0.5 * log_variance + np.log1p(-fee)) / 12.0
-    scale = np.sqrt(log_variance / 12.0)
     annual_balances = np.empty((paths, months // 12 + 1), dtype=np.float64)
     terminals = np.empty(paths, dtype=np.float64)
     drawdowns = np.empty(paths, dtype=np.float64)
@@ -258,9 +272,19 @@ def funding_paths_kernel(draws, annual_mean, annual_volatility, initial, inflows
     return metrics, fan
 
 
+@njit((D, F, F, F, V, V, F, F, F, F, F), cache=True, nogil=True)
+def funding_paths_kernel(draws, annual_mean, annual_volatility, initial, inflows,
+                         outflows, target, fee, required_probability, drawdown_alert, contribution_ratio):
+    """Supported annual-moment contract delegates to the unique monthly recurrence."""
+    drift, scale = funding_monthly_parameters_kernel(annual_mean, annual_volatility, fee, 0, 1)
+    return funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows, outflows,
+                                            target, required_probability, drawdown_alert, contribution_ratio)
+
+
 KERNELS = (funding_schedule_kernel, funding_pass_kernel, required_return_kernel,
            funding_summary_kernel, wilson_interval_kernel, capital_gate_kernel,
-           funding_payment_kernel, funding_capital_successes_kernel, funding_paths_kernel)
+           funding_payment_kernel, funding_capital_successes_kernel,
+           funding_monthly_parameters_kernel, funding_paths_from_monthly_kernel, funding_paths_kernel)
 for dispatcher in KERNELS:
     dispatcher.disable_compile()
 
@@ -287,6 +311,8 @@ def warm_goal_kernels():
     funding_summary_kernel(100., 10., 120., 12, 0., 0., 0, inflows, outflows, 12, 0.5)
     draws, _ = seeded_factor_draws_kernel(12, 8, 1, 42, 0, 5.)
     funding_paths_kernel(draws, 0.06, 0.15, 90., inflows, outflows, 120., 0.01, 0.8, 0.2, 1.0)
+    drift, scale = funding_monthly_parameters_kernel(.06, .15, .01, 1, 252)
+    funding_paths_from_monthly_kernel(draws, drift, scale, 90., inflows, outflows, 120., .8, 1., 1.)
     _WARMED_PID = os.getpid()
     if not execution_audit()["complete"]:
         _WARMED_PID = None

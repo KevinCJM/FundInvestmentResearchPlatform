@@ -44,7 +44,9 @@ export default function StageLayout({ stageId }: { stageId: StageId }) {
   const isStageOverview = location.pathname.replace(/\/$/, '') === stage.path
   const factorContext: ContextType | undefined = stage.id === 'product-research'
     ? (location.pathname.startsWith('/product-research/products/') ? undefined : 'product_research')
-    : stage.id === 'pre-investment' ? (location.pathname.includes('/taa') ? 'taa' : location.pathname.includes('/saa') ? 'saa' : 'allocation')
+    // 投资目标与约束只冻结目标、风险等级和现金约束，不挑产品，因子证据在这里没有消费者。
+    : stage.id === 'pre-investment' ? (location.pathname.startsWith('/pre-investment/objectives') ? undefined
+      : location.pathname.includes('/taa') ? 'taa' : location.pathname.includes('/saa') ? 'saa' : 'allocation')
     : stage.id === 'portfolio-center' ? 'portfolio'
     : stage.id === 'post-investment' ? 'post_investment'
     : location.pathname === '/settings/scenario-algorithms' ? 'regime' : undefined

@@ -9,6 +9,7 @@ import LegacyRedirect from './components/LegacyRedirect'
 import StageLayout from './layouts/StageLayout'
 import AutoAssetClassification from './pages/AutoAssetClassification'
 import ClassAllocation from './pages/ClassAllocation'
+import InvestmentObjectivesCenter from './pages/InvestmentObjectivesCenter'
 import InvestmentObjectivesWorkspace from './pages/InvestmentObjectivesWorkspace'
 import StrategicAllocationWorkspace from './pages/StrategicAllocationWorkspace'
 import AccountingBookingWorkspace from './pages/AccountingBookingWorkspace'
@@ -47,6 +48,10 @@ import ToolHubPage from './pages/ToolHubPage'
 import TradeAllocationWorkspace from './pages/TradeAllocationWorkspace'
 import TacticalAllocationWorkspace from './pages/TacticalAllocationWorkspace'
 import TimingResearch from './pages/TimingResearch'
+import RiskScaleCenter from './pages/RiskScaleCenter'
+import RiskScaleWorkspace from './pages/RiskScaleWorkspace'
+import RiskScaleVersionView from './pages/RiskScaleVersionView'
+import RiskScaleCompare from './pages/RiskScaleCompare'
 
 const prototypePage = (pageKey: string) => <PrototypeWorkspace key={pageKey} pageKey={pageKey} />
 
@@ -91,7 +96,8 @@ export default function App() {
 
             <Route path="/pre-investment" element={<StageLayout stageId="pre-investment" />}>
               <Route index element={<StageOverview stageId="pre-investment" />} />
-              <Route path="objectives" element={<InvestmentObjectivesWorkspace />} />
+              <Route path="objectives" element={<InvestmentObjectivesCenter />} />
+              <Route path="objectives/new" element={<InvestmentObjectivesWorkspace />} />
               <Route path="product-pool" element={<ProductPoolSelection />} />
               <Route path="saa" element={saaHub} />
               <Route path="saa/asset-classes" element={<ManualConstruction />} />
@@ -190,6 +196,11 @@ export default function App() {
               <Route path="research-data-lab" element={<ResearchDataLab />} />
               <Route path="pit-snapshots" element={<PitSnapshots />} />
               <Route path="research-parameters" element={prototypePage('research-parameters')} />
+              <Route path="risk-scales" element={<RiskScaleCenter />} />
+              <Route path="risk-scales/new" element={<RiskScaleWorkspace />} />
+              <Route path="risk-scales/compare" element={<RiskScaleCompare />} />
+              <Route path="risk-scales/drafts/:draftId" element={<RiskScaleWorkspace />} />
+              <Route path="risk-scales/versions/:versionId" element={<RiskScaleVersionView />} />
               <Route path="indicators-models" element={<IndicatorStudio />} />
               <Route path="factor-research" element={<FactorResearchCenter />} />
               <Route path="risk-models" element={<RiskModelCenter />} />

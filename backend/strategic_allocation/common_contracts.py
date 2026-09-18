@@ -15,3 +15,9 @@ Currency = Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, str_strip_whitespace=True)
+
+
+class FrozenRef(Contract):
+    """An immutable artifact identity, shared by reference and mandate inputs."""
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,119}$")
+    content_hash: Fingerprint

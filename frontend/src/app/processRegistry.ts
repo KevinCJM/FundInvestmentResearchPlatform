@@ -89,7 +89,7 @@ const preInvestment = withAccent({
   path: '/pre-investment',
   tone: 'teal',
   nodes: [
-    { id: 'objectives', label: '投资目标与约束', description: '保存期限、币种、收益目标、波动与流动性边界及战术风险预算，供长期政策真实消费。', path: '/pre-investment/objectives', status: 'partial' },
+    { id: 'objectives', label: '投资目标与约束', description: '设置收益目标、最大风险等级与现金需求；风险标尺提供冻结参考参数和C1–C5，正式CMA留到后续研究。', path: '/pre-investment/objectives', status: 'partial' },
     { id: 'product-pool', label: '选择产品池版本', description: '选择已生效产品池版本并冻结为本次投前可投资域。', path: '/pre-investment/product-pool', status: 'available' },
     { id: 'saa', label: '战略资产配置（SAA）', description: '确定大类资产中枢权重、偏离区间与长期风险预算。', path: '/pre-investment/saa', status: 'partial' },
     { id: 'taa', label: '战术资产配置（TAA）', description: '锁定 SAA，研究相对强弱或观点偏离，比较含成本回测与情景影响，并将已保存的大类预算传入产品配置。', path: '/pre-investment/taa', status: 'partial' },
@@ -239,6 +239,7 @@ const settings = withAccent({
     { id: 'research-data-lab', label: '研究数据实验室', description: '搜索并检查指数、宏观、指标版本与上传序列，研究覆盖、缺失、PIT 和时序表现后加入计算图。', path: '/settings/research-data-lab', status: 'available' },
     { id: 'pit-snapshots', label: 'PIT 时点快照', description: '体检每张表的事件时间与可得时间、公告滞后与 PIT 等级，并对数据整体封版，供研究上下文引用。', path: '/settings/pit-snapshots', status: 'available' },
     { id: 'research-parameters', label: '研究口径与参数中心', description: '维护可复用、版本化的基准、无风险利率、数据处理和计算口径模板，供产品与组合研究引用。', path: '/settings/research-parameters', status: 'prototype' },
+    { id: 'risk-scales', label: '风险等级配置中心', description: '以参考资产与市场假设建立可追溯的 C1–C5 风险标尺，管理不可变版本和当前默认。', path: '/settings/risk-scales', status: 'available' },
     { id: 'indicators-models', label: '指标与模型管理', description: '维护标量、矩阵及组合指标的定义、公式、范围和版本。', path: '/settings/indicators-models', status: 'partial' },
     { id: 'factor-research', label: '因子研究中心', description: '构建和检验共享因子，区分比较基准、模型与数据来源，发布研究版本并接入产品池和投研证据。', path: '/settings/factor-research', status: 'available' },
     { id: 'risk-models', label: '风险模型中心', description: '研究并验证产品敏感度、现金流久期与凸度；发布到统一数据磁盘，供产品与组合直接读取。', path: '/settings/risk-models', status: 'available' },
