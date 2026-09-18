@@ -101,5 +101,7 @@
   "settings.backtest-center": {"zh-CN":"统一回测中心","en-US":"Backtest center"},
   "settings.system-parameters": {"zh-CN":"系统参数","en-US":"System parameters"},
   "settings.language-terminology": {"zh-CN":"语言与术语","en-US":"Language and terminology"},
-  "settings.language-terminology.description": {"zh-CN":"查看内置系统翻译，维护独立的业务术语与多语言覆盖。","en-US":"View read-only system translations and manage separate multilingual business terminology."}
+  "settings.language-terminology.description": {"zh-CN":"查看内置系统翻译，维护独立的业务术语与多语言覆盖。","en-US":"View read-only system translations and manage separate multilingual business terminology."},
+  "settings.risk-scales": {"zh-CN":"风险等级配置中心","en-US":"Risk Scale Configuration Center"},
+  "settings.risk-scales.description": {"zh-CN":"以参考资产与市场假设建立可追溯的 C1–C5 风险标尺，管理不可变版本和当前默认。","en-US":"Build traceable C1–C5 risk scales from reference assets and market assumptions; manage immutable versions and defaults."}
 }

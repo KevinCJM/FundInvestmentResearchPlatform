@@ -74,6 +74,11 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     def preview_mandate(body: MandateStudyRequest):
         return _call(service.preview_mandate, body)
 
+    # Deterministic cash-flow echo while the objective is still being typed; no storage.
+    @router.post("/mandates/funding")
+    def mandate_funding(body: MandateStudyRequest):
+        return _call(service.mandate_funding, body)
+
     @router.post("/mandates/confirm", status_code=201)
     def confirm_mandate(body: ConfirmMandateRequest):
         return _call(service.confirm_mandate, body)
@@ -81,6 +86,10 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     @router.get("/mandates/{identifier}")
     def get_mandate(identifier: str):
         return _call(service.get_mandate, identifier)
+
+    @router.delete("/mandates/{identifier}")
+    def retire_mandate(identifier: str):
+        return _call(service.retire_mandate, identifier)
 
     @router.post("/risk-reference")
     def risk_reference(body: RiskReferenceRequest):

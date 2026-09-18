@@ -137,10 +137,13 @@ async def lifespan(_app: FastAPI):
     tactical_status = tactical_service.warm()
     if tactical_status.get("complete") is not True:
         raise RuntimeError("战术资产配置 NJIT 启动预热未完成")
-    from services.strategic_allocation_routes import strategic_service
+    from services.strategic_allocation_routes import strategic_service, risk_scale_service
     strategic_status = strategic_service.warm()
     if strategic_status.get("complete") is not True:
         raise RuntimeError("战略资产配置 NJIT 启动预热未完成")
+    risk_scale_status = risk_scale_service.warm()
+    if risk_scale_status.get("complete") is not True:
+        raise RuntimeError("风险标尺计算启动预热未完成")
     portfolio_status = warm_portfolio_numba_kernels()
     scenario_stress_status = warm_scenario_numba_kernels()
     synthetic_series_status = warm_synthetic_series_numba_kernel()
@@ -182,6 +185,7 @@ async def lifespan(_app: FastAPI):
         "taa": taa_status,
         "tactical_allocation": tactical_status,
         "strategic_allocation": strategic_status,
+        "risk_scales": risk_scale_status,
         "portfolio_research": portfolio_status,
         "scenario_stress": scenario_stress_status,
         "synthetic_product_series": synthetic_series_status,

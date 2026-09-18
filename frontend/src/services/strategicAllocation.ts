@@ -1,4 +1,6 @@
 import { cmaModelInputError, type CmaModelRequest } from './cmaModelTypes'
+import { cashSuccessRequired, hasCashBudget, fundingThreshold, checkReferenceAssessment, type CashBudget, type BoundaryPolicy, type CapitalTarget, type CashProtection, type RiskAuthorization, type RiskDecision, type ReferenceDiagnosis } from './mandateTypes'
+export type { CashBudget, BoundaryPolicy, CapitalTarget, CashProtection, RiskAuthorization } from './mandateTypes'
 import type { InstitutionalContext, InstitutionalDiagnostics } from "./institutionalContext"
 import type { UniverseVersion, MappingVersion } from "./strategicScope"
 import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
@@ -17,22 +19,29 @@ export interface FundingPlan {
 }
 export interface BenchmarkPolicy {
   name: string; alloc_name: string; weights: Record<string, number>
-  target_excess_return: number; max_tracking_error: number
+  target_excess_return: number; max_tracking_error: number; source?: 'explicit' | 'risk_scale_reference'
 }
 export interface MandateDefinition {
-  name: string; as_of: string; review_date: string; currency: string; horizon_years: number
-  target_return: number; max_volatility: number; min_liquid_weight: number; max_illiquid_weight: number
+  schema_version?: '1.0' | '2.0'
+  cash_budget?: CashBudget | null; funding_target?: CapitalTarget | null; cash_protection?: CashProtection | null
+  boundary_policy?: BoundaryPolicy | null; risk_authorization?: RiskAuthorization | null
+  name: string; as_of: string; review_date: string | null; currency: string; horizon_years: number
+  target_return: number; target_excess_return: number; min_cash_weight: number
+  max_volatility: number | null; min_liquid_weight: number; max_illiquid_weight: number
   max_tracking_error: number; risk_aversion: number
   rebalance_policy: 'monthly' | 'quarterly' | 'annually' | 'threshold'; rebalance_note: string; note: string
   objective_kind?: ObjectiveKind; funding_plan?: FundingPlan | null; benchmark?: BenchmarkPolicy | null
+  stated_benchmark?: string
   institutional_context?: InstitutionalContext | null; strategic_universe_id?: string | null
   boundary_reason?: string; allocation_scope?: string | null
+  boundary_policy_hash?: string; effective_cash_reserve_weight?: number; risk_reference_valid_until?: string | null
+  effective_target_return?: number | null
   asset_limits?: PolicyRequest['constraints']; group_limits?: PolicyRequest['group_limits']
 }
 export interface MandateVersion {
   id: string; name: string; created_at: string; content_hash: string; definition: MandateDefinition
   assessment?: MandateAssessment; assessment_status?: MandateAssessment['status']
-  planning_settings?: { simulation_paths: number; seed: number; uncertainty_penalty: number }
+  planning_settings?: { simulation_paths: number; seed: number; validation_seed?: number; uncertainty_penalty: number }
 }
 export type EconomicRole = 'growth' | 'rates' | 'inflation' | 'credit' | 'liquidity' | 'diversifier'
 export interface AssetAssumption {
@@ -114,7 +123,7 @@ export interface FundingMetrics {
   success_probability: number; probability_lower: number; probability_upper: number
   payment_failure_probability: number; terminal_p05: number; terminal_median: number; terminal_p95: number
   expected_terminal_shortfall: number; expected_unpaid_payments: number
-  market_drawdown_p95: number; drawdown_alert_probability: number
+  market_drawdown_p95: number; drawdown_alert_probability: number | null
   required_initial_capital: number; additional_initial_capital: number
   success_with_10pct_more_capital: number; success_with_10pct_lower_target: number
   capital_gate_status?: 'solved' | 'insufficient_paths'
@@ -123,16 +132,21 @@ export interface FundingMetrics {
   annual_fan?: Array<{ year: number; p05: number; median: number; p95: number }>
 }
 export interface FundingSummary {
-  investable_capital: number; nominal_terminal_target: number; total_contributions: number; total_withdrawals: number
+  investable_capital: number; nominal_terminal_target: number | null; total_contributions: number; total_withdrawals: number
   required_liquid_capital: number; required_liquid_weight: number; required_effective_return: number | null
-  root_status: 'solved' | 'at_lower_bound' | 'above_search_bound'; currency: string; liquidity_months: number
+  root_status: 'solved' | 'at_lower_bound' | 'above_search_bound' | 'not_applicable'; currency: string; liquidity_months: number
+  cashflow_required_return?: number | null
+  cashflow_required_return_status?: 'solved' | 'at_lower_bound' | 'above_search_bound'
   liquidity_payment_buffer?: number; liquidity_payment_buffer_ratio?: number; liquidity_shortfall_capital?: number
   monthly_cashflows: Array<{ month: number; contribution: number; withdrawal: number }>
 }
 export interface MandateStudyRequest {
   definition: MandateDefinition; cma_id: string | null; simulation_paths: number; seed: number; uncertainty_penalty: number
+  validation_seed?: number
 }
 export interface MandateAssessment {
+  risk_decision?: RiskDecision; reference_diagnosis?: ReferenceDiagnosis
+  diagnosis_scope?: 'universal_reference' | 'actual_cma'
   preview_hash: string; request: MandateStudyRequest; definition: MandateDefinition
   funding: FundingSummary | null; candidates: PolicyCandidate[]; status: 'inputs_only' | 'diagnosed' | 'needs_revision'
   cma: { id: string; name: string; as_of: string; content_hash: string } | null
@@ -140,6 +154,10 @@ export interface MandateAssessment {
   blockers: string[]; warnings: string[]; execution: FixedNjitExecutionAudit
   funding_model?: { version: string; paths: number; seed: number; frequency: string }
   funding_execution?: FixedNjitExecutionAudit
+}
+/** Deterministic cash-flow arithmetic for the input page; no CMA, no simulation. */
+export interface MandateFundingEcho {
+  funding: FundingSummary | null; effective_target_return: number | null; execution: FixedNjitExecutionAudit
 }
 export interface PolicyCandidate {
   id: 'minimum-risk' | 'nominal-utility' | 'robust-utility' | 'maximum-return' | 'risk-budget'
@@ -178,9 +196,10 @@ export interface StrategicCatalog {
 export const percentInputValue = (value: number | null | undefined): number => typeof value === 'number' && Number.isFinite(value) ? Number((value * 100).toPrecision(12)) : NaN
 
 const root = '/api/strategic-allocation'
-async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+async function request<T>(path: string, body?: unknown, signal?: AbortSignal, method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'): Promise<T> {
+  const resolvedMethod = method ?? (body === undefined ? 'GET' : 'POST')
   const response = await fetch(`${root}${path}`, {
-    method: body === undefined ? 'GET' : 'POST', signal,
+    method: resolvedMethod, signal,
     headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
   const result = await response.json().catch(() => { throw new Error('资产配置服务没有返回可读取的数据，请重试。') })
@@ -199,13 +218,13 @@ const verified = <T extends { execution: FixedNjitExecutionAudit }>(value: T): T
 const probability = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
 const missingDiagnosis = () => new Error('资金目标诊断缺失或口径不一致，已停止展示通过状态，请重新运行。')
 
-function checkFundingMetrics(metrics: FundingMetrics, threshold: number) {
+function checkFundingMetrics(metrics: FundingMetrics, threshold: number, allowMissingAlert = false) {
   if (!metrics) throw missingDiagnosis()
   const probabilities = ['success_probability', 'probability_lower', 'probability_upper', 'payment_failure_probability',
     'market_drawdown_p95', 'drawdown_alert_probability', 'success_with_10pct_more_capital', 'success_with_10pct_lower_target'] as const
   const amounts = ['terminal_p05', 'terminal_median', 'terminal_p95', 'expected_terminal_shortfall', 'expected_unpaid_payments',
     'required_initial_capital', 'additional_initial_capital'] as const
-  if (probabilities.some(key => !probability(metrics[key])) || amounts.some(key => !Number.isFinite(metrics[key]) || metrics[key] < 0)
+  if (probabilities.some(key => !(allowMissingAlert && key === 'drawdown_alert_probability' && metrics[key] === null) && !probability(metrics[key])) || amounts.some(key => !Number.isFinite(metrics[key]) || metrics[key] < 0)
     || metrics.probability_lower > metrics.success_probability + 1e-12 || metrics.success_probability > metrics.probability_upper + 1e-12
     || metrics.terminal_p05 > metrics.terminal_median || metrics.terminal_median > metrics.terminal_p95) throw missingDiagnosis()
   if (metrics.annual_fan && (!Array.isArray(metrics.annual_fan) || metrics.annual_fan.some((row, index, rows) =>
@@ -225,13 +244,14 @@ function checkFundingMetrics(metrics: FundingMetrics, threshold: number) {
 
 function checkGoalCandidates(definition: MandateDefinition, candidates: PolicyCandidate[]) {
   if (!Array.isArray(candidates)) throw missingDiagnosis()
-  if (!definition.funding_plan) return
-  const threshold = definition.funding_plan.required_probability
+  if (!cashSuccessRequired(definition)) return
+  const threshold = fundingThreshold(definition)
+  if (typeof threshold !== 'number') throw missingDiagnosis()
   for (const candidate of candidates) {
     const goal = candidate.goal_check
     if (!goal || typeof goal.within_limits !== 'boolean' || goal.threshold !== threshold || goal.gate_basis !== 'wilson_95pct_lower_bound') throw missingDiagnosis()
-    checkFundingMetrics(goal.central, threshold)
-    if (goal.conservative !== null) checkFundingMetrics(goal.conservative, threshold)
+    checkFundingMetrics(goal.central, threshold, definition.schema_version === '2.0')
+    if (goal.conservative !== null) checkFundingMetrics(goal.conservative, threshold, definition.schema_version === '2.0')
     if (goal.within_limits !== (goal.central.probability_lower >= threshold)) throw missingDiagnosis()
   }
 }
@@ -246,11 +266,12 @@ function checkedAssessment(value: MandateAssessment): MandateAssessment {
   if (!value.definition || !value.request || !Array.isArray(value.blockers) || !Array.isArray(value.warnings)
     || !['inputs_only', 'diagnosed', 'needs_revision'].includes(value.status)) throw missingDiagnosis()
   checkGoalCandidates(value.definition, value.candidates)
-  if ((value.status === 'diagnosed' && (!value.cma || !value.candidates.length))
+  checkReferenceAssessment(value, checkFundingMetrics)
+  if ((value.status === 'diagnosed' && (!value.cma || !value.candidates.length) && value.reference_diagnosis?.status !== 'validated')
     || (value.status === 'inputs_only' && (value.cma || value.candidates.length))
     || (value.cma && value.cma.id !== value.request.cma_id)) throw missingDiagnosis()
-  if (value.definition.funding_plan && (!value.funding || !Number.isFinite(value.funding.investable_capital) || value.funding.investable_capital <= 0)) throw missingDiagnosis()
-  if (value.definition.funding_plan && value.candidates.length) {
+  if (hasCashBudget(value.definition) && (!value.funding || !Number.isFinite(value.funding.investable_capital) || value.funding.investable_capital <= 0)) throw missingDiagnosis()
+  if (cashSuccessRequired(value.definition) && value.candidates.length) {
     if (!value.funding_execution || !value.funding_model) throw missingDiagnosis()
     assertFixedNjitExecution(value.funding_execution, '资金目标诊断')
     const passing = value.candidates.some(candidate => candidate.goal_check?.within_limits === true)
@@ -270,8 +291,12 @@ function checkedCma<T extends CmaPreview>(value: T): T {
 
 export const getStrategicCatalog = (signal?: AbortSignal) => request<StrategicCatalog>('/catalog', undefined, signal)
 export const previewMandate = async (body: MandateStudyRequest, signal?: AbortSignal) => checkedAssessment(await request<MandateAssessment>('/mandates/preview', body, signal))
-export const confirmMandate = async (body: MandateStudyRequest, previewHash: string, signal?: AbortSignal) => {
-  const value = await request<MandateVersion>('/mandates/confirm', { request: body, preview_hash: previewHash, acknowledge_limits: true }, signal)
+export const previewMandateFunding = async (body: MandateStudyRequest, signal?: AbortSignal) =>
+  verified(await request<MandateFundingEcho>('/mandates/funding', body, signal))
+export const confirmMandate = async (body: MandateStudyRequest, previewHash: string, signal?: AbortSignal, replacesMandateId?: string | null) => {
+  const value = await request<MandateVersion>('/mandates/confirm', {
+    request: body, preview_hash: previewHash, acknowledge_limits: true, replaces_mandate_id: replacesMandateId ?? null,
+  }, signal)
   if (!value.assessment?.execution) throw new Error('目标版本缺少对应的诊断记录，已停止交接。')
   checkedAssessment(value.assessment)
   return value
@@ -281,6 +306,8 @@ export const getMandate = async (id: string, signal?: AbortSignal) => {
   if (value.assessment?.preview_hash) checkedAssessment(value.assessment)
   return value
 }
+export const deleteMandate = (id: string, signal?: AbortSignal) =>
+  request<{ deleted: true; id: string }>(`/mandates/${encodeURIComponent(id)}`, undefined, signal, 'DELETE')
 export const riskReference = async (body: RiskReferenceRequest, signal?: AbortSignal) => verified(await request<RiskReference>('/risk-reference', body, signal))
 export const previewCma = async (body: CmaDefinition, signal?: AbortSignal) => checkedCma(await request<CmaPreview>('/cma/preview', cmaRequest(body), signal))
 export const publishCma = async (body: CmaDefinition, previewHash: string, signal?: AbortSignal) => checkedCma(await request<CmaVersion>('/cma', { request: cmaRequest(body), preview_hash: previewHash }, signal))
@@ -291,7 +318,7 @@ export const previewPolicy = async (body: PolicyRequest, signal?: AbortSignal) =
   if (unavailable.some(c => c.id !== 'risk-budget' || !c.unavailable_reason || Object.keys(c.weights).length)) throw new Error('不可用候选的状态不完整，请重新比较。')
   const value: PolicyPreview = { ...wire, candidates: wire.candidates.filter((c): c is PolicyCandidate => c.available !== false), unavailable_candidates: unavailable }
   checkGoalCandidates(value.mandate, value.candidates)
-  if (value.mandate.funding_plan) {
+  if (cashSuccessRequired(value.mandate)) {
     if (!value.funding_execution) throw missingDiagnosis()
     assertFixedNjitExecution(value.funding_execution, '政策资金目标诊断')
   }

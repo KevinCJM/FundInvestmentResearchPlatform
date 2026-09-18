@@ -1,0 +1,147 @@
+import { test, expect, type Page, type TestInfo } from '@playwright/test'
+import { auditTextContrast } from './helpers/contrast'
+
+const api = 'http://127.0.0.1:8126'
+async function connect(page: Page, locale = 'zh-CN') {
+  await page.addInitScript(language => localStorage.setItem('fund-research.i18n.locale', language), locale)
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  return errors
+}
+async function layout(page: Page, info: TestInfo, name: string, heading: string) {
+  await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy()
+  const contrast = await page.getByRole('heading', { name: heading, exact: true }).locator('..').locator('p').evaluate(element => {
+    const color = getComputedStyle(element).color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(x => {
+      const v = x / 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4
+    })
+    return 1.05 / (.2126 * color[0] + .7152 * color[1] + .0722 * color[2] + .05)
+  })
+  expect(contrast).toBeGreaterThanOrEqual(4.5)
+  await expect.poll(() => page.evaluate(auditTextContrast)).toEqual([])
+  await page.screenshot({ path: info.outputPath(`${name}.png`), fullPage: true })
+}
+
+test('两步目标流程只收集目标、风险等级和现金，并展示双有效前沿', async ({ page, request }, info) => {
+  const errors = await connect(page)
+  const fixture = await (await request.get(`${api}/fixture`)).json()
+  await page.clock.setFixedTime(new Date(`${fixture.today}T12:00:00Z`))
+  await page.goto('/pre-investment/objectives')
+  await expect(page.getByRole('heading', { name: '投资目标与约束', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: '添加投资目标与约束', exact: true }).first().click()
+  await expect(page).toHaveURL(/\/pre-investment\/objectives\/new/)
+  await expect(page.getByRole('heading', { name: '添加投资目标与约束', exact: true })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: '投资目标步骤' }).getByRole('button')).toHaveCount(2)
+  await expect(page.getByLabel('目标研究日', { exact: false })).toBeEnabled() // fixture explicitly closes PIT
+  await expect(page.getByLabel('目标研究日', { exact: false })).toHaveValue(fixture.today)
+  await page.getByLabel('目标名称', { exact: true }).fill(`精简目标-${info.project.name}`)
+  await page.getByRole('combobox', { name: '投资目标类型', exact: false }).selectOption('funding_goal')
+  await page.getByLabel(/期末目标金额/).fill('1000000')
+  await layout(page, info, '01-objective', '添加投资目标与约束')
+
+  await expect(page.getByRole('combobox', { name: /风险标尺版本/ })).toHaveValue('')
+  await page.getByRole('combobox', { name: /风险标尺版本/ }).selectOption(fixture.scale.id)
+  await expect(page.getByLabel(/^计价币种/)).toHaveValue('CNY')
+  await page.getByRole('button', { name: /^C3 / }).click()
+  await page.getByLabel(/最低现金占比/).fill('10')
+  await expect(page.getByRole('checkbox', { name: /期末与期间目标需要本金和现金流计划/ })).toBeChecked()
+  await page.getByLabel(/总资金（CNY）/).fill('1000000')
+  await expect(page.getByLabel(/最高预期年波动/)).toHaveCount(0)
+  await expect(page.getByLabel(/风险厌恶/)).toHaveCount(0)
+  await expect(page.getByLabel(/政策来源/)).toHaveCount(0)
+  await expect(page.getByLabel(/CMA/)).toHaveCount(0)
+  await layout(page, info, '02-risk-cash', '添加投资目标与约束')
+
+  await page.getByRole('button', { name: '下一步：结果与确认', exact: true }).click()
+  const pending = page.waitForResponse(r => r.url().endsWith('/mandates/preview') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: '运行目标诊断', exact: true }).click()
+  const response = await pending
+  expect(response.status()).toBe(200)
+  const diagnosis = await response.json()
+  expect(diagnosis.request.cma_id).toBeNull()
+  expect(diagnosis.definition.risk_authorization.selected_max_level).toBe(3)
+  expect(diagnosis.reference_diagnosis.reference_frontier).toHaveLength(101)
+  expect(diagnosis.reference_diagnosis.constrained_frontier).toHaveLength(101)
+  expect(diagnosis.reference_diagnosis.risk_boundaries).toEqual(fixture.scale.preview.result.applied_boundaries)
+  expect(diagnosis.reference_diagnosis.cash_constraint.requested_min_cash_weight).toBeCloseTo(.1)
+  await expect(page.getByRole('heading', { name: '参考前沿与当前约束前沿', exact: true })).toBeVisible()
+  await expect(page.getByText(/C1–C5 始终来自所选风险等级配置/)).toBeVisible()
+  await expect(page.getByText('10.00%', { exact: true }).first()).toBeVisible()
+  await layout(page, info, '03-dual-frontiers', '添加投资目标与约束')
+
+  await page.getByRole('checkbox', { name: /我已核对输入、最终授权上限/ }).check()
+  const confirmed = page.waitForResponse(r => r.url().endsWith('/mandates/confirm') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: '保存新目标版本', exact: true }).click()
+  const savedResponse = await confirmed
+  expect(savedResponse.status()).toBe(201)
+  const saved = await savedResponse.json()
+  expect(saved.definition.boundary_policy.source).toBe('investment_objectives_model_convention_v1')
+  expect(saved.definition.effective_cash_reserve_weight).toBeGreaterThanOrEqual(.1)
+  await expect(page.getByText('只读版本', { exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: /下一步：确定投资范围/ })).toBeVisible()
+
+  // Published objectives are managed from a list, matching Risk Scale Center.
+  await page.getByRole('link', { name: '返回投资目标列表', exact: true }).click()
+  const row = page.getByRole('row', { name: new RegExp(`精简目标-${info.project.name}`) })
+  await expect(row).toBeVisible()
+  await row.getByRole('link', { name: '修改', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '修改投资目标与约束', exact: true })).toBeVisible()
+  const modifiedName = `精简目标-${info.project.name}-修改`
+  await page.getByLabel('目标名称', { exact: true }).fill(modifiedName)
+  await page.getByRole('button', { name: '2. 结果与确认', exact: true }).click()
+  await page.getByRole('button', { name: '运行目标诊断', exact: true }).click()
+  await expect(page.getByText('当前约束下可实现', { exact: true })).toBeVisible()
+  await page.getByRole('checkbox', { name: /我已核对输入、最终授权上限/ }).check()
+  const replacement = page.waitForResponse(r => r.url().endsWith('/mandates/confirm') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: '保存修改后的版本', exact: true }).click()
+  expect((await replacement).status()).toBe(201)
+  await expect(page.getByRole('heading', { name: '已保存投资目标与约束', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: '返回投资目标列表', exact: true }).click()
+  await expect(page.getByText(`精简目标-${info.project.name}`, { exact: true })).toHaveCount(0)
+  const activeRow = page.getByRole('row', { name: new RegExp(modifiedName) })
+  await activeRow.getByRole('button', { name: '删除', exact: true }).click()
+  await page.getByRole('button', { name: '确认删除', exact: true }).click()
+  await expect(page.getByText(modifiedName, { exact: true })).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('相对基准直接使用风险等级代表组合，不要求用户手填基准', async ({ page, request }, info) => {
+  const errors = await connect(page)
+  const fixture = await (await request.get(`${api}/fixture`)).json()
+  await page.clock.setFixedTime(new Date(`${fixture.today}T12:00:00Z`))
+  await page.goto('/pre-investment/objectives')
+  await page.getByRole('link', { name: '添加投资目标与约束', exact: true }).first().click()
+  await page.getByLabel('目标名称', { exact: true }).fill(`相对目标-${info.project.name}`)
+  await page.getByRole('combobox', { name: '投资目标类型', exact: false }).selectOption('benchmark_relative')
+  await page.getByLabel(/目标年超额收益/).fill('0.5')
+  await expect(page.getByLabel(/基准名称/)).toHaveCount(0)
+  await expect(page.getByLabel(/基准大类方案/)).toHaveCount(0)
+  await page.getByRole('combobox', { name: /风险标尺版本/ }).selectOption(fixture.scale.id)
+  await page.getByRole('button', { name: /^C3 / }).click()
+  await page.getByRole('button', { name: '下一步：结果与确认', exact: true }).click()
+  const pending = page.waitForResponse(r => r.url().endsWith('/mandates/preview'))
+  await page.getByRole('button', { name: '运行目标诊断', exact: true }).click()
+  const diagnosis = await (await pending).json()
+  expect(diagnosis.definition.benchmark.source).toBe('risk_scale_reference')
+  expect(diagnosis.definition.benchmark.target_excess_return).toBeCloseTo(.005)
+  expect(Object.values(diagnosis.definition.benchmark.weights).reduce((a: number, b: any) => a + Number(b), 0)).toBeCloseTo(1)
+  await layout(page, info, 'relative-benchmark', '添加投资目标与约束')
+  expect(errors).toEqual([])
+})
+
+test('英语页面在无PIT时研究日可编辑，字段顺序和移动端布局可用', async ({ page }, info) => {
+  const errors = await connect(page, 'en-US')
+  await page.goto('/pre-investment/objectives')
+  await expect(page.getByRole('heading', { name: 'Investment objectives and constraints', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'Add investment objective', exact: true }).first().click()
+  await expect(page.getByRole('heading', { name: 'Add investment objective', exact: true })).toBeVisible()
+  await expect(page.getByLabel(/^Research date/)).toBeEnabled()
+  await page.getByLabel('Name', { exact: true }).focus()
+  await page.keyboard.type('English compact objective')
+  await page.keyboard.press('Tab')
+  await expect(page.getByLabel(/^Research date/)).toBeFocused()
+  await expect(page.getByLabel(/^Base currency/)).toHaveAttribute('readonly')
+  await expect(page.getByRole('navigation', { name: 'Objective workflow steps' }).getByRole('button')).toHaveCount(2)
+  await layout(page, info, 'english-compact', 'Add investment objective')
+  expect(errors).toEqual([])
+})
