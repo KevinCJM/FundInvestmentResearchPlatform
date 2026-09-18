@@ -130,5 +130,43 @@ test('historical intersection to risk scale, five segmentation methods, publish 
   await expect(page.getByRole('link', { name: 'Edit' }).first()).toBeVisible()
   await expect(page.getByRole('button', { name: 'Delete' }).first()).toBeVisible()
   await expect(page.getByText('System default', { exact: true })).toBeVisible()
+
+  const scaleRoot = '/api/strategic-allocation/risk-scales'
+  const originalId = new URL(versionUrl).pathname.split('/').at(-1)!
+  const original = await (await page.request.get(`${scaleRoot}/${originalId}`)).json()
+  const secondRequest = { ...original.preview.request_echo,
+    definition: { ...original.preview.request_echo.definition, name: 'Browser comparison version' } }
+  const secondPreviewResponse = await page.request.post(`${scaleRoot}/preview`, { data: secondRequest })
+  expect(secondPreviewResponse.status()).toBe(200)
+  const secondPreview = await secondPreviewResponse.json()
+  const secondResponse = await page.request.post(`${scaleRoot}/confirm`, { data: { request: secondRequest,
+    preview_hash: secondPreview.preview_hash, confirm: true, idempotency_key: 'browser-comparison-version',
+    acknowledged_warnings: secondPreview.warnings.map((warning: any) => warning.code) } })
+  expect(secondResponse.status()).toBe(201)
+  // Use the real paginated API with one row per page to exercise navigation compactly.
+  await page.route('**/api/strategic-allocation/risk-scales?*', async route => {
+    const url = new URL(route.request().url()); url.searchParams.set('limit', '1')
+    await route.fulfill({ response: await route.fetch({ url: url.toString() }) })
+  })
+  await page.reload()
+  await page.getByRole('checkbox', { name: /Browser comparison version/ }).check()
+  await page.getByRole('button', { name: 'Load more versions', exact: true }).click()
+  await page.getByRole('checkbox', { name: /浏览器合成测试风险标尺/ }).check()
+  await page.getByRole('link', { name: 'Compare selected versions', exact: true }).click()
+  await expect(page).toHaveURL(/risk-scales\/compare\?left=.+&right=.+/)
+  await expect(page.getByRole('heading', { name: 'Browser comparison version · v2', exact: true })).toBeVisible()
+  for (const width of [320, 768, 1440]) {
+    await page.setViewportSize({ width, height: 1000 }); await noOverflow(page); await shot(page, `comparison-en-${width}`)
+  }
+  await page.getByRole('link', { name: 'Back to risk scales', exact: true }).click()
+  await page.getByRole('button', { name: 'Load more versions', exact: true }).click()
+  const defaultRow = page.getByRole('row').filter({ hasText: 'System default' })
+  await defaultRow.getByRole('button', { name: 'Delete', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Confirm delete', exact: true })).toBeDisabled()
+  await page.getByRole('checkbox', { name: /I explicitly confirm clearing/ }).check()
+  await page.getByRole('button', { name: 'Confirm delete', exact: true }).click()
+  await expect(page.getByText('System default', { exact: true })).toHaveCount(0)
+  const retired = await (await page.request.get(`${scaleRoot}/${originalId}`)).json()
+  expect(retired.retired).toBe(true)
   expect(browserErrors).toEqual([])
 })

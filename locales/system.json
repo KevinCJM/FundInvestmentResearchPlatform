@@ -1292,6 +1292,7 @@
   "riskScales.resume": {"zh-CN":"继续编辑","en-US":"Resume editing"},
   "riskScales.noDrafts": {"zh-CN":"暂无已保存草稿；新建后可显式保存。","en-US":"No drafts saved yet. Create a scale and save it explicitly."},
   "riskScales.compareSelected": {"zh-CN":"比较选中版本","en-US":"Compare selected versions"},
+  "riskScales.loadMore": {"zh-CN":"加载更多版本","en-US":"Load more versions"},
   "riskScales.exactlyTwo": {"zh-CN":"请选择恰好两个不同的版本。","en-US":"Select exactly two different versions."},
   "riskScales.readonly": {"zh-CN":"只读版本","en-US":"Read-only version"},
   "riskScales.copyInputs": {"zh-CN":"基于此版本新建研究","en-US":"Copy inputs to a new study"},

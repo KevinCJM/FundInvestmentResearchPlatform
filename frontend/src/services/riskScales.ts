@@ -41,7 +41,7 @@ export const riskScales = {
   confirm: (value: ConfirmRequest, signal?: AbortSignal) => request<VersionView>('/risk-scales/confirm', signal, value, 'POST'),
   version: (id: string, signal?: AbortSignal) => request<VersionView>(`/risk-scales/${idPath(id)}`, signal),
   activate: (id: string, value: ActivateRequest, signal?: AbortSignal) => request<DefaultBinding>(`/risk-scales/${idPath(id)}/activate`, signal, value, 'POST'),
-  retire: (id: string, value: RetireRequest, signal?: AbortSignal) => request<unknown>(`/risk-scales/${idPath(id)}/retire`, signal, value, 'POST'),
+  retire: (id: string, value: RetireRequest, signal?: AbortSignal) => request<DefaultBinding>(`/risk-scales/${idPath(id)}/retire`, signal, value, 'POST'),
   compare: (left_id: string, right_id: string, signal?: AbortSignal) => request<CompareResponse>('/risk-scales/compare', signal, { left_id, right_id }, 'POST'),
   sources: (kind: string, q: string, offset = 0, signal?: AbortSignal) => request<SourceCatalog>(`/reference-inputs/catalog?${new URLSearchParams({ kind, q, offset: String(offset), limit: '20' })}`, signal),
   reference: (id: string, signal?: AbortSignal) => request<ReferenceVersion>(`/reference-inputs/${idPath(id)}`, signal),

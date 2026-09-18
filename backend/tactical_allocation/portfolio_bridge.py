@@ -26,7 +26,8 @@ def validate_decision_application(decision: dict, data: TacticalAllocationData, 
     request, recommendation = preview["request"], preview["recommendation"]
     if baseline.get("policy"):
         from backend.strategic_allocation.policy_gate import require_policy_application
-        require_policy_application(baseline, recommendation["weights"], request["max_tracking_error"], request["as_of"])
+        require_policy_application(baseline, recommendation["weights"], request["max_tracking_error"], request["as_of"],
+            workspace=data.universe_dir, data_dir=data.data_dir)
     try:
         expires = date.fromisoformat(recommendation["expires_on"])
         as_of = date.fromisoformat(request["as_of"])

@@ -413,8 +413,10 @@ class TacticalAllocationService:
             payload["walk_forward"] = evaluate_walk_forward(request, data, signals, base, lower, upper, limits, group_args)
         if baseline.get("policy"):
             from backend.strategic_allocation.policy_gate import check_policy
-            payload["policy_check"] = check_policy(baseline, payload["recommendation"]["weights"], request.max_tracking_error, str(request.as_of))
+            payload["policy_check"] = check_policy(baseline, payload["recommendation"]["weights"], request.max_tracking_error, str(request.as_of),
+                workspace=self.data.universe_dir, data_dir=self.data.data_dir)
             payload["warnings"].extend(payload["policy_check"]["violations"])
+            payload["warnings"].extend(payload["policy_check"]["risk_scale_blockers"])
             payload["recommendation"]["expires_on"] = min(payload["recommendation"]["expires_on"], baseline["policy"]["expires_on"])
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         # Keep the eventual immutable manifest within its checked reader budget.
