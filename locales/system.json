@@ -1360,7 +1360,7 @@
   "riskScales.problem.UNSTABLE_CALIBRATION": {"zh-CN":"101/200 点复核未稳定，请核对差异后再采用。","en-US":"The 101 / 200 point check is unstable. Review differences before adopting the result."},
   "riskScales.problem.ENDPOINT_MISMATCH": {"zh-CN":"两次前沿端点不一致，无法完成稳定性验证。","en-US":"The two frontier endpoint sets differ; stability validation cannot be completed."},
   "riskScales.problem.STABILITY_UNAVAILABLE": {"zh-CN":"200 点分档验证失败，当前自动标尺不能发布。","en-US":"The 200-point segmentation check failed. This automatic scale cannot be published."},
-  "riskScales.problem.RETROSPECTIVE_PORTRAITS": {"zh-CN":"风险画像仅为事后参考；ES 为日频经验值，不是年度损失保证。再平衡口径以该版本冻结证据为准。","en-US":"Risk portraits are retrospective references. ES is an empirical daily value, not an annual loss guarantee. Rebalancing follows the evidence frozen with this version."},
+  "riskScales.problem.RETROSPECTIVE_PORTRAITS": {"zh-CN":"风险画像仅为事后参考；ES 为日频经验值，不是年度损失保证。","en-US":"Risk portraits are retrospective references. ES is an empirical daily value, not an annual loss guarantee."},
   "riskScales.problem.VERSION_RETIRED": {"zh-CN":"版本已退休，仅供历史读取。","en-US":"The version is retired and available for historical reading only."},
   "riskScales.problem.VERSION_EXPIRED": {"zh-CN":"版本已超过硬失效日。","en-US":"The version has passed its hard expiry date."},
   "riskScales.problem.REVIEW_DUE": {"zh-CN":"版本已到复核日，请建立复核后的新版本。","en-US":"The review date has arrived. Create a newly reviewed version."},
