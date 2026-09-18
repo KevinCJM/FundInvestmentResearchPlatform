@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const python = process.env.INDICATOR_TEST_PYTHON || 'python3'
 export default defineConfig({
-  testDir: '.', testMatch: ['scenario-remediation.spec.ts', 'regime-full-stack.spec.ts'], workers: 1, timeout: 90_000,
+  testDir: '.', testMatch: ['scenario-remediation.spec.ts', 'regime-full-stack.spec.ts', 'market-state-workflow.spec.ts'], workers: 1, timeout: 90_000,
   expect: { timeout: 15_000 }, reporter: [['list']],
   outputDir: process.env.SCENARIO_AUDIT_OUTPUT_DIR || path.join(root, 'frontend/test-results/scenario-remediation'),
   use: { baseURL: 'http://127.0.0.1:4184', channel: 'chrome', headless: true, trace: 'retain-on-failure' },

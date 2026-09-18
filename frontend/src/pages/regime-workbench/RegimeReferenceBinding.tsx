@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Button } from '../../components/ui'
+import { useEffect, useRef, useState } from 'react'
+import { Badge, Button } from '../../components/ui'
 import { getRegimeGraphDefinition, listHistoricalReferences, type HistoricalReference, type RegimeGraphDefinition } from '../../services/regimeGraph'
 import { bindStudyReference, studyMappingIssue } from './regimeStudy'
 
@@ -13,6 +13,7 @@ export default function RegimeReferenceBinding({ definition, onChange, onHistori
   const [error, setError] = useState('')
   const [source, setSource] = useState<{ key: string; text: string }>({ key: '', text: '' })
   const [retry, setRetry] = useState(0)
+  const adoptedReference = useRef('')
   useEffect(() => {
     if (!active) return
     const controller = new AbortController()
@@ -24,6 +25,14 @@ export default function RegimeReferenceBinding({ definition, onChange, onHistori
   }, [active, retry])
   const key = referenceKey(definition.study?.reference)
   const selected = items.find(item => referenceKey(item) === key)
+  useEffect(() => {
+    if (active && !disabled && selected && adoptedReference.current !== key) {
+      adoptedReference.current = key
+      if (!definition.id && !definition.graph.nodes.length && JSON.stringify(definition.states) !== JSON.stringify(selected.states)) {
+        onChange(bindStudyReference(definition, definition.study?.reference, selected.states))
+      }
+    }
+  }, [active, disabled, selected, key, definition, onChange])
   useEffect(() => {
     if (!selected || !active) return
     const controller = new AbortController()
@@ -40,9 +49,9 @@ export default function RegimeReferenceBinding({ definition, onChange, onHistori
   return <section aria-label="历史参考绑定" className="mb-4 min-w-0 space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-sm tabular-nums">
     <label className="block font-semibold text-slate-700">要识别的历史参考<select aria-label="历史参考版本" className={field} value={key} disabled={disabled || loading || Boolean(error)} onChange={event => {
       const item = items.find(candidate => referenceKey(candidate) === event.target.value)
-      onChange(bindStudyReference(definition, item ? { run_id: item.run_id, publication_id: item.publication_id, content_hash: item.content_hash } : undefined))
+      onChange(bindStudyReference(definition, item ? { run_id: item.run_id, publication_id: item.publication_id, content_hash: item.content_hash } : undefined, item?.states))
     }}>
-      <option value="">暂不绑定参考</option>
+      <option value="">请选择已确认的历史参考</option>
       {key && !selected && <option value={key} disabled>当前绑定版本不在可用目录中</option>}
       {items.map(item => <option key={referenceKey(item)} value={referenceKey(item)}>{item.name} · v{item.definition_revision} · {item.as_of || '截至日未提供'} · {item.created_at}</option>)}
     </select></label>
@@ -50,12 +59,14 @@ export default function RegimeReferenceBinding({ definition, onChange, onHistori
     {loading && <div role="status" className="space-y-2 text-slate-600"><div className="h-4 rounded bg-slate-100" />正在读取历史参考…</div>}
     {error && <div role="alert" className="text-rose-800">{error}<Button onClick={() => setRetry(value => value + 1)}>重试读取参考</Button></div>}
     {!loading && !error && !items.length && <div className="space-y-2 text-slate-600"><p>还没有已确认的历史参考。先生成历史区间，再保存为历史参考。</p><Button onClick={onHistorical} disabled={!onHistorical}>前往历史状态定义</Button></div>}
-    {!key && <p className="text-slate-600">可先探索实时识别；选择历史参考后才能评价准确率与校准概率。</p>}
+    {!key && <p className="text-slate-600">先选择历史参考，再建立识别同一组状态的实时模型。一份参考可以比较多个实时模型。</p>}
     {key && !loading && !error && !selected && <p role="alert" className="text-amber-900">参考版本不可用，请重新选择；当前不能验证。</p>}
     {selected && <>
+      <Badge tone="neutral">已绑定固定参考 · 不代表识别已通过验证</Badge>
       <p className="break-words text-slate-600">{selected.name} · 第 {selected.definition_revision} 版 · {({ daily: '日频', monthly: '月频', weekly: '周频' } as Record<string, string>)[selected.frequency || ''] || selected.frequency || '频率未提供'} · 截至 {selected.as_of || '未提供'}</p>
       <p className="text-xs text-slate-600">观察范围：{selected.series_summary?.first_observation_date || '未提供'} 至 {selected.series_summary?.last_observation_date || '未提供'}。</p>
       <p className="break-words text-xs text-slate-600">数据来源：{source.key === key ? source.text : '正在读取…'}</p>
+      <p className="text-xs text-slate-600">更换参考或状态对应关系后，需保存新修订并重新验证、校准。已有版本与报告保留。</p>
       <details><summary className="min-h-10 cursor-pointer text-slate-600">状态对应与来源</summary>
         <div className="grid gap-3 sm:grid-cols-2">{definition.states.map(state => <label key={state.id} className="min-w-0 text-slate-700">{state.label}（{state.id}）<select aria-label={`参考状态：${state.id}`} className={field} disabled={disabled} value={definition.study?.state_mapping ? definition.study.state_mapping[state.id] || '' : selected.states.some(item => item.id === state.id) ? state.id : ''} onChange={event => {
           const { calibration_id: _calibration, qualification_id: _qualification, ...study } = definition.study!

@@ -281,7 +281,7 @@ test('通用区间滚动：自定义回撤、搜索、画布、窗口参数与�
   expect(errors).toEqual([])
 })
 
-test('内置时序迁移：v3目录、KDJ短窗口、画布与Excel', async ({ page, request }, info) => {
+test('内置时序：目录窗口参数、KDJ短窗口、画布与Excel', async ({ page, request }, info) => {
   test.setTimeout(150_000)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
@@ -289,7 +289,11 @@ test('内置时序迁移：v3目录、KDJ短窗口、画布与Excel', async ({ p
   const builtins = catalog.items.filter((item: { source: string; result_kind: string }) => item.source === 'built_in' && item.result_kind === 'time_series')
   expect(builtins).toHaveLength(5)
   for (const definition of builtins) {
-    expect(definition.revision).toBe(3)
+    // Built-ins ship one definition each, opening exactly their rolling width.
+    expect(definition.revision).toBe(1)
+    expect(definition.parameter_contract_version).toBe('1.0')
+    expect(definition.parameter_schema.map((item: { id: string }) => item.id)).toEqual(['window'])
+    expect(definition.name.startsWith('N 日')).toBe(true)
     for (const channel of definition.series_outputs) {
       expect(channel.expression).toContain('rolling_apply(')
       expect(channel.expression).not.toContain('rolling_window(')
@@ -307,12 +311,12 @@ test('内置时序迁移：v3目录、KDJ短窗口、画布与Excel', async ({ p
   expect(all.execution.request_time_compilation).toBe(0)
   expect(all.execution.python_fallback).toBe(0)
   await page.goto('/settings/indicators-models')
-  await page.getByRole('button', { name: /^KDJ/ }).click()
+  await page.getByRole('button', { name: /^N 日 KDJ/ }).click()
   await page.getByRole('tab', { name: /画布/ }).click()
   const canvasNodes = page.locator('.react-flow__node')
   await expect(canvasNodes.filter({ hasText: '滚动计算' })).toHaveCount(2)
   await expect(canvasNodes.filter({ hasText: '有限值判断' })).toHaveCount(2)
-  await page.screenshot({ path: info.outputPath('builtin-v3-kdj-graph.png'), fullPage: true })
+  await page.screenshot({ path: info.outputPath('builtin-kdj-graph.png'), fullPage: true })
   const preview = page.locator('#workspace-tab-preview')
   if (await preview.isVisible()) await preview.click()
   else await page.locator('#indicator-tab-preview').click()
@@ -326,7 +330,7 @@ test('内置时序迁移：v3目录、KDJ短窗口、画布与Excel', async ({ p
   // Studio previews use an inline draft; version identity is verified on the
   // catalogue/reference execution above, then compare every displayed value.
   const canonical = all.results.find((item: { indicator_id: string }) => item.indicator_id === 'builtin-kdj-series')
-  expect(canonical.indicator_revision).toBe(3)
+  expect(canonical.indicator_revision).toBe(1)
   expect(result.results[0].channels).toEqual(canonical.channels)
   expect(result.results[0].channels.map((item: { id: string }) => item.id)).toEqual(['k', 'd', 'j'])
   expect(typeof result.results[0].channels[0].values[0]).toBe('number')
@@ -334,7 +338,7 @@ test('内置时序迁移：v3目录、KDJ短窗口、画布与Excel', async ({ p
   const downloading = page.waitForEvent('download')
   await page.getByRole('button', { name: '下载 Excel 计算逻辑' }).click()
   expect(await (await downloading).failure()).toBeNull()
-  await page.screenshot({ path: info.outputPath('builtin-v3-kdj-preview.png'), fullPage: true })
+  await page.screenshot({ path: info.outputPath('builtin-kdj-preview.png'), fullPage: true })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
   expect(errors).toEqual([])
 })

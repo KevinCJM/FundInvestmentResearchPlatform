@@ -773,7 +773,12 @@
         "情景模拟",
         "牛熊",
         "美林时钟",
-        "数据实验室"
+        "数据实验室",
+        "零相位滤波",
+        "Butterworth",
+        "Savitzky",
+        "Ehlers",
+        "历史参考绑定"
       ],
       "negative_keywords": [
         "static copy only",

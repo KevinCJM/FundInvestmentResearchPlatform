@@ -50,7 +50,7 @@ test('事件库空筛选及字段错误连接真实 API', async ({ page }, info)
   await visual(page, info.outputPath('event-error.png'))
 })
 
-test('确认历史参考后下一步自动带入精确发布版本', async ({ page }, info) => {
+test('确认历史参考后刷新仍能下一步带入精确发布版本', async ({ page }, info) => {
   const identity = await connect(page)
   await page.goto(`/settings/scenario-algorithms?center=historical&definition=${identity.historical_id}&revision=1`)
   await expect(page.getByLabel('研究名称')).toHaveValue('浏览器验收·历史定义（合成数据）')
@@ -63,9 +63,16 @@ test('确认历史参考后下一步自动带入精确发布版本', async ({ pa
   const version = await response.json()
   expect(version.historical_reference?.content_hash).toBeTruthy()
   await page.keyboard.press('Escape')
+  await expect(page.getByRole('button', { name: '下一步：建立实时识别', exact: true })).toBeEnabled()
+  await page.reload()
+  await expect(page.getByLabel('研究名称')).toHaveValue('浏览器验收·历史定义（合成数据）')
+  await expect(page.getByRole('button', { name: '下一步：建立实时识别', exact: true })).toBeEnabled()
+  await visual(page, info.outputPath('historical-reference-restored.png'))
   await page.getByRole('button', { name: '下一步：建立实时识别', exact: true }).click()
   const reference = version.historical_reference
   await expect(page.getByLabel('历史参考版本')).toHaveValue(JSON.stringify([reference.run_id, reference.publication_id, reference.content_hash]))
+  await expect(page.getByText('已绑定参考 · 待验证', { exact: true })).toBeVisible()
+  await expect(page.getByText('正在加载模板与可用节点…', { exact: true })).toBeHidden()
   await visual(page, info.outputPath('historical-reference-handoff.png'))
 })
 

@@ -22,9 +22,10 @@ from .condition_numba import CONDITION_KERNELS, condition_compare_kernel, select
 from .manual_event_numba import MANUAL_EVENT_KERNELS
 from causality.temporal_numba import TEMPORAL_KERNELS
 from computation_graph.series_numba import causal_available_kernel, valid_series_output_kernel
+from computation_graph.smoothing_numba import SMOOTHING_KERNELS
 
 
-KERNEL_VERSION = "regime-graph-kernels/2.10.0"
+KERNEL_VERSION = "regime-graph-kernels/2.12.0"
 _F64 = float64[::1]
 _I64 = int64[::1]
 _F64_2D = float64[:, ::1]
@@ -1107,6 +1108,7 @@ KERNELS: dict[str, CPUDispatcher] = {
     "causal_available": causal_available_kernel,
     "valid_series_output": valid_series_output_kernel,
     **TREND_KERNELS,
+    **SMOOTHING_KERNELS,
     **PEAK_TROUGH_KERNELS,
     **SEGMENT_KERNELS,
     **CONDITION_KERNELS,

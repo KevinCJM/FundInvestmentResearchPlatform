@@ -11,7 +11,7 @@ from research_series.product_sources import PRODUCT_SOURCES
 from .granular_registry import CONDITION, PHASE_CODES, granularity_metadata, register_granular_nodes
 
 
-REGISTRY_VERSION = "regime-graph-nodes/2.14.0"
+REGISTRY_VERSION = "regime-graph-nodes/2.16.0"
 
 SERIES = "series<float64>"
 BOOL_SERIES = "series<bool>"
@@ -1075,6 +1075,8 @@ def register_segment_nodes(registry, numeric_node, port, parameter):
 
 register_segment_nodes(NODE_REGISTRY, _numeric_node, _port, _trend_parameter)
 register_series_operators(NODE_REGISTRY, _numeric_node, _port)
+from computation_graph.smoothing_operators import register_smoothing_operators
+register_smoothing_operators(NODE_REGISTRY, _numeric_node, _port)
 register_granular_nodes(NODE_REGISTRY, _numeric_node, _port)
 _manual_events_node = _numeric_node(
     "annotation.manual_events",
