@@ -135,6 +135,13 @@ export function mandateStepIssues(value: MandateDefinition, cutoff: string): [st
       || !integer(flow.first_month, 1, value.horizon_years * 12)
       || !integer(flow.last_month, flow.first_month, value.horizon_years * 12)
       || ![1, 3, 12].includes(flow.every_months))) riskCash = '现金流须有名称、正金额及期限内的开始/结束月份。'
+    else if (value.cash_protection?.mode === 'payments_only' && !cash.flows.some(flow => flow.kind === 'withdrawal')) {
+      riskCash = '仅支付保护须至少有一笔必要支付，请添加支付或改为仅资金算账。'
+    }
+    else if (value.cash_protection?.mode === 'payments_and_terminal_floor'
+      && (!finite(value.cash_protection.terminal_floor?.amount, 0, 1e13) || value.cash_protection.terminal_floor!.amount <= 0)) {
+      riskCash = '请填写有效且大于零的期末保护金额。'
+    }
   }
   return [basic, goal, riskCash]
 }
@@ -161,6 +168,10 @@ export const levelReaches = (reference: number | null | undefined, target: numbe
 /** 最后一次真正发生的支付月：开始月 + k×频率，不越过投资期限。 */
 export const lastPaymentMonth = (first: number, everyMonths: number, horizonMonths: number) =>
   first + Math.max(0, Math.floor((horizonMonths - first) / everyMonths)) * everyMonths
+
+/** Keep a recurring draft distinct from once; an out-of-horizon end blocks submission. */
+export const recurringLastMonth = (first: number, everyMonths: number, horizonMonths: number) =>
+  Math.max(first + everyMonths, lastPaymentMonth(first, everyMonths, horizonMonths))
 
 export function modelMonthLabel(day: string, month: number): string {
   const start = new Date(`${day}T00:00:00Z`)

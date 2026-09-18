@@ -1,7 +1,7 @@
 import { Button } from '../ui'
 import { Field, inputClass, NumberInput } from '../risk-models/ResearchUI'
 import type { CashBudget, FundingFlow, FundingSummary, MandateDefinition } from '../../services/strategicAllocation'
-import { amountText, lastPaymentMonth, modelMonthLabel, newCashBudget } from './model'
+import { amountText, recurringLastMonth, modelMonthLabel, newCashBudget } from './model'
 import { useMandateText } from './text'
 
 export default function CashBudgetFields({ value, onChange, funding }: {
@@ -17,7 +17,7 @@ export default function CashBudgetFields({ value, onChange, funding }: {
   const terminal = required ? value.funding_target ?? null : value.cash_protection?.terminal_floor ?? null
   const setTerminal = (amount: number, basis: 'nominal' | 'real' = terminal?.amount_basis ?? 'nominal') =>
     onChange(required ? { funding_target: { amount, amount_basis: basis } }
-      : { cash_protection: Number.isFinite(amount) && amount > 0
+      : { cash_protection: value.cash_protection?.mode === 'payments_and_terminal_floor' || Number.isFinite(amount) && amount > 0
           ? { mode: 'payments_and_terminal_floor', terminal_floor: { amount, amount_basis: basis } } : null })
   // Restated from the server's own funding numbers; no schedule arithmetic runs here.
   const net = funding ? funding.investable_capital + funding.total_contributions - funding.total_withdrawals : null
@@ -38,14 +38,22 @@ export default function CashBudgetFields({ value, onChange, funding }: {
       <span>{required ? t('cashRequiredForFunding') : t('useCashBudget')}</span>
     </label>
     {!cash ? <p className="text-sm leading-6 text-slate-600">{t('cashOptionalSimple')}</p> : <>
+      {!required && <Field label={t('cashProtection')} hint={t('cashProtectionHint')}>
+        <select className={inputClass} value={value.cash_protection?.mode ?? 'none'} onChange={event =>
+          onChange({ cash_protection: event.target.value === 'none' ? null : event.target.value === 'payments_only'
+            ? { mode: 'payments_only' } : { mode: 'payments_and_terminal_floor', terminal_floor: terminal ?? { amount: NaN, amount_basis: 'nominal' } } })}>
+          <option value="none">{t('noProtection')}</option><option value="payments_only">{t('paymentsOnly')}</option>
+          <option value="payments_and_terminal_floor">{t('paymentsAndFloor')}</option>
+        </select>
+      </Field>}
       {cash.balance_as_of !== value.as_of && <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
         <p role="status" className="text-sm text-amber-900">{t('cashRollRequired', { from: cash.balance_as_of, to: value.as_of })}</p>
         <Button onClick={() => patch({ balance_as_of: value.as_of })}>{t('confirmCashRoll')}</Button>
       </div>}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label={`${t('capital')}（${value.currency}）`} hint={t('capitalHint')}><NumberInput className={inputClass} value={cash.total_capital} min={0} onValueChange={n => patch({ total_capital: n })} /></Field>
-        <Field label={`${t(required ? 'terminalTarget' : 'terminalFloor')}（${value.currency}）`} hint={t(required ? 'terminalTargetHint' : 'terminalFloorHint')}>
-          <NumberInput className={inputClass} value={terminal?.amount ?? NaN} min={0} onValueChange={setTerminal} /></Field>
+        {value.cash_protection?.mode !== 'payments_only' && <Field label={`${t(required ? 'terminalTarget' : 'terminalFloor')}（${value.currency}）`} hint={t(required ? 'terminalTargetHint' : 'terminalFloorHint')}>
+          <NumberInput className={inputClass} value={terminal?.amount ?? NaN} min={0} onValueChange={setTerminal} /></Field>}
       </div>
       {gap !== null && funding && <p className="rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-700">
         {t('fundingBridge', { capital: amountText(funding.investable_capital), contributions: amountText(funding.total_contributions),
@@ -66,13 +74,13 @@ export default function CashBudgetFields({ value, onChange, funding }: {
             <Field label={label('name')}><input className={inputClass} maxLength={120} value={flow.name} onChange={e => update({ name: e.target.value })} /></Field>
             <Field label={label('direction')}><select className={inputClass} value={flow.kind} onChange={e => update({ kind: e.target.value as FundingFlow['kind'] })}><option value="contribution">{t('contribution')}</option><option value="withdrawal">{t('payment')}</option></select></Field>
             <Field label={`${label('amount')}（${value.currency}）`}><NumberInput className={inputClass} value={flow.amount} min={0} onValueChange={n => update({ amount: n })} /></Field>
-            <Field label={label('first_month')}><select className={inputClass} value={flow.first_month} onChange={e => { const first = Number(e.target.value); update({ first_month: first, last_month: once ? first : lastPaymentMonth(first, flow.every_months, months) }) }}>
+            <Field label={label('first_month')}><select className={inputClass} value={flow.first_month} onChange={e => { const first = Number(e.target.value); update({ first_month: first, last_month: once ? first : recurringLastMonth(first, flow.every_months, months) }) }}>
               {Array.from({ length: months }, (_, month) => monthOption(month + 1))}
             </select></Field>
             <Field label={label('last_month')} hint={t('lastMonthHint')}><input className={inputClass} readOnly value={monthText(flow.last_month)} /></Field>
             <Field label={label('frequency')}><select className={inputClass} value={once ? 'once' : String(flow.every_months)}
               onChange={e => update(e.target.value === 'once' ? { every_months: 1, last_month: flow.first_month }
-                : { every_months: Number(e.target.value) as 1 | 3 | 12, last_month: lastPaymentMonth(flow.first_month, Number(e.target.value), months) })}>
+                : { every_months: Number(e.target.value) as 1 | 3 | 12, last_month: recurringLastMonth(flow.first_month, Number(e.target.value), months) })}>
               {['once', '1', '3', '12'].map(key => <option key={key} value={key}>{t(key === 'once' ? 'everyOnce' : `every${key}`)}</option>)}
             </select></Field>
           </div>
