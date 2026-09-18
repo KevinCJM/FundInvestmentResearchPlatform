@@ -445,6 +445,7 @@ class RiskScaleService:
         definition = PreviewRequest.model_validate(item['preview']['request_echo']).definition
         return {**{k: item[k] for k in ('id', 'name', 'artifact_type', 'content_hash', 'scheme_id', 'version_number', 'created_at', 'immutable', 'preview')},
                 'current_eligibility': self._current(item, state), 'retired': identifier in state['retired'],
+                'current_default_eligibility': self._current(item, state, default=True),
                 'review_due_at': definition.review_due_at, 'review_status': self._review_status(definition.review_due_at)}
 
     def catalog(self, offset=0, limit=50, base_currency=None, risk_basis_id=None):

@@ -413,3 +413,8 @@ def test_unstable_automatic_calibration_cannot_be_default(setup, monkeypatch, ad
     old = svc._item(version['id'])
     old['preview']['default_eligibility'] = {'eligible': True, 'blockers': []}
     assert not svc._current(old, default=True)['eligible']
+    monkeypatch.setattr(svc, '_item', lambda identifier: old)
+    view = svc.get_version(version['id'])
+    assert view['preview']['default_eligibility']['eligible']
+    assert not view['current_default_eligibility']['eligible']
+    assert 'UNSTABLE_CALIBRATION' in [x['code'] for x in view['current_default_eligibility']['blockers']]
