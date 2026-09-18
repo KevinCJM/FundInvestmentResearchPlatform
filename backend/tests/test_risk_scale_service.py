@@ -390,3 +390,31 @@ def test_constraints_cannot_exclude_low_risk_space_and_keep_default_qualificatio
     pre=client.post(P+'/preview',json={'definition':d}).json()
     assert not pre['default_eligibility']['eligible']
     assert 'CASH_CONSTRAINT_COVERAGE' in [x['code'] for x in pre['default_eligibility']['blockers']]
+
+
+@pytest.mark.parametrize('adjusted', [False, True])
+def test_unstable_automatic_calibration_cannot_be_default(setup, monkeypatch, adjusted):
+    svc, _, inputs = setup
+    reference, _ = freeze_reference(svc, inputs)
+    d = definition(reference)
+    if adjusted:
+        stable = svc.preview(PreviewRequest(definition=d))
+        d['segmentation'] = {'algorithm_id': 'frontier_shape_dp_v2',
+                             'adjusted_caps': stable['result']['applied_boundaries']}
+    monkeypatch.setattr(numeric, 'boundary_stability_kernel', lambda *args: (.2, 1))
+    version, _, preview = publish(svc, d)
+    assert preview['publication_eligibility']['eligible']
+    assert not preview['default_eligibility']['eligible']
+    assert 'UNSTABLE_CALIBRATION' in [x['code'] for x in preview['default_eligibility']['blockers']]
+    with pytest.raises(IndicatorDomainError) as error:
+        svc.activate(version['id'], ActivateRequest(confirm=True, expected_revision=0))
+    assert error.value.code == 'DEFAULT_INELIGIBLE'
+    assert svc.get_version(version['id'])['content_hash'] == version['content_hash']
+    old = svc._item(version['id'])
+    old['preview']['default_eligibility'] = {'eligible': True, 'blockers': []}
+    assert not svc._current(old, default=True)['eligible']
+    monkeypatch.setattr(svc, '_item', lambda identifier: old)
+    view = svc.get_version(version['id'])
+    assert view['preview']['default_eligibility']['eligible']
+    assert not view['current_default_eligibility']['eligible']
+    assert 'UNSTABLE_CALIBRATION' in [x['code'] for x in view['current_default_eligibility']['blockers']]

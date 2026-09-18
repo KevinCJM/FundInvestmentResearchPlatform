@@ -318,3 +318,22 @@ it('自定义加权基准按资产名称列出权重，种子权重不带求解�
   expect(await screen.findByText('成分 000300.SH 100.00%')).toBeInTheDocument()
   expect(screen.getByText('现金资产 · 参考利率 1.00%')).toBeInTheDocument()
 })
+
+it.each(['draft', 'editFrom', 'manual'])('日期变化不自动改写现金事实，%s入口须明确确认预算', async mode => {
+  researchClock.day = mode === 'manual' ? null : '2026-09-18'
+  install(); const user = userEvent.setup()
+  const request = boundaryStudy()
+  const entry = mode === 'editFrom' ? `/pre-investment/objectives/new?editFrom=${savedVersion.id}` : '/pre-investment/objectives/new'
+  ready(request, entry)
+  await screen.findByLabelText('目标名称')
+  if (mode === 'manual') fireEvent.change(screen.getByLabelText(/目标研究日/), { target: { value: '2026-09-18' } })
+  const confirm = await screen.findByRole('button', { name: '我已核对资金和现金流，确认按新研究日使用' })
+  const pending = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!
+  expect(pending.definition.as_of).toBe('2026-09-18')
+  expect(pending.definition.cash_budget).toEqual(request.definition.cash_budget)
+  expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeDisabled()
+  await user.click(confirm)
+  const rolled = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!
+  expect(rolled.definition.cash_budget).toEqual({ ...request.definition.cash_budget, balance_as_of: '2026-09-18' })
+  expect(screen.queryByRole('button', { name: '我已核对资金和现金流，确认按新研究日使用' })).not.toBeInTheDocument()
+})

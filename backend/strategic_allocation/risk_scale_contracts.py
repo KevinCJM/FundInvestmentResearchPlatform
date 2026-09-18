@@ -228,6 +228,7 @@ class VersionView(Contract):
     immutable: Literal[True] = True
     preview: PreviewResponse
     current_eligibility: Eligibility
+    current_default_eligibility: Eligibility
     retired: bool
     review_due_at: date | None = None
     review_status: Literal['none', 'scheduled', 'upcoming', 'due'] = 'none'

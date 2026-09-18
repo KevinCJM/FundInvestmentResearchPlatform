@@ -341,6 +341,7 @@ class RiskScaleService:
             if cash and grids is not None and (grids[0][3][0] != 0 or grids[0][2][0, 0] > numeric.BOUNDARY_TOL):
                 default_blockers.append(problem('CASH_CONSTRAINT_COVERAGE', '当前参考约束排除了零风险现金端点，不能设为全范围系统默认标尺。'))
             warnings.append(problem('RETROSPECTIVE_PORTRAITS', '非现金代表组合按各代理配置的再平衡规则回放，仅是事后画像；ES 为日频经验值，不是年度损失保证。'))
+        default_blockers.extend(self._stability_default_blockers(result))
         payload = {'request_echo': request.model_dump(mode='json'),
             'resolved_refs': {'reference_inputs': d.reference_input_ref.model_dump()},
             'data_fingerprints': {'reference_inputs': reference['content_hash'], 'means': array_digest(mu), 'covariance': array_digest(covariance),
@@ -399,6 +400,14 @@ class RiskScaleService:
         self.artifacts.arrays(identifier)
         return item
 
+    @staticmethod
+    def _stability_default_blockers(result):
+        stability = result.get('stability') or {}
+        if (stability.get('status') == 'unstable_calibration'
+                or stability.get('algorithm_stability_status') == 'unstable_calibration'):
+            return [problem('UNSTABLE_CALIBRATION', '101/200 点分档复核不稳定，不能设为系统默认；请调整研究输入并重新验证。')]
+        return []
+
     def _current(self, item, state=None, default=False):
         state = self.store.read() if state is None else state
         blockers = []
@@ -412,6 +421,8 @@ class RiskScaleService:
             if default:
                 blockers.extend(self._default_blockers(d, source, raw, clock=date.today()))
                 blockers.extend(item['preview']['default_eligibility']['blockers'])
+                # Older immutable versions may have recorded instability only as a warning.
+                blockers.extend(self._stability_default_blockers(item['preview']['result']))
         except IndicatorDomainError:
             blockers.append(problem('FROZEN_REFERENCE_UNAVAILABLE', '冻结参考来源不可读、失效或校验失败。'))
         return {'eligible': not blockers, 'blockers': blockers}
@@ -434,6 +445,7 @@ class RiskScaleService:
         definition = PreviewRequest.model_validate(item['preview']['request_echo']).definition
         return {**{k: item[k] for k in ('id', 'name', 'artifact_type', 'content_hash', 'scheme_id', 'version_number', 'created_at', 'immutable', 'preview')},
                 'current_eligibility': self._current(item, state), 'retired': identifier in state['retired'],
+                'current_default_eligibility': self._current(item, state, default=True),
                 'review_due_at': definition.review_due_at, 'review_status': self._review_status(definition.review_due_at)}
 
     def catalog(self, offset=0, limit=50, base_currency=None, risk_basis_id=None):

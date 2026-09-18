@@ -118,6 +118,14 @@ describe('Risk Scale Center routes and exact versions', () => {
     mount('/settings/risk-scales/versions/risk-fixture'); await screen.findByText('只读版本'); await screen.findByText(/本页读取发布时冻结/)
     expect(riskScales.version).toHaveBeenCalledWith('risk-fixture', expect.any(AbortSignal)); expect(riskScales.preview).not.toHaveBeenCalled(); expect(screen.queryByText(new RegExp(riskVersion.content_hash))).not.toBeInTheDocument(); expect(screen.getByRole('link', { name: '基于此版本新建研究' })).toHaveAttribute('href', '/settings/risk-scales/new?from=risk-fixture')
   })
+  it('explains recalculated default blockers on older immutable versions', async () => {
+    vi.mocked(riskScales.version).mockResolvedValue({ ...riskVersion,
+      current_default_eligibility: { eligible: false, blockers: [{ code: 'UNSTABLE_CALIBRATION', message: 'Unstable' }] } })
+    mount('/settings/risk-scales/versions/risk-fixture')
+    expect(await screen.findByRole('button', { name: '设为系统默认' })).toBeDisabled()
+    expect(screen.getByText(/101\/200 点复核未稳定/)).toBeInTheDocument()
+    expect(riskScales.activate).not.toHaveBeenCalled()
+  })
   it('requires independent explicit default confirmation with revision', async () => {
     mount('/settings/risk-scales/versions/risk-fixture'); fireEvent.click(await screen.findByRole('button', { name: '设为系统默认' })); expect(riskScales.activate).not.toHaveBeenCalled(); expect(screen.getByRole('button', { name: '确认执行' })).toBeDisabled(); fireEvent.click(screen.getByLabelText('我已核对版本及本次操作的影响。')); fireEvent.click(screen.getByRole('button', { name: '确认执行' })); await waitFor(() => expect(riskScales.activate).toHaveBeenCalledWith('risk-fixture', { confirm: true, expected_revision: 0 }, expect.any(AbortSignal)))
   })
