@@ -402,3 +402,34 @@ it.each([25, 1])('循环计划开始月%s缩到无法重复时保留意图，恢
   fireEvent.change(horizon, { target: { value: '6' } })
   expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows[0]).toMatchObject({ first_month: first, last_month: 61, every_months: 12 })
 })
+
+it('改开始月和频率不把越界循环计划变为单次，明确选择单次才改变意图', async () => {
+  install(); const user = userEvent.setup(); const request = boundaryStudy()
+  request.definition = { ...request.definition, horizon_years: 5, cash_budget: { ...request.definition.cash_budget!,
+    flows: [{ name: '循环支付', kind: 'withdrawal', amount: 10000, first_month: 25, last_month: 58, every_months: 3 }] } }
+  ready(request)
+  fireEvent.change(screen.getByLabelText('投资期限（年）'), { target: { value: '1' } })
+  const first = screen.getByRole('combobox', { name: /^现金流 1 · 开始月/ })
+  const frequency = screen.getByRole('combobox', { name: /^现金流 1 · 频率/ })
+  await user.selectOptions(first, '12')
+  expect(frequency).toHaveValue('3')
+  expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeDisabled()
+  await user.selectOptions(frequency, '12')
+  expect(frequency).toHaveValue('12')
+  fireEvent.change(screen.getByLabelText('投资期限（年）'), { target: { value: '5' } })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows[0]).toMatchObject({ first_month: 12, last_month: 60, every_months: 12 })
+  await user.selectOptions(frequency, 'once')
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows[0]).toMatchObject({ first_month: 12, last_month: 12 })
+})
+
+it.each(['empty', 'contribution', 'deleted'])('仅支付保护的%s现金计划没有支付时禁止诊断并解释原因', async state => {
+  install(); const user = userEvent.setup(); const request = boundaryStudy()
+  request.definition = { ...request.definition, objective_kind: 'absolute_return', funding_target: null,
+    cash_protection: { mode: 'payments_only' }, cash_budget: { ...request.definition.cash_budget!, flows: state === 'empty' ? [] : [
+      { name: '计划', kind: state === 'contribution' ? 'contribution' : 'withdrawal', amount: 1000, first_month: 1, last_month: 1, every_months: 1 },
+    ] } }
+  ready(request)
+  if (state === 'deleted') await user.click(screen.getByRole('button', { name: /移除现金流/ }))
+  expect(screen.getByText('仅支付保护须至少有一笔必要支付，请添加支付或改为仅资金算账。')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeDisabled()
+})

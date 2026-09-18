@@ -229,8 +229,11 @@ test('编辑已保存绝对收益目标保留现金保护和独立资金验证',
   await page.getByRole('combobox', { name: /^现金流 1 · 开始月/ }).selectOption('25')
   await page.getByLabel('投资期限（年）', { exact: true }).fill('1')
   await expect(page.getByRole('button', { name: '2. 结果与确认', exact: true })).toBeDisabled()
+  await page.getByRole('combobox', { name: /^现金流 1 · 开始月/ }).selectOption('12')
   await expect(page.getByRole('combobox', { name: /^现金流 1 · 频率/ })).toHaveValue('3')
+  await expect(page.getByRole('button', { name: '2. 结果与确认', exact: true })).toBeDisabled()
   await page.getByLabel('投资期限（年）', { exact: true }).fill('12')
+  await page.getByRole('combobox', { name: /^现金流 1 · 开始月/ }).selectOption('25')
   await expect(page.getByLabel(/^现金流 1 · 结束月/)).toHaveValue(/第142月/)
 
   await page.getByLabel('目标名称', { exact: true }).fill(`现金保护保留-${info.project.name}`)

@@ -1,7 +1,7 @@
 import { Button } from '../ui'
 import { Field, inputClass, NumberInput } from '../risk-models/ResearchUI'
 import type { CashBudget, FundingFlow, FundingSummary, MandateDefinition } from '../../services/strategicAllocation'
-import { amountText, lastPaymentMonth, modelMonthLabel, newCashBudget } from './model'
+import { amountText, recurringLastMonth, modelMonthLabel, newCashBudget } from './model'
 import { useMandateText } from './text'
 
 export default function CashBudgetFields({ value, onChange, funding }: {
@@ -74,13 +74,13 @@ export default function CashBudgetFields({ value, onChange, funding }: {
             <Field label={label('name')}><input className={inputClass} maxLength={120} value={flow.name} onChange={e => update({ name: e.target.value })} /></Field>
             <Field label={label('direction')}><select className={inputClass} value={flow.kind} onChange={e => update({ kind: e.target.value as FundingFlow['kind'] })}><option value="contribution">{t('contribution')}</option><option value="withdrawal">{t('payment')}</option></select></Field>
             <Field label={`${label('amount')}（${value.currency}）`}><NumberInput className={inputClass} value={flow.amount} min={0} onValueChange={n => update({ amount: n })} /></Field>
-            <Field label={label('first_month')}><select className={inputClass} value={flow.first_month} onChange={e => { const first = Number(e.target.value); update({ first_month: first, last_month: once ? first : lastPaymentMonth(first, flow.every_months, months) }) }}>
+            <Field label={label('first_month')}><select className={inputClass} value={flow.first_month} onChange={e => { const first = Number(e.target.value); update({ first_month: first, last_month: once ? first : recurringLastMonth(first, flow.every_months, months) }) }}>
               {Array.from({ length: months }, (_, month) => monthOption(month + 1))}
             </select></Field>
             <Field label={label('last_month')} hint={t('lastMonthHint')}><input className={inputClass} readOnly value={monthText(flow.last_month)} /></Field>
             <Field label={label('frequency')}><select className={inputClass} value={once ? 'once' : String(flow.every_months)}
               onChange={e => update(e.target.value === 'once' ? { every_months: 1, last_month: flow.first_month }
-                : { every_months: Number(e.target.value) as 1 | 3 | 12, last_month: lastPaymentMonth(flow.first_month, Number(e.target.value), months) })}>
+                : { every_months: Number(e.target.value) as 1 | 3 | 12, last_month: recurringLastMonth(flow.first_month, Number(e.target.value), months) })}>
               {['once', '1', '3', '12'].map(key => <option key={key} value={key}>{t(key === 'once' ? 'everyOnce' : `every${key}`)}</option>)}
             </select></Field>
           </div>
