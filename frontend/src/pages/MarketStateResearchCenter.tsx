@@ -6,8 +6,8 @@ import { marketStateStageFromQuery, type MarketStateStage } from './regime-workb
 
 const steps: Array<{ id: MarketStateStage; index: string; title: string; description: string }> = [
   { id: 'historical', index: '1', title: '定义历史参考', description: '用完整历史数据明确“什么叫这个市场状态”。' },
-  { id: 'realtime', index: '2', title: '建立实时识别', description: '只使用当时可得信息，识别同一组状态。' },
-  { id: 'validation', index: '3', title: '验证识别能力', description: '绑定固定历史参考，校准并检查留出与前瞻证据。' },
+  { id: 'realtime', index: '2', title: '建立实时识别', description: '先选固定历史参考，再用当时可得信息识别状态。' },
+  { id: 'validation', index: '3', title: '验证识别能力与应用', description: '检查准确性、校准与前瞻证据，再判断可用范围。' },
 ]
 
 export default function MarketStateResearchCenter() {
@@ -75,7 +75,7 @@ export default function MarketStateResearchCenter() {
           </button>
         })}
       </div>
-      <p className="mt-3 px-1 text-xs leading-5 text-slate-600">历史参考、实时模型和验证报告仍分别保存为不可变版本；这里仅把用户操作流程连在一起。</p>
+      <p className="mt-3 px-1 text-xs leading-5 text-slate-600">历史参考可独立用于复盘，也可供多个实时模型比较。参考或模型变化后，验证结果按新版本重新生成。</p>
     </div>
 
     <section id="market-state-stage-historical" role="tabpanel" hidden={stage !== 'historical'}>

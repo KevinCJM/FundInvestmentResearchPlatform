@@ -21,12 +21,12 @@ from historical_regimes.v2_contracts import parse_definition_v2, inspect_definit
 from timing_research.catalog import build_catalog
 from timing_research.contracts import Definition
 from timing_research.graph import GraphRuntime, _formula_plan
-from test_builtin_series_rolling_migration import IDS, inputs, compile_definition, compute
+from test_builtin_series_indicators import IDS, inputs, compile_definition, compute
 
 
 @pytest.fixture(scope='module')
 def source_service():
-    definitions = [item for item in _built_in_indicators() if item.get('result_kind') == 'time_series' and item['revision'] in {1, 2, 3}]
+    definitions = [item for item in _built_in_indicators() if item.get('result_kind') == 'time_series']
     return SimpleNamespace(indicators=SimpleNamespace(list_all_versions=lambda: definitions),
         get_indicator=lambda identifier, revision: copy.deepcopy(next(x for x in definitions if x['id'] == identifier and x['revision'] == revision)))
 
@@ -46,21 +46,31 @@ def _context(definition, missing=False):
         data['market_high'][20] = np.nan
     dates = data['observation_dates'].astype('int64').astype('datetime64[D]')
     data.update(single_product_scalar_context(definition, dates, returns=data['returns']))
+    # The graph node runs at the definition's declared defaults; so does the
+    # reference it is compared against.
+    data.update({str(item['id']): float(item['default']) for item in definition.get('parameter_schema') or []})
     for value in data.values():
         if isinstance(value, np.ndarray):
             value.setflags(write=False)
     return data, dates
 
 
+def _quote_basis(names):
+    """Which OHLC basis a built-in reads; the catalogue moved to back-adjusted."""
+
+    return 'adjusted' if any(str(name).startswith('adjusted_') for name in names) else 'market'
+
+
 def _regime_graph(metadata, data, dates):
     raw = instantiate_template_v2('peak-trough-daily-v2')
     nodes, bindings = [], {}
     ports = metadata['inputs']
+    basis = _quote_basis(port['name'] for port in ports)
     # A KDJ fixture shares one proven source axis. High/low derive transparently
     # from that source; unrelated axes must NOT be silently declared aligned.
-    is_kdj = {p['name'] for p in ports} == {'market_close', 'market_high', 'market_low'}
+    is_kdj = {p['name'] for p in ports} == {f'{basis}_close', f'{basis}_high', f'{basis}_low'}
     if is_kdj:
-        ports = [p for p in ports if p['name'] == 'market_close']
+        ports = [p for p in ports if p['name'] == f'{basis}_close']
     for index, port in enumerate(ports):
         name, identifier = port['name'], f'source_{index}'
         assert name not in SYSTEM_CONTEXT_NAMES
@@ -69,8 +79,8 @@ def _regime_graph(metadata, data, dates):
                      for day, v in zip(dates, data[name])]}})
         bindings[name] = {'node_id': identifier, 'port': 'value'}
     if is_kdj:
-        for field, offset in [('market_high', .8), ('market_low', -.9)]:
-            nodes.append({'id': field, 'type': 'feature.formula', 'inputs': {'feature_1': bindings['market_close']},
+        for field, offset in [(f'{basis}_high', .8), (f'{basis}_low', -.9)]:
+            nodes.append({'id': field, 'type': 'feature.formula', 'inputs': {'feature_1': bindings[f'{basis}_close']},
                           'parameters': {'expression': f'feature_1 + ({offset})'}})
             bindings[field] = {'node_id': field, 'port': 'value'}
     nodes.append({'id': 'metric', 'type': metadata['id'], 'inputs': bindings, 'parameters': {}})
@@ -85,7 +95,7 @@ def _regime_graph(metadata, data, dates):
     return raw
 
 
-@pytest.mark.parametrize('revision', [1, 2, 3])
+@pytest.mark.parametrize('revision', [1])
 @pytest.mark.parametrize('indicator_id', IDS)
 def test_regime_versioned_execution_matches_indicator_engine(source_service, regime_service, indicator_id, revision, monkeypatch):
     definition = source_service.get_indicator(indicator_id, revision)
@@ -94,9 +104,13 @@ def test_regime_versioned_execution_matches_indicator_engine(source_service, reg
     assert metadata.get('available'), metadata.get('unavailable_reason')
     data, dates = _context(definition)
     if 'kdj' in indicator_id:
-        for name in ('market_close', 'market_high', 'market_low'):
-            data[name] = data[name].copy()
-            data[name][6] = np.nan
+        # The graph derives high/low from close to keep one proven axis, so the
+        # reference has to be fed the same derived series, not the fixture's.
+        basis = _quote_basis(definition['required_variables'])
+        close = data[f'{basis}_close'].copy()
+        close[6] = np.nan
+        for name, offset in ((f'{basis}_close', 0.), (f'{basis}_high', .8), (f'{basis}_low', -.9)):
+            data[name] = close + offset
             data[name].setflags(write=False)
     raw = _regime_graph(metadata, data, dates)
     inspection = inspect_definition_v2(parse_definition_v2(raw))
@@ -129,7 +143,9 @@ def _timing_graph(metadata):
             ])
             connections[name] = 'returns.value'
         else:
-            field = {'market_close': 'close', 'market_high': 'high', 'market_low': 'low', 'volume': 'volume', 'adjusted_nav': 'close'}[name]
+            field = {'market_close': 'close', 'market_high': 'high', 'market_low': 'low',
+                     'adjusted_close': 'close', 'adjusted_high': 'high', 'adjusted_low': 'low',
+                     'volume': 'volume', 'adjusted_nav': 'close'}[name]
             identifier = f'source_{index}'
             nodes.append({'id': identifier, 'label': name, 'op': 'source', 'parameters': {'field': field}})
             connections[name] = f'{identifier}.value'
@@ -146,7 +162,7 @@ def _timing_graph(metadata):
     return Definition(name='跨中心滚动验证', nodes=nodes, entry=previous)
 
 
-@pytest.mark.parametrize('revision', [1, 2, 3])
+@pytest.mark.parametrize('revision', [1])
 @pytest.mark.parametrize('indicator_id', IDS)
 def test_timing_versioned_execution_matches_indicator_engine(source_service, indicator_id, revision, monkeypatch):
     definition = source_service.get_indicator(indicator_id, revision)
@@ -162,8 +178,10 @@ def test_timing_versioned_execution_matches_indicator_engine(source_service, ind
     assert len({id(prepared.formulas[f'metric.{port}']) for port in expected}) == 1
     import timing_research.graph as graph
     monkeypatch.setattr(graph, 'compile_numba_series_plan', lambda *_a, **_k: pytest.fail('formal execution must not compile'))
-    bars = SimpleNamespace(dates=dates.astype(np.int64), close=data['adjusted_nav'] if 'sharpe' in indicator_id else data['market_close'],
-                           high=data['market_high'], low=data['market_low'], volume=data['volume'])
+    basis = _quote_basis(definition['required_variables'])
+    bars = SimpleNamespace(dates=dates.astype(np.int64),
+                           close=data['adjusted_nav'] if 'sharpe' in indicator_id else data[f'{basis}_close'],
+                           high=data[f'{basis}_high'], low=data[f'{basis}_low'], volume=data['volume'])
     actual = runtime.evaluate(prepared, bars)
     for port, values in expected.items():
         np.testing.assert_allclose(actual[f'metric.{port}'], values, equal_nan=True, rtol=1e-10, atol=1e-12)

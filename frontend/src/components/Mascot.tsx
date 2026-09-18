@@ -3,6 +3,7 @@
 const POSES = {
   empty: { file: 'mascot-empty-240.webp', width: 120 },
   noresult: { file: 'mascot-noresult-240.webp', width: 120 },
+  error: { file: 'mascot-error-240.webp', width: 120 },
   welcome: { file: 'mascot-welcome-240.webp', width: 120 },
   working: { file: 'mascot-working-160.webp', width: 80 },
   success: { file: 'mascot-success-96.webp', width: 48 },

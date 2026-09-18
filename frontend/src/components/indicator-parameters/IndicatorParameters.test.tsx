@@ -20,7 +20,7 @@ const fixedDraft: IndicatorDraft = { ...indicator, parameter_contract_version: n
   series_outputs: indicator.series_outputs!.map(output => ({ ...output, expression: 'rolling_mean(market_close, 20)' })) }
 const candidate: parameterApi.ParameterCandidate = { id: 'ma:1:window:abc', output_id: 'ma', output_label: '均线', operator_id: 'rolling_mean', argument: 'window', label: '窗口期数', value: 20, parameter_id: null, type: 'integer', minimum: 1, maximum: 20000, step: 1 }
 const result = (value: number): TimeSeriesIndicatorResult => ({
-  indicator_id: indicator.id, indicator_revision: 3, indicator_name: indicator.name, result_kind: 'time_series',
+  instance_key: null, indicator_id: indicator.id, indicator_revision: 3, indicator_name: indicator.name, result_kind: 'time_series',
   target: { kind: 'etf', product_id: '510300.SH', name: 'ETF' }, period: '1Y', parameters: { window_1: value },
   axis_anchor: 'market_close', history_policy: 'lookback', lookback_observations: value, minimum_observations: value,
   status: 'ok', warnings: [], dates: ['2025-01-01'],

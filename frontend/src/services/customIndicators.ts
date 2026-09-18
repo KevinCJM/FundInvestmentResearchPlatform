@@ -788,6 +788,8 @@ export interface SeriesIndicatorInstance {
   compile_token?: string
   /** Per-instance overrides of explicitly opened parameters; omitted keys use revision defaults. */
   parameters?: Record<string, number>
+  /** Caller-owned name echoed on the matching result. Required when the same indicator is requested more than once. */
+  instance_key?: string
 }
 
 export interface EvaluateTimeSeriesIndicatorsRequest {
@@ -814,6 +816,8 @@ export interface TimeSeriesChannelResult {
 
 export interface TimeSeriesIndicatorResult {
   data_context?: IndicatorDateContext | null
+  /** Echo of the requesting instance's key; `indicator_id` does not identify one instance. */
+  instance_key: string | null
   indicator_id: string | null
   indicator_revision: number | null
   indicator_name: string

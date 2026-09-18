@@ -159,3 +159,23 @@ K / 递归平滑 / 周期             3      [开放为参数]
 Excel 是本次计算的可复核快照：参数、数据区间及公式均对应导出时有效值。滚动窗口在生成工作簿时展开为明确单元格范围；修改工作簿参数单元格不会自动重新取数或重建全部滚动范围，需要在系统修改参数后重新导出。
 
 数值验收覆盖 MA、嵌套滚动、KDJ 三通道、参数改变后的范围推导、历史版本默认值、缓存隔离、图形往返和导出。最终执行结果及未通过的全量检查见 `docs/indicator_runtime_parameters_acceptance.md`。
+
+## 8. 内置时序指标开放窗口（2026-09-18）
+
+内置时序指标此前是固定公式：窗口写在公式里，只能复制成自定义指标才能改。本轮把 5 个内置时序指标的滚动窗口开放为运行参数，读者不再需要为「看 60 日均线」新建一条指标。
+
+| 指标 | 名称 | `window` 默认 |
+| --- | --- | --- |
+| `builtin-close-moving-average-series` | N 日复权收盘价均线 | 20 |
+| `builtin-bollinger-bands-series` | N 日布林带（复权） | 20 |
+| `builtin-volume-moving-average-series` | N 日成交量均线 | 10 |
+| `builtin-kdj-series` | N 日 KDJ（3, 3，复权） | 9 |
+| `builtin-rolling-5d-annualized-sharpe-series` | N 日滚动年化夏普比率 | 5 |
+
+- 每个指标只开放一个 `window`（整数，2–1000，步长 1）。一条公式里的多处滚动宽度共用它：布林带的均值与标准差、KDJ 的高低区间都必须同宽，分开调会改变算法而不是调参数。
+- KDJ 的 3 日递归平滑、布林带的 2 倍标准差仍是公式常量，按第 7 节的第一批范围不开放。
+- 定义由 `series_parameters.bind_parameter_input` 生成，与指标中心「开放为参数」走同一条绑定和校验；内置定义不额外保存一份公式。
+- 内置指标不再在源码里堆历史版本。`time_series_builtin_indicators` 现在只产出 5 条 revision 1 的定义（后复权口径 + 通用区间作用域 + 可变窗口）；此前的 v1–v4 属于本仓库自己的种子数据，按仓库存量代码治理只保留一份当前实现，历史版本由 Git 追溯。产品快照锁定的是标量内置指标，评价结果有 30 分钟 TTL，都不引用被删除的时序 revision。
+- `builtin-rolling-5d-annualized-sharpe-series` 的 ID 保留不变（ID 是稳定句柄，改名会打断已保存的引用），其 `rolling_source` 记为 `detached`：宽度已由 `window` 接管，来源标量只作为出处记录。
+- 历史需求按本次窗口重新推导（KDJ 仍是全历史递推）；不同窗口共用同一个已预热 NJIT 计划，`request_time_compilation=0`。
+- `/api/custom-indicators/compose` 现在允许在配置位置传入已声明参数（按其默认值做范围校验），与画布 `graph/resolve` 的行为一致；此前只接受字面常量，参数化公式无法逐节点重建。

@@ -183,6 +183,61 @@ def test_njit_default_override_cache_and_history_are_instance_scoped(tmp_path):
     assert again["cache"]["hits"] == 1
 
 
+def test_repeated_instances_are_matched_by_their_own_key(tmp_path):
+    """走势图允许同一指标配多条，indicator_id 不再能识别结果属于哪一条。"""
+
+    service, _ = _service(tmp_path)
+    saved = service.create_indicator(opened())
+    instance = {"indicator_id": saved["id"], "indicator_revision": saved["revision"]}
+    response = service.evaluate_series(
+        indicator_instances=[
+            {**instance, "instance_key": "ov1", "parameters": {"window_1": 5}},
+            {**instance, "instance_key": "ov2", "parameters": {"window_1": 20}},
+            {**instance, "instance_key": "ov3", "parameters": {"window_1": 5}},
+        ],
+        target={"kind": "etf", "product_id": "510300.SH"},
+        period="1M",
+    )
+    first, second, third = response["results"]
+    assert [item["instance_key"] for item in response["results"]] == ["ov1", "ov2", "ov3"]
+    assert [item["indicator_id"] for item in response["results"]] == [saved["id"]] * 3
+    assert first["parameters"] == third["parameters"] == {"window_1": 5}
+    assert second["parameters"] == {"window_1": 20}
+    # 参数相同的两条命中同一份缓存，但各自是独立记录：写第三条的键不能改到第一条。
+    assert response["cache"]["hits"] == 1
+    assert first is not third
+    first_values, second_values, third_values = (
+        _as_float(item["channels"][0]["values"]) for item in response["results"]
+    )
+    np.testing.assert_allclose(first_values, third_values, rtol=0, equal_nan=True)
+    assert not np.allclose(first_values, second_values, rtol=0, equal_nan=True)
+
+
+def test_instance_key_is_optional_and_reaches_the_route(tmp_path, monkeypatch):
+    service, _ = _service(tmp_path)
+    saved = service.create_indicator(opened())
+    plain = service.evaluate_series(
+        indicator_instances=[{"indicator_id": saved["id"]}],
+        target={"kind": "etf", "product_id": "510300.SH"}, period="1M",
+    )["results"][0]
+    assert plain["instance_key"] is None
+
+    monkeypatch.setattr(custom_indicator_routes, "indicator_service", service)
+    app = FastAPI()
+    app.include_router(custom_indicator_routes.router)
+    client = TestClient(app)
+    payload = client.post("/api/custom-indicators/evaluate-series", json={
+        "indicator_instances": [
+            {"indicator_id": saved["id"], "instance_key": "ov1"},
+            {"indicator_id": saved["id"], "instance_key": "ov2", "parameters": {"window_1": 5.0}},
+        ],
+        "target": {"kind": "etf", "product_id": "510300.SH"},
+        "period": "1M",
+    })
+    assert payload.status_code == 200
+    assert [item["instance_key"] for item in payload.json()["results"]] == ["ov1", "ov2"]
+
+
 def test_nested_windows_and_no_request_compilation(tmp_path, monkeypatch):
     from custom_indicators import series_service
     service, frame = _service(tmp_path)

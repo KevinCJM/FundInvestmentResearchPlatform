@@ -431,13 +431,16 @@ JS
 | --- | --- | --- | --- | --- |
 | `empty` | `0010` 站立侧指 | 120px | `mascot-empty-240.webp` 8.7K | 手指向创建/导入入口 |
 | `noresult` | `0011` 抓头疑惑 | 120px | `mascot-noresult-240.webp` 7.7K | 唯一带「?」的姿势 |
+| `error` | `0003` 正面垂手 | 120px | `mascot-error-240.webp` 8.4K | 读取/计算失败、404、错误边界 |
 | `welcome` | `0005` 举手打招呼 | 120px | `mascot-welcome-240.webp` 8.3K | 只在首次会话出现 |
-| `working` | `0004` 侧背身行走 | 80px | `mascot-working-160.webp` 3.6K | 与骨架屏并用，不替代骨架屏 |
+| `working` | `0006` 前伸行走 | 80px | `mascot-working-160.webp` 4.7K | 数据加载中；与骨架屏或加载指示并用，不替代它们 |
 | `success` | `0008` 双手举高 | 48px | `mascot-success-96.webp` 3.1K | 内联于确认条 |
 
-已接入：首页搜索无结果（`ProcessHome` 弹窗，`noresult`）、因子研究中心「尚未运行检验」（`FactorResearchCenter`，`empty`）。`welcome` / `working` / `success` 资产已就绪，尚未接入。
+已接入：首页搜索无结果（`ProcessHome` 弹窗，`noresult`）、因子研究中心「尚未运行检验」（`FactorResearchCenter`，`empty`）、产品详情加载中与查无此产品（`ProductDetail`，`working` / `noresult`）、走势图面板的读取中/读取失败/口径无数据/无可视化数据（`ProductTrendChart`，`working` / `error` / `empty` / `noresult`）。`welcome` / `success` 资产已就绪，尚未接入。
 
-`0003`（正面垂手）、`0006`（前伸行走）、`0007`（跳跃张手）、`0009`（欢呼）与上表语义重叠或过于接近，**不转 WebP、不出货**，留在 `images/` 作为后续素材。
+`0004`（侧背身行走）、`0007`（跳跃张手）、`0009`（欢呼）与上表语义重叠或过于接近，**不转 WebP、不出货**，留在 `images/` 作为后续素材。
+
+`error` 目前借用 `0003`：11 张源图里没有真正表达「出错/抱歉」的姿势，`0003` 是唯一中性可用的。补到更贴切的姿势后按 15.3 的管线替换同名资产即可，状态键不变。
 
 ### 15.2 禁止出现的位置
 
@@ -448,7 +451,7 @@ JS
 1. 任何数值旁边：净值、收益率、回撤、权重、绩效、归因、风险指标。
 2. 风险提示、PIT 口径警告（`PitBadge` / `PitDecisionNotice`）、因果性审计告警。
 3. 基金会计的对账差异、关账错误、凭证错误、双账勾稽差额。
-4. 表格内部、图表内部、图表 tooltip、画布节点。
+4. 表格内部、图表内部、图表 tooltip、画布节点。图表**尚未出图**时的整面板级占位区（读取中 / 读取失败 / 无数据）不算图表内部，按下述例外处理；图一旦画出来，这块区域就不再有吉祥物。
 5. 交易计划、前置检查、订单分配相关的任何界面。
 6. `VISUAL_DENSITY: 7` 工作区中承载业务数据的正文区域。无数据的页面主空态和明确标记为未实现的原型横幅按下述例外处理；例外不能覆盖第 1–5 条禁区。
 
@@ -461,16 +464,16 @@ JS
 1. **资产管线沿用既有约定**：`images/NNNN.png`（源，已 git 跟踪）→ `frontend/public/homepage/images/mascot-<state>-<资产宽度>.webp`。**禁止在代码里引用 `images/*.png` 原图**，单个 1MB。新增姿势时复跑：
 
 ```sh
-for map in "0010:empty:240" "0011:noresult:240" "0005:welcome:240" "0004:working:160" "0008:success:96"; do
+for map in "0010:empty:240" "0011:noresult:240" "0003:error:240" "0005:welcome:240" "0006:working:160" "0008:success:96"; do
   IFS=: read pose state w <<< "$map"
   magick "images/$pose.png" -resize ${w}x${w} -quality 82 -define webp:alpha-quality=90 \
     "frontend/public/homepage/images/mascot-$state-$w.webp"
 done
 ```
-2. **体积预算**：5 个资产实测合计 31.3KB，`public/` 从 404KB 增至 444KB。每个状态只出一档宽度，不做 `srcset`。
+2. **体积预算**：6 个资产实测合计 40.8KB。每个状态只出一档宽度，不做 `srcset`。
 3. **装饰语义**：`alt=""` + `aria-hidden="true"`。状态含义由旁边的文字承载，屏幕阅读器不需要「一头牛在欢呼」。
 4. **不做动画**。`MOTION_INTENSITY: 2` 下不做 CSS 弹跳、不做 Lottie、不做逐帧序列。
-5. **单页最多 1 个实例**。同一页两处出现即为装饰滥用。
+5. **单页最多 1 个实例**。同一页两处出现即为装饰滥用。据此，一个面板的读取中/失败/空态几个分支必须互斥地占用同一个位置；行内一句话的局部状态（如指标表上方的「正在批量计算…」、叠加指标的失败提示）保持纯文字，不配图。
 6. **显示尺寸上限**：空态 120px 宽，内联确认 48px 宽（资产各为 2 倍）。不做全屏、不做背景水印。
 7. **首屏之外的实例必须 `loading="lazy"`**，并显式声明 `width` / `height` 以保住 CLS。
 8. **单一组件承载**，不逐页复制 `<img>`：`components/Mascot.tsx`，props 仅 `state` 与可选 `className`，由 15.1 的表驱动。姿势与状态的映射只存在一处。禁区由 `mascot-in-forbidden-zone` 规则按文件名机械拦截（`Accounting|Financial|Ledger|Booking|Reconcil|Statement|Trade|Risk|Pit|Performance|Attribution|Valuation|Allocation|Portfolio|Dashboard`）。

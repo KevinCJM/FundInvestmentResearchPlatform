@@ -323,6 +323,13 @@ def parse_definition_v2(payload: Mapping[str, Any]) -> RegimeDefinitionV2:
         ) from exc
 
 
+def _finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _parameter_diagnostics(node: RegimeGraphNodeV2, metadata: Mapping[str, Any]) -> list[dict[str, Any]]:
     schema = metadata.get("parameter_schema") or {}
     properties = schema.get("properties") or {}
@@ -371,7 +378,7 @@ def _parameter_diagnostics(node: RegimeGraphNodeV2, metadata: Mapping[str, Any])
             )
             continue
         if isinstance(value, (int, float)) and not isinstance(value, bool):
-            if not math.isfinite(float(value)):
+            if not _finite_number(value):
                 diagnostics.append(
                     {
                         "code": "NONFINITE_NODE_PARAMETER",
@@ -458,7 +465,7 @@ def _parameter_diagnostics(node: RegimeGraphNodeV2, metadata: Mapping[str, Any])
                         and (
                             isinstance(item_value, bool)
                             or not isinstance(item_value, (int, float))
-                            or not math.isfinite(float(item_value))
+                            or not _finite_number(item_value)
                         )
                     )
                     if item_invalid:
@@ -731,6 +738,12 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                         }
                     )
 
+        if node.type == "filter.savitzky_golay_centered":
+            window, polyorder = node.parameters.get("window", 21), node.parameters.get("polyorder", 3)
+            if isinstance(window, int) and isinstance(polyorder, int) and (window % 2 != 1 or polyorder >= window):
+                diagnostics.append({"code": "INVALID_SMOOTHING_PARAMETERS", "severity": "error",
+                                    "path": f"graph.nodes.{node.id}.parameters",
+                                    "message": "居中窗口必须为奇数，多项式阶数必须小于窗口。"})
         if node.type in {"filter.kama", "model.trend_regime"}:
             lower_name, upper_name, lower_default, upper_default = (
                 ("fast", "slow", 2, 126) if node.type == "filter.kama"
@@ -885,7 +898,7 @@ def inspect_definition_v2(definition: RegimeDefinitionV2) -> dict[str, Any]:
                 and all(
                     isinstance(value, (int, float))
                     and not isinstance(value, bool)
-                    and math.isfinite(float(value))
+                    and _finite_number(value)
                     for value in weights
                 )
                 and sum(float(value) for value in weights) <= 0.0

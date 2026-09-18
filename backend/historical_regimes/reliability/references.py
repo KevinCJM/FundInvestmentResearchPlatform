@@ -35,9 +35,25 @@ def reference_catalog(graph):
         for publication in run.get("publications", []):
             ref = dict(run_id=run["id"], publication_id=publication["id"], content_hash=run.get("content_hash"))
             try:
-                verified, _ = resolve_reference(graph, ref, hydrate=False)
+                verified, verified_publication = resolve_reference(graph, ref, hydrate=False)
             except IndicatorDomainError:
                 continue
-            items.append({**ref, **{key: verified.get(key) for key in (
+            items.append({**ref, "publication_usage": verified_publication["usage"], **{key: verified.get(key) for key in (
                 "definition_id", "definition_revision", "name", "frequency", "states", "as_of", "created_at", "series_summary")}})
     return {"items": items}
+
+
+def require_research_reference(graph, definition):
+    """Unbound realtime studies remain drafts; legacy untyped studies stay readable."""
+    study = definition.study
+    if study is None or study.purpose != "realtime_recognition":
+        return
+    if study.reference is None:
+        raise ValidationError("REALTIME_REFERENCE_REQUIRED", "请先绑定已确认的历史参考；无参考模型可保存为探索草稿。", "study.reference")
+    run, _ = resolve_reference(graph, study.reference, hydrate=False)
+    targets = {s["id"] for s in run["states"]}
+    sources = {s.id for s in definition.states}
+    mapping = study.state_mapping
+    if ((mapping is None and sources != targets)
+            or (mapping is not None and (set(mapping) != sources or not set(mapping.values()).issubset(targets)))):
+        raise ValidationError("REFERENCE_STATE_MAPPING_REQUIRED", "请为每个实时状态明确配置历史参考状态。", "study.state_mapping")

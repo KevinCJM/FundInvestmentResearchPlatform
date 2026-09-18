@@ -262,7 +262,7 @@ export default function ProductResearch() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [productKind, setProductKind] = useState<'etf' | 'fund'>(() => readProductKind(searchParams.get('kind')));
   const [response, setResponse] = useState<ProductsResponse | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(() => readPositiveInteger(searchParams.get('page'), 1));
   const [pageSize, setPageSize] = useState(() => {
@@ -388,7 +388,9 @@ export default function ProductResearch() {
         console.error('Failed to load products', err);
         setError(err instanceof Error ? err.message : s('productResearch.errorGeneric'));
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
     fetchData();

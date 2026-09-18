@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from custom_indicators.service import CustomIndicatorService
-from custom_indicators.rolling_series import derive_rolling_series_definition
+from custom_indicators.rolling_series import ROLLING_TRANSFORM_VERSION, derive_rolling_series_definition
 from custom_indicators.series_parameters import inspect_parameter_inputs, bind_parameter_input
 from services import custom_indicator_routes
 from test_custom_indicator_time_series import _write_market_data
@@ -115,17 +115,22 @@ def test_default_override_cache_history_revision_and_no_request_compilation(serv
     assert service.get_indicator(saved["id"])["parameter_schema"][0]["default"] == 5
 
 
-def test_immutable_old_transform_versions_and_builtin_revision_two(service):
+def test_old_transform_versions_stay_derivable_but_the_builtin_ships_one(service):
+    """Authors may still pin an older transform; the catalogue itself does not."""
+
     source = service.get_indicator("builtin-annualized-sharpe-v2")
     for version, token in (("1.0.0", "rolling_mean("), ("2.0.0", "rolling_window("), ("3.0.0", "rolling_apply(")):
         draft = derive_rolling_series_definition(source, 5, transform_version=version)
         assert token in draft["expression"]
         saved = service.create_indicator(draft)
         assert saved["rolling_source"]["transform_version"] == version
-    builtin = service.get_indicator("builtin-rolling-5d-annualized-sharpe-series", 2)
-    assert builtin["rolling_source"]["transform_version"] == "2.0.0"
-    assert "rolling_apply" not in builtin["expression"]
-    assert "rolling_std" in service.get_indicator("builtin-rolling-5d-annualized-sharpe-series", 1)["expression"]
+    builtin = service.get_indicator("builtin-rolling-5d-annualized-sharpe-series")
+    assert builtin["revision"] == 1
+    assert builtin["rolling_source"]["transform_version"] == ROLLING_TRANSFORM_VERSION
+    assert "rolling_apply(" in builtin["expression"]
+    from custom_indicators.errors import NotFoundError
+    with pytest.raises(NotFoundError):
+        service.get_indicator("builtin-rolling-5d-annualized-sharpe-series", 2)
 
 
 def test_ineligible_shape_or_history_is_explained_and_not_derived(service):

@@ -5,6 +5,8 @@ from __future__ import annotations
 from .indicator_nodes import (is_typed_formula_node, typed_node_expression, typed_node_expressions, formula_plan_key, register_indicator_nodes)
 from computation_graph.series_contracts import regime_series_outputs
 from computation_graph.series_numba import causal_available_kernel
+from computation_graph.smoothing_operators import SMOOTHING_OPERATORS
+from computation_graph.smoothing_numba import SMOOTHING_KERNELS, smoothing_available_kernel
 
 import copy
 from research_series.product_sources import PRODUCT_SOURCES, ETF_ADJUSTED_FIELDS, adjustment_path, product_source_spec
@@ -2341,6 +2343,16 @@ class RegimeGraphV2Service:
     ) -> dict[str, PortValue]:
         node_type = node.type
         parameters = node.parameters
+        if node_type in SMOOTHING_OPERATORS:
+            spec = SMOOTHING_OPERATORS[node_type]
+            if mode == "realtime" and not spec["causal"]:
+                raise ValidationError("NON_CAUSAL_REALTIME_GRAPH", "该滤波需要后续数据，仅限事后研究。", f"graph.nodes.{node.id}")
+            source = self._input(node_outputs, node.inputs["value"])
+            # Sources normalize dtype at the boundary; kernels borrow even readonly/strided views.
+            arguments = [np.int64(parameters.get(name, field["default"])) for name, field in spec["parameters"].items()]
+            values = SMOOTHING_KERNELS[spec["kernel_id"]](source.values, *arguments)
+            available = smoothing_available_kernel(source.available, np.int64(not spec["causal"]))
+            return {"value": PortValue(values, source.dates, available)}
         if node_type == "source.constant":
             anchor = self._input(node_outputs, node.inputs["anchor"])
             return {"value": self._port(constant_like_kernel(np.ascontiguousarray(anchor.values, dtype=np.float64), np.float64(parameters.get("value", 0.0))), anchor)}
@@ -2513,7 +2525,14 @@ class RegimeGraphV2Service:
             for value in ports.values():
                 if value.available is not available:
                     available = maximum_int64_kernel(available, value.available)
-            outputs = execute_granular_node(node_type, parameters, {name: value.values for name, value in ports.items()}, state_count)
+            if node_type == "state.continuous":
+                available = causal_available_kernel(available)
+            try:
+                outputs = execute_granular_node(node_type, parameters, {name: value.values for name, value in ports.items()}, state_count)
+            except ValueError as exc:
+                if node_type != "state.continuous":
+                    raise
+                raise ValidationError("CONTINUOUS_STATE_INPUT_INVALID", "连续分类需要有效价格、合法候选和首日初始状态；请修复输入数据。", f"graph.nodes.{node.id}") from exc
             return {name: PortValue(values, source.dates, available) for name, values in outputs.items()}
         if node_type == "pivot.local_extrema":
             source = self._input(node_outputs, node.inputs["value"])
@@ -3237,6 +3256,7 @@ class RegimeGraphV2Service:
         if manual_event_result is not None:
             evidence["event_count"] = manual_event_result["event_count_port"]
         evidence_node = node_map[state_ref.node_id]
+        continuous_evidence = node_outputs[evidence_node.id]["evidence"].values if evidence_node.type == "state.continuous" else None
         while evidence_node.type in {"post.confirmation", "post.merge_short_regimes"}:
             evidence_node = node_map[evidence_node.inputs["state"].node_id]
         if evidence_node.type == "model.peak_trough":
@@ -3277,18 +3297,30 @@ class RegimeGraphV2Service:
             segment_id = next(iter(segment_ids))
             segment = node_map[segment_id]
             pivot_node = node_map[segment.inputs["pivot"].node_id]
-            price_port = self._input(node_outputs, pivot_node.inputs["value"])
+            price_reference = pivot_node.inputs["value"]
+            statistic_reference = evidence_node.inputs.get("value")
+            statistic = node_map.get(statistic_reference.node_id) if statistic_reference else None
+            if statistic is not None and statistic.type in STATISTIC_IDS and statistic.inputs["start"].node_id == segment_id:
+                # Classification returns and trend dating can deliberately use different curves.
+                price_reference = statistic.inputs["value"]
+            price_port = self._input(node_outputs, price_reference)
             if price_port.dates is state_port.dates:
                 evidence.update(phase_start_index=node_outputs[segment_id]["start"],
                                 phase_end_index=node_outputs[segment_id]["end"], index_value=price_port,
                                 pivot=node_outputs[pivot_node.id]["pivot"], pivot_price=node_outputs[pivot_node.id]["pivot_price"])
+                if price_reference != pivot_node.inputs["value"] and node_map[pivot_node.inputs["value"].node_id].type in SMOOTHING_OPERATORS:
+                    evidence["filtered_index"] = self._input(node_outputs, pivot_node.inputs["value"])
                 for candidate in (node_map[node_id] for node_id in required if node_map[node_id].type in STATISTIC_IDS):
                     if (candidate.inputs["start"].node_id != segment_id
-                            or candidate.inputs["value"] != pivot_node.inputs["value"]
+                            or candidate.inputs["value"] != price_reference
                             or self._input(node_outputs, candidate.inputs["value"]).dates is not state_port.dates):
                         continue
                     key = "phase_return" if candidate.type == "segment.change" else candidate.type.replace(".", "_")
                     evidence[key] = node_outputs[candidate.id]["value"]
+        smoothing_without_pivots = any(node_map[n].type in SMOOTHING_OPERATORS for n in dating_nodes) and not any(
+            node_map[n].type.startswith(("pivot.", "segment.")) or node_map[n].type == "model.peak_trough"
+            for n in final_dependencies
+        )
         series: list[dict[str, Any]] = []
         channel_values = {}
         for name in definition.graph.channel_metadata:
@@ -3321,12 +3353,18 @@ class RegimeGraphV2Service:
                 simultaneous = int(manual_event_result["event_count_port"].values[index])
                 row_reasons = ([f"人工事后事件区间：该观测同时落入 {simultaneous} 个用户定义事件；仅用于历史研究。"]
                                if simultaneous > 0 else ["人工事后事件区间：该观测不在用户定义事件内。"])
+            elif retrospective_dating and smoothing_without_pivots:
+                row_reasons = (["事后滤波：依赖完整输入或右侧样本，不是当时的交易信号。"] if state is not None
+                               else ["未分类：滤波窗口不完整、输入缺失或状态尚未确认。"])
             elif retrospective_dating:
                 row_reasons = (["事后峰谷定界：相邻小幅反向波段满足整段振幅、方向效率及最短长度约束，合并为震荡；不是当时的交易信号。"]
                                if state is not None and state.role == "neutral" and "sideways_range" in evidence and np.isfinite(evidence["sideways_range"].values[index])
                                else ["事后峰谷分段：依据独立区间统计与分类规则判断；不提供当时交易信号。"] if state is not None and interval_nodes
                                else ["事后峰谷定界；依赖全样本筛选，不是当时的交易信号。"] if state is not None
                                else ["未分类：未形成完整保留峰谷区间、处于首尾边界或存在无效数据。"])
+            elif continuous_evidence is not None:
+                row_reasons = [{0: "由当时数据初始化状态；尚未获得完整趋势确认。", 1: "当前候选状态成立。",
+                                2: "没有确认的新方向，延续已有市场状态。", 3: "新方向等待连续确认，当前延续已有市场状态。"}[int(continuous_evidence[index])]]
             else:
                 row_reasons = ["状态已识别"] if int(reason_codes[index]) == 0 else ["输入不足或状态被拒识"]
             series.append(
@@ -4429,6 +4467,8 @@ class RegimeGraphV2Service:
             raise ValidationError("INVALID_RUN_MODE", "请选择实时识别或事后研究。", "mode")
         definition = parse_definition_v2(self.definitions.get(reference["id"], reference["revision"]))
         validate_definition_v2(definition)
+        from .reliability.references import require_research_reference
+        require_research_reference(self, definition)
         self._validate_realtime_graph(definition, mode)
         self._validate_plan(definition, compile_token)
         with self._research_activation.locked():
@@ -4779,6 +4819,8 @@ class RegimeGraphV2Service:
             int(run.get("definition_revision") or 0),
         )
         definition = parse_definition_v2(stored)
+        from .reliability.references import require_research_reference
+        require_research_reference(self, definition)
         if definition_content_hash(definition) != run.get("definition_snapshot_hash"):
             raise ValidationError(
                 "RUN_DEFINITION_LINEAGE_MISMATCH",

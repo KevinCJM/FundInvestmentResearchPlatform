@@ -26,6 +26,8 @@ export default function RegimeSavePanel({ contextKey = '', purpose, definition, 
   const [step, setStep] = useState('')
   const [error, setError] = useState('')
   const [result, setResult] = useState<RegimeResearchVersion | null>(null)
+  const [draftSaved, setDraftSaved] = useState<{ id?: string; revision?: number } | null>(null)
+  const exploration = purpose === 'realtime_recognition' && !definition.study?.reference
   const [advanced, setAdvanced] = useState(false)
   const saved = useRef<RegimeGraphDefinition | null>(definition.id && !dirty ? definition : null)
   const live = useRef({ definition: signature(definition), mode, asOf, contextKey })
@@ -36,6 +38,7 @@ export default function RegimeSavePanel({ contextKey = '', purpose, definition, 
   useEffect(() => {
     if (inFlight.current) return
     setName(definition.name); setDescription(definition.description); setResult(null); setError('')
+    setDraftSaved(current => current && !dirty && current.id === definition.id && current.revision === definition.revision ? current : null)
     saved.current = definition.id && !dirty ? definition : null
   }, [definition, dirty, mode, asOf, contextKey])
 
@@ -58,6 +61,7 @@ export default function RegimeSavePanel({ contextKey = '', purpose, definition, 
         onSaved(stored)
       }
       if (!stored || !isCurrent()) return
+      if (exploration) { setDraftSaved({ id: stored.id, revision: stored.revision }); return }
       setStep('正在准备计算…')
       const plan = await prepareRegimeGraph(stored)
       if (!isCurrent()) return
@@ -73,10 +77,10 @@ export default function RegimeSavePanel({ contextKey = '', purpose, definition, 
   }
 
   return <section aria-label="保存情景供研究使用" className="min-w-0 space-y-5">
-    <p className="text-sm leading-6 text-slate-600">{purpose === 'historical_reference' ? '确认保存定义与历史运行，供实时识别选择为固定参考。' : '保存这套计算逻辑后，可在单产品等研究页面直接选择它。'}</p>
+    <p className="text-sm leading-6 text-slate-600">{exploration ? '保存探索草稿。绑定历史参考后，才能验证准确性并生成可复用的研究版本。' : purpose === 'historical_reference' ? '确认保存定义与历史运行，供实时识别选择为固定参考。' : '保存这套计算逻辑后，可在单产品等研究页面直接选择它；研究可用不代表识别已通过验证。'}</p>
     <fieldset disabled={Boolean(step)} className="min-w-0 space-y-4 disabled:opacity-70">
-      <label className="block text-sm font-semibold text-slate-700">情景名称<input autoComplete="off" value={name} maxLength={80} onChange={event => { setName(event.target.value); setResult(null) }} className="mt-2 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal" /></label>
-      <label className="block text-sm font-semibold text-slate-700">说明（可选）<textarea value={description} maxLength={1000} rows={2} onChange={event => { setDescription(event.target.value); setResult(null) }} className="mt-2 block w-full resize-y rounded-xl border border-slate-300 bg-white p-3 font-normal" /></label>
+      <label className="block text-sm font-semibold text-slate-700">情景名称<input autoComplete="off" value={name} maxLength={80} onChange={event => { setName(event.target.value); setResult(null); setDraftSaved(null) }} className="mt-2 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 font-normal" /></label>
+      <label className="block text-sm font-semibold text-slate-700">说明（可选）<textarea value={description} maxLength={1000} rows={2} onChange={event => { setDescription(event.target.value); setResult(null); setDraftSaved(null) }} className="mt-2 block w-full resize-y rounded-xl border border-slate-300 bg-white p-3 font-normal" /></label>
     </fieldset>
     <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
       <p><strong className="text-slate-900">{mode === 'retrospective' ? '事后研究' : '实时识别'}</strong>{asOf ? ` · 截至 ${asOf}` : ' · 使用当前可用数据'}</p>
@@ -84,10 +88,11 @@ export default function RegimeSavePanel({ contextKey = '', purpose, definition, 
       <p className="text-xs leading-5">{definition.id ? `当前为 v${definition.revision}。修改后会保存为新版本，已有研究继续使用原版本。` : '首次保存为 v1，之后可继续修改并保存新版本。'}</p>
       {mode === 'retrospective' && <p className="text-xs text-amber-800">用于解释历史市场，不作为当时可交易的信号。</p>}
     </div>
-    {!valid && !result && !step && <p role="alert" className="text-sm text-amber-800">请先完成公式检查，再保存情景。</p>}
+    {!valid && !result && !draftSaved && !step && <p role="alert" className="text-sm text-amber-800">请先完成公式检查，再保存情景。</p>}
     {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm leading-6 text-rose-800">{error}</p>}
     {step && <p role="status" className="text-sm font-medium text-accent-700">{step}</p>}
-    <button type="button" disabled={!valid || !name.trim() || Boolean(step) || Boolean(result)} onClick={() => void save()} className="min-h-11 w-full rounded-xl bg-accent-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-40">{step ? '正在保存…' : result ? '已保存，可用于研究' : error && saved.current ? '重试生成研究结果' : purpose === 'historical_reference' ? '保存为历史参考' : '保存并用于研究'}</button>
+    {draftSaved && <p role="status" className="text-sm text-slate-700">探索草稿已保存；尚未生成可供应用的研究版本。</p>}
+    <button type="button" disabled={!valid || !name.trim() || Boolean(step) || Boolean(result)} onClick={() => void save()} className="min-h-11 w-full rounded-xl bg-accent-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-40">{step ? '正在保存…' : result ? '已保存，可用于研究' : exploration ? '保存探索草稿' : error && saved.current ? '重试生成研究结果' : purpose === 'historical_reference' ? '保存为历史参考' : '保存并用于研究'}</button>
     {result && <div role="status" className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
       <p className="font-semibold">{result.name} · v{result.revision} 已可选用</p>
       <p>{result.series_summary.first_observation_date} — {result.series_summary.last_observation_date} · {result.series_summary.row_count} 个观测</p>

@@ -31,6 +31,23 @@ beforeEach(() => {
   vi.mocked(api.enableRegimeResearchVersion).mockResolvedValue(version)
 })
 
+it('无参考实时探索只保存草稿，不计算或发布研究版本', async () => {
+  const definition = { ...draft, study: { purpose: 'realtime_recognition' as const, family: 'custom' as const } }
+  vi.mocked(api.createRegimeGraphDefinition).mockResolvedValue({ ...definition, id: 'draft', revision: 1 })
+  function Explorer() {
+    const [value, setValue] = useState<api.RegimeGraphDefinition>(definition)
+    return <RegimeSavePanel purpose="realtime_recognition" definition={value} dirty={!value.id} valid={!value.id} mode="realtime" asOf="" onSaved={setValue} onBusy={vi.fn()} onViewResult={vi.fn()}>{null}</RegimeSavePanel>
+  }
+  render(<Explorer />)
+  fireEvent.click(screen.getByRole('button', { name: '保存探索草稿' }))
+  expect(await screen.findByText(/探索草稿已保存/)).toBeVisible()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(api.createRegimeGraphDefinition).toHaveBeenCalledOnce()
+  expect(api.prepareRegimeGraph).not.toHaveBeenCalled()
+  expect(api.enableRegimeResearchVersion).not.toHaveBeenCalled()
+  expect(screen.queryByRole('link', { name: '前往产品研究' })).not.toBeInTheDocument()
+})
+
 it('一次保存算法并启用研究，默认不展示技术管理', async () => {
   const user = userEvent.setup(); render(<Host />)
   expect(screen.queryByRole('button', { name: '运行已保存版本' })).not.toBeInTheDocument()
