@@ -24,7 +24,6 @@ const listLinkClass = 'inline-flex min-h-10 items-center rounded-lg px-2 text-sm
 function alignPitDate(value: MandateDefinition, day: string, locked: boolean): MandateDefinition {
   if (!locked || value.as_of === day) return value
   return { ...value, as_of: day,
-    cash_budget: value.cash_budget ? { ...value.cash_budget, balance_as_of: day } : null,
     risk_authorization: { ...value.risk_authorization!, risk_scale_ref: null, authorized_max_level: null, selected_max_level: null },
     benchmark: null, max_volatility: null }
 }
@@ -100,19 +99,16 @@ export default function InvestmentObjectivesWorkspace() {
     return () => controller.abort()
   }, [editFrom, viewId, reload])
   useEffect(() => {
-    if (platformDay === previousResearchDay.current) return
+    const changed = platformDay !== previousResearchDay.current
+    const needsAlignment = pitLocked && definition.as_of !== platformDay
+    if (!changed && !needsAlignment) return
     previousResearchDay.current = platformDay
     // A viewing clock does not replace the inputs or diagnosis of a saved version.
     if (viewId || selected) return
     generation.current += 1; operation.current?.abort(); setBusy(false); setAcknowledged(false); setPreview(null); setSelected(null)
-    if (pitLocked) setDraft(current => ({ ...current, definition: {
-      ...current.definition, as_of: platformDay,
-      cash_budget: current.definition.cash_budget ? { ...current.definition.cash_budget, balance_as_of: platformDay } : null,
-      risk_authorization: { ...current.definition.risk_authorization!, risk_scale_ref: null, authorized_max_level: null, selected_max_level: null },
-      benchmark: null, max_volatility: null,
-    } }))
+    if (pitLocked) setDraft(current => ({ ...current, definition: alignPitDate(current.definition, platformDay, true) }))
     setNotice(pitUnknown ? '' : t('pitChanged'))
-  }, [platformDay, pitLocked, pitUnknown, viewId, selected])
+  }, [platformDay, pitLocked, pitUnknown, viewId, selected, definition.as_of])
 
   // 现金流改变真正需要的收益，所以填写页一边填一边回显服务端的确定性资金算术。
   useEffect(() => {
@@ -134,7 +130,6 @@ export default function InvestmentObjectivesWorkspace() {
       const dateChanged = typeof patch.as_of === 'string' && patch.as_of !== current.definition.as_of
       const next = { ...current.definition, ...patch }
       if (dateChanged) {
-        next.cash_budget = next.cash_budget ? { ...next.cash_budget, balance_as_of: patch.as_of! } : null
         next.risk_authorization = { ...next.risk_authorization!, risk_scale_ref: null, authorized_max_level: null, selected_max_level: null }
         next.max_volatility = null; next.benchmark = null
       }

@@ -51,7 +51,7 @@ export function compactMandateDefinition(input: Partial<MandateDefinition> | nul
   const oldRef = input.risk_authorization?.risk_scale_ref ?? null
   const oldCash = input.cash_budget
   const oldPlan = input.funding_plan
-  const migratedCash: CashBudget | null = oldCash ? { ...newCashBudget(day), ...oldCash, balance_as_of: day }
+  const migratedCash: CashBudget | null = oldCash ? { ...newCashBudget(day), ...oldCash }
     : oldPlan ? { ...newCashBudget(day), total_capital: oldPlan.total_capital, outside_reserve: oldPlan.outside_reserve,
       amount_basis: oldPlan.amount_basis, inflation: oldPlan.inflation, annual_fee: oldPlan.annual_fee,
       flows: oldPlan.flows, source: 'legacy_funding_plan' } : null

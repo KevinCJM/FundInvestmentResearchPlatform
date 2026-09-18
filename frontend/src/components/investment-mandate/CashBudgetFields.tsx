@@ -26,8 +26,9 @@ export default function CashBudgetFields({ value, onChange, funding }: {
   const months = Number.isInteger(value.horizon_years) && value.horizon_years >= 1 && value.horizon_years <= 30 ? value.horizon_years * 12 : 0
   // 结束月 is derived, never chosen: a stream runs to its last payment inside the horizon,
   // and 仅一次 is the same month as 开始月.
-  const monthText = (month: number) => locale === 'zh-CN' ? modelMonthLabel(value.as_of, month)
-    : `Month ${month} · ${modelMonthLabel(value.as_of, month).slice(-11, -1)}`
+  const budgetDay = cash?.balance_as_of ?? value.as_of
+  const monthText = (month: number) => locale === 'zh-CN' ? modelMonthLabel(budgetDay, month)
+    : `Month ${month} · ${modelMonthLabel(budgetDay, month).slice(-11, -1)}`
   const monthOption = (month: number) => <option key={month} value={month}>{monthText(month)}</option>
   return <section className="min-w-0 space-y-4 border-t border-slate-200 pt-5" aria-label={t('cashBudget')}>
     <h4 className="text-base font-semibold">{t('sectionCash')}</h4>
@@ -37,6 +38,10 @@ export default function CashBudgetFields({ value, onChange, funding }: {
       <span>{required ? t('cashRequiredForFunding') : t('useCashBudget')}</span>
     </label>
     {!cash ? <p className="text-sm leading-6 text-slate-600">{t('cashOptionalSimple')}</p> : <>
+      {cash.balance_as_of !== value.as_of && <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+        <p role="status" className="text-sm text-amber-900">{t('cashRollRequired', { from: cash.balance_as_of, to: value.as_of })}</p>
+        <Button onClick={() => patch({ balance_as_of: value.as_of })}>{t('confirmCashRoll')}</Button>
+      </div>}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label={`${t('capital')}（${value.currency}）`} hint={t('capitalHint')}><NumberInput className={inputClass} value={cash.total_capital} min={0} onValueChange={n => patch({ total_capital: n })} /></Field>
         <Field label={`${t(required ? 'terminalTarget' : 'terminalFloor')}（${value.currency}）`} hint={t(required ? 'terminalTargetHint' : 'terminalFloorHint')}>

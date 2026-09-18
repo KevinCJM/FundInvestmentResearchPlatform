@@ -395,6 +395,8 @@
   "mandate.reloadCatalog": {"zh-CN":"重新读取目录","en-US":"Reload catalog"},
   "mandate.catalogUnavailable": {"zh-CN":"目录不可用时仍可填写目标；读取失败不代表不存在历史版本。","en-US":"You can keep editing while the catalog is unavailable. A loading error does not mean no historical versions exist."},
   "mandate.retry": {"zh-CN":"重试","en-US":"Retry"},
+  "mandate.cashRollRequired": {"zh-CN":"现金预算仍以 {{from}} 为基准，当前研究日为 {{to}}。请核对并更新本金、储备和未来现金流；确认后，现金流月份才改以新研究日起算。确认前不能诊断或保存。","en-US":"The cash budget is still dated {{from}}, while the research date is {{to}}. Review and update capital, reserves and future cash flows. Confirmation rebases the flow months to the new research date. Diagnosis and saving remain blocked until confirmed."},
+  "mandate.confirmCashRoll": {"zh-CN":"我已核对资金和现金流，确认按新研究日使用","en-US":"I reviewed capital and cash flows; use the new research date"},
   "landing.heroLine1": {"zh-CN":"用数据与研究，","en-US":"Let research lead."},
   "landing.heroLine2": {"zh-CN":"发现","en-US":"Discover "},
   "landing.heroEmphasis": {"zh-CN":"更好的投资机会","en-US":"better possibilities."},
