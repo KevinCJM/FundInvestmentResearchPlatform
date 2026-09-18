@@ -164,6 +164,41 @@ test('相对基准直接使用风险等级代表组合，不要求用户手填�
   expect(errors).toEqual([])
 })
 
+test('编辑已保存绝对收益目标保留现金保护和独立资金验证', async ({ page, request }, info) => {
+  const errors = await connect(page)
+  const fixture = await (await request.get(`${api}/fixture`)).json()
+  const protection = { mode: 'payments_and_terminal_floor', terminal_floor: { amount: 800000, amount_basis: 'nominal' } }
+  const study = { definition: { schema_version: '2.0', name: `现金保护-${info.project.name}`,
+    as_of: fixture.today, horizon_years: 10, objective_kind: 'absolute_return', target_return: 0,
+    max_volatility: null, cash_budget: { total_capital: 1000000, balance_as_of: fixture.today }, cash_protection: protection,
+    risk_authorization: { mode: 'manual_level', authorized_max_level: 3, selected_max_level: 3,
+      risk_scale_ref: { id: fixture.scale.id, content_hash: fixture.scale.content_hash } } } }
+  const initial = await request.post(`${api}/api/strategic-allocation/mandates/preview`, { data: study })
+  expect(initial.status()).toBe(200)
+  const savedResponse = await request.post(`${api}/api/strategic-allocation/mandates/confirm`, {
+    data: { request: study, preview_hash: (await initial.json()).preview_hash, acknowledge_limits: true } })
+  expect(savedResponse.status()).toBe(201)
+  const saved = await savedResponse.json()
+  await page.goto(`/pre-investment/objectives/new?editFrom=${saved.id}`)
+  await expect(page.getByLabel(/^期末至少保有/)).toHaveValue('800000')
+  await page.getByLabel('目标名称', { exact: true }).fill(`现金保护保留-${info.project.name}`)
+  await page.getByRole('button', { name: '2. 结果与确认', exact: true }).click()
+  const previewed = page.waitForResponse(r => r.url().endsWith('/mandates/preview'))
+  await page.getByRole('button', { name: '运行目标诊断', exact: true }).click()
+  const preview = await (await previewed).json()
+  expect(preview.definition.cash_protection).toEqual(protection)
+  expect(preview.reference_diagnosis.validation.candidate_frozen_before_validation).toBe(true)
+  await page.getByRole('checkbox', { name: /我已核对输入/ }).check()
+  const confirmed = page.waitForResponse(r => r.url().endsWith('/mandates/confirm'))
+  await page.getByRole('button', { name: '保存修改后的版本', exact: true }).click()
+  const replacement = await (await confirmed).json()
+  expect(replacement.definition.cash_protection).toEqual(protection)
+  expect(replacement.supersedes_mandate_id).toBe(saved.id)
+  await expect(page.getByText('只读版本', { exact: true })).toBeVisible()
+  await layout(page, info, 'cash-protection-preserved', '已保存投资目标与约束')
+  expect(errors).toEqual([])
+})
+
 test('英语页面在无PIT时研究日可编辑，字段顺序和移动端布局可用', async ({ page }, info) => {
   const errors = await connect(page, 'en-US')
   await page.goto('/pre-investment/objectives')

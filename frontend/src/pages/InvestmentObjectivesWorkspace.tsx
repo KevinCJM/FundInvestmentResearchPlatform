@@ -80,6 +80,8 @@ export default function InvestmentObjectivesWorkspace() {
   useEffect(() => {
     const identifier = viewId ?? editFrom
     if (!identifier) { setEditSource(null); setSelected(null); setInitializing(false); return }
+    // Confirmation already returned this immutable version; keep it visible.
+    if (viewId && selected?.id === viewId) { setInitializing(false); return }
     const controller = new AbortController(); setInitializing(true); setError(''); setNotice('')
     setSelected(null); setEditSource(null); setPreview(null)
     getMandate(identifier, controller.signal).then(version => {

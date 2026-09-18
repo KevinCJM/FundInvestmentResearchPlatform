@@ -112,6 +112,12 @@ class StrategicAllocationService:
         superseded = {item["supersedes_mandate_id"] for item in mandates if item.get("supersedes_mandate_id")}
         return {item["id"] for item in mandates} - superseded - self._retired_mandate_ids()
 
+    def _require_active_mandate(self, identifier: str) -> dict:
+        mandate = self.get_mandate(identifier)
+        if identifier not in self._active_mandate_ids():
+            raise ConflictError("MANDATE_INACTIVE", "投资目标已删除或被新版本替代，不能建立新政策；请刷新并选择当前版本。")
+        return mandate
+
     def retire_mandate(self, identifier: str) -> dict:
         mandate = self.get_mandate(identifier)
         # Serialize lifecycle changes so concurrent edit/delete requests cannot
@@ -516,7 +522,7 @@ class StrategicAllocationService:
 
     def preview_policy(self, request: PolicyRequest) -> dict:
         kernels.require_ready()
-        mandate_artifact, cma = self.get_mandate(request.mandate_id), self.get_cma(request.cma_id)
+        mandate_artifact, cma = self._require_active_mandate(request.mandate_id), self.get_cma(request.cma_id)
         assessment = mandate_artifact.get("assessment", {})
         if not assessment.get("preview_hash") or not assessment.get("request"):
             raise ValidationError("MANDATE_CONFIRMATION_REQUIRED", "此目标缺少诊断与确认记录；请复制为新研究，诊断并确认后再建立政策。")
@@ -602,4 +608,7 @@ class StrategicAllocationService:
             **({"funding_validation": funding_validation} if funding_validation is not None else {}),
             "reason": body.reason, "confirmation_type": "researcher_policy_adoption", "independent_approval": False,
             "execution": preview["execution"]}
-        return self.baselines.save_baseline(baseline)
+        # Share the lifecycle lock: retirement/replacement cannot race this final write.
+        with self.artifacts.governance_lock.locked():
+            self._require_active_mandate(preview["mandate_id"])
+            return self.baselines.save_baseline(baseline)

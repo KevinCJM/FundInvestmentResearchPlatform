@@ -65,6 +65,7 @@ export function compactMandateDefinition(input: Partial<MandateDefinition> | nul
     min_cash_weight: input.min_cash_weight ?? input.boundary_policy?.cash_reserve_weight ?? 0,
     cash_budget: migratedCash ?? (kind === 'funding_goal' ? newCashBudget(day) : null),
     funding_target: kind === 'funding_goal' ? input.funding_target ?? (oldPlan ? { amount: oldPlan.terminal_target, amount_basis: oldPlan.amount_basis } : { amount: NaN, amount_basis: 'nominal' }) : null,
+    cash_protection: kind !== 'funding_goal' && migratedCash ? input.cash_protection ?? null : null,
     risk_authorization: { mode: 'manual_level', source: 'risk_scale_selection', risk_scale_ref: oldRef,
       authorized_max_level: oldRef ? oldLevel : null, selected_max_level: oldRef ? oldLevel : null },
     // Auto-frozen benchmarks are re-derived server-side; only hand-weighted ones are carried back.

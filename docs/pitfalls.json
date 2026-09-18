@@ -1349,7 +1349,9 @@
         "A shared cash budget is independent of the three objective kinds. Cash protection requires the effective cash-role floor in SAA and the frozen TAA gate, not merely tradable liquid assets. Missing frozen cash evidence must fail closed.",
         "Adding study parameters can make shared draft-shape validation discard supported earlier drafts. Adapt missing study fields at the mandate boundary without loosening the global draft guard or changing original inputs.",
         "Funding-suggestion mode requires a cash budget and an explicit funding_target or cash_protection. Withdrawal rows alone must not bypass probability validation and produce a validated recommendation; manual/numeric budget-only research retains its separate semantics.",
-        "PIT initialization and clock changes invalidate editable mandate drafts only. A saved view must retain its frozen request, assessment and readonly state even when the clock resolves after the version; never turn it into a new active mandate."
+        "PIT initialization and clock changes invalidate editable mandate drafts only. A saved view must retain its frozen request, assessment and readonly state even when the clock resolves after the version; never turn it into a new active mandate.",
+        "Cloning compact non-funding mandates must preserve explicit cash_protection and terminal-floor amount basis with the cash budget; otherwise probability validation silently disappears.",
+        "New SAA previews require an active mandate. Publishing rechecks activity under the same governance lock used for retirement/replacement; historical mandate and baseline reads remain immutable and available."
       ],
       "safe_observation_methods": [
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_mandate_diagnostic_integrity.py -q",
