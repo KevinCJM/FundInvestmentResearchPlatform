@@ -20,6 +20,7 @@ export function TaskFields({ value, onChange, cutoff, pitLocked, pitLabel }: Pro
   const changeHorizon = (years: number) => onChange({ horizon_years: years,
     ...(value.cash_budget && Number.isInteger(years) && years >= 1 && years <= 30 ? {
       cash_budget: { ...value.cash_budget, flows: value.cash_budget.flows.map(flow => flow.last_month === flow.first_month
+        || lastPaymentMonth(flow.first_month, flow.every_months, years * 12) <= flow.first_month
         ? flow : { ...flow, last_month: lastPaymentMonth(flow.first_month, flow.every_months, years * 12) }) },
     } : {}) })
   return <div className="space-y-5">

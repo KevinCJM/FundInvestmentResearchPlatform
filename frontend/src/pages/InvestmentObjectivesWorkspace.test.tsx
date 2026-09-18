@@ -389,3 +389,16 @@ it('期限变化重算循环现金流末月，单次支付原日期保持且无�
   fireEvent.change(horizon, { target: { value: '2' } })
   expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows.map(f => f.last_month)).toEqual([23, 6])
 })
+
+it.each([25, 1])('循环计划开始月%s缩到无法重复时保留意图，恢复期限后仍循环', async first => {
+  install(); const request = boundaryStudy()
+  request.definition = { ...request.definition, horizon_years: 5, cash_budget: { ...request.definition.cash_budget!,
+    flows: [{ name: '年度支付', kind: 'withdrawal', amount: 10000, first_month: first, last_month: 49, every_months: 12 }] } }
+  ready(request)
+  const horizon = screen.getByLabelText('投资期限（年）')
+  fireEvent.change(horizon, { target: { value: '1' } })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows[0].last_month).toBe(49)
+  expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeDisabled()
+  fireEvent.change(horizon, { target: { value: '6' } })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows[0]).toMatchObject({ first_month: first, last_month: 61, every_months: 12 })
+})

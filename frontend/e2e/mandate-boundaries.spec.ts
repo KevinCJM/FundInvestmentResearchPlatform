@@ -226,6 +226,10 @@ test('编辑已保存绝对收益目标保留现金保护和独立资金验证',
   await page.getByLabel('现金流 1 · 目标名称', { exact: true }).fill('Recurring payment')
   await page.getByLabel(/^现金流 1 · 金额/).fill('1000')
   await page.getByRole('combobox', { name: /^现金流 1 · 频率/ }).selectOption('3')
+  await page.getByRole('combobox', { name: /^现金流 1 · 开始月/ }).selectOption('25')
+  await page.getByLabel('投资期限（年）', { exact: true }).fill('1')
+  await expect(page.getByRole('button', { name: '2. 结果与确认', exact: true })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: /^现金流 1 · 频率/ })).toHaveValue('3')
   await page.getByLabel('投资期限（年）', { exact: true }).fill('12')
   await expect(page.getByLabel(/^现金流 1 · 结束月/)).toHaveValue(/第142月/)
 
@@ -236,6 +240,7 @@ test('编辑已保存绝对收益目标保留现金保护和独立资金验证',
   const preview = await (await previewed).json()
   expect(preview.definition.cash_protection).toEqual({ mode: 'payments_only', terminal_floor: null })
   expect(preview.definition.cash_budget.flows[0].last_month).toBe(142)
+  expect(preview.definition.cash_budget.flows[0].first_month).toBe(25)
   expect(preview.reference_diagnosis.validation.candidate_frozen_before_validation).toBe(true)
   await page.getByRole('checkbox', { name: /我已核对输入/ }).check()
   const confirmed = page.waitForResponse(r => r.url().endsWith('/mandates/confirm'))
