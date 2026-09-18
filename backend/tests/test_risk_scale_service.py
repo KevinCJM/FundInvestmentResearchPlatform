@@ -110,6 +110,10 @@ def test_cold_start_full_flow_and_schema(setup):
     old=client.get(P+'/'+version['id']).json()
     assert old['content_hash']==original_hash and old['retired'] and not old['current_eligibility']['eligible']
     assert client.get(P).json()['total']==0  # Deleted/retired versions leave the normal configuration list.
+    historical = client.get(P+'?include_retired=true&limit=1').json()
+    assert historical['total'] == 1 and historical['items'][0]['id'] == version['id']
+    assert historical['items'][0]['retired'] is True
+    assert historical['next_offset'] is None
 
 
 def test_study_options_only_returns_versions_usable_on_requested_research_day(setup):
@@ -418,3 +422,31 @@ def test_unstable_automatic_calibration_cannot_be_default(setup, monkeypatch, ad
     assert view['preview']['default_eligibility']['eligible']
     assert not view['current_default_eligibility']['eligible']
     assert 'UNSTABLE_CALIBRATION' in [x['code'] for x in view['current_default_eligibility']['blockers']]
+
+
+@pytest.mark.parametrize('action', ['update', 'delete'])
+def test_draft_revision_is_rechecked_on_preview_and_confirm(setup, action):
+    svc, client, inputs = setup
+    reference, _ = freeze_reference(svc, inputs)
+    d = definition(reference)
+    saved = client.post(P+'/drafts', json={'name': d['name'], 'scheme_id': d['scheme_id'],
+        'editable_definition': {'schema_version': 1, 'definition': d}}).json()
+    # In-memory edits remain supported; the saved revision is the concurrency token.
+    request = {'definition': {**d, 'name': 'Unsaved local edit'}, 'draft_id': saved['id'], 'draft_revision': saved['revision']}
+    response = client.post(P+'/preview', json=request)
+    assert response.status_code == 200, response.json()
+    preview = response.json()
+    if action == 'update':
+        changed = client.patch(P+'/drafts/'+saved['id'], json={'name': d['name'], 'scheme_id': d['scheme_id'],
+            'editable_definition': {'definition': d}, 'expected_revision': saved['revision']})
+    else:
+        changed = client.request('DELETE', P+'/drafts/'+saved['id'], json={'expected_revision': saved['revision']})
+    assert changed.status_code == 200, changed.json()
+    stale = client.post(P+'/preview', json=request)
+    assert stale.status_code == 409 and stale.json()['detail']['code'] == 'REVISION_CONFLICT'
+    before = svc.catalog()['total']
+    stale = client.post(P+'/confirm', json={'request': request, 'preview_hash': preview['preview_hash'],
+        'confirm': True, 'idempotency_key': 'stale-draft-'+action,
+        'acknowledged_warnings': [item['code'] for item in preview['warnings']]})
+    assert stale.status_code == 409 and stale.json()['detail']['code'] == 'REVISION_CONFLICT'
+    assert svc.catalog()['total'] == before
