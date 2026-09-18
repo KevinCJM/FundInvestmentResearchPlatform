@@ -60,8 +60,8 @@ def build_router(service):
 
     @router.get(prefix, response_model=CatalogResponse)
     def catalog(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
-                base_currency: str | None = None, risk_basis_id: str | None = None):
-        result = call(service.catalog, offset, limit, base_currency, risk_basis_id)
+                base_currency: str | None = None, risk_basis_id: str | None = None, include_retired: bool = False):
+        result = call(service.catalog, offset, limit, base_currency, risk_basis_id, include_retired)
         result['items'] = summaries(result['items'])
         return result
 

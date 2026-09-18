@@ -240,6 +240,7 @@ class Summary(Contract):
     content_hash: str
     created_at: str
     artifact_type: str
+    retired: bool = False
     scheme_id: str | None = None
     version_number: int | None = None
     base_currency: str | None = None

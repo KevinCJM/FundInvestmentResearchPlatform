@@ -104,14 +104,13 @@ class RiskScaleService:
     def _draft(self, request, state=None):
         if not request.draft_id:
             return
-        if state is None:
-            draft = self.store.get_draft(request.draft_id)
-        else:
-            draft = next((x for x in state['drafts'] if x['id'] == request.draft_id), None)
+        state = self.store.read() if state is None else state
+        draft = next((x for x in state['drafts'] if x['id'] == request.draft_id), None)
         if draft is None or draft['revision'] != request.draft_revision:
             raise ConflictError('REVISION_CONFLICT', '草稿已修改或删除，请重新加载。')
-        if draft['editable_definition'] != request.definition.model_dump(mode='json'):
-            raise ConflictError('DRAFT_INPUT_CHANGED', '提交输入与所选草稿修订不一致，请先保存或使用独立预览。')
+        # Revision identifies the saved edit base; preview_hash binds current unsaved edits.
+        if draft['scheme_id'] != request.definition.scheme_id:
+            raise ConflictError('DRAFT_SCHEME_CHANGED', '提交方案与所选草稿不一致，请重新加载。')
 
     def _research_day(self):
         return automatic_research_day(self.references.sources.data_dir)
@@ -448,10 +447,10 @@ class RiskScaleService:
                 'current_default_eligibility': self._current(item, state, default=True),
                 'review_due_at': definition.review_due_at, 'review_status': self._review_status(definition.review_due_at)}
 
-    def catalog(self, offset=0, limit=50, base_currency=None, risk_basis_id=None):
+    def catalog(self, offset=0, limit=50, base_currency=None, risk_basis_id=None, include_retired=False):
         state = self.store.read()
         items = [x for x in self.artifacts.list('series') if x.get('artifact_type') == 'risk_scale'
-                 and x.get('id') not in state['retired']
+                 and (include_retired or x.get('id') not in state['retired'])
                  and (base_currency is None or x.get('base_currency') == base_currency)
                  and (risk_basis_id is None or x.get('risk_basis_id') == risk_basis_id)]
         page = []
@@ -464,7 +463,7 @@ class RiskScaleService:
                 due = frozen.get('review_due_at')
                 if due is None:
                     due = PreviewRequest.model_validate(frozen['preview']['request_echo']).definition.review_due_at
-            page.append({**item, 'review_due_at': due, 'review_status': self._review_status(due)})
+            page.append({**item, 'review_due_at': due, 'review_status': self._review_status(due), 'retired': item['id'] in state['retired']})
         return {'items': page, 'drafts': state['drafts'], 'total': len(items),
                 'next_offset': offset+limit if offset+limit < len(items) else None}
 

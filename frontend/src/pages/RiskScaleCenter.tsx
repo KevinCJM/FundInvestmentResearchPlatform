@@ -13,24 +13,25 @@ export default function RiskScaleCenter() {
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null), [defaults, setDefaults] = useState<DefaultsResponse | null>(null)
   const [pendingDelete, setPendingDelete] = useState<DeleteTarget | null>(null)
   const [clearDefault, setClearDefault] = useState(false), [compared, setCompared] = useState<string[]>([])
+  const [includeRetired, setIncludeRetired] = useState(false)
   const [notice, setNotice] = useState('')
 
   const reload = () => {
     setNotice('')
     setCompared([]); setPendingDelete(null); setClearDefault(false)
-    void loadTask.run(async signal => { const [nextCatalog, nextDefaults] = await Promise.all([riskScales.catalog('limit=100', signal), riskScales.defaults(signal)]); return { nextCatalog, nextDefaults } }, ({ nextCatalog, nextDefaults }) => { setCatalog(nextCatalog); setDefaults(nextDefaults) })
+    void loadTask.run(async signal => { const [nextCatalog, nextDefaults] = await Promise.all([riskScales.catalog(`limit=100${includeRetired ? '&include_retired=true' : ''}`, signal), riskScales.defaults(signal)]); return { nextCatalog, nextDefaults } }, ({ nextCatalog, nextDefaults }) => { setCatalog(nextCatalog); setDefaults(nextDefaults) })
   }
 
   useEffect(() => {
     reload()
     return () => { loadTask.invalidate(); actionTask.invalidate() }
-  }, [])
+  }, [includeRetired])
 
   const defaultIds = new Set((defaults?.items ?? []).map(item => item.version_id).filter((id): id is string => Boolean(id)))
   const deletingDefault = pendingDelete?.kind === 'version' && defaultIds.has(pendingDelete.id)
   const loadMore = () => {
     if (catalog?.next_offset == null) return
-    void loadTask.run(signal => riskScales.catalog(`limit=100&offset=${catalog.next_offset}`, signal), page => {
+    void loadTask.run(signal => riskScales.catalog(`limit=100&offset=${catalog.next_offset}${includeRetired ? '&include_retired=true' : ''}`, signal), page => {
       setCatalog(current => current ? { ...page,
         items: [...new Map([...current.items, ...page.items].map(item => [item.id, item])).values()] } : page)
     })
@@ -69,10 +70,10 @@ export default function RiskScaleCenter() {
     }, ({ target: result, binding }) => {
       setCatalog(current => current ? {
         ...current,
-        items: result.kind === 'version' ? current.items.filter(item => item.id !== result.id) : current.items,
+        items: result.kind === 'version' ? includeRetired ? current.items.map(item => item.id === result.id ? { ...item, retired: true } : item) : current.items.filter(item => item.id !== result.id) : current.items,
         drafts: result.kind === 'draft' ? current.drafts.filter(item => item.id !== result.id) : current.drafts,
-        total: result.kind === 'version' ? Math.max(0, current.total - 1) : current.total,
-        next_offset: result.kind === 'version' && current.next_offset != null ? Math.max(0, current.next_offset - 1) : current.next_offset,
+        total: result.kind === 'version' && !includeRetired ? Math.max(0, current.total - 1) : current.total,
+        next_offset: result.kind === 'version' && !includeRetired && current.next_offset != null ? Math.max(0, current.next_offset - 1) : current.next_offset,
       } : current)
       setCompared(current => current.filter(id => id !== result.id))
       setPendingDelete(null)
@@ -90,6 +91,7 @@ export default function RiskScaleCenter() {
 
     <ErrorNotice error={loadTask.error} retry={reload} />
     <ErrorNotice error={actionTask.error} />
+    <label className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={includeRetired} disabled={actionTask.busy} onChange={event => setIncludeRetired(event.target.checked)} />{t('includeRetired')}</label>
     {notice && <p role="status" className="text-sm text-emerald-800">{notice}</p>}
     {loadTask.busy && <Loading />}
     {catalog && <div className="flex flex-wrap items-center gap-3">
@@ -115,13 +117,13 @@ export default function RiskScaleCenter() {
                 onChange={event => setCompared(current => event.target.checked ? [...current, row.id] : current.filter(id => id !== row.id))} />}
               <Link className="hover:text-accent-700 hover:underline" to={row.kind === 'version' ? `/settings/risk-scales/versions/${encodeURIComponent(row.id)}` : `/settings/risk-scales/drafts/${encodeURIComponent(row.id)}`}>{row.name}</Link>
             </th>
-            <td className="px-3 py-3"><div className="flex flex-wrap items-center gap-1"><Badge tone={row.kind === 'version' ? 'success' : 'warning'}>{t(row.kind === 'version' ? 'published' : 'draft')}</Badge>{row.kind === 'version' && defaultIds.has(row.id) && <Badge>{t('systemDefault')}</Badge>}{row.kind === 'version' && row.item.review_status === 'upcoming' && <Badge tone="warning">{t('reviewUpcoming')}</Badge>}{row.kind === 'version' && row.item.review_status === 'due' && <Badge tone="danger">{t('reviewDue')}</Badge>}{row.kind === 'version' && row.item.review_due_at && row.item.review_status !== 'none' && <span className="text-xs text-slate-600">{String(row.item.review_due_at)}</span>}</div></td>
+            <td className="px-3 py-3"><div className="flex flex-wrap items-center gap-1"><Badge tone={row.kind === 'version' ? 'success' : 'warning'}>{t(row.kind === 'version' ? row.item.retired ? 'retired' : 'published' : 'draft')}</Badge>{row.kind === 'version' && defaultIds.has(row.id) && <Badge>{t('systemDefault')}</Badge>}{row.kind === 'version' && row.item.review_status === 'upcoming' && <Badge tone="warning">{t('reviewUpcoming')}</Badge>}{row.kind === 'version' && row.item.review_status === 'due' && <Badge tone="danger">{t('reviewDue')}</Badge>}{row.kind === 'version' && row.item.review_due_at && row.item.review_status !== 'none' && <span className="text-xs text-slate-600">{String(row.item.review_due_at)}</span>}</div></td>
             <td className="px-3 py-3 tabular-nums">{row.kind === 'version' ? `v${row.item.version_number ?? 1}` : t('revision', { revision: row.item.revision })}</td>
             <td className="px-3 py-3 whitespace-nowrap text-slate-600">{formatDate(row.at)}</td>
             <td className="px-4 py-2"><div className="flex justify-end gap-1">
               {row.kind === 'version' && <Link className={linkClass} to={`/settings/risk-scales/versions/${encodeURIComponent(row.id)}`}>{t('viewDetails')}</Link>}
-              <Link className={linkClass} to={row.kind === 'version' ? `/settings/risk-scales/new?editFrom=${encodeURIComponent(row.id)}` : `/settings/risk-scales/drafts/${encodeURIComponent(row.id)}`}>{t('editConfig')}</Link>
-              <Button tone="danger" disabled={actionTask.busy} onClick={() => { setClearDefault(false); setPendingDelete({ kind: row.kind, id: row.id, name: row.name }) }}>{t('deleteConfig')}</Button>
+              {!(row.kind === 'version' && row.item.retired) && <><Link className={linkClass} to={row.kind === 'version' ? `/settings/risk-scales/new?editFrom=${encodeURIComponent(row.id)}` : `/settings/risk-scales/drafts/${encodeURIComponent(row.id)}`}>{t('editConfig')}</Link>
+              <Button tone="danger" disabled={actionTask.busy} onClick={() => { setClearDefault(false); setPendingDelete({ kind: row.kind, id: row.id, name: row.name }) }}>{t('deleteConfig')}</Button></>}
             </div></td>
           </tr>)}</tbody>
         </table>
