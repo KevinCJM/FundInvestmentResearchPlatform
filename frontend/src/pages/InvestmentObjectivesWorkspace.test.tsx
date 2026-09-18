@@ -129,6 +129,42 @@ it('未知PIT阻止诊断；恢复为关闭后可继续编辑', async () => {
   expect(await screen.findByLabelText(/^风险标尺版本/)).toHaveValue(riskVersion.id)
 })
 
+it.each([
+  [undefined, '2026-09-18'], ['2026-09-17', '2026-09-18'],
+  ['2026-09-17', null], ['2026-09-17', undefined],
+] as const)('已保存目标在PIT从%s变为%s后保留冻结诊断与只读状态', async (initial, next) => {
+  researchClock.day = initial
+  const fetch = install(); const user = userEvent.setup()
+  const route = `/pre-investment/objectives/new?view=${savedVersion.id}`
+  const tree = () => <MemoryRouter initialEntries={[route]}><InvestmentObjectivesWorkspace /></MemoryRouter>
+  const view = render(tree())
+  await screen.findByText('只读版本')
+  const frozen = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')
+  researchClock.day = next
+  view.rerender(tree())
+  expect(screen.getByText('只读版本')).toBeInTheDocument()
+  expect(screen.getByText('当前约束下可实现')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '运行目标诊断' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '保存新目标版本' })).not.toBeInTheDocument()
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')).toEqual(frozen)
+  await user.click(screen.getByRole('button', { name: '1. 目标与约束' }))
+  expect(screen.getByLabelText('目标名称')).toBeDisabled()
+  expect(screen.getByLabelText(/目标研究日/)).toHaveValue(savedVersion.definition.as_of)
+  expect(screen.getByLabelText(/^风险标尺版本/)).toHaveValue(riskVersion.id)
+  expect(fetch.mock.calls.filter(([url]) => /\/mandates\/(preview|confirm)$/.test(String(url)))).toHaveLength(0)
+})
+
+it('PIT变化仍清除可编辑草稿的旧诊断与风险引用', async () => {
+  install(); const user = userEvent.setup(); const view = ready()
+  await openResult(user)
+  researchClock.day = '2026-09-18'
+  view.rerender(<MemoryRouter><InvestmentObjectivesWorkspace /></MemoryRouter>)
+  expect(screen.queryByText('当前约束下可实现')).not.toBeInTheDocument()
+  const draft = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!
+  expect(draft.definition.as_of).toBe('2026-09-18')
+  expect(draft.definition.risk_authorization?.risk_scale_ref).toBeNull()
+})
+
 it('相对基准目标只要求超额收益，基准自动来自所选风险等级代表组合', async () => {
   install(); const user = userEvent.setup(); ready()
   const objective = screen.getByLabelText(/投资目标类型/)

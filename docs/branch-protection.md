@@ -1,6 +1,6 @@
 # 分支保护实现
 
-需求以 [提交规范](../branch_submission_rules.md) 为准。三组原生规则各司其职，避免为了 Owner 自己合并而放开其他保护。
+需求以 [提交规范](../branch_submission_rules.md) 为准，执行顺序见 [代码提交全流程](submission-workflow.md)。本文区分 GitHub 已有原生配置与执行者必须遵守的审核规范；文档变更本身不部署远端规则。
 
 | 规则 | 配置文件 | 范围 | 豁免 |
 | --- | --- | --- | --- |
@@ -8,9 +8,11 @@
 | 必须 1 个有效 Approve，新提交撤销旧批准 | `.github/approval-ruleset.json` | main、Dev | 仅 KevinCJM，限 PR 合并 |
 | 必须通过 branch-policy | `.github/main-branch-ruleset.json` | main | 无 |
 
-批准豁免按合并操作者判断。Owner 可以免批准合并自己的或其他人的 PR；普通协作者执行合并仍需有效批准。普通写权限不包含修改规则或使用 Owner 豁免的权限。规则固定到 KevinCJM 的用户 ID，不自动惠及将来新增的管理员。
+原生批准豁免按合并操作者判断。Owner 可以免普通 Approve 合并自己的或其他人的 PR；普通协作者仍需有效批准。规则固定到 KevinCJM 的用户 ID，不自动惠及其他管理员。该原生能力不表示 AI 已获准绕过 Bot 审核。
 
-Codex 原有评论审核保留为辅助，不强制额外 AI/quality 检查、代码所有者审核、最后推送者批准或讨论全部关闭。main 的来源检查继续强制。
+**Bot 审核是提交规范中的强制合并条件。** 正常合并必须确认指定 Bot 已通过当前最新 HEAD；Owner 可作例外，AI 代为执行则必须先取得本次人类明确允许，并逐条回复 Bot 的意见及代码/测试依据。是否拥有 Owner 凭据不能代替这项允许。
+
+**技术覆盖边界：** 现有三组 ruleset 和下述 `branch-policy` 工作流没有解析 Bot 的 review、评论或审核提交，也没有独立的 `bot-review-gate` required check。它们可能在 Bot 尚未通过时允许有权限者操作，但执行者仍不得违反提交规范。当前用规范约束 AI 主动请求人类允许，不建设用于区分 AI/人类身份的技术系统；不得声称这次文档更新已经部署自动 Bot 门禁。
 
 ## 最小工作流
 
@@ -37,13 +39,13 @@ gh api repos/KevinCJM/FundInvestmentResearchPlatform/rules/branches/Dev
 gh api repos/KevinCJM/FundInvestmentResearchPlatform/rulesets/实际ID
 ```
 
-批准规则仅放 `pull_request` 及批准参数；不能把必需检查、禁止强推/删除等规则混进去。Owner 使用终端 `gh pr merge --merge --admin --match-head-commit <SHA>` 行使已配置的 PR 内豁免，不能以此绕过其他规则。未经用户授权不得扩大豁免账号。
+批准规则仅放 `pull_request` 及批准参数；不能把必需检查、禁止强推/删除等规则混进去。Owner 使用终端 `gh pr merge --merge --admin --match-head-commit <SHA>` 行使已配置的 PR 内豁免前，AI 须确认 Bot 已通过，或已完成提交规范中的人类授权、逐条回复和最终核对。不能借此绕过其他规则，未经用户授权不得扩大豁免账号。
 
 ## 验证与权限边界
 
 - 核对规则范围、批准数和唯一豁免用户；PR-only 与 main 方向规则的 bypass 必须为空。
 - 执行实际 YAML 的 main/Dev 来源正反例，并用 actionlint 校验。
-- 通过 GitHub 实际 PR 检查验证工作流，并核对 Owner 无 Approve 时能否按规则合并；不进行危险的真实主线推送测试。
+- 通过 GitHub 实际 PR 检查验证工作流。原生 Owner 无普通 Approve 的合并能力验证，须使用 Bot 已通过或已获本次例外允许的 PR；不得为了测试权限直接绕过 Bot，也不进行真实主线推送测试。
 - GitHub 原生检查按名称和 App 匹配；本方案不隔离恶意管理员或刻意伪造同名 Actions 检查的写权限人。工作流修改须检查真实差异；只读配置验证不能冒充另一个账号的实际测试。
 
 GitHub API 支持指定用户及仅 PR 的规则豁免：[REST rulesets](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset)。

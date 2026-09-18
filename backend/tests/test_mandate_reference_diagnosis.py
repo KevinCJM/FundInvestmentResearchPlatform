@@ -1,6 +1,7 @@
 """Real offline risk-scale -> mandate reference search/validation integration."""
 import numpy as np
 import pytest
+from pydantic import ValidationError as InputError
 
 from backend.tests.risk_scale_app import make_service
 from backend.tests.test_risk_scale_service import freeze_reference, definition as scale_definition, publish
@@ -32,6 +33,26 @@ def request_for(version, **updates):
             "authorized_max_level": 3, "risk_scale_ref": {k: version[k] for k in ("id", "content_hash")}})
     data.update(updates)
     return MandateStudyRequest(definition=MandateRequest.model_validate(data), simulation_paths=500, seed=43, validation_seed=971)
+
+
+@pytest.mark.parametrize("objective_kind", ["absolute_return", "benchmark_relative"])
+def test_funding_suggestion_rejects_payments_without_explicit_success_condition(reference, objective_kind):
+    _, scale, _ = reference
+    # A withdrawal is a cash-flow fact, not consent to a probability-based goal.
+    with pytest.raises(InputError, match="明确的资金成功条件"):
+        request_for(scale, objective_kind=objective_kind, funding_target=None, cash_protection=None)
+
+
+def test_funding_suggestion_with_payment_protection_runs_independent_validation(reference):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="absolute_return", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    result = service.preview_mandate(body)
+    study = result["reference_diagnosis"]
+    assert study["status"] == "validated"
+    assert study["validation"]["seed"] == body.validation_seed != body.seed
+    assert study["validation"]["central"]["probability_lower"] >= .8
+    assert result["risk_decision"]["status"] == "recommendation_validated"
 
 
 def test_frozen_scale_constrained_frontier_then_independent_validation(reference):

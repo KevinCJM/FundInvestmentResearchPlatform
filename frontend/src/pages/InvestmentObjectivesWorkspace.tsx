@@ -97,6 +97,8 @@ export default function InvestmentObjectivesWorkspace() {
   useEffect(() => {
     if (platformDay === previousResearchDay.current) return
     previousResearchDay.current = platformDay
+    // A viewing clock does not replace the inputs or diagnosis of a saved version.
+    if (viewId || selected) return
     generation.current += 1; operation.current?.abort(); setBusy(false); setAcknowledged(false); setPreview(null); setSelected(null)
     if (pitLocked) setDraft(current => ({ ...current, definition: {
       ...current.definition, as_of: platformDay,
@@ -105,7 +107,7 @@ export default function InvestmentObjectivesWorkspace() {
       benchmark: null, max_volatility: null,
     } }))
     setNotice(pitUnknown ? '' : t('pitChanged'))
-  }, [platformDay, pitLocked, pitUnknown])
+  }, [platformDay, pitLocked, pitUnknown, viewId, selected])
 
   // 现金流改变真正需要的收益，所以填写页一边填一边回显服务端的确定性资金算术。
   useEffect(() => {
