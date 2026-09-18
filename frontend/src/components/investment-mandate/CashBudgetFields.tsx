@@ -68,7 +68,7 @@ export default function CashBudgetFields({ value, onChange, funding }: {
       <div className="divide-y divide-slate-200">{cash.flows.map((flow, index) => {
         const update = (next: Partial<FundingFlow>) => flows(cash.flows.map((item, i) => i === index ? { ...item, ...next } : item))
         const label = (key: string) => `${t('flowNumber', { n: index + 1 })} · ${t(key)}`
-        const once = flow.last_month === flow.first_month
+        const once = flow.last_month === flow.first_month && flow.every_months === 1
         return <fieldset key={index} className="min-w-0 space-y-3 py-4"><legend className="text-sm font-medium">{t('flowNumber', { n: index + 1 })}</legend>
           <div className="grid gap-3 sm:grid-cols-3">
             <Field label={label('name')}><input className={inputClass} maxLength={120} value={flow.name} onChange={e => update({ name: e.target.value })} /></Field>

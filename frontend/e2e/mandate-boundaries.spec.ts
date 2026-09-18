@@ -207,10 +207,12 @@ test('相对基准直接使用风险等级代表组合，不要求用户手填�
 test('编辑已保存绝对收益目标保留现金保护和独立资金验证', async ({ page, request }, info) => {
   const errors = await connect(page)
   const fixture = await (await request.get(`${api}/fixture`)).json()
+  await page.clock.setFixedTime(new Date(`${fixture.today}T12:00:00Z`))
   const protection = { mode: 'payments_and_terminal_floor', terminal_floor: { amount: 800000, amount_basis: 'nominal' } }
   const study = { definition: { schema_version: '2.0', name: `现金保护-${info.project.name}`,
     as_of: fixture.today, horizon_years: 10, objective_kind: 'absolute_return', target_return: 0,
-    max_volatility: null, cash_budget: { total_capital: 1000000, balance_as_of: fixture.today }, cash_protection: protection,
+    max_volatility: null, cash_budget: { total_capital: 1000000, balance_as_of: fixture.today,
+      flows: [{ name: 'Historical recurrence', kind: 'withdrawal', amount: 1000, first_month: 12, last_month: 12, every_months: 3 }] }, cash_protection: protection,
     risk_authorization: { mode: 'manual_level', authorized_max_level: 3, selected_max_level: 3,
       risk_scale_ref: { id: fixture.scale.id, content_hash: fixture.scale.content_hash } } } }
   const initial = await request.post(`${api}/api/strategic-allocation/mandates/preview`, { data: study })
@@ -226,7 +228,9 @@ test('编辑已保存绝对收益目标保留现金保护和独立资金验证',
   await expect(page.getByRole('button', { name: '2. 结果与确认', exact: true })).toBeDisabled()
   await page.getByLabel(/^期末至少保有/).fill('800000')
   await page.getByRole('combobox', { name: /^现金保护条件/ }).selectOption('payments_only')
-  await page.getByRole('button', { name: '添加投入或支付', exact: true }).click()
+  await expect(page.getByRole('combobox', { name: /^现金流 1 · 频率/ })).toHaveValue('3')
+  await page.getByLabel('投资期限（年）', { exact: true }).fill('11')
+  await expect(page.getByLabel(/^现金流 1 · 结束月/)).toHaveValue(/第132月/)
   await page.getByLabel('现金流 1 · 目标名称', { exact: true }).fill('Recurring payment')
   await page.getByLabel(/^现金流 1 · 金额/).fill('1000')
   await page.getByRole('combobox', { name: /^现金流 1 · 频率/ }).selectOption('3')
