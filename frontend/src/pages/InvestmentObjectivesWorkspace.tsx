@@ -171,7 +171,7 @@ export default function InvestmentObjectivesWorkspace() {
         effectiveCash={preview?.reference_diagnosis?.cash_constraint?.effective_min_cash_weight ?? resolved.effective_cash_reserve_weight} />
       {editSource && !selected && <p className="rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-700">{t('editingPublishedHint', { name: editSource.name })}</p>}
       {selected && <div className="flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 p-3"><Badge>{t('readonly')}</Badge><p className="text-sm">{selected.name} · {statusLabel(selected.assessment?.status ?? selected.assessment_status)}</p>
-        <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-800 underline" to={allocationJourneyPath('pool')}>{t('nextScope')}</Link>
+        <Link className="inline-flex min-h-10 items-center text-sm font-semibold text-accent-800 underline" to={allocationJourneyPath('pool', { mandateId: selected.id })}>{t('nextScope')}</Link>
       </div>}
       <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold">{t(stepKeys[step])}</h2>
       <Card className="min-w-0 space-y-5" aria-label={t('editor')}>

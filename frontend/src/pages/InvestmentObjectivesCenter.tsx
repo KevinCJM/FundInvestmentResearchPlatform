@@ -78,7 +78,7 @@ export default function InvestmentObjectivesCenter() {
           const level = definition.risk_authorization?.selected_max_level ?? definition.risk_authorization?.authorized_max_level
           const cash = definition.effective_cash_reserve_weight ?? definition.min_cash_weight ?? 0
           return <tr key={item.id} className="border-t border-slate-200">
-            <th scope="row" className="px-4 py-3 text-left font-medium text-slate-900">{item.name}</th>
+            <th scope="row" className="px-4 py-3 text-left font-medium text-slate-900"><Link className={linkClass} to={`/pre-investment/objectives/new?view=${encodeURIComponent(item.id)}`}>{item.name}</Link></th>
             <td className="px-3 py-3 text-slate-700">{objectiveText(definition, t)}</td>
             <td className="px-3 py-3 whitespace-nowrap text-slate-700">{definition.as_of}</td>
             <td className="px-3 py-3 text-right tabular-nums">{level ? `C${level}` : '—'}</td>

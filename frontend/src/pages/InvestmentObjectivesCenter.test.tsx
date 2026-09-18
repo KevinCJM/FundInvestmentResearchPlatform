@@ -28,6 +28,7 @@ it('主页面先展示现有目标列表，并提供新增、修改和删除', a
   render(<MemoryRouter><InvestmentObjectivesCenter /></MemoryRouter>)
   const table = await screen.findByRole('table', { name: '已发布投资目标与约束列表' })
   expect(within(table).getByText('家庭长期目标')).toBeInTheDocument()
+  expect(within(table).getByRole('link', { name: '家庭长期目标' })).toHaveAttribute('href', `/pre-investment/objectives/new?view=${version.id}`)
   expect(within(table).getByText('C3')).toBeInTheDocument()
   expect(screen.getByRole('link', { name: '添加投资目标与约束' })).toHaveAttribute('href', '/pre-investment/objectives/new?fresh=1')
   expect(within(table).getByRole('link', { name: '修改' })).toHaveAttribute('href', `/pre-investment/objectives/new?editFrom=${version.id}`)

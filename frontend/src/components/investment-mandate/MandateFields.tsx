@@ -42,8 +42,8 @@ export function GoalFields({ value, onChange, version }: Props & { version: Vers
   const selectedLevel = value.risk_authorization?.selected_max_level ?? null
   const portrait = selectedLevel ? levels[selectedLevel - 1] : undefined
   const changeKind = (objective: ObjectiveKind) => {
-    // Only a funding goal needs a ledger to exist; the other objectives start with it off.
-    const cash = objective === 'funding_goal' ? value.cash_budget ?? newCashBudget(value.as_of) : null
+    // Budgets are shared facts; changing a success criterion must not erase them.
+    const cash = value.cash_budget ?? (objective === 'funding_goal' ? newCashBudget(value.as_of) : null)
     // A relative objective is measured against the level's representative portfolio; a
     // level without one cannot carry it, so the choice goes back to the researcher.
     const keepLevel = objective !== 'benchmark_relative' || !portrait || portrait.representative_node_id != null
@@ -54,7 +54,7 @@ export function GoalFields({ value, onChange, version }: Props & { version: Vers
       target_excess_return: objective === 'benchmark_relative' ? NaN : 0,
       cash_budget: cash,
       funding_target: objective === 'funding_goal' ? { amount: NaN, amount_basis: 'nominal' } : null,
-      cash_protection: null,
+      cash_protection: objective === 'funding_goal' ? null : value.cash_protection ?? null,
       benchmark: null,
       stated_benchmark: '',
     })
