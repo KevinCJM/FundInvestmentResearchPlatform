@@ -358,3 +358,34 @@ it.each(['draft', 'editFrom', 'manual'])('日期变化不自动改写现金事�
   expect(rolled.definition.cash_budget).toEqual({ ...request.definition.cash_budget, balance_as_of: '2026-09-18' })
   expect(screen.queryByRole('button', { name: '我已核对资金和现金流，确认按新研究日使用' })).not.toBeInTheDocument()
 })
+
+it.each(['absolute_return', 'benchmark_relative'] as const)('%s现金计划可显式选择仅支付保护并提交独立验证', async kind => {
+  const fetch = install(); const user = userEvent.setup(); const request = boundaryStudy()
+  request.definition = { ...request.definition, objective_kind: kind, target_return: 0, target_excess_return: 0,
+    funding_target: null, cash_protection: null, cash_budget: { ...request.definition.cash_budget!,
+      flows: [{ name: '必要支付', kind: 'withdrawal', amount: 10000, first_month: 1, last_month: 1, every_months: 1 }] } }
+  ready(request)
+  await user.selectOptions(screen.getByRole('combobox', { name: /^现金保护条件/ }), 'payments_only')
+  expect(screen.queryByLabelText(/^期末至少保有/)).not.toBeInTheDocument()
+  await openResult(user)
+  const call = fetch.mock.calls.find(([url]) => String(url) === `${root}/mandates/preview`)!
+  const definition = JSON.parse(String(call[1]?.body)).definition
+  expect(definition.cash_protection).toEqual({ mode: 'payments_only' })
+  expect(definition.funding_target).toBeNull()
+})
+
+it('期限变化重算循环现金流末月，单次支付原日期保持且无效期限不改计划', async () => {
+  install(); const request = boundaryStudy()
+  request.definition = { ...request.definition, horizon_years: 2, cash_budget: { ...request.definition.cash_budget!, flows: [
+    { name: '季度投入', kind: 'contribution', amount: 10000, first_month: 2, last_month: 23, every_months: 3 },
+    { name: '单次支付', kind: 'withdrawal', amount: 5000, first_month: 6, last_month: 6, every_months: 1 },
+  ] } }
+  ready(request)
+  const horizon = screen.getByLabelText('投资期限（年）')
+  fireEvent.change(horizon, { target: { value: '5' } })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows.map(f => f.last_month)).toEqual([59, 6])
+  fireEvent.change(horizon, { target: { value: '1.5' } })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows.map(f => f.last_month)).toEqual([59, 6])
+  fireEvent.change(horizon, { target: { value: '2' } })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows.map(f => f.last_month)).toEqual([23, 6])
+})

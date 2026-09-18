@@ -38,14 +38,22 @@ export default function CashBudgetFields({ value, onChange, funding }: {
       <span>{required ? t('cashRequiredForFunding') : t('useCashBudget')}</span>
     </label>
     {!cash ? <p className="text-sm leading-6 text-slate-600">{t('cashOptionalSimple')}</p> : <>
+      {!required && <Field label={t('cashProtection')} hint={t('cashProtectionHint')}>
+        <select className={inputClass} value={value.cash_protection?.mode ?? 'none'} onChange={event =>
+          onChange({ cash_protection: event.target.value === 'none' ? null : event.target.value === 'payments_only'
+            ? { mode: 'payments_only' } : { mode: 'payments_and_terminal_floor', terminal_floor: terminal ?? { amount: NaN, amount_basis: 'nominal' } } })}>
+          <option value="none">{t('noProtection')}</option><option value="payments_only">{t('paymentsOnly')}</option>
+          <option value="payments_and_terminal_floor">{t('paymentsAndFloor')}</option>
+        </select>
+      </Field>}
       {cash.balance_as_of !== value.as_of && <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
         <p role="status" className="text-sm text-amber-900">{t('cashRollRequired', { from: cash.balance_as_of, to: value.as_of })}</p>
         <Button onClick={() => patch({ balance_as_of: value.as_of })}>{t('confirmCashRoll')}</Button>
       </div>}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label={`${t('capital')}（${value.currency}）`} hint={t('capitalHint')}><NumberInput className={inputClass} value={cash.total_capital} min={0} onValueChange={n => patch({ total_capital: n })} /></Field>
-        <Field label={`${t(required ? 'terminalTarget' : 'terminalFloor')}（${value.currency}）`} hint={t(required ? 'terminalTargetHint' : 'terminalFloorHint')}>
-          <NumberInput className={inputClass} value={terminal?.amount ?? NaN} min={0} onValueChange={setTerminal} /></Field>
+        {value.cash_protection?.mode !== 'payments_only' && <Field label={`${t(required ? 'terminalTarget' : 'terminalFloor')}（${value.currency}）`} hint={t(required ? 'terminalTargetHint' : 'terminalFloorHint')}>
+          <NumberInput className={inputClass} value={terminal?.amount ?? NaN} min={0} onValueChange={setTerminal} /></Field>}
       </div>
       {gap !== null && funding && <p className="rounded-lg bg-slate-50 p-3 text-sm leading-6 text-slate-700">
         {t('fundingBridge', { capital: amountText(funding.investable_capital), contributions: amountText(funding.total_contributions),

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Field, inputClass, NumberInput, percentText } from '../risk-models/ResearchUI'
 import { metadata, riskScales, textValue, type ReferenceAsset, type VersionView } from '../../services/riskScales'
 import { percentInputValue as percent, type MandateDefinition, type MandateFundingEcho, type ObjectiveKind } from '../../services/strategicAllocation'
-import { CUSTOM_BENCHMARK, levelReaches, newCashBudget } from './model'
+import { CUSTOM_BENCHMARK, lastPaymentMonth, levelReaches, newCashBudget } from './model'
 import { useMandateText } from './text'
 
 type Props = { value: MandateDefinition; onChange: (patch: Partial<MandateDefinition>) => void }
@@ -17,13 +17,18 @@ export function TaskFields({ value, onChange, cutoff, pitLocked, pitLabel }: Pro
   cutoff: string; pitLocked: boolean; pitLabel: string
 }) {
   const { t } = useMandateText()
+  const changeHorizon = (years: number) => onChange({ horizon_years: years,
+    ...(value.cash_budget && Number.isInteger(years) && years >= 1 && years <= 30 ? {
+      cash_budget: { ...value.cash_budget, flows: value.cash_budget.flows.map(flow => flow.last_month === flow.first_month
+        ? flow : { ...flow, last_month: lastPaymentMonth(flow.first_month, flow.every_months, years * 12) }) },
+    } : {}) })
   return <div className="space-y-5">
     <div className="grid gap-4 sm:grid-cols-2">
       <Field label={t('name')}><input className={inputClass} value={value.name} maxLength={120} onChange={e => onChange({ name: e.target.value })} /></Field>
       <Field label={t('researchDate')} hint={pitLocked ? t('pitDateLocked') : t('pitDateManual')}>
         <input className={inputClass} type="date" value={value.as_of} max={cutoff} disabled={pitLocked} onChange={e => onChange({ as_of: e.target.value })} />
       </Field>
-      <Field label={t('horizon')} hint={t('horizonHint')}><NumberInput aria-label={t('horizon')} className={inputClass} value={value.horizon_years} min={1} max={30} onValueChange={n => onChange({ horizon_years: n })} /></Field>
+      <Field label={t('horizon')} hint={t('horizonHint')}><NumberInput aria-label={t('horizon')} className={inputClass} value={value.horizon_years} min={1} max={30} onValueChange={changeHorizon} /></Field>
       <Field label={t('reviewDate')} hint={t('reviewDateOptional')}><input className={inputClass} type="date" min={value.as_of} value={value.review_date ?? ''} onChange={e => onChange({ review_date: e.target.value || null })} /></Field>
     </div>
     <p className="text-xs leading-5 text-slate-600">{pitLabel}</p>
