@@ -32,6 +32,7 @@ test('historical intersection to risk scale, five segmentation methods, publish 
   expect(fixtureResponse.ok()).toBe(true)
   const fixture = await fixtureResponse.json(); expect(fixture.test_only).toBe(true)
   const reference = fixture.reference_request
+  await page.clock.setFixedTime(new Date(`${reference.as_of}T12:00:00Z`))
   await page.goto('/settings/risk-scales')
   await expect(page.getByText('尚未配置风险等级', { exact: true })).toBeVisible()
   await expect(page.getByLabel('本位币')).toHaveCount(0)
@@ -77,6 +78,7 @@ test('historical intersection to risk scale, five segmentation methods, publish 
   await page.getByRole('button', { name: '计算前沿与五档', exact: true }).click()
   await expect(page.getByRole('table', { name: 'C1–C5 风险等级', exact: true })).toBeVisible()
   await expect(page.getByTestId('risk-frontier-chart').locator('canvas')).toBeVisible()
+  await expect(page.getByText('ES 与回撤画像：代表组合外层按月再平衡，代理内部使用各自的冻结再平衡规则。', { exact: true })).toBeVisible()
   for (const method of ['equal_volatility_v1', 'equal_arclength_v1', 'equal_return_v1', 'manual_volatility_bands_v1', 'frontier_shape_dp_v2']) {
     await page.getByLabel('分档方式').selectOption(method)
     await expect(page.getByRole('button', { name: '更新前沿与分档预览' })).toHaveCount(0)

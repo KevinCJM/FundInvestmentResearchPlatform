@@ -450,3 +450,37 @@ def test_draft_revision_is_rechecked_on_preview_and_confirm(setup, action):
         'acknowledged_warnings': [item['code'] for item in preview['warnings']]})
     assert stale.status_code == 409 and stale.json()['detail']['code'] == 'REVISION_CONFLICT'
     assert svc.catalog()['total'] == before
+
+
+def test_zero_variance_market_proxy_is_not_a_cash_endpoint(setup):
+    import pandas as pd
+    svc, _, inputs = setup
+    path = svc.references.sources.data_dir / 'synthetic-test-only' / 'etf_daily_df.parquet'
+    frame = pd.read_parquet(path)
+    frame.loc[frame['ts_code'] == '900002.SH', 'adj_nav'] = 1.
+    frame.to_parquet(path, index=False)
+    reference, _ = freeze_reference(svc, inputs)
+    d = definition(reference)
+    d['constraint_profile'] = {'asset_limits': {'cash': {'min_weight': 0., 'max_weight': 0.}}}
+    preview = svc.preview(PreviewRequest(definition=d))
+    endpoint = preview['result']['frontier'][0]
+    assert endpoint['volatility'] <= numeric.BOUNDARY_TOL
+    assert abs(endpoint['weights'][0]) < 1e-7
+    assert not preview['default_eligibility']['eligible']
+    assert 'CASH_CONSTRAINT_COVERAGE' in [x['code'] for x in preview['default_eligibility']['blockers']]
+
+
+def test_portrait_rebalance_is_frozen_and_cash_endpoint_is_qualified(setup):
+    svc, _, inputs = setup
+    reference, _ = freeze_reference(svc, inputs)
+    version, _, preview = publish(svc, definition(reference))
+    assert preview['result']['frontier'][0]['weights'][0] == pytest.approx(1.)
+    assert preview['result']['diagnostics']['representative_portfolio_rebalance'] == 'monthly'
+    saved = svc.get_version(version['id'])
+    assert saved['preview']['result']['diagnostics']['representative_portfolio_rebalance'] == 'monthly'
+    assert saved['content_hash'] == version['content_hash']
+    old = svc._item(version['id'])
+    old['preview']['result']['frontier'][0]['weights'] = [0., 1., 0.]
+    old['preview']['result']['frontier'][0]['volatility'] = 0.
+    old['preview']['default_eligibility'] = {'eligible': True, 'blockers': []}
+    assert not svc._current(old, default=True)['eligible']

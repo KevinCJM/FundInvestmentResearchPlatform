@@ -32,3 +32,15 @@ describe('risk chart evidence', () => {
   })
   it('rejects unrelated draft schemas safely', () => { expect(() => restoreRiskEditor({ something: 'else' })).toThrow('') })
 })
+
+it('shows the frozen outer portrait rule and marks missing historical evidence explicitly', () => {
+  const preview = structuredClone(riskPreview)
+  preview.warnings = [{ code: 'RETROSPECTIVE_PORTRAITS', message: '风险画像仅为事后参考；ES 为日频经验值，不是年度损失保证。' }]
+  preview.result.diagnostics = { ...preview.result.diagnostics, representative_portfolio_rebalance: 'monthly' }
+  const view = render(<RiskScaleResults preview={preview} compact />)
+  expect(screen.getByText(/代表组合外层按月再平衡/)).toBeInTheDocument()
+  expect(screen.getByText(/代表组合外层按月再平衡/)).toBeInTheDocument()
+  expect(screen.queryByText(/代表组合按各代理配置的再平衡规则/)).not.toBeInTheDocument()
+  view.rerender(<RiskScaleResults preview={riskPreview} compact />)
+  expect(screen.getByText(/历史版本未记录代表组合外层再平衡口径/)).toBeInTheDocument()
+})
