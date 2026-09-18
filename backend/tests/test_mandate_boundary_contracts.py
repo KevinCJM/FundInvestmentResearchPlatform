@@ -202,6 +202,44 @@ def test_published_mandate_edit_and_delete_keep_history_but_only_list_active_ver
     assert first["id"] not in {item["id"] for item in service.catalog()["mandates"]}
 
 
+@pytest.mark.parametrize("action", ["retire", "replace"])
+@pytest.mark.parametrize("during_publish", [False, True])
+def test_inactive_mandate_cannot_create_policy_but_history_remains(workspace, monkeypatch, action, during_publish):
+    service, _ = workspace
+    mandate, _, request = saved_inputs(service)
+    preview = service.preview_policy(request)
+    publish = PublishPolicyRequest(request=request, preview_hash=preview["preview_hash"],
+        candidate_id="minimum-risk", name="目标状态保护测试", reason="离线验证目标生命周期门禁")
+    historical = service.publish_policy(publish)
+    before = service.baselines.list_baselines()
+
+    def deactivate():
+        if action == "retire":
+            service.retire_mandate(mandate["id"])
+        else:
+            study = MandateStudyRequest.model_validate(mandate["assessment"]["request"])
+            value = service.preview_mandate(study)
+            service.confirm_mandate(ConfirmMandateRequest(request=study, preview_hash=value["preview_hash"],
+                acknowledge_limits=True, replaces_mandate_id=mandate["id"]))
+
+    if during_publish:
+        original = service.preview_policy
+        def preview_then_deactivate(body):
+            value = original(body)
+            deactivate()
+            return value
+        monkeypatch.setattr(service, "preview_policy", preview_then_deactivate)
+    else:
+        deactivate()
+        with pytest.raises(ConflictError, match="不能建立新政策"):
+            service.preview_policy(request)
+    with pytest.raises(ConflictError, match="不能建立新政策"):
+        service.publish_policy(publish)
+    assert service.baselines.list_baselines() == before
+    assert service.baselines.get_baseline(historical["id"]) == historical
+    assert service.get_mandate(mandate["id"])["content_hash"] == mandate["content_hash"]
+
+
 def test_pending_scale_keeps_input_research_but_does_not_invent_cap(workspace):
     service, _ = workspace
     data = new_definition(max_volatility=None, risk_authorization={"mode": "manual_level", "authorized_max_level": 3,

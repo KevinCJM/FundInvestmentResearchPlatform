@@ -252,6 +252,29 @@ it('从主列表修改已发布目标时直接进入可编辑副本，保存新�
   expect(JSON.parse(String(call[1]?.body)).replaces_mandate_id).toBe(savedVersion.id)
 })
 
+it.each(['absolute_return', 'benchmark_relative'] as const)('编辑%s目标保留原现金保护，并随新版本提交', async kind => {
+  const request = boundaryStudy()
+  request.definition = { ...request.definition, objective_kind: kind, target_return: 0,
+    target_excess_return: 0, funding_target: null,
+    cash_protection: { mode: 'payments_and_terminal_floor', terminal_floor: { amount: 800000, amount_basis: 'real' } } }
+  const assessment = boundaryAssessment(request)
+  const version = { ...savedVersion, definition: assessment.definition, assessment }
+  const fetch = install({ [`${root}/mandates/${version.id}`]: () => response(version) })
+  const user = userEvent.setup()
+  ready(request, `/pre-investment/objectives/new?editFrom=${version.id}`)
+  await screen.findByRole('heading', { name: '修改投资目标与约束' })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_protection).toEqual(request.definition.cash_protection)
+  fireEvent.change(screen.getByLabelText('目标名称'), { target: { value: '保留资金保护的新版本' } })
+  await openResult(user)
+  await user.click(screen.getByRole('checkbox', { name: /我已核对输入/ }))
+  await user.click(screen.getByRole('button', { name: '保存修改后的版本' }))
+  await screen.findByText('只读版本')
+  const call = fetch.mock.calls.find(([url]) => String(url) === `${root}/mandates/confirm`)!
+  const submitted = JSON.parse(String(call[1]?.body))
+  expect(submitted.replaces_mandate_id).toBe(version.id)
+  expect(submitted.request.definition.cash_protection).toEqual(request.definition.cash_protection)
+})
+
 it('诊断API失败时保留草稿并显示错误，不伪造前沿结果', async () => {
   install({ [`${root}/mandates/preview`]: () => response({ detail: { message: '参考数据暂不可用。' } }, 422) })
   const user = userEvent.setup(); ready()
