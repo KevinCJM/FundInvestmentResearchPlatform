@@ -138,6 +138,10 @@ export function mandateStepIssues(value: MandateDefinition, cutoff: string): [st
     else if (value.cash_protection?.mode === 'payments_only' && !cash.flows.some(flow => flow.kind === 'withdrawal')) {
       riskCash = '仅支付保护须至少有一笔必要支付，请添加支付或改为仅资金算账。'
     }
+    else if (value.cash_protection?.mode === 'payments_and_terminal_floor'
+      && (!finite(value.cash_protection.terminal_floor?.amount, 0, 1e13) || value.cash_protection.terminal_floor!.amount <= 0)) {
+      riskCash = '请填写有效且大于零的期末保护金额。'
+    }
   }
   return [basic, goal, riskCash]
 }

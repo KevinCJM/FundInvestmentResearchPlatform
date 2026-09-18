@@ -433,3 +433,19 @@ it.each(['empty', 'contribution', 'deleted'])('仅支付保护的%s现金计划�
   expect(screen.getByText('仅支付保护须至少有一笔必要支付，请添加支付或改为仅资金算账。')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeDisabled()
 })
+
+it('选择期末保护后必须填写正金额，清空不静默关闭保护', async () => {
+  install(); const user = userEvent.setup(); const request = boundaryStudy()
+  request.definition = { ...request.definition, objective_kind: 'absolute_return', funding_target: null, cash_protection: null }
+  ready(request)
+  await user.selectOptions(screen.getByRole('combobox', { name: /^现金保护条件/ }), 'payments_and_terminal_floor')
+  expect(screen.getByText('请填写有效且大于零的期末保护金额。')).toBeInTheDocument()
+  const input = screen.getByLabelText(/^期末至少保有/)
+  for (const amount of ['0', '-1', '']) {
+    fireEvent.change(input, { target: { value: amount } })
+    expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeDisabled()
+    expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_protection?.mode).toBe('payments_and_terminal_floor')
+  }
+  fireEvent.change(input, { target: { value: '800000' } })
+  expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeEnabled()
+})

@@ -17,7 +17,7 @@ export default function CashBudgetFields({ value, onChange, funding }: {
   const terminal = required ? value.funding_target ?? null : value.cash_protection?.terminal_floor ?? null
   const setTerminal = (amount: number, basis: 'nominal' | 'real' = terminal?.amount_basis ?? 'nominal') =>
     onChange(required ? { funding_target: { amount, amount_basis: basis } }
-      : { cash_protection: Number.isFinite(amount) && amount > 0
+      : { cash_protection: value.cash_protection?.mode === 'payments_and_terminal_floor' || Number.isFinite(amount) && amount > 0
           ? { mode: 'payments_and_terminal_floor', terminal_floor: { amount, amount_basis: basis } } : null })
   // Restated from the server's own funding numbers; no schedule arithmetic runs here.
   const net = funding ? funding.investable_capital + funding.total_contributions - funding.total_withdrawals : null
