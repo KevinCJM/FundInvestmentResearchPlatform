@@ -1,6 +1,7 @@
 """New budget/authorization semantics and old-contract regression, offline."""
 from copy import deepcopy
 from datetime import date, timedelta
+import numpy as np
 import pytest
 from pydantic import ValidationError as InputError
 
@@ -407,3 +408,76 @@ def test_contract_benchmark_text_is_evidence_only_and_cannot_linger_on_other_obj
     plain = {**relative}
     plain.pop("stated_benchmark")
     assert funding_inputs(relative) == funding_inputs(plain)
+
+
+def test_retired_scale_blocks_current_policy_and_product_handoff_but_preserves_history(workspace, monkeypatch):
+    from backend.tests.risk_scale_app import seed_sources
+    from backend.tests.test_risk_scale_service import freeze_reference, definition as scale_definition, publish
+    from backend.strategic_allocation.reference_sources import ReferenceSources
+    from backend.strategic_allocation.risk_scale_contracts import RetireRequest
+    from backend.strategic_allocation.policy_gate import require_policy_application
+    from backend.tactical_allocation.portfolio_bridge import validate_allocation_source
+    from backend.tactical_allocation.data import TacticalAllocationData
+
+    service, _ = workspace
+    monkeypatch.delenv('STRATEGIC_ALLOCATION_DATA_DIR', raising=False)
+    service.warm()
+    source_dir = service.data.data_dir / 'reference-fixture'
+    inputs = seed_sources(source_dir)
+    service.risk_scales.references.sources = ReferenceSources(source_dir)
+    reference, _ = freeze_reference(service.risk_scales, inputs)
+    scale, _, _ = publish(service.risk_scales, scale_definition(reference))
+    _, cma, _ = saved_inputs(service)
+    definition = new_definition(max_volatility=None, risk_authorization={
+        'mode': 'manual_level', 'authorized_max_level': 5, 'selected_max_level': 5,
+        'risk_scale_ref': {k: scale[k] for k in ('id', 'content_hash')}})
+    study = MandateStudyRequest(definition=MandateRequest.model_validate(definition))
+    preview = service.preview_mandate(study)
+    mandate = service.confirm_mandate(ConfirmMandateRequest(request=study, preview_hash=preview['preview_hash'], acknowledge_limits=True))
+    policy_request = PolicyRequest(mandate_id=mandate['id'], cma_id=cma['id'])
+    preview = service.preview_policy(policy_request)
+    baseline = service.publish_policy(PublishPolicyRequest(request=policy_request, preview_hash=preview['preview_hash'],
+        candidate_id='minimum-risk', name='冻结风险标尺政策', reason='离线验证标尺治理应用门禁'))
+    weights = {a['id']: a['base_weight'] for a in baseline['assets']}
+    root = service.artifacts.root.parent.parent
+    context = {'strategic_root': root, 'data_dir': service.data.data_dir}
+    before = check_policy(baseline, weights, 0., baseline['as_of'], **context)
+    assert before['current_application_eligible'], before
+    from backend.tactical_allocation.service import TacticalAllocationService
+    taa_root, universe_root = root / 'separate-taa', root / 'separate-universe'
+    tactical = TacticalAllocationService(taa_root, service.data.data_dir, universe_dir=universe_root, strategic_root=root)
+    # Other NAV/universe gates have their own fixtures; isolate governance here.
+    monkeypatch.setattr(TacticalAllocationData, 'validate_application', lambda self, value: None)
+    decision = tactical.repository.save_decision({'name': 'Separate storage roots', 'preview': {'baseline': baseline,
+        'request': {'as_of': baseline['as_of'], 'max_tracking_error': 0., 'max_turnover': 1.},
+        'recommendation': {'weights': weights, 'expires_on': baseline['policy']['expires_on'], 'turnover_from_current': 0.},
+        'selected_id': 'saa', 'candidates': [{'id': 'saa', 'strength': 0.}],
+        'weight_path': [{'date': baseline['as_of']}, {'date': str(date.today() + timedelta(days=1))}]}},
+        arrays={'returns': np.zeros((2, 2))})
+    exported = tactical.product_allocation(decision['id'])
+    components = exported['constituents']
+    strategy = {'type': 'manual', 'weights': [p['weight'] / 100 for p in components]}
+    monkeypatch.setenv('TACTICAL_ALLOCATION_DATA_DIR', str(taa_root))
+    assert validate_allocation_source(exported['allocation_source'], components, strategy,
+        baseline['universe_snapshot_id'], universe_root, strategic_root=root)['decision_id'] == decision['id']
+    service.risk_scales.retire(scale['id'], RetireRequest(confirm=True, expected_revision=0, reason='风险标尺已不再适用'))
+    after = check_policy(baseline, weights, 0., baseline['as_of'], **context)
+    assert after['within_limits'] and not after['current_application_eligible']
+    assert any('退休' in text for text in after['risk_scale_blockers'])
+    assert service.baselines.get_baseline(baseline['id']) == baseline
+    with pytest.raises(ValidationError) as error:
+        require_policy_application(baseline, weights, 0., baseline['as_of'], **context)
+    assert error.value.code == 'SAA_RISK_SCALE_INELIGIBLE'
+    # Both paths block after retirement even with three separate storage roots.
+    with pytest.raises(ValidationError) as error:
+        tactical.product_allocation(decision['id'])
+    assert error.value.code == 'SAA_RISK_SCALE_INELIGIBLE'
+    with pytest.raises(ValidationError) as error:
+        validate_allocation_source(exported['allocation_source'], components, strategy,
+            baseline['universe_snapshot_id'], universe_root, strategic_root=root)
+    assert error.value.code == 'SAA_RISK_SCALE_INELIGIBLE'
+    # Missing context or changed frozen identity must not grant current permission.
+    assert not check_policy(baseline, weights, 0., baseline['as_of'])['current_application_eligible']
+    bad = deepcopy(baseline)
+    bad['policy']['mandate']['risk_authorization']['risk_scale_ref']['content_hash'] = '0' * 64
+    assert '指纹' in check_policy(bad, weights, 0., baseline['as_of'], **context)['risk_scale_blockers'][0]
