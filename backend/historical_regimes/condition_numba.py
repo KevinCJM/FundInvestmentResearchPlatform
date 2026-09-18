@@ -71,7 +71,53 @@ def select_state_kernel(condition, when_true, when_false, true_code, false_code)
     return result
 
 
+@njit(types.Tuple((I, F, F))(RI, RI, RF, int64, int64), cache=True)
+def continuous_state_kernel(candidates, initial, observed, confirmation, state_count):
+    """Hold a modeled state between confirmed candidates; never invent missing prices.
+
+    Evidence: 0 initial estimate, 1 confirmed candidate, 2 held state, 3 pending switch.
+    -1 in candidates means no new proposal, not missing market observations.
+    """
+    size = candidates.size
+    if initial.size != size or observed.size != size or not 1 <= confirmation <= 252 or not 2 <= state_count <= 12:
+        raise ValueError("INVALID_CONTINUOUS_STATE_CONTRACT")
+    states = np.empty(size, dtype=np.int64)
+    evidence = np.empty(size)
+    pending = np.zeros(size)
+    active = proposed = -1
+    count = 0
+    confirmed = False
+    for t in range(size):
+        if not np.isfinite(observed[t]) or observed[t] <= 0:
+            raise ValueError("CONTINUOUS_STATE_OBSERVATION_MISSING")
+        candidate = candidates[t]
+        if candidate < -1 or candidate >= state_count or initial[t] < -1 or initial[t] >= state_count:
+            raise ValueError("CONTINUOUS_STATE_CODE_INVALID")
+        if t == 0:
+            if initial[t] < 0:
+                raise ValueError("CONTINUOUS_STATE_INITIAL_REQUIRED")
+            active = initial[t]
+        basis = 2.0 if confirmed else 0.0
+        if candidate < 0:
+            proposed, count = -1, 0
+        elif candidate == active:
+            proposed, count = -1, 0
+            confirmed, basis = True, 1.0
+        else:
+            count = count + 1 if candidate == proposed else 1
+            proposed = candidate
+            if count >= confirmation:
+                active = proposed
+                proposed, count = -1, 0
+                confirmed, basis = True, 1.0
+            else:
+                basis = 3.0
+        states[t], evidence[t], pending[t] = active, basis, count
+    return states, evidence, pending
+
+
 CONDITION_KERNELS = {
+    "continuous_state": continuous_state_kernel,
     "condition_compare": condition_compare_kernel,
     "condition_valid": condition_valid_kernel,
     "condition_logic": condition_logic_kernel,

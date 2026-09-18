@@ -3,6 +3,14 @@ import { createBlankRegimeDefinition, definitionForRequest } from '../../service
 import { bindStudyReference, scenarioCenterFromQuery, studyDraft, studyMappingIssue } from './regimeStudy'
 
 describe('研究用途与精确参考', () => {
+  it('只有空白新模型继承参考状态，已有规则保持原状态与显式映射', () => {
+    const blank = createBlankRegimeDefinition()
+    const reference = { run_id: 'r', publication_id: 'p', content_hash: 'h' }
+    const states = [{ id: 'expansion', label: '扩张', color: '#000000' }]
+    expect(bindStudyReference(blank, reference, states).states).toEqual(states)
+    expect(bindStudyReference({ ...blank, id: 'existing', revision: 1 }, reference, states).states).toBe(blank.states)
+    expect(bindStudyReference({ ...blank, graph: { ...blank.graph, nodes: [{ id: 'n', type: 'source.index', parameters: {}, inputs: {} }] } }, reference, states).states).toBe(blank.states)
+  })
   it('旧实时链接保持精确目标且打开实时入口', () => {
     const query = new URLSearchParams('center=historical&mode=realtime&definition=d&revision=7')
     expect(scenarioCenterFromQuery(query)).toBe('realtime')

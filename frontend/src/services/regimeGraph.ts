@@ -992,6 +992,7 @@ export async function publishRegimeFormalRun(runId: string, usage: RegimePublica
 }
 
 export interface HistoricalReference extends NonNullable<RegimeStudy['reference']> {
+  publication_usage?: RegimePublicationUsage
   definition_id: string
   definition_revision: number
   name: string

@@ -152,7 +152,7 @@ def analyze_temporal(definition, registry, mode: str = "realtime", snapshots: Ma
                   "semantic_hindsight": hindsight, "may_repaint": repaint}
         obligations[node_id] = {"node_id": node_id, "label": node.label or metadata.get("label", node.type),
                                 "rule": rule, "description": contract["reason"],
-                                "warmup_sensitive": node.type in {"filter.ema", "filter.kama", "filter.super_smoother", "filter.kalman"} or metadata.get("typed_operator_id") == "recursive_smooth"}
+                                "warmup_sensitive": node.type in {"state.continuous", "filter.ema", "filter.kama", "filter.super_smoother", "filter.kalman", "filter.ehlers_error_correcting"} or metadata.get("typed_operator_id") == "recursive_smooth"}
         memo[key] = result
         visiting.remove(key)
         return result

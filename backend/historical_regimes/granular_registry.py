@@ -19,6 +19,7 @@ PENDING_COMPOSITES = {
     "model.ensemble": "成员加权、共识与拒识仍组合执行；尚未提供等价展开。",
 }
 COUPLED_REASONS = {
+    "state.continuous": "活动状态、候选方向与连续计数共同递推；没有新候选时延续已初始化状态，只在确认当日切换。",
     "pivot.ps_filter": "阶段、周期和首尾约束相互影响，删点后必须重新检查；每轮至少删一点，直至稳定。",
     "post.peak_sideways": "从最早起点选择最长合格完整波段，振幅、路径效率和峰谷结构联合约束。",
     "model.hysteresis": "进入和退出门槛依赖前一活动状态。",
@@ -91,6 +92,18 @@ def register_granular_nodes(registry, numeric_node, port):
             "true_code": parameter("integer", 0, "条件满足时的状态", minimum=-1, maximum=11, state_code=True),
             "false_code": parameter("integer", 1, "条件不满足时的状态", minimum=-1, maximum=11, state_code=True),
         }, ["select_state"], "条件满足或不满足时选择对应状态；可连接另一状态结果。未知条件始终未分类；未选分支不影响数值。")
+    continuity = add("state.continuous", "连续状态保持与确认", "postprocess",
+        [{**port("candidate", states), "label": "切换候选（-1表示无新候选）"},
+         {**port("initial", states), "label": "因果初始判断（仅读取首点）"},
+         {**port("value", series), "label": "原始价格（连续数据检查）"}],
+        [port("state", states), {**port("evidence", series), "label": "判定依据：0初始化、1候选成立、2延续、3待切换"},
+         {**port("pending_count", series), "label": "待切换连续次数"}],
+        {"confirmation": parameter("integer", 1, "新方向连续确认次数", minimum=1, maximum=252,
+                                   description="候选本身已包含连续确认时取1。等待时延续原状态，不回填历史。")},
+        ["continuous_state", "causal_available"],
+        "从显式初始判断开始，每期保持一个状态；无新候选时延续原状态，反向候选连续达标后切换。数据缺失或非正价格报错，不能被当作无信号。判定依据与连续计数不是置信度。")
+    continuity["missing_policy"] = "hold_no_proposal_fail_on_missing_observation"
+    continuity["kernel_version"] = "continuous-state/1"
     encoding = add("state.encode", "确定性状态编码", "output", [port("state", states)],
         [port("probabilities", "probabilities<time,state>"), port("confidence", "confidence<time>")], {},
         ["state_probabilities", "state_confidence"], "把明确状态转为 0/1 隶属编码与已分类指示值；1 不代表预测正确率或统计置信度。")

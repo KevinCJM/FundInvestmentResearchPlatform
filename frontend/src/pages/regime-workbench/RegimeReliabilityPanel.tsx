@@ -105,6 +105,7 @@ export default function RegimeReliabilityPanel({ definition, dirty, valid, conte
   }
   return <Card className="mb-5 min-w-0 space-y-4">
     <SectionHeader title="验证识别能力" description="评价相对所选历史参考的表现，校准与后续测试使用独立时间段。" />
+    <p className="text-sm leading-6 text-slate-600">先固定参考与评估时间范围，再比较模型。模型原始概率、相对参考校准后的匹配概率、前瞻验证资格是三种不同证据；规则输出的 0/1 不代表预测正确率。</p>
     <div className="grid min-w-0 gap-3 sm:grid-cols-3">
       {([['calibration_end', '校准截止日'], ['validation_end', '验证截止日（可选）'], ['test_end', '测试截止日（可选）']] as const).map(([key, label]) => <label key={key} className="min-w-0 text-sm text-slate-700">{label}<input aria-label={label} type="date" className={field} value={policy[key] || ''} onChange={event => patchPolicy({ [key]: event.target.value || null })} /></label>)}
     </div>

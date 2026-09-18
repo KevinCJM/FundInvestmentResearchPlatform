@@ -42,6 +42,10 @@ def series_draft(service: CustomIndicatorService, expression: str) -> dict:
     draft["rolling_source"]["detached"] = True
     draft["expression"] = expression
     draft["series_outputs"][0]["expression"] = expression
+    # The replacement formula is the draft's own; the built-in's open window
+    # does not survive it, and an unused parameter is rejected on purpose.
+    draft.pop("parameter_contract_version", None)
+    draft["parameter_schema"] = []
     return draft
 
 
@@ -81,6 +85,7 @@ def recompose_dag(
     *,
     dsl_version: str,
     operator_registry_version: str,
+    parameter_schema: list | None = None,
 ) -> dict:
     nodes = {str(node["id"]): node for node in dag["nodes"]}
     incoming: dict[str, list] = {}
@@ -110,7 +115,7 @@ def recompose_dag(
         response = client.post("/api/custom-indicators/compose", json={
             "context": "single_product", "operator_id": operator,
             "dsl_version": dsl_version, "operator_registry_version": operator_registry_version,
-            "arguments": arguments,
+            "arguments": arguments, "parameter_schema": parameter_schema or [],
         })
         assert response.status_code == 200, response.text
         result = response.json()
@@ -146,6 +151,7 @@ def test_catalog_compose_validate_roundtrip_all_channels(client: TestClient, ser
             "result",
             dsl_version=definition["dsl_version"],
             operator_registry_version=definition["operator_registry_version"],
+            parameter_schema=definition.get("parameter_schema") or [],
         )[source_field]
     else:
         for channel in updated["series_outputs"]:
@@ -155,6 +161,7 @@ def test_catalog_compose_validate_roundtrip_all_channels(client: TestClient, ser
                 channel["id"],
                 dsl_version=definition["dsl_version"],
                 operator_registry_version=definition["operator_registry_version"],
+                parameter_schema=definition.get("parameter_schema") or [],
             )[source_field]
         updated["expression"] = updated["series_outputs"][0]["expression"]
     if updated.get("result_kind", "scalar") == "scalar":
@@ -173,13 +180,16 @@ def test_catalog_compose_validate_roundtrip_all_channels(client: TestClient, ser
             root,
             dsl_version=updated["dsl_version"],
             operator_registry_version=updated["operator_registry_version"],
+            parameter_schema=updated.get("parameter_schema") or [],
         )
         expected = updated["expression"] if root == "result" else next(
             output["expression"] for output in updated["series_outputs"] if output["id"] == root
         )
         assert again[source_field] == expected
     if updated.get("rolling_source"):
-        assert updated["rolling_source"]["detached"] is False
+        # Opening the window detached the built-in from its scalar source, so
+        # what remains is provenance, not a formula the source still dictates.
+        assert updated["rolling_source"]["detached"] is True
         saved = client.post("/api/custom-indicators", json={**updated, "name": "往返校验夏普"})
         assert saved.status_code in {200, 201}, saved.text
 

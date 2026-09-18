@@ -23,12 +23,12 @@ from .formula_source import canonical_formula_source
 from .periods import SUPPORTED_PERIODS
 from .series_parameters import (
     PARAMETER_CONTRACT_VERSION,
+    bind_parameter_input,
+    inspect_parameter_inputs,
     resolve_parameter_values,
     validate_parameter_definition,
 )
 from .rolling_series import (
-    LEGACY_ROLLING_TRANSFORM_VERSION,
-    WINDOW_REDUCTION_TRANSFORM_VERSION,
     ROLLING_TRANSFORM_VERSION,
     derive_rolling_series_definition,
     normalize_rolling_source,
@@ -379,8 +379,8 @@ def _common(
         "description": description,
         "expression": primary["expression"],
         "series_outputs": channels,
-        # Time-series definitions are immutable numerical contracts. Constants
-        # such as 5, 10 or 20 belong in the formula rather than request payloads.
+        # The seed carries every width as a literal; ``_open_window`` turns the
+        # rolling one into a declared parameter once the formula canonicalizes.
         "parameter_schema": [],
         "fixed_parameters": copy.deepcopy(fixed_parameters or []),
         "result_kind": TIME_SERIES_RESULT_KIND,
@@ -421,154 +421,204 @@ def _common(
     }
 
 
+_BUILTIN_WINDOW = {
+    "id": "window",
+    "label": "窗口期数",
+    "type": "integer",
+    "minimum": 2,
+    "maximum": 1000,
+    "step": 1,
+    "description": "参与滚动计算的交易日个数。",
+}
+
+
+def _open_window(definition: dict[str, Any], window: int) -> dict[str, Any]:
+    """Open every rolling width in one definition as a single shared ``window``.
+
+    Binding goes through the same path the composer offers authors, so a
+    built-in never carries a second, hand-written copy of its own formula.
+    Widths that belong to one algorithm must move together: a Bollinger band
+    whose mean and deviation disagree is a different indicator, not a setting.
+    """
+
+    definition["parameter_contract_version"] = PARAMETER_CONTRACT_VERSION
+    definition["parameter_schema"] = [{**_BUILTIN_WINDOW, "default": int(window)}]
+    while True:
+        candidate = next(
+            (
+                item
+                for item in inspect_parameter_inputs(definition)["candidates"]
+                if item["operator_id"] == "rolling_apply"
+                and item["argument"] == "window"
+                and not item["parameter_id"]
+            ),
+            None,
+        )
+        if candidate is None:
+            return definition
+        if int(candidate["value"]) != int(window):
+            raise RuntimeError(f"{definition['id']} mixes rolling widths")
+        definition = bind_parameter_input(
+            definition, candidate_id=candidate["id"], parameter_id="window"
+        )
+
+
+def _windowed_builtin(
+    *,
+    timestamp: str,
+    indicator_id: str,
+    channels: list[dict[str, Any]],
+    window: int,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Canonicalize a built-in's formulas, then open its rolling width."""
+
+    plan = compose_typed_series_bundle(
+        {str(item["id"]): str(item["expression"]) for item in channels},
+        variable_types=variable_types("single_product", TYPED_DSL_VERSION),
+        dsl_version=TYPED_DSL_VERSION,
+        operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
+    )
+    canonical = dict(plan.python_expressions)
+    for item in channels:
+        item["expression"] = canonical[str(item["id"])]
+    return _open_window(
+        _common(
+            timestamp=timestamp,
+            indicator_id=indicator_id,
+            channels=channels,
+            required_variables=list(plan.context_requirements),
+            operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
+            lookback_observations=window,
+            **fields,
+        ),
+        window,
+    )
+
+
+_ADJUSTED_DATA_BASIS = "ETF 后复权日 K 行情；按日期对齐，缺失保留为空，不前向填充"
+_SCOPE_METHODOLOGY = "区间统计由通用滚动计算执行；递推状态保持在作用域外。"
+_ADJUSTED_METHODOLOGY = "价格输入为后复权 OHLC，含分红再投资与份额折算。"
+
+
 def time_series_builtin_indicators(
     timestamp: str,
     scalar_indicators: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return immutable built-ins whose algorithm parameters are formula literals."""
+    """Built-in series indicators: one definition each, rolling width adjustable."""
 
-    price_ma = _common(
+    price_ma = _windowed_builtin(
         timestamp=timestamp,
         indicator_id="builtin-close-moving-average-series",
-        name="20 日收盘价均线",
-        description="对 ETF 原始收盘价计算固定 20 个交易日的简单移动平均。",
+        name="N 日复权收盘价均线",
+        description="对 ETF 后复权收盘价计算 N 个交易日的简单移动平均。",
         channels=[
             _channel(
                 "ma",
-                "20 日收盘价均线",
-                "rolling_mean(market_close, 20)",
+                "N 日复权收盘价均线",
+                "rolling_apply(mean(adjusted_close), 20)",
                 unit="",
                 output_measure="auto",
             )
         ],
-        required_variables=["market_close"],
-        axis_anchor="market_close",
+        axis_anchor="adjusted_close",
         history_policy="lookback",
-        lookback_observations=20,
+        window=20,
         minimum_observations=20,
-        methodology="在每个时点使用截至当日最近 20 个有限收盘价求算术平均；样本不足 20 个时为空。",
+        data_basis=_ADJUSTED_DATA_BASIS,
+        methodology=(
+            "在每个时点使用截至当日最近 N 个有限复权收盘价求算术平均；样本不足 N 个时为空。"
+            f"{_SCOPE_METHODOLOGY}{_ADJUSTED_METHODOLOGY}"
+        ),
     )
 
-    middle = "rolling_mean(market_close, 20)"
-    deviation = "rolling_std(market_close, 20)"
-    bollinger = _common(
+    middle = "rolling_apply(mean(adjusted_close), 20)"
+    deviation = "rolling_apply(std(adjusted_close, 0), 20)"
+    bollinger = _windowed_builtin(
         timestamp=timestamp,
         indicator_id="builtin-bollinger-bands-series",
-        name="20 日布林带",
-        description="收盘价固定 20 日均值上下叠加 2 倍总体标准差。",
+        name="N 日布林带（复权）",
+        description="后复权收盘价 N 日均值上下叠加 2 倍总体标准差。",
         channels=[
-            _channel(
-                "upper",
-                "布林上轨",
-                f"{middle} + 2 * {deviation}",
-                unit="",
-                output_measure="auto",
-            ),
-            _channel(
-                "middle",
-                "布林中轨",
-                middle,
-                unit="",
-                output_measure="auto",
-            ),
-            _channel(
-                "lower",
-                "布林下轨",
-                f"{middle} - 2 * {deviation}",
-                unit="",
-                output_measure="auto",
-            ),
+            _channel("upper", "布林上轨", f"{middle} + 2 * {deviation}", unit="", output_measure="auto"),
+            _channel("middle", "布林中轨", middle, unit="", output_measure="auto"),
+            _channel("lower", "布林下轨", f"{middle} - 2 * {deviation}", unit="", output_measure="auto"),
         ],
-        required_variables=["market_close"],
-        axis_anchor="market_close",
+        axis_anchor="adjusted_close",
         history_policy="lookback",
-        lookback_observations=20,
+        window=20,
         minimum_observations=20,
-        methodology="中轨为 20 日简单移动平均；上下轨为中轨加减 2 倍总体标准差（ddof=0）。",
+        data_basis=_ADJUSTED_DATA_BASIS,
+        methodology=(
+            "中轨为 N 日简单移动平均；上下轨为中轨加减 2 倍总体标准差（ddof=0）。"
+            f"{_SCOPE_METHODOLOGY}{_ADJUSTED_METHODOLOGY}"
+        ),
     )
 
-    volume_ma = _common(
+    # Volume carries no adjustment factor, so it keeps the raw quote basis and
+    # anchors on itself; anchoring on the adjusted close would make it
+    # uncomputable wherever a factor is missing.
+    volume_ma = _windowed_builtin(
         timestamp=timestamp,
         indicator_id="builtin-volume-moving-average-series",
-        name="10 日成交量均线",
-        description="对 ETF 日成交量计算固定 10 个交易日的简单移动平均。",
+        name="N 日成交量均线",
+        description="对 ETF 日成交量计算 N 个交易日的简单移动平均；日期轴由成交量自身决定，不依赖复权因子。",
         channels=[
             _channel(
                 "volume_ma",
-                "10 日成交量均线",
-                "rolling_mean(volume, 10)",
+                "N 日成交量均线",
+                "rolling_apply(mean(volume), 10)",
                 unit="",
                 output_measure="auto",
                 precision=2,
             )
         ],
-        required_variables=["market_close", "volume"],
-        axis_anchor="market_close",
+        axis_anchor="volume",
         history_policy="lookback",
-        lookback_observations=10,
+        window=10,
         minimum_observations=10,
-        methodology="在每个时点使用截至当日最近 10 个有限成交量求算术平均；样本不足 10 个时为空。",
+        methodology=(
+            "在每个时点使用截至当日最近 N 个有限成交量求算术平均；样本不足 N 个时为空。"
+            f"{_SCOPE_METHODOLOGY}"
+        ),
     )
 
-    lowest = "rolling_min(market_low, 9, 1)"
-    highest = "rolling_max(market_high, 9, 1)"
-    rsv = (
-        f"divide_or_default((market_close - {lowest}) * 100, "
-        f"{highest} - {lowest}, 50)"
-    )
+    lowest = "rolling_apply(min_where(adjusted_low, finite_mask(adjusted_low)), 9, 1)"
+    highest = "rolling_apply(max_where(adjusted_high, finite_mask(adjusted_high)), 9, 1)"
+    rsv = f"divide_or_default((adjusted_close - {lowest}) * 100, {highest} - {lowest}, 50)"
     k_value = f"recursive_smooth({rsv}, 3, 50)"
     d_value = f"recursive_smooth({k_value}, 3, 50)"
-    kdj = _common(
+    kdj = _windowed_builtin(
         timestamp=timestamp,
         indicator_id="builtin-kdj-series",
-        name="KDJ（9, 3, 3）",
-        description="以固定 9 日高低区间计算 RSV，并按固定 3 日参数递归平滑得到 K、D、J。",
+        name="N 日 KDJ（3, 3，复权）",
+        description="以后复权 N 日高低区间计算 RSV，并按固定 3 日参数递归平滑得到 K、D、J。",
         channels=[
-            _channel(
-                "k",
-                "K 值",
-                k_value,
-                unit="",
-                output_measure="oscillator_0_100",
-                precision=2,
-            ),
-            _channel(
-                "d",
-                "D 值",
-                d_value,
-                unit="",
-                output_measure="oscillator_0_100",
-                precision=2,
-            ),
-            _channel(
-                "j",
-                "J 值",
-                f"3 * ({k_value}) - 2 * ({d_value})",
-                unit="",
-                output_measure="auto",
-                precision=2,
-            ),
+            _channel("k", "K 值", k_value, unit="", output_measure="oscillator_0_100", precision=2),
+            _channel("d", "D 值", d_value, unit="", output_measure="oscillator_0_100", precision=2),
+            _channel("j", "J 值", f"3 * ({k_value}) - 2 * ({d_value})", unit="", output_measure="auto", precision=2),
         ],
-        required_variables=["market_close", "market_high", "market_low"],
-        axis_anchor="market_close",
+        axis_anchor="adjusted_close",
         history_policy="full_history",
-        lookback_observations=9,
+        window=9,
         minimum_observations=1,
-        methodology="RSV 分母为零时取 50；K、D 初始值均为 50；J=3K-2D，J 不裁剪。",
+        data_basis=_ADJUSTED_DATA_BASIS,
+        methodology=(
+            "RSV 分母为零时取 50；K、D 初始值均为 50；J=3K-2D，J 不裁剪。"
+            f"{_SCOPE_METHODOLOGY}{_ADJUSTED_METHODOLOGY}"
+        ),
     )
 
-    scalar_by_id = {
-        str(item.get("id") or ""): item for item in scalar_indicators or []
-    }
+    scalar_by_id = {str(item.get("id") or ""): item for item in scalar_indicators or []}
     sharpe_source = scalar_by_id.get("builtin-annualized-sharpe-v2")
     if sharpe_source is None:
         raise RuntimeError("annualized Sharpe scalar built-in is required")
     rolling_sharpe = derive_rolling_series_definition(
         sharpe_source,
         5,
-        name="5 日滚动年化夏普比率",
-        description="对每个时点最近 5 个有效收益观察值计算样本标准差口径的年化夏普比率。",
-        transform_version=LEGACY_ROLLING_TRANSFORM_VERSION,
+        name="N 日滚动年化夏普比率",
+        description="对每个时点最近 N 个有效收益观察值计算样本标准差口径的年化夏普比率。",
+        transform_version=ROLLING_TRANSFORM_VERSION,
     )
     rolling_sharpe.update(
         {
@@ -578,165 +628,24 @@ def time_series_builtin_indicators(
             "read_only": True,
             "created_at": timestamp,
             "updated_at": timestamp,
+            "dsl_version": TYPED_DSL_VERSION,
+            "operator_registry_version": WINDOW_OPERATOR_REGISTRY_VERSION,
+            "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
+            "variable_registry_version": VARIABLE_REGISTRY_VERSION,
+            "data_contract_version": DATA_CONTRACT_VERSION,
+            "context_schema_version": CONTEXT_SCHEMA_VERSION,
+            "formula_version": TYPED_DSL_VERSION,
         }
     )
-    legacy_items = [price_ma, bollinger, volume_ma, kdj, rolling_sharpe]
-    for item in legacy_items:
-        item.update(
-            {
-                "revision": 1,
-                "dsl_version": ROLLING_TYPED_DSL_VERSION,
-                "operator_registry_version": ROLLING_OPERATOR_REGISTRY_VERSION,
-                "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
-                "variable_registry_version": VARIABLE_REGISTRY_VERSION,
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "context_schema_version": CONTEXT_SCHEMA_VERSION,
-                "formula_version": ROLLING_TYPED_DSL_VERSION,
-            }
-        )
-
-    current_items: list[dict[str, Any]] = []
-    for legacy in legacy_items:
-        if legacy.get("rolling_source"):
-            current = derive_rolling_series_definition(
-                sharpe_source,
-                5,
-                name=str(legacy["name"]),
-                description=str(legacy["description"]),
-                transform_version=WINDOW_REDUCTION_TRANSFORM_VERSION,
-            )
-            current.update(
-                {
-                    "id": legacy["id"],
-                    "source": "built_in",
-                    "read_only": True,
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                }
-            )
-        else:
-            current = copy.deepcopy(legacy)
-            plan = compose_typed_series_bundle(
-                {
-                    str(output["id"]): str(output["expression"])
-                    for output in current.get("series_outputs") or []
-                },
-                variable_types=variable_types("single_product", TYPED_DSL_VERSION),
-                dsl_version=TYPED_DSL_VERSION,
-                operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
-            )
-            canonical = dict(plan.python_expressions)
-            for output in current.get("series_outputs") or []:
-                output["expression"] = canonical[str(output["id"])]
-            current["expression"] = current["series_outputs"][0]["expression"]
-        current.update(
-            {
-                "revision": 2,
-                "dsl_version": TYPED_DSL_VERSION,
-                "operator_registry_version": WINDOW_OPERATOR_REGISTRY_VERSION,
-                "numeric_kernel_version": NUMERIC_KERNEL_VERSION,
-                "variable_registry_version": VARIABLE_REGISTRY_VERSION,
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "context_schema_version": CONTEXT_SCHEMA_VERSION,
-                "formula_version": TYPED_DSL_VERSION,
-            }
-        )
-        current_items.append(current)
-    # Versioned definitions are replay contracts, not parallel numerical code.
-    # New selections use whole-interval scopes; v1/v2 remain immutable.
-    middle = "rolling_apply(mean(market_close), 20)"
-    deviation = "rolling_apply(std(market_close, 0), 20)"
-    lowest = "rolling_apply(min_where(market_low, finite_mask(market_low)), 9, 1)"
-    highest = "rolling_apply(max_where(market_high, finite_mask(market_high)), 9, 1)"
-    rsv = f"divide_or_default((market_close - {lowest}) * 100, {highest} - {lowest}, 50)"
-    k_value = f"recursive_smooth({rsv}, 3, 50)"
-    d_value = f"recursive_smooth({k_value}, 3, 50)"
-    scoped_formulas = {
-        "builtin-close-moving-average-series": {"ma": middle},
-        "builtin-bollinger-bands-series": {
-            "upper": f"{middle} + 2 * {deviation}", "middle": middle,
-            "lower": f"{middle} - 2 * {deviation}",
-        },
-        "builtin-volume-moving-average-series": {"volume_ma": "rolling_apply(mean(volume), 10)"},
-        "builtin-kdj-series": {"k": k_value, "d": d_value, "j": f"3 * ({k_value}) - 2 * ({d_value})"},
-    }
-    scoped_items = []
-    for previous in current_items:
-        current = copy.deepcopy(previous)
-        if previous.get("rolling_source"):
-            current.update(derive_rolling_series_definition(
-                sharpe_source, 5, name=previous["name"], description=previous["description"],
-                transform_version=ROLLING_TRANSFORM_VERSION,
-            ))
-        else:
-            plan = compose_typed_series_bundle(
-                scoped_formulas[previous["id"]],
-                variable_types=variable_types("single_product", TYPED_DSL_VERSION),
-                dsl_version=TYPED_DSL_VERSION, operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
-            )
-            canonical = dict(plan.python_expressions)
-            for output in current["series_outputs"]:
-                output["expression"] = canonical[output["id"]]
-            current["expression"] = current["series_outputs"][0]["expression"]
-            current["required_variables"] = list(plan.context_requirements)
-            current["methodology"] += " 区间统计由通用滚动计算执行；递推状态保持在作用域外。"
-        current["revision"] = 3
-        scoped_items.append(current)
-    # v4 moves the technical built-ins onto the back-adjusted quote basis, the
-    # only price path that carries dividends and share conversions. v1-v3 keep
-    # the unadjusted basis so stored results still replay unchanged.
-    adjusted_middle = "rolling_apply(mean(adjusted_close), 20)"
-    adjusted_deviation = "rolling_apply(std(adjusted_close, 0), 20)"
-    adjusted_lowest = "rolling_apply(min_where(adjusted_low, finite_mask(adjusted_low)), 9, 1)"
-    adjusted_highest = "rolling_apply(max_where(adjusted_high, finite_mask(adjusted_high)), 9, 1)"
-    adjusted_rsv = (
-        f"divide_or_default((adjusted_close - {adjusted_lowest}) * 100, "
-        f"{adjusted_highest} - {adjusted_lowest}, 50)"
+    rolling_sharpe["methodology"] = (
+        "每个右端时点对最近 N 个观察区间独立执行完整来源计算图；状态从窗口起点重置，缺失窗口不计算。"
     )
-    adjusted_k = f"recursive_smooth({adjusted_rsv}, 3, 50)"
-    adjusted_d = f"recursive_smooth({adjusted_k}, 3, 50)"
-    adjusted_formulas = {
-        "builtin-close-moving-average-series": {"ma": adjusted_middle},
-        "builtin-bollinger-bands-series": {
-            "upper": f"{adjusted_middle} + 2 * {adjusted_deviation}", "middle": adjusted_middle,
-            "lower": f"{adjusted_middle} - 2 * {adjusted_deviation}",
-        },
-        "builtin-volume-moving-average-series": {"volume_ma": "rolling_apply(mean(volume), 10)"},
-        "builtin-kdj-series": {"k": adjusted_k, "d": adjusted_d,
-                               "j": f"3 * ({adjusted_k}) - 2 * ({adjusted_d})"},
-    }
-    adjusted_labels = {
-        "builtin-close-moving-average-series": ("20 日复权收盘价均线", "对 ETF 后复权收盘价计算固定 20 个交易日的简单移动平均。"),
-        "builtin-bollinger-bands-series": ("20 日布林带（复权）", "后复权收盘价固定 20 日均值上下叠加 2 倍总体标准差。"),
-        "builtin-volume-moving-average-series": ("10 日成交量均线", "对 ETF 日成交量计算固定 10 个交易日的简单移动平均；日期轴由成交量自身决定，不依赖复权因子。"),
-        "builtin-kdj-series": ("KDJ（9, 3, 3，复权）", "以后复权高低区间计算 RSV，并按固定 3 日参数递归平滑得到 K、D、J。"),
-    }
-    adjusted_items = []
-    for previous in scoped_items:
-        if previous["id"] not in adjusted_formulas:
-            continue
-        current = copy.deepcopy(previous)
-        plan = compose_typed_series_bundle(
-            adjusted_formulas[previous["id"]],
-            variable_types=variable_types("single_product", TYPED_DSL_VERSION),
-            dsl_version=TYPED_DSL_VERSION, operator_registry_version=WINDOW_OPERATOR_REGISTRY_VERSION,
-        )
-        canonical = dict(plan.python_expressions)
-        for output in current["series_outputs"]:
-            output["expression"] = canonical[output["id"]]
-            output["label"] = output["label"].replace("收盘价", "复权收盘价")
-        current["expression"] = current["series_outputs"][0]["expression"]
-        current["required_variables"] = list(plan.context_requirements)
-        current["name"], current["description"] = adjusted_labels[previous["id"]]
-        # Volume carries no adjustment, so anchoring it on the adjusted close
-        # would make it uncomputable wherever a factor is missing.
-        current["axis_anchor"] = "volume" if previous["id"].endswith("volume-moving-average-series") else "adjusted_close"
-        if any(name.startswith("adjusted_") for name in plan.context_requirements):
-            current["data_basis"] = "ETF 后复权日 K 行情；按日期对齐，缺失保留为空，不前向填充"
-            current["methodology"] += " 价格输入为后复权 OHLC，含分红再投资与份额折算。"
-        current["revision"] = 4
-        adjusted_items.append(current)
-    return legacy_items + current_items + scoped_items + adjusted_items
+    # The transform pinned one width; ``window`` now owns it, so the recorded
+    # rolling source keeps only the provenance it can still vouch for.
+    rolling_sharpe["fixed_parameters"] = []
+    rolling_sharpe = _open_window(rolling_sharpe, 5)
+
+    return [price_ma, bollinger, volume_ma, kdj, rolling_sharpe]
 
 def parameter_variable_types(definition: Mapping[str, Any]) -> dict[str, ValueType]:
     """Stable scalar types for explicitly declared algorithm parameters."""

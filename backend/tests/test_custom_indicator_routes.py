@@ -123,7 +123,7 @@ def test_meta_list_and_interactive_validation_contract(monkeypatch, tmp_path: Pa
     assert invalid.json()["diagnostics"][0]["code"] == "UNKNOWN_FUNCTION"
 
 
-def test_time_series_builder_requires_fixed_constants_and_runtime_cannot_override(
+def test_time_series_builder_requires_fixed_constants_but_serves_declared_widths(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -151,7 +151,7 @@ def test_time_series_builder_requires_fixed_constants_and_runtime_cannot_overrid
             ],
         },
     )
-    runtime_override = client.post(
+    declared_width = client.post(
         "/api/custom-indicators/evaluate-series",
         json={
             "indicator_instances": [
@@ -173,10 +173,8 @@ def test_time_series_builder_requires_fixed_constants_and_runtime_cannot_overrid
     assert "rolling_mean" in valid_compose.json()["normalized_expression"]
     assert "20.0" in valid_compose.json()["normalized_expression"]
     assert "rolling_mean" not in valid_compose.json()["display_latex"]
-    assert runtime_override.status_code == 422
-    assert runtime_override.json()["detail"]["code"] == (
-        "SERIES_PARAMETERS_FIXED_IN_DEFINITION"
-    )
+    assert declared_width.status_code == 200
+    assert declared_width.json()["results"][0]["parameters"] == {"window": 5}
 
 
 def test_legacy_typed_requests_infer_the_matching_registry_version(
