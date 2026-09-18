@@ -3410,7 +3410,7 @@
       "name": "Shared metric presentation, selection, and browser preference contract",
       "path": "frontend/src/components/metrics/MetricDisplay.tsx",
       "kind": "frontend_shared_feature",
-      "purpose": "Renders indicator values, units, business indicator types, status, definitions, result cards, comparison matrices, and structured Chinese input-unavailability explanations from locked result metadata; provides searchable product/context/type-aware selection and versioned local browser preferences without persisting products, results, or historical as-of dates.",
+      "purpose": "Renders indicator values, units, business indicator types, status, definitions, result cards, comparison matrices, and structured Chinese input-unavailability explanations from locked result metadata; provides searchable product/context/type-aware selection and versioned local browser preferences without persisting products, results, or historical as-of dates. Product trend overlays use sequential batches of at most 50 instances and discard superseded batches; copies made before channel metadata arrives retain explicit placement or resolve a shared default subplot after native-axis matching.",
       "module_tags": [
         "frontend",
         "metrics",

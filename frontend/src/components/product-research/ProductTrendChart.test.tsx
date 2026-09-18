@@ -169,6 +169,89 @@ describe('走势图价格口径', () => {
 })
 
 describe('叠加时序指标', () => {
+  it.each([50, 51, 101])('%i 条曲线按接口上限分批，所有结果按实例键呈现', async (count) => {
+    const catalog = Array.from({ length: count }, (_, index) => ({ ...indicator, id: `ma-${index}`, name: `均线${index}` }))
+    vi.mocked(evaluateTimeSeriesIndicators).mockImplementation(async request => {
+      if (request.indicator_instances.length > 50) throw new Error('请求超过50条')
+      // Deliberately reverse responses: row matching must use instance_key.
+      const response = evaluated(request)
+      return { ...response, results: response.results.reverse() } as never
+    })
+    renderChart(catalog)
+    await screen.findByTestId('chart')
+    openSelector()
+    for (const checkbox of screen.getAllByRole('checkbox')) fireEvent.click(checkbox)
+
+    await waitFor(() => expect(Object.keys(JSON.parse(screen.getByTestId('chart').dataset.axis ?? '{}'))).toHaveLength(count + 2))
+    const calls = vi.mocked(evaluateTimeSeriesIndicators).mock.calls.map(([request]) => request)
+    expect(calls.every(request => request.indicator_instances.length <= 50)).toBe(true)
+    const finalBatches = calls.slice(-Math.ceil(count / 50))
+    expect(finalBatches.map(request => request.indicator_instances.length)).toEqual(count === 50 ? [50] : count === 51 ? [50, 1] : [50, 50, 1])
+    expect(new Set(finalBatches.flatMap(request => request.indicator_instances.map(item => item.instance_key))).size).toBe(count)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('后续批次失败时明确报错，不把部分结果当成完整结果', async () => {
+    const catalog = Array.from({ length: 51 }, (_, index) => ({ ...indicator, id: `ma-${index}`, name: `均线${index}` }))
+    vi.mocked(evaluateTimeSeriesIndicators).mockImplementation(async request => {
+      if (request.indicator_instances[0].indicator_id === 'ma-50') throw new Error('第二批计算失败')
+      return evaluated(request) as never
+    })
+    renderChart(catalog)
+    await screen.findByTestId('chart')
+    openSelector()
+    for (const checkbox of screen.getAllByRole('checkbox')) fireEvent.click(checkbox)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('第二批计算失败')
+    expect(Object.keys(JSON.parse(screen.getByTestId('chart').dataset.axis ?? '{}'))).toEqual(['价格', '成交量'])
+  })
+
+  it('卸载后不继续发送旧请求的剩余批次', async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    vi.mocked(evaluateTimeSeriesIndicators).mockImplementation(async request => {
+      await held
+      return evaluated(request) as never
+    })
+    const catalog = Array.from({ length: 51 }, (_, index) => ({ ...indicator, id: `ma-${index}`, name: `均线${index}` }))
+    const view = renderChart(catalog)
+    await screen.findByTestId('chart')
+    openSelector()
+    for (const checkbox of screen.getAllByRole('checkbox')) fireEvent.click(checkbox)
+    const count = vi.mocked(evaluateTimeSeriesIndicators).mock.calls.length
+    view.unmount()
+    await act(async () => { release() })
+    expect(evaluateTimeSeriesIndicators).toHaveBeenCalledTimes(count)
+  })
+
+  it.each(['native', 'panel', 'right', 'explicit-panel'])('加载期间连续复制保持 %s 位置，并允许手动拆分', async mode => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    vi.mocked(evaluateTimeSeriesIndicators).mockImplementation(async request => {
+      await held
+      return evaluated(request) as never
+    })
+    const selected = mode === 'panel' ? volatility : indicator
+    renderChart([selected])
+    await screen.findByTestId('chart')
+    await addIndicator(new RegExp(selected.name))
+    if (mode === 'right' || mode === 'explicit-panel') {
+      choosePlacement(screen.getByRole('combobox', { name: /的显示位置$/ }), mode === 'right' ? '右轴同图' : '独立子图')
+    }
+    fireEvent.click(screen.getByRole('button', { name: /再加一条$/ }))
+    fireEvent.click(screen.getAllByRole('button', { name: /再加一条$/ })[1])
+    await act(async () => { release() })
+
+    const places = screen.getAllByRole('combobox', { name: /的显示位置$/ }) as HTMLSelectElement[]
+    expect(new Set(places.map(place => place.value)).size).toBe(1)
+    if (mode === 'native' || mode === 'right') expect(places[0].value).toBe(mode)
+    const axes = Object.values(JSON.parse(screen.getByTestId('chart').dataset.axis ?? '{}')).slice(2)
+    expect(axes).toHaveLength(3)
+    expect(new Set(axes).size).toBe(1)
+    choosePlacement(places[2], '独立子图')
+    await waitFor(() => expect(places[2].value).not.toBe(places[0].value))
+  })
+
   it('默认请求锁定版本，修改参数重算但不改变定义', async () => {
     renderChart()
     await screen.findByTestId('chart')

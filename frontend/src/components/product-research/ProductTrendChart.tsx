@@ -40,8 +40,12 @@ interface OverlayInstance {
   parameters: Record<string, number>
   /** Unset until the user chooses; the default follows the channel contract. */
   placement?: Placement
+  /** A copy shares this subplot only if its resolved default is not a native axis. */
+  defaultPanelOwner?: string
 }
 
+// Matches EvaluateSeriesRequest / MAX_SERIES_INSTANCES; the list itself is unbounded.
+const SERIES_BATCH_SIZE = 50
 let instanceSequence = 0
 const nextInstanceKey = () => `ov${(instanceSequence += 1)}`
 
@@ -210,27 +214,34 @@ export default function ProductTrendChart({
     [requested],
   )
 
-  const overlayKey = JSON.stringify(requested.map(({ instance, indicator }) => (
+  const overlayKey = JSON.stringify([productId, productKind, requested.map(({ instance, indicator }) => (
     [instance.key, indicator.id, indicator.revision, instance.parameters]
-  )))
+  ))])
   useEffect(() => {
     if (requested.length === 0) { setOverlay(null); return undefined }
     let active = true
-    evaluateTimeSeriesIndicators({
-      indicator_instances: requested.map(({ instance, indicator }) => ({
-        instance_key: instance.key,
-        indicator_id: indicator.id,
-        indicator_revision: indicator.revision,
-        ...(Object.keys(instance.parameters).length ? { parameters: instance.parameters } : {}),
-      })),
-      target: { kind: productKind, product_id: productId },
-      period: 'ALL',
-      max_points: 5000,
+    const evaluate = async () => {
+      const results: TimeSeriesIndicatorResult[] = []
+      // Sequential batches bound server work; superseded requests cannot launch another batch.
+      for (let start = 0; start < requested.length && active; start += SERIES_BATCH_SIZE) {
+        const response = await evaluateTimeSeriesIndicators({
+          indicator_instances: requested.slice(start, start + SERIES_BATCH_SIZE).map(({ instance, indicator }) => ({
+            instance_key: instance.key,
+            indicator_id: indicator.id,
+            indicator_revision: indicator.revision,
+            ...(Object.keys(instance.parameters).length ? { parameters: instance.parameters } : {}),
+          })),
+          target: { kind: productKind, product_id: productId },
+          period: 'ALL',
+          max_points: 5000,
+        })
+        results.push(...response.results)
+      }
+      if (active) setOverlay({ key: overlayKey, results })
+    }
+    void evaluate().catch((failure) => {
+      if (active) setOverlay({ key: overlayKey, error: failure instanceof Error ? failure.message : '叠加指标计算失败。' })
     })
-      .then((response) => { if (active) setOverlay({ key: overlayKey, results: response.results }) })
-      .catch((failure) => {
-        if (active) setOverlay({ key: overlayKey, error: failure instanceof Error ? failure.message : '叠加指标计算失败。' })
-      })
     return () => { active = false }
   }, [productId, productKind, overlayKey])
 
@@ -273,7 +284,7 @@ export default function ProductTrendChart({
       const channels = result?.channels ?? []
       const native = nativeAxisOf(channels)
       const own = panelValue(instance.key)
-      const stored = instance.placement
+      const stored = instance.placement ?? (!native && instance.defaultPanelOwner ? panelValue(instance.defaultPanelOwner) : undefined)
       const place: Placement = stored === 'native' && !native ? own : stored ?? (native ? 'native' : own)
       const schema = indicator.parameter_contract_version === '1.0' ? indicator.parameter_schema ?? [] : []
       // Only a repeated indicator carries its parameters in the name; a lone one
@@ -490,14 +501,15 @@ export default function ProductTrendChart({
    * curves start out overlaid: comparing parameters is the whole point of asking
    * for a second one. The placement select then splits them apart if wanted.
    */
-  const duplicate = (row: { instance: OverlayInstance; place: Placement }) => setInstances((current) => {
+  const duplicate = (row: { instance: OverlayInstance; place: Placement; channels: TimeSeriesChannelResult[] }) => setInstances((current) => {
     const index = current.findIndex((item) => item.key === row.instance.key)
     if (index < 0) return current
     const copy: OverlayInstance = {
       key: nextInstanceKey(),
       indicatorId: row.instance.indicatorId,
       parameters: { ...row.instance.parameters },
-      placement: row.place,
+      placement: row.channels.length ? row.place : row.instance.placement,
+      defaultPanelOwner: row.instance.defaultPanelOwner ?? row.instance.key,
     }
     return [...current.slice(0, index + 1), copy, ...current.slice(index + 1)]
   })
