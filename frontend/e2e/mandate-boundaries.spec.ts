@@ -133,11 +133,32 @@ test('两步目标流程只收集目标、风险等级和现金，并展示双�
   await page.getByRole('link', { name: '返回投资目标列表', exact: true }).click()
   const row = page.getByRole('row', { name: new RegExp(`精简目标-${info.project.name}`) })
   await expect(row).toBeVisible()
+  await page.evaluate(() => sessionStorage.setItem('allocation-journey:v1', JSON.stringify({ mandateId: 'another-objective', baselineId: 'old-policy', taaRunId: 'old-taa' })))
   await row.getByRole('link', { name: `精简目标-${info.project.name}`, exact: true }).click()
   await expect(page).toHaveURL(new RegExp(`view=${saved.id}`))
   await expect(page.getByText('只读版本', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: /下一步：确定投资范围/ })).toHaveAttribute('href', `/pre-investment/product-pool?mandate=${saved.id}`)
-  await page.getByRole('link', { name: '返回投资目标列表', exact: true }).click()
+  const poolVersion = { id: 'handoff-version', pool_id: 'handoff-pool', pool_name: 'Handoff pool', version: 1,
+    effective_from: '2020-01-01', effective_to: null, evaluation_plans: [], members: [], investable_count: 1,
+    member_counts: { approved: 1, pending: 0, watch: 0, rejected: 0 }, immutable: true, created_at: fixture.today }
+  const snapshot = { id: 'handoff-universe', name: 'Handoff scope', research_date: fixture.today,
+    version_ids: ['handoff-version'], groups: [], product_count: 1, immutable: true }
+  await page.route('**/api/product-pool-versions?*', route => route.fulfill({ json: { items: [poolVersion], total: 1 } }))
+  await page.route('**/api/investable-universe-snapshots**', route => route.fulfill({ json: snapshot }))
+  await page.getByRole('link', { name: /下一步：确定投资范围/ }).click()
+  await page.getByRole('checkbox', { name: /Handoff pool/ }).check()
+  await page.getByRole('button', { name: '生成锁定快照', exact: true }).click()
+  await expect(page.getByText('可投资域快照已锁定', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '进入手动构建大类', exact: true }).click()
+  await expect(page).toHaveURL(/asset-classes\?universe=handoff-universe/)
+  const journey = await page.evaluate(() => JSON.parse(sessionStorage.getItem('allocation-journey:v1')!))
+  expect(journey.mandateId).toBe(saved.id)
+  expect(journey.baselineId).toBeUndefined()
+  expect(journey.taaRunId).toBeUndefined()
+  // Reuse the fixture's existing classification; the SAA URL deliberately carries no mandate.
+  await page.goto('/pre-investment/saa/policy?alloc=' + encodeURIComponent('浏览器离线股债'))
+  await expect(page.getByRole('combobox', { name: '投资目标版本', exact: true })).toHaveValue(saved.id)
+  await page.goto('/pre-investment/objectives')
   await row.getByRole('link', { name: '修改', exact: true }).click()
   await expect(page.getByRole('heading', { name: '修改投资目标与约束', exact: true })).toBeVisible()
   const modifiedName = `精简目标-${info.project.name}-修改`
