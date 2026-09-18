@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import InvestmentObjectivesWorkspace from './InvestmentObjectivesWorkspace'
-import { writeAllocationDraft, readAllocationDraft } from '../app/allocationJourney'
+import { writeAllocationDraft, readAllocationDraft, updateAllocationJourney } from '../app/allocationJourney'
 import { boundaryAssessment, boundaryStudy } from '../test/mandateBoundaryFixtures'
 import { fundingStudy } from '../test/mandateFixtures'
 import { riskReference, riskVersion } from '../test/riskScaleFixtures'
@@ -136,9 +136,11 @@ it.each([
   researchClock.day = initial
   const fetch = install(); const user = userEvent.setup()
   const route = `/pre-investment/objectives/new?view=${savedVersion.id}`
+  updateAllocationJourney({ mandateId: 'another-objective' })
   const tree = () => <MemoryRouter initialEntries={[route]}><InvestmentObjectivesWorkspace /></MemoryRouter>
   const view = render(tree())
   await screen.findByText('只读版本')
+  expect(screen.getByRole('link', { name: /下一步：确定投资范围/ })).toHaveAttribute('href', `/pre-investment/product-pool?mandate=${savedVersion.id}`)
   const frozen = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')
   researchClock.day = next
   view.rerender(tree())
@@ -294,11 +296,30 @@ it('填写页底部回显考虑现金流后真正需要的收益，并判断所�
 })
 
 it('非期末金额目标默认不打开本金与现金流计划', async () => {
-  install(); const user = userEvent.setup(); ready()
-  await user.selectOptions(screen.getByLabelText(/^投资目标类型/), 'absolute_return')
+  install(); const user = userEvent.setup()
+  const request = boundaryStudy()
+  request.definition = { ...request.definition, objective_kind: 'absolute_return', funding_target: null, cash_budget: null }
+  ready(request)
+  await user.selectOptions(screen.getByLabelText(/^投资目标类型/), 'benchmark_relative')
   const ledger = screen.getByRole('checkbox', { name: /这笔资金有明确本金/ })
   expect(ledger).not.toBeChecked()
   expect(screen.queryByLabelText(/^总资金/)).not.toBeInTheDocument()
+})
+
+it('切换目标类型保留本金、储备、现金流及兼容的现金保护', async () => {
+  install(); const user = userEvent.setup(); const request = boundaryStudy()
+  request.definition = { ...request.definition, objective_kind: 'absolute_return', funding_target: null,
+    cash_budget: { ...request.definition.cash_budget!, outside_reserve: 50000,
+      flows: [{ name: '必要支付', kind: 'withdrawal', amount: 10000, first_month: 3, last_month: 3, every_months: 1 }] },
+    cash_protection: { mode: 'payments_and_terminal_floor', terminal_floor: { amount: 800000, amount_basis: 'real' } } }
+  ready(request)
+  for (const kind of ['benchmark_relative', 'absolute_return', 'funding_goal', 'absolute_return']) {
+    await user.selectOptions(screen.getByLabelText(/^投资目标类型/), kind)
+    const current = readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition
+    expect(current.cash_budget).toEqual(request.definition.cash_budget)
+    if (kind === 'benchmark_relative') expect(current.cash_protection).toEqual(request.definition.cash_protection)
+    if (kind === 'funding_goal') expect(current.cash_protection).toBeNull()
+  }
 })
 
 it('自定义加权基准按资产名称列出权重，种子权重不带求解器残差', async () => {
