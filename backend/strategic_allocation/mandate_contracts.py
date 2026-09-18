@@ -20,6 +20,8 @@ class CashProtection(Contract):
     def target(self):
         if (self.mode == "payments_and_terminal_floor") != (self.terminal_floor is not None):
             raise ValueError("期末资金保护须明确金额；仅支付保护不能残留期末底线。")
+        if self.terminal_floor is not None and self.terminal_floor.amount <= 0:
+            raise ValueError("期末保护金额必须大于零；仅保障支付请使用 payments_only。")
         return self
 
 

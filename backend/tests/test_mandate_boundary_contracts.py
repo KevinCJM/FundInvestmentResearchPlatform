@@ -481,3 +481,20 @@ def test_retired_scale_blocks_current_policy_and_product_handoff_but_preserves_h
     bad = deepcopy(baseline)
     bad['policy']['mandate']['risk_authorization']['risk_scale_ref']['content_hash'] = '0' * 64
     assert '指纹' in check_policy(bad, weights, 0., baseline['as_of'], **context)['risk_scale_blockers'][0]
+
+
+@pytest.mark.parametrize('amount', [0., -1., float('nan'), float('inf')])
+def test_terminal_protection_requires_positive_finite_floor_even_with_payments(amount):
+    data = new_definition(cash_budget=budget(flows=[payment()]),
+        cash_protection={'mode': 'payments_and_terminal_floor', 'terminal_floor': {'amount': amount}})
+    with pytest.raises(InputError):
+        MandateRequest.model_validate(data)
+
+
+def test_payment_only_and_zero_funding_target_remain_supported():
+    protected = MandateRequest.model_validate(new_definition(cash_budget=budget(flows=[payment()]),
+        cash_protection={'mode': 'payments_only'}))
+    assert protected.cash_protection.terminal_floor is None
+    funding = MandateRequest.model_validate(new_definition(objective_kind='funding_goal',
+        cash_budget=budget(flows=[payment()]), funding_target={'amount': 0.}))
+    assert funding.funding_target.amount == 0.

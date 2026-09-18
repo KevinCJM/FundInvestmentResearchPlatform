@@ -449,3 +449,13 @@ it('选择期末保护后必须填写正金额，清空不静默关闭保护', a
   fireEvent.change(input, { target: { value: '800000' } })
   expect(screen.getByRole('button', { name: '2. 结果与确认' })).toBeEnabled()
 })
+
+it.each([3, 12] as const)('旧版每%s月循环只发生一次时保留频率，延长期限后恢复后续支付', async frequency => {
+  install(); const request = boundaryStudy()
+  request.definition = { ...request.definition, horizon_years: 1, cash_budget: { ...request.definition.cash_budget!,
+    flows: [{ name: '历史循环支付', kind: 'withdrawal', amount: 1000, first_month: 12, last_month: 12, every_months: frequency }] } }
+  ready(request)
+  expect(screen.getByRole('combobox', { name: /^现金流 1 · 频率/ })).toHaveValue(String(frequency))
+  fireEvent.change(screen.getByLabelText('投资期限（年）'), { target: { value: '3' } })
+  expect(readAllocationDraft<MandateStudyRequest>('mandate-study:editor')!.definition.cash_budget!.flows[0]).toMatchObject({ first_month: 12, last_month: 36, every_months: frequency })
+})
