@@ -1347,7 +1347,9 @@
         "Mandate 2.0 risk levels resolve to upper caps, never minimum volatility constraints. Pending reference research may be saved but cannot silently acquire a numeric authorization. Keep original request inputs separate from resolved immutable constraints.",
         "Separate reference search from fixed-candidate validation. A capital diagnostic after failed search is not a validated recommendation and must not authorize risk. Actual SAA adoption uses its own independent check; finite candidate failure is not an infeasibility proof.",
         "A shared cash budget is independent of the three objective kinds. Cash protection requires the effective cash-role floor in SAA and the frozen TAA gate, not merely tradable liquid assets. Missing frozen cash evidence must fail closed.",
-        "Adding study parameters can make shared draft-shape validation discard supported earlier drafts. Adapt missing study fields at the mandate boundary without loosening the global draft guard or changing original inputs."
+        "Adding study parameters can make shared draft-shape validation discard supported earlier drafts. Adapt missing study fields at the mandate boundary without loosening the global draft guard or changing original inputs.",
+        "Funding-suggestion mode requires a cash budget and an explicit funding_target or cash_protection. Withdrawal rows alone must not bypass probability validation and produce a validated recommendation; manual/numeric budget-only research retains its separate semantics.",
+        "PIT initialization and clock changes invalidate editable mandate drafts only. A saved view must retain its frozen request, assessment and readonly state even when the clock resolves after the version; never turn it into a new active mandate."
       ],
       "safe_observation_methods": [
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_mandate_diagnostic_integrity.py -q",

@@ -49,7 +49,7 @@ test('两步目标流程只收集目标、风险等级和现金，并展示双�
   await expect(page.getByLabel(/最高预期年波动/)).toHaveCount(0)
   await expect(page.getByLabel(/风险厌恶/)).toHaveCount(0)
   await expect(page.getByLabel(/政策来源/)).toHaveCount(0)
-  await expect(page.getByLabel(/CMA/)).toHaveCount(0)
+  await expect(page.getByRole('combobox', { name: /CMA/ })).toHaveCount(0)
   await layout(page, info, '02-risk-cash', '添加投资目标与约束')
 
   await page.getByRole('button', { name: '下一步：结果与确认', exact: true }).click()
@@ -79,6 +79,41 @@ test('两步目标流程只收集目标、风险等级和现金，并展示双�
   expect(saved.definition.effective_cash_reserve_weight).toBeGreaterThanOrEqual(.1)
   await expect(page.getByText('只读版本', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: /下一步：确定投资范围/ })).toBeVisible()
+
+  // A saved view may load before the global PIT setting recovers.
+  let pitUnavailable = true
+  await page.route(`**/api/strategic-allocation/mandates/${saved.id}`, route =>
+    route.fulfill({ status: 503, json: { detail: { message: '保存版本暂时不可读' } } }))
+  await page.route('**/api/pit/settings', route => route.fulfill(pitUnavailable
+    ? { status: 503, json: { detail: 'Offline PIT recovery fixture' } }
+    : { json: { settings: { active_release_id: null }, available_releases: [],
+      effective: { no_pit: false, as_of: fixture.today, run_mode: 'RESEARCH', label: 'Recovered PIT' } } }))
+  await page.reload()
+  await expect(page.getByRole('alert').filter({ hasText: '保存版本暂时不可读' })).toBeVisible()
+  pitUnavailable = false
+  const menu = page.getByRole('button', { name: '菜单', exact: true })
+  if (await menu.isVisible()) await menu.click()
+  await page.locator('[data-testid=pit-badge]:visible').click()
+  await page.getByRole('button', { name: '重试读取 PIT 口径', exact: true }).click()
+  await expect(page.locator('[data-testid=pit-badge]:visible')).toContainText(`PIT 打开：${fixture.today}`)
+  await page.getByRole('button', { name: '关闭口径切换', exact: true }).click()
+  if (await menu.isVisible()) await menu.click()
+  await expect(page).toHaveURL(new RegExp(`view=${saved.id}`))
+  await expect(page.getByLabel('目标名称', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '运行目标诊断', exact: true })).toHaveCount(0)
+  await page.unroute(`**/api/strategic-allocation/mandates/${saved.id}`)
+  await page.getByRole('button', { name: '重试', exact: true }).click()
+  await expect(page.getByText('只读版本', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '运行目标诊断', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '保存新目标版本', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '1. 目标与约束', exact: true }).click()
+  await expect(page.getByLabel('目标名称', { exact: true })).toBeDisabled()
+  await expect(page.getByLabel('目标研究日', { exact: false })).toHaveValue(saved.definition.as_of)
+  await page.getByRole('button', { name: '2. 结果与确认', exact: true }).click()
+  await layout(page, info, 'saved-after-pit-recovery', '已保存投资目标与约束')
+  const unchanged = await (await request.get(`${api}/api/strategic-allocation/mandates/${saved.id}`)).json()
+  expect(unchanged.content_hash).toBe(saved.content_hash)
+  await page.unroute('**/api/pit/settings')
 
   // Published objectives are managed from a list, matching Risk Scale Center.
   await page.getByRole('link', { name: '返回投资目标列表', exact: true }).click()

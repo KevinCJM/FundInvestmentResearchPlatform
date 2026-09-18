@@ -196,7 +196,8 @@ class MandateRequest(Contract):
             raise ValueError("资金目标须提供现金预算，不可重复提供现金保护成功条件。")
         if self.cash_protection is not None and self.cash_budget is None:
             raise ValueError("现金保护需要真实现金预算。")
-        if risk.mode == "funding_suggestion" and self.cash_budget is None:
+        if risk.mode == "funding_suggestion" and (self.cash_budget is None
+                or self.funding_target is None and self.cash_protection is None):
             raise ValueError("资金建议模式需要现金预算和明确的资金成功条件。")
         if self.cash_budget is None:
             return

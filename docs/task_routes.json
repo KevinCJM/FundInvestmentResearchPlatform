@@ -139,7 +139,13 @@
         "release branch",
         "branch-policy",
         "ai-review",
-        "quality-gate"
+        "quality-gate",
+        "docs/submission-workflow.md",
+        "提交逻辑",
+        "Bot 审核",
+        "bot review",
+        "Owner 豁免",
+        "绕过审核"
       ],
       "negative_keywords": [],
       "route_priority": 105,

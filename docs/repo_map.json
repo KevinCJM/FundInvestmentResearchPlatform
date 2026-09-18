@@ -16,7 +16,7 @@
       "name": "AI branch submission, review and merge protocol",
       "path": "branch_submission_rules.md",
       "kind": "submission_protocol",
-      "purpose": "Owns terminal-only PR submission: PR-only main/Dev, same-repository Dev into main, one native approval for ordinary mergers, and a PR-only approval exemption for owner KevinCJM. Codex comments are optional. Live deployment and permissions must be verified from GitHub.",
+      "purpose": "Owns terminal-only submission with PR-only main/Dev and same-repository Dev into main. Normal merges require trusted Bot approval of the latest HEAD, independently of local self-review and ordinary human approval. Only owner KevinCJM may use review exemptions; AI bypass of Bot review requires explicit human authorization tied to the PR, HEAD and findings, followed by replies with evidence before merging. The narrative workflow explains scope, commits, review, exceptions, merge verification, release and rollback. Existing GitHub configs enforce PR, native approval and branch direction, not Bot content or human-versus-AI identity.",
       "module_tags": [
         "submission",
         "branches",
@@ -26,12 +26,14 @@
         "governance"
       ],
       "entry_files": [
-        "branch_submission_rules.md"
+        "branch_submission_rules.md",
+        "docs/submission-workflow.md"
       ],
       "key_symbols": [],
       "child_modules": [],
       "first_read_files": [
-        "branch_submission_rules.md"
+        "branch_submission_rules.md",
+        "docs/submission-workflow.md"
       ],
       "then_check_files": [
         "AGENTS.md",
@@ -60,7 +62,11 @@
         "documented_policy_is_not_remote_enforcement",
         "author_cannot_approve_own_pr",
         "unrelated_dirty_files_in_submission",
-        "approval_exemption_must_not_include_pr_only_or_branch_direction"
+        "approval_exemption_must_not_include_pr_only_or_branch_direction",
+        "bot_completed_is_not_approval",
+        "stale_head_review_or_exception",
+        "owner_credentials_are_not_human_bypass_authorization",
+        "bot_gate_is_execution_protocol_not_native_check"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -89,7 +95,8 @@
           ".github/workflows/branch-policy.yml",
           ".github/branch-ruleset.json",
           ".github/main-branch-ruleset.json",
-          ".github/approval-ruleset.json"
+          ".github/approval-ruleset.json",
+          "docs/submission-workflow.md"
         ],
         "unsampled_paths": []
       }
