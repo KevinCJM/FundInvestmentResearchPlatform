@@ -94,8 +94,12 @@ test('historical intersection to risk scale, five segmentation methods, publish 
   for (const width of [320, 768, 1279, 1280, 1440]) {
     await page.setViewportSize({ width, height: 1000 }); await noOverflow(page); await shot(page, `frontier-zh-${width}`)
   }
+  const draftSaved = page.waitForResponse(r => r.url().endsWith('/risk-scales/drafts') && r.request().method() === 'POST')
   await page.getByRole('button', { name: '保存草稿', exact: true }).click()
   await expect(page.getByText(/已保存修订/)).toBeVisible()
+  const savedDraft = await (await draftSaved).json()
+  expect(savedDraft.editable_definition.step).toBe(2)
+  await page.goto(`/settings/risk-scales/drafts/${savedDraft.id}`)
   await page.getByRole('button', { name: '计算前沿与五档', exact: true }).click()
   await page.getByRole('button', { name: '核对发布内容', exact: true }).click()
   const publication = page.locator('#risk-step-title').locator('..')

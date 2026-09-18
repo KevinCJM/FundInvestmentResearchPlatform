@@ -214,6 +214,7 @@ describe('guided risk scale editing', () => {
     fireEvent.click(await screen.findByRole('button', { name: '计算前沿与五档' }))
     await screen.findByLabelText('分档方式')
     expect(riskScales.preview).toHaveBeenLastCalledWith(expect.objectContaining({ draft_id: 'draft-fixture', draft_revision: 4 }), expect.any(AbortSignal))
+    expect(riskScales.updateDraft).toHaveBeenCalledWith('draft-fixture', expect.objectContaining({ editable_definition: expect.objectContaining({ step: 2 }), expected_revision: 3 }), expect.any(AbortSignal))
     fireEvent.click(screen.getByRole('button', { name: '核对发布内容' }))
     fireEvent.click(screen.getByLabelText('Synthetic test warning'))
     fireEvent.click(screen.getByLabelText(/我已核对当前内容，确认发布该版本/))
