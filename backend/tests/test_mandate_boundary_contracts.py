@@ -416,7 +416,7 @@ def test_retired_scale_blocks_current_policy_and_product_handoff_but_preserves_h
     from backend.strategic_allocation.reference_sources import ReferenceSources
     from backend.strategic_allocation.risk_scale_contracts import RetireRequest
     from backend.strategic_allocation.policy_gate import require_policy_application
-    from backend.tactical_allocation.portfolio_bridge import validate_decision_application, validate_allocation_source
+    from backend.tactical_allocation.portfolio_bridge import validate_allocation_source
     from backend.tactical_allocation.data import TacticalAllocationData
 
     service, _ = workspace
@@ -440,9 +440,26 @@ def test_retired_scale_blocks_current_policy_and_product_handoff_but_preserves_h
         candidate_id='minimum-risk', name='冻结风险标尺政策', reason='离线验证标尺治理应用门禁'))
     weights = {a['id']: a['base_weight'] for a in baseline['assets']}
     root = service.artifacts.root.parent.parent
-    context = {'workspace': root, 'data_dir': service.data.data_dir}
+    context = {'strategic_root': root, 'data_dir': service.data.data_dir}
     before = check_policy(baseline, weights, 0., baseline['as_of'], **context)
     assert before['current_application_eligible'], before
+    from backend.tactical_allocation.service import TacticalAllocationService
+    taa_root, universe_root = root / 'separate-taa', root / 'separate-universe'
+    tactical = TacticalAllocationService(taa_root, service.data.data_dir, universe_dir=universe_root, strategic_root=root)
+    # Other NAV/universe gates have their own fixtures; isolate governance here.
+    monkeypatch.setattr(TacticalAllocationData, 'validate_application', lambda self, value: None)
+    decision = tactical.repository.save_decision({'name': 'Separate storage roots', 'preview': {'baseline': baseline,
+        'request': {'as_of': baseline['as_of'], 'max_tracking_error': 0., 'max_turnover': 1.},
+        'recommendation': {'weights': weights, 'expires_on': baseline['policy']['expires_on'], 'turnover_from_current': 0.},
+        'selected_id': 'saa', 'candidates': [{'id': 'saa', 'strength': 0.}],
+        'weight_path': [{'date': baseline['as_of']}, {'date': str(date.today() + timedelta(days=1))}]}},
+        arrays={'returns': np.zeros((2, 2))})
+    exported = tactical.product_allocation(decision['id'])
+    components = exported['constituents']
+    strategy = {'type': 'manual', 'weights': [p['weight'] / 100 for p in components]}
+    monkeypatch.setenv('TACTICAL_ALLOCATION_DATA_DIR', str(taa_root))
+    assert validate_allocation_source(exported['allocation_source'], components, strategy,
+        baseline['universe_snapshot_id'], universe_root, strategic_root=root)['decision_id'] == decision['id']
     service.risk_scales.retire(scale['id'], RetireRequest(confirm=True, expected_revision=0, reason='风险标尺已不再适用'))
     after = check_policy(baseline, weights, 0., baseline['as_of'], **context)
     assert after['within_limits'] and not after['current_application_eligible']
@@ -451,17 +468,13 @@ def test_retired_scale_blocks_current_policy_and_product_handoff_but_preserves_h
     with pytest.raises(ValidationError) as error:
         require_policy_application(baseline, weights, 0., baseline['as_of'], **context)
     assert error.value.code == 'SAA_RISK_SCALE_INELIGIBLE'
-    # Both the TAA export and a direct portfolio request recheck mutable governance.
-    decision = service.baselines.save_decision({'preview': {'baseline': baseline,
-        'request': {'as_of': baseline['as_of'], 'max_tracking_error': 0.},
-        'recommendation': {'weights': weights}}}, arrays={'returns': np.zeros((2, 2))})
-    data = TacticalAllocationData(service.data.data_dir, universe_dir=root)
+    # Both paths block after retirement even with three separate storage roots.
     with pytest.raises(ValidationError) as error:
-        validate_decision_application(decision, data)
+        tactical.product_allocation(decision['id'])
     assert error.value.code == 'SAA_RISK_SCALE_INELIGIBLE'
-    monkeypatch.setenv('TACTICAL_ALLOCATION_DATA_DIR', str(root))
     with pytest.raises(ValidationError) as error:
-        validate_allocation_source({'kind': 'taa', 'decision_id': decision['id']}, [], {}, '', root)
+        validate_allocation_source(exported['allocation_source'], components, strategy,
+            baseline['universe_snapshot_id'], universe_root, strategic_root=root)
     assert error.value.code == 'SAA_RISK_SCALE_INELIGIBLE'
     # Missing context or changed frozen identity must not grant current permission.
     assert not check_policy(baseline, weights, 0., baseline['as_of'])['current_application_eligible']

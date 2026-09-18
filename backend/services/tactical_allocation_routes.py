@@ -17,6 +17,7 @@ tactical_service = TacticalAllocationService(
     Path(os.getenv("TACTICAL_ALLOCATION_DATA_DIR", str(indicator_service.workspace_data_dir))),
     indicator_service.market_data_dir, regime_resolver=regime_graph_v2_service.resolve_taa_run,
     universe_dir=indicator_service.workspace_data_dir,
+    strategic_root=Path(os.getenv("STRATEGIC_ALLOCATION_DATA_DIR", str(indicator_service.workspace_data_dir))),
 )
 
 

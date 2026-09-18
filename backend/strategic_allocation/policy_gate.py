@@ -1,6 +1,5 @@
 """Shared preview/application gate for an adopted strategic research policy."""
 from datetime import date
-import os
 from pathlib import Path
 
 import numpy as np
@@ -14,17 +13,17 @@ from .cma_application import frozen_policy_assumptions
 from .mandate_inputs import cash_success_required, require_resolved_authorization
 
 
-def _current_scale_blockers(reference: dict | None, workspace: Path | None, data_dir: Path | None) -> list[str]:
+def _current_scale_blockers(reference: dict | None, strategic_root: Path | None, data_dir: Path | None) -> list[str]:
     if not reference:
         return []
-    if workspace is None or data_dir is None:
+    if strategic_root is None or data_dir is None:
         return ["无法核对风险标尺当前状态，历史研究可读，暂不能用于当前产品应用。"]
     from backend.sensitivity.repository import ArtifactRepository
     from .reference_inputs import ReferenceInputs
     from .reference_sources import ReferenceSources
     from .risk_scale_service import RiskScaleService
     from .risk_scale_store import RiskScaleStore
-    root = Path(os.getenv("STRATEGIC_ALLOCATION_DATA_DIR", str(workspace))) / "strategic_allocation"
+    root = Path(strategic_root) / "strategic_allocation"
     artifacts = ArtifactRepository(root / "artifacts")
     reader = RiskScaleService(artifacts, RiskScaleStore(root), ReferenceInputs(artifacts, ReferenceSources(data_dir)))
     try:
@@ -37,7 +36,7 @@ def _current_scale_blockers(reference: dict | None, workspace: Path | None, data
 
 
 def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str,
-                 *, workspace: Path | None = None, data_dir: Path | None = None) -> dict | None:
+                 *, strategic_root: Path | None = None, data_dir: Path | None = None) -> dict | None:
     policy = baseline.get("policy")
     if policy is None:
         return None  # Historical baselines do not acquire fabricated policy evidence.
@@ -110,7 +109,7 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
         if mapping and not mapping["definition"]["as_of"] <= str(date.today()) < mapping["definition"]["valid_until"]:
             mapping_blockers.append("实施映射尚未生效或已到复核日。")
     expires = policy["expires_on"]
-    scale_blockers = _current_scale_blockers((mandate.get("risk_authorization") or {}).get("risk_scale_ref"), workspace, data_dir)
+    scale_blockers = _current_scale_blockers((mandate.get("risk_authorization") or {}).get("risk_scale_ref"), strategic_root, data_dir)
     if as_of < baseline["as_of"] or as_of >= expires:
         violations.append("政策尚未适用于本研究日或已到复核日期，请重新确认长期政策。")
     return {"within_limits": not violations, "violations": violations,
@@ -128,8 +127,8 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
 
 
 def require_policy_application(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str,
-                               *, workspace: Path | None = None, data_dir: Path | None = None) -> None:
-    check = check_policy(baseline, weights, tracking_error_limit, as_of, workspace=workspace, data_dir=data_dir)
+                               *, strategic_root: Path | None = None, data_dir: Path | None = None) -> None:
+    check = check_policy(baseline, weights, tracking_error_limit, as_of, strategic_root=strategic_root, data_dir=data_dir)
     if check and check["risk_scale_blockers"]:
         raise ValidationError("SAA_RISK_SCALE_INELIGIBLE", "；".join(check["risk_scale_blockers"]))
     if check and not check["within_limits"]:

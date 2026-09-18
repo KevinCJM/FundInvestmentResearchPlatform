@@ -14,7 +14,8 @@ from backend.tactical_allocation.data import TacticalAllocationData
 from backend.tactical_allocation.repository import TacticalAllocationRepository
 
 
-def validate_decision_application(decision: dict, data: TacticalAllocationData, frozen_returns=None) -> None:
+def validate_decision_application(decision: dict, data: TacticalAllocationData, frozen_returns=None,
+                                  *, strategic_root: Path | None = None) -> None:
     """The same application gate protects export and direct portfolio writes."""
     preview = decision["preview"]
     # Export and direct product writes share the new-clock gate as well.
@@ -27,7 +28,7 @@ def validate_decision_application(decision: dict, data: TacticalAllocationData, 
     if baseline.get("policy"):
         from backend.strategic_allocation.policy_gate import require_policy_application
         require_policy_application(baseline, recommendation["weights"], request["max_tracking_error"], request["as_of"],
-            workspace=data.universe_dir, data_dir=data.data_dir)
+            strategic_root=strategic_root, data_dir=data.data_dir)
     try:
         expires = date.fromisoformat(recommendation["expires_on"])
         as_of = date.fromisoformat(request["as_of"])
@@ -63,7 +64,7 @@ def validate_decision_application(decision: dict, data: TacticalAllocationData, 
 
 
 def validate_allocation_source(source: Any, components: list[dict], strategy: dict,
-                               universe_id: str, workspace: Path) -> dict | None:
+                               universe_id: str, workspace: Path, *, strategic_root: Path | None = None) -> dict | None:
     if source is None:
         return None
     if not isinstance(source, dict) or source.get("kind") != "taa" or not source.get("decision_id"):
@@ -72,7 +73,9 @@ def validate_allocation_source(source: Any, components: list[dict], strategy: di
     decision = repository.get_decision(source["decision_id"])
     preview = decision["preview"]
     baseline = preview["baseline"]
-    validate_decision_application(decision, TacticalAllocationData(workspace, universe_dir=workspace), repository.decision_arrays(decision["id"])["returns"])
+    strategic_root = Path(strategic_root) if strategic_root is not None else Path(os.getenv("STRATEGIC_ALLOCATION_DATA_DIR", str(workspace)))
+    validate_decision_application(decision, TacticalAllocationData(workspace, universe_dir=workspace), repository.decision_arrays(decision["id"])["returns"],
+        strategic_root=strategic_root)
     if universe_id != baseline.get("universe_snapshot_id"):
         raise ValidationError("TAA_UNIVERSE_MISMATCH", "产品组合须使用 TAA 锁定的同一可投资域。")
     if strategy["type"] != "manual":

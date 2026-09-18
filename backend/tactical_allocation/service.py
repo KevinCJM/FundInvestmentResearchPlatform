@@ -32,9 +32,11 @@ def _vector(values: dict[str, float], assets: list[str], label: str) -> np.ndarr
 
 
 class TacticalAllocationService:
-    def __init__(self, root: Path, data_dir: Path, regime_resolver: Callable | None = None, universe_dir: Path | None = None):
+    def __init__(self, root: Path, data_dir: Path, regime_resolver: Callable | None = None, universe_dir: Path | None = None,
+                 strategic_root: Path | None = None):
         self.repository = TacticalAllocationRepository(root)
         self.data = TacticalAllocationData(data_dir, universe_dir=universe_dir or root)
+        self.strategic_root = Path(strategic_root) if strategic_root is not None else Path(root)
         self.regime_resolver = regime_resolver
 
     def warm(self) -> dict[str, Any]:
@@ -414,7 +416,7 @@ class TacticalAllocationService:
         if baseline.get("policy"):
             from backend.strategic_allocation.policy_gate import check_policy
             payload["policy_check"] = check_policy(baseline, payload["recommendation"]["weights"], request.max_tracking_error, str(request.as_of),
-                workspace=self.data.universe_dir, data_dir=self.data.data_dir)
+                strategic_root=self.strategic_root, data_dir=self.data.data_dir)
             payload["warnings"].extend(payload["policy_check"]["violations"])
             payload["warnings"].extend(payload["policy_check"]["risk_scale_blockers"])
             payload["recommendation"]["expires_on"] = min(payload["recommendation"]["expires_on"], baseline["policy"]["expires_on"])
@@ -502,7 +504,8 @@ class TacticalAllocationService:
         from backend.tactical_allocation.portfolio_bridge import validate_decision_application
         from .clocks import validate_clock_application
         validate_clock_application(preview)
-        validate_decision_application(decision, self.data, self.repository.decision_arrays(decision_id)["returns"])
+        validate_decision_application(decision, self.data, self.repository.decision_arrays(decision_id)["returns"],
+            strategic_root=self.strategic_root)
         assets = baseline["assets"]
         class_weights = _vector(preview["recommendation"]["weights"], [item["id"] for item in assets], "TAA")
         products, class_indices, within = [], [], []
