@@ -51,6 +51,17 @@ def test_reference_day_is_automatic_from_pit_or_today(setup):
     assert with_pit.json()['quality']['intersection_end']<=str(pit_day)
 
 
+def test_incomplete_sse_calendar_is_rejected_even_when_sources_match(setup):
+    svc,client,source=setup
+    path=svc.references.sources.data_dir/'synthetic-test-only'/'trade_day_df.parquet'
+    calendar=pd.read_parquet(path)
+    calendar=calendar.drop(index=[calendar.index[20]])
+    calendar.to_parquet(path,index=False)
+    response=client.post(R+'/preview',json=source)
+    assert response.status_code==422
+    assert response.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_INVALID'
+
+
 def test_missing_date_shrinks_intersection_and_unknown_announcement_rejected(setup):
     svc,client,source=setup
     path=svc.references.sources.data_dir/'synthetic-test-only'/'etf_daily_df.parquet'

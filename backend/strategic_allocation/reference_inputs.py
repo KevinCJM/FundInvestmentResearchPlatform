@@ -88,8 +88,7 @@ def _validate_sse_calendar(snapshot_dir, observed_dates):
         calendar = pd.read_parquet(path, columns=["exchange", "cal_date", "is_open"])
     except (OSError, ValueError, KeyError) as exc:
         raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历无法读取，不能继续构建日频参考样本。") from exc
-    calendar = calendar.loc[(calendar["exchange"].astype(str).str.upper() == "SSE")
-                            & (pd.to_numeric(calendar["is_open"], errors="coerce") == 1)]
+    calendar = calendar.loc[calendar["exchange"].astype(str).str.upper() == "SSE"]
     raw_dates = calendar["cal_date"]
     if pd.api.types.is_datetime64_any_dtype(raw_dates):
         parsed = pd.to_datetime(raw_dates, errors="coerce").dt.normalize()
@@ -97,7 +96,15 @@ def _validate_sse_calendar(snapshot_dir, observed_dates):
         compact = raw_dates.astype(str).str.replace("-", "", regex=False).str[:8]
         parsed = pd.to_datetime(compact, format="%Y%m%d", errors="coerce").dt.normalize()
     observed = pd.DatetimeIndex(np.asarray(observed_dates).astype("datetime64[D]")).normalize().unique().sort_values()
-    expected = pd.DatetimeIndex(parsed.dropna().unique()).sort_values()
+    if parsed.isna().any() or parsed.duplicated().any():
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历包含无效或重复日期，不能继续构建日频参考样本。")
+    calendar_dates = pd.DatetimeIndex(parsed.to_numpy()).sort_values()
+    calendar_window = calendar_dates[(calendar_dates >= observed[0]) & (calendar_dates <= observed[-1])]
+    expected_calendar = pd.date_range(observed[0], observed[-1], freq="D")
+    if not calendar_window.equals(expected_calendar):
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历未覆盖研究区间内的全部自然日，不能证明开放日样本连续。")
+    open_mask = pd.to_numeric(calendar["is_open"], errors="coerce").eq(1).to_numpy()
+    expected = pd.DatetimeIndex(parsed.to_numpy()[open_mask]).sort_values()
     expected = expected[(expected >= observed[0]) & (expected <= observed[-1])]
     missing = expected.difference(observed)
     unexpected = observed.difference(expected)
