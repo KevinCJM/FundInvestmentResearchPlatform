@@ -20,10 +20,6 @@ class ReferenceSources:
         self.series = ResearchSeriesService(data_dir, workspace_data_dir=data_dir)
         self.data_dir = Path(data_dir)
 
-    def active_snapshot(self) -> Path:
-        snapshot, _ = self.series._active_snapshot()
-        return snapshot
-
     def active_snapshot_context(self):
         return self.series._active_snapshot()
 
