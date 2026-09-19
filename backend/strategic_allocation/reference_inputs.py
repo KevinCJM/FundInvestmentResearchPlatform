@@ -4,6 +4,9 @@ import hashlib
 import json
 from datetime import date
 import numpy as np
+import pandas as pd
+
+from backend.market_data import resolve_market_data_file
 from backend.custom_indicators.errors import ConflictError, ValidationError
 from backend.pit.context import view_override
 from backend.sensitivity.repository import ArtifactRepository, digest_json
@@ -78,6 +81,35 @@ def _rebalance_reset_flags(days: list[str], rule: str) -> np.ndarray:
     return result
 
 
+def _validate_sse_calendar(data_dir, observed_dates):
+    path = resolve_market_data_file("trade_day_df.parquet", data_dir)
+    if not path.is_file():
+        raise ValidationError("REFERENCE_SSE_CALENDAR_REQUIRED", "缺少 SSE 交易日日历，无法证明日频参考样本连续。")
+    try:
+        calendar = pd.read_parquet(path, columns=["exchange", "cal_date", "is_open"])
+    except (OSError, ValueError, KeyError) as exc:
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历无法读取，不能继续构建日频参考样本。") from exc
+    calendar = calendar.loc[(calendar["exchange"].astype(str).str.upper() == "SSE")
+                            & (pd.to_numeric(calendar["is_open"], errors="coerce") == 1)]
+    raw_dates = calendar["cal_date"]
+    if pd.api.types.is_datetime64_any_dtype(raw_dates):
+        parsed = pd.to_datetime(raw_dates, errors="coerce").dt.normalize()
+    else:
+        compact = raw_dates.astype(str).str.replace("-", "", regex=False).str[:8]
+        parsed = pd.to_datetime(compact, format="%Y%m%d", errors="coerce").dt.normalize()
+    observed = pd.DatetimeIndex(np.asarray(observed_dates).astype("datetime64[D]")).normalize().unique().sort_values()
+    expected = pd.DatetimeIndex(parsed.dropna().unique()).sort_values()
+    expected = expected[(expected >= observed[0]) & (expected <= observed[-1])]
+    missing = expected.difference(observed)
+    unexpected = observed.difference(expected)
+    if len(missing) or len(unexpected):
+        diagnostics = ([{"code": "missing_trading_day", "date": stamp.strftime("%Y-%m-%d")} for stamp in missing[:20]]
+                       + [{"code": "unexpected_observation_day", "date": stamp.strftime("%Y-%m-%d")} for stamp in unexpected[:20]])
+        raise ValidationError("REFERENCE_SSE_CALENDAR_GAP",
+            f"共同参考样本与 SSE 开放日不连续：缺少 {len(missing)} 个开放日，含 {len(unexpected)} 个非开放日观察。",
+            diagnostics=diagnostics)
+
+
 def confirm_warnings(preview, acknowledged):
     required = {x['code'] for x in preview['warnings']}
     if not required.issubset(set(acknowledged)):
@@ -135,6 +167,7 @@ class ReferenceInputs:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_SHORT', '所选非现金代理的历史数据交集不足 21 个观测日，请更换代理。')
         if common_dates.size > 10000:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_LONG', '共同历史区间超过 10000 个观测日，当前风险标尺不支持更长历史。')
+        _validate_sse_calendar(self.sources.data_dir, common_dates)
         days = common_dates.astype('datetime64[D]').astype(str).tolist()
         panel = np.empty((common_dates.size - 1, len(request.assets)), dtype=np.float64)
         provenance = []

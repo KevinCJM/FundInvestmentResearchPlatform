@@ -1,11 +1,13 @@
 """Real offline risk-scale -> mandate reference search/validation integration."""
 import numpy as np
 import pytest
+from contextlib import contextmanager
 from pydantic import ValidationError as InputError
 
 from backend.tests.risk_scale_app import make_service
 from backend.tests.test_risk_scale_service import freeze_reference, definition as scale_definition, publish
 from backend.tests.test_mandate_boundary_contracts import new_definition, budget, payment
+import backend.strategic_allocation.service as service_module
 from backend.strategic_allocation.service import StrategicAllocationService
 from backend.strategic_allocation.contracts import MandateRequest, MandateStudyRequest, ConfirmMandateRequest
 from backend.strategic_allocation import goal_kernels as goals, mandate_kernels as numeric
@@ -53,6 +55,36 @@ def test_funding_suggestion_with_payment_protection_runs_independent_validation(
     assert study["validation"]["seed"] == body.validation_seed != body.seed
     assert study["validation"]["central"]["probability_lower"] >= .8
     assert result["risk_decision"]["status"] == "recommendation_validated"
+
+
+def test_confirmation_holds_risk_scale_lock_through_preview_and_save(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale)
+    preview = service.preview_mandate(body)
+    active = False
+    original_locked = service.risk_scales.store.document.locked
+
+    @contextmanager
+    def wrapped_locked():
+        nonlocal active
+        with original_locked():
+            active = True
+            try:
+                yield
+            finally:
+                active = False
+
+    original_save = service.artifacts.save
+
+    def checked_save(*args, **kwargs):
+        assert active
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(service.risk_scales.store.document, "locked", wrapped_locked)
+    monkeypatch.setattr(service.artifacts, "save", checked_save)
+    saved = service.confirm_mandate(ConfirmMandateRequest(
+        request=body, preview_hash=preview["preview_hash"], acknowledge_limits=True))
+    assert saved["artifact_type"] == "investment_mandate"
 
 
 def test_frozen_scale_constrained_frontier_then_independent_validation(reference):
@@ -131,6 +163,19 @@ def test_compact_objective_freezes_model_conventions_and_reuses_scale_for_two_fr
     reference_points = [(p["volatility"], p["expected_return"]) for p in study["reference_frontier"]]
     constrained_points = [(p["volatility"], p["expected_return"]) for p in study["constrained_frontier"]]
     assert constrained_points != reference_points  # Re-optimized with the cash floor, not relabelled.
+
+
+def test_funding_suggestion_refreezes_automatic_benchmark_at_recommended_level(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    monkeypatch.setattr(service_module, "diagnose_reference",
+                         lambda *_args, **_kwargs: {"status": "validated", "minimum_tested_feasible_level": 1})
+    result = service.preview_mandate(body)
+    level = result["risk_decision"]["selected_max_level"]
+    expected = scale["preview"]["result"]["levels"][level - 1]["representative_weights"]
+    weights = list(result["definition"]["benchmark"]["weights"].values())
+    assert weights == pytest.approx(expected)
 
 
 def test_relative_goal_uses_selected_risk_scale_representative_as_frozen_benchmark(reference):

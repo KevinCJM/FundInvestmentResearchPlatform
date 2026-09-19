@@ -28,7 +28,9 @@ from .institution import diagnose_institution, review_blockers
 from .sources import product_source, strategic_source
 from .universes import StrategicScopes
 from .planning import funding_inputs, diagnose_funding, require_goal_checks, LIMITATIONS
-from .mandate_inputs import cash_success_required, has_cash_budget, resolve_authorization, require_resolved_authorization, effective_cash_floor, effective_return_floor
+from .mandate_inputs import (cash_success_required, has_cash_budget, resolve_authorization,
+                             require_resolved_authorization, effective_cash_floor, effective_return_floor,
+                             _freeze_reference_benchmark)
 from .contracts import (
     CmaRequest, PolicyRequest, PublishCmaRequest,
     PublishPolicyRequest, RiskReferenceRequest, MandateStudyRequest, ConfirmMandateRequest,
@@ -177,6 +179,7 @@ class StrategicAllocationService:
     def preview_mandate(self, request: MandateStudyRequest) -> dict:
         kernels.require_ready()
         goal_kernels.require_ready()
+        requested_benchmark = request.definition.model_dump(mode="json").get("benchmark")
         definition, risk_decision = resolve_authorization(request.definition.model_dump(mode="json"), self.risk_scales)
         if definition.get("strategic_universe_id"):
             universe = self.scopes.get_universe(definition["strategic_universe_id"])
@@ -217,6 +220,10 @@ class StrategicAllocationService:
                                              selection_pending=False, status="recommendation_validated")
                         definition["risk_authorization"]["selected_max_level"] = level
                         definition["max_volatility"] = cap
+                        if requested_benchmark is None:
+                            version = self.risk_scales.get_version(risk_decision["risk_scale_ref"]["id"])
+                            definition["benchmark"] = None
+                            _freeze_reference_benchmark(definition, version, level)
             elif reference["status"] in {"validation_failed", "no_validated_candidate_in_search", "constraint_conflict", "solver_failed"}:
                 payload["status"] = "needs_revision"
         if request.cma_id and definition.get("max_volatility") is not None:
@@ -255,22 +262,23 @@ class StrategicAllocationService:
             raise ValidationError("MANDATE_BOUNDARY_REASON", "旧版目标须说明风险和流动性边界的依据，至少5个字符。")
         if body.replaces_mandate_id is not None:
             self.get_mandate(body.replaces_mandate_id)
-        preview = self.preview_mandate(body.request)
-        if preview["preview_hash"] != body.preview_hash:
-            raise ConflictError("MANDATE_PREVIEW_CHANGED", "目标、模型或CMA已变化，请重新诊断后确认。")
-        fields = {"artifact_type": "investment_mandate",
-            "name": body.request.definition.name, "definition": preview["definition"],
-            "assessment": preview, "supersedes_mandate_id": body.replaces_mandate_id,
-            "planning_settings": {"simulation_paths": body.request.simulation_paths,
-                "seed": body.request.seed, "validation_seed": body.request.validation_seed,
-                "uncertainty_penalty": body.request.uncertainty_penalty},
-            "research_only": True}
-        if body.replaces_mandate_id is None:
-            return self.artifacts.save("series", fields)
-        with self.artifacts.governance_lock.locked():
-            if body.replaces_mandate_id not in self._active_mandate_ids():
-                raise ConflictError("MANDATE_ALREADY_REPLACED", "原投资目标已被修改或删除，请刷新列表后重新选择。")
-            return self.artifacts.save("series", fields)
+        with self.risk_scales.store.document.locked():
+            preview = self.preview_mandate(body.request)
+            if preview["preview_hash"] != body.preview_hash:
+                raise ConflictError("MANDATE_PREVIEW_CHANGED", "目标、模型或CMA已变化，请重新诊断后确认。")
+            fields = {"artifact_type": "investment_mandate",
+                "name": body.request.definition.name, "definition": preview["definition"],
+                "assessment": preview, "supersedes_mandate_id": body.replaces_mandate_id,
+                "planning_settings": {"simulation_paths": body.request.simulation_paths,
+                    "seed": body.request.seed, "validation_seed": body.request.validation_seed,
+                    "uncertainty_penalty": body.request.uncertainty_penalty},
+                "research_only": True}
+            if body.replaces_mandate_id is None:
+                return self.artifacts.save("series", fields)
+            with self.artifacts.governance_lock.locked():
+                if body.replaces_mandate_id not in self._active_mandate_ids():
+                    raise ConflictError("MANDATE_ALREADY_REPLACED", "原投资目标已被修改或删除，请刷新列表后重新选择。")
+                return self.artifacts.save("series", fields)
 
     def _source(self, alloc_name: str | None, as_of: str, *, strategic_universe_id: str | None = None,
                 implementation_mapping_id: str | None = None) -> dict:

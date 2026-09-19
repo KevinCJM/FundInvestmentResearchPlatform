@@ -57,11 +57,10 @@ def test_missing_date_shrinks_intersection_and_unknown_announcement_rejected(set
     frame=pd.read_parquet(path)
     original=frame.copy()
     target=frame.index[frame['ts_code']=='900002.SH'][12]
-    baseline=client.post(R+'/preview',json=source).json()['quality']['observations']
     frame.drop(index=[target]).to_parquet(path,index=False)
     r=client.post(R+'/preview',json=source)
-    assert r.status_code==200,r.json()
-    assert r.json()['quality']['observations']==baseline-1
+    assert r.status_code==422,r.json()
+    assert r.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_GAP'
     # Restore a complete market series, then make one common-date information clock unknown.
     target=original.index[original['ts_code']=='900002.SH'][12]
     original.loc[target,'ann_date']=pd.NaT
