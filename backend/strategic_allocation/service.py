@@ -235,6 +235,7 @@ class StrategicAllocationService:
                                     break
                                 reference = diagnose_reference(self, request, working_definition, working_decision)
                                 payload["reference_diagnosis"] = reference
+                                working_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
                                 risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
                                 if reference["status"] != "validated":
                                     break

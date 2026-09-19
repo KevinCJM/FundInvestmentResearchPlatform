@@ -233,6 +233,7 @@ def test_funding_suggestion_iterates_until_refrozen_benchmark_stabilizes(referen
     assert len(calls) == 3
     assert calls[0] != calls[1] != calls[2]
     assert result["risk_decision"]["selected_max_level"] == 1
+    assert result["risk_decision"]["minimum_tested_feasible_level"] == 1
     assert result["risk_decision"]["status"] == "recommendation_validated"
 
 
