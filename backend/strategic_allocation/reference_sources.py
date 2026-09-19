@@ -20,6 +20,10 @@ class ReferenceSources:
         self.series = ResearchSeriesService(data_dir, workspace_data_dir=data_dir)
         self.data_dir = Path(data_dir)
 
+    def active_snapshot(self) -> Path:
+        snapshot, _ = self.series._active_snapshot()
+        return snapshot
+
     def warm(self):
         global _WARMED_PID
         result = warm_research_series_numba_kernels()

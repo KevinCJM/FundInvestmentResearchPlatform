@@ -6,7 +6,6 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from backend.market_data import resolve_market_data_file
 from backend.custom_indicators.errors import ConflictError, ValidationError
 from backend.pit.context import view_override
 from backend.sensitivity.repository import ArtifactRepository, digest_json
@@ -81,8 +80,8 @@ def _rebalance_reset_flags(days: list[str], rule: str) -> np.ndarray:
     return result
 
 
-def _validate_sse_calendar(data_dir, observed_dates):
-    path = resolve_market_data_file("trade_day_df.parquet", data_dir)
+def _validate_sse_calendar(snapshot_dir, observed_dates):
+    path = snapshot_dir / "trade_day_df.parquet"
     if not path.is_file():
         raise ValidationError("REFERENCE_SSE_CALENDAR_REQUIRED", "缺少 SSE 交易日日历，无法证明日频参考样本连续。")
     try:
@@ -167,7 +166,7 @@ class ReferenceInputs:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_SHORT', '所选非现金代理的历史数据交集不足 21 个观测日，请更换代理。')
         if common_dates.size > 10000:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_LONG', '共同历史区间超过 10000 个观测日，当前风险标尺不支持更长历史。')
-        _validate_sse_calendar(self.sources.data_dir, common_dates)
+        _validate_sse_calendar(self.sources.active_snapshot(), common_dates)
         days = common_dates.astype('datetime64[D]').astype(str).tolist()
         panel = np.empty((common_dates.size - 1, len(request.assets)), dtype=np.float64)
         provenance = []

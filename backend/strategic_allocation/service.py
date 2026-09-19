@@ -226,20 +226,23 @@ class StrategicAllocationService:
                             version = self.risk_scales.get_version(risk_decision["risk_scale_ref"]["id"])
                             proposed_definition["benchmark"] = None
                             _freeze_reference_benchmark(proposed_definition, version, level)
-                            reference = diagnose_reference(self, request, proposed_definition, proposed_decision)
-                            payload["reference_diagnosis"] = reference
-                            risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
-                            if (reference["status"] != "validated"
-                                    or reference["minimum_tested_feasible_level"] != level):
-                                payload["status"] = "needs_revision"
-                                payload["blockers"].append("冻结参考基准后的推荐等级未稳定通过复核，请重新诊断。")
-                                definition["max_volatility"] = None
-                            else:
+                            benchmark_level_changed = level != risk_decision["authorized_max_level"]
+                            if benchmark_level_changed:
+                                reference = diagnose_reference(self, request, proposed_definition, proposed_decision)
+                                payload["reference_diagnosis"] = reference
+                                risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
+                            if (not benchmark_level_changed
+                                    or (reference["status"] == "validated"
+                                        and reference["minimum_tested_feasible_level"] == level)):
                                 definition.clear()
                                 definition.update(proposed_definition)
                                 risk_decision.clear()
                                 risk_decision.update(proposed_decision)
                                 risk_decision["status"] = "recommendation_validated"
+                            else:
+                                payload["status"] = "needs_revision"
+                                payload["blockers"].append("冻结参考基准后的推荐等级未稳定通过复核，请重新诊断。")
+                                definition["max_volatility"] = None
                         else:
                             definition.clear()
                             definition.update(proposed_definition)
