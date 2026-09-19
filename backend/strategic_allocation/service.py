@@ -226,18 +226,38 @@ class StrategicAllocationService:
                             version = self.risk_scales.get_version(risk_decision["risk_scale_ref"]["id"])
                             proposed_definition["benchmark"] = None
                             _freeze_reference_benchmark(proposed_definition, version, level)
-                            benchmark_level_changed = level != risk_decision["authorized_max_level"]
-                            if benchmark_level_changed:
-                                reference = diagnose_reference(self, request, proposed_definition, proposed_decision)
+                            working_level = level
+                            working_definition = proposed_definition
+                            working_decision = proposed_decision
+                            stable = working_level == risk_decision["authorized_max_level"]
+                            for _ in range(len(risk_decision["applied_boundaries"])):
+                                if stable:
+                                    break
+                                reference = diagnose_reference(self, request, working_definition, working_decision)
                                 payload["reference_diagnosis"] = reference
                                 risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
-                            if (not benchmark_level_changed
-                                    or (reference["status"] == "validated"
-                                        and reference["minimum_tested_feasible_level"] == level)):
+                                if reference["status"] != "validated":
+                                    break
+                                next_level = reference["minimum_tested_feasible_level"]
+                                if (next_level is None or not 1 <= next_level <= len(risk_decision["applied_boundaries"])
+                                        or next_level > working_level):
+                                    break
+                                if next_level == working_level:
+                                    stable = True
+                                    break
+                                working_level = next_level
+                                cap = risk_decision["applied_boundaries"][working_level - 1]
+                                working_definition["benchmark"] = None
+                                working_definition["risk_authorization"]["selected_max_level"] = working_level
+                                working_definition["max_volatility"] = cap
+                                working_decision.update(selected_max_level=working_level,
+                                                        selected_volatility_cap=cap)
+                                _freeze_reference_benchmark(working_definition, version, working_level)
+                            if stable:
                                 definition.clear()
-                                definition.update(proposed_definition)
+                                definition.update(working_definition)
                                 risk_decision.clear()
-                                risk_decision.update(proposed_decision)
+                                risk_decision.update(working_decision)
                                 risk_decision["status"] = "recommendation_validated"
                             else:
                                 payload["status"] = "needs_revision"

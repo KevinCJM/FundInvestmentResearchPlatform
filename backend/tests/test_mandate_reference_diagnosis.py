@@ -213,6 +213,29 @@ def test_funding_suggestion_revalidates_against_refrozen_benchmark(reference, mo
     assert calls[0]["weights"] != calls[1]["weights"]
 
 
+def test_funding_suggestion_iterates_until_refrozen_benchmark_stabilizes(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    calls = []
+    results = iter([
+        {"status": "validated", "minimum_tested_feasible_level": 2},
+        {"status": "validated", "minimum_tested_feasible_level": 1},
+        {"status": "validated", "minimum_tested_feasible_level": 1},
+    ])
+
+    def diagnose(*_args, **_kwargs):
+        calls.append(_args[2]["benchmark"]["weights"])
+        return next(results)
+
+    monkeypatch.setattr(service_module, "diagnose_reference", diagnose)
+    result = service.preview_mandate(body)
+    assert len(calls) == 3
+    assert calls[0] != calls[1] != calls[2]
+    assert result["risk_decision"]["selected_max_level"] == 1
+    assert result["risk_decision"]["status"] == "recommendation_validated"
+
+
 @pytest.mark.parametrize("second_result", [
     {"status": "validation_failed", "minimum_tested_feasible_level": None},
     {"status": "validated", "minimum_tested_feasible_level": 2},
