@@ -214,24 +214,44 @@ class StrategicAllocationService:
                     level = reference["minimum_tested_feasible_level"]
                     if level is not None:
                         cap = risk_decision["applied_boundaries"][level - 1]
-                        risk_decision.update(selected_max_level=level, selected_volatility_cap=cap,
-                                             selection_pending=False, status="recommendation_validated")
-                        definition["risk_authorization"]["selected_max_level"] = level
-                        definition["max_volatility"] = cap
-                        if requested_benchmark is None:
+                        proposed_definition = copy.deepcopy(definition)
+                        proposed_decision = copy.deepcopy(risk_decision)
+                        proposed_decision.update(selected_max_level=level, selected_volatility_cap=cap,
+                                                 selection_pending=False)
+                        proposed_definition["risk_authorization"]["selected_max_level"] = level
+                        proposed_definition["max_volatility"] = cap
+                        automatic_relative_benchmark = (requested_benchmark is None
+                                                        and definition.get("objective_kind") == "benchmark_relative")
+                        if automatic_relative_benchmark:
                             version = self.risk_scales.get_version(risk_decision["risk_scale_ref"]["id"])
-                            definition["benchmark"] = None
-                            _freeze_reference_benchmark(definition, version, level)
-                            reference = diagnose_reference(self, request, definition, risk_decision)
+                            proposed_definition["benchmark"] = None
+                            _freeze_reference_benchmark(proposed_definition, version, level)
+                            reference = diagnose_reference(self, request, proposed_definition, proposed_decision)
                             payload["reference_diagnosis"] = reference
                             risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
-                if reference["status"] == "validated":
+                            if (reference["status"] != "validated"
+                                    or reference["minimum_tested_feasible_level"] != level):
+                                payload["status"] = "needs_revision"
+                                payload["blockers"].append("冻结参考基准后的推荐等级未稳定通过复核，请重新诊断。")
+                                definition["max_volatility"] = None
+                            else:
+                                definition.clear()
+                                definition.update(proposed_definition)
+                                risk_decision.clear()
+                                risk_decision.update(proposed_decision)
+                                risk_decision["status"] = "recommendation_validated"
+                        else:
+                            definition.clear()
+                            definition.update(proposed_definition)
+                            risk_decision.clear()
+                            risk_decision.update(proposed_decision)
+                            risk_decision["status"] = "recommendation_validated"
+                if reference["status"] == "validated" and risk_decision["status"] == "recommendation_validated":
                     payload["status"] = "diagnosed"
                     payload["diagnosis_scope"] = "universal_reference"
-                    if not risk_decision["selection_pending"]:
-                        risk_decision["status"] = "recommendation_validated"
-                else:
-                    payload["status"] = "needs_revision"
+                elif not payload["blockers"] and not risk_decision["selection_pending"]:
+                    payload["status"] = "diagnosed"
+                    payload["diagnosis_scope"] = "universal_reference"
             elif reference["status"] in {"validation_failed", "no_validated_candidate_in_search", "constraint_conflict", "solver_failed"}:
                 payload["status"] = "needs_revision"
         if request.cma_id and definition.get("max_volatility") is not None:

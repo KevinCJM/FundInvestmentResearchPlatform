@@ -196,6 +196,42 @@ def test_funding_suggestion_revalidates_against_refrozen_benchmark(reference, mo
     assert calls[0]["weights"] != calls[1]["weights"]
 
 
+@pytest.mark.parametrize("second_result", [
+    {"status": "validation_failed", "minimum_tested_feasible_level": None},
+    {"status": "validated", "minimum_tested_feasible_level": 2},
+])
+def test_failed_or_unstable_refrozen_benchmark_does_not_authorize(reference, monkeypatch, second_result):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    results = iter([
+        {"status": "validated", "minimum_tested_feasible_level": 1},
+        second_result,
+    ])
+    monkeypatch.setattr(service_module, "diagnose_reference", lambda *_args, **_kwargs: next(results))
+    result = service.preview_mandate(body)
+    assert result["status"] == "needs_revision"
+    assert result["definition"]["max_volatility"] is None
+    assert result["risk_decision"]["selection_pending"] is True
+    assert result["risk_decision"]["status"] == "awaiting_recommendation"
+
+
+def test_absolute_return_does_not_repeat_diagnosis_for_unused_benchmark(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="absolute_return", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    calls = []
+
+    def diagnose(*_args, **_kwargs):
+        calls.append(True)
+        return {"status": "validated", "minimum_tested_feasible_level": 1}
+
+    monkeypatch.setattr(service_module, "diagnose_reference", diagnose)
+    result = service.preview_mandate(body)
+    assert len(calls) == 1
+    assert result["risk_decision"]["status"] == "recommendation_validated"
+
+
 def test_relative_goal_uses_selected_risk_scale_representative_as_frozen_benchmark(reference):
     service, scale, _ = reference
     risk = {"mode": "manual_level", "source": "risk_scale_selection", "authorized_max_level": 3,
