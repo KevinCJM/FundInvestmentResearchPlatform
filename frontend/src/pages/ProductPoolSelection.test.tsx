@@ -86,6 +86,22 @@ describe('ProductPoolSelection', () => {
     expect(readAllocationJourney().universeId).toBeUndefined()
   })
 
+  it('目标链接进入产品流程后持久保留该目标，清除旧政策并跨快照和构建路由传递', async () => {
+    updateAllocationJourney({ mandateId: 'mandate-A', baselineId: 'policy-A', taaRunId: 'taa-A' })
+    render(<MemoryRouter initialEntries={['/pre-investment/product-pool?mandate=mandate-B']}><Routes>
+      <Route path="/pre-investment/product-pool" element={<ProductPoolSelection />} />
+      <Route path="*" element={<LocationProbe />} />
+    </Routes></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('checkbox', { name: /核心产品池/ }))
+    fireEvent.click(screen.getByRole('button', { name: '生成锁定快照' }))
+    await screen.findByText('可投资域快照已锁定')
+    fireEvent.click(screen.getByRole('button', { name: '进入手动构建大类' }))
+    expect(await screen.findByTestId('location-probe')).toHaveTextContent('/pre-investment/saa/asset-classes?universe=universe-1')
+    expect(readAllocationJourney()).toMatchObject({ mandateId: 'mandate-B', universeId: 'universe-1' })
+    expect(readAllocationJourney().baselineId).toBeUndefined()
+    expect(readAllocationJourney().taaRunId).toBeUndefined()
+  })
+
   // The hand-off used to point at a route that does not exist and at a query key
   // the target pages never read, so the locked universe was silently dropped and
   // the user landed back on the dashboard.

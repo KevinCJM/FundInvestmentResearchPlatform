@@ -5,7 +5,7 @@ import numpy as np
 
 from .condition_numba import (
     COMPARISON_OPCODES, condition_compare_kernel, condition_valid_kernel,
-    condition_logic_kernel, select_state_kernel,
+    condition_logic_kernel, select_state_kernel, continuous_state_kernel,
 )
 from .peak_trough_numba import ps_filter_pivots_kernel, peak_trough_sideways_kernel
 from .segment_numba import (
@@ -42,6 +42,10 @@ def execute_granular_node(node_type, parameters, inputs, state_count):
         states = integer("state")
         return {"probabilities": state_probabilities_kernel(states, np.int64(state_count)),
                 "confidence": state_confidence_kernel(states)}
+    if node_type == "state.continuous":
+        state, evidence, pending = continuous_state_kernel(inputs["candidate"], inputs["initial"], inputs["value"],
+            np.int64(parameters.get("confirmation", 1)), np.int64(state_count))
+        return {"state": state, "evidence": evidence, "pending_count": pending}
     if node_type == "pivot.ps_filter":
         pivots, prices = ps_filter_pivots_kernel(floating("value"), floating("pivot"),
             np.int64(parameters.get("min_phase", 4)), np.int64(parameters.get("min_cycle", 16)),

@@ -59,7 +59,7 @@ def cma_covariance_kernel(volatility, correlation):
     covariance = np.empty((count, count), dtype=np.float64)
     checked_correlation = np.empty((count, count), dtype=np.float64)
     for i in range(count):
-        if not np.isfinite(volatility[i]) or volatility[i] <= 0:
+        if not np.isfinite(volatility[i]) or volatility[i] < 0:
             raise ValueError("CMA_VOLATILITY")
         if abs(correlation[i, i] - 1) > 1e-10:
             raise ValueError("CMA_CORRELATION_DIAGONAL")

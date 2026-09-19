@@ -35,8 +35,10 @@ export function studyDraft(definition: RegimeGraphDefinition, purpose?: RegimeSt
   return purpose && !definition.id ? { ...definition, default_mode: studyMode(purpose), study: { purpose, family: definition.study?.family || 'custom' } } : definition
 }
 
-export function bindStudyReference(definition: RegimeGraphDefinition, reference?: RegimeStudy['reference']): RegimeGraphDefinition {
-  return { ...definition, default_mode: 'realtime', study: { purpose: 'realtime_recognition', family: definition.study?.family || 'custom', ...(reference ? { reference } : {}) } }
+export function bindStudyReference(definition: RegimeGraphDefinition, reference?: RegimeStudy['reference'], states?: RegimeGraphDefinition['states']): RegimeGraphDefinition {
+  // Empty new models inherit the taxonomy; existing rules keep explicit mapping.
+  const adoptStates = reference && states && !definition.id && !definition.graph.nodes.length
+  return { ...definition, ...(adoptStates ? { states: states.map(state => ({ ...state })) } : {}), default_mode: 'realtime', study: { purpose: 'realtime_recognition', family: definition.study?.family || 'custom', ...(reference ? { reference } : {}) } }
 }
 
 export function studyMappingIssue(definition: RegimeGraphDefinition, states: Array<{ id: string }>) {

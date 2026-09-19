@@ -44,6 +44,10 @@ function ProductPoolWorkspace() {
   const platformAsOf = useResearchDay()
   const requestedVersion = params.get('version') || ''
   const requestedUniverse = params.get('universe') || ''
+  const requestedMandate = params.get('mandate') || ''
+  useEffect(() => {
+    if (requestedMandate) updateAllocationJourney({ mandateId: requestedMandate })
+  }, [requestedMandate])
   const [draft, setDraft] = useAllocationDraft(`pool:${requestedUniverse ? `universe:${requestedUniverse}` : requestedVersion || 'resume'}`, { researchDate: '', name: '投前研究可投资域', selectedIds: [] as string[], snapshotId: '', selectionEdited: false })
   const researchDate = draft.researchDate || platformAsOf || journey.researchDate || today()
   const name = draft.name

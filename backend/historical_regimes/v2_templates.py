@@ -437,6 +437,41 @@ from .completion_templates import completion_templates
 TEMPLATES_V2.extend(completion_templates())
 
 
+def _smoothed_reference_templates():
+    """New research hypotheses; old templates and saved snapshots are unchanged."""
+    result = []
+    for suffix, label, operator, parameters in (
+        ("butterworth", "Butterworth 零相位", "filter.butterworth_zero_phase", {"period": 63}),
+        ("savgol", "Savitzky–Golay 居中", "filter.savitzky_golay_centered", {"window": 63, "polyorder": 3}),
+    ):
+        item = _daily_peak_template()
+        identifier = f"market-trend-smoothed-{suffix}-reference-v2"
+        item.pop("authoring_hidden", None)
+        item.update(id=identifier, version=2, name=f"平滑峰谷参考 · {label}", default_mode="retrospective",
+                    tags=["事后识别", "日频", "平滑峰谷", "可编辑计算步骤"],
+                    description="在同一条日频平滑曲线上定位峰谷并做PS筛选，再按原始价格计算区间收益。参数是研究起点，未证明优于现有参考；首尾未完成区间留空。")
+        definition = item["definition"]
+        definition.update(name=item["name"], description=item["description"], template_id=identifier,
+                          default_mode="retrospective", study={"purpose": "historical_reference", "family": "market_trend"})
+        nodes = definition["graph"]["nodes"]
+        nodes.insert(1, {"id": "smooth", "type": operator, "parameters": parameters, "inputs": {"value": _ref("market")}})
+        nodes[2]["inputs"]["value"] = _ref("smooth")
+        nodes.insert(3, {"id": "filtered", "type": "pivot.ps_filter", "parameters": {"min_phase": 20, "min_cycle": 120, "amplitude_exception": .5},
+                         "inputs": {"value": _ref("smooth"), "pivot": _ref("pivots", "pivot")}})
+        nodes[4]["inputs"]["pivot"] = _ref("filtered", "pivot")
+        for node in nodes:
+            if node["id"] in {"upper", "lower"}:
+                node["parameters"]["value"] = .15 if node["id"] == "upper" else -.15
+        definition["graph"]["outputs"].update(raw=_ref("market"), smooth=_ref("smooth"))
+        definition["graph"]["channel_metadata"] = {"raw": {"label": "原始指数"}, "smooth": {"label": "事后平滑趋势"}}
+        definition["graph"]["exposed_node_ids"] = [n["id"] for n in nodes]
+        result.append(item)
+    return result
+
+
+TEMPLATES_V2.extend(_smoothed_reference_templates())
+
+
 def _versioned_template(item: dict[str, Any]) -> dict[str, Any]:
     from .v2_registry import NODE_REGISTRY
     result = copy.deepcopy(item)

@@ -9,6 +9,7 @@ import copy
 from datetime import date
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -20,12 +21,14 @@ from backend.sensitivity.repository import ArtifactRepository, digest_json
 from backend.tactical_allocation.contracts import AssetLimit
 from backend.tactical_allocation.data import TacticalAllocationData, warm_tactical_data
 from backend.tactical_allocation.repository import TacticalAllocationRepository
-from . import kernels, goal_kernels, institution_kernels, cma_model_kernels
+from . import kernels, goal_kernels, institution_kernels, cma_model_kernels, mandate_kernels
+from .mandate_diagnosis import diagnose_reference, validate_fixed_candidate
 from .cma_application import apply_model, frozen_assumptions, frozen_model_lineage, frozen_numeric_inputs
 from .institution import diagnose_institution, review_blockers
 from .sources import product_source, strategic_source
 from .universes import StrategicScopes
 from .planning import funding_inputs, diagnose_funding, require_goal_checks, LIMITATIONS
+from .mandate_inputs import cash_success_required, has_cash_budget, resolve_authorization, require_resolved_authorization, effective_cash_floor, effective_return_floor
 from .contracts import (
     CmaRequest, PolicyRequest, PublishCmaRequest,
     PublishPolicyRequest, RiskReferenceRequest, MandateStudyRequest, ConfirmMandateRequest,
@@ -48,6 +51,12 @@ def _finite_list(values: np.ndarray) -> list:
     return [float(value) if np.isfinite(value) else None for value in values]
 
 
+def _policy_expiry(mandate: dict) -> str:
+    """Operational consumers need one date even when the user leaves review optional."""
+    dates = [value for value in (mandate.get("review_date"), mandate.get("risk_reference_valid_until")) if value]
+    return min(dates) if dates else "9999-12-31"
+
+
 class StrategicAllocationService:
     def __init__(self, root: Path, data_dir: Path, *, universe_dir: Path | None = None,
                  tactical_repository: TacticalAllocationRepository | None = None):
@@ -55,17 +64,27 @@ class StrategicAllocationService:
         self.data = TacticalAllocationData(data_dir, universe_dir=universe_dir)
         self.baselines = tactical_repository or TacticalAllocationRepository(root)
         self.scopes = StrategicScopes(self.artifacts, self.data)
+        from .risk_scale_service import RiskScaleService
+        from .risk_scale_store import RiskScaleStore
+        from .reference_inputs import ReferenceInputs
+        from .reference_sources import ReferenceSources
+        self.risk_scales = RiskScaleService(
+            self.artifacts, RiskScaleStore(self.artifacts.root.parent),
+            ReferenceInputs(self.artifacts, ReferenceSources(data_dir)))
 
     def warm(self) -> dict:
         warm_tactical_data()
         institution_kernels.warm()
         cma_model_kernels.warm()
+        self.risk_scales.warm()
         audit = kernels.warm_strategic_kernels()
+        mandate_kernels.warm()
         institution = institution_kernels.execution_audit()
         models = cma_model_kernels.execution_audit()
         if not audit["complete"] or not institution["complete"] or not models["complete"]:
             raise RuntimeError("战略配置及机构诊断启动预热未完成。")
-        return {**audit, "institution": institution, "cma_models": models}
+        return {**audit, "institution": institution, "cma_models": models,
+                "mandate_reference": mandate_kernels.execution_audit()}
 
     def _get(self, identifier: str, artifact_type: str) -> dict:
         item = self.artifacts.get(identifier, "series")
@@ -79,12 +98,55 @@ class StrategicAllocationService:
     def get_cma(self, identifier: str) -> dict:
         return self._get(identifier, "capital_market_assumptions")
 
+    def _retired_mandate_ids(self) -> set[str]:
+        retired = set()
+        for summary in self.artifacts.list("retirement"):
+            item = self.artifacts.get(summary["id"], "retirement")
+            if item.get("artifact_type") == "investment_mandate_retirement" and item.get("mandate_id"):
+                retired.add(item["mandate_id"])
+        return retired
+
+    def _active_mandate_ids(self) -> set[str]:
+        items = [self.artifacts.get(summary["id"], "series") for summary in self.artifacts.list("series")]
+        mandates = [item for item in items if item.get("artifact_type") == "investment_mandate"]
+        superseded = {item["supersedes_mandate_id"] for item in mandates if item.get("supersedes_mandate_id")}
+        return {item["id"] for item in mandates} - superseded - self._retired_mandate_ids()
+
+    def _require_active_mandate(self, identifier: str) -> dict:
+        mandate = self.get_mandate(identifier)
+        if identifier not in self._active_mandate_ids():
+            raise ConflictError("MANDATE_INACTIVE", "投资目标已删除或被新版本替代，不能建立新政策；请刷新并选择当前版本。")
+        return mandate
+
+    def retire_mandate(self, identifier: str) -> dict:
+        mandate = self.get_mandate(identifier)
+        # Serialize lifecycle changes so concurrent edit/delete requests cannot
+        # produce two active replacements or duplicate retirement records.
+        with self.artifacts.governance_lock.locked():
+            if identifier in self._retired_mandate_ids():
+                return {"deleted": True, "id": identifier}
+            if identifier not in self._active_mandate_ids():
+                raise ConflictError("MANDATE_ALREADY_REPLACED", "该投资目标已被新版本替代，请刷新列表后操作当前版本。")
+            self.artifacts.save("retirement", {
+                "artifact_type": "investment_mandate_retirement",
+                "name": mandate["name"],
+                "mandate_id": identifier,
+                "mandate_hash": mandate["content_hash"],
+                "research_only": True,
+            })
+        return {"deleted": True, "id": identifier}
+
     def catalog(self) -> dict:
         mandates, assumptions, universes, mappings = [], [], [], []
-        for summary in self.artifacts.list("series"):
-            item = self.artifacts.get(summary["id"], "series")
+        series = [self.artifacts.get(summary["id"], "series") for summary in self.artifacts.list("series")]
+        superseded = {item["supersedes_mandate_id"] for item in series
+                      if item.get("artifact_type") == "investment_mandate" and item.get("supersedes_mandate_id")}
+        retired = self._retired_mandate_ids()
+        for item in series:
             common = {key: item[key] for key in ("id", "name", "created_at", "content_hash")}
             if item.get("artifact_type") == "investment_mandate":
+                if item["id"] in superseded or item["id"] in retired:
+                    continue
                 mandates.append({**common, "definition": item["definition"],
                     "assessment_status": item.get("assessment", {}).get("status", "inputs_only")})
             elif item.get("artifact_type") == "capital_market_assumptions":
@@ -102,26 +164,62 @@ class StrategicAllocationService:
         return {**self.data.catalog(), "mandates": mandates, "assumptions": assumptions, "policies": policies,
                 "strategic_universes": universes, "implementation_maps": mappings}
 
+    def mandate_funding(self, request: MandateStudyRequest) -> dict:
+        """填写页的现金流确定性回显：只跑资金算术，不碰CMA、不跑模拟、不解参考组合。"""
+        goal_kernels.require_ready()
+        definition = request.definition.model_dump(mode="json")
+        prepared = funding_inputs(definition)
+        required = prepared[0]["cashflow_required_return"] if prepared else None
+        return {"funding": prepared[0] if prepared else None,
+                "effective_target_return": effective_return_floor(definition, required),
+                "execution": goal_kernels.execution_audit()}
+
     def preview_mandate(self, request: MandateStudyRequest) -> dict:
         kernels.require_ready()
         goal_kernels.require_ready()
-        definition = request.definition.model_dump(mode="json")
+        definition, risk_decision = resolve_authorization(request.definition.model_dump(mode="json"), self.risk_scales)
         if definition.get("strategic_universe_id"):
             universe = self.scopes.get_universe(definition["strategic_universe_id"])
             if universe["definition"]["currency"] != definition["currency"] or universe["definition"]["as_of"] > definition["as_of"]:
                 raise ValidationError("MANDATE_UNIVERSE_BASIS", "目标须与战略范围采用同本位币及适用研究日。")
         prepared = funding_inputs(definition)
+        if definition.get("schema_version", "1.0") == "2.0":
+            definition["effective_cash_reserve_weight"] = effective_cash_floor(
+                definition, prepared[0]["required_liquid_weight"] if prepared else 0.)
+            definition["effective_target_return"] = effective_return_floor(
+                definition, prepared[0]["cashflow_required_return"] if prepared else None)
+            if risk_decision.get("reference_valid_until"):
+                definition["risk_reference_valid_until"] = risk_decision["reference_valid_until"]
         payload = {"request": request.model_dump(mode="json"), "definition": definition,
             "funding": prepared[0] if prepared else None, "candidates": [], "cma": None,
             "status": "inputs_only", "blockers": [], "warnings": list(LIMITATIONS),
             "execution": goal_kernels.execution_audit(),
             "confirmation_type": "research_inputs_not_external_approval"}
+        if risk_decision is not None:
+            payload["risk_decision"] = risk_decision
         if definition.get("institutional_context") is not None:
             payload["institutional_diagnostics"] = diagnose_institution(definition)
         if prepared and prepared[0]["required_liquid_weight"] > 1:
             payload["blockers"].append("流动性窗口内的压力净支出超过可投资本金；先调整资金或支付计划。")
             payload["status"] = "needs_revision"
-        if request.cma_id:
+        if risk_decision and risk_decision.get("risk_scale_ref"):
+            reference = diagnose_reference(self, request, definition, risk_decision)
+            payload["reference_diagnosis"] = reference
+            risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
+            if reference["status"] == "validated":
+                payload["status"] = "diagnosed"
+                payload["diagnosis_scope"] = "universal_reference"
+                if risk_decision["selection_pending"]:
+                    level = reference["minimum_tested_feasible_level"]
+                    if level is not None:
+                        cap = risk_decision["applied_boundaries"][level - 1]
+                        risk_decision.update(selected_max_level=level, selected_volatility_cap=cap,
+                                             selection_pending=False, status="recommendation_validated")
+                        definition["risk_authorization"]["selected_max_level"] = level
+                        definition["max_volatility"] = cap
+            elif reference["status"] in {"validation_failed", "no_validated_candidate_in_search", "constraint_conflict", "solver_failed"}:
+                payload["status"] = "needs_revision"
+        if request.cma_id and definition.get("max_volatility") is not None:
             cma = self.get_cma(request.cma_id)
             assumed = cma["definition"]
             if (assumed["currency"] != definition["currency"] or assumed["horizon_years"] != definition["horizon_years"]
@@ -142,24 +240,37 @@ class StrategicAllocationService:
             else:
                 require_goal_checks(definition, calculation["candidates"])
                 payload.update(calculation)
-                passing = any(item["goal_check"]["within_limits"] if definition.get("funding_plan") else True
+                payload["diagnosis_scope"] = "actual_cma"
+                passing = any(item["goal_check"]["within_limits"] if cash_success_required(definition) else True
                               for item in calculation["candidates"])
                 payload["status"] = "diagnosed" if passing else "needs_revision"
                 if not passing:
                     payload["blockers"].append("当前代表组合均未达到目标成功概率门槛；不代表所有可能组合数学上都无解。")
+        if risk_decision and risk_decision["selection_pending"]:
+            definition["max_volatility"] = None
         return _hashed(payload)
 
     def confirm_mandate(self, body: ConfirmMandateRequest) -> dict:
-        if len(body.request.definition.boundary_reason) < 5:
-            raise ValidationError("MANDATE_BOUNDARY_REASON", "请说明风险和流动性边界的依据，至少5个字符。")
+        if body.request.definition.schema_version == "1.0" and len(body.request.definition.boundary_reason) < 5:
+            raise ValidationError("MANDATE_BOUNDARY_REASON", "旧版目标须说明风险和流动性边界的依据，至少5个字符。")
+        if body.replaces_mandate_id is not None:
+            self.get_mandate(body.replaces_mandate_id)
         preview = self.preview_mandate(body.request)
         if preview["preview_hash"] != body.preview_hash:
             raise ConflictError("MANDATE_PREVIEW_CHANGED", "目标、模型或CMA已变化，请重新诊断后确认。")
-        return self.artifacts.save("series", {"artifact_type": "investment_mandate",
+        fields = {"artifact_type": "investment_mandate",
             "name": body.request.definition.name, "definition": preview["definition"],
-            "assessment": preview, "planning_settings": {"simulation_paths": body.request.simulation_paths,
-                "seed": body.request.seed, "uncertainty_penalty": body.request.uncertainty_penalty},
-            "research_only": True})
+            "assessment": preview, "supersedes_mandate_id": body.replaces_mandate_id,
+            "planning_settings": {"simulation_paths": body.request.simulation_paths,
+                "seed": body.request.seed, "validation_seed": body.request.validation_seed,
+                "uncertainty_penalty": body.request.uncertainty_penalty},
+            "research_only": True}
+        if body.replaces_mandate_id is None:
+            return self.artifacts.save("series", fields)
+        with self.artifacts.governance_lock.locked():
+            if body.replaces_mandate_id not in self._active_mandate_ids():
+                raise ConflictError("MANDATE_ALREADY_REPLACED", "原投资目标已被修改或删除，请刷新列表后重新选择。")
+            return self.artifacts.save("series", fields)
 
     def _source(self, alloc_name: str | None, as_of: str, *, strategic_universe_id: str | None = None,
                 implementation_mapping_id: str | None = None) -> dict:
@@ -285,6 +396,7 @@ class StrategicAllocationService:
 
     @staticmethod
     def _constraints(request: PolicyRequest, definition: dict, mandate: dict) -> tuple[list, dict]:
+        require_resolved_authorization(mandate)
         names = [asset["id"] for asset in definition["assets"]]
         if set(request.constraints) - set(names):
             raise ValidationError("SAA_CONSTRAINT_AXIS", "约束包含不属于当前假设的资产。")
@@ -324,9 +436,10 @@ class StrategicAllocationService:
         illiquid = [a["id"] for a in definition["assets"] if a["liquidity"] == "illiquid"]
         liquidity_floor = mandate["min_liquid_weight"]
         funding = funding_inputs(mandate)
-        if funding:
-            liquidity_floor = max(liquidity_floor, funding[0]["required_liquid_weight"])
-        if liquidity_floor > 1:
+        funding_floor = funding[0]["required_liquid_weight"] if funding else 0.
+        if mandate.get("schema_version", "1.0") == "1.0":
+            liquidity_floor = max(liquidity_floor, funding_floor)
+        if max(liquidity_floor, funding_floor) > 1:
             raise ValidationError("MANDATE_LIQUIDITY_CONFLICT", "现金流要求的流动性储备超过可投资本金。")
         if liquidity_floor > 0 and not liquid:
             raise ValidationError("SAA_LIQUID_ASSETS_MISSING", "目标要求流动性储备，但没有标明可提供流动性的资产类别。")
@@ -334,7 +447,7 @@ class StrategicAllocationService:
             groups.append({"id": "policy-liquid-reserve", "assets": liquid, "lo": liquidity_floor, "hi": 1.0})
         if illiquid:
             groups.append({"id": "policy-illiquid-cap", "assets": illiquid, "lo": 0.0, "hi": mandate["max_illiquid_weight"]})
-        cash_floor = (mandate.get("institutional_context") or {}).get("cash_reserve_weight", 0)
+        cash_floor = effective_cash_floor(mandate, funding_floor)
         if cash_floor > 0:
             cash = [a["id"] for a in definition["assets"] if a["role"] == "liquidity" and a["liquidity"] == "liquid"]
             if not cash:
@@ -355,10 +468,13 @@ class StrategicAllocationService:
         benchmark = mandate.get("benchmark")
         benchmark_weights = np.empty(0, dtype=np.float64)
         if benchmark:
-            if benchmark["alloc_name"] != definition["alloc_name"] or set(benchmark["weights"]) != set(names):
-                raise ValidationError("MANDATE_BENCHMARK_AXIS", "基准必须使用当前CMA的大类方案及完整资产轴，不能按名称猜测。")
+            if (benchmark.get("source", "explicit") == "explicit" and benchmark["alloc_name"] != definition["alloc_name"]
+                    or set(benchmark["weights"]) != set(names)):
+                raise ValidationError("MANDATE_BENCHMARK_AXIS", "基准必须与当前CMA使用完整一致的资产轴；显式基准还须属于同一大类方案。")
             benchmark_weights = np.asarray([benchmark["weights"][name] for name in names], dtype=np.float64)
-        floor = mandate["target_return"] if mandate.get("objective_kind", "absolute_return") == "absolute_return" else -np.inf
+        floor = mandate.get("effective_target_return")
+        if floor is None:
+            floor = mandate["target_return"] if mandate.get("objective_kind", "absolute_return") == "absolute_return" else -np.inf
         if request.risk_budget is not None and set(request.risk_budget) != set(names):
             raise ValidationError("SAA_RISK_BUDGET_AXIS", "风险预算须完整覆盖当前资产轴，不能遗漏或包含未知资产。")
         risk_budget = np.asarray([request.risk_budget[name] for name in names] if request.risk_budget is not None else [], dtype=np.float64)
@@ -406,16 +522,17 @@ class StrategicAllocationService:
 
     def preview_policy(self, request: PolicyRequest) -> dict:
         kernels.require_ready()
-        mandate_artifact, cma = self.get_mandate(request.mandate_id), self.get_cma(request.cma_id)
+        mandate_artifact, cma = self._require_active_mandate(request.mandate_id), self.get_cma(request.cma_id)
         assessment = mandate_artifact.get("assessment", {})
         if not assessment.get("preview_hash") or not assessment.get("request"):
             raise ValidationError("MANDATE_CONFIRMATION_REQUIRED", "此目标缺少诊断与确认记录；请复制为新研究，诊断并确认后再建立政策。")
         mandate, definition = mandate_artifact["definition"], cma["definition"]
+        require_resolved_authorization(mandate)
         if mandate["currency"] != definition["currency"] or mandate["horizon_years"] != definition["horizon_years"]:
             raise ValidationError("SAA_MANDATE_CMA_BASIS", "投资目标与长期假设的计价币种、投资期限须一致。")
-        if not mandate["as_of"] <= definition["as_of"] < mandate["review_date"]:
+        if definition["as_of"] < mandate["as_of"] or (mandate.get("review_date") and definition["as_of"] >= mandate["review_date"]):
             raise ValidationError("SAA_MANDATE_EXPIRED", "假设日期不在目标的研究有效区间；请保存适用的新目标。")
-        if mandate.get("funding_plan") and mandate["as_of"] != definition["as_of"]:
+        if has_cash_budget(mandate) and mandate["as_of"] != definition["as_of"]:
             raise ValidationError("MANDATE_CMA_BASIS", "金额计划和CMA研究日须一致；更新时必须显式滚动现金流计划。")
         source = self._definition_source(definition)
         if any(source["lineage"].get(key) != cma["source_snapshot"]["lineage"].get(key) for key in ("config_hash", "nav_hash", "strategic_universe_hash", "implementation_mapping_hash")):
@@ -426,7 +543,14 @@ class StrategicAllocationService:
             simulation_seed=planning_settings.get("seed"))
         application_day = str(date.today())
         application_blockers = [*source["apply_reasons"], *review_blockers(mandate, application_day)]
-        if application_day >= mandate["review_date"]:
+        if mandate.get("schema_version", "1.0") == "2.0":
+            risk_ref = mandate["risk_authorization"].get("risk_scale_ref")
+            if risk_ref:
+                scale = self.risk_scales.get_version(risk_ref["id"])
+                if scale["content_hash"] != risk_ref["content_hash"]:
+                    raise ConflictError("MANDATE_RISK_SCALE_CHANGED", "目标引用标尺指纹已变化，不能用于新政策。")
+                application_blockers.extend(x["message"] for x in scale["current_eligibility"]["blockers"])
+        if mandate.get("review_date") and application_day >= mandate["review_date"]:
             application_blockers.append("政策已到复核日，历史研究可保留；请确认新政策后再用于当前产品应用。")
         mapping = source.get("implementation_mapping_snapshot")
         if mapping and not mapping["definition"]["as_of"] <= application_day < mapping["definition"]["valid_until"]:
@@ -437,7 +561,7 @@ class StrategicAllocationService:
             **calculation, "current_application_eligible": source["apply_eligible"] and not application_blockers,
             "application_blockers": application_blockers,
             "method": "finite_long_only_moment_candidates", "execution": kernels.execution_audit(),
-            "warnings": [*cma["warnings"], *([text.replace("四类代表组合", "代表组合（含显式风险预算）") for text in LIMITATIONS] if request.risk_budget is not None and mandate.get("funding_plan") else LIMITATIONS if mandate.get("funding_plan") else []),
+            "warnings": [*cma["warnings"], *([text.replace("四类代表组合", "代表组合（含显式风险预算）") for text in LIMITATIONS] if request.risk_budget is not None and cash_success_required(mandate) else LIMITATIONS if cash_success_required(mandate) else []),
                          "历史研究可以保存；当前应用需另行核对政策是否到期。",
                          "有限候选比较不保证全局最优；预期收益不是历史业绩或收益承诺。",
                          "政策再平衡约定不自动执行；TAA 按所选决策、执行频率及费用口径独立验证。"]})
@@ -450,8 +574,24 @@ class StrategicAllocationService:
         if candidate is None or candidate.get("available") is False:
             raise ValidationError("SAA_CANDIDATE_UNAVAILABLE", "所选候选不存在或风险贡献未定义，请选择可用候选。")
         require_goal_checks(preview["mandate"], [item for item in preview["candidates"] if item.get("available") is not False])
-        if preview["mandate"].get("funding_plan") and not candidate["goal_check"]["within_limits"]:
+        if cash_success_required(preview["mandate"]) and not candidate["goal_check"]["within_limits"]:
             raise ValidationError("MANDATE_GOAL_NOT_MET", "所选组合的模拟成功概率区间下界未达到目标门槛，请调整目标或资金后重新研究。")
+        funding_validation = None
+        if preview["mandate"].get("schema_version", "1.0") == "2.0" and cash_success_required(preview["mandate"]):
+            saved = self.get_mandate(preview["mandate_id"])
+            settings = saved["planning_settings"]
+            # Separate stream from both the mandate recommendation and SAA exploration.
+            verification = SimpleNamespace(simulation_paths=settings["simulation_paths"],
+                validation_seed=int(settings["validation_seed"]) ^ 0x9E3779B9)
+            if verification.validation_seed == int(settings["seed"]):
+                raise ValidationError("MANDATE_VALIDATION_SEED_COLLISION", "冻结目标的搜索与SAA验证样本重复，请重新确认使用不同随机种子的目标。")
+            funding_validation = validate_fixed_candidate(
+                np.asarray([candidate["metrics"][key] for key in METRICS], dtype=np.float64),
+                preview["mandate"], funding_inputs(preview["mandate"]), verification,
+                {"method_code": 0, "periods_per_year": 1})
+            funding_validation["distribution"] = "annual_moment_proxy_approximation"
+            if not funding_validation["within_limits"]:
+                raise ValidationError("MANDATE_INDEPENDENT_VALIDATION_FAILED", "所选SAA未通过独立资金验证，未采纳政策；请复核目标和模型。")
         baseline = copy.deepcopy(preview["source_snapshot"])
         baseline["name"] = body.name
         baseline["group_limits"] = preview["group_limits"]
@@ -462,9 +602,13 @@ class StrategicAllocationService:
             "mandate_hash": preview["mandate_hash"], "cma_id": preview["cma_id"], "cma_hash": preview["cma_hash"],
             "mandate": preview["mandate"], "assumptions": preview["assumptions"], "covariance": preview["covariance"],
             **{key: preview[key] for key in ("raw_assumptions", "model_result", "effective_returns", "effective_covariance") if key in preview},
-            "expires_on": preview["mandate"]["review_date"], "selection": candidate,
+            "expires_on": _policy_expiry(preview["mandate"]), "selection": candidate,
             "selection_request": preview["request"], "selection_preview_hash": preview["preview_hash"],
             "funding_model": preview.get("funding_model"), "funding_execution": preview.get("funding_execution"),
+            **({"funding_validation": funding_validation} if funding_validation is not None else {}),
             "reason": body.reason, "confirmation_type": "researcher_policy_adoption", "independent_approval": False,
             "execution": preview["execution"]}
-        return self.baselines.save_baseline(baseline)
+        # Share the lifecycle lock: retirement/replacement cannot race this final write.
+        with self.artifacts.governance_lock.locked():
+            self._require_active_mandate(preview["mandate_id"])
+            return self.baselines.save_baseline(baseline)

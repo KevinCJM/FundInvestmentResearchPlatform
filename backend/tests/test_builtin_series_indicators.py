@@ -1,8 +1,6 @@
-"""v3 built-ins use whole-interval scopes without rewriting historical contracts."""
+"""Built-in series indicators: one definition each, rolling width adjustable."""
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import Counter
 
 import numpy as np
@@ -14,30 +12,28 @@ from cal_indicators.typed_types import ValueType
 from custom_indicators.service import _built_in_indicators
 from custom_indicators.variable_registry import variable_types
 
-HISTORY_HASHES = {
-    "builtin-close-moving-average-series@1": "d85f59012a41e293eac39ea066f45c98ac2bca7e35085818b8ecc2d59c1d1b7d",
-    "builtin-bollinger-bands-series@1": "78b90255a996e439f2b3d44c31f108d5a74fd79aa5530d0e1df6805ade894560",
-    "builtin-volume-moving-average-series@1": "426f2dd4e3aa05d2f47307f2926dbd8748ec97458410889db4ceb8fb866c8db7",
-    "builtin-kdj-series@1": "9074b1d20365deebf17c0634bb3dbf862c13a3047a3b5621f989fc9882e51fd2",
-    "builtin-rolling-5d-annualized-sharpe-series@1": "19893dae397dda80564ca985b856ca5d58a38f846f3a708d39530e6678f532ea",
-    "builtin-close-moving-average-series@2": "a4627054db8586dadf94e34006656a2bd289e327d1f85ef08fbfe8270b8bfe4b",
-    "builtin-bollinger-bands-series@2": "bd6a8bedcc5ed3fc067cc1afee66bbf4f8907c63f532cc92d986b4376accba3b",
-    "builtin-volume-moving-average-series@2": "e85437227b4efebdb05c9ea2787274f5b35eb1ace5657542c7d1592d741256af",
-    "builtin-kdj-series@2": "1430637494c34104142af9b250406423d847886a57229bf57e291b9fac71f23d",
-    "builtin-rolling-5d-annualized-sharpe-series@2": "0b2b87997114b9f41ec6b6c0cbab7fb39eda22fdb69762d02fde307ee984ea03",
+DEFAULT_WINDOWS = {
+    'builtin-close-moving-average-series': 20,
+    'builtin-bollinger-bands-series': 20,
+    'builtin-volume-moving-average-series': 10,
+    'builtin-kdj-series': 9,
+    'builtin-rolling-5d-annualized-sharpe-series': 5,
 }
-IDS = sorted({key.split('@')[0] for key in HISTORY_HASHES})
+IDS = sorted(DEFAULT_WINDOWS)
 
 
 @pytest.fixture(scope="module")
 def definitions():
-    return {(item['id'], item['revision']): item for item in _built_in_indicators()
+    return {item['id']: item for item in _built_in_indicators()
             if item.get('result_kind') == 'time_series'}
 
 
 def compile_definition(definition):
+    parameters = {str(item['id']): ValueType.scalar(semantic_dimension='count')
+                  for item in definition['parameter_schema']}
     plan = compose_typed_series_bundle({item['id']: item['expression'] for item in definition['series_outputs']},
-        variable_types=variable_types('single_product', definition['dsl_version']),
+        variable_types={**variable_types('single_product', definition['dsl_version']), **parameters},
+        parameter_names=frozenset(parameters),
         dsl_version=definition['dsl_version'], operator_registry_version=definition['operator_registry_version'])
     return plan, compile_numba_series_plan(plan)
 
@@ -68,59 +64,33 @@ def inputs(size=80, missing=False):
     return data
 
 
-def compute(compiled, context):
+def compute(compiled, context, window=None):
+    """Run one plan; ``window`` overrides whatever width the context carries."""
+
+    if window is not None:
+        context = {**context, 'window': float(window)}
     return compiled.compute(tuple(context[name] for name in compiled.context_names))
 
 
-def test_all_ten_historical_definition_hashes_are_unchanged(definitions):
-    for key, expected in HISTORY_HASHES.items():
-        name, revision = key.split('@')
-        value = {k: v for k, v in definitions[name, int(revision)].items() if k not in {'created_at', 'updated_at'}}
-        digest = hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                                          separators=(',', ':'), default=str).encode()).hexdigest()
-        assert digest == expected, key
+def reference_window(values, window, reduce):
+    """A window yields a value only when all of its observations are finite."""
+
+    output = np.full(len(values), np.nan)
+    for index in range(window - 1, len(values)):
+        chunk = values[index - window + 1:index + 1]
+        if np.all(np.isfinite(chunk)):
+            output[index] = reduce(chunk)
+    return output
 
 
-@pytest.mark.parametrize('indicator_id', IDS)
-def test_current_definition_and_executable_plan_use_generic_scope(definitions, indicator_id):
-    definition = definitions[indicator_id, 3]
-    plan, compiled = compile_definition(definition)
-    operations = {node.operator_id for node in plan.nodes}
-    assert 'rolling_apply' in operations
-    assert not operations.intersection({'rolling_window', 'rolling_mean', 'rolling_std', 'rolling_min', 'rolling_max'})
-    assert definition['parameter_schema'] == []
-    previous = definitions[indicator_id, 2]
-    assert [(x['id'], x['label'], x['precision'], x['display_format']) for x in definition['series_outputs']] == [
-        (x['id'], x['label'], x['precision'], x['display_format']) for x in previous['series_outputs']]
-    delegates = [value for value in compiled.dispatcher.py_func.__globals__.values() if hasattr(value, 'interval_source')]
-    assert delegates
-    assert all('interval_body(' in kernel.rolling_source and not kernel._can_compile for kernel in delegates)
-    if 'sharpe' in indicator_id:
-        assert definition['rolling_source']['transform_version'] == '3.0.0'
-        assert definition['rolling_source']['definition_hash'] == previous['rolling_source']['definition_hash']
-
-
-@pytest.mark.parametrize('indicator_id', IDS)
-@pytest.mark.parametrize('missing', [False, True])
-def test_v2_v3_every_channel_matches_including_null_positions(definitions, indicator_id, missing):
-    context = inputs(missing=missing)
-    _, previous = compile_definition(definitions[indicator_id, 2])
-    _, current = compile_definition(definitions[indicator_id, 3])
-    before = {key: value.copy() for key, value in context.items() if isinstance(value, np.ndarray)}
-    for old, new in zip(compute(previous, context), compute(current, context)):
-        np.testing.assert_array_equal(np.isnan(old), np.isnan(new))
-        np.testing.assert_allclose(new, old, rtol=1e-8, atol=1e-9, equal_nan=True)
-    for key, value in before.items():
-        np.testing.assert_array_equal(context[key], value)
-
-
-def reference_kdj(context):
-    low, high, close = (context[key] for key in ('market_low', 'market_high', 'market_close'))
+def reference_kdj(context, window):
+    low, high, close = (context[key] for key in ('adjusted_low', 'adjusted_high', 'adjusted_close'))
     k = np.full(len(close), np.nan)
     d = np.full(len(close), np.nan)
     k_state = d_state = 50.
     for index in range(len(close)):
-        low_window, high_window = low[max(0, index - 8):index + 1], high[max(0, index - 8):index + 1]
+        start = max(0, index - window + 1)
+        low_window, high_window = low[start:index + 1], high[start:index + 1]
         lows, highs = low_window[np.isfinite(low_window)], high_window[np.isfinite(high_window)]
         if not lows.size or not highs.size or not np.isfinite(close[index]):
             continue
@@ -132,17 +102,73 @@ def reference_kdj(context):
     return k, d, 3 * k - 2 * d
 
 
+def reference_channels(indicator_id, context, window):
+    """Independent NumPy answers for every channel of one built-in."""
+
+    if indicator_id == 'builtin-close-moving-average-series':
+        return [reference_window(context['adjusted_close'], window, np.mean)]
+    if indicator_id == 'builtin-volume-moving-average-series':
+        return [reference_window(context['volume'], window, np.mean)]
+    if indicator_id == 'builtin-bollinger-bands-series':
+        middle = reference_window(context['adjusted_close'], window, np.mean)
+        deviation = reference_window(context['adjusted_close'], window, lambda chunk: np.std(chunk, ddof=0))
+        return [middle + 2 * deviation, middle, middle - 2 * deviation]
+    if indicator_id == 'builtin-kdj-series':
+        return list(reference_kdj(context, window))
+    annualization = np.sqrt(context['periods_per_year'])
+    excess = context['risk_free_rate_per_observation']
+    return [reference_window(context['returns'], window,
+                             lambda chunk: (chunk.mean() - excess) / np.std(chunk, ddof=1) * annualization)]
+
+
+@pytest.mark.parametrize('indicator_id', IDS)
+def test_catalog_carries_one_revision_that_opens_only_its_rolling_width(definitions, indicator_id):
+    definition = definitions[indicator_id]
+    assert definition['revision'] == 1
+    assert definition['source'] == 'built_in' and definition['read_only']
+    assert definition['name'].startswith('N 日')
+    assert definition['parameter_contract_version'] == '1.0'
+    assert [(item['id'], item['type'], item['default'], item['minimum'], item['maximum'], item['step'])
+            for item in definition['parameter_schema']] == [
+        ('window', 'integer', DEFAULT_WINDOWS[indicator_id], 2, 1000, 1)]
+    plan, compiled = compile_definition(definition)
+    operations = {node.operator_id for node in plan.nodes}
+    assert 'rolling_apply' in operations
+    assert not operations.intersection({'rolling_window', 'rolling_mean', 'rolling_std', 'rolling_min', 'rolling_max'})
+    for channel in definition['series_outputs']:
+        assert 'window' in channel['expression']
+    delegates = [value for value in compiled.dispatcher.py_func.__globals__.values() if hasattr(value, 'interval_source')]
+    assert delegates
+    assert all('interval_body(' in kernel.rolling_source and not kernel._can_compile for kernel in delegates)
+
+
+@pytest.mark.parametrize('indicator_id', IDS)
+@pytest.mark.parametrize('missing', [False, True])
+def test_every_channel_matches_an_independent_reference_at_several_widths(definitions, indicator_id, missing):
+    context = inputs(missing=missing)
+    _, compiled = compile_definition(definitions[indicator_id])
+    before = {key: value.copy() for key, value in context.items() if isinstance(value, np.ndarray)}
+    for window in (2, DEFAULT_WINDOWS[indicator_id], 25):
+        actual = compute(compiled, context, window)
+        expected = reference_channels(indicator_id, context, window)
+        for left, right in zip(actual, expected):
+            np.testing.assert_array_equal(np.isnan(left), np.isnan(right))
+            np.testing.assert_allclose(left, right, rtol=1e-10, atol=1e-10, equal_nan=True)
+    for key, value in before.items():
+        np.testing.assert_array_equal(context[key], value)
+
+
 @pytest.mark.parametrize('case', ['normal', 'missing', 'flat', 'zero', 'unbounded_j', 'short'])
 def test_kdj_short_windows_missing_and_recursive_state_match_independent_reference(definitions, case):
     context = inputs(size=7 if case == 'short' else 80, missing=case == 'missing')
     if case in {'flat', 'zero'}:
-        for key in ('market_close', 'market_high', 'market_low'):
+        for key in ('adjusted_close', 'adjusted_high', 'adjusted_low'):
             context[key][:] = 100. if case == 'flat' else 0.
     if case == 'unbounded_j':
-        context['market_close'][30:40] *= 10
-    _, compiled = compile_definition(definitions['builtin-kdj-series', 3])
-    actual = compute(compiled, context)
-    for left, right in zip(actual, reference_kdj(context)):
+        context['adjusted_close'][30:40] *= 10
+    _, compiled = compile_definition(definitions['builtin-kdj-series'])
+    actual = compute(compiled, context, 9)
+    for left, right in zip(actual, reference_kdj(context, 9)):
         np.testing.assert_allclose(left, right, rtol=1e-12, atol=1e-12, equal_nan=True)
     assert np.isfinite(actual[0][0])
     if case == 'unbounded_j':
@@ -153,7 +179,7 @@ def test_kdj_short_windows_missing_and_recursive_state_match_independent_referen
     ('builtin-bollinger-bands-series', 2, 0), ('builtin-kdj-series', 2, 2),
 ])
 def test_multi_channel_shared_subgraphs_are_not_repeated(definitions, indicator_id, scopes, smoothing):
-    plan, compiled = compile_definition(definitions[indicator_id, 3])
+    plan, compiled = compile_definition(definitions[indicator_id])
     counts = Counter(node.operator_id for node in plan.nodes)
     assert counts['rolling_apply'] == scopes
     assert counts['recursive_smooth'] == smoothing
@@ -172,13 +198,14 @@ def test_partial_window_minimum_and_mask_are_general_not_kdj_specific():
     context.update(width=3., minimum=1., market_close=np.array([1., np.nan, 3., np.inf, 5., 0., 7., 8.]))
     signatures = tuple(compiled.dispatcher.signatures)
     expected = [1., 1., 2., 3., 4., 2.5, 4., 5.]
-    np.testing.assert_allclose(compute(compiled, context)[0], expected)
+    np.testing.assert_allclose(compiled.compute(tuple(context[name] for name in compiled.context_names))[0], expected)
     context['minimum'] = 2.
-    np.testing.assert_allclose(compute(compiled, context)[0], [np.nan, np.nan, 2., np.nan, 4., 2.5, 4., 5.], equal_nan=True)
+    np.testing.assert_allclose(compiled.compute(tuple(context[name] for name in compiled.context_names))[0],
+                               [np.nan, np.nan, 2., np.nan, 4., 2.5, 4., 5.], equal_nan=True)
     assert signatures == tuple(compiled.dispatcher.signatures)
     context['minimum'] = 4.
     with pytest.raises(ValueError, match='MIN_PERIODS'):
-        compute(compiled, context)
+        compiled.compute(tuple(context[name] for name in compiled.context_names))
 
 
 def test_partial_minimum_cannot_exceed_window_at_parse_time():
@@ -187,56 +214,86 @@ def test_partial_minimum_cannot_exceed_window_at_parse_time():
 
 
 @pytest.fixture(scope='module')
-def migration_service(tmp_path_factory):
+def service(tmp_path_factory):
     from custom_indicators.service import CustomIndicatorService
     from test_custom_indicator_time_series import _write_market_data
     from cal_indicators.typed_numba_kernels import warm_numba_kernel_registry
-    root = tmp_path_factory.mktemp('builtin-series-migration')
+    root = tmp_path_factory.mktemp('builtin-series')
     _write_market_data(root)
     service = CustomIndicatorService(root, root)
     warm_numba_kernel_registry()
     versions = [item for item in service.indicators.list_all_versions() if item.get('result_kind') == 'time_series']
-    assert len(versions) == 19
+    assert len(versions) == len(IDS)
     for definition in versions:
         service.series_service.warm(definition)
     yield service
     service.close_compute_engine()
 
 
-def test_repository_and_actual_api_execution_use_current_but_allow_v2(migration_service, monkeypatch):
+@pytest.mark.parametrize('indicator_id', IDS)
+def test_one_warmed_plan_serves_every_width(service, indicator_id, monkeypatch):
     from custom_indicators import series_service
-    service = migration_service
-    current = [item for item in service.list_indicators()['items'] if item.get('result_kind') == 'time_series']
-    assert len(current) == 5 and {item['revision'] for item in current} == {3, 4}
+    default = DEFAULT_WINDOWS[indicator_id]
     monkeypatch.setattr(series_service, '_compile_definition', lambda *a, **kw: pytest.fail('request-time compilation'))
-    instances = [{'indicator_id': item['id'], 'indicator_revision': revision} for item in current for revision in (2, 3)]
-    # v4 changed the price basis on purpose, so only v2 vs v3 may be compared numerically.
-    response = service.evaluate_series(indicator_instances=instances, target={'kind': 'etf', 'product_id': '510300.SH'}, period='ALL')
-    assert response['summary']['ok'] == 10, response
-    assert response['execution']['python_fallback'] == 0
+    response = service.evaluate_series(
+        indicator_instances=[{'indicator_id': indicator_id},
+                             {'indicator_id': indicator_id, 'parameters': {'window': default}},
+                             {'indicator_id': indicator_id, 'parameters': {'window': default * 2}}],
+        target={'kind': 'etf', 'product_id': '510300.SH'}, period='ALL')
+    assert response['summary']['ok'] == 3, response
+    assert len(response['execution']['compiled_plan_ids']) == 1
     assert response['execution']['request_time_compilation'] == 0
-    for old, new in zip(response['results'][::2], response['results'][1::2]):
-        assert old['indicator_revision'] == 2 and new['indicator_revision'] == 3
-        for left, right in zip(old['channels'], new['channels']):
-            np.testing.assert_allclose(np.asarray(left['values'], dtype=float), np.asarray(right['values'], dtype=float),
-                                       equal_nan=True, rtol=1e-8, atol=1e-9)
+    assert response['execution']['python_fallback'] == 0
+    implicit, explicit, widened = response['results']
+    # An omitted parameter and the same value spelled out are one calculation.
+    for left, right in zip(implicit['channels'], explicit['channels']):
+        assert left['values'] == right['values']
+    # KDJ carries recursive state, so it loads full history and reports no lookback.
+    if implicit['history_policy'] == 'lookback':
+        assert implicit['lookback_observations'] == default
+        assert widened['lookback_observations'] == default * 2
+    assert any(left['values'] != right['values']
+               for left, right in zip(implicit['channels'], widened['channels']))
+
+
+def test_window_outside_the_declared_range_is_rejected(service):
+    from custom_indicators.errors import ValidationError
+    for window in (1, 1001, 20.5):
+        with pytest.raises(ValidationError):
+            service.evaluate_series(
+                indicator_instances=[{'indicator_id': 'builtin-close-moving-average-series',
+                                      'parameters': {'window': window}}],
+                target={'kind': 'etf', 'product_id': '510300.SH'}, period='ALL')
+
+
+def test_opening_a_further_input_still_produces_a_separate_user_indicator(service):
+    from custom_indicators.series_parameters import inspect_parameter_inputs, bind_parameter_input
+    builtin = service.get_indicator('builtin-kdj-series')
+    candidate = next(item for item in inspect_parameter_inputs(builtin)['candidates']
+                     if item['operator_id'] == 'recursive_smooth' and item['argument'] == 'periods')
+    opened = bind_parameter_input(builtin, candidate_id=candidate['id'])
+    opened['name'] = '自定义可调平滑 KDJ'
+    saved = service.create_indicator(opened)
+    assert len(saved['parameter_schema']) == 2
+    assert [item['id'] for item in service.get_indicator(builtin['id'])['parameter_schema']] == ['window']
 
 
 @pytest.mark.parametrize('indicator_id', IDS)
-def test_current_builtin_graph_and_native_excel_are_resolvable(migration_service, monkeypatch, indicator_id):
+def test_builtin_graph_and_native_excel_are_resolvable(service, monkeypatch, indicator_id):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from services import custom_indicator_routes
     import xml.etree.ElementTree as ET
     import zipfile
-    service = migration_service
     monkeypatch.setattr(custom_indicator_routes, 'indicator_service', service)
     app = FastAPI()
     app.include_router(custom_indicator_routes.router)
     client = TestClient(app)
     definition = service.get_indicator(indicator_id)
     context = {'result_kind': 'time_series', 'context_kind': 'single_product',
-               'dsl_version': '2.4.0', 'operator_registry_version': '2.4.0'}
+               'dsl_version': '2.4.0', 'operator_registry_version': '2.4.0',
+               'parameter_contract_version': definition['parameter_contract_version'],
+               'parameter_schema': definition['parameter_schema']}
     graph = client.post('/api/custom-indicators/graph/resolve', json={**context, 'source_kind': 'formula',
         'expressions': {item['id']: item['expression'] for item in definition['series_outputs']}}).json()
     assert graph['valid'], graph
@@ -257,41 +314,6 @@ def test_current_builtin_graph_and_native_excel_are_resolvable(migration_service
                 assert any('ISNUMBER(' in formula for formula in formulas)
     finally:
         artifact.cleanup()
-
-
-def test_new_scope_parameters_remain_author_controlled(migration_service):
-    from custom_indicators.series_parameters import inspect_parameter_inputs, bind_parameter_input
-    service = migration_service
-    builtin = service.get_indicator('builtin-close-moving-average-series')
-    assert not builtin['parameter_schema']
-    candidate = next(item for item in inspect_parameter_inputs(builtin)['candidates'] if item['operator_id'] == 'rolling_apply')
-    opened = bind_parameter_input(builtin, candidate_id=candidate['id'])
-    opened['name'] = '迁移后自定义可调均线'
-    saved = service.create_indicator(opened)
-    parameter = saved['parameter_schema'][0]['id']
-    results = service.evaluate_series(indicator_instances=[{'indicator_id': saved['id']},
-        {'indicator_id': saved['id'], 'parameters': {parameter: 10}}],
-        target={'kind': 'etf', 'product_id': '510300.SH'}, period='ALL')
-    assert results['summary']['ok'] == 2
-    assert [item['lookback_observations'] for item in results['results']] == [20, 10]
-    assert len(results['execution']['compiled_plan_ids']) == 1
-    assert service.get_indicator(builtin['id'])['parameter_schema'] == []
-
-
-@pytest.mark.parametrize('indicator_id', IDS)
-def test_explicit_v1_reference_remains_executable_after_v3_migration(migration_service, indicator_id):
-    response = migration_service.evaluate_series(
-        indicator_instances=[{'indicator_id': indicator_id, 'indicator_revision': revision} for revision in (1, 3)],
-        target={'kind': 'etf', 'product_id': '510300.SH'}, period='ALL',
-    )
-    assert response['summary']['ok'] == 2, response
-    historical, current = response['results']
-    assert historical['indicator_revision'] == 1
-    assert current['indicator_revision'] == 3
-    for old, new in zip(historical['channels'], current['channels']):
-        np.testing.assert_allclose(np.asarray(old['values'], dtype=float), np.asarray(new['values'], dtype=float),
-                                   equal_nan=True, rtol=1e-8, atol=1e-9)
-    assert response['execution']['request_time_compilation'] == 0
 
 
 def test_partial_window_is_causal_and_preserves_unknown_future():

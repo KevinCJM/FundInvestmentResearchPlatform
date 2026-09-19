@@ -87,7 +87,7 @@ function makeFetch(options?: { keepRunning?: boolean; failed?: boolean }) {
     if (path.endsWith('/templates/v2')) return ok({ items: [{ id: 'bull-bear-v2', name: '牛熊震荡计算图' }] })
     if (path.endsWith('/v2/definitions')) return ok({ items: [] })
     if (path.includes('/v2/definitions/saved-query?revision=4')) return ok({ ...templateDefinition, id: 'saved-query', revision: 4, name: '精确修订研究' })
-    if (path.endsWith('/v2/graph-assets')) return ok({ items: [] })
+    if (path.endsWith('/v2/graph-assets') || path.endsWith('/references') || path.endsWith('/reference-quality/catalog')) return ok({ items: [] })
     if (path.includes('/v2/experiments?definition_id=')) return ok({ items: [] })
     if (path.includes('/templates/bull-bear-v2/instantiate')) return ok({ definition: templateDefinition })
     if (path.endsWith('/authoring/resolve')) return ok({ valid: true, definition: JSON.parse(String(init?.body)).definition, source: '', diagnostics: [], compile_status: 'not_requested', display_latex: { state: 'S_t=1' } })
@@ -161,6 +161,13 @@ describe('HistoricalRegimeWorkbench', () => {
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
     render(<HistoricalRegimeWorkbench purpose={purpose} initialDefinition={templateDefinition} />)
+    if (purpose === 'realtime_recognition') {
+      expect(await screen.findByText(/先完成历史参考选择与状态对应/)).toBeVisible()
+      expect(screen.queryByRole('tablist', { name: '历史情景工作区' })).not.toBeInTheDocument()
+      await user.click(screen.getByText('高级：无参考探索'))
+      await user.click(screen.getByRole('button', { name: '进入探索草稿' }))
+      expect(screen.getByText('探索草稿 · 尚无验证基准')).toBeVisible()
+    }
     await waitFor(() => expect(screen.getByRole('button', { name: action, hidden: true })).toBeEnabled())
     await toPreview(user)
     expect(screen.queryByRole('radiogroup', { name: 'V2 识别模式' })).not.toBeInTheDocument()
@@ -169,6 +176,62 @@ describe('HistoricalRegimeWorkbench', () => {
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/preview-runs') && init?.method === 'POST')).toBe(true))
     const call = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/preview-runs') && init?.method === 'POST')!
     expect(JSON.parse(String(call[1]?.body))).toMatchObject({ mode, definition: { study: { purpose, family: 'custom' } } })
+  })
+
+  const savedHistory: RegimeGraphDefinition = { ...templateDefinition, id: 'historical', revision: 4, default_mode: 'retrospective', study: { purpose: 'historical_reference', family: 'market_trend' } }
+  const historyReference = { definition_id: 'historical', definition_revision: 4, as_of: null, run_id: 'saved-run', publication_id: 'saved-publication', content_hash: 'frozen-hash', publication_usage: 'research_display' }
+
+  it('重新打开历史定义时恢复精确参考，下一步传递引用，编辑后失效', async () => {
+    const base = makeFetch(), onReferenceReady = vi.fn(), onNextResearchStep = vi.fn()
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith('/references')
+      ? Promise.resolve(ok({ items: [{ ...historyReference, definition_id: 'other' }, { ...historyReference, definition_revision: 3 }, { ...historyReference, as_of: '2024-01-01' }, { ...historyReference, publication_id: 'product-publication', publication_usage: 'product_research' }, historyReference] }))
+      : base(input, init)))
+    render(<HistoricalRegimeWorkbench purpose="historical_reference" initialDefinition={savedHistory} onReferenceReady={onReferenceReady} onNextResearchStep={onNextResearchStep} />)
+    const next = screen.getByRole('button', { name: '下一步：建立实时识别' })
+    await waitFor(() => expect(next).toBeEnabled())
+    fireEvent.click(next)
+    expect(onReferenceReady).toHaveBeenCalledWith({ run_id: 'saved-run', publication_id: 'saved-publication', content_hash: 'frozen-hash' })
+    expect(onNextResearchStep).toHaveBeenCalledOnce()
+    fireEvent.change(screen.getByLabelText('研究名称'), { target: { value: '未保存改动' } })
+    expect(screen.queryByRole('button', { name: '下一步：建立实时识别' })).not.toBeInTheDocument()
+  })
+
+  it('历史参考读取失败可重试，其他定义或修订的参考不能放行', async () => {
+    const base = makeFetch()
+    let fail = true
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).endsWith('/references')) return base(input, init)
+      return fail ? Promise.reject(new Error('参考读取失败')) : Promise.resolve(ok({ items: [{ ...historyReference, definition_revision: 3 }, { ...historyReference, definition_id: 'other' }] }))
+    }))
+    render(<HistoricalRegimeWorkbench purpose="historical_reference" initialDefinition={savedHistory} onNextResearchStep={vi.fn()} />)
+    const retry = await screen.findByRole('button', { name: '重试读取历史参考' })
+    expect(screen.getByRole('button', { name: '下一步：建立实时识别' })).toBeDisabled()
+    fail = false; fireEvent.click(retry)
+    expect(await screen.findByText('先“保存为历史参考”确认本版本的历史区间。')).toBeVisible()
+    expect(screen.getByRole('button', { name: '下一步：建立实时识别' })).toBeDisabled()
+  })
+
+  it('截至日改变后拒绝旧参考响应，并传递新截至日的精确引用', async () => {
+    const base = makeFetch(), pending: Array<(response: Response) => void> = [], onReferenceReady = vi.fn()
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith('/references')
+      ? new Promise<Response>(resolve => pending.push(resolve)) : base(input, init)))
+    const user = userEvent.setup()
+    render(<HistoricalRegimeWorkbench purpose="historical_reference" initialDefinition={savedHistory} onReferenceReady={onReferenceReady} onNextResearchStep={vi.fn()} />)
+    await waitFor(() => expect(pending).toHaveLength(1))
+    await act(async () => pending[0](ok({ items: [historyReference] })))
+    const next = screen.getByRole('button', { name: '下一步：建立实时识别' })
+    await waitFor(() => expect(next).toBeEnabled())
+    await toPreview(user)
+    fireEvent.change(screen.getByLabelText('V2 截至日'), { target: { value: '2024-01-01' } })
+    expect(next).toBeDisabled()
+    await waitFor(() => expect(pending).toHaveLength(2))
+    fireEvent.change(screen.getByLabelText('V2 截至日'), { target: { value: '2024-01-02' } })
+    await waitFor(() => expect(pending).toHaveLength(3))
+    await act(async () => pending[2](ok({ items: [{ ...historyReference, as_of: '2024-01-02', run_id: 'new-cutoff' }] })))
+    await waitFor(() => expect(next).toBeEnabled())
+    await act(async () => pending[1](ok({ items: [] })))
+    fireEvent.click(next)
+    expect(onReferenceReady).toHaveBeenCalledWith({ run_id: 'new-cutoff', publication_id: historyReference.publication_id, content_hash: historyReference.content_hash })
   })
 
   async function ready(fetchMock = makeFetch(), initialDefinition = templateDefinition) {

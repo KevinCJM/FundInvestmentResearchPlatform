@@ -299,11 +299,11 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   await expect(page.getByText('1.83%')).toBeVisible()
   const metricTable = page.getByRole('table', { name: '研究指标计算结果', exact: true })
   await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toContainText('2025-01-06 至 2026-01-06')
-  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).toContainText('250 个观察值')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 年/ })).not.toContainText('个观察值')
   await expect(page.getByRole('button', { name: '移除区间 近 1 年' })).toBeDisabled()
   await page.getByLabel('添加计算区间').selectOption('1M')
   await expect(metricTable.getByRole('columnheader', { name: /近 1 月/ })).toContainText('2025-12-06 至 2026-01-06')
-  await expect(metricTable.getByRole('columnheader', { name: /近 1 月/ })).toContainText('21 个观察值')
+  await expect(metricTable.getByRole('columnheader', { name: /近 1 月/ })).not.toContainText('个观察值')
   await expect(metricTable.getByText('1.83%')).toHaveCount(2)
   const researchPanel = page.getByRole('region', { name: '研究指标', exact: true })
   await researchPanel.screenshot({ path: testInfo.outputPath('metric-period-columns.png') })
@@ -330,7 +330,7 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   await page.getByRole('button', { name: '关闭', exact: true }).click()
   await page.getByRole('button', { name: '移除指标 累计收益率' }).click()
   await expect(page.getByText('1.83%')).not.toBeVisible()
-  await expect(page.getByRole('button', { name: /选择研究指标/ })).toContainText('已选 0/8')
+  await expect(page.getByRole('button', { name: /选择研究指标/ })).toHaveText('选择研究指标已选 0')
 
   await page.getByRole('tab', { name: '收益统计', exact: true }).click()
   await expect(page.getByRole('heading', { name: '箱形图' })).toBeVisible()
@@ -382,3 +382,73 @@ test('详情页在三档宽度统一展示指标值、窗口、定义抽屉与�
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
 })
+
+for (const native of [true, false]) {
+  test(`走势图慢响应复制与51条曲线分批：${native ? '原生轴' : '共用子图'}`, async ({ page }, testInfo) => {
+    test.setTimeout(90_000)
+    await mockMetricDisplayApi(page)
+    const curve = {
+      ...indicator, id: 'review-series', name: '测试曲线', result_kind: 'time_series', output_contract: 'series_bundle',
+      parameter_contract_version: '1.0',
+      parameter_schema: [{ id: 'window', label: '窗口期数', type: 'integer', default: 20, minimum: 2, maximum: 1000, step: 1 }],
+    }
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const sizes: number[] = []
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.route('**/api/custom-indicators**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path === '/api/custom-indicators') return route.fulfill({ json: { items: [indicator, curve], total: 2 } })
+      if (path !== '/api/custom-indicators/evaluate-series') return route.fallback()
+      const request = route.request().postDataJSON()
+      sizes.push(request.indicator_instances.length)
+      if (request.indicator_instances.length > 50) return route.fulfill({ status: 422, json: { detail: '最多50条' } })
+      await held
+      return route.fulfill({ json: {
+        results: request.indicator_instances.map((instance: { instance_key: string; parameters?: { window?: number } }) => ({
+          instance_key: instance.instance_key, indicator_id: curve.id, indicator_revision: 1, indicator_name: curve.name,
+          result_kind: 'time_series', target: request.target, period: request.period, status: 'ok', warnings: [],
+          parameters: { window: instance.parameters?.window ?? 20 },
+          dates: ['2026-01-02', '2026-01-03', '2026-01-04'],
+          channels: [{ id: 'value', label: '测试曲线', values: [3, 3.1, 3.2], unit: native ? '元' : '%',
+            display_format: native ? 'number' : 'percent', precision: 2, null_count: 0,
+            semantic_dimension: native ? 'raw_market_price' : 'return_decimal' }],
+        })),
+        execution: { execution_backend: 'numba_njit_fixed_signature', nopython: true, object_mode: 0,
+          python_fallback: 0, request_time_compilation: 0, kernel_signatures: { ui_contract_fixture: ['fixed'] } },
+      } })
+    })
+    await page.goto('/product-research/products/510300.SH?kind=etf')
+    await page.getByRole('tab', { name: '走势与指标', exact: true }).click()
+    const chart = page.getByRole('region', { name: '走势图', exact: true })
+    await page.getByRole('button', { name: /选择时序指标/ }).click()
+    await page.getByRole('checkbox', { name: /测试曲线/ }).check()
+    await page.getByRole('button', { name: '完成', exact: true }).click()
+    await chart.getByRole('button', { name: /再加一条$/ }).click()
+    await chart.getByRole('button', { name: /再加一条$/ }).nth(1).click()
+    release()
+    const positions = chart.getByRole('combobox', { name: /的显示位置$/ })
+    await expect(positions).toHaveCount(3)
+    await expect.poll(() => positions.evaluateAll(nodes => new Set(nodes.map(node => (node as HTMLSelectElement).value)).size)).toBe(1)
+    if (native) await expect(positions.first()).toHaveValue('native')
+    else await expect(chart.getByText(/共用一个子图，同一条纵轴/)).toHaveCount(2)
+    await chart.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath('resolved-copy.png') })
+
+    for (let index = 3; index < 51; index += 1) await chart.getByRole('button', { name: /再加一条$/ }).first().click()
+    await expect(positions).toHaveCount(51)
+    await expect(chart.getByRole('alert')).toHaveCount(0)
+    await expect.poll(() => sizes.slice(-2)).toEqual([50, 1])
+    await expect.poll(() => positions.evaluateAll(nodes => new Set(nodes.map(node => (node as HTMLSelectElement).value)).size)).toBe(1)
+    if (native) await expect(positions.last()).toHaveValue('native')
+    else await expect(chart.getByText(/共用一个子图，同一条纵轴/)).toHaveCount(50)
+    expect(sizes.every(size => size <= 50)).toBe(true)
+    await expect(chart.locator('canvas')).toHaveCount(1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+    expect(await page.evaluate(auditTextContrast)).toEqual([])
+    expect(errors).toEqual([])
+    await positions.first().scrollIntoViewIfNeeded()
+    await page.screenshot({ path: testInfo.outputPath('51-curves.png') })
+  })
+}

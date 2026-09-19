@@ -87,8 +87,9 @@
 - `SSE` 交易日日历来源 `data/trade_day_df.parquet`，新增数据时需保证 `exchange='SSE'`、`is_open=1`。
 
 ## 提交与合并请求规范
-- AI 在创建开发分支、准备 commit/push、创建或更新 PR、执行 PR 审核、合并、发布、回滚及维护提交规则前，必须完整阅读并遵守 [branch_submission_rules.md](branch_submission_rules.md)，不能仅凭记忆或本节摘要操作。
-- 分支流向、提交范围、AI 审核、测试证据、合并条件及异常处理由该文档统一规定；不得在其他文档中维护相互冲突的提交规则。
+- AI 在创建开发分支、准备 commit/push、创建或更新 PR、执行 PR 审核、合并、发布、回滚及维护提交规则前，必须完整阅读 [提交规范](branch_submission_rules.md) 和 [代码提交全流程](docs/submission-workflow.md)，不能仅凭记忆或本节摘要操作。
+- 分支流向、提交范围、Bot 审核、测试证据、合并条件及异常处理由提交规范统一规定；全流程文档解释执行顺序，不另立规则。
+- Bot 未通过最新提交的审核时不得正常合并。AI 代 Owner 绕过 Bot 审核，必须先给出具体意见、代码/测试依据及拟回复，取得人类针对该 PR、完整 HEAD SHA 和争议项的明确允许，再逐条回复 Bot 说明理由，最后才可合并。普通“帮我合并”不等于绕过授权；新提交或新增争议不能沿用旧许可。此要求由 AI 自觉执行，不做 AI/人类身份的技术区分；细节以提交规范的 Owner 例外流程为准。
 - 按用户已经授权的任务范围执行，不重复询问已授权动作；写文档或修改代码本身不表示已获准提交、推送、合并或修改远端仓库设置。
 
 ## 安全与配置提醒
@@ -131,7 +132,7 @@ Machine-first routing protocol for downstream agents operating from the current 
 2. `docs/repo_map.json`
 3. `docs/task_routes.json`
 4. `docs/pitfalls.json`
-5. `branch_submission_rules.md` before branch creation, commit/push, PR creation or review, merge, release, rollback, or submission-policy maintenance
+5. `branch_submission_rules.md` and `docs/submission-workflow.md` before branch creation, commit/push, PR creation or review, merge, release, rollback, or submission-policy maintenance
 6. `docs/frontend-design-guidelines.md` before frontend visual, interaction, or asset changes; also `docs/homepage-design.md` when the homepage is involved
 7. Routed code, tests, and configs
 

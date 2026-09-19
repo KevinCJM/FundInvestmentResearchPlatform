@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from backend.custom_indicators.errors import NotFoundError, ValidationError
+from backend.custom_indicators.errors import ConflictError, NotFoundError, ValidationError
 from backend.custom_indicators.repository import AtomicJsonStore, utc_now
 from backend.data_storage import fsync_dir, guard_path
 from backend.factor_research.repository import clean
@@ -24,6 +24,8 @@ SUMMARY_KEYS = (
     "id", "kind", "name", "created_at", "stage", "model_id", "model_revision",
     "run_id", "release_id", "target_keys", "as_of", "effective_at", "expires_at",
     "cache_key", "content_hash", "method", "frequency", "publishable", "entry",
+    "artifact_type", "scheme_id", "version_number", "base_currency", "risk_basis_id",
+    "research_as_of", "review_due_at",
 )
 
 
@@ -121,11 +123,99 @@ class ArtifactRepository:
                 raise ValidationError("RESEARCH_ARRAY_CORRUPT", "冻结输入数组损坏或不符合数值契约，已停止使用。") from exc
         return result
 
-    def save(self, kind: str, fields: dict[str, Any], arrays: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _read_operations(store: AtomicJsonStore) -> dict:
+        if store.path.exists() and (store.path.is_symlink() or store.path.stat().st_size > 16_000_000):
+            raise ValidationError("IDEMPOTENCY_CORRUPT", "发布操作记录损坏或超过容量。")
+        payload = store.read_unlocked()
+        for item in payload["items"]:
+            if (not isinstance(item, dict) or not isinstance(item.get("key"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["key"])
+                    or not isinstance(item.get("request_hash"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["request_hash"])
+                    or type(item.get("complete")) is not bool or not isinstance(item.get("kind"), str)):
+                raise ValidationError("IDEMPOTENCY_CORRUPT", "发布操作记录结构无效。")
+            checked_id(item.get("id"))
+        return payload
+
+    def idempotent_result(self, key: str, request_hash: str) -> dict[str, Any] | None:
+        """Read-only replay lookup; interrupted promotion is finished by save()."""
+        guard_path(self.root)
+        operations = AtomicJsonStore(self.root / "operations.json")
+        if not operations.path.exists():
+            return None
+        token = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        operation = next((x for x in self._read_operations(operations)["items"] if x["key"] == token), None)
+        if operation is None:
+            return None
+        if operation["request_hash"] != request_hash:
+            raise ConflictError("IDEMPOTENCY_CONFLICT", "同一幂等键已用于不同输入。")
+        if operation.get("complete"):
+            item = self.get(operation["id"], operation["kind"])
+            if item.get("idempotency") != {"key": token, "request_hash": request_hash}:
+                raise ValidationError("IDEMPOTENCY_CORRUPT", "发布恢复记录与冻结成果不一致。")
+            self.arrays(item["id"])
+            return item
+        return None
+
+    def save(self, kind: str, fields: dict[str, Any], arrays: dict[str, np.ndarray] | None = None,
+             *, idempotency_key: str | None = None, request_hash: str | None = None) -> dict[str, Any]:
+        """Optional exact-operation replay; existing callers keep random immutable IDs.
+
+        Reservation precedes promotion. Recovery checks only its reserved directory,
+        including all NPY checksums, then repairs the index without a directory scan.
+        """
+        if idempotency_key is None:
+            return self._save(kind, fields, arrays)
+        guard_path(self.root, write=True)
+        if (not isinstance(idempotency_key, str) or not 8 <= len(idempotency_key) <= 160
+                or not isinstance(request_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", request_hash)):
+            raise ValidationError("IDEMPOTENCY_INVALID", "幂等发布需要有效操作键和请求指纹。")
+        operations = AtomicJsonStore(self.root / "operations.json")
+        token = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+        with operations.locked():
+            payload = self._read_operations(operations)
+            operation = next((x for x in payload["items"] if x["key"] == token), None)
+            if operation is not None and (operation["request_hash"] != request_hash or operation["kind"] != kind):
+                raise ConflictError("IDEMPOTENCY_CONFLICT", "同一幂等键已用于不同输入。")
+            if operation is None:
+                operation = {"key": token, "kind": kind, "request_hash": request_hash,
+                             "id": f"research-{kind}-{uuid.uuid4().hex}", "complete": False}
+                payload["items"].append(operation)
+                if len(json.dumps(payload).encode()) > 16_000_000:
+                    raise ValidationError("IDEMPOTENCY_CAPACITY", "发布操作记录达到容量上限。")
+                operations.write_unlocked(payload)
+            destination = self._folder(operation["id"])
+            if destination.exists():
+                item = self.get(operation["id"], kind)
+                if item.get("idempotency") != {"key": token, "request_hash": request_hash}:
+                    raise ValidationError("IDEMPOTENCY_CORRUPT", "发布恢复记录与冻结成果不一致。")
+                self.arrays(item["id"])
+                self._register(item)
+            else:
+                item = self._save(kind, {**fields, "idempotency": {"key": token, "request_hash": request_hash}},
+                                  arrays, object_id=operation["id"])
+            operation["complete"] = True
+            operations.write_unlocked(payload)
+            return item
+
+    def _register(self, item: dict[str, Any]) -> None:
+        with self.index.locked():
+            payload = self.index.read_unlocked()
+            previous = next((x for x in payload["items"] if x["id"] == item["id"]), None)
+            if previous is not None:
+                if previous.get("content_hash") != item["content_hash"]:
+                    raise ValidationError("RESEARCH_INDEX_INVALID", "成果索引与冻结内容不一致。")
+                return
+            payload["items"].append({key: item[key] for key in SUMMARY_KEYS if key in item})
+            self.index.write_unlocked(payload)
+
+    def _save(self, kind: str, fields: dict[str, Any], arrays: dict[str, np.ndarray] | None = None,
+              *, object_id: str | None = None) -> dict[str, Any]:
         guard_path(self.root, write=True)
         if kind not in {"run", "release", "retirement", "series", "preview", "impact"}:
             raise ValueError("unsupported artifact kind")
-        object_id = f"research-{kind}-{uuid.uuid4().hex}"
+        object_id = object_id or f"research-{kind}-{uuid.uuid4().hex}"
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = Path(tempfile.mkdtemp(prefix=".writing-", dir=self.root))
         destination = self._folder(object_id)
@@ -158,10 +248,7 @@ class ArtifactRepository:
             os.rename(temporary, destination)
             promoted = True
             fsync_dir(self.root)
-            with self.index.locked():
-                payload = self.index.read_unlocked()
-                payload["items"].append({key: item[key] for key in SUMMARY_KEYS if key in item})
-                self.index.write_unlocked(payload)
+            self._register(item)
             return item
         finally:
             if not promoted and temporary.exists():

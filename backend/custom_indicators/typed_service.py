@@ -1143,10 +1143,19 @@ def compose_expression(request: dict[str, Any]) -> dict[str, Any]:
     if bool(operator_id) == bool(template_id):
         raise ValidationError("INVALID_COMPOSE_TARGET", "必须且只能指定 operator_id 或 template_id。")
     if operator_id:
+        # A declared parameter stands in for its default at a configuration
+        # input, exactly as the canvas does: the range check is the same either
+        # way, and the width is still a constant by the time anything compiles.
+        declared = {str(item["id"]): item for item in parameter_schema}
         try:
             _validate_fixed_constant_arguments(
                 str(operator_id),
-                list(request.get("arguments") or []),
+                [
+                    {**item, "source": "constant", "value": declared[str(item.get("value"))]["default"]}
+                    if str(item.get("source") or "") == "variable" and str(item.get("value")) in declared
+                    else item
+                    for item in request.get("arguments") or []
+                ],
                 operator_registry_version,
             )
             expression = _operator_expression(

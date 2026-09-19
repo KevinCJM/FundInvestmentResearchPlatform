@@ -28,6 +28,7 @@ from cal_indicators.typed_numba_kernels import (  # noqa: E402
 from custom_indicators.errors import ConflictError, ValidationError  # noqa: E402
 from custom_indicators.runtime_context import aligned_return_series_kernel  # noqa: E402
 from custom_indicators.series_definitions import (  # noqa: E402
+    normalize_series_parameters,
     normalize_time_series_definition,
     parameter_variable_types,
     series_expressions,
@@ -100,13 +101,13 @@ def _write_market_data(root: Path, count: int = 80) -> pd.DataFrame:
 
 
 def _warm_series(service: CustomIndicatorService) -> None:
-    # This suite exercises the real time-series preparation path, including
-    # every historical revision, not unrelated scalar/portfolio batch warmup.
+    # This suite exercises the real time-series preparation path, not unrelated
+    # scalar/portfolio batch warmup.
     from cal_indicators.typed_numba_kernels import warm_numba_kernel_registry
     warm_numba_kernel_registry()
     definitions = [item for item in service.indicators.list_all_versions()
                    if item.get("result_kind") == "time_series"]
-    assert len(definitions) == 19
+    assert len(definitions) == 5
     for definition in definitions:
         service.series_service.warm(definition)
 
@@ -152,7 +153,7 @@ def test_aligned_return_series_kernel_preserves_axis_and_missing_values() -> Non
     assert aligned_return_series_kernel.nopython_signatures
 
 
-def test_five_builtin_time_series_indicators_use_fixed_formulas_and_match_references(
+def test_five_builtin_time_series_indicators_match_references_at_their_default_width(
     tmp_path: Path,
 ) -> None:
     service, frame = _service(tmp_path)
@@ -160,15 +161,25 @@ def test_five_builtin_time_series_indicators_use_fixed_formulas_and_match_refere
         item["id"]: item for item in service.list_indicators()["items"]
         if item.get("result_kind") == "time_series"
     }
-    assert all(not item.get("parameter_schema") for item in definitions.values())
-    assert definitions["builtin-close-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(adjusted_close), 20, observation_dates, annual_risk_free_rate_decimal)"
-    assert definitions["builtin-volume-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(volume), 10, observation_dates, annual_risk_free_rate_decimal)"
+    # Every built-in opens its rolling width and nothing else; the references
+    # below are computed at each one's default, which is what a run with no
+    # parameters must reproduce.
+    assert {item_id: [(entry["id"], entry["default"]) for entry in item["parameter_schema"]]
+            for item_id, item in definitions.items()} == {
+        "builtin-close-moving-average-series": [("window", 20)],
+        "builtin-bollinger-bands-series": [("window", 20)],
+        "builtin-volume-moving-average-series": [("window", 10)],
+        "builtin-kdj-series": [("window", 9)],
+        "builtin-rolling-5d-annualized-sharpe-series": [("window", 5)],
+    }
+    assert definitions["builtin-close-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(adjusted_close), window, observation_dates, annual_risk_free_rate_decimal)"
+    assert definitions["builtin-volume-moving-average-series"]["series_outputs"][0]["expression"] == "rolling_apply(mean(volume), window, observation_dates, annual_risk_free_rate_decimal)"
     rolling_definition = definitions["builtin-rolling-5d-annualized-sharpe-series"]
     assert rolling_definition["series_outputs"][0]["expression"] == (
         "rolling_apply((mean(returns) - risk_free_rate_per_observation) / "
-        "std(returns, 1) * sqrt(periods_per_year), 5, observation_dates, annual_risk_free_rate_decimal)"
+        "std(returns, 1) * sqrt(periods_per_year), window, observation_dates, annual_risk_free_rate_decimal)"
     )
-    assert rolling_definition["revision"] == 3
+    assert rolling_definition["revision"] == 1
     assert rolling_definition["rolling_source"]["transform_version"] == "3.0.0"
     assert rolling_definition["rolling_source"] == {
         **rolling_definition["rolling_source"],
@@ -177,7 +188,8 @@ def test_five_builtin_time_series_indicators_use_fixed_formulas_and_match_refere
         "indicator_revision": 1,
         "window_observations": 5,
         "minimum_observations": 5,
-        "detached": False,
+        # ``window`` owns the width now, so the scalar source is provenance.
+        "detached": True,
     }
 
     response = service.evaluate_series(
@@ -342,6 +354,7 @@ def test_time_series_plan_shares_bollinger_subexpressions(tmp_path: Path) -> Non
             **variable_types("single_product", definition["dsl_version"]),
             **parameter_variable_types(definition),
         },
+        parameter_names=frozenset(parameter_variable_types(definition)),
         dsl_version=definition["dsl_version"],
         operator_registry_version=definition["operator_registry_version"],
     )
@@ -357,22 +370,28 @@ def test_time_series_plan_shares_bollinger_subexpressions(tmp_path: Path) -> Non
     assert set(plan.roots) == {"upper", "middle", "lower"}
 
 
-def test_runtime_algorithm_parameters_are_rejected(tmp_path: Path) -> None:
+def test_only_declared_runtime_parameters_are_accepted(tmp_path: Path) -> None:
     service, _frame = _service(tmp_path)
+    response = service.evaluate_series(
+        indicator_instances=[{
+            "indicator_id": "builtin-close-moving-average-series",
+            "parameters": {"window": 5},
+        }],
+        target={"kind": "etf", "product_id": "510300.SH"},
+        period="ALL",
+    )
+    assert response["summary"]["ok"] == 1
+    assert response["results"][0]["parameters"] == {"window": 5}
     with pytest.raises(ValidationError) as error:
         service.evaluate_series(
             indicator_instances=[{
                 "indicator_id": "builtin-close-moving-average-series",
-                "parameters": {"window": 5},
+                "parameters": {"min_periods": 5},
             }],
             target={"kind": "etf", "product_id": "510300.SH"},
             period="ALL",
         )
-    assert error.value.code in {
-        "SERIES_PARAMETERS_FIXED_IN_DEFINITION",
-        "SERIES_RUNTIME_PARAMETERS_NOT_SUPPORTED",
-        "UNKNOWN_SERIES_PARAMETER",
-    }
+    assert error.value.code == "UNKNOWN_SERIES_PARAMETER"
 
 
 def test_legacy_runtime_parameter_definition_is_frozen_to_default_value() -> None:
@@ -410,6 +429,11 @@ def test_legacy_runtime_parameter_definition_is_frozen_to_default_value() -> Non
     assert normalized["series_outputs"][0]["expression"] == "rolling_mean(market_close, 5)"
     assert normalized["fixed_parameters"][0]["id"] == "window"
     assert normalized["fixed_parameters"][0]["value"] == 5
+    # A frozen width stays frozen at run time; reopening it means a new indicator.
+    assert normalize_series_parameters(normalized, None) == {}
+    with pytest.raises(ValidationError) as error:
+        normalize_series_parameters(normalized, {"window": 5})
+    assert error.value.code == "SERIES_PARAMETERS_FIXED_IN_DEFINITION"
 
 
 def test_scalar_evaluation_rejects_time_series_definition(tmp_path: Path) -> None:
@@ -443,8 +467,8 @@ def test_validation_exposes_true_math_latex_measure_and_inferred_history(tmp_pat
         assert r"\mathrm{NaN}" not in latex
         assert item["resolved_output_measure"] == "adjusted_market_price"
         assert item["semantic_dimension"] == "adjusted_market_price"
-    assert r"\mathcal{R}_{20}" in validation["output_inferences"]["middle"]["display_latex"]
-    assert r"\mathcal{R}_{20}" in validation["output_inferences"]["upper"]["display_latex"]
+    assert r"\mathcal{R}_{\mathrm{window}}" in validation["output_inferences"]["middle"]["display_latex"]
+    assert r"\mathcal{R}_{\mathrm{window}}" in validation["output_inferences"]["upper"]["display_latex"]
     assert all("latex_fragment" in node for node in validation["dag"]["nodes"])
     assert "chart_panel" not in definition
     assert "chart_panel" not in definition["presentation"]
@@ -490,7 +514,7 @@ def test_kdj_measure_inference_distinguishes_bounded_kd_from_unbounded_j(tmp_pat
     assert output["j"]["resolved_output_measure"] == "dimensionless"
     assert validation["history_policy"] == "full_history"
     assert r"\mathcal{S}_{3,50}" in output["k"]["display_latex"]
-    assert r"\mathcal{R}_{9;1}" in output["k"]["display_latex"]
+    assert r"\mathcal{R}_{\mathrm{window};1}" in output["k"]["display_latex"]
     assert r"\operatorname{finite}" in output["k"]["display_latex"]
     assert r"\mathbin{\oslash}_{50}" in output["k"]["display_latex"]
     for item in output.values():
@@ -526,7 +550,8 @@ def test_time_series_excel_export_uses_raw_data_fixed_literals_and_formulas(tmp_
         assert any("SQRT(DEVSQ(" in formula and "-(0)" in formula for formula in formulas)
         assert any("直接入参 · 复权收盘价" in text for text in texts)
         assert any("原生 Excel 公式（可复制）" in text for text in texts)
-        assert not any("直接入参 · window" in text for text in texts)
+        # The workbook records the width this export actually used.
+        assert any("直接入参 · window" in text for text in texts)
         assert not any(
             token in formula
             for formula in formulas
@@ -646,7 +671,7 @@ def test_time_series_excel_route_returns_xlsx_without_runtime_parameters(
     assert "rolling_mean(" not in worksheet_xml
     assert "S01_" not in worksheet_xml
     assert "直接入参 · 复权收盘价" in worksheet_xml
-    assert "直接入参 · window" not in worksheet_xml
+    assert "直接入参 · window" in worksheet_xml
 
 
 def test_scalar_indicator_can_be_lifted_to_fixed_rolling_time_series(
@@ -732,7 +757,7 @@ def test_five_day_rolling_annualized_sharpe_builtin_is_available_and_njit(
     definition = service.get_indicator(
         "builtin-rolling-5d-annualized-sharpe-series"
     )
-    assert definition["name"] == "5 日滚动年化夏普比率"
+    assert definition["name"] == "N 日滚动年化夏普比率"
     assert definition["rolling_source"]["indicator_id"] == "builtin-annualized-sharpe-v2"
     assert definition["rolling_source"]["window_observations"] == 5
     assert definition["minimum_observations"] == 5
@@ -749,9 +774,10 @@ def test_five_day_rolling_annualized_sharpe_builtin_is_available_and_njit(
         5,
     )["definition"]
     generated_expression = generated["series_outputs"][0]["expression"]
-    # Current v3 uses the same whole-interval scope as newly derived metrics.
-    # Immutable v1/v2 contracts are covered by the migration regression.
-    assert generated_expression == expression
+    # The built-in is a fresh derivation with its width opened as ``window``.
+    assert expression == generated_expression.replace(
+        ", 5, observation_dates", ", window, observation_dates"
+    )
     assert generated_expression.startswith("rolling_apply(")
     assert generated["rolling_source"]["transform_version"] == "3.0.0"
     assert definition["rolling_source"]["transform_version"] == "3.0.0"
@@ -911,6 +937,7 @@ def test_configuration_argument_cannot_use_data_variable(tmp_path: Path) -> None
     definition = service.get_indicator("builtin-close-moving-average-series")
     invalid = {
         **definition,
+        "parameter_schema": [],
         "series_outputs": [
             {
                 **definition["series_outputs"][0],

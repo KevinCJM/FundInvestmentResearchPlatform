@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 from . import goal_kernels as goals
 from backend.custom_indicators.errors import ValidationError
+from .mandate_inputs import effective_funding_plan, cash_success_required
 
 FUNDING_METRICS = (
     "success_probability", "probability_lower", "probability_upper", "payment_failure_probability",
@@ -23,8 +24,8 @@ LIMITATIONS = [
 
 
 def funding_inputs(definition: dict):
-    plan = definition.get("funding_plan")
-    if not plan:
+    plan = effective_funding_plan(definition)
+    if plan is None:
         return None
     goals.require_ready()
     months = definition["horizon_years"] * 12
@@ -36,19 +37,26 @@ def funding_inputs(definition: dict):
                                                      int(plan["amount_basis"] == "real"))
     summary, status = goals.funding_summary_kernel(
         plan["total_capital"], plan["outside_reserve"], plan["terminal_target"], months,
-        plan["inflation"], plan["annual_fee"], int(plan["amount_basis"] == "real"),
+        plan["inflation"], plan["annual_fee"], int(plan.get("target_amount_basis", plan["amount_basis"]) == "real"),
         inflows, outflows, plan["liquidity_months"], plan["contribution_stress_ratio"])
     names = ("investable_capital", "nominal_terminal_target", "total_contributions", "total_withdrawals",
              "required_liquid_capital", "required_liquid_weight", "required_effective_return",
              "liquidity_payment_buffer", "liquidity_payment_buffer_ratio", "liquidity_shortfall_capital")
     result = dict(zip(names, [float(v) if np.isfinite(v) else None for v in summary], strict=True))
-    result.update({"root_status": ("solved", "at_lower_bound", "above_search_bound")[status],
+    # The deterministic return the cash flows demand stays available even without a
+    # funding success condition; it is a constraint, never a success probability.
+    result.update({"cashflow_required_return": result["required_effective_return"],
+                   "cashflow_required_return_status": ("solved", "at_lower_bound", "above_search_bound")[status],
+                   "root_status": ("solved", "at_lower_bound", "above_search_bound")[status],
                    "return_search_bounds": [-0.99, 5.0], "currency": definition["currency"],
                    "fee_included": True, "required_return_basis": "annual_effective_gross_of_model_fee",
                    "cashflow_timing": "equal_model_month_end_contribution_then_payment",
                    "liquidity_months": plan["liquidity_months"],
                    "monthly_cashflows": [{"month": i + 1, "contribution": float(inflows[i]),
                                            "withdrawal": float(outflows[i])} for i in range(months)]})
+    if not cash_success_required(definition):
+        result.update(required_effective_return=None, root_status="not_applicable",
+                      nominal_terminal_target=None)
     inflows.flags.writeable = False
     outflows.flags.writeable = False
     return result, inflows, outflows
@@ -63,8 +71,8 @@ def _funding_metrics(values: np.ndarray) -> dict:
 
 def require_goal_checks(definition: dict, candidates: list[dict]) -> None:
     """Validate diagnostic evidence; missing data is never a passing goal."""
-    plan = definition.get("funding_plan")
-    if not plan:
+    plan = effective_funding_plan(definition)
+    if not cash_success_required(definition):
         return
     threshold = plan["required_probability"]
     for candidate in candidates:
@@ -84,11 +92,11 @@ def require_goal_checks(definition: dict, candidates: list[dict]) -> None:
 
 def diagnose_funding(definition: dict, candidates: list[dict], *, paths: int, seed: int) -> dict:
     prepared = funding_inputs(definition)
-    if prepared is None:
-        return {"kind": definition.get("objective_kind", "absolute_return"), "funding": None,
-                "candidates": candidates, "limitations": []}
+    if prepared is None or not cash_success_required(definition):
+        return {"kind": definition.get("objective_kind", "absolute_return"),
+                "funding": prepared[0] if prepared else None, "candidates": candidates, "limitations": []}
     summary, inflows, outflows = prepared
-    plan = definition["funding_plan"]
+    plan = effective_funding_plan(definition)
     draws, _ = goals.seeded_factor_draws_kernel(inflows.size, paths, 1, seed, 0, 5.)
     draws.flags.writeable = False
     for candidate in candidates:
@@ -98,6 +106,8 @@ def diagnose_funding(definition: dict, candidates: list[dict], *, paths: int, se
             inflows, outflows, summary["nominal_terminal_target"], plan["annual_fee"],
             plan["required_probability"], plan["drawdown_alert"], 1.0)
         central = _funding_metrics(values)
+        if plan.get("drawdown_alert_enabled") is False:
+            central["drawdown_alert_probability"] = None
         central["annual_fan"] = [{"year": i, "p05": float(row[0]), "median": float(row[1]), "p95": float(row[2])}
                                  for i, row in enumerate(fan)]
         conservative = None
@@ -107,6 +117,8 @@ def diagnose_funding(definition: dict, candidates: list[dict], *, paths: int, se
                 inflows, outflows, summary["nominal_terminal_target"], plan["annual_fee"],
                 plan["required_probability"], plan["drawdown_alert"], plan["contribution_stress_ratio"])
             conservative = _funding_metrics(stressed)
+            if plan.get("drawdown_alert_enabled") is False:
+                conservative["drawdown_alert_probability"] = None
         candidate["goal_check"] = {"within_limits": central["probability_lower"] >= plan["required_probability"],
             "threshold": plan["required_probability"], "gate_basis": "wilson_95pct_lower_bound",
             "central": central, "conservative": conservative,

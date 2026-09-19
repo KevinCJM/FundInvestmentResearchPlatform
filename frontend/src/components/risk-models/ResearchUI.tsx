@@ -25,8 +25,8 @@ export function NumberInput({ value, onValueChange, ...props }: Omit<InputHTMLAt
     }} />
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return <label className="block min-w-0 text-sm font-medium text-slate-800">{label}{children}{hint && <span className="mt-1 block text-xs font-normal leading-5 text-slate-600">{hint}</span>}</label>
+export function Field({ label, hint, children, required = false }: { label: string; hint?: string; children: ReactNode; required?: boolean }) {
+  return <label data-required={required || undefined} className="block min-w-0 text-sm font-medium text-slate-800"><span className={required ? "after:ml-0.5 after:text-rose-700 after:content-['*']" : undefined}>{label}</span>{children}{hint && <span className="mt-1 block text-xs font-normal leading-5 text-slate-600">{hint}</span>}</label>
 }
 export function Feedback({ error, notice }: { error?: string; notice?: string }) {
   return <>{error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">{error}</p>}{notice && <p role="status" className="rounded-lg border border-accent-200 bg-accent-50 px-4 py-3 text-sm text-accent-900">{notice}</p>}</>

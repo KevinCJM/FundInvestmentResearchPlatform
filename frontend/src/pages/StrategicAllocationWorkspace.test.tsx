@@ -6,6 +6,8 @@ import StrategicAllocationWorkspace from './StrategicAllocationWorkspace'
 import InvestmentObjectivesWorkspace from './InvestmentObjectivesWorkspace'
 import TaaWalkForward from '../components/tactical-allocation/TaaWalkForward'
 import { cmaDefinition, cmaPreview, cmaVersion, mandateVersion, policyBaseline, policyPreview, strategicCatalog } from '../test/strategicAllocationFixtures'
+import { boundaryAssessment, boundaryStudy } from '../test/mandateBoundaryFixtures'
+import { riskVersion } from '../test/riskScaleFixtures'
 import { taaExecution } from '../test/tacticalAllocationFixtures'
 import { assessment, fundingStudy } from '../test/mandateFixtures'
 import { completeCma, previewCma } from '../services/strategicAllocation'
@@ -13,6 +15,7 @@ import { allocationJourneyPath, writeAllocationDraft } from '../app/allocationJo
 
 const researchClock = vi.hoisted(() => ({ day: '2026-09-12' as string | null | undefined }))
 vi.mock('../app/ResearchContext', () => ({ useResearchDay: () => researchClock.day }))
+vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="echarts" /> }))
 const response = (value: unknown, status = 200) => Promise.resolve({ ok: status < 400, status, json: async () => value } as Response)
 const root = '/api/strategic-allocation'
 function install(overrides: Record<string, (init?: RequestInit) => Promise<Response>> = {}) {
@@ -20,15 +23,19 @@ function install(overrides: Record<string, (init?: RequestInit) => Promise<Respo
     const url = String(input)
     if (overrides[url]) return overrides[url](init)
     if (url === `${root}/catalog`) return response(strategicCatalog)
+    if (url.startsWith(`${root}/risk-scales/study-options?`)) return response({ as_of: '2026-09-17', items: [{
+      id: riskVersion.id, name: riskVersion.name, content_hash: riskVersion.content_hash, version_number: riskVersion.version_number,
+      base_currency: 'CNY', risk_basis_id: 'annualized-periodic-volatility-v1', research_as_of: '2026-09-17', valid_until: null,
+    }] })
+    if (url === `${root}/risk-scales/${riskVersion.id}`) return response(riskVersion)
     if (url === `${root}/mandates/preview`) {
       const request = JSON.parse(String(init?.body))
-      return response({ request, definition: request.definition, preview_hash: 'e'.repeat(64), execution: taaExecution,
-        status: 'inputs_only', funding: null, candidates: [], cma: null, blockers: [], warnings: [] })
+      return response(boundaryAssessment(request))
     }
     if (url === `${root}/mandates/confirm`) {
       const { request } = JSON.parse(String(init?.body))
-      return response({ ...mandateVersion, definition: request.definition, assessment: { request, definition: request.definition,
-        preview_hash: 'e'.repeat(64), execution: taaExecution, status: 'inputs_only', funding: null, candidates: [], cma: null, blockers: [], warnings: [] } }, 201)
+      const assessment = boundaryAssessment(request)
+      return response({ ...mandateVersion, definition: assessment.definition, assessment }, 201)
     }
     if (url === `${root}/cma/cma-1`) return response(cmaVersion)
     if (url === `${root}/cma/preview`) return response({ ...cmaPreview, definition: JSON.parse(String(init?.body)) })
@@ -60,28 +67,23 @@ beforeEach(() => { researchClock.day = '2026-09-12'; localStorage.clear(); sessi
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('真实自上而下操作顺序', () => {
-  it('目标未完成时不允许保存；保存后直接携带目标版本进入政策研究', async () => {
-    const fetch = install()
-    const user = userEvent.setup()
+  it('目标确认后只冻结目标/风险/现金，并进入后续产品范围而不是提前选择正式CMA', async () => {
+    researchClock.day = '2026-09-17'
+    const fetch = install(); const user = userEvent.setup()
+    writeAllocationDraft('mandate-study:editor', boundaryStudy())
     render(<MemoryRouter><InvestmentObjectivesWorkspace /></MemoryRouter>)
-    expect(screen.queryByRole('button', { name: '保存新目标版本' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '下一步：风险与限制' })).toBeDisabled()
-    await user.type(screen.getByLabelText('目标名称'), '养老配置目标')
-    fireEvent.change(screen.getByLabelText(/最低预期年收益/), { target: { value: '3' } })
-    await user.click(screen.getByRole('button', { name: '下一步：风险与限制' }))
-    fireEvent.change(screen.getByLabelText('最高预期年波动（%）'), { target: { value: '15' } })
-    fireEvent.change(screen.getByLabelText(/风险与流动性边界的依据/), { target: { value: '根据必要支出及损失承受能力确定' } })
-    await user.click(screen.getByRole('button', { name: '下一步：量化诊断' }))
+    expect(screen.queryByLabelText(/CMA/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '2. 结果与确认' }))
     await user.click(screen.getByRole('button', { name: '运行目标诊断' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: '下一步：核对与确认' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: '下一步：核对与确认' }))
-    expect(screen.getByRole('button', { name: '保存新目标版本' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: '保存新目标版本' })).toBeDisabled()
     await user.click(screen.getByRole('checkbox', { name: /我已核对输入/ }))
     await user.click(screen.getByRole('button', { name: '保存新目标版本' }))
-    expect(await screen.findByRole('link', { name: /使用此目标进入长期配置/ })).toHaveAttribute('href', '/pre-investment/saa/policy?mandate=mandate-1')
+    expect(await screen.findByRole('link', { name: /下一步：确定投资范围/ })).toHaveAttribute('href', '/pre-investment/product-pool?mandate=mandate-1')
     const call = fetch.mock.calls.find(([url]) => String(url) === `${root}/mandates/confirm`)!
-    expect(JSON.parse(String(call[1]?.body)).request.definition.target_return).toBe(.03)
-    expect(screen.getByRole('button', { name: '已锁定此目标版本' })).toBeDisabled()
+    const submitted = JSON.parse(String(call[1]?.body)).request
+    expect(submitted.cma_id).toBeNull()
+    expect(submitted.definition.risk_authorization.selected_max_level).toBe(3)
+    expect(screen.getByText('只读版本')).toBeInTheDocument()
   })
 
   it('SAA 主入口明确提供历史有效前沿实验入口，但不把它混成前瞻 CMA', async () => {
@@ -180,22 +182,21 @@ describe('真实自上而下操作顺序', () => {
     expect(fetch.mock.calls.filter(([url]) => String(url) === `${root}/cma`)).toHaveLength(0)
   })
 
-  it('目标保存中修改输入，不把旧版本当成新目标', async () => {
+  it('目标保存中修改输入，不把迟到的旧版本当成当前目标', async () => {
+    researchClock.day = '2026-09-17'
     let resolve!: (value: Response) => void
     install({ [`${root}/mandates/confirm`]: () => new Promise(done => { resolve = done }) })
-    writeAllocationDraft('strategic-mandate:editor', { ...mandateVersion.definition, boundary_reason: '旧目标需要重新核对风险承受能力' })
+    writeAllocationDraft('mandate-study:editor', boundaryStudy())
     const user = userEvent.setup(); render(<MemoryRouter><InvestmentObjectivesWorkspace /></MemoryRouter>)
-    await user.click(screen.getByRole('button', { name: '下一步：风险与限制' }))
-    await user.click(screen.getByRole('button', { name: '下一步：量化诊断' }))
+    await user.click(screen.getByRole('button', { name: '2. 结果与确认' }))
     await user.click(screen.getByRole('button', { name: '运行目标诊断' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: '下一步：核对与确认' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: '下一步：核对与确认' }))
+    await screen.findByText('当前约束下可实现')
     await user.click(screen.getByRole('checkbox', { name: /我已核对输入/ }))
     await user.click(screen.getByRole('button', { name: '保存新目标版本' }))
-    await user.click(screen.getByRole('button', { name: '1. 资金与成功标准' }))
+    await user.click(screen.getByRole('button', { name: '1. 目标与约束' }))
     fireEvent.change(screen.getByLabelText('目标名称'), { target: { value: '修改后的目标' } })
     await act(async () => resolve(await response(mandateVersion, 201)))
-    expect(screen.queryByRole('link', { name: /使用此目标进入长期配置/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('只读版本')).not.toBeInTheDocument()
     expect(screen.getByLabelText('目标名称')).toHaveValue('修改后的目标')
   })
 

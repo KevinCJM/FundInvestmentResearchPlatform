@@ -4,7 +4,7 @@ import { taaBaseline, taaCatalog, taaExecution } from './tacticalAllocationFixtu
 
 export const mandateDefinition: MandateDefinition = {
   name: '长期配置目标', as_of: '2026-09-12', review_date: '2099-09-12', currency: 'CNY', horizon_years: 10,
-  target_return: .03, max_volatility: .15, min_liquid_weight: .2, max_illiquid_weight: 0,
+  target_return: .03, target_excess_return: 0, min_cash_weight: 0, max_volatility: .15, min_liquid_weight: .2, max_illiquid_weight: 0,
   max_tracking_error: .04, risk_aversion: 5, rebalance_policy: 'quarterly', rebalance_note: '', note: '',
 }
 export const mandateVersion: MandateVersion = { id: 'mandate-1', name: mandateDefinition.name, created_at: '2026-09-12T00:00:00Z', content_hash: 'm'.repeat(64), definition: mandateDefinition }
