@@ -139,7 +139,13 @@
         "release branch",
         "branch-policy",
         "ai-review",
-        "quality-gate"
+        "quality-gate",
+        "docs/submission-workflow.md",
+        "提交逻辑",
+        "Bot 审核",
+        "bot review",
+        "Owner 豁免",
+        "绕过审核"
       ],
       "negative_keywords": [],
       "route_priority": 105,
@@ -226,30 +232,117 @@
     {
       "id": "R85",
       "task_type": "published_risk_models_sensitivities_and_macro_scenario_consumption",
-      "match_keywords": ["风险模型中心", "敏感性研究", "产品风险暴露", "宏观传导", "已发布情景", "确认发布", "预览不保存", "久期", "凸度", "risk-models", "scenario-transmission", "published-scenarios", "PublishedRiskPanel", "PublishedScenarioCenter", "ModelResearchService"],
-      "negative_keywords": ["historical regime identification only", "因子选股有效性"],
+      "match_keywords": [
+        "风险模型中心",
+        "敏感性研究",
+        "产品风险暴露",
+        "宏观传导",
+        "已发布情景",
+        "确认发布",
+        "预览不保存",
+        "久期",
+        "凸度",
+        "risk-models",
+        "scenario-transmission",
+        "published-scenarios",
+        "PublishedRiskPanel",
+        "PublishedScenarioCenter",
+        "ModelResearchService"
+      ],
+      "negative_keywords": [
+        "historical regime identification only",
+        "因子选股有效性"
+      ],
       "route_priority": 99,
-      "first_read_modules": ["published_risk_scenario_research"],
-      "expand_to_modules": ["factor_research_center", "backend_data_storage", "backend_portfolio_research", "frontend_allocation_workflows", "backend_regime_research"],
-      "pitfall_ids": ["P14", "P15", "P19", "P20"],
-      "expand_search_codes": ["read_frontend_backend_pair", "inspect_data_schema_contract"],
-      "stop_and_verify_codes": ["run_minimum_regression", "run_frontend_build_when_deps_available", "validate_ai_routing"],
-      "fact_check_codes": ["verify_api_payload_shape", "verify_typed_context_and_portfolio_snapshot"],
-      "scope_flags": ["subtree_only", "published_research", "fixed_signature_njit", "managed_data_disk", "persist_only_on_confirmed_publish", "transient_previews_and_impacts"]
+      "first_read_modules": [
+        "published_risk_scenario_research"
+      ],
+      "expand_to_modules": [
+        "factor_research_center",
+        "backend_data_storage",
+        "backend_portfolio_research",
+        "frontend_allocation_workflows",
+        "backend_regime_research"
+      ],
+      "pitfall_ids": [
+        "P14",
+        "P15",
+        "P19",
+        "P20"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression",
+        "run_frontend_build_when_deps_available",
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_typed_context_and_portfolio_snapshot"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "published_research",
+        "fixed_signature_njit",
+        "managed_data_disk",
+        "persist_only_on_confirmed_publish",
+        "transient_previews_and_impacts"
+      ]
     },
     {
       "id": "R84",
       "task_type": "product_timing_research_graph_execution_or_version_binding",
-      "match_keywords": ["产品择时", "择时算法", "择时研究", "timing_research", "TimingResearch", "next-open", "alpha-beta"],
-      "negative_keywords": ["Tushare download only"],
+      "match_keywords": [
+        "产品择时",
+        "择时算法",
+        "择时研究",
+        "timing_research",
+        "TimingResearch",
+        "next-open",
+        "alpha-beta"
+      ],
+      "negative_keywords": [
+        "Tushare download only"
+      ],
       "route_priority": 98,
-      "first_read_modules": ["product_timing_research"],
-      "expand_to_modules": ["backend_custom_indicator_service", "market_data_snapshot_lifecycle", "backend_api_shell", "frontend_app_shell", "frontend_investment_process_framework"],
-      "pitfall_ids": ["P07", "P12", "P13", "P14"],
-      "expand_search_codes": ["read_frontend_backend_pair", "inspect_data_schema_contract"],
-      "stop_and_verify_codes": ["run_minimum_regression", "run_frontend_build_when_deps_available", "validate_ai_routing"],
-      "fact_check_codes": ["verify_api_payload_shape", "verify_operator_causality_baseline", "verify_typed_context_and_portfolio_snapshot"],
-      "scope_flags": ["subtree_only", "real_data_required", "manual_investment_decision"]
+      "first_read_modules": [
+        "product_timing_research"
+      ],
+      "expand_to_modules": [
+        "backend_custom_indicator_service",
+        "market_data_snapshot_lifecycle",
+        "backend_api_shell",
+        "frontend_app_shell",
+        "frontend_investment_process_framework"
+      ],
+      "pitfall_ids": [
+        "P07",
+        "P12",
+        "P13",
+        "P14"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression",
+        "run_frontend_build_when_deps_available",
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "verify_operator_causality_baseline",
+        "verify_typed_context_and_portfolio_snapshot"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "real_data_required",
+        "manual_investment_decision"
+      ]
     },
     {
       "id": "R83",
@@ -1138,6 +1231,10 @@
         "strategic_allocation",
         "StrategicAllocationWorkspace",
         "InvestmentObjectivesWorkspace",
+        "cash_budget",
+        "risk_authorization",
+        "投资目标与边界",
+        "最低已验证参考等级",
         "CMA",
         "长期政策",
         "投资目标",
@@ -1151,7 +1248,11 @@
         "Black-Litterman",
         "black_litterman",
         "scenario_mixture",
-        "风险预算候选"
+        "风险预算候选",
+        "风险等级配置中心",
+        "RiskScale",
+        "risk-scales",
+        "风险标尺"
       ],
       "negative_keywords": [],
       "route_priority": 101,

@@ -16,7 +16,7 @@
       "name": "AI branch submission, review and merge protocol",
       "path": "branch_submission_rules.md",
       "kind": "submission_protocol",
-      "purpose": "Owns terminal-only PR submission: PR-only main/Dev, same-repository Dev into main, one native approval for ordinary mergers, and a PR-only approval exemption for owner KevinCJM. Codex comments are optional. Live deployment and permissions must be verified from GitHub.",
+      "purpose": "Owns terminal-only submission with PR-only main/Dev and same-repository Dev into main. Normal merges require trusted Bot approval of the latest HEAD, independently of local self-review and ordinary human approval. Only owner KevinCJM may use review exemptions; AI bypass of Bot review requires explicit human authorization tied to the PR, HEAD and findings, followed by replies with evidence before merging. The narrative workflow explains scope, commits, review, exceptions, merge verification, release and rollback. Existing GitHub configs enforce PR, native approval and branch direction, not Bot content or human-versus-AI identity.",
       "module_tags": [
         "submission",
         "branches",
@@ -26,12 +26,14 @@
         "governance"
       ],
       "entry_files": [
-        "branch_submission_rules.md"
+        "branch_submission_rules.md",
+        "docs/submission-workflow.md"
       ],
       "key_symbols": [],
       "child_modules": [],
       "first_read_files": [
-        "branch_submission_rules.md"
+        "branch_submission_rules.md",
+        "docs/submission-workflow.md"
       ],
       "then_check_files": [
         "AGENTS.md",
@@ -60,7 +62,11 @@
         "documented_policy_is_not_remote_enforcement",
         "author_cannot_approve_own_pr",
         "unrelated_dirty_files_in_submission",
-        "approval_exemption_must_not_include_pr_only_or_branch_direction"
+        "approval_exemption_must_not_include_pr_only_or_branch_direction",
+        "bot_completed_is_not_approval",
+        "stale_head_review_or_exception",
+        "owner_credentials_are_not_human_bypass_authorization",
+        "bot_gate_is_execution_protocol_not_native_check"
       ],
       "edit_risk": "medium",
       "blast_radius": [
@@ -89,7 +95,8 @@
           ".github/workflows/branch-policy.yml",
           ".github/branch-ruleset.json",
           ".github/main-branch-ruleset.json",
-          ".github/approval-ruleset.json"
+          ".github/approval-ruleset.json",
+          "docs/submission-workflow.md"
         ],
         "unsampled_paths": []
       }
@@ -4718,7 +4725,7 @@
       "name": "Investment objectives, CMA and immutable SAA policies",
       "path": "backend/strategic_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The product-first path and historical frontier remain. cma_application supplies frozen effective moments from manual, Black-Litterman or explicit probability-scenario assumptions to one policy search, funding diagnosis and TAA risk checks. Posterior mean uncertainty is not asset-return risk. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Saved research does not certify current implementation eligibility.",
+      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The product-first path and historical frontier remain. cma_application supplies frozen effective moments from manual, Black-Litterman or explicit probability-scenario assumptions to one policy search, funding diagnosis and TAA risk checks. Posterior mean uncertainty is not asset-return risk. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Mandate schema 2.0 separates shared cash budgets from the three success criteria, records explicitly confirmed policy snapshots and resolves risk caps from immutable scale references. The current objective workspace is a two-step user flow: objective with risk/cash constraints, then results/confirmation. It binds a research-date-valid RiskScaleVersion, derives a cash-constrained reference frontier from that scale's frozen reference inputs, and keeps C1-C5 anchored to the original scale. Reference research separates search from fixed-candidate validation and labels failed-search capital diagnostics as non-authorizing. Actual SAA rechecks funding independently; TAA consumes the frozen effective cash-role floor and reference expiry rather than inheriting a reference success probability. Saved research does not certify current implementation eligibility. Risk Scale Center publishes immutable reference assets, historical moments and C1-C5 boundaries, with revision-checked drafts, default pointers and retirement. The frontier and historical optimizer use one fixed-signature QP core; reference publication supports idempotent crash recovery.",
       "module_tags": [
         "SAA",
         "CMA",
@@ -4736,7 +4743,13 @@
         "frontend/src/components/strategic-scope",
         "frontend/src/services/strategicScope.ts",
         "frontend/src/services/institutionalContext.ts",
-        "frontend/src/services/cmaModelTypes.ts"
+        "frontend/src/services/cmaModelTypes.ts",
+        "backend/strategic_allocation/risk_scale_service.py",
+        "backend/strategic_allocation/risk_scale_routes.py",
+        "frontend/src/pages/RiskScaleCenter.tsx",
+        "frontend/src/pages/RiskScaleWorkspace.tsx",
+        "frontend/src/pages/InvestmentObjectivesCenter.tsx",
+        "frontend/src/components/risk-scales"
       ],
       "key_symbols": [
         "StrategicAllocationService",
@@ -4754,7 +4767,9 @@
         "docs/research/investment-mandate-research-design-2026-09-13.md",
         "backend/strategic_allocation/planning.py",
         "backend/strategic_allocation/goal_kernels.py",
-        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx"
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
+        "docs/research/risk-level-configuration-center-design-2026-09-16.md",
+        "docs/research/investment-objectives-simplification-design-2026-09-17.md"
       ],
       "then_check_files": [
         "docs/research/saa-taa-review-response-2026-09-12.md",
@@ -4791,7 +4806,47 @@
         "docs/research/bettersaataa-M1-report-2026-09-14.md",
         "docs/research/bettersaataa-M2-kernels-report-2026-09-14.md",
         "docs/research/bettersaataa-M2-integration-report-2026-09-14.md",
-        "docs/research/bettersaataa-M3-report-2026-09-14.md"
+        "docs/research/bettersaataa-M3-report-2026-09-14.md",
+        "backend/strategic_allocation/common_contracts.py",
+        "backend/strategic_allocation/contracts.py",
+        "backend/strategic_allocation/goal_kernels.py",
+        "backend/strategic_allocation/mandate_contracts.py",
+        "backend/strategic_allocation/mandate_diagnosis.py",
+        "backend/strategic_allocation/mandate_inputs.py",
+        "backend/strategic_allocation/mandate_kernels.py",
+        "backend/strategic_allocation/planning.py",
+        "backend/strategic_allocation/reference_contracts.py",
+        "backend/strategic_allocation/reference_evidence_kernels.py",
+        "backend/strategic_allocation/reference_inputs.py",
+        "backend/strategic_allocation/reference_sources.py",
+        "backend/strategic_allocation/risk_scale_contracts.py",
+        "backend/strategic_allocation/risk_scale_kernels.py",
+        "backend/strategic_allocation/risk_scale_registry.py",
+        "backend/strategic_allocation/risk_scale_routes.py",
+        "backend/strategic_allocation/risk_scale_service.py",
+        "backend/strategic_allocation/risk_scale_store.py",
+        "backend/strategic_allocation/routes.py",
+        "backend/strategic_allocation/service.py",
+        "docs/research/investment-mandate-risk-scale-acceptance-2026-09-16.md",
+        "docs/research/investment-mandate-risk-scale-implementation-design-2026-09-16.md",
+        "docs/research/investment-objectives-simplification-design-2026-09-17.md",
+        "docs/research/risk-level-configuration-center-design-2026-09-16.md",
+        "docs/research/risk-level-configuration-center-final-audit-2026-09-16.md",
+        "docs/research/risk-level-configuration-center-implementation-2026-09-16.md",
+        "docs/research/risk-scale-cash-asset-density-optimization-2026-09-17.md",
+        "frontend/src/services/mandateContract.generated.ts",
+        "frontend/src/services/mandateTypes.ts",
+        "frontend/src/services/riskScaleContract.generated.ts",
+        "frontend/src/services/riskScales.ts",
+        "frontend/src/services/strategicAllocation.ts",
+        "scripts/export_mandate_contracts.py",
+        "scripts/export_risk_scale_contracts.py",
+        "backend/frontier_moments.py",
+        "docs/research/pre-investment-dual-path-cma-saa-design-2026-09-16.md",
+        "docs/research/screenshots/mandate-boundaries-20260916",
+        "frontend/src/pages/RiskScaleCompare.tsx",
+        "frontend/src/pages/RiskScaleVersionView.tsx",
+        "docs/research/risk-mandate-submit-review-2026-09-18.md"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -4828,17 +4883,44 @@
         "frontend/src/components/strategic-allocation/PolicyCandidatesM2.test.tsx",
         "frontend/src/components/strategic-allocation/RiskBudgetEditor.test.tsx",
         "frontend/src/components/strategic-scope/StrategicScopeWorkspace.test.tsx",
-        "frontend/src/components/investment-mandate/InstitutionalFields.test.tsx",
         "frontend/src/app/allocationJourney.m1.test.tsx",
         "frontend/src/layouts/StageLayout.test.tsx",
         "frontend/e2e/better-saataa-01-04.spec.ts",
-        "frontend/e2e/bettersaataa-m1.spec.ts"
+        "frontend/e2e/bettersaataa-m1.spec.ts",
+        "backend/tests/benchmark_mandate_reference.py",
+        "backend/tests/benchmark_risk_scale.py",
+        "backend/tests/mandate_boundary_app.py",
+        "backend/tests/risk_scale_app.py",
+        "backend/tests/test_mandate_boundary_contracts.py",
+        "backend/tests/test_mandate_reference_diagnosis.py",
+        "backend/tests/test_risk_scale_frontier.py",
+        "backend/tests/test_risk_scale_independent_audit.py",
+        "backend/tests/test_risk_scale_reference.py",
+        "backend/tests/test_risk_scale_segmentation.py",
+        "backend/tests/test_risk_scale_service.py",
+        "backend/tests/test_risk_scale_storage.py",
+        "frontend/e2e/mandate-boundaries.spec.ts",
+        "frontend/e2e/risk-scales.spec.ts",
+        "frontend/src/components/investment-mandate/flowMonths.test.ts",
+        "frontend/src/components/risk-scales/ReferenceEditor.test.tsx",
+        "frontend/src/components/risk-scales/RiskScaleInputs.test.tsx",
+        "frontend/src/components/risk-scales/RiskScaleResults.test.tsx",
+        "frontend/src/pages/InvestmentObjectivesBoundaries.test.tsx",
+        "frontend/src/pages/InvestmentObjectivesCenter.test.tsx",
+        "frontend/src/pages/RiskScaleFlow.test.tsx",
+        "frontend/src/pages/RiskScaleStandalone.test.tsx",
+        "frontend/src/services/riskScales.test.ts",
+        "frontend/src/test/mandateBoundaryFixtures.ts",
+        "frontend/src/test/riskScaleFixtures.ts",
+        "frontend/e2e/helpers/mandates.ts"
       ],
       "related_configs": [
         "frontend/playwright.strategic.config.ts",
         "frontend/playwright.better-saataa.config.ts",
         "frontend/playwright.m1.config.ts",
-        "backend/tests/bettersaataa_m1_app.py"
+        "backend/tests/bettersaataa_m1_app.py",
+        "frontend/playwright.mandate.config.ts",
+        "frontend/playwright.risk-scales.config.ts"
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_strategic_allocation.py backend/tests/test_tactical_walk_forward.py backend/tests/test_frontier_grid.py -q",
@@ -4848,9 +4930,15 @@
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_investment_mandate.py backend/tests/test_mandate_diagnostic_integrity.py backend/tests/test_strategic_allocation.py -q",
         "npm run test --prefix frontend -- --run InvestmentObjectivesWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx strategicAllocation.test.ts",
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_bettersaataa_m1.py backend/tests/test_bettersaataa_scope_journey.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_risk_budget.py backend/tests/test_bettersaataa_final_audit.py -q",
-        "npm run test --prefix frontend -- --run StrategicAllocationModels.test.tsx CmaModelEditor.test.tsx PolicyCandidatesM2.test.tsx StrategicScopeWorkspace.test.tsx InstitutionalFields.test.tsx StageLayout.test.tsx",
+        "npm run test --prefix frontend -- --run StrategicAllocationModels.test.tsx CmaModelEditor.test.tsx PolicyCandidatesM2.test.tsx StrategicScopeWorkspace.test.tsx StageLayout.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1",
-        "npm run test:e2e --prefix frontend -- --config=playwright.m1.config.ts --workers=1"
+        "npm run test:e2e --prefix frontend -- --config=playwright.m1.config.ts --workers=1",
+        "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_risk_scale_frontier.py backend/tests/test_risk_scale_independent_audit.py backend/tests/test_risk_scale_reference.py backend/tests/test_risk_scale_segmentation.py backend/tests/test_risk_scale_service.py backend/tests/test_risk_scale_storage.py backend/tests/test_mandate_boundary_contracts.py backend/tests/test_mandate_reference_diagnosis.py -q",
+        "npm run test --prefix frontend -- --run RiskScale InvestmentObjectives riskScales ReferenceEditor flowMonths",
+        "npm run test:e2e --prefix frontend -- --config=playwright.risk-scales.config.ts",
+        "npm run test:e2e --prefix frontend -- --config=playwright.mandate.config.ts",
+        "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_mandate_contracts.py --check",
+        "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_risk_scale_contracts.py --check"
       ],
       "pitfall_ids": [
         "P04",

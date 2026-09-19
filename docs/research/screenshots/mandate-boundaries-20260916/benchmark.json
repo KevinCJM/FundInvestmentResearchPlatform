@@ -1,0 +1,60 @@
+{
+  "platform": "macOS-15.6.1-arm64-arm-64bit",
+  "candidates": 101,
+  "months": 120,
+  "paths": 2000,
+  "shared_input_bytes": 1923384,
+  "draws_share_owner_memory": true,
+  "input_writeable": false,
+  "runs": [
+    {
+      "seconds": 0.19263649999629706,
+      "selected_node": -1,
+      "output_bytes": 2424,
+      "nrt_allocations": 6
+    },
+    {
+      "seconds": 0.19608087500091642,
+      "selected_node": -1,
+      "output_bytes": 2424,
+      "nrt_allocations": 6
+    },
+    {
+      "seconds": 0.19273062504362315,
+      "selected_node": -1,
+      "output_bytes": 2424,
+      "nrt_allocations": 6
+    }
+  ],
+  "process_peak_rss_bytes_including_imports_and_warmup": 496730112,
+  "execution": {
+    "backend": "numba_njit_fixed_signature",
+    "kernel_version": "mandate-reference-search/1.0.0",
+    "complete": true,
+    "fully_warmed": true,
+    "nopython": true,
+    "python_fallback": 0,
+    "object_mode": 0,
+    "request_time_compilation": 0,
+    "kernel_signatures": {
+      "reference_candidate_checks_kernel": [
+        "(Array(float64, 2, 'A', True, aligned=True), Array(int64, 1, 'A', True, aligned=True), Array(float64, 1, 'A', True, aligned=True), Array(float64, 2, 'A', True, aligned=True), Array(float64, 1, 'A', True, aligned=True), Array(float64, 2, 'A', True, aligned=True), Array(float64, 2, 'A', True, aligned=True), Array(float64, 1, 'A', True, aligned=True), Array(float64, 1, 'A', True, aligned=True), Array(float64, 1, 'A', True, aligned=True), float64, float64, float64, float64, float64, float64, Array(float64, 1, 'A', True, aligned=True), float64)"
+      ],
+      "reference_funding_search_kernel": [
+        "(Array(float64, 2, 'A', True, aligned=True), Array(int64, 1, 'A', True, aligned=True), Array(float64, 3, 'A', True, aligned=True), float64, Array(float64, 1, 'A', True, aligned=True), Array(float64, 1, 'A', True, aligned=True), float64, float64, float64, int64, int64)"
+      ],
+      "minimum_reference_candidate_kernel": [
+        "(Array(float64, 2, 'A', True, aligned=True), Array(int64, 1, 'A', True, aligned=True))"
+      ],
+      "diagnostic_reference_candidate_kernel": [
+        "(Array(float64, 2, 'A', True, aligned=True), Array(int64, 1, 'A', True, aligned=True), Array(float64, 2, 'A', True, aligned=True))"
+      ]
+    },
+    "fingerprint": "b4267cd90cfdc0cbcecd581c181bb2e624b5f7912199f7c7ebf59120807c7f76"
+  },
+  "limitations": [
+    "Peak RSS includes imports and startup warmup, not just this kernel.",
+    "NRT counts native allocations; no zero-allocation claim is made.",
+    "No candidate-by-path-by-month result cube is allocated."
+  ]
+}

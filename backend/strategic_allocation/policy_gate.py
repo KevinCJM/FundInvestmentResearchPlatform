@@ -1,21 +1,48 @@
 """Shared preview/application gate for an adopted strategic research policy."""
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 
-from backend.custom_indicators.errors import ValidationError
+from backend.custom_indicators.errors import IndicatorDomainError, ValidationError
+from backend.data_storage import StorageError
 from . import kernels, institution_kernels
 from .institution import review_blockers
 from .sources import verify_strategic_snapshot
 from .cma_application import frozen_policy_assumptions
+from .mandate_inputs import cash_success_required, require_resolved_authorization
 
 
-def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str) -> dict | None:
+def _current_scale_blockers(reference: dict | None, strategic_root: Path | None, data_dir: Path | None) -> list[str]:
+    if not reference:
+        return []
+    if strategic_root is None or data_dir is None:
+        return ["无法核对风险标尺当前状态，历史研究可读，暂不能用于当前产品应用。"]
+    from backend.sensitivity.repository import ArtifactRepository
+    from .reference_inputs import ReferenceInputs
+    from .reference_sources import ReferenceSources
+    from .risk_scale_service import RiskScaleService
+    from .risk_scale_store import RiskScaleStore
+    root = Path(strategic_root) / "strategic_allocation"
+    artifacts = ArtifactRepository(root / "artifacts")
+    reader = RiskScaleService(artifacts, RiskScaleStore(root), ReferenceInputs(artifacts, ReferenceSources(data_dir)))
+    try:
+        version = reader.get_version(reference["id"])
+        if version["content_hash"] != reference["content_hash"]:
+            return ["风险标尺冻结指纹不一致，不能用于当前产品应用。"]
+        return [item["message"] for item in version["current_eligibility"]["blockers"]]
+    except (IndicatorDomainError, StorageError, OSError, ValueError, KeyError):
+        return ["风险标尺当前状态或冻结来源不可读，暂不能用于当前产品应用。"]
+
+
+def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str,
+                 *, strategic_root: Path | None = None, data_dir: Path | None = None) -> dict | None:
     policy = baseline.get("policy")
     if policy is None:
         return None  # Historical baselines do not acquire fabricated policy evidence.
     kernels.require_ready()
     mandate = policy["mandate"]
+    require_resolved_authorization(mandate)
     assumptions = frozen_policy_assumptions(policy)
     names = [asset["id"] for asset in baseline["assets"]]
     if set(weights) != set(names) or [a["id"] for a in assumptions["assets"]] != names:
@@ -37,7 +64,10 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
         violations.append("当前目标在冻结 CMA 下的预期主动风险超过投资目标的政策预算。")
     if metrics[1] > mandate["max_volatility"] + 1e-10:
         violations.append("当前目标在冻结 CMA 下的预期波动超过投资目标上限。")
-    if mandate.get("objective_kind", "absolute_return") == "absolute_return" and metrics[0] < mandate["target_return"] - 1e-10:
+    return_floor = mandate.get("effective_target_return")
+    if return_floor is None and mandate.get("objective_kind", "absolute_return") == "absolute_return":
+        return_floor = mandate["target_return"]
+    if return_floor is not None and metrics[0] < return_floor - 1e-10:
         violations.append("当前目标在冻结CMA下的预期收益低于投资授权下限。")
     benchmark_check = None
     if mandate.get("benchmark"):
@@ -56,13 +86,16 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
             violations.append("当前目标相对投资授权基准的主动风险超过上限。")
     institution = mandate.get("institutional_context")
     cash_check = None
-    if institution is not None:
+    modern = mandate.get("schema_version", "1.0") == "2.0"
+    if institution is not None or modern:
         institution_kernels.require_ready()
         eligible = np.asarray([a["role"] == "liquidity" and a["liquidity"] == "liquid" for a in assumptions["assets"]], dtype=np.bool_)
         values.flags.writeable = False
         eligible.flags.writeable = False
         cash_weight = institution_kernels.cash_weight_kernel(values, eligible)
-        floor = institution["cash_reserve_weight"]
+        floor = mandate.get("effective_cash_reserve_weight") if modern else institution["cash_reserve_weight"]
+        if floor is None or not np.isfinite(floor) or floor < 0 or floor > 1:
+            raise ValidationError("SAA_CASH_EVIDENCE", "冻结政策缺少有效现金用途下限，不能按零处理。")
         cash_check = {"weight": float(cash_weight), "minimum": floor}
         if cash_weight < floor - 1e-10:
             violations.append("当前目标低于冻结的现金用途下限；可交易风险资产不能替代现金储备。")
@@ -76,14 +109,16 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
         if mapping and not mapping["definition"]["as_of"] <= str(date.today()) < mapping["definition"]["valid_until"]:
             mapping_blockers.append("实施映射尚未生效或已到复核日。")
     expires = policy["expires_on"]
+    scale_blockers = _current_scale_blockers((mandate.get("risk_authorization") or {}).get("risk_scale_ref"), strategic_root, data_dir)
     if as_of < baseline["as_of"] or as_of >= expires:
         violations.append("政策尚未适用于本研究日或已到复核日期，请重新确认长期政策。")
     return {"within_limits": not violations, "violations": violations,
-            "current_application_eligible": str(date.today()) < expires and not violations and not reviews and not current_reviews and not mapping_blockers,
+            "current_application_eligible": str(date.today()) < expires and not violations and not reviews and not current_reviews and not mapping_blockers and not scale_blockers,
+            "risk_scale_blockers": scale_blockers,
             "implementation_blockers": mapping_blockers,
             "manual_review_blockers": reviews, "current_manual_review_blockers": current_reviews, "cash_reserve_check": cash_check,
             "benchmark_check": benchmark_check,
-            "goal_diagnostic_scope": "strategic_plan_only_not_tactical_probability_guarantee" if mandate.get("funding_plan") else None,
+            "goal_diagnostic_scope": "strategic_plan_only_not_tactical_probability_guarantee" if cash_success_required(mandate) else None,
             "expected_return": float(metrics[0]), "expected_volatility": float(metrics[1]), "max_volatility": mandate["max_volatility"],
             "expected_tracking_error": float(expected_tracking_error),
             "requested_tracking_error_limit": float(tracking_error_limit) if np.isfinite(tracking_error_limit) else None,
@@ -91,8 +126,11 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
             "cma_id": policy["cma_id"], "mandate_id": policy["mandate_id"], "execution": kernels.execution_audit()}
 
 
-def require_policy_application(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str) -> None:
-    check = check_policy(baseline, weights, tracking_error_limit, as_of)
+def require_policy_application(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str,
+                               *, strategic_root: Path | None = None, data_dir: Path | None = None) -> None:
+    check = check_policy(baseline, weights, tracking_error_limit, as_of, strategic_root=strategic_root, data_dir=data_dir)
+    if check and check["risk_scale_blockers"]:
+        raise ValidationError("SAA_RISK_SCALE_INELIGIBLE", "；".join(check["risk_scale_blockers"]))
     if check and not check["within_limits"]:
         raise ValidationError("SAA_POLICY_LIMIT", "；".join(check["violations"]))
     if check and (check["manual_review_blockers"] or check["current_manual_review_blockers"]):

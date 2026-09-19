@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test'
+import { saveMandateFixture } from './helpers/mandates'
 import { auditTextContrast } from './helpers/contrast'
 
-test('real M1 objective → no-product scope → forward SAA → explicit mapping; responsive and readonly', async ({ page }, info) => {
+test('real M1 objective → no-product scope → forward SAA → explicit mapping; responsive and readonly', async ({ page, request }, info) => {
   const errors: string[] = [], posts: string[] = []
   page.on('pageerror', e => errors.push(e.message))
   await page.route('**/api/**', async route => {
@@ -10,31 +11,20 @@ test('real M1 objective → no-product scope → forward SAA → explicit mappin
     const response = await route.fetch({ url: `http://127.0.0.1:8129${url.pathname}${url.search}` })
     await route.fulfill({ response })
   })
-  await page.goto('/pre-investment/objectives')
-  await page.getByLabel(/资金用途场景/).selectOption('corporate_treasury')
-  await page.getByLabel('资金用途说明').fill('经营储备与长期风险资金分开研究')
-  await page.getByLabel(/组合内现金用途下限/).fill('20')
-  await page.getByText('经济状况与人工核验', { exact: true }).click()
-  await page.getByRole('checkbox', { name: '提供经济状况研究快照' }).check()
-  await page.getByLabel('经济快照来源').fill('离线浏览器测试经济快照')
-  await page.getByLabel(/可投资资产（CNY）/).fill('1000000')
-  await page.getByLabel(/组合外资产（CNY）/).fill('200000')
-  await page.getByLabel(/已确认负债（CNY）/).fill('300000')
-  await page.getByLabel('目标名称').fill('M1企业现金研究')
-  await page.getByLabel(/最低预期年收益/).fill('0')
-  await page.getByRole('button', { name: '下一步：风险与限制' }).click()
-  await page.getByLabel('最高预期年波动（%）').fill('20')
-  await page.getByLabel(/风险与流动性边界的依据/).fill('明确现金支付与损失承受能力边界')
-  await page.getByRole('button', { name: '下一步：量化诊断' }).click()
-  await page.getByRole('button', { name: '运行目标诊断' }).click()
-  const diagnosis = page.getByRole('region', { name: '机构经济状况诊断' })
-  await expect(diagnosis).toContainText('900,000')
-  await expect(diagnosis).toContainText('未提供完整数据')
-  await expect(diagnosis).toContainText('尚未完成人工核验')
-  await page.getByRole('button', { name: '下一步：核对与确认' }).click()
-  await page.getByRole('checkbox', { name: /我已核对输入/ }).check()
-  await page.getByRole('button', { name: '保存新目标版本' }).click()
-  await page.getByRole('link', { name: /下一步：确定投资范围/ }).click()
+  const day = new Date().toISOString().slice(0, 10)
+  const review = new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10)
+  const saved = await saveMandateFixture(request, 'http://127.0.0.1:8129/api/strategic-allocation', {
+    definition: { name: 'M1企业现金研究', as_of: day, review_date: review, target_return: 0, max_volatility: .2,
+      boundary_reason: '明确现金支付与损失承受能力边界',
+      institutional_context: { investor_type: 'corporate_treasury', purpose: '经营储备与长期风险资金分开研究',
+        cash_reserve_weight: .2, balance_sheet: { as_of: day, currency: 'CNY', source: '离线浏览器测试经济快照',
+          investable_assets: 1000000, outside_assets: 200000, confirmed_liabilities: 300000 } } },
+  })
+  const diagnosis = saved.preview.institutional_diagnostics
+  expect(diagnosis.balance_sheet.net_assets_after_confirmed_liabilities).toBe(900000)
+  expect(diagnosis.balance_sheet.uncalled_commitments).toBeNull()
+  expect(diagnosis.review_blockers).toHaveLength(5)
+  await page.goto(`/pre-investment/product-pool?mandate=${saved.version.id}`)
   await page.getByRole('link', { name: '先做战略研究：独立资产范围' }).click()
   await page.getByLabel('战略范围名称').fill('M1独立战略')
   await page.getByLabel('战略范围来源').fill('明确的离线风险与流动性研究')
