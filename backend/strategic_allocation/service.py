@@ -210,8 +210,6 @@ class StrategicAllocationService:
             payload["reference_diagnosis"] = reference
             risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
             if reference["status"] == "validated":
-                payload["status"] = "diagnosed"
-                payload["diagnosis_scope"] = "universal_reference"
                 if risk_decision["selection_pending"]:
                     level = reference["minimum_tested_feasible_level"]
                     if level is not None:
@@ -224,6 +222,16 @@ class StrategicAllocationService:
                             version = self.risk_scales.get_version(risk_decision["risk_scale_ref"]["id"])
                             definition["benchmark"] = None
                             _freeze_reference_benchmark(definition, version, level)
+                            reference = diagnose_reference(self, request, definition, risk_decision)
+                            payload["reference_diagnosis"] = reference
+                            risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
+                if reference["status"] == "validated":
+                    payload["status"] = "diagnosed"
+                    payload["diagnosis_scope"] = "universal_reference"
+                    if not risk_decision["selection_pending"]:
+                        risk_decision["status"] = "recommendation_validated"
+                else:
+                    payload["status"] = "needs_revision"
             elif reference["status"] in {"validation_failed", "no_validated_candidate_in_search", "constraint_conflict", "solver_failed"}:
                 payload["status"] = "needs_revision"
         if request.cma_id and definition.get("max_volatility") is not None:

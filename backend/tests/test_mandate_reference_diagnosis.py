@@ -178,6 +178,24 @@ def test_funding_suggestion_refreezes_automatic_benchmark_at_recommended_level(r
     assert weights == pytest.approx(expected)
 
 
+def test_funding_suggestion_revalidates_against_refrozen_benchmark(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    calls = []
+
+    def diagnose(*_args, **_kwargs):
+        definition = _args[2]
+        calls.append(definition.get("benchmark"))
+        return {"status": "validated", "minimum_tested_feasible_level": 1}
+
+    monkeypatch.setattr(service_module, "diagnose_reference", diagnose)
+    service.preview_mandate(body)
+    assert len(calls) == 2
+    assert calls[0]["source"] == calls[1]["source"] == "risk_scale_reference"
+    assert calls[0]["weights"] != calls[1]["weights"]
+
+
 def test_relative_goal_uses_selected_risk_scale_representative_as_frozen_benchmark(reference):
     service, scale, _ = reference
     risk = {"mode": "manual_level", "source": "risk_scale_selection", "authorized_max_level": 3,
