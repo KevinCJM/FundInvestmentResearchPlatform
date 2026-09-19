@@ -68,7 +68,7 @@ class ReferenceSources:
                          | {'reference_capability': self._capability(item)})
         return {'items': items, 'total': payload['total'], 'offset': offset, 'limit': limit, 'problems': []}
 
-    def load(self, component, request):
+    def load(self, component, request, *, snapshot=None):
         code = component.series_id.split(':')[-1]
         catalog = self.series.catalog(kind=component.kind, query=code, offset=0, limit=200)
         item = next((x for x in catalog['items'] if x['id'] == component.series_id), None)
@@ -77,7 +77,7 @@ class ReferenceSources:
             raise ValidationError('REFERENCE_SOURCE_UNAVAILABLE', '来源或所需历史字段不可用，请在数据中心核验或更换来源。')
         if _WARMED_PID != os.getpid():
             raise RuntimeError('REFERENCE_SOURCE_NOT_READY')
-        snapshot, _ = self.series._active_snapshot()
+        snapshot = snapshot or self.active_snapshot()
         field = next((x for x in item['fields'] if isinstance(x, dict) and x.get('name', x.get('id')) == component.field), {})
         binding = {**item.get('binding_parameters', {}), **field.get('binding_parameters', {}),
                    'kind': component.kind, 'field': component.field, 'ts_code': code,

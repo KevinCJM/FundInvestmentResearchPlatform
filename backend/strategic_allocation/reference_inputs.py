@@ -149,13 +149,14 @@ class ReferenceInputs:
         evidence.require_ready()
         source_cache = {}
         common_dates = None
+        snapshot = self.sources.active_snapshot()
         for asset in request.assets:
             if asset.asset_type == 'cash':
                 continue
             for component in asset.components:
                 source_key = digest_json(component.model_dump(exclude={'weight'}))
                 if source_key not in source_cache:
-                    source = self.sources.load(component, request)
+                    source = self.sources.load(component, request, snapshot=snapshot)
                     dates = np.asarray(source['dates'], dtype='datetime64[D]').astype(np.int64)
                     if dates.ndim != 1 or dates.size < 21 or np.any(dates[1:] <= dates[:-1]):
                         raise ValidationError('REFERENCE_SOURCE_DATES', '参考序列日期不足、重复或未按时间递增。')
@@ -166,7 +167,7 @@ class ReferenceInputs:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_SHORT', '所选非现金代理的历史数据交集不足 21 个观测日，请更换代理。')
         if common_dates.size > 10000:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_LONG', '共同历史区间超过 10000 个观测日，当前风险标尺不支持更长历史。')
-        _validate_sse_calendar(self.sources.active_snapshot(), common_dates)
+        _validate_sse_calendar(snapshot, common_dates)
         days = common_dates.astype('datetime64[D]').astype(str).tolist()
         panel = np.empty((common_dates.size - 1, len(request.assets)), dtype=np.float64)
         provenance = []
