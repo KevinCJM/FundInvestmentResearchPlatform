@@ -103,7 +103,10 @@ def _validate_sse_calendar(snapshot_dir, observed_dates):
     expected_calendar = pd.date_range(observed[0], observed[-1], freq="D")
     if not calendar_window.equals(expected_calendar):
         raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历未覆盖研究区间内的全部自然日，不能证明开放日样本连续。")
-    open_mask = pd.to_numeric(calendar["is_open"], errors="coerce").eq(1).to_numpy()
+    open_values = pd.to_numeric(calendar["is_open"], errors="coerce")
+    if open_values.isna().any() or not open_values.isin([0, 1]).all():
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历的 is_open 必须全部为 0 或 1。")
+    open_mask = open_values.eq(1).to_numpy()
     expected = pd.DatetimeIndex(parsed.to_numpy()[open_mask]).sort_values()
     expected = expected[(expected >= observed[0]) & (expected <= observed[-1])]
     missing = expected.difference(observed)

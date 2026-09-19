@@ -62,6 +62,17 @@ def test_incomplete_sse_calendar_is_rejected_even_when_sources_match(setup):
     assert response.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_INVALID'
 
 
+def test_invalid_sse_calendar_open_flag_is_rejected(setup):
+    svc,client,source=setup
+    path=svc.references.sources.data_dir/'synthetic-test-only'/'trade_day_df.parquet'
+    calendar=pd.read_parquet(path)
+    calendar.loc[calendar.index[20],'is_open']=2
+    calendar.to_parquet(path,index=False)
+    response=client.post(R+'/preview',json=source)
+    assert response.status_code==422
+    assert response.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_INVALID'
+
+
 def test_missing_date_shrinks_intersection_and_unknown_announcement_rejected(setup):
     svc,client,source=setup
     path=svc.references.sources.data_dir/'synthetic-test-only'/'etf_daily_df.parquet'
