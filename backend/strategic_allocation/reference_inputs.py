@@ -149,14 +149,14 @@ class ReferenceInputs:
         evidence.require_ready()
         source_cache = {}
         common_dates = None
-        snapshot = self.sources.active_snapshot()
+        snapshot, manifest = self.sources.active_snapshot_context()
         for asset in request.assets:
             if asset.asset_type == 'cash':
                 continue
             for component in asset.components:
                 source_key = digest_json(component.model_dump(exclude={'weight'}))
                 if source_key not in source_cache:
-                    source = self.sources.load(component, request, snapshot=snapshot)
+                    source = self.sources.load(component, request, snapshot=snapshot, manifest=manifest)
                     dates = np.asarray(source['dates'], dtype='datetime64[D]').astype(np.int64)
                     if dates.ndim != 1 or dates.size < 21 or np.any(dates[1:] <= dates[:-1]):
                         raise ValidationError('REFERENCE_SOURCE_DATES', '参考序列日期不足、重复或未按时间递增。')

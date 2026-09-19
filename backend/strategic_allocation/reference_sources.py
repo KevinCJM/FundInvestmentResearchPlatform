@@ -24,6 +24,9 @@ class ReferenceSources:
         snapshot, _ = self.series._active_snapshot()
         return snapshot
 
+    def active_snapshot_context(self):
+        return self.series._active_snapshot()
+
     def warm(self):
         global _WARMED_PID
         result = warm_research_series_numba_kernels()
@@ -68,16 +71,19 @@ class ReferenceSources:
                          | {'reference_capability': self._capability(item)})
         return {'items': items, 'total': payload['total'], 'offset': offset, 'limit': limit, 'problems': []}
 
-    def load(self, component, request, *, snapshot=None):
+    def load(self, component, request, *, snapshot=None, manifest=None):
+        snapshot, manifest = (self.active_snapshot_context()
+                              if snapshot is None or manifest is None
+                              else (snapshot, manifest))
         code = component.series_id.split(':')[-1]
-        catalog = self.series.catalog(kind=component.kind, query=code, offset=0, limit=200)
+        catalog = self.series.catalog(kind=component.kind, query=code, offset=0, limit=200,
+                                      snapshot=snapshot, manifest=manifest)
         item = next((x for x in catalog['items'] if x['id'] == component.series_id), None)
         capability = self._capability(item) if item is not None else {'available': False, 'supported_fields': []}
         if item is None or not capability['available'] or component.field not in capability['supported_fields']:
             raise ValidationError('REFERENCE_SOURCE_UNAVAILABLE', '来源或所需历史字段不可用，请在数据中心核验或更换来源。')
         if _WARMED_PID != os.getpid():
             raise RuntimeError('REFERENCE_SOURCE_NOT_READY')
-        snapshot = snapshot or self.active_snapshot()
         field = next((x for x in item['fields'] if isinstance(x, dict) and x.get('name', x.get('id')) == component.field), {})
         binding = {**item.get('binding_parameters', {}), **field.get('binding_parameters', {}),
                    'kind': component.kind, 'field': component.field, 'ts_code': code,

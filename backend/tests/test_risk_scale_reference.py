@@ -187,6 +187,17 @@ def test_confirmation_requires_literal_true(setup):
         assert r.status_code==422
 
 
+def test_reference_load_uses_pinned_catalog_snapshot(setup,monkeypatch):
+    svc,_,source=setup
+    request=ReferenceInputRequest.model_validate(source)
+    component=request.assets[1].components[0]
+    snapshot, manifest=svc.references.sources.active_snapshot_context()
+    monkeypatch.setattr(svc.references.sources.series, '_active_snapshot',
+                        lambda: (_ for _ in ()).throw(AssertionError('active snapshot changed during load')))
+    loaded=svc.references.sources.load(component,request,snapshot=snapshot,manifest=manifest)
+    assert loaded['identity']['series_id']==component.series_id
+
+
 def test_raw_resolver_used_without_display_profile_or_numeric_json_roundtrip(setup,monkeypatch):
     svc,client,source=setup
     monkeypatch.setattr(svc.references.sources.series,'profile',lambda **kwargs: (_ for _ in ()).throw(AssertionError('unused display statistics')))
