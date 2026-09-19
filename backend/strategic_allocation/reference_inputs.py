@@ -4,6 +4,8 @@ import hashlib
 import json
 from datetime import date
 import numpy as np
+import pandas as pd
+
 from backend.custom_indicators.errors import ConflictError, ValidationError
 from backend.pit.context import view_override
 from backend.sensitivity.repository import ArtifactRepository, digest_json
@@ -78,6 +80,45 @@ def _rebalance_reset_flags(days: list[str], rule: str) -> np.ndarray:
     return result
 
 
+def _validate_sse_calendar(snapshot_dir, observed_dates):
+    path = snapshot_dir / "trade_day_df.parquet"
+    if not path.is_file():
+        raise ValidationError("REFERENCE_SSE_CALENDAR_REQUIRED", "缺少 SSE 交易日日历，无法证明日频参考样本连续。")
+    try:
+        calendar = pd.read_parquet(path, columns=["exchange", "cal_date", "is_open"])
+    except (OSError, ValueError, KeyError) as exc:
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历无法读取，不能继续构建日频参考样本。") from exc
+    calendar = calendar.loc[calendar["exchange"].astype(str).str.upper() == "SSE"]
+    raw_dates = calendar["cal_date"]
+    if pd.api.types.is_datetime64_any_dtype(raw_dates):
+        parsed = pd.to_datetime(raw_dates, errors="coerce").dt.normalize()
+    else:
+        compact = raw_dates.astype(str).str.replace("-", "", regex=False).str[:8]
+        parsed = pd.to_datetime(compact, format="%Y%m%d", errors="coerce").dt.normalize()
+    observed = pd.DatetimeIndex(np.asarray(observed_dates).astype("datetime64[D]")).normalize().unique().sort_values()
+    if parsed.isna().any() or parsed.duplicated().any():
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历包含无效或重复日期，不能继续构建日频参考样本。")
+    calendar_dates = pd.DatetimeIndex(parsed.to_numpy()).sort_values()
+    calendar_window = calendar_dates[(calendar_dates >= observed[0]) & (calendar_dates <= observed[-1])]
+    expected_calendar = pd.date_range(observed[0], observed[-1], freq="D")
+    if not calendar_window.equals(expected_calendar):
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历未覆盖研究区间内的全部自然日，不能证明开放日样本连续。")
+    open_values = pd.to_numeric(calendar["is_open"], errors="coerce")
+    if open_values.isna().any() or not open_values.isin([0, 1]).all():
+        raise ValidationError("REFERENCE_SSE_CALENDAR_INVALID", "SSE 交易日日历的 is_open 必须全部为 0 或 1。")
+    open_mask = open_values.eq(1).to_numpy()
+    expected = pd.DatetimeIndex(parsed.to_numpy()[open_mask]).sort_values()
+    expected = expected[(expected >= observed[0]) & (expected <= observed[-1])]
+    missing = expected.difference(observed)
+    unexpected = observed.difference(expected)
+    if len(missing) or len(unexpected):
+        diagnostics = ([{"code": "missing_trading_day", "date": stamp.strftime("%Y-%m-%d")} for stamp in missing[:20]]
+                       + [{"code": "unexpected_observation_day", "date": stamp.strftime("%Y-%m-%d")} for stamp in unexpected[:20]])
+        raise ValidationError("REFERENCE_SSE_CALENDAR_GAP",
+            f"共同参考样本与 SSE 开放日不连续：缺少 {len(missing)} 个开放日，含 {len(unexpected)} 个非开放日观察。",
+            diagnostics=diagnostics)
+
+
 def confirm_warnings(preview, acknowledged):
     required = {x['code'] for x in preview['warnings']}
     if not required.issubset(set(acknowledged)):
@@ -118,13 +159,14 @@ class ReferenceInputs:
         evidence.require_ready()
         source_cache = {}
         common_dates = None
+        snapshot, manifest = self.sources.active_snapshot_context()
         for asset in request.assets:
             if asset.asset_type == 'cash':
                 continue
             for component in asset.components:
                 source_key = digest_json(component.model_dump(exclude={'weight'}))
                 if source_key not in source_cache:
-                    source = self.sources.load(component, request)
+                    source = self.sources.load(component, request, snapshot=snapshot, manifest=manifest)
                     dates = np.asarray(source['dates'], dtype='datetime64[D]').astype(np.int64)
                     if dates.ndim != 1 or dates.size < 21 or np.any(dates[1:] <= dates[:-1]):
                         raise ValidationError('REFERENCE_SOURCE_DATES', '参考序列日期不足、重复或未按时间递增。')
@@ -135,6 +177,7 @@ class ReferenceInputs:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_SHORT', '所选非现金代理的历史数据交集不足 21 个观测日，请更换代理。')
         if common_dates.size > 10000:
             raise ValidationError('REFERENCE_INTERSECTION_TOO_LONG', '共同历史区间超过 10000 个观测日，当前风险标尺不支持更长历史。')
+        _validate_sse_calendar(snapshot, common_dates)
         days = common_dates.astype('datetime64[D]').astype(str).tolist()
         panel = np.empty((common_dates.size - 1, len(request.assets)), dtype=np.float64)
         provenance = []

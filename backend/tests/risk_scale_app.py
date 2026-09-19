@@ -43,7 +43,11 @@ def seed_sources(root: Path):
     pd.DataFrame(index_catalog).to_parquet(snapshot/'index_catalog_df.parquet',index=False)
     pd.DataFrame([{'source_api':'index_daily','ts_code':c,'first_date':days[0], 'latest_date':days[-1],
         'rows':len(days),'domestic_trade_day_coverage':1.0} for c in [*codes, extra_index_code]]).to_parquet(snapshot/'index_coverage_snapshot.parquet',index=False)
-    pd.DataFrame({'exchange':['SSE']*len(days),'is_open':[1]*len(days),'cal_date':days}).to_parquet(root/'trade_day_df.parquet', index=False)
+    calendar_days = pd.date_range(days[0], days[-1], freq='D')
+    calendar = pd.DataFrame({'exchange':['SSE']*len(calendar_days),
+        'is_open':[int(day.dayofweek < 5) for day in calendar_days], 'cal_date':calendar_days})
+    calendar.to_parquet(snapshot/'trade_day_df.parquet', index=False)
+    calendar.to_parquet(root/'trade_day_df.parquet', index=False)
     files = {p.name: {'status':'passed'} for p in snapshot.iterdir()}
     (root/'tushare_active.json').write_text(json.dumps({'schema_version':1,'snapshot_dir':snapshot.name,
         'activated_at':str(date.today())+'T00:00:00+00:00','files':files,'validation':{'status':'passed','datasets':{}}}))

@@ -51,17 +51,38 @@ def test_reference_day_is_automatic_from_pit_or_today(setup):
     assert with_pit.json()['quality']['intersection_end']<=str(pit_day)
 
 
+def test_incomplete_sse_calendar_is_rejected_even_when_sources_match(setup):
+    svc,client,source=setup
+    path=svc.references.sources.data_dir/'synthetic-test-only'/'trade_day_df.parquet'
+    calendar=pd.read_parquet(path)
+    calendar=calendar.drop(index=[calendar.index[20]])
+    calendar.to_parquet(path,index=False)
+    response=client.post(R+'/preview',json=source)
+    assert response.status_code==422
+    assert response.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_INVALID'
+
+
+def test_invalid_sse_calendar_open_flag_is_rejected(setup):
+    svc,client,source=setup
+    path=svc.references.sources.data_dir/'synthetic-test-only'/'trade_day_df.parquet'
+    calendar=pd.read_parquet(path)
+    calendar.loc[calendar.index[20],'is_open']=2
+    calendar.to_parquet(path,index=False)
+    response=client.post(R+'/preview',json=source)
+    assert response.status_code==422
+    assert response.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_INVALID'
+
+
 def test_missing_date_shrinks_intersection_and_unknown_announcement_rejected(setup):
     svc,client,source=setup
     path=svc.references.sources.data_dir/'synthetic-test-only'/'etf_daily_df.parquet'
     frame=pd.read_parquet(path)
     original=frame.copy()
     target=frame.index[frame['ts_code']=='900002.SH'][12]
-    baseline=client.post(R+'/preview',json=source).json()['quality']['observations']
     frame.drop(index=[target]).to_parquet(path,index=False)
     r=client.post(R+'/preview',json=source)
-    assert r.status_code==200,r.json()
-    assert r.json()['quality']['observations']==baseline-1
+    assert r.status_code==422,r.json()
+    assert r.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_GAP'
     # Restore a complete market series, then make one common-date information clock unknown.
     target=original.index[original['ts_code']=='900002.SH'][12]
     original.loc[target,'ann_date']=pd.NaT
@@ -186,6 +207,17 @@ def test_confirmation_requires_literal_true(setup):
         r=client.post(R+'/confirm',json={'request':source,'preview_hash':'0'*64,'confirm':confirm,
              'idempotency_key':'invalid-confirm','acknowledged_warnings':[]})
         assert r.status_code==422
+
+
+def test_reference_load_uses_pinned_catalog_snapshot(setup,monkeypatch):
+    svc,_,source=setup
+    request=ReferenceInputRequest.model_validate(source)
+    component=request.assets[1].components[0]
+    snapshot, manifest=svc.references.sources.active_snapshot_context()
+    monkeypatch.setattr(svc.references.sources.series, '_active_snapshot',
+                        lambda: (_ for _ in ()).throw(AssertionError('active snapshot changed during load')))
+    loaded=svc.references.sources.load(component,request,snapshot=snapshot,manifest=manifest)
+    assert loaded['identity']['series_id']==component.series_id
 
 
 def test_raw_resolver_used_without_display_profile_or_numeric_json_roundtrip(setup,monkeypatch):

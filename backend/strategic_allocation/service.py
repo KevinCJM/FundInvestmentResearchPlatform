@@ -28,7 +28,9 @@ from .institution import diagnose_institution, review_blockers
 from .sources import product_source, strategic_source
 from .universes import StrategicScopes
 from .planning import funding_inputs, diagnose_funding, require_goal_checks, LIMITATIONS
-from .mandate_inputs import cash_success_required, has_cash_budget, resolve_authorization, require_resolved_authorization, effective_cash_floor, effective_return_floor
+from .mandate_inputs import (cash_success_required, has_cash_budget, resolve_authorization,
+                             require_resolved_authorization, effective_cash_floor, effective_return_floor,
+                             _freeze_reference_benchmark)
 from .contracts import (
     CmaRequest, PolicyRequest, PublishCmaRequest,
     PublishPolicyRequest, RiskReferenceRequest, MandateStudyRequest, ConfirmMandateRequest,
@@ -177,6 +179,7 @@ class StrategicAllocationService:
     def preview_mandate(self, request: MandateStudyRequest) -> dict:
         kernels.require_ready()
         goal_kernels.require_ready()
+        requested_benchmark = request.definition.model_dump(mode="json").get("benchmark")
         definition, risk_decision = resolve_authorization(request.definition.model_dump(mode="json"), self.risk_scales)
         if definition.get("strategic_universe_id"):
             universe = self.scopes.get_universe(definition["strategic_universe_id"])
@@ -207,16 +210,72 @@ class StrategicAllocationService:
             payload["reference_diagnosis"] = reference
             risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
             if reference["status"] == "validated":
-                payload["status"] = "diagnosed"
-                payload["diagnosis_scope"] = "universal_reference"
                 if risk_decision["selection_pending"]:
                     level = reference["minimum_tested_feasible_level"]
                     if level is not None:
                         cap = risk_decision["applied_boundaries"][level - 1]
-                        risk_decision.update(selected_max_level=level, selected_volatility_cap=cap,
-                                             selection_pending=False, status="recommendation_validated")
-                        definition["risk_authorization"]["selected_max_level"] = level
-                        definition["max_volatility"] = cap
+                        proposed_definition = copy.deepcopy(definition)
+                        proposed_decision = copy.deepcopy(risk_decision)
+                        proposed_decision.update(selected_max_level=level, selected_volatility_cap=cap,
+                                                 selection_pending=False)
+                        proposed_definition["risk_authorization"]["selected_max_level"] = level
+                        proposed_definition["max_volatility"] = cap
+                        automatic_relative_benchmark = (requested_benchmark is None
+                                                        and definition.get("objective_kind") == "benchmark_relative")
+                        if automatic_relative_benchmark:
+                            version = self.risk_scales.get_version(risk_decision["risk_scale_ref"]["id"])
+                            proposed_definition["benchmark"] = None
+                            _freeze_reference_benchmark(proposed_definition, version, level)
+                            working_level = level
+                            working_definition = proposed_definition
+                            working_decision = proposed_decision
+                            stable = working_level == risk_decision["authorized_max_level"]
+                            for _ in range(len(risk_decision["applied_boundaries"])):
+                                if stable:
+                                    break
+                                reference = diagnose_reference(self, request, working_definition, working_decision)
+                                payload["reference_diagnosis"] = reference
+                                working_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
+                                risk_decision["minimum_tested_feasible_level"] = reference["minimum_tested_feasible_level"]
+                                if reference["status"] != "validated":
+                                    break
+                                next_level = reference["minimum_tested_feasible_level"]
+                                if (next_level is None or not 1 <= next_level <= len(risk_decision["applied_boundaries"])
+                                        or next_level > working_level):
+                                    break
+                                if next_level == working_level:
+                                    stable = True
+                                    break
+                                working_level = next_level
+                                cap = risk_decision["applied_boundaries"][working_level - 1]
+                                working_definition["benchmark"] = None
+                                working_definition["risk_authorization"]["selected_max_level"] = working_level
+                                working_definition["max_volatility"] = cap
+                                working_decision.update(selected_max_level=working_level,
+                                                        selected_volatility_cap=cap)
+                                _freeze_reference_benchmark(working_definition, version, working_level)
+                            if stable:
+                                definition.clear()
+                                definition.update(working_definition)
+                                risk_decision.clear()
+                                risk_decision.update(working_decision)
+                                risk_decision["status"] = "recommendation_validated"
+                            else:
+                                payload["status"] = "needs_revision"
+                                payload["blockers"].append("冻结参考基准后的推荐等级未稳定通过复核，请重新诊断。")
+                                definition["max_volatility"] = None
+                        else:
+                            definition.clear()
+                            definition.update(proposed_definition)
+                            risk_decision.clear()
+                            risk_decision.update(proposed_decision)
+                            risk_decision["status"] = "recommendation_validated"
+                if reference["status"] == "validated" and risk_decision["status"] == "recommendation_validated":
+                    payload["status"] = "diagnosed"
+                    payload["diagnosis_scope"] = "universal_reference"
+                elif not payload["blockers"] and not risk_decision["selection_pending"]:
+                    payload["status"] = "diagnosed"
+                    payload["diagnosis_scope"] = "universal_reference"
             elif reference["status"] in {"validation_failed", "no_validated_candidate_in_search", "constraint_conflict", "solver_failed"}:
                 payload["status"] = "needs_revision"
         if request.cma_id and definition.get("max_volatility") is not None:
@@ -255,22 +314,23 @@ class StrategicAllocationService:
             raise ValidationError("MANDATE_BOUNDARY_REASON", "旧版目标须说明风险和流动性边界的依据，至少5个字符。")
         if body.replaces_mandate_id is not None:
             self.get_mandate(body.replaces_mandate_id)
-        preview = self.preview_mandate(body.request)
-        if preview["preview_hash"] != body.preview_hash:
-            raise ConflictError("MANDATE_PREVIEW_CHANGED", "目标、模型或CMA已变化，请重新诊断后确认。")
-        fields = {"artifact_type": "investment_mandate",
-            "name": body.request.definition.name, "definition": preview["definition"],
-            "assessment": preview, "supersedes_mandate_id": body.replaces_mandate_id,
-            "planning_settings": {"simulation_paths": body.request.simulation_paths,
-                "seed": body.request.seed, "validation_seed": body.request.validation_seed,
-                "uncertainty_penalty": body.request.uncertainty_penalty},
-            "research_only": True}
-        if body.replaces_mandate_id is None:
-            return self.artifacts.save("series", fields)
-        with self.artifacts.governance_lock.locked():
-            if body.replaces_mandate_id not in self._active_mandate_ids():
-                raise ConflictError("MANDATE_ALREADY_REPLACED", "原投资目标已被修改或删除，请刷新列表后重新选择。")
-            return self.artifacts.save("series", fields)
+        with self.risk_scales.store.document.locked():
+            preview = self.preview_mandate(body.request)
+            if preview["preview_hash"] != body.preview_hash:
+                raise ConflictError("MANDATE_PREVIEW_CHANGED", "目标、模型或CMA已变化，请重新诊断后确认。")
+            fields = {"artifact_type": "investment_mandate",
+                "name": body.request.definition.name, "definition": preview["definition"],
+                "assessment": preview, "supersedes_mandate_id": body.replaces_mandate_id,
+                "planning_settings": {"simulation_paths": body.request.simulation_paths,
+                    "seed": body.request.seed, "validation_seed": body.request.validation_seed,
+                    "uncertainty_penalty": body.request.uncertainty_penalty},
+                "research_only": True}
+            if body.replaces_mandate_id is None:
+                return self.artifacts.save("series", fields)
+            with self.artifacts.governance_lock.locked():
+                if body.replaces_mandate_id not in self._active_mandate_ids():
+                    raise ConflictError("MANDATE_ALREADY_REPLACED", "原投资目标已被修改或删除，请刷新列表后重新选择。")
+                return self.artifacts.save("series", fields)
 
     def _source(self, alloc_name: str | None, as_of: str, *, strategic_universe_id: str | None = None,
                 implementation_mapping_id: str | None = None) -> dict:
