@@ -1176,9 +1176,14 @@ class ResearchSeriesService:
         query: str | None = None,
         offset: int = 0,
         limit: int = 200,
+        snapshot: Path | None = None,
+        manifest: dict[str, object] | None = None,
     ) -> dict[str, Any]:
         # Workspace definitions and user uploads do not depend on market downloads.
-        snapshot, manifest = self._active_snapshot() if kind not in {"indicator", "upload"} else (None, None)
+        if kind in {"indicator", "upload"}:
+            snapshot, manifest = None, None
+        elif snapshot is None or manifest is None:
+            snapshot, manifest = self._active_snapshot()
         items: list[dict[str, Any]] = []
         if kind in {None, "index"}:
             items.extend(self._index_catalog_items(snapshot, manifest))

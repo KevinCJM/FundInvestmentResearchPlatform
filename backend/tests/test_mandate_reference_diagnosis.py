@@ -1,11 +1,13 @@
 """Real offline risk-scale -> mandate reference search/validation integration."""
 import numpy as np
 import pytest
+from contextlib import contextmanager
 from pydantic import ValidationError as InputError
 
 from backend.tests.risk_scale_app import make_service
 from backend.tests.test_risk_scale_service import freeze_reference, definition as scale_definition, publish
 from backend.tests.test_mandate_boundary_contracts import new_definition, budget, payment
+import backend.strategic_allocation.service as service_module
 from backend.strategic_allocation.service import StrategicAllocationService
 from backend.strategic_allocation.contracts import MandateRequest, MandateStudyRequest, ConfirmMandateRequest
 from backend.strategic_allocation import goal_kernels as goals, mandate_kernels as numeric
@@ -53,6 +55,36 @@ def test_funding_suggestion_with_payment_protection_runs_independent_validation(
     assert study["validation"]["seed"] == body.validation_seed != body.seed
     assert study["validation"]["central"]["probability_lower"] >= .8
     assert result["risk_decision"]["status"] == "recommendation_validated"
+
+
+def test_confirmation_holds_risk_scale_lock_through_preview_and_save(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale)
+    preview = service.preview_mandate(body)
+    active = False
+    original_locked = service.risk_scales.store.document.locked
+
+    @contextmanager
+    def wrapped_locked():
+        nonlocal active
+        with original_locked():
+            active = True
+            try:
+                yield
+            finally:
+                active = False
+
+    original_save = service.artifacts.save
+
+    def checked_save(*args, **kwargs):
+        assert active
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(service.risk_scales.store.document, "locked", wrapped_locked)
+    monkeypatch.setattr(service.artifacts, "save", checked_save)
+    saved = service.confirm_mandate(ConfirmMandateRequest(
+        request=body, preview_hash=preview["preview_hash"], acknowledge_limits=True))
+    assert saved["artifact_type"] == "investment_mandate"
 
 
 def test_frozen_scale_constrained_frontier_then_independent_validation(reference):
@@ -131,6 +163,114 @@ def test_compact_objective_freezes_model_conventions_and_reuses_scale_for_two_fr
     reference_points = [(p["volatility"], p["expected_return"]) for p in study["reference_frontier"]]
     constrained_points = [(p["volatility"], p["expected_return"]) for p in study["constrained_frontier"]]
     assert constrained_points != reference_points  # Re-optimized with the cash floor, not relabelled.
+
+
+def test_funding_suggestion_refreezes_automatic_benchmark_at_recommended_level(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    monkeypatch.setattr(service_module, "diagnose_reference",
+                         lambda *_args, **_kwargs: {"status": "validated", "minimum_tested_feasible_level": 1})
+    result = service.preview_mandate(body)
+    level = result["risk_decision"]["selected_max_level"]
+    expected = scale["preview"]["result"]["levels"][level - 1]["representative_weights"]
+    weights = list(result["definition"]["benchmark"]["weights"].values())
+    assert weights == pytest.approx(expected)
+
+
+def test_funding_suggestion_skips_revalidation_when_level_is_unchanged(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    calls = []
+
+    def diagnose(*_args, **_kwargs):
+        calls.append(True)
+        return {"status": "validated", "minimum_tested_feasible_level": 3}
+
+    monkeypatch.setattr(service_module, "diagnose_reference", diagnose)
+    result = service.preview_mandate(body)
+    assert len(calls) == 1
+    assert result["risk_decision"]["selected_max_level"] == 3
+    assert result["risk_decision"]["status"] == "recommendation_validated"
+
+
+def test_funding_suggestion_revalidates_against_refrozen_benchmark(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    calls = []
+
+    def diagnose(*_args, **_kwargs):
+        definition = _args[2]
+        calls.append(definition.get("benchmark"))
+        return {"status": "validated", "minimum_tested_feasible_level": 1}
+
+    monkeypatch.setattr(service_module, "diagnose_reference", diagnose)
+    service.preview_mandate(body)
+    assert len(calls) == 2
+    assert calls[0]["source"] == calls[1]["source"] == "risk_scale_reference"
+    assert calls[0]["weights"] != calls[1]["weights"]
+
+
+def test_funding_suggestion_iterates_until_refrozen_benchmark_stabilizes(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    calls = []
+    results = iter([
+        {"status": "validated", "minimum_tested_feasible_level": 2},
+        {"status": "validated", "minimum_tested_feasible_level": 1},
+        {"status": "validated", "minimum_tested_feasible_level": 1},
+    ])
+
+    def diagnose(*_args, **_kwargs):
+        calls.append(_args[2]["benchmark"]["weights"])
+        return next(results)
+
+    monkeypatch.setattr(service_module, "diagnose_reference", diagnose)
+    result = service.preview_mandate(body)
+    assert len(calls) == 3
+    assert calls[0] != calls[1] != calls[2]
+    assert result["risk_decision"]["selected_max_level"] == 1
+    assert result["risk_decision"]["minimum_tested_feasible_level"] == 1
+    assert result["risk_decision"]["status"] == "recommendation_validated"
+
+
+@pytest.mark.parametrize("second_result", [
+    {"status": "validation_failed", "minimum_tested_feasible_level": None},
+    {"status": "validated", "minimum_tested_feasible_level": 2},
+])
+def test_failed_or_unstable_refrozen_benchmark_does_not_authorize(reference, monkeypatch, second_result):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="benchmark_relative", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    results = iter([
+        {"status": "validated", "minimum_tested_feasible_level": 1},
+        second_result,
+    ])
+    monkeypatch.setattr(service_module, "diagnose_reference", lambda *_args, **_kwargs: next(results))
+    result = service.preview_mandate(body)
+    assert result["status"] == "needs_revision"
+    assert result["definition"]["max_volatility"] is None
+    assert result["risk_decision"]["selection_pending"] is True
+    assert result["risk_decision"]["status"] == "awaiting_recommendation"
+
+
+def test_absolute_return_does_not_repeat_diagnosis_for_unused_benchmark(reference, monkeypatch):
+    service, scale, _ = reference
+    body = request_for(scale, objective_kind="absolute_return", funding_target=None,
+                       cash_protection={"mode": "payments_only"})
+    calls = []
+
+    def diagnose(*_args, **_kwargs):
+        calls.append(True)
+        return {"status": "validated", "minimum_tested_feasible_level": 1}
+
+    monkeypatch.setattr(service_module, "diagnose_reference", diagnose)
+    result = service.preview_mandate(body)
+    assert len(calls) == 1
+    assert result["risk_decision"]["status"] == "recommendation_validated"
 
 
 def test_relative_goal_uses_selected_risk_scale_representative_as_frozen_benchmark(reference):
