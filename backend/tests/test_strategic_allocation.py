@@ -46,9 +46,12 @@ def workspace(tmp_path):
                    "nv": values[t, i], "available_at": day, "as_of": None}
                   for i, name in enumerate(("股票", "债券")) for t, day in enumerate(days)]).to_parquet(
                       tmp_path / "asset_nv.parquet", index=False)
-    pd.DataFrame({"exchange": ["SSE"] * len(days),
-                  "cal_date": [int(day.strftime("%Y%m%d")) for day in days],
-                  "is_open": [1] * len(days)}).to_parquet(tmp_path / "trade_day_df.parquet", index=False)
+    # Closed dates must remain covered when the research day is a weekend.
+    calendar_days = pd.date_range(start=days[0], end=date.today())
+    pd.DataFrame({"exchange": ["SSE"] * len(calendar_days),
+                  "cal_date": [int(day.strftime("%Y%m%d")) for day in calendar_days],
+                  "is_open": calendar_days.isin(days).astype(int)}).to_parquet(
+                      tmp_path / "trade_day_df.parquet", index=False)
     return StrategicAllocationService(tmp_path / "research", tmp_path), days
 
 

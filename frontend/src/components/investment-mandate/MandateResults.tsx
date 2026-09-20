@@ -1,6 +1,7 @@
 import { percentText } from '../risk-models/ResearchUI'
 import type { FundingSummary, PolicyCandidate } from '../../services/strategicAllocation'
 import { amountText } from './model'
+import { useI18n } from '../../i18n/runtime'
 
 export function FundingOverview({ value }: { value: FundingSummary }) {
   return <div className="space-y-3" aria-label="资金测算结果">
@@ -18,11 +19,13 @@ export function FundingOverview({ value }: { value: FundingSummary }) {
 }
 
 export function GoalCandidateSummary({ candidate }: { candidate: PolicyCandidate }) {
+  const { s } = useI18n()
   const goal = candidate.goal_check
   return <div className="space-y-2 text-sm leading-6">
     {goal && <>
       <p className={goal.within_limits ? 'text-slate-800' : 'text-amber-800'}>目标成功概率 {percentText(goal.central.success_probability)}；95%模拟采样区间 {percentText(goal.central.probability_lower)} 至 {percentText(goal.central.probability_upper)}。{goal.within_limits ? '区间下界达到' : '区间下界未达到'} {percentText(goal.threshold)} 门槛。</p>
       <p className="text-xs text-slate-600">这里的“通过”仅限所选模型和CMA假设，不代表实际收益保证。当前TAA预算不承诺维持整段资金目标概率。</p>
+      <p className="text-xs leading-5 text-slate-600">{s('ltcma.fundingDistributionHint')}</p>
     </>}
     {candidate.benchmark_check && <p className="text-slate-700">相对 {candidate.benchmark_check.name}：预期年超额 {percentText(candidate.benchmark_check.expected_excess_return)}；主动风险 {percentText(candidate.benchmark_check.tracking_error)} / 上限 {percentText(candidate.benchmark_check.max_tracking_error)}。</p>}
   </div>

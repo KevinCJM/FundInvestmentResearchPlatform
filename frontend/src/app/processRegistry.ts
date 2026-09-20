@@ -91,12 +91,13 @@ const preInvestment = withAccent({
   nodes: [
     { id: 'objectives', label: '投资目标与约束', description: '设置收益目标、最大风险等级与现金需求；风险标尺提供冻结参考参数和C1–C5，正式CMA留到后续研究。', path: '/pre-investment/objectives', status: 'partial' },
     { id: 'product-pool', label: '选择产品池版本', description: '选择已生效产品池版本并冻结为本次投前可投资域。', path: '/pre-investment/product-pool', status: 'available' },
+    { id: 'ltcma', label: 'LTCMA 中心', description: '独立研究长期资本市场假设，管理冻结版本，供 SAA 选择引用。', path: '/pre-investment/ltcma', status: 'available' },
     { id: 'saa', label: '战略资产配置（SAA）', description: '确定大类资产中枢权重、偏离区间与长期风险预算。', path: '/pre-investment/saa', status: 'partial' },
     { id: 'taa', label: '战术资产配置（TAA）', description: '锁定 SAA，研究相对强弱或观点偏离，比较含成本回测与情景影响，并将已保存的大类预算传入产品配置。', path: '/pre-investment/taa', status: 'partial' },
-    { id: 'product-allocation-timing', label: '产品配置与择时', description: '在大类资产预算内研究具体基金配置、产品替代关系和产品级择时规则。', path: '/pre-investment/product-allocation-timing', status: 'partial' },
-    { id: 'portfolio-synthesis', label: '目标组合合成与风险检查', description: '合成大类与产品权重，检查边际风险贡献、风险预算、集中度及全部投资约束。', path: '/pre-investment/portfolio-synthesis', status: 'prototype' },
-    { id: 'validation', label: '统一回测与稳健性验证', description: '通过样本内外、滚动验证、压力和成本模拟检验方案。', path: '/pre-investment/validation', status: 'partial' },
-    { id: 'approval', label: '研究方案定稿与外部审批记录', description: '固化研究方案、数据截止日和版本，并记录平台外部审批结果。', path: '/pre-investment/approval', status: 'prototype' },
+    { id: 'product-allocation-timing', label: '产品配置与择时', description: '承接 SAA 或 TAA，核对产品权重、实际风险、费用和剩余资金；保留历史组合与择时研究入口。', path: '/pre-investment/product-allocation-timing', status: 'partial' },
+    { id: 'portfolio-synthesis', label: '研究包与风险汇总', description: '汇总同一候选的来源、产品风险、费用、现金与验证证据，保留完整版本。', path: '/pre-investment/portfolio-synthesis', status: 'partial' },
+    { id: 'validation', label: '研究验证', description: '锁定候选，复核产品风险、成本、剩余付款和选定情景；缺失证据明确列出。', path: '/pre-investment/validation', status: 'partial' },
+    { id: 'approval', label: '研究定稿', description: '核对同一份验证报告，记录理由与复核日期，冻结并导出研究包。', path: '/pre-investment/approval', status: 'partial' },
   ],
   tools: [
     { label: '长期政策配置', description: '经济大类、长期资本市场假设、稳健候选与政策确认。', path: '/pre-investment/saa/policy' },

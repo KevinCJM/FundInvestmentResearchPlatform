@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { saveMandateFixture } from './helpers/mandates'
+import { fillLtcmaAsset, previewCurrentLtcma, publishCurrentLtcma } from './helpers/ltcma'
 import { auditTextContrast } from './helpers/contrast'
 
 test('real M1 objective → no-product scope → forward SAA → explicit mapping; responsive and readonly', async ({ page, request }, info) => {
@@ -50,19 +51,17 @@ test('real M1 objective → no-product scope → forward SAA → explicit mappin
     await page.screenshot({ path: info.outputPath(`scope-${width}.png`), fullPage: true })
   }
   await page.getByRole('link', { name: /先做前瞻CMA与SAA研究/ }).click()
-  await page.getByRole('button', { name: '填写长期假设' }).click()
+  await page.getByRole('link', { name: '新建 LTCMA', exact: true }).click()
+  await page.getByLabel('名称', { exact: true }).fill('M1 独立战略 LTCMA')
   await expect(page.getByRole('button', { name: '读取历史风险参考' })).toHaveCount(0)
-  await page.getByLabel('预测来源与主要假设').fill('离线测试手工前瞻预期，非投资建议')
+  await page.getByLabel('假设依据', { exact: false }).fill('离线测试手工前瞻预期，非投资建议')
   for (const [id, ret, vol] of [['growth', '6', '15'], ['cash', '2', '1']]) {
-    await page.getByLabel(`${id}预期年收益（%）`).fill(ret)
-    await page.getByLabel(`${id}年化波动（%）`).fill(vol)
-    await page.getByLabel(`${id}均值不确定半宽（百分点）`).fill('1')
+    await fillLtcmaAsset(page, id, { annualReturn: ret, volatility: vol, uncertainty: '1' })
   }
-  await page.getByLabel('growth与cash相关系数').fill('0')
-  await page.getByRole('checkbox', { name: /我已确认同币种/ }).check()
-  await page.getByRole('button', { name: '验证长期假设' }).click()
-  await expect(page.getByText(/资产轴和风险矩阵已通过校验/)).toBeVisible()
-  await page.getByRole('button', { name: '确认保存假设版本' }).click()
+  await page.getByLabel('相关矩阵: growth / cash', { exact: true }).fill('0')
+  await previewCurrentLtcma(page)
+  await publishCurrentLtcma(page)
+  await page.getByRole('button', { name: '用于 SAA', exact: true }).click()
   await page.getByRole('button', { name: '比较符合目标的政策候选' }).click()
   await expect(page.getByRole('table', { name: '长期政策候选比较' })).toBeVisible()
   await page.getByRole('button', { name: '复核此候选' }).first().click()

@@ -16,6 +16,7 @@ FUNDING_METRICS = (
 )
 LIMITATIONS = [
     "月度独立对数正态组合代理，仅匹配CMA年度简单收益均值和波动；不是厚尾、状态转换或各资产再平衡仿真。",
+    "即使 CMA 来自情景或历史状态，资金路径也未保留原生情景尾部和转移；成功率偏差方向依赖支付与目标，不能预设始终乐观。",
     "模拟区间只表示采样误差，不包括CMA和模型误差；历史研究日不等于已证明当时可得或已部署。",
     "流动性预算基于现金流和人工liquid标签，不认证逐产品赎回、结算或市场冲击。",
     "费用为年有效财富扣减，现金流为月末先投入后支付；未支付金额未折现。",
@@ -128,5 +129,7 @@ def diagnose_funding(definition: dict, candidates: list[dict], *, paths: int, se
     require_goal_checks(definition, candidates)
     return {"kind": "funding_goal", "funding": summary, "candidates": candidates,
             "model": {"version": goals.VERSION, "paths": paths, "seed": seed,
-                      "frequency": "monthly", "common_random_numbers": True},
+                      "frequency": "monthly", "common_random_numbers": True,
+                      "distribution": "monthly_iid_single_lognormal_moment_proxy",
+                      "native_scenario_tails": False, "native_regime_transitions": False},
             "limitations": LIMITATIONS, "execution": goals.execution_audit()}

@@ -40,7 +40,7 @@ flowchart LR
 - **外部执行边界**：平台可以测算交易计划、记录外部成交和执行结果，但不连接券商或基金销售系统下单。
 - **投后闭环**：实际结果应反馈至产品池、配置模型和研究假设，而不是直接覆盖历史研究版本。
 
-完整业务定义见 [CONTEXT.md](CONTEXT.md)、[公募基金量化投资流程大纲.md](公募基金量化投资流程大纲.md) 和 [前端功能蓝图](docs/frontend-investment-research-blueprint.md)。
+完整业务定义见 [CONTEXT.md](CONTEXT.md)、[资产配置投研与财富管理平台发展规划纲要.md](资产配置投研与财富管理平台发展规划纲要.md) 和 [前端功能蓝图](docs/frontend-investment-research-blueprint.md)。
 
 ## 当前能力状态
 
@@ -164,7 +164,7 @@ Tushare 接口、文件、业务键和刷新状态以 [TushareDownload.md](Tusha
 ├── T01_get_data.py          Tushare 下载、增量更新和检查点入口
 ├── config.py                数据目录与本地凭据配置
 ├── docker-compose.yml       单服务容器部署
-└── 公募基金量化投资流程大纲.md  业务流程总纲
+└── 资产配置投研与财富管理平台发展规划纲要.md  平台发展规划总纲
 ```
 
 ## 快速开始
@@ -303,7 +303,7 @@ npm run test:e2e --prefix frontend
 ## 相关文档
 
 - [领域语言与边界](CONTEXT.md)
-- [资产配置投研与组合管理流程大纲](公募基金量化投资流程大纲.md)
+- [资产配置投研与财富管理平台发展规划纲要](资产配置投研与财富管理平台发展规划纲要.md)
 - [前端功能蓝图](docs/frontend-investment-research-blueprint.md)
 - [需求说明](docs/requirements.md)
 - [自定义指标设计](docs/custom_indicator_design.md)
