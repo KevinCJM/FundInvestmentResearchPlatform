@@ -14,7 +14,7 @@
     {
       "id": "branch_submission_workflow",
       "name": "AI branch submission, review and merge protocol",
-      "path": "branch_submission_rules.md",
+      "path": "docs/governance/branch-submission-rules.md",
       "kind": "submission_protocol",
       "purpose": "Owns terminal-only submission with PR-only main/Dev and same-repository Dev into main. Normal merges require trusted Bot approval of the latest HEAD, independently of local self-review and ordinary human approval. Only owner KevinCJM may use review exemptions; AI bypass of Bot review requires explicit human authorization tied to the PR, HEAD and findings, followed by replies with evidence before merging. The narrative workflow explains scope, commits, review, exceptions, merge verification, release and rollback. Existing GitHub configs enforce PR, native approval and branch direction, not Bot content or human-versus-AI identity.",
       "module_tags": [
@@ -26,19 +26,19 @@
         "governance"
       ],
       "entry_files": [
-        "branch_submission_rules.md",
-        "docs/submission-workflow.md"
+        "docs/governance/branch-submission-rules.md",
+        "docs/governance/submission-workflow.md"
       ],
       "key_symbols": [],
       "child_modules": [],
       "first_read_files": [
-        "branch_submission_rules.md",
-        "docs/submission-workflow.md"
+        "docs/governance/branch-submission-rules.md",
+        "docs/governance/submission-workflow.md"
       ],
       "then_check_files": [
         "AGENTS.md",
         "docs/ai_routing_evolution_policy.json",
-        "docs/branch-protection.md"
+        "docs/governance/branch-protection.md"
       ],
       "upstream_dependencies": [
         "ai_routing_files"
@@ -88,15 +88,15 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-          "branch_submission_rules.md",
+          "docs/governance/branch-submission-rules.md",
           "AGENTS.md",
           "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R03 --mode context",
-          "docs/branch-protection.md",
+          "docs/governance/branch-protection.md",
           ".github/workflows/branch-policy.yml",
           ".github/branch-ruleset.json",
           ".github/main-branch-ruleset.json",
           ".github/approval-ruleset.json",
-          "docs/submission-workflow.md"
+          "docs/governance/submission-workflow.md"
         ],
         "unsampled_paths": []
       }
@@ -129,14 +129,14 @@
         "signal_counts_kernel"
       ],
       "first_read_files": [
-        "docs/research/tactical-allocation-workbench-design-2026-09-11.md",
+        "docs/pre-investment/taa.md",
         "backend/tactical_allocation/contracts.py",
         "backend/tactical_allocation/service.py",
         "frontend/src/pages/TacticalAllocationWorkspace.tsx"
       ],
       "then_check_files": [
-        "docs/research/tactical-allocation-workbench-acceptance-2026-09-11.md",
-        "docs/research/taa-numeric-contract.md",
+        "docs/verification/allocation.md",
+        "docs/pre-investment/taa-numeric-contract.md",
         "backend/historical_regimes/taa.py",
         "backend/historical_regimes/data.py",
         "backend/custom_indicators/portfolio_service.py",
@@ -144,14 +144,11 @@
         "frontend/src/pages/PortfolioConstruction.tsx",
         "backend/research_input_checks.py",
         "frontend/src/app/allocationJourney.ts",
-        "docs/research/journey-taa-implementation-2026-09-11.md",
-        "docs/research/taa-human-journey-audit-2026-09-11.md",
-        "docs/research/tactical-allocation-product-analysis-2026-09-10.md",
+        "docs/pre-investment/README.md",
+        "docs/pre-investment/taa.md",
         "backend/tactical_allocation/clocks.py",
         "backend/tactical_allocation/signals.py",
-        "docs/research/bettersaataa-01-04-design-2026-09-14.md",
-        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md",
-        "docs/research/scenario-audit-followup-2026-09-16.md"
+        "docs/verification/regimes.md"
       ],
       "child_modules": [],
       "upstream_dependencies": [
@@ -270,8 +267,8 @@
         "frontend/src/pages/RiskModelCenter.tsx",
         "frontend/src/pages/PublishedScenarioCenter.tsx",
         "frontend/src/pages/RiskApplicationWorkspace.tsx",
-        "docs/research/risk-model-scenario-design-2026-09-10.md",
-        "docs/research/risk-model-scenario-acceptance-2026-09-10.md"
+        "docs/regimes/risk-models.md",
+        "docs/verification/regimes.md"
       ],
       "key_symbols": [
         "ModelResearchService",
@@ -286,7 +283,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
-        "docs/research/risk-model-scenario-design-2026-09-10.md",
+        "docs/regimes/risk-models.md",
         "backend/sensitivity/contracts.py",
         "backend/sensitivity/service.py",
         "backend/scenario_stress/published.py",
@@ -313,7 +310,7 @@
         "frontend/src/App.tsx",
         "frontend/src/app/processRegistry.ts",
         "frontend/src/test/publishedRiskFixtures.ts",
-        "docs/research/scenario-audit-followup-2026-09-16.md"
+        "docs/verification/regimes.md"
       ],
       "upstream_dependencies": [
         "factor_research_center",
@@ -398,7 +395,7 @@
           "frontend/e2e/published-risk.spec.ts",
           "backend/sensitivity/service.py",
           "backend/scenario_stress/published.py",
-          "docs/research/risk-model-scenario-acceptance-2026-09-10.md"
+          "docs/verification/regimes.md"
         ],
         "unsampled_paths": []
       }
@@ -421,8 +418,7 @@
         "frontend/src/pages/TimingResearch.tsx",
         "frontend/src/services/timingResearch.ts",
         "frontend/src/components/timing-research",
-        "docs/research/product-timing-research-design-2026-09-10.md",
-        "docs/research/etf-algorithm-adaptations-2026-09-10.md"
+        "docs/product-research/timing.md"
       ],
       "key_symbols": [
         "TimingResearchService",
@@ -434,8 +430,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
-        "docs/research/product-timing-research-design-2026-09-10.md",
-        "docs/research/etf-algorithm-adaptations-2026-09-10.md",
+        "docs/product-research/timing.md",
         "backend/timing_research/contracts.py",
         "backend/timing_research/service.py",
         "backend/timing_research/graph.py",
@@ -558,7 +553,7 @@
         "backend/services/storage_routes.py",
         "scripts/manage_data_storage.py",
         "start_services.sh",
-        "docs/data_storage_design.md",
+        "docs/data/storage.md",
         "frontend/src/services/dataStorage.ts",
         "frontend/src/components/data-sources/DataStoragePanel.tsx"
       ],
@@ -576,7 +571,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
-        "docs/data_storage_design.md",
+        "docs/data/storage.md",
         "backend/data_storage.py",
         "backend/storage_migration.py",
         "backend/services/storage_routes.py"
@@ -660,7 +655,7 @@
           "backend/tests/test_data_storage.py",
           "frontend/src/components/data-sources/DataStoragePanel.test.tsx",
           "scripts/manage_data_storage.py",
-          "docs/data_storage_design.md",
+          "docs/data/storage.md",
           "docs/qa/data-storage-attach-desktop.png"
         ],
         "unsampled_paths": []
@@ -694,13 +689,11 @@
         "frontend/e2e/factor-research-live.spec.ts",
         "frontend/playwright.factor-live.config.ts",
         "scripts/start_factor_research_preview.mjs",
-        "因子研究中心_详细设计.md",
-        "因子研究中心_双模块详细设计.md",
-        "因子研究中心_首套因子验收.md"
+        "docs/factor-research.md",
+        "docs/verification/factors.md"
       ],
       "first_read_files": [
-        "因子研究中心_双模块详细设计.md",
-        "因子研究中心_详细设计.md",
+        "docs/factor-research.md",
         "backend/factor_research/contracts.py",
         "backend/factor_research/service.py",
         "backend/factor_research/numba_kernels.py",
@@ -722,7 +715,8 @@
         "frontend/src/components/FactorEvidencePanel.tsx",
         "frontend/src/layouts/StageLayout.tsx",
         "frontend/src/pages/ProductDetail.tsx",
-        "因子研究中心_首套因子验收.md"
+        "docs/verification/factors.md",
+        "docs/factor-research.md"
       ],
       "related_tests": [
         "backend/tests/test_factor_research_numba.py",
@@ -778,7 +772,7 @@
           "frontend/src/pages/FactorResearchCenter.test.tsx",
           "frontend/e2e/factor-research.spec.ts",
           "frontend/e2e/factor-research-live.spec.ts",
-          "因子研究中心_首套因子验收.md"
+          "docs/verification/factors.md"
         ],
         "fact_status": "grounded",
         "unsampled_paths": []
@@ -848,42 +842,39 @@
       ],
       "entry_files": [
         "README.md",
+        "docs/README.md",
         "./LICENSE",
-        "资产配置投研与财富管理平台发展规划纲要.md",
-        "README_SEPARATED.md",
-        "docs/requirements.md",
-        "docs/custom_indicator_design.md",
-        "docs/weight_reuse_task_plan.md",
-        "docs/test_report.md",
-        "docs/product_scenario_research_design.md"
+        "docs/product/requirements.md",
+        "docs/indicators/README.md",
+        "docs/pre-investment/historical-frontier.md",
+        "docs/verification/engineering.md",
+        "docs/product-research/scenario-research.md"
       ],
       "key_symbols": [],
       "child_modules": [],
       "first_read_files": [
         "README.md",
-        "docs/requirements.md"
+        "docs/README.md",
+        "docs/product/domain-language.md",
+        "docs/product/requirements.md"
       ],
       "then_check_files": [
-        "docs/custom_indicator_design.md",
-        "docs/weight_reuse_task_plan.md",
-        "docs/test_report.md",
-        "README_SEPARATED.md",
-        "docs/project_audit_fixes_acceptance.md",
-        "docs/project_audit_fixes_design.md",
-        "docs/project_code_logic_audit_2026-09-10.md",
-        "docs/submission_fixes_acceptance_2026-09-11.md",
-        "docs/frontend-design-change-notes.md",
+        "docs/indicators/README.md",
+        "docs/pre-investment/historical-frontier.md",
+        "docs/verification/engineering.md",
+        "README.md",
         "docs/images/frontend-design-20260912/home-en-1251.png",
         "docs/images/frontend-design-20260912/product-quadrant-tooltip.png",
         "docs/images/frontend-design-20260912/indicator-tablet.png",
         "docs/images/frontend-design-20260912/report-desktop.png",
         "docs/images/frontend-design-20260912/report-mobile.png",
         "docs/images/frontend-design-20260912/disclosure-unavailable-mobile.png",
-        "saa-taa-recheck-2026-09-12.md",
-        "saa-taa-recheck-round3-2026-09-12.md",
-        "saa-taa-recheck-round4-2026-09-12.md",
-        "saa-taa-recheck-round5-2026-09-13.md",
-        "saa-taa-review-2026-09-12.md"
+        "docs/verification/allocation.md",
+        "docs/README.md",
+        "docs/governance/documentation.md",
+        "docs/product/research-parameters.md",
+        "docs/research/ai-agent-indicator-product-research-design-2026-09-18.md",
+        "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -920,9 +911,9 @@
         "fact_status": "grounded",
         "evidence": [
           "README.md",
-          "docs/requirements.md",
-          "docs/custom_indicator_design.md",
-          "docs/weight_reuse_task_plan.md"
+          "docs/product/requirements.md",
+          "docs/indicators/README.md",
+          "docs/pre-investment/historical-frontier.md"
         ],
         "unsampled_paths": []
       }
@@ -984,7 +975,7 @@
         "backend/pit/release.py",
         "backend/pit/settings.py",
         "backend/services/pit_routes.py",
-        "docs/pit_workflow_design.md"
+        "docs/data/pit.md"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -1115,6 +1106,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
+        "docs/governance/numeric-computing.md",
         "backend/backtest_engine.py",
         "backend/strategy.py",
         "backend/fit.py",
@@ -1125,9 +1117,8 @@
       "then_check_files": [
         "backend/backtest_api_spec.json",
         "backend/backtest_example.json",
-        "docs/research/frontier-grid-round4-design-2026-09-12.md",
-        "docs/research/frontier-restoration-design-2026-09-13.md",
-        "docs/research/frontier-restoration-acceptance-2026-09-13.md"
+        "docs/pre-investment/historical-frontier.md",
+        "docs/verification/allocation.md"
       ],
       "upstream_dependencies": [
         "data_ingestion_config",
@@ -1245,7 +1236,7 @@
       ],
       "then_check_files": [
         "frontend/src/pages/ClassAllocation.tsx",
-        "docs/weight_reuse_task_plan.md"
+        "docs/pre-investment/historical-frontier.md"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -1765,6 +1756,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
+        "docs/governance/numeric-computing.md",
         "backend/cal_indicators/indicator_runtime.py",
         "backend/cal_indicators/latex_excutor.py",
         "backend/cal_indicators/numba_finance_math.py"
@@ -1861,9 +1853,8 @@
         "backend/cal_indicators/builtin_batch_kernel.py",
         "backend/services/custom_indicator_routes.py",
         "backend/benchmark_indicator_engine.py",
-        "docs/custom_indicator_excel_export_design.md",
-        "docs/rolling_scalar_indicator_design.md",
-        "docs/scalar_to_rolling_series_design.md"
+        "docs/indicators/excel-export.md",
+        "docs/indicators/rolling-intervals.md"
       ],
       "key_symbols": [
         "CustomIndicatorService",
@@ -1908,7 +1899,7 @@
         "backend/cal_indicators/builtin_batch_kernel.py"
       ],
       "then_check_files": [
-        "docs/market_attribution_builtin.md",
+        "docs/indicators/README.md",
         "backend/tests/test_custom_indicator_service.py",
         "backend/tests/test_custom_indicator_routes.py",
         "backend/tests/test_custom_indicator_variables.py",
@@ -1916,7 +1907,6 @@
         "backend/tests/test_evaluation_run_results.py",
         "backend/tests/test_instrument_routes.py",
         "backend/benchmark_indicator_engine.py",
-        "docs/custom_indicator_design.md",
         "backend/custom_indicators/series_service.py"
       ],
       "upstream_dependencies": [
@@ -2110,6 +2100,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
+        "docs/governance/operator-contracts.md",
         "backend/cal_indicators/typed_types.py",
         "backend/cal_indicators/typed_operators.py",
         "backend/cal_indicators/operator_lowering.py",
@@ -2124,9 +2115,8 @@
         "backend/services/custom_indicator_routes.py"
       ],
       "then_check_files": [
-        "docs/independent_indicators_shared_execution_design.md",
-        "docs/indicator_operator_primitives_design.md",
-        "docs/indicator_operator_primitives_acceptance.md",
+        "docs/indicators/README.md",
+        "docs/verification/engineering.md",
         "backend/causality/audit.py",
         "backend/causality/baseline.json",
         "backend/tests/test_causality.py",
@@ -2143,22 +2133,16 @@
         "backend/tests/test_series_runtime_parameters.py",
         "backend/tests/test_indicator_formula_roundtrip.py",
         "backend/tests/test_indicator_graph.py",
-        "docs/custom_indicator_design.md",
         "backend/causality/rolling_scope.py",
         "backend/causality/synthetic.py",
         "backend/causality/temporal_numba.py",
         "backend/scripts/benchmark_builtin_series_migration.py",
         "backend/scripts/benchmark_rolling_interval.py",
-        "docs/builtin_series_rolling_migration_acceptance.md",
-        "docs/builtin_series_rolling_migration_design.md",
-        "docs/rolling_interval_graph_acceptance.md",
-        "docs/rolling_interval_graph_design.md",
-        "docs/rolling_window_operator_split_acceptance.md",
-        "docs/rolling_window_operator_split_design.md",
+        "docs/indicators/rolling-intervals.md",
         "backend/scripts/benchmark_drawdown_outputs.py",
-        "docs/indicator_parameter_contract_design.md",
-        "docs/indicator_runtime_parameters_design.md",
-        "docs/adjusted_price_indicator_design.md"
+        "docs/indicators/parameters.md",
+        "docs/data/adjusted-price.md",
+        "docs/indicators/causality.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -2304,7 +2288,7 @@
         "backend/tests/test_portfolio_research.py",
         "backend/tests/test_portfolio_regime_backtest.py",
         "frontend/src/services/portfolioResearch.ts",
-        "docs/custom_indicator_design.md"
+        "docs/indicators/README.md"
       ],
       "upstream_dependencies": [
         "backend_custom_indicator_service",
@@ -2453,69 +2437,43 @@
         "backend/scripts/benchmark_regime_trend.py",
         "backend/historical_regimes/peak_trough_numba.py",
         "backend/tests/test_historical_regime_peak_trough.py",
-        "docs/research/peak-trough-regime-implementation-2026-09-07.md",
-        "docs/research/historical-regime-audit-2026-09-07.md",
+        "docs/regimes/peak-trough.md",
+        "docs/research/regime-methods.md",
         "backend/historical_regimes/segment_numba.py",
         "backend/historical_regimes/authoring.py",
-        "docs/research/regime-authoring-design-2026-09-07.md",
+        "docs/regimes/README.md",
         "backend/computation_graph/series_contracts.py",
         "backend/computation_graph/series_expression.py",
         "backend/computation_graph/series_operators.py",
         "backend/computation_graph/series_runtime.py",
         "backend/computation_graph/series_numba.py",
-        "docs/research/regime-series-studio-design-2026-09-07.md",
         "backend/historical_regimes/node_preview.py",
         "backend/research_series/file_import.py",
-        "docs/research/regime-source-forms-2026-09-08.md",
         "backend/historical_regimes/indicator_nodes.py",
-        "docs/research/regime-indicator-nodes-2026-09-08.md",
         "backend/historical_regimes/data.py",
         "backend/research_series/product_sources.py",
-        "docs/research/regime-product-sources-2026-09-08.md",
         "backend/research_series/numba_kernels.py",
-        "TushareDownload.md",
-        "docs/research/merrill-clock-run-repair-2026-09-10.md",
-        "docs/research/regime-save-for-research-design-2026-09-10.md",
-        "docs/research/manual-historical-event-intervals-design-2026-09-10.md",
-        "docs/research/regime-operator-granularity-design-2026-09-09.md",
-        "docs/research/temporal-capability-event-library-design-2026-09-10.md",
+        "docs/data/tushare-download.md",
+        "docs/regimes/events.md",
         "backend/historical_regimes/indicator_sources.py",
         "backend/historical_regimes/reliability/prospective.py",
         "backend/historical_regimes/reliability/source_versions.py",
-        "docs/research/regime-prospective-api-2026-09-15.md",
-        "docs/research/regime-source-continuation-design-2026-09-15.md",
-        "docs/research/scenario-center-horizon-and-market-state-research-2026-09-16.md",
-        "docs/research/scenario-audit-remediation-2026-09-16.md",
-        "docs/research/scenario-audit-followup-2026-09-16.md",
-        "docs/research/regime-completion-design-2026-09-15.md",
+        "docs/regimes/validation.md",
+        "docs/verification/regimes.md",
         "backend/scripts/csi300_recognition_search.py",
         "backend/scripts/csi300_reference_study.py",
         "backend/tests/benchmark_regime_completion.py",
         "backend/tests/benchmark_regime_reliability.py",
         "backend/tests/regime_completion_app.py",
-        "docs/research/Market Regime Detection Framework.md",
         "docs/research/assets/csi300-market-trend-reference-v1.png",
         "docs/research/csi300-reference-recognition-study-2026-09-15.md",
-        "docs/research/regime-completion-api-2026-09-15.md",
-        "docs/research/regime-completion-backend-acceptance-2026-09-15.md",
-        "docs/research/regime-completion-final-audit-2026-09-15.md",
-        "docs/research/regime-prospective-acceptance-2026-09-15.md",
-        "docs/research/regime-reference-confidence-api-2026-09-14.md",
-        "docs/research/regime-reference-confidence-backend-acceptance-2026-09-14.md",
-        "docs/research/regime-reference-confidence-design-2026-09-14.md",
-        "docs/research/regime-reference-confidence-final-audit-2026-09-14.md",
-        "docs/research/regime-source-continuation-acceptance-2026-09-15.md",
-        "docs/research/scenario-center-dev-comparison-audit-2026-09-16.md",
-        "docs/research/scenario-center-market-state-integration-final-2026-09-16.md",
-        "docs/research/scenario-regime-research-best-practices-and-center-optimization-2026-09-15.md",
-        "docs/research/scenario-regime-state-evidence-acceptance-2026-09-15.md",
-        "docs/research/scenario-center-submission-2026-09-17.md",
         "backend/computation_graph/smoothing_numba.py",
         "backend/computation_graph/smoothing_operators.py",
-        "docs/research/market-state-smoothing-design-2026-09-18.md",
+        "docs/regimes/smoothing.md",
         "backend/historical_regimes/reliability/references.py",
         "backend/tests/benchmark_smoothing.py",
-        "docs/research/continuous-market-state-2026-09-18.md"
+        "docs/regimes/continuous-state.md",
+        "docs/indicators/computation-graph.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -2688,7 +2646,7 @@
           "backend/tests/test_research_series_import.py",
           "backend/research_series/file_import.py",
           "backend/historical_regimes/indicator_nodes.py",
-          "docs/research/regime-indicator-nodes-2026-09-08.md",
+          "docs/regimes/README.md",
           "backend/tests/test_regime_indicator_nodes.py"
         ],
         "unsampled_paths": []
@@ -2774,11 +2732,10 @@
         "frontend/src/components/computation-graph/SeriesOutputFields.tsx",
         "frontend/src/pages/regime-workbench/RegimeSeriesOutputs.tsx",
         "frontend/src/pages/regime-workbench/RegimeNumericOutputs.tsx",
-        "docs/research/regime-series-studio-design-2026-09-07.md",
+        "docs/regimes/README.md",
         "frontend/src/components/indicator-graph/IndicatorGraphEditor.tsx",
         "frontend/src/pages/regime-workbench/RegimeDefinitionLibrary.tsx",
         "frontend/src/pages/regime-workbench/RegimeGuidedFormulaPanel.tsx",
-        "docs/research/regime-studio-ui-parity-2026-09-07.md",
         "docs/research/assets/regime-studio-canvas-2026-09-07.png",
         "docs/research/assets/regime-studio-guided-2026-09-07.png",
         "frontend/src/pages/regime-workbench/RegimeMathPreview.tsx",
@@ -2791,10 +2748,7 @@
         "frontend/e2e/regime-upstream-preview.spec.ts",
         "frontend/src/pages/regime-workbench/RegimeUploadSeriesEditor.tsx",
         "frontend/src/pages/regime-workbench/RegimeIndicatorSourceFields.tsx",
-        "docs/research/regime-source-forms-2026-09-08.md",
         "frontend/src/pages/regime-workbench/RegimeResourceLibrary.tsx",
-        "docs/research/regime-indicator-nodes-2026-09-08.md",
-        "docs/research/regime-product-sources-2026-09-08.md",
         "frontend/src/pages/regime-workbench/RegimeSavePanel.tsx",
         "frontend/src/services/regimeResearchVersions.ts",
         "frontend/src/components/computation-graph/GraphCanvas.tsx",
@@ -2804,12 +2758,9 @@
         "frontend/src/pages/MarketStateResearchCenter.tsx",
         "frontend/src/services/regimeDiagnostics.ts",
         "backend/tests/scenario_remediation_app.py",
-        "docs/research/scenario-audit-followup-2026-09-16.md",
-        "docs/research/regime-completion-frontend-acceptance-2026-09-15.md",
-        "docs/research/regime-prospective-frontend-acceptance-2026-09-15.md",
-        "docs/research/regime-reference-confidence-frontend-acceptance-2026-09-14.md",
+        "docs/verification/regimes.md",
         "frontend/src/services/regimeProspective.ts",
-        "docs/research/market-state-smoothing-design-2026-09-18.md"
+        "docs/regimes/smoothing.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -2983,7 +2934,7 @@
           "frontend/src/pages/regime-workbench/RegimeUploadSeriesEditor.tsx",
           "frontend/src/pages/regime-workbench/RegimeIndicatorSourceFields.tsx",
           "frontend/src/pages/regime-workbench/RegimeResourceLibrary.tsx",
-          "docs/research/regime-indicator-nodes-2026-09-08.md",
+          "docs/regimes/README.md",
           "frontend/src/pages/regime-workbench/RegimeResourceLibrary.test.tsx",
           "frontend/e2e/regime-indicator-nodes.spec.ts"
         ],
@@ -3021,9 +2972,9 @@
         "frontend/src/pages/ProcessHome.tsx",
         "frontend/src/homepage",
         "frontend/public/homepage/images",
-        "docs/homepage-design.md",
+        "docs/frontend/homepage.md",
         "docs/homepage/screenshots",
-        "design-qa.md",
+        "docs/verification/engineering.md",
         "frontend/src/components/ui.tsx"
       ],
       "key_symbols": [
@@ -3057,14 +3008,15 @@
         "frontend/src/pages/PitSnapshots.tsx",
         "frontend/src/services/pit.ts",
         "frontend/src/services/pitOverride.ts",
-        "docs/frontend-design-guidelines.md",
+        "docs/frontend/README.md",
         "scripts/check_frontend_design.mjs",
         "frontend/src/components/ui.tsx",
         "frontend/src/components/Mascot.tsx",
         "frontend/src/components/computation-graph/nodeAppearance.ts",
         "frontend/src/pages/LanguageTerminology.tsx",
         "frontend/src/components/localization/LanguageColumnsEditor.tsx",
-        "frontend/src/components/localization/TranslationMatrix.tsx"
+        "frontend/src/components/localization/TranslationMatrix.tsx",
+        "docs/frontend/i18n.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell"
@@ -3153,9 +3105,9 @@
         "static-prototype"
       ],
       "entry_files": [
-        "CONTEXT.md",
-        "docs/frontend-investment-research-blueprint.md",
-        "docs/account-portfolio-allocation-accounting-design.md",
+        "docs/product/domain-language.md",
+        "docs/product/requirements.md",
+        "docs/product/accounting.md",
         "frontend/src/app",
         "frontend/src/layouts",
         "frontend/src/app/processRegistry.ts",
@@ -3191,14 +3143,14 @@
       ],
       "child_modules": [],
       "first_read_files": [
-        "CONTEXT.md",
-        "docs/account-portfolio-allocation-accounting-design.md",
+        "docs/product/domain-language.md",
+        "docs/product/accounting.md",
         "frontend/src/app/processRegistry.ts",
         "frontend/src/app/actualPortfolioDemoData.ts",
         "frontend/src/App.tsx"
       ],
       "then_check_files": [
-        "docs/frontend-investment-research-blueprint.md",
+        "docs/product/requirements.md",
         "frontend/src/layouts/StageLayout.tsx",
         "frontend/src/pages/PortfolioCenterWorkspace.tsx",
         "frontend/src/pages/PortfolioOnboardingWorkspace.tsx",
@@ -3269,8 +3221,8 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-          "CONTEXT.md",
-          "docs/account-portfolio-allocation-accounting-design.md",
+          "docs/product/domain-language.md",
+          "docs/product/accounting.md",
           "frontend/src/app/processRegistry.ts",
           "frontend/src/app/actualPortfolioDemoData.ts",
           "frontend/src/pages/TradeAllocationWorkspace.tsx",
@@ -3329,7 +3281,7 @@
         "frontend/e2e/indicator-primitives.spec.ts",
         "frontend/src/App.tsx",
         "frontend/src/components/Header.tsx",
-        "docs/custom_indicator_design.md",
+        "docs/indicators/README.md",
         "frontend/src/components/indicator-graph/indicatorGraphPresentation.ts",
         "frontend/src/components/computation-graph/GraphCanvas.tsx",
         "frontend/src/components/indicator-graph/IndicatorNodeInspector.tsx",
@@ -3337,7 +3289,8 @@
         "frontend/src/components/indicator-parameters/IndicatorParameterEditor.tsx",
         "frontend/src/components/indicator-parameters/IndicatorParameterInputs.tsx",
         "frontend/src/services/indicatorGraph.ts",
-        "frontend/src/services/indicatorParameters.ts"
+        "frontend/src/services/indicatorParameters.ts",
+        "docs/indicators/canvas.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -3472,8 +3425,8 @@
         "frontend/src/pages/ProductCompare.tsx",
         "frontend/src/pages/EvaluationPlan.tsx",
         "frontend/src/pages/HoldingDiagnosis.tsx",
-        "docs/product_trend_chart_design.md",
-        "docs/product_research_indicator_table_design.md"
+        "docs/product-research/trend-chart.md",
+        "docs/product-research/README.md"
       ],
       "upstream_dependencies": [
         "backend_custom_indicator_service"
@@ -3645,7 +3598,7 @@
         "backend/services/instrument_analytics.py",
         "backend/services/instrument_routes.py",
         "backend/services/data_routes.py",
-        "docs/product_scenario_research_design.md"
+        "docs/product-research/scenario-research.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -3777,7 +3730,7 @@
         "frontend/src/components/HistoricalRegimeBacktest.test.tsx",
         "frontend/src/services/portfolioResearch.test.ts",
         "backend/services/portfolio_routes.py",
-        "docs/custom_indicator_design.md"
+        "docs/indicators/README.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -3866,7 +3819,7 @@
         "frontend/src/pages/AutoAssetClassification.tsx",
         "frontend/src/components/ClassFitPanel.tsx",
         "frontend/src/services/strategyWeights.ts",
-        "docs/auto_asset_class_design.md",
+        "docs/pre-investment/asset-classification.md",
         "frontend/src/pages/EvaluationPlan.tsx",
         "frontend/src/components/evaluation/EvaluationProductSelector.tsx",
         "frontend/src/pages/Placeholder.tsx",
@@ -3907,10 +3860,8 @@
         "frontend/src/layouts/StageLayout.tsx",
         "frontend/src/pages/ProductPools.tsx",
         "frontend/src/pages/ProductPoolSelection.tsx",
-        "docs/research/allocation-journey-optimization-acceptance-2026-09-11.md",
-        "docs/research/allocation-journey-optimization-design-2026-09-11.md",
-        "docs/research/journey-saa-implementation-2026-09-11.md",
-        "docs/research/journey-upstream-implementation-2026-09-11.md",
+        "docs/verification/allocation.md",
+        "docs/pre-investment/README.md",
         "frontend/src/components/frontier-grid/FrontierGrid.tsx"
       ],
       "upstream_dependencies": [
@@ -4022,7 +3973,7 @@
         "docker-compose.yml",
         "deploy/README.md",
         "config.py",
-        "TushareDownload.md",
+        "docs/data/tushare-download.md",
         "T01_get_data.py",
         "backend/services/refresh_runtime.py",
         "backend/services/data_refresh.py",
@@ -4033,8 +3984,8 @@
         "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
         "frontend/src/pages/IndexData.tsx",
         "frontend/src/pages/DataManagement.tsx",
-        "docs/tushare_data_refresh_design.md",
-        "docs/requirements.md"
+        "docs/data/etl.md",
+        "docs/product/requirements.md"
       ],
       "key_symbols": [
         "read_tushare_token",
@@ -4087,14 +4038,15 @@
         "market_data_snapshot_lifecycle"
       ],
       "first_read_files": [
-        "TushareDownload.md",
+        "docs/data/acquisition-protocol.md",
+        "docs/data/tushare-download.md",
         "config.py",
         "T01_get_data.py",
         "backend/services/refresh_runtime.py",
         "backend/services/data_refresh.py",
         "backend/services/data_routes.py",
-        "docs/requirements.md",
-        "docs/tushare_data_refresh_design.md"
+        "docs/product/requirements.md",
+        "docs/data/etl.md"
       ],
       "then_check_files": [
         "backend/market_data.py",
@@ -4199,11 +4151,11 @@
       "grounding": {
         "fact_status": "grounded",
         "evidence": [
-          "TushareDownload.md",
+          "docs/data/tushare-download.md",
           "config.py",
           "T01_get_data.py",
-          "docs/requirements.md",
-          "docs/tushare_data_refresh_design.md",
+          "docs/product/requirements.md",
+          "docs/data/etl.md",
           "backend/services/refresh_runtime.py",
           "backend/services/data_refresh.py",
           "backend/services/data_routes.py",
@@ -4255,7 +4207,7 @@
       "then_check_files": [
         "backend/data_model/definitions",
         "backend/tests/test_data_model_catalog.py",
-        "docs/data_source_center_design.md"
+        "docs/data/README.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell"
@@ -4334,13 +4286,8 @@
         "scripts/smoke_etl_workflow.py",
         "scripts/smoke_multi_source.py",
         "scripts/smoke_fund_events.py",
-        "docs/data_source_center_design.md",
-        "docs/data_sync_user_flow.md",
-        "docs/etl_workflow_design.md",
-        "docs/etl_task_card_design.md",
-        "docs/auto_incremental_design.md",
-        "docs/etl_generic_full_data_design.md",
-        "docs/multi_source_resolution_design.md"
+        "docs/data/README.md",
+        "docs/data/etl.md"
       ],
       "key_symbols": [
         "DataSourceService",
@@ -4378,7 +4325,8 @@
         "backend/data_sources/transport.py",
         "backend/tests/test_data_source_center.py",
         "backend/tests/test_etl_workflows.py",
-        "backend/tests/test_multi_source_resolution.py"
+        "backend/tests/test_multi_source_resolution.py",
+        "docs/indicators/computation-graph.md"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -4539,7 +4487,8 @@
         "frontend/src/pages/DataSourceCenter.test.tsx",
         "frontend/src/pages/DataModelCatalog.test.tsx",
         "frontend/e2e/data-source-center.spec.ts",
-        "frontend/e2e/etl-workflow.spec.ts"
+        "frontend/e2e/etl-workflow.spec.ts",
+        "docs/indicators/computation-graph.md"
       ],
       "upstream_dependencies": [
         "frontend_app_shell",
@@ -4666,7 +4615,8 @@
         "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
         "skills/ai-hermes-self-evolve/scripts/route_task.py",
         "skills/ai-hermes-routing-init/scripts/init_ai_routing.py",
-        "docs/research/journey-routing-validation-2026-09-11.md"
+        "docs/README.md",
+        "scripts/check_documentation.py"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -4766,53 +4716,32 @@
       ],
       "child_modules": [],
       "first_read_files": [
-        "docs/research/top-down-allocation-design-2026-09-12.md",
+        "docs/pre-investment/README.md",
         "backend/strategic_allocation/contracts.py",
         "backend/strategic_allocation/service.py",
         "frontend/src/pages/StrategicAllocationWorkspace.tsx",
-        "docs/research/investment-mandate-research-design-2026-09-13.md",
+        "docs/pre-investment/mandate.md",
         "backend/strategic_allocation/planning.py",
         "backend/strategic_allocation/goal_kernels.py",
         "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
-        "docs/research/risk-level-configuration-center-design-2026-09-16.md",
-        "docs/research/investment-objectives-simplification-design-2026-09-17.md"
+        "docs/pre-investment/risk-scale.md"
       ],
       "then_check_files": [
-        "docs/research/saa-taa-review-response-2026-09-12.md",
-        "docs/research/top-down-allocation-acceptance-2026-09-12.md",
-        "docs/research/top-down-allocation-design-2026-09-12.md",
-        "docs/research/top-down-allocation-research-2026-09-12.md",
+        "docs/verification/allocation.md",
+        "docs/pre-investment/README.md",
+        "docs/research/allocation-methods.md",
         "backend/strategic_allocation/kernels.py",
         "backend/strategic_allocation/policy_gate.py",
         "backend/services/strategic_allocation_routes.py",
         "backend/tests/strategic_allocation_app.py",
-        "docs/research/saa-taa-submission-2026-09-13.md",
         "docs/research/screenshots/saa-taa-20260913",
-        "docs/research/investment-mandate-optimization-2026-09-13.md",
-        "docs/research/investment-mandate-acceptance-2026-09-13.md",
-        "investment-mandate-review-2026-09-13.md",
-        "investment-mandate-fix-recheck-2026-09-13.md",
-        "saa-frontier-history-comparison-2026-09-13.md",
-        "saa-taa-business-intent-recheck-2026-09-13.md",
         "docs/research/screenshots/mandate-fix-20260913",
-        "docs/research/pr14-merge-review-2026-09-13.md",
-        "local-dev-diff-review-2026-09-13.md",
-        "local-dev-fix-recheck-2026-09-14.md",
         "docs/research/screenshots/pr14-merge-review",
         "backend/strategic_allocation/cma_application.py",
         "backend/strategic_allocation/cma_models.py",
         "backend/strategic_allocation/sources.py",
         "backend/strategic_allocation/institution.py",
         "backend/strategic_allocation/universes.py",
-        "docs/research/bettersaataa-01-04-research-2026-09-14.md",
-        "docs/research/bettersaataa-01-04-requirements-2026-09-14.md",
-        "docs/research/bettersaataa-01-04-design-2026-09-14.md",
-        "docs/research/bettersaataa-01-04-acceptance-2026-09-14.md",
-        "docs/research/bettersaataa-review-findings-2026-09-14.md",
-        "docs/research/bettersaataa-M1-report-2026-09-14.md",
-        "docs/research/bettersaataa-M2-kernels-report-2026-09-14.md",
-        "docs/research/bettersaataa-M2-integration-report-2026-09-14.md",
-        "docs/research/bettersaataa-M3-report-2026-09-14.md",
         "backend/strategic_allocation/common_contracts.py",
         "backend/strategic_allocation/contracts.py",
         "backend/strategic_allocation/goal_kernels.py",
@@ -4833,13 +4762,8 @@
         "backend/strategic_allocation/risk_scale_store.py",
         "backend/strategic_allocation/routes.py",
         "backend/strategic_allocation/service.py",
-        "docs/research/investment-mandate-risk-scale-acceptance-2026-09-16.md",
-        "docs/research/investment-mandate-risk-scale-implementation-design-2026-09-16.md",
-        "docs/research/investment-objectives-simplification-design-2026-09-17.md",
-        "docs/research/risk-level-configuration-center-design-2026-09-16.md",
-        "docs/research/risk-level-configuration-center-final-audit-2026-09-16.md",
-        "docs/research/risk-level-configuration-center-implementation-2026-09-16.md",
-        "docs/research/risk-scale-cash-asset-density-optimization-2026-09-17.md",
+        "docs/pre-investment/mandate.md",
+        "docs/pre-investment/risk-scale.md",
         "frontend/src/services/mandateContract.generated.ts",
         "frontend/src/services/mandateTypes.ts",
         "frontend/src/services/riskScaleContract.generated.ts",
@@ -4848,16 +4772,13 @@
         "scripts/export_mandate_contracts.py",
         "scripts/export_risk_scale_contracts.py",
         "backend/frontier_moments.py",
-        "docs/research/pre-investment-dual-path-cma-saa-design-2026-09-16.md",
         "docs/research/screenshots/mandate-boundaries-20260916",
         "frontend/src/pages/RiskScaleCompare.tsx",
         "frontend/src/pages/RiskScaleVersionView.tsx",
-        "docs/research/risk-mandate-submit-review-2026-09-18.md",
         "backend/strategic_allocation/multi_cma.py",
         "backend/strategic_allocation/multi_cma_kernels.py",
         "frontend/src/components/strategic-allocation/MultiCmaSelection.tsx",
         "frontend/src/components/strategic-allocation/CrossModelResults.tsx",
-        "docs/research/multi-cma-parameter-average-acceptance-2026-09-19.md",
         "frontend/src/services/ltcmaContract.generated.ts",
         "scripts/export_ltcma_contracts.py",
         "backend/strategic_allocation/compatibility.py",
@@ -4865,15 +4786,14 @@
         "backend/strategic_allocation/compatibility_kernels.py",
         "backend/qp_numba.py",
         "frontend/src/components/strategic-allocation/CompatibilityResults.tsx",
-        "docs/research/multi-cma-compatible-all-models-acceptance-2026-09-19.md",
         "backend/strategic_allocation/uncertainty.py",
         "backend/strategic_allocation/uncertainty_kernels.py",
         "frontend/src/components/ltcma/LtcmaModelDiagnostics.tsx",
         "frontend/src/components/ltcma/LtcmaResults.tsx",
-        "docs/research/ltcma-center-implementation-design-2026-09-18.md",
-        "docs/research/ltcma-center-acceptance-2026-09-18.md",
-        "cma-model-review-2026-09-20.md",
-        "docs/research/cma-model-review-response-2026-09-20.md"
+        "docs/pre-investment/ltcma.md",
+        "docs/research/cma-model-decisions.md",
+        "docs/pre-investment/saa.md",
+        "docs/pre-investment/funding.md"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -5070,7 +4990,7 @@
       ],
       "child_modules": [],
       "first_read_files": [
-        "docs/research/pre-investment-implementation-validation-plan-2026-09-19.md",
+        "docs/pre-investment/implementation.md",
         "backend/pre_investment/contracts.py",
         "backend/pre_investment/service.py",
         "frontend/src/pages/PreInvestmentImplementation.tsx"
@@ -5094,8 +5014,9 @@
         "backend/strategic_allocation/goal_kernels.py",
         "backend/scenario_stress/published.py",
         "backend/scenario_stress/published_contracts.py",
-        "docs/research/pre-investment-implementation-acceptance-2026-09-19.md",
-        "docs/research/screenshots/implementation-20260920"
+        "docs/verification/allocation.md",
+        "docs/research/screenshots/implementation-20260920",
+        "docs/pre-investment/funding.md"
       ],
       "upstream_dependencies": [
         "strategic_allocation_policy",
@@ -5165,6 +5086,837 @@
         ],
         "unsampled_paths": []
       }
+    },
+    {
+      "id": "documentation_maintenance",
+      "name": "Documentation lifecycle, catalog and candidate validation",
+      "path": "scripts/check_documentation.py",
+      "kind": "repository_tooling",
+      "purpose": "Maps scoped changes to document owners and validates catalog/index, links, explicit plan tables and optional candidate-bound review receipts. Reads worktree, staged or merge-base/head candidates without modifying them. Semantic correctness and financial/deployment qualification require separate review.",
+      "module_tags": [
+        "documentation",
+        "docs-as-code",
+        "governance"
+      ],
+      "entry_files": [
+        "scripts/check_documentation.py",
+        "docs/governance/documentation.md"
+      ],
+      "key_symbols": [
+        "Candidate",
+        "catalog",
+        "inspect",
+        "impacts",
+        "document_index"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "docs/governance/documentation.md",
+        "docs/README.md",
+        "scripts/check_documentation.py"
+      ],
+      "then_check_files": [
+        "scripts/tests/test_documentation.py",
+        "scripts/requirements-docs.txt",
+        ".github/workflows/documentation.yml",
+        "docs/repo_map.json"
+      ],
+      "upstream_dependencies": [
+        "ai_routing_files"
+      ],
+      "downstream_dependencies": [
+        "project_docs",
+        "branch_submission_workflow"
+      ],
+      "out_of_scope_dependencies": [
+        "Native client Stop hooks",
+        "Live GitHub required-check configuration",
+        "Automatic semantic proof of documentation correctness"
+      ],
+      "related_tests": [
+        "scripts/tests/test_documentation.py",
+        "backend/tests/test_tushare_data_script.py"
+      ],
+      "related_configs": [
+        "scripts/requirements-docs.txt",
+        ".github/workflows/documentation.yml"
+      ],
+      "risk_flags": [
+        "staged_worktree_mismatch",
+        "historical_evidence_not_current_proof",
+        "mixed_task_scope",
+        "semantic_review_not_mechanical_validation"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "agent documentation maintenance",
+        "documentation path contracts"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P02",
+        "P25"
+      ],
+      "minimum_regression": [
+        "python3 -m pytest scripts/tests/test_documentation.py -q",
+        "python3 scripts/check_documentation.py",
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "offline_checks",
+        "no_automatic_rewrite"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "scripts/check_documentation.py",
+          "scripts/tests/test_documentation.py",
+          "docs/governance/documentation.md",
+          ".github/workflows/documentation.yml"
+        ],
+        "unsampled_paths": []
+      }
     }
-  ]
+  ],
+  "documentation": {
+    "schema_version": "1.0",
+    "index": "docs/README.md",
+    "documents": [
+      {
+        "path": "README.md",
+        "title": "资产配置投研与组合管理平台",
+        "topic": "入口",
+        "role": "overview",
+        "status": "active",
+        "modules": [
+          "project_docs"
+        ],
+        "read_when": "项目定位、快速开始及文档入口"
+      },
+      {
+        "path": "docs/README.md",
+        "title": "文档索引",
+        "topic": "入口",
+        "role": "index",
+        "status": "active",
+        "modules": [
+          "project_docs",
+          "ai_routing_files",
+          "documentation_maintenance"
+        ],
+        "read_when": "查找主题、专业契约、历史证据和草稿"
+      },
+      {
+        "path": "AGENTS.md",
+        "title": "Repository Guidelines",
+        "topic": "入口",
+        "role": "policy",
+        "status": "active",
+        "modules": [
+          "branch_submission_workflow"
+        ],
+        "read_when": "智能体执行协议、必读条件与授权边界"
+      },
+      {
+        "path": "docs/product/requirements.md",
+        "title": "产品需求与路线图",
+        "topic": "产品与领域",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "frontend_investment_process_framework",
+          "data_ingestion_config"
+        ],
+        "read_when": "了解产品范围、当前能力和交付顺序"
+      },
+      {
+        "path": "docs/product/accounting.md",
+        "title": "资产主体、账户、组合分摊与投资核算详细设计",
+        "topic": "产品与领域",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_investment_process_framework"
+        ],
+        "read_when": "账户、组合分摊、账务与绩效模型变更前"
+      },
+      {
+        "path": "docs/product/domain-language.md",
+        "title": "资产配置投研与组合管理平台领域语言",
+        "topic": "产品与领域",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_investment_process_framework"
+        ],
+        "read_when": "业务设计或术语变更前：资产主体、账户、研究与真实组合边界"
+      },
+      {
+        "path": "docs/product/research-parameters.md",
+        "title": "研究参数中心与运行口径分离",
+        "topic": "产品与领域",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "project_docs"
+        ],
+        "read_when": "研究参数模板的目标设计；不视为已经交付"
+      },
+      {
+        "path": "docs/pre-investment/README.md",
+        "title": "投前研究",
+        "topic": "投前研究",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "tactical_allocation_workbench",
+          "frontend_allocation_workflows",
+          "strategic_allocation_policy"
+        ],
+        "read_when": "开始或修改投前研究：先看完整链路与承接关系"
+      },
+      {
+        "path": "docs/pre-investment/asset-classification.md",
+        "title": "自动构建资产大类",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_allocation_workflows"
+        ],
+        "read_when": "产品聚类、大类候选、映射及局限"
+      },
+      {
+        "path": "docs/pre-investment/funding.md",
+        "title": "资金目标与剩余资金续算",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy",
+          "pre_investment_implementation"
+        ],
+        "read_when": "资金流、月份窗口、负债及剩余资金模型"
+      },
+      {
+        "path": "docs/pre-investment/historical-frontier.md",
+        "title": "历史配置空间与有效前沿",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_quant_core",
+          "backend_strategy_routes"
+        ],
+        "read_when": "历史有效前沿、求解和诊断"
+      },
+      {
+        "path": "docs/pre-investment/implementation.md",
+        "title": "产品实施、统一验证与研究定稿",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "pre_investment_implementation"
+        ],
+        "read_when": "产品风险、成本、余款续算、研究包验证和定稿"
+      },
+      {
+        "path": "docs/pre-investment/ltcma.md",
+        "title": "LTCMA：长期资本市场假设",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy"
+        ],
+        "read_when": "长期资本市场假设、模型与估计口径"
+      },
+      {
+        "path": "docs/pre-investment/mandate.md",
+        "title": "投资目标与约束",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy"
+        ],
+        "read_when": "目标约束、版本确认及适用边界"
+      },
+      {
+        "path": "docs/pre-investment/risk-scale.md",
+        "title": "Universal 风险标尺",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy"
+        ],
+        "read_when": "C1–C5 风险标尺、冻结输入与诊断"
+      },
+      {
+        "path": "docs/pre-investment/saa.md",
+        "title": "SAA：战略资产配置",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy"
+        ],
+        "read_when": "单/多 CMA 的战略配置与采纳规则"
+      },
+      {
+        "path": "docs/pre-investment/taa-numeric-contract.md",
+        "title": "TAA 数值接口契约",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "tactical_allocation_workbench"
+        ],
+        "read_when": "TAA 费用、时钟、持仓递推与数值边界"
+      },
+      {
+        "path": "docs/pre-investment/taa.md",
+        "title": "TAA：战术资产配置",
+        "topic": "投前研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "tactical_allocation_workbench"
+        ],
+        "read_when": "基于 SAA 的战术偏离及用户操作"
+      },
+      {
+        "path": "docs/data/README.md",
+        "title": "数据源、字段映射与多源取值",
+        "topic": "数据管理",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "backend_data_model_catalog",
+          "backend_data_source_etl"
+        ],
+        "read_when": "配置来源、导入映射与标准数据的统一入口"
+      },
+      {
+        "path": "docs/data/acquisition-protocol.md",
+        "title": "Tushare 下载与文档同步协议",
+        "topic": "数据管理",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "data_ingestion_config"
+        ],
+        "read_when": "下载变更前必读：技能、权限、限流、隔离 smoke 与同步要求"
+      },
+      {
+        "path": "docs/data/adjusted-price.md",
+        "title": "复权价格口径：数据、ETL 与指标入参改造设计",
+        "topic": "数据管理",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_typed_indicator_v2"
+        ],
+        "read_when": "价格复权、收益语义与覆盖"
+      },
+      {
+        "path": "docs/data/etl.md",
+        "title": "数据下载与 ETL 编排",
+        "topic": "数据管理",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "data_ingestion_config",
+          "backend_data_source_etl"
+        ],
+        "read_when": "执行图、增量/全量、检查点及恢复"
+      },
+      {
+        "path": "docs/data/pit.md",
+        "title": "PIT：数据可得时点与决策时钟",
+        "topic": "数据管理",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_api_shell"
+        ],
+        "read_when": "数据血缘、发布与时点可得性"
+      },
+      {
+        "path": "docs/data/storage.md",
+        "title": "数据存储与目录迁移",
+        "topic": "数据管理",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_data_storage"
+        ],
+        "read_when": "共享数据目录、迁移、锁和只读边界"
+      },
+      {
+        "path": "docs/data/tushare-download.md",
+        "title": "Tushare 下载、文件与数据状态契约",
+        "topic": "数据管理",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_regime_research",
+          "data_ingestion_config"
+        ],
+        "read_when": "下载动作、输出文件、schema 与带日期的数据证据"
+      },
+      {
+        "path": "docs/indicators/README.md",
+        "title": "指标中心：独立定义与共享执行",
+        "topic": "指标与计算图",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "backend_custom_indicator_service",
+          "backend_typed_indicator_v2",
+          "backend_portfolio_research",
+          "frontend_indicator_studio",
+          "frontend_portfolio_research"
+        ],
+        "read_when": "指标中心定义、运行及共享能力入口"
+      },
+      {
+        "path": "docs/indicators/canvas.md",
+        "title": "指标画布",
+        "topic": "指标与计算图",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_indicator_studio"
+        ],
+        "read_when": "画布节点、连线、展开及预览"
+      },
+      {
+        "path": "docs/indicators/causality.md",
+        "title": "因果性审计模块设计（未来函数 / 数据泄露检验）",
+        "topic": "指标与计算图",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_typed_indicator_v2"
+        ],
+        "read_when": "因果性、知识可得时点与审核"
+      },
+      {
+        "path": "docs/indicators/computation-graph.md",
+        "title": "公用计算图与 ETL 画布",
+        "topic": "指标与计算图",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_regime_research",
+          "backend_data_source_etl",
+          "frontend_data_source_center"
+        ],
+        "read_when": "DAG 类型、编译、执行与数据轴"
+      },
+      {
+        "path": "docs/indicators/excel-export.md",
+        "title": "指标 Excel 复现契约",
+        "topic": "指标与计算图",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_custom_indicator_service"
+        ],
+        "read_when": "指标导出及公式、展示映射"
+      },
+      {
+        "path": "docs/indicators/parameters.md",
+        "title": "指标参数契约",
+        "topic": "指标与计算图",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_typed_indicator_v2"
+        ],
+        "read_when": "运行参数、默认值及定义/实例边界"
+      },
+      {
+        "path": "docs/indicators/rolling-intervals.md",
+        "title": "滚动区间计算图",
+        "topic": "指标与计算图",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_custom_indicator_service",
+          "backend_typed_indicator_v2"
+        ],
+        "read_when": "滚动、事件、区间及边界语义"
+      },
+      {
+        "path": "docs/product-research/README.md",
+        "title": "产品研究：指标表与产品对比",
+        "topic": "产品研究",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "frontend_metric_presentation"
+        ],
+        "read_when": "产品研究表与指标消费的主要入口"
+      },
+      {
+        "path": "docs/product-research/scenario-research.md",
+        "title": "产品研究：历史情景与模拟",
+        "topic": "产品研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_etf_research_pages"
+        ],
+        "read_when": "产品在历史情景中的比较及统计"
+      },
+      {
+        "path": "docs/product-research/timing.md",
+        "title": "ETF 产品择时研究",
+        "topic": "产品研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "product_timing_research"
+        ],
+        "read_when": "ETF 择时图、训练/验证和版本绑定"
+      },
+      {
+        "path": "docs/product-research/trend-chart.md",
+        "title": "产品走势图与时序指标",
+        "topic": "产品研究",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_metric_presentation"
+        ],
+        "read_when": "趋势图、指标叠加、轴和批量请求"
+      },
+      {
+        "path": "docs/regimes/README.md",
+        "title": "市场状态研究",
+        "topic": "市场状态与情景",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "backend_regime_research",
+          "frontend_regime_research"
+        ],
+        "read_when": "历史/实时状态、研究工作台及证据承接入口"
+      },
+      {
+        "path": "docs/regimes/continuous-state.md",
+        "title": "连续实时市场状态",
+        "topic": "市场状态与情景",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_regime_research"
+        ],
+        "read_when": "连续状态与概率序列"
+      },
+      {
+        "path": "docs/regimes/events.md",
+        "title": "历史事件库与时点能力",
+        "topic": "市场状态与情景",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_regime_research"
+        ],
+        "read_when": "事件类型、时间能力及区间消费"
+      },
+      {
+        "path": "docs/regimes/peak-trough.md",
+        "title": "峰谷定界法：事后牛熊震荡区间识别",
+        "topic": "市场状态与情景",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_regime_research"
+        ],
+        "read_when": "峰谷识别、确认及边界"
+      },
+      {
+        "path": "docs/regimes/risk-models.md",
+        "title": "风险模型、情景模拟与压力测试",
+        "topic": "市场状态与情景",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "published_risk_scenario_research"
+        ],
+        "read_when": "发布风险模型、敏感性与压力期限"
+      },
+      {
+        "path": "docs/regimes/smoothing.md",
+        "title": "市场状态研究流程与平滑算子",
+        "topic": "市场状态与情景",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_regime_research",
+          "frontend_regime_research"
+        ],
+        "read_when": "状态平滑与迟滞规则"
+      },
+      {
+        "path": "docs/regimes/validation.md",
+        "title": "市场状态：验证、校准与前瞻资格",
+        "topic": "市场状态与情景",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_regime_research"
+        ],
+        "read_when": "参考置信度、实时可靠性与前瞻资格"
+      },
+      {
+        "path": "docs/factor-research.md",
+        "title": "因子研究",
+        "topic": "因子研究",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "factor_research_center"
+        ],
+        "read_when": "因子、暴露、收益归因与研究证据"
+      },
+      {
+        "path": "docs/frontend/README.md",
+        "title": "前端设计准则",
+        "topic": "界面与术语",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "frontend_app_shell"
+        ],
+        "read_when": "修改视觉、交互或资产前必读的设计规范"
+      },
+      {
+        "path": "docs/frontend/homepage.md",
+        "title": "新版投研首页",
+        "topic": "界面与术语",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_app_shell"
+        ],
+        "read_when": "涉及首页时必读，区分首页与工作台规则"
+      },
+      {
+        "path": "docs/frontend/i18n.md",
+        "title": "语言与业务术语",
+        "topic": "界面与术语",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "frontend_app_shell"
+        ],
+        "read_when": "语言、术语和业务翻译维护"
+      },
+      {
+        "path": "docs/governance/branch-protection.md",
+        "title": "分支保护实现",
+        "topic": "开发与治理",
+        "role": "policy",
+        "status": "active",
+        "modules": [
+          "branch_submission_workflow"
+        ],
+        "read_when": "区分仓库规则、工作流配置和远端实际保护"
+      },
+      {
+        "path": "docs/governance/branch-submission-rules.md",
+        "title": "提交、审核与合并规范",
+        "topic": "开发与治理",
+        "role": "policy",
+        "status": "active",
+        "modules": [
+          "branch_submission_workflow"
+        ],
+        "read_when": "分支、提交、PR、审核、合并和发布前必须完整阅读"
+      },
+      {
+        "path": "docs/governance/documentation.md",
+        "title": "文档维护协议",
+        "topic": "开发与治理",
+        "role": "policy",
+        "status": "active",
+        "modules": [
+          "project_docs",
+          "documentation_maintenance"
+        ],
+        "read_when": "文档变更与任务收尾：影响核对、计划结项和检查命令"
+      },
+      {
+        "path": "docs/governance/numeric-computing.md",
+        "title": "NJIT 与零拷贝高性能计算约束",
+        "topic": "开发与治理",
+        "role": "policy",
+        "status": "active",
+        "modules": [
+          "backend_quant_core",
+          "backend_indicator_runtime"
+        ],
+        "read_when": "数值、窗口和内存改动前必读：NJIT、预热、零回退、零拷贝"
+      },
+      {
+        "path": "docs/governance/operator-contracts.md",
+        "title": "算子颗粒度与组合算法治理",
+        "topic": "开发与治理",
+        "role": "policy",
+        "status": "active",
+        "modules": [
+          "backend_typed_indicator_v2"
+        ],
+        "read_when": "算子/模板变更前必读：颗粒度、类型、时点和等价性"
+      },
+      {
+        "path": "docs/governance/submission-workflow.md",
+        "title": "代码提交、Bot 审核与合并全流程",
+        "topic": "开发与治理",
+        "role": "policy",
+        "status": "active",
+        "modules": [
+          "branch_submission_workflow"
+        ],
+        "read_when": "提交工作流的执行顺序与异常处理；不另立规则"
+      },
+      {
+        "path": "docs/research/allocation-methods.md",
+        "title": "配置研究：方法来源与选择理由",
+        "topic": "方法研究",
+        "role": "research",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy"
+        ],
+        "read_when": "配置方法的选择依据与尚未完成的扩展"
+      },
+      {
+        "path": "docs/research/cma-model-decisions.md",
+        "title": "CMA 模型：关键决策与勘误",
+        "topic": "方法研究",
+        "role": "research",
+        "status": "active",
+        "modules": [
+          "strategic_allocation_policy"
+        ],
+        "read_when": "CMA 数理勘误与实现取舍"
+      },
+      {
+        "path": "docs/research/csi300-reference-recognition-study-2026-09-15.md",
+        "title": "沪深300主趋势：实时识别与 CMA 研究校验",
+        "topic": "方法研究",
+        "role": "research",
+        "status": "active",
+        "modules": [
+          "backend_regime_research"
+        ],
+        "read_when": "沪深300特定样本的参考识别研究；不可外推为普遍验证"
+      },
+      {
+        "path": "docs/research/regime-methods.md",
+        "title": "市场状态：方法选择与研究结论",
+        "topic": "方法研究",
+        "role": "research",
+        "status": "active",
+        "modules": [
+          "backend_regime_research"
+        ],
+        "read_when": "状态识别方法、时点约束与取舍"
+      },
+      {
+        "path": "docs/verification/allocation.md",
+        "title": "配置研究：决策与验收纪要",
+        "topic": "验证证据",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "tactical_allocation_workbench",
+          "backend_quant_core",
+          "frontend_allocation_workflows",
+          "strategic_allocation_policy",
+          "pre_investment_implementation"
+        ],
+        "read_when": "配置研究历史证据、解析反例与资格边界"
+      },
+      {
+        "path": "docs/verification/engineering.md",
+        "title": "工程、指标与界面：验收纪要",
+        "topic": "验证证据",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "backend_typed_indicator_v2",
+          "frontend_app_shell"
+        ],
+        "read_when": "工程、指标与界面验收证据及适用版本"
+      },
+      {
+        "path": "docs/verification/factors.md",
+        "title": "因子研究：有效历史证据",
+        "topic": "验证证据",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "factor_research_center"
+        ],
+        "read_when": "因子研究验收及未闭合资格"
+      },
+      {
+        "path": "docs/verification/regimes.md",
+        "title": "情景研究：决策与验收纪要",
+        "topic": "验证证据",
+        "role": "evidence",
+        "status": "historical",
+        "modules": [
+          "tactical_allocation_workbench",
+          "published_risk_scenario_research",
+          "backend_regime_research",
+          "frontend_regime_research"
+        ],
+        "read_when": "情景研究验收、限制与待复验问题"
+      },
+      {
+        "path": "docs/research/ai-agent-indicator-product-research-design-2026-09-18.md",
+        "title": "指标中心 × 产品研究：AI 智能体详细设计",
+        "topic": "研究草稿",
+        "role": "draft",
+        "status": "draft",
+        "modules": [
+          "project_docs"
+        ],
+        "read_when": "未采纳研究草稿；实施前重新核对需求、代码和证据"
+      },
+      {
+        "path": "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md",
+        "title": "投前研究流程与机构买方投研差距分析",
+        "topic": "研究草稿",
+        "role": "draft",
+        "status": "draft",
+        "modules": [
+          "project_docs"
+        ],
+        "read_when": "未采纳研究草稿；实施前重新核对需求、代码和证据"
+      },
+      {
+        "path": "deploy/README.md",
+        "title": "Production deployment",
+        "topic": "部署",
+        "role": "topic",
+        "status": "active",
+        "modules": [
+          "data_ingestion_config"
+        ],
+        "read_when": "部署方式、运行环境与持久化要求"
+      }
+    ]
+  }
 }

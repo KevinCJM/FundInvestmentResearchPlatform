@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 前端设计准则的机械检查。规则与阈值的说明见 docs/frontend-design-guidelines.md。
+// 前端设计准则的机械检查。规则与阈值的说明见 docs/frontend/README.md。
 // 棘轮语义：budget 是当前实测值，只允许下降。current > budget 即回归，退出码 1。
 // 收敛一批实现后把 budget 改小；target 是准则要求的终值，仅作提示，不参与判定。
 import { readFileSync, readdirSync, statSync } from 'node:fs'

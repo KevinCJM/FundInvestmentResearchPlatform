@@ -1,5 +1,5 @@
 /** @type {import('tailwindcss').Config} */
-// 令牌层。准则见 docs/frontend-design-guidelines.md，回归检查见 scripts/check_frontend_design.mjs。
+// 令牌层。准则见 docs/frontend/README.md，回归检查见 scripts/check_frontend_design.mjs。
 // 这里只放跨页面共享的语义令牌；不要把一次性数值写进来。
 export default {
   content: [

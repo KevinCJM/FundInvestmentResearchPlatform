@@ -1,4 +1,4 @@
-// 姿势与状态的映射只存在这一处。契约与禁区见 docs/frontend-design-guidelines.md 第 15 节。
+// 姿势与状态的映射只存在这一处。契约与禁区见 docs/frontend/README.md 第 15 节。
 // 资产是显示宽度的 2 倍，用于高密度屏；因此不需要 srcset。
 const POSES = {
   empty: { file: 'mascot-empty-240.webp', width: 120 },
