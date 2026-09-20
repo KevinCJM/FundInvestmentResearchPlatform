@@ -143,6 +143,16 @@ class ImplementationService:
         }
 
     def save(self, body, package_id=None):
+        copied_from_id = body.copied_from_id
+        if package_id:
+            # Copy lineage is fixed at creation, independent of later UI state.
+            copied_from_id = self.repository.current(package_id).get("copied_from_id")
+        elif copied_from_id is not None:
+            source = self.repository.artifacts.get(copied_from_id, "series")
+            if source.get("artifact_type") != "implementation_package":
+                raise ValidationError(
+                    "PACKAGE_COPY_SOURCE_TYPE", "复制来源必须是已保存的研究包版本。"
+                )
         candidate_hash, refs = self.candidate_identity(body.candidate)
         return self.repository.append(
             package_id,
@@ -153,7 +163,7 @@ class ImplementationService:
                 "candidate_hash": candidate_hash,
                 "dependencies": refs,
                 "stage": "draft",
-                "copied_from_id": body.copied_from_id,
+                "copied_from_id": copied_from_id,
                 "report_id": None,
             },
             key=body.idempotency_key,

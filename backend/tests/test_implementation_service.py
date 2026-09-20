@@ -159,6 +159,62 @@ def saved_report(service, body):
     return validated
 
 
+def test_copy_lineage_survives_reopen_edits_validation_and_export(implementation):
+    service, body = implementation
+    app = FastAPI()
+    app.include_router(build_router(service))
+    client = TestClient(app)
+    original = service.save(PackageWrite(candidate=body, idempotency_key="copy-source-001"))
+    create = {"candidate": body.model_dump(mode="json"), "copied_from_id": original["id"],
+              "idempotency_key": "copy-create-001"}
+    response = client.post("/api/pre-investment/packages", json=create)
+    assert response.status_code == 201, response.text
+    copied = response.json()
+    assert client.post("/api/pre-investment/packages", json=create).json() == copied
+    path = f"/api/pre-investment/packages/{copied['scheme_id']}"
+    for index, supplied_source in enumerate((None, copied["id"])):
+        reopened = client.get(path).json()["package"]
+        edit = {"candidate": {**reopened["candidate"], "name": f"复制后编辑{index}"},
+                "expected_revision": reopened["revision"], "copied_from_id": supplied_source,
+                "idempotency_key": f"copy-edit-{index:03d}"}
+        response = client.put(path, json=edit)
+        assert response.status_code == 200, response.text
+        current = response.json()
+        assert current["copied_from_id"] == original["id"]
+        assert client.put(path, json=edit).json() == current
+    stale = {**edit, "idempotency_key": "copy-stale-edit"}
+    assert client.put(path, json=stale).status_code == 409
+    validated = service.validate(copied["scheme_id"], PackageAction(
+        expected_revision=current["revision"], candidate_hash=current["candidate_hash"],
+        idempotency_key="copy-validate-001"))
+    report = service.repository.report(validated["report_id"])
+    service.finalize(copied["scheme_id"], FinalizePackage(
+        expected_revision=validated["revision"], candidate_hash=validated["candidate_hash"],
+        validation_report_hash=report["content_hash"], idempotency_key="copy-finalize-001",
+        reviewer="本地研究员", reason="复核复制来源与研究证据", accept_research_limits=True,
+        review_due_at=date.today() + timedelta(days=30)))
+    with zipfile.ZipFile(io.BytesIO(client.get(path + "/export").content)) as archive:
+        exported = json.loads(archive.read("research-package.json"))
+    assert exported["package"]["copied_from_id"] == original["id"]
+    assert all(row["copied_from_id"] == original["id"] for row in exported["history"])
+    assert service.repository.current(original["scheme_id"]) == original
+
+
+def test_copy_requires_an_existing_package_revision(implementation):
+    service, body = implementation
+    app = FastAPI()
+    app.include_router(build_router(service))
+    client = TestClient(app)
+    original = service.save(PackageWrite(candidate=body, idempotency_key="copy-source-001"))
+    other = service.repository.artifacts.save("series", {"artifact_type": "other", "name": "其他成果"})
+    for identifier, status in (("series-missing", 404), (original["scheme_id"], 404), (other["id"], 422)):
+        response = client.post("/api/pre-investment/packages", json={
+            "candidate": body.model_dump(mode="json"), "copied_from_id": identifier,
+            "idempotency_key": "copy-invalid-source"})
+        assert response.status_code == status, response.text
+        assert service.repository.list() == [original]
+
+
 def test_report_finalize_export_and_current_retirement(implementation):
     service, body = implementation
     item = saved_report(service, body)
