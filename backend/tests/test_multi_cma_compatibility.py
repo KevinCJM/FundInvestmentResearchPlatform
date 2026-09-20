@@ -255,3 +255,61 @@ def test_overlapping_group_and_asset_bounds_with_zero_tracking_error():
 def test_common_readiness_is_bound_to_worker_pid(monkeypatch):
     monkeypatch.setattr(numeric, '_WARMED_PID', -1)
     with pytest.raises(RuntimeError): problem()
+
+
+def test_outer_iteration_enters_compiled_state_machine(monkeypatch):
+    assert hasattr(numeric, 'advance_outer_approximation_kernel')
+    kernel = numeric.advance_outer_approximation_kernel
+    assert kernel in numeric.KERNELS and kernel.nopython_signatures
+    assert not kernel._can_compile
+    calls = []
+    def record(*args):
+        calls.append(args)
+        return kernel(*args)
+    def python_step_forbidden(*args):
+        raise AssertionError('numerical outer loop called a Python substep')
+    monkeypatch.setattr(numeric, 'advance_outer_approximation_kernel', record)
+    monkeypatch.setattr(numeric, 'linear_master_kernel', python_step_forbidden)
+    monkeypatch.setattr(numeric, 'quadratic_support_kernel', python_step_forbidden)
+    result = problem([[.1, .02]])
+    assert result['status'] == 'converged' and result['support_cuts'] > 1
+    assert len(calls) == result['iterations']
+    assert all(call[0] is calls[0][0] for call in calls)
+    assert all(call[1] is calls[0][1] for call in calls)
+
+
+@pytest.mark.parametrize('floor,cap,iterations,cuts,expected', [
+    (0., .16, 64, 2048, 1), (.061, .16, 64, 2048, 3),
+    (0., .13, 64, 2048, 3), (0., .16, 1, 2048, 5), (0., .16, 64, 0, 8),
+])
+def test_compiled_outer_batch_matches_deadline_yields(floor, cap, iterations, cuts, expected):
+    means = np.array([[.1, .02], [.02, .1]]) if floor else np.array([[.1, .02]])
+    risks = np.repeat((np.eye(2) * .04)[None], means.shape[0], axis=0)
+    base, limits, cost, lo, hi, initial = numeric.prepare_problem_kernel(
+        means, risks, np.tile([0., 1.], (2, 1)), np.empty((0, 2)), np.empty(0),
+        np.empty(0), np.empty(0), floor, cap, 1., 0., np.zeros(means.shape[0]), 0)
+    results = []
+    for batch in (1, 128):
+        workspace = numeric.prepare_outer_workspace_kernel(base, limits, initial, cuts, means.shape[0])
+        state, values, matrix, rhs, current, weights, residuals = workspace
+        while state[0] == 0:
+            numeric.advance_outer_approximation_kernel(*workspace, cost, lo, hi, risks,
+                np.empty(0), cap, 1., iterations, 500, 1e-7, batch)
+        assert state[0] == expected
+        results.append((state.copy(), values.copy(), current.copy(),
+                        matrix[:state[3]].copy(), rhs[:state[3]].copy(), residuals[:state[5]].copy()))
+        if expected == 1:
+            np.testing.assert_allclose(weights, problem(means, risks, floor=floor, cap=cap)['weights'])
+    for single, batched in zip(*results):
+        np.testing.assert_array_equal(single, batched)
+
+
+def test_deadline_between_compiled_iterations_preserves_budget_status(monkeypatch):
+    import backend.strategic_allocation.compatibility_solver as solver
+
+    ticks = iter([0., 2.])
+    monkeypatch.setattr(solver.time, 'monotonic', lambda: next(ticks))
+    result = problem([[.1, .02]], floor=0., deadline=1.)
+    assert result['status'] == 'time_budget' and result['iterations'] == 2
+    assert result['support_cuts'] > 0 and result['weights'] is None
+    assert result['phase_one_lower_bound'] is None

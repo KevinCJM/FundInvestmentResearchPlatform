@@ -16,6 +16,9 @@ M = types.Array(types.float64, 2, 'A', readonly=True)
 T = types.Array(types.float64, 3, 'A', readonly=True)
 I = types.int64
 F = types.float64
+WV = types.Array(types.float64, 1, 'A')
+WM = types.Array(types.float64, 2, 'A')
+WI = types.Array(types.int64, 1, 'A')
 _WARMED_PID = None
 
 
@@ -186,7 +189,81 @@ def worst_model_summary_kernel(metrics, probability_lowers):
     return result, worst
 
 
-KERNELS = (prepare_problem_kernel, linear_master_kernel, quadratic_support_kernel, worst_model_summary_kernel, bounded_lp_kernel)
+@njit((M, V, V, I, I), cache=True, nogil=True)
+def prepare_outer_workspace_kernel(base, limits, initial, max_cuts, risk_count):
+    count = limits.size
+    matrix = np.empty((count + max_cuts, initial.size))
+    rhs = np.empty(count + max_cuts)
+    matrix[:count] = base
+    rhs[:count] = limits
+    # status, outer iterations, master iterations, rows, base rows, residual count.
+    state = np.array([0, 0, 0, count, count, 0], dtype=np.int64)
+    # objective, lower bound, objective gap, Phase-I lower bound.
+    values = np.array([np.nan, -np.inf, np.nan, np.nan])
+    return (state, values, matrix, rhs, initial.copy(),
+            np.empty(initial.size - 1), np.empty(risk_count))
+
+
+@njit((WI, WV, WM, WV, WV, WV, WV, V, V, V, T, V, F, F, I, I, F, I),
+      cache=True, nogil=True)
+def advance_outer_approximation_kernel(state, values, matrix, rhs, current,
+                                      weights, residuals, cost, lower, upper,
+                                      risks, benchmark, vol_cap, te_cap,
+                                      max_iterations, master_iterations,
+                                      objective_tolerance, step_budget):
+    """Own the entire numerical iteration; yield only for wall-clock scheduling.
+
+    State/workspace remain exclusive to this solve across scheduling yields.
+    Status: 0 running, 1 converged, 2 verified feasible, 3 infeasible,
+    4 unresolved Phase I, 5 outer limit, 6 master limit, 7 numerical failure,
+    8 cut budget. Time cancellation is I/O scheduling outside this kernel.
+    """
+    for _ in range(step_budget):
+        if state[0] != 0:
+            break
+        state[1] += 1
+        count = state[3]
+        point, code, used, checks = linear_master_kernel(
+            matrix[:count], rhs[:count], cost, lower, upper, current, master_iterations)
+        current[:] = point
+        state[2] += used
+        if code == 4:
+            values[3] = checks[4]
+            state[0] = 3
+            break
+        if code == 5 or not np.all(np.isfinite(current)):
+            state[0] = 4
+            break
+        if np.isfinite(checks[4]):
+            values[1] = max(values[1], checks[4])
+        cuts, cut_limits, checks = quadratic_support_kernel(
+            current, risks, benchmark, vol_cap, te_cap)
+        residuals[:checks.size] = checks
+        state[5] = checks.size
+        if code == 0 and cuts.shape[0] == 0:
+            weights[:] = current[:-1]
+            values[0] = current[-1]
+            if np.isfinite(values[1]):
+                values[2] = max(0., values[0] - values[1])
+            state[0] = 1 if values[0] - values[1] <= objective_tolerance else 2
+            break
+        if code != 0:
+            state[0] = 6 if code == 1 else 7
+            break
+        if count + cuts.shape[0] > rhs.size:
+            state[0] = 8
+            break
+        matrix[count:count + cuts.shape[0]] = cuts
+        rhs[count:count + cuts.shape[0]] = cut_limits
+        state[3] += cuts.shape[0]
+        if state[1] >= max_iterations:
+            state[0] = 5
+    return state[0]
+
+
+KERNELS = (prepare_problem_kernel, linear_master_kernel, quadratic_support_kernel,
+           worst_model_summary_kernel, bounded_lp_kernel, prepare_outer_workspace_kernel,
+           advance_outer_approximation_kernel)
 for kernel in KERNELS:
     kernel.disable_compile()
 
@@ -194,7 +271,7 @@ for kernel in KERNELS:
 def execution_audit():
     complete = _WARMED_PID == os.getpid() and all(len(k.signatures) == 1 and k.nopython_signatures
         and not k._can_compile and not any(o.objectmode for o in k.overloads.values()) for k in KERNELS)
-    return {'backend': 'numba_njit_fixed_signature', 'kernel_version': 'multi-cma-outer-approximation/1.0.0',
+    return {'backend': 'numba_njit_fixed_signature', 'kernel_version': 'multi-cma-outer-approximation/1.1.0',
             'complete': bool(complete), 'fully_warmed': bool(complete), 'nopython': bool(complete),
             'object_mode': 0, 'python_fallback': 0, 'request_time_compilation': 0,
             'kernel_signatures': {k.__name__: [str(s) for s in k.signatures] for k in KERNELS}}
@@ -218,6 +295,11 @@ def warm():
     linear_master_kernel(a, b, f, lo, hi, x, 300)
     quadratic_support_kernel(np.array([1.,0.,0.]), risks, np.empty(0), .16, 1.)
     worst_model_summary_kernel(np.zeros((2,5)), np.array([.9,.8]))
+    state, values, matrix, rhs, current, weights, residuals = prepare_outer_workspace_kernel(a, b, x, 2048, 2)
+    advance_outer_approximation_kernel(state, values, matrix, rhs, current, weights, residuals,
+        f, lo, hi, risks, np.empty(0), .16, 1., 64, 500, 1e-7, 64)
+    if state[0] != 1:
+        raise RuntimeError('COMPATIBILITY_OUTER_WARMUP_FAILED')
     _WARMED_PID = os.getpid()
     require_ready()
     return execution_audit()

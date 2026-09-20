@@ -289,6 +289,8 @@ reason / evidence_ref / execution_version / checked_at / review_due_at
 
 建议状态：`draft → candidate_frozen → validation_complete → finalized`；不满足条件可停在候选或形成明确失败报告。每个 report 是不可变版本，包的阶段状态由事件投影，不原地修改既有研究事实。
 
+验证在追加 `candidate_frozen` 前必须取得与预览、优化共用的计算名额。忙碌请求返回 `IMPLEMENTATION_BUSY`，不得修改版本、幂等记录或运行尝试；原 revision 和操作键可直接重试。取得名额后，无论冻结写入、候选校验或计算失败，都必须释放名额；已开始计算的失败尝试仍保留审计记录。
+
 研究定稿同时携带独立资格字段：
 
 - `research_scope`：例如静态权重前瞻研究／历史回放／特定路径规则验证。
