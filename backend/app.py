@@ -137,7 +137,7 @@ async def lifespan(_app: FastAPI):
     tactical_status = tactical_service.warm()
     if tactical_status.get("complete") is not True:
         raise RuntimeError("战术资产配置 NJIT 启动预热未完成")
-    from services.strategic_allocation_routes import strategic_service, risk_scale_service
+    from services.strategic_allocation_routes import strategic_service, risk_scale_service, implementation_service
     strategic_status = strategic_service.warm()
     if strategic_status.get("complete") is not True:
         raise RuntimeError("战略资产配置 NJIT 启动预热未完成")
@@ -160,6 +160,9 @@ async def lifespan(_app: FastAPI):
     sensitivity_status = warm_sensitivity_kernels()
     if sensitivity_status.get("complete") is not True:
         raise RuntimeError("风险模型与已发布情景计算内核未完成启动预热")
+    implementation_status = implementation_service.warm()
+    if implementation_status.get('complete') is not True:
+        raise RuntimeError('产品实施与资金续算启动预热未完成')
     if factor_status.get("complete") is not True:
         raise RuntimeError("因子研究中心 NJIT 启动预热未完成")
     regime_graph_plan_status = regime_graph_v2_service.prewarm_saved_definitions()
@@ -199,6 +202,7 @@ async def lifespan(_app: FastAPI):
         "factor_research": factor_status,
         "timing_research": timing_status,
         "published_sensitivity": sensitivity_status,
+        "pre_investment_implementation": implementation_status,
     }
     # Share the PIT page's single background scan, after all NJIT workers warm.
     # This is diagnostic cache priming, not a waiver of PIT/publication checks.

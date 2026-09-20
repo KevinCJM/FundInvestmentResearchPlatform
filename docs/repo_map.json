@@ -849,7 +849,7 @@
       "entry_files": [
         "README.md",
         "./LICENSE",
-        "公募基金量化投资流程大纲.md",
+        "资产配置投研与财富管理平台发展规划纲要.md",
         "README_SEPARATED.md",
         "docs/requirements.md",
         "docs/custom_indicator_design.md",
@@ -1061,7 +1061,7 @@
       "name": "Portfolio math, fitting, optimization, calendar, and backtest core",
       "path": "backend/backtest_engine.py",
       "kind": "backend_domain_core",
-      "purpose": "Core portfolio calculations: ETF-to-class NAV fitting, rolling correlation, efficient frontier exploration, risk-budget and target-weight solving, rebalance date generation, fitting-window validation, and portfolio backtests. Class NAV computation returns one request-owned ClassNavResult containing numerical outputs, lineage and availability dates; fitting APIs and allocation persistence consume that same result instead of process-global last-load state. Historical frontier supports a continuous return-target grid with point_count distinct from max_iterations, fixed-signature QP/SQP and explicit failure diagnostics. Successful grid points join the common Pareto and representative candidate set. Duplicate exposures can exhaust the singular-QP endpoint budget; this is a known limitation, not infeasibility proof.",
+      "purpose": "Core portfolio calculations: ETF-to-class NAV fitting, rolling correlation, efficient frontier exploration, risk-budget and target-weight solving, rebalance date generation, fitting-window validation, and portfolio backtests. Class NAV computation returns one request-owned ClassNavResult containing numerical outputs, lineage and availability dates; fitting APIs and allocation persistence consume that same result instead of process-global last-load state. Historical frontier supports a continuous return-target grid with point_count distinct from max_iterations, fixed-signature QP/SQP and explicit failure diagnostics. Successful grid points join the common Pareto and representative candidate set. Duplicate exposures can exhaust the singular-QP endpoint budget; this is a known limitation, not infeasibility proof. The shared active-set body also supplies dual multipliers to a bounded LP adapter; historical QP callers retain the four-value ABI and original tolerances. The LP box and multiplier residual give conservative objective bounds for common-CMA Phase I.",
       "module_tags": [
         "backend",
         "quant",
@@ -2454,6 +2454,7 @@
         "backend/historical_regimes/peak_trough_numba.py",
         "backend/tests/test_historical_regime_peak_trough.py",
         "docs/research/peak-trough-regime-implementation-2026-09-07.md",
+        "docs/research/historical-regime-audit-2026-09-07.md",
         "backend/historical_regimes/segment_numba.py",
         "backend/historical_regimes/authoring.py",
         "docs/research/regime-authoring-design-2026-09-07.md",
@@ -4725,7 +4726,7 @@
       "name": "Investment objectives, CMA and immutable SAA policies",
       "path": "backend/strategic_allocation",
       "kind": "full_stack_research_module",
-      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The product-first path and historical frontier remain. cma_application supplies frozen effective moments from manual, Black-Litterman or explicit probability-scenario assumptions to one policy search, funding diagnosis and TAA risk checks. Posterior mean uncertainty is not asset-return risk. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Mandate schema 2.0 separates shared cash budgets from the three success criteria, records explicitly confirmed policy snapshots and resolves risk caps from immutable scale references. The current objective workspace is a two-step user flow: objective with risk/cash constraints, then results/confirmation. It binds a research-date-valid RiskScaleVersion, derives a cash-constrained reference frontier from that scale's frozen reference inputs, and keeps C1-C5 anchored to the original scale. Reference research separates search from fixed-candidate validation and labels failed-search capital diagnostics as non-authorizing. Actual SAA rechecks funding independently; TAA consumes the frozen effective cash-role floor and reference expiry rather than inheriting a reference success probability. Saved research does not certify current implementation eligibility. Risk Scale Center publishes immutable reference assets, historical moments and C1-C5 boundaries, with revision-checked drafts, default pointers and retirement. The frontier and historical optimizer use one fixed-signature QP core; reference publication supports idempotent crash recovery.",
+      "purpose": "Freezes mandates, forward-looking CMA and adopted SAA policies. Optional institutional context separates cash-purpose floors, economic snapshots and dated manual evidence; these are not legal approval or complete ALM. Independent immutable strategic universes support research without product NAV; explicit implementation maps preserve gaps and gate TAA. The product-first path and historical frontier remain. The independent LTCMA center supplies manual, Black-Litterman, explicit scenarios, historical statistics, daily NIW and historical regime occupancy through cma_application to one policy search, funding diagnosis and TAA risk checks. Statistical evidence is currently CNY/SSE daily and requires calendar coverage. The SAA workspace selects frozen CMA versions rather than editing them. V2 CMA is independent of mandate and implementation mapping; implementation mapping is chosen separately at policy creation. Mutable drafts, explicit idempotent publication, copy-to-new research and retirement are separate from immutable analytical versions. Posterior mean uncertainty is not asset-return risk. Single-CMA SAA may explicitly use a frozen mean-error ellipsoid for Historical, NIW or Black-Litterman evidence; the legacy box model remains the default, multi-CMA mean-error dependence is not inferred, and BL basket views reuse the same Gaussian update with diagnostics only. Optional signed Euler risk-budget scoring preserves the four original candidates; zero-risk budget candidates are unavailable. Funding cashflows, cent-rounded capital replay, preview/confirm hashes, immutable history, clock invalidation and exact SAA return navigation remain enforced. Model and institutional kernels join PID-bound startup readiness. Mandate schema 2.0 separates shared cash budgets from the three success criteria, records explicitly confirmed policy snapshots and resolves risk caps from immutable scale references. The current objective workspace is a two-step user flow: objective with risk/cash constraints, then results/confirmation. It binds a research-date-valid RiskScaleVersion, derives a cash-constrained reference frontier from that scale's frozen reference inputs, and keeps C1-C5 anchored to the original scale. Reference research separates search from fixed-candidate validation and labels failed-search capital diagnostics as non-authorizing. Actual SAA rechecks funding independently; TAA consumes the frozen effective cash-role floor and reference expiry rather than inheriting a reference success probability. Saved research does not certify current implementation eligibility. Risk Scale Center publishes immutable reference assets, historical moments and C1-C5 boundaries, with revision-checked drafts, default pointers and retirement. The frontier and historical optimizer use one fixed-signature QP core; reference publication supports idempotent crash recovery. Parameter-average SAA accepts hash-bound, same-date V2 CMA references with matching economic scope and moment semantics. It averages means and within-model covariance, freezes all sources and model disagreement inside a schema-2 policy, and cross-evaluates each candidate under the original models. Source-model failures are diagnostic, while the fused model governs adoption and TAA. Compatible-all-model SAA now independently solves maximum-return anchors and a continuous common minimax-regret or maximin-return problem. A bounded outer approximation checks each original variance and benchmark TE, uses a certified bounded-LP Phase I, and distinguishes infeasibility from unresolved budgets. Every source gates adoption and TAA; funding filters the joint candidate and is independently revalidated per source. Equal-weight display moments never replace the all-model contract. Predictive mixtures, common C1-C5 frontiers and general concave-utility objectives remain unsupported. Legacy single-CMA request echoes and saved policies retain their existing contract. Publication checks source retirement under the governance lock and bounds metadata and total funding work before execution or persistence.",
       "module_tags": [
         "SAA",
         "CMA",
@@ -4749,7 +4750,12 @@
         "frontend/src/pages/RiskScaleCenter.tsx",
         "frontend/src/pages/RiskScaleWorkspace.tsx",
         "frontend/src/pages/InvestmentObjectivesCenter.tsx",
-        "frontend/src/components/risk-scales"
+        "frontend/src/components/risk-scales",
+        "frontend/src/components/ltcma",
+        "frontend/src/pages/LtcmaCenter.tsx",
+        "frontend/src/pages/LtcmaWorkspace.tsx",
+        "frontend/src/pages/LtcmaVersionView.tsx",
+        "frontend/src/services/ltcma.ts"
       ],
       "key_symbols": [
         "StrategicAllocationService",
@@ -4846,7 +4852,28 @@
         "docs/research/screenshots/mandate-boundaries-20260916",
         "frontend/src/pages/RiskScaleCompare.tsx",
         "frontend/src/pages/RiskScaleVersionView.tsx",
-        "docs/research/risk-mandate-submit-review-2026-09-18.md"
+        "docs/research/risk-mandate-submit-review-2026-09-18.md",
+        "backend/strategic_allocation/multi_cma.py",
+        "backend/strategic_allocation/multi_cma_kernels.py",
+        "frontend/src/components/strategic-allocation/MultiCmaSelection.tsx",
+        "frontend/src/components/strategic-allocation/CrossModelResults.tsx",
+        "docs/research/multi-cma-parameter-average-acceptance-2026-09-19.md",
+        "frontend/src/services/ltcmaContract.generated.ts",
+        "scripts/export_ltcma_contracts.py",
+        "backend/strategic_allocation/compatibility.py",
+        "backend/strategic_allocation/compatibility_solver.py",
+        "backend/strategic_allocation/compatibility_kernels.py",
+        "backend/qp_numba.py",
+        "frontend/src/components/strategic-allocation/CompatibilityResults.tsx",
+        "docs/research/multi-cma-compatible-all-models-acceptance-2026-09-19.md",
+        "backend/strategic_allocation/uncertainty.py",
+        "backend/strategic_allocation/uncertainty_kernels.py",
+        "frontend/src/components/ltcma/LtcmaModelDiagnostics.tsx",
+        "frontend/src/components/ltcma/LtcmaResults.tsx",
+        "docs/research/ltcma-center-implementation-design-2026-09-18.md",
+        "docs/research/ltcma-center-acceptance-2026-09-18.md",
+        "cma-model-review-2026-09-20.md",
+        "docs/research/cma-model-review-response-2026-09-20.md"
       ],
       "upstream_dependencies": [
         "backend_quant_core",
@@ -4912,7 +4939,25 @@
         "frontend/src/services/riskScales.test.ts",
         "frontend/src/test/mandateBoundaryFixtures.ts",
         "frontend/src/test/riskScaleFixtures.ts",
-        "frontend/e2e/helpers/mandates.ts"
+        "frontend/e2e/helpers/mandates.ts",
+        "backend/tests/test_multi_cma.py",
+        "frontend/src/pages/MultiCmaWorkspace.test.tsx",
+        "frontend/e2e/multi-cma.spec.ts",
+        "backend/tests/test_multi_cma_performance.py",
+        "backend/tests/test_multi_cma_compatibility.py",
+        "backend/tests/benchmark_multi_cma_compatibility.py",
+        "backend/tests/test_cma_diagnostics.py",
+        "backend/tests/test_cma_review.py",
+        "backend/tests/test_cma_uncertainty.py",
+        "frontend/src/components/ltcma/CmaReview.test.tsx",
+        "frontend/src/components/ltcma/LtcmaStatisticsFields.test.tsx",
+        "frontend/src/pages/LtcmaCenter.test.tsx",
+        "frontend/src/test/ltcmaFixtures.ts",
+        "frontend/e2e/helpers/ltcma.ts",
+        "frontend/e2e/ltcma.spec.ts",
+        "backend/tests/test_ltcma_evidence.py",
+        "backend/tests/test_ltcma_lifecycle.py",
+        "backend/tests/benchmark_ltcma.py"
       ],
       "related_configs": [
         "frontend/playwright.strategic.config.ts",
@@ -4920,7 +4965,10 @@
         "frontend/playwright.m1.config.ts",
         "backend/tests/bettersaataa_m1_app.py",
         "frontend/playwright.mandate.config.ts",
-        "frontend/playwright.risk-scales.config.ts"
+        "frontend/playwright.risk-scales.config.ts",
+        "frontend/playwright.multi-cma.config.ts",
+        "frontend/playwright.ltcma.config.ts",
+        "backend/tests/ltcma_app.py"
       ],
       "minimum_regression": [
         "python3 -m pytest backend/tests/test_strategic_allocation.py backend/tests/test_tactical_walk_forward.py backend/tests/test_frontier_grid.py -q",
@@ -4938,7 +4986,16 @@
         "npm run test:e2e --prefix frontend -- --config=playwright.risk-scales.config.ts",
         "npm run test:e2e --prefix frontend -- --config=playwright.mandate.config.ts",
         "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_mandate_contracts.py --check",
-        "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_risk_scale_contracts.py --check"
+        "/usr/bin/env PYTHONPATH=.:backend python3 scripts/export_risk_scale_contracts.py --check",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma.py backend/tests/test_cma_model_integration.py backend/tests/test_strategic_allocation.py -q",
+        "npm run test --prefix frontend -- --run MultiCmaWorkspace.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.multi-cma.config.ts",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 scripts/export_ltcma_contracts.py --check",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_multi_cma_compatibility.py backend/tests/test_multi_cma.py backend/tests/test_optimizer_strategy_numba.py backend/tests/test_frontier_grid.py -q",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 backend/tests/benchmark_multi_cma_compatibility.py",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_cma_review.py backend/tests/test_cma_uncertainty.py backend/tests/test_cma_diagnostics.py backend/tests/test_cma_models.py backend/tests/test_cma_model_integration.py backend/tests/test_ltcma_statistics.py -q",
+        "npm run test --prefix frontend -- --run CmaReview.test.tsx StrategicAllocationWorkspace.test.tsx StrategicAllocationModels.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.ltcma.config.ts"
       ],
       "pitfall_ids": [
         "P04",
@@ -4974,7 +5031,137 @@
           "backend/tests/test_cma_model_integration.py",
           "backend/tests/test_bettersaataa_m1.py",
           "backend/tests/test_bettersaataa_final_audit.py",
-          "frontend/e2e/better-saataa-01-04.spec.ts"
+          "frontend/e2e/better-saataa-01-04.spec.ts",
+          "backend/strategic_allocation/compatibility.py",
+          "backend/strategic_allocation/compatibility_kernels.py",
+          "backend/tests/test_multi_cma_compatibility.py",
+          "backend/tests/test_cma_review.py",
+          "backend/tests/test_cma_uncertainty.py",
+          "backend/tests/test_cma_diagnostics.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "pre_investment_implementation",
+      "name": "Product risk, funding continuation and immutable research packages",
+      "path": "backend/pre_investment",
+      "kind": "full_stack_research_module",
+      "purpose": "Direct frozen SAA or saved TAA sources feed one product/cash candidate. Q budgets are separate from joint beta and full residual covariance. Single/A/B policies retain their enforcement. Each-side self-financing fees and explicit cash dates feed arbitrary remaining-month funding; product paths require declared same-month settlement and constant-rate sensitivity. Reports freeze sources, arrays, code hashes and registered attempts. Revision and candidate hashes govern validation and immutable local research finalization; current eligibility is rechecked. The legacy gross portfolio engine, product timing and TAA remain available. Research finalization does not certify execution, historical PIT or independent institutional approval.",
+      "module_tags": [
+        "pre-investment",
+        "implementation",
+        "cash",
+        "research-package"
+      ],
+      "entry_files": [
+        "backend/pre_investment/service.py",
+        "frontend/src/pages/PreInvestmentImplementation.tsx",
+        "frontend/src/services/implementation.ts",
+        "frontend/src/components/implementation",
+        "backend/services/strategic_allocation_routes.py"
+      ],
+      "key_symbols": [
+        "ImplementationService",
+        "PackageRepository",
+        "product_risk_kernel",
+        "self_financing_kernel",
+        "funding_paths_from_monthly_kernel"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "docs/research/pre-investment-implementation-validation-plan-2026-09-19.md",
+        "backend/pre_investment/contracts.py",
+        "backend/pre_investment/service.py",
+        "frontend/src/pages/PreInvestmentImplementation.tsx"
+      ],
+      "then_check_files": [
+        "backend/pre_investment/__init__.py",
+        "backend/pre_investment/contracts.py",
+        "backend/pre_investment/cost_kernels.py",
+        "backend/pre_investment/costs.py",
+        "backend/pre_investment/evaluation.py",
+        "backend/pre_investment/funding.py",
+        "backend/pre_investment/path_kernels.py",
+        "backend/pre_investment/paths.py",
+        "backend/pre_investment/repository.py",
+        "backend/pre_investment/risk.py",
+        "backend/pre_investment/risk_kernels.py",
+        "backend/pre_investment/routes.py",
+        "backend/pre_investment/scenarios.py",
+        "backend/pre_investment/service.py",
+        "backend/pre_investment/sources.py",
+        "backend/strategic_allocation/goal_kernels.py",
+        "backend/scenario_stress/published.py",
+        "backend/scenario_stress/published_contracts.py",
+        "docs/research/pre-investment-implementation-acceptance-2026-09-19.md",
+        "docs/research/screenshots/implementation-20260920"
+      ],
+      "upstream_dependencies": [
+        "strategic_allocation_policy",
+        "tactical_allocation_workbench",
+        "published_risk_scenario_research"
+      ],
+      "downstream_dependencies": [
+        "frontend_investment_process_framework"
+      ],
+      "out_of_scope_dependencies": [
+        "live accounts and trading",
+        "historical PIT certification",
+        "authenticated independent approval"
+      ],
+      "related_tests": [
+        "backend/tests/test_implementation_kernels.py",
+        "backend/tests/test_implementation_packages.py",
+        "backend/tests/test_implementation_paths.py",
+        "backend/tests/test_implementation_scenarios.py",
+        "backend/tests/test_implementation_service.py",
+        "backend/tests/test_funding_continuation.py",
+        "frontend/src/pages/PreInvestmentImplementation.test.tsx",
+        "frontend/e2e/implementation.spec.ts",
+        "backend/tests/test_implementation_continuation.py",
+        "backend/tests/benchmark_implementation.py"
+      ],
+      "related_configs": [
+        "frontend/playwright.implementation.config.ts",
+        "backend/tests/implementation_app.py"
+      ],
+      "minimum_regression": [
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_implementation_kernels.py backend/tests/test_implementation_packages.py backend/tests/test_implementation_paths.py backend/tests/test_implementation_scenarios.py backend/tests/test_implementation_service.py backend/tests/test_funding_continuation.py backend/tests/test_implementation_continuation.py -q",
+        "npm run test --prefix frontend -- --run PreInvestmentImplementation.test.tsx StrategicAllocationWorkspace.test.tsx TacticalAllocationWorkspace.test.tsx",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- --config=playwright.implementation.config.ts",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 backend/tests/benchmark_implementation.py"
+      ],
+      "pitfall_ids": [
+        "P24",
+        "P22"
+      ],
+      "risk_flags": [
+        "immutable_candidate_and_report",
+        "self_financing_cash",
+        "fixed_signature_njit"
+      ],
+      "edit_risk": "high",
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "research_only"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/pre_investment/service.py",
+          "backend/pre_investment/evaluation.py",
+          "backend/tests/test_implementation_kernels.py",
+          "backend/tests/test_implementation_packages.py",
+          "backend/tests/test_implementation_paths.py",
+          "backend/tests/test_implementation_scenarios.py",
+          "backend/tests/test_implementation_service.py",
+          "backend/tests/test_funding_continuation.py",
+          "frontend/src/pages/PreInvestmentImplementation.test.tsx",
+          "frontend/e2e/implementation.spec.ts",
+          "backend/tests/test_implementation_continuation.py"
         ],
         "unsampled_paths": []
       }

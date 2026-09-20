@@ -309,6 +309,15 @@ class PublishedScenarioService:
                           for item in reversed(items) if item.get("immutable")][:200]}
 
     def _target(self, request, exposure_run):
+        if request.target.kind == 'implementation_candidate':
+            targets = {item['key']: item for item in exposure_run['targets']}
+            if any(x.key not in targets for x in request.target.holdings):
+                raise ValidationError('EXPOSURE_HOLDINGS_MISSING', '已发布暴露模型未覆盖此候选的全部产品；不删除持仓或重分配权重。')
+            assets = [targets[x.key] for x in request.target.holdings]
+            weights = np.asarray([x.weight for x in request.target.holdings], dtype=np.float64)
+            return assets, weights, {'kind': 'implementation_candidate', 'name': '产品实施候选',
+                                    'candidate_hash': request.target.candidate_hash,
+                                    'weight_basis': 'exact_candidate_target'}
         if request.target.kind == "product":
             key = request.target.product_key
             target = next((item for item in exposure_run["targets"] if item["key"] == key), None)

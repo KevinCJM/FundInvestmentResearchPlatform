@@ -46,10 +46,17 @@ class ScenarioPublish(Contract):
     acknowledge_limitations: Literal[True]
 
 
+class CandidateHolding(Contract):
+    key: str = Field(pattern=r'^(etf|fund):[A-Z0-9.]+$')
+    weight: float = Field(ge=0, le=1)
+
+
 class ImpactTarget(Contract):
-    kind: Literal["product", "portfolio_run"]
+    kind: Literal["product", "portfolio_run", "implementation_candidate"]
     product_key: str | None = Field(default=None, max_length=120)
     portfolio_run_id: str | None = Field(default=None, max_length=120)
+    candidate_hash: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    holdings: list[CandidateHolding] = Field(default_factory=list, max_length=50)
 
     @model_validator(mode="after")
     def identity(self):
@@ -57,6 +64,13 @@ class ImpactTarget(Contract):
             raise ValueError("产品压测须选择产品，不选择组合快照")
         if self.kind == "portfolio_run" and (not self.portfolio_run_id or self.product_key):
             raise ValueError("组合压测须选择不可变组合运行，不直接填产品")
+        if self.kind == 'implementation_candidate':
+            if not self.candidate_hash or not self.holdings or self.product_key or self.portfolio_run_id:
+                raise ValueError('实施候选须提供精确指纹和非空持仓，不能混用历史组合来源。')
+            if len({x.key for x in self.holdings}) != len(self.holdings):
+                raise ValueError('实施候选不能包含重复产品。')
+        elif self.candidate_hash or self.holdings:
+            raise ValueError('只有实施候选使用候选指纹与显式持仓。')
         return self
 
 

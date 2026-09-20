@@ -14,6 +14,7 @@ _R1 = types.Array(types.float64, 1, "A", readonly=True)
 _R2 = types.Array(types.float64, 2, "A", readonly=True)
 _I1 = types.Array(types.int64, 1, "A", readonly=True)
 _DETAIL = types.Tuple((types.float64[::1], types.int64, types.int64, types.float64[::1]))
+_CERT_DETAIL = types.Tuple((types.float64[::1], types.int64, types.int64, types.float64[::1], types.float64[::1]))
 _RESULT = types.Tuple((types.float64[::1], types.int64, types.int64, types.float64))
 
 
@@ -39,8 +40,8 @@ def independent_constraint_kernel(matrix, active, size, candidate):
     return np.sqrt(np.dot(vector, vector)) > 1e-10 * max(1.0, original_norm)
 
 
-@njit(_DETAIL(_R2, _R1, _R2, _R1, _R1, types.int64, types.float64, types.int64, types.boolean), cache=False, nogil=True)
-def active_set_qp_core(hessian, linear, matrix, limits, initial, max_iterations, tolerance, equality_count, kkt_stopping):
+@njit(_CERT_DETAIL(_R2, _R1, _R2, _R1, _R1, types.int64, types.float64, types.int64, types.boolean), cache=False, nogil=True)
+def _active_set_qp_solve(hessian, linear, matrix, limits, initial, max_iterations, tolerance, equality_count, kkt_stopping):
     """One numerical core: minimize .5*x'H*x + f'x from a feasible point.
 
     First equality_count rows are permanent equalities, the rest are >=.
@@ -56,18 +57,19 @@ def active_set_qp_core(hessian, linear, matrix, limits, initial, max_iterations,
             or matrix.shape != (m, n) or max_iterations < 1 or tolerance <= 0):
         raise ValueError("QP_INPUT_AXIS")
     diagnostics = np.full(4, np.inf)
+    dual = np.zeros(m, dtype=np.float64)
     x = initial.copy()
     if (not np.all(np.isfinite(x)) or not np.all(np.isfinite(hessian))
             or not np.all(np.isfinite(linear)) or not np.all(np.isfinite(matrix))
             or not np.all(np.isfinite(limits))):
-        return x, 3, 0, diagnostics
+        return x, 3, 0, diagnostics, dual
     slack = np.empty(m, dtype=np.float64)
     for row in range(m):
         slack[row] = -limits[row]
         for j in range(n):
             slack[row] += matrix[row, j] * x[j]
     if (equality_count > 0 and np.max(np.abs(slack[:equality_count])) > 1e-7) or (m > equality_count and np.min(slack[equality_count:]) < -1e-7):
-        return x, 2, 0, diagnostics
+        return x, 2, 0, diagnostics, dual
     scale = max(np.max(np.abs(hessian)), np.max(np.abs(linear)), 1e-12)
     h = hessian / scale
     f = linear / scale
@@ -99,9 +101,12 @@ def active_set_qp_core(hessian, linear, matrix, limits, initial, max_iterations,
             solution = np.linalg.solve(kkt, rhs)
         except Exception:
             diagnostics[1] = np.inf
-            return x, 3, iteration + 1, diagnostics
+            return x, 3, iteration + 1, diagnostics, dual
         direction = solution[:n]
         multipliers = solution[n:]
+        dual[:] = 0.0
+        for k in range(active_count):
+            dual[active[k]] = -multipliers[k] * scale
         stationarity = gradient.copy()
         for k in range(active_count):
             stationarity += multipliers[k] * matrix[active[k]]
@@ -132,8 +137,8 @@ def active_set_qp_core(hessian, linear, matrix, limits, initial, max_iterations,
                     violation = abs(slack[row]) if row < equality_count else max(0.0, -slack[row])
                     diagnostics[0] = max(diagnostics[0], violation)
                 if (residual <= tolerance * 10 and diagnostics[0] <= 1e-7):
-                    return x, 0, iteration + 1, diagnostics
-                return x, 3, iteration + 1, diagnostics
+                    return x, 0, iteration + 1, diagnostics, dual
+                return x, 3, iteration + 1, diagnostics, dual
             selected[active[remove]] = False
             for k in range(remove, active_count - 1):
                 active[k] = active[k + 1]
@@ -156,13 +161,58 @@ def active_set_qp_core(hessian, linear, matrix, limits, initial, max_iterations,
                 alpha = candidate_alpha
                 blocker = row
         if not np.isfinite(alpha):
-            return x, 3, iteration + 1, diagnostics
+            return x, 3, iteration + 1, diagnostics, dual
         x += alpha * direction
         if blocker >= 0 and active_count < n:
             active[active_count] = blocker
             active_count += 1
             selected[blocker] = True
-    return x, 1, max_iterations, diagnostics
+    return x, 1, max_iterations, diagnostics, dual
+
+
+@njit(_DETAIL(_R2, _R1, _R2, _R1, _R1, types.int64, types.float64, types.int64, types.boolean), cache=False, nogil=True)
+def active_set_qp_core(hessian, linear, matrix, limits, initial, max_iterations, tolerance, equality_count, kkt_stopping):
+    """Preserve the existing QP ABI while sharing the primal/dual solve."""
+    x, status, used, diagnostics, _ = _active_set_qp_solve(
+        hessian, linear, matrix, limits, initial, max_iterations, tolerance, equality_count, kkt_stopping)
+    return x, status, used, diagnostics
+
+
+@njit((_R1, _R2, _R1, _R1, _R1, _R1, types.int64, types.float64), cache=False, nogil=True)
+def bounded_lp_kernel(linear, matrix, limits, initial, lower, upper, max_iterations, tolerance):
+    """LP with one equality, >= rows and declared finite bounding box.
+
+    Dual inequalities are clipped to nonnegative values. The remaining
+    stationarity error is minimized over the box, giving a conservative lower
+    bound even when the active-set iteration did not converge. The caller must
+    encode the same box in its constraints; a residual is never an infeasibility
+    certificate by itself. diagnostics[4:] = lower bound, primal-dual gap.
+    """
+    n = linear.size
+    if (lower.size != n or upper.size != n or not np.all(np.isfinite(lower))
+            or not np.all(np.isfinite(upper)) or np.any(lower > upper) or limits.size < 1):
+        raise ValueError("LP_BOUNDING_BOX")
+    x, status, used, checks, dual = _active_set_qp_solve(
+        np.zeros((n, n)), linear, matrix, limits, initial, max_iterations, tolerance, 1, True)
+    residual = linear.copy()
+    bound = 0.0
+    magnitude = 1.0
+    for row in range(limits.size):
+        multiplier = dual[row] if row == 0 else max(0.0, dual[row])
+        bound += multiplier * limits[row]
+        magnitude += abs(multiplier * limits[row])
+        for j in range(n):
+            residual[j] -= multiplier * matrix[row, j]
+            magnitude += abs(multiplier * matrix[row, j]) * max(abs(lower[j]), abs(upper[j]))
+    for j in range(n):
+        bound += residual[j] * (lower[j] if residual[j] >= 0 else upper[j])
+    # Floating arithmetic reserve, separate from the caller's optimality tolerance.
+    bound -= 1e-12 * magnitude
+    result = np.empty(6)
+    result[:4] = checks
+    result[4] = bound
+    result[5] = np.dot(linear, x) - bound
+    return x, status, used, result
 
 
 @njit(_RESULT(_R2, _R1, _R2, _R1, _R1, types.int64, types.float64), cache=False, nogil=True)
@@ -319,7 +369,7 @@ def matrix_qp_kernel(hessian, linear, equalities, values, inequalities, limits,
                                      matrix, bound, rank, initial, max_iterations, tolerance)
 
 
-QP_KERNELS = (independent_constraint_kernel, active_set_qp_core, feasible_qp_kernel,
+QP_KERNELS = (independent_constraint_kernel, _active_set_qp_solve, active_set_qp_core, bounded_lp_kernel, feasible_qp_kernel,
               prepare_constraints_kernel, constraint_violation_kernel,
               prepared_matrix_qp_kernel, matrix_qp_kernel)
 for _kernel in QP_KERNELS:

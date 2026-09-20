@@ -1,4 +1,5 @@
 import { Button, SectionHeader } from '../ui'
+import BlackLittermanViews from './BlackLittermanViews'
 import { Field, inputClass, NumberInput, percentText } from '../risk-models/ResearchUI'
 import { percentInputValue } from '../../services/strategicAllocation'
 import { cmaModelInputError, type CmaModelContext, type CmaModelRequest, type CmaScenario } from '../../services/cmaModelTypes'
@@ -19,6 +20,7 @@ export interface CmaModelEditorProps {
   disabledReason?: string
   error?: string
   onCopy?: () => void
+  hideMethodChoice?: boolean
 }
 
 function CovarianceEditor({ label, axis, value, onChange }: {
@@ -37,7 +39,7 @@ function CovarianceEditor({ label, axis, value, onChange }: {
 }
 
 /** Controlled editor only: no fetch, persistence, inferred market data, or model calculations. */
-export default function CmaModelEditor({ context, value, onChange, onPreview, busy = false, readOnly = false, disabledReason, error, onCopy }: CmaModelEditorProps) {
+export default function CmaModelEditor({ context, value, onChange, onPreview, busy = false, readOnly = false, disabledReason, error, onCopy, hideMethodChoice = false }: CmaModelEditorProps) {
   const sameContext = !value || value.as_of === context.as_of && value.currency === context.currency && JSON.stringify(value.asset_ids) === JSON.stringify(context.asset_ids)
   const reason = disabledReason || (readOnly ? '这是已保存版本，模型输入只读；复制为新研究后编辑。' : !sameContext ? '资产范围、日期或币种已变化；请重新选择方法建立新研究。' : '')
   const validation = value ? cmaModelInputError(value) : null
@@ -52,10 +54,10 @@ export default function CmaModelEditor({ context, value, onChange, onPreview, bu
     if (value?.method === 'scenario_mixture') onChange({ ...value, scenarios: value.scenarios.map((s, i) => i === index ? { ...s, ...patch } : s) })
   }
   return <section aria-label="CMA生成方法" aria-busy={busy} className="min-w-0 space-y-4 break-words text-slate-900">
-    <SectionHeader title="长期假设的生成方法" description="使用相同资产范围与年化算术总收益口径；模型预览不会保存版本。" />
-    <Field label="预期生成方法"><select className={input} disabled={busy || readOnly || !!disabledReason || !context.asset_ids.length} value={value?.method ?? 'manual'} onChange={event => changeMethod(event.target.value)}>
+    {!hideMethodChoice && <SectionHeader title="长期假设的生成方法" description="使用相同资产范围与年化算术总收益口径；模型预览不会保存版本。" />}
+    {!hideMethodChoice && <Field label="预期生成方法"><select className={input} disabled={busy || readOnly || !!disabledReason || !context.asset_ids.length} value={value?.method ?? 'manual'} onChange={event => changeMethod(event.target.value)}>
       <option value="manual">直接填写</option><option value="black_litterman">市场基准＋观点</option><option value="scenario_mixture">多情景假设</option>
-    </select></Field>
+    </select></Field>}
     {!context.asset_ids.length && <p role="status" className="text-sm text-slate-600">尚未载入资产范围，请先选择或确认战略资产。</p>}
     {reason && <p role="status" className="text-sm leading-6 text-slate-600">{reason}</p>}
     {readOnly && onCopy && <Button className={button} onClick={onCopy} disabled={busy}>复制为新研究</Button>}
@@ -64,7 +66,7 @@ export default function CmaModelEditor({ context, value, onChange, onPreview, bu
     {value && <fieldset disabled={busy || !!reason} className="min-w-0 space-y-4">
       <legend className="sr-only">模型输入</legend>
       <p className="break-words text-sm text-slate-600">{value.as_of} · {value.currency} · 年化算术总收益</p>
-      <Field label="模型与风险依据"><textarea className={input} rows={2} maxLength={2000} value={value.source} onChange={e => onChange({ ...value, source: e.target.value })} /></Field>
+      {!hideMethodChoice && <Field label="模型与风险依据"><textarea className={input} rows={2} maxLength={2000} value={value.source} onChange={e => onChange({ ...value, source: e.target.value })} /></Field>}
       {value.method === 'black_litterman' ? <>
         <p className="text-sm leading-6 text-slate-600">市场权重必须由你明确提供。没有观点时，结果等于市场均衡先验加无风险收益；资产风险沿用下方输入协方差。</p>
         <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">{value.asset_ids.map(asset => <Field key={asset} label={`${asset}市场权重（%）`}><NumberInput className={numeric} value={percentInputValue(value.market_weights[asset])} onValueChange={n => onChange({ ...value, market_weights: { ...value.market_weights, [asset]: n / 100 } })} /></Field>)}</div>
@@ -76,24 +78,8 @@ export default function CmaModelEditor({ context, value, onChange, onPreview, bu
         </div>
         <CovarianceEditor label="资产风险协方差" axis={value.asset_ids} value={value.covariance} onChange={covariance => onChange({ ...value, covariance })} />
         <details><summary className="cursor-pointer py-2 text-sm font-semibold">高级设置</summary><Field label="先验均值不确定性系数 τ" hint="有限正数；仅缩放均值先验协方差，不改变资产风险。"><NumberInput className={numeric} value={value.tau} onValueChange={tau => onChange({ ...value, tau })} /></Field></details>
-        <div className="space-y-4 divide-y divide-slate-200">{value.views.map((view, index) => <fieldset key={index} className="min-w-0 space-y-3 pt-4">
-          <legend className="text-sm font-semibold">观点 {index + 1}</legend>
-          <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <Field label={`观点${index + 1}类型`}><select className={input} value={view.kind} onChange={e => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, kind: e.target.value as 'absolute' | 'relative', relative_to: null } : v) })}><option value="absolute">绝对总收益</option><option value="relative">相对收益差</option></select></Field>
-            <Field label={`观点${index + 1}资产`}><select className={input} value={view.asset_id} onChange={e => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, asset_id: e.target.value } : v) })}><option value="">请选择资产</option>{value.asset_ids.map(a => <option key={a}>{a}</option>)}</select></Field>
-            {view.kind === 'relative' && <Field label={`观点${index + 1}比较资产`}><select className={input} value={view.relative_to ?? ''} onChange={e => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, relative_to: e.target.value || null } : v) })}><option value="">请选择另一资产</option>{value.asset_ids.map(a => <option key={a} disabled={a === view.asset_id}>{a}</option>)}</select></Field>}
-            <Field label={`观点${index + 1}${view.kind === 'absolute' ? '年化总收益（%）' : '年化收益差（百分点）'}`}><NumberInput className={numeric} value={percentInputValue(view.annual_return)} onValueChange={n => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, annual_return: n / 100 } : v) })} /></Field>
-            <Field label={`观点${index + 1}标准差（百分点）`} hint="严格为正，表示观点不确定性，不是胜率。"><NumberInput aria-label={`观点${index + 1}标准差（百分点）`} className={numeric} value={percentInputValue(view.view_std)} onValueChange={n => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, view_std: n / 100 } : v) })} /></Field>
-            <Field label={`观点${index + 1}观察日`}><input type="date" className={input} value={view.observed_on} onChange={e => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, observed_on: e.target.value } : v) })} /></Field>
-            <Field label={`观点${index + 1}可得日`}><input type="date" className={input} max={value.as_of} value={view.available_on} onChange={e => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, available_on: e.target.value } : v) })} /></Field>
-            <Field label={`观点${index + 1}依据`}><input className={input} maxLength={2000} value={view.source} onChange={e => onChange({ ...value, views: value.views.map((v, i) => i === index ? { ...v, source: e.target.value } : v) })} /></Field>
-          </div>
-          <Button className={button} onClick={() => onChange({ ...value, views: value.views.filter((_, i) => i !== index) })}>移除观点 {index + 1}</Button>
-        </fieldset>)}</div>
-        {!value.views.length && <p className="text-sm text-slate-600">尚无观点，可直接预览先验，或添加有依据的观点。</p>}
-        <Button className={button} disabled={value.views.length >= 60} onClick={() => onChange({ ...value, views: [...value.views, { kind: 'absolute', asset_id: '', relative_to: null, annual_return: NaN, view_std: NaN, observed_on: '', available_on: '', source: '' }] })}>添加观点</Button>
-        {value.views.length >= 60 && <p className="text-xs text-slate-600">已达到60条观点上限。</p>}
-      </> : <>
+        <BlackLittermanViews value={value} onChange={onChange} />
+      </> : value.method === 'scenario_mixture' ? <>
         <p className="text-sm leading-6 text-slate-600">只有明确概率的情景才能混合。结果包含情景之间的均值差异风险，是单期矩匹配，不是尾部风险预测。</p>
         <Field label="情景风险口径"><select className={input} value={value.risk_mode} onChange={e => onChange({ ...value, risk_mode: e.target.value as 'shared' | 'scenario_specific', shared_covariance: e.target.value === 'shared' ? blankMatrix(value.asset_ids.length) : null, scenarios: value.scenarios.map(s => ({ ...s, covariance: e.target.value === 'shared' ? null : blankMatrix(value.asset_ids.length) })) })}><option value="shared">明确共用一个风险矩阵</option><option value="scenario_specific">逐情景提供风险矩阵</option></select></Field>
         <p className="text-xs text-slate-600">切换风险口径后，请重新填写对应矩阵，原矩阵不会被自动复制。</p>
@@ -113,7 +99,7 @@ export default function CmaModelEditor({ context, value, onChange, onPreview, bu
         </fieldset>)}</div>
         <Button className={button} disabled={value.scenarios.length >= 60} onClick={() => onChange({ ...value, scenarios: [...value.scenarios, { id: '', probability: NaN, annual_returns: Object.fromEntries(value.asset_ids.map(a => [a, NaN])), covariance: value.risk_mode === 'shared' ? null : blankMatrix(value.asset_ids.length), source: '' }] })}>添加情景</Button>
         {value.scenarios.length >= 60 && <p className="text-xs text-slate-600">已达到60个情景上限。</p>}
-      </>}
+      </> : null}
     </fieldset>}
     {value && validation && !readOnly && <p role="status" className="text-sm leading-6 text-amber-900">{validation}</p>}
     {error && <p role="alert" className="text-sm leading-6 text-rose-700">{error}</p>}

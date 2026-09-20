@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, StrictBool, model_validator
 
 from backend.tactical_allocation.contracts import AssetLimit, GroupLimit
 from .institution_contracts import InstitutionalContext
@@ -262,11 +262,15 @@ class AssetAssumption(Contract):
     liquidity: Literal["liquid", "illiquid"]
     rationale: str = Field(min_length=3, max_length=1000)
     annual_return: Number | None = Field(default=None, ge=-0.5, le=2)
-    annual_volatility: Number | None = Field(default=None, gt=0, le=3)
+    annual_volatility: Number | None = Field(default=None, ge=0, le=3)
     mean_uncertainty: Number = Field(ge=0, le=1)
 
 
 class CmaRequest(Contract):
+    schema_version: Literal["1.0", "2.0"] = "1.0"
+    moment_semantics: Literal["annualized_periodic_arithmetic", "one_year_simple"] | None = None
+    fee_basis: Literal["source_embedded_no_additional_fee", "explicit_assumption"] | None = None
+    fx_hedging_basis: Literal["same_currency_no_conversion", "explicit_assumption"] | None = None
     name: Identifier
     alloc_name: Identifier | None = None
     strategic_universe_id: Identifier | None = None
@@ -286,6 +290,29 @@ class CmaRequest(Contract):
 
     @model_validator(mode="after")
     def shape(self):
+        if self.schema_version == "1.0" and any(a.annual_volatility == 0 for a in self.assets):
+            raise ValueError("旧版 CMA 波动率必须为正；确定性现金须使用 2.0 的显式现金角色。")
+        if self.schema_version == "2.0":
+            if any(a.annual_volatility == 0 and (a.role != "liquidity" or a.liquidity != "liquid") for a in self.assets):
+                raise ValueError("零波动只适用于明确的可流动现金角色，不能给风险资产制造零风险。")
+            if self.model is not None and self.model.method == "scenario_mixture" and self.moment_semantics != "one_year_simple":
+                raise ValueError("人工年度情景须声明同一年简单收益矩，不能当日频占用率年化。")
+            if self.moment_semantics is None or self.fee_basis is None or self.fx_hedging_basis is None:
+                raise ValueError("新 LTCMA 须明确收益矩、费用及币种口径。")
+            if self.implementation_mapping_id is not None:
+                raise ValueError("独立 LTCMA 不绑定实施映射；请在 SAA 交接时单独选择。")
+        elif any(v is not None for v in (self.moment_semantics, self.fee_basis, self.fx_hedging_basis)):
+            raise ValueError("新收益语义字段须使用 LTCMA 2.0，不能改写旧请求口径。")
+        if self.model is not None and self.model.method in {"historical_statistics", "bayesian_niw", "historical_regime_occupancy"}:
+            if self.schema_version != "2.0" or self.moment_semantics != "annualized_periodic_arithmetic":
+                raise ValueError("统计生成器须使用 LTCMA 2.0 的基础期算术年化语义。")
+            if any(a.mean_uncertainty != 0 for a in self.assets):
+                raise ValueError("统计方法的均值不确定性由模型提供，不同时填写人工半宽。")
+            proxy = self.model.proxy_inputs
+            if proxy is not None:
+                meta = {a.id: a for a in self.assets}
+                if any(a.asset_type == "cash" and (meta[a.id].role != "liquidity" or meta[a.id].liquidity != "liquid") for a in proxy.assets):
+                    raise ValueError("纯现金研究代理须对应现金经济角色与可流动资产。")
         if bool(self.alloc_name) == bool(self.strategic_universe_id):
             raise ValueError("须明确选择真实大类方案或不可变战略范围，不能混用来源。")
         if self.implementation_mapping_id and not self.strategic_universe_id:
@@ -326,11 +353,25 @@ class PublishCmaRequest(Contract):
     preview_hash: Fingerprint
 
 
+class PolicyCmaRef(Contract):
+    cma_id: Identifier
+    content_hash: Fingerprint
+    weight: Number | None = Field(default=None, ge=0, le=1)
+
+
 class PolicyRequest(Contract):
     mandate_id: Identifier
-    cma_id: Identifier
+    cma_id: Identifier | None = None
+    mode: Literal["single", "parameter_average", "compatible_all_models"] = "single"
+    cma_refs: list[PolicyCmaRef] = Field(default_factory=list, max_length=20)
+    compatibility_objective: Literal["minimax_regret", "maximin_return"] = "minimax_regret"
+    solver_max_iterations: int = Field(default=64, ge=1, le=128, strict=True)
+    implementation_mapping_id: Identifier | None = None
     constraints: dict[str, AssetLimit] = Field(default_factory=dict)
     group_limits: list[GroupLimit] = Field(default_factory=list, max_length=28)
+    uncertainty_set: Literal["box", "ellipsoidal"] = "box"
+    uncertainty_confidence: Literal["68", "90", "95"] | None = None
+    uncertainty_approximation_acknowledged: StrictBool = False
     uncertainty_penalty: Number = Field(default=1, ge=0, le=5)
     risk_budget: dict[Identifier, Number] | None = Field(default=None, min_length=1, max_length=30)
     candidate_count: int = Field(default=2000, ge=200, le=5000, strict=True)
@@ -339,6 +380,26 @@ class PolicyRequest(Contract):
 
     @model_validator(mode="after")
     def budget(self):
+        if self.uncertainty_set == "ellipsoidal":
+            if self.mode != "single":
+                raise ValueError("SAA_UNCERTAINTY_SET_UNAVAILABLE: 多 CMA 尚未定义均值误差交叉协方差，不能使用椭球模式。")
+            if self.uncertainty_confidence is None or self.uncertainty_penalty != 1:
+                raise ValueError("SAA_UNCERTAINTY_PARAMETERS: 椭球模式须明确覆盖水平，不同时使用人工半宽惩罚倍数。")
+        elif self.uncertainty_confidence is not None or self.uncertainty_approximation_acknowledged:
+            raise ValueError("SAA_UNCERTAINTY_PARAMETERS: 区间模式不使用椭球覆盖水平或近似确认。")
+        if self.mode == "single":
+            if self.cma_id is None or self.cma_refs:
+                raise ValueError("单 CMA 模式须选择一个版本，不能同时提供融合来源。")
+        else:
+            if self.cma_id is not None or not self.cma_refs or len({r.cma_id for r in self.cma_refs}) != len(self.cma_refs):
+                raise ValueError("多 CMA 须提供不重复的完整来源，不能同时指定单 CMA。")
+            if self.mode == "parameter_average" and (any(r.weight is None for r in self.cma_refs)
+                    or abs(sum(r.weight for r in self.cma_refs) - 1) > 1e-8):
+                raise ValueError("参数融合权重须非负且合计 100%。")
+            if self.mode == "compatible_all_models" and (any(r.weight is not None for r in self.cma_refs) or self.risk_budget is not None):
+                raise ValueError("共同约束模式要求每个模型均通过，不使用概率权重；风险预算目标尚不支持，请显式清除。")
+        if self.mode != "compatible_all_models" and (self.compatibility_objective != "minimax_regret" or self.solver_max_iterations != 64):
+            raise ValueError("共同约束求解设置仅适用于模式 B。")
         if self.risk_budget is not None and (any(v < 0 for v in self.risk_budget.values())
                 or abs(sum(self.risk_budget.values()) - 1) > 1e-8):
             raise ValueError("风险预算须非负且合计100%；未提供时保留原四类候选。")
@@ -348,6 +409,6 @@ class PolicyRequest(Contract):
 class PublishPolicyRequest(Contract):
     request: PolicyRequest
     preview_hash: Fingerprint
-    candidate_id: Literal["minimum-risk", "nominal-utility", "robust-utility", "maximum-return", "risk-budget"]
+    candidate_id: Literal["minimum-risk", "nominal-utility", "robust-utility", "maximum-return", "risk-budget", "compatible"]
     name: Identifier
     reason: str = Field(min_length=5, max_length=2000)

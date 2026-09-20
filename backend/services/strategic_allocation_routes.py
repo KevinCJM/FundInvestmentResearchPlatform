@@ -24,3 +24,12 @@ _saa_router = router
 router = APIRouter()
 router.include_router(_saa_router)
 router.include_router(build_risk_scale_router(risk_scale_service))
+
+from backend.pre_investment.service import ImplementationService
+from backend.pre_investment.routes import build_router as build_implementation_router
+
+from .published_scenario_routes import published_scenario_service
+from backend.pre_investment.scenarios import ScenarioAdapter
+
+implementation_service = ImplementationService(strategic_service, scenarios=ScenarioAdapter(published_scenario_service))
+router.include_router(build_implementation_router(implementation_service))

@@ -20,6 +20,7 @@ from backend.factor_research.repository import clean
 
 ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,119}$")
 ARRAY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+MANIFEST_MAX_BYTES = 8_000_000
 SUMMARY_KEYS = (
     "id", "kind", "name", "created_at", "stage", "model_id", "model_revision",
     "run_id", "release_id", "target_keys", "as_of", "effective_at", "expires_at",
@@ -82,7 +83,7 @@ class ArtifactRepository:
         if not path.is_file():
             raise NotFoundError("RESEARCH_ARTIFACT_NOT_FOUND", "未找到研究成果；请检查所选版本及数据磁盘。")
         try:
-            if path.is_symlink() or path.stat().st_size > 8_000_000:
+            if path.is_symlink() or path.stat().st_size > MANIFEST_MAX_BYTES:
                 raise ValueError("invalid manifest")
             item = json.loads(path.read_text(encoding="utf-8"))
             checksum = item.get("content_hash")
@@ -239,8 +240,11 @@ class ArtifactRepository:
             item = {**clean(fields), "id": object_id, "kind": kind, "schema_version": 1,
                     "created_at": utc_now(), "immutable": True, "arrays": descriptors}
             item["content_hash"] = digest_json(item)
-            with (temporary / "manifest.json").open("w", encoding="utf-8") as target:
-                json.dump(item, target, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            encoded = json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            if len(encoded) > MANIFEST_MAX_BYTES:
+                raise ValidationError("RESEARCH_ARTIFACT_CAPACITY", "研究成果超过容量上限，请精简说明或对账记录后重试。")
+            with (temporary / "manifest.json").open("wb") as target:
+                target.write(encoded)
                 target.flush()
                 os.fsync(target.fileno())
             fsync_dir(temporary)
