@@ -5,21 +5,22 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
-import importlib.util
 import json
 import posixpath
 import re
 import subprocess
 import sys
 import unicodedata
-from functools import lru_cache
+from functools import cached_property
 from pathlib import Path
+from types import ModuleType
 from urllib.parse import unquote, urlsplit
 
 from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = 'docs/repo_map.json'
+HERMES = 'skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py'
 INDEX = 'docs/README.md'
 INDEX_START = '<!-- DOCUMENT-INDEX:BEGIN -->'
 INDEX_END = '<!-- DOCUMENT-INDEX:END -->'
@@ -34,17 +35,6 @@ def git(root: Path, *args: str) -> bytes:
     if result.returncode:
         raise ValueError(result.stderr.decode(errors='replace').strip() or 'git failed')
     return result.stdout
-
-
-@lru_cache(maxsize=1)
-def hermes():
-    """Reuse the installed project routing helper, including rename-aware Git parsing."""
-    spec = importlib.util.spec_from_file_location(
-        '_documentation_hermes', ROOT / 'skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py')
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def safe_path(path: str) -> str:
@@ -100,6 +90,23 @@ class Candidate:
 
     def text(self, path: str) -> str:
         return self.read(path).decode('utf-8')
+
+    @cached_property
+    def hermes(self) -> ModuleType:
+        """Load routing logic from the same candidate as its documentation."""
+        source = self.read(HERMES)
+        filename = str(self.root / HERMES)
+        name = '_documentation_hermes_' + hashlib.sha256(filename.encode() + b'\0' + source).hexdigest()
+        module = ModuleType(name)
+        module.__file__ = filename
+        # Dataclasses resolve annotations through the module registry during load.
+        sys.modules[name] = module
+        try:
+            exec(compile(source, filename, 'exec'), module.__dict__)
+        except Exception as exc:
+            sys.modules.pop(name, None)
+            raise ValueError(f'cannot load candidate routing helper {HERMES}: {exc}') from exc
+        return module
 
 
 def managed(path: str) -> bool:
@@ -227,7 +234,7 @@ def catalog(candidate: Candidate) -> tuple[dict, list[dict], list[str]]:
 
 
 def impacts(candidate: Candidate, mapping: dict, documents: list[dict], changed: list[str]) -> list[dict]:
-    helpers = hermes()
+    helpers = candidate.hermes
     causes: dict[str, set[str]] = {}
     for path in changed:
         if path.endswith('.md'):
@@ -293,7 +300,7 @@ def inspect(candidate: Candidate, changed: list[str], review: dict | None = None
             errors.append(f'{INDEX}: index differs from repo_map; regenerate the navigation block')
     affected = impacts(candidate, mapping, documents, changed)
     digest = hashlib.sha256()
-    for path in sorted(set(changed) | {d['path'] for d in documents} | {CATALOG}):
+    for path in sorted(set(changed) | {d['path'] for d in documents} | {CATALOG, HERMES}):
         digest.update(path.encode() + b'\0')
         digest.update(hashlib.sha256(candidate.read(path)).digest() if path in candidate.paths else b'DELETED')
     fingerprint = digest.hexdigest()
@@ -349,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('--head-ref requires --base-ref')
         mode = 'staged' if args.staged else 'commit' if args.base_ref else 'worktree'
         candidate = Candidate(args.project_root, mode, args.head_ref)
-        helpers = hermes()
+        helpers = candidate.hermes
         if args.staged:
             entries = helpers._run_git_changed_entries(candidate.root, ['--cached'])
         elif args.base_ref:

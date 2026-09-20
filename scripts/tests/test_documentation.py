@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 SOURCE = Path(__file__).resolve().parents[1] / 'check_documentation.py'
+HERMES_PATH = 'skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py'
 spec = importlib.util.spec_from_file_location('documentation_check_tested', SOURCE)
 check = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = check
@@ -41,6 +42,8 @@ def repo(tmp_path):
     write(tmp_path, 'docs/repo_map.json', json.dumps(mapping))
     write(tmp_path, 'docs/README.md', '# Index\n\n' + check.document_index(docs) + '\n')
     write(tmp_path, 'src/service.py', 'VALUE = 1\n')
+    write(tmp_path, 'scripts/check_documentation.py', SOURCE.read_text())
+    write(tmp_path, HERMES_PATH, (SOURCE.parents[1] / HERMES_PATH).read_text())
     git(tmp_path, 'add', '.')
     git(tmp_path, 'commit', '-qm', 'baseline')
     return tmp_path
@@ -161,6 +164,52 @@ def test_commit_candidate_ignores_worktree_changes(repo):
     write(repo, 'README.md', '[bad](missing.md)\n')
     assert inspect(repo)['errors']
     assert not check.inspect(check.Candidate(repo, 'commit'), [])['errors']
+
+
+@pytest.mark.parametrize('mode', ['staged', 'commit'])
+def test_candidate_helper_ignores_code_outside_candidate(repo, mode):
+    base = git(repo, 'rev-parse', 'HEAD')
+    write(repo, 'src/service.py', 'VALUE = 2\n')
+    git(repo, 'add', 'src/service.py')
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'candidate')
+        head = git(repo, 'rev-parse', 'HEAD')
+    write(repo, HERMES_PATH, "raise RuntimeError('outside candidate')\n")
+    if mode == 'commit':
+        git(repo, 'add', HERMES_PATH)
+        git(repo, 'commit', '-qm', 'unrelated later helper')
+    args = ['--staged'] if mode == 'staged' else ['--base-ref', base, '--head-ref', head]
+    result = subprocess.run([sys.executable, str(repo / 'scripts/check_documentation.py'),
+                             *args, '--json'], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr or result.stdout
+    report = json.loads(result.stdout)
+    assert report['changed_files'] == ['src/service.py']
+    assert {d['path'] for d in report['affected_documents']} == {
+        'README.md', 'AGENTS.md', 'docs/README.md', 'docs/topic.md'}
+
+
+@pytest.mark.parametrize('mode', ['staged', 'commit'])
+def test_unstaged_helper_repair_cannot_hide_candidate_failure(repo, mode):
+    base = git(repo, 'rev-parse', 'HEAD')
+    original = (repo / HERMES_PATH).read_text()
+    write(repo, HERMES_PATH, "raise RuntimeError('broken candidate helper')\n")
+    git(repo, 'add', HERMES_PATH)
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'broken helper candidate')
+    write(repo, HERMES_PATH, original)
+    args = ['--staged'] if mode == 'staged' else ['--base-ref', base, '--head-ref', 'HEAD']
+    result = subprocess.run([sys.executable, str(repo / 'scripts/check_documentation.py'),
+                             *args, '--json'], capture_output=True, text=True)
+    assert result.returncode == 1, result.stdout
+    assert 'broken candidate helper' in json.loads(result.stdout)['errors'][0]
+
+
+def test_review_fingerprint_includes_helper_code(repo):
+    before = inspect(repo, ['src/service.py'])
+    with (repo / HERMES_PATH).open('a') as stream:
+        stream.write('\n# Routing helper revision\n')
+    after = inspect(repo, ['src/service.py'])
+    assert before['fingerprint'] != after['fingerprint']
 
 
 def test_code_impact_is_separate_from_structural_validation(repo):

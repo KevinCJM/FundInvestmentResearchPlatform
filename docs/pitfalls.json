@@ -1538,7 +1538,8 @@
       "symptoms": [
         "Routing coverage passes while a plan or operational instruction still needs semantic review.",
         "An unstaged Markdown fix hides a broken staged candidate.",
-        "Markdown links pass while plain-text filenames and source comments still point to retired documents."
+        "Markdown links pass while plain-text filenames and source comments still point to retired documents.",
+        "Candidate documents use staged/commit content while routing helper code is imported from the worktree, allowing unstaged changes to alter the check."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1565,7 +1566,8 @@
         "Run document checks against the exact worktree, index or PR head candidate.",
         "Treat source change as a review trigger, not proof that prose is wrong or that a plan is finished.",
         "Close problems only with relevant current-version evidence; preserve historical evidence boundaries.",
-        "After moving or deleting documents, search tracked source and prose for retired paths and filenames; Markdown link validation does not cover plain-text or comment references. Check the actual Git candidate when the worktree is dirty."
+        "After moving or deleting documents, search tracked source and prose for retired paths and filenames; Markdown link validation does not cover plain-text or comment references. Check the actual Git candidate when the worktree is dirty.",
+        "Load reused routing helper code from the same candidate and include it in the review fingerprint; verify both outside-candidate failures and unstaged repairs with isolated Git fixtures."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",
