@@ -25,53 +25,32 @@ def solve(means, risks, bounds, groups, lows, highs, benchmark, floor, vol_cap,
     base, limits, cost, lower, upper, initial = numeric.prepare_problem_kernel(
         means, risks, bounds, groups, lows, highs, benchmark, float(floor), float(vol_cap),
         float(te_cap), float(excess), references, int(objective))
-    count = len(limits)
-    matrix = np.empty((count + MAX_CUTS, initial.size)); rhs = np.empty(count + MAX_CUTS)
-    matrix[:count] = base; rhs[:count] = limits
-    current = initial
-    bound = -np.inf
-    feasible = None
-    best_value = np.inf
-    status = 'iteration_limit'
-    masters = 0
-    residuals = None
-    phase_one_bound = None
-    for iteration in range(max_iterations):
+    workspace = numeric.prepare_outer_workspace_kernel(
+        base, limits, initial, MAX_CUTS, risks.shape[0] * (2 if benchmark.size else 1))
+    state, values, matrix, rhs, current, weights, residuals = workspace
+    timed_out = False
+    # Only the wall-clock scheduler stays in Python. Every numerical transition,
+    # stopping decision and support cut belongs to the compiled state machine.
+    # Yield after each master to retain the existing non-preemptive time budget.
+    while state[0] == 0:
         if time.monotonic() >= deadline:
-            status = 'time_budget'; break
-        # Views retain one bounded support-cut workspace for the whole solve.
-        current, code, used, checks = numeric.linear_master_kernel(
-            matrix[:count], rhs[:count], cost, lower, upper, current, MASTER_ITERATIONS)
-        masters += int(used)
-        if code == 4:
-            phase_one_bound = float(checks[4])
-            status = 'infeasible'; break
-        if code == 5 or not np.all(np.isfinite(current)):
-            status = 'phase_one_unresolved'; break
-        if np.isfinite(checks[4]):
-            bound = max(bound, float(checks[4]))
-        cuts, cut_limits, residuals = numeric.quadratic_support_kernel(
-            current, risks, benchmark, float(vol_cap), float(te_cap))
-        # The shared master already checks primal residuals. A failed LP cannot
-        # authorize weights merely because its nonlinear risks happen to pass.
-        if code == 0 and not len(cuts):
-            feasible = current[:-1].copy()
-            best_value = float(current[-1])
-            status = 'converged' if best_value-bound <= OBJECTIVE_TOLERANCE else 'verified_feasible'
+            timed_out = True
             break
-        if code != 0:
-            status = 'master_iteration_limit' if code == 1 else 'numerical_failure'; break
-        if count + len(cuts) > len(rhs):
-            status = 'cut_budget'; break
-        matrix[count:count+len(cuts)] = cuts
-        rhs[count:count+len(cuts)] = cut_limits
-        count += len(cuts)
-    return {'weights': feasible, 'status': status, 'objective_value': best_value if feasible is not None else None,
-            'lower_bound': bound if np.isfinite(bound) else None,
-            'objective_gap': max(0., best_value-bound) if feasible is not None and np.isfinite(bound) else None,
-            'phase_one_lower_bound': phase_one_bound, 'iterations': iteration+1,
-            'master_iterations': masters, 'support_cuts': count-len(limits),
-            'risk_residuals': residuals.tolist() if residuals is not None else [],
+        numeric.advance_outer_approximation_kernel(
+            state, values, matrix, rhs, current, weights, residuals, cost, lower, upper,
+            risks, benchmark, float(vol_cap), float(te_cap), max_iterations,
+            MASTER_ITERATIONS, OBJECTIVE_TOLERANCE, 1)
+    statuses = ('running', 'converged', 'verified_feasible', 'infeasible',
+                'phase_one_unresolved', 'iteration_limit', 'master_iteration_limit',
+                'numerical_failure', 'cut_budget')
+    objective_value, bound, gap, phase_one_bound = (
+        float(value) if np.isfinite(value) else None for value in values)
+    return {'weights': weights if state[0] in (1, 2) else None,
+            'status': 'time_budget' if timed_out else statuses[state[0]],
+            'objective_value': objective_value, 'lower_bound': bound, 'objective_gap': gap,
+            'phase_one_lower_bound': phase_one_bound, 'iterations': int(state[1]) + int(timed_out),
+            'master_iterations': int(state[2]), 'support_cuts': int(state[3] - state[4]),
+            'risk_residuals': residuals[:state[5]].tolist(),
             'search_domain': 'continuous_convex_outer_approximation',
             'objective_tolerance': OBJECTIVE_TOLERANCE,
             'phase_one': 'bounded_maximum_normalized_slack_with_dual_lower_bound',

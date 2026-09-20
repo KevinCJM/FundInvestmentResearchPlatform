@@ -4,6 +4,7 @@ import io
 import json
 import threading
 import zipfile
+from contextlib import contextmanager
 from datetime import date
 import numpy as np
 from backend.custom_indicators.errors import (
@@ -20,6 +21,16 @@ from . import risk, risk_kernels, cost_kernels, funding, path_kernels
 from .evaluation import evaluate, execution_manifest, combined_fee
 
 _COMPUTE = threading.BoundedSemaphore(1)
+
+
+@contextmanager
+def compute_slot():
+    if not _COMPUTE.acquire(blocking=False):
+        raise ConflictError("IMPLEMENTATION_BUSY", "已有实施研究正在计算，请稍后重试。")
+    try:
+        yield
+    finally:
+        _COMPUTE.release()
 
 
 def operation_key(key, stage):
@@ -66,25 +77,13 @@ class ImplementationService:
 
     def preview(self, candidate):
         candidate_hash, _ = self.candidate_identity(candidate)
-        if not _COMPUTE.acquire(blocking=False):
-            raise ConflictError(
-                "IMPLEMENTATION_BUSY", "已有实施研究正在计算，请稍后重试。"
-            )
-        try:
+        with compute_slot():
             return evaluate(self, candidate, candidate_hash)[0]
-        finally:
-            _COMPUTE.release()
 
     def optimize(self, candidate):
         risk_kernels.require_ready()
-        if not _COMPUTE.acquire(blocking=False):
-            raise ConflictError(
-                "IMPLEMENTATION_BUSY", "已有实施研究正在计算，请稍后重试。"
-            )
-        try:
+        with compute_slot():
             return self._optimize(candidate)
-        finally:
-            _COMPUTE.release()
 
     def _optimize(self, candidate):
         source = self.sources.resolve(candidate.source, candidate.as_of)
@@ -221,94 +220,89 @@ class ImplementationService:
             raise ConflictError(
                 "PACKAGE_STALE", "候选或研究包已更新，请刷新后重新验证。"
             )
-        item = self.repository.append(
-            package_id,
-            original["revision"],
-            {**self._fields(original), "stage": "candidate_frozen", "report_id": None},
-            key=operation_key(action.idempotency_key, "freeze"),
-        )
-        if self.repository.current(package_id)["id"] != item["id"]:
-            raise ConflictError(
-                "PACKAGE_STALE", "候选锁定后已被新版本替代，本报告不能放行当前方案。"
-            )
-        if not _COMPUTE.acquire(blocking=False):
-            raise ConflictError(
-                "IMPLEMENTATION_BUSY", "已有实施研究正在计算，请稍后重试。"
-            )
-        try:
-            candidate = ImplementationCandidate.model_validate(item["candidate"])
-            # Persist an explicit attempt before computation; failures remain visible.
-            attempt = self.register_attempt_raw(
-                {
-                    "logical_attempt_id": action.idempotency_key,
-                    "hypothesis_family": "implementation_validation",
-                    "candidate_hash": item["candidate_hash"],
-                    "status": "started",
-                    "reason": "用户明确登记候选验证运行",
-                    "package_id": package_id,
-                },
-                operation_key(action.idempotency_key, "start"),
-            )
-            if saved:
-                report = saved
-                result = saved
-            else:
-                result, arrays = evaluate(
-                    self, candidate, item["candidate_hash"], validation=True
-                )
-                result.update(
-                    artifact_type="implementation_validation",
-                    package_id=package_id,
-                    attempt_id=attempt["id"],
-                    candidate=item["candidate"],
-                    manifest_scope="exact_inputs_arrays_source_fingerprints",
-                )
-                report = store.save(
-                    "run",
-                    result,
-                    arrays,
-                    idempotency_key=operation_key(action.idempotency_key, "report"),
-                    request_hash=operation_hash,
-                )
-            self.register_attempt_raw(
-                {
-                    "logical_attempt_id": action.idempotency_key,
-                    "hypothesis_family": "implementation_validation",
-                    "candidate_hash": item["candidate_hash"],
-                    "status": "succeeded" if result["research_ready"] else "failed",
-                    "reason": "验证报告已冻结",
-                    "package_id": package_id,
-                    "report_id": report["id"],
-                },
-                operation_key(action.idempotency_key, "finish"),
-            )
-            return self.repository.append(
+        with compute_slot():
+            item = self.repository.append(
                 package_id,
-                item["revision"],
-                {
-                    **self._fields(item),
-                    "stage": "validation_complete",
-                    "report_id": report["id"],
-                    "validation_report_hash": report["content_hash"],
-                    "candidate_frozen": True,
-                },
-                key=operation_key(action.idempotency_key, "package"),
+                original["revision"],
+                {**self._fields(original), "stage": "candidate_frozen", "report_id": None},
+                key=operation_key(action.idempotency_key, "freeze"),
             )
-        except Exception:
-            self.register_attempt_raw(
-                {
-                    "logical_attempt_id": action.idempotency_key,
-                    "hypothesis_family": "implementation_validation",
-                    "candidate_hash": item["candidate_hash"],
-                    "status": "failed",
-                    "reason": "计算或保存失败，原始候选仍保留",
-                    "package_id": package_id,
-                },
-                operation_key(action.idempotency_key, "failure"),
-            )
-            raise
-        finally:
-            _COMPUTE.release()
+            if self.repository.current(package_id)["id"] != item["id"]:
+                raise ConflictError(
+                    "PACKAGE_STALE", "候选锁定后已被新版本替代，本报告不能放行当前方案。"
+                )
+            try:
+                candidate = ImplementationCandidate.model_validate(item["candidate"])
+                # Persist an explicit attempt before computation; failures remain visible.
+                attempt = self.register_attempt_raw(
+                    {
+                        "logical_attempt_id": action.idempotency_key,
+                        "hypothesis_family": "implementation_validation",
+                        "candidate_hash": item["candidate_hash"],
+                        "status": "started",
+                        "reason": "用户明确登记候选验证运行",
+                        "package_id": package_id,
+                    },
+                    operation_key(action.idempotency_key, "start"),
+                )
+                if saved:
+                    report = saved
+                    result = saved
+                else:
+                    result, arrays = evaluate(
+                        self, candidate, item["candidate_hash"], validation=True
+                    )
+                    result.update(
+                        artifact_type="implementation_validation",
+                        package_id=package_id,
+                        attempt_id=attempt["id"],
+                        candidate=item["candidate"],
+                        manifest_scope="exact_inputs_arrays_source_fingerprints",
+                    )
+                    report = store.save(
+                        "run",
+                        result,
+                        arrays,
+                        idempotency_key=operation_key(action.idempotency_key, "report"),
+                        request_hash=operation_hash,
+                    )
+                self.register_attempt_raw(
+                    {
+                        "logical_attempt_id": action.idempotency_key,
+                        "hypothesis_family": "implementation_validation",
+                        "candidate_hash": item["candidate_hash"],
+                        "status": "succeeded" if result["research_ready"] else "failed",
+                        "reason": "验证报告已冻结",
+                        "package_id": package_id,
+                        "report_id": report["id"],
+                    },
+                    operation_key(action.idempotency_key, "finish"),
+                )
+                return self.repository.append(
+                    package_id,
+                    item["revision"],
+                    {
+                        **self._fields(item),
+                        "stage": "validation_complete",
+                        "report_id": report["id"],
+                        "validation_report_hash": report["content_hash"],
+                        "candidate_frozen": True,
+                    },
+                    key=operation_key(action.idempotency_key, "package"),
+                )
+            except Exception:
+                self.register_attempt_raw(
+                    {
+                        "logical_attempt_id": action.idempotency_key,
+                        "hypothesis_family": "implementation_validation",
+                        "candidate_hash": item["candidate_hash"],
+                        "status": "failed",
+                        "reason": "计算或保存失败，原始候选仍保留",
+                        "package_id": package_id,
+                    },
+                    operation_key(action.idempotency_key, "failure"),
+                )
+                raise
 
     def current_eligibility(self, item, report=None):
         reasons = []

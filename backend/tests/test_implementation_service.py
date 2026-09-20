@@ -159,6 +159,44 @@ def saved_report(service, body):
     return validated
 
 
+def test_busy_validation_leaves_no_revision_or_attempt_and_can_retry(implementation):
+    from backend.pre_investment.service import _COMPUTE
+
+    service, body = implementation
+    item = service.save(PackageWrite(candidate=body, idempotency_key="busy-create"))
+    action = PackageAction(expected_revision=item["revision"],
+        candidate_hash=item["candidate_hash"], idempotency_key="busy-validation")
+    before = service.view(item["scheme_id"])
+    assert _COMPUTE.acquire(blocking=False)
+    try:
+        with pytest.raises(ConflictError, match="稍后重试"):
+            service.validate(item["scheme_id"], action)
+    finally:
+        _COMPUTE.release()
+    assert service.view(item["scheme_id"]) == before
+    validated = service.validate(item["scheme_id"], action)
+    assert validated["revision"] == item["revision"] + 2
+    assert validated["stage"] == "validation_complete"
+    assert service.validate(item["scheme_id"], action) == validated
+
+
+def test_validation_releases_compute_slot_when_freeze_fails(implementation, monkeypatch):
+    from backend.pre_investment.service import _COMPUTE
+
+    service, body = implementation
+    item = service.save(PackageWrite(candidate=body, idempotency_key="freeze-failure-create"))
+    action = PackageAction(expected_revision=item["revision"],
+        candidate_hash=item["candidate_hash"], idempotency_key="freeze-failure-validation")
+    def fail(*args, **kwargs):
+        raise OSError("controlled freeze failure")
+    monkeypatch.setattr(service.repository, "append", fail)
+    with pytest.raises(OSError, match="controlled freeze failure"):
+        service.validate(item["scheme_id"], action)
+    assert _COMPUTE.acquire(blocking=False)
+    _COMPUTE.release()
+    assert service.repository.history(item["scheme_id"]) == [item]
+
+
 def test_copy_lineage_survives_reopen_edits_validation_and_export(implementation):
     service, body = implementation
     app = FastAPI()
