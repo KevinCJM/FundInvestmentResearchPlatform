@@ -30,7 +30,7 @@
 | basis | 来源 | OHLC | 成交量 | 适用 |
 | --- | --- | --- | --- | --- |
 | `adjusted_nav` | `etf_daily_df.parquet` / `fund_nav_df.parquet` 的 `adj_nav` | 无（只有 close） | 无 | etf + fund |
-| `adjusted_kline` | `etf_daily_candle_df.parquet` 的 `adj_open/adj_high/adj_low/adj_close`，由「ETF 复权价格」ETL 落盘（见 `adjusted_price_indicator_design.md`） | 有 | 有（不复权，见下） | etf |
+| `adjusted_kline` | `etf_daily_candle_df.parquet` 的 `adj_open/adj_high/adj_low/adj_close`，由「ETF 复权价格」ETL 落盘（见[复权价格契约](../data/adjusted-price.md)） | 有 | 有（不复权，见下） | etf |
 | `raw_kline` | `etf_daily_candle_df.parquet`，即现有 `_load_timeseries` | 有 | 有 | etf |
 
 口径规则：

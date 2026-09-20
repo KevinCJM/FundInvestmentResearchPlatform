@@ -1,6 +1,6 @@
 """Shared smoothing kernels; observation-spaced input, never Python fallback.
 
-Derivations and boundary contracts: docs/research/market-state-smoothing-design-2026-09-18.md.
+Derivations and boundary contracts: docs/regimes/smoothing.md.
 Inputs are borrowed read-only strided views; only outputs and workspaces allocate.
 """
 import numpy as np

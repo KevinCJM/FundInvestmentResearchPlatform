@@ -1,5 +1,5 @@
 // 工作台的共用外壳。新页面用这里的组件，不要再复制一份 className 串。
-// 取值与首页令牌一致，规则见 docs/frontend-design-guidelines.md。
+// 取值与首页令牌一致，规则见 docs/frontend/README.md。
 import type { ReactNode } from 'react'
 import Mascot, { type MascotState } from './Mascot'
 

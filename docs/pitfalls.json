@@ -1537,7 +1537,8 @@
       ],
       "symptoms": [
         "Routing coverage passes while a plan or operational instruction still needs semantic review.",
-        "An unstaged Markdown fix hides a broken staged candidate."
+        "An unstaged Markdown fix hides a broken staged candidate.",
+        "Markdown links pass while plain-text filenames and source comments still point to retired documents."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1563,7 +1564,8 @@
         "Use the scoped task diff; do not include other tasks in a shared dirty worktree.",
         "Run document checks against the exact worktree, index or PR head candidate.",
         "Treat source change as a review trigger, not proof that prose is wrong or that a plan is finished.",
-        "Close problems only with relevant current-version evidence; preserve historical evidence boundaries."
+        "Close problems only with relevant current-version evidence; preserve historical evidence boundaries.",
+        "After moving or deleting documents, search tracked source and prose for retired paths and filenames; Markdown link validation does not cover plain-text or comment references. Check the actual Git candidate when the worktree is dirty."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",
