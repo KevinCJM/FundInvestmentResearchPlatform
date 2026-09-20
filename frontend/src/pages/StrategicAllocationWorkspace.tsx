@@ -115,7 +115,7 @@ function StrategicEditor({ initialAllocation, initialMandate, initialUniverse, i
   const [candidate, setCandidate] = useState<PolicyCandidate | null>(null)
   const [savedPolicy, setSavedPolicy] = useState<StrategicBaseline | null>(null)
   const generation = useRef(0), operation = useRef<AbortController | null>(null)
-  const attemptedCma = useRef(''), initializedScope = useRef('')
+  const initialCmaHandled = useRef(false), initializedScope = useRef('')
   const attemptedMulti = useRef('')
   const previousClock = useRef(platformDay)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -182,8 +182,7 @@ function StrategicEditor({ initialAllocation, initialMandate, initialUniverse, i
   }, [allocation, universe, mandate])
   useEffect(() => {
     const wanted = initialCma || editor.savedCmaId
-    if (mode !== 'single' || !catalog || !mandate || !wanted || cmaVersion || attemptedCma.current === wanted) return
-    attemptedCma.current = wanted
+    if (mode !== 'single' || !catalog || !mandate || !wanted || cmaVersion || initialCmaHandled.current) return
     loadAssumptions(wanted)
   }, [catalog, mandate, initialCma, editor.savedCmaId, cmaVersion, mode])
   useEffect(() => {
@@ -195,7 +194,11 @@ function StrategicEditor({ initialAllocation, initialMandate, initialUniverse, i
   function invalidate(assumptions = false) {
     generation.current += 1; operation.current?.abort()
     setBusy(false); setError(''); setNotice(''); setPolicyPreview(null); setCandidate(null); setSavedPolicy(null)
-    if (assumptions) { setCmaVersion(null); setCmaVersions([]); attemptedMulti.current = ''; setEditor(current => ({ ...current, savedCmaId: null, cmaRefs: [] })) }
+    if (assumptions) {
+      initialCmaHandled.current = true
+      setCmaVersion(null); setCmaVersions([]); attemptedMulti.current = ''
+      setEditor(current => ({ ...current, savedCmaId: null, cmaRefs: [] }))
+    }
   }
   function changeScope(patch: Partial<Pick<Draft, 'mandateId' | 'allocationName' | 'strategicUniverseId' | 'implementationMappingId'>>) {
     invalidate('allocationName' in patch || 'strategicUniverseId' in patch)
@@ -218,7 +221,6 @@ function StrategicEditor({ initialAllocation, initialMandate, initialUniverse, i
   function loadAssumptions(id: string) {
     invalidate(true)
     if (!id) return
-    attemptedCma.current = id
     void run(signal => getCma(id, signal), value => {
       const reason = cmaSelectionReason(value.definition, selectionContext)
       if (value.id !== id || reason) throw new Error(reason ? t(reason) : '读取的 LTCMA 版本不一致。')

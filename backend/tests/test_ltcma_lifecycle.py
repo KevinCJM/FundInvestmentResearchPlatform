@@ -99,3 +99,64 @@ def test_api_static_paths_and_no_fake_capabilities(workspace):
 def test_nonfinite_draft_is_not_cleaned_to_zero():
     with pytest.raises(ValueError):
         CmaDraftWrite(name="坏数值", editable_definition={"annual_return": float("nan")})
+
+
+def test_prior_retirement_after_calculation_blocks_new_publication(workspace, monkeypatch):
+    from backend.tests.test_ltcma_evidence import modern_manual
+    from backend.tests.test_ltcma_statistics import request, publish
+
+    service, _ = workspace
+    service.warm()
+    prior = publish(service, modern_manual(), "retirement-race-prior")
+    definition = request("bayesian_niw",
+        prior_ref={"id": prior["id"], "content_hash": prior["content_hash"]},
+        mean_prior_observations=20., covariance_prior_observations=20.)
+    preview = service.cma.preview(definition)
+    original = service.cma.calculation
+
+    def retire_after_calculation(value):
+        result = original(value)
+        service.cma.retire(prior["id"], CmaRetire(confirm=True,
+            content_hash=prior["content_hash"], reason="计算完成后停止先验新引用"))
+        return result
+
+    monkeypatch.setattr(service.cma, "calculation", retire_after_calculation)
+    with pytest.raises(ValidationError, match="停止新引用"):
+        service.cma.publish(CmaCenterPublish(request=definition,
+            preview_hash=preview["preview_hash"], confirm=True,
+            idempotency_key="retirement-race-posterior"))
+    assert service.cma.list(include_retired=True)["total"] == 1
+    assert service.cma.get(prior["id"]) == prior
+
+
+def test_niw_publication_holds_lifecycle_lock_and_replays_after_retirement(workspace, monkeypatch):
+    fcntl = pytest.importorskip("fcntl")
+    from backend.tests.test_ltcma_evidence import modern_manual
+    from backend.tests.test_ltcma_statistics import request, publish
+
+    service, _ = workspace
+    service.warm()
+    prior = publish(service, modern_manual(), "locked-prior-publication")
+    definition = request("bayesian_niw",
+        prior_ref={"id": prior["id"], "content_hash": prior["content_hash"]},
+        mean_prior_observations=20., covariance_prior_observations=20.)
+    preview = service.cma.preview(definition)
+    body = CmaCenterPublish(request=definition, preview_hash=preview["preview_hash"],
+        confirm=True, idempotency_key="locked-posterior-publication")
+    original = service.artifacts.save
+    checked = []
+
+    def save_with_lock_probe(*args, **kwargs):
+        with service.artifacts.governance_lock.lock_path.open("a+") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        checked.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service.artifacts, "save", save_with_lock_probe)
+    posterior = service.cma.publish(body)
+    assert checked == [True]
+    service.cma.retire(prior["id"], CmaRetire(confirm=True,
+        content_hash=prior["content_hash"], reason="新版本发布后停止先验新引用"))
+    assert service.cma.publish(body) == posterior
+    assert service.cma.get(posterior["id"]) == posterior

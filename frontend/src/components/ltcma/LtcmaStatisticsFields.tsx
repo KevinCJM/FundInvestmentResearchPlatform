@@ -39,7 +39,9 @@ export default function LtcmaStatisticsFields({ value, options, onChange, source
         onChange({ ...value, model: { ...model, prior_ref: { id: prior?.id ?? '', content_hash: prior?.content_hash ?? '' }, prior_mode: 'recenter', data_reuse_acknowledged: false } })
       }}><option value="">{t('choose')}</option>{priors.map(item => <option key={item.id} value={item.id}>{item.name} · {item.as_of}</option>)}</select></Field>
       {!priors.length && <p className="text-sm text-amber-800">{t('noPrior')}</p>}
-      <Field label={t('priorMode')}><select aria-label={t('priorMode')} className={control} value={model.prior_mode ?? 'recenter'} onChange={event => onChange({ ...value, model: { ...model, prior_mode: event.target.value as 'recenter' | 'continue', data_reuse_acknowledged: false } })}>
+      <Field label={t('priorMode')}><select aria-label={t('priorMode')} className={control} value={model.prior_mode ?? 'recenter'} onChange={event => onChange({ ...value, model: { ...model,
+        prior_mode: event.target.value as 'recenter' | 'continue', data_reuse_acknowledged: false,
+        mean_prior_observations: null, covariance_prior_observations: null } })}>
         <option value="recenter">{t('recenter')}</option><option value="continue" disabled={priors.find(item => item.id === model.prior_ref.id)?.method !== 'bayesian_niw'}>{t('continuePrior')}</option>
       </select></Field><p className="text-sm leading-6 text-slate-600">{t('priorHint')}</p>
       {model.prior_mode !== 'continue' && <div className="grid gap-3 sm:grid-cols-2"><Field label={t('meanStrength')}><NumberInput className={control} value={model.mean_prior_observations ?? NaN} onValueChange={mean_prior_observations => onChange({ ...value, model: { ...model, mean_prior_observations } })} /></Field>

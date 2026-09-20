@@ -4950,6 +4950,7 @@
         "backend/tests/test_cma_review.py",
         "backend/tests/test_cma_uncertainty.py",
         "frontend/src/components/ltcma/CmaReview.test.tsx",
+        "frontend/src/components/ltcma/LtcmaStatisticsFields.test.tsx",
         "frontend/src/pages/LtcmaCenter.test.tsx",
         "frontend/src/test/ltcmaFixtures.ts",
         "frontend/e2e/helpers/ltcma.ts",

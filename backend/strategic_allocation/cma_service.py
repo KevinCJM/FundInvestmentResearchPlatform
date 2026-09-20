@@ -226,5 +226,13 @@ class CmaResearchService:
                   **preview, "research_only": True}
         if copied_from:
             fields["copied_from_id"] = copied_from
-        return self.artifacts.save("series", fields, arrays,
-                                   idempotency_key=operation, request_hash=request_hash)
+        with self.artifacts.governance_lock.locked():
+            # Replay is historical; only a new publication creates a prior reference.
+            if operation:
+                replay = self.artifacts.idempotent_result(operation, request_hash)
+                if replay:
+                    return replay
+            if isinstance(body.request.model, BayesianCmaRequest):
+                self.require_selectable(body.request.model.prior_ref.id)
+            return self.artifacts.save("series", fields, arrays,
+                                       idempotency_key=operation, request_hash=request_hash)

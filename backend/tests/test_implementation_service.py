@@ -111,6 +111,26 @@ def implementation(workspace):
     return service, body
 
 
+def test_oversized_package_is_rejected_without_breaking_saved_history(implementation):
+    service, body = implementation
+    first = service.save(PackageWrite(candidate=body, idempotency_key="size-valid-package"))
+    raw = body.model_dump(mode="json")
+    raw["state"]["reconciliation"] = [
+        {"occurrence_id": f"{index:064x}", "status": "paid", "paid_amount": 1.,
+         "evidence": "证" * 2000}
+        for index in range(1400)
+    ]
+    oversized = ImplementationCandidate.model_validate(raw)
+    for _ in range(2):
+        with pytest.raises(ValidationError, match="容量上限"):
+            service.save(PackageWrite(candidate=oversized, idempotency_key="size-large-package"))
+    assert service.repository.list() == [first]
+    assert service.repository.current(first["scheme_id"]) == first
+    assert not list(service.repository.artifacts.root.glob(".writing-*"))
+    assert len(list(service.repository.artifacts.root.glob("*/manifest.json"))) == 1
+    assert service.save(PackageWrite(candidate=body, idempotency_key="size-valid-package")) == first
+
+
 def test_direct_saa_risk_cost_preview_is_pure(implementation):
     service, body = implementation
     result = service.preview(body)

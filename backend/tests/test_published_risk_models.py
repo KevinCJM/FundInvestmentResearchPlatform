@@ -420,6 +420,38 @@ def test_artifact_tamper_and_path_traversal_are_rejected(tmp_path):
         repository.get(run['id'])
 
 
+@pytest.mark.parametrize('idempotent', [False, True])
+def test_manifest_byte_limit_includes_metadata_and_preserves_replay(tmp_path, monkeypatch, idempotent):
+    from backend.sensitivity import repository as module
+
+    monkeypatch.setattr(module, 'utc_now', lambda: '2026-09-20T00:00:00+00:00')
+    repository = ArtifactRepository(tmp_path / 'artifacts')
+    fields = {'name': '字节边界', 'evidence': '证' * 100}
+    arrays = {'values': np.array([1., 2.])}
+    options = {'idempotency_key': 'byte-limit-first', 'request_hash': digest_json(fields)} if idempotent else {}
+    first = repository.save('run', fields, arrays, **options)
+    size = (repository.root / first['id'] / 'manifest.json').stat().st_size
+    monkeypatch.setattr(module, 'MANIFEST_MAX_BYTES', size)
+    if idempotent:
+        options['idempotency_key'] = 'byte-limit-exact'
+    exact = repository.save('run', fields, arrays, **options)
+    assert repository.get(exact['id']) == exact
+    assert (repository.root / exact['id'] / 'manifest.json').stat().st_size == size
+    if idempotent:
+        assert repository.save('run', fields, arrays, **options) == exact
+    oversized = {**fields, 'evidence': fields['evidence'] + 'a'}
+    if idempotent:
+        options = {'idempotency_key': 'byte-limit-large', 'request_hash': digest_json(oversized)}
+    for _ in range(2):
+        with pytest.raises(ValidationError, match='容量上限'):
+            repository.save('run', oversized, arrays, **options)
+    assert {item['id'] for item in repository.list()} == {first['id'], exact['id']}
+    assert not list(repository.root.glob('.writing-*'))
+    assert len(list(repository.root.glob('*/manifest.json'))) == 2
+    if idempotent:
+        assert repository.idempotent_result(options['idempotency_key'], options['request_hash']) is None
+
+
 def test_managed_storage_guard_precedes_any_creation(tmp_path, monkeypatch):
     from backend.sensitivity import repository as module
     root = tmp_path / 'missing-disk' / 'risk_models'

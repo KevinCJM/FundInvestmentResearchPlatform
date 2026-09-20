@@ -72,6 +72,28 @@ beforeEach(() => { researchClock.day = '2026-09-12'; localStorage.clear(); sessi
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('真实自上而下操作顺序', () => {
+  it('CMA 深链接只初始化一次，手动切换和清空不被旧链接覆盖', async () => {
+    const second = { ...cmaVersion, id: 'cma-2', name: '第二份长期假设' }
+    let completeSecond!: (value: Response) => void
+    const fetch = install({
+      [`${root}/catalog`]: () => response({ ...strategicCatalog, assumptions: [
+        ...strategicCatalog.assumptions, { ...strategicCatalog.assumptions[0], id: second.id, name: second.name },
+      ] }),
+      [`${root}/cma/cma-2`]: () => new Promise(resolve => { completeSecond = resolve }),
+    })
+    render(<MemoryRouter initialEntries={['/pre-investment/saa/policy?alloc=股债分类&mandate=mandate-1&cma=cma-1']}><StrategicAllocationWorkspace /></MemoryRouter>)
+    await screen.findByRole('button', { name: '比较符合目标的政策候选' })
+    fireEvent.click(screen.getByRole('button', { name: '2. 选择 LTCMA' }))
+    fireEvent.change(screen.getByLabelText('选择已确认 LTCMA'), { target: { value: second.id } })
+    await waitFor(() => expect(completeSecond).toBeTypeOf('function'))
+    await act(async () => { completeSecond(await response(second)) })
+    fireEvent.click(screen.getByRole('button', { name: '2. 选择 LTCMA' }))
+    expect(screen.getByLabelText('选择已确认 LTCMA')).toHaveValue(second.id)
+    fireEvent.change(screen.getByLabelText('选择已确认 LTCMA'), { target: { value: '' } })
+    await waitFor(() => expect(screen.getByLabelText('选择已确认 LTCMA')).toHaveValue(''))
+    expect(fetch.mock.calls.filter(([url]) => String(url) === `${root}/cma/cma-1`)).toHaveLength(1)
+  })
+
   it('目标确认后只冻结目标/风险/现金，并进入后续产品范围而不是提前选择正式CMA', async () => {
     researchClock.day = '2026-09-17'
     const fetch = install(); const user = userEvent.setup()
