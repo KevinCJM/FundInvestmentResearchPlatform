@@ -57,7 +57,6 @@ htmlcov/
 # Local visual QA artifacts
 /output/
 /.tmp_project_*/
-design-qa.md
 design-qa-*.png
 
 # Secrets

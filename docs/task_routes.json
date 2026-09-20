@@ -117,7 +117,7 @@
       "id": "R03",
       "task_type": "branch_submission_ai_review_merge_or_release_policy",
       "match_keywords": [
-        "branch_submission_rules.md",
+        "docs/governance/branch-submission-rules.md",
         "提交流程",
         "提交要求",
         "提交规范",
@@ -140,7 +140,7 @@
         "branch-policy",
         "ai-review",
         "quality-gate",
-        "docs/submission-workflow.md",
+        "docs/governance/submission-workflow.md",
         "提交逻辑",
         "Bot 审核",
         "bot review",
@@ -171,6 +171,48 @@
         "subtree_only",
         "submission_protocol",
         "business_regression_routed_separately"
+      ]
+    },
+    {
+      "id": "R04",
+      "task_type": "documentation_structure_index_lifecycle_or_impact",
+      "match_keywords": [
+        "文档结构",
+        "文档索引",
+        "文档维护",
+        "文档结项",
+        "Markdown",
+        "check_documentation",
+        "documentation lifecycle",
+        "documentation index",
+        "文档同步"
+      ],
+      "negative_keywords": [],
+      "route_priority": 104,
+      "first_read_modules": [
+        "documentation_maintenance",
+        "project_docs",
+        "ai_routing_files"
+      ],
+      "expand_to_modules": [],
+      "pitfall_ids": [
+        "P01",
+        "P02",
+        "P25"
+      ],
+      "expand_search_codes": [
+        "read_reference_map_first"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression",
+        "validate_ai_routing"
+      ],
+      "fact_check_codes": [
+        "read_reference_map_first"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "documentation_maintenance"
       ]
     },
     {

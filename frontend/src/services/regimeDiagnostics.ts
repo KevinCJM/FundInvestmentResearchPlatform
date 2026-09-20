@@ -1,4 +1,4 @@
-// Contracts from docs/research/regime-completion-api-2026-09-15.md.
+// Contracts from docs/regimes/validation.md.
 export interface RegimeStabilityPolicy {
   enabled?: boolean; max_variants?: number; perturbation?: number
   parameters?: boolean; windows?: boolean; seeds?: boolean; truncation?: boolean
