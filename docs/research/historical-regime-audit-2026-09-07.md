@@ -48,7 +48,7 @@ flowchart TB
 
 技术上是模块化单体。`backend/app.py` 注册业务路由并在启动阶段预热计算内核；各业务服务负责数据、参数、任务和结果，NJIT 负责核心数值计算。本次核实历史情景的实际数值调用，未把全项目存在预热入口当作全项目合规验收。
 
-主要背景依据：[README](/Users/chenjunming/Desktop/KevinGit/FundInvestmentResearchPlatform-frontend-framework/README.md)、[领域语言](/Users/chenjunming/Desktop/KevinGit/FundInvestmentResearchPlatform-frontend-framework/CONTEXT.md)、[投研流程大纲](/Users/chenjunming/Desktop/KevinGit/FundInvestmentResearchPlatform-frontend-framework/公募基金量化投资流程大纲.md)、[应用启动与路由](/Users/chenjunming/Desktop/KevinGit/FundInvestmentResearchPlatform-frontend-framework/backend/app.py:146)。
+主要背景依据：[README](/Users/chenjunming/Desktop/KevinGit/FundInvestmentResearchPlatform-frontend-framework/README.md)、[领域语言](/Users/chenjunming/Desktop/KevinGit/FundInvestmentResearchPlatform-frontend-framework/CONTEXT.md)、[平台发展规划纲要](../../资产配置投研与财富管理平台发展规划纲要.md)、[应用启动与路由](/Users/chenjunming/Desktop/KevinGit/FundInvestmentResearchPlatform-frontend-framework/backend/app.py:146)。
 
 **2. 投研全流程及当前能力边界**
 

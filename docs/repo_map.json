@@ -849,7 +849,7 @@
       "entry_files": [
         "README.md",
         "./LICENSE",
-        "公募基金量化投资流程大纲.md",
+        "资产配置投研与财富管理平台发展规划纲要.md",
         "README_SEPARATED.md",
         "docs/requirements.md",
         "docs/custom_indicator_design.md",
@@ -2454,6 +2454,7 @@
         "backend/historical_regimes/peak_trough_numba.py",
         "backend/tests/test_historical_regime_peak_trough.py",
         "docs/research/peak-trough-regime-implementation-2026-09-07.md",
+        "docs/research/historical-regime-audit-2026-09-07.md",
         "backend/historical_regimes/segment_numba.py",
         "backend/historical_regimes/authoring.py",
         "docs/research/regime-authoring-design-2026-09-07.md",
