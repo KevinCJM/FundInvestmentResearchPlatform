@@ -37,7 +37,7 @@
 | ID | 状态 | 工作项 | 完成判据 | 证据/剩余事项 |
 | --- | --- | --- | --- | --- |
 | DOC-01 | verified | 文档归位、目录与收尾检查 | 链接、候选读取和路由检查通过，现有专业规则完整保留 | [2026-09-20 本地验收](../verification/engineering.md#文档工程升级2026-09-20)；远端发布不在本任务内 |
-| DOC-02 | implemented_unverified | PR 文档检查配置 | 本地候选检查通过，并取得实际 PR 工作流运行证据 | 配置随本次文档变更提交；仍待实际 PR 工作流运行证据，未配置 required check |
+| DOC-02 | verified | PR 文档检查配置 | 本地候选检查通过，并取得实际 PR 工作流运行证据 | [PR #45 实际运行证据](../verification/engineering.md#pr-远端检查验证2026-09-20)；仅验证工作流运行，不包含 required check 配置 |
 
 状态为 `planned`（待开发）、`in_progress`（进行中）、`implemented_unverified`（已实现待验证）、`verified`（约定范围已验证）、`deferred`（延期）或 `cancelled`（取消）。verified 必须链接具备适用范围的证据；延期、取消需说明原因。验证字段完整不等于证据真实，仍须审核。
 
