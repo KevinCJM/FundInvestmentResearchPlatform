@@ -28,7 +28,12 @@ export interface TaaBaseline {
   pit: { status: string; reasons: string[] }
   lineage: Record<string, unknown>
   policy?: {
-    mandate_id: string; cma_id: string; expires_on: string; reason: string
+    mandate_id: string; cma_id: string | null; expires_on: string; reason: string
+    mode?: 'single' | 'parameter_average' | 'compatible_all_models'
+    compatibility?: import('./strategicAllocation').CompatibilityEvidence
+    uncertainty_model?: import('./strategicAllocation').MeanUncertaintyEvidence
+    selection?: import('./strategicAllocation').PolicyCandidate
+    multi_cma?: import('./strategicAllocation').MultiCmaEvidence
     assumptions: import('./strategicAllocation').CmaDefinition
     mandate: { max_tracking_error: number; max_volatility: number; currency: string; horizon_years: number }
     independent_approval: boolean; execution: FixedNjitExecutionAudit
@@ -178,7 +183,7 @@ export interface TaaPreview {
   execution: FixedNjitExecutionAudit
   audit: Record<string, unknown>
   walk_forward?: TaaWalkForwardResult
-  policy_check?: { within_limits: boolean; goal_diagnostic_scope?: string | null; current_application_eligible?: boolean; benchmark_check?: { name: string; tracking_error: number; max_tracking_error: number } | null; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: FixedNjitExecutionAudit }
+  policy_check?: { risk_evaluation_mode?: 'parameter_average' | 'compatible_all_models'; cross_model_results?: import('./strategicAllocation').CrossModelResult[]; within_limits: boolean; goal_diagnostic_scope?: string | null; current_application_eligible?: boolean; benchmark_check?: { name: string; tracking_error: number; max_tracking_error: number } | null; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: FixedNjitExecutionAudit }
 }
 
 export interface TaaScenarioRequest {

@@ -1227,6 +1227,10 @@
       "id": "R87",
       "task_type": "investment_objectives_cma_and_strategic_policy",
       "match_keywords": [
+        "LTCMA",
+        "LtcmaWorkspace",
+        "bayesian_niw",
+        "historical_regime_occupancy",
         "strategic-allocation",
         "strategic_allocation",
         "StrategicAllocationWorkspace",
@@ -1252,7 +1256,18 @@
         "风险等级配置中心",
         "RiskScale",
         "risk-scales",
-        "风险标尺"
+        "风险标尺",
+        "multi_cma",
+        "parameter_average",
+        "多 CMA",
+        "参数融合",
+        "MultiCmaSelection",
+        "CrossModelResults",
+        "compatible_all_models",
+        "共同约束",
+        "minimax_regret",
+        "maximin_return",
+        "CompatibilityResults"
       ],
       "negative_keywords": [],
       "route_priority": 101,
@@ -1270,6 +1285,46 @@
         "P07",
         "P08",
         "P23"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "research_only"
+      ]
+    },
+    {
+      "id": "R88",
+      "task_type": "pre_investment_product_funding_validation",
+      "match_keywords": [
+        "pre_investment",
+        "产品实施",
+        "资金续算",
+        "研究包",
+        "PreInvestmentImplementation",
+        "FundingState",
+        "implementation package"
+      ],
+      "negative_keywords": [],
+      "route_priority": 103,
+      "first_read_modules": [
+        "pre_investment_implementation"
+      ],
+      "expand_to_modules": [
+        "strategic_allocation_policy",
+        "tactical_allocation_workbench",
+        "published_risk_scenario_research"
+      ],
+      "pitfall_ids": [
+        "P24",
+        "P22"
       ],
       "expand_search_codes": [
         "read_frontend_backend_pair"

@@ -1,17 +1,17 @@
 # 投前研究统一设计：投资目标、双代理大类、五类 CMA 与单／多 CMA 的 SAA
 
 - 项目：BetterSaaTaa
-- 整体审核与修订日：2026-09-18
+- 整体审核与修订日：2026-09-19
 - 文档性质：业务与算法详细设计，并同步记录当前已落地能力；**设计完成不等于其余规划能力已经开发完成**。
 - 代码核对基线：本地 `ISSUE2609/BetterSaaTaa` 当前 working tree；风险等级配置中心与 Mandate 2.0／投资目标优化已经进入真实前后端调用链，单／多 CMA 后续能力仍以当前代码事实为准。
-- 本次范围：在原统一设计上同步 2026-09-18 代码事实，明确已完成的风险等级配置中心和投资目标与约束，并重新确定后续实施顺序；不修改生产代码、数据或远端分支。
+- 本次范围：核对当前工作树的投研流程与投前模块，修正已过时的实现描述，并按第 21 节顺序完成 P4 模式 A 与模式 B 的线性收益基础版。保留已有未提交的 LTCMA 工作；代码、测试、浏览器验收分别记录，不将设计要求或过往验收当作本次执行证据。
 - 文件名沿用历史名称，避免断开现有引用；本文不再表示“两套独立的 SAA 流程”。
 
 > **最终主线：投资目标 → 构建大类及代理 → 形成一套或多套 CMA → 单／多 CMA 的 SAA → 大类层 TAA → 产品映射与配置 → 验证与定稿。**
 >
-> Settings 中的 Universal 风险标尺是可复用的前置研究成果，不是每次投前研究都要重新执行的一步。CMA 是独立模块；多 CMA 的“参数融合”和“兼容配置”是两个并列、明确支持的 SAA 模式。
+> Settings 中的 Universal 风险标尺是可复用的前置研究成果，不是每次投前研究都要重新执行的一步。CMA 是独立模块；目标设计中，多 CMA 的“参数融合”和“兼容配置”是两个并列的 SAA 模式。
 >
-> **当前实施里程碑（2026-09-18）：风险等级配置中心与投资目标／约束已经完成本轮功能开发；下一主任务转为独立 CMA 研究中心。当前 SAA 仍只消费单个 `cma_id`，因此不能把多 CMA 设计视为已实现。**
+> **当前实施里程碑（2026-09-19）：风险等级配置中心、投资目标／约束、Product-first 与 Strategic-first 两条 LTCMA 上游路径及独立 LTCMA 中心第一版均已有真实链路；两条路径已经汇合到同一冻结 LTCMA → SAA 主流程。现已实现模式 A 的 E2 参数平均及模式 B 的逐模型联合约束、线性收益 minimax regret／maximin、冻结保存与 TAA 门禁，单 CMA 保持兼容。下一阶段重点转向 class-level TAA 与产品应用解耦、产品实施契约和统一验证；模式 B 五等级比较、凹效用扩展、E3 原生混合分布路径作为后续增强。具体执行证据见第 21.4–21.6 节。**
 
 ## 阅读顺序
 
@@ -59,7 +59,7 @@
 2. **代码实现**：接口和实际执行链已经按该设计完成。
 3. **模型有效**：经过足够数据、样本外检验和业务治理后，具备明确适用范围。
 
-本文整体仍以设计闭环为主，但截至 2026-09-18，RiskScaleVersion 全局风险标尺和 Mandate 2.0／投资目标与约束已经完成代码落地并进入真实调用链。其他能力仍须逐项以第 2 节和第 21 节的实现状态为准；不得把局部已完成扩展成整套投前研究均已上线。
+本文整体仍以设计闭环为主。当前 RiskScaleVersion、Mandate 2.0、独立 LTCMA 及模式 A 参数平均已有代码实现；各自的验收范围以第 2 节、第 21 节及对应验收记录为准，不将局部完成扩展成整套投前研究均已上线。
 
 ## 0.3 保留的业务选择
 
@@ -147,13 +147,14 @@ Global 诊断是参考，不替代本次实际资产范围验证。实际 CMA �
 | 资金算法 | 已有月度现金流、二分所需收益、对数正态组合代理、Wilson 下界、资本补足重放；填写阶段另有只跑资金算术、不触发 CMA／模拟的 `mandate_funding()` 回显 | `backend/strategic_allocation/goal_kernels.py`；`service.py` |
 | 风险等级配置中心 | **已落地**：独立 RiskScale 工作台、草稿、预览、确认、不可变版本、默认版本、启用／退役、比较、参考输入和研究日资格检查已经形成完整前后端链路，并被 Mandate 2.0 直接消费 | `backend/strategic_allocation/risk_scale_service.py`；`risk_scale_routes.py`；`risk_scale_store.py`；`reference_inputs.py`；`frontend/src/pages/RiskScaleCenter.tsx`；`RiskScaleWorkspace.tsx`；`RiskScaleVersionView.tsx`；`services/riskScales.ts` |
 | 大类代理 | 产品构建、自动分类、类内权重、大类净值已有；完整统一指数 Proxy 层仍需完善 | `frontend/src/pages/ManualConstruction.tsx`、`AutoAssetClassification.tsx`；`backend/fit.py:323–403` |
-| CMA | Manual、Black–Litterman、Scenario Mixture 已有并仍嵌在长期政策工作台；**独立 CMA 研究中心尚未形成**，Historical 独立生成器、NIW、Regime 多资产桥接尚未实现 | `backend/strategic_allocation/cma_model_contracts.py`；`cma_models.py`；`cma_application.py`；`frontend/src/components/strategic-allocation/CmaModelEditor.tsx`；`StrategicAllocationWorkspace.tsx` |
+| LTCMA 双路径上游 | **两条路径第一版均已打通**：Product-first 从产品池／产品大类进入 `allocation:*`；Strategic-first 从独立 `StrategicUniverse` 进入 `universe:*`，统计方法可为战略资产配置研究 Proxy，不要求先完成实施产品映射。两条路径最终均进入同一 LTCMA 契约 | `frontend/src/pages/ProductPoolSelection.tsx`；`components/strategic-scope/StrategicScopeWorkspace.tsx`；`components/ltcma/model.ts::applyScope()`；`LtcmaInputFields.tsx` |
+| CMA | **独立 LTCMA 中心第一版已实现**：Manual、BL、人工 Scenario、Historical、NIW、历史状态六个明确入口（五类方法族）；列表、可编辑草稿、预览、幂等确认、冻结读取、复制与停止新引用已有。统计方法当前限定 CNY／SSE／日频 252；SAA 只选择已保存版本，不再内嵌编辑器 | `backend/strategic_allocation/cma_service.py`；`cma_evidence.py`；`cma_statistical_models.py`；`cma_statistical_kernels.py`；`cma_application.py`；`frontend/src/pages/LtcmaCenter.tsx`；`LtcmaWorkspace.tsx`；`LtcmaVersionView.tsx` |
 | 历史风险参考 | 显式区间、SSE 日频、252 年化、至少 20 个共同收益观测、固定强度对角收缩；返回历史均值但不自动当长期收益 | `backend/strategic_allocation/service.py` 的 `risk_reference()`；`kernels.py` |
-| CMA 消费 | 模型只计算一次，SAA 读取冻结有效参数；均值不确定半宽仍来自请求，并非 BL 后验自动生成 | `backend/strategic_allocation/cma_application.py` |
-| SAA | `PolicyRequest` **仍只有一个 `cma_id`**；当前是单 CMA 政策研究，四种代表候选与可选风险预算属于有限候选搜索；参数融合和多 CMA 兼容配置尚未实现 | `backend/strategic_allocation/contracts.py`；`service.py`；`frontend/src/services/strategicAllocation.ts` |
+| CMA 消费 | SAA 读取冻结有效参数，不重新拟合；Historical／NIW 等统计结果提供 `mean_uncertainty` 时使用模型结果，其他方法保留请求半宽；BL 后验均值协方差不自动转成该半宽 | `backend/strategic_allocation/cma_application.py`；`cma_statistical_models.py` |
+| SAA | **三种模式已接通**：single 保留 `cma_id`；parameter_average 保留四类有限候选与可选风险预算；compatible_all_models 不使用模型权重，先求独立收益锚点，再直接求解共同约束下的 minimax regret／maximin，并逐模型执行采纳门禁 | `backend/strategic_allocation/contracts.py`；`multi_cma.py`；`compatibility.py`／`compatibility_solver.py`／`compatibility_kernels.py`；`service.py`；`frontend/src/pages/StrategicAllocationWorkspace.tsx` |
 | 前沿 | 历史收益输入的确定性目标网格与 QP/SQP 内核已有；网格点数上限 200 | `backend/optimizer.py`；`backend/qp_numba.py` |
-| 状态联动 | 已有不可变历史状态、单目标条件统计及转移矩阵；CMA 还没有多资产状态桥接 | `backend/historical_regimes/v2_service.py`；`analytics.py` |
-| TAA | 读取冻结单 CMA 政策；战略来源仍受实施映射条件限制；class-level TAA 与产品应用门禁尚未按目标设计拆开 | `backend/strategic_allocation/policy_gate.py`；`backend/tactical_allocation/portfolio_bridge.py` |
+| 状态联动 | 历史状态 CMA 已从核验过的事后运行快照取得同一状态日期轴，并对共同多资产收益估计条件矩、历史占用率和应用概率；先混合再年化。未实现 Markov 多期预测、自动新情景参数补造或全部期限适配 | `backend/strategic_allocation/cma_evidence.py`；`cma_statistical_models.py`；`frontend/src/components/ltcma/LtcmaRegimeResults.tsx` |
+| TAA | 读取冻结单 CMA 或模式 A 政策；模式 A 按融合风险执行门禁，并展示原模型矩风险及跟踪误差诊断，`goal_check=null`，不继承 SAA 资金成功率；战略来源仍受实施映射限制，class-level TAA 与产品应用门禁尚未按目标设计拆开 | `backend/strategic_allocation/cma_application.py`；`policy_gate.py`；`backend/tactical_allocation/portfolio_bridge.py` |
 | Settings | 风险等级配置中心已标记 `available`；研究参数中心仍为 `prototype` | `frontend/src/app/processRegistry.ts` |
 
 特别纠正此前讨论中的两个判断：当前目标模块**已经有量化诊断**；当前通用前沿内核也**不等于已经支持多协方差二次约束的联合稳健求解器**。
@@ -179,6 +180,33 @@ Global 诊断是参考，不替代本次实际资产范围验证。实际 CMA �
 | ValidationReportVersion | 证据范围、通过／失败／未验证、来源与算法版本 | 把局部成功称为全局最优 |
 
 新对象是目标设计。实现时复用现有不可变 artifact 存储，不另建一套平行数值或历史版本实现。
+
+## 2.3 全投研流程与当前交接边界（2026-09-19 核对）
+
+真实流程应按成果及引用关系理解，不能只按导航页面是否存在判断完成度。
+
+| 阶段 | 当前真实能力与交接 | 尚未闭环的部分 |
+|---|---|---|
+| 产品研究 | 市场概览、产品详情／比较、指标评价、择时研究与产品池；已生效 `ProductPoolVersion` 可生成冻结的 `InvestableUniverseSnapshot` | 持仓穿透仍为原型；研究发布不等于投资准入自动通过 |
+| 投前研究 | RiskScale → Mandate；产品池／战略范围 → 大类代理 → 冻结 LTCMA → SAA baseline → TAA decision → 产品组合研究 | 组合合成、统一验证和审批入口仍有原型；本章后续设计不因此全部可用 |
+| 投中执行 | 组合、账户与交易分配已有交互演示及数值校验 | 流程注册仍标记 `prototype`；没有据此证明真实订单、托管回报或执行闭环 |
+| 基金会计 | Booking、账户分配及双主体报表有专用演示页面 | 仍为原型，不代表真实入账、对账及法定账簿 |
+| 投后管理 | `/post-investment/research-diagnosis` 消费真实研究对象与运行快照 | 实际组合绩效、归因、监控及报告仍为原型 |
+| 反馈迭代 | 已定义导航与业务框架 | 当前为原型，尚无自动反馈并更新研究版本的业务闭环 |
+
+投前各子功能的输入输出如下：
+
+1. **投资目标**：选择冻结风险标尺，填写三类成功标准与独立现金预算，经预览／确认形成不可变 Mandate 2.0；风险授权与参考资金诊断分别保留。
+2. **范围与大类**：**两条 LTCMA 上游路径第一版均已完成。** Product-first 先冻结产品池与可投资域，再手动／自动分类及类内构建，并以 `allocation:*` 进入 LTCMA；Strategic-first 先创建独立 `StrategicUniverse`，可配置研究 Proxy，并以 `universe:*` 进入 LTCMA，不要求预先完成实施产品映射。两条路径共用同一 LTCMA／SAA 主链，而非两套模型。
+3. **LTCMA**：对明确资产范围进行人工、历史、NIW、BL 或状态／情景研究；草稿、预览、冻结发布、复制与停止新引用各有独立语义。SAA 引用已发布版本，不在页面重复编辑模型。
+4. **SAA**：已确认 Mandate、冻结 CMA 与权重／分组约束生成四种代表候选，可另加风险预算候选；确认时复核预览 hash，冻结来源、参数、约束及最终权重。资金目标另做固定候选的独立样本验证；采纳仍是研究员确认，`independent_approval=False`。
+5. **TAA**：读取精确的服务端 SAA baseline，结合信号、观察／决策／执行时钟、训练验证与费用形成决策；继续检查授权、复核日期及实施映射，不将 SAA 成功率当作战术路径的资金保证。
+6. **产品配置与诊断**：现有桥接要求同一可投资域、冻结产品归属、手动产品权重与逐类预算守恒，生成 ResearchTarget／PortfolioRun。它是静态目标的历史回放，不等于动态 TAA 回放。择时 release／binding 是独立研究引用，不自动改写权重。
+7. **合成、统一验证与审批**：目前导航连接已有单项工具或原型，尚无完整 ResearchPackageVersion／外部审批闭环。
+
+代码依据：`frontend/src/App.tsx`、`app/processRegistry.ts`、`app/prototypeRegistry.ts`、`pages/ProductPoolSelection.tsx`、`pages/PortfolioConstruction.tsx`、`backend/strategic_allocation/service.py`、`policy_gate.py` 和 `backend/tactical_allocation/portfolio_bridge.py`。`allocationJourney` 保存浏览器选择与草稿引用，不能作为冻结模型、数值或 PIT 证据；TAA 返回 SAA 时读取原 baseline。
+
+本次先执行 `codegraph index` 全量重建：1,218 个索引文件项、24,574 个节点、83,013 条关系。4 个 ENOENT 均为当前工作树已删除的旧 CMA 编辑组件，错误记录位于 `.codegraph/errors.log`；不是四个仍在调用链的实现。实现后执行 `codegraph sync`，状态显示最新索引为 1,227 文件项、24,742 节点、83,644 关系。CodeGraph 用于定位与调用关系，最终完成度仍由当前源码和执行验收确定；临时审计目录的同名符号不作为生产调用证据。数字仅为 2026-09-19 本次快照。
 
 ---
 
@@ -360,7 +388,7 @@ w_{right}\in\arg\min w^\top\Sigma_Uw
 
 ## 4.5 自动算法：弧长加权角度连续动态规划
 
-原设计使用裸斜率平方误差。GMV 附近可能出现接近竖直的切线，裸斜率会发散，并对网格密度敏感。因此目标实现改为 `frontier_shape_dp_v2`；这是对尚未实现设计的修订，不修改已保存算法结果。
+原设计使用裸斜率平方误差。GMV 附近可能出现接近竖直的切线，裸斜率会发散，并对网格密度敏感。因此采用 `frontier_shape_dp_v2`；当前 `risk_scale_kernels.py` 已默认执行该算法，以下为其设计契约。历史已保存标尺保持原版本，不随实现更新重算。
 
 **步骤 A：标准化。** 对已验证、按风险排序的前沿点：
 
@@ -588,7 +616,7 @@ Mandate 保存的是事实、治理、已选风险上限和诊断证据；即使
 
 采纳 SAA 则要求最终权重通过本次真实输入下的硬约束和所要求的资金检验。Universal 参考不足不能冒充真实不可行证明；真实硬约束冲突不能被一个“全局参考通过”覆盖。
 
-默认主流程五步：资金任务 → 成功标准 → 风险等级／预算 → 诊断 → 确认。技术参数如随机种子、路径数、误差阈值折叠；计算依据与警告可展开。
+上述五项是业务依赖，当前界面已收敛为两步：“目标与约束 → 结果确认”。资金任务、成功标准及风险授权在第一步共同填写，诊断及确认在第二步；不再把旧五步页面顺序当作当前界面。技术参数如随机种子、路径数、误差阈值折叠，计算依据与警告可展开。
 
 现有 `risk_aversion` 保留为效用模型软参数，不定义 C1–C5。若使用同一冻结参考前沿校准，局部平滑内点有 `lambda = 2 dmu/d(sigma²)`；端点、平台段或斜率不稳定时不强行反演，效用候选标为未校准，默认使用明确风险上限下的收益目标。不能对每套 CMA 各自任意校准 lambda 后再声称效用数值可直接比较。
 
@@ -596,9 +624,9 @@ Mandate 保存的是事实、治理、已选风险上限和诊断证据；即使
 
 ## 5.9 资金预算应独立于三种成功标准
 
-当前 `MandateRequest` 将 `funding_plan` 与 `objective_kind=funding_goal` 绑定；切换成绝对收益或相对基准目标时不能残留该计划。这是已存在的请求契约，不应在迁移中静默改变。
+旧 `schema_version=1.0` 将 `funding_plan` 与 `objective_kind=funding_goal` 绑定；其读取及兼容校验保持原语义。当前 `schema_version=2.0` 已将 `cash_budget`、`funding_target`、`cash_protection` 分开，三个目标可以共享一份预算，不能继续把旧版限制描述为当前全局限制。
 
-目标设计需要解决一个缺口：**企业以绝对收益为考核目标，也可能有每季度支付；以相对基准为目标，也仍需保留运营现金。** 因此新版本将资金事实与投资成功标准分离：
+当前 2.0 已解决这一基础契约问题：**企业以绝对收益为考核目标，也可能有每季度支付；以相对基准为目标，也仍需保留运营现金。** 以下字段展示其领域职责；任意月份续算等更完整适配仍按第 17.5 节单独实施：
 
 ```text
 cash_budget（可选，三个 objective_kind 都可使用）
@@ -896,7 +924,7 @@ Bayesian 生成器计算一次解析后验，SAA 消费一套参数。后验抽�
 
 ## 10.5 第一版实现与失败条件
 
-需要新增 `bayesian_niw` 契约、固定签名统计内核、t 分位数或经过验证的数值分位数路径，以及前端先验选择器。当前代码未实现这些。
+2026-09-18 第一版已实现 `bayesian_niw` 契约、固定签名 NIW 内核、数值 t 分位数及先验选择器，并核对了 SciPy 参考值。当前支持同日频下重新构造先验与后验续更；基础强度由用户明确输入，不伪造弱／中／强模板；尚未实现上述全部衰减策略或跨频率适配。
 
 数值更新可用矩阵乘法与稳定散点累积；不得显式求逆。先验缺失、非正定、样本频率不匹配、旧先验与新数据重叠未声明、可信区间尺度混淆均阻断正式发布。
 
@@ -996,7 +1024,7 @@ S_v 在正观点噪声下可求解不意味着所有旧协方差门禁都支持�
 
 当前 `conditional_stats` 主要针对单个评价目标，且带 `forward_1_period_from_signal` 语义，不能直接充当多资产状态协方差。
 
-需要新增证据桥接，而不是把历史中心与 CMA 互相调用形成循环：
+当前 LTCMA 的 `cma_evidence.py` 已提供证据桥接；历史中心与 CMA 保持单向引用：
 
 ```text
 HistoricalRegimeRun + ReturnPanelVersion
@@ -1089,7 +1117,7 @@ manual_same_period_scenarios
 historical_regime_occupancy
 ```
 
-内部只保留一个频率无关的矩混合内核；年度输入与历史状态输入使用不同校验／转换包装。当前内核含既有年度参数验证，需通过有回归测试的提取改造复用，不能不经检查直接塞入日频量。
+当前已提取唯一频率无关的 `mixture_moments_kernel`，返回均值、总协方差、状态内协方差和状态间分歧。`scenario_mixture_kernel` 保留人工情景的输入验证；历史状态经 `cma_statistical_models.py` 在基础频率直接复用共享内核，再年化。两种包装不能交换概率及时间尺度语义。
 
 ## 12.7 一个必要的恒等式检查
 
@@ -1425,9 +1453,26 @@ E3 的长期路径仍需指定模型状态是否跨期固定、每期重抽还�
 
 派生参数作为研究内不可变子产物保存；需要成为可单独复用的 CMA 时再显式发布 CmaVersion。M=1 必须退化为相同单模型结果，不引入额外偏差。
 
+## 15.7 模式 A 本次实施边界
+
+模式 A 以 E2 为可执行范围，沿用既有单 CMA 数值求解与资金诊断。模式 B 现已独立实现，见第 16 节；E3 原生混合路径、跨币种／跨频率及不同 vintage 适配仍是后续任务。
+
+- **请求**：旧 `cma_id` 单模型调用保留；参数平均显式传 `mode=parameter_average` 与 `cma_refs[{cma_id,content_hash,weight}]`。不接受重复版本、非法权重、合计不为 1 或冲突的单模型引用，不自动归一化。
+- **兼容**：新融合仅接受具有显式口径的 V2 CMA；研究日、币种、期限、收益语义、费用、FX、风险角色及完整资产定义须一致。统计窗口可以不同；代理定义、现金／流动性角色不能按资产同名猜测。不同 as_of 的旧 vintage 暂不开放，不能把未实现适配当成可用功能。
+- **数值**：复用频率无关混合内核的均值和 `within` 协方差，`between` 单独保存为模型分歧；不对独立最优权重求平均，不平方模型权重。使用既有固定签名与启动预热，派生输出可分配小型数组，原大样本与冻结来源不复制成路径大张量。
+- **不确定性**：保留各模型原有不确定性证据；融合半宽为显式盒式边界的权重和，标记未联合校准，不冒充独立误差或新统计置信区间。
+- **交叉诊断**：每个最终候选在各原 CMA 下重新计算收益、波动、必要基准与资金检查。仅融合模型参与模式 A 的采纳门禁；原模型失败仍必须可见，不显示“全模型兼容”。资金模型继续明确使用融合矩的年度矩代理近似。
+- **冻结与下游**：派生参数是政策内部子产物，保存全部源版本、hash、研究权重和有效参数，不自动发布新的独立 CMA，也不冒用第一个 CMA 的 ID。新政策与 TAA 同时读取冻结融合风险和原模型诊断；TAA 重算各源矩风险与 TE，`goal_check=null`，不表示已做剩余资金续算。历史单模型契约保持原义。
+- **界面与失效**：成员、权重、模式、范围或 PIT 变化均使当前预览失效；全部来源读取成功后才允许计算。旧单选草稿显式适配，晚到响应不得恢复已失效候选；历史政策展示完整冻结引用。
+- **资源门禁**：最多 20 个来源、30 个大类；资金计算按 `(来源数+1) × 候选数 × 路径数 × 月数` 检查 5000 万预算，中央／保守计算至多两倍。冻结证据使用与仓库相同的 UTF-8 紧凑 JSON 编码，超过 7,000,000 bytes 时在落盘前拒绝，给仓库 8 MB 上限保留余量；不自动减路径或丢来源。
+
+单模型／参数平均的实际接口字段、实现限制和执行结果以最终代码及本次验收记录为准；上述实施边界不将第 16–18 节的全部目标能力提前标记为完成。
+
 ---
 
 # 16. 多 CMA 模式 B：共同约束下寻找一套兼容配置
+
+**2026-09-19 实现边界：** 已支持年度线性预期收益（相对目标为预期超额）的 minimax regret 与 maximin，M≤20、N≤30；每个模型分别执行收益、权重／分组、方差及基准 TE 约束。`risk_budget` 在模式 B 显式拒绝；没有静默忽略或替换原模式 A 的风险预算能力。资金模拟仅检查一个共同候选，并保留锚点交叉诊断。第 16.6 节五等级联合前沿、凹效用、CVaR 优化等仍为目标设计。证据见 [模式 B 验收记录](multi-cma-compatible-all-models-acceptance-2026-09-19.md)。
 
 ## 16.1 不是简单平均各自权重
 
@@ -1491,7 +1536,7 @@ V_m^*=\max_{w\in\mathcal F_m}q_m(w).
 
 当目标为线性收益或凹二次效用，风险矩 PSD，约束是线性与方差／TE 上限，问题是凸 QCQP／可转 SOCP。它**不是只有线性约束的普通 QP**。[R9]
 
-当前 `feasible_qp_kernel` 可复用作子问题，但还没有完整的多 CMA 二次约束求解链。目标新增有限维 `MultiModelConstraintEvaluator` 与有界外逼近主问题调度，不宣称复制一次旧前沿函数即可完成。
+当前已由 `compatibility.py → compatibility_solver.solve → compatibility_kernels → qp_numba.bounded_lp_kernel` 接通线性收益目标的共同约束求解。原 QP 内核继续作为唯一数值实现；新增乘子输出的内部求解及保留原 ABI 的薄适配。凹二次效用与 CVaR 连续适配尚未实现，不能据此宣称全部 QCQP 目标都已开放。
 
 ### 可执行的基础数值路线
 
@@ -1506,13 +1551,13 @@ g_m(w_k)+2(\Sigma_mw_k)^\top(w-w_k)\le0.
    因 g_m 凸，切面定义的是包含真实可行集的外近似。**满足切面并不代表已满足原二次约束**。
 3. TE 约束用偏移变量 `w−b` 的对应梯度；凹效用约束同样使用其凸形式的支撑切面。
 4. 每轮主问题使用共享固定签名 QP／LP 内核。新增切面可能使上次点不可行，必须先做线性 Phase-I，而不是把不合法初值交给要求可行初值的旧函数。
-5. Phase-I：在 nonnegative／sum=1 等基本域内，对其余主问题约束加非负松弛，最小化松弛和。可从等权及足够松弛初始化；只有取得可核验的目标下界证明松弛不可能为零，才判定不可行。
+5. Phase-I：当前实现保留 simplex 与有限 box 为硬域，对其余归一化约束添加一个公共非负松弛，最小化最大松弛量。相较原草案的松弛和，零最优值的可行性含义一致，仅需一个额外变量；不把正松弛数值解释为原单位的总缺口。只有有界 LP 的对偶目标下界大于 1e-8 才报告不可行；其余失败均为未完成。
 6. 逐轮计算全部真实 g_m、收益、权重约束。真实可行点给出可行目标界；主问题给出松弛问题目标界。两者差小于声明容差且真实残差通过，才认为凸求解完成。
 7. 设置最大迭代、最大切面、超时、矩阵条件数与停止容差；预算耗尽返回近似／未收敛，不能退回简单平均并称为成功。
 
-当前 `backend/qp_numba.py::feasible_qp_kernel` 的真实约定是：**矩阵首行为等式，其余行为 `A x >= b`，并要求可行初值**；`H=0` 已有线性规划分支。返回的是解、状态、迭代数与残差，没有完整对偶证书。实现新主问题时必须转换切面的不等号方向，不能把 `<=` 直接传给该接口。
+历史 `feasible_qp_kernel` 保留**首行为等式，其余行为 `A x >= b`，且要求可行初值**及原四项返回 ABI。当前源码也已有显式等式数、独立等式秩检查与矩阵 QP 入口，不能再记作缺失能力。模式 B 的 LP 只有 sum(w)=1 一条等式；切面已转换为 `>=`。新增 `bounded_lp_kernel` 在同一内核上取得乘子，对非负约束乘子与残余梯度的 box 最小值计算保守下界，并扣除浮点运算裕量。下界不依赖“残差小即最优”的推断。
 
-多条产品预算等式、辅助变量与一般 Phase-I 不能未经适配直接复用“首行等式”的旧调用。共享求解层需增加显式独立等式块／等式秩检查，或经过验证的消元适配；重复的预算等式和总权重等式须按线性相关性处理，不用微小松弛制造可行。无可核验乘子／目标界时只报告近似结果，不能依据残差推断全局不可行。
+多条产品预算等式仍需在产品实施层接入现有矩阵 QP 契约，不属于本次模式 B 的单预算 LP。重复等式应按线性相关性处理，不用微小松弛制造可行。无可核验目标界时只报告近似或未完成，不能依据残差推断全局不可行。
 
 普通工具或第三方优化器不能绕过项目 NJIT 要求成为未登记生产路径。
 
@@ -1587,7 +1632,7 @@ SaaPolicyVersion 保存一套最终权重，并同时冻结：
 mandate_id / risk_scale_version_id / numeric_limits
 asset_class_version_id / ordered_asset_ids
 cma_ids[] / hashes[] / decision_as_of
-mode: single | parameter_fusion | compatible_all_models
+mode: single | parameter_average | compatible_all_models（均已接通）
 aggregation_semantics / weights (模式 A)
 compatibility_objective / reference_optima (模式 B)
 primary_evaluation_spec / all_model_risk_contract
@@ -1597,7 +1642,11 @@ solver_status / residuals / bounds / limitations
 
 M 个模型、G 个网格点的锚点研究是约 M×G 个基础问题，加一次或若干联合问题；不是把各模型后验样本数相乘。实际耗时仍取决于约束、收敛和模拟预算，不承诺“无论怎样都很轻量”。
 
-SAA 多模型功能不能只把 `cma_id` 改成列表；`cma_application`、policy gate、冻结对象和 TAA 消费也必须同步更新。旧单模型记录只读适配为长度 1 的集合，保留其原算法和风险语义。
+模式 B 冻结 `compatibility`（目标、各锚点、最终状态、残差、上下界和限制）、全部原 CMA 及逐模型结果。政策内部等权矩仅为展示兼容字段，显式记录 `effective_moments_role=display_reference_only` 与 `primary_evaluation_spec=each_frozen_source_model`；不能以其替代采纳或 TAA 的逐模型风险。指标汇总按列取最不利值，不对应单一分布。确认时对每个源模型使用与探索独立的资金随机流；历史政策读取不重新拟合。
+
+运行限制为 1–128 轮（默认 64）、每个主问题 500 步、最多 2,048 个切面，锚点与共同求解共享 30 秒轮间检查预算；单次 LP／资金内核不可抢占，因此不是进程级硬实时中断。资金路径月预算为 `M×(M+2)×paths×months ≤ 50,000,000`，中央／保守至多两倍；继续执行 7 MB UTF-8 元数据上限。目标界差≤1e-7 且真实风险误差≤1e-10 才报告收敛；预算耗尽不制造后备权重。
+
+SAA 多模型功能不能只把 `cma_id` 改成列表；`cma_application`、policy gate、冻结对象和 TAA 消费也必须同步更新。当前旧单模型请求与记录保持原形状、预览 hash 和风险语义；模式 A 新政策使用内部 `schema_version=2.0`、`mode=parameter_average` 与完整 `multi_cma` 证据。缺失融合证据时失败关闭，不按人工单模型继续。
 
 ---
 
@@ -1610,7 +1659,7 @@ w^{TAA}=w^{SAA}+\Delta w,\quad\mathbf1^\top\Delta w=0,\quad w^{TAA}\ge0.
 \tag{T1}
 \]
 
-目标权重始终包含现金，满足资产／分组上下限与现金用途要求。未启用 TAA 时，Delta=0，可引用 SAA 进入产品实施，不应为了交接强造一条战术观点。
+目标权重始终包含现金，满足资产／分组上下限与现金用途要求。目标设计允许未启用 TAA 时以 Delta=0 直接引用 SAA 进入产品实施，不应为了交接强造战术观点。**当前产品桥接只接受已保存的合法 TAA decision，直接 SAA 交接尚未接通**；现阶段仍需保存零偏离的 TAA 决策并通过原有门禁。
 
 保留当前 momentum、manual、published regime、composite，以及训练／验证、walk-forward、信号成熟期、执行滞后、最低持有期、换手、交易成本、preflight 等研究能力。
 
@@ -1819,7 +1868,7 @@ risk_evaluation_contract / final_constraint_audit
 
 投前导航的**目标形态**按“投资目标 → 大类代理 → CMA → SAA → TAA → 产品实施 → 验证”组织。Settings 单独提供“全局风险等级”。辅助历史实验、压力测试和指标诊断以侧栏／上下文工具呈现，不与主步骤混排成无先后清单。
 
-截至 2026-09-18，风险等级配置中心已经是独立 Settings 工作台，投资目标也已经有独立列表及新增／修改／删除流程；但 CMA 仍嵌在 `StrategicAllocationWorkspace` 内，`StageLayout` 顶部快捷流程仍主要是“范围 → 大类／映射 → SAA → TAA → 产品”。因此下一次前端重组应优先把 CMA 提升为一级研究模块，而不是先扩展多 CMA 或产品实施页面。
+截至 2026-09-18，风险等级配置中心和投资目标列表保持现有职责；LTCMA 已提升为投前一级节点 `/pre-investment/ltcma`，支持“研究输入 → 结果与确认”。`StageLayout` 快捷流程已加入 LTCMA。`StrategicAllocationWorkspace` 改为选择冻结 LTCMA，保留来源资格和原 SAA→TAA 门禁，不再重复编辑模型。
 
 | 页面 | 默认展示 | 高级／详情 |
 |---|---|---|
@@ -1845,9 +1894,9 @@ CMA 在 SAA 页面只显示选择器、摘要和“复制为新 CMA 研究”，
 | 全局标尺版本治理 | **已实现** | `/risk-scales/confirm`、`/{id}`、`/{id}/activate`、`/{id}/retire`、`/compare`、`/defaults`、`/drafts`，同前缀 | 不可变版本、默认绑定、退役、比较、草稿；active 指针不覆盖历史 |
 | 风险标尺参考输入 | **已实现** | `/reference-inputs/catalog`、`/preview`、`/confirm`、`/{id}` | 可追溯参考输入版本及冻结证据 |
 | 投资目标 | **Mandate 2.0 已实现** | 现有 `/mandates/preview`、`/mandates/confirm`、读取／退役及资金回显接口 | 事实、现金预算、RiskScale 授权、参考诊断 → 不可变 MandateVersion |
-| 独立 CMA | **部分实现** | 扩展现有 `/api/strategic-allocation/cma/preview`、`/cma`、`/cma/{id}` | 现有 Manual／BL／Scenario 迁入独立中心；补 Historical、NIW、Regime 及统一矩口径 |
-| 历史状态证据 | **待实现** | `POST /api/strategic-allocation/cma/regime-evidence/preview` | run 引用＋收益面板＋区间 → 状态矩／占用率／lineage |
-| 单／多 CMA SAA | 单 CMA **已实现**；多 CMA **待实现** | 扩展现有 `/policy/preview`、`/policies` | `cma_refs[]`、mode、aggregation／compatibility → 一套最终权重与完整评估 |
+| 独立 CMA | **第一版已实现** | 现有 `/api/strategic-allocation/cma/preview`、`/cma`、`/cma/{id}`；新增能力、研究选项、草稿及停止新引用接口 | 单一 CmaResearchService；V2 请求、幂等发布和生成类型；旧版本按原语义读取 |
+| 历史状态证据 | **已集成到 CMA 预览，不另建重复接口** | `/cma/preview` 的 `historical_regime_occupancy` 方法 | run 引用＋共同收益面板＋区间 → 状态矩／占用率／应用概率／lineage；专门的独立证据发布接口仍非本版范围 |
+| 单／多 CMA SAA | single、模式 A E2、模式 B 线性收益基础版 **已实现** | 现有 `/policy/preview`、`/policies` | 单模型 `cma_id`；A 使用带权 `cma_refs`；B 使用无权 `cma_refs`、`compatibility_objective` 和有界 `solver_max_iterations`；返回锚点、共同候选、状态／目标界、逐模型诊断与冻结政策 |
 | 实施匹配与配置 | **目标扩展待实现** | 扩展现有 implementation-map／portfolio 研究接口 | 候选范围、匹配规则、目标预算 → 映射与产品权重 |
 
 带固定名称的子路径须在通用 `{id}` 路由前注册，避免 `regime-evidence` 被当作 ID。请求和响应 schema 由同一契约生成前后端类型，不靠字符串猜测方法。
@@ -1866,27 +1915,29 @@ execution_audit / preview_hash
 
 ## 19.3 统一目录与调用职责
 
-复用当前 `backend/strategic_allocation/` 作为 CMA／目标／政策业务边界，目标扩展：
+当前复用 `backend/strategic_allocation/` 作为 CMA／目标／政策业务边界：
 
 ```text
 cma_model_contracts.py / cma_models.py / cma_model_kernels.py
 cma_application.py                   冻结参数唯一消费入口
-cma_evidence.py                      新：共同数据与输入准备
-regime_cma_evidence.py               新：事后状态桥接
+cma_service.py / cma_store.py        已有：研究编排、草稿与版本治理
+cma_evidence.py                      已有：共同数据准备及事后状态桥接
+cma_statistical_models.py            已有：统计模型编排
+cma_statistical_kernels.py           已有：固定签名统计／NIW 内核
 risk_scale_contracts.py
 risk_scale_service.py
 risk_scale_kernels.py
-objective_diagnostics.py             新：目标和标尺联动
-multi_cma_contracts.py
-multi_cma_service.py
-multi_cma_kernels.py
+mandate_diagnosis.py                 已有：目标和标尺联动，不再另建重复实现
+contracts.py                        已有：PolicyCmaRef 与 single／parameter_average 请求
+multi_cma.py                        已有：融合来源校验、冻结矩与原模型诊断编排
+multi_cma_kernels.py                已有：固定签名声明半宽聚合；矩融合复用 cma_model_kernels
 goal_kernels.py / planning.py        现金流与资金诊断复用
 policy_gate.py                      单／多模型统一资格门禁
 ```
 
 共享数值求解留在 `backend/optimizer.py`／`backend/qp_numba.py` 及适当拆分的共用内核中。历史收益 → 矩的准备，与冻结 CMA → 矩的读取分开，随后共用求解能力；不从前瞻研究调用历史 HTTP 接口伪装同一数据来源。
 
-RiskLevels／风险等级配置工作台已经完成并保持现有实现。下一步前端新增**独立 CMA 研究中心**，把当前 `StrategicAllocationWorkspace` 内的 CMA 编辑能力迁到可独立进入、保存和复用的工作台；MultiCmaSelector／CrossModelResults 留到多 CMA SAA 阶段。继续使用 StrategicAllocationWorkspace 作为政策研究边界，只保留实际被调用的一套数学执行实现。
+RiskLevels 和独立 LTCMA 工作台均已落地。原工作树已移除旧 SAA 内独立假设编辑、有效结果及战略前瞻表单的未使用组件；当前统一从 LTCMA 研究并在 SAA 引用。本次 `MultiCmaSelection`／`CrossModelResults`／`CompatibilityResults` 已接通 E2 参数平均、共同约束、收益目标选择、锚点交叉诊断和可行／不可行／未收敛展示。模式或成员变动均废弃旧预览；B 转回 A 需重新确认研究权重。
 
 ## 19.4 版本依赖与失效
 
@@ -1912,9 +1963,9 @@ RiskLevels／风险等级配置工作台已经完成并保持现有实现。下�
 
 ## 19.6 数值与内存预算
 
-N 保持与当前大类契约一致的上限 30；情景数上限 60；网格上限 200。多 CMA 的建议初始上限 M=20，属于目标资源配置，正式启用前需要基准测试。路径数沿用既有 500–10000 范围时，也需额外检查总计算量。
+N 保持与当前大类契约一致的上限 30；情景数上限 60；网格上限 200。模式 A 当前请求硬上限 M=20，已提供最大轴数值与内存基准脚本 `backend/tests/test_multi_cma_performance.py`；该小矩阵基准不代表整次求解或资金模拟耗时。路径数沿用已确认 Mandate 的预算。
 
-资金研究复杂度约与 `M × 候选数 × 路径数 × 月数` 成正比，不能只限制某一维。预览应估算总预算，允许用户明确减少候选／路径或提交受控计算；不静默丢弃 CMA。
+当前资金预览硬门禁为 `(M+1) × (4 或 5 个候选) × paths × months ≤ 50,000,000`；加 1 包含融合模型，中央与保守计算最多两倍。超限时用户须显式减少来源或重新确认路径预算，不能静默丢弃 CMA。源证据逐个读取／冻结、预览完成和最终保存前均检查 7,000,000 bytes 紧凑 JSON 预算；最终检查包含名称、理由及政策，早于正式写入。
 
 不得分配完整 `M×候选×路径×月份×资产` 大张量。复用只读收益面板，分块生成随机数和路径，累计指标；保存足以确定性重现的随机数算法、种子与分块规则。common random numbers 是比较方差控制工具，不意味着各候选的真实市场收益具有该人为耦合。
 
@@ -1924,7 +1975,7 @@ NumPy 数组及 mmap 在边界规范化后复用；协方差、Beta、成分索�
 
 ## 19.7 能力注册、统一门禁与可解释的失败
 
-后端目录需明确返回本进程可执行的 `supported_methods / supported_objectives / supported_constraints / supported_moment_semantics`。一个方法已经在设计中出现，不代表能在当前后端执行；未就绪的 NIW、指数 TAA、多 CMA 联合求解等必须显示具体原因，不回退到另一种方法。
+后端目录需明确返回本进程可执行的 `supported_methods / supported_objectives / supported_constraints / supported_moment_semantics`。一个方法已经在设计中出现，不代表能在当前后端执行；任何尚未预热的方法、未支持的跨频率 NIW、指数 TAA 或多 CMA 联合求解均须显示具体原因，不回退到另一种方法。当前日频 NIW 已实现，不属于笼统未开发能力。
 
 统一约束结果至少包含：
 
@@ -1968,7 +2019,7 @@ source / reason / execution_version
 | 单 CMA → SAA | S1–S4 | 声明精确／有限搜索性质的候选 | Q43 |
 | 多 CMA → 共同 SAA | C1–C6、联合二次约束 | 一套全模型兼容权重或明确失败状态 | Q44–Q47 |
 | CMA／权重 → 分布与资金 | D1–D10 | 模型指定的概率、尾部、回撤；不保证现实 | Q48–Q50 |
-| SAA → TAA | T1–T2、信号时点与 all-model gate | 同一授权下战术目标 | Q51–Q53 |
+| SAA → TAA | T1–T2、信号时点、继承原 SAA 模式的门禁；模式 A 为融合风险＋原模型诊断，模式 B 已按全部冻结模型复核收益、波动及 TE | 同一授权下战术目标 | Q51–Q53 |
 | 大类 → 实施候选 | I1–I2、合同筛选与样本外检验 | 候选及未匹配原因 | Q54 |
 | 大类预算 → 产品权重 | I3–I4、线性约束 QP | 预算守恒、成本与 TE | Q55–Q57 |
 | 产品 → 实际风险复核 | I5–I7、多模型评估 | 无风险映射证据时只读研究、不能正式应用 | Q58–Q59 |
@@ -2072,7 +2123,7 @@ frontend/src/pages/StrategicAllocationWorkspace.test.tsx
 frontend/src/components/strategic-allocation/CmaModelEditor.test.tsx
 ```
 
-新增全局风险分段、NIW、历史状态桥接、参数融合、联合二次约束与多模型下游继承测试。参考求解器可用于隔离数值验证，但生产路径仍须满足 AGENTS.md 的固定签名 NJIT 要求。
+全局风险分段、NIW 与历史状态桥接已有对应测试（`test_risk_scale_*`、`test_ltcma_statistics.py`、`test_ltcma_evidence.py`、`test_ltcma_lifecycle.py`）；参数融合及下游继承的本次证据另行记录，模式 B 联合二次约束、独立参考解、不可行证据和下游全模型门禁已有专门测试（见模式 B 验收记录）。参考求解器可用于隔离数值验证，但生产路径仍须满足 AGENTS.md 的固定签名 NJIT 要求。
 
 ---
 
@@ -2080,14 +2131,14 @@ frontend/src/components/strategic-allocation/CmaModelEditor.test.tsx
 
 ## 21.1 按依赖实施，避免只有页面没有算法
 
-| 阶段 | 当前状态（2026-09-18） | 必须完成 | 验收重点 |
+| 阶段 | 当前状态（2026-09-19） | 必须完成 | 验收重点 |
 |---|---|---|---|
 | P0 统一契约 | **部分完成，持续治理** | 资产／日期／收益／风险语义、现有只读兼容、数据质量 | 旧结果不变，错误口径不能进入新链路 |
-| P1 共用代理与 CMA | **下一主任务** | 先建立独立 CMA 中心并复用现有 Manual／BL／Scenario，再补 Historical；随后补 NIW 与 Regime 桥接，并继续完善指数 Proxy | CMA 可脱离 SAA 独立研究、保存和复用；参数来源可追溯 |
-| P2 全局标尺 | **本轮已完成** | 维护已实现 RiskScaleVersion、参考输入、前沿、分段、版本治理和 Mandate 消费链 | 无客户 Mandate 也可初始化；历史版本不可变；默认版本切换不改写旧研究 |
-| P3 投资目标 | **本轮已完成** | 维护 Mandate 2.0、三类成功标准、独立现金预算、RiskScale 授权、资金建议／参考诊断及版本生命周期 | 所需风险、承受政策与正式授权分开；预算不重复；修改不原地覆盖历史 |
-| P4 多 CMA SAA | **待 P1 完成后实施** | 先做模式 A 参数融合，再做模式 B 兼容配置、联合约束和完整证据 | 一个最终 w；不能只增加多选框 |
-| P5 TAA／产品继承 | **现有单 CMA／旧门禁可用，目标改造待后续** | 类级 TAA 与实际应用分开、剩余资金续算、多模型风险下传、Q／Beta、多个预算等式与实施风险 | 最后产品没有绕过前面授权，也没有冒用原 SAA 的资金成功率 |
+| P1 共用代理与 CMA | **Product-first／Strategic-first 两条上游路径及 LTCMA 第一版均完成；通用代理与频率适配仍有后续范围** | 双路径已汇合到统一 LTCMA；独立中心、五类方法族、冻结证据及单 CMA 交接已实现。指数来源语义、跨币种／跨频率、统一代理独立生命周期按实际需求继续增强 | 已有结果不重算；原产品链路保留；战略研究不因缺实施产品而丢失资产；日历缺失或来源不完整不得静默缩短 |
+| P2 全局标尺 | **已有实现，本次相关回归通过** | 维护已实现 RiskScaleVersion、参考输入、前沿、分段、版本治理和 Mandate 消费链 | 无客户 Mandate 也可初始化；历史版本不可变；默认版本切换不改写旧研究 |
+| P3 投资目标 | **已有实现，本次相关回归通过** | 维护 Mandate 2.0、三类成功标准、独立现金预算、RiskScale 授权、资金建议／参考诊断及版本生命周期 | 所需风险、承受政策与正式授权分开；预算不重复；修改不原地覆盖历史 |
+| P4 多 CMA SAA | **模式 A E2 与模式 B 线性收益基础版已实现** | 同轴同口径融合；共同约束、两种线性收益目标、锚点交叉矩阵与冻结读取已接通；五等级联合前沿、凹效用与 E3 仍待实现 | 一个最终 w；不能只增加多选框或平均独立最优权重 |
+| P5 TAA／产品继承 | **三种模式风险下传已接通；完整目标仍待开发** | 尚需类级 TAA 与实际应用分开、剩余资金续算、Q／Beta、多个预算等式与实施风险 | 原模型诊断不冒充全部通过，TAA 不冒用原 SAA 资金成功率 |
 | P6 统一验证 | **部分能力已有，统一闭环待后续** | 数值、PIT、现金流、压力、成本、回归与可复现发布 | 未验证项不显示通过，不把模拟当保证 |
 
 前端重组可与各阶段并行，但不可先显示“已支持”再用静态示例补结果。涉及前端代码时完整遵守项目设计准则和真实浏览器验收。
@@ -2100,7 +2151,7 @@ ALM、保险偿付能力、养老金负债过程、杠杆／做空、固定交�
 
 ## 21.3 本轮已执行的独立数学样例
 
-以下保留 2026-09-16 原设计审核时的数学证据：当时使用两组隔离的 NumPy／SciPy 数学参考脚本完成 **38 项检查，全部通过**，其中基础公式与联合配置样例 26 项，分段 DP／穷举、现金流、残差和边界补充 12 项。输入全部为固定合成样本，不读取真实投资数据，不导入 BetterSaaTaa 的生产实现。**2026-09-18 本次仅同步代码事实与实施顺序，没有重新运行这 38 项脚本。**
+以下保留 2026-09-16 原设计审核时的数学证据：当时使用两组隔离的 NumPy／SciPy 数学参考脚本完成 **38 项检查，全部通过**，其中基础公式与联合配置样例 26 项，分段 DP／穷举、现金流、残差和边界补充 12 项。输入全部为固定合成样本，不读取真实投资数据，不导入 BetterSaaTaa 的生产实现。**2026-09-18 文档同步及 2026-09-19 本次开发均未重新运行这 38 项脚本；本次实现验收另见第 21.4–21.5 节。**
 
 这些是**文档算法核对**，不是新功能已开发、生产 NJIT 已执行或全量 pytest 已通过的证据。以下表格汇总主要关系，不要求表格行数等于断言数量；数值误差按复核容差记录，不把某次浮点末位误差当作算法精度保证。
 
@@ -2134,20 +2185,51 @@ BL 样例的可重现输入：权重 `(0.55,0.35,0.10)`，delta=2.5，rf=0.02，
 
 ## 21.4 本轮完成与尚待验证
 
-截至 2026-09-18，设计之外已经新增两个明确的代码里程碑：
+截至 2026-09-19，设计之外已经形成以下代码里程碑：
 
-1. **P2 风险等级配置中心已完成本轮开发。** RiskScaleService、参考输入、草稿／预览／确认、不可变版本、默认版本、启用／退役、比较及前端工作台已经形成真实链路。
-2. **P3 投资目标与约束已完成本轮优化。** Mandate 2.0 已接入 RiskScale 授权，现金预算与三类成功标准分离；列表、新增、修改为替代版本、删除／退役、实时资金回显、参考诊断和确认流程已经落地。
+1. **P2 风险等级配置中心已有实现。** RiskScaleService、参考输入、草稿／预览／确认、不可变版本、默认版本、启用／退役、比较及前端工作台已经形成真实链路。
+2. **P3 投资目标与约束已有实现。** Mandate 2.0 已接入 RiskScale 授权，现金预算与三类成功标准分离；列表、新增、修改为替代版本、删除／退役、实时资金回显、参考诊断和确认流程已经落地。
 
-因此下一阶段不再继续扩写 RiskScale 或 Mandate，而应进入 **P1 的独立 CMA 研究中心**：先把现有 Manual／Black–Litterman／Scenario Mixture 从 SAA 页面解耦并形成独立版本工作流，再补 Historical CMA；NIW 和 Regime 多资产桥接随后完成。完成这一层后，再进入 P4 多 CMA SAA，优先实现参数融合模式 A，最后才做需要新联合二次约束能力的模式 B。
+3. **P1 的两条 LTCMA 上游路径与独立 LTCMA 中心第一版已完成。** Product-first 已形成“产品池／产品 → 大类 → LTCMA”，Strategic-first 已形成“独立战略大类 → 研究 Proxy → LTCMA”；`applyScope()` 统一接收 `allocation:*` 与 `universe:*`。LTCMA 本身包括五类方法族、草稿与发布、冻结证据、人工／统计结果展示、SAA 只读选择和相关回归。实现与验收分别见 `ltcma-center-implementation-design-2026-09-18.md`、`ltcma-center-acceptance-2026-09-18.md`。
 
-仍未完成：独立 CMA 中心、Historical 独立生成器、NIW、Regime 多资产 CMA 桥接、多 CMA SAA、class-level TAA 与产品应用解耦、产品实施新来源契约，以及这些新增链路对应的完整数值／性能／浏览器回归。不得据此将整套投前研究标为已上线。
+4. **P4 模式 A 的 E2 参数平均本次已实现。** 包含契约校验、固定签名 NJIT、原模型交叉诊断、不可变来源与融合结果、预览失效、历史恢复及 TAA 风险消费。验收范围与执行结果见 [模式 A 验收记录](multi-cma-parameter-average-acceptance-2026-09-19.md)。模式 B 现已有独立的连续联合求解与全模型门禁，见第 21.5 节；最终权重由共同问题求出。
+
+仍未完成：跨频率／跨币种的通用证据适配、自动机构基准及利率来源选择、全部 NIW 先验模板与衰减策略、完整多期状态生成器、模式 B 五等级联合前沿与凹效用、E3 原生混合路径、class-level TAA 与产品应用解耦、产品实施新来源契约及全投研闭环。本次验收属于本地离线研究能力的技术验证，不代表真实市场预测已经验证或系统已部署。
+
+## 21.5 共同约束模式 B 的本次交付（2026-09-19）
+
+- 代码链路：冻结 CMA → 独立收益锚点 → 全源交叉评估 → 共同约束连续求解 → 全源最终检查 → 独立资金验证 → 不可变政策 → TAA 逐模型门禁。
+- 数值实现：复用唯一 active-set QP 内核，新增带有限 box 目标下界的 LP、Phase-I 与风险支撑切面；固定 float64 只读签名，按 worker PID 预热，禁止请求时编译与 Python 数值回退。
+- 页面交付：第三种模式、无权重模型选择、两种目标、求解状态／不可行下界、全部锚点交叉矩阵、共同候选复核、历史冻结来源与 TAA 诊断。
+- 当前完成范围及实测记录：[模式 B 验收记录](multi-cma-compatible-all-models-acceptance-2026-09-19.md)。未完成的广义能力仍按 P4／P5／P6 表保留，不把本次基础版写成全投研闭环已完成。
+
+## 21.6 下一实施顺序（2026-09-19）
+
+两条 LTCMA 上游路径、独立 LTCMA 和 SAA 的 single／模式 A／模式 B 基础链路已经形成。后续不再优先扩写上游页面，按主流程阻塞程度推进：
+
+1. **P5：拆开 class-level TAA 与产品应用门禁。** 大类层 TAA 可以在没有最终实施产品时继续研究；只有进入真实产品应用时才要求完整、有效的 Implementation Mapping。
+2. **P5：收口产品实施契约。** 统一 SAA／TAA → Implementation Mapping → ProductAllocation 的来源、预算守恒、Q／Beta／残差、费用与实际风险复核，同时保留 Product-first 旧链路兼容。
+3. **P6：统一验证与研究包。** 将 Mandate、RiskScale、LTCMA、SAA、TAA、产品权重、压力／成本／PIT 证据汇总为可复现的 ValidationReport／ResearchPackage，并明确通过、失败和未验证。
+4. **增强项后置。** 模式 B 五等级联合前沿、凹效用、E3 原生混合分布，以及 LTCMA 跨币种／跨频率／统一 Proxy 生命周期不阻塞当前主链，按实际研究需求再扩展。
+
+
+## 21.7 产品实施与统一研究包的本次交付（2026-09-20）
+
+第 21.4、21.6 节为前一轮时间点记录。当前已新增 `backend/pre_investment`：直接冻结 SAA／已保存 TAA 承接、显式后置映射、类别预算与统计暴露分离、联合残差风险、single/A/B 产品门禁、逐边自融资费用、近期现金日历及任意剩余月份续算。共享原资金递推，保留存量整数年 ABI；未将原始 SAA 概率继承成当前余额的保证。
+
+四个投前下游页面已接入真实研究包：产品与资金、证据汇总、候选锁定验证、具名研究定稿。不可变版本冻结来源、数组、代码及环境指纹，旧报告不能用于新候选；导出、复制重研及当前资格重新核验均已接通。SAA、TAA、产品历史构建及产品择时原入口保留。
+
+本轮提供明确同月结算条件下的 ETF／现金产品路径、声明费率敏感性、复用已发布情景；不把静态产品回放称为动态 TAA 产品执行。实际全期交收／成交容量、基金未来持有期费率表、PIT 和认证独立审批仍未验证。Class-level TAA 与产品映射彻底解耦、模式 B 产品联合 QCQP、原生混合路径等增强项未由本轮基础版冒充完成。
+
+详细实现、数值契约、里程碑修正及最终命令见[开发验收](pre-investment-implementation-acceptance-2026-09-19.md)。
 
 ---
 
 # 22. 核验后的主要外部依据
 
 引用用于支持具体方法，不用于给项目自定义政策背书。动态机构页面记录的是本轮核验时的内容；算法分档阈值、五方法产品分类、UI／接口名称和实施阶段均是本项目设计。
+
+以下外部资料沿用早期设计审核的引用，2026-09-19 本次未重新检索。本文本次新增的实现状态和验收结论来自本地源码及执行证据，不以旧外部页面快照证明当前产品能力。
 
 **[R1] CFA Institute — Capital Market Expectations, Part II: Forecasting Asset Class Returns（2026 curriculum）。** 支持统计、DCF、风险溢价及估计误差的区分，不代表“五类工具”是官方分类。
 https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/capital-market-expectations-part-ii

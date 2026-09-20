@@ -11,7 +11,7 @@ I = types.Array(types.int64, 2, "A", readonly=True)
 D = types.Array(types.float64, 3, "A", readonly=True)
 F = types.float64
 N = types.int64
-VERSION = "mandate-funding-monthly-lognormal/1.2.0"
+VERSION = "mandate-funding-monthly-lognormal/1.3.0"
 _WARMED_PID = None
 
 
@@ -184,8 +184,8 @@ def funding_monthly_parameters_kernel(mean, volatility, fee, method, periods):
 def funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows,
                                       outflows, target, required_probability, drawdown_alert, contribution_ratio):
     months, paths, factors = draws.shape
-    if (months < 1 or months % 12 or paths < 1 or factors != 1 or inflows.size != months
-            or outflows.size != months or initial <= 0 or target < 0
+    if (months < 1 or months > 360 or paths < 1 or factors != 1 or inflows.size != months
+            or outflows.size != months or initial < 0 or target < 0
             or not np.isfinite(initial) or not np.isfinite(target) or not 0 < drawdown_alert <= 1
             or not np.isfinite(drift) or not np.isfinite(scale) or scale < 0
             or not 0 <= required_probability <= 1 or not 0 <= contribution_ratio <= 1):
@@ -194,7 +194,8 @@ def funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows,
         if (not np.isfinite(inflows[i]) or not np.isfinite(outflows[i])
                 or inflows[i] < 0 or outflows[i] < 0):
             raise ValueError("FUNDING_PATH_INPUT")
-    annual_balances = np.empty((paths, months // 12 + 1), dtype=np.float64)
+    checkpoints = (months + 11) // 12 + 1
+    annual_balances = np.empty((paths, checkpoints), dtype=np.float64)
     terminals = np.empty(paths, dtype=np.float64)
     drawdowns = np.empty(paths, dtype=np.float64)
     required_capitals = np.empty(paths, dtype=np.float64)
@@ -223,6 +224,8 @@ def funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows,
             unpaid += payment_gap
             if (month + 1) % 12 == 0:
                 annual_balances[path, (month + 1) // 12] = wealth
+            elif month + 1 == months:
+                annual_balances[path, checkpoints - 1] = wealth
         required_capital = max(capital_floor, target / growth - discounted_flows, 0.0)
         if not np.isfinite(required_capital) or not np.isfinite(wealth):
             raise ValueError("FUNDING_PATH_OVERFLOW")
@@ -263,7 +266,7 @@ def funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows,
         max(0.0, required_initial - initial), extra_count / paths, reduced_count / paths,
         gate_capital, max(0.0, gate_capital - initial) if np.isfinite(gate_capital) else np.nan,
         gate_probability, gate_low, gate_high])
-    fan = np.empty((months // 12 + 1, 3), dtype=np.float64)
+    fan = np.empty((checkpoints, 3), dtype=np.float64)
     for year in range(fan.shape[0]):
         sorted_values = np.sort(annual_balances[:, year])
         fan[year, 0] = quantile_sorted_kernel(sorted_values, 0.05)
@@ -276,6 +279,8 @@ def funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows,
 def funding_paths_kernel(draws, annual_mean, annual_volatility, initial, inflows,
                          outflows, target, fee, required_probability, drawdown_alert, contribution_ratio):
     """Supported annual-moment contract delegates to the unique monthly recurrence."""
+    if draws.shape[0] % 12 or initial <= 0:
+        raise ValueError("FUNDING_PATH_INPUT")
     drift, scale = funding_monthly_parameters_kernel(annual_mean, annual_volatility, fee, 0, 1)
     return funding_paths_from_monthly_kernel(draws, drift, scale, initial, inflows, outflows,
                                             target, required_probability, drawdown_alert, contribution_ratio)

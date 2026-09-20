@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { saveMandateFixture } from './helpers/mandates'
+import { fillLtcmaAsset, previewCurrentLtcma, publishCurrentLtcma } from './helpers/ltcma'
 
 test('real isolated API: historical frontier stays discoverable and renders real ECharts', async ({ page }, info) => {
   const errors: string[] = []
@@ -192,7 +193,7 @@ test(`real funding goal: ${clockChange ? 'unknown PIT blocks goals until retry' 
   expect(goal.central.gate_required_initial_capital).toBeGreaterThanOrEqual(goal.central.required_initial_capital)
   await page.goto(`/pre-investment/saa/policy?mandate=${saved.version.id}`)
   await page.getByRole('combobox', { name: '已保存的大类配置', exact: true }).selectOption('浏览器离线股债')
-  await page.getByRole('combobox', { name: '或者使用已保存的长期假设', exact: true }).selectOption(cma.id)
+  await page.getByRole('combobox', { name: '选择已确认 LTCMA', exact: true }).selectOption(cma.id)
   await page.getByText('联合约束与候选搜索设置', { exact: true }).click()
   await page.getByLabel('随机种子', { exact: true }).fill('19')
   await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
@@ -233,26 +234,26 @@ test('real isolated API: goal, CMA, policy adoption and TAA on desktop/mobile', 
   expect(saved.preview.status).toBe('inputs_only')
   await page.goto(`/pre-investment/saa/policy?mandate=${saved.version.id}`)
   await page.getByRole('combobox', { name: '已保存的大类配置', exact: true }).selectOption('浏览器离线股债')
-  await page.getByRole('button', { name: '填写长期假设', exact: true }).click()
-  await expect(page.getByLabel('股票预期年收益（%）')).toHaveValue('')
-  await page.getByLabel('预测来源与主要假设', { exact: false }).fill('离线验收显式假设：人民币十年算术总收益，无投资推荐含义。')
+  await page.getByRole('link', { name: '新建 LTCMA', exact: true }).click()
+  await page.getByLabel('名称', { exact: true }).fill(`兼容浏览器 LTCMA-${info.project.name}`)
+  await expect(page.getByLabel('股票 · 预期年收益（%）', { exact: true })).toHaveValue('')
+  await page.getByLabel('假设依据', { exact: false }).fill('离线验收显式假设：人民币十年算术总收益，无投资推荐含义。')
   for (const [asset, role, annualReturn, uncertainty] of [['股票', 'growth', '7', '2'], ['债券', 'rates', '2.5', '.5']]) {
-    await page.getByRole('combobox', { name: `${asset}经济角色`, exact: true }).selectOption(role)
-    await page.getByRole('combobox', { name: `${asset}流动性`, exact: true }).selectOption('liquid')
-    await page.getByLabel(`${asset}分类与代理理由`, { exact: true }).fill(`${asset}经济风险代理，仅供离线验收`)
-    await page.getByLabel(`${asset}预期年收益（%）`, { exact: true }).fill(annualReturn)
-    await page.getByLabel(`${asset}均值不确定半宽（百分点）`, { exact: false }).fill(uncertainty)
+    await fillLtcmaAsset(page, asset, { role, annualReturn, uncertainty, rationale: `${asset}经济风险代理，仅供离线验收` })
   }
+  const riskResponse = page.waitForResponse(response => response.url().endsWith('/risk-reference') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '读取历史风险参考', exact: true }).click()
-  await expect(page.getByText(/已读取 300 个共同收益观察期/)).toBeVisible()
-  await expect(page.getByLabel('股票预期年收益（%）')).toHaveValue('7')
-  await page.getByRole('checkbox', { name: /我已确认：所有假设/ }).check()
+  const risk = await riskResponse
+  expect(risk.status()).toBe(200)
+  expect((await risk.json()).observations).toBe(300)
+  await expect(page.getByText('已绑定历史风险来源；修改风险数值后需重新确认。', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('股票 · 预期年收益（%）', { exact: true })).toHaveValue('7')
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()
   await page.screenshot({ path: info.outputPath('cma-inputs.png'), fullPage: true })
-  await page.getByRole('button', { name: '验证长期假设', exact: true }).click()
-  await expect(page.getByText(/资产轴和风险矩阵已通过校验/)).toBeVisible()
+  await previewCurrentLtcma(page)
   expect(writes.filter(path => path === '/api/strategic-allocation/cma')).toHaveLength(0)
-  await page.getByRole('button', { name: '确认保存假设版本', exact: true }).click()
+  await publishCurrentLtcma(page)
+  await page.getByRole('button', { name: '用于 SAA', exact: true }).click()
   await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
   await expect(page.getByRole('table', { name: '长期政策候选比较' })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBeTruthy()

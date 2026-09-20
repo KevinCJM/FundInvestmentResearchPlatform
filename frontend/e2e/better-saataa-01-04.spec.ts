@@ -1,5 +1,6 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test'
 import { auditTextContrast } from './helpers/contrast'
+import { fillLtcmaAsset, previewCurrentLtcma, publishCurrentLtcma } from './helpers/ltcma'
 import { taaBaseline, taaCatalog, taaPreview, taaPreflight } from '../src/test/tacticalAllocationFixtures'
 import { cmaDefinition, policyBaseline } from '../src/test/strategicAllocationFixtures'
 
@@ -137,26 +138,22 @@ test('strategic-first journey: edit, preview, confirm, real SAA, visible impleme
   await expect(scope.getByLabel('战略范围名称', { exact: true })).toBeDisabled()
   const journey = page.getByRole('navigation', { name: '配置研究流程' })
   await expect(journey.getByRole('link', { name: '2. 产品映射', exact: true })).toBeVisible()
-  await expect(journey.getByRole('link', { name: '4. 战术研究 TAA', exact: true })).toHaveCount(0)
-  await journey.getByRole('link', { name: '3. 长期配置 SAA', exact: true }).click()
+  await expect(journey.getByRole('link', { name: '5. 战术研究 TAA', exact: true })).toHaveCount(0)
+  await journey.getByRole('link', { name: '4. 长期配置 SAA', exact: true }).click()
   await expect(page.getByRole('heading', { name: '长期政策配置', exact: true })).toBeVisible()
   await page.getByRole('combobox', { name: '投资目标版本', exact: true }).selectOption(mandate.id)
   await expect(page.getByText(/尚有实施缺口/)).toBeVisible()
-  await page.getByRole('button', { name: '填写长期假设', exact: true }).click()
-  await page.getByLabel('预测来源与主要假设', { exact: false }).fill('明确人工前瞻输入，未使用任何虚构代理净值。')
+  await page.getByRole('link', { name: '新建 LTCMA', exact: true }).click()
+  await page.getByLabel('名称', { exact: true }).fill(`独立前瞻 LTCMA-${info.project.name}`)
+  await page.getByLabel('假设依据', { exact: false }).fill('明确人工前瞻输入，未使用任何虚构代理净值。')
   for (const [asset, mean, volatility, uncertainty] of [['growth', '7', '18', '2'], ['reserve', '2', '1', '.1']]) {
-    await page.getByLabel(`${asset}预期年收益（%）`, { exact: true }).fill(mean)
-    await page.getByLabel(`${asset}年化波动（%）`, { exact: false }).fill(volatility)
-    await page.getByLabel(`${asset}均值不确定半宽（百分点）`, { exact: false }).fill(uncertainty)
+    await fillLtcmaAsset(page, asset, { annualReturn: mean, volatility, uncertainty })
   }
-  // This is a manual risk assumption, not an inferred product proxy.
-  const correlation = page.getByLabel(/growth.*reserve.*相关/)
-  if (await correlation.count()) await correlation.first().fill('0')
-  else await page.getByLabel(/相关.*growth.*reserve/).first().fill('0')
-  await page.getByRole('checkbox', { name: /我已确认.*同币种/ }).check()
-  await page.getByRole('button', { name: '验证长期假设', exact: true }).click()
-  await expect(page.getByText(/资产轴和风险矩阵已通过校验/)).toBeVisible()
-  await page.getByRole('button', { name: '确认保存假设版本', exact: true }).click()
+  // This remains a manual risk assumption, not a fabricated product proxy.
+  await page.getByLabel('相关矩阵: growth / reserve', { exact: true }).fill('0')
+  await previewCurrentLtcma(page)
+  await publishCurrentLtcma(page)
+  await page.getByRole('button', { name: '用于 SAA', exact: true }).click()
   await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
   const table = page.getByRole('table', { name: '长期政策候选比较' })
   await expect(table).toBeVisible()
@@ -177,15 +174,12 @@ for (const method of ['black_litterman', 'scenario_mixture'] as const) {
     const errors = await realApi(page)
     const mandate = await createMandate(request, `${method}-${info.project.name}`)
     await page.goto(`/pre-investment/saa/policy?mandate=${mandate.id}&alloc=${encodeURIComponent('浏览器离线股债')}`)
-    await page.getByRole('button', { name: '填写长期假设', exact: true }).click()
-    await page.getByRole('combobox', { name: '预期生成方法', exact: true }).selectOption(method)
-    await page.getByRole('textbox', { name: '模型与风险依据', exact: true }).fill('离线验收明确提供的模型假设；不是下载的机构预测。')
-    await page.getByLabel('预测来源与主要假设', { exact: true }).fill('同日同币种的隔离研究输入；不作为真实投资建议。')
+    await page.getByRole('link', { name: '新建 LTCMA', exact: true }).click()
+    await page.getByLabel('名称', { exact: true }).fill(`${method} LTCMA-${info.project.name}`)
+    await page.getByLabel('生成方法', { exact: true }).selectOption(method)
+    await page.getByLabel('假设依据', { exact: false }).fill('同日同币种的隔离研究输入；不作为真实投资建议。')
     for (const [asset, role] of [['股票', 'growth'], ['债券', 'rates']]) {
-      await page.getByRole('combobox', { name: `${asset}经济角色`, exact: true }).selectOption(role)
-      await page.getByRole('combobox', { name: `${asset}流动性`, exact: true }).selectOption('liquid')
-      await page.getByLabel(`${asset}分类与代理理由`, { exact: true }).fill(`${asset}明确代理与经济用途`)
-      await page.getByLabel(`${asset}均值不确定半宽（百分点）`, { exact: true }).fill('1')
+      await fillLtcmaAsset(page, asset, { role, rationale: `${asset}明确代理与经济用途`, uncertainty: '1' })
     }
     const covarianceLabel = method === 'black_litterman' ? '资产风险协方差' : '共用风险协方差'
     await page.locator('summary').filter({ hasText: new RegExp(`^${covarianceLabel}$`) }).click()
@@ -218,26 +212,21 @@ for (const method of ['black_litterman', 'scenario_mixture'] as const) {
         await page.getByLabel(`情景${index}依据`, { exact: true }).fill('明确概率与条件收益，非事件发生预测')
       }
     }
-    await page.getByRole('checkbox', { name: /我已确认同币种/ }).check()
-    const previewResponse = page.waitForResponse(response => response.url().endsWith('/cma/preview') && response.request().method() === 'POST')
-    await page.getByRole('button', { name: '验证长期假设', exact: true }).click()
-    const preview = await previewResponse
-    expect(preview.status()).toBe(200)
-    const effective = await preview.json()
+    const effective = await previewCurrentLtcma(page)
     expect(effective.model_result.method).toBe(method)
     expect(effective.execution.cma_models.python_fallback).toBe(0)
     expect(effective.definition.assets.every((asset: { annual_return: unknown }) => asset.annual_return === null)).toBe(true)
-    await expect(page.getByText(/资产轴和风险矩阵已通过校验/)).toBeVisible()
+    await expect(page.getByRole('table', { name: '收益与风险假设', exact: true })).toBeVisible()
     await verifyLayout(page)
     await page.screenshot({ path: info.outputPath(`${method}-effective-cma.png`), fullPage: true })
     // Editing an input must invalidate the old preview, not certify stale numbers.
-    await page.getByRole('textbox', { name: '模型与风险依据', exact: true }).fill('更新来源后必须重新验证的明确研究假设')
-    await expect(page.getByRole('button', { name: '确认保存假设版本', exact: true })).toBeDisabled()
-    await page.getByRole('button', { name: '验证长期假设', exact: true }).click()
-    await expect(page.getByRole('button', { name: '确认保存假设版本', exact: true })).toBeEnabled()
-    const savedResponse = page.waitForResponse(response => response.url().endsWith('/cma') && response.request().method() === 'POST')
-    await page.getByRole('button', { name: '确认保存假设版本', exact: true }).click()
-    const savedCma = await (await savedResponse).json()
+    await page.getByRole('button', { name: '返回修改输入', exact: true }).click()
+    await page.getByLabel('假设依据', { exact: false }).fill('更新来源后必须重新验证的明确研究假设')
+    await expect(page.getByRole('button', { name: '2. 结果与确认', exact: true })).toBeDisabled()
+    await previewCurrentLtcma(page)
+    await expect(page.getByRole('button', { name: '确认保存版本', exact: true })).toBeDisabled()
+    const savedCma = await publishCurrentLtcma(page)
+    await page.getByRole('button', { name: '用于 SAA', exact: true }).click()
     await page.getByRole('checkbox', { name: '增加风险预算候选', exact: true }).check()
     await expect(page.getByRole('button', { name: '比较符合目标的政策候选', exact: true })).toBeDisabled()
     await page.getByLabel('股票风险预算（%）', { exact: true }).fill('50')

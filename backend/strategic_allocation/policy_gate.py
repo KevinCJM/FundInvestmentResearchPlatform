@@ -112,6 +112,37 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
     scale_blockers = _current_scale_blockers((mandate.get("risk_authorization") or {}).get("risk_scale_ref"), strategic_root, data_dir)
     if as_of < baseline["as_of"] or as_of >= expires:
         violations.append("政策尚未适用于本研究日或已到复核日期，请重新确认长期政策。")
+    extra = {}
+    if "multi_cma" in policy:
+        from .multi_cma import cross_model_results
+        extra["cross_model_results"] = cross_model_results(policy["multi_cma"], weights, mandate,
+            penalty=policy["selection_request"].get("uncertainty_penalty", 1.),
+            policy_weights={asset["id"]: asset["base_weight"] for asset in baseline["assets"]},
+            tracking_error_limit=tracking_error_limit)
+        extra["risk_evaluation_mode"] = policy["mode"]
+        if policy["mode"] == "compatible_all_models":
+            from .compatibility_kernels import worst_model_summary_kernel, require_ready
+            require_ready()
+            rows = extra["cross_model_results"]
+            for row in rows:
+                violations.extend(f"{row['name']}：{message}" for message in row["violations"])
+            from .multi_cma import METRICS
+            metrics, _ = worst_model_summary_kernel(
+                np.asarray([[r["metrics"][k] for k in METRICS] for r in rows], dtype=np.float64), np.empty(0))
+            extra["metric_basis"] = "worst_per_metric_not_one_distribution"
+            # Reuse the same max-column summary for the individual forward TEs.
+            te_metrics = np.zeros((len(rows), 5))
+            te_metrics[:, 1] = [r["expected_tracking_error"] for r in rows]
+            te_summary, _ = worst_model_summary_kernel(te_metrics, np.empty(0))
+            expected_tracking_error = te_summary[1]
+            if benchmark_check is not None:
+                benchmark_metrics = np.zeros((len(rows), 5))
+                benchmark_metrics[:, 0] = [r["benchmark_check"]["expected_excess_return"] for r in rows]
+                benchmark_metrics[:, 1] = [r["benchmark_check"]["tracking_error"] for r in rows]
+                benchmark_summary, _ = worst_model_summary_kernel(benchmark_metrics, np.empty(0))
+                benchmark_check.update(expected_excess_return=float(benchmark_summary[0]),
+                                       tracking_error=float(benchmark_summary[1]),
+                                       metric_basis="worst_per_metric_not_one_distribution")
     return {"within_limits": not violations, "violations": violations,
             "current_application_eligible": str(date.today()) < expires and not violations and not reviews and not current_reviews and not mapping_blockers and not scale_blockers,
             "risk_scale_blockers": scale_blockers,
@@ -123,7 +154,7 @@ def check_policy(baseline: dict, weights: dict, tracking_error_limit: float, as_
             "expected_tracking_error": float(expected_tracking_error),
             "requested_tracking_error_limit": float(tracking_error_limit) if np.isfinite(tracking_error_limit) else None,
             "max_tracking_error": mandate["max_tracking_error"], "expires_on": expires,
-            "cma_id": policy["cma_id"], "mandate_id": policy["mandate_id"], "execution": kernels.execution_audit()}
+            "cma_id": policy["cma_id"], "mandate_id": policy["mandate_id"], "execution": kernels.execution_audit(), **extra}
 
 
 def require_policy_application(baseline: dict, weights: dict, tracking_error_limit: float, as_of: str,

@@ -1,4 +1,5 @@
 import { cmaModelInputError, type CmaModelRequest } from './cmaModelTypes'
+import type { CmaRequest as WireCmaRequest, PolicyRequest as WirePolicyRequest, PolicyCmaRef } from './ltcmaContract.generated'
 import { cashSuccessRequired, hasCashBudget, fundingThreshold, checkReferenceAssessment, type CashBudget, type BoundaryPolicy, type CapitalTarget, type CashProtection, type RiskAuthorization, type RiskDecision, type ReferenceDiagnosis } from './mandateTypes'
 export type { CashBudget, BoundaryPolicy, CapitalTarget, CashProtection, RiskAuthorization } from './mandateTypes'
 import type { InstitutionalContext, InstitutionalDiagnostics } from "./institutionalContext"
@@ -53,6 +54,8 @@ export interface RiskReferenceRequest {
   shrinkage: number; periods_per_year: number
 }
 export interface CmaDefinition {
+  schema_version?: WireCmaRequest['schema_version']; moment_semantics?: WireCmaRequest['moment_semantics']
+  fee_basis?: WireCmaRequest['fee_basis']; fx_hedging_basis?: WireCmaRequest['fx_hedging_basis']
   name: string; alloc_name: string | null; strategic_universe_id?: string | null; implementation_mapping_id?: string | null
   as_of: string; currency: string; horizon_years: number
   return_basis: 'annual_arithmetic_total_return'; source: string; basis_confirmed: boolean
@@ -80,17 +83,19 @@ export function completeCma(value: CmaDraft | CmaDefinition): value is CmaDraft 
     && value.assets.length && value.assets.every(asset => asset.role && asset.liquidity && asset.rationale.trim().length >= 3
       && Number.isFinite(asset.mean_uncertainty) && asset.mean_uncertainty >= 0 && asset.mean_uncertainty <= 1
       && (model || Number.isFinite(asset.annual_return) && Number.isFinite(asset.annual_volatility)
-        && typeof asset.annual_return === 'number' && typeof asset.annual_volatility === 'number' && asset.annual_return >= -.5 && asset.annual_return <= 2 && asset.annual_volatility > 0 && asset.annual_volatility <= 3))
+        && typeof asset.annual_return === 'number' && typeof asset.annual_volatility === 'number' && asset.annual_return >= -.5 && asset.annual_return <= 2 && (asset.annual_volatility > 0 || value.schema_version === '2.0' && asset.annual_volatility === 0 && asset.role === 'liquidity' && asset.liquidity === 'liquid') && asset.annual_volatility <= 3))
     && (model || value.correlation && value.correlation.length === value.assets.length && value.correlation.every(row => row.length === value.assets.length && row.every(Number.isFinite))))
 }
 /** Model inputs supply the numbers; no fake manual values are sent to the API. */
-function cmaRequest(value: CmaDefinition): CmaDefinition {
+export function cmaRequest(value: CmaDefinition): CmaDefinition {
   return !value.model ? value : { ...value, correlation: undefined,
     assets: value.assets.map(({ annual_return: _mean, annual_volatility: _risk, ...asset }) => asset) }
 }
 export interface CmaModelResult {
   asset_ids: string[]; method: CmaModelRequest['method']; definition: CmaModelRequest
   effective_returns: number[]; effective_covariance: number[][]; posterior_mean_covariance: number[][] | null
+  mean_uncertainty?: number[]
+  mean_estimation_covariance?: number[][]
   content_hash: string; execution: FixedNjitExecutionAudit
   model_audit: { limitations: string[]; [key: string]: unknown }
 }
@@ -105,6 +110,7 @@ export type StrategicBaseline = Omit<TaaBaseline, 'alloc_name'> & {
 }
 export type StrategicSourceSnapshot = Omit<StrategicBaseline, 'id' | 'created_at' | 'content_hash'>
 export interface CmaPreview {
+  semantics?: Record<string, unknown>
   preview_hash: string; definition: CmaDefinition; source_snapshot: StrategicSourceSnapshot
   covariance: number[][]; warnings: string[]; execution: FixedNjitExecutionAudit
   effective_assumptions?: CmaDefinition; effective_returns?: number[]; effective_covariance?: number[][]; model_result?: CmaModelResult
@@ -112,12 +118,25 @@ export interface CmaPreview {
 export interface CmaVersion extends CmaPreview {
   id: string; name: string; created_at: string; content_hash: string
 }
-export interface PolicyRequest {
-  mandate_id: string; cma_id: string
-  risk_budget?: Record<string, number> | null
+export type PolicyRequest = Omit<WirePolicyRequest, 'constraints' | 'group_limits' | 'uncertainty_penalty' | 'candidate_count' | 'seed'> & {
   constraints: Record<string, { min_weight: number; max_weight: number; max_abs_tilt: number }>
   group_limits: Array<{ id: string; assets: string[]; lo: number; hi: number }>
   uncertainty_penalty: number; candidate_count: number; seed: number
+}
+export type CmaReference = PolicyCmaRef
+export interface MultiCmaEvidence {
+  mode: 'parameter_average' | 'compatible_all_models'; aggregation_semantics: 'parameter_average' | 'all_models_required'; refs: CmaReference[]
+  primary_evaluation_spec?: 'each_frozen_source_model'; effective_moments_role?: 'display_reference_only'
+  sources: Array<CmaReference & { name: string; as_of: string }>
+  effective_returns: number[]; effective_covariance: number[][]; effective_mean_uncertainty: number[]
+  model_disagreement: number[][]; uncertainty_status: 'not_jointly_calibrated'; content_hash: string
+}
+export interface CrossModelResult {
+  cma_id: string; cma_hash: string; name: string; weight?: number | null
+  metrics: PolicyCandidate['metrics']; risk_contributions: PolicyCandidate['risk_contributions']
+  goal_check?: PolicyCandidate['goal_check'] | null; benchmark_check?: PolicyCandidate['benchmark_check'] | null
+  within_limits: boolean; violations: string[]
+  expected_tracking_error?: number | null; diagnostic_scope?: 'strategic_moments_and_funding' | 'tactical_moments_only'
 }
 export interface FundingMetrics {
   success_probability: number; probability_lower: number; probability_upper: number
@@ -160,8 +179,10 @@ export interface MandateFundingEcho {
   funding: FundingSummary | null; effective_target_return: number | null; execution: FixedNjitExecutionAudit
 }
 export interface PolicyCandidate {
-  id: 'minimum-risk' | 'nominal-utility' | 'robust-utility' | 'maximum-return' | 'risk-budget'
-  available?: true; risk_budget?: Record<string, number>; risk_budget_distance?: number; distance_basis?: string
+  cross_model_results?: CrossModelResult[]
+  id: 'minimum-risk' | 'nominal-utility' | 'robust-utility' | 'maximum-return' | 'risk-budget' | 'compatible'
+  all_models_pass?: boolean; metric_basis?: 'worst_per_metric_not_one_distribution'; solver?: CompatibilitySolver
+  available?: boolean; unavailable_reason?: string | null; risk_budget?: Record<string, number>; risk_budget_distance?: number; distance_basis?: string
   name: string; weights: Record<string, number>; risk_contributions: Record<string, number | null>
   goal_check?: { within_limits: boolean; threshold: number; gate_basis: string; central: FundingMetrics
     conservative: FundingMetrics | null; stress_contribution_ratio: number }
@@ -169,13 +190,34 @@ export interface PolicyCandidate {
     target_excess_return: number; max_tracking_error: number }
   metrics: { expected_return: number; volatility: number; conservative_return: number; nominal_utility: number; robust_utility: number }
 }
-export interface UnavailablePolicyCandidate {
+export interface UnavailableRiskBudgetCandidate {
   id: 'risk-budget'; name: string; available: false; unavailable_reason: string
   weights: Record<string, never>; risk_contributions: Record<string, never>
   risk_budget: Record<string, number>; risk_budget_distance: null
   metrics: Record<keyof PolicyCandidate['metrics'], null>
 }
+export type UnavailablePolicyCandidate = UnavailableRiskBudgetCandidate | (PolicyCandidate & { id: 'compatible'; available: false; unavailable_reason: string })
+export interface CompatibilitySolver {
+  status: 'converged' | 'verified_feasible' | 'infeasible' | 'phase_one_unresolved' | 'time_budget' | 'iteration_limit' | 'master_iteration_limit' | 'numerical_failure' | 'cut_budget'
+  objective_value: number | null; lower_bound: number | null; objective_gap: number | null; phase_one_lower_bound: number | null
+  iterations: number; support_cuts: number; blocked_by_anchor?: string
+}
+export interface CompatibilityEvidence {
+  objective: 'minimax_regret' | 'maximin_return'; regret_basis: 'bounded_continuous_anchor_optima' | 'approximate_regret'
+  gate: 'all_frozen_models'; joint_solver: CompatibilitySolver
+  funding_search_domain: 'one_joint_candidate_with_anchor_cross_diagnostics'
+  anchors: Array<{ cma_id: string; name: string; solver: CompatibilitySolver; weights: Record<string, number> | null;
+    reference_value: number | null; reference_upper_bound: number | null; cross_model_results: CrossModelResult[] }>
+  limitations: string[]
+}
+export interface MeanUncertaintyEvidence {
+  set: 'ellipsoidal'; confidence: '68' | '90' | '95'; kappa: number; dimension: number
+  calibration: string; warnings: string[]; content_hash: string
+}
 export interface PolicyPreview {
+  uncertainty_model?: MeanUncertaintyEvidence
+  multi_cma?: MultiCmaEvidence
+  compatibility?: CompatibilityEvidence
   unavailable_candidates?: UnavailablePolicyCandidate[]
   preview_hash: string; request: PolicyRequest; mandate: MandateDefinition; assumptions: CmaDefinition
   source_snapshot: StrategicSourceSnapshot; candidates: PolicyCandidate[]; accepted_candidates: number
@@ -188,7 +230,7 @@ export interface StrategicCatalog {
   allocations: TaaCatalog['allocations']; mandates: MandateVersion[]
   strategic_universes?: Pick<UniverseVersion, 'id' | 'name' | 'created_at' | 'content_hash' | 'definition'>[]
   implementation_maps?: Pick<MappingVersion, 'id' | 'name' | 'created_at' | 'content_hash' | 'definition' | 'implementation_status' | 'implementation_gaps'>[]
-  assumptions: Array<{ id: string; name: string; alloc_name: string | null; strategic_universe_id?: string | null; implementation_mapping_id?: string | null; as_of: string; currency: string; horizon_years: number }>
+  assumptions: Array<{ id: string; name: string; schema_version?: '1.0' | '2.0'; retired?: boolean; alloc_name: string | null; strategic_universe_id?: string | null; implementation_mapping_id?: string | null; as_of: string; currency: string; horizon_years: number }>
   policies: Array<{ id: string; name: string; as_of: string; alloc_name: string | null }>
 }
 
@@ -280,7 +322,7 @@ function checkedAssessment(value: MandateAssessment): MandateAssessment {
   return value
 }
 
-function checkedCma<T extends CmaPreview>(value: T): T {
+export function checkedCma<T extends CmaPreview>(value: T): T {
   verified(value)
   if (value.definition.model) {
     if (!value.model_result || !value.effective_assumptions || !value.effective_returns || !value.effective_covariance) throw new Error('模型版本缺少冻结的有效假设，不能用于政策研究。')
@@ -315,8 +357,24 @@ export const getCma = async (id: string, signal?: AbortSignal) => checkedCma(awa
 export const previewPolicy = async (body: PolicyRequest, signal?: AbortSignal) => {
   const wire = verified(await request<Omit<PolicyPreview, 'candidates'> & { candidates: Array<PolicyCandidate | UnavailablePolicyCandidate> }>('/policy/preview', body, signal))
   const unavailable = wire.candidates.filter((c): c is UnavailablePolicyCandidate => c.available === false)
-  if (unavailable.some(c => c.id !== 'risk-budget' || !c.unavailable_reason || Object.keys(c.weights).length)) throw new Error('不可用候选的状态不完整，请重新比较。')
+  if (unavailable.some(c => !c.unavailable_reason || (c.id === 'risk-budget' ? Object.keys(c.weights).length > 0 : c.id !== 'compatible' || c.all_models_pass !== false))) throw new Error('不可用候选的状态不完整，请重新比较。')
   const value: PolicyPreview = { ...wire, candidates: wire.candidates.filter((c): c is PolicyCandidate => c.available !== false), unavailable_candidates: unavailable }
+  checkMultiCmaEvidence(body, value.multi_cma)
+  if (body.mode === 'parameter_average' || body.mode === 'compatible_all_models') {
+    for (const candidate of [...value.candidates, ...unavailable.filter(c => c.id === 'compatible')]) {
+      const rows = candidate.cross_model_results
+      if (!rows || rows.length !== body.cma_refs!.length || body.cma_refs!.some(ref => !rows.some(row =>
+        row.cma_id === ref.cma_id && row.cma_hash === ref.content_hash && (row.weight ?? null) === (ref.weight ?? null) &&
+        typeof row.within_limits === 'boolean' && Array.isArray(row.violations) && (row.within_limits || row.violations.length > 0)))) throw new Error('原 CMA 交叉评估不完整，请重新比较。')
+    }
+  }
+  if (body.mode === 'compatible_all_models') {
+    if (!value.compatibility || value.compatibility.gate !== 'all_frozen_models' ||
+      value.compatibility.objective !== (body.compatibility_objective ?? 'minimax_regret') || !value.compatibility.joint_solver ||
+      value.candidates.some(c => c.id !== 'compatible' || c.all_models_pass !== true || !c.cross_model_results?.every(row => row.within_limits))) {
+      throw new Error('共同配置缺少全模型约束证据，请重新比较。')
+    }
+  }
   checkGoalCandidates(value.mandate, value.candidates)
   if (cashSuccessRequired(value.mandate)) {
     if (!value.funding_execution) throw missingDiagnosis()
@@ -327,8 +385,23 @@ export const previewPolicy = async (body: PolicyRequest, signal?: AbortSignal) =
 export const publishPolicy = async (body: PolicyRequest, hash: string, candidate: PolicyCandidate['id'], name: string, reason: string, signal?: AbortSignal) => {
   const result = await request<StrategicBaseline>('/policies', { request: body, preview_hash: hash, candidate_id: candidate, name, reason }, signal)
   if (!result.policy) throw new Error('返回的版本缺少政策与目标引用，已停止交接。')
+  checkMultiCmaEvidence(body, result.policy.multi_cma)
+  if (body.mode === 'compatible_all_models' && (result.policy.mode !== body.mode || result.policy.compatibility?.gate !== 'all_frozen_models')) throw new Error('共同配置的冻结模式不一致，已停止交接。')
   assertFixedNjitExecution(result.policy.execution, '政策采纳')
   return result
+}
+
+function checkMultiCmaEvidence(body: PolicyRequest, evidence?: MultiCmaEvidence) {
+  if (body.mode !== 'parameter_average' && body.mode !== 'compatible_all_models') return
+  const common = body.mode === 'compatible_all_models'
+  if (!evidence || evidence.mode !== body.mode || evidence.aggregation_semantics !== (common ? 'all_models_required' : 'parameter_average') ||
+    (common && (evidence.primary_evaluation_spec !== 'each_frozen_source_model' || evidence.effective_moments_role !== 'display_reference_only')) ||
+    !Array.isArray(evidence.refs) || !Array.isArray(evidence.sources) || evidence.refs.length !== body.cma_refs?.length ||
+    evidence.sources.length !== body.cma_refs?.length || body.cma_refs.some(ref => !evidence.refs.some(item =>
+      item.cma_id === ref.cma_id && item.content_hash === ref.content_hash && (item.weight ?? null) === (ref.weight ?? null)) || !evidence.sources.some(source =>
+        source.cma_id === ref.cma_id && source.content_hash === ref.content_hash && (source.weight ?? null) === (ref.weight ?? null) && source.name && source.as_of))) {
+    throw new Error('返回的融合证据与所选 CMA 不一致，已停止交接。')
+  }
 }
 
 export { request as strategicRequest }

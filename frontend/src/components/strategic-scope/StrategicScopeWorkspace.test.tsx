@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import ProductPoolSelection from '../../pages/ProductPoolSelection'
-import StrategicAllocationWorkspace from '../../pages/StrategicAllocationWorkspace'
+import LtcmaWorkspace from '../../pages/LtcmaWorkspace'
+import { ltcmaCapabilities } from '../../test/ltcmaFixtures'
 import ImplementationMappingEditor from './ImplementationMappingEditor'
 import { writeAllocationDraft, readAllocationJourney, updateAllocationJourney } from '../../app/allocationJourney'
 import { cmaPreview, cmaVersion, strategicCatalog } from '../../test/strategicAllocationFixtures'
@@ -30,6 +31,8 @@ function install(overrides: Record<string, (init?: RequestInit) => Promise<Respo
     const url = String(input)
     if (overrides[url]) return overrides[url](init)
     if (url === `${root}/catalog`) return response(catalog)
+    if (url === `${root}/cma/capabilities`) return response(ltcmaCapabilities)
+    if (url === `${root}/cma/study-options`) return response({ ...catalog, regime_runs: [] })
     if (url === `${root}/universes/scope-one`) return response(version)
     if (url === `${root}/universes/preview`) return response({ ...version, definition: JSON.parse(String(init?.body)) })
     if (url === `${root}/universes/confirm`) return response({ ...version, definition: JSON.parse(String(init?.body)).request }, 201)
@@ -162,23 +165,23 @@ it('显式选择暂不匹配会清除旅程中的旧映射和下游引用', asyn
   expect(screen.getByRole('link', { name: /先做前瞻CMA与SAA研究/ })).not.toHaveAttribute('href', expect.stringContaining('mapping='))
 })
 
-it('独立战略进入SAA只发战略ID，数值从空白填写，无伪造alloc_name或历史参考', async () => {
+it('独立战略进入LTCMA只发战略ID，数值从空白填写，无伪造alloc_name或历史参考', async () => {
   const fetch = install(); const user = userEvent.setup()
-  render(<MemoryRouter initialEntries={['/pre-investment/saa/policy?strategic_universe=scope-one&mandate=mandate-1']}><StrategicAllocationWorkspace /></MemoryRouter>)
-  await waitFor(() => expect(screen.getByRole('button', { name: '填写长期假设' })).toBeEnabled())
-  await user.click(screen.getByRole('button', { name: '填写长期假设' }))
-  expect(screen.getByLabelText('equity预期年收益（%）')).toHaveValue('')
+  render(<MemoryRouter initialEntries={['/pre-investment/ltcma/new?strategic_universe=scope-one']}><LtcmaWorkspace /></MemoryRouter>)
+  await screen.findByLabelText('名称')
+  await user.type(screen.getByLabelText('名称'), '战略 LTCMA 研究')
+  expect(screen.getByLabelText('equity · 预期年收益（%）')).toHaveValue('')
   expect(screen.queryByRole('button', { name: '读取历史风险参考' })).not.toBeInTheDocument()
   for (const [id, ret, vol] of [['equity', '6', '15'], ['cash', '2', '1']]) {
-    fireEvent.change(screen.getByLabelText(`${id}预期年收益（%）`), { target: { value: ret } })
-    fireEvent.change(screen.getByLabelText(`${id}年化波动（%）`), { target: { value: vol } })
-    fireEvent.change(screen.getByLabelText(`${id}均值不确定半宽（百分点）`), { target: { value: '1' } })
+    fireEvent.change(screen.getByLabelText(`${id} · 预期年收益（%）`), { target: { value: ret } })
+    fireEvent.change(screen.getByLabelText(`${id} · 年化波动（%）`), { target: { value: vol } })
+    fireEvent.change(screen.getByLabelText(new RegExp(`${id} · 均值不确定半宽`)), { target: { value: '1' } })
   }
-  fireEvent.change(screen.getByLabelText('equity与cash相关系数'), { target: { value: '0' } })
-  fireEvent.change(screen.getByLabelText('预测来源与主要假设'), { target: { value: '明确的离线研究假设' } })
-  await user.click(screen.getByRole('checkbox', { name: /我已确认同币种/ }))
-  await user.click(screen.getByRole('button', { name: '验证长期假设' }))
-  await screen.findByText(/资产轴和风险矩阵已通过校验/)
+  fireEvent.change(screen.getByLabelText('相关矩阵: equity / cash'), { target: { value: '0' } })
+  fireEvent.change(screen.getByLabelText(/假设依据/), { target: { value: '明确的离线研究假设' } })
+  await user.click(screen.getByRole('checkbox', { name: /我已核对资产范围/ }))
+  await user.click(screen.getByRole('button', { name: '计算预览' }))
+  await screen.findByRole('button', { name: '确认保存版本' })
   const body = JSON.parse(String(fetch.mock.calls.find(([url]) => String(url).endsWith('/cma/preview'))![1]?.body))
   expect(body).toMatchObject({ alloc_name: null, strategic_universe_id: 'scope-one', implementation_mapping_id: null })
   expect(body.assets.map((a: { id: string }) => a.id)).toEqual(['equity', 'cash'])

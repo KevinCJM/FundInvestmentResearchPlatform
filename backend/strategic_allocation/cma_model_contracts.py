@@ -6,7 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field, TypeAdapter, model_validator
 
-from .common_contracts import Contract, Currency, Identifier, Number
+from .common_contracts import Contract, Currency, Fingerprint, Identifier, Number
+from .reference_contracts import ReferenceInputRequest
 
 MatrixRow = Annotated[list[Number], Field(min_length=1, max_length=30)]
 Matrix = Annotated[list[MatrixRow], Field(min_length=1, max_length=30)]
@@ -57,6 +58,41 @@ class BlackLittermanView(Contract):
         return self
 
 
+class BlackLittermanViewLeg(Contract):
+    asset_id: Identifier
+    coefficient: Number = Field(ge=-4, le=4)
+
+
+class BlackLittermanBasketView(Contract):
+    """A normalized total-return basket, not a leveraged portfolio order."""
+    kind: Literal["basket"]
+    basis: Literal["absolute", "relative"]
+    legs: list[BlackLittermanViewLeg] = Field(min_length=1, max_length=30)
+    annual_return: Number
+    view_std: Number = Field(gt=0)
+    observed_on: date
+    available_on: date
+    source: Source
+
+    @model_validator(mode="after")
+    def basket(self):
+        if len({leg.asset_id for leg in self.legs}) != len(self.legs):
+            raise ValueError("CMA_BL_VIEW_AXIS: 篮子资产不得重复。")
+        gross = sum(abs(leg.coefficient) for leg in self.legs)
+        total = sum(leg.coefficient for leg in self.legs)
+        if not 1e-12 <= gross <= 4 or abs(total - (1 if self.basis == "absolute" else 0)) > 1e-10:
+            raise ValueError("CMA_BL_VIEW_PICK: 篮子不能全零，绝对观点系数合计为1、相对观点为0，绝对值合计不超过4。")
+        if not (-0.5 <= self.annual_return <= 2 if self.basis == "absolute" else -2.5 <= self.annual_return <= 2.5):
+            raise ValueError("CMA_BL_VIEW_RETURN: 篮子观点收益超出所选口径范围。")
+        if self.observed_on > self.available_on:
+            raise ValueError("CMA_BL_VIEW_DATE: 观察日不能晚于可得日。")
+        return self
+
+
+BlackLittermanViewRequest = Annotated[
+    BlackLittermanView | BlackLittermanBasketView, Field(discriminator="kind")]
+
+
 class BlackLittermanRequest(CmaModelContext):
     method: Literal["black_litterman"]
     covariance: Matrix
@@ -66,7 +102,7 @@ class BlackLittermanRequest(CmaModelContext):
     delta: Number = Field(gt=0)
     tau: Number = Field(gt=0)
     risk_free_rate: Number = Field(ge=-0.5, le=2)
-    views: list[BlackLittermanView] = Field(default_factory=list, max_length=60)
+    views: list[BlackLittermanViewRequest] = Field(default_factory=list, max_length=60)
 
     @model_validator(mode="after")
     def inputs(self):
@@ -76,7 +112,9 @@ class BlackLittermanRequest(CmaModelContext):
                 or abs(sum(self.market_weights.values()) - 1) > 1e-8):
             raise ValueError("CMA_BL_MARKET_WEIGHTS: 明确市场权重须完整、非负并合计100%。")
         for view in self.views:
-            if view.asset_id not in self.asset_ids or (view.relative_to and view.relative_to not in self.asset_ids):
+            referenced = ([leg.asset_id for leg in view.legs] if view.kind == "basket"
+                          else [view.asset_id, *([view.relative_to] if view.relative_to else [])])
+            if any(asset not in self.asset_ids for asset in referenced):
                 raise ValueError("CMA_BL_VIEW_AXIS: 观点引用了未知资产。")
             if view.available_on > self.as_of:
                 raise ValueError("CMA_BL_VIEW_UNAVAILABLE: 观点在研究日尚不可得。")
@@ -119,5 +157,87 @@ class ScenarioMixtureRequest(CmaModelContext):
         return self
 
 
-CmaModelRequest = Annotated[BlackLittermanRequest | ScenarioMixtureRequest, Field(discriminator="method")]
+class CmaWindow(Contract):
+    kind: Literal["1Y", "2Y", "3Y", "5Y", "10Y", "common_since_inception", "custom"] = "5Y"
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode="after")
+    def interval(self):
+        if self.kind == "custom":
+            if self.start_date is None or self.end_date is None or self.start_date >= self.end_date:
+                raise ValueError("自定义历史窗口须提供有效的开始和结束日期。")
+        elif self.start_date is not None or self.end_date is not None:
+            raise ValueError("相对历史窗口不同时填写自定义日期。")
+        return self
+
+
+class CmaVersionRef(Contract):
+    id: Identifier
+    content_hash: Fingerprint
+
+
+class StatisticalCmaContext(CmaModelContext):
+    window: CmaWindow = Field(default_factory=CmaWindow)
+    observation_frequency: Literal["daily"] = "daily"
+    periods_per_year: Literal[252] = 252
+    proxy_inputs: ReferenceInputRequest | None = None
+
+    @model_validator(mode="after")
+    def evidence_context(self):
+        if self.currency != "CNY":
+            raise ValueError("历史证据目前支持 CNY/SSE 日频，不自动转换币种。")
+        if self.window.end_date is not None and self.window.end_date > self.as_of:
+            raise ValueError("历史窗口结束日不能晚于研究日。")
+        if self.proxy_inputs is not None and (self.proxy_inputs.as_of != self.as_of
+                or self.proxy_inputs.currency != self.currency
+                or [a.id for a in self.proxy_inputs.assets] != self.asset_ids):
+            raise ValueError("研究代理须与 CMA 使用同一资产轴、日期和币种。")
+        return self
+
+
+class HistoricalCmaRequest(StatisticalCmaContext):
+    method: Literal["historical_statistics"]
+    shrinkage: Number = Field(default=0.1, ge=0, le=1)
+
+
+class BayesianCmaRequest(StatisticalCmaContext):
+    method: Literal["bayesian_niw"]
+    prior_ref: CmaVersionRef
+    prior_mode: Literal["recenter", "continue"] = "recenter"
+    mean_prior_observations: Number | None = Field(default=None, gt=0, le=100000)
+    covariance_prior_observations: Number | None = Field(default=None, gt=0, le=100000)
+    data_reuse_acknowledged: bool = False
+
+    @model_validator(mode="after")
+    def prior_strength(self):
+        supplied = (self.mean_prior_observations, self.covariance_prior_observations)
+        if self.prior_mode == "recenter" and any(x is None for x in supplied):
+            raise ValueError("新建 NIW 先验须明确均值和风险的日频等效观察数。")
+        if self.prior_mode == "continue" and any(x is not None for x in supplied):
+            raise ValueError("后验续更继承原信息量，不重复提供新先验强度。")
+        return self
+
+
+class RegimeCmaRequest(StatisticalCmaContext):
+    method: Literal["historical_regime_occupancy"]
+    run_ref: CmaVersionRef
+    probabilities: dict[Identifier, Number] | None = Field(default=None, min_length=1, max_length=60)
+    probability_reason: str = Field(default="", max_length=2000)
+    shrinkage: Number = Field(default=0.0, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def probability_contract(self):
+        if self.probabilities is not None:
+            if any(x < 0 or x > 1 for x in self.probabilities.values()) or abs(sum(self.probabilities.values()) - 1) > 1e-8:
+                raise ValueError("应用概率须非负且合计 100%，不会自动归一化。")
+            if len(self.probability_reason.strip()) < 5:
+                raise ValueError("覆盖历史占用率须填写原因。")
+        return self
+
+
+CmaModelRequest = Annotated[
+    BlackLittermanRequest | ScenarioMixtureRequest | HistoricalCmaRequest | BayesianCmaRequest | RegimeCmaRequest,
+    Field(discriminator="method"),
+]
 CMA_MODEL_ADAPTER = TypeAdapter(CmaModelRequest)

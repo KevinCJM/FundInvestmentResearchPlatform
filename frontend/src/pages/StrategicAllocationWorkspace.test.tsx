@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import StrategicAllocationWorkspace from './StrategicAllocationWorkspace'
+import LtcmaWorkspace from './LtcmaWorkspace'
+import { ltcmaCapabilities, ltcmaOptions } from '../test/ltcmaFixtures'
 import InvestmentObjectivesWorkspace from './InvestmentObjectivesWorkspace'
 import TaaWalkForward from '../components/tactical-allocation/TaaWalkForward'
 import { cmaDefinition, cmaPreview, cmaVersion, mandateVersion, policyBaseline, policyPreview, strategicCatalog } from '../test/strategicAllocationFixtures'
@@ -23,6 +25,8 @@ function install(overrides: Record<string, (init?: RequestInit) => Promise<Respo
     const url = String(input)
     if (overrides[url]) return overrides[url](init)
     if (url === `${root}/catalog`) return response(strategicCatalog)
+    if (url === `${root}/cma/capabilities`) return response(ltcmaCapabilities)
+    if (url === `${root}/cma/study-options`) return response(ltcmaOptions)
     if (url.startsWith(`${root}/risk-scales/study-options?`)) return response({ as_of: '2026-09-17', items: [{
       id: riskVersion.id, name: riskVersion.name, content_hash: riskVersion.content_hash, version_number: riskVersion.version_number,
       base_currency: 'CNY', risk_basis_id: 'annualized-periodic-volatility-v1', research_as_of: '2026-09-17', valid_until: null,
@@ -37,6 +41,7 @@ function install(overrides: Record<string, (init?: RequestInit) => Promise<Respo
       const assessment = boundaryAssessment(request)
       return response({ ...mandateVersion, definition: assessment.definition, assessment }, 201)
     }
+    if (url === `${root}/mandates/mandate-1`) { const assessment = boundaryAssessment(boundaryStudy()); return response({ ...mandateVersion, definition: assessment.definition, assessment }) }
     if (url === `${root}/cma/cma-1`) return response(cmaVersion)
     if (url === `${root}/cma/preview`) return response({ ...cmaPreview, definition: JSON.parse(String(init?.body)) })
     if (url === `${root}/cma`) return response({ ...cmaVersion, definition: JSON.parse(String(init?.body)).request }, 201)
@@ -57,9 +62,9 @@ function renderPolicy() {
   return render(policyTree())
 }
 async function loadCma(user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByLabelText('或者使用已保存的长期假设')
-  await waitFor(() => expect(screen.getByRole('button', { name: '填写长期假设' })).toBeEnabled())
-  await user.selectOptions(screen.getByLabelText('或者使用已保存的长期假设'), 'cma-1')
+  await screen.findByLabelText('选择已确认 LTCMA')
+  await waitFor(() => expect(screen.getByRole('button', { name: '选择已确认 LTCMA' })).toBeEnabled())
+  await user.selectOptions(screen.getByLabelText('选择已确认 LTCMA'), 'cma-1')
   await screen.findByRole('button', { name: '比较符合目标的政策候选' })
 }
 
@@ -95,13 +100,13 @@ describe('真实自上而下操作顺序', () => {
 
   it('选择范围后不编造预期收益、经济用途或相关性', async () => {
     install(); const user = userEvent.setup(); renderPolicy()
-    await waitFor(() => expect(screen.getByRole('button', { name: '填写长期假设' })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: '填写长期假设' }))
-    expect(screen.getByLabelText('equity预期年收益（%）')).toHaveValue('')
-    expect(screen.getByLabelText('equity经济角色')).toHaveValue('')
-    expect(screen.getByLabelText('equity与bond相关系数')).toHaveValue('')
-    expect(screen.getByRole('button', { name: '验证长期假设' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '确认保存假设版本' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: '选择已确认 LTCMA' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: '选择已确认 LTCMA' }))
+    expect(screen.queryByLabelText('equity预期年收益（%）')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('equity经济角色')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('选择已确认 LTCMA')).toHaveValue('')
+    expect(screen.queryByRole('button', { name: '验证长期假设' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '新建 LTCMA' }).getAttribute('href')).toContain('/pre-investment/ltcma/new?')
   })
 
   it('已保存 CMA → 比较 → 理由 → 确认 → TAA，不会自动采纳', async () => {
@@ -175,9 +180,11 @@ describe('真实自上而下操作顺序', () => {
 
   it('矩阵失败显示可操作原因，预览不执行保存', async () => {
     const fetch = install({ [`${root}/cma/preview`]: () => response({ detail: { message: '相关矩阵不是半正定矩阵，请检查相关系数。' } }, 422) })
-    const user = userEvent.setup(); renderPolicy(); await loadCma(user)
-    await user.click(screen.getByRole('button', { name: '2. 长期假设' }))
-    await user.click(screen.getByRole('button', { name: '验证长期假设' }))
+    const user = userEvent.setup()
+    render(<MemoryRouter initialEntries={['/pre-investment/ltcma/new?copy=cma-1']}><LtcmaWorkspace /></MemoryRouter>)
+    await screen.findByLabelText('名称')
+    await user.click(screen.getByRole('checkbox', { name: /我已核对资产范围/ }))
+    await user.click(screen.getByRole('button', { name: '计算预览' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('半正定')
     expect(fetch.mock.calls.filter(([url]) => String(url) === `${root}/cma`)).toHaveLength(0)
   })

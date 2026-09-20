@@ -12,6 +12,9 @@ import ClassAllocation from './pages/ClassAllocation'
 import InvestmentObjectivesCenter from './pages/InvestmentObjectivesCenter'
 import InvestmentObjectivesWorkspace from './pages/InvestmentObjectivesWorkspace'
 import StrategicAllocationWorkspace from './pages/StrategicAllocationWorkspace'
+import LtcmaCenter from './pages/LtcmaCenter'
+import LtcmaWorkspace from './pages/LtcmaWorkspace'
+import LtcmaVersionView from './pages/LtcmaVersionView'
 import AccountingBookingWorkspace from './pages/AccountingBookingWorkspace'
 import AccountStatementAllocationWorkspace from './pages/AccountStatementAllocationWorkspace'
 import FinancialStatementsWorkspace from './pages/FinancialStatementsWorkspace'
@@ -29,6 +32,7 @@ import RiskModelCenter from './pages/RiskModelCenter'
 import RiskApplicationWorkspace from './pages/RiskApplicationWorkspace'
 import ManualConstruction from './pages/ManualConstruction'
 import PortfolioConstruction from './pages/PortfolioConstruction'
+import PreInvestmentImplementation from './pages/PreInvestmentImplementation'
 import PortfolioCenterWorkspace from './pages/PortfolioCenterWorkspace'
 import PortfolioOnboardingWorkspace from './pages/PortfolioOnboardingWorkspace'
 import PortfolioSolutionCatalog from './pages/PortfolioSolutionCatalog'
@@ -103,14 +107,17 @@ export default function App() {
               <Route path="saa/asset-classes" element={<ManualConstruction />} />
               <Route path="saa/auto-classification" element={<AutoAssetClassification />} />
               <Route path="saa/allocation-lab" element={<ClassAllocation />} />
+              <Route path="ltcma" element={<LtcmaCenter />} />
+              <Route path="ltcma/new" element={<LtcmaWorkspace />} />
+              <Route path="ltcma/:versionId" element={<LtcmaVersionView />} />
               <Route path="saa/policy" element={<StrategicAllocationWorkspace />} />
               <Route path="taa" element={<TacticalAllocationWorkspace />} />
-              <Route path="product-allocation-timing" element={prototypePage('product-allocation-timing')} />
+              <Route path="product-allocation-timing" element={<PreInvestmentImplementation />} />
               <Route path="product-allocation-timing/construction" element={<PortfolioConstruction />} />
               <Route path="product-allocation-timing/timing" element={<TimingResearch mode="application" />} />
-              <Route path="portfolio-synthesis" element={prototypePage('portfolio-synthesis')} />
-              <Route path="validation" element={prototypePage('validation')} />
-              <Route path="approval" element={prototypePage('approval')} />
+              <Route path="portfolio-synthesis" element={<PreInvestmentImplementation mode="synthesis" />} />
+              <Route path="validation" element={<PreInvestmentImplementation mode="validation" />} />
+              <Route path="approval" element={<PreInvestmentImplementation mode="approval" />} />
             </Route>
 
             <Route path="/investment-execution" element={<StageLayout stageId="investment-execution" />}>
