@@ -1882,7 +1882,8 @@
         "period_metadata",
         "resolve_period_bounds",
         "availability",
-        "router"
+        "router",
+        "resolve_source_contract_versions"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -2098,7 +2099,8 @@
         "configuration_violations",
         "batch_parameter_names",
         "batch_parameter_vector",
-        "CppIndicatorBatchPlan"
+        "CppIndicatorBatchPlan",
+        "resolve_source_contract_versions"
       ],
       "child_modules": [],
       "first_read_files": [

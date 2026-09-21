@@ -523,7 +523,7 @@
         "Keep runtime definitions in memory and treat generated DSL JSON as optional metadata only.",
         "Run malicious/invalid AST, operator arity/type, DAG budget, finite scalar-leaf and shared-node failure-isolation tests. Preserve legacy single-root behavior and keep named output identities explicit.",
         "Keep NetworkX optional and do not make execution topology depend on DOT export support.",
-        "C++ AOT adaptation must preserve N NAV versus N-1 interval returns, metric-scoped parameter slots, historical source versions and per-root failure isolation. Prepared run/run_audit borrows output; retained results require run_snapshot. Platform prepare must wrap all three run methods and validate each result audit before returning; validating only execute is insufficient. Never fabricate NJIT signatures for native execution or infer that service warmup was removed."
+        "C++ AOT adaptation must preserve N NAV versus N-1 interval returns, metric-scoped parameter slots, historical source versions and per-root failure isolation. Resolve source-contract defaults by DSL and reject mismatches before native compilation; recording unvalidated version strings in the fingerprint is not a compatibility check. Prepared run/run_audit borrows output; retained results require run_snapshot. Platform prepare must wrap all three run methods and validate each result audit before returning; validating only execute is insufficient. Never fabricate NJIT signatures for native execution or infer that service warmup was removed."
       ],
       "safe_observation_methods": [
         "cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q",

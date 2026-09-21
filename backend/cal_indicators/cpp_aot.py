@@ -20,7 +20,9 @@ from custom_indicators.series_definitions import (
     parameter_variable_types,
 )
 from custom_indicators.series_parameters import validate_parameter_definition
-from custom_indicators.variable_registry import normalize_variable_latex, variable_types
+from custom_indicators.variable_registry import (
+    normalize_variable_latex, resolve_source_contract_versions, variable_types,
+)
 
 
 class _ValidatedPreparedBatch:
@@ -73,17 +75,19 @@ class CppIndicatorBatchPlan:
             definition["parameter_schema"] = schema
             if schema:
                 validate_parameter_definition(definition)
+            dsl_version = str(definition.get("dsl_version") or TYPED_DSL_VERSION)
             types = {
-                **variable_types("single_product"),
+                **variable_types("single_product", dsl_version),
                 **parameter_variable_types(definition),
             }
             plan = compose_typed_expression(
                 normalize_variable_latex(str(definition.get("expression") or "")),
                 variable_types=types,
-                dsl_version=str(definition.get("dsl_version") or TYPED_DSL_VERSION),
+                dsl_version=dsl_version,
                 operator_registry_version=definition.get("operator_registry_version"),
                 parameter_names=frozenset(item["id"] for item in schema),
             )
+            source_versions = resolve_source_contract_versions(plan.dsl_version, definition)
             # Financial/source versions are an explicit CSE namespace, not inferred from names.
             contracts.append(
                 json.dumps(
@@ -91,9 +95,9 @@ class CppIndicatorBatchPlan:
                         "adapter": "firp-scalar-cpp-1",
                         "dsl": plan.dsl_version,
                         "registry": plan.operator_registry_version,
-                        "data": definition.get("data_contract_version"),
-                        "variables": definition.get("variable_registry_version"),
-                        "context": definition.get("context_schema_version"),
+                        "data": source_versions["data_contract_version"],
+                        "variables": source_versions["variable_registry_version"],
+                        "context": source_versions["context_schema_version"],
                     },
                     sort_keys=True,
                     separators=(",", ":"),

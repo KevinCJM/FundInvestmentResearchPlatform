@@ -75,3 +75,5 @@ npx playwright test e2e/cpp-aot-execution.spec.ts --workers=2
 ### Bot 审核补充复验
 
 [PR #49 的 prepared 门禁意见](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/49#discussion_r4059306433)已复现：原实现的 `run()`、`run_audit()`、`run_snapshot()` 均可绕过平台凭据校验。缺失构建身份及矛盾后端共 6 个反例修复前全部失败。适配器现逐次校验原生结果后返回；`run()` 只执行一次并返回同一借用数组，快照仍保持独立。修复后 C++ AOT 契约与执行门禁共 39 项通过；前端及既有 NJIT 业务实现未变，沿用上面的对应验证。
+
+[源契约版本意见](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/49#discussion_r4059337498)同样已复现：35 个默认值/显式等价及未知/跨代错配反例在修复前失败。源版本解析现由平台服务与 AOT 适配器共用，按已校验 DSL 绑定已安装语义，在生成原生图前拒绝错配；原定义不修改。适配器使用与平台编译器一致的版本化变量类型及既有兼容规则。最终 AOT 与执行门禁 74 项通过，连同现有服务、变量和参数的回归共 150 项通过（包含上述 74 项，不重复相加）。

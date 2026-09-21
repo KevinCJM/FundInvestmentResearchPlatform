@@ -14,6 +14,9 @@ from custom_indicators.series_parameters import (
     bind_parameter_input,
     inspect_parameter_inputs,
 )
+from custom_indicators.variable_registry import (
+    CONTEXT_SCHEMA_VERSION, DATA_CONTRACT_VERSION, VARIABLE_REGISTRY_VERSION,
+)
 
 
 AdaptiveScheduler = pytest.importorskip("calmetrics_engine").AdaptiveScheduler
@@ -84,6 +87,40 @@ def test_persisted_dsl_and_aliases_keep_their_version(version):
         plan.fingerprint != CppIndicatorBatchPlan([definition()]).fingerprint
         or version == "2.4.0"
     )
+
+
+@pytest.mark.parametrize("version", ["2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"])
+def test_source_contract_defaults_match_platform_and_explicit_versions(version):
+    from custom_indicators.service import CustomIndicatorService
+
+    item = definition(dsl_version=version)
+    before = deepcopy(item)
+    normalized = CustomIndicatorService._normalize_definition({"name": "contract", **item})
+    fields = ("data_contract_version", "variable_registry_version", "context_schema_version")
+    explicit = {**item, **{field: normalized[field] for field in fields}}
+    plan = CppIndicatorBatchPlan([item])
+    assert plan.fingerprint == CppIndicatorBatchPlan([explicit]).fingerprint
+    result = execute(plan, [100.0, 110.0, 121.0])
+    contract = json.loads(result.audit["source_contracts"][0])
+    for key, field in zip(("data", "variables", "context"), fields):
+        assert contract[key] == normalized[field]
+    assert result.values[0, 0] == pytest.approx(0.1)
+    assert item == before
+
+
+@pytest.mark.parametrize("version", ["2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"])
+@pytest.mark.parametrize("field,modern,legacy", [
+    ("data_contract_version", DATA_CONTRACT_VERSION, "adjusted-nav-v1"),
+    ("variable_registry_version", VARIABLE_REGISTRY_VERSION, "legacy-typed-v2.0"),
+    ("context_schema_version", CONTEXT_SCHEMA_VERSION, "multi-asset-v1"),
+])
+@pytest.mark.parametrize("invalid", ["unknown", "other_version"])
+def test_source_contract_versions_reject_unknown_and_mismatched(version, field, modern, legacy, invalid):
+    value = "future-contract" if invalid == "unknown" else (modern if version == "2.0.0" else legacy)
+    with pytest.raises(ValidationError) as error:
+        CppIndicatorBatchPlan([definition(dsl_version=version, **{field: value})])
+    assert error.value.code == f"UNSUPPORTED_{field.upper()}"
+    assert error.value.field == field
 
 
 def test_latex_and_unsupported_or_mismatched_versions():
