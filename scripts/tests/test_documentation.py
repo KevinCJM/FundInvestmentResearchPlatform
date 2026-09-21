@@ -171,6 +171,19 @@ def test_indented_plan_rows_still_validate_state_and_evidence(indent):
     assert any('needs a link' in e for e in check.check_plans('plan.md', text))
 
 
+@pytest.mark.parametrize('omit_edges', ['all', 'separator', 'data'])
+def test_plan_rows_with_optional_edge_pipes_are_validated(omit_edges):
+    def table(row):
+        lines = (HEADER + row).splitlines()
+        indices = range(3) if omit_edges == 'all' else [1 if omit_edges == 'separator' else 2]
+        for i in indices:
+            lines[i] = lines[i].strip('|').strip()
+        return '\n'.join(lines)
+    assert check.check_plans('plan.md', table('| TASK-1 | done | Build | Tested | none |'))
+    assert check.check_plans('plan.md', table('| TASK-1 | verified | Build | Tested | none |'))
+    assert not check.check_plans('plan.md', table('| TASK-1 | planned | Build | Tested | pending |'))
+
+
 def test_plan_example_in_code_fence_is_not_a_live_plan():
     assert not check.check_plans('plan.md', '```markdown\n' + HEADER + '| EXAMPLE | done | | | |\n```\n')
 
@@ -242,6 +255,63 @@ def test_review_fingerprint_includes_helper_code(repo):
         stream.write('\n# Routing helper revision\n')
     after = inspect(repo, ['src/service.py'])
     assert before['fingerprint'] != after['fingerprint']
+
+
+@pytest.mark.parametrize('mode', ['staged', 'commit'])
+def test_candidate_checker_ignores_worktree_inspection_code(repo, mode):
+    base = git(repo, 'rev-parse', 'HEAD')
+    write(repo, 'src/service.py', 'VALUE = 2\n')
+    git(repo, 'add', 'src/service.py')
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'candidate')
+        head = git(repo, 'rev-parse', 'HEAD')
+    path = repo / 'scripts/check_documentation.py'
+    path.write_text(path.read_text().replace('mapping, documents, errors = catalog(candidate)',
+                                             "raise RuntimeError('outside candidate checker')"))
+    if mode == 'commit':
+        git(repo, 'add', str(path.relative_to(repo)))
+        git(repo, 'commit', '-qm', 'unrelated later checker')
+    args = ['--staged'] if mode == 'staged' else ['--base-ref', base, '--head-ref', head]
+    result = subprocess.run([sys.executable, str(path), *args, '--json'], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert json.loads(result.stdout)['changed_files'] == ['src/service.py']
+
+
+@pytest.mark.parametrize('mode', ['staged', 'commit'])
+@pytest.mark.parametrize('broken', ["raise RuntimeError('broken candidate checker')\n", 'def broken(:\n'])
+def test_worktree_checker_repair_cannot_hide_candidate_failure(repo, mode, broken):
+    base = git(repo, 'rev-parse', 'HEAD')
+    path = repo / 'scripts/check_documentation.py'
+    original = path.read_text()
+    path.write_text(broken)
+    git(repo, 'add', 'scripts/check_documentation.py')
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'broken candidate checker')
+    path.write_text(original)
+    args = ['--staged'] if mode == 'staged' else ['--base-ref', base]
+    result = subprocess.run([sys.executable, str(path), *args, '--json'], capture_output=True, text=True)
+    assert result.returncode == 1, result.stdout
+    assert 'candidate checker' in json.loads(result.stdout)['errors'][0]
+
+
+@pytest.mark.parametrize('mode', ['staged', 'commit'])
+def test_candidate_without_checker_cannot_use_worktree_copy(repo, mode):
+    base = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'rm', '--cached', 'scripts/check_documentation.py')
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'remove checker from candidate')
+    args = ['--staged'] if mode == 'staged' else ['--base-ref', base]
+    result = subprocess.run([sys.executable, str(repo / 'scripts/check_documentation.py'),
+                             *args, '--json'], capture_output=True, text=True)
+    assert result.returncode == 1, result.stdout
+    assert 'scripts/check_documentation.py' in json.loads(result.stdout)['errors'][0]
+
+
+def test_review_fingerprint_includes_checker_code(repo):
+    before = inspect(repo, ['src/service.py'])
+    with (repo / 'scripts/check_documentation.py').open('a') as stream:
+        stream.write('\n# Changed checker implementation\n')
+    assert before['fingerprint'] != inspect(repo, ['src/service.py'])['fingerprint']
 
 
 def test_code_impact_is_separate_from_structural_validation(repo):
@@ -352,6 +422,18 @@ def test_document_rename_keeps_old_path_in_review_scope(repo, capsys):
     roles = {d['path']: d['role'] for d in report['affected_documents']}
     assert roles['docs/topic.md'] == 'deleted'
     assert roles['docs/renamed.md'] == 'topic'
+
+
+def test_default_worktree_rename_keeps_retired_document_review(repo, capsys):
+    git(repo, 'mv', 'docs/topic.md', 'docs/renamed.md')
+    mapping = json.loads((repo / 'docs/repo_map.json').read_text())
+    mapping['documentation']['documents'][-1]['path'] = 'docs/renamed.md'
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    write(repo, 'docs/README.md', '# Index\n\n' + check.document_index(mapping['documentation']['documents']) + '\n')
+    assert check.main(['--project-root', str(repo), '--json']) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert {'docs/topic.md', 'docs/renamed.md'} <= set(report['changed_files'])
+    assert any(d['path'] == 'docs/topic.md' and d['role'] == 'deleted' for d in report['affected_documents'])
 
 
 @pytest.mark.parametrize('mode', ['worktree', 'staged', 'commit'])
