@@ -1,6 +1,6 @@
 import {
-  assertFixedNjitExecution,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution'
 
 export type ProductKind = 'etf' | 'fund'
@@ -571,7 +571,7 @@ export interface ValidationResponse {
   minimum_observations?: number
   compiled_series_plan_id?: string
   compile_status?: string
-  execution?: FixedNjitExecutionAudit
+  execution?: NativeNumericalExecutionAudit
 }
 
 export interface ComposeArgument {
@@ -836,14 +836,14 @@ export interface TimeSeriesIndicatorResult {
   dates: string[]
   channels: TimeSeriesChannelResult[]
   presentation: MetricPresentation
-  execution?: FixedNjitExecutionAudit
+  execution?: NativeNumericalExecutionAudit
 }
 
 export interface EvaluateTimeSeriesIndicatorsResponse {
   results: TimeSeriesIndicatorResult[]
   summary: { total: number; ok: number; warning: number; error: number; unavailable: number }
   cache: { hits: number; misses: number }
-  execution: FixedNjitExecutionAudit & {
+  execution: NativeNumericalExecutionAudit & {
     compiled_plan_ids?: string[]
     request_time_compilation?: number
   }
@@ -875,7 +875,7 @@ export interface EvaluateIndicatorsResponse {
   results: EvaluationResult[]
   summary: { total: number; ok: number; warning: number; error: number; unavailable?: number }
   cache: { hits: number; misses: number }
-  execution: FixedNjitExecutionAudit
+  execution: NativeNumericalExecutionAudit
 }
 
 export interface EvaluationPlanIndicator {
@@ -968,7 +968,7 @@ export interface EvaluationPlanRunResponse {
     has_next: boolean
     expires_at: string
   }
-  execution: FixedNjitExecutionAudit & {
+  execution: NativeNumericalExecutionAudit & {
     engine_version?: string
     data_generation?: string
     execution_lanes?: Record<string, number>
@@ -1155,7 +1155,7 @@ async function calculationRequest<T extends { execution: unknown }>(
   init?: RequestInit,
 ): Promise<T> {
   const result = await apiRequest<T>(path, init)
-  assertFixedNjitExecution(result.execution, '指标与评价计算')
+  assertNativeNumericalExecution(result.execution, '指标与评价计算')
   return result
 }
 

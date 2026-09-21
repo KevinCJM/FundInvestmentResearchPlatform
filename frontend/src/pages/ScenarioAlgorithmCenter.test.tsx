@@ -1,3 +1,4 @@
+import { cppAotAudit } from '../test/cppAotFixture';
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -576,6 +577,17 @@ describe("ScenarioAlgorithmCenter", () => {
     expect(JSON.parse(String(runCall?.[1]?.body))).toEqual({
       definition: { id: "SCN-1", revision: 2 },
     });
+  });
+
+  it("原生 AOT 结果显示真实执行后端", async () => {
+    vi.stubGlobal("fetch", makeFetch({ initialRun: { ...deterministicRun, compute_audit: cppAotAudit } }));
+    const user = userEvent.setup();
+    render(<ScenarioAlgorithmCenter />);
+    await screen.findByRole("heading", { name: "情景模拟与压测" });
+    await act(async () => { await user.click(screen.getByRole("tab", { name: /结果与归因/ })); });
+    expect(screen.getByText("C++ AOT · 已通过")).toBeInTheDocument();
+    expect(screen.getByText("原生预编译内核")).toBeInTheDocument();
+    expect(screen.queryByText("固定签名 NJIT · 已通过")).not.toBeInTheDocument();
   });
 
   it("确定性结果不展示伪概率，概率型结果展示分位扇形和失败对象", async () => {

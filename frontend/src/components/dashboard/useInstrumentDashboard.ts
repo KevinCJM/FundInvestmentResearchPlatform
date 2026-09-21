@@ -8,7 +8,7 @@ import type {
   Loadable,
   SegmentKind,
 } from './types';
-import { assertFixedNjitExecution } from '../../utils/fixedNjitExecution';
+import { assertNativeNumericalExecution } from '../../utils/fixedNjitExecution';
 
 const emptyLoadable = <T,>(): Loadable<T> => ({ data: null, loading: false, error: null });
 
@@ -31,7 +31,7 @@ const fetchJson = async <T extends { execution: unknown }>(url: string, signal: 
     throw new Error(`HTTP ${response.status}`);
   }
   const payload = await response.json() as T;
-  assertFixedNjitExecution(payload.execution, '市场与产品统计');
+  assertNativeNumericalExecution(payload.execution, '市场与产品统计');
   return payload;
 };
 

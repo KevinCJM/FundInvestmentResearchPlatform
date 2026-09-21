@@ -5,7 +5,7 @@ import HorizontalMetricComparison, {
   PerformanceQuadrantChart,
 } from './HorizontalMetricComparison'
 import { buildAnnualMetricRows, type AnnualMetricsResult } from '../utils/performance'
-import type { FixedNjitExecutionAuditLanes } from '../utils/fixedNjitExecution'
+import type { NativeNumericalExecutionAuditLanes } from '../utils/fixedNjitExecution'
 
 export interface ClassFitMetric {
   name: string
@@ -34,7 +34,7 @@ export interface ClassFitResult {
   metrics: ClassFitMetric[]
   consistency: ClassFitConsistency[]
   annual_metrics: AnnualMetricsResult
-  execution: FixedNjitExecutionAuditLanes
+  execution: NativeNumericalExecutionAuditLanes
 }
 
 /** Shared NAV / correlation / metric view for a set of asset classes. */

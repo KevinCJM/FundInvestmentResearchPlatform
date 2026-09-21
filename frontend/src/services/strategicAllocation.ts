@@ -4,7 +4,7 @@ import { cashSuccessRequired, hasCashBudget, fundingThreshold, checkReferenceAss
 export type { CashBudget, BoundaryPolicy, CapitalTarget, CashProtection, RiskAuthorization } from './mandateTypes'
 import type { InstitutionalContext, InstitutionalDiagnostics } from "./institutionalContext"
 import type { UniverseVersion, MappingVersion } from "./strategicScope"
-import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 import type { TaaBaseline, TaaCatalog } from './tacticalAllocation'
 
 export type ObjectiveKind = 'absolute_return' | 'funding_goal' | 'benchmark_relative'
@@ -96,13 +96,13 @@ export interface CmaModelResult {
   effective_returns: number[]; effective_covariance: number[][]; posterior_mean_covariance: number[][] | null
   mean_uncertainty?: number[]
   mean_estimation_covariance?: number[][]
-  content_hash: string; execution: FixedNjitExecutionAudit
+  content_hash: string; execution: NativeNumericalExecutionAudit
   model_audit: { limitations: string[]; [key: string]: unknown }
 }
 export interface RiskReference {
   preview_hash: string; request: RiskReferenceRequest; assets: string[]; volatility: number[]
   correlation: number[][]; historical_mean: number[]; observations: number; source_hash: string
-  lineage: { start_date: string; end_date: string }; warnings: string[]; execution: FixedNjitExecutionAudit
+  lineage: { start_date: string; end_date: string }; warnings: string[]; execution: NativeNumericalExecutionAudit
 }
 export type StrategicBaseline = Omit<TaaBaseline, 'alloc_name'> & {
   alloc_name: string | null
@@ -112,7 +112,7 @@ export type StrategicSourceSnapshot = Omit<StrategicBaseline, 'id' | 'created_at
 export interface CmaPreview {
   semantics?: Record<string, unknown>
   preview_hash: string; definition: CmaDefinition; source_snapshot: StrategicSourceSnapshot
-  covariance: number[][]; warnings: string[]; execution: FixedNjitExecutionAudit
+  covariance: number[][]; warnings: string[]; execution: NativeNumericalExecutionAudit
   effective_assumptions?: CmaDefinition; effective_returns?: number[]; effective_covariance?: number[][]; model_result?: CmaModelResult
 }
 export interface CmaVersion extends CmaPreview {
@@ -170,13 +170,13 @@ export interface MandateAssessment {
   funding: FundingSummary | null; candidates: PolicyCandidate[]; status: 'inputs_only' | 'diagnosed' | 'needs_revision'
   cma: { id: string; name: string; as_of: string; content_hash: string } | null
   institutional_diagnostics?: InstitutionalDiagnostics | null
-  blockers: string[]; warnings: string[]; execution: FixedNjitExecutionAudit
+  blockers: string[]; warnings: string[]; execution: NativeNumericalExecutionAudit
   funding_model?: { version: string; paths: number; seed: number; frequency: string }
-  funding_execution?: FixedNjitExecutionAudit
+  funding_execution?: NativeNumericalExecutionAudit
 }
 /** Deterministic cash-flow arithmetic for the input page; no CMA, no simulation. */
 export interface MandateFundingEcho {
-  funding: FundingSummary | null; effective_target_return: number | null; execution: FixedNjitExecutionAudit
+  funding: FundingSummary | null; effective_target_return: number | null; execution: NativeNumericalExecutionAudit
 }
 export interface PolicyCandidate {
   cross_model_results?: CrossModelResult[]
@@ -221,10 +221,10 @@ export interface PolicyPreview {
   unavailable_candidates?: UnavailablePolicyCandidate[]
   preview_hash: string; request: PolicyRequest; mandate: MandateDefinition; assumptions: CmaDefinition
   source_snapshot: StrategicSourceSnapshot; candidates: PolicyCandidate[]; accepted_candidates: number
-  warnings: string[]; execution: FixedNjitExecutionAudit
+  warnings: string[]; execution: NativeNumericalExecutionAudit
   funding?: FundingSummary | null; current_application_eligible?: boolean; application_blockers?: string[]
   funding_model?: MandateAssessment['funding_model'] | null
-  funding_execution?: FixedNjitExecutionAudit
+  funding_execution?: NativeNumericalExecutionAudit
 }
 export interface StrategicCatalog {
   allocations: TaaCatalog['allocations']; mandates: MandateVersion[]
@@ -253,8 +253,8 @@ async function request<T>(path: string, body?: unknown, signal?: AbortSignal, me
   }
   return result as T
 }
-const verified = <T extends { execution: FixedNjitExecutionAudit }>(value: T): T => {
-  assertFixedNjitExecution(value.execution, '长期配置研究')
+const verified = <T extends { execution: NativeNumericalExecutionAudit }>(value: T): T => {
+  assertNativeNumericalExecution(value.execution, '长期配置研究')
   return value
 }
 const probability = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
@@ -303,7 +303,7 @@ function checkedAssessment(value: MandateAssessment): MandateAssessment {
   if (value.definition?.institutional_context) {
     const institutional = value.institutional_diagnostics
     if (!institutional || institutional.automated_compliance !== 'not_modelled' || institutional.independent_approval !== false) throw new Error('机构诊断缺少明确的人工核验边界。')
-    assertFixedNjitExecution(institutional.execution, '经济状况诊断')
+    assertNativeNumericalExecution(institutional.execution, '经济状况诊断')
   }
   if (!value.definition || !value.request || !Array.isArray(value.blockers) || !Array.isArray(value.warnings)
     || !['inputs_only', 'diagnosed', 'needs_revision'].includes(value.status)) throw missingDiagnosis()
@@ -315,7 +315,7 @@ function checkedAssessment(value: MandateAssessment): MandateAssessment {
   if (hasCashBudget(value.definition) && (!value.funding || !Number.isFinite(value.funding.investable_capital) || value.funding.investable_capital <= 0)) throw missingDiagnosis()
   if (cashSuccessRequired(value.definition) && value.candidates.length) {
     if (!value.funding_execution || !value.funding_model) throw missingDiagnosis()
-    assertFixedNjitExecution(value.funding_execution, '资金目标诊断')
+    assertNativeNumericalExecution(value.funding_execution, '资金目标诊断')
     const passing = value.candidates.some(candidate => candidate.goal_check?.within_limits === true)
     if ((value.status === 'diagnosed') !== passing) throw missingDiagnosis()
   }
@@ -326,7 +326,7 @@ export function checkedCma<T extends CmaPreview>(value: T): T {
   verified(value)
   if (value.definition.model) {
     if (!value.model_result || !value.effective_assumptions || !value.effective_returns || !value.effective_covariance) throw new Error('模型版本缺少冻结的有效假设，不能用于政策研究。')
-    assertFixedNjitExecution(value.model_result.execution, '长期假设模型')
+    assertNativeNumericalExecution(value.model_result.execution, '长期假设模型')
   }
   return value
 }
@@ -378,7 +378,7 @@ export const previewPolicy = async (body: PolicyRequest, signal?: AbortSignal) =
   checkGoalCandidates(value.mandate, value.candidates)
   if (cashSuccessRequired(value.mandate)) {
     if (!value.funding_execution) throw missingDiagnosis()
-    assertFixedNjitExecution(value.funding_execution, '政策资金目标诊断')
+    assertNativeNumericalExecution(value.funding_execution, '政策资金目标诊断')
   }
   return value
 }
@@ -387,7 +387,7 @@ export const publishPolicy = async (body: PolicyRequest, hash: string, candidate
   if (!result.policy) throw new Error('返回的版本缺少政策与目标引用，已停止交接。')
   checkMultiCmaEvidence(body, result.policy.multi_cma)
   if (body.mode === 'compatible_all_models' && (result.policy.mode !== body.mode || result.policy.compatibility?.gate !== 'all_frozen_models')) throw new Error('共同配置的冻结模式不一致，已停止交接。')
-  assertFixedNjitExecution(result.policy.execution, '政策采纳')
+  assertNativeNumericalExecution(result.policy.execution, '政策采纳')
   return result
 }
 

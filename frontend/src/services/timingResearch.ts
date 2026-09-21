@@ -1,4 +1,4 @@
-import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 
 export type TimingValueType = 'series' | 'condition' | 'panel' | 'condition_panel'
 export interface TimingPort { name: string; label: string; type: TimingValueType; required?: boolean }
@@ -65,7 +65,7 @@ export interface TimingProductResult {
 export interface TimingRunSummary { id: string; name: string; created_at: string; status?: string }
 export interface TimingRun extends TimingRunSummary {
   definition_snapshot: TimingDefinition; request_snapshot: Omit<TimingRequest, 'compile_token'>
-  execution: FixedNjitExecutionAudit; restrictions: string[]; products: TimingProductResult[]
+  execution: NativeNumericalExecutionAudit; restrictions: string[]; products: TimingProductResult[]
 }
 export interface TimingJob { id: string; status: 'queued' | 'running' | 'completed' | 'done' | 'failed'; progress: number; total: number; run_id?: string; error?: string }
 export interface TimingRelease { id: string; run_id: string; name?: string; note?: string; usage?: string; created_at?: string; products?: Array<{ product_id: string; status?: string }> }
@@ -84,14 +84,14 @@ async function request<T>(path: string, method = 'GET', body?: unknown, signal?:
 }
 async function numerical<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   const value = await request<T & { execution?: unknown }>(path, method, body, signal)
-  assertFixedNjitExecution(value.execution, '择时研究')
+  assertNativeNumericalExecution(value.execution, '择时研究')
   return value
 }
 export const timingApi = {
   catalog: (signal?: AbortSignal) => request<TimingCatalog>('/catalog', 'GET', undefined, signal),
   definitions: (signal?: AbortSignal) => request<{ items: SavedTimingDefinition[] }>('/definitions', 'GET', undefined, signal),
   save: (definition: TimingDefinition, current?: SavedTimingDefinition) => request<SavedTimingDefinition>(current ? `/definitions/${encodeURIComponent(current.id)}` : '/definitions', current ? 'PUT' : 'POST', current ? { ...definition, revision: current.revision } : definition),
-  prepare: (definition: TimingDefinition, signal?: AbortSignal) => numerical<{ compile_token: string; definition_hash: string; execution: FixedNjitExecutionAudit }>('/prepare', 'POST', { definition }, signal),
+  prepare: (definition: TimingDefinition, signal?: AbortSignal) => numerical<{ compile_token: string; definition_hash: string; execution: NativeNumericalExecutionAudit }>('/prepare', 'POST', { definition }, signal),
   run: (body: TimingRequest, signal?: AbortSignal) => request<TimingJob>('/runs', 'POST', body, signal),
   job: (id: string, signal?: AbortSignal) => request<TimingJob>(`/jobs/${encodeURIComponent(id)}`, 'GET', undefined, signal),
   runs: (signal?: AbortSignal) => request<{ items: TimingRunSummary[] }>('/runs', 'GET', undefined, signal),

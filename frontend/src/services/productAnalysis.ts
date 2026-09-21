@@ -1,6 +1,6 @@
 import {
-  assertFixedNjitExecution,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution'
 
 export type StatisticsPeriod = 'ALL' | '1M' | '3M' | '6M' | '1Y' | '3Y' | '5Y'
@@ -367,16 +367,15 @@ export interface ProductResearchContext {
   simulationMessage: string | null
 }
 
-export interface ProductAnalysisExecution extends FixedNjitExecutionAudit {
-  execution_backend: 'numba_njit_fixed_signature'
+export type ProductAnalysisExecution = NativeNumericalExecutionAudit & {
   engine: string
-  kernel_version: string
-  kernel_coverage: string
-  kernel_fingerprint: string
-  kernel_signatures: Record<string, string[]>
-  nopython: true
-  njit_required: true
-  object_mode: 0
+  kernel_version?: string
+  kernel_coverage?: string
+  kernel_fingerprint?: string
+  kernel_signatures?: Record<string, string[]>
+  nopython?: true
+  njit_required?: boolean
+  object_mode?: 0
   python_fallback: 0
   request_time_compilation: 0
 }
@@ -501,7 +500,7 @@ export async function analyzeProduct(
     throw new ProductAnalysisApiError(response.status, '产品分析服务返回了无效响应')
   }
   try {
-    assertFixedNjitExecution(result.execution, '产品分析')
+    assertNativeNumericalExecution(result.execution, '产品分析')
   } catch (failure) {
     throw new ProductAnalysisApiError(
       response.status,
@@ -540,7 +539,7 @@ export interface ProductPriceSeries {
   points: PricePoint[]
   warnings: string[]
   bases: ChartBasisOption[]
-  execution: FixedNjitExecutionAudit
+  execution: NativeNumericalExecutionAudit
 }
 
 export async function fetchProductPriceSeries(

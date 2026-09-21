@@ -159,3 +159,56 @@ def test_ordinary_regression_cannot_claim_the_model_exemption():
 
     with pytest.raises(ComputePolicyError, match="仅限机器学习"):
         validate_execution_audit(invalid)
+
+
+def _cpp_stage_audit():
+    # Synthetic policy fixture, not a production native build identity.
+    return {
+        "execution_backend": "cpp_aot", "audit_schema": "cpp-aot-execution-1",
+        "engine": "calmetrics_engine", "engine_version": "0.3.0",
+        "engine_build_id": "a" * 64, "plan_fingerprint": "native-3-" + "b" * 32,
+        "operator_registry_version": "canonical-native-1", "typed_ir_version": "cpp-typed-ir-1",
+        "native_aot": True, "input_dtype": "float64", "output_dtype": "float64",
+        "python_fallback": 0, "python_operator_calls": 0, "python_worker_callbacks": 0,
+        "request_time_compilation": 0, "cpu_budget": 2, "cpu_tokens": 1,
+        "result_lifetime": "independent",
+    }
+
+
+def _model_with_cpp_stages():
+    audit = OptimizedThirdPartyModelDeclaration(
+        model_family="machine_learning", package="scikit-learn", package_version="1.7.0",
+        model_name="GradientBoostingClassifier", model_version="1",
+        native_backend="compiled_tree_inference", model_fingerprint="model-1",
+        input_dtype="float64[C]", output_dtype="int64[C]",
+        feature_pipeline_backend="cpp_aot", postprocess_backend="cpp_aot",
+    ).audit()
+    audit.update(feature_pipeline_audit=_cpp_stage_audit(), postprocess_audit=_cpp_stage_audit())
+    return audit
+
+
+@pytest.mark.parametrize("stage", ["feature_pipeline", "postprocess"])
+@pytest.mark.parametrize("fault", ["missing", "build", "callback", "backend", "conflict"])
+def test_cpp_model_stage_requires_its_own_valid_audit(stage, fault):
+    audit = _model_with_cpp_stages()
+    key = f"{stage}_audit"
+    if fault == "missing":
+        del audit[key]
+    elif fault == "build":
+        del audit[key]["engine_build_id"]
+    elif fault == "callback":
+        audit[key]["python_worker_callbacks"] = 1
+    elif fault == "backend":
+        audit[key]["execution_backend"] = "numba_njit_fixed_signature"
+    else:
+        audit[key]["backend"] = "numba_njit_fixed_signature"
+    with pytest.raises(ComputePolicyError):
+        validate_execution_audit(audit)
+
+
+def test_cpp_model_stages_accept_complete_independent_proofs():
+    audit = _model_with_cpp_stages()
+    audit["postprocess_audit"]["plan_fingerprint"] = "native-4-" + "c" * 32
+    assert OptimizedThirdPartyModelDeclaration(**audit).audit() == audit
+    result = validate_execution_audit(audit)
+    assert result["feature_pipeline_audit"]["plan_fingerprint"] != result["postprocess_audit"]["plan_fingerprint"]

@@ -1,14 +1,9 @@
 import {
-  assertFixedNjitExecution,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution'
 
-export interface BusinessNumericExecution extends FixedNjitExecutionAudit {
-  execution_backend: 'numba_njit_fixed_signature'
-  nopython: true
-  object_mode: 0
-  python_fallback: 0
-  request_time_compilation: 0
+export type BusinessNumericExecution = NativeNumericalExecutionAudit & {
   [key: string]: unknown
 }
 
@@ -68,7 +63,7 @@ async function requestBusinessNumeric<T extends { execution: BusinessNumericExec
   if (!response.ok) {
     throw new Error(payload?.detail || `业务数值内核返回错误 ${response.status}`)
   }
-  assertFixedNjitExecution(payload?.execution, '业务数值内核')
+  assertNativeNumericalExecution(payload?.execution, '业务数值内核')
   return payload as T
 }
 

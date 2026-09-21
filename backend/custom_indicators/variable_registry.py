@@ -9,14 +9,47 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 from cal_indicators.typed_types import ValueType
+from .errors import ValidationError
 
 
 VARIABLE_REGISTRY_VERSION = "3.0.0"
 DATA_CONTRACT_VERSION = "tushare-eod-v2"
 CONTEXT_SCHEMA_VERSION = "typed-context-v2"
+
+
+def resolve_source_contract_versions(
+    dsl_version: str,
+    fields: Mapping[str, Any] | None = None,
+    defaults: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Bind installed source semantics after the caller validates the typed DSL."""
+    fields, defaults = fields or {}, defaults or {}
+    supported = (
+        {
+            "variable_registry_version": "legacy-typed-v2.0",
+            "data_contract_version": "adjusted-nav-v1",
+            "context_schema_version": "multi-asset-v1",
+        }
+        if dsl_version == "2.0.0"
+        else {
+            "variable_registry_version": VARIABLE_REGISTRY_VERSION,
+            "data_contract_version": DATA_CONTRACT_VERSION,
+            "context_schema_version": CONTEXT_SCHEMA_VERSION,
+        }
+    )
+    for field, version in supported.items():
+        requested = str(fields.get(field) or defaults.get(field) or version)
+        if requested != version:
+            raise ValidationError(
+                f"UNSUPPORTED_{field.upper()}",
+                f"typed {dsl_version} 仅支持 {field}={version}。",
+                field=field,
+            )
+    return supported
+
 
 ContextKind = Literal["single_product", "portfolio"]
 ProductKind = Literal["etf", "fund"]
@@ -800,6 +833,7 @@ __all__ = [
     "canonicalize_variables",
     "get_variable",
     "normalize_variable_latex",
+    "resolve_source_contract_versions",
     "retired_variable_message",
     "retired_variable_replacement",
     "variable_latex_symbols",
