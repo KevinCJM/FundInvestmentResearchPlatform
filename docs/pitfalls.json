@@ -1539,7 +1539,9 @@
         "Routing coverage passes while a plan or operational instruction still needs semantic review.",
         "An unstaged Markdown fix hides a broken staged candidate.",
         "Markdown links pass while plain-text filenames and source comments still point to retired documents.",
-        "Candidate documents use staged/commit content while routing helper code is imported from the worktree, allowing unstaged changes to alter the check."
+        "Candidate documents use staged/commit content while routing helper code is imported from the worktree, allowing unstaged changes to alter the check.",
+        "A deleted or moved document disappears from affected_documents when its catalog entry is removed, so strict review can omit the retired path.",
+        "Raw pipe splitting treats escaped pipes in valid GFM plan cells as extra columns."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1567,7 +1569,9 @@
         "Treat source change as a review trigger, not proof that prose is wrong or that a plan is finished.",
         "Close problems only with relevant current-version evidence; preserve historical evidence boundaries.",
         "After moving or deleting documents, search tracked source and prose for retired paths and filenames; Markdown link validation does not cover plain-text or comment references. Check the actual Git candidate when the worktree is dirty.",
-        "Load reused routing helper code from the same candidate and include it in the review fingerprint; verify both outside-candidate failures and unstaged repairs with isolated Git fixtures."
+        "Load reused routing helper code from the same candidate and include it in the review fingerprint; verify both outside-candidate failures and unstaged repairs with isolated Git fixtures.",
+        "Keep deleted managed Markdown paths in the review scope independently of the current catalog; require a decision about replacement contracts, routing and source references.",
+        "Split plan cells on unescaped GFM table delimiters; pipes inside inline code must also be escaped. Cover worktree, staged, commit and rename retirement cases."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",

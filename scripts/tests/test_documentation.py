@@ -139,6 +139,12 @@ def test_duplicate_plan_ids_fail():
     assert any('duplicate' in e for e in check.check_plans('plan.md', HEADER + row + row))
 
 
+@pytest.mark.parametrize('work', [r'A \| B', r'`A \| B`', r'路径 \\| 选项'])
+def test_plan_cells_allow_escaped_pipes(work):
+    row = f'| TASK-1 | planned | {work} | Tested | Still needed |\n'
+    assert not check.check_plans('plan.md', HEADER + row)
+
+
 def test_plan_example_in_code_fence_is_not_a_live_plan():
     assert not check.check_plans('plan.md', '```markdown\n' + HEADER + '| EXAMPLE | done | | | |\n```\n')
 
@@ -272,6 +278,54 @@ def test_rename_scope_preserves_old_and_new_paths(repo, capsys):
     assert check.main(['--project-root', str(repo), '--base-ref', base, '--json']) == 0
     report = json.loads(capsys.readouterr().out)
     assert set(report['changed_files']) == {'src/service.py', 'src/renamed.py'}
+
+
+@pytest.mark.parametrize('mode', ['worktree', 'staged', 'commit'])
+def test_deleted_document_requires_explicit_review(repo, capsys, mode):
+    base = git(repo, 'rev-parse', 'HEAD')
+    (repo / 'docs/topic.md').unlink()
+    mapping = json.loads((repo / 'docs/repo_map.json').read_text())
+    mapping['documentation']['documents'] = [
+        d for d in mapping['documentation']['documents'] if d['path'] != 'docs/topic.md']
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    write(repo, 'docs/README.md', '# Index\n\n' + check.document_index(mapping['documentation']['documents']) + '\n')
+    if mode != 'worktree':
+        git(repo, 'add', 'docs')
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'retire document')
+    args = ['--staged'] if mode == 'staged' else ['--base-ref', base] if mode == 'commit' else []
+    assert check.main(['--project-root', str(repo), *args, '--json']) == 0
+    report = json.loads(capsys.readouterr().out)
+    retired = [d for d in report['affected_documents'] if d['path'] == 'docs/topic.md']
+    assert retired == [{'path': 'docs/topic.md', 'role': 'deleted',
+                        'caused_by': ['docs/topic.md'], 'review': {'status': 'needs_review'}}]
+    review = {'fingerprint': report['fingerprint'], 'documents': [
+        {'path': d['path'], 'status': 'reviewed_no_change', 'reason': 'Current contract is unchanged.'}
+        for d in report['affected_documents'] if d['path'] != 'docs/topic.md']}
+    candidate = check.Candidate(repo, mode)
+    result = check.inspect(candidate, report['changed_files'], review, require_review=True)
+    assert 'docs/topic.md: documentation impact review is incomplete' in result['errors']
+    review['documents'].append({'path': 'docs/topic.md', 'status': 'reviewed_no_change',
+                                'reason': 'Retired duplicate; surviving contract and references reviewed.'})
+    assert not check.inspect(candidate, report['changed_files'], review, require_review=True)['errors']
+
+
+def test_document_rename_keeps_old_path_in_review_scope(repo, capsys):
+    base = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'mv', 'docs/topic.md', 'docs/renamed.md')
+    mapping = json.loads((repo / 'docs/repo_map.json').read_text())
+    for d in mapping['documentation']['documents']:
+        if d['path'] == 'docs/topic.md':
+            d['path'] = 'docs/renamed.md'
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    write(repo, 'docs/README.md', '# Index\n\n' + check.document_index(mapping['documentation']['documents']) + '\n')
+    git(repo, 'add', 'docs')
+    git(repo, 'commit', '-qm', 'move document and index')
+    assert check.main(['--project-root', str(repo), '--base-ref', base, '--json']) == 0
+    report = json.loads(capsys.readouterr().out)
+    roles = {d['path']: d['role'] for d in report['affected_documents']}
+    assert roles['docs/topic.md'] == 'deleted'
+    assert roles['docs/renamed.md'] == 'topic'
 
 
 def test_readonly_check_does_not_rewrite_documents_or_index(repo):
