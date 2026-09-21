@@ -1547,7 +1547,8 @@
         "Indented plan headers are recognized while raw row prefixes stop validation and allow invalid statuses or missing evidence.",
         "The checker implementation is taken from the worktree even though its input and helper are read from the index or selected commit.",
         "Default worktree path-only Git collection drops the source of staged renames.",
-        "Valid GFM plan rows omit edge pipes and bypass checks that require raw leading pipes."
+        "Valid GFM plan rows omit edge pipes and bypass checks that require raw leading pipes.",
+        "A candidate checker raises SystemExit(0) before completing validation and the launcher reports success without a check report."
       ],
       "trigger_actions": [
         "finish a code, config or documentation milestone",
@@ -1583,7 +1584,8 @@
         "Normalize plan row indentation consistently with headers after excluding code blocks; cover legal one-to-three-space indentation with invalid states and missing evidence.",
         "Run Git-candidate validation in the checker implementation selected from that candidate and bind its bytes in the fingerprint; missing, invalid or failed candidate code must not fall back to worktree repairs.",
         "Use structured name-status diffs for both staged and unstaged worktree changes, retaining both rename paths and separately including untracked paths.",
-        "Recognize plan header labels and rows with optional GFM edge pipes while retaining column, state and evidence checks."
+        "Recognize plan header labels and rows with optional GFM edge pipes while retaining column, state and evidence checks.",
+        "Convert SystemExit during candidate checker initialization or main execution into failure, including a zero exit code; verify staged and commit candidates with both entry points."
       ],
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",

@@ -145,7 +145,7 @@ def run_candidate_checker(candidate: Candidate, source: bytes, digest: str,
         if not isinstance(result, int):
             raise ValueError('main must return an integer exit code')
         return result
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         raise ValueError(f'cannot execute candidate checker {CHECKER}: {exc}') from exc
     finally:
         sys.modules.pop(name, None)

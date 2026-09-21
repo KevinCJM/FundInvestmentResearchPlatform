@@ -278,7 +278,12 @@ def test_candidate_checker_ignores_worktree_inspection_code(repo, mode):
 
 
 @pytest.mark.parametrize('mode', ['staged', 'commit'])
-@pytest.mark.parametrize('broken', ["raise RuntimeError('broken candidate checker')\n", 'def broken(:\n'])
+@pytest.mark.parametrize('broken', [
+    "raise RuntimeError('broken candidate checker')\n",
+    'def broken(:\n',
+    'raise SystemExit(0)\n',
+    'def main(argv=None):\n    raise SystemExit(0)\n',
+])
 def test_worktree_checker_repair_cannot_hide_candidate_failure(repo, mode, broken):
     base = git(repo, 'rev-parse', 'HEAD')
     path = repo / 'scripts/check_documentation.py'
