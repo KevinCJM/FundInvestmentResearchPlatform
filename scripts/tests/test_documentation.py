@@ -249,6 +249,22 @@ def test_unstaged_helper_repair_cannot_hide_candidate_failure(repo, mode):
     assert 'broken candidate helper' in json.loads(result.stdout)['errors'][0]
 
 
+@pytest.mark.parametrize('mode', ['worktree', 'staged', 'commit'])
+def test_helper_system_exit_cannot_report_success(repo, mode):
+    base = git(repo, 'rev-parse', 'HEAD')
+    write(repo, HERMES_PATH, 'raise SystemExit(0)\n')
+    if mode != 'worktree':
+        git(repo, 'add', HERMES_PATH)
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'helper exits before validation')
+    args = [] if mode == 'worktree' else ['--staged'] if mode == 'staged' else ['--base-ref', base]
+    result = subprocess.run([sys.executable, str(repo / 'scripts/check_documentation.py'),
+                             *args, '--json'], capture_output=True, text=True)
+    assert result.returncode == 1, result.stdout
+    report = json.loads(result.stdout)
+    assert report['status'] == 'failed' and report['errors']
+
+
 def test_review_fingerprint_includes_helper_code(repo):
     before = inspect(repo, ['src/service.py'])
     with (repo / HERMES_PATH).open('a') as stream:
