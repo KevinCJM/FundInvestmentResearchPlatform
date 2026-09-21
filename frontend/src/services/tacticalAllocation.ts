@@ -1,4 +1,4 @@
-import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 
 export interface TaaAsset {
   id: string
@@ -28,10 +28,15 @@ export interface TaaBaseline {
   pit: { status: string; reasons: string[] }
   lineage: Record<string, unknown>
   policy?: {
-    mandate_id: string; cma_id: string; expires_on: string; reason: string
+    mandate_id: string; cma_id: string | null; expires_on: string; reason: string
+    mode?: 'single' | 'parameter_average' | 'compatible_all_models'
+    compatibility?: import('./strategicAllocation').CompatibilityEvidence
+    uncertainty_model?: import('./strategicAllocation').MeanUncertaintyEvidence
+    selection?: import('./strategicAllocation').PolicyCandidate
+    multi_cma?: import('./strategicAllocation').MultiCmaEvidence
     assumptions: import('./strategicAllocation').CmaDefinition
     mandate: { max_tracking_error: number; max_volatility: number; currency: string; horizon_years: number }
-    independent_approval: boolean; execution: FixedNjitExecutionAudit
+    independent_approval: boolean; execution: NativeNumericalExecutionAudit
   }
 }
 
@@ -117,7 +122,7 @@ export interface TaaWalkForwardResult {
     purged_training_periods: number; strength?: number; training?: TaaMetrics; validation?: TaaMetrics
     validation_feasible?: boolean; baseline_fallback_exemption?: boolean
   }>
-  execution: FixedNjitExecutionAudit
+  execution: NativeNumericalExecutionAudit
 }
 
 export interface TaaMetrics {
@@ -175,10 +180,10 @@ export interface TaaPreview {
   weight_path: Array<{ date: string; weights: Record<string, number>; turnover: number; cost?: number; two_way_turnover?: number; decision?: boolean; execution_opportunity?: boolean; traded?: boolean; no_trade_reason?: string; research_target?: Record<string, number> }>
   application?: TaaApplication
   warnings: string[]
-  execution: FixedNjitExecutionAudit
+  execution: NativeNumericalExecutionAudit
   audit: Record<string, unknown>
   walk_forward?: TaaWalkForwardResult
-  policy_check?: { within_limits: boolean; goal_diagnostic_scope?: string | null; current_application_eligible?: boolean; benchmark_check?: { name: string; tracking_error: number; max_tracking_error: number } | null; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: FixedNjitExecutionAudit }
+  policy_check?: { risk_evaluation_mode?: 'parameter_average' | 'compatible_all_models'; cross_model_results?: import('./strategicAllocation').CrossModelResult[]; within_limits: boolean; goal_diagnostic_scope?: string | null; current_application_eligible?: boolean; benchmark_check?: { name: string; tracking_error: number; max_tracking_error: number } | null; violations: string[]; expected_volatility: number; max_volatility: number; expected_tracking_error: number; requested_tracking_error_limit: number | null; max_tracking_error: number; expires_on: string; execution: NativeNumericalExecutionAudit }
 }
 
 export interface TaaScenarioRequest {
@@ -208,7 +213,7 @@ export interface TaaScenarioResult {
   contributions: Array<{ asset_id: string; baseline: number; taa: number; excess: number }>
   cost?: { baseline: number; taa: number }
   warnings: string[]
-  execution: FixedNjitExecutionAudit
+  execution: NativeNumericalExecutionAudit
 }
 
 export interface TaaDecision {
@@ -246,9 +251,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 const post = <T,>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) })
-const audited = <T extends { execution: FixedNjitExecutionAudit }>(result: T, name: string): T => {
+const audited = <T extends { execution: NativeNumericalExecutionAudit }>(result: T, name: string): T => {
   if (!result || typeof result !== 'object') throw new Error(`${name}返回的结果不完整，请重新读取。`)
-  assertFixedNjitExecution(result.execution, name)
+  assertNativeNumericalExecution(result.execution, name)
   return result
 }
 

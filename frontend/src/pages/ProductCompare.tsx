@@ -2133,20 +2133,20 @@ export default function ProductCompare() {
           )}
           <div className="rounded-xl border border-accent-200 bg-accent-50 px-4 py-3 text-sm" aria-live="polite">
             {comparisonAnalysisLoading ? (
-              <span className="text-accent-800">正在由服务端固定签名 NJIT 内核计算比较指标…</span>
+              <span className="text-accent-800">正在由服务端数值引擎计算比较指标…</span>
             ) : comparisonAnalysisError ? (
               <span className="text-amber-800">{comparisonAnalysisError}</span>
             ) : comparisonExecution ? (
               <details>
                 <summary className="cursor-pointer font-medium text-accent-800">
-                  数值引擎：Numba NJIT · {comparisonExecution.kernel_coverage}
+                  数值引擎：{(comparisonExecution.execution_backend ?? comparisonExecution.backend) === 'cpp_aot' ? 'C++ AOT' : `Numba NJIT · ${'kernel_coverage' in comparisonExecution ? comparisonExecution.kernel_coverage : ''}`}
                 </summary>
                 <dl className="mt-2 grid gap-1 text-xs text-accent-900 sm:grid-cols-2">
-                  <div><dt className="inline font-medium">后端：</dt><dd className="inline"> {comparisonExecution.execution_backend}</dd></div>
-                  <div><dt className="inline font-medium">内核版本：</dt><dd className="inline"> {comparisonExecution.kernel_version}</dd></div>
-                  <div><dt className="inline font-medium">nopython：</dt><dd className="inline"> {String(comparisonExecution.nopython)}</dd></div>
+                  <div><dt className="inline font-medium">后端：</dt><dd className="inline"> {comparisonExecution.execution_backend ?? comparisonExecution.backend}</dd></div>
+                  <div><dt className="inline font-medium">内核版本：</dt><dd className="inline"> {('kernel_version' in comparisonExecution ? comparisonExecution.kernel_version : 'engine_version' in comparisonExecution ? comparisonExecution.engine_version : '未提供')}</dd></div>
+                  <div><dt className="inline font-medium">{(comparisonExecution.execution_backend ?? comparisonExecution.backend) === 'cpp_aot' ? '原生预编译：' : 'nopython：'}</dt><dd className="inline"> {String(('nopython' in comparisonExecution ? comparisonExecution.nopython : 'native_aot' in comparisonExecution ? comparisonExecution.native_aot : '未提供'))}</dd></div>
                   <div><dt className="inline font-medium">Python fallback：</dt><dd className="inline"> {comparisonExecution.python_fallback}</dd></div>
-                  <div className="sm:col-span-2 break-all"><dt className="inline font-medium">指纹：</dt><dd className="inline"> {comparisonExecution.kernel_fingerprint}</dd></div>
+                  <div className="sm:col-span-2 break-all"><dt className="inline font-medium">指纹：</dt><dd className="inline"> {('kernel_fingerprint' in comparisonExecution ? comparisonExecution.kernel_fingerprint : 'plan_fingerprint' in comparisonExecution ? comparisonExecution.plan_fingerprint : '未提供')}</dd></div>
                 </dl>
               </details>
             ) : (

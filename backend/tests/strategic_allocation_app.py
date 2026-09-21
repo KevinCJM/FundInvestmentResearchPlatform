@@ -28,9 +28,10 @@ pd.DataFrame([{'asset_alloc_name': '浏览器离线股债', 'asset_name': name, 
               for name, code in [('股票', '510300.SH'), ('债券', '511010.SH')]]).to_parquet(root / 'asset_alloc_info.parquet', index=False)
 pd.DataFrame([{'asset_alloc_name': '浏览器离线股债', 'asset_name': name, 'date': day, 'nv': nav[t, i], 'available_at': day, 'as_of': None}
               for i, name in enumerate(('股票', '债券')) for t, day in enumerate(days)]).to_parquet(root / 'asset_nv.parquet', index=False)
-pd.DataFrame({'exchange': ['SSE'] * len(days),
-              'cal_date': [int(day.strftime('%Y%m%d')) for day in days],
-              'is_open': [1] * len(days)}).to_parquet(root / 'trade_day_df.parquet', index=False)
+calendar_days = pd.date_range(days[0], date.today(), freq='D')
+pd.DataFrame({'exchange': ['SSE'] * len(calendar_days),
+              'cal_date': [int(day.strftime('%Y%m%d')) for day in calendar_days],
+              'is_open': calendar_days.isin(days).astype(int)}).to_parquet(root / 'trade_day_df.parquet', index=False)
 analytics_routes.DATA_DIR = root
 strategy_routes.DATA_DIR = root
 strategic = StrategicAllocationService(root / 'research', root)

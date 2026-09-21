@@ -116,12 +116,12 @@ export function useAllocationJourney() {
   return [journey, updateAllocationJourney] as const
 }
 
-export type AllocationJourneyStep = 'pool' | 'classes' | 'saa' | 'taa' | 'products'
+export type AllocationJourneyStep = 'pool' | 'classes' | 'ltcma' | 'saa' | 'taa' | 'products'
 export function allocationJourneyPath(step: AllocationJourneyStep, journey = readAllocationJourney()): string {
   if (step === 'products' && journey.taaRunId && !readAllocationDraft(`products:${journey.universeId || 'local'}:${journey.taaRunId}`)) return allocationJourneyPath('taa', journey)
   const paths = {
     pool: '/pre-investment/product-pool', classes: '/pre-investment/saa/asset-classes',
-    saa: '/pre-investment/saa/policy', taa: '/pre-investment/taa',
+    ltcma: '/pre-investment/ltcma', saa: '/pre-investment/saa/policy', taa: '/pre-investment/taa',
     products: '/pre-investment/product-allocation-timing/construction',
   }
   const query = new URLSearchParams()

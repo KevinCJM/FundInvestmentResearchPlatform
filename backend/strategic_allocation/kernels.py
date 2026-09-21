@@ -19,7 +19,7 @@ CV = float64[::1]
 CM = float64[:, ::1]
 GM = types.uint8[:, ::1]
 _WARMED_PID: int | None = None
-VERSION = "forward-policy-moments/1.2.0"
+VERSION = "forward-policy-moments/1.3.0"
 
 
 @njit((M, float64, int64), cache=True, nogil=True)
@@ -113,6 +113,72 @@ def portfolio_moments_kernel(weights, means, covariance, uncertainty, aversion, 
     return metrics, contributions
 
 
+@njit((M,), cache=True, nogil=True)
+def mean_covariance_diagnostics_kernel(covariance):
+    """Validate U separately from return risk; deterministic coordinates remain exact zeros."""
+    n = covariance.shape[0]
+    if n < 1 or n > 30 or covariance.shape[1] != n:
+        raise ValueError("SAA_MEAN_COVARIANCE_AXIS")
+    maximum = 0.0
+    for i in range(n):
+        for j in range(n):
+            if not np.isfinite(covariance[i, j]):
+                raise ValueError("SAA_MEAN_COVARIANCE_INVALID")
+            maximum = max(maximum, abs(covariance[i, j]))
+    tolerance = max(maximum * 1e-12, 1e-300)
+    active = np.empty(n, dtype=np.int64)
+    standard_error = np.empty(n, dtype=np.float64)
+    count = 0
+    for i in range(n):
+        if covariance[i, i] < 0:
+            raise ValueError("SAA_MEAN_COVARIANCE_INVALID")
+        standard_error[i] = np.sqrt(covariance[i, i])
+        if covariance[i, i] > 0:
+            active[count] = i
+            count += 1
+        for j in range(n):
+            if abs(covariance[i, j] - covariance[j, i]) > tolerance:
+                raise ValueError("SAA_MEAN_COVARIANCE_INVALID")
+            if covariance[i, i] == 0 and covariance[i, j] != 0:
+                raise ValueError("SAA_MEAN_COVARIANCE_INVALID")
+    block = np.empty((count, count), dtype=np.float64)
+    for i in range(count):
+        for j in range(count):
+            block[i, j] = covariance[active[i], active[j]]
+    if count:
+        minimum = np.linalg.eigvalsh(block)[0]
+        if minimum < -tolerance:
+            raise ValueError("SAA_MEAN_COVARIANCE_NOT_PSD")
+        positive_definite = minimum > tolerance
+    else:
+        positive_definite = False
+    return standard_error, count, positive_definite
+
+
+@njit((V, V, M, M, float64, float64), cache=True, nogil=True)
+def _ellipsoidal_metrics_kernel(weights, means, covariance, mean_covariance, aversion, kappa):
+    if mean_covariance.shape != covariance.shape or not np.isfinite(kappa) or kappa < 0:
+        raise ValueError("SAA_MEAN_COVARIANCE_INVALID")
+    metrics, contributions = portfolio_moments_kernel(weights, means, covariance,
+        np.zeros(weights.size, dtype=np.float64), aversion, 0.0)
+    variance = 0.0
+    for i in range(weights.size):
+        for j in range(weights.size):
+            variance += weights[i] * mean_covariance[i, j] * weights[j]
+    haircut = kappa * np.sqrt(max(0.0, variance))
+    if not np.isfinite(haircut):
+        raise ValueError("SAA_MEAN_COVARIANCE_INVALID")
+    metrics[2] -= haircut
+    metrics[4] -= haircut
+    return metrics, contributions
+
+
+@njit((V, V, M, M, float64, float64), cache=True, nogil=True)
+def portfolio_moments_ellipsoidal_kernel(weights, means, covariance, mean_covariance, aversion, kappa):
+    mean_covariance_diagnostics_kernel(mean_covariance)
+    return _ellipsoidal_metrics_kernel(weights, means, covariance, mean_covariance, aversion, kappa)
+
+
 @njit((V, V, M), cache=True, nogil=True)
 def expected_active_risk_kernel(weights, baseline_weights, covariance):
     """Forward tracking error of target weights versus the frozen policy weights."""
@@ -171,11 +237,12 @@ def risk_budget_error_kernel(contributions, budget):
     return error
 
 
-@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V),
+@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V, M, float64, types.boolean),
       cache=True, nogil=True)
-def policy_candidates_with_budget_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
+def _policy_candidates_uncertainty_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
                                          aversion, penalty, min_return, max_volatility, benchmark_weights,
-                                         benchmark_te_limit, target_excess, samples, seed, risk_budget):
+                                         benchmark_te_limit, target_excess, samples, seed, risk_budget,
+                                         mean_covariance, kappa, ellipsoidal):
     """One finite search for all objectives; optional risk-budget fit is not an exact solution."""
     count = means.size
     if (count < 1 or count > 30 or bounds.shape != (count, 2) or groups.shape[1] != count
@@ -183,6 +250,10 @@ def policy_candidates_with_budget_kernel(means, covariance, uncertainty, bounds,
             or samples < 1 or samples > 5000 or benchmark_weights.size not in (0, count)
             or risk_budget.size not in (0, count)):
         raise ValueError("POLICY_SEARCH_SHAPE")
+    if ellipsoidal:
+        if mean_covariance.shape != (count, count) or not np.isfinite(kappa) or kappa < 0:
+            raise ValueError("SAA_MEAN_COVARIANCE_INVALID")
+        mean_covariance_diagnostics_kernel(mean_covariance)
     has_budget = int(risk_budget.size == count)
     if has_budget:
         budget_total = 0.0
@@ -239,7 +310,10 @@ def policy_candidates_with_budget_kernel(means, covariance, uncertainty, bounds,
             valid = valid and group_low[g] - 1e-8 <= value <= group_high[g] + 1e-8
         if not valid:
             continue
-        metrics, contributions = portfolio_moments_kernel(weights, means, covariance, uncertainty, aversion, penalty)
+        if ellipsoidal:
+            metrics, contributions = _ellipsoidal_metrics_kernel(weights, means, covariance, mean_covariance, aversion, kappa)
+        else:
+            metrics, contributions = portfolio_moments_kernel(weights, means, covariance, uncertainty, aversion, penalty)
         if metrics[0] < min_return - 1e-10 or metrics[1] > max_volatility + 1e-10:
             continue
         if has_benchmark:
@@ -272,6 +346,27 @@ def policy_candidates_with_budget_kernel(means, covariance, uncertainty, bounds,
     return selected_weights, selected_metrics, selected_contributions, accepted
 
 
+@njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V),
+      cache=True, nogil=True)
+def policy_candidates_with_budget_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
+                                         aversion, penalty, min_return, max_volatility, benchmark_weights,
+                                         benchmark_te_limit, target_excess, samples, seed, risk_budget):
+    """Unchanged box ABI and sampling; both uncertainty sets use the same search body."""
+    return _policy_candidates_uncertainty_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
+        aversion, penalty, min_return, max_volatility, benchmark_weights, benchmark_te_limit, target_excess,
+        samples, seed, risk_budget, np.empty((0, 0), dtype=np.float64), 0.0, False)
+
+
+@njit((V, M, M, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64, V),
+      cache=True, nogil=True)
+def policy_candidates_ellipsoidal_kernel(means, covariance, mean_covariance, bounds, groups, group_low, group_high,
+                                         aversion, kappa, min_return, max_volatility, benchmark_weights,
+                                         benchmark_te_limit, target_excess, samples, seed, risk_budget):
+    return _policy_candidates_uncertainty_kernel(means, covariance, np.empty(0), bounds, groups, group_low, group_high,
+        aversion, 0.0, min_return, max_volatility, benchmark_weights, benchmark_te_limit, target_excess,
+        samples, seed, risk_budget, mean_covariance, kappa, True)
+
+
 @njit((V, M, V, CM, GM, CV, CV, float64, float64, float64, float64, V, float64, float64, int64, int64),
       cache=True, nogil=True)
 def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, group_low, group_high,
@@ -286,7 +381,9 @@ def policy_candidates_kernel(means, covariance, uncertainty, bounds, groups, gro
 
 KERNELS = (historical_risk_kernel, cma_covariance_kernel, portfolio_moments_kernel,
            expected_active_risk_kernel, expected_excess_return_kernel,
-           policy_candidates_with_budget_kernel, policy_candidates_kernel, risk_budget_error_kernel)
+           policy_candidates_with_budget_kernel, policy_candidates_kernel, risk_budget_error_kernel,
+           mean_covariance_diagnostics_kernel, _ellipsoidal_metrics_kernel, portfolio_moments_ellipsoidal_kernel,
+           _policy_candidates_uncertainty_kernel, policy_candidates_ellipsoidal_kernel)
 for dispatcher in KERNELS:
     dispatcher.disable_compile()
 
@@ -323,6 +420,10 @@ def warm_strategic_kernels():
                              np.array([0.5, 0.5]))
     risk_budget_error_kernel(np.array([0.6, 0.4]), np.array([0.5, 0.5]))
     expected_excess_return_kernel(np.array([0.6, 0.4]), np.array([0.5, 0.5]), np.array([0.06, 0.03]))
+    portfolio_moments_ellipsoidal_kernel(np.array([.6, .4]), np.array([.06, .03]), cov, cov * .05, 5., 2.)
+    policy_candidates_ellipsoidal_kernel(np.array([.06, .03]), cov, cov * .05,
+        np.array([[0., 1.], [0., 1.]]), np.zeros((0, 2), dtype=np.uint8), np.empty(0), np.empty(0),
+        5., 2., 0., 1., np.empty(0), 1., 0., 200, 42, np.empty(0))
     from .goal_kernels import warm_goal_kernels
     warm_goal_kernels()
     _WARMED_PID = os.getpid()

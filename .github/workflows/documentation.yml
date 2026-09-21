@@ -1,0 +1,36 @@
+name: Documentation
+on:
+  pull_request:
+    branches: [main, Dev]
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  documentation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install documentation check dependencies
+        run: python -m pip install -r scripts/requirements-docs.txt
+      - name: Test candidate and documentation checks
+        run: python -m pytest scripts/tests/test_documentation.py -q
+      - name: Check PR documentation candidate
+        env:
+          DOC_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DOC_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/check_documentation.py --base-ref "$DOC_BASE_SHA" --head-ref "$DOC_HEAD_SHA" --json > documentation-report.json
+      - name: Preserve structural results and semantic review scope
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation-report
+          path: documentation-report.json
+          if-no-files-found: ignore

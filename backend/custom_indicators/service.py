@@ -176,6 +176,7 @@ from .variable_registry import (
     canonicalize_variables,
     get_variable,
     normalize_variable_latex,
+    resolve_source_contract_versions,
     variable_catalog,
     variable_latex_symbols,
     variable_types,
@@ -1671,33 +1672,14 @@ class CustomIndicatorService:
             ROLLING_TYPED_DSL_VERSION,
             TYPED_DSL_VERSION,
         }:
-            supported_versions = {
-                "variable_registry_version": VARIABLE_REGISTRY_VERSION,
-                "data_contract_version": DATA_CONTRACT_VERSION,
-                "context_schema_version": CONTEXT_SCHEMA_VERSION,
-            }
-            for field_name, supported_version in supported_versions.items():
-                requested_version = str(
-                    fields.get(field_name)
-                    or protocol_defaults.get(field_name)
-                    or supported_version
-                )
-                if requested_version != supported_version:
-                    raise ValidationError(
-                        f"UNSUPPORTED_{field_name.upper()}",
-                        f"typed {dsl_version} 仅支持 {field_name}={supported_version}。",
-                        field=field_name,
-                    )
-                protocol_versions[field_name] = requested_version
+            protocol_versions = resolve_source_contract_versions(
+                dsl_version, fields, protocol_defaults
+            )
         elif dsl_version == LEGACY_TYPED_DSL_VERSION:
             # New requests that explicitly opt into v2.0 bind to the frozen
             # compatibility identifiers. Existing persisted JSON is never
             # rewritten; decoration applies these values only to API reads.
-            protocol_versions = {
-                "variable_registry_version": "legacy-typed-v2.0",
-                "data_contract_version": "adjusted-nav-v1",
-                "context_schema_version": "multi-asset-v1",
-            }
+            protocol_versions = resolve_source_contract_versions(dsl_version)
         output_contract = str(
             fields.get("output_contract")
             or protocol_defaults.get("output_contract")

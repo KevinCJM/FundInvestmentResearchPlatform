@@ -1,10 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, afterEach, it, expect, vi } from 'vitest'
 import StrategicAllocationWorkspace from './StrategicAllocationWorkspace'
+import LtcmaWorkspace from './LtcmaWorkspace'
+import LtcmaVersionView from './LtcmaVersionView'
 import { writeAllocationDraft } from '../app/allocationJourney'
 import { cmaDefinition, cmaPreview, cmaVersion, strategicCatalog, policyPreview } from '../test/strategicAllocationFixtures'
+import { ltcmaCapabilities, ltcmaOptions } from '../test/ltcmaFixtures'
 import { taaExecution } from '../test/tacticalAllocationFixtures'
 import type { BlackLittermanRequest } from '../services/cmaModelTypes'
 
@@ -25,7 +28,10 @@ function install(overrides: Record<string,(init?: RequestInit)=>Promise<Response
     const url=String(input)
     if (overrides[url]) return overrides[url](init)
     if(url.endsWith('/catalog')) return response(strategicCatalog)
+    if(url.endsWith('/cma/capabilities')) return response(ltcmaCapabilities)
+    if(url.endsWith('/cma/study-options')) return response(ltcmaOptions)
     if(url.endsWith('/cma/cma-1')) return response({ ...cmaVersion,...result })
+    if(url.endsWith('/cma/cma-1/view')) return response({ version: { ...cmaVersion,...result }, retired: false })
     if(url.endsWith('/cma/preview')) return response(result)
     if(url.endsWith('/cma')) return response({ ...cmaVersion,...result })
     if(url.endsWith('/policy/preview')) return response({ ...policyPreview, request: JSON.parse(String(init?.body)) })
@@ -33,71 +39,66 @@ function install(overrides: Record<string,(init?: RequestInit)=>Promise<Response
   })
   vi.stubGlobal('fetch',fetch); return fetch
 }
-function tree() { return <MemoryRouter initialEntries={['/pre-investment/saa/policy?alloc=股债分类&mandate=mandate-1']}><StrategicAllocationWorkspace /></MemoryRouter> }
-function draft() {
-  writeAllocationDraft('strategic-policy:股债分类:mandate-1', { mandateId:'mandate-1', allocationName:'股债分类', strategicUniverseId:'', implementationMappingId:'',
-    assumptions: { ...cmaDefinition, model, assets: cmaDefinition.assets.map(a=>({...a,annual_return:NaN,annual_volatility:NaN})) },
-    reference: { alloc_name:'股债分类',as_of:cmaDefinition.as_of,start_date:'2026-01-01',end_date:cmaDefinition.as_of,shrinkage:.1,periods_per_year:252 },
-    settings: policyPreview.request, policyName:'模型政策',reason:'' })
-}
-async function openEditor() {
-  await waitFor(()=>expect(screen.getByRole('button',{name:'填写长期假设'})).toBeEnabled())
-  fireEvent.click(screen.getByRole('button',{name:'填写长期假设'}))
+function tree(center = false) {
+  return <MemoryRouter initialEntries={[center ? '/pre-investment/ltcma/new?copy=cma-1' : '/pre-investment/saa/policy?alloc=股债分类&mandate=mandate-1']}><Routes>
+    <Route path="/pre-investment/saa/policy" element={<StrategicAllocationWorkspace />} />
+    <Route path="/pre-investment/ltcma/new" element={<LtcmaWorkspace />} />
+    <Route path="/pre-investment/ltcma/:versionId" element={<LtcmaVersionView />} />
+  </Routes></MemoryRouter>
 }
 beforeEach(()=>{ clock.day='2026-09-12'; localStorage.clear(); sessionStorage.clear() })
 afterEach(()=>{ vi.unstubAllGlobals() })
 
-it('mounts model mode without duplicate mean/risk inputs and saves actual effective results',async()=>{
-  const fetch=install();draft();render(tree());await openEditor()
-  expect(screen.getByLabelText('预期生成方法')).toHaveValue('black_litterman')
-  expect(screen.queryByLabelText('equity预期年收益（%）')).toBeNull()
-  expect(screen.queryByLabelText('equity年化波动（%）')).toBeNull()
-  expect(screen.getByLabelText('equity均值不确定半宽（百分点）')).toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button',{name:'验证长期假设'}))
-  expect(await screen.findByRole('table',{name:'有效收益与风险'})).toHaveTextContent('9.20%')
+it('edits a copied model only in LTCMA, with no duplicate mean/risk inputs',async()=>{
+  const fetch=install(), user=userEvent.setup(); render(tree(true))
+  expect(await screen.findByLabelText('生成方法')).toHaveValue('black_litterman')
+  expect(screen.queryByLabelText('equity · 预期年收益（%）')).toBeNull()
+  expect(screen.queryByLabelText('equity · 年化波动（%）')).toBeNull()
+  expect(screen.getByLabelText(/equity · 均值不确定半宽/)).toBeInTheDocument()
+  await user.click(screen.getByRole('checkbox',{name:/我已核对资产范围/}))
+  await user.click(screen.getByRole('button',{name:'计算预览'}))
+  expect(await screen.findByRole('table',{name:'收益与风险假设'})).toHaveTextContent('9.20%')
   expect(fetch.mock.calls.filter(([u])=>String(u).endsWith('/cma'))).toHaveLength(0)
   const body=JSON.parse(String(fetch.mock.calls.find(([u])=>String(u).endsWith('/cma/preview'))![1]?.body))
   expect(body.model.method).toBe('black_litterman')
   expect(body.assets[0].annual_return).toBeUndefined()
   expect(body.correlation).toBeUndefined()
-  fireEvent.click(screen.getByRole('button',{name:'确认保存假设版本'}))
-  await screen.findByRole('button',{name:'比较符合目标的政策候选'})
-  fireEvent.click(screen.getByRole('button',{name:'2. 长期假设'}))
-  expect(screen.getByLabelText('预期生成方法')).toBeDisabled()
-  fireEvent.click(screen.getByRole('button',{name:'复制为新研究'}))
-  expect(screen.getByLabelText('预期生成方法')).toBeEnabled()
-  expect(screen.getByRole('button',{name:'确认保存假设版本'})).toBeDisabled()
+  await user.click(screen.getByRole('checkbox',{name:/我已阅读结果和限制/}))
+  await user.click(screen.getByRole('button',{name:'确认保存版本'}))
+  await screen.findByRole('button',{name:'用于 SAA'})
+  expect(screen.queryByLabelText('生成方法')).toBeNull()
+  expect(screen.getByRole('link',{name:'复制为新研究'})).toBeVisible()
 })
 
 it('discards late model preview when clock changes',async()=>{
   let resolve!:(r:Response)=>void
-  install({ '/api/strategic-allocation/cma/preview':()=>new Promise(done=>{resolve=done}) });draft()
-  const view=render(tree());await openEditor()
-  fireEvent.click(screen.getByRole('button',{name:'验证长期假设'}))
-  clock.day=undefined;view.rerender(tree())
+  install({ '/api/strategic-allocation/cma/preview':()=>new Promise(done=>{resolve=done}) })
+  const user=userEvent.setup(), view=render(tree(true)); await screen.findByLabelText('生成方法')
+  await user.click(screen.getByRole('checkbox',{name:/我已核对资产范围/}))
+  await user.click(screen.getByRole('button',{name:'计算预览'}))
+  clock.day=undefined;view.rerender(tree(true))
   await act(async()=>resolve(await response(result)))
-  expect(screen.queryByRole('table',{name:'有效收益与风险'})).toBeNull()
-  expect(screen.getByRole('button',{name:'确认保存假设版本'})).toBeDisabled()
+  expect(screen.queryByRole('table',{name:'收益与风险假设'})).toBeNull()
+  expect(screen.getByRole('button',{name:'计算预览'})).toBeDisabled()
 })
 
-it('switching manual/scenario/BL clears stale manual certifications and starts blank',async()=>{
-  install();render(tree());await openEditor()
-  const user=userEvent.setup()
-  await user.selectOptions(screen.getByLabelText('预期生成方法'),'scenario_mixture')
-  expect(screen.queryByLabelText('equity预期年收益（%）')).toBeNull()
+it('switching methods in LTCMA clears stale manual values and certifications',async()=>{
+  install();render(tree(true));const user=userEvent.setup(); await screen.findByLabelText('生成方法')
+  await user.selectOptions(screen.getByLabelText('生成方法'),'scenario_mixture')
+  expect(screen.queryByLabelText('equity · 预期年收益（%）')).toBeNull()
   expect(screen.getByText(/尚无情景，请添加/)).toBeInTheDocument()
-  await user.selectOptions(screen.getByLabelText('预期生成方法'),'black_litterman')
+  await user.selectOptions(screen.getByLabelText('生成方法'),'black_litterman')
   expect(screen.getByLabelText('equity市场权重（%）')).toHaveValue('')
-  expect(screen.getByRole('button',{name:'验证长期假设'})).toBeDisabled()
-  await user.selectOptions(screen.getByLabelText('预期生成方法'),'manual')
-  expect(screen.getByLabelText('equity预期年收益（%）')).toHaveValue('')
+  expect(screen.getByRole('button',{name:'计算预览'})).toBeDisabled()
+  await user.selectOptions(screen.getByLabelText('生成方法'),'manual')
+  expect(screen.getByLabelText('equity · 预期年收益（%）')).toHaveValue('')
   expect(screen.getByRole('button',{name:'读取历史风险参考'})).toBeInTheDocument()
 })
 
-it('loads saved model readonly and sends optional budget through actual policy API',async()=>{
+it('SAA consumes a saved model and sends optional risk budgets through its policy API',async()=>{
   const fetch=install();render(tree());const user=userEvent.setup()
-  await waitFor(()=>expect(screen.getByRole('button',{name:'填写长期假设'})).toBeEnabled())
-  await user.selectOptions(screen.getByLabelText('或者使用已保存的长期假设'),'cma-1')
+  await screen.findByLabelText('选择已确认 LTCMA')
+  await user.selectOptions(screen.getByLabelText('选择已确认 LTCMA'),'cma-1')
   await screen.findByRole('button',{name:'比较符合目标的政策候选'})
   fireEvent.click(screen.getByLabelText('增加风险预算候选'))
   expect(screen.getByRole('button',{name:'比较符合目标的政策候选'})).toBeDisabled()
@@ -106,29 +107,29 @@ it('loads saved model readonly and sends optional budget through actual policy A
   fireEvent.click(screen.getByRole('button',{name:'比较符合目标的政策候选'}))
   await screen.findByRole('table',{name:'长期政策候选比较'})
   expect(JSON.parse(String(fetch.mock.calls.find(([u])=>String(u).endsWith('/policy/preview'))![1]?.body)).risk_budget).toEqual({equity:.3,bond:.7})
+  expect(fetch.mock.calls.some(([u])=>String(u).endsWith('/cma/preview'))).toBe(false)
 })
 
-it('saved model reference restores readonly after reload, with explicit copy before edit', async()=>{
-  install(); draft()
-  const key='allocation-draft:v1:strategic-policy:股债分类:mandate-1'
-  localStorage.setItem(key,JSON.stringify({...JSON.parse(localStorage.getItem(key)!),savedCmaId:'cma-1'}))
+it('restores saved references without restoring an in-page model editor', async()=>{
+  install()
+  writeAllocationDraft('strategic-policy:股债分类:mandate-1', { mandateId:'mandate-1', allocationName:'股债分类', strategicUniverseId:'', implementationMappingId:'',
+    settings: policyPreview.request, policyName:'模型政策', reason:'', savedCmaId:'cma-1' })
   render(tree())
   await screen.findByRole('button',{name:'比较符合目标的政策候选'})
-  fireEvent.click(screen.getByRole('button',{name:'2. 长期假设'}))
-  expect(screen.getByLabelText('预期生成方法')).toBeDisabled()
-  expect(screen.getByRole('button',{name:'复制为新研究'})).toBeEnabled()
+  fireEvent.click(screen.getByRole('button',{name:'2. 选择 LTCMA'}))
+  expect(screen.queryByLabelText('预期生成方法')).toBeNull()
+  expect(screen.getByRole('link',{name:'复制为新研究'})).toHaveAttribute('href','/pre-investment/ltcma/new?copy=cma-1&mandate=mandate-1')
 })
 
-it('changing the selected source drops old model state and late saved responses', async()=>{
+it('changing scope discards late saved model responses', async()=>{
   let resolve!:(r:Response)=>void
   install({ '/api/strategic-allocation/cma/cma-1':()=>new Promise(done=>{resolve=done}) })
-  render(tree());const user=userEvent.setup()
-  await waitFor(()=>expect(screen.getByRole('button',{name:'填写长期假设'})).toBeEnabled())
-  await user.selectOptions(screen.getByLabelText('或者使用已保存的长期假设'),'cma-1')
+  render(tree());const user=userEvent.setup(); await screen.findByLabelText('选择已确认 LTCMA')
+  await user.selectOptions(screen.getByLabelText('选择已确认 LTCMA'),'cma-1')
   fireEvent.change(screen.getByLabelText('已保存的大类配置'),{target:{value:''}})
   await act(async()=>resolve(await response({...cmaVersion,...result})))
   expect(screen.queryByRole('button',{name:'比较符合目标的政策候选'})).toBeNull()
   fireEvent.change(screen.getByLabelText('已保存的大类配置'),{target:{value:'股债分类'}})
-  await openEditor()
-  expect(screen.getByLabelText('预期生成方法')).toHaveValue('manual')
+  await waitFor(()=>expect(screen.getByRole('button',{name:'选择已确认 LTCMA'})).toBeEnabled())
+  expect(screen.getByLabelText('选择已确认 LTCMA')).toHaveValue('')
 })

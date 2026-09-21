@@ -2277,7 +2277,7 @@ def test_tushare_download_document_tracks_executable_contract() -> None:
     module = _load_data_script()
     from backend.services.data_refresh import DATASET_SPECS, MODULE_SCOPE_FLAGS
 
-    document_path = ROOT / "TushareDownload.md"
+    document_path = ROOT / "docs/data/tushare-download.md"
     document = document_path.read_text(encoding="utf-8")
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
@@ -2296,12 +2296,12 @@ def test_tushare_download_document_tracks_executable_contract() -> None:
         if f"`{flag}`" not in document
     ]
 
-    assert not missing_actions, f"TushareDownload.md 缺少动作: {missing_actions}"
-    assert not missing_files, f"TushareDownload.md 缺少输出文件: {missing_files}"
-    assert not missing_flags, f"TushareDownload.md 缺少 CLI 参数: {missing_flags}"
+    assert not missing_actions, f"docs/data/tushare-download.md 缺少动作: {missing_actions}"
+    assert not missing_files, f"docs/data/tushare-download.md 缺少输出文件: {missing_files}"
+    assert not missing_flags, f"docs/data/tushare-download.md 缺少 CLI 参数: {missing_flags}"
     assert "代码已支持但未下载" in document
     assert "本地派生" in document
-    assert "TushareDownload.md" in agents
+    assert "docs/data/tushare-download.md" in agents
 
 
 @pytest.mark.parametrize('latest', [False, True])

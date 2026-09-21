@@ -15,7 +15,7 @@ from .kernels import cma_covariance_kernel
 V = types.Array(float64, 1, "A", readonly=True)
 M = types.Array(float64, 2, "A", readonly=True)
 D = types.Array(float64, 3, "A", readonly=True)
-VERSION = "explicit-cma-models/1.0.0"
+VERSION = "explicit-cma-models/1.1.0"
 _WARMED_PID: int | None = None
 
 
@@ -48,8 +48,8 @@ def validate_effective_returns_kernel(means):
 
 
 @njit((M, V, M, V, V, float64, float64, float64), cache=True, nogil=True)
-def black_litterman_kernel(covariance, market_weights, picks, view_returns, view_std,
-                          delta, tau, risk_free_rate):
+def black_litterman_update_kernel(covariance, market_weights, picks, view_returns, view_std,
+                                 delta, tau, risk_free_rate):
     """Joint Gaussian mean update; risk remains the caller's explicit Sigma.
 
     q_excess = q_total - rf * P1 also handles relative (+1/-1) views.
@@ -83,21 +83,19 @@ def black_litterman_kernel(covariance, market_weights, picks, view_returns, view
     residual = np.empty(views, dtype=np.float64)
     omega = np.empty(views, dtype=np.float64)
     for v in range(views):
-        positives, negatives, exposure, projected = 0, 0, 0.0, 0.0
+        gross, exposure, projected = 0.0, 0.0, 0.0
         for i in range(count):
             p = picks[v, i]
-            if p == 1:
-                positives += 1
-            elif p == -1:
-                negatives += 1
-            elif p != 0:
+            if not np.isfinite(p):
                 raise ValueError("CMA_BL_VIEW_PICK")
+            gross += abs(p)
             exposure += p
             projected += p * prior[i]
-        if positives != 1 or negatives > 1:
+        absolute = abs(exposure - 1.0) <= 1e-10
+        if not 1e-12 <= gross <= 4.0 or (not absolute and abs(exposure) > 1e-10):
             raise ValueError("CMA_BL_VIEW_PICK")
         q = view_returns[v]
-        if not np.isfinite(q) or (negatives == 0 and not -0.5 <= q <= 2) or (negatives == 1 and not -2.5 <= q <= 2.5):
+        if not np.isfinite(q) or (absolute and not -0.5 <= q <= 2) or (not absolute and not -2.5 <= q <= 2.5):
             raise ValueError("CMA_BL_VIEW_RETURN")
         omega[v] = view_std[v] * view_std[v]
         if not np.isfinite(view_std[v]) or view_std[v] <= 0 or not np.isfinite(omega[v]) or omega[v] <= 0:
@@ -105,6 +103,8 @@ def black_litterman_kernel(covariance, market_weights, picks, view_returns, view
         residual[v] = q - risk_free_rate * exposure - projected
     means = prior + risk_free_rate
     posterior = prior_covariance.copy()
+    gain_transpose = np.empty((views, count), dtype=np.float64)
+    view_prior_variance = np.empty(views, dtype=np.float64)
     if views:
         # Small workspaces are owned/contiguous for LAPACK; inputs stay shared.
         cross = np.zeros((count, views), dtype=np.float64)
@@ -117,10 +117,12 @@ def black_litterman_kernel(covariance, market_weights, picks, view_returns, view
             for u in range(views):
                 for i in range(count):
                     system[v, u] += picks[v, i] * cross[i, u]
+            view_prior_variance[v] = system[v, v]
             system[v, v] += omega[v]
         # Cholesky is a numerical SPD gate, never a regularizer or inverse.
         np.linalg.cholesky(system)
         solved = np.linalg.solve(system, cross.T.copy())
+        gain_transpose = solved
         transform = np.eye(count)
         for i in range(count):
             for v in range(views):
@@ -141,7 +143,75 @@ def black_litterman_kernel(covariance, market_weights, picks, view_returns, view
                 value = (posterior[i, j] + posterior[j, i]) * 0.5
                 posterior[i, j], posterior[j, i] = value, value
     validate_effective_returns_kernel(means)
-    return means, posterior, prior
+    return means, posterior, prior, gain_transpose, residual, view_prior_variance, omega
+
+
+@njit((M, V, M, V, V, float64, float64, float64), cache=True, nogil=True)
+def black_litterman_kernel(covariance, market_weights, picks, view_returns, view_std,
+                          delta, tau, risk_free_rate):
+    """Keep the three-result ABI; there is only one Gaussian update implementation."""
+    result = black_litterman_update_kernel(covariance, market_weights, picks, view_returns,
+                                          view_std, delta, tau, risk_free_rate)
+    return result[0], result[1], result[2]
+
+
+@njit((M, V, V, M, V, V, V), cache=True, nogil=True)
+def black_litterman_diagnostics_kernel(covariance, market_weights, prior, gain_transpose,
+                                      residual, view_prior_variance, omega):
+    """Explain an already solved update; influence is not a probability or blend weight."""
+    count, views = prior.size, residual.size
+    if (covariance.shape != (count, count) or market_weights.size != count
+            or gain_transpose.shape != (views, count) or view_prior_variance.size != views or omega.size != views):
+        raise ValueError("CMA_BL_AXIS")
+    market_variance, market_excess = 0.0, 0.0
+    contributions = np.empty((views, count), dtype=np.float64)
+    shift = np.zeros(count, dtype=np.float64)
+    ratio = np.empty(views, dtype=np.float64)
+    for i in range(count):
+        market_excess += market_weights[i] * prior[i]
+        for j in range(count):
+            market_variance += market_weights[i] * covariance[i, j] * market_weights[j]
+        for v in range(views):
+            contributions[v, i] = gain_transpose[v, i] * residual[v]
+            shift[i] += contributions[v, i]
+    for v in range(views):
+        ratio[v] = view_prior_variance[v] / omega[v]
+    volatility = np.sqrt(max(0.0, market_variance))
+    sharpe = market_excess / volatility if volatility > 1e-15 else np.nan
+    return market_excess, volatility, sharpe, ratio, contributions, shift
+
+
+@njit((V, M, D, types.boolean), cache=True, nogil=True)
+def mixture_moments_kernel(probabilities, scenario_means, risk_covariances, shared_risk):
+    """Frequency-neutral total covariance, shared by scenarios and state evidence."""
+    scenarios, count = scenario_means.shape
+    if (probabilities.size != scenarios or scenarios < 1 or scenarios > 60 or count < 1 or count > 30
+            or risk_covariances.shape != (1 if shared_risk else scenarios, count, count)):
+        raise ValueError("CMA_SCENARIO_AXIS")
+    means = np.zeros(count, dtype=np.float64)
+    total = 0.0
+    for s in range(scenarios):
+        p = probabilities[s]
+        if not np.isfinite(p) or p < 0 or p > 1:
+            raise ValueError("CMA_SCENARIO_PROBABILITY")
+        total += p
+        for i in range(count):
+            if not np.isfinite(scenario_means[s, i]):
+                raise ValueError("CMA_SCENARIO_MEAN")
+            means[i] += p * scenario_means[s, i]
+    if abs(total - 1.0) > 1e-8:
+        raise ValueError("CMA_SCENARIO_PROBABILITY")
+    within = np.zeros((count, count), dtype=np.float64)
+    between = np.zeros((count, count), dtype=np.float64)
+    for s in range(scenarios):
+        risk = 0 if shared_risk else s
+        for i in range(count):
+            for j in range(count):
+                if not np.isfinite(risk_covariances[risk, i, j]):
+                    raise ValueError("CMA_SCENARIO_RISK")
+                within[i, j] += probabilities[s] * risk_covariances[risk, i, j]
+                between[i, j] += probabilities[s] * (scenario_means[s, i] - means[i]) * (scenario_means[s, j] - means[j])
+    return means, within + between, within, between
 
 
 @njit((V, M, D, types.boolean), cache=True, nogil=True)
@@ -166,22 +236,16 @@ def scenario_mixture_kernel(probabilities, scenario_means, risk_covariances, sha
             means[i] += p * scenario_means[s, i]
     if abs(total - 1) > 1e-8:
         raise ValueError("CMA_SCENARIO_PROBABILITY")
-    within = np.zeros((count, count), dtype=np.float64)
-    between = np.zeros((count, count), dtype=np.float64)
-    for s in range(scenarios):
-        risk = 0 if shared_risk else s
-        for i in range(count):
-            for j in range(count):
-                within[i, j] += probabilities[s] * risk_covariances[risk, i, j]
-                between[i, j] += probabilities[s] * (scenario_means[s, i] - means[i]) * (scenario_means[s, j] - means[j])
-    covariance = within + between
+    means, covariance, within, between = mixture_moments_kernel(
+        probabilities, scenario_means, risk_covariances, shared_risk)
     validate_effective_returns_kernel(means)
     covariance_diagnostics_kernel(covariance)
     return means, covariance, within, between
 
 
 KERNELS = (covariance_diagnostics_kernel, validate_effective_returns_kernel,
-           black_litterman_kernel, scenario_mixture_kernel)
+           black_litterman_update_kernel, black_litterman_kernel, black_litterman_diagnostics_kernel,
+           mixture_moments_kernel, scenario_mixture_kernel)
 for dispatcher in KERNELS:
     dispatcher.disable_compile()
 
@@ -214,6 +278,8 @@ def warm():
         array.flags.writeable = False
     black_litterman_kernel(covariance, weights, picks, q, std, 2., 0.05, 0.02)
     black_litterman_kernel(covariance, weights, picks[:0], q[:0], std[:0], 2., 0.05, 0.02)
+    solved = black_litterman_update_kernel(covariance, weights, picks, q, std, 2., .05, .02)
+    black_litterman_diagnostics_kernel(covariance, weights, solved[2], solved[3], solved[4], solved[5], solved[6])
     means = np.array([[0.04, 0.03], [0.08, 0.02]])[:, ::-1]
     risks = covariance[None, :, :]
     scenario_mixture_kernel(np.array([0.4, 0.6]), means, risks, True)

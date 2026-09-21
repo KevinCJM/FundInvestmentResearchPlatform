@@ -7,23 +7,67 @@
       "title": "strategic_scope_effective_models_and_execution_evidence",
       "severity": "high",
       "confidence": "high",
-      "risk_codes": ["implementation_scope_conflation", "stale_effective_cma", "cash_liquidity_conflation", "execution_clock_leakage", "direct_bridge_bypass"],
-      "symptoms": ["Pure forward SAA is blocked by product-only navigation, or missing products erase strategic budgets.", "Model output is displayed while funding or TAA consumes old manual moments.", "Changing execution frequency changes cost basis or hides actual holding-budget breaches."],
-      "trigger_actions": ["change mandates, strategic universes, implementation maps or CMA generation", "change SAA policy consumption, TAA signals, clocks or product handoff"],
-      "related_paths": ["backend/strategic_allocation/cma_application.py", "backend/strategic_allocation/sources.py", "backend/strategic_allocation/institution.py", "backend/tactical_allocation/clocks.py", "backend/tactical_allocation/signals.py", "backend/tactical_allocation/portfolio_bridge.py", "frontend/src/layouts/StageLayout.tsx", "backend/tactical_allocation/service.py", "frontend/src/pages/TacticalAllocationWorkspace.tsx", "frontend/src/components/strategic-scope/ImplementationMappingEditor.tsx", "frontend/src/components/tactical-allocation/TaaPolicySignals.tsx"],
-      "affected_modules": ["strategic_allocation_policy", "tactical_allocation_workbench", "frontend_allocation_workflows"],
-      "blast_radius": ["policy validity", "funding diagnosis", "tactical costs and timing", "immutable source lineage", "product budget preservation"],
+      "risk_codes": [
+        "implementation_scope_conflation",
+        "stale_effective_cma",
+        "cash_liquidity_conflation",
+        "execution_clock_leakage",
+        "direct_bridge_bypass"
+      ],
+      "symptoms": [
+        "Pure forward SAA is blocked by product-only navigation, or missing products erase strategic budgets.",
+        "Model output is displayed while funding or TAA consumes old manual moments.",
+        "Changing execution frequency changes cost basis or hides actual holding-budget breaches."
+      ],
+      "trigger_actions": [
+        "change mandates, strategic universes, implementation maps or CMA generation",
+        "change SAA policy consumption, TAA signals, clocks or product handoff"
+      ],
+      "related_paths": [
+        "backend/strategic_allocation/cma_application.py",
+        "backend/strategic_allocation/sources.py",
+        "backend/strategic_allocation/institution.py",
+        "backend/tactical_allocation/clocks.py",
+        "backend/tactical_allocation/signals.py",
+        "backend/tactical_allocation/portfolio_bridge.py",
+        "frontend/src/layouts/StageLayout.tsx",
+        "backend/tactical_allocation/service.py",
+        "frontend/src/pages/TacticalAllocationWorkspace.tsx",
+        "frontend/src/components/strategic-scope/ImplementationMappingEditor.tsx",
+        "frontend/src/components/tactical-allocation/TaaPolicySignals.tsx",
+        "backend/strategic_allocation/compatibility.py",
+        "backend/strategic_allocation/compatibility_solver.py",
+        "backend/strategic_allocation/compatibility_kernels.py",
+        "backend/qp_numba.py"
+      ],
+      "affected_modules": [
+        "strategic_allocation_policy",
+        "tactical_allocation_workbench",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "policy validity",
+        "funding diagnosis",
+        "tactical costs and timing",
+        "immutable source lineage",
+        "product budget preservation"
+      ],
       "check_before_edit": [
         "Preserve product-first workflows. Independent strategic definitions may support CMA/SAA without NAV; missing maps remain explicit and block TAA/product implementation. Completing a map creates new versions, never rewrites old policies.",
         "Consume frozen effective moments through cma_application in search, funding and policy risk. Preserve raw model identity and hashes; posterior mean uncertainty is not asset-return risk. Never refit historical artifacts.",
+        "LTCMA V2 does not require mandate or product implementation mapping. Select the mapping at SAA policy creation without changing CMA evidence; old mapping-bound records retain their original contract. Retirement blocks new SAA/prior use while historical versions remain readable. NIW publication must recheck prior eligibility and save under the retirement governance lock; completed idempotent replay remains historical. Switching the editor to continuation clears recenter strengths and reuse consent. The SAA CMA deep link initializes once and must not override subsequent user selection or clearing during pending reads.",
+        "Historical LTCMA needs an SSE calendar covering the requested end, including closed dates. A stale calendar and equally truncated NAV must not silently shorten the sample. Switching a statistical draft from strategic proxies to a product allocation clears proxy_inputs. State occupancy, applied probabilities, unestimated states and NIW asset-risk versus mean-uncertainty evidence remain distinct.",
         "Cash-purpose floors require explicit liquid liquidity-role assets. Institutional manual evidence retains every topic, date and reason; researcher records are not independent approval.",
         "Preserve original four-candidate and daily-target outputs. Risk budgets compare signed Euler shares over finite candidates; zero variance is unavailable. New kernels require actual invocation, fixed signatures and PID-bound warmup.",
+        "Box mean uncertainty and the opt-in single-CMA ellipsoid are distinct models. Preserve default box request echoes and frozen history; never substitute return covariance for missing mean covariance. Gaussian, NIW-t and finite-sample Hotelling radii have different calibrations. Nonzero variance coordinates, not numerical rank thresholds, determine the implemented dimension; singular or shrunk sample plug-in coverage needs explicit approximation consent. Multi-CMA mean-error dependence is not inferred. BL basket views reuse the original Gaussian update; diagnostics must not change asset risk or declared half-widths. State ML denominators preserve the total-moment identity, transition diagnostics do not create a multi-year forecast, and moment-proxy funding does not preserve native scenario tails.",
         "Separate observation, decision and execution clocks. Preserve drift, lag, explicit cost basis, actual-path budget diagnostics and training-only selection. Fixed-target stress is not strategy replay.",
         "Every positive-weight signal component must be known, complete and unexpired, without missing-component renormalization. External value/carry/macro labels do not license fabricating scores from NAV.",
         "Use actual dated holdings for thresholds and recheck current holdings at the shared product bridge. Policy/mapping expiry needs explicit reasons. Navigation references are not current eligibility proofs.",
         "Composite recommendation expiry uses each positive component age/expiry at the adopted lag-mature decision, capped by research and policy review dates; never reuse the old momentum/regime global age or a pending signal expiry.",
         "Restoring a TAA baseline or saved decision atomically restores its frozen mandate, strategic universe and mapping references, explicitly clearing absent references. Immutable mapping reads are independent of PIT initialization; clock changes invalidate computations, not saved history.",
-        "Changing an external signal kind resets both its visible JSON and submitted observations; preserve incomplete JSON while typing and block calculation until it is valid."
+        "Changing an external signal kind resets both its visible JSON and submitted observations; preserve incomplete JSON while typing and block calculation until it is valid.",
+        "For parameter-average SAA, validate every source hash, V2 semantic basis, economic/proxy identity and retirement state. E2 uses the shared mixture kernel within covariance, never its total covariance or squared model weights. Preserve the fused policy marker and complete frozen multi_cma evidence; missing evidence must not fall back to legacy manual assumptions. Cross-model failures remain visible diagnostics, not an implicit all-model gate. Bound total funding work and final metadata before writing so an accepted policy remains readable.",
+        "Compatible-all-model policies require every frozen source to pass; display-only average moments cannot authorize adoption or TAA. Preserve the mode, compatibility gate and source hashes together. Solver timeout, iteration exhaustion and unresolved Phase I are not infeasibility. The compiled outer state machine owns iteration state, cut accumulation, objective bounds and numerical stopping; Python only schedules wall-clock checks between masters. Warm and audit this state machine itself, not only its LP substeps. A positive normalized Phase-I objective lower bound may certify a conflict; zero relaxed objective still requires original risk checks. Funding failure applies only to the generated common candidate, not the full feasible set; confirm using an independent stream for each model. Numeric execution audits must include the shared frontend backend/nopython/object_mode fields as well as PID-bound warmup."
       ],
       "safe_observation_methods": [
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_cma_model_integration.py backend/tests/test_bettersaataa_m1.py backend/tests/test_tactical_allocation_clocks_signals.py backend/tests/test_bettersaataa_final_audit.py -q",
@@ -35,14 +79,66 @@
       "title": "published_sensitivity_and_scenario_boundaries",
       "severity": "high",
       "confidence": "high",
-      "risk_codes": ["conditional_model_misread_as_causal", "stale_data_refreshed_by_requested_asof", "silent_release_substitution", "unconfirmed_preview_persistence", "impact_persistence_without_publish", "incomplete_exposure_reweighting", "period_shock_double_counting", "negative_input_sign_loss"],
-      "symptoms": ["A scenario label or hardcoded beta is presented as a calibrated macro model.", "Opening a product page fits a model or reads complete training panels.", "A model/cashflow/scenario preview creates files before the user confirms publication.", "A product or portfolio stress calculation is persisted even though the workflow has no confirm-publish action.", "A past-data model becomes fresh merely by changing as_of to today.", "A negative shock is converted to a positive number while typing, or blank input becomes zero.", "Missing held assets disappear from portfolio P&L or new holdings are applied to an old result."],
-      "trigger_actions": ["edit risk-model or scenario-transmission research", "change preview, publication, artifact persistence or published-scenario application", "connect business pages to published exposure artifacts"],
-      "related_paths": ["backend/sensitivity/service.py", "backend/sensitivity/kernels.py", "backend/sensitivity/repository.py", "backend/scenario_stress/published.py", "frontend/src/components/risk-models/PublishedRiskPanel.tsx", "frontend/src/components/risk-models/ResearchUI.tsx", "frontend/src/pages/PublishedScenarioCenter.tsx"],
-      "affected_modules": ["published_risk_scenario_research"],
-      "blast_radius": ["model validation", "scenario economic interpretation", "portfolio stress P&L", "immutable research history"],
-      "check_before_edit": ["Keep statistical holdout validation distinct from identified causality or certified historical PIT. Event names never supply numerical coefficients.", "Unconfirmed model, cashflow, transmission and scenario previews are pure calculations: they must not call ArtifactRepository.save, create directories/locks, or persist frozen arrays. Only an explicit confirm-publish request may write research artifacts, after server-side recomputation/compilation matches the preview hash.", "Product and portfolio stress impacts are transient because that workflow has no confirm-publish action. Do not reintroduce impact caching/persistence or a normal saved-impact history without an explicit product decision and publication workflow; old persisted impact IDs are read-only compatibility only.", "Freeze definitions, input contracts, training outputs and publication times only on confirmed publication. Expiry uses actual joint-sample data_as_of; requested as_of does not refresh stale data. Collinear failed fits still have readable counts and blockers.", "Match variable ID, contract hash and frequency; risk-return percent display, bp, percentage-point and point changes are not interchangeable. Every path row is a period change, not an accumulated level.", "Use published coefficients or fixed-cashflow repricing, never manually editable betas or automatic training on consumption. Runtime reads only required mmap arrays; publication verifies complete artifacts. Cashflow repricing requires the parallel-yield semantic contract: a bp unit alone never licenses treating Shibor or policy rates as bond yield. Calendar coverage includes known closed days and is required only through the last complete analysis period.", "Use stored end holdings derived from last beginning weights and last returns. Reject every missing nonzero exposure, preserve buy-and-hold versus explicit zero-cost constant weighting, and reconcile contributions to terminal wealth. Portfolio comparisons pin the same scenario, exposure release, date, notional and holding policy; show both holdings dates and do not show a partial comparison when either request fails.", "Require explicit unchanged-other-factors consent. Deterministic conditional paths do not supply probabilities, VaR or ES.", "Keep pinned missing/retired/expired releases visible as unavailable; never silently replace them. Reject stale drafts and ignore late requests from another product.", "Retain incomplete signed input until it becomes a valid number; test negative, fractional, empty and external reset cases. Bound form containers so wide tables do not widen a mobile page.", "Guard the managed data disk before confirmed publication reads/writes; no mkdir fallback on offline storage. Historical immutable published results remain readable after retirement without recalculation. Explicit source-data import remains a persisted data operation and is not treated as an unconfirmed research preview."],
-      "safe_observation_methods": ["python3 -m pytest backend/tests/test_published_risk_models.py -q", "npm run test --prefix frontend -- --run PublishedRiskFlow.test.tsx ResearchUI.test.tsx riskModels.test.ts", "npm run test:e2e --prefix frontend -- --config=playwright.risk.config.ts --workers=1"]
+      "risk_codes": [
+        "conditional_model_misread_as_causal",
+        "stale_data_refreshed_by_requested_asof",
+        "silent_release_substitution",
+        "unconfirmed_preview_persistence",
+        "impact_persistence_without_publish",
+        "incomplete_exposure_reweighting",
+        "period_shock_double_counting",
+        "negative_input_sign_loss"
+      ],
+      "symptoms": [
+        "A scenario label or hardcoded beta is presented as a calibrated macro model.",
+        "Opening a product page fits a model or reads complete training panels.",
+        "A model/cashflow/scenario preview creates files before the user confirms publication.",
+        "A product or portfolio stress calculation is persisted even though the workflow has no confirm-publish action.",
+        "A past-data model becomes fresh merely by changing as_of to today.",
+        "A negative shock is converted to a positive number while typing, or blank input becomes zero.",
+        "Missing held assets disappear from portfolio P&L or new holdings are applied to an old result."
+      ],
+      "trigger_actions": [
+        "edit risk-model or scenario-transmission research",
+        "change preview, publication, artifact persistence or published-scenario application",
+        "connect business pages to published exposure artifacts"
+      ],
+      "related_paths": [
+        "backend/sensitivity/service.py",
+        "backend/sensitivity/kernels.py",
+        "backend/sensitivity/repository.py",
+        "backend/scenario_stress/published.py",
+        "frontend/src/components/risk-models/PublishedRiskPanel.tsx",
+        "frontend/src/components/risk-models/ResearchUI.tsx",
+        "frontend/src/pages/PublishedScenarioCenter.tsx"
+      ],
+      "affected_modules": [
+        "published_risk_scenario_research"
+      ],
+      "blast_radius": [
+        "model validation",
+        "scenario economic interpretation",
+        "portfolio stress P&L",
+        "immutable research history"
+      ],
+      "check_before_edit": [
+        "Keep statistical holdout validation distinct from identified causality or certified historical PIT. Event names never supply numerical coefficients.",
+        "Unconfirmed model, cashflow, transmission and scenario previews are pure calculations: they must not call ArtifactRepository.save, create directories/locks, or persist frozen arrays. Only an explicit confirm-publish request may write research artifacts, after server-side recomputation/compilation matches the preview hash.",
+        "Product and portfolio stress impacts are transient because that workflow has no confirm-publish action. Do not reintroduce impact caching/persistence or a normal saved-impact history without an explicit product decision and publication workflow; old persisted impact IDs are read-only compatibility only.",
+        "Freeze definitions, input contracts, training outputs and publication times only on confirmed publication. Expiry uses actual joint-sample data_as_of; requested as_of does not refresh stale data. Collinear failed fits still have readable counts and blockers.",
+        "Match variable ID, contract hash and frequency; risk-return percent display, bp, percentage-point and point changes are not interchangeable. Every path row is a period change, not an accumulated level.",
+        "Use published coefficients or fixed-cashflow repricing, never manually editable betas or automatic training on consumption. Runtime reads only required mmap arrays; publication verifies complete artifacts. Cashflow repricing requires the parallel-yield semantic contract: a bp unit alone never licenses treating Shibor or policy rates as bond yield. Calendar coverage includes known closed days and is required only through the last complete analysis period.",
+        "Use stored end holdings derived from last beginning weights and last returns. Reject every missing nonzero exposure, preserve buy-and-hold versus explicit zero-cost constant weighting, and reconcile contributions to terminal wealth. Portfolio comparisons pin the same scenario, exposure release, date, notional and holding policy; show both holdings dates and do not show a partial comparison when either request fails.",
+        "Require explicit unchanged-other-factors consent. Deterministic conditional paths do not supply probabilities, VaR or ES.",
+        "Keep pinned missing/retired/expired releases visible as unavailable; never silently replace them. Reject stale drafts and ignore late requests from another product.",
+        "Retain incomplete signed input until it becomes a valid number; test negative, fractional, empty and external reset cases. Bound form containers so wide tables do not widen a mobile page.",
+        "Guard the managed data disk before confirmed publication reads/writes; no mkdir fallback on offline storage. Historical immutable published results remain readable after retirement without recalculation. Explicit source-data import remains a persisted data operation and is not treated as an unconfirmed research preview."
+      ],
+      "safe_observation_methods": [
+        "python3 -m pytest backend/tests/test_published_risk_models.py -q",
+        "npm run test --prefix frontend -- --run PublishedRiskFlow.test.tsx ResearchUI.test.tsx riskModels.test.ts",
+        "npm run test:e2e --prefix frontend -- --config=playwright.risk.config.ts --workers=1"
+      ]
     },
     {
       "id": "P19",
@@ -76,7 +172,7 @@
         "backend/services/product_pool_routes.py",
         "frontend/src/components/FactorEvidencePanel.tsx",
         "frontend/e2e/factor-research-live.spec.ts",
-        "因子研究中心_首套因子验收.md"
+        "docs/verification/factors.md"
       ],
       "affected_modules": [
         "factor_research_center",
@@ -166,12 +262,16 @@
       "confidence": "high",
       "risk_codes": [
         "routing_memory_drift",
-        "routing_only_scope_leak"
+        "routing_only_scope_leak",
+        "covered_read_requirements_missing_from_route_context",
+        "stable_files_exempted_as_local_artifacts"
       ],
       "symptoms": [
         "task_routes duplicates repo_map operational file lists.",
         "routing-only changes accidentally include business code.",
-        "AGENTS.md is used as a dumping ground for project facts instead of protocol."
+        "AGENTS.md is used as a dumping ground for project facts instead of protocol.",
+        "A read_before_edit path passes coverage/path validation but is absent from route_task context because read_before_edit is absent from operational_list_resolution.apply_to_fields and from the rendered first_read/then_check lists.",
+        "Stable source, test, config or documentation paths are exempted by allowed_untracked_globs, masking files missing from Git."
       ],
       "trigger_actions": [
         "edit AGENTS.md or docs routing JSON",
@@ -208,11 +308,14 @@
       "check_before_edit": [
         "Keep routing facts in JSON owners.",
         "Run evolve and validate after routing changes.",
-        "Use routing-only changed-file lists for routing-only work."
+        "Use routing-only changed-file lists for routing-only work.",
+        "Put mandatory module reading in first_read_files and inspect the actual route_task context; path coverage alone does not prove an agent will receive the requirement.",
+        "Restrict allowed_untracked_globs to genuine local diagnostic/cache artifacts. Keep new stable references visible as reproducibility failures until they are included in an authorized Git submission scope."
       ],
       "safe_observation_methods": [
         "python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --routing-only --changed-file <path> --json",
-        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R70 --mode context"
       ]
     },
     {
@@ -344,7 +447,7 @@
         "backend/trading_calendar.py",
         "backend/services/analytics_routes.py",
         "backend/services/strategy_routes.py",
-        "docs/requirements.md",
+        "docs/product/requirements.md",
         "backend/tests/test_strategy_api.py",
         "backend/tests/test_analytics_routes.py"
       ],
@@ -369,7 +472,7 @@
         "Do not add large or sensitive local data files as routing references unless they are intentionally tracked artifacts."
       ],
       "safe_observation_methods": [
-        "rg -n \"read_parquet|to_parquet|DATA_DIR|trade_day_df|asset_nv|etf_info_df|etf_daily_df\" backend config.py T01_get_data.py docs/requirements.md",
+        "rg -n \"read_parquet|to_parquet|DATA_DIR|trade_day_df|asset_nv|etf_info_df|etf_daily_df\" backend config.py T01_get_data.py docs/product/requirements.md",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
       ]
     },
@@ -401,7 +504,11 @@
         "backend/cal_indicators/latex_excutor.py",
         "backend/cal_indicators/numba_finance_math.py",
         "backend/tests/test_numba_finance_math.py",
-        "backend/tests/test_numba_finance_indicators.py"
+        "backend/tests/test_numba_finance_indicators.py",
+        "backend/cal_indicators/cpp_aot.py",
+        "backend/tests/test_cpp_aot_contracts.py",
+        "backend/compute_policy.py",
+        "frontend/src/utils/fixedNjitExecution.ts"
       ],
       "affected_modules": [
         "backend_indicator_runtime",
@@ -415,7 +522,8 @@
       "check_before_edit": [
         "Keep runtime definitions in memory and treat generated DSL JSON as optional metadata only.",
         "Run malicious/invalid AST, operator arity/type, DAG budget, finite scalar-leaf and shared-node failure-isolation tests. Preserve legacy single-root behavior and keep named output identities explicit.",
-        "Keep NetworkX optional and do not make execution topology depend on DOT export support."
+        "Keep NetworkX optional and do not make execution topology depend on DOT export support.",
+        "C++ AOT adaptation must preserve N NAV versus N-1 interval returns, metric-scoped parameter slots, historical source versions and per-root failure isolation. Resolve source-contract defaults by DSL and reject mismatches before native compilation; recording unvalidated version strings in the fingerprint is not a compatibility check. Prepared run/run_audit borrows output; retained results require run_snapshot. Platform prepare must wrap all three run methods and validate each result audit before returning; validating only execute is insufficient. Every result must match the bound graph fingerprint and method-specific lifetime (execute/snapshot independent; prepared run/audit borrowed), and third-party C++ feature/postprocess stages require their own complete matching audits. Never fabricate NJIT signatures for native execution or infer that service warmup was removed."
       ],
       "safe_observation_methods": [
         "cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q",
@@ -522,7 +630,7 @@
         "backend/backtest_engine.py",
         "backend/tests/test_strategy_api.py",
         "frontend/src/pages/ClassAllocation.tsx",
-        "docs/weight_reuse_task_plan.md"
+        "docs/pre-investment/historical-frontier.md"
       ],
       "affected_modules": [
         "backend_strategy_routes",
@@ -546,7 +654,7 @@
     },
     {
       "id": "P09",
-  "title": "frontend_managed_external_api_tokens_must_remain_local_private_and_redacted",
+      "title": "frontend_managed_external_api_tokens_must_remain_local_private_and_redacted",
       "severity": "high",
       "confidence": "high",
       "risk_codes": [
@@ -556,10 +664,10 @@
       ],
       "symptoms": [
         "A data ingestion script contains a hardcoded third-party API token value.",
-    "A future agent quotes token values in summaries, logs, or routing memory.",
-      "A Token configuration endpoint returns the submitted value or persists it in task state.",
-      "Tushare integration reads the legacy process environment instead of the frontend-managed local credential.",
-      "Calling tushare.set_token writes an extra tk.csv credential file in the user's home directory."
+        "A future agent quotes token values in summaries, logs, or routing memory.",
+        "A Token configuration endpoint returns the submitted value or persists it in task state.",
+        "Tushare integration reads the legacy process environment instead of the frontend-managed local credential.",
+        "Calling tushare.set_token writes an extra tk.csv credential file in the user's home directory."
       ],
       "trigger_actions": [
         "edit data ingestion scripts",
@@ -571,9 +679,9 @@
         "T01_get_data.py",
         "config.py",
         "backend/services/data_refresh.py",
-    "backend/services/data_routes.py",
-    "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
-    "frontend/src/components/dashboard/useDataRefresh.ts",
+        "backend/services/data_routes.py",
+        "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
+        "frontend/src/components/dashboard/useDataRefresh.ts",
         "AGENTS.md"
       ],
       "affected_modules": [
@@ -586,15 +694,15 @@
       ],
       "check_before_edit": [
         "Do not copy or quote token literal values.",
-    "Persist the frontend-supplied Token only in the ignored data/.tushare_token file with 0600 permissions and atomic replacement.",
-      "Never return the Token, put it in command arguments or persisted job state, or allow changes while the refresh lock is held.",
-      "Keep config.require_tushare_token on the same local credential file and explicitly ignore legacy TUSHARE_TOKEN environment values.",
-      "Pass the frontend-managed Token directly to tushare.pro_api(token); do not call tushare.set_token or create a second home-directory credential file."
+        "Persist the frontend-supplied Token only in the ignored data/.tushare_token file with 0600 permissions and atomic replacement.",
+        "Never return the Token, put it in command arguments or persisted job state, or allow changes while the refresh lock is held.",
+        "Keep config.require_tushare_token on the same local credential file and explicitly ignore legacy TUSHARE_TOKEN environment values.",
+        "Pass the frontend-managed Token directly to tushare.pro_api(token); do not call tushare.set_token or create a second home-directory credential file."
       ],
       "safe_observation_methods": [
-    "rg -n \"TOKEN|token|TUSHARE\" config.py T01_get_data.py backend/services/data_refresh.py backend/services/data_routes.py frontend/src/components/dashboard",
-    "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py -q",
-    "npm run test --prefix frontend -- --run src/App.test.tsx src/components/dashboard/useDataRefresh.test.tsx"
+        "rg -n \"TOKEN|token|TUSHARE\" config.py T01_get_data.py backend/services/data_refresh.py backend/services/data_routes.py frontend/src/components/dashboard",
+        "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py -q",
+        "npm run test --prefix frontend -- --run src/App.test.tsx src/components/dashboard/useDataRefresh.test.tsx"
       ]
     },
     {
@@ -626,7 +734,7 @@
         "backend/tests/test_instrument_routes.py",
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
-        "docs/requirements.md"
+        "docs/product/requirements.md"
       ],
       "affected_modules": [
         "backend_etf_product_api",
@@ -659,32 +767,32 @@
         "browser_triggered_writes",
         "unbounded_subprocess_output",
         "full_refresh_partial_exposure",
-      "snapshot_failure_duplicate_fetch",
-      "incremental_overlap_regression",
-      "incremental_date_schema_drift",
-      "parallel_refresh_rate_limit_or_concurrent_write",
-      "unchanged_incremental_rewrites_full_history",
-      "backend_restart_interrupts_supervised_web_refresh",
-      "silent_large_parquet_merge_triggers_idle_timeout"
+        "snapshot_failure_duplicate_fetch",
+        "incremental_overlap_regression",
+        "incremental_date_schema_drift",
+        "parallel_refresh_rate_limit_or_concurrent_write",
+        "unchanged_incremental_rewrites_full_history",
+        "backend_restart_interrupts_supervised_web_refresh",
+        "silent_large_parquet_merge_triggers_idle_timeout"
       ],
       "symptoms": [
         "CLI and Web jobs run simultaneously because they do not use the same lock file on the same local filesystem.",
         "A public production deployment exposes a write endpoint without an explicit enable decision.",
         "Full-refresh files become visible before read-only validation and atomic manifest activation complete.",
-      "A successful Tushare fetch is repeated because local snapshot post-processing failed.",
-      "Late or revised observations are skipped because incremental overlap rows do not replace matching stored keys.",
-      "Incremental merge mixes string or integer stored dates with Timestamp values and Arrow conversion fails before schema alignment.",
-      "Independent worker limiters or worker-side Parquet writes exceed the account quota or expose partially merged data.",
-      "An empty or identical incremental window rewrites a multi-gigabyte Parquet file and rebuilds the complete analytics snapshot even though no observable data changed.",
-      "A Web-started refresh loses its supervising process during an API restart and is later surfaced only as a generic interrupted job, even though already-landed files remain reusable.",
-      "A multi-gigabyte streaming merge performs real work but emits no stdout for longer than the idle timeout, so the supervisor can mistake it for a stalled child."
+        "A successful Tushare fetch is repeated because local snapshot post-processing failed.",
+        "Late or revised observations are skipped because incremental overlap rows do not replace matching stored keys.",
+        "Incremental merge mixes string or integer stored dates with Timestamp values and Arrow conversion fails before schema alignment.",
+        "Independent worker limiters or worker-side Parquet writes exceed the account quota or expose partially merged data.",
+        "An empty or identical incremental window rewrites a multi-gigabyte Parquet file and rebuilds the complete analytics snapshot even though no observable data changed.",
+        "A Web-started refresh loses its supervising process during an API restart and is later surfaced only as a generic interrupted job, even though already-landed files remain reusable.",
+        "A multi-gigabyte streaming merge performs real work but emits no stdout for longer than the idle timeout, so the supervisor can mistake it for a stalled child."
       ],
       "trigger_actions": [
         "enable DATA_REFRESH_ENABLED in production",
         "change refresh lock, persisted state, heartbeat, subprocess logging, or timeout behavior",
-      "change full-refresh staging, validation, or manifest activation",
-      "change date overlap, merge precedence, checkpoint, empty response, or atomic write behavior",
-      "change refresh worker count, request frequency, or date/code thread-pool scheduling"
+        "change full-refresh staging, validation, or manifest activation",
+        "change date overlap, merge precedence, checkpoint, empty response, or atomic write behavior",
+        "change refresh worker count, request frequency, or date/code thread-pool scheduling"
       ],
       "related_paths": [
         "T01_get_data.py",
@@ -701,7 +809,7 @@
         "frontend/src/pages/Dashboard.tsx",
         "frontend/src/components/dashboard/useDataRefresh.ts",
         "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
-        "docs/tushare_data_refresh_design.md"
+        "docs/data/etl.md"
       ],
       "affected_modules": [
         "data_ingestion_config",
@@ -731,11 +839,11 @@
         "Stream a bounded, redacted log tail instead of capture_output, retain checkpoints after interruption, and expose persisted modules/scopes as a safe one-click retry contract when the supervising API process is lost.",
         "Long local Parquet merges must emit flushed progress often enough to refresh the supervisor's activity timer; do not treat a silent CPU-bound merge as idle.",
         "Write full refreshes to an isolated version, build the local metrics snapshot, validate it, and atomically switch the manifest; keep the old manifest on any failure.",
-      "Treat analytics rebuild or promotion failure as a warning after successful fetching so operators can rebuild locally without another Tushare call.",
-      "Refetch the configured trading-day overlap and let incoming rows replace matching keys while preserving atomic sorted output.",
-      "Normalize date values before deduplication, then serialize them back to the existing Parquet Arrow date-column type before conversion and atomic replacement.",
-      "Make every worker share the source/API quota and retry policy; keep pagination sequential within each date. Workers may atomically write their own disjoint request checkpoints, never the shared final output. Only the coordinator publishes the fully validated final Parquet.",
-      "Copy untouched instrument groups in Arrow, preserve the original Parquet when the merged content is identical, and reuse a non-stale analytics snapshot only when every analytics source fingerprint is unchanged."
+        "Treat analytics rebuild or promotion failure as a warning after successful fetching so operators can rebuild locally without another Tushare call.",
+        "Refetch the configured trading-day overlap and let incoming rows replace matching keys while preserving atomic sorted output.",
+        "Normalize date values before deduplication, then serialize them back to the existing Parquet Arrow date-column type before conversion and atomic replacement.",
+        "Make every worker share the source/API quota and retry policy; keep pagination sequential within each date. Workers may atomically write their own disjoint request checkpoints, never the shared final output. Only the coordinator publishes the fully validated final Parquet.",
+        "Copy untouched instrument groups in Arrow, preserve the original Parquet when the merged content is identical, and reuse a non-stale analytics snapshot only when every analytics source fingerprint is unchanged."
       ],
       "safe_observation_methods": [
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_tushare_data_script.py backend/tests/test_data_refresh.py -q",
@@ -1028,10 +1136,10 @@
       "risk_codes": [
         "synthetic_data_leak",
         "period_boundary_drift",
-      "variable_availability_fail_open",
-      "static_product_kind_blocks_real_fields",
-      "existing_indicator_composition_revision_drift",
-      "display_latex_implementation_leak",
+        "variable_availability_fail_open",
+        "static_product_kind_blocks_real_fields",
+        "existing_indicator_composition_revision_drift",
+        "display_latex_implementation_leak",
         "as_of_announcement_lookahead",
         "optimistic_lock_bypass",
         "ranking_missing_as_zero",
@@ -1040,10 +1148,10 @@
       "symptoms": [
         "A missing parquet file silently falls back to simulated prices or a zero-valued metric.",
         "1W or calendar-month/year windows use a different boundary rule across preview, detail, comparison, and ranking.",
-      "A conditional Tushare variable is offered without checking the selected product, period, and historical as-of date, or an availability-service failure is treated as available.",
-      "An indicator is rejected only because its catalog product-kind hint differs, without checking the formula's actual required fields for that product.",
-      "An existing indicator is inserted by mutable ID or copied from stale client state instead of being resolved and checked by locked revision and matching protocol versions.",
-      "The headline LaTeX expands rolling-window loops, missing-value branches, or recursive implementation details instead of using compact mathematical operator symbols.",
+        "A conditional Tushare variable is offered without checking the selected product, period, and historical as-of date, or an availability-service failure is treated as available.",
+        "An indicator is rejected only because its catalog product-kind hint differs, without checking the formula's actual required fields for that product.",
+        "An existing indicator is inserted by mutable ID or copied from stale client state instead of being resolved and checked by locked revision and matching protocol versions.",
+        "The headline LaTeX expands rolling-window loops, missing-value branches, or recursive implementation details instead of using compact mathematical operator symbols.",
         "A fund NAV field is exposed for a historical as-of date before its announcement date, or partial field coverage is silently treated as complete.",
         "An update or delete omits revision, or a saved plan runs the latest indicator instead of its locked historical version.",
         "A product with any missing selected metric is normalized as zero and included in ranking."
@@ -1052,9 +1160,9 @@
         "edit custom indicator CRUD, evaluate, or plan routes",
         "edit variable registry, availability API, series provider, or period selection",
         "edit JSON persistence, cache keys, or invalidation",
-      "edit IndicatorStudio variable catalog or guided operator parameters",
-      "add existing-indicator composition or formula reuse",
-      "edit typed mathematical LaTeX or time-series formula previews",
+        "edit IndicatorStudio variable catalog or guided operator parameters",
+        "add existing-indicator composition or formula reuse",
+        "edit typed mathematical LaTeX or time-series formula previews",
         "edit detail, comparison, or evaluation-plan indicator integration"
       ],
       "related_paths": [
@@ -1073,7 +1181,7 @@
         "frontend/src/pages/EvaluationPlan.tsx",
         "backend/tests/test_custom_indicator_variables.py",
         "frontend/src/pages/IndicatorStudio.test.tsx",
-        "docs/custom_indicator_design.md"
+        "docs/indicators/README.md"
       ],
       "affected_modules": [
         "backend_custom_indicator_service",
@@ -1092,14 +1200,14 @@
       "check_before_edit": [
         "Use real or fixture parquet only; missing data must return null plus a warning.",
         "Keep 1W at five return observations and calendar M/Y windows anchored by the latest observation before the boundary.",
-      "Resolve variable availability for every selected product, period, and as-of date; fail closed in both the catalog and operator parameter drawer when all relevant targets fail.",
-      "Treat applicable_product_kinds as a catalog hint only; compile required_variables and report source, field, observation, coverage, or common-window blockers per product before calculation.",
-      "Resolve inserted indicators by indicator_id plus revision on the server, require matching context and DSL/registry/data/schema versions, and expand to an independent scalar expression rather than a mutable runtime reference.",
-      "Runtime-constant series parameters require explicit parameter_contract_version 1.0 and author-opened positions. Preserve older frozen-default contracts; merge and validate defaults plus overrides per instance, recompute lookback and output ranges, include effective values in cache/export provenance, and reuse the prewarmed NJIT signature. Canvas parameter nodes must roundtrip without becoming data variables or literals.",
-      "When lifting a scalar indicator into a rolling series, lock the source revision and definition hash and execute the complete eligible scalar subgraph in each window. Preserve explicit runtime-parameter contracts; local sample/day/risk-free context belongs to that scope, never to the whole series.",
+        "Resolve variable availability for every selected product, period, and as-of date; fail closed in both the catalog and operator parameter drawer when all relevant targets fail.",
+        "Treat applicable_product_kinds as a catalog hint only; compile required_variables and report source, field, observation, coverage, or common-window blockers per product before calculation.",
+        "Resolve inserted indicators by indicator_id plus revision on the server, require matching context and DSL/registry/data/schema versions, and expand to an independent scalar expression rather than a mutable runtime reference.",
+        "Runtime-constant series parameters require explicit parameter_contract_version 1.0 and author-opened positions. Preserve older frozen-default contracts; merge and validate defaults plus overrides per instance, recompute lookback and output ranges, include effective values in cache/export provenance, and reuse the prewarmed NJIT signature. Canvas parameter nodes must roundtrip without becoming data variables or literals.",
+        "When lifting a scalar indicator into a rolling series, lock the source revision and definition hash and execute the complete eligible scalar subgraph in each window. Preserve explicit runtime-parameter contracts; local sample/day/risk-free context belongs to that scope, never to the whole series.",
         "Keep every existing anchor date even when its value is NaN/Inf. Derive returns on the uncompressed NAV axis, retain the leading unavailable return, and load a preceding observation only for bodies that require a level/date baseline. Verify displayed tails against the same dates from a full calculation.",
         "Initial metadata/catalog responses must not overwrite edits made while loading. Only initialize untouched technical defaults; keep validation unavailable until the registry is loaded.",
-      "Keep the headline formula semantic and compact: use symbols such as mu, sigma, s, windowed min/max, smoothing S, or drawdown D; keep min_periods, NaN branches and implementation recurrences in the detailed DAG explanation.",
+        "Keep the headline formula semantic and compact: use symbols such as mu, sigma, s, windowed min/max, smoothing S, or drawdown D; keep min_periods, NaN branches and implementation recurrences in the detailed DAG explanation.",
         "Respect ann_date <= as_of for reported NAV fields and surface partial coverage instead of silently filling or claiming full availability.",
         "Require revision for every mutable update/delete and run plans against independent indicator IDs and locked revisions, never removed scalar child-result references. When save/readback changes draft source or metadata, invalidate old inline compile tokens before preview/export; equivalent LaTeX is not the same exact token payload.",
         "Merge scalar computation nodes only under identical bindings, operator versions and input/window contracts. Preparation locks revisions before evaluation; formal evaluation must not compile a missing plan or rerun independent formulas as a fallback.",
@@ -1358,6 +1466,137 @@
         "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_mandate_diagnostic_integrity.py -q",
         "npm run test --prefix frontend -- --run StrategicAllocationWorkspace.test.tsx",
         "npm run test:e2e --prefix frontend -- --config=playwright.strategic.config.ts"
+      ]
+    },
+    {
+      "id": "P24",
+      "title": "implementation_cash_and_candidate_evidence",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "class_budget_is_not_statistical_exposure",
+        "nav_is_not_cash",
+        "stale_candidate_report"
+      ],
+      "symptoms": [
+        "Class weights match but residual or total active risk exceeds the mandate.",
+        "Later cash replenishment hides a historical missed payment.",
+        "Changed inputs are finalized with a previous validation report."
+      ],
+      "trigger_actions": [
+        "edit product risk, cost, continuation or package finalization"
+      ],
+      "related_paths": [
+        "backend/pre_investment/__init__.py",
+        "backend/pre_investment/contracts.py",
+        "backend/pre_investment/cost_kernels.py",
+        "backend/pre_investment/costs.py",
+        "backend/pre_investment/evaluation.py",
+        "backend/pre_investment/funding.py",
+        "backend/pre_investment/path_kernels.py",
+        "backend/pre_investment/paths.py",
+        "backend/pre_investment/repository.py",
+        "backend/pre_investment/risk.py",
+        "backend/pre_investment/risk_kernels.py",
+        "backend/pre_investment/routes.py",
+        "backend/pre_investment/scenarios.py",
+        "backend/pre_investment/service.py",
+        "backend/pre_investment/sources.py",
+        "frontend/src/pages/PreInvestmentImplementation.tsx",
+        "frontend/src/services/implementation.ts",
+        "frontend/src/components/implementation"
+      ],
+      "affected_modules": [
+        "pre_investment_implementation",
+        "strategic_allocation_policy",
+        "published_risk_scenario_research"
+      ],
+      "blast_radius": [
+        "investment risk interpretation",
+        "funding feasibility",
+        "immutable research evidence"
+      ],
+      "check_before_edit": [
+        "Keep Q funding budgets separate from joint beta and full residual covariance. D=0 and zero active alpha are explicit forward assumptions. A originals are diagnostic; B originals all gate.",
+        "Charge each buy/sell side against post-cost holdings through the common self-financing solve. Unknown rates or settlement dates are unavailable; NAV does not fund cash payments. Already-paid costs require already-target holdings.",
+        "Use original monthly cashflow occurrence identities and inflation base; remaining 1/13/37 and zero months preserve terminal and missed-payment semantics. Original reserve is not deducted twice.",
+        "Copy provenance points to a validated immutable package artifact ID, not the logical package ID; updates preserve the stored copied_from_id even when the client omits or replaces it. A report belongs to the exact candidate and revision. Lock the candidate before validation and recheck source governance, data/code/fee fingerprints before finalization. Immutable reports remain readable when current use expires. Artifact admission checks the final UTF-8 manifest byte size including metadata against the same limit as reads, before promotion and index registration; oversized failures must leave existing package lists and history readable.",
+        "Reserve the shared compute slot before freezing a candidate. Busy validation must leave revisions and attempts unchanged so the same revision/key can retry; release the slot even if freezing fails. A frozen-candidate validation is distinct from independent simulation. Only a completed simulation on the validation random stream can assert independent_simulation. Local named research finalization is not authenticated independent review."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_implementation_kernels.py backend/tests/test_implementation_packages.py backend/tests/test_implementation_paths.py backend/tests/test_implementation_scenarios.py backend/tests/test_implementation_service.py backend/tests/test_funding_continuation.py -q",
+        "npm run test --prefix frontend -- --run PreInvestmentImplementation.test.tsx StrategicAllocationWorkspace.test.tsx TacticalAllocationWorkspace.test.tsx",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- --config=playwright.implementation.config.ts"
+      ]
+    },
+    {
+      "id": "P25",
+      "title": "documentation_coverage_is_not_semantic_freshness",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "staged_worktree_mismatch",
+        "historical_evidence_not_current_proof",
+        "documentation_semantic_drift"
+      ],
+      "symptoms": [
+        "Routing coverage passes while a plan or operational instruction still needs semantic review.",
+        "An unstaged Markdown fix hides a broken staged candidate.",
+        "Markdown links pass while plain-text filenames and source comments still point to retired documents.",
+        "Candidate documents use staged/commit content while routing helper code is imported from the worktree, allowing unstaged changes to alter the check.",
+        "A deleted or moved document disappears from affected_documents when its catalog entry is removed, so strict review can omit the retired path.",
+        "Raw pipe splitting treats escaped pipes in valid GFM plan cells as extra columns.",
+        "A per-heading-base counter collides with natural numbered headings and rejects valid links to globally suffixed anchors.",
+        "Removing a source/config/test route with its file or module can hide its document owner if only the candidate map is read.",
+        "Indented plan headers are recognized while raw row prefixes stop validation and allow invalid statuses or missing evidence.",
+        "The checker implementation is taken from the worktree even though its input and helper are read from the index or selected commit.",
+        "Default worktree path-only Git collection drops the source of staged renames.",
+        "Valid GFM plan rows omit edge pipes and bypass checks that require raw leading pipes.",
+        "A candidate checker raises SystemExit(0) before completing validation and the launcher reports success without a check report.",
+        "Worktree routing helper initialization can also raise SystemExit(0) outside the Git-candidate wrapper, skipping all checks."
+      ],
+      "trigger_actions": [
+        "finish a code, config or documentation milestone",
+        "move or retire a document",
+        "close a plan or historical defect"
+      ],
+      "related_paths": [
+        "scripts/check_documentation.py",
+        "scripts/tests/test_documentation.py",
+        "docs/governance/documentation.md",
+        "docs/repo_map.json"
+      ],
+      "affected_modules": [
+        "documentation_maintenance",
+        "ai_routing_files",
+        "project_docs"
+      ],
+      "blast_radius": [
+        "agent closeout",
+        "documentation reproducibility"
+      ],
+      "check_before_edit": [
+        "Use the scoped task diff; do not include other tasks in a shared dirty worktree.",
+        "Run document checks against the exact worktree, index or PR head candidate.",
+        "Treat source change as a review trigger, not proof that prose is wrong or that a plan is finished.",
+        "Close problems only with relevant current-version evidence; preserve historical evidence boundaries.",
+        "After moving or deleting documents, search tracked source and prose for retired paths and filenames; Markdown link validation does not cover plain-text or comment references. Check the actual Git candidate when the worktree is dirty.",
+        "Load reused routing helper code from the same candidate and include it in the review fingerprint; verify both outside-candidate failures and unstaged repairs with isolated Git fixtures.",
+        "Keep deleted managed Markdown paths in the review scope independently of the current catalog; require a decision about replacement contracts, routing and source references.",
+        "Split plan cells on unescaped GFM table delimiters; pipes inside inline code must also be escaped. Cover worktree, staged, commit and rename retirement cases.",
+        "Generate heading suffixes against every previously emitted heading slug, including naturally numbered headings; test both heading orders and actual inbound links.",
+        "Resolve changed paths against both candidate and base module/document ownership; use HEAD for worktree/index and merge-base for PRs, and bind the base commit in review fingerprints.",
+        "Normalize plan row indentation consistently with headers after excluding code blocks; cover legal one-to-three-space indentation with invalid states and missing evidence.",
+        "Run Git-candidate validation in the checker implementation selected from that candidate and bind its bytes in the fingerprint; missing, invalid or failed candidate code must not fall back to worktree repairs.",
+        "Use structured name-status diffs for both staged and unstaged worktree changes, retaining both rename paths and separately including untracked paths.",
+        "Recognize plan header labels and rows with optional GFM edge pipes while retaining column, state and evidence checks.",
+        "Convert SystemExit during candidate checker initialization or main execution into failure, including a zero exit code; verify staged and commit candidates with both entry points.",
+        "Catch SystemExit at the helper import boundary for worktree, staged and commit checks, and remove partially loaded helper modules on failure."
+      ],
+      "safe_observation_methods": [
+        "python3 scripts/check_documentation.py --staged --json",
+        "python3 -m pytest scripts/tests/test_documentation.py -q"
       ]
     }
   ]

@@ -21,9 +21,10 @@ from backend.sensitivity.repository import ArtifactRepository, digest_json
 from backend.tactical_allocation.contracts import AssetLimit
 from backend.tactical_allocation.data import TacticalAllocationData, warm_tactical_data
 from backend.tactical_allocation.repository import TacticalAllocationRepository
-from . import kernels, goal_kernels, institution_kernels, cma_model_kernels, mandate_kernels
+from . import kernels, goal_kernels, institution_kernels, cma_model_kernels, mandate_kernels, multi_cma_kernels, compatibility_kernels
 from .mandate_diagnosis import diagnose_reference, validate_fixed_candidate
-from .cma_application import apply_model, frozen_assumptions, frozen_model_lineage, frozen_numeric_inputs
+from .cma_application import frozen_assumptions, frozen_model_lineage, frozen_numeric_inputs
+from .cma_service import CmaResearchService
 from .institution import diagnose_institution, review_blockers
 from .sources import product_source, strategic_source
 from .universes import StrategicScopes
@@ -73,20 +74,27 @@ class StrategicAllocationService:
         self.risk_scales = RiskScaleService(
             self.artifacts, RiskScaleStore(self.artifacts.root.parent),
             ReferenceInputs(self.artifacts, ReferenceSources(data_dir)))
+        self.cma = CmaResearchService(self)
 
     def warm(self) -> dict:
         warm_tactical_data()
         institution_kernels.warm()
         cma_model_kernels.warm()
         self.risk_scales.warm()
+        cma_statistics = self.cma.warm()
+        multi_cma = multi_cma_kernels.warm()
+        compatibility = compatibility_kernels.warm()
+        from . import uncertainty_kernels
+        uncertainty_radius = uncertainty_kernels.warm()
         audit = kernels.warm_strategic_kernels()
         mandate_kernels.warm()
         institution = institution_kernels.execution_audit()
         models = cma_model_kernels.execution_audit()
-        if not audit["complete"] or not institution["complete"] or not models["complete"]:
+        if not audit["complete"] or not institution["complete"] or not models["complete"] or not cma_statistics["complete"] or not multi_cma["complete"] or not compatibility["complete"] or not uncertainty_radius["complete"]:
             raise RuntimeError("战略配置及机构诊断启动预热未完成。")
-        return {**audit, "institution": institution, "cma_models": models,
-                "mandate_reference": mandate_kernels.execution_audit()}
+        return {**audit, "institution": institution, "cma_models": models, "cma_statistics": cma_statistics,
+                "mandate_reference": mandate_kernels.execution_audit(), "multi_cma": multi_cma,
+                "compatibility": compatibility, "uncertainty_radius": uncertainty_radius}
 
     def _get(self, identifier: str, artifact_type: str) -> dict:
         item = self.artifacts.get(identifier, "series")
@@ -98,7 +106,7 @@ class StrategicAllocationService:
         return self._get(identifier, "investment_mandate")
 
     def get_cma(self, identifier: str) -> dict:
-        return self._get(identifier, "capital_market_assumptions")
+        return self.cma.get(identifier)
 
     def _retired_mandate_ids(self) -> set[str]:
         retired = set()
@@ -144,6 +152,7 @@ class StrategicAllocationService:
         superseded = {item["supersedes_mandate_id"] for item in series
                       if item.get("artifact_type") == "investment_mandate" and item.get("supersedes_mandate_id")}
         retired = self._retired_mandate_ids()
+        retired_cma = self.cma.retired_ids()
         for item in series:
             common = {key: item[key] for key in ("id", "name", "created_at", "content_hash")}
             if item.get("artifact_type") == "investment_mandate":
@@ -152,10 +161,13 @@ class StrategicAllocationService:
                 mandates.append({**common, "definition": item["definition"],
                     "assessment_status": item.get("assessment", {}).get("status", "inputs_only")})
             elif item.get("artifact_type") == "capital_market_assumptions":
+                if item["id"] in retired_cma:
+                    continue
                 assumptions.append({**common, **{key: item["definition"][key] for key in
                     ("alloc_name", "as_of", "currency", "horizon_years")},
                     "strategic_universe_id": item["definition"].get("strategic_universe_id"),
-                    "implementation_mapping_id": item["definition"].get("implementation_mapping_id")})
+                    "implementation_mapping_id": item["definition"].get("implementation_mapping_id"),
+                    "schema_version": item["definition"].get("schema_version", "1.0")})
             elif item.get("artifact_type") == "strategic_universe":
                 universes.append({**common, "definition": item["definition"]})
             elif item.get("artifact_type") == "implementation_mapping":
@@ -404,55 +416,11 @@ class StrategicAllocationService:
             "warnings": [*data["reasons"], "历史风险只是参考，不是未来风险承诺；历史均值不自动转为长期预期。",
                          "收缩强度由研究员指定，不是自动估计的 Ledoit–Wolf 系数。"]})
 
-    def _cma_calculation(self, request: CmaRequest) -> tuple[dict, dict]:
-        source = self._definition_source(request.model_dump(mode="json"))
-        if request.strategic_universe_id:
-            universe = source["strategic_universe_snapshot"]["definition"]
-            if request.currency != universe["currency"]:
-                raise ValidationError("SAA_UNIVERSE_CURRENCY", "长期假设与战略范围的本位币不同。")
-            metadata = {a["id"]: a for a in universe["assets"]}
-            if any(a.id not in metadata or a.role != metadata[a.id]["role"] or a.liquidity != metadata[a.id]["liquidity"] for a in request.assets):
-                raise ValidationError("SAA_UNIVERSE_ROLE", "经济角色或流动性与不可变战略定义不同；请确认新的范围版本。")
-        names = [asset["id"] for asset in source["assets"]]
-        if [asset.id for asset in request.assets] != names:
-            raise ValidationError("SAA_CMA_AXIS", "长期假设的资产及顺序须与所选大类一致；请重新加载分类。")
-        model_payload = {}
-        if request.model is not None:
-            model_payload, arrays = apply_model(request, names)
-            covariance = arrays["covariance"]
-            min_eigenvalue = model_payload["model_result"]["model_audit"]["min_correlation_eigenvalue"]
-        else:
-            vol = np.asarray([a.annual_volatility for a in request.assets], dtype=np.float64)
-            corr = np.asarray(request.correlation, dtype=np.float64)
-            covariance, min_eigenvalue = kernels.cma_covariance_kernel(vol, corr)
-            arrays = {"covariance": covariance}
-        reference = None
-        if request.risk_origin == "historical_reference":
-            reference = self.risk_reference(request.risk_reference)
-            if reference["preview_hash"] != request.risk_reference_hash:
-                raise ConflictError("SAA_RISK_REFERENCE_CHANGED", "历史风险来源已变化，请重新读取风险参考。")
-            if reference["volatility"] != vol.tolist() or reference["correlation"] != request.correlation:
-                raise ValidationError("SAA_RISK_REFERENCE_EDITED", "风险数值已被人工修改，请明确改为人工风险假设，不沿用原参考认证。")
-        payload = {"definition": request.model_dump(mode="json"), "source_snapshot": source,
-            "covariance": covariance.tolist(), "min_correlation_eigenvalue": float(min_eigenvalue),
-            "risk_reference": reference, "execution": kernels.execution_audit(),
-            "warnings": [*source["pit"]["reasons"], "经济角色、流动性与同币种总收益口径由研究员确认，不是系统校准的宏观暴露。",
-                         "预期收益与均值不确定半宽是研究假设；不确定半宽不是波动率或统计置信区间。"]}
-        payload.update(model_payload)
-        if model_payload:
-            payload["execution"] = {**payload["execution"], "cma_models": model_payload["model_result"]["execution"]}
-            payload["warnings"].extend(model_payload["model_result"]["model_audit"]["limitations"])
-        return _hashed(payload), arrays
-
     def preview_cma(self, request: CmaRequest) -> dict:
-        return self._cma_calculation(request)[0]
+        return self.cma.preview(request)
 
     def publish_cma(self, body: PublishCmaRequest) -> dict:
-        preview, arrays = self._cma_calculation(body.request)
-        if preview["preview_hash"] != body.preview_hash:
-            raise ConflictError("SAA_CMA_PREVIEW_CHANGED", "假设或来源已变化，请重新验证后确认保存。")
-        return self.artifacts.save("series", {"artifact_type": "capital_market_assumptions", "name": body.request.name,
-            **preview, "research_only": True}, arrays)
+        return self.cma.publish(body)
 
     @staticmethod
     def _constraints(request: PolicyRequest, definition: dict, mandate: dict) -> tuple[list, dict]:
@@ -517,12 +485,21 @@ class StrategicAllocationService:
 
     def _candidate_calculation(self, request: PolicyRequest, mandate: dict, cma: dict, *,
                                paths: int = 2000, simulation_seed: int | None = None) -> dict:
+        if request.mode == "compatible_all_models":
+            from .compatibility import calculate
+            return calculate(self, request, mandate, cma, paths=paths, simulation_seed=simulation_seed)
+        budget = {}
+        if "multi_cma" in cma:
+            from .multi_cma import require_calculation_budget
+            budget["multi_cma_budget"] = require_calculation_budget(request, mandate, paths)
         definition = frozen_assumptions(cma)
         if cma["definition"].get("model") is not None:
             cma_model_kernels.require_ready()
         groups, limits = self._constraints(request, definition, mandate)
         names = [asset["id"] for asset in definition["assets"]]
         means, covariance, uncertainty = frozen_numeric_inputs(cma, self.artifacts)
+        from .uncertainty import resolve_uncertainty
+        mean_covariance, uncertainty_model = resolve_uncertainty(request, cma, self.artifacts)
         bounds = np.asarray([[limits[name]["min_weight"], limits[name]["max_weight"]] for name in names], dtype=np.float64)
         membership = np.asarray([[int(name in g["assets"]) for name in names] for g in groups], dtype=np.uint8).reshape(len(groups), len(names))
         benchmark = mandate.get("benchmark")
@@ -538,11 +515,13 @@ class StrategicAllocationService:
         if request.risk_budget is not None and set(request.risk_budget) != set(names):
             raise ValidationError("SAA_RISK_BUDGET_AXIS", "风险预算须完整覆盖当前资产轴，不能遗漏或包含未知资产。")
         risk_budget = np.asarray([request.risk_budget[name] for name in names] if request.risk_budget is not None else [], dtype=np.float64)
-        weights, metrics, contributions, accepted = kernels.policy_candidates_with_budget_kernel(
-            means, covariance, uncertainty, bounds, membership,
+        search = (kernels.policy_candidates_ellipsoidal_kernel if uncertainty_model is not None
+                  else kernels.policy_candidates_with_budget_kernel)
+        weights, metrics, contributions, accepted = search(
+            means, covariance, mean_covariance if uncertainty_model is not None else uncertainty, bounds, membership,
             np.asarray([g["lo"] for g in groups], dtype=np.float64), np.asarray([g["hi"] for g in groups], dtype=np.float64),
-            mandate["risk_aversion"], request.uncertainty_penalty, floor, mandate["max_volatility"],
-            benchmark_weights, benchmark["max_tracking_error"] if benchmark else 1.,
+            mandate["risk_aversion"], uncertainty_model["kappa"] if uncertainty_model is not None else request.uncertainty_penalty,
+            floor, mandate["max_volatility"], benchmark_weights, benchmark["max_tracking_error"] if benchmark else 1.,
             benchmark["target_excess_return"] if benchmark else 0., request.candidate_count, request.seed, risk_budget)
         if not accepted:
             raise ValidationError("SAA_NO_FEASIBLE_CANDIDATE", "当前目标与硬约束下未找到可行候选。检查收益、波动、基准主动风险、流动性和权重边界；有限搜索失败不证明数学无解。")
@@ -550,6 +529,8 @@ class StrategicAllocationService:
             "metrics": dict(zip(METRICS, _finite_list(metrics[i]), strict=True)),
             "risk_contributions": dict(zip(names, _finite_list(contributions[i]), strict=True))}
             for i, (key, label) in enumerate(METHODS)]
+        if uncertainty_model is not None:
+            candidates[2]["name"] = "椭球稳健效用（有限搜索）"
         unavailable = []
         if request.risk_budget is not None:
             if np.all(np.isfinite(metrics[4])):
@@ -576,13 +557,27 @@ class StrategicAllocationService:
         diagnosis = diagnose_funding(mandate, candidates, paths=paths,
                                      seed=request.seed if simulation_seed is None else simulation_seed)
         require_goal_checks(mandate, candidates)
+        if "multi_cma" in cma:
+            from .multi_cma import cross_model_results
+            for candidate in candidates:
+                candidate["cross_model_results"] = cross_model_results(cma["multi_cma"], candidate["weights"], mandate,
+                    penalty=request.uncertainty_penalty, paths=paths,
+                    seed=request.seed if simulation_seed is None else simulation_seed)
         return {"constraints": limits, "group_limits": groups, "covariance": covariance.tolist(),
                 "candidates": candidates + unavailable, "accepted_candidates": accepted, "funding": diagnosis.get("funding"),
-                "funding_model": diagnosis.get("model"), "funding_execution": diagnosis.get("execution")}
+                "funding_model": diagnosis.get("model"), "funding_execution": diagnosis.get("execution"),
+                **({"uncertainty_model": uncertainty_model} if uncertainty_model is not None else {}), **budget}
 
     def preview_policy(self, request: PolicyRequest) -> dict:
         kernels.require_ready()
-        mandate_artifact, cma = self._require_active_mandate(request.mandate_id), self.get_cma(request.cma_id)
+        from .multi_cma import resolve, request_payload
+        mandate_artifact = self._require_active_mandate(request.mandate_id)
+        if request.mode == "single":
+            cma = self.cma.require_selectable(request.cma_id)
+        elif request.mode in ("parameter_average", "compatible_all_models"):
+            cma = resolve(self, request)
+        else:
+            raise ValidationError("SAA_MULTI_CMA_MODE", "未知 SAA 模式，未执行计算。")
         assessment = mandate_artifact.get("assessment", {})
         if not assessment.get("preview_hash") or not assessment.get("request"):
             raise ValidationError("MANDATE_CONFIRMATION_REQUIRED", "此目标缺少诊断与确认记录；请复制为新研究，诊断并确认后再建立政策。")
@@ -597,6 +592,12 @@ class StrategicAllocationService:
         source = self._definition_source(definition)
         if any(source["lineage"].get(key) != cma["source_snapshot"]["lineage"].get(key) for key in ("config_hash", "nav_hash", "strategic_universe_hash", "implementation_mapping_hash")):
             raise ConflictError("SAA_CMA_SOURCE_CHANGED", "大类或净值来源已变，请重新验证长期假设；旧版本仍可读取。")
+        if request.implementation_mapping_id:
+            if definition.get("schema_version") != "2.0" or not definition.get("strategic_universe_id"):
+                raise ValidationError("LTCMA_POLICY_MAPPING", "独立政策映射仅适用于 2.0 战略 LTCMA；旧版本保持原冻结映射。")
+            source = self._source(None, definition["as_of"],
+                strategic_universe_id=definition["strategic_universe_id"],
+                implementation_mapping_id=request.implementation_mapping_id)
         planning_settings = mandate_artifact.get("planning_settings", {})
         calculation = self._candidate_calculation(request, mandate, cma,
             paths=planning_settings.get("simulation_paths", 2000),
@@ -615,7 +616,7 @@ class StrategicAllocationService:
         mapping = source.get("implementation_mapping_snapshot")
         if mapping and not mapping["definition"]["as_of"] <= application_day < mapping["definition"]["valid_until"]:
             application_blockers.append("实施映射尚未生效或已到复核日，请确认新映射后再用于当前产品应用。")
-        return _hashed({"request": request.model_dump(mode="json"), "mandate_id": mandate_artifact["id"],
+        payload = {"request": request_payload(request), "mandate_id": mandate_artifact["id"],
             "mandate_hash": mandate_artifact["content_hash"], "cma_id": cma["id"], "cma_hash": cma["content_hash"],
             "mandate": mandate, "assumptions": frozen_assumptions(cma), **frozen_model_lineage(cma), "source_snapshot": source,
             **calculation, "current_application_eligible": source["apply_eligible"] and not application_blockers,
@@ -624,7 +625,21 @@ class StrategicAllocationService:
             "warnings": [*cma["warnings"], *([text.replace("四类代表组合", "代表组合（含显式风险预算）") for text in LIMITATIONS] if request.risk_budget is not None and cash_success_required(mandate) else LIMITATIONS if cash_success_required(mandate) else []),
                          "历史研究可以保存；当前应用需另行核对政策是否到期。",
                          "有限候选比较不保证全局最优；预期收益不是历史业绩或收益承诺。",
-                         "政策再平衡约定不自动执行；TAA 按所选决策、执行频率及费用口径独立验证。"]})
+                         "政策再平衡约定不自动执行；TAA 按所选决策、执行频率及费用口径独立验证。"]}
+        if calculation.get("uncertainty_model"):
+            payload["warnings"].extend(calculation["uncertainty_model"]["warnings"])
+        else:
+            payload["warnings"].append("区间稳健化按逐资产半宽求最坏收益，不是组合联合95%置信下界；惩罚倍数是研究设置。")
+        if "multi_cma" in payload:
+            from .multi_cma import require_payload_budget
+            if request.mode == "compatible_all_models":
+                payload["method"] = calculation["method"]
+                payload["execution"] = calculation["execution"]
+                payload["warnings"] = [*cma["warnings"], *calculation["compatibility"]["limitations"],
+                    "仅核验原始约束及目标界限后报告凸问题收敛；资金检查不保证全局成功概率最优。",
+                    "研究保存不等于当前产品实施资格，也不代表未来收益保证。"]
+            require_payload_budget(payload)
+        return _hashed(payload)
 
     def publish_policy(self, body: PublishPolicyRequest) -> dict:
         preview = self.preview_policy(body.request)
@@ -637,7 +652,7 @@ class StrategicAllocationService:
         if cash_success_required(preview["mandate"]) and not candidate["goal_check"]["within_limits"]:
             raise ValidationError("MANDATE_GOAL_NOT_MET", "所选组合的模拟成功概率区间下界未达到目标门槛，请调整目标或资金后重新研究。")
         funding_validation = None
-        if preview["mandate"].get("schema_version", "1.0") == "2.0" and cash_success_required(preview["mandate"]):
+        if (preview["mandate"].get("schema_version", "1.0") == "2.0" or body.request.mode == "compatible_all_models") and cash_success_required(preview["mandate"]):
             saved = self.get_mandate(preview["mandate_id"])
             settings = saved["planning_settings"]
             # Separate stream from both the mandate recommendation and SAA exploration.
@@ -645,11 +660,22 @@ class StrategicAllocationService:
                 validation_seed=int(settings["validation_seed"]) ^ 0x9E3779B9)
             if verification.validation_seed == int(settings["seed"]):
                 raise ValidationError("MANDATE_VALIDATION_SEED_COLLISION", "冻结目标的搜索与SAA验证样本重复，请重新确认使用不同随机种子的目标。")
-            funding_validation = validate_fixed_candidate(
-                np.asarray([candidate["metrics"][key] for key in METRICS], dtype=np.float64),
-                preview["mandate"], funding_inputs(preview["mandate"]), verification,
-                {"method_code": 0, "periods_per_year": 1})
-            funding_validation["distribution"] = "annual_moment_proxy_approximation"
+            if body.request.mode == "compatible_all_models":
+                validations = []
+                prepared = funding_inputs(preview["mandate"])
+                for row in candidate["cross_model_results"]:
+                    result = validate_fixed_candidate(
+                        np.asarray([row["metrics"][key] for key in METRICS], dtype=np.float64),
+                        preview["mandate"], prepared, verification, {"method_code": 0, "periods_per_year": 1})
+                    validations.append({"cma_id": row["cma_id"], **result})
+                funding_validation = {"within_limits": all(row["within_limits"] for row in validations),
+                    "models": validations, "distribution": "each_source_annual_moment_proxy", "validation_seed": verification.validation_seed}
+            else:
+                funding_validation = validate_fixed_candidate(
+                    np.asarray([candidate["metrics"][key] for key in METRICS], dtype=np.float64),
+                    preview["mandate"], funding_inputs(preview["mandate"]), verification,
+                    {"method_code": 0, "periods_per_year": 1})
+                funding_validation["distribution"] = "annual_moment_proxy_approximation"
             if not funding_validation["within_limits"]:
                 raise ValidationError("MANDATE_INDEPENDENT_VALIDATION_FAILED", "所选SAA未通过独立资金验证，未采纳政策；请复核目标和模型。")
         baseline = copy.deepcopy(preview["source_snapshot"])
@@ -661,14 +687,22 @@ class StrategicAllocationService:
         baseline["policy"] = {"schema_version": "1.0", "mandate_id": preview["mandate_id"],
             "mandate_hash": preview["mandate_hash"], "cma_id": preview["cma_id"], "cma_hash": preview["cma_hash"],
             "mandate": preview["mandate"], "assumptions": preview["assumptions"], "covariance": preview["covariance"],
-            **{key: preview[key] for key in ("raw_assumptions", "model_result", "effective_returns", "effective_covariance") if key in preview},
+            **{key: preview[key] for key in ("raw_assumptions", "model_result", "effective_returns", "effective_covariance", "multi_cma", "compatibility", "uncertainty_model") if key in preview},
             "expires_on": _policy_expiry(preview["mandate"]), "selection": candidate,
             "selection_request": preview["request"], "selection_preview_hash": preview["preview_hash"],
             "funding_model": preview.get("funding_model"), "funding_execution": preview.get("funding_execution"),
             **({"funding_validation": funding_validation} if funding_validation is not None else {}),
             "reason": body.reason, "confirmation_type": "researcher_policy_adoption", "independent_approval": False,
             "execution": preview["execution"]}
-        # Share the lifecycle lock: retirement/replacement cannot race this final write.
+        if "multi_cma" in preview:
+            baseline["policy"].update(schema_version="2.0", mode=body.request.mode)
+            baseline["policy"]["multi_cma_budget"] = preview["multi_cma_budget"]
+            from .multi_cma import require_payload_budget
+            require_payload_budget(baseline)
         with self.artifacts.governance_lock.locked():
             self._require_active_mandate(preview["mandate_id"])
+            identifiers = ([ref["cma_id"] for ref in preview["multi_cma"]["refs"]]
+                           if "multi_cma" in preview else [preview["cma_id"]])
+            for identifier in identifiers:
+                self.cma.require_selectable(identifier)
             return self.baselines.save_baseline(baseline)

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProductCompare from './ProductCompare'
+import { cppAotAudit } from '../test/cppAotFixture'
 import { evaluateCustomIndicators, getCustomIndicatorMeta, listCustomIndicators } from '../services/customIndicators'
 import type { IndicatorDefinition, MetricPresentation } from '../services/customIndicators'
 
@@ -167,6 +168,18 @@ describe('ProductCompare custom indicators', () => {
       custody_fee: 0.1,
     })
     expect(await screen.findByText(/Numba NJIT · 31\/31/)).toBeInTheDocument()
+  })
+
+  it.each([cppAotAudit, { ...cppAotAudit, execution_backend: undefined, backend: 'cpp_aot' }])('展示原生 AOT 结果，不要求 NJIT 签名', async (execution) => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/compare-analysis')) {
+        return Promise.resolve({ ok: true, json: async () => ({ ...compareResponse('510300.SH'), execution }) })
+      }
+      return productFetch(input)
+    }))
+    render(<MemoryRouter initialEntries={['/product-compare?kind=etf&ids=510300.SH,159915.SZ']}><ProductCompare /></MemoryRouter>)
+    expect(await screen.findByText('数值引擎：C++ AOT')).toBeInTheDocument()
+    expect(screen.queryByText(/无效的.*执行证明/)).not.toBeInTheDocument()
   })
 
   it('不同指标可独立选择计算区间并按区间拆分引擎请求', async () => {

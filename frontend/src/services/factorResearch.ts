@@ -1,4 +1,4 @@
-import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 
 export type NumberValue = number | null
 export type FactorKind = 'etf' | 'fund' | 'stock'
@@ -41,7 +41,7 @@ export interface RunSummary {
 }
 export interface FactorRun extends RunRecord {
   kind: 'run'; study_snapshot: Study; factor_snapshots: FactorDefinition[]; as_of: string
-  input_checksum: string; engine_version: string; execution: FixedNjitExecutionAudit
+  input_checksum: string; engine_version: string; execution: NativeNumericalExecutionAudit
   summaries: { in_sample: RunSummary; out_of_sample: RunSummary }
   periods: Array<{ date: string; entry_date: string | null; label_end: string | null; sample: string; ic: NumberValue[]; rank_ic: NumberValue[]; pair_counts: number[]; group_returns: NumberValue[] }>
   curves: Array<{ date: string; nav: NumberValue; benchmark_nav: NumberValue; turnover: NumberValue; cost: NumberValue }>
@@ -73,7 +73,7 @@ export interface ReturnCatalog {
 export interface ReturnDataset extends Omit<FactorDataset, 'observations' | 'start_date' | 'end_date'> {
   kind: 'dataset'; created_at: string; frequency: 'daily'; units: 'decimal_return'; construction: string
   factor_names: string[]; dependent_return: 'total' | 'excess'; rows: Array<{ date: string } & Record<string, string | NumberValue>>
-  warnings: string[]; input_checksum?: string; checksum?: string; execution?: FixedNjitExecutionAudit
+  warnings: string[]; input_checksum?: string; checksum?: string; execution?: NativeNumericalExecutionAudit
   plan_snapshot?: ReturnPlan; source_run_id?: string; source_panel_id?: string
   diagnostics?: {
     factors: Array<{ factor: string; observations: number; mean: NumberValue; std: NumberValue; positive_rate: NumberValue }>
@@ -113,7 +113,7 @@ export interface ContributionAnalysis {
 }
 export interface AttributionRun extends RunRecord {
   attribution?: ContributionAnalysis
-  request: AttributionRequest; as_of: string; execution: FixedNjitExecutionAudit; warnings: string[]
+  request: AttributionRequest; as_of: string; execution: NativeNumericalExecutionAudit; warnings: string[]
   results: Array<{ name: string; code: string; status: string; reason: string | null; exposures: Array<{ factor: string; value: NumberValue }>
     train_r2: NumberValue; test_r2: NumberValue; train_observations: number; test_observations: number
     annualized_intercept: NumberValue; train_residual_volatility: NumberValue; test_residual_volatility: NumberValue }>
@@ -134,12 +134,12 @@ async function request<T>(path: string, method = 'GET', body?: unknown, signal?:
     const message = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((item: { msg: string }) => item.msg).join('；') : detail?.message
     throw new Error(message || `请求失败（${response.status}）`)
   }
-  if (value?.execution) assertFixedNjitExecution(value.execution, '因子研究')
+  if (value?.execution) assertNativeNumericalExecution(value.execution, '因子研究')
   return value as T
 }
 async function numerical<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const value = await request<T & { execution?: unknown }>(path, method, body)
-  assertFixedNjitExecution(value.execution, '因子研究')
+  assertNativeNumericalExecution(value.execution, '因子研究')
   return value
 }
 export const factorApi = {

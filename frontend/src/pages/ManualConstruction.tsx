@@ -16,9 +16,9 @@ import {
   type InvestableUniverseSnapshot,
 } from '../services/productPools'
 import {
-  assertFixedNjitExecution,
-  assertFixedNjitExecutionLanes,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  assertNativeNumericalExecutionLanes,
+  type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution'
 import { apiErrorMessage } from '../utils/apiError'
 import PitProvenance from '../components/PitProvenance'
@@ -120,9 +120,9 @@ export default function AssetClassConstructionPage() {
   const [fitLoading, setFitLoading] = useState(false)
   const startDate = draft.startDate
   const setStartDate = (value: string) => setDraft(current => ({ ...current, startDate: value }))
-  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: Array<Array<number | null>>; corr_labels: string[]; metrics: { name: string; cumulative_return?: number | null; annual_return?: number | null; annual_vol?: number | null; sharpe?: number | null; var99?: number | null; es99?: number | null; max_drawdown?: number | null; calmar?: number | null }[]; consistency: { name: string; mean_corr?: number; pca_evr1?: number; max_te?: number }[]; annual_metrics: AnnualMetricsResult; execution: FixedNjitExecutionAudit; pit?: PitRunLineage }>(null)
+  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: Array<Array<number | null>>; corr_labels: string[]; metrics: { name: string; cumulative_return?: number | null; annual_return?: number | null; annual_vol?: number | null; sharpe?: number | null; var99?: number | null; es99?: number | null; max_drawdown?: number | null; calmar?: number | null }[]; consistency: { name: string; mean_corr?: number; pca_evr1?: number; max_te?: number }[]; annual_metrics: AnnualMetricsResult; execution: NativeNumericalExecutionAudit; pit?: PitRunLineage }>(null)
   const [rollLoading, setRollLoading] = useState(false)
-  const [rollResult, setRollResult] = useState<null | { dates: string[]; series: Record<string, Array<number | null>>; metrics: { name: string; overall:number | null; mean:number | null; median:number | null; std:number | null; skew:number | null; kurtosis:number | null }[]; execution: FixedNjitExecutionAudit }>(null)
+  const [rollResult, setRollResult] = useState<null | { dates: string[]; series: Record<string, Array<number | null>>; metrics: { name: string; overall:number | null; mean:number | null; median:number | null; std:number | null; skew:number | null; kurtosis:number | null }[]; execution: NativeNumericalExecutionAudit }>(null)
   const rollWindow = draft.rollWindow
   const setRollWindow = (value: number) => setDraft(current => ({ ...current, rollWindow: value }))
   const classOptions = useMemo(()=> classes.map(c=> c.name), [classes])
@@ -316,8 +316,8 @@ export default function AssetClassConstructionPage() {
         body: JSON.stringify(payload),
       })
       if (!resp.ok) throw new Error(`后端返回错误状态 ${resp.status}`)
-      const data: { weights: number[]; execution: FixedNjitExecutionAudit } = await resp.json()
-      assertFixedNjitExecution(data.execution, '风险平价权重求解')
+      const data: { weights: number[]; execution: NativeNumericalExecutionAudit } = await resp.json()
+      assertNativeNumericalExecution(data.execution, '风险平价权重求解')
       if (!Array.isArray(data.weights) || data.weights.length !== ac.etfs.length || data.weights.some((weight) => typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0)) {
         throw new Error('后端权重数量或数值不符合契约')
       }
@@ -382,7 +382,7 @@ export default function AssetClassConstructionPage() {
       // 原来的 `后端错误 400` 把它吃掉了。
       if (!resp.ok) throw new Error(apiErrorMessage(await resp.json().catch(() => null), `后端错误 ${resp.status}`))
       const data = await resp.json() as NonNullable<typeof fitResult>
-      assertFixedNjitExecutionLanes(data.execution, '资产大类拟合')
+      assertNativeNumericalExecutionLanes(data.execution, '资产大类拟合')
       setFitResult(data)
     } catch (e: any) {
       setActionError('拟合失败：' + (e?.message || e))
@@ -417,7 +417,7 @@ export default function AssetClassConstructionPage() {
       })
       if (!resp.ok) throw new Error(`后端错误 ${resp.status}`)
       const data = await resp.json() as NonNullable<typeof rollResult>
-      assertFixedNjitExecution(data.execution, '大类滚动相关性')
+      assertNativeNumericalExecution(data.execution, '大类滚动相关性')
       setRollResult(data)
     } catch (e:any) {
       alert('滚动相关性计算失败：' + (e?.message||e))

@@ -1,4 +1,5 @@
-export interface StrategyExecutionAudit {
+import { assertNativeNumericalExecution, type CppAotExecutionAudit } from '../utils/fixedNjitExecution'
+interface NjitStrategyExecutionAudit {
   backend: 'numba_njit_fixed_signature'
   execution_backend: 'numba_njit_fixed_signature'
   kernel_version: string
@@ -11,6 +12,8 @@ export interface StrategyExecutionAudit {
   python_fallback: 0
   request_time_compilation: 0
 }
+
+export type StrategyExecutionAudit = NjitStrategyExecutionAudit | CppAotExecutionAudit
 
 export interface EqualWeightsResponse {
   weights: number[]
@@ -45,21 +48,16 @@ export async function requestEqualWeights(
   ) {
     throw new Error('等权计算服务返回的权重向量无效或资产数量不一致')
   }
-  if (
-    !result.execution
-    || result.execution.backend !== 'numba_njit_fixed_signature'
-    || result.execution.execution_backend !== 'numba_njit_fixed_signature'
-    || result.execution.nopython !== true
-    || result.execution.njit_required !== true
-    || result.execution.object_mode !== 0
-    || result.execution.python_fallback !== 0
-    || result.execution.request_time_compilation !== 0
-    || !result.execution.kernel_signatures
-    || typeof result.execution.kernel_signatures !== 'object'
-    || Object.keys(result.execution.kernel_signatures).length === 0
-    || Object.values(result.execution.kernel_signatures).some((signatures) => !Array.isArray(signatures) || signatures.length === 0)
-  ) {
-    throw new Error('等权计算服务未通过固定签名 NJIT 执行校验')
+  try {
+    assertNativeNumericalExecution(result.execution)
+    if ((result.execution?.execution_backend ?? result.execution?.backend) !== 'cpp_aot'
+        && (result.execution?.backend !== 'numba_njit_fixed_signature'
+          || result.execution.execution_backend !== 'numba_njit_fixed_signature'
+          || (result.execution as NjitStrategyExecutionAudit).njit_required !== true)) {
+      throw new Error('Incomplete NJIT proof')
+    }
+  } catch {
+    throw new Error((result.execution?.execution_backend ?? result.execution?.backend) === 'cpp_aot' ? '等权计算服务未通过 C++ AOT 执行校验' : '等权计算服务未通过固定签名 NJIT 执行校验')
   }
   return result as EqualWeightsResponse
 }

@@ -3,7 +3,9 @@ from fastapi import APIRouter, HTTPException
 from numpy.linalg import LinAlgError
 
 from backend.custom_indicators.errors import IndicatorDomainError
-from .contracts import (CmaRequest, PolicyRequest, PublishCmaRequest,
+from .cma_center_contracts import CmaCenterPublish
+from .cma_center_routes import install_cma_center_routes
+from .contracts import (CmaRequest, PolicyRequest,
                         PublishPolicyRequest, RiskReferenceRequest,
                         MandateStudyRequest, ConfirmMandateRequest)
 from .service import StrategicAllocationService
@@ -95,12 +97,14 @@ def build_router(service: StrategicAllocationService) -> APIRouter:
     def risk_reference(body: RiskReferenceRequest):
         return _call(service.risk_reference, body)
 
+    install_cma_center_routes(router, service, _call)
+
     @router.post("/cma/preview")
     def preview_cma(body: CmaRequest):
         return _call(service.preview_cma, body)
 
     @router.post("/cma", status_code=201)
-    def publish_cma(body: PublishCmaRequest):
+    def publish_cma(body: CmaCenterPublish):
         return _call(service.publish_cma, body)
 
     @router.get("/cma/{identifier}")

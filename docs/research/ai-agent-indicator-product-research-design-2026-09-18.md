@@ -4,7 +4,7 @@
 > - 基线：HEAD `e4f85b1`（2026-09-17，含 `cb4d3df` 产品研究展示条数上限调整）
 > - 状态：**设计稿，尚未实现。** 本文描述目标实现与验收方式，不代表任何代码已落地。
 > - 范围：指标计算中心（IndicatorStudio / `backend/custom_indicators`）+ 产品研究模块（ProductDetail 等页面 / `backend/product_analysis`、`research_series` 等）+ AI Harness + 前端对话面板。
-> - 关联约束：[AGENTS.md](../../AGENTS.md)（NJIT、算子治理、测试、AI Hermes 路由）、[docs/frontend-design-guidelines.md](../frontend-design-guidelines.md)（前端视觉与交互）、[branch_submission_rules.md](../../branch_submission_rules.md)（提交规则）。
+> - 关联约束：[AGENTS.md](../../AGENTS.md)（NJIT、算子治理、测试、AI Hermes 路由）、[docs/frontend/README.md](../frontend/README.md)（前端视觉与交互）、[docs/governance/branch-submission-rules.md](../governance/branch-submission-rules.md)（提交规则）。
 > - 术语：本文中「指标」指自定义指标（custom indicator）；DSL 指 `backend/cal_indicators` 的类型化表达式；「落库」指写入 `data/custom_indicators.json` 形成不可变 revision。
 
 ---
@@ -653,7 +653,7 @@ class LLMClient(Protocol):
 
 ## 5. 前端设计
 
-遵循 [docs/frontend-design-guidelines.md](../frontend-design-guidelines.md)：令牌唯一来源、12px 字号下限、对比度、四态、可达性与性能预算；不新增颜色、不新增动画库。
+遵循 [docs/frontend/README.md](../frontend/README.md)：令牌唯一来源、12px 字号下限、对比度、四态、可达性与性能预算；不新增颜色、不新增动画库。
 
 > 智能体操作前端界面（填写 LaTeX、设置筛选条件并实时反显）的完整协议见 §11；本节的面板与页面通过 `useAgentSurface` 注册的 UI Surface 对接。
 
@@ -841,7 +841,7 @@ python skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py
 
 §11 基础 UI 动作独立到 M5，避免拖累 M1–M3 主链路；图编辑器动作（`insert_node / connect / set_arguments`）在此之后按需排期。
 
-每个里程碑完成后按 `branch_submission_rules.md` 走分支、测试证据与合并流程；实现阶段同步更新 AI Hermes 路由记忆并运行校验脚本。
+每个里程碑完成后按 `docs/governance/branch-submission-rules.md` 走分支、测试证据与合并流程；实现阶段同步更新 AI Hermes 路由记忆并运行校验脚本。
 
 ---
 
@@ -867,8 +867,8 @@ python skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py
 
 - 指标中心：`frontend/src/pages/IndicatorStudio.tsx`、`frontend/src/services/customIndicators.ts`、`backend/services/custom_indicator_routes.py`、`backend/custom_indicators/service.py`、`repository.py`、`graph_service.py`、`variable_registry.py`、`backend/cal_indicators/typed_operators.py`、`typed_latex.py`、`latex_excutor.py`。
 - 产品研究：`frontend/src/pages/ProductDetail.tsx` 等、`frontend/src/components/metrics/useMetricDisplayPreference.ts`、`MetricDisplay.tsx`、`backend/services/product_analysis.py`、`research_series_routes.py`、`backend/research_series/service.py`。
-- 治理与规范：`AGENTS.md`、`docs/frontend-design-guidelines.md`、`branch_submission_rules.md`、`docs/repo_map.json`、`docs/task_routes.json`、`docs/pitfalls.json`。
-- 相关既有设计文档：`docs/research/risk-level-configuration-center-implementation-2026-09-16.md`（同类前后端一体设计写法）。
+- 治理与规范：`AGENTS.md`、`docs/frontend/README.md`、`docs/governance/branch-submission-rules.md`、`docs/repo_map.json`、`docs/task_routes.json`、`docs/pitfalls.json`。
+- 相关既有设计文档：[风险标尺](../pre-investment/risk-scale.md)（同类前后端一体设计写法）。
 
 ---
 
@@ -967,7 +967,7 @@ class UiActionSpec(Contract):
 - [ ] harness 测试：动作生成、拒绝回喂、撤销回滚、旧快照防过期。
 - [ ] E2E（fixture 模式）：AI 设置两个条件 → 页面条件 chip 与结果表真实刷新；AI 写入 LaTeX → 公式渲染与诊断出现。
 - [ ] 全部动作在对话流可见、可撤销、可审计；非法动作被拒并给出原因。
-- [ ] 动效、高亮、焦点环、`aria-live` 宣告符合 `docs/frontend-design-guidelines.md`（无新动画库，reduce 下降级）。
+- [ ] 动效、高亮、焦点环、`aria-live` 宣告符合 `docs/frontend/README.md`（无新动画库，reduce 下降级）。
 - [ ] 契约测试：后端动作 schema 与前端 TS 镜像一致；target 命名唯一且稳定。
 
 ---

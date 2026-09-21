@@ -1,4 +1,4 @@
-import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 
 export type ResearchDomain = 'product' | 'transmission'
 export type Frequency = 'daily' | 'weekly' | 'monthly' | 'quarterly'
@@ -30,7 +30,7 @@ export interface RiskRun {
   data_as_of?: string
   rows: RiskRow[]; coefficients?: Array<Array<number | null>>; publishable: boolean; blockers: string[]
   metrics?: { price: number; modified_duration: number; convexity: number }
-  execution: FixedNjitExecutionAudit; limitations: string[]; created_at: string; content_hash: string
+  execution: NativeNumericalExecutionAudit; limitations: string[]; created_at: string; content_hash: string
   preview_hash?: string; transient?: boolean; deployment_fit?: string
 }
 export interface RiskRelease {
@@ -80,7 +80,7 @@ export interface ScenarioHorizonEvidence {
 export interface ScenarioPreview {
   id: string; name: string; entry: ScenarioDraft['entry']; definition: ScenarioDraft; definition_hash: string
   frequency: Frequency; input_variables: RiskVariable[]; factors: RiskVariable[]; path: number[][]
-  horizon: number; horizon_evidence?: ScenarioHorizonEvidence; lineage: TransmissionStep[]; limitations: string[]; execution: FixedNjitExecutionAudit
+  horizon: number; horizon_evidence?: ScenarioHorizonEvidence; lineage: TransmissionStep[]; limitations: string[]; execution: NativeNumericalExecutionAudit
   preview_hash?: string; transient?: boolean; publication_request_id?: string
 }
 export interface ScenarioRelease {
@@ -101,7 +101,7 @@ export interface RiskImpact {
   path: Array<{ step: number; return: number; nav: number; drawdown: number }>
   by_asset: Array<ResearchTarget & { weight: number; contribution: number }>
   by_factor: Array<{ id: string; name: string; contribution: number }>
-  lineage: TransmissionStep[]; limitations: string[]; execution: FixedNjitExecutionAudit
+  lineage: TransmissionStep[]; limitations: string[]; execution: NativeNumericalExecutionAudit
   assumed_unchanged_factors: string[]; frequency: Frequency; transient?: boolean
 }
 export interface PortfolioChoice { id: string; name: string; as_of: string; created_at: string }
@@ -124,8 +124,8 @@ export async function riskRequest<T>(url: string, options: RequestInit = {}): Pr
 }
 const post = <T,>(url: string, body: unknown, signal?: AbortSignal) => riskRequest<T>(url, { method: 'POST', body: JSON.stringify(body), signal })
 const items = async <T,>(url: string, signal?: AbortSignal) => (await riskRequest<{ items: T[] }>(url, { signal })).items
-const audit = <T extends { execution: FixedNjitExecutionAudit }>(value: T, name: string) => {
-  assertFixedNjitExecution(value.execution, name)
+const audit = <T extends { execution: NativeNumericalExecutionAudit }>(value: T, name: string) => {
+  assertNativeNumericalExecution(value.execution, name)
   return value
 }
 export const riskCatalog = (domain: ResearchDomain, signal?: AbortSignal) => riskRequest<RiskCatalog>(`${root(domain)}/catalog`, { signal })
