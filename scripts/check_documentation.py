@@ -120,7 +120,7 @@ class Candidate:
         sys.modules[name] = module
         try:
             exec(compile(source, filename, 'exec'), module.__dict__)
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             sys.modules.pop(name, None)
             raise ValueError(f'cannot load candidate routing helper {HERMES}: {exc}') from exc
         return module
