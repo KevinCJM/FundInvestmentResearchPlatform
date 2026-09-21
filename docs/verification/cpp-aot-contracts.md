@@ -79,3 +79,5 @@ npx playwright test e2e/cpp-aot-execution.spec.ts --workers=2
 [源契约版本意见](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/49#discussion_r4059337498)同样已复现：35 个默认值/显式等价及未知/跨代错配反例在修复前失败。源版本解析现由平台服务与 AOT 适配器共用，按已校验 DSL 绑定已安装语义，在生成原生图前拒绝错配；原定义不修改。适配器使用与平台编译器一致的版本化变量类型及既有兼容规则。最终 AOT 与执行门禁 74 项通过，连同现有服务、变量和参数的回归共 150 项通过（包含上述 74 项，不重复相加）。
 
 [图指纹绑定](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/49#discussion_r4059390872)与[模型阶段凭据](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/49#discussion_r4059390878)两项意见已复现并修复。执行入口捕获本次图，普通/准备执行均要求 AOT 凭据与该图指纹一致；第三方 C++ 前后处理分别要求完整且后端匹配的审计，前后端统一校验。缺省 NJIT 声明的序列化形状保持不变。修复前后端 14 个反例、前端 2 项测试失败；修复后 AOT/政策共 89 项通过，最终前端 163 个文件、1346 项通过，类型、构建、设计与语言检查通过。
+
+[执行方法与生命周期绑定](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/49#discussion_r4059442421)已用真实原生借用/独立输出交换方法复现，4 个反例修复前失败。平台现按方法严格要求结果所有权，格式合法但生命周期不匹配也拒绝；修复后 AOT/政策 93 项通过。前端实现未变，沿用上一轮 1346 项与构建验证。

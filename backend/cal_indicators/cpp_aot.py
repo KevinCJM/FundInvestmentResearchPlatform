@@ -25,13 +25,15 @@ from custom_indicators.variable_registry import (
 )
 
 
-def _validate_result(result, expected_fingerprint: str):
+def _validate_result(result, expected_fingerprint: str, expected_lifetime: str):
     audit = validate_execution_audit(result.audit)
     if (
         audit["execution_backend"] != CPP_AOT_BACKEND
         or audit.get("plan_fingerprint") != expected_fingerprint
     ):
         raise ComputePolicyError("C++ AOT 执行凭据与当前编译图不匹配")
+    if audit["result_lifetime"] != expected_lifetime:
+        raise ComputePolicyError("C++ AOT 结果所有权与执行方法不匹配")
     return result
 
 
@@ -48,11 +50,11 @@ class _ValidatedPreparedBatch:
 
     def run_audit(self):
         result = self._prepared.run_audit()
-        return _validate_result(result, self._expected_fingerprint)
+        return _validate_result(result, self._expected_fingerprint, "borrowed_until_next_run")
 
     def run_snapshot(self):
         result = self._prepared.run_snapshot()
-        return _validate_result(result, self._expected_fingerprint)
+        return _validate_result(result, self._expected_fingerprint, "independent")
 
 
 class CppIndicatorBatchPlan:
@@ -191,7 +193,7 @@ class CppIndicatorBatchPlan:
             parameters=self.parameters(parameters),
             **options,
         )
-        return _validate_result(result, graph.fingerprint)
+        return _validate_result(result, graph.fingerprint, "independent")
 
     def prepare(self, scheduler, inputs, starts, ends, *, parameters=None):
         """Use run_snapshot() for retained results; run() explicitly borrows output."""

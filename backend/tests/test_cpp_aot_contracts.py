@@ -252,6 +252,31 @@ def test_native_execution_rejects_valid_credentials_from_a_different_graph(metho
                 getattr(expected.prepare(faulty_scheduler, inputs, starts, ends), method)()
 
 
+@pytest.mark.parametrize("method", ["execute", "run", "run_audit", "run_snapshot"])
+def test_native_execution_rejects_lifetime_incompatible_with_method(method):
+    plan = CppIndicatorBatchPlan([definition()])
+    inputs = {"adjusted_nav": np.array([100.0, 110.0, 121.0])}
+    starts, ends = np.array([0], np.int64), np.array([3], np.int64)
+    with AdaptiveScheduler(cpu_budget=1) as scheduler:
+        native = scheduler.prepare_execution(plan.graph, inputs, starts, ends, parameters=plan.parameters())
+        # Swap actual ownership as well as metadata, retaining a valid graph proof.
+        wrong_result = native.run_audit() if method in ("execute", "run_snapshot") else native.run_snapshot()
+        validate_execution_audit(wrong_result.audit)
+        provider = SimpleNamespace(
+            execute=lambda *a, **kw: wrong_result,
+            prepare_execution=lambda *a, **kw: SimpleNamespace(
+                run=lambda: wrong_result.values,
+                run_audit=lambda: wrong_result,
+                run_snapshot=lambda: wrong_result,
+            ),
+        )
+        with pytest.raises(ComputePolicyError):
+            if method == "execute":
+                plan.execute(provider, inputs, starts, ends)
+            else:
+                getattr(plan.prepare(provider, inputs, starts, ends), method)()
+
+
 def test_actual_native_proof_fails_closed_if_any_required_field_is_missing():
     audit = execute(CppIndicatorBatchPlan([definition()]), [100.0, 110.0]).audit
     for key in (
