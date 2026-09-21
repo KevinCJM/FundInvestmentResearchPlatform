@@ -48,9 +48,11 @@ def safe_path(path: str) -> str:
 
 class Candidate:
     """Read exclusively from the worktree, index, or one immutable commit."""
-    def __init__(self, root: Path, mode: str = 'worktree', ref: str = 'HEAD'):
+    def __init__(self, root: Path, mode: str = 'worktree', ref: str = 'HEAD',
+                 base_ref: str | None = None):
         self.root, self.mode = root.resolve(), mode
         self.ref = git(root, 'rev-parse', '--verify', f'{ref}^{{commit}}').decode().strip() if mode == 'commit' else ref
+        self.base_ref = base_ref
         self.symlinks: set[str] = set()
         if mode == 'commit':
             entries = git(root, 'ls-tree', '-r', '-z', self.ref).split(b'\0')
@@ -90,6 +92,19 @@ class Candidate:
 
     def text(self, path: str) -> str:
         return self.read(path).decode('utf-8')
+
+    @cached_property
+    def base(self) -> Candidate | None:
+        ref = self.base_ref
+        if ref is None and self.mode != 'commit':
+            result = subprocess.run(['git', '-C', str(self.root), 'rev-parse',
+                                     '--verify', '--quiet', 'HEAD^{commit}'], capture_output=True)
+            if result.returncode == 1:  # A new repository has no committed owner map.
+                return None
+            if result.returncode:
+                raise ValueError(result.stderr.decode(errors='replace').strip() or 'cannot resolve base HEAD')
+            ref = result.stdout.decode().strip()
+        return Candidate(self.root, 'commit', ref) if ref is not None else None
 
     @cached_property
     def hermes(self) -> ModuleType:
@@ -176,7 +191,8 @@ def check_plans(path: str, text: str) -> list[str]:
         if number in code_lines:
             inside = False
             continue
-        if line.strip() == '| ID | 状态 | 工作项 | 完成判据 | 证据/剩余事项 |':
+        line = line.strip()
+        if line == '| ID | 状态 | 工作项 | 完成判据 | 证据/剩余事项 |':
             inside = True
             continue
         if not inside:
@@ -243,17 +259,26 @@ def catalog(candidate: Candidate) -> tuple[dict, list[dict], list[str]]:
 
 def impacts(candidate: Candidate, mapping: dict, documents: list[dict], changed: list[str]) -> list[dict]:
     helpers = candidate.hermes
+    mappings, owners = [mapping], list(documents)
+    base = candidate.base
+    if base is not None and CATALOG in base.paths:
+        previous = json.loads(base.text(CATALOG))
+        mappings.append(previous)
+        owners.extend(previous.get('documentation', {}).get('documents', []))
     causes: dict[str, set[str]] = {}
     for path in changed:
         if path.endswith('.md'):
             causes.setdefault(path, set()).add(path)
             continue
-        for m in mapping['modules']:
-            refs = [p for _, p in helpers._iter_path_values(m, helpers.MODULE_PATH_FIELDS)]
-            if any(path == p.removeprefix('./') or path.startswith(p.removeprefix('./').rstrip('/') + '/') for p in refs):
-                for d in documents:
-                    if m['id'] in d['modules']:
-                        causes.setdefault(d['path'], set()).add(path)
+        module_ids = set()
+        for owner_map in mappings:
+            for m in owner_map['modules']:
+                refs = [p for _, p in helpers._iter_path_values(m, helpers.MODULE_PATH_FIELDS)]
+                if any(path == p.removeprefix('./') or path.startswith(p.removeprefix('./').rstrip('/') + '/') for p in refs):
+                    module_ids.add(m['id'])
+        for d in owners:
+            if module_ids.intersection(d['modules']):
+                causes.setdefault(d['path'], set()).add(path)
     # Include incoming references for moved/deleted or otherwise changed docs.
     for d in documents:
         if d['path'] not in candidate.paths:
@@ -311,6 +336,8 @@ def inspect(candidate: Candidate, changed: list[str], review: dict | None = None
             errors.append(f'{INDEX}: index differs from repo_map; regenerate the navigation block')
     affected = impacts(candidate, mapping, documents, changed)
     digest = hashlib.sha256()
+    if candidate.base is not None:
+        digest.update(b'base\0' + candidate.base.ref.encode() + b'\0')
     for path in sorted(set(changed) | {d['path'] for d in documents} | {CATALOG, HERMES}):
         digest.update(path.encode() + b'\0')
         digest.update(hashlib.sha256(candidate.read(path)).digest() if path in candidate.paths else b'DELETED')
@@ -372,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
             entries = helpers._run_git_changed_entries(candidate.root, ['--cached'])
         elif args.base_ref:
             base = git(candidate.root, 'merge-base', args.base_ref, candidate.ref).decode().strip()
+            candidate.base_ref = base
             entries = helpers.collect_changed_entries(candidate.root, [], base_ref=base, head_ref=candidate.ref)
         else:
             for path in args.changed_file:
