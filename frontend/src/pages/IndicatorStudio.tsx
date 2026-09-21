@@ -831,6 +831,7 @@ function costEstimateLabel(cost: string | number | undefined) {
 }
 
 function executionBackendLabel(backend: string | undefined) {
+  if (backend === 'cpp_aot') return '高性能原生计算（已预先编译）'
   if (backend === 'numba_njit_fixed_signature') return '高性能编译计算（已固定输入输出类型）'
   if (backend === 'numpy_blas_lapack') return '高性能线性代数计算'
   return '数组向量化计算'

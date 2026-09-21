@@ -172,7 +172,7 @@
         "backend/services/product_pool_routes.py",
         "frontend/src/components/FactorEvidencePanel.tsx",
         "frontend/e2e/factor-research-live.spec.ts",
-        "因子研究中心_首套因子验收.md"
+        "docs/verification/factors.md"
       ],
       "affected_modules": [
         "factor_research_center",
@@ -262,12 +262,16 @@
       "confidence": "high",
       "risk_codes": [
         "routing_memory_drift",
-        "routing_only_scope_leak"
+        "routing_only_scope_leak",
+        "covered_read_requirements_missing_from_route_context",
+        "stable_files_exempted_as_local_artifacts"
       ],
       "symptoms": [
         "task_routes duplicates repo_map operational file lists.",
         "routing-only changes accidentally include business code.",
-        "AGENTS.md is used as a dumping ground for project facts instead of protocol."
+        "AGENTS.md is used as a dumping ground for project facts instead of protocol.",
+        "A read_before_edit path passes coverage/path validation but is absent from route_task context because read_before_edit is absent from operational_list_resolution.apply_to_fields and from the rendered first_read/then_check lists.",
+        "Stable source, test, config or documentation paths are exempted by allowed_untracked_globs, masking files missing from Git."
       ],
       "trigger_actions": [
         "edit AGENTS.md or docs routing JSON",
@@ -304,11 +308,14 @@
       "check_before_edit": [
         "Keep routing facts in JSON owners.",
         "Run evolve and validate after routing changes.",
-        "Use routing-only changed-file lists for routing-only work."
+        "Use routing-only changed-file lists for routing-only work.",
+        "Put mandatory module reading in first_read_files and inspect the actual route_task context; path coverage alone does not prove an agent will receive the requirement.",
+        "Restrict allowed_untracked_globs to genuine local diagnostic/cache artifacts. Keep new stable references visible as reproducibility failures until they are included in an authorized Git submission scope."
       ],
       "safe_observation_methods": [
         "python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --routing-only --changed-file <path> --json",
-        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R70 --mode context"
       ]
     },
     {
@@ -440,7 +447,7 @@
         "backend/trading_calendar.py",
         "backend/services/analytics_routes.py",
         "backend/services/strategy_routes.py",
-        "docs/requirements.md",
+        "docs/product/requirements.md",
         "backend/tests/test_strategy_api.py",
         "backend/tests/test_analytics_routes.py"
       ],
@@ -465,7 +472,7 @@
         "Do not add large or sensitive local data files as routing references unless they are intentionally tracked artifacts."
       ],
       "safe_observation_methods": [
-        "rg -n \"read_parquet|to_parquet|DATA_DIR|trade_day_df|asset_nv|etf_info_df|etf_daily_df\" backend config.py T01_get_data.py docs/requirements.md",
+        "rg -n \"read_parquet|to_parquet|DATA_DIR|trade_day_df|asset_nv|etf_info_df|etf_daily_df\" backend config.py T01_get_data.py docs/product/requirements.md",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_strategy_api.py backend/tests/test_analytics_routes.py -q"
       ]
     },
@@ -497,7 +504,11 @@
         "backend/cal_indicators/latex_excutor.py",
         "backend/cal_indicators/numba_finance_math.py",
         "backend/tests/test_numba_finance_math.py",
-        "backend/tests/test_numba_finance_indicators.py"
+        "backend/tests/test_numba_finance_indicators.py",
+        "backend/cal_indicators/cpp_aot.py",
+        "backend/tests/test_cpp_aot_contracts.py",
+        "backend/compute_policy.py",
+        "frontend/src/utils/fixedNjitExecution.ts"
       ],
       "affected_modules": [
         "backend_indicator_runtime",
@@ -511,7 +522,8 @@
       "check_before_edit": [
         "Keep runtime definitions in memory and treat generated DSL JSON as optional metadata only.",
         "Run malicious/invalid AST, operator arity/type, DAG budget, finite scalar-leaf and shared-node failure-isolation tests. Preserve legacy single-root behavior and keep named output identities explicit.",
-        "Keep NetworkX optional and do not make execution topology depend on DOT export support."
+        "Keep NetworkX optional and do not make execution topology depend on DOT export support.",
+        "C++ AOT adaptation must preserve N NAV versus N-1 interval returns, metric-scoped parameter slots, historical source versions and per-root failure isolation. Resolve source-contract defaults by DSL and reject mismatches before native compilation; recording unvalidated version strings in the fingerprint is not a compatibility check. Prepared run/run_audit borrows output; retained results require run_snapshot. Platform prepare must wrap all three run methods and validate each result audit before returning; validating only execute is insufficient. Every result must match the bound graph fingerprint and method-specific lifetime (execute/snapshot independent; prepared run/audit borrowed), and third-party C++ feature/postprocess stages require their own complete matching audits. Never fabricate NJIT signatures for native execution or infer that service warmup was removed."
       ],
       "safe_observation_methods": [
         "cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_numba_finance_math.py tests/test_numba_finance_indicators.py -q",
@@ -618,7 +630,7 @@
         "backend/backtest_engine.py",
         "backend/tests/test_strategy_api.py",
         "frontend/src/pages/ClassAllocation.tsx",
-        "docs/weight_reuse_task_plan.md"
+        "docs/pre-investment/historical-frontier.md"
       ],
       "affected_modules": [
         "backend_strategy_routes",
@@ -722,7 +734,7 @@
         "backend/tests/test_instrument_routes.py",
         "frontend/src/pages/ProductDetail.tsx",
         "frontend/src/pages/ProductCompare.tsx",
-        "docs/requirements.md"
+        "docs/product/requirements.md"
       ],
       "affected_modules": [
         "backend_etf_product_api",
@@ -797,7 +809,7 @@
         "frontend/src/pages/Dashboard.tsx",
         "frontend/src/components/dashboard/useDataRefresh.ts",
         "frontend/src/components/dashboard/DataHealthRefreshPanel.tsx",
-        "docs/tushare_data_refresh_design.md"
+        "docs/data/etl.md"
       ],
       "affected_modules": [
         "data_ingestion_config",
@@ -1169,7 +1181,7 @@
         "frontend/src/pages/EvaluationPlan.tsx",
         "backend/tests/test_custom_indicator_variables.py",
         "frontend/src/pages/IndicatorStudio.test.tsx",
-        "docs/custom_indicator_design.md"
+        "docs/indicators/README.md"
       ],
       "affected_modules": [
         "backend_custom_indicator_service",
@@ -1516,6 +1528,75 @@
         "npm run test --prefix frontend -- --run PreInvestmentImplementation.test.tsx StrategicAllocationWorkspace.test.tsx TacticalAllocationWorkspace.test.tsx",
         "npm run build --prefix frontend",
         "npm run test:e2e --prefix frontend -- --config=playwright.implementation.config.ts"
+      ]
+    },
+    {
+      "id": "P25",
+      "title": "documentation_coverage_is_not_semantic_freshness",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "staged_worktree_mismatch",
+        "historical_evidence_not_current_proof",
+        "documentation_semantic_drift"
+      ],
+      "symptoms": [
+        "Routing coverage passes while a plan or operational instruction still needs semantic review.",
+        "An unstaged Markdown fix hides a broken staged candidate.",
+        "Markdown links pass while plain-text filenames and source comments still point to retired documents.",
+        "Candidate documents use staged/commit content while routing helper code is imported from the worktree, allowing unstaged changes to alter the check.",
+        "A deleted or moved document disappears from affected_documents when its catalog entry is removed, so strict review can omit the retired path.",
+        "Raw pipe splitting treats escaped pipes in valid GFM plan cells as extra columns.",
+        "A per-heading-base counter collides with natural numbered headings and rejects valid links to globally suffixed anchors.",
+        "Removing a source/config/test route with its file or module can hide its document owner if only the candidate map is read.",
+        "Indented plan headers are recognized while raw row prefixes stop validation and allow invalid statuses or missing evidence.",
+        "The checker implementation is taken from the worktree even though its input and helper are read from the index or selected commit.",
+        "Default worktree path-only Git collection drops the source of staged renames.",
+        "Valid GFM plan rows omit edge pipes and bypass checks that require raw leading pipes.",
+        "A candidate checker raises SystemExit(0) before completing validation and the launcher reports success without a check report.",
+        "Worktree routing helper initialization can also raise SystemExit(0) outside the Git-candidate wrapper, skipping all checks."
+      ],
+      "trigger_actions": [
+        "finish a code, config or documentation milestone",
+        "move or retire a document",
+        "close a plan or historical defect"
+      ],
+      "related_paths": [
+        "scripts/check_documentation.py",
+        "scripts/tests/test_documentation.py",
+        "docs/governance/documentation.md",
+        "docs/repo_map.json"
+      ],
+      "affected_modules": [
+        "documentation_maintenance",
+        "ai_routing_files",
+        "project_docs"
+      ],
+      "blast_radius": [
+        "agent closeout",
+        "documentation reproducibility"
+      ],
+      "check_before_edit": [
+        "Use the scoped task diff; do not include other tasks in a shared dirty worktree.",
+        "Run document checks against the exact worktree, index or PR head candidate.",
+        "Treat source change as a review trigger, not proof that prose is wrong or that a plan is finished.",
+        "Close problems only with relevant current-version evidence; preserve historical evidence boundaries.",
+        "After moving or deleting documents, search tracked source and prose for retired paths and filenames; Markdown link validation does not cover plain-text or comment references. Check the actual Git candidate when the worktree is dirty.",
+        "Load reused routing helper code from the same candidate and include it in the review fingerprint; verify both outside-candidate failures and unstaged repairs with isolated Git fixtures.",
+        "Keep deleted managed Markdown paths in the review scope independently of the current catalog; require a decision about replacement contracts, routing and source references.",
+        "Split plan cells on unescaped GFM table delimiters; pipes inside inline code must also be escaped. Cover worktree, staged, commit and rename retirement cases.",
+        "Generate heading suffixes against every previously emitted heading slug, including naturally numbered headings; test both heading orders and actual inbound links.",
+        "Resolve changed paths against both candidate and base module/document ownership; use HEAD for worktree/index and merge-base for PRs, and bind the base commit in review fingerprints.",
+        "Normalize plan row indentation consistently with headers after excluding code blocks; cover legal one-to-three-space indentation with invalid states and missing evidence.",
+        "Run Git-candidate validation in the checker implementation selected from that candidate and bind its bytes in the fingerprint; missing, invalid or failed candidate code must not fall back to worktree repairs.",
+        "Use structured name-status diffs for both staged and unstaged worktree changes, retaining both rename paths and separately including untracked paths.",
+        "Recognize plan header labels and rows with optional GFM edge pipes while retaining column, state and evidence checks.",
+        "Convert SystemExit during candidate checker initialization or main execution into failure, including a zero exit code; verify staged and commit candidates with both entry points.",
+        "Catch SystemExit at the helper import boundary for worktree, staged and commit checks, and remove partially loaded helper modules on failure."
+      ],
+      "safe_observation_methods": [
+        "python3 scripts/check_documentation.py --staged --json",
+        "python3 -m pytest scripts/tests/test_documentation.py -q"
       ]
     }
   ]

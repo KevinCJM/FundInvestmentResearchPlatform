@@ -1,5 +1,5 @@
 import type { IndicatorDefinition, MetricPresentation } from './customIndicators'
-import { assertFixedNjitExecution, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 import type { HistoricalRegimeBacktestReference, RegimeConditioningResult } from './portfolioRegime'
 
 export type PortfolioProductKind = 'etf' | 'fund'
@@ -263,11 +263,11 @@ function normalizeWeightPath(value: unknown, assets: unknown, dates: unknown): P
 
 function normalizeRun(raw: unknown): PortfolioRun {
   const source = (raw ?? {}) as Record<string, any>
-  assertFixedNjitExecution(source.execution, '组合研究运行')
+  assertNativeNumericalExecution(source.execution, '组合研究运行')
   const regimeConditioning = source.regime_conditioning && typeof source.regime_conditioning === 'object'
     ? source.regime_conditioning as RegimeConditioningResult
     : null
-  if (regimeConditioning) assertFixedNjitExecution(regimeConditioning.execution, '组合历史情景条件统计')
+  if (regimeConditioning) assertNativeNumericalExecution(regimeConditioning.execution, '组合历史情景条件统计')
   const dates = source.dates ?? []
   const rawWeights = Array.isArray(source.weight_path) ? source.weight_path : Array.isArray(source.weights) ? source.weights : []
   return {
@@ -287,7 +287,7 @@ function normalizeRun(raw: unknown): PortfolioRun {
 
 function normalizeDiagnosis(raw: unknown): PortfolioDiagnosis {
   const source = (raw ?? {}) as Record<string, any>
-  assertFixedNjitExecution(source.execution, '组合研究诊断')
+  assertNativeNumericalExecution(source.execution, '组合研究诊断')
   return {
     summary: metricList(source.summary_metrics ?? source.metrics ?? source.summary), components: Array.isArray(source.components) ? source.components : [],
     custom_indicators: portfolioMetricList(source.custom_indicators), contributions: Array.isArray(source.contributions) ? source.contributions : [],
@@ -370,8 +370,8 @@ export async function diagnosePortfolioRun(id: string, indicatorIds: string[] = 
   }))
 }
 export async function runPortfolioScenario(id: string, input: { name: string; start_date: string; end_date: string }) {
-  const response = await request<{ name: string; metrics?: PortfolioMetric[]; warnings?: unknown; execution: FixedNjitExecutionAudit }>(`/api/portfolio-runs/${encodeURIComponent(id)}/scenario`, { method: 'POST', body: JSON.stringify(input) })
-  assertFixedNjitExecution(response.execution, '组合历史情景')
+  const response = await request<{ name: string; metrics?: PortfolioMetric[]; warnings?: unknown; execution: NativeNumericalExecutionAudit }>(`/api/portfolio-runs/${encodeURIComponent(id)}/scenario`, { method: 'POST', body: JSON.stringify(input) })
+  assertNativeNumericalExecution(response.execution, '组合历史情景')
   return { name: response.name, metrics: metricList(response.metrics), warnings: warningMessages(response.warnings) }
 }
 

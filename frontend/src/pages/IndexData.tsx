@@ -4,8 +4,8 @@ import DataWorkspaceNav from '../components/data-sources/DataWorkspaceNav';
 import { useDataRefresh } from '../components/dashboard/useDataRefresh';
 import type { DataQualityWarning, DataRefreshStatus, InstrumentAnalyticsResponse } from '../components/dashboard/types';
 import {
-  assertFixedNjitExecution,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution';
 
 interface IndexSummary {
@@ -16,7 +16,7 @@ interface IndexSummary {
   latest_date?: string | null;
   missing_count: number;
   stale_count: number;
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 type QualityTone = 'good' | 'warning' | 'danger' | 'planned';
@@ -98,7 +98,7 @@ interface DeepQualityReport {
   checks: QualityCheck[];
   issues: DeepQualityIssue[];
   validation: { status: 'passed' | 'unavailable'; manifest?: string | null };
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 interface QualityIssue extends DeepQualityIssue {
@@ -261,19 +261,19 @@ export default function DataQuality() {
       fetch('/api/data/quality', { signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error('深度质量检查结果暂不可用。');
         const payload = await response.json() as DeepQualityReport;
-        assertFixedNjitExecution(payload.execution, '深度数据质量统计');
+        assertNativeNumericalExecution(payload.execution, '深度数据质量统计');
         return payload;
       }),
       fetch('/api/instruments/analytics?kind=all', { signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error('产品覆盖质量结果暂不可用。');
         const payload = await response.json() as InstrumentAnalyticsResponse;
-        assertFixedNjitExecution(payload.execution, '产品覆盖质量统计');
+        assertNativeNumericalExecution(payload.execution, '产品覆盖质量统计');
         return payload;
       }),
       fetch('/api/indices/summary', { signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error('指数覆盖质量结果暂不可用。');
         const payload = await response.json() as IndexSummary;
-        assertFixedNjitExecution(payload.execution, '指数覆盖质量统计');
+        assertNativeNumericalExecution(payload.execution, '指数覆盖质量统计');
         return payload;
       }),
     ]).then(([qualityResult, analyticsResult, indexResult]) => {

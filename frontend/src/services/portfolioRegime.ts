@@ -1,4 +1,4 @@
-import type { FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import type { NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 
 export interface HistoricalRegimeBacktestReference {
   run_id: string
@@ -60,5 +60,5 @@ export interface RegimeConditioningResult {
     state_transitions?: number
   }
   conditional_performance: Record<string, RegimeConditionalPerformanceRow[]>
-  execution?: FixedNjitExecutionAudit
+  execution?: NativeNumericalExecutionAudit
 }

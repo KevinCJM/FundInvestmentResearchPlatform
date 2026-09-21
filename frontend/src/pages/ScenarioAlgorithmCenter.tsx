@@ -1,3 +1,4 @@
+import { isNativeNumericalExecution } from '../utils/fixedNjitExecution';
 import { NumberInput } from "../components/risk-models/ResearchUI";
 import {
   type KeyboardEvent,
@@ -1980,10 +1981,9 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
   const terminal = result.distribution?.terminal;
   const computeAudit = run.compute_audit;
   const computeBackend = computeAudit?.execution_backend ?? computeAudit?.backend;
-  const computeCompliant = computeBackend === "numba_njit_fixed_signature" &&
-    computeAudit?.nopython === true && computeAudit?.python_fallback === 0;
+  const computeCompliant = isNativeNumericalExecution(computeAudit);
   const compiledKernelCount = Object.keys(
-    computeAudit?.kernel_signatures ?? {},
+    computeAudit && 'kernel_signatures' in computeAudit ? computeAudit.kernel_signatures ?? {} : {},
   ).length;
   const firstBreachStep = result.summary.first_breach_step ?? null;
   const exportRun = () => {
@@ -2124,13 +2124,13 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
               计算执行审计
             </p>
             <p className="mt-1 text-lg font-bold text-slate-950">
-              {computeCompliant ? "固定签名 NJIT · 已通过" : "执行证据缺失或不合规"}
+              {computeCompliant ? `${computeBackend === "cpp_aot" ? "C++ AOT" : "固定签名 NJIT"} · 已通过` : "执行证据缺失或不合规"}
             </p>
             <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-lg bg-white/70 p-2">
                 <dt className="text-slate-600">内核覆盖</dt>
                 <dd className="mt-1 font-bold text-slate-900">
-                  {computeAudit?.kernel_coverage ?? `${compiledKernelCount} 个固定签名`}
+                  {computeAudit?.kernel_coverage ?? (computeBackend === "cpp_aot" ? "原生预编译内核" : `${compiledKernelCount} 个固定签名`)}
                 </dd>
               </div>
               <div className="rounded-lg bg-white/70 p-2">
@@ -2141,7 +2141,7 @@ function ResultPanel({ run }: { run: ScenarioStressRun | null }) {
               </div>
             </dl>
             <p className="mt-2 break-all text-xs leading-5 text-slate-600">
-              nopython={String(computeAudit?.nopython ?? false)} · 指纹 {computeAudit?.fingerprint?.slice(0, 16) ?? "未提供"}
+              {computeBackend === "cpp_aot" ? "原生预编译" : `nopython=${String(computeAudit && 'nopython' in computeAudit ? computeAudit.nopython : false)}`} · 指纹 {computeAudit && 'plan_fingerprint' in computeAudit ? computeAudit.plan_fingerprint?.slice(0, 24) : computeAudit?.fingerprint?.slice(0, 16) ?? "未提供"}
             </p>
           </div>
           <div

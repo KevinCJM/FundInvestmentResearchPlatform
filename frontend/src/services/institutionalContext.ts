@@ -1,4 +1,4 @@
-import type { FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import type { NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 export const reviewTopics = [['tax', '税务'], ['regulation', '监管'], ['currency_hedging', '币种与对冲'], ['leverage', '杠杆'], ['special_liquidity', '特殊流动性']] as const
 export type ReviewTopic = typeof reviewTopics[number][0]
 export interface ReviewItem {
@@ -17,7 +17,7 @@ export interface InstitutionalDiagnostics {
   balance_sheet: null | { as_of: string; currency: string; source: string; total_assets: number | null
     net_assets_after_confirmed_liabilities: number | null; uncalled_commitments: number | null; status: 'research_snapshot' }
   cash_reserve_weight: number; review_blockers: string[]; current_review_blockers: string[]
-  automated_compliance: 'not_modelled'; independent_approval: false; execution: FixedNjitExecutionAudit
+  automated_compliance: 'not_modelled'; independent_approval: false; execution: NativeNumericalExecutionAudit
 }
 export function newInstitution(type: InstitutionalContext['investor_type']): InstitutionalContext {
   return { investor_type: type, purpose: '', cash_reserve_weight: 0, balance_sheet: null,
