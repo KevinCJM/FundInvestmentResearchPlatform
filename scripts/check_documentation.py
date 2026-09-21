@@ -179,7 +179,10 @@ def check_plans(path: str, text: str) -> list[str]:
         if not line.startswith('|'):
             inside = False
             continue
-        cells = [s.strip() for s in line.strip('|').split('|')]
+        # GFM escaped pipes stay in their cell, including those in inline code.
+        cells = [s.strip() for s in re.split(r'(?<!\\)\|', line.strip())[1:]]
+        if cells and not cells[-1]:
+            cells.pop()
         if all(re.fullmatch(r':?-+:?', c) for c in cells):
             continue
         if len(cells) != 5:
@@ -258,8 +261,11 @@ def impacts(candidate: Candidate, mapping: dict, documents: list[dict], changed:
             if target and target[0] in changed:
                 causes.setdefault(d['path'], set()).add(target[0])
     by_path = {d['path']: d for d in documents}
-    return [{'path': p, 'role': by_path[p]['role'], 'caused_by': sorted(c)}
-            for p, c in sorted(causes.items()) if p in by_path]
+    # Catalog removal must not erase the obligation to review a retired path.
+    return [{'path': p, 'role': by_path[p]['role'] if p in by_path else 'deleted',
+             'caused_by': sorted(c)}
+            for p, c in sorted(causes.items())
+            if p in by_path or (managed(p) and p not in candidate.paths)]
 
 
 def inspect(candidate: Candidate, changed: list[str], review: dict | None = None,
