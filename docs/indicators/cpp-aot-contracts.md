@@ -15,7 +15,7 @@
 
 ## 所有权
 
-`scheduler.execute()` 返回独立输出。`prepared.run()` / `run_audit()` 复用同一输出缓冲区，生命周期明确为 `borrowed_until_next_run`。需要缓存、快照或跨请求保留时调用 `run_snapshot()`；它直接写入独立只读输出，状态数组也独立，scheduler 关闭后仍有效。调用期间输入必须保持不变。
+`scheduler.execute()` 返回独立输出。`prepared.run()` / `run_audit()` 复用同一输出缓冲区，生命周期明确为 `borrowed_until_next_run`。需要缓存、快照或跨请求保留时调用 `run_snapshot()`；它直接写入独立只读输出，状态数组也独立，scheduler 关闭后仍有效。调用期间输入必须保持不变。平台 `prepare()` 返回受门禁保护的句柄，`run()`、`run_audit()`、`run_snapshot()` 每次都在暴露结果前校验当次原生凭据；`run()` 通过一次 audited 执行取得同一借用数组，不重复计算或复制。
 
 ## 执行门禁
 

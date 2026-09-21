@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -148,9 +149,48 @@ def test_error_statuses_empty_short_and_retained_snapshots():
         )
         retained = prepared.run_snapshot()
         fresh = prepared.run_audit()
+        borrowed = prepared.run()
+        assert np.shares_memory(borrowed, fresh.values)
         assert not np.shares_memory(retained.values, fresh.values)
         validate_execution_audit(retained.audit)
     assert retained.values[0, 1] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("method", ["run", "run_audit", "run_snapshot"])
+@pytest.mark.parametrize("invalid_proof", ["missing", "contradictory"])
+def test_prepared_execution_rejects_invalid_native_proof(method, invalid_proof):
+    plan = CppIndicatorBatchPlan([definition()])
+    inputs = {"adjusted_nav": np.array([100.0, 110.0, 121.0])}
+    starts, ends = np.array([0], np.int64), np.array([3], np.int64)
+    calls = []
+    with AdaptiveScheduler(cpu_budget=1) as scheduler:
+        native = scheduler.prepare_execution(
+            plan.graph, inputs, starts, ends, parameters=plan.parameters()
+        )
+
+        def corrupt_result(run):
+            calls.append(1)
+            result = run()
+            audit = dict(result.audit)
+            if invalid_proof == "missing":
+                audit.pop("engine_build_id")
+            else:
+                audit["backend"] = "numba_njit_fixed_signature"
+            return SimpleNamespace(
+                values=result.values, statuses=result.statuses, audit=audit
+            )
+
+        # Inject only faulty package metadata; computation and ownership remain native.
+        faulty_native = SimpleNamespace(
+            run=native.run,
+            run_audit=lambda: corrupt_result(native.run_audit),
+            run_snapshot=lambda: corrupt_result(native.run_snapshot),
+        )
+        provider = SimpleNamespace(prepare_execution=lambda *a, **kw: faulty_native)
+        prepared = plan.prepare(provider, inputs, starts, ends)
+        with pytest.raises(ComputePolicyError):
+            getattr(prepared, method)()
+        assert len(calls) == 1
 
 
 def test_actual_native_proof_fails_closed_if_any_required_field_is_missing():

@@ -23,6 +23,27 @@ from custom_indicators.series_parameters import validate_parameter_definition
 from custom_indicators.variable_registry import normalize_variable_latex, variable_types
 
 
+class _ValidatedPreparedBatch:
+    """Validate each native result without copying or changing its lifetime."""
+
+    def __init__(self, prepared):
+        self._prepared = prepared
+
+    def run(self):
+        # The audited call executes once and returns the same borrowed buffer.
+        return self.run_audit().values
+
+    def run_audit(self):
+        result = self._prepared.run_audit()
+        validate_execution_audit(result.audit)
+        return result
+
+    def run_snapshot(self):
+        result = self._prepared.run_snapshot()
+        validate_execution_audit(result.audit)
+        return result
+
+
 class CppIndicatorBatchPlan:
     """Prepared immutable definitions; parameter values never change the graph id."""
 
@@ -161,6 +182,7 @@ class CppIndicatorBatchPlan:
 
     def prepare(self, scheduler, inputs, starts, ends, *, parameters=None):
         """Use run_snapshot() for retained results; run() explicitly borrows output."""
-        return scheduler.prepare_execution(
+        prepared = scheduler.prepare_execution(
             self.graph, inputs, starts, ends, parameters=self.parameters(parameters)
         )
+        return _ValidatedPreparedBatch(prepared)

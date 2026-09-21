@@ -71,3 +71,7 @@ npx playwright test e2e/cpp-aot-execution.spec.ts --workers=2
 - 文档检查器：47 项通过（含最新 Dev 检查器修复）；66 份文档、349 处本地链接、暂存候选检查、Hermes 结构与本次文件覆盖检查通过。
 
 历史引擎全量回归和性能记录仍仅适用于上文日期与版本；本次提交没有切换平台默认服务后端，也没有部署。
+
+### Bot 审核补充复验
+
+[PR #49 的 prepared 门禁意见](https://github.com/KevinCJM/FundInvestmentResearchPlatform/pull/49#discussion_r4059306433)已复现：原实现的 `run()`、`run_audit()`、`run_snapshot()` 均可绕过平台凭据校验。缺失构建身份及矛盾后端共 6 个反例修复前全部失败。适配器现逐次校验原生结果后返回；`run()` 只执行一次并返回同一借用数组，快照仍保持独立。修复后 C++ AOT 契约与执行门禁共 39 项通过；前端及既有 NJIT 业务实现未变，沿用上面的对应验证。
