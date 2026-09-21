@@ -135,9 +135,14 @@ def markdown(text: str) -> tuple[set[str], list[str]]:
             title = ''.join(t.content for t in inline.children or [] if t.type in {'text', 'code_inline'})
             title = title.lower()
             slug = ''.join(c for c in title if c in '_- ' or unicodedata.category(c)[0] in 'LN').replace(' ', '-')
-            n = counts.get(slug, 0)
-            counts[slug] = n + 1
-            anchors.add(f'{slug}-{n}' if n else slug)
+            anchor = slug
+            suffix = counts.get(slug, 0)
+            while anchor in counts:
+                suffix += 1
+                anchor = f'{slug}-{suffix}'
+            counts[slug] = suffix
+            counts[anchor] = 0
+            anchors.add(anchor)
         for t in token.children or []:
             if t.type == 'link_open':
                 links.append(t.attrGet('href'))

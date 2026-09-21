@@ -58,6 +58,22 @@ def test_reference_links_code_blocks_chinese_and_duplicate_anchors(repo):
     assert inspect(repo)['errors'] == []
 
 
+@pytest.mark.parametrize(('titles', 'expected'), [
+    (['Foo', 'Foo-1', 'Foo'], {'foo', 'foo-1', 'foo-2'}),
+    (['Foo', 'Foo', 'Foo-1'], {'foo', 'foo-1', 'foo-1-1'}),
+    (['Foo', 'Foo-1', 'Foo-2', 'Foo', 'Foo'], {'foo', 'foo-1', 'foo-2', 'foo-3', 'foo-4'}),
+])
+def test_heading_suffixes_avoid_all_emitted_slugs(titles, expected):
+    anchors, _ = check.markdown('\n\n'.join('# ' + title for title in titles))
+    assert anchors == expected
+
+
+def test_link_to_heading_with_colliding_natural_suffix_is_valid(repo):
+    write(repo, 'docs/topic.md', '# Foo\n\n# Foo-1\n\n# Foo\n')
+    write(repo, 'README.md', '[third heading](docs/topic.md#foo-2)\n')
+    assert not inspect(repo)['errors']
+
+
 @pytest.mark.parametrize('target', ['missing.md', 'topic.md#absent', '/tmp/external.md', '../../escape.md'])
 def test_broken_or_nonportable_links_fail(repo, target):
     write(repo, 'docs/topic.md', f'# Topic\n[link]({target})\n')
