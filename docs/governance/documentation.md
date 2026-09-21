@@ -76,6 +76,8 @@ python3 -m pytest scripts/tests/test_documentation.py -q
 
 候选隔离同时覆盖所复用的 Hermes 辅助代码：暂存检查从 index 加载，指定提交检查从该提交加载，工作区修复不能代替候选中的版本。辅助代码也纳入审核回执指纹，版本变化使旧回执失效；候选缺少辅助代码或加载失败时直接报错。
 
+标题锚点在同一文档内全局去重，包括标题本身含编号的情况：`Foo`、`Foo-1`、`Foo` 对应 `foo`、`foo-1`、`foo-2`。不能只统计同名标题，否则有效的编号锚点链接会被误报。
+
 路由变化继续运行 Hermes validate/evolve；Tushare 相关文档运行 `backend/tests/test_tushare_data_script.py -k document`。专业契约测试按实际变更选择，不为纯路径移动启动全量业务回归或正式下载。
 
 ## 触发与部署边界
