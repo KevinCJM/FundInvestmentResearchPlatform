@@ -161,6 +161,16 @@ def test_plan_cells_allow_escaped_pipes(work):
     assert not check.check_plans('plan.md', HEADER + row)
 
 
+@pytest.mark.parametrize('indent', [' ', '  ', '   '])
+def test_indented_plan_rows_still_validate_state_and_evidence(indent):
+    rows = HEADER + '| TASK-1 | done | Build | Tested | missing |\n'
+    text = '\n'.join(indent + line for line in rows.splitlines())
+    assert check.check_plans('plan.md', text)
+    rows = HEADER + '| TASK-1 | verified | Build | Tested | missing |\n'
+    text = '\n'.join(indent + line for line in rows.splitlines())
+    assert any('needs a link' in e for e in check.check_plans('plan.md', text))
+
+
 def test_plan_example_in_code_fence_is_not_a_live_plan():
     assert not check.check_plans('plan.md', '```markdown\n' + HEADER + '| EXAMPLE | done | | | |\n```\n')
 
@@ -318,7 +328,7 @@ def test_deleted_document_requires_explicit_review(repo, capsys, mode):
     review = {'fingerprint': report['fingerprint'], 'documents': [
         {'path': d['path'], 'status': 'reviewed_no_change', 'reason': 'Current contract is unchanged.'}
         for d in report['affected_documents'] if d['path'] != 'docs/topic.md']}
-    candidate = check.Candidate(repo, mode)
+    candidate = check.Candidate(repo, mode, base_ref=base if mode == 'commit' else None)
     result = check.inspect(candidate, report['changed_files'], review, require_review=True)
     assert 'docs/topic.md: documentation impact review is incomplete' in result['errors']
     review['documents'].append({'path': 'docs/topic.md', 'status': 'reviewed_no_change',
@@ -342,6 +352,71 @@ def test_document_rename_keeps_old_path_in_review_scope(repo, capsys):
     roles = {d['path']: d['role'] for d in report['affected_documents']}
     assert roles['docs/topic.md'] == 'deleted'
     assert roles['docs/renamed.md'] == 'topic'
+
+
+@pytest.mark.parametrize('mode', ['worktree', 'staged', 'commit'])
+def test_retired_config_keeps_base_module_document_ownership(repo, capsys, mode):
+    path = 'settings/retired.json'
+    mapping = json.loads((repo / 'docs/repo_map.json').read_text())
+    mapping['modules'][0]['related_configs'] = [path]
+    write(repo, path, '{}\n')
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', 'tracked external config ownership')
+    base = git(repo, 'rev-parse', 'HEAD')
+    (repo / path).unlink()
+    mapping['modules'][0].pop('related_configs')
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    if mode != 'worktree':
+        git(repo, 'add', '.')
+    if mode == 'commit':
+        git(repo, 'commit', '-qm', 'retire config and its route')
+    args = ['--staged'] if mode == 'staged' else ['--base-ref', base] if mode == 'commit' else []
+    assert check.main(['--project-root', str(repo), *args, '--json']) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert {d['path'] for d in report['affected_documents'] if path in d['caused_by']} == {
+        'README.md', 'AGENTS.md', 'docs/README.md', 'docs/topic.md'}
+    assert check.main(['--project-root', str(repo), *args, '--require-review', '--json']) == 1
+    assert json.loads(capsys.readouterr().out)['errors']
+
+
+def test_retired_module_uses_base_document_ownership(repo, capsys):
+    path = 'settings/retired.json'
+    mapping = json.loads((repo / 'docs/repo_map.json').read_text())
+    mapping['modules'].append({'id': 'retired', 'related_configs': [path]})
+    mapping['documentation']['documents'][-1]['modules'] = ['retired']
+    write(repo, path, '{}\n')
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', 'retired module owner')
+    base = git(repo, 'rev-parse', 'HEAD')
+    (repo / path).unlink()
+    mapping['modules'].pop()
+    mapping['documentation']['documents'][-1]['modules'] = ['test']
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', 'consolidate module and remove config')
+    assert check.main(['--project-root', str(repo), '--base-ref', base, '--json']) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert any(d['path'] == 'docs/topic.md' and path in d['caused_by'] for d in report['affected_documents'])
+
+
+def test_review_fingerprint_binds_base_ownership(repo):
+    original = (repo / 'docs/repo_map.json').read_text()
+    before = inspect(repo, ['src/service.py'])
+    mapping = json.loads(original)
+    mapping['modules'][0]['related_configs'] = ['settings/retired.json']
+    write(repo, 'docs/repo_map.json', json.dumps(mapping))
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', 'change base ownership')
+    write(repo, 'docs/repo_map.json', original)
+    after = inspect(repo, ['src/service.py'])
+    assert before['fingerprint'] != after['fingerprint']
+
+
+def test_new_repository_without_head_has_no_base_ownership(repo):
+    git(repo, 'checkout', '--orphan', 'new-history')
+    assert not inspect(repo, ['src/service.py'])['errors']
 
 
 def test_readonly_check_does_not_rewrite_documents_or_index(repo):
