@@ -3,10 +3,13 @@ from __future__ import annotations
 """Fail-closed execution policy for every user-reachable numerical chain."""
 
 from dataclasses import asdict, dataclass
+import re
 from typing import Any, Mapping
 
 
 NJIT_BACKEND = "numba_njit_fixed_signature"
+CPP_AOT_BACKEND = "cpp_aot"
+NATIVE_NUMERICAL_BACKENDS = frozenset({NJIT_BACKEND, CPP_AOT_BACKEND})
 THIRD_PARTY_BACKEND = "optimized_third_party_model"
 ALLOWED_THIRD_PARTY_MODEL_FAMILIES = frozenset(
     {"machine_learning", "deep_learning", "neural_network"}
@@ -72,16 +75,49 @@ def _signature_groups(audit: Mapping[str, Any]) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _validate_cpp_aot(audit: Mapping[str, Any]) -> dict[str, Any]:
+    required = {
+        "audit_schema": "cpp-aot-execution-1", "engine": "calmetrics_engine",
+        "operator_registry_version": "canonical-native-1", "typed_ir_version": "cpp-typed-ir-1",
+        "input_dtype": "float64", "output_dtype": "float64",
+    }
+    if any(audit.get(key) != value for key, value in required.items()):
+        raise ComputePolicyError("C++ AOT 执行契约或引擎不受支持")
+    if audit.get("native_aot") is not True:
+        raise ComputePolicyError("C++ AOT 必须使用构建阶段编译的原生内核")
+    for key in ("python_fallback", "python_operator_calls", "python_worker_callbacks", "request_time_compilation"):
+        if type(audit.get(key)) is not int or audit[key] != 0:
+            raise ComputePolicyError("C++ AOT 禁止 Python 数值回调、回退或请求期编译")
+    if not isinstance(audit.get("engine_version"), str) or not audit["engine_version"].strip():
+        raise ComputePolicyError("C++ AOT 缺少引擎版本")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(audit.get("engine_build_id", ""))):
+        raise ComputePolicyError("C++ AOT 缺少有效构建身份")
+    if not re.fullmatch(r"native-[1-9][0-9]*-[0-9a-f]{32}", str(audit.get("plan_fingerprint", ""))):
+        raise ComputePolicyError("C++ AOT 缺少有效计划身份")
+    cpu, tokens = audit.get("cpu_budget"), audit.get("cpu_tokens")
+    if type(cpu) is not int or type(tokens) is not int or not 1 <= tokens <= cpu <= 1024:
+        raise ComputePolicyError("C++ AOT CPU 执行证明无效")
+    if audit.get("result_lifetime") not in {"independent", "borrowed_until_next_run"}:
+        raise ComputePolicyError("C++ AOT 必须声明结果所有权")
+    return {**audit, "execution_backend": CPP_AOT_BACKEND, "njit_required": False}
+
+
 def validate_execution_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
     """Validate one numerical lane and return a normalized immutable audit.
 
-    Ordinary numerical code has exactly one admissible lane: eagerly compiled,
-    fixed-signature Numba nopython execution.  A third-party exception is
+    Ordinary numerical code uses fixed-signature Numba or the audited C++ AOT
+    engine.  A third-party exception is
     intentionally narrow and only covers optimized ML/DL/neural-network model
     engines behind an isolated array contract.
     """
 
+    if not isinstance(audit, Mapping):
+        raise ComputePolicyError("执行证明必须是对象")
+    if audit.get("backend") and audit.get("execution_backend") and audit["backend"] != audit["execution_backend"]:
+        raise ComputePolicyError("执行后端声明冲突")
     backend = _backend(audit)
+    if backend == CPP_AOT_BACKEND:
+        return _validate_cpp_aot(audit)
     fallback = audit.get("python_fallback")
     if fallback != 0:
         raise ComputePolicyError("数值计算链路禁止 Python 慢速回退")
@@ -145,10 +181,10 @@ def validate_execution_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
             raise ComputePolicyError("第三方模型计算期间禁止 Python 数值回调")
         if audit.get("model_engine_scope") != "training_or_inference_only":
             raise ComputePolicyError("第三方豁免只能覆盖模型训练或推理本身")
-        if audit.get("feature_pipeline_backend") != NJIT_BACKEND:
-            raise ComputePolicyError("第三方模型的特征工程与缩放仍必须使用 NJIT")
-        if audit.get("postprocess_backend") != NJIT_BACKEND:
-            raise ComputePolicyError("第三方模型的路径、统计和归因后处理仍必须使用 NJIT")
+        if audit.get("feature_pipeline_backend") not in NATIVE_NUMERICAL_BACKENDS:
+            raise ComputePolicyError("第三方模型的特征工程与缩放必须使用固定签名 NJIT 或 C++ AOT")
+        if audit.get("postprocess_backend") not in NATIVE_NUMERICAL_BACKENDS:
+            raise ComputePolicyError("第三方模型的路径、统计和归因后处理必须使用固定签名 NJIT 或 C++ AOT")
         normalized = dict(audit)
         normalized["execution_backend"] = THIRD_PARTY_BACKEND
         normalized["njit_required"] = False
@@ -157,7 +193,7 @@ def validate_execution_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
         return normalized
 
     raise ComputePolicyError(
-        "普通数学、矩阵、回归、导数、统计、组合和回测仅允许 fixed-signature NJIT；"
+        "普通数学、矩阵、回归、导数、统计、组合和回测仅允许 fixed-signature NJIT 或 C++ AOT；"
         "当前执行后端不合规"
     )
 

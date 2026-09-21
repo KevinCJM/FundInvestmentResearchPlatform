@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import ClassFitPanel, { ClassConsistencyTable, type ClassFitResult } from '../components/ClassFitPanel'
-import { assertFixedNjitExecution, assertFixedNjitExecutionLanes, type FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution, assertNativeNumericalExecutionLanes, type NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
 import {
   getInvestableUniverse,
   investableUniverseEligibleCount,
@@ -73,7 +73,7 @@ interface AutoClassResult {
     contract_deviations: { code: string; name: string; assigned_class: string; contract_label: string }[]
     winsorized: { code: string; name: string; clipped: number; max_raw_return: number | null }[]
   }
-  execution: FixedNjitExecutionAudit
+  execution: NativeNumericalExecutionAudit
   universe_snapshot: {
     id: string
     name: string
@@ -335,7 +335,7 @@ export default function AutoAssetClassification() {
       })
       if (!response.ok) throw new Error(`后端错误 ${response.status}`)
       const data = await response.json() as ClassFitResult
-      assertFixedNjitExecutionLanes(data.execution, '自动大类净值拟合')
+      assertNativeNumericalExecutionLanes(data.execution, '自动大类净值拟合')
       setFitResult(data)
     } catch (reason: any) {
       setFitError(`大类净值与指标计算失败：${reason?.message || reason}`)
@@ -382,7 +382,7 @@ export default function AutoAssetClassification() {
       })
       const data = await response.json()
       if (!response.ok) throw new Error(apiErrorMessage(data, `后端错误 ${response.status}`))
-      assertFixedNjitExecution(data.execution, '自动构建大类')
+      assertNativeNumericalExecution(data.execution, '自动构建大类')
       setResult(data as AutoClassResult)
       await runFit((data as AutoClassResult).classes)
     } catch (reason: any) {

@@ -1,3 +1,4 @@
+import { assertNativeNumericalExecution, type CppAotExecutionAudit } from '../utils/fixedNjitExecution'
 export interface ProductCompareRangeRequest {
   start_date: string | null
   end_date: string | null
@@ -42,7 +43,7 @@ export interface ProductCompareRangeResult {
   rolling_volatility: ProductCompareSeriesPoint[]
 }
 
-export interface ProductCompareExecutionAudit {
+interface NjitProductCompareExecutionAudit {
   backend: 'numba_njit_fixed_signature'
   execution_backend: 'numba_njit_fixed_signature'
   engine: string
@@ -56,6 +57,8 @@ export interface ProductCompareExecutionAudit {
   python_fallback: 0
   request_time_compilation: 0
 }
+
+export type ProductCompareExecutionAudit = NjitProductCompareExecutionAudit | CppAotExecutionAudit
 
 export interface ProductCompareAnalysisResponse {
   schema_version: number
@@ -106,26 +109,16 @@ export async function analyzeProductComparison(
   }
   const result = payload as Partial<ProductCompareAnalysisResponse>
   const execution = result.execution
-  if (
-    !execution
-    || execution.backend !== 'numba_njit_fixed_signature'
-    || execution.execution_backend !== 'numba_njit_fixed_signature'
-    || execution.nopython !== true
-    || execution.njit_required !== true
-    || execution.object_mode !== 0
-    || execution.python_fallback !== 0
-    || execution.request_time_compilation !== 0
-    || !execution.kernel_signatures
-    || typeof execution.kernel_signatures !== 'object'
-    || Object.keys(execution.kernel_signatures).length === 0
-    || Object.values(execution.kernel_signatures).some(
-      (signatures) => !Array.isArray(signatures) || signatures.length === 0,
-    )
-  ) {
-    throw new ProductCompareApiError(
-      response.status,
-      '产品比较服务未通过固定签名 NJIT 执行校验',
-    )
+  try {
+    assertNativeNumericalExecution(execution)
+    if ((execution?.execution_backend ?? execution?.backend) !== 'cpp_aot'
+        && (execution?.backend !== 'numba_njit_fixed_signature'
+          || execution.execution_backend !== 'numba_njit_fixed_signature'
+          || (execution as NjitProductCompareExecutionAudit).njit_required !== true)) {
+      throw new Error('Incomplete NJIT proof')
+    }
+  } catch {
+    throw new ProductCompareApiError(response.status, (execution?.execution_backend ?? execution?.backend) === 'cpp_aot' ? '产品比较服务未通过 C++ AOT 执行校验' : '产品比较服务未通过固定签名 NJIT 执行校验')
   }
   if (!result.ranges?.performance || !result.ranges.risk || !result.ranges.efficiency) {
     throw new ProductCompareApiError(response.status, '产品比较服务返回的区间结果不完整')

@@ -79,6 +79,8 @@
 | 研究草稿 | [指标中心 × 产品研究：AI 智能体详细设计](research/ai-agent-indicator-product-research-design-2026-09-18.md) | 未采纳研究草稿；实施前重新核对需求、代码和证据 |
 | 研究草稿 | [投前研究流程与机构买方投研差距分析](research/pre-investment-institutional-gap-analysis-2026-09-19.md) | 未采纳研究草稿；实施前重新核对需求、代码和证据 |
 | 部署 | [Production deployment](../deploy/README.md) | 部署方式、运行环境与持久化要求 |
+| 指标与数值计算 | [C++ AOT 接入契约](indicators/cpp-aot-contracts.md) | 接入 C++ AOT：错误隔离、数据参数、历史 DSL、结果所有权及双后端门禁 |
+| 验收与证据 | [C++ AOT 契约验收记录](verification/cpp-aot-contracts.md) | 核对 AOT 契约验证的版本、范围、命令及生产迁移边界 |
 <!-- DOCUMENT-INDEX:END -->
 
 ## 阅读与维护边界

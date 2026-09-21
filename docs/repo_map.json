@@ -2028,7 +2028,7 @@
       "name": "Typed indicator primitives, shared DAG and fixed-signature NJIT runtime",
       "path": "backend/cal_indicators/typed_dsl.py",
       "kind": "backend_indicator_engine",
-      "purpose": "Typed DSL preserves nominal axes, bool masks, semantic dimensions and price-basis checks. Current authoring supports rolling_apply as a deferred complete interval-scalar subgraph: eligibility follows typed dependencies and reviewed primitive interval policies, not an indicator allowlist. A prepared NJIT loop binds aligned slice views, resets path/context state per window and collects numeric scalar results without materializing T×W data or compiling during evaluation. Scope implementation version participates in plan identity. Price/return date axes preserve existing missing observations, and return-only scopes do not discard the first supplied valid return; an extra preceding observation is requested only when level paths or elapsed-period context require it. Existing 2.3 rolling_* and 2.4 rolling_window-plus-reducer formulas retain their frozen contracts; newly derived whole-graph definitions use transform protocol 3.0.0. All five built-in time-series indicators expose one current definition with a shared adjustable window and whole-interval scopes. Built-ins have no selectable Vx history; the common revision field is not a catalog of historical built-in implementations. BOLL shares two scopes across three channels. KDJ uses optional minimum observations of 1 with finite_mask and conditional extrema, while its K/D recursion remains outside the scopes. Optional minimum-count scopes preserve raw date positions and delegate missing-value handling to the body; omitted minimum retains the complete-window contract. Generic execution costs the sum of interval computations, not guaranteed O(T), and is measurably slower than the historical specialized kernels for these small built-ins. Current formulas use mathematical and state primitives; supported historical business function spellings lower into the same current DAG rather than alternate production algorithms. Independent scalar metrics merge structurally identical nodes under matching bindings, versions and windows; selected roots prune unrelated branches. Drawdown dates share the last equally deepest interval and regression projections share a fitted state. Startup/save/explicit preparation owns fixed-signature NJIT compilation; formal evaluation fails closed without Python fallback or new signatures. Ordinary time-series multi-channel contracts remain separate from removed scalar bundles. Opened calculation parameters are supported for both result kinds; an opened position must be a configuration input of the operator signature. Runtime values travel in a per-batch parameter vector (risk-free scalars included) so one prewarmed fused plan serves every value; only the slot layout enters the batch plan id. Registry 2.4.1 declares the new constant-input restrictions; DSL 2.4 also accepts frozen registry 2.4.0. Historical scalar input contracts delegate to the same kernels. Repeated formula roots require occurrence-aware subset selection. Probability bounds are explicitly open and independent of step.",
+      "purpose": "Typed DSL preserves nominal axes, bool masks, semantic dimensions and price-basis checks. Current authoring supports rolling_apply as a deferred complete interval-scalar subgraph: eligibility follows typed dependencies and reviewed primitive interval policies, not an indicator allowlist. A prepared NJIT loop binds aligned slice views, resets path/context state per window and collects numeric scalar results without materializing T×W data or compiling during evaluation. Scope implementation version participates in plan identity. Price/return date axes preserve existing missing observations, and return-only scopes do not discard the first supplied valid return; an extra preceding observation is requested only when level paths or elapsed-period context require it. Existing 2.3 rolling_* and 2.4 rolling_window-plus-reducer formulas retain their frozen contracts; newly derived whole-graph definitions use transform protocol 3.0.0. All five built-in time-series indicators expose one current definition with a shared adjustable window and whole-interval scopes. Built-ins have no selectable Vx history; the common revision field is not a catalog of historical built-in implementations. BOLL shares two scopes across three channels. KDJ uses optional minimum observations of 1 with finite_mask and conditional extrema, while its K/D recursion remains outside the scopes. Optional minimum-count scopes preserve raw date positions and delegate missing-value handling to the body; omitted minimum retains the complete-window contract. Generic execution costs the sum of interval computations, not guaranteed O(T), and is measurably slower than the historical specialized kernels for these small built-ins. Current formulas use mathematical and state primitives; supported historical business function spellings lower into the same current DAG rather than alternate production algorithms. Independent scalar metrics merge structurally identical nodes under matching bindings, versions and windows; selected roots prune unrelated branches. Drawdown dates share the last equally deepest interval and regression projections share a fitted state. Startup/save/explicit preparation owns fixed-signature NJIT compilation; formal evaluation fails closed without Python fallback or new signatures. Ordinary time-series multi-channel contracts remain separate from removed scalar bundles. Opened calculation parameters are supported for both result kinds; an opened position must be a configuration input of the operator signature. Runtime values travel in a per-batch parameter vector (risk-free scalars included) so one prewarmed fused plan serves every value; only the slot layout enters the batch plan id. Registry 2.4.1 declares the new constant-input restrictions; DSL 2.4 also accepts frozen registry 2.4.0. Historical scalar input contracts delegate to the same kernels. Repeated formula roots require occurrence-aware subset selection. Probability bounds are explicitly open and independent of step. Explicit CppIndicatorBatchPlan adapts versioned single-product scalar definitions to CalMetricsEngine; current service routing and NJIT warmup remain unchanged.",
       "module_tags": [
         "backend",
         "indicators",
@@ -2066,7 +2066,8 @@
         "backend/cal_indicators/regression_state.py",
         "backend/cal_indicators/rolling_scope.py",
         "backend/computation_graph/causal_series.py",
-        "backend/cal_indicators/shared_batch_graph.py"
+        "backend/cal_indicators/shared_batch_graph.py",
+        "backend/cal_indicators/cpp_aot.py"
       ],
       "key_symbols": [
         "ValueType",
@@ -2096,7 +2097,8 @@
         "infer_expression",
         "configuration_violations",
         "batch_parameter_names",
-        "batch_parameter_vector"
+        "batch_parameter_vector",
+        "CppIndicatorBatchPlan"
       ],
       "child_modules": [],
       "first_read_files": [
@@ -2142,7 +2144,10 @@
         "backend/scripts/benchmark_drawdown_outputs.py",
         "docs/indicators/parameters.md",
         "docs/data/adjusted-price.md",
-        "docs/indicators/causality.md"
+        "docs/indicators/causality.md",
+        "docs/indicators/cpp-aot-contracts.md",
+        "docs/verification/cpp-aot-contracts.md",
+        "backend/compute_policy.py"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -2174,7 +2179,8 @@
         "backend/tests/test_rolling_interval_safety.py",
         "backend/tests/test_rolling_interval_service.py",
         "backend/tests/test_independent_drawdown.py",
-        "backend/tests/test_operator_primitives.py"
+        "backend/tests/test_operator_primitives.py",
+        "backend/tests/test_cpp_aot_contracts.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -2194,7 +2200,8 @@
         "operator_causality_baseline_complete",
         "logical_rolling_window_must_fuse_without_materialization",
         "configuration_inputs_derive_from_signature_contract_only",
-        "runtime_parameter_values_must_not_enter_a_compiled_plan_id"
+        "runtime_parameter_values_must_not_enter_a_compiled_plan_id",
+        "cpp_aot_isolation_parameter_slots_and_snapshot_ownership"
       ],
       "edit_risk": "high",
       "blast_radius": [
@@ -2210,7 +2217,8 @@
       "minimum_regression": [
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_typed_indicator_types.py tests/test_typed_indicator_catalog.py tests/test_typed_indicator_compiler.py tests/test_typed_indicator_runtime.py tests/test_typed_numeric_backend.py tests/test_typed_numba_v22.py tests/test_typed_indicator_product_service.py tests/test_custom_indicator_variables.py tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_causality.py -q'",
         "/Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m py_compile backend/cal_indicators/typed_numba_kernels.py backend/cal_indicators/typed_numba_plan.py backend/cal_indicators/typed_dsl.py backend/cal_indicators/typed_operators.py",
-        "python3 -m pytest backend/tests/test_rolling_interval_graph.py backend/tests/test_rolling_interval_safety.py backend/tests/test_rolling_interval_service.py backend/tests/test_builtin_series_indicators.py backend/tests/test_cross_center_rolling.py -q"
+        "python3 -m pytest backend/tests/test_rolling_interval_graph.py backend/tests/test_rolling_interval_safety.py backend/tests/test_rolling_interval_service.py backend/tests/test_builtin_series_indicators.py backend/tests/test_cross_center_rolling.py -q",
+        "python3 -m pytest backend/tests/test_cpp_aot_contracts.py backend/tests/test_compute_policy.py -q"
       ],
       "routing_confidence": "high",
       "scope_flags": [
@@ -2946,7 +2954,7 @@
       "name": "React app shell, routing, and Vite config",
       "path": "frontend/src/App.tsx",
       "kind": "frontend_entrypoint",
-      "purpose": "React BrowserRouter shell, top navigation, page route table, Vite proxy to the FastAPI backend, Tailwind setup, and Vitest setup. Integrates the PIT settings page and shared context/provenance UI. Server-held defaults remain separate from a sessionStorage tab-only viewing override sent on data-request headers; changing the temporary view does not update global settings. Result footnotes describe the saved run lineage rather than inferring it from the current page badge.",
+      "purpose": "React BrowserRouter shell, top navigation, page route table, Vite proxy to the FastAPI backend, Tailwind setup, and Vitest setup. Integrates the PIT settings page and shared context/provenance UI. Server-held defaults remain separate from a sessionStorage tab-only viewing override sent on data-request headers; changing the temporary view does not update global settings. Result footnotes describe the saved run lineage rather than inferring it from the current page badge. Numerical response gates accept independently validated NJIT or C++ AOT execution evidence.",
       "module_tags": [
         "frontend",
         "react",
@@ -3016,7 +3024,8 @@
         "frontend/src/pages/LanguageTerminology.tsx",
         "frontend/src/components/localization/LanguageColumnsEditor.tsx",
         "frontend/src/components/localization/TranslationMatrix.tsx",
-        "docs/frontend/i18n.md"
+        "docs/frontend/i18n.md",
+        "frontend/src/test/cppAotFixture.ts"
       ],
       "upstream_dependencies": [
         "backend_api_shell"
@@ -3037,7 +3046,10 @@
         "frontend/src/homepage/history.test.tsx",
         "frontend/e2e/homepage.spec.ts",
         "frontend/e2e/contrast.spec.ts",
-        "frontend/e2e/helpers/contrast.ts"
+        "frontend/e2e/helpers/contrast.ts",
+        "frontend/src/utils/cppAotExecution.test.ts",
+        "frontend/e2e/cpp-aot-execution.spec.ts",
+        "frontend/src/services/nativeExecutionContracts.test.ts"
       ],
       "related_configs": [
         "frontend/vite.config.ts",
@@ -5916,6 +5928,28 @@
           "data_ingestion_config"
         ],
         "read_when": "部署方式、运行环境与持久化要求"
+      },
+      {
+        "path": "docs/indicators/cpp-aot-contracts.md",
+        "title": "C++ AOT 接入契约",
+        "topic": "指标与数值计算",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "backend_typed_indicator_v2"
+        ],
+        "read_when": "接入 C++ AOT：错误隔离、数据参数、历史 DSL、结果所有权及双后端门禁"
+      },
+      {
+        "path": "docs/verification/cpp-aot-contracts.md",
+        "title": "C++ AOT 契约验收记录",
+        "topic": "验收与证据",
+        "role": "evidence",
+        "status": "active",
+        "modules": [
+          "backend_typed_indicator_v2"
+        ],
+        "read_when": "核对 AOT 契约验证的版本、范围、命令及生产迁移边界"
       }
     ]
   }

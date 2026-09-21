@@ -1,4 +1,4 @@
-import type { FixedNjitExecutionAudit } from '../../utils/fixedNjitExecution';
+import type { NativeNumericalExecutionAudit } from '../../utils/fixedNjitExecution';
 
 export type DashboardKind = 'all' | 'etf' | 'fund';
 export type SegmentKind = Exclude<DashboardKind, 'all'>;
@@ -131,7 +131,7 @@ export interface InstrumentAnalyticsResponse {
   data_quality: DashboardDataQuality;
   metric_definitions: Record<string, MetricDefinition>;
   units?: Record<string, string>;
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 export interface InstrumentTrendResponse {
@@ -141,7 +141,7 @@ export interface InstrumentTrendResponse {
   series: Partial<Record<SegmentKind, DashboardTrendSeries>>;
   available_values: DashboardFilterOption[];
   data_quality: Pick<DashboardDataQuality, 'warnings'>;
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 export interface RankingItem {
@@ -174,7 +174,7 @@ export interface InstrumentRankingsResponse {
   as_of?: string | null;
   items: RankingItem[];
   data_quality: Pick<DashboardDataQuality, 'warnings'>;
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 export type DashboardFilterKey = 'fund_type' | 'invest_type' | 'status' | 'management' | 'market';

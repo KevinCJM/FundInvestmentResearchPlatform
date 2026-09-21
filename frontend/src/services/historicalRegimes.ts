@@ -1,8 +1,8 @@
 import type { RegimeStudy } from './regimeGraph'
 import {
   assertCompliantExecutionGraph,
-  assertFixedNjitExecution,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution'
 
 export type RegimeMode = 'realtime' | 'retrospective'
@@ -407,7 +407,7 @@ export interface RegimeComparison {
   agreement_rate?: number | null
   disagreement_periods?: Array<{ start_date: string; end_date: string; states: Record<string, string> }>
   pairwise?: Array<{ left_run_id: string; right_run_id: string; agreement_rate?: number | null; boundary_distance?: number | null }>
-  execution: FixedNjitExecutionAudit
+  execution: NativeNumericalExecutionAudit
 }
 
 export interface RegimeApplicationBinding {
@@ -561,6 +561,6 @@ export async function compareHistoricalRegimeRuns(runIds: string[], referenceRun
     method: 'POST',
     body: JSON.stringify({ run_ids: runIds, ...(referenceRunId ? { reference_run_id: referenceRunId } : {}) }),
   })
-  assertFixedNjitExecution(result.execution, '历史情景版本比较')
+  assertNativeNumericalExecution(result.execution, '历史情景版本比较')
   return result
 }

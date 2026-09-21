@@ -1,6 +1,6 @@
 import {
-  assertFixedNjitExecution,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  type NativeNumericalExecutionAudit,
 } from "../utils/fixedNjitExecution";
 
 export type ScenarioMethod =
@@ -286,7 +286,7 @@ export interface ScenarioApplicationBinding {
   run_content_hash?: string;
 }
 
-export interface ScenarioComputeAudit extends FixedNjitExecutionAudit {
+export type ScenarioComputeAudit = NativeNumericalExecutionAudit & {
   fully_warmed?: boolean;
   kernel_coverage?: string;
   fingerprint?: string;
@@ -362,7 +362,7 @@ export interface ScenarioRunComparison {
     }>;
     deltas_to_reference?: Record<string, Record<string, number | null>>;
   }>;
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 export interface ScenarioWeightSummary {
@@ -383,7 +383,7 @@ export interface ScenarioWeightSummary {
     maximum_absolute_weight: number;
     maximum_gross_exposure: number;
   };
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 export class ScenarioStressApiError extends Error {
@@ -430,7 +430,7 @@ function validatedScenarioRun(
   run: ScenarioStressRun,
   label: string,
 ): ScenarioStressRun {
-  assertFixedNjitExecution(run.compute_audit, label);
+  assertNativeNumericalExecution(run.compute_audit, label);
   return run;
 }
 
@@ -565,7 +565,7 @@ export async function compareScenarioStressRuns(
       }),
     },
   );
-  assertFixedNjitExecution(result.execution, "情景运行比较");
+  assertNativeNumericalExecution(result.execution, "情景运行比较");
   if (!result.rows?.length && result.runs?.length) {
     result.rows = result.runs.flatMap((run) =>
       Object.entries(run.metrics ?? {}).map(([portfolioId, metrics]) => ({
@@ -605,6 +605,6 @@ export async function summarizeScenarioStressWeights(
       signal,
     },
   );
-  assertFixedNjitExecution(summary.execution, "情景组合权重核验");
+  assertNativeNumericalExecution(summary.execution, "情景组合权重核验");
   return summary;
 }

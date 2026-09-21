@@ -24,8 +24,8 @@ import {
   withSelectedIndicators,
 } from '../components/metrics/useMetricDisplayPreference';
 import {
-  assertFixedNjitExecution,
-  type FixedNjitExecutionAudit,
+  assertNativeNumericalExecution,
+  type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution';
 import { Badge, Button, Card, EmptyState } from '../components/ui';
 import { systemText as s, useI18n } from '../i18n/runtime';
@@ -115,7 +115,7 @@ interface ProductsResponse {
   pit?: { as_of?: string | null; snapshot_is_hindsight?: boolean; warnings?: string[] };
   sort_by: string;
   sort_dir: 'asc' | 'desc' | string;
-  execution: FixedNjitExecutionAudit;
+  execution: NativeNumericalExecutionAudit;
 }
 
 const integerFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
@@ -379,7 +379,7 @@ export default function ProductResearch() {
           throw new Error(payload?.detail || s('productResearch.errorLoadFailed'));
         }
         const data = (await resp.json()) as ProductsResponse;
-        assertFixedNjitExecution(data.execution, '产品研究统计');
+        assertNativeNumericalExecution(data.execution, '产品研究统计');
         setResponse(data);
       } catch (err) {
         if ((err as DOMException).name === 'AbortError') {

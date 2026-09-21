@@ -6,7 +6,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   requestEqualWeights,
 } from '../services/strategyWeights';
-import { assertFixedNjitExecution } from '../utils/fixedNjitExecution';
+import { assertNativeNumericalExecution } from '../utils/fixedNjitExecution';
 import {
   HistoricalRegimeBacktestSelector,
   RegimeConditioningPanel,
@@ -358,7 +358,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         throw new Error(apiErrorMessage(data, fallback));
       }
       if (studyBounds.current !== expectedStudy) throw new Error('研究结束日或方案已变化，请重新计算权重。');
-      assertFixedNjitExecution(data?.execution, '大类权重求解');
+      assertNativeNumericalExecution(data?.execution, '大类权重求解');
       return (data.weights || []) as number[];
     },
     [buildComputeWeightsPayload]
@@ -398,7 +398,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
         throw new Error(apiErrorMessage(data, '批量调仓权重计算失败'));
       }
       if (studyBounds.current !== expectedStudy) throw new Error('研究结束日或方案已变化，请重新计算调仓计划。');
-      assertFixedNjitExecution(data?.execution, '批量调仓权重计算');
+      assertNativeNumericalExecution(data?.execution, '批量调仓权重计算');
       const markers = (data.dates || []).map((d: string, idx: number) => ({
         date: d,
         weights: (data.weights && data.weights[idx]) || [],
@@ -794,7 +794,7 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
       const data = await res.json();
       if (requestSequence !== frontierRequestSequence.current || expectedInput !== latestFrontierKey.current) return;
       if (!res.ok) throw new Error(apiErrorMessage(data, '计算失败'));
-      assertFixedNjitExecution(data?.execution, '大类配置有效前沿');
+      assertNativeNumericalExecution(data?.execution, '大类配置有效前沿');
       frontierInputRef.current = frontierInputKey;
       setFrontierData(data);
     } catch (e: any) {
@@ -1886,9 +1886,9 @@ function ClassAllocationEditor({ requestedAllocation, universeId }: { requestedA
                   const dat = await res.json();
                   if (studyBounds.current !== expectedStudy) throw new Error('研究结束日或方案已变化，请重新运行回测。');
                   if(!res.ok) throw new Error(apiErrorMessage(dat, '回测失败'));
-                  assertFixedNjitExecution(dat?.execution, '大类配置策略回测');
+                  assertNativeNumericalExecution(dat?.execution, '大类配置策略回测');
                   if (dat?.regime_conditioning) {
-                    assertFixedNjitExecution(dat.regime_conditioning.execution, '组合历史情景条件统计');
+                    assertNativeNumericalExecution(dat.regime_conditioning.execution, '组合历史情景条件统计');
                   }
                   backtestInputRef.current = stableStringify({ selectedAlloc, btStart, endDate, strategies: prepared, historicalRegime, singleLimits, groupLimits, riskFreePct });
                   setBtSeries(dat);

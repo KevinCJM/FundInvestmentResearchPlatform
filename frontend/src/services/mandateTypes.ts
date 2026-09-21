@@ -1,7 +1,7 @@
 import type { CapitalTarget, CashBudget as WireBudget, CashProtection, MandatePolicy as WirePolicy, RiskAuthorization } from './mandateContract.generated'
 import type { FundingMetrics, FundingFlow, MandateDefinition, MandateAssessment } from './strategicAllocation'
-import type { FixedNjitExecutionAudit } from '../utils/fixedNjitExecution'
-import { assertFixedNjitExecution } from '../utils/fixedNjitExecution'
+import type { NativeNumericalExecutionAudit } from '../utils/fixedNjitExecution'
+import { assertNativeNumericalExecution } from '../utils/fixedNjitExecution'
 
 export type CashBudget = Omit<Required<WireBudget>, 'flows'> & { flows: FundingFlow[] }
 export type BoundaryPolicy = Omit<Required<WirePolicy>, 'confirmed'> & { confirmed: boolean }
@@ -45,7 +45,7 @@ export interface ReferenceDiagnosis {
   reference_frontier?: ReferenceFrontierPoint[]; constrained_frontier?: ReferenceFrontierPoint[]; risk_boundaries?: number[]
   cash_constraint?: { cash_asset_ids: string[]; requested_min_cash_weight: number; cashflow_derived_weight: number; effective_min_cash_weight: number }
   reachability?: Reachability
-  search_seed: number; validation_seed: number; paths: number; execution: FixedNjitExecutionAudit
+  search_seed: number; validation_seed: number; paths: number; execution: NativeNumericalExecutionAudit
   distribution?: { engine: string; version: string; frequency: string }
   reference_input_ref?: { id: string; content_hash: string }; risk_scale_ref?: { id: string; content_hash: string }
 }
@@ -72,7 +72,7 @@ export function checkReferenceAssessment(value: MandateAssessment, checkMetrics:
     if (d.risk_scale_ref) return fail()
     return
   }
-  assertFixedNjitExecution(r.execution, '目标参考诊断')
+  assertNativeNumericalExecution(r.execution, '目标参考诊断')
   if (!Array.isArray(r.candidates) || !Array.isArray(r.blockers) || !Array.isArray(r.limitations)
     || r.search_seed !== value.request.seed || r.validation_seed !== value.request.validation_seed
     || r.search_seed === r.validation_seed) return fail()

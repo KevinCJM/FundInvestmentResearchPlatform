@@ -8,6 +8,32 @@ export interface FixedNjitExecutionAudit {
   kernel_signatures?: Record<string, readonly string[]>
 }
 
+export interface CppAotExecutionAudit {
+  backend?: string
+  execution_backend?: string
+  audit_schema?: string
+  engine?: string
+  engine_version?: string
+  engine_build_id?: string
+  operator_registry_version?: string
+  typed_ir_version?: string
+  plan_fingerprint?: string
+  native_aot?: boolean
+  python_fallback?: number
+  python_operator_calls?: number
+  python_worker_callbacks?: number
+  request_time_compilation?: number
+  input_dtype?: string
+  output_dtype?: string
+  cpu_budget?: number
+  cpu_tokens?: number
+  result_lifetime?: string
+}
+
+export type NativeNumericalExecutionAudit = FixedNjitExecutionAudit | CppAotExecutionAudit
+
+export type NativeNumericalExecutionAuditLanes = Record<string, NativeNumericalExecutionAudit>
+
 export interface OptimizedThirdPartyExecutionAudit {
   backend?: string
   execution_backend?: string
@@ -67,6 +93,7 @@ export function assertFixedNjitExecution(
 
   if (
     backend !== 'numba_njit_fixed_signature'
+    || (audit?.backend && audit.execution_backend && audit.backend !== audit.execution_backend)
     || audit?.nopython !== true
     || audit.object_mode !== 0
     || audit.python_fallback !== 0
@@ -127,8 +154,8 @@ export function assertOptimizedThirdPartyExecution(
     || audit.native_optimized !== true
     || audit.isolated_array_contract !== true
     || audit.model_engine_scope !== 'training_or_inference_only'
-    || audit.feature_pipeline_backend !== 'numba_njit_fixed_signature'
-    || audit.postprocess_backend !== 'numba_njit_fixed_signature'
+    || !['numba_njit_fixed_signature', 'cpp_aot'].includes(audit.feature_pipeline_backend ?? '')
+    || !['numba_njit_fixed_signature', 'cpp_aot'].includes(audit.postprocess_backend ?? '')
     || audit.python_callback !== false
     || audit.python_fallback !== 0
     || audit.exemption_reason !== 'optimized_ml_dl_nn_model_engine'
@@ -137,14 +164,70 @@ export function assertOptimizedThirdPartyExecution(
   }
 }
 
+export function assertCppAotExecution(
+  value: unknown,
+  calculationLabel = '数值计算',
+): asserts value is CppAotExecutionAudit {
+  const audit = value as CppAotExecutionAudit | null | undefined
+  const cpu = audit?.cpu_budget
+  const tokens = audit?.cpu_tokens
+  if (
+    (audit?.execution_backend ?? audit?.backend) !== 'cpp_aot'
+    || (audit?.backend && audit.execution_backend && audit.backend !== audit.execution_backend)
+    || audit?.audit_schema !== 'cpp-aot-execution-1'
+    || audit.engine !== 'calmetrics_engine'
+    || !nonEmptyText(audit.engine_version)
+    || !/^[0-9a-f]{64}$/.test(audit.engine_build_id ?? '')
+    || !/^native-[1-9][0-9]*-[0-9a-f]{32}$/.test(audit.plan_fingerprint ?? '')
+    || audit.operator_registry_version !== 'canonical-native-1'
+    || audit.typed_ir_version !== 'cpp-typed-ir-1'
+    || audit.native_aot !== true
+    || audit.python_fallback !== 0
+    || audit.python_operator_calls !== 0
+    || audit.python_worker_callbacks !== 0
+    || audit.request_time_compilation !== 0
+    || audit.input_dtype !== 'float64' || audit.output_dtype !== 'float64'
+    || !Number.isInteger(cpu) || !Number.isInteger(tokens)
+    || !(tokens! >= 1 && tokens! <= cpu! && cpu! <= 1024)
+    || !['independent', 'borrowed_until_next_run'].includes(audit.result_lifetime ?? '')
+  ) throw new Error(`${calculationLabel}未提供有效的 C++ AOT 执行证明`)
+}
+
+/** Both backends are native numerical lanes; this does not grant model exemptions. */
+export function assertNativeNumericalExecution(
+  value: unknown,
+  calculationLabel = '数值计算',
+): asserts value is NativeNumericalExecutionAudit {
+  const audit = value as { backend?: unknown; execution_backend?: unknown } | null | undefined
+  if ((audit?.execution_backend ?? audit?.backend) === 'cpp_aot') {
+    assertCppAotExecution(value, calculationLabel)
+  } else {
+    assertFixedNjitExecution(value, calculationLabel)
+  }
+}
+
+export function assertNativeNumericalExecutionLanes(
+  value: unknown,
+  calculationLabel = '数值计算',
+): asserts value is NativeNumericalExecutionAudit | Record<string, NativeNumericalExecutionAudit> {
+  const audit = value as { backend?: unknown; execution_backend?: unknown } | null | undefined
+  if (nonEmptyText(audit?.execution_backend) || nonEmptyText(audit?.backend)) {
+    assertNativeNumericalExecution(value, calculationLabel)
+    return
+  }
+  const lanes = audit && typeof audit === 'object' && !Array.isArray(audit) ? Object.entries(audit) : []
+  if (lanes.length === 0) throw new Error(`${calculationLabel}未提供有效的数值执行证明`)
+  lanes.forEach(([lane, item]) => assertNativeNumericalExecution(item, `${calculationLabel}（${lane}）`))
+}
+
 export function assertCompliantNumericalExecution(
   value: unknown,
   calculationLabel = '数值计算',
-): asserts value is FixedNjitExecutionAudit | OptimizedThirdPartyExecutionAudit {
+): asserts value is NativeNumericalExecutionAudit | OptimizedThirdPartyExecutionAudit {
   const audit = value as { backend?: unknown; execution_backend?: unknown } | null | undefined
   const backend = audit?.execution_backend ?? audit?.backend
-  if (backend === 'numba_njit_fixed_signature') {
-    assertFixedNjitExecution(value, calculationLabel)
+  if (backend === 'numba_njit_fixed_signature' || backend === 'cpp_aot') {
+    assertNativeNumericalExecution(value, calculationLabel)
     return
   }
   if (backend === 'optimized_third_party_model') {
@@ -166,4 +249,8 @@ export function assertCompliantExecutionGraph(
     const audit = wrapper?.plan && typeof wrapper.plan === 'object' ? wrapper.plan : item
     assertCompliantNumericalExecution(audit, `${calculationLabel}第 ${index + 1} 段`)
   })
+}
+
+export function isNativeNumericalExecution(value: unknown): value is NativeNumericalExecutionAudit {
+  try { assertNativeNumericalExecution(value); return true } catch { return false }
 }
