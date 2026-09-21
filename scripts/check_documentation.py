@@ -20,6 +20,7 @@ from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = 'docs/repo_map.json'
+CHECKER = 'scripts/check_documentation.py'
 HERMES = 'skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py'
 INDEX = 'docs/README.md'
 INDEX_START = '<!-- DOCUMENT-INDEX:BEGIN -->'
@@ -27,6 +28,7 @@ INDEX_END = '<!-- DOCUMENT-INDEX:END -->'
 ROLES = {'overview', 'index', 'topic', 'contract', 'policy', 'research', 'evidence', 'draft'}
 STATES = {'active', 'historical', 'draft'}
 PLAN_STATES = {'planned', 'in_progress', 'implemented_unverified', 'verified', 'deferred', 'cancelled'}
+PLAN_COLUMNS = ['ID', '状态', '工作项', '完成判据', '证据/剩余事项']
 IGNORED = ('.tmp*/**', '.codegraph/**', '**/node_modules/**', 'frontend/dist/**', 'data/**', '**/__pycache__/**', '*.pyc')
 
 
@@ -128,6 +130,27 @@ def managed(path: str) -> bool:
     return path.endswith('.md') and ('/' not in path or path.startswith('docs/') or path == 'deploy/README.md')
 
 
+def run_candidate_checker(candidate: Candidate, source: bytes, digest: str,
+                          argv: list[str] | None) -> int:
+    """The launcher selects Git bytes; all validation runs in that implementation."""
+    filename = str(candidate.root / CHECKER)
+    name = '_documentation_candidate_' + digest
+    module = ModuleType(name)
+    module.__file__ = filename
+    module._CANDIDATE_CHECKER_DIGEST = digest
+    sys.modules[name] = module
+    try:
+        exec(compile(source, filename, 'exec'), module.__dict__)
+        result = module.main(argv)
+        if not isinstance(result, int):
+            raise ValueError('main must return an integer exit code')
+        return result
+    except (Exception, SystemExit) as exc:
+        raise ValueError(f'cannot execute candidate checker {CHECKER}: {exc}') from exc
+    finally:
+        sys.modules.pop(name, None)
+
+
 def document_index(documents: list[dict]) -> str:
     """Only this generated navigation block mirrors the JSON document catalog."""
     rows = ['| 主题 | 入口／文档 | 用途与读取时机 |', '| --- | --- | --- |']
@@ -192,18 +215,20 @@ def check_plans(path: str, text: str) -> list[str]:
             inside = False
             continue
         line = line.strip()
-        if line == '| ID | 状态 | 工作项 | 完成判据 | 证据/剩余事项 |':
+        # GFM edge pipes are optional; escaped pipes remain within their cell.
+        cells = [s.strip() for s in re.split(r'(?<!\\)\|', line)]
+        if cells and not cells[0]:
+            cells.pop(0)
+        if cells and not cells[-1]:
+            cells.pop()
+        if cells == PLAN_COLUMNS:
             inside = True
             continue
         if not inside:
             continue
-        if not line.startswith('|'):
+        if '|' not in line:
             inside = False
             continue
-        # GFM escaped pipes stay in their cell, including those in inline code.
-        cells = [s.strip() for s in re.split(r'(?<!\\)\|', line.strip())[1:]]
-        if cells and not cells[-1]:
-            cells.pop()
         if all(re.fullmatch(r':?-+:?', c) for c in cells):
             continue
         if len(cells) != 5:
@@ -338,7 +363,7 @@ def inspect(candidate: Candidate, changed: list[str], review: dict | None = None
     digest = hashlib.sha256()
     if candidate.base is not None:
         digest.update(b'base\0' + candidate.base.ref.encode() + b'\0')
-    for path in sorted(set(changed) | {d['path'] for d in documents} | {CATALOG, HERMES}):
+    for path in sorted(set(changed) | {d['path'] for d in documents} | {CATALOG, CHECKER, HERMES}):
         digest.update(path.encode() + b'\0')
         digest.update(hashlib.sha256(candidate.read(path)).digest() if path in candidate.paths else b'DELETED')
     fingerprint = digest.hexdigest()
@@ -394,6 +419,11 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError('--head-ref requires --base-ref')
         mode = 'staged' if args.staged else 'commit' if args.base_ref else 'worktree'
         candidate = Candidate(args.project_root, mode, args.head_ref)
+        if mode != 'worktree':
+            source_code = candidate.read(CHECKER)
+            digest = hashlib.sha256(source_code).hexdigest()
+            if globals().get('_CANDIDATE_CHECKER_DIGEST') != digest:
+                return run_candidate_checker(candidate, source_code, digest, argv)
         helpers = candidate.hermes
         if args.staged:
             entries = helpers._run_git_changed_entries(candidate.root, ['--cached'])
@@ -401,10 +431,15 @@ def main(argv: list[str] | None = None) -> int:
             base = git(candidate.root, 'merge-base', args.base_ref, candidate.ref).decode().strip()
             candidate.base_ref = base
             entries = helpers.collect_changed_entries(candidate.root, [], base_ref=base, head_ref=candidate.ref)
-        else:
+        elif args.changed_file:
             for path in args.changed_file:
                 safe_path(path)
             entries = helpers.collect_changed_entries(candidate.root, args.changed_file)
+        else:
+            entries = helpers._run_git_changed_entries(candidate.root, [])
+            entries += helpers._run_git_changed_entries(candidate.root, ['--cached'])
+            untracked = git(candidate.root, 'ls-files', '--others', '--exclude-standard', '-z')
+            entries += [helpers.ChangedEntry(path=p.decode()) for p in untracked.split(b'\0') if p]
         changed = sorted({e.path for e in entries if not any(fnmatch.fnmatch(e.path, pat) for pat in IGNORED)})
         if args.print_index:
             _, docs, errors = catalog(candidate)
