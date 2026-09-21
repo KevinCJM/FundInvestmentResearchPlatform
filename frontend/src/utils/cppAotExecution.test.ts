@@ -11,7 +11,28 @@ const njit = {
   python_fallback: 0, request_time_compilation: 0, kernel_signatures: { k: ['float64[:]'] },
 }
 
+const model = {
+  execution_backend: 'optimized_third_party_model', model_family: 'machine_learning',
+  package: 'scikit-learn', package_version: '1.7.0', model_name: 'Tree', model_version: '1',
+  native_backend: 'compiled_tree_inference', model_fingerprint: 'model-1',
+  input_dtype: 'float64[C]', output_dtype: 'int64[C]', third_party_package: true,
+  native_optimized: true, isolated_array_contract: true, model_engine_scope: 'training_or_inference_only',
+  feature_pipeline_backend: 'cpp_aot', postprocess_backend: 'cpp_aot',
+  feature_pipeline_audit: cpp, postprocess_audit: cpp,
+  python_callback: false, python_fallback: 0, exemption_reason: 'optimized_ml_dl_nn_model_engine',
+}
+
 describe('C++ AOT execution policy', () => {
+  it('accepts model stages with complete independent AOT proofs', () => {
+    expect(() => assertCompliantExecutionGraph([model])).not.toThrow()
+    expect(() => assertCompliantExecutionGraph([{ ...model, backend: 'numba_njit_fixed_signature' }])).toThrow()
+  })
+  it.each(['feature_pipeline', 'postprocess'])('requires a valid AOT proof for %s', stage => {
+    for (const audit of [undefined, njit, { ...cpp, engine_build_id: '' },
+      { ...cpp, python_worker_callbacks: 1 }, { ...cpp, backend: 'numba_njit_fixed_signature' }]) {
+      expect(() => assertCompliantExecutionGraph([{ ...model, [`${stage}_audit`]: audit }])).toThrow()
+    }
+  })
   it('accepts a native proof without fabricated NJIT signatures', () => {
     expect(() => assertCppAotExecution(cpp)).not.toThrow()
     expect(() => assertNativeNumericalExecution(cpp)).not.toThrow()

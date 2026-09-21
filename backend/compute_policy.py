@@ -61,9 +61,15 @@ class OptimizedThirdPartyModelDeclaration:
     python_callback: bool = False
     python_fallback: int = 0
     execution_backend: str = THIRD_PARTY_BACKEND
+    feature_pipeline_audit: Mapping[str, Any] | None = None
+    postprocess_audit: Mapping[str, Any] | None = None
 
     def audit(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        for field in ("feature_pipeline_audit", "postprocess_audit"):
+            if result[field] is None:
+                del result[field]
+        return result
 
 
 def _backend(audit: Mapping[str, Any]) -> str:
@@ -186,6 +192,13 @@ def validate_execution_audit(audit: Mapping[str, Any]) -> dict[str, Any]:
         if audit.get("postprocess_backend") not in NATIVE_NUMERICAL_BACKENDS:
             raise ComputePolicyError("第三方模型的路径、统计和归因后处理必须使用固定签名 NJIT 或 C++ AOT")
         normalized = dict(audit)
+        for stage in ("feature_pipeline", "postprocess"):
+            stage_backend = audit[f"{stage}_backend"]
+            proof = audit.get(f"{stage}_audit")
+            if stage_backend == CPP_AOT_BACKEND or proof is not None:
+                if not isinstance(proof, Mapping) or _backend(proof) != stage_backend:
+                    raise ComputePolicyError(f"第三方模型 {stage} 缺少匹配的独立执行证明")
+                normalized[f"{stage}_audit"] = validate_execution_audit(proof)
         normalized["execution_backend"] = THIRD_PARTY_BACKEND
         normalized["njit_required"] = False
         normalized["exemption_reason"] = "optimized_ml_dl_nn_model_engine"

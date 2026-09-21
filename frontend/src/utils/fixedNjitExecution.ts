@@ -52,6 +52,8 @@ export interface OptimizedThirdPartyExecutionAudit {
   model_engine_scope?: string
   feature_pipeline_backend?: string
   postprocess_backend?: string
+  feature_pipeline_audit?: NativeNumericalExecutionAudit
+  postprocess_audit?: NativeNumericalExecutionAudit
   python_callback?: boolean
   python_fallback?: number
   exemption_reason?: string
@@ -147,6 +149,7 @@ export function assertOptimizedThirdPartyExecution(
   ]
   if (
     backend !== 'optimized_third_party_model'
+    || (audit?.backend && audit.execution_backend && audit.backend !== audit.execution_backend)
     || !optimizedModelFamilies.has(audit?.model_family ?? '')
     || requiredText.some((item) => !nonEmptyText(item))
     || disallowedNativeModelBackends.has(String(audit?.native_backend ?? '').trim().toLowerCase())
@@ -161,6 +164,16 @@ export function assertOptimizedThirdPartyExecution(
     || audit.exemption_reason !== 'optimized_ml_dl_nn_model_engine'
   ) {
     throw new Error(`${calculationLabel}未提供有效的第三方优化模型执行证明`)
+  }
+  for (const stage of ['feature_pipeline', 'postprocess'] as const) {
+    const stageBackend = audit[`${stage}_backend`]
+    const proof = audit[`${stage}_audit`]
+    if (stageBackend === 'cpp_aot' || proof != null) {
+      assertNativeNumericalExecution(proof, `${calculationLabel}（${stage}）`)
+      if ((proof.execution_backend ?? proof.backend) !== stageBackend) {
+        throw new Error(`${calculationLabel}的 ${stage} 执行后端与证明不匹配`)
+      }
+    }
   }
 }
 

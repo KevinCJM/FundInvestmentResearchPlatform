@@ -11,7 +11,7 @@ from copy import deepcopy
 import json
 from typing import Any, Mapping, Sequence
 
-from compute_policy import validate_execution_audit
+from compute_policy import CPP_AOT_BACKEND, ComputePolicyError, validate_execution_audit
 from .typed_dsl import compose_typed_expression
 from .typed_operators import TYPED_DSL_VERSION
 from custom_indicators.series_definitions import (
@@ -25,11 +25,22 @@ from custom_indicators.variable_registry import (
 )
 
 
+def _validate_result(result, expected_fingerprint: str):
+    audit = validate_execution_audit(result.audit)
+    if (
+        audit["execution_backend"] != CPP_AOT_BACKEND
+        or audit.get("plan_fingerprint") != expected_fingerprint
+    ):
+        raise ComputePolicyError("C++ AOT 执行凭据与当前编译图不匹配")
+    return result
+
+
 class _ValidatedPreparedBatch:
     """Validate each native result without copying or changing its lifetime."""
 
-    def __init__(self, prepared):
+    def __init__(self, prepared, expected_fingerprint: str):
         self._prepared = prepared
+        self._expected_fingerprint = expected_fingerprint
 
     def run(self):
         # The audited call executes once and returns the same borrowed buffer.
@@ -37,13 +48,11 @@ class _ValidatedPreparedBatch:
 
     def run_audit(self):
         result = self._prepared.run_audit()
-        validate_execution_audit(result.audit)
-        return result
+        return _validate_result(result, self._expected_fingerprint)
 
     def run_snapshot(self):
         result = self._prepared.run_snapshot()
-        validate_execution_audit(result.audit)
-        return result
+        return _validate_result(result, self._expected_fingerprint)
 
 
 class CppIndicatorBatchPlan:
@@ -173,20 +182,21 @@ class CppIndicatorBatchPlan:
 
     def execute(self, scheduler, inputs, starts, ends, *, parameters=None, **options):
         """Use the caller-owned native scheduler; never create a pool per request."""
+        graph = self.graph
         result = scheduler.execute(
-            self.graph,
+            graph,
             inputs,
             starts,
             ends,
             parameters=self.parameters(parameters),
             **options,
         )
-        validate_execution_audit(result.audit)
-        return result
+        return _validate_result(result, graph.fingerprint)
 
     def prepare(self, scheduler, inputs, starts, ends, *, parameters=None):
         """Use run_snapshot() for retained results; run() explicitly borrows output."""
+        graph = self.graph
         prepared = scheduler.prepare_execution(
-            self.graph, inputs, starts, ends, parameters=self.parameters(parameters)
+            graph, inputs, starts, ends, parameters=self.parameters(parameters)
         )
-        return _ValidatedPreparedBatch(prepared)
+        return _ValidatedPreparedBatch(prepared, graph.fingerprint)

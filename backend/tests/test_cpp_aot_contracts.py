@@ -230,6 +230,28 @@ def test_prepared_execution_rejects_invalid_native_proof(method, invalid_proof):
         assert len(calls) == 1
 
 
+@pytest.mark.parametrize("method", ["execute", "run", "run_audit", "run_snapshot"])
+def test_native_execution_rejects_valid_credentials_from_a_different_graph(method):
+    expected = CppIndicatorBatchPlan([definition("mean(returns)")])
+    other = CppIndicatorBatchPlan([definition("std(returns,1)")])
+    assert expected.fingerprint != other.fingerprint
+    inputs = {"adjusted_nav": np.array([100.0, 110.0, 121.0])}
+    starts, ends = np.array([0], np.int64), np.array([3], np.int64)
+    with AdaptiveScheduler(cpu_budget=1) as scheduler:
+        wrong_result = other.execute(scheduler, inputs, starts, ends)
+        validate_execution_audit(wrong_result.audit)  # valid credentials, wrong graph
+        wrong_prepared = other.prepare(scheduler, inputs, starts, ends)
+        faulty_scheduler = SimpleNamespace(
+            execute=lambda *a, **kw: wrong_result,
+            prepare_execution=lambda *a, **kw: wrong_prepared,
+        )
+        with pytest.raises(ComputePolicyError):
+            if method == "execute":
+                expected.execute(faulty_scheduler, inputs, starts, ends)
+            else:
+                getattr(expected.prepare(faulty_scheduler, inputs, starts, ends), method)()
+
+
 def test_actual_native_proof_fails_closed_if_any_required_field_is_missing():
     audit = execute(CppIndicatorBatchPlan([definition()]), [100.0, 110.0]).audit
     for key in (

@@ -19,7 +19,9 @@
 
 ## 执行门禁
 
-后端 `validate_execution_audit` 与前端 `assertNativeNumericalExecution` 接受固定签名 NJIT 或正式 `cpp_aot` 凭据。C++ 必须声明 `cpp-aot-execution-1`、真实包版本与源码/工具链构建 SHA256、原生计划指纹、算子/IR 版本、dtype、CPU 预算、所有权及 AOT 标志；Python 回退、算子回调、worker 回调、请求期机器码编译必须均为 0。后端声明冲突或字段缺失时失败关闭。凭据是内部可追溯执行信息，不是密码学远程认证。产品比较和等权接口保留既有 NJIT 严格要求：`backend`、`execution_backend` 均声明固定签名 NJIT 且 `njit_required=true`；支持 AOT 不放宽旧路径的缺字段检查。
+后端 `validate_execution_audit` 与前端 `assertNativeNumericalExecution` 接受固定签名 NJIT 或正式 `cpp_aot` 凭据。C++ 必须声明 `cpp-aot-execution-1`、真实包版本与源码/工具链构建 SHA256、原生计划指纹、算子/IR 版本、dtype、CPU 预算、所有权及 AOT 标志；Python 回退、算子回调、worker 回调、请求期机器码编译必须均为 0。后端声明冲突或字段缺失时失败关闭。平台适配器还要求当次 `plan_fingerprint` 与调用时绑定的编译图完全一致；普通执行及三种 prepared 方法均执行此检查。凭据是内部可追溯执行信息，不是密码学远程认证。产品比较和等权接口保留既有 NJIT 严格要求：`backend`、`execution_backend` 均声明固定签名 NJIT 且 `njit_required=true`；支持 AOT 不放宽旧路径的缺字段检查。
+
+第三方优化模型如将特征处理或后处理声明为 `cpp_aot`，必须分别提供完整 `feature_pipeline_audit`、`postprocess_audit`，各凭据后端与阶段声明一致并通过相同 AOT 门禁；单独的后端名称或另一阶段的凭据不能代替。原 NJIT 阶段保持既有声明兼容；若显式提供阶段凭据，也校验其完整性和一致性。
 
 调用方在服务资源初始化时持有唯一 scheduler；不为每个指标、请求创建 Python 池。安装缺失或原生加载失败必须阻止该路径就绪，不能退回 Python。既有 NJIT 路径继续执行原有 readiness 与预热门禁。
 
