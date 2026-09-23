@@ -172,9 +172,10 @@ export interface AgentMemorySource {
   source_session_id: string; source_message_id?: string; accepted_at: string
 }
 export const fetchAgentMemory = (id: string) => request<{ items: AgentMemorySource[]; legacy_unavailable?: boolean }>(`${sessionPath(id)}/memory`)
+export type AgentSessionReceipt = Pick<AgentSession, 'session_id' | 'session_revision'>
 export const decideAgentMemory = (id: string, proposal: string, decision: 'accept' | 'reject', replace?: AgentMemorySource) =>
-  request(`${sessionPath(id)}/memory`, { method: 'POST', body: JSON.stringify({ proposal_id: proposal, decision,
+  request<AgentSessionReceipt>(`${sessionPath(id)}/memory`, { method: 'POST', body: JSON.stringify({ proposal_id: proposal, decision,
     ...(replace ? { replace_memory_id: replace.memory_id, expected_version: replace.version } : {}) }) })
 export const revokeAgentMemory = (id: string, memory: AgentMemorySource, requestId: string) =>
-  request(`${sessionPath(id)}/memory/revoke`, { method: 'POST', body: JSON.stringify({ request_id: requestId,
+  request<AgentSessionReceipt>(`${sessionPath(id)}/memory/revoke`, { method: 'POST', body: JSON.stringify({ request_id: requestId,
     memory_id: memory.memory_id, expected_version: memory.version }) })

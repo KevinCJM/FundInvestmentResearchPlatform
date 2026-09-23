@@ -47,13 +47,13 @@ async function fixture(page: Page) {
         if (body.text.includes('记住')) session.memory_proposals = [{ proposal_id: `proposal-${messages.length}`, status: 'pending', summary: body.text, source_message_id: body.message_id, key: 'answer.style', object_id: 'scope' }]
         return json(currentRun, 202)
       }
-      if (path.endsWith('/memory/revoke')) { decisions.push(body); memory = []; session.memory_sources = []; session.session_revision++; return json({ revoked: true }) }
+      if (path.endsWith('/memory/revoke')) { decisions.push(body); memory = []; session.memory_sources = []; session.session_revision++; return json({ revoked: true, session_id: id, session_revision: session.session_revision }) }
       if (path.endsWith('/memory') && body) {
         decisions.push(body)
         const proposal = session.memory_proposals.find((item: any) => item.proposal_id === body.proposal_id)
         proposal.status = body.decision === 'accept' ? 'accepted' : 'rejected'
         if (body.decision === 'accept') memory = [{ memory_id: 'memory-1', version: 1, scope: 'product_research', object_id: 'scope', key: proposal.key, text: proposal.summary, source_session_id: id, source_message_id: proposal.source_message_id, accepted_at: '2026-09-21T00:00:00Z' }]
-        session.memory_sources = memory; session.session_revision++; return json({ accepted: body.decision === 'accept' })
+        session.memory_sources = memory; session.session_revision++; return json({ accepted: body.decision === 'accept', session_id: id, session_revision: session.session_revision })
       }
       if (path.endsWith('/memory')) return json({ items: memory })
       if (path.endsWith('/events')) return json({ items: [], has_more: false, last_seq: 0, next_event_seq: 1 })

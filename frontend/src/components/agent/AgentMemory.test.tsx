@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 import AgentMemory from './AgentMemory'
@@ -10,8 +10,38 @@ vi.mock('../../services/agent', () => ({ fetchAgentMemory: api.load, fetchAgentS
 const source: AgentMemorySource = { memory_id: 'memory-a', version: 1, scope: 'indicator_center', object_id: 'scope', key: 'reply.language', text: '用中文', source_session_id: 'older', source_message_id: 'm1', accepted_at: '2026-09-21' }
 const refresh = vi.fn()
 const chat = (props: object = {}) => ({ session: { session_id: 's', session_revision: 1,
-  memory_proposals: [{ proposal_id: 'p', status: 'pending', summary: '用英文', key: 'reply.language', object_id: 'scope' }], ...props }, refresh, acceptSession: vi.fn() }) as unknown as AgentConversationState
+  memory_proposals: [{ proposal_id: 'p', status: 'pending', summary: '用英文', key: 'reply.language', object_id: 'scope' }], ...props }, refresh, acceptSession: vi.fn(), acceptSessionRevision: vi.fn() }) as unknown as AgentConversationState
 afterEach(() => { cleanup(); vi.clearAllMocks() })
+
+it.each(['accept', 'reject', 'revoke'] as const)('%s回执先同步版本，后续读取失败不被迟到列表刷新清掉', async decision => {
+  const initial = chat({ memory_proposals: decision === 'revoke' ? [] : chat().session!.memory_proposals }).session!
+  let release: ((value: { items: AgentMemorySource[] }) => void) | undefined
+  api.load.mockResolvedValueOnce({ items: decision === 'revoke' ? [source] : [] })
+    .mockImplementation(() => new Promise(resolve => { release = resolve }))
+  const admit = vi.fn()
+  api.session.mockImplementation(async () => { expect(admit).toHaveBeenCalledWith('s', 2); throw new Error('会话读取失败') })
+  const mutation = decision === 'revoke' ? api.revoke : api.decide
+  mutation.mockResolvedValue({ session_id: 's', session_revision: 2 })
+  function Conversation() {
+    const [session, acceptSession] = useState(initial)
+    return <><output aria-label="会话版本">{session.session_revision}</output><AgentMemory chat={{ session, acceptSession, refresh,
+      acceptSessionRevision: (id: string, revision: number) => { admit(id, revision); acceptSession(current => ({ ...current, session_revision: revision })) },
+    } as unknown as AgentConversationState} busy={false} /></>
+  }
+  render(<Conversation />)
+  await waitFor(() => expect(api.load).toHaveBeenCalledOnce())
+  fireEvent.click(screen.getByText(`偏好与记忆（${decision === 'revoke' ? 0 : 1} 项待确认）`))
+  const name = { accept: '接受记忆', reject: '不记住', revoke: '撤销记忆' }[decision]
+  await waitFor(() => expect(screen.getByRole('button', { name })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('会话读取失败')
+  expect(screen.getByLabelText('会话版本')).toHaveTextContent('2')
+  await waitFor(() => expect(release).toBeDefined())
+  await act(async () => { release!({ items: decision === 'accept' ? [source] : [] }) })
+  expect(screen.getByRole('alert')).toHaveTextContent('会话读取失败')
+  for (const button of screen.queryAllByRole('button', { name: /接受记忆|不记住|撤销记忆|替换此偏好/ })) expect(button).toBeDisabled()
+  expect(mutation).toHaveBeenCalledOnce()
+})
 
 it('创建回执补全为同版本会话快照时，加载本轮已引用的确认偏好', async () => {
   api.load.mockResolvedValue({ items: [source] })
@@ -25,7 +55,7 @@ it('创建回执补全为同版本会话快照时，加载本轮已引用的确�
 })
 
 it('独立显示待确认提案、旧偏好和来源，明确替换与撤销且不触发业务保存', async () => {
-  api.load.mockResolvedValue({ items: [source] }); api.decide.mockResolvedValue({}); api.revoke.mockResolvedValue({})
+  api.load.mockResolvedValue({ items: [source] }); api.decide.mockResolvedValue({ session_id: 's', session_revision: 2 }); api.revoke.mockResolvedValue({ session_id: 's', session_revision: 3 })
   api.session.mockResolvedValue(chat().session)
   render(<AgentMemory chat={chat({ memory_sources: [source] })} busy={false} />)
   fireEvent.click(screen.getByText('偏好与记忆（1 项待确认）'))
@@ -66,10 +96,10 @@ it.each((['accept', 'reject', 'revoke'] as const).flatMap(decision => [true, fal
     return { ...initial, session_revision: 2, memory_proposals: decision === 'revoke' ? [] : [{ ...initial.memory_proposals![0], status: decision === 'accept' ? 'accepted' : 'rejected' }] }
   })
   const mutate = decision === 'revoke' ? api.revoke : api.decide
-  mutate.mockImplementation(async () => { persisted = true; if (lost) throw new Error('操作响应丢失'); return {} })
+  mutate.mockImplementation(async () => { persisted = true; if (lost) throw new Error('操作响应丢失'); return { session_id: 's', session_revision: 2 } })
   function Conversation() {
     const [session, acceptSession] = useState(initial)
-    return <AgentMemory chat={{ session, acceptSession, refresh } as unknown as AgentConversationState} busy={false} />
+    return <AgentMemory chat={{ session, acceptSession, refresh, acceptSessionRevision: vi.fn() } as unknown as AgentConversationState} busy={false} />
   }
   render(<Conversation />)
   await waitFor(() => expect(api.load).toHaveBeenCalledOnce())
