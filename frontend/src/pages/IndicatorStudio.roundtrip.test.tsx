@@ -14,7 +14,7 @@ const parameter = (name: string, label: string, scalar = false): IndicatorOperat
 })
 const values = parameter('values', '输入序列')
 const windowParameter = parameter('window', '窗口期数', true)
-const ddof = parameter('ddof', '自由度修正', true)
+const ddof = { ...parameter('ddof', '自由度修正', true), minimum: 0, maximum: null }
 const minimum = parameter('min_periods', '最少有效观察数', true)
 const pair = [parameter('lhs', '输入 A'), parameter('rhs', '输入 B')]
 
@@ -159,7 +159,11 @@ describe('IndicatorStudio formula source roundtrip', () => {
     await click(user, screen.getByRole('button', { name: rolling ? '解析并校验全部通道' : '解析并校验公式' }))
     for (let pass = 0; pass < 2; pass++) {
       const drawer = await openBuilder(user)
-      expect(within(drawer).getByLabelText('自由度修正 有限常量')).toHaveValue(1)
+      const ddofInput = within(drawer).getByLabelText('自由度修正 有限常量')
+      expect(ddofInput).toHaveValue(1)
+      fireEvent.change(ddofInput, { target: { value: '-1' } })
+      expect(within(drawer).getByRole('button', { name: '应用逻辑修改' })).toBeDisabled()
+      fireEvent.change(ddofInput, { target: { value: '1' } })
       await click(user, within(drawer).getByRole('button', { name: '应用逻辑修改' }))
       await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     }

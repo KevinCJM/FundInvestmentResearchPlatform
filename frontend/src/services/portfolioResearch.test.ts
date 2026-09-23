@@ -15,6 +15,13 @@ function response(body: unknown) {
 }
 
 describe('portfolioResearch canonical response adapters', () => {
+  it('保留服务器冻结快照日期与指标版本参数供页面证据引用', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ id: 'run-1', requested_as_of: '2020-12-31', effective_as_of: '2020-12-30', target_revision: 4,
+      custom_indicators: [{ indicator_id: 'metric', indicator_revision: 7, indicator_name: '指标', value: 0, parameters: { window: 20 } }], execution: fixedExecution })))
+    const result = await getPortfolioRun('run-1')
+    expect(result).toMatchObject({ requested_as_of: '2020-12-31', effective_as_of: '2020-12-30', target_revision: 4 })
+    expect(result.custom_indicators?.[0]).toMatchObject({ indicator_id: 'metric', indicator_revision: 7, parameters: { window: 20 }, value: 0 })
+  })
   afterEach(() => {
     vi.unstubAllGlobals()
   })

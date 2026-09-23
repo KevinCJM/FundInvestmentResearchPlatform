@@ -28,6 +28,11 @@ import {
   type NativeNumericalExecutionAudit,
 } from '../utils/fixedNjitExecution';
 import { Badge, Button, Card, EmptyState } from '../components/ui';
+import AgentPanel from '../components/agent/AgentPanel';
+import usePageContextRevision from '../components/agent/usePageContextRevision';
+import useResearchAgentView from '../components/agent/useResearchAgentView';
+import { buildProductResearchEvidence, frozenIndicatorRefs, pageResultReference, type PageResultRecord } from '../services/agentPageEvidence';
+import type { AgentPageContext } from '../services/agent';
 import { systemText as s, useI18n } from '../i18n/runtime';
 
 interface ProductItem {
@@ -291,6 +296,11 @@ export default function ProductResearch() {
   const [definitionIndicator, setDefinitionIndicator] = useState<IndicatorDefinition | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [pageInput, setPageInput] = useState('1');
+  const [responseKey, setResponseKey] = useState('');
+  const [listRecord, setListRecord] = useState<PageResultRecord | null>(null);
+  const [metricRecord, setMetricRecord] = useState<PageResultRecord | null>(null);
+  const agentView = useResearchAgentView(researchAsOf);
+  const listKey = JSON.stringify([productKind, searchKeyword, filters, conditions, snapshotMetrics, sortKey, sortDir, page, pageSize, agentView.identity]);
   const [researchPreference, setResearchPreference] = useMetricDisplayPreference(
     'product-research',
     'single_product',
@@ -379,10 +389,13 @@ export default function ProductResearch() {
           throw new Error(payload?.detail || s('productResearch.errorLoadFailed'));
         }
         const data = (await resp.json()) as ProductsResponse;
+        if (controller.signal.aborted) return;
         assertNativeNumericalExecution(data.execution, '产品研究统计');
         setResponse(data);
+        setResponseKey(listKey);
+        setListRecord({ key: listKey, request: { query: params.toString(), pit_identity: agentView.identity }, completed: true });
       } catch (err) {
-        if ((err as DOMException).name === 'AbortError') {
+        if (controller.signal.aborted || (err as DOMException).name === 'AbortError') {
           return;
         }
         console.error('Failed to load products', err);
@@ -395,7 +408,7 @@ export default function ProductResearch() {
     };
     fetchData();
     return () => controller.abort();
-  }, [conditions, page, pageSize, sortKey, sortDir, searchKeyword, filters, productKind, snapshotMetrics, reloadToken]);
+  }, [listKey, reloadToken]);
 
   useEffect(() => {
     let active = true;
@@ -412,13 +425,22 @@ export default function ProductResearch() {
     return () => { active = false; };
   }, [productKind]);
 
-  const currentPageTargets = useMemo(() => (response?.items ?? []).flatMap((item) => {
+  const currentPageTargets = useMemo(() => (responseKey === listKey ? response?.items ?? [] : []).flatMap((item) => {
     const productId = item.ts_code ?? item.code;
     return productId ? [{ kind: productKind, product_id: productId, name: item.name ?? productId }] : [];
-  }), [productKind, response?.items]);
+  }), [productKind, response?.items, responseKey, listKey]);
   const selectedResearchIndicators = useMemo(() => researchPreference.indicatorIds
     .map((id) => researchIndicators.find((indicator) => indicator.id === id))
     .filter((indicator): indicator is IndicatorDefinition => Boolean(indicator)), [researchIndicators, researchPreference.indicatorIds]);
+
+  const metricRequests = useMemo(() => groupIndicatorsByPeriod({ ...researchPreference,
+    indicatorIds: selectedResearchIndicators.map(indicator => indicator.id) }, '1Y').map(({ indicatorIds, period }) => ({
+    indicator_refs: frozenIndicatorRefs(indicatorIds, {}, selectedResearchIndicators, period).map(({ period: _period, ...reference }) => reference),
+    targets: currentPageTargets.map(({ kind, product_id }) => ({ kind, product_id })),
+    period, as_of: researchAsOf || undefined,
+  })), [currentPageTargets, researchAsOf, researchPreference, selectedResearchIndicators]);
+  const metricsKey = JSON.stringify([metricRequests, viewMode, agentView.identity]);
+  const agentIndicators = viewMode === 'metrics' ? metricRequests.flatMap(request => request.indicator_refs.map(reference => ({ ...reference, period: request.period }))) : [];
 
   useEffect(() => {
     if (viewMode !== 'metrics' || currentPageTargets.length === 0 || selectedResearchIndicators.length === 0) {
@@ -427,22 +449,13 @@ export default function ProductResearch() {
     }
     let active = true;
     setResearchLoading(true); setResearchError(null);
-    const selectedPreference = {
-      ...researchPreference,
-      indicatorIds: selectedResearchIndicators.map((indicator) => indicator.id),
-    };
-    Promise.all(groupIndicatorsByPeriod(selectedPreference, '1Y').map(({ indicatorIds, period }) => (
-      evaluateCustomIndicators({
-        indicator_ids: indicatorIds,
-        targets: currentPageTargets.map(({ kind, product_id }) => ({ kind, product_id })),
-        period,
-        as_of: researchAsOf || undefined,
-      })
-    ))).then((responses) => { if (active) setResearchResults(responses.flatMap(({ results }) => results)); })
+    const frozenRecord: PageResultRecord = { key: metricsKey, request: { requests: structuredClone(metricRequests), pit_identity: agentView.identity }, indicators: agentIndicators, completed: true };
+    Promise.all(metricRequests.map(request => evaluateCustomIndicators(request)))
+      .then((responses) => { if (active) { setResearchResults(responses.flatMap(({ results }) => results)); setMetricRecord(frozenRecord); } })
       .catch(() => { if (active) { setResearchResults([]); setResearchError(s('productResearch.errorMetrics')); } })
       .finally(() => { if (active) setResearchLoading(false); });
     return () => { active = false; };
-  }, [currentPageTargets, researchAsOf, researchPreference.periodsByIndicator, selectedResearchIndicators, viewMode]);
+  }, [metricsKey]);
 
   const switchProductKind = (kind: 'etf' | 'fund') => {
     setProductKind(kind);
@@ -546,6 +559,65 @@ export default function ProductResearch() {
   const selectedCount = allMatchingSelected
     ? Math.max(0, (response?.total ?? 0) - excludedProductIds.size)
     : selectedList.length;
+  // 助手只冻结页面当前明确的分析批次：当前分页前 10 项；选择数量只是声明，不等于已计算。
+  const agentBatchTargets = useMemo(() => currentPageTargets.slice(0, 10), [currentPageTargets]);
+  const agentAsOf = agentView.asOf;
+  const agentSelectionMode: 'current_page' | 'selected' | 'all_matching' = allMatchingSelected
+    ? 'all_matching' : selectedList.length > 0 ? 'selected' : 'current_page';
+  // 只有语义条件变化才递增修订号；结果回包或指标计算完成不打断已发送的问题。
+  const agentContextRevision = usePageContextRevision(JSON.stringify([
+    productKind, searchKeyword, filters, conditions, snapshotMetrics, sortKey, sortDir, page, pageSize,
+    viewMode, researchAsOf, allMatchingSelected, Object.keys(selectedProducts).sort(), Array.from(excludedProductIds).sort(),
+    metricsKey, agentView.identity,
+  ]));
+  const agentPageContext: AgentPageContext = {
+    page: 'product-research',
+    page_instance_id: `product-research:${productKind}`,
+    context_revision: agentContextRevision,
+    view_state: agentView.viewState,
+    calculation: { context_kind: 'single_product', targets: agentBatchTargets.map(({ kind, product_id }) => ({ kind, product_id })), period: '1Y', as_of: agentAsOf },
+  };
+  const captureAgentSnapshot = () => buildProductResearchEvidence({
+    request: {
+      kind: productKind,
+      q: searchKeyword,
+      fund_type: filters.fund_type,
+      fund_category: filters.type,
+      invest_type: filters.invest_type,
+      market: filters.market,
+      status: filters.status,
+      management: filters.management,
+      custodian: filters.custodian,
+      qdii_type: filters.qdii_type,
+      page,
+      page_size: pageSize,
+      sort_by: sortKey,
+      sort_dir: sortDir,
+      conditions,
+      snapshot_metrics: snapshotMetrics,
+      as_of: agentAsOf,
+      targets: agentBatchTargets.map(({ kind, product_id }) => ({ kind, product_id })),
+      batch_offset: 0,
+      visible_count: currentPageTargets.length,
+      selected_count: selectedCount,
+      selection_mode: agentSelectionMode,
+      excluded_ids: allMatchingSelected ? Array.from(excludedProductIds).slice(0, 200) : [],
+      indicators: agentIndicators,
+      view_mode: viewMode === 'metrics' ? 'metrics' : 'overview',
+    },
+    displayed: {
+      source: 'instruments.products + evaluate-custom-indicators',
+      refs: {
+        page_items: response?.items.length ?? 0,
+        total: response?.total ?? 0,
+        metric_results: researchResults.length,
+        view_mode: viewMode,
+        pit: { as_of: response?.pit?.as_of ?? null, snapshot_is_hindsight: response?.pit?.snapshot_is_hindsight ?? null },
+        list: pageResultReference(listRecord, listKey, loading, error),
+        metrics: pageResultReference(metricRecord, metricsKey, researchLoading, researchError),
+      },
+    },
+  });
   const conditionFields = response?.condition_fields ?? fallbackConditionFields(productKind);
   const snapshotMetricFields = response?.snapshot_metric_fields ?? [];
   const selectedSnapshotMetricFields = snapshotMetrics.flatMap((field) => {
@@ -1157,6 +1229,9 @@ export default function ProductResearch() {
         )}
       </section>
       <MetricDefinitionDrawer indicator={definitionIndicator} onClose={() => setDefinitionIndicator(null)} />
+      <AgentPanel pageContext={agentPageContext} busy={loading || !!error || responseKey !== listKey || agentView.viewState === 'unknown'}
+        conversationOptions={{ capturePageSnapshot: captureAgentSnapshot, enabled: !loading && !error && responseKey === listKey && agentView.viewState !== 'unknown', cancelOnUnmount: true }}
+        renderStatus={() => <p role="status" className="text-xs text-slate-600">{loading || error || responseKey !== listKey ? s('agent.researchPage.loading') : s('agent.researchPage.batch', { count: agentBatchTargets.length, visible: currentPageTargets.length, selected: selectedCount })}</p>} />
     </div>
   );
 }

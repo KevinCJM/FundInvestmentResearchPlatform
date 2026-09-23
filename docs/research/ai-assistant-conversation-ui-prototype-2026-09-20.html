@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 助手 · 对话界面设计样稿</title>
+<style>
+/* Independent design artifact; colors mirror the existing project tokens. */
+:root{--accent:#1662f5;--accent-hover:#0f52d6;--soft:#f0f6ff;--ink:#0f172a;--text:#334155;--muted:#475569;--line:#e2e8f0;--page:#f1f5f9;--success:#065f46;--warn:#78350f;--error:#be123c;font:14px/1.7 "Avenir Next",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--text);background:var(--page)}
+*{box-sizing:border-box}body{margin:0}button,select,textarea{font:inherit;color:inherit}button,select{min-height:40px;border:1px solid #cbd5e1;background:white;border-radius:8px;padding:7px 12px;cursor:pointer}button:hover{background:#f8fafc}button:active{transform:translateY(1px)}button:disabled{cursor:default;color:var(--muted);background:var(--page)}:focus-visible{outline:2px solid #2d7bfa;outline-offset:3px}a{color:var(--accent-hover)}h1,h2,h3,p{margin:0}h1{font-size:24px;color:var(--ink)}h2{font-size:18px;line-height:1.4;color:var(--ink)}h3{font-size:16px;color:var(--ink)}small,.subtle{font-size:12px;color:var(--muted)}.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.primary{background:var(--accent);border-color:var(--accent);color:white;font-weight:600}.primary:hover{background:var(--accent-hover)}.text-button{border-color:transparent;background:transparent;color:var(--accent-hover)}[hidden]{display:none!important}
+.review{padding:24px 32px;background:white;border-bottom:1px solid var(--line)}.review p{margin:4px 0 16px}.review-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.review-controls label{display:flex;gap:8px;align-items:center}.stage{position:relative;max-width:1600px;height:calc(100dvh - 244px);min-height:500px;margin:20px auto;background:#f8fafc;overflow:hidden}.workspace{padding:32px;max-width:820px}.workspace>p{margin:8px 0 24px}.workspace-block{border:1px solid var(--line);border-radius:12px;background:white;padding:20px;margin:16px 0}.workspace-block p{margin:8px 0}.workspace dl{display:grid;grid-template-columns:100px 1fr;gap:8px}.workspace dt{color:var(--muted)}.workspace dd{margin:0}.placeholder-line{height:10px;background:var(--line);border-radius:8px;margin:16px 0;width:70%}.placeholder-line.short{width:40%}.work-note{max-width:320px;font-size:12px}
+.panel{position:absolute;right:20px;bottom:20px;width:480px;max-width:calc(100% - 24px);height:760px;max-height:calc(100% - 40px);display:flex;flex-direction:column;background:white;border:1px solid var(--line);border-radius:12px;box-shadow:0 20px 25px -5px rgb(15 23 42 / .10),0 8px 10px -6px rgb(15 23 42 / .10);overflow:hidden}.panel.expanded{width:720px}.panel header{padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0}.heading{display:flex;align-items:center;gap:8px}.heading h2{flex:1}.heading img{width:32px;height:32px;object-fit:contain}.model{margin:4px 0 0 40px;overflow-wrap:anywhere}.context{background:#f8fafc;padding:0 16px;border-bottom:1px solid var(--line);font-size:12px;flex-shrink:0}.context summary{min-height:40px;display:flex;align-items:center;gap:6px;cursor:pointer}.context summary:before{content:'›';font-size:18px}.context[open] summary:before{content:'⌄'}.context p{padding-bottom:12px}.messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:20px 16px;scrollbar-gutter:stable}.user{max-width:90%;margin:0 0 24px auto;padding:10px 14px;background:var(--soft);border:1px solid #c7ddff;border-radius:12px;color:#123a85;white-space:pre-wrap}.role{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px}.assistant>p{margin:10px 0}.artifact{border:1px solid var(--line);border-radius:12px;margin-top:16px;overflow:hidden}.artifact-section{padding:14px 16px}.artifact-section+.artifact-section{border-top:1px solid var(--line)}.badge{font-size:12px;border-radius:99px;padding:2px 8px;background:#d1fae5;color:var(--success);white-space:nowrap}.artifact-title{align-items:flex-start;justify-content:space-between}.outputs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.outputs strong{display:block;font-weight:600}.outputs span{font-size:12px;color:var(--muted)}.formula summary{cursor:pointer;color:var(--accent-hover);min-height:40px;padding:7px 0}.formula pre{margin:8px 0 12px;border-radius:8px;background:#020617;color:#e2e8f0;padding:12px;font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto}.formula code{font:inherit}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.feedback{margin-top:10px;font-size:12px;color:var(--success)}.preview-meta{margin-top:6px;font-size:12px;color:var(--muted)}.message-actions{margin:8px 0}.phase{font-size:14px;color:var(--muted);margin:16px 0}.phase summary{cursor:pointer;min-height:40px;display:flex;align-items:center;gap:8px}.phase summary:before{content:'◌';font-size:20px}.phase ul{list-style:none;margin:8px 0 0;padding:0 0 0 26px;font-size:12px}.phase li{padding:4px 0}.error{background:#fff1f2;border:1px solid #fecdd3;padding:14px;border-radius:8px;color:var(--error)}.error .actions{color:var(--text)}.jump{align-self:center;flex-shrink:0;margin:0 0 8px;border-radius:99px;box-shadow:0 1px 2px rgb(15 23 42 / .05);color:var(--accent-hover)}
+.composer{padding:12px;border-top:1px solid var(--line);background:white;flex-shrink:0}.composer label{display:block;font-size:12px;font-weight:600;margin-bottom:6px}.composer textarea{width:100%;min-height:68px;max-height:144px;resize:none;border:1px solid #cbd5e1;border-radius:8px;padding:10px 12px;display:block;background:white}.composer textarea::placeholder{color:var(--muted);opacity:1}.compose-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px}.compose-footer .row{margin-left:auto}.launcher{position:absolute;right:20px;bottom:20px;display:flex;align-items:center;flex-direction:column;border:0;background:transparent;gap:4px}.launcher img{width:80px;height:80px;object-fit:contain}.launcher span{background:white;border:1px solid var(--line);border-radius:99px;padding:2px 8px;font-size:12px;font-weight:600}.empty{padding:32px 0}.empty p{margin:12px 0 20px}.suggestions{display:flex;flex-direction:column;align-items:flex-start;gap:8px}.sample-note{padding:0 32px 24px}.stage.mobile{width:320px;min-height:500px}.stage.mobile .workspace{padding:16px}.stage.mobile .panel{width:296px;right:12px;bottom:12px;height:652px;max-height:calc(100% - 88px)}.stage.mobile .heading .expand{display:none}.stage.mobile .outputs{grid-template-columns:1fr;gap:8px}.stage.mobile .user{max-width:96%}.stage.mobile .shortcut{display:none}.stage.mobile .model{margin-left:0}.stage.mobile .launcher img{width:64px;height:64px}
+@media(max-width:639px){.review{padding:16px}.stage{margin:0;min-height:500px}.stage .workspace{padding:16px}.panel,.panel.expanded{width:calc(100% - 24px);right:12px;bottom:12px;height:652px;max-height:calc(100% - 88px)}.heading .expand,.shortcut{display:none}.model{margin-left:0}.outputs{grid-template-columns:1fr}.user{max-width:96%}.sample-note{padding:16px}.launcher img{width:64px;height:64px}.stage.mobile{max-width:100%}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;transform:none!important}}
+</style>
+<header class="review">
+  <h1>AI 助手 · 对话界面优化</h1>
+  <p>交互设计样稿：以下消息、校验与试算均为示例，不调用模型、不保存业务数据。</p>
+  <div class="review-controls">
+    <label>查看状态 <select id="scenario"><option value="result">回复与成果</option><option value="thinking">思考中</option><option value="compacting">整理上下文</option><option value="error">请求失败</option><option value="history">历史成果</option><option value="empty">首次打开</option></select></label>
+    <button id="mobile" aria-pressed="false">查看 320px 布局</button>
+    <a href="ai-assistant-conversation-ui-design-2026-09-20.md">详细设计文档</a>
+  </div>
+</header>
+<main class="stage" id="stage">
+  <section class="workspace" aria-label="示意工作台">
+    <small>研究工作台 · 背景示意</small><h1>指标中心</h1>
+    <p>讨论需求、定义计算，再用真实产品检验。</p>
+    <section class="workspace-block"><h2>定义与公式</h2><p class="subtle">助手打开时，工作台仍可操作。</p><div class="placeholder-line"></div><div class="placeholder-line short"></div></section>
+    <section class="workspace-block" id="work-result" tabindex="-1"><h2>校验与预览</h2><p id="workspace-status">等待查看对应回复的试算结果。</p><dl id="conditions" hidden><dt>产品</dt><dd>示例 ETF（DEMO.ETF）</dd><dt>计算周期</dt><dd>近 1 年（1Y）</dd><dt>历史截止日</dt><dd>2019-12-31</dd><dt>动量窗口</dt><dd>20 个观察值</dd></dl><p class="subtle">设计示例，没有执行实际计算。</p></section>
+    <p class="work-note">可以体验：展开阅读、查看完整公式、填入与保存反馈、试算跳转、关闭重开，以及不同状态的布局。</p>
+  </section>
+  <section class="panel" id="panel" role="dialog" aria-modal="false" aria-labelledby="title">
+    <header><div class="heading"><img src="../../frontend/public/homepage/images/mascot-welcome-240.webp" width="32" height="32" alt=""><h2 id="title" tabindex="-1">AI 助手</h2><button class="expand" id="expand" aria-expanded="false">展开</button><button id="close" aria-label="关闭 AI 助手">× 关闭</button></div><p class="model subtle">配置模型：DeepSeek v4.1 Flash（示例）</p></header>
+    <details class="context"><summary>本次上下文 · 指标定义</summary><p>当前页面：指标中心<br>未选择产品，也可以讨论和生成计算逻辑。<br>时点口径：随页面设置；试算按其快照条件展示。</p></details>
+    <div class="messages" id="messages" role="log" aria-label="对话记录">
+      <div class="user" id="user">帮我设计一个能观察 ETF 动量方向和强度的指标，窗口默认 20，可调整。</div>
+      <div class="empty" id="empty" hidden><h3>想一起研究什么？</h3><p>先讨论想法，再用当前页面的工具验证。需要具体数据时再选择研究对象。</p><div class="suggestions"><button data-prompt="帮我设计一个指标。">设计一个指标</button><button data-prompt="请解释当前公式的计算逻辑。">解释当前公式</button><button data-prompt="我想先确定指标，再找一个产品试算。">找产品试算</button></div></div>
+      <details class="phase" id="phase" hidden><summary><span id="phase-text" role="status">思考中…</span></summary><ul><li>✓ 已收到研究需求</li><li id="step">正在分析计算口径</li></ul></details>
+      <div class="error" id="error" role="alert" hidden><strong>本次请求未完成</strong><p>模型服务暂时没有响应，消息已保留。</p><div class="actions"><button id="retry">重试这条消息</button></div></div>
+      <article class="assistant" id="answer">
+        <div class="role">AI</div><p>可以把<strong>方向</strong>和<strong>强度</strong>分别输出，方便观察它们如何随时间变化。</p><p>下面是这轮讨论形成的草稿。参数可以继续调整，保存前由你确认。</p>
+        <section class="artifact" aria-label="本轮指标草稿">
+          <div class="artifact-section"><div class="row artifact-title"><h3>ETF 量价动量</h3><span class="badge">定义校验通过</span></div><p class="subtle" id="draft-state">时序 · 2 个输出 · 未保存草稿</p>
+            <div class="outputs"><div><strong>动量方向</strong><span>时序输出 · direction</span></div><div><strong>动量强度</strong><span>时序输出 · strength</span></div></div><p class="subtle">默认动量窗口：20 个观察值，可调整</p>
+            <details class="formula"><summary>查看完整公式（2 个输出）</summary><strong>动量方向</strong><pre tabindex="0" aria-label="动量方向公式"><code>sign(mean(rolling_window(log_returns, momentum_window)))</code></pre><strong>动量强度</strong><pre tabindex="0" aria-label="动量强度公式"><code>multiply(absolute(divide(mean(rolling_window(log_returns, momentum_window)), std(rolling_window(log_returns, momentum_window)))), divide(mean(rolling_window(turnover_amount, volume_short_window)), mean(rolling_window(turnover_amount, volume_long_window))))</code></pre><p class="subtle">完整 DSL 原文。当前仅演示阅读结构。</p></details>
+            <div class="actions"><button id="apply">填入编辑器</button><button class="primary" id="save">确认保存指标</button></div><p id="feedback" class="feedback" role="status" hidden></p><p class="subtle" id="history-note" hidden>历史草稿：填入编辑器后重新校验，再保存。</p>
+          </div>
+          <section class="artifact-section" aria-label="本轮试算结果"><strong>本轮试算</strong><p class="preview-meta">示例 ETF · DEMO.ETF<br>近 1 年 · 截止 2019-12-31 · 动量窗口 20</p><div class="actions"><button id="preview">查看试算结果</button></div></section>
+        </section>
+      </article>
+    </div>
+    <button class="jump" id="jump" hidden>↓ 查看最新</button>
+    <form class="composer" id="composer"><label for="input">发送消息</label><textarea id="input" rows="2" maxlength="4000" placeholder="描述问题，或继续补充你的想法…"></textarea><div class="compose-footer"><small>保存需确认<span class="shortcut"> · ⌘ / Ctrl + Enter 发送</span></small><div class="row"><button type="button" id="stop" hidden>停止</button><button class="primary" id="send" type="submit" disabled>发送</button></div></div></form>
+  </section>
+  <button class="launcher" id="launcher" hidden aria-label="打开 AI 助手" aria-haspopup="dialog"><img src="../../frontend/public/homepage/images/mascot-welcome-240.webp" width="80" height="80" alt=""><span>AI 助手</span></button>
+</main>
+<p class="sample-note subtle">本样稿用于确认信息层级与交互方向。模型、工具、校验、试算、保存均为演示；线上能力以实际接口为准。</p>
+<script>
+const el = id => document.getElementById(id);
+let busy = false;
+function syncInput(){el('send').disabled=!el('input').value.trim();el('send').textContent=busy?'停止并发送':'发送';el('input').style.height='auto';el('input').style.height=Math.min(144,el('input').scrollHeight)+'px';}
+function showPanel(open,returnFocus=true){el('panel').hidden=!open;el('launcher').hidden=open;requestAnimationFrame(()=>{if(open)el('title').focus();else if(returnFocus)el('launcher').focus();});}
+function setScenario(value){
+  el('scenario').value=value;busy=['thinking','compacting'].includes(value);
+  for(const [id,shown] of Object.entries({user:value!=='empty',empty:value==='empty',phase:busy,error:value==='error',answer:['result','history'].includes(value),stop:busy,'history-note':value==='history',save:value!=='history'}))el(id).hidden=!shown;
+  el('phase-text').textContent=value==='compacting'?'正在整理上下文，稍后继续…':'思考中…';el('step').textContent=value==='compacting'?'正在整理历史信息':'正在分析计算口径';
+  el('draft-state').textContent=value==='history'?'时序 · 2 个输出 · 历史草稿':'时序 · 2 个输出 · 未保存草稿';el('save').textContent='确认保存指标';el('save').disabled=false;el('feedback').hidden=true;el('messages').scrollTop=0;el('jump').hidden=true;syncInput();
+}
+el('scenario').onchange=e=>setScenario(e.target.value);
+el('mobile').onclick=()=>{const mobile=el('stage').classList.toggle('mobile');el('mobile').setAttribute('aria-pressed',String(mobile));el('mobile').textContent=mobile?'返回桌面布局':'查看 320px 布局';};
+el('expand').onclick=()=>{const expanded=el('panel').classList.toggle('expanded');el('expand').setAttribute('aria-expanded',String(expanded));el('expand').textContent=expanded?'收起宽度':'展开';};
+el('close').onclick=()=>showPanel(false);el('launcher').onclick=()=>showPanel(true);
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!el('panel').hidden){event.preventDefault();showPanel(false);}});
+el('input').oninput=syncInput;
+el('input').onkeydown=event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)&&!event.isComposing&&el('input').value.trim()){event.preventDefault();el('composer').requestSubmit();}};
+el('composer').onsubmit=event=>{event.preventDefault();const text=el('input').value.trim();if(!text)return;el('user').textContent=text;el('input').value='';setScenario('thinking');el('step').textContent='设计演示：未调用模型，可在顶部切换回复状态。';};
+el('stop').onclick=()=>{busy=false;el('phase-text').textContent='已停止（演示），可以继续补充需求';el('stop').hidden=true;syncInput();};
+el('retry').onclick=()=>setScenario('thinking');
+for(const button of document.querySelectorAll('[data-prompt]'))button.onclick=()=>{el('input').value=button.dataset.prompt;syncInput();el('input').focus();};
+el('apply').onclick=()=>{el('feedback').hidden=false;el('feedback').textContent='演示：已填入编辑器，尚未保存。';};
+el('save').onclick=()=>{el('feedback').hidden=false;el('feedback').textContent='演示：保存成功。实际页面须等待服务确认。';el('save').textContent='已保存（演示）';el('save').disabled=true;};
+el('preview').onclick=()=>{el('workspace-status').textContent='对应回复的试算条件（设计示例）';el('conditions').hidden=false;showPanel(false,false);el('work-result').scrollIntoView({block:'center'});el('work-result').focus({preventScroll:true});};
+el('messages').onscroll=()=>{el('jump').hidden=el('messages').scrollHeight-el('messages').scrollTop-el('messages').clientHeight<48;};
+el('jump').onclick=()=>{el('messages').scrollTop=el('messages').scrollHeight;el('jump').hidden=true;};
+setScenario('result');
+</script>
+</html>

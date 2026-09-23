@@ -325,6 +325,8 @@ from services.timing_research_routes import router as timing_research_router
 from services.tactical_allocation_routes import router as tactical_allocation_router
 from services.strategic_allocation_routes import router as strategic_allocation_router
 from services.localization_routes import router as localization_router
+from services.llm_settings_routes import router as llm_settings_router
+from agent.routes import router as agent_router
 
 app.include_router(data_router)
 app.include_router(pit_router)
@@ -353,6 +355,8 @@ app.include_router(risk_model_router)
 app.include_router(transmission_router)
 app.include_router(published_scenario_router)
 app.include_router(localization_router)
+app.include_router(llm_settings_router)
+app.include_router(agent_router)
 
 
 @app.get("/api/health")

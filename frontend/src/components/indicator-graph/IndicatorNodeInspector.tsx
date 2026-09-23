@@ -102,10 +102,10 @@ export default function IndicatorNodeInspector({ graph, selectedId, variables, o
           {upstream?.kind === 'parameter' && <p className="mt-2 text-xs text-accent-800">{s('indicatorParameters.parameterNode', { code: upstream.parameter_id })}</p>}
           {upstream?.kind !== 'parameter' && (fixed || constant) && (typeof value === 'boolean'
             ? <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={value} onChange={event => updateConstant(event.target.checked)} />{label}</label>
-            : <input aria-label={s('graph.parameterConstant', { name: label })} className={field} type="number" step={parameter.constant_kind === 'integer' ? 1 : 'any'} min={parameter.minimum} max={parameter.maximum} value={value ?? ''} onChange={event => updateConstant(event.target.value === '' ? null : Number(event.target.value))} />)}
+            : <input aria-label={s('graph.parameterConstant', { name: label })} className={field} type="number" step={parameter.constant_kind === 'integer' ? 1 : 'any'} min={parameter.minimum ?? undefined} max={parameter.maximum ?? undefined} value={value ?? ''} onChange={event => updateConstant(event.target.value === '' ? null : Number(event.target.value))} />)}
           {constant && <p className="mt-1 text-xs text-slate-600">{s('graph.constantSync', {}, '这里修改的是相连的常量节点，画布与参数同步更新。')}</p>}
           {constantUsages > 1 && <p className="mt-1 text-xs text-amber-800">{s('graph.sharedConstant', { count: constantUsages }, '此常量被 {{count}} 处引用，修改会同步影响这些输入。')}</p>}
-          {fixed && upstream?.kind !== 'parameter' && <p className="mt-1 text-xs text-slate-600">{s(parameter.constant_kind === 'integer' ? 'graph.fixedInteger' : 'graph.fixedNumber')}{parameter.minimum !== undefined ? ` · ${s('graph.minimum', { value: parameter.minimum })}` : ''}{parameter.maximum !== undefined ? ` · ${s('graph.maximum', { value: parameter.maximum })}` : ''}</p>}
+          {fixed && upstream?.kind !== 'parameter' && <p className="mt-1 text-xs text-slate-600">{s(parameter.constant_kind === 'integer' ? 'graph.fixedInteger' : 'graph.fixedNumber')}{parameter.minimum != null ? ` · ${s('graph.minimum', { value: parameter.minimum })}` : ''}{parameter.maximum != null ? ` · ${s('graph.maximum', { value: parameter.maximum })}` : ''}</p>}
         </fieldset>
       })}
     </>}

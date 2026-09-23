@@ -216,6 +216,66 @@
       ]
     },
     {
+      "id": "R77",
+      "task_type": "ai_research_assistant_llm_harness_and_recovery",
+      "match_keywords": [
+        "AI 助手",
+        "AI 智能体",
+        "agent",
+        "AgentPanel",
+        "RunController",
+        "AgentSessionStore",
+        "LLM API",
+        "LLM 配置",
+        "工具回执",
+        "上下文压缩",
+        "会话恢复",
+        "记忆确认",
+        "ai-functions",
+        "data_policy",
+        "useAgentConversation"
+      ],
+      "negative_keywords": [
+        "routing memory only"
+      ],
+      "route_priority": 100,
+      "first_read_modules": [
+        "ai_research_agent"
+      ],
+      "expand_to_modules": [
+        "backend_custom_indicator_service",
+        "backend_portfolio_research",
+        "frontend_indicator_studio",
+        "frontend_etf_research_pages",
+        "frontend_portfolio_research",
+        "market_data_snapshot_lifecycle",
+        "project_docs"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P12",
+        "P14",
+        "P25"
+      ],
+      "expand_search_codes": [
+        "read_frontend_backend_pair",
+        "inspect_data_schema_contract"
+      ],
+      "stop_and_verify_codes": [
+        "run_minimum_regression",
+        "run_frontend_build_when_deps_available"
+      ],
+      "fact_check_codes": [
+        "verify_api_payload_shape",
+        "read_reference_map_first"
+      ],
+      "scope_flags": [
+        "subtree_only",
+        "research_only",
+        "explicit_human_business_commit"
+      ]
+    },
+    {
       "id": "R86",
       "task_type": "tactical_allocation_saa_linked_decision_workbench",
       "match_keywords": [

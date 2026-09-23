@@ -1,0 +1,27 @@
+.agent-dialog {
+  width: 480px;
+  height: min(760px, calc(var(--agent-viewport-height, 100dvh) - 88px));
+}
+.agent-dialog:not([hidden]) { animation: agent-enter 180ms ease-out; }
+.agent-composer textarea { min-height: 36px; max-height: min(144px, calc(var(--agent-viewport-height, 100dvh) * .25)); }
+.agent-floating button { transition-property: transform, opacity; transition-duration: 120ms; }
+.agent-floating button:not(:disabled):active { transform: translateY(1px); }
+.agent-copy-confirmed button > svg { animation: agent-confirm 160ms ease-out; }
+.agent-tooltip { animation: agent-confirm 120ms ease-out; }
+.agent-floating summary::after { content: ' ▾'; margin-left: .35rem; }
+.agent-floating details[open] > summary::after { content: ' ▴'; }
+@keyframes agent-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes agent-confirm { from { opacity: 0; } to { opacity: 1; } }
+@media (hover: hover) and (pointer: fine) {
+  .agent-reply-copy { opacity: 0; }
+  .agent-reply:hover .agent-reply-copy, .agent-reply:focus-within .agent-reply-copy,
+  .agent-bubble:hover .agent-reply-copy, .agent-bubble:focus-within .agent-reply-copy { opacity: 1; }
+}
+@media (min-width: 640px) {
+  .agent-dialog { height: min(760px, calc(var(--agent-viewport-height, 100dvh) - 104px)); }
+}
+@media (min-width: 1024px) { .agent-dialog.agent-expanded { width: 720px; } }
+@media (prefers-reduced-motion: reduce) {
+  .agent-floating *, .agent-floating *::before, .agent-floating *::after, .agent-tooltip { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+  .agent-floating button:not(:disabled):active { transform: none; }
+}

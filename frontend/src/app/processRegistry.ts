@@ -242,6 +242,7 @@ const settings = withAccent({
     { id: 'research-parameters', label: '研究口径与参数中心', description: '维护可复用、版本化的基准、无风险利率、数据处理和计算口径模板，供产品与组合研究引用。', path: '/settings/research-parameters', status: 'prototype' },
     { id: 'risk-scales', label: '风险等级配置中心', description: '以参考资产与市场假设建立可追溯的 C1–C5 风险标尺，管理不可变版本和当前默认。', path: '/settings/risk-scales', status: 'available' },
     { id: 'indicators-models', label: '指标与模型管理', description: '维护标量、矩阵及组合指标的定义、公式、范围和版本。', path: '/settings/indicators-models', status: 'partial' },
+    { id: 'llm-api', label: 'LLM API 配置', description: '管理 AI 助手的大模型 API 配置，指定当前使用的服务；密钥仅显示脱敏结果。', path: '/settings/llm-api', status: 'available' },
     { id: 'factor-research', label: '因子研究中心', description: '构建和检验共享因子，区分比较基准、模型与数据来源，发布研究版本并接入产品池和投研证据。', path: '/settings/factor-research', status: 'available' },
     { id: 'risk-models', label: '风险模型中心', description: '研究并验证产品敏感度、现金流久期与凸度；发布到统一数据磁盘，供产品与组合直接读取。', path: '/settings/risk-models', status: 'available' },
     { id: 'timing-algorithms', label: '择时算法中心', description: '复用指标计算与条件规则，编辑、保存并检验可展开的产品择时算法。', path: '/settings/timing-algorithms', status: 'partial' },
