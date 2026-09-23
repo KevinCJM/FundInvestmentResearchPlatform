@@ -16,6 +16,7 @@ type RunBinding = { run: AgentRun; frozen: AgentPageContext; key: string; adopte
 type ConversationCore = { session: Omit<AgentSession, 'active_run' | 'execution_blocked_by'> | null; binding: RunBinding | null; unboundBlock: string | null }
 type ConversationInput =
   | { kind: 'session'; snapshot: AgentSession }
+  | { kind: 'revision'; sessionId: string; revision: number }
   | { kind: 'message'; run: AgentRun; context: AgentPageContext }
   | { kind: 'run'; run: AgentRun }
   | { kind: 'phase'; sessionId: string; runId: string; phase: string; status?: AgentRun['status'] }
@@ -142,6 +143,12 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
     if (!mounted.current) return false
     const before = coreRef.current
     let head = before.session, binding = before.binding, unboundBlock = before.unboundBlock
+    if (input.kind === 'revision') {
+      if (!head || head.session_id !== input.sessionId || !Number.isSafeInteger(input.revision) || input.revision <= head.session_revision) return false
+      // A mutation receipt advances only its known version, never other snapshot fields.
+      publishCore({ ...before, session: { ...head, session_revision: input.revision } })
+      return true
+    }
     const snapshot = input.kind === 'session' ? input.snapshot : null
     if (snapshot) {
       if ((snapshot.page_context && agentSessionStorageKey(snapshot.page_context) !== storageKey)
@@ -204,6 +211,7 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
     return true
   }, [merge, matchesContext, publishCore, storageKey])
   const acceptSession = useCallback((snapshot: AgentSession) => acceptInput({ kind: 'session', snapshot }), [acceptInput])
+  const acceptSessionRevision = useCallback((sessionId: string, revision: number) => acceptInput({ kind: 'revision', sessionId, revision }), [acceptInput])
   const ownsRun = useCallback((sessionId: string, runId: string) => mounted.current
     && coreRef.current.session?.session_id === sessionId && coreRef.current.binding?.run.run_id === runId, [])
 
@@ -512,7 +520,7 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
     contextChanged: !!(core.binding || core.session?.page_context) && !matchesContext(pageContext),
     loadEarlier, hasEarlier: !!olderCursor, loadingEarlier,
     busy: sending || waitingToSend || running(run) || !!run?.execution_blocked_by || !!session?.execution_blocked_by,
-    send, stop, edit: submitEdit, retry, refresh: () => setReload(n => n + 1), acceptSession }
+    send, stop, edit: submitEdit, retry, refresh: () => setReload(n => n + 1), acceptSession, acceptSessionRevision }
 }
 
 export type AgentConversationState = ReturnType<typeof useAgentConversation>

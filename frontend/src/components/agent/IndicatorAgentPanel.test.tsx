@@ -37,6 +37,7 @@ function server(options: { configured?: boolean; active?: boolean; draft?: boole
     }
     if (path.endsWith('/messages')) {
       const body = JSON.parse(String(init?.body)); requests.push(body)
+      if (body.expected_session_revision !== revision) return response({ detail: { code: 'REVISION_CONFLICT', message: '会话版本冲突' } }, 409)
       if (options.defer && requests.length === 1) {
         const success = await new Promise<boolean>(resolve => { release = value => resolve(!!value) })
         if (!success) return response({ detail: { message: '连接暂时失败' } }, 502)
@@ -56,12 +57,12 @@ function server(options: { configured?: boolean; active?: boolean; draft?: boole
     if (path.endsWith('/cancel')) { finish('已停止，进度已保留。', 'cancelled'); return response(run) }
     if (path.endsWith('/invalidate-context')) { finish('口径已变化。', 'paused'); return response(run) }
     if (path.includes('/runs/')) return response(run)
-    if (path.endsWith('/commit-preview')) return response({ confirmation_id: 'confirm', definition_hash: 'hash' })
-    if (path.endsWith('/commit')) return response({ indicator_id: 'i', revision: 1 })
+    if (path.endsWith('/commit-preview')) { revision++; return response({ session_id: sessionId, session_revision: revision, confirmation_id: 'confirm', definition_hash: 'hash', draft_revision: 1, definition, preview_status: 'valid', impact: { action: 'create', name: definition.name, context_kind: 'single_product', target: null, name_conflict_indicator_id: 'existing-indicator' } }) }
+    if (path.endsWith('/commit')) { revision++; return response({ session_id: sessionId, session_revision: revision, indicator_id: 'i', revision: 1 }) }
     if (path.endsWith(`/sessions/${sessionId}`)) return response({ session_id: sessionId, session_revision: revision, page_context: { calculation: { as_of: null, ...context.calculation }, view_state: context.view_state, context_revision: context.context_revision, page_instance_id: context.page_instance_id, page: context.page }, messages: events.filter(e => e.type === 'user.message' || e.type === 'assistant.message').slice(-200), older_message_cursor: null, events: events.slice(0, 200), next_event_seq: events.length + 1, active_run: run, draft })
     throw new Error(`unexpected ${url}`)
   })
-  vi.stubGlobal('fetch', fetcher); vi.stubGlobal('EventSource', undefined)
+  vi.stubGlobal('fetch', fetcher); vi.stubGlobal('EventSource', undefined); vi.stubGlobal('confirm', vi.fn(() => true))
   return { fetcher, requests, finish, release: (value?: boolean) => release?.(value), definition }
 }
 async function open() {
@@ -71,6 +72,68 @@ async function open() {
 function send(text: string) { fireEvent.change(screen.getByRole('textbox'), { target: { value: text } }); fireEvent.click(screen.getByRole('button', { name: '发送' })) }
 
 describe('AgentPanel', () => {
+  it('保存成功后的会话读取失败也沿用保存回执版本继续对话', async () => {
+    const api = server({ draft: true }), original = api.fetcher.getMockImplementation()!
+    let saved = false
+    api.fetcher.mockImplementation(async (url, init) => {
+      if (saved && url.endsWith('/sessions/s')) throw new TypeError('会话暂时不可读')
+      const result = await original(url, init)
+      if (url.endsWith('/commit')) saved = true
+      return result
+    })
+    render(<AgentPanel {...props} />); await open(); send('生成平均价差')
+    const save = await screen.findByRole('button', { name: '确认保存指标' })
+    await waitFor(() => expect(save).toBeEnabled()); fireEvent.click(save)
+    await screen.findByRole('button', { name: '已保存' })
+    await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled())
+    send('继续解释已保存的定义')
+    await waitFor(() => expect(api.requests).toHaveLength(2))
+    expect(api.requests[1].expected_session_revision).toBe(3)
+  })
+
+  it('取消保存确认后立即继续对话使用预览更新后的会话版本', async () => {
+    const api = server({ draft: true })
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    render(<AgentPanel {...props} />); await open(); send('生成平均价差')
+    const save = await screen.findByRole('button', { name: '确认保存指标' })
+    await waitFor(() => expect(save).toBeEnabled())
+    fireEvent.click(save)
+    await waitFor(() => expect(window.confirm).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled())
+    send('继续解释这个口径')
+    await waitFor(() => expect(api.requests).toHaveLength(2))
+    expect(api.requests[1].expected_session_revision).toBe(2)
+    expect(screen.queryByText('会话版本冲突')).not.toBeInTheDocument()
+    expect(api.fetcher.mock.calls.some(([url]) => url.endsWith('/commit'))).toBe(false)
+  })
+
+  it('先展示冻结预览与同名影响，取消不写入，再次明确确认才保存', async () => {
+    const api = server({ draft: true })
+    const confirm = vi.fn((_message: string) => {
+      expect(api.fetcher.mock.calls.some(([url]) => url.endsWith('/commit-preview'))).toBe(true)
+      expect(api.fetcher.mock.calls.some(([url]) => url.endsWith('/commit'))).toBe(false)
+      return false
+    })
+    vi.stubGlobal('confirm', confirm)
+    render(<AgentPanel {...props} />); await open(); send('生成平均价差')
+    const save = await screen.findByRole('button', { name: '确认保存指标' })
+    await waitFor(() => expect(save).toBeEnabled())
+    fireEvent.click(save)
+    await waitFor(() => expect(confirm).toHaveBeenCalledOnce())
+    expect(confirm.mock.calls[0][0]).toContain(api.definition.name)
+    expect(confirm.mock.calls[0][0]).toContain(api.definition.expression)
+    expect(confirm.mock.calls[0][0]).toContain('同名指标')
+    expect(confirm.mock.calls[0][0]).toContain('不会覆盖')
+    expect(api.fetcher.mock.calls.filter(([url]) => url.endsWith('/commit'))).toHaveLength(0)
+    await waitFor(() => expect(save).toBeEnabled())
+    confirm.mockReturnValue(true)
+    fireEvent.click(save)
+    await screen.findByRole('button', { name: '已保存' })
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(api.fetcher.mock.calls.filter(([url]) => url.endsWith('/commit-preview'))).toHaveLength(2)
+    expect(api.fetcher.mock.calls.filter(([url]) => url.endsWith('/commit'))).toHaveLength(1)
+  })
+
   it.each([false, true])('保存成功回执直接返回或恢复后，宿主目录只刷新一次，回执丢失=%s', async lost => {
     const api = server({ draft: true }), committed = vi.fn()
     let saved = false, writes = 0
@@ -151,6 +214,7 @@ describe('AgentPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认保存指标' }))
     expect(await screen.findByRole('button', { name: '已保存' })).toBeDisabled()
     expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]); expect(applied.size).toBe(1)
+    expect(window.confirm).toHaveBeenCalledTimes(1)
     expect(api.fetcher.mock.calls.filter(([url]) => url.endsWith('/commit-preview'))).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: '关闭 AI 助手' })); await open()
     expect(await screen.findByRole('button', { name: '已保存' })).toBeDisabled()
@@ -290,6 +354,7 @@ describe('AgentPanel', () => {
     await waitFor(() => expect(committed).toHaveBeenCalledOnce())
     const preview = api.fetcher.mock.calls.find(([url]) => url.endsWith('/commit-preview'))
     expect(JSON.parse(String(preview?.[1]?.body)).definition).toEqual(api.definition)
+    for (const output of outputs) expect(vi.mocked(window.confirm).mock.calls[0][0]).toContain(`${output.label} = ${output.expression}`)
   })
   it('重新挂载恢复消息，不重新发送或保存研究数据到浏览器', async () => {
     const api = server(); const view = render(<AgentPanel {...props} />); await open(); send('解释指标')

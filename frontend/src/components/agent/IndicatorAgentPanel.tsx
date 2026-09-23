@@ -150,14 +150,25 @@ function IndicatorArtifacts({ pageContext, onApplyDraft, onCommitted, onPreview,
         const target = (pageContext.calculation as { targets?: Array<{ kind: string; product_id: string }> }).targets?.[0]
         const preview = await previewAgentCommit(session.session_id, { draft_revision: draft.draft_revision, definition: draft.definition, ...(target ? { target } : {}), page_context: pageContext })
         if (!mounted.current) return
-        const confirmationId = String(preview.confirmation_id || '')
-        if (!confirmationId) throw new Error(s('agent.confirmationMissing'))
-        attempt = { request: { request_id: messageId(), confirmation_id: confirmationId, definition_hash: preview.definition_hash || draft.definition_hash, draft_revision: draft.draft_revision, confirmed: true } }
+        chat.acceptSessionRevision(preview.session_id, preview.session_revision)
+        if (!preview.confirmation_id || !preview.definition || preview.preview_status !== 'valid' || preview.impact?.action !== 'create') throw new Error(s('agent.confirmationMissing'))
+        const frozen = preview.definition, impact = preview.impact
+        const formula = frozen.result_kind === 'time_series'
+          ? (frozen.series_outputs || []).map(output => `${output.label || output.id} = ${output.expression}`).join('\n')
+          : frozen.expression
+        // The server has frozen this preview. A second human action authorizes its write.
+        if (!window.confirm(s('agent.saveImpact', { name: impact.name, formula,
+          target: impact.target?.name || impact.target?.product_id || s('agent.saveWithoutTarget'),
+          period: (pageContext.calculation.period as string) || s('agent.unrestricted'), asOf: (pageContext.calculation.as_of as string) || s('agent.unrestricted'),
+          impact: impact.name_conflict_indicator_id ? s('agent.saveNameConflict') : '',
+        }))) return
+        attempt = { request: { request_id: messageId(), confirmation_id: preview.confirmation_id, definition_hash: preview.definition_hash, draft_revision: preview.draft_revision, confirmed: true } }
         commits.set(commitKey, attempt)
       }
       const result = await commitAgentDraft(session.session_id, attempt.request)
       attempt.result = result
       if (!mounted.current) return
+      if (typeof result.session_id === 'string' && typeof result.session_revision === 'number') chat.acceptSessionRevision(result.session_id, result.session_revision)
       setActionFeedback(key, { text: result.revision ? s('agent.savedRevision', { revision: String(result.revision) }) : s('agent.indicatorSaved'), saved: true })
       chat.refresh(); onCommitted?.()
     } catch (reason) {

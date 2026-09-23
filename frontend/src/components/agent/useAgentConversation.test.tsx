@@ -45,6 +45,29 @@ function setup(snapshot: Partial<AgentSession>, events: AgentEvent[] = [], failH
 afterEach(() => { cleanup(); sessionStorage.clear(); Events.instances = []; vi.unstubAllGlobals() })
 const connected = async () => { await waitFor(() => expect(Events.instances.some(source => !source.closed)).toBe(true)); return Events.instances.find(source => !source.closed)! }
 
+it('独立操作回执只推进所属会话版本，旧版本和其他会话不能覆盖运行与记忆', async () => {
+  const proposals = [{ proposal_id: 'pending', status: 'pending' as const, summary: '保留人工决定' }]
+  setup({ memory_proposals: proposals })
+  const { result, unmount } = renderHook(() => useAgentConversation(context, true))
+  await connected()
+  const original = result.current.session!, active = result.current.run
+  act(() => { expect(result.current.acceptSessionRevision('session', 3)).toBe(true) })
+  expect(result.current.session?.session_revision).toBe(3)
+  expect(result.current.run).toBe(active)
+  expect(result.current.session?.memory_proposals).toEqual(proposals)
+  expect(result.current.session?.page_context).toEqual(original.page_context)
+  act(() => {
+    expect(result.current.acceptSessionRevision('other-session', 100)).toBe(false)
+    expect(result.current.acceptSessionRevision('session', 2)).toBe(false)
+    expect(result.current.acceptSessionRevision('session', Number.NaN)).toBe(false)
+    expect(result.current.acceptSession(original)).toBe(false)
+  })
+  expect(result.current.session?.session_revision).toBe(3)
+  const accept = result.current.acceptSessionRevision
+  unmount()
+  expect(accept('session', 4)).toBe(false)
+})
+
 it.each(['SSE', 'poll'] as const)('通过%s收到终态后恢复提案和引用来源，重复通知不重复读取', async transport => {
   const proposal = { proposal_id: 'proposal', status: 'pending', summary: '以后请用中文回答。' }
   const memory = { memory_id: 'memory', text: '使用简洁中文', version: 1 }

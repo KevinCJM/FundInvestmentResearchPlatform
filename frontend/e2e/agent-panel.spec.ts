@@ -119,7 +119,7 @@ test('图片不可用时仍能通过文字和键盘打开关闭', async ({ page 
   await expect(launcher).toBeFocused()
 })
 
-async function agentApi(page: Page, options: { delay?: boolean; running?: boolean; model?: string; loseCommitReply?: boolean; loseMessageReply?: boolean; memory?: boolean; loseMemoryReply?: 'accept' | 'reject' | 'revoke' } = {}) {
+async function agentApi(page: Page, options: { delay?: boolean; running?: boolean; model?: string; loseCommitReply?: boolean; loseMessageReply?: boolean; memory?: boolean; loseMemoryReply?: 'accept' | 'reject' | 'revoke'; nameConflict?: boolean } = {}) {
   let revision = 0, context: Record<string, unknown> = {}, run: Record<string, any> | null = null
   let sessionId = 's', sessionCount = 0
   let draft: Record<string, unknown> | null = null
@@ -199,12 +199,13 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
     if (path.includes('/runs/')) return route.fulfill({ json: run })
     if (path.endsWith('/commit-preview')) {
       expect(route.request().postDataJSON()).not.toHaveProperty('target')
-      return route.fulfill({ json: { confirmation_id: 'c', definition_hash: 'hash' } })
+      revision++
+      return route.fulfill({ json: { session_id: sessionId, session_revision: revision, confirmation_id: 'c', definition_hash: 'hash', draft_revision: 1, definition, preview_status: 'valid', impact: { action: 'create', name: definition.name, context_kind: 'single_product', target: null, name_conflict_indicator_id: options.nameConflict ? 'existing' : null } } })
     }
     if (path.endsWith('/commit')) {
-      saved = true; commitWrites++
+      saved = true; commitWrites++; revision++
       if (options.loseCommitReply) return route.abort('failed')
-      return route.fulfill({ json: { indicator_id: 'i', revision: 1 } })
+      return route.fulfill({ json: { session_id: sessionId, session_revision: revision, indicator_id: 'i', revision: 1 } })
     }
     if (path.endsWith('/memory/revoke')) {
       memoryDecisions.push('revoke')
@@ -436,6 +437,7 @@ for (const recovery of ['重开浮窗', '刷新页面']) test(`保存回执丢�
   await input.fill('生成平均价差'); await page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(page.getByText('请确认是交易价格还是总市值？', { exact: true })).toBeVisible()
   await input.fill('使用交易价格'); await page.getByRole('button', { name: '发送', exact: true }).click()
+  page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '确认保存指标', exact: true }).click()
   await expect(page.getByRole('region', { name: '本轮指标草稿' }).getByRole('alert')).toBeVisible()
   if (recovery === '刷新页面') {
@@ -482,6 +484,7 @@ test('保存响应丢失后关闭重开再保存只创建一次', async ({ page 
   await expect(page.getByText('请确认是交易价格还是总市值？', { exact: true })).toBeVisible()
   await input.fill('使用交易价格'); await page.getByRole('button', { name: '发送', exact: true }).click()
   const save = page.getByRole('button', { name: '确认保存指标', exact: true })
+  page.once('dialog', dialog => dialog.accept())
   await save.click()
   await expect(page.getByRole('region', { name: '本轮指标草稿' }).getByRole('alert')).toBeVisible()
   await page.getByRole('button', { name: '关闭 AI 助手', exact: true }).click()
@@ -732,7 +735,7 @@ test('只展示校验通过的草稿，设计中、失败及失效草稿在恢�
 })
 
 test('未选产品可多轮讨论、生成公式并由人类保存', async ({ page }) => {
-  await openStudio(page); const api = await agentApi(page)
+  await openStudio(page); const api = await agentApi(page, { nameConflict: true })
   await page.getByRole('button', { name: '打开 AI 助手' }).click()
   const input = page.getByRole('textbox', { name: '发送消息' })
   await input.fill('我想算每天最高与最低市场价值之差的平均值')
@@ -743,10 +746,31 @@ test('未选产品可多轮讨论、生成公式并由人类保存', async ({ pa
   await page.getByRole('button', { name: '查看完整公式（1 个输出）', exact: true }).click()
   await expect(page.getByText(api.definition.expression, { exact: true })).toBeVisible()
   expect(api.saved()).toBe(false)
+  const pending = page.waitForEvent('dialog')
+  const click = page.getByRole('button', { name: '确认保存指标' }).click()
+  const dialog = await pending
+  expect(dialog.type()).toBe('confirm')
+  expect(dialog.message()).toContain(api.definition.name)
+  expect(dialog.message()).toContain(api.definition.expression)
+  expect(dialog.message()).toContain('同名指标')
+  expect(dialog.message()).toContain('不会覆盖')
+  expect(api.commitWrites()).toBe(0)
+  await dialog.dismiss(); await click
+  expect(api.saved()).toBe(false)
+  expect(api.commitWrites()).toBe(0)
+  await input.fill('取消保存后继续解释这个口径')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect.poll(() => api.requests.length).toBe(3)
+  expect(api.requests[2].expected_session_revision).toBe(3)
+  await expect(page.getByRole('button', { name: '确认保存指标' })).toBeEnabled()
+  await expect(page.getByText('会话版本冲突', { exact: true })).toHaveCount(0)
+  page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '确认保存指标' }).click()
-  await expect(page.getByRole('status').filter({ hasText: '指标已保存' })).toBeVisible()
+  const savedCard = page.getByRole('region', { name: '本轮指标草稿' }).filter({ has: page.getByRole('button', { name: '已保存', exact: true }) })
+  await expect(savedCard.getByRole('status')).toBeVisible()
   expect(api.saved()).toBe(true)
-  await expect(page.getByRole('region', { name: '本轮指标草稿' }).getByRole('status')).toContainText('指标已保存')
+  await expect(savedCard.getByRole('status')).toContainText('指标已保存')
+  expect(api.commitWrites()).toBe(1)
   await expectCloseReachable(page)
 })
 
