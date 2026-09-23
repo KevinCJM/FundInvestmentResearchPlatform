@@ -16,7 +16,7 @@ const messages: AgentEvent[] = [
 const conversation = {
   session: { session_id: 'session' }, run: { run_id: 'run', status: 'completed', phase: 'thinking' }, messages, draft,
   activity: [{ seq: 1, type: 'tool.completed', run_id: 'run', data: { tool: 'metrics.validate', status: 'ok', duration_ms: 12 } }],
-  busy: false, sending: false, error: '后端原始错误', preview: null, setError: vi.fn(), send: vi.fn(),
+  busy: false, sending: false, error: '后端原始错误', preview: null, setError: vi.fn(), send: vi.fn(), acceptSessionRevision: vi.fn(),
 }
 vi.mock('./useAgentConversation', async importOriginal => ({ ...await importOriginal<typeof import('./useAgentConversation')>(), default: () => conversation }))
 afterEach(async () => { cleanup(); vi.unstubAllGlobals(); conversation.run.status = 'completed'; conversation.send.mockClear(); await i18n.changeLanguage('zh-CN') })
@@ -25,7 +25,7 @@ describe('AgentPanel localization', () => {
   it('英文保存确认展示冻结名称、全部通道和同名影响，取消不提交', async () => {
     await i18n.changeLanguage('en-US')
     const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/commit-preview')
-      ? { confirmation_id: 'c', definition_hash: 'hash', draft_revision: 1, definition: draft.definition, preview_status: 'valid',
+      ? { session_id: 'session', session_revision: 2, confirmation_id: 'c', definition_hash: 'hash', draft_revision: 1, definition: draft.definition, preview_status: 'valid',
           impact: { action: 'create', name: '用户命名', context_kind: 'single_product', target: null, name_conflict_indicator_id: 'existing' } }
       : { configured: true } }))
     const confirm = vi.fn(() => false)

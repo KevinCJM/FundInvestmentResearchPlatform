@@ -3,6 +3,8 @@ import type { AgentPreview } from './agent'
 import type { IndicatorDraft } from './customIndicators'
 
 export type AgentCommitPreview = {
+  session_id: string
+  session_revision: number
   confirmation_id: string
   definition_hash: string
   draft_revision: number

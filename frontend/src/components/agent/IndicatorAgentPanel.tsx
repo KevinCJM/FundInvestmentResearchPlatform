@@ -154,6 +154,7 @@ function IndicatorArtifacts({ pageContext, onApplyDraft, onCommitted, onPreview,
         const target = (pageContext.calculation as { targets?: Array<{ kind: string; product_id: string }> }).targets?.[0]
         const preview = await previewAgentCommit(session.session_id, { draft_revision: draft.draft_revision, definition: draft.definition, ...(target ? { target } : {}), page_context: pageContext })
         if (!mounted.current) return
+        chat.acceptSessionRevision(preview.session_id, preview.session_revision)
         if (!preview.confirmation_id || !preview.definition || preview.preview_status !== 'valid' || preview.impact?.action !== 'create') throw new Error(s('agent.confirmationMissing'))
         const frozen = preview.definition, impact = preview.impact
         const formula = frozen.result_kind === 'time_series'
@@ -171,6 +172,7 @@ function IndicatorArtifacts({ pageContext, onApplyDraft, onCommitted, onPreview,
       const result = await commitAgentDraft(session.session_id, attempt.request)
       attempt.result = result
       if (!mounted.current) return
+      if (typeof result.session_id === 'string' && typeof result.session_revision === 'number') chat.acceptSessionRevision(result.session_id, result.session_revision)
       setActionFeedback(key, { text: result.revision ? s('agent.savedRevision', { revision: String(result.revision) }) : s('agent.indicatorSaved'), saved: true })
       chat.refresh(); onCommitted?.()
     } catch (reason) {

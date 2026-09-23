@@ -197,12 +197,13 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
     if (path.includes('/runs/')) return route.fulfill({ json: run })
     if (path.endsWith('/commit-preview')) {
       expect(route.request().postDataJSON()).not.toHaveProperty('target')
-      return route.fulfill({ json: { confirmation_id: 'c', definition_hash: 'hash', draft_revision: 1, definition, preview_status: 'valid', impact: { action: 'create', name: definition.name, context_kind: 'single_product', target: null, name_conflict_indicator_id: options.nameConflict ? 'existing' : null } } })
+      revision++
+      return route.fulfill({ json: { session_id: sessionId, session_revision: revision, confirmation_id: 'c', definition_hash: 'hash', draft_revision: 1, definition, preview_status: 'valid', impact: { action: 'create', name: definition.name, context_kind: 'single_product', target: null, name_conflict_indicator_id: options.nameConflict ? 'existing' : null } } })
     }
     if (path.endsWith('/commit')) {
-      saved = true; commitWrites++
+      saved = true; commitWrites++; revision++
       if (options.loseCommitReply) return route.abort('failed')
-      return route.fulfill({ json: { indicator_id: 'i', revision: 1 } })
+      return route.fulfill({ json: { session_id: sessionId, session_revision: revision, indicator_id: 'i', revision: 1 } })
     }
     if (path.endsWith('/memory/revoke')) {
       memoryDecisions.push('revoke')
@@ -755,11 +756,19 @@ test('未选产品可多轮讨论、生成公式并由人类保存', async ({ pa
   await dialog.dismiss(); await click
   expect(api.saved()).toBe(false)
   expect(api.commitWrites()).toBe(0)
+  await input.fill('取消保存后继续解释这个口径')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect.poll(() => api.requests.length).toBe(3)
+  expect(api.requests[2].expected_session_revision).toBe(3)
+  await expect(page.getByRole('button', { name: '确认保存指标' })).toBeEnabled()
+  await expect(page.getByText('会话版本冲突', { exact: true })).toHaveCount(0)
   page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '确认保存指标' }).click()
-  await expect(page.getByRole('status').filter({ hasText: '指标已保存' })).toBeVisible()
+  const savedCard = page.getByRole('region', { name: '本轮指标草稿' }).filter({ has: page.getByRole('button', { name: '已保存', exact: true }) })
+  await expect(savedCard.getByRole('status')).toBeVisible()
   expect(api.saved()).toBe(true)
-  await expect(page.getByRole('region', { name: '本轮指标草稿' }).getByRole('status')).toContainText('指标已保存')
+  await expect(savedCard.getByRole('status')).toContainText('指标已保存')
+  expect(api.commitWrites()).toBe(1)
   await expectCloseReachable(page)
 })
 
