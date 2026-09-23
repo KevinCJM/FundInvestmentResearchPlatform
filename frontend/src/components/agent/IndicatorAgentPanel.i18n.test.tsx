@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentPanel from './IndicatorAgentPanel'
 import { i18n } from '../../i18n/runtime'
@@ -22,6 +22,25 @@ vi.mock('./useAgentConversation', async importOriginal => ({ ...await importOrig
 afterEach(async () => { cleanup(); vi.unstubAllGlobals(); conversation.run.status = 'completed'; conversation.send.mockClear(); await i18n.changeLanguage('zh-CN') })
 
 describe('AgentPanel localization', () => {
+  it('英文保存确认展示冻结名称、全部通道和同名影响，取消不提交', async () => {
+    await i18n.changeLanguage('en-US')
+    const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.endsWith('/commit-preview')
+      ? { confirmation_id: 'c', definition_hash: 'hash', draft_revision: 1, definition: draft.definition, preview_status: 'valid',
+          impact: { action: 'create', name: '用户命名', context_kind: 'single_product', target: null, name_conflict_indicator_id: 'existing' } }
+      : { configured: true } }))
+    const confirm = vi.fn(() => false)
+    vi.stubGlobal('fetch', fetcher); vi.stubGlobal('confirm', confirm)
+    render(<AgentPanel pageContext={{ page: 'indicator-studio', page_instance_id: 'test', context_revision: 0, view_state: 'inherit', calculation: { context_kind: 'single_product', period: '1Y', targets: [] } }} draft={{}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open AI Assistant' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Save indicator' }))
+    await waitFor(() => expect(confirm).toHaveBeenCalledOnce())
+    const text = vi.mocked(window.confirm).mock.calls[0][0]
+    expect(text).toContain('An indicator with this name already exists')
+    expect(text).toContain('用户命名')
+    expect(text).toContain('用户通道 = mean(rolling_window(returns,20))')
+    expect(fetcher.mock.calls.some(([url]) => url.endsWith('/commit'))).toBe(false)
+  })
+
   it('英文继续按钮保持服务端识别的恢复命令', async () => {
     await i18n.changeLanguage('en-US')
     conversation.run.status = 'paused'

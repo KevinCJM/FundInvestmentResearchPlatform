@@ -119,7 +119,7 @@ test('图片不可用时仍能通过文字和键盘打开关闭', async ({ page 
   await expect(launcher).toBeFocused()
 })
 
-async function agentApi(page: Page, options: { delay?: boolean; running?: boolean; model?: string; loseCommitReply?: boolean; loseMessageReply?: boolean; memory?: boolean; loseMemoryReply?: 'accept' | 'reject' | 'revoke' } = {}) {
+async function agentApi(page: Page, options: { delay?: boolean; running?: boolean; model?: string; loseCommitReply?: boolean; loseMessageReply?: boolean; memory?: boolean; loseMemoryReply?: 'accept' | 'reject' | 'revoke'; nameConflict?: boolean } = {}) {
   let revision = 0, context: Record<string, unknown> = {}, run: Record<string, any> | null = null
   let sessionId = 's', sessionCount = 0
   let draft: Record<string, unknown> | null = null
@@ -197,7 +197,7 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
     if (path.includes('/runs/')) return route.fulfill({ json: run })
     if (path.endsWith('/commit-preview')) {
       expect(route.request().postDataJSON()).not.toHaveProperty('target')
-      return route.fulfill({ json: { confirmation_id: 'c', definition_hash: 'hash' } })
+      return route.fulfill({ json: { confirmation_id: 'c', definition_hash: 'hash', draft_revision: 1, definition, preview_status: 'valid', impact: { action: 'create', name: definition.name, context_kind: 'single_product', target: null, name_conflict_indicator_id: options.nameConflict ? 'existing' : null } } })
     }
     if (path.endsWith('/commit')) {
       saved = true; commitWrites++
@@ -434,6 +434,7 @@ for (const recovery of ['重开浮窗', '刷新页面']) test(`保存回执丢�
   await input.fill('生成平均价差'); await page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(page.getByText('请确认是交易价格还是总市值？', { exact: true })).toBeVisible()
   await input.fill('使用交易价格'); await page.getByRole('button', { name: '发送', exact: true }).click()
+  page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '确认保存指标', exact: true }).click()
   await expect(page.getByRole('region', { name: '本轮指标草稿' }).getByRole('alert')).toBeVisible()
   if (recovery === '刷新页面') {
@@ -480,6 +481,7 @@ test('保存响应丢失后关闭重开再保存只创建一次', async ({ page 
   await expect(page.getByText('请确认是交易价格还是总市值？', { exact: true })).toBeVisible()
   await input.fill('使用交易价格'); await page.getByRole('button', { name: '发送', exact: true }).click()
   const save = page.getByRole('button', { name: '确认保存指标', exact: true })
+  page.once('dialog', dialog => dialog.accept())
   await save.click()
   await expect(page.getByRole('region', { name: '本轮指标草稿' }).getByRole('alert')).toBeVisible()
   await page.getByRole('button', { name: '关闭 AI 助手', exact: true }).click()
@@ -730,7 +732,7 @@ test('只展示校验通过的草稿，设计中、失败及失效草稿在恢�
 })
 
 test('未选产品可多轮讨论、生成公式并由人类保存', async ({ page }) => {
-  await openStudio(page); const api = await agentApi(page)
+  await openStudio(page); const api = await agentApi(page, { nameConflict: true })
   await page.getByRole('button', { name: '打开 AI 助手' }).click()
   const input = page.getByRole('textbox', { name: '发送消息' })
   await input.fill('我想算每天最高与最低市场价值之差的平均值')
@@ -741,6 +743,19 @@ test('未选产品可多轮讨论、生成公式并由人类保存', async ({ pa
   await page.getByRole('button', { name: '查看完整公式（1 个输出）', exact: true }).click()
   await expect(page.getByText(api.definition.expression, { exact: true })).toBeVisible()
   expect(api.saved()).toBe(false)
+  const pending = page.waitForEvent('dialog')
+  const click = page.getByRole('button', { name: '确认保存指标' }).click()
+  const dialog = await pending
+  expect(dialog.type()).toBe('confirm')
+  expect(dialog.message()).toContain(api.definition.name)
+  expect(dialog.message()).toContain(api.definition.expression)
+  expect(dialog.message()).toContain('同名指标')
+  expect(dialog.message()).toContain('不会覆盖')
+  expect(api.commitWrites()).toBe(0)
+  await dialog.dismiss(); await click
+  expect(api.saved()).toBe(false)
+  expect(api.commitWrites()).toBe(0)
+  page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '确认保存指标' }).click()
   await expect(page.getByRole('status').filter({ hasText: '指标已保存' })).toBeVisible()
   expect(api.saved()).toBe(true)
