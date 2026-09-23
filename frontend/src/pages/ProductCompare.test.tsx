@@ -1,11 +1,13 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ProductCompare from './ProductCompare'
 import { cppAotAudit } from '../test/cppAotFixture'
 import { evaluateCustomIndicators, getCustomIndicatorMeta, listCustomIndicators } from '../services/customIndicators'
 import type { IndicatorDefinition, MetricPresentation } from '../services/customIndicators'
+const testPit = vi.hoisted(() => ({ day: null as string | null }))
+vi.mock('../app/ResearchContext', () => ({ useResearchDay: () => testPit.day, useResearchContextIdentity: () => `fixture-${testPit.day}` }))
 
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }))
 vi.mock('../services/customIndicators', () => ({
@@ -118,8 +120,8 @@ describe('ProductCompare custom indicators', () => {
     vi.mocked(getCustomIndicatorMeta).mockResolvedValue({ periods: [{ value: '1M', label: '近 1 月', description: '运行周期' }, { value: '1Y', label: '近 1 年', description: '运行周期' }] } as any)
     vi.mocked(evaluateCustomIndicators).mockResolvedValue({
       results: [
-        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' }, period: '1Y', value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' } },
-        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '159915.SZ', name: '创业板ETF' }, period: '1Y', value: null, status: 'warning', warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '样本不足' }], window: { requested_as_of: null, effective_as_of: '2026-01-06', start_date: null, end_date: '2026-01-06', observation_count: 10, data_latest_date: '2026-01-06' } },
+        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '510300.SH', name: '沪深300ETF' }, period: '1Y', value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: null, start_date: '2025-01-06', end_date: '2026-01-06', observation_count: 250, data_latest_date: '2026-01-06' } },
+        { indicator_id: annualIndicator.id, indicator_revision: annualIndicator.revision, indicator_name: annualIndicator.name, presentation: annualPresentation, target: { kind: 'etf', product_id: '159915.SZ', name: '创业板ETF' }, period: '1Y', value: null, status: 'warning', warnings: [{ code: 'INSUFFICIENT_SAMPLE', message: '样本不足' }], window: { requested_as_of: null, effective_as_of: null, start_date: null, end_date: '2026-01-06', observation_count: 10, data_latest_date: '2026-01-06' } },
       ], summary: { total: 2, ok: 1, warning: 1, error: 0 }, cache: { hits: 0, misses: 2 },
       execution: compareResponse('510300.SH').execution,
     })
@@ -145,7 +147,7 @@ describe('ProductCompare custom indicators', () => {
     expect(screen.getByText('不可计算')).toBeInTheDocument()
     expect(screen.getByText('样本不足')).toBeInTheDocument()
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith({
-      indicator_ids: ['total-return'],
+      indicator_refs: [{ indicator_id: 'total-return', indicator_revision: 2 }],
       targets: [{ kind: 'etf', product_id: '510300.SH' }, { kind: 'etf', product_id: '159915.SZ' }],
       period: '1Y',
       as_of: undefined,
@@ -187,7 +189,7 @@ describe('ProductCompare custom indicators', () => {
     render(<MemoryRouter initialEntries={['/product-compare?kind=etf&ids=510300.SH,159915.SZ']}><ProductCompare /></MemoryRouter>)
 
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith(expect.objectContaining({
-      indicator_ids: ['total-return'],
+      indicator_refs: [{ indicator_id: 'total-return', indicator_revision: 2 }],
       targets: [{ kind: 'etf', product_id: '510300.SH' }, { kind: 'etf', product_id: '159915.SZ' }],
       period: '1Y',
     })))
@@ -197,18 +199,18 @@ describe('ProductCompare custom indicators', () => {
     await user.click(screen.getByRole('checkbox', { name: /月度波动率/ }))
 
     await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenCalledWith(expect.objectContaining({
-      indicator_ids: ['total-return', 'monthly-volatility'],
+      indicator_refs: [{ indicator_id: 'total-return', indicator_revision: 2 }, { indicator_id: 'monthly-volatility', indicator_revision: 2 }],
       period: '1Y',
     })))
     await user.selectOptions(await screen.findByLabelText('月度波动率计算区间'), '1M')
 
     await waitFor(() => {
       expect(evaluateCustomIndicators).toHaveBeenCalledWith(expect.objectContaining({
-        indicator_ids: ['total-return'],
+        indicator_refs: [{ indicator_id: 'total-return', indicator_revision: 2 }],
         period: '1Y',
       }))
       expect(evaluateCustomIndicators).toHaveBeenCalledWith(expect.objectContaining({
-        indicator_ids: ['monthly-volatility'],
+        indicator_refs: [{ indicator_id: 'monthly-volatility', indicator_revision: 2 }],
         period: '1M',
       }))
     })
@@ -270,5 +272,208 @@ describe('ProductCompare custom indicators', () => {
       await user.click(screen.getByRole('button', { name: /返回手动构建大类/ }))
     })
     expect(await screen.findByText('手动构建大类来源页')).toBeInTheDocument()
+  })
+})
+
+describe('ProductCompare AI 助手接入', () => {
+  interface AgentCapture { sessions: Array<Record<string, any>>; messages: Array<Record<string, any>> }
+
+  const SENTINEL = 987654.321
+
+  /** Business calls plus the shared agent endpoints; the compare curves carry a sentinel value. */
+  function compareFetch(ids: string[], capture: AgentCapture, gate?: Promise<void>) {
+    let sessionCount = 0
+    let lastRun: Record<string, any> | null = null
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const path = new URL(url, 'http://localhost').pathname
+      if (path === '/api/agent/meta') return { ok: true, json: async () => ({ configured: true, model: 'fixture-model' }) }
+      if (path === '/api/agent/sessions' && init?.method === 'POST') {
+        sessionCount += 1
+        const body = JSON.parse(String(init?.body)); capture.sessions.push(body)
+        return { ok: true, json: async () => ({ session_id: `session-${sessionCount}`, session_revision: 0, page_context: body.page_context }) }
+      }
+      if (path.endsWith('/messages')) {
+        const body = JSON.parse(String(init?.body)); capture.messages.push(body)
+        if (gate && capture.messages.length === 1) await gate
+        lastRun = { run_id: `run-${capture.messages.length}`, session_id: `session-${sessionCount}`, message_id: body.message_id, session_revision: 1, run_revision: 1, status: 'completed', phase: 'thinking',
+          response: { session_id: `session-${sessionCount}`, session_revision: 1, reply: { text: `第 ${capture.messages.length} 次回复` } } }
+        return { ok: true, status: 202, json: async () => lastRun }
+      }
+      if (path.endsWith('/events')) return { ok: true, json: async () => ({ items: [], has_more: false, last_seq: 0, next_event_seq: 1 }) }
+      if (path.includes('/runs/')) return { ok: true, json: async () => lastRun }
+      if (url.includes('/compare-analysis')) {
+        const response = compareResponse(ids.find(id => url.includes(id)) ?? ids[0] ?? '510300.SH')
+        response.ranges.performance.normalized_nav = [{ date: '2026-01-02', value: SENTINEL }, { date: '2026-01-06', value: SENTINEL }]
+        return { ok: true, json: async () => response }
+      }
+      const id = ids.find(candidate => url.includes(candidate)) ?? ids[0] ?? '510300.SH'
+      return { ok: true, json: async () => productResponse(id, id) }
+    })
+  }
+
+  async function openPanel() {
+    fireEvent.click(screen.getByRole('button', { name: '打开 AI 助手' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: '发送消息' })).toBeEnabled())
+    return screen.getByRole('textbox', { name: '发送消息' })
+  }
+
+  /** Sync change+click: the panel can re-render while the model metadata resolves. */
+  async function sendMessage(text: string) {
+    fireEvent.change(screen.getByRole('textbox', { name: '发送消息' }), { target: { value: text } })
+    await waitFor(() => expect(screen.getByRole('textbox', { name: '发送消息' })).toHaveValue(text))
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    testPit.day = null
+    sessionStorage.clear()
+    window.localStorage.clear()
+    vi.stubGlobal('EventSource', undefined)
+  })
+
+  it('比较保留全局研究日，矩阵显式截止日独立；指标回包不改变运行上下文', async () => {
+    testPit.day = '2019-12-31'
+    const capture: AgentCapture = { sessions: [], messages: [] }
+    vi.stubGlobal('fetch', compareFetch(['510300.SH'], capture))
+    let finish!: (value: any) => void
+    vi.mocked(evaluateCustomIndicators).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    render(<MemoryRouter initialEntries={['/product-compare?ids=510300.SH']}><ProductCompare /></MemoryRouter>)
+    await screen.findByText('基础信息对比')
+    fireEvent.change(screen.getByLabelText('截止日'), { target: { value: '2020-12-31' } })
+    await waitFor(() => expect(evaluateCustomIndicators).toHaveBeenLastCalledWith(expect.objectContaining({ as_of: '2020-12-31' })))
+    await openPanel(); await sendMessage('比较与指标日期各是什么？')
+    await waitFor(() => expect(capture.messages).toHaveLength(1))
+    expect(capture.messages[0].page_snapshot.sections.request).toMatchObject({ as_of: '2019-12-31', metrics_as_of: '2020-12-31' })
+    const frozen = capture.messages[0].page_context
+    await act(async () => finish({ results: [{ indicator_id: annualIndicator.id, indicator_revision: 2, target: { kind: 'etf', product_id: '510300.SH' }, value: 0, status: 'ok', window: { effective_as_of: '2020-12-30' } }] }))
+    await sendMessage('保留当前口径')
+    await waitFor(() => expect(capture.messages).toHaveLength(2))
+    expect(capture.messages[1].page_context).toEqual(frozen)
+    expect(capture.messages[1].page_snapshot.sections.results.refs.metrics).toMatchObject({ status: 'ready', frozen_request: { requests: [{ as_of: '2020-12-31', indicator_refs: [{ indicator_id: annualIndicator.id, indicator_revision: 2 }] }] } })
+    expect(screen.getAllByTestId('chart').length).toBeGreaterThan(0)
+    vi.mocked(evaluateCustomIndicators).mockResolvedValue({ results: [] } as any)
+  })
+
+  it('发送时冻结混合类型、三个独立区间、滚动窗口与实际费用，且不携带净值曲线数组', async () => {
+    const capture: AgentCapture = { sessions: [], messages: [] }
+    const ids = ['510300.SH', '024011.OF']
+    vi.stubGlobal('fetch', compareFetch(ids, capture))
+    render(<MemoryRouter initialEntries={['/product-compare?ids=510300.SH,024011.OF&kinds=etf,fund']}><ProductCompare /></MemoryRouter>)
+    await screen.findByText('基础信息对比')
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some((call) => String(call[0]).includes('/compare-analysis'))).toBe(true))
+    expect(screen.getAllByRole('button', { name: '打开 AI 助手' })).toHaveLength(1)
+
+    await openPanel()
+    await sendMessage('这两只产品在不同区间下的表现差异是什么？')
+    await waitFor(() => expect(capture.messages).toHaveLength(1))
+    expect(capture.messages[0].page_snapshot).toMatchObject({
+      version: 1,
+      snapshot_id: expect.stringMatching(/^snap-[0-9a-f]{32}$/),
+      captured_at: expect.any(String),
+      page: 'product-compare',
+      sections: {
+        request: {
+          targets: [
+            { kind: 'etf', product_id: '510300.SH', management_fee: 0.5, custody_fee: 0.1 },
+            { kind: 'fund', product_id: '024011.OF', management_fee: 0.5, custody_fee: 0.1 },
+          ],
+          ranges: {
+            performance: { start_date: '2026-01-02', end_date: '2026-01-06' },
+            risk: { start_date: '2026-01-02', end_date: '2026-01-06' },
+            efficiency: { start_date: '2026-01-02', end_date: '2026-01-06' },
+          },
+          rolling_window_days: 2,
+          indicators: [{ indicator_id: 'total-return', indicator_revision: 2, period: '1Y' }],
+          as_of: null,
+          source: 'actual',
+        },
+        results: {
+          source: 'unverified_client_display',
+          displayed_source: 'instruments.products + compare-analysis',
+          refs: { compared_products: 2, ranges_resolved: true, indicator_results: expect.any(Number), demo: false },
+          note: expect.any(String),
+        },
+      },
+    })
+    expect(capture.messages[0].page_context).toMatchObject({
+      page: 'product-compare',
+      view_state: 'inherit',
+      calculation: { context_kind: 'single_product', period: '1Y', as_of: null,
+        targets: [{ kind: 'etf', product_id: '510300.SH' }, { kind: 'fund', product_id: '024011.OF' }] },
+    })
+    expect(capture.messages[0].page_context.page_instance_id).toMatch(/^product-compare:[0-9a-f]{16}$/)
+    // 曲线数组与其中的数值完全不进入快照。
+    const snapshotText = JSON.stringify(capture.messages[0])
+    expect(snapshotText).not.toContain('987654')
+    expect(snapshotText).not.toContain('normalized_nav')
+    expect(capture.messages[0].page_snapshot.sections.results.refs).not.toHaveProperty('normalized_nav')
+  })
+
+  it('demo 预览只登记虚拟来源并在面板中说明，不冒充真实产品计算', async () => {
+    const capture: AgentCapture = { sessions: [], messages: [] }
+    vi.stubGlobal('fetch', compareFetch(['DEMO50'], capture))
+    render(<MemoryRouter initialEntries={['/product-compare?kind=etf&preview=demo']}><ProductCompare /></MemoryRouter>)
+    await screen.findByText('基础信息对比')
+
+    await openPanel()
+    expect(screen.getByRole('status')).toHaveTextContent('当前页面是虚拟示例数据')
+    await sendMessage('这个页面的数据可靠吗？')
+    await waitFor(() => expect(capture.messages).toHaveLength(1))
+    const request = capture.messages[0].page_snapshot.sections.request
+    expect(request.source).toBe('demo')
+    expect(request.targets.length).toBeGreaterThan(0)
+    expect(request.targets[0]).toMatchObject({ kind: 'etf', product_id: 'DEMO50' })
+    expect(capture.messages[0].page_snapshot.sections.results.refs.demo).toBe(true)
+  })
+
+  it('没有可比较产品时不提交页面快照，聊天仍可用', async () => {
+    const capture: AgentCapture = { sessions: [], messages: [] }
+    vi.stubGlobal('fetch', compareFetch([], capture))
+    render(<MemoryRouter initialEntries={['/product-compare']}><ProductCompare /></MemoryRouter>)
+    await screen.findByText('未能加载任何产品详情。')
+
+    await openPanel()
+    await sendMessage('没有产品时能做什么？')
+    await waitFor(() => expect(capture.messages).toHaveLength(1))
+    expect(capture.messages[0]).not.toHaveProperty('page_snapshot')
+    expect(capture.messages[0].page_context.calculation.targets).toEqual([])
+  })
+
+  it('切换对比对象后进入独立实例，旧实例的迟到回复不能进入新实例', async () => {
+    const capture: AgentCapture = { sessions: [], messages: [] }
+    let release: (() => void) | undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    vi.stubGlobal('fetch', compareFetch(['510300.SH', '159915.SZ'], capture, gate))
+    function SwitchTargets() {
+      const navigate = useNavigate()
+      return <button type="button" onClick={() => navigate('/product-compare?ids=159915.SZ&kind=etf')}>切换对比对象</button>
+    }
+    render(
+      <MemoryRouter initialEntries={['/product-compare?ids=510300.SH&kind=etf']}>
+        <ProductCompare />
+        <SwitchTargets />
+      </MemoryRouter>,
+    )
+    await screen.findByText('基础信息对比')
+
+    await openPanel()
+    await sendMessage('第一组产品的问题')
+    await waitFor(() => expect(capture.messages).toHaveLength(1))
+    const firstInstance = capture.messages[0].page_context.page_instance_id
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '切换对比对象' }))
+    await waitFor(() => expect(screen.queryByText('第一组产品的问题')).not.toBeInTheDocument())
+    await act(async () => { release?.() })
+    expect(screen.queryByText('第 1 次回复')).not.toBeInTheDocument()
+
+    await openPanel()
+    await sendMessage('第二组产品的问题')
+    await waitFor(() => expect(capture.messages).toHaveLength(2))
+    expect(capture.messages[1].page_context.page_instance_id).not.toBe(firstInstance)
+    expect(capture.messages[1].page_snapshot.sections.request.targets)
+      .toEqual([{ kind: 'etf', product_id: '159915.SZ', management_fee: 0.5, custody_fee: 0.1 }])
   })
 })

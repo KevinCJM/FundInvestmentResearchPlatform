@@ -4,6 +4,7 @@ import IndicatorParameterInputs from '../components/indicator-parameters/Indicat
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
+import type { AgentPreview } from '../services/agent'
 import IndicatorGraphEditor, { type IndicatorGraphEditorHandle } from '../components/indicator-graph/IndicatorGraphEditor'
 import katex from 'katex'
 import ScalarOutputEditor from '../components/indicator-outputs/ScalarOutputEditor'
@@ -59,6 +60,8 @@ import {
 } from '../services/customIndicators'
 import { IndicatorInputDates, MetricUnavailableReason, MetricValue } from '../components/metrics/MetricDisplay'
 import { SearchDropdown } from '../components/FilterDropdown'
+import IndicatorAgentPanel from '../components/agent/IndicatorAgentPanel'
+import { buildIndicatorStudioEvidence, submittedParameterOverrides, type FrozenPreviewRequest } from '../services/agentPageEvidence'
 
 const FALLBACK_PERIODS = [
   { value: '1W', label: '近 1 周', description: '最近 5 个收益观察值' },
@@ -625,8 +628,8 @@ function isComposerArgumentValid(
     const value = Number(argument.value)
     if (!Number.isFinite(value)) return false
     if (argument.parameter.constant_kind === 'integer' && !Number.isInteger(value)) return false
-    if (argument.parameter.minimum !== undefined && value < argument.parameter.minimum) return false
-    if (argument.parameter.maximum !== undefined && value > argument.parameter.maximum) return false
+    if (argument.parameter.minimum != null && value < argument.parameter.minimum) return false
+    if (argument.parameter.maximum != null && value > argument.parameter.maximum) return false
     return true
   }
   if (argument.source === 'omitted') return Boolean(argument.parameter.optional)
@@ -1169,6 +1172,9 @@ export default function IndicatorStudio() {
   const [validation, setValidation] = useState<ValidationResponse | null>(null)
   const [results, setResults] = useState<EvaluationResult[]>([])
   const [seriesResults, setSeriesResults] = useState<TimeSeriesIndicatorResult[]>([])
+  const [agentPreview, setAgentPreview] = useState<AgentPreview | null>(null)
+  const [agentPreviewDefinition, setAgentPreviewDefinition] = useState<IndicatorDraft | null>(null)
+  const adoptedPreviewId = useRef('')
   const [runtimeParameters, setRuntimeParameters] = useState<Record<string, number>>({})
   const [parameterPending, setParameterPending] = useState(false)
   const [activeSeriesOutputId, setActiveSeriesOutputId] = useState('')
@@ -1180,6 +1186,26 @@ export default function IndicatorStudio() {
   const [asOf, setAsOf] = useState(searchParams.get('as_of') || '')
   const [mobileTab, setMobileTab] = useState<MobileTab>('library')
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(() => searchParams.get('ids') ? 'preview' : 'editor')
+  const receiveAgentPreview = React.useCallback((value: AgentPreview | null, explicit = false) => {
+    if (!explicit && value && adoptedPreviewId.current === value.preview_id) return
+    setAgentPreview(value)
+    if (!value) return
+    adoptedPreviewId.current = value.preview_id
+    const target = value.result.results[0]?.target ?? value.target
+    setTargets([{ kind: target.kind as ProductKind, product_id: target.product_id, name: target.name || target.product_id }])
+    setPeriod(value.period)
+    setAsOf(value.as_of || '')
+    setRuntimeParameters(Object.fromEntries((value.definition.parameter_schema ?? []).map(parameter => [
+      parameter.id, value.result.results[0]?.parameters?.[parameter.id] ?? parameter.default,
+    ])))
+    setAgentPreviewDefinition(value.definition)
+    previewRequestRef.current += 1
+    setPreviewing(false)
+    setResults([])
+    setSeriesResults([])
+    setError(null)
+    setMobileTab('preview'); setWorkspaceTab('preview')
+  }, [])
   const [catalogTab, setCatalogTab] = useState<CatalogTab>('variables')
   const [editorMode, setEditorMode] = useState<EditorMode>('guided')
   const [canvasPending, setCanvasPending] = useState(false)
@@ -1223,6 +1249,7 @@ export default function IndicatorStudio() {
   const validationRequestRef = useRef(0)
   const previewRequestRef = useRef(0)
   const previewContextRef = useRef('')
+  const previewProvenanceRef = useRef<FrozenPreviewRequest | null>(null)
   const composerRequestRef = useRef(0)
 
   const selectedIndicator = indicators.find((item) => item.id === selectedId) ?? null
@@ -1278,7 +1305,12 @@ export default function IndicatorStudio() {
     setComposer(null)
   }
   const activePeriod = periods.some((item) => item.value === period) ? period : periods[0]?.value || ''
-  previewContextRef.current = JSON.stringify({ draft, selectedId, targets, activePeriod, asOf, canvasPending, runtimeParameters })
+  const previewDefinition = agentPreviewDefinition ?? draft
+  const previewIsTimeSeries = previewDefinition.result_kind === 'time_series'
+  const previewReady = agentPreviewDefinition ? !loading && !!meta : hasDefinitionFormula
+  previewContextRef.current = JSON.stringify({ draft: previewDefinition, selectedId, targets, activePeriod, asOf, canvasPending, runtimeParameters })
+  const renderedPreviewContext = previewContextRef.current
+  useEffect(() => { setAgentPreviewDefinition(null); setAgentPreview(null) }, [draft, selectedId])
   const parameterSchemaKey = JSON.stringify(draft.parameter_schema ?? [])
   useEffect(() => {
     setRuntimeParameters({})
@@ -1292,6 +1324,7 @@ export default function IndicatorStudio() {
     setPreviewing(false)
     setResults([])
     setSeriesResults([])
+    setAgentPreview(null)
     setRuntimeParameters(values)
   }
   const contextIndicators = indicatorsForContext(indicators, STUDIO_CONTEXT)
@@ -2185,16 +2218,28 @@ export default function IndicatorStudio() {
       setMessage(`校验与预览最多选择 ${MAX_PREVIEW_TARGETS} 个产品，请先移除一个产品。`)
       return
     }
+    setAgentPreview(null)
     setTargets((current) => [...current, target])
     setResults([])
     setSeriesResults([])
     setMessage(`已添加预览产品（${targets.length + 1}/${MAX_PREVIEW_TARGETS}），请运行计算。`)
   }
 
+  const validatePreviewDefinition = async () => {
+    if (!agentPreviewDefinition) return validation?.valid ? validation : validate()
+    try {
+      const checked = await validateCustomIndicator(normalizeDraft(previewDefinition))
+      if (!checked.valid) setError(new Error(checked.diagnostics.map(item => item.message).join('；')))
+      return checked
+    } catch (failure) { setError(failure); return null }
+  }
+
   const preview = async () => {
-    if (parameterPending) { setMessage(s('indicatorParameters.pending')); return }
-    if (canvasPendingRef.current) { setMessage('画布尚未应用，不能预览旧公式。'); return }
-    const checked = validation?.valid ? validation : await validate()
+    if (!agentPreviewDefinition && parameterPending) { setMessage(s('indicatorParameters.pending')); return }
+    if (!agentPreviewDefinition && canvasPendingRef.current) { setMessage('画布尚未应用，不能预览旧公式。'); return }
+    const startingContext = previewContextRef.current
+    const checked = await validatePreviewDefinition()
+    if (startingContext !== previewContextRef.current) return
     if (!checked?.valid) {
       setMobileTab('editor')
       setWorkspaceTab('editor')
@@ -2208,9 +2253,10 @@ export default function IndicatorStudio() {
     }
     const previewSequence = ++previewRequestRef.current
     const previewContext = previewContextRef.current
-    const isCurrentPreview = () => previewSequence === previewRequestRef.current && previewContext === previewContextRef.current && !canvasPendingRef.current
+    const isCurrentPreview = () => previewSequence === previewRequestRef.current && previewContext === previewContextRef.current && (agentPreviewDefinition || !canvasPendingRef.current)
     try {
       setPreviewing(true)
+      setAgentPreview(null)
       setSeriesResults([])
       setError(null)
       const calculationPeriod = activePeriod
@@ -2218,7 +2264,21 @@ export default function IndicatorStudio() {
         setMessage('请选择本次预览的计算周期。')
         return
       }
-      const normalized = normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT })
+      const normalized = normalizeDraft({ ...previewDefinition, context_kind: STUDIO_CONTEXT })
+      // Frozen with the request: a later edit must never be presented as the definition behind these results.
+      // `parameters` records only the overrides this request actually submits; the server-effective
+      // values remain in each result row's own `parameters`.
+      const submitted = submittedParameterOverrides(normalized, runtimeParameters)
+      const frozenRequest: FrozenPreviewRequest = {
+        definition: normalized as unknown as Record<string, unknown>,
+        parameters: submitted,
+        parameters_submitted: submitted !== null,
+        targets: targets.map(({ kind, product_id, name }) => ({ kind, product_id, name })),
+        period: calculationPeriod,
+        as_of: asOf || null,
+        requested_at: new Date().toISOString(),
+        completed_at: null,
+      }
       if (normalized.result_kind === 'time_series') {
         const responses = await Promise.all(targets.map(({ name: _name, ...target }) => (
           evaluateTimeSeriesIndicators({
@@ -2234,6 +2294,7 @@ export default function IndicatorStudio() {
           })
         )))
         if (!isCurrentPreview()) return
+        previewProvenanceRef.current = { ...frozenRequest, completed_at: new Date().toISOString() }
         const timeSeriesResults = responses.flatMap((response) => response.results)
         setResults([])
         setSeriesResults(timeSeriesResults)
@@ -2251,6 +2312,7 @@ export default function IndicatorStudio() {
           include_series: false,
         })
         if (!isCurrentPreview()) return
+        previewProvenanceRef.current = { ...frozenRequest, completed_at: new Date().toISOString() }
         setSeriesResults([])
         setResults(response.results)
         setMessage(`预览完成：${response.summary.ok} 个成功，${response.summary.warning + response.summary.error} 个需关注。`)
@@ -2265,9 +2327,11 @@ export default function IndicatorStudio() {
   }
 
   const downloadExcel = async () => {
-    if (parameterPending) { setMessage(s('indicatorParameters.pending')); return }
-    if (canvasPendingRef.current) { setMessage('请先应用画布修改，再导出计算逻辑。'); return }
-    const checked = validation?.valid ? validation : await validate()
+    if (!agentPreviewDefinition && parameterPending) { setMessage(s('indicatorParameters.pending')); return }
+    if (!agentPreviewDefinition && canvasPendingRef.current) { setMessage('请先应用画布修改，再导出计算逻辑。'); return }
+    const startingContext = previewContextRef.current
+    const checked = await validatePreviewDefinition()
+    if (startingContext !== previewContextRef.current) return
     if (!checked?.valid) {
       setMobileTab('editor')
       setWorkspaceTab('editor')
@@ -2284,14 +2348,14 @@ export default function IndicatorStudio() {
       setError(null)
       const exportContext = previewContextRef.current
       const downloaded = await exportCustomIndicatorExcel({
-        inline_definition: normalizeDraft({ ...draft, context_kind: STUDIO_CONTEXT }),
+        inline_definition: normalizeDraft({ ...previewDefinition, context_kind: STUDIO_CONTEXT }),
         compile_token: checked.compile_token ?? undefined,
-        ...(draft.parameter_contract_version === '1.0' ? { parameters: runtimeParameters } : {}),
+        ...(previewDefinition.parameter_contract_version === '1.0' ? { parameters: runtimeParameters } : {}),
         targets: targets.map(({ name: _name, ...target }) => target),
         period: activePeriod,
         as_of: asOf || undefined,
       })
-      if (canvasPendingRef.current || exportContext !== previewContextRef.current) return
+      if ((!agentPreviewDefinition && canvasPendingRef.current) || exportContext !== previewContextRef.current) return
       const objectUrl = URL.createObjectURL(downloaded.blob)
       const anchor = document.createElement('a')
       anchor.href = objectUrl
@@ -2300,7 +2364,7 @@ export default function IndicatorStudio() {
       anchor.click()
       anchor.remove()
       URL.revokeObjectURL(objectUrl)
-      setMessage(`Excel 已生成：包含 ${targets.length} 个产品的真实原始数据、逐步 Excel 公式和${isTimeSeries ? '各时序通道' : '指标'}结果。`)
+      setMessage(`Excel 已生成：包含 ${targets.length} 个产品的真实原始数据、逐步 Excel 公式和${previewIsTimeSeries ? '各时序通道' : '指标'}结果。`)
     } catch (exportError) {
       setError(exportError)
     } finally {
@@ -2359,8 +2423,62 @@ export default function IndicatorStudio() {
     requestAnimationFrame(() => document.getElementById(`workspace-tab-${nextTab}`)?.focus())
   }
 
+  const capturePageEvidence = () => buildIndicatorStudioEvidence({
+    selection: { indicator_id: selectedId, indicator_revision: selectedIndicator?.revision ?? null, name: selectedIndicator?.name, read_only: selectedIndicator?.read_only },
+    draft,
+    // agentPreviewDefinition keeps governing the controls after its result is cleared, so it is
+    // reported as the active preview definition independently of whether a result exists.
+    active_preview_definition: agentPreviewDefinition as unknown as Record<string, unknown> | null,
+    definition_dirty: definitionDirty,
+    validation,
+    canvas_pending: canvasPending,
+    parameter_pending: parameterPending,
+    previewing,
+    targets: targets.map(({ kind, product_id, name }) => ({ kind, product_id, name })),
+    period: activePeriod,
+    as_of: asOf,
+    runtime_parameters: runtimeParameters,
+    manual_results: results,
+    manual_series_results: seriesResults,
+    manual_request: previewProvenanceRef.current,
+    agent_preview: agentPreview,
+  })
+
   return (
     <div className={`mx-auto w-full ${editorMode === 'canvas' ? 'max-w-[1920px]' : 'max-w-[1440px]'}`}>
+      <IndicatorAgentPanel
+        capturePageSnapshot={capturePageEvidence}
+        pageContext={{
+          page: 'indicator-studio',
+          page_instance_id: 'indicator-studio',
+          context_revision: selectedId ? (selectedIndicator?.revision ?? 0) : 0,
+          view_state: 'inherit',
+          calculation: { context_kind: STUDIO_CONTEXT, targets: targets.map(({ kind, product_id }) => ({ kind, product_id })), period: activePeriod, as_of: asOf || null },
+        }}
+        draft={draft as unknown as Record<string, unknown>}
+        onApplyDraft={(value) => patchDraft(value as Partial<IndicatorDraft>)}
+        onCommitted={() => { void refreshCatalog() }}
+        onPreview={receiveAgentPreview}
+        onViewPreview={(value) => {
+          // Loading this same snapshot automatically may finish while the explicit read is in flight.
+          const target = value.result.results[0]?.target ?? value.target
+          const adoptedContext = JSON.stringify({ ...JSON.parse(renderedPreviewContext), draft: value.definition,
+            targets: [{ kind: target.kind, product_id: target.product_id, name: target.name || target.product_id }],
+            activePeriod: value.period, asOf: value.as_of || '',
+            runtimeParameters: Object.fromEntries((value.definition.parameter_schema ?? []).map(parameter => [parameter.id, value.result.results[0]?.parameters?.[parameter.id] ?? parameter.default])),
+          })
+          if (renderedPreviewContext !== previewContextRef.current && adoptedContext !== previewContextRef.current) {
+            setMessage('预览条件已变化，请再次点击对应回复的“查看试算结果”。')
+            return false
+          }
+          receiveAgentPreview(value, true)
+          setMobileTab('preview'); setWorkspaceTab('preview')
+          requestAnimationFrame(() => {
+            document.getElementById('agent-preview-results')?.scrollIntoView({ block: 'start' })
+            document.getElementById('agent-preview-results-title')?.focus({ preventScroll: true })
+          })
+        }}
+      />
       <div className="mb-6 flex flex-col gap-4 rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-accent-950 px-5 py-5 text-white shadow-lg sm:px-7 sm:py-6 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <p className="text-sm font-semibold text-accent-200">工作区共享 · 统一研究指标层</p>
@@ -2527,26 +2645,38 @@ export default function IndicatorStudio() {
 
         <section id="indicator-panel-preview" role="tabpanel" aria-labelledby="indicator-tab-preview workspace-tab-preview indicator-preview-title" className={`${mobileTab === 'preview' ? 'block' : 'hidden'} min-w-0 space-y-5 ${workspaceTab === 'preview' ? 'xl:block' : 'xl:hidden'}`}>
           <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[minmax(320px,0.72fr)_minmax(0,1.28fr)] xl:items-start">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><h2 id="indicator-preview-title" className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs text-slate-600">最多选择 {MAX_PREVIEW_TARGETS} 个真实产品并分别计算同一指标；不会合并为组合，也不会使用模拟数据。</p><div aria-label="当前预览指标" aria-live="polite" className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-accent-100 bg-accent-50 px-3 py-2 text-sm"><span className="text-slate-600">当前指标</span><strong className="text-accent-800">{draft.name}</strong><span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">{selectedIndicator?.read_only ? '内置指标' : selectedIndicator ? `工作区 v${selectedIndicator.revision}` : '未保存草稿'}</span></div>
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><h2 id="indicator-preview-title" className="font-semibold text-slate-900">校验与预览</h2><p className="mt-1 text-xs text-slate-600">最多选择 {MAX_PREVIEW_TARGETS} 个真实产品并分别计算同一指标；不会合并为组合，也不会使用模拟数据。</p><div aria-label="当前预览指标" aria-live="polite" className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-accent-100 bg-accent-50 px-3 py-2 text-sm"><span className="text-slate-600">当前指标</span><strong className="text-accent-800">{previewDefinition.name}</strong><span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">{agentPreviewDefinition ? 'AI 试算草稿' : selectedIndicator?.read_only ? '内置指标' : selectedIndicator ? `工作区 v${selectedIndicator.revision}` : '未保存草稿'}</span></div>
               <div className="mt-4 flex gap-2"><select aria-label="产品类型" value={searchKind} onChange={(event) => { setSearchKind(event.target.value as ProductKind | 'all'); setSearchResults([]) }} className="rounded-xl border border-slate-200 bg-white px-2 text-sm focus:border-accent-500 focus:outline-none"><option value="all">全部</option><option value="etf">ETF</option><option value="fund">公募基金</option></select><SearchDropdown label="搜索产品" value={searchText} items={searchResults} onChange={setSearchText} onSearch={lookupProducts} loading={searching} placeholder="名称或代码" className="flex-1" getItemKey={(item, index) => `${item.code ?? item.ts_code ?? index}-${item.instrument_type ?? ''}`} renderItem={(item) => { const target = targetFromItem(item); const selected = Boolean(target && targets.some((value) => value.kind === target.kind && value.product_id === target.product_id)); const atLimit = targets.length >= MAX_PREVIEW_TARGETS; return <div className="flex min-h-11 items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-0"><span className="min-w-0 text-sm text-slate-700"><span className="font-medium">{item.name || target?.product_id}</span><span className="ml-2 text-xs text-slate-600">{target?.product_id}</span></span><button type="button" onClick={() => addTarget(item)} disabled={!target || selected || atLimit} title={!selected && atLimit ? `最多选择 ${MAX_PREVIEW_TARGETS} 个产品` : undefined} className="shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-accent-700 hover:bg-accent-50 disabled:text-slate-600 focus:outline-none focus:ring-2 focus:ring-accent-500">{selected ? '已添加' : atLimit ? '已达上限' : '添加'}</button></div> }} /></div>
-              <div className="mt-4"><p className="text-sm font-medium text-slate-700">已选产品 <span aria-live="polite" className="text-slate-600">{targets.length} / {MAX_PREVIEW_TARGETS}</span></p><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((target) => <span key={`${target.kind}-${target.product_id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-3 pr-1 text-xs text-slate-700"><span>{target.name}</span><span className="text-slate-600">{target.product_id !== target.name ? target.product_id : ''}</span><button type="button" aria-label={`移除 ${target.name}`} onClick={() => { setTargets((current) => current.filter((item) => item.kind !== target.kind || item.product_id !== target.product_id)); setResults([]); setMessage('预览产品已移除，请重新计算。') }} className="rounded-full px-1.5 py-0.5 text-slate-600 hover:bg-white hover:text-rose-600">×</button></span>) : <p className="text-sm text-slate-600">尚未选择产品</p>}</div></div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setPeriod(event.target.value); setResults([]); setSeriesResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAsOf(event.target.value); setResults([]); setSeriesResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" /></label></div>
-              {draft.parameter_contract_version === '1.0' && draft.parameter_schema?.length
-                ? <div className="mt-4"><IndicatorParameterInputs schema={draft.parameter_schema} values={runtimeParameters} onApply={applyRuntimeParameters} disabled={parameterPending || canvasPending || saving} /></div>
+              <div className="mt-4"><p className="text-sm font-medium text-slate-700">已选产品 <span aria-live="polite" className="text-slate-600">{targets.length} / {MAX_PREVIEW_TARGETS}</span></p><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((target) => <span key={`${target.kind}-${target.product_id}`} className="inline-flex items-center gap-1 rounded-full bg-slate-100 py-1 pl-3 pr-1 text-xs text-slate-700"><span>{target.name}</span><span className="text-slate-600">{target.product_id !== target.name ? target.product_id : ''}</span><button type="button" aria-label={`移除 ${target.name}`} onClick={() => { setAgentPreview(null); setSeriesResults([]); setTargets((current) => current.filter((item) => item.kind !== target.kind || item.product_id !== target.product_id)); setResults([]); setMessage('预览产品已移除，请重新计算。') }} className="rounded-full px-1.5 py-0.5 text-slate-600 hover:bg-white hover:text-rose-600">×</button></span>) : <p className="text-sm text-slate-600">尚未选择产品</p>}</div></div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-sm font-medium text-slate-700">计算周期<select aria-label="计算周期" value={activePeriod} onChange={(event) => { setAgentPreview(null); setPeriod(event.target.value); setResults([]); setSeriesResults([]); setMessage('预览周期已更改，请重新计算。') }} className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500">{periods.map((item) => <option key={item.value} value={item.value}>{item.label}（{item.value}）</option>)}</select></label><label className="text-sm font-medium text-slate-700">历史截止日（可选）<input aria-label="历史截止日" type="date" value={asOf} onChange={(event) => { setAgentPreview(null); setAsOf(event.target.value); setResults([]); setSeriesResults([]); setMessage('历史截止日已更改，请重新计算。') }} className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500" /></label></div>
+              {previewDefinition.parameter_contract_version === '1.0' && previewDefinition.parameter_schema?.length
+                ? <div className="mt-4"><IndicatorParameterInputs schema={previewDefinition.parameter_schema} values={runtimeParameters} onApply={applyRuntimeParameters} disabled={!agentPreviewDefinition && (parameterPending || canvasPending || saving)} /></div>
                 : <p className="mt-3 rounded-lg border border-accent-100 bg-accent-50 px-3 py-2 text-xs text-accent-800">{s('indicatorParameters.fixedHint')}</p>}
-              <p className="mt-2 text-xs text-slate-500">选择产品并执行预览后，系统会根据实际数据判断是否可计算，并在结果中说明数据缺失、样本不足等原因。</p><button type="button" onClick={() => void preview()} disabled={previewing || excelExporting || periods.length === 0 || !targets.length || !hasDefinitionFormula} className="mt-3 w-full rounded-lg bg-accent-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-accent-500">{previewing ? '计算中…' : '预览指标'}</button><button type="button" onClick={() => void downloadExcel()} disabled={excelExporting || previewing || periods.length === 0 || !targets.length || !hasDefinitionFormula} className="mt-2 w-full rounded-lg border border-accent-200 bg-white px-4 py-2.5 text-sm font-semibold text-accent-700 hover:bg-accent-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-accent-500">{excelExporting ? '正在生成 Excel…' : '下载 Excel 计算逻辑'}</button>
+              <p className="mt-2 text-xs text-slate-500">选择产品并执行预览后，系统会根据实际数据判断是否可计算，并在结果中说明数据缺失、样本不足等原因。</p><button type="button" onClick={() => void preview()} disabled={previewing || excelExporting || periods.length === 0 || !targets.length || !previewReady} className="mt-3 w-full rounded-lg bg-accent-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-accent-700 disabled:cursor-not-allowed disabled:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-accent-500">{previewing ? '计算中…' : '预览指标'}</button><button type="button" onClick={() => void downloadExcel()} disabled={excelExporting || previewing || periods.length === 0 || !targets.length || !previewReady} className="mt-2 w-full rounded-lg border border-accent-200 bg-white px-4 py-2.5 text-sm font-semibold text-accent-700 hover:bg-accent-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300 focus:outline-none focus:ring-2 focus:ring-accent-500">{excelExporting ? '正在生成 Excel…' : '下载 Excel 计算逻辑'}</button>
           </div>
 
           <div className="min-w-0 space-y-5">
-            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-label="指标定义校验">
+            {agentPreview && <section id="agent-preview-results" aria-label="AI 试算结果" className="min-w-0 scroll-mt-24 space-y-3">
+              <div className="rounded-xl border border-accent-200 bg-accent-50 p-4">
+                <h2 id="agent-preview-results-title" tabIndex={-1} className="font-semibold text-slate-900">AI 试算结果 · {agentPreview.definition.name}</h2>
+                <p className="mt-1 text-sm text-slate-700">产品 {agentPreview.result.results?.[0]?.target.name || agentPreview.target.name || agentPreview.target.product_id}（{agentPreview.target.product_id}） · {agentPreview.period} · 历史截止日 {agentPreview.as_of || '未限制'}</p>
+                <p className="mt-2 text-xs text-slate-600">已同步本次试算的产品、周期、历史截止日和计算参数；可在左侧调整后重新预览。</p>
+              </div>
+              {!agentPreview.result.results?.length
+                ? <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">本次试算没有返回可展示的数据，请让助手检查产品数据和计算条件。</p>
+                : agentPreview.result_kind === 'time_series'
+                  ? <TimeSeriesResultsPanel results={agentPreview.result.results} />
+                  : <ResultsPanel results={agentPreview.result.results} draft={agentPreview.definition} contextDomain={STUDIO_CONTEXT} />}
+            </section>}
+            {!agentPreviewDefinition && <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-label="指标定义校验">
               <h2 className="font-semibold text-slate-900">{validation?.valid === false ? '当前公式未通过校验' : '指标定义校验'}</h2>
               <p role="status" className="mt-2 text-sm text-slate-600">{canvasPending ? '画布尚未应用，请返回定义与公式完成修改。' : validating ? '正在校验公式、类型与计算计划…' : validation?.valid ? '指标定义有效；产品数据是否充足，以实际预览结果为准。' : '请校验当前定义，再选择产品运行。'}</p>
               {validation?.valid === false && <ul className="mt-2 space-y-1 text-sm text-rose-700">{validation.diagnostics.map((item, index) => <li key={`${item.code}-${index}`}>{diagnosticMessage(item.code, item.message)}</li>)}</ul>}
               <div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => void validate()} disabled={!hasDefinitionFormula || validating} className="min-h-10 rounded-lg border border-accent-200 px-3 py-2 text-sm font-semibold text-accent-700 disabled:opacity-40">校验指标定义</button><button type="button" onClick={() => { setMobileTab('editor'); activateWorkspaceTab('editor') }} className="min-h-10 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">返回定义与公式修改</button></div>
-            </section>
-            {isTimeSeries
+            </section>}
+            {(!agentPreview || results.length > 0 || seriesResults.length > 0) && (previewIsTimeSeries
               ? <TimeSeriesResultsPanel results={seriesResults} />
-              : <ResultsPanel results={results} draft={draft} contextDomain={STUDIO_CONTEXT} />}
+              : <ResultsPanel results={results} draft={previewDefinition} contextDomain={STUDIO_CONTEXT} />)}
           </div>
           </div>
           <p className="px-1 text-xs text-slate-600">指标定义和评价方案在当前工作区共享。数据缺失、样本不足或无效数值会明确标为不可计算。</p>
@@ -3137,9 +3267,10 @@ function formatTimeSeriesChannelValue(
 }
 
 function TimeSeriesResultsPanel({ results }: { results: TimeSeriesIndicatorResult[] }) {
+  const titleId = useId()
   if (!results.length) return <div className="rounded-xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-600">选择产品并预览后显示具名时序通道。</div>
   const computedCount = results.filter((result) => result.status === 'ok' || result.status === 'warning').length
-  return <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="series-preview-results-title"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 id="series-preview-results-title" className="font-semibold text-slate-900">时序结果预览</h2><p className="mt-1 text-xs text-slate-600">日期轴与通道值按日期显式对齐；缺失点保留为空，不补零。</p></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">可计算 {computedCount}/{results.length} 个产品</span></div><div className="mt-4 space-y-5">{results.map((result, resultIndex) => {
+  return <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby={titleId}><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 id={titleId} className="font-semibold text-slate-900">时序结果预览</h2><p className="mt-1 text-xs text-slate-600">日期轴与通道值按日期显式对齐；缺失点保留为空，不补零。</p></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">可计算 {computedCount}/{results.length} 个产品</span></div><div className="mt-4 space-y-5">{results.map((result, resultIndex) => {
     const option = result.dates.length && result.channels.length ? {
       animation: false,
       tooltip: { trigger: 'axis' },
@@ -3165,10 +3296,11 @@ function TimeSeriesResultsPanel({ results }: { results: TimeSeriesIndicatorResul
 }
 
 function ResultsPanel({ results, draft, contextDomain }: { results: EvaluationResult[]; draft: IndicatorDraft; contextDomain: IndicatorContextDomain }) {
+  const titleId = useId()
   if (!results.length) return <div className="rounded-xl border border-dashed border-slate-200 bg-white p-5 text-sm text-slate-600">选择产品并预览后显示真实净值计算结果。</div>
   const computedCount = results.filter(result => result.value !== null).length
-  return <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby="preview-results-title">
-    <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="preview-results-title" className="font-semibold text-slate-900">结果预览</h2><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">有可用结果 {computedCount}/{results.length} 个产品</span></div>
+  return <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm" aria-labelledby={titleId}>
+    <div className="flex flex-wrap items-center justify-between gap-2"><h2 id={titleId} className="font-semibold text-slate-900">结果预览</h2><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">有可用结果 {computedCount}/{results.length} 个产品</span></div>
     <div className="mt-3 space-y-3">{results.map((result, index) => <article key={`${result.target.kind}-${result.target.product_id}-${index}`} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
       <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-slate-800">{result.target.name}</p><p className="text-xs text-slate-600">{result.target.product_id} · {contextDomain === 'portfolio' ? '快照窗口' : result.period}</p></div>{<strong className={result.value === null ? 'text-amber-700' : 'text-accent-700'}>{result.presentation ? <MetricValue value={result.value} presentation={result.presentation} /> : displayValue(result, draft)}</strong>}</div>
       {<>

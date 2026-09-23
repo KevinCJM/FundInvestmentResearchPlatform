@@ -56,6 +56,7 @@ import RiskScaleCenter from './pages/RiskScaleCenter'
 import RiskScaleWorkspace from './pages/RiskScaleWorkspace'
 import RiskScaleVersionView from './pages/RiskScaleVersionView'
 import RiskScaleCompare from './pages/RiskScaleCompare'
+import LlmSettings from './pages/LlmSettings'
 
 const prototypePage = (pageKey: string) => <PrototypeWorkspace key={pageKey} pageKey={pageKey} />
 
@@ -209,6 +210,7 @@ export default function App() {
               <Route path="risk-scales/drafts/:draftId" element={<RiskScaleWorkspace />} />
               <Route path="risk-scales/versions/:versionId" element={<RiskScaleVersionView />} />
               <Route path="indicators-models" element={<IndicatorStudio />} />
+              <Route path="llm-api" element={<LlmSettings />} />
               <Route path="factor-research" element={<FactorResearchCenter />} />
               <Route path="risk-models" element={<RiskModelCenter />} />
               <Route path="scenario-algorithms/apply" element={<RiskApplicationWorkspace />} />

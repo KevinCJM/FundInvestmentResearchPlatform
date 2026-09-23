@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
 import {
@@ -22,6 +22,11 @@ import type { MetricPresentation } from '../services/customIndicators'
 import { humanizeIndicatorMessage } from '../utils/indicatorDiagnostics'
 import { RegimeConditioningPanel } from '../components/HistoricalRegimeBacktest'
 import { PortfolioRiskSection } from '../components/risk-models/PublishedRiskPanel'
+import AgentPanel from '../components/agent/AgentPanel'
+import usePageContextRevision from '../components/agent/usePageContextRevision'
+import { buildHoldingDiagnosisEvidence, shortStableId, pageResultReference, type PageResultRecord, type FrozenIndicatorRef } from '../services/agentPageEvidence'
+import type { AgentPageContext } from '../services/agent'
+import { systemText as s } from '../i18n/runtime'
 
 const percent = (value: number | null | undefined) => value === null || value === undefined || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(2)}%`
 const metricPresentation = (metric: PortfolioMetric): MetricPresentation => metric.presentation ?? {
@@ -42,6 +47,12 @@ export default function HoldingDiagnosis() {
   const [params] = useSearchParams()
   const targetId = params.get('target')
   const suppliedRunId = params.get('run')
+  return <HoldingDiagnosisRun key={JSON.stringify([targetId, suppliedRunId])} targetId={targetId} suppliedRunId={suppliedRunId} />
+}
+
+function HoldingDiagnosisRun({ targetId, suppliedRunId }: { targetId: string | null; suppliedRunId: string | null }) {
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const [target, setTarget] = useState<ResearchTarget | null>(null)
   const [run, setRun] = useState<PortfolioRun | null>(null)
   const [diagnosis, setDiagnosis] = useState<PortfolioDiagnosis | null>(null)
@@ -52,9 +63,14 @@ export default function HoldingDiagnosis() {
   const [scenario, setScenario] = useState({ name: '历史压力区间', start_date: '2020-01-01', end_date: '2020-03-31' })
   const [scenarioResult, setScenarioResult] = useState<{ name: string; metrics: PortfolioMetric[]; warnings?: string[]; start_date: string; end_date: string } | null>(null)
   const [scenarioLoading, setScenarioLoading] = useState(false)
+  const [scenarioError, setScenarioError] = useState('')
   const [portfolioIndicators, setPortfolioIndicators] = useState<PortfolioIndicatorDefinition[]>([])
   const [indicatorLoading, setIndicatorLoading] = useState(false)
   const [indicatorError, setIndicatorError] = useState('')
+  const [metricRecord, setMetricRecord] = useState<PageResultRecord | null>(null)
+  const [scenarioRecord, setScenarioRecord] = useState<PageResultRecord | null>(null)
+  const [scenarioRequest, setScenarioRequest] = useState<typeof scenario | null>(null)
+  const scenarioAttempt = useRef(0), indicatorAttempt = useRef(0)
   const [metricPreference, setMetricPreference] = useMetricDisplayPreference(
     'holding-diagnosis',
     'portfolio',
@@ -73,6 +89,7 @@ export default function HoldingDiagnosis() {
         const runId = suppliedRunId ?? (await listPortfolioRuns()).items.find((item) => item.target_id === resolvedTarget?.id)?.id
         if (!runId) throw new Error('该研究对象尚未生成组合运行快照。')
         const [snapshot, detail] = await Promise.all([getPortfolioRun(runId), diagnosePortfolioRun(runId, [])])
+        if (snapshot.id !== runId || (targetId && snapshot.target_id && snapshot.target_id !== targetId)) throw new Error('返回的运行快照与当前研究对象不一致。')
         let indicators: PortfolioIndicatorDefinition[] = []
         try { indicators = await listPortfolioIndicators() } catch (caught: any) { if (active) setIndicatorError(humanizeIndicatorMessage(caught?.message, '组合指标目录加载失败')) }
         if (active) { setTarget(resolvedTarget); setRun(snapshot); setDiagnosis(detail); setPortfolioIndicators(indicators) }
@@ -85,6 +102,54 @@ export default function HoldingDiagnosis() {
   const navOption = useMemo(() => ({ tooltip: { trigger: 'axis' }, legend: { data: ['组合净值', '回撤'] }, xAxis: { type: 'category', data: run?.nav.map((point) => point.date) ?? [] }, yAxis: [{ type: 'value', name: '净值' }, { type: 'value', name: '回撤', axisLabel: { formatter: '{value}%' } }], series: [{ name: '组合净值', type: 'line', smooth: true, data: run?.nav.map((point) => point.value) ?? [] }, { name: '回撤', type: 'line', yAxisIndex: 1, areaStyle: {}, data: run?.drawdown.map((point) => point.value * 100) ?? [] }] }), [run])
   const weightOption = useMemo(() => ({ tooltip: { trigger: 'axis' }, legend: { type: 'scroll' }, xAxis: { type: 'category', data: (diagnosis?.weight_path ?? run?.weights ?? []).map((point) => point.date) }, yAxis: { type: 'value', axisLabel: { formatter: (value: number) => `${(value * 100).toFixed(0)}%` } }, series: Object.keys((diagnosis?.weight_path ?? run?.weights ?? [])[0]?.weights ?? {}).map((key) => ({ name: key, type: 'line', stack: 'weights', areaStyle: {}, data: (diagnosis?.weight_path ?? run?.weights ?? []).map((point) => point.weights[key]) })) }), [diagnosis, run])
   const metrics = diagnosis && Array.isArray(diagnosis.summary) ? diagnosis.summary : []
+
+  // 助手只冻结真实不可变运行快照：没有 run 时不提交请求，也不创建占位 ID。
+  const metricsKey = JSON.stringify([run?.id, metricPreference.indicatorIds])
+  const agentIndicators = metricRecord?.key === metricsKey ? metricRecord.indicators ?? [] : []
+  // 只有页面确实按当前起止日期跑过情景，才把它作为页面明确请求冻结；否则不提交情景。
+  const agentScenario = scenarioRequest && scenarioRequest.start_date === scenario.start_date && scenarioRequest.end_date === scenario.end_date
+    ? { start_date: scenario.start_date, end_date: scenario.end_date } : null
+  const scenarioKey = JSON.stringify([run?.id, scenario])
+  const agentContextRevision = usePageContextRevision(JSON.stringify([
+    run?.id ?? null, scenario.name, scenario.start_date, scenario.end_date,
+    metricPreference.indicatorIds, metricPreference.periodsByIndicator, agentScenario,
+  ]))
+  const agentPageContext: AgentPageContext = {
+    page: 'holding-diagnosis',
+    // 页面对象由 URL 选择决定：加载中的快照不会让已打开的对话重挂。
+    page_instance_id: `holding-diagnosis:${shortStableId(suppliedRunId ?? targetId ?? 'none')}`,
+    context_revision: agentContextRevision,
+    view_state: 'inherit',
+    calculation: { context_kind: 'portfolio', run_id: run?.id ?? '' },
+  }
+  const captureAgentSnapshot = () => {
+    if (!run || !/^run-[0-9a-f]{32}$/.test(run.id)) return null
+    const snapshot = run
+    return buildHoldingDiagnosisEvidence({
+      request: { run_id: run.id, indicators: agentIndicators, scenario: agentScenario },
+      displayed: {
+        source: 'portfolio-runs + diagnose + scenario',
+        refs: {
+          run_id: run.id,
+          requested_as_of: snapshot.requested_as_of ?? null,
+          effective_as_of: snapshot.effective_as_of ?? null,
+          target_revision: snapshot.target_revision ?? null,
+          component_count: run.contributions?.length ?? diagnosis?.components?.length ?? 0,
+          displayed_metrics: metrics.length,
+          scenario: agentScenario ? 'explicit_page_request' : 'not_requested',
+          metrics: pageResultReference(metricRecord, metricsKey, indicatorLoading, indicatorError),
+          scenario_result: pageResultReference(scenarioRecord, scenarioKey, scenarioLoading, scenarioError),
+        },
+      },
+    })
+  }
+  const assistant = <AgentPanel
+    pageContext={agentPageContext}
+    busy={loading || !run || !/^run-[0-9a-f]{32}$/.test(run.id)}
+    conversationOptions={{ capturePageSnapshot: captureAgentSnapshot, enabled: !loading && !!run && /^run-[0-9a-f]{32}$/.test(run.id), cancelOnUnmount: true }}
+    renderStatus={() => run ? null : <p role="status" className="text-sm text-slate-600">{s('agent.researchPage.holdingNoRun')}</p>}
+  />
+
 
   async function handleExport(format: 'csv' | 'zip') {
     if (!run) return
@@ -99,16 +164,44 @@ export default function HoldingDiagnosis() {
       else await downloadPortfolioExport(run.id, format)
     } catch (caught: any) { setError(humanizeIndicatorMessage(caught?.message, '导出失败')) } finally { setExporting(null) }
   }
-  async function handleScenario() { if (!run) return; setScenarioLoading(true); setError(''); try { setScenarioResult({ ...(await runPortfolioScenario(run.id, scenario)), start_date: scenario.start_date, end_date: scenario.end_date }) } catch (caught: any) { setError(humanizeIndicatorMessage(caught?.message, '情景分析失败')) } finally { setScenarioLoading(false) } }
+  async function handleScenario() {
+    if (!run) return
+    const attempt = ++scenarioAttempt.current, request = { ...scenario }, key = scenarioKey
+    setScenarioRequest(request); setScenarioLoading(true); setScenarioError(''); setError('')
+    try {
+      const result = await runPortfolioScenario(run.id, request)
+      if (!mounted.current || attempt !== scenarioAttempt.current) return
+      setScenarioResult({ ...result, start_date: request.start_date, end_date: request.end_date })
+      setScenarioRecord({ key, request: { run_id: run.id, ...request }, completed: true })
+    } catch (caught: any) {
+      if (mounted.current && attempt === scenarioAttempt.current) {
+        const message = humanizeIndicatorMessage(caught?.message, '情景分析失败')
+        setScenarioError(message); setError(message)
+      }
+    }
+    finally { if (mounted.current && attempt === scenarioAttempt.current) setScenarioLoading(false) }
+  }
   async function refreshPortfolioIndicators() {
     if (!run || !metricPreference.indicatorIds.length) return
+    const attempt = ++indicatorAttempt.current, key = metricsKey
+    const request = { run_id: run.id, indicator_ids: [...metricPreference.indicatorIds] }
     setIndicatorLoading(true); setIndicatorError('')
-    try { setDiagnosis(await diagnosePortfolioRun(run.id, metricPreference.indicatorIds)) } catch (caught: any) { setIndicatorError(humanizeIndicatorMessage(caught?.message, '组合指标计算失败')) } finally { setIndicatorLoading(false) }
+    try {
+      const result = await diagnosePortfolioRun(run.id, request.indicator_ids)
+      if (!mounted.current || attempt !== indicatorAttempt.current) return
+      setDiagnosis(result)
+      const resolvedIndicators = (result.custom_indicators ?? []).flatMap((metric): FrozenIndicatorRef[] => metric.indicator_id && metric.indicator_revision
+        ? [{ indicator_id: metric.indicator_id, indicator_revision: metric.indicator_revision, period: 'snapshot', parameters: metric.parameters ?? {} }] : [])
+      // The portfolio request submitted IDs only; resolved defaults are not parameter overrides.
+      const indicators = resolvedIndicators.map(({ parameters: _parameters, ...reference }) => reference)
+      setMetricRecord({ key, request, indicators, resolved_indicators: resolvedIndicators, completed: true })
+    } catch (caught: any) { if (mounted.current && attempt === indicatorAttempt.current) setIndicatorError(humanizeIndicatorMessage(caught?.message, '组合指标计算失败')) }
+    finally { if (mounted.current && attempt === indicatorAttempt.current) setIndicatorLoading(false) }
   }
 
-  if (loading) return <div className="mx-auto max-w-7xl p-6" role="status">正在加载不可变组合快照…</div>
-  if (error && !run) return <div className="mx-auto max-w-3xl p-6"><div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 p-4 text-rose-800">{error}</div><Link to="/pre-investment/product-allocation-timing/construction" className="mt-4 inline-block text-emerald-700 underline">去构建组合</Link></div>
-  if (!run || !diagnosis) return null
+  if (loading) return <>{<div className="mx-auto max-w-7xl p-6" role="status">正在加载不可变组合快照…</div>}{assistant}</>
+  if (error && !run) return <>{<div className="mx-auto max-w-3xl p-6"><div role="alert" className="rounded-xl border border-rose-300 bg-rose-50 p-4 text-rose-800">{error}</div><Link to="/pre-investment/product-allocation-timing/construction" className="mt-4 inline-block text-emerald-700 underline">去构建组合</Link></div>}{assistant}</>
+  if (!run || !diagnosis) return assistant
 
   return <div className="mx-auto max-w-7xl space-y-5 p-4 sm:p-6" aria-busy={scenarioLoading || exporting !== null}>
     <header className="rounded-xl bg-slate-900 px-5 py-6 text-white"><p className="text-sm text-emerald-300">不可变运行快照 · {target ? `研究对象 ${target.revision} 版` : '直接快照查看'}</p><h1 className="mt-1 text-2xl font-semibold">持仓诊断：{target?.name ?? run.name}</h1><p className="mt-2 text-sm text-slate-300">快照 ID：{run.id}。后续配置变更不会改写本次诊断。</p></header>
@@ -124,5 +217,6 @@ export default function HoldingDiagnosis() {
     <section className="rounded-xl border border-slate-200 bg-white p-4"><h2 className="font-semibold">历史情景</h2><div className="mt-3 grid gap-3 md:grid-cols-4"><label className="text-sm">名称<input value={scenario.name} onChange={(event) => setScenario({ ...scenario, name: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 p-2" /></label><label className="text-sm">开始日<input type="date" value={scenario.start_date} onChange={(event) => setScenario({ ...scenario, start_date: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 p-2" /></label><label className="text-sm">结束日<input type="date" value={scenario.end_date} onChange={(event) => setScenario({ ...scenario, end_date: event.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 p-2" /></label><button type="button" onClick={handleScenario} disabled={scenarioLoading} className="self-end rounded-lg bg-slate-900 px-4 py-2 text-sm text-white">{scenarioLoading ? '计算中…' : '运行情景'}</button></div>{scenarioResult && <div className="mt-3 rounded-lg bg-slate-50 p-3 text-sm"><b>{scenarioResult.name}</b><ul className="mt-2 flex flex-wrap gap-4">{scenarioResult.metrics.map((metric) => <li key={metric.name}>{metric.name}：<MetricValue value={metric.value} presentation={metricPresentation(metric)} /></li>)}</ul>{scenarioResult.warnings?.map((warning) => <p className="mt-1 text-amber-800" key={warning}>{humanizeIndicatorMessage(warning)}</p>)}</div>}</section>
     <PortfolioRiskSection key={run.id} portfolioRunId={run.id} context="使用本次不可变研究快照的期末持仓。读取已发布敏感度，不重新拟合，也不改变真实持仓。" />
     {diagnosis.warnings.length > 0 && <section className="rounded-xl border border-amber-300 bg-amber-50 p-4"><h2 className="font-semibold text-amber-900">数据与运行警告</h2><ul className="mt-2 list-disc pl-5 text-sm text-amber-900">{diagnosis.warnings.map((warning) => <li key={warning}>{humanizeIndicatorMessage(warning)}</li>)}</ul></section>}
+    {assistant}
   </div>
 }

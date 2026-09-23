@@ -42,6 +42,9 @@ export interface PortfolioRunRequest {
 
 export interface PortfolioSeriesPoint { date: string; value: number }
 export interface PortfolioMetric {
+  indicator_id?: string
+  indicator_revision?: number
+  parameters?: Record<string, number>
   metric_id?: string
   name: string
   value: number | null
@@ -58,6 +61,9 @@ export interface PortfolioRun {
   id: string
   target_id?: string | null
   name: string
+  requested_as_of?: string | null
+  effective_as_of?: string | null
+  target_revision?: number | null
   request?: PortfolioRunRequest
   nav: PortfolioSeriesPoint[]
   drawdown: PortfolioSeriesPoint[]
@@ -207,6 +213,9 @@ function portfolioMetricList(value: unknown): PortfolioMetric[] {
     const rawValue = record.value
     return [{
       name,
+      indicator_id: typeof record.indicator_id === 'string' ? record.indicator_id : undefined,
+      indicator_revision: typeof record.indicator_revision === 'number' ? record.indicator_revision : undefined,
+      parameters: record.parameters && typeof record.parameters === 'object' ? record.parameters as Record<string, number> : undefined,
       value: typeof rawValue === 'number' && Number.isFinite(rawValue) ? rawValue : null,
       unit: typeof record.unit === 'string' ? record.unit : undefined,
       status: record.status === 'ok' || record.status === 'warning' || record.status === 'unavailable' || record.status === 'error' ? record.status : undefined,
@@ -272,6 +281,8 @@ function normalizeRun(raw: unknown): PortfolioRun {
   const rawWeights = Array.isArray(source.weight_path) ? source.weight_path : Array.isArray(source.weights) ? source.weights : []
   return {
     id: String(source.id ?? ''), target_id: source.target_id ?? null, name: String(source.name ?? source.target_name ?? '组合运行'),
+    requested_as_of: source.requested_as_of ?? null, effective_as_of: source.effective_as_of ?? null,
+    target_revision: source.target_revision ?? null,
     request: source.request,
     nav: seriesPoints(dates, source.portfolio_nav ?? source.nav),
     drawdown: seriesPoints(dates, source.drawdown),

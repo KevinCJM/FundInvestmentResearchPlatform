@@ -95,6 +95,8 @@
   "settings.pit-snapshots": {"zh-CN":"PIT 时点快照","en-US":"Point-in-time snapshots"},
   "settings.research-parameters": {"zh-CN":"研究口径与参数中心","en-US":"Research conventions and parameters"},
   "settings.indicators-models": {"zh-CN":"指标与模型管理","en-US":"Indicators and models"},
+  "settings.llm-api": {"zh-CN":"LLM API 配置","en-US":"LLM API settings"},
+  "settings.llm-api.description": {"zh-CN":"管理 AI 助手的大模型 API 配置，指定当前使用的服务；密钥仅显示脱敏结果。","en-US":"Manage model API profiles for the AI assistant and select the active service. Keys are masked."},
   "settings.factor-research": {"zh-CN":"因子研究中心","en-US":"Factor research"},
   "settings.risk-models": {"zh-CN":"风险模型中心","en-US":"Risk model center"},
   "settings.timing-algorithms": {"zh-CN":"择时算法中心","en-US":"Timing algorithms"},

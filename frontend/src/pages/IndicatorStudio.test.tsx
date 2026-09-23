@@ -442,12 +442,16 @@ describe('IndicatorStudio', () => {
   let composeFailure = false
   let validateAsSeries = false
   let snapshotConfig: SnapshotIndicatorConfig
+  let previewValue: number | null = 0.1234
+  let agentMessages: Array<Record<string, any>> = []
 
   beforeEach(() => {
     catalog = [builtIn, reusableBuiltIn, rollingSharpeSource, portfolioBuiltIn]
     activeMeta = meta
     composeFailure = false
     validateAsSeries = false
+    previewValue = 0.1234
+    agentMessages = []
     snapshotConfig = {
       schema_version: 1,
       revision: 1,
@@ -746,13 +750,27 @@ describe('IndicatorStudio', () => {
         const body = JSON.parse(String(init?.body))
         const targets = body.targets as Array<{ kind: 'etf' | 'fund'; product_id: string }>
         return json({
-          results: targets.map((target) => ({ indicator_id: null, indicator_revision: null, indicator_name: '收益波动率', target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id }, period: body.period, value: 0.1234, status: 'ok', warnings: [], window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 250, data_latest_date: '2026-08-28' } })),
+          results: targets.map((target) => ({ indicator_id: null, indicator_revision: null, indicator_name: '收益波动率', target: { ...target, name: target.product_id === '510300.SH' ? '沪深300ETF' : target.product_id }, period: body.period, value: previewValue, status: 'ok', warnings: [], window: { requested_as_of: body.as_of || null, effective_as_of: '2026-08-28', start_date: '2025-08-28', end_date: '2026-08-28', observation_count: 250, data_latest_date: '2026-08-28' } })),
           summary: { total: targets.length, ok: targets.length, warning: 0, error: 0 },
           cache: { hits: 0, misses: targets.length },
           execution: fixedExecution,
         })
       }
       if (url === '/api/custom-indicators/evaluate-portfolio') return json({ results: [{ indicator_id: null, indicator_revision: null, indicator_name: '组合波动率', target: { kind: 'portfolio', product_id: 'run-001', name: '稳健组合' }, period: 'snapshot', value: 0.087, status: 'ok', warnings: [], window: { requested_as_of: null, effective_as_of: '2026-08-28', start_date: '2024-01-02', end_date: '2026-08-28', observation_count: 640, data_latest_date: '2026-08-28' } }], summary: { total: 1, ok: 1, warning: 0, error: 0 }, cache: { hits: 0, misses: 1 }, execution: fixedExecution })
+      if (url.startsWith('/api/agent/')) {
+        const run = (revision: number) => ({ run_id: `agent-run-${revision}`, session_id: 'agent-studio', session_revision: revision, run_revision: 1, status: 'completed', phase: 'thinking',
+          response: { session_id: 'agent-studio', session_revision: revision, reply: { text: '页面显示为 0。' }, artifacts: {} } })
+        if (url === '/api/agent/meta') return json({ configured: true, model: 'fixture' })
+        if (url === '/api/agent/sessions') return json({ session_id: 'agent-studio', session_revision: 0 })
+        if (url.includes('/messages')) {
+          const body = JSON.parse(String(init?.body || '{}'))
+          agentMessages.push(body)
+          return json({ ...run(agentMessages.length), message_id: body.message_id })
+        }
+        if (url.includes('/events')) return json({ items: [], has_more: false, next_event_seq: 1 })
+        if (url.includes('/runs/')) return json(run(agentMessages.length))
+        return json({ session_id: 'agent-studio', session_revision: agentMessages.length, messages: [], next_event_seq: 1, active_run: null })
+      }
       return json({})
     }))
   })
@@ -1779,5 +1797,44 @@ describe('IndicatorStudio', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('服务端拒绝展开，请检查参数。')
     expect(screen.getByRole('dialog', { name: '配置 全元素标准差' })).toBeInTheDocument()
+  })
+
+  it('发送消息时冻结页面显示的零值与原始口径，编辑中的定义另列一区', async () => {
+    const user = setupUser()
+    previewValue = 0
+    await renderStudio('/indicator-studio?kind=etf&ids=510300.SH')
+    await user.click(screen.getByRole('button', { name: /收益波动率/ }))
+    await user.click(screen.getByRole('button', { name: '预览指标' }))
+    expect(await screen.findByText('预览完成：1 个成功，0 个需关注。')).toBeInTheDocument()
+    expect(screen.getAllByText('0.00%').length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: '打开 AI 助手' }))
+    const input = await screen.findByRole('textbox', { name: '发送消息' })
+    fireEvent.change(input, { target: { value: '这个指标为什么是 0？' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(agentMessages).toHaveLength(1))
+
+    const snapshot = agentMessages[0].page_snapshot
+    expect(snapshot).toMatchObject({ version: 1, page: 'indicator-studio' })
+    expect(snapshot.snapshot_id).toMatch(/^snap-[0-9a-f]{32}$/)
+    expect(snapshot.sections.results.displayed_source).toBe('manual_preview')
+    expect(snapshot.sections.results.groups).toHaveLength(1)
+    expect(snapshot.sections.results.groups[0].value).toBe(0)
+    expect(snapshot.sections.results.groups[0].window.effective_as_of).toBe('2026-08-28')
+    expect(snapshot.sections.results.groups[0].target).toMatchObject({ kind: 'etf', product_id: '510300.SH' })
+    expect(snapshot.sections.results.frozen_request).toMatchObject({ period: '1Y', as_of: null, targets: [{ kind: 'etf', product_id: '510300.SH' }] })
+    expect(snapshot.sections.results.frozen_request.definition.name).toBe('收益波动率')
+    expect(snapshot.sections.results.frozen_request.requested_at).toEqual(expect.any(String))
+    // 该内置定义不是 parameter_contract_version 1.0，请求没有提交任何参数覆盖。
+    expect(snapshot.sections.results.frozen_request.parameters).toBeNull()
+    expect(snapshot.sections.results.frozen_request.parameters_submitted).toBe(false)
+    // 编辑分区描述页面当前输入，不是结果所用口径。
+    expect(snapshot.sections.editing.definition.source).toBe('editor')
+    expect(snapshot.sections.editing.active_preview).toBeNull()
+    expect(snapshot.sections.editing.selection).toMatchObject({ indicator_id: 'builtin-volatility', indicator_revision: 1 })
+    expect(snapshot.sections.editing.runtime_inputs).toMatchObject({ period: '1Y', as_of: null, runtime_parameters: {} })
+    expect(snapshot.sections.editing.runtime_inputs.targets[0]).toMatchObject({ kind: 'etf', product_id: '510300.SH' })
+    expect(snapshot.sections.editing.state).toMatchObject({ canvas_pending: false, parameter_pending: false })
+    expect(agentMessages[0].page_context.calculation).toMatchObject({ context_kind: 'single_product' })
   })
 })
