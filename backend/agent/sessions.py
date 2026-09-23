@@ -543,6 +543,8 @@ class AgentSessionStore:
                 raise AgentError("AGENT_SESSION_BUSY", "当前任务仍在处理，请先停止。", status_code=409)
             if parent and parent.get("superseded_by"):
                 raise AgentError("AGENT_RUN_SUPERSEDED", "这一轮已被修改，不能再继续原运行。", status_code=409)
+            if parent and parent["run_id"] != state.get("last_run_id"):
+                raise AgentError("AGENT_RESUME_STALE", "已有更新的对话，请刷新后继续最新一轮。", status_code=409)
             replaced = self._replaced_turn(db, session_id, state, request) if request.edit_of_message_id else None
             if replaced is not None:
                 # Tool rollback cannot undo separate human approvals or commit-preview proposals.

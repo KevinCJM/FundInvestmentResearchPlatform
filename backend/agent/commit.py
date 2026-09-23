@@ -35,6 +35,16 @@ def _target_in_context(page_context, target) -> bool:
     )
 
 
+def _same_definition(left, right):
+    """Match all JSON fields while allowing browsers to round-trip 0.0 as 0."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_same_definition(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_same_definition(a, b) for a, b in zip(left, right))
+    same_type = type(left) is type(right) or (type(left) in (int, float) and type(right) in (int, float))
+    return same_type and left == right
+
+
 def preview(*, store: Any, session_id: str, request: CommitPreviewRequest, service: Any) -> dict[str, Any]:
     state = store.read(session_id)
     assert_mutable(state)
@@ -42,13 +52,14 @@ def preview(*, store: Any, session_id: str, request: CommitPreviewRequest, servi
     draft = state.get("draft") or {}
     if not draft.get("valid"):
         raise AgentError("AGENT_DRAFT_REQUIRED", "请先校验通过指标草稿再提交预览。", status_code=409)
-    if request.draft_revision != draft.get("draft_revision"):
+    if (request.draft_revision != draft.get("draft_revision")
+            or not _same_definition(request.definition, draft.get("definition"))):
         raise AgentError("REVISION_CONFLICT", "草稿已更新，请刷新后预览。", status_code=409)
     if request.page_context.context_kind != "single_product":
         raise AgentError("AGENT_TOOL_DOMAIN_MISMATCH", "指标创作仅支持单产品计算域。", status_code=409)
     if request.target is not None and not _target_in_context(request.page_context, request.target):
         raise AgentError("AGENT_CONTEXT_CHANGED", "提交目标不在当前页面上下文内。", status_code=409)
-    definition = dict(request.definition)
+    definition = dict(draft["definition"])
     if definition.get("context_kind", "single_product") != "single_product":
         raise AgentError("AGENT_TOOL_DOMAIN_MISMATCH", "这里只保存单产品指标。", status_code=409)
     name = str(definition.get("name") or "").strip()
@@ -109,8 +120,11 @@ def commit(*, store: Any, session_id: str, request: CommitRequest, service: Any)
         if not request.confirmed:
             raise AgentError("AGENT_CONFIRMATION_REQUIRED", "指标写入必须由人类明确确认。", status_code=422)
         confirmation = state.get("pending_confirmation") or {}
+        draft = state.get("draft") or {}
         if (confirmation.get("confirmation_id") != request.confirmation_id or confirmation.get("definition_hash") != request.definition_hash
-            or confirmation.get("draft_revision") != request.draft_revision or confirmation.get("context_hash") != state["context_hash"]):
+            or confirmation.get("draft_revision") != request.draft_revision or confirmation.get("context_hash") != state["context_hash"]
+            or not draft.get("valid") or draft.get("draft_revision") != request.draft_revision
+            or draft.get("definition_hash") != request.definition_hash):
             raise AgentError("AGENT_CONFIRMATION_STALE", "确认快照已失效，请重新预览。", status_code=409)
         intent = {"state": "started", "request_hash": fingerprint, "confirmation_id": request.confirmation_id,
                   "definition_hash": request.definition_hash, "at": utc_now()}

@@ -949,7 +949,7 @@ def test_model_return_admission_orders_foreign_cancel_and_result(tmp_path, monke
                 assert done['usage']['prompt_tokens'] >= 17 and done['usage']['completion_tokens'] >= 9
             else:
                 assert bool(done.get('error')) is (accepted_first and phase == 'primary')
-            for index, resume in enumerate((None, done['run_id'])):
+            for index, resume in enumerate((done['run_id'], None)):
                 followup = FixtureLLMClient([{'content': '新的分析'}])
                 next_run, _ = controller.submit(sid, request(page, message=f'next-{index}', text='继续换个角度。',
                     revision=store.read(sid)['session_revision'], resume=resume), followup, service)
@@ -1696,10 +1696,13 @@ def test_commit_recovery_deduplicates_new_confirmations_and_restores_saved_state
         store.write(state)
 
     def save(request_id, definition):
+        with store.locked(sid) as state:
+            draft = store_draft(state, definition=definition, validation={'valid': True}, compile_token=None)
+            store.write(state)
         prepared = commit.preview(store=store, session_id=sid, service=service,
-            request=CommitPreviewRequest(draft_revision=1, definition=definition, page_context=page))
+            request=CommitPreviewRequest(draft_revision=draft['draft_revision'], definition=definition, page_context=page))
         command = CommitRequest(request_id=request_id, confirmation_id=prepared['confirmation_id'],
-            definition_hash=prepared['definition_hash'], draft_revision=1, confirmed=True)
+            definition_hash=prepared['definition_hash'], draft_revision=draft['draft_revision'], confirmed=True)
         result = commit.commit(store=store, session_id=sid, request=command, service=service)
         assert result['session_revision'] == prepared['session_revision'] + 1
         return result, command
@@ -1719,6 +1722,9 @@ def test_commit_recovery_deduplicates_new_confirmations_and_restores_saved_state
     different, _ = save('different-definition', {**DEFINITION, 'name': '另一个指标'})
     assert different['indicator_id'] != first['indicator_id'] and len(service.create_calls) == 2
     # Old completed receipts are recoverable too, without an invented migration.
+    with store.locked(sid) as state:
+        store_draft(state, definition=DEFINITION, validation={'valid': True}, compile_token=None)
+        store.write(state)
     with store.connection(write=True) as db:
         body = store.commit_receipt(db, sid, 'first'); body.pop('definition_hash')
         store.put_commit(db, sid, 'first', body)
@@ -1801,3 +1807,108 @@ def test_failed_save_cannot_be_repeated_with_a_new_confirmation(tmp_path, monkey
             commit.commit(store=store, session_id=sid, request=command, service=service)
         assert error.value.code == ('DECORATION_FAILED' if index == 0 else 'AGENT_COMMIT_UNCERTAIN')
     assert len(calls) == 1 and store.public(sid)['saved_commit'] is None
+
+
+@pytest.mark.parametrize('change', [{'name': '混入的另一指标'}, {'expression': 'mean(returns)'}])
+def test_commit_preview_rejects_another_definition_at_the_current_revision(tmp_path, change):
+    from agent import commit
+    store, page, session, service = setup(tmp_path)
+    sid = session['session_id']
+    with store.locked(sid) as state:
+        draft = store_draft(state, definition=DEFINITION, validation={'valid': True}, compile_token=None)
+        store.write(state)
+    before = store.read(sid)
+    with pytest.raises(AgentError) as error:
+        commit.preview(store=store, session_id=sid, service=service, request=CommitPreviewRequest(
+            draft_revision=draft['draft_revision'], definition={**DEFINITION, **change}, page_context=page))
+    assert error.value.code == 'REVISION_CONFLICT'
+    assert store.read(sid) == before
+    assert not service.validate_calls and not service.create_calls
+    prepared = commit.preview(store=store, session_id=sid, service=service, request=CommitPreviewRequest(
+        draft_revision=draft['draft_revision'], definition=DEFINITION, page_context=page))
+    command = CommitRequest(request_id='correct', confirmation_id=prepared['confirmation_id'],
+        definition_hash=prepared['definition_hash'], draft_revision=draft['draft_revision'], confirmed=True)
+    commit.commit(store=store, session_id=sid, service=service, request=command)
+    assert service.create_calls == [DEFINITION]
+
+
+def test_commit_rejects_a_previous_mismatched_confirmation(tmp_path):
+    from agent import commit
+    from agent.sessions import definition_hash
+    store, page, session, service = setup(tmp_path)
+    sid = session['session_id']
+    other = {**DEFINITION, 'name': '旧版错配确认'}
+    with store.locked(sid) as state:
+        store_draft(state, definition=DEFINITION, validation={'valid': True}, compile_token=None)
+        # A confirmation accepted before the exact-draft guard was introduced.
+        state['pending_confirmation'] = {'confirmation_id': 'old-confirmation', 'definition': other,
+            'definition_hash': definition_hash(other), 'draft_revision': 1, 'context_hash': state['context_hash']}
+        store.write(state)
+    before = store.read(sid)
+    with pytest.raises(AgentError) as error:
+        commit.commit(store=store, session_id=sid, service=service, request=CommitRequest(
+            request_id='old-save', confirmation_id='old-confirmation', definition_hash=definition_hash(other),
+            draft_revision=1, confirmed=True))
+    assert error.value.code == 'AGENT_CONFIRMATION_STALE'
+    assert not service.create_calls and store.read(sid) == before
+
+
+def test_resume_rejects_old_pending_batch_after_newer_turn_and_preserves_replay(tmp_path):
+    from agent.research_runtime import catalog_version, data_generation
+    store, page, session, service = setup(tmp_path)
+    sid = session['session_id']
+    old, _ = store.accept(sid, request(page, message='old'), {})
+    old.update(catalog_version=catalog_version(service), data_generation=data_generation(service),
+        checkpoint={'model_step': 1, 'messages': [{'role': 'user', 'content': '旧需求'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'old-call', 'type': 'function',
+                'function': {'name': 'metrics.validate', 'arguments': stable_json({'definition': DEFINITION})}}]}]})
+    store.checkpoint(old, events=[{'type': 'run.started'}])
+    store.interrupt(old)
+
+    async def run():
+        controller = RunController(store)
+        try:
+            newer_request = request(page, message='newer', revision=1, text='改为新研究目标')
+            newer, _ = controller.submit(sid, newer_request, FixtureLLMClient([
+                {'tool_calls': [{'name': 'metrics.validate', 'arguments': {'definition': {**DEFINITION, 'name': '最新研究指标'}}}]},
+                {'content': '按新目标处理。'}]), service)
+            assert (await controller.wait(newer))['status'] == 'completed'
+            before = store.read(sid)
+            previous_calls = copy.deepcopy(service.validate_calls)
+            stale_llm = FixtureLLMClient([{'content': '不应执行'}])
+            with pytest.raises(AgentError) as error:
+                stale, _ = controller.submit(sid, request(page, message='stale-resume', revision=before['session_revision'],
+                    text='继续', resume=old['run_id']), stale_llm, service)
+                await controller.wait(stale)
+            assert error.value.code == 'AGENT_RESUME_STALE'
+            assert store.read(sid) == before and not stale_llm.requests and service.validate_calls == previous_calls
+            latest_request = request(page, message='latest-resume', revision=before['session_revision'],
+                text='继续分析', resume=newer['run_id'])
+            latest, replayed = controller.submit(sid, latest_request, FixtureLLMClient([{'content': '继续新目标。'}]), service)
+            assert not replayed and (await controller.wait(latest))['status'] == 'completed'
+            replay, replayed = controller.submit(sid, latest_request, stale_llm, service)
+            assert replayed and replay['run_id'] == latest['run_id'] and not stale_llm.requests
+        finally:
+            await controller.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('wire_value', [0, False, '0'])
+def test_commit_preview_keeps_json_number_roundtrip_but_rejects_type_aliases(tmp_path, wire_value):
+    from agent import commit
+    store, page, session, service = setup(tmp_path)
+    sid = session['session_id']
+    definition = {**DEFINITION, 'annual_risk_free_rate_percent': 0.0}
+    with store.locked(sid) as state:
+        store_draft(state, definition=definition, validation={'valid': True}, compile_token=None)
+        store.write(state)
+    command = CommitPreviewRequest(draft_revision=1,
+        definition={**definition, 'annual_risk_free_rate_percent': wire_value}, page_context=page)
+    if type(wire_value) is not int:
+        with pytest.raises(AgentError) as error:
+            commit.preview(store=store, session_id=sid, service=service, request=command)
+        assert error.value.code == 'REVISION_CONFLICT' and not service.validate_calls
+    else:
+        prepared = commit.preview(store=store, session_id=sid, service=service, request=command)
+        assert prepared['definition_hash'] == store.read(sid)['draft']['definition_hash']
+        assert type(prepared['definition']['annual_risk_free_rate_percent']) is float

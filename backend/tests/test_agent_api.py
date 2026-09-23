@@ -458,12 +458,13 @@ def test_commit_preview_and_commit_are_idempotent(harness: AgentHarness, monkeyp
     )
     assert sent.status_code == 200, sent.text
     draft_revision = sent.json()["draft"]["draft_revision"]
+    definition = sent.json()["draft"]["definition"]
 
     preview = harness.client.post(
         f"/api/agent/sessions/{session['session_id']}/commit-preview",
         json={
             "draft_revision": draft_revision,
-            "definition": DEFINITION,
+            "definition": definition,
             "target": {"kind": "etf", "product_id": "510300.SH"},
             "page_context": single_context(),
         },
@@ -478,7 +479,7 @@ def test_commit_preview_and_commit_are_idempotent(harness: AgentHarness, monkeyp
         f"/api/agent/sessions/{session['session_id']}/commit-preview",
         json={
             "draft_revision": draft_revision + 1,
-            "definition": DEFINITION,
+            "definition": definition,
             "target": {"kind": "etf", "product_id": "510300.SH"},
             "page_context": single_context(),
         },
@@ -532,7 +533,7 @@ def test_memory_decision_is_audited_and_idempotent(harness: AgentHarness, monkey
         f"/api/agent/sessions/{session['session_id']}/commit-preview",
         json={
             "draft_revision": sent.json()["draft"]["draft_revision"],
-            "definition": DEFINITION,
+            "definition": sent.json()["draft"]["definition"],
             "target": {"kind": "etf", "product_id": "510300.SH"},
             "page_context": single_context(),
         },
