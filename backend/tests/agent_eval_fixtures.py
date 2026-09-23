@@ -202,15 +202,14 @@ def run_task(case: EvalCase, root: Path, *, trials: int = TRIALS) -> list[dict[s
 
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {"CUSTOM_INDICATOR_DATA_DIR": str(workdir)}))
-            from services import custom_indicator_routes
             from agent import routes as agent_routes
             from services.llm_settings_routes import router as settings_router
 
             service = EvalService(workdir)
-            stack.enter_context(patch.object(custom_indicator_routes, "indicator_service", service))
             llm = FixtureLLMClient(list(case.replies))
             stack.enter_context(patch.object(agent_routes, "_llm_client", lambda session_id: llm))
             app = FastAPI()
+            app.state.agent_indicator_service = service
             app.include_router(settings_router)
             app.include_router(agent_routes.router)
             observed: dict[str, Any] = {"requests": llm.requests}

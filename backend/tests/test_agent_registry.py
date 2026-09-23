@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 
-from agent.contracts import AgentError
+from agent.contracts import AgentError, PageContext
 from agent.scopes import allowed_tools, require_tool
 from agent.tools import TOOL_REGISTRY, build_tool_registry, parse_arguments, tool_specs
 
@@ -32,6 +32,21 @@ def test_registry_fails_closed_for_incomplete_or_duplicate_tools():
     tool = TOOL_REGISTRY['metrics.lookup']
     with pytest.raises(ValueError,match='duplicate'): build_tool_registry(tool,tool)
     for bad in [replace(tool,handler=None), replace(tool,scopes=()), replace(tool,domains=('unknown',)),
-                replace(tool,arguments=object), replace(tool,equivalent_to='missing'), replace(tool,view=None)]:
+                replace(tool,arguments=object), replace(tool,equivalent_to='missing'), replace(tool,view=None),
+                replace(tool,current_data=True), replace(tool,current_data=lambda page, args: True)]:
         with pytest.raises(ValueError): build_tool_registry(bad)
     with pytest.raises(TypeError): TOOL_REGISTRY['injected'] = tool
+
+
+def test_tool_data_policy_distinguishes_immutable_runs_from_current_scenarios():
+    portfolio = PageContext.model_validate({'page': 'holding-diagnosis', 'page_instance_id': 'run',
+        'calculation': {'context_kind': 'portfolio', 'run_id': 'run-1'}})
+    product = PageContext.model_validate({'page': 'product-compare', 'page_instance_id': 'compare',
+        'calculation': {'context_kind': 'single_product'}})
+    assert not TOOL_REGISTRY['portfolios.eval'].uses_current_data(portfolio, {})
+    for operation in ('diagnosis', 'metrics'):
+        assert not TOOL_REGISTRY['page.analyze'].uses_current_data(portfolio, {'operation': operation})
+    assert TOOL_REGISTRY['page.analyze'].uses_current_data(portfolio, {'operation': 'scenario'})
+    assert TOOL_REGISTRY['page.analyze'].uses_current_data(product, {'operation': 'comparison'})
+    assert TOOL_REGISTRY['metrics.preview'].uses_current_data(product, {})
+    assert not TOOL_REGISTRY['task.read'].uses_current_data(product, {})

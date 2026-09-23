@@ -124,6 +124,7 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
   let sessionId = 's', sessionCount = 0
   let draft: Record<string, unknown> | null = null
   let events: Array<Record<string, any>> = []
+  const deliveredEvents: Array<Record<string, any>> = []
   let saved = false
   let commitWrites = 0
   let memoryProposal: Record<string, unknown> | null = null
@@ -191,6 +192,7 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
       if (url.searchParams.get('stream')) return route.fulfill({ status: 503, json: {} })
       const after = Number(url.searchParams.get('after_seq'))
       const items = events.filter(e => e.seq > after)
+      deliveredEvents.push(...structuredClone(items))
       return route.fulfill({ json: { items, last_seq: items.at(-1)?.seq || after, has_more: false, next_event_seq: events.length + 1 } })
     }
     if (path.endsWith('/cancel')) { finish('已停止，已提交的进度已保留。', 'cancelled'); return route.fulfill({ json: run }) }
@@ -243,7 +245,7 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
   const toolEvent = (type: 'tool.started' | 'tool.completed') => {
     if (run) add({ type, run_id: run.run_id, data: { tool: 'metrics.validate', status: 'ok', ...(type === 'tool.completed' ? { duration_ms: 7 } : {}) } })
   }
-  return { setPhase, toolEvent, requests, definition, release: () => release?.(), saved: () => saved, commitWrites: () => commitWrites, updateDraft, finish,
+  return { setPhase, toolEvent, requests, definition, deliveredEvents, runSnapshot: () => structuredClone(run), release: () => release?.(), saved: () => saved, commitWrites: () => commitWrites, updateDraft, finish,
     memoryDecisions, restoreMemoryReads: () => { memoryReadsUnavailable = false }, proposeMemory: () => {
       memoryProposal = { proposal_id: 'proposal-one', status: 'pending', summary: '以后请用简洁中文回答。', key: 'reply.language', object_id: 'scope' }
       finish('请确认是否记住。')
@@ -1605,10 +1607,19 @@ test('收到更新草稿后的阶段事件不会重放旧运行成果', async ({
   await openStudio(page)
   const api = await agentApi(page, { running: true })
   let holdRun = false, waiting = false
+  let previousRun: Record<string, any> | null = null
   let release!: () => void
   const pending = new Promise<void>(resolve => { release = resolve })
   await page.route('**/api/agent/sessions/s/runs/r1', async route => {
-    if (holdRun) { waiting = true; await pending }
+    if (holdRun) {
+      // An older poll can reach GET /runs before it has read the new events.
+      // Let that poll finish with its old receipt; block only after event delivery,
+      // so neither a deadlocked poll nor a fresh run snapshot can mask the assertion.
+      const delivered = api.deliveredEvents.some(event => event.type === 'draft.updated'
+        && event.data?.draft?.definition?.name === '已更新的区间价差')
+      if (!delivered) return route.fulfill({ json: previousRun })
+      waiting = true; await pending
+    }
     await route.fallback()
   })
   await page.getByRole('button', { name: '打开 AI 助手' }).click()
@@ -1618,6 +1629,7 @@ test('收到更新草稿后的阶段事件不会重放旧运行成果', async ({
   api.updateDraft(true)
   const card = page.getByRole('region', { name: '本轮指标草稿', exact: true })
   await expect(card.getByRole('heading', { name: '区间平均价差', exact: true })).toBeVisible()
+  previousRun = api.runSnapshot()
   holdRun = true
   api.definition.name = '已更新的区间价差'
   api.updateDraft(true)

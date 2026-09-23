@@ -488,11 +488,7 @@ class RunController:
                         await self._finish(run, "已达到显式配置的执行上限，进度已保留。", status="paused", reason="explicit_limit")
                         return
                     tool = TOOL_REGISTRY.get(call["name"])
-                    # Portfolio evaluations/diagnosis read an immutable run; a
-                    # scenario instead rebuilds it from the current market data.
-                    uses_current_data = bool(tool and "data" in tool.dependencies and not (
-                        page.context_kind == "portfolio" and (call["name"] == "portfolios.eval" or
-                        (call["name"] == "page.analyze" and call["arguments"].get("operation") != "scenario"))))
+                    uses_current_data = bool(tool and tool.uses_current_data(page, call["arguments"]))
                     if catalog_version(service) != run["catalog_version"]:
                         self.cancel(run["session_id"], run["run_id"], reason="context_changed", source="catalog")
                         raise RunStopped()

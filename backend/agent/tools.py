@@ -137,8 +137,8 @@ class MemoryProposeArgs(Contract):
     object_id: str = Field(default="scope", min_length=1, max_length=100)
 
 
-# Runner-bound tools read durable state the handler cannot receive as arguments.
-RUNNER_TOOLS = ("context.read", "page.read", "page.recompute", "page.analyze", "task.read", "task.plan", "memory.propose")
+# Runner-bound tools need durable state or explicitly mounted business services.
+RUNNER_TOOLS = ("context.read", "page.read", "page.recompute", "page.analyze", "task.read", "task.plan", "memory.propose", "products.search")
 
 
 @dataclass(frozen=True)
@@ -156,6 +156,10 @@ class ToolDefinition:
     equivalent_to: str = ""
     ignored_read_fields: tuple[str, ...] = ()
     projection: str = "registered"
+    current_data: Callable[[PageContext, dict[str, Any]], bool] | None = None
+
+    def uses_current_data(self, page_context, arguments):
+        return "data" in self.dependencies and (self.current_data is None or self.current_data(page_context, arguments))
 
 
 def build_tool_registry(*definitions: ToolDefinition):
@@ -172,6 +176,7 @@ def build_tool_registry(*definitions: ToolDefinition):
                 or not set(tool.domains) <= domains
                 or tool.progress not in {"read", "draft", "preview"}
                 or not set(tool.dependencies) <= {"data", "draft", "page_evidence"}
+                or (tool.current_data is not None and (not callable(tool.current_data) or "data" not in tool.dependencies))
                 or not callable(tool.view)
                 or (tool.handler is None and tool.name not in RUNNER_TOOLS)
                 or (tool.handler is not None and not callable(tool.handler))):
@@ -252,10 +257,10 @@ def _preview_target(session, page_context, stated: Optional[EvaluationTarget]) -
     return target
 
 
-def _effective_as_of(stated: Optional[str]) -> Optional[str]:
-    from services.custom_indicator_routes import pit_as_of
+def _effective_as_of(service, stated: Optional[str]) -> Optional[str]:
+    from pit.context import resolve_request_context
 
-    return pit_as_of(stated)
+    return resolve_request_context(service.market_data_dir, stated).as_of
 
 
 def _refresh_draft(service: Any, session: dict[str, Any]) -> dict[str, Any]:
@@ -372,7 +377,7 @@ def _handle_availability(service, session, page_context, args: AvailabilityArgs)
         targets=[_preview_target(session, page_context, args.target)] if args.target else _context_targets(page_context),
         variable_ids=args.variable_ids or (session.get("draft") or {}).get("dependencies") or None,
         period=period,
-        as_of=_effective_as_of(args.as_of if args.as_of is not None else calculation.as_of),
+        as_of=_effective_as_of(service, args.as_of if args.as_of is not None else calculation.as_of),
     )
     return {"tool": "metrics.availability", **_admitted("metrics.availability", result, view=views.VIEW_AVAILABILITY)}
 
@@ -383,7 +388,7 @@ def _handle_preview(service, session, page_context, args: PreviewArgs) -> dict[s
         raise AgentError("AGENT_DRAFT_REQUIRED", "请先校验通过指标草稿再预览。", status_code=409, field="draft")
     target = _preview_target(session, page_context, args.target)
     period = page_context.calculation.period
-    as_of = _effective_as_of(page_context.calculation.as_of)
+    as_of = _effective_as_of(service, page_context.calculation.as_of)
     definition = draft["definition"]
     session.setdefault("_tool_suboperations", []).append({"tool": "evaluate-series" if draft.get("result_kind") == "time_series" else "evaluate", "attempt": 1})
     if draft.get("result_kind") == "time_series":
@@ -611,10 +616,8 @@ def _handle_page_recompute(service, args: PageRecomputeArgs, page_context, page_
             "note": "这是当前数据版本上按页面原请求的只读重算；空研究日由现有 PIT 规则解析，冻结定义、产品、周期及实际参数保持不变。"}
 
 
-def _handle_products_search(service, session, page_context, args: SearchArgs) -> dict[str, Any]:
-    from services.instrument_routes import instrument_search
-
-    listing = instrument_search(q=args.query, kind=args.kind, sort_by="name", sort_dir="asc", page=1, page_size=args.limit)
+def _handle_products_search(callbacks, session, page_context, args: SearchArgs) -> dict[str, Any]:
+    listing = research_pages.require_page_service(callbacks, 'search')(q=args.query, kind=args.kind, sort_by="name", sort_dir="asc", page=1, page_size=args.limit)
     items = [
         {"kind": item["instrument_type"], "product_id": item.get("ts_code") or item["code"], "name": item.get("name")}
         for item in listing["items"]
@@ -630,7 +633,7 @@ def _handle_products_eval(service, session, page_context, args: SavedIndicatorAr
         inline_definition=None,
         targets=_context_targets(page_context),
         period=page_context.calculation.period,
-        as_of=_effective_as_of(page_context.calculation.as_of),
+        as_of=_effective_as_of(service, page_context.calculation.as_of),
         include_series=args.include_series,
         parameters={},
     )
@@ -643,7 +646,7 @@ def _handle_products_series(service, session, page_context, args: SavedIndicator
         indicator_instances=[{"indicator_id": indicator_id} for indicator_id in args.indicator_ids],
         target=_first_target(page_context),
         period=page_context.calculation.period,
-        as_of=_effective_as_of(page_context.calculation.as_of),
+        as_of=_effective_as_of(service, page_context.calculation.as_of),
     )
     proof_map = _proof_map_for_rows(service, result.get("results"))
     return {"tool": "products.series", **_admitted("products.series", result, projection=Projection(proof_map=proof_map))}
@@ -702,6 +705,14 @@ def _handle_portfolios_eval(service, session, page_context, args: PortfolioEvalA
     return {"tool": "portfolios.eval", **_admitted("portfolios.eval", result, projection=Projection(proof_map=proof_map))}
 
 
+def _page_analysis_uses_current_data(page_context, arguments):
+    return page_context.context_kind != "portfolio" or arguments.get("operation") == "scenario"
+
+
+def _frozen_portfolio_data(page_context, arguments):
+    return False
+
+
 TOOL_REGISTRY = build_tool_registry(
     ToolDefinition(name='task.read', arguments=TaskReadArgs,
         description='读取当前任务的用户原话来源、页面口径、提议计划、未决问题和已由工具证明的进度；回复完成不等于目标完成。',
@@ -732,7 +743,7 @@ TOOL_REGISTRY = build_tool_registry(
         description='按当前页面消息冻结请求只读分析：product-research的catalog/metrics，product-compare的comparison/metrics，holding-diagnosis的diagnosis/metrics/scenario。仅明确当前批次或真实运行；不读取客户端数字，不写业务结果。',
         handler=None, scopes=('product_research',), domains=('single_product', 'portfolio'),
         progress='preview', requires_view=True, dependencies=('data', 'page_evidence'),
-        view=research_pages.analysis_view),
+        view=research_pages.analysis_view, current_data=_page_analysis_uses_current_data),
     ToolDefinition(
         name='page.recompute', arguments=PageRecomputeArgs,
         description='按页面冻结的定义、产品、周期/研究日与实际提交参数只读重算某个 results 分组，用于解释页面数字；不使用会话草稿或默认参数，不写入任何结果。',
@@ -817,7 +828,7 @@ TOOL_REGISTRY = build_tool_registry(
     ToolDefinition(
         name='products.search', arguments=SearchArgs,
         description='用户需要试算或请求样例产品时，检索真实产品。候选不代表数据完整，随后用 availability 检查，再把 target 传给 preview。',
-        handler=_handle_products_search, scopes=('indicator_center', 'product_research'), domains=('single_product',),
+        handler=None, scopes=('indicator_center', 'product_research'), domains=('single_product',),
         dependencies=('data',),
         view=views.VIEW_SEARCH, projection='catalog_contract',
     ),
@@ -831,7 +842,7 @@ TOOL_REGISTRY = build_tool_registry(
         name='portfolios.eval', arguments=PortfolioEvalArgs,
         description='在组合运行快照上计算已保存组合指标，不接受单产品目标；模型只接收状态与经证明的汇总。',
         handler=_handle_portfolios_eval, scopes=('product_research',), domains=('portfolio',),
-        progress='preview', requires_view=True,
+        progress='preview', requires_view=True, current_data=_frozen_portfolio_data,
         dependencies=('data',),
         view=views.VIEW_EVALUATION_SCALAR, projection='evaluation_summary',
     ),
@@ -860,9 +871,11 @@ def execute_tool(
     if name == "metrics.availability":
         calculation = page_context.calculation
         if ((args.period is not None and args.period != calculation.period)
-            or (args.as_of is not None and args.as_of != _effective_as_of(calculation.as_of))):
+            or (args.as_of is not None and args.as_of != _effective_as_of(service, calculation.as_of))):
             raise AgentError("AGENT_CONTEXT_CHANGED", "请先在页面确认新的周期或研究日，再按该口径检查数据。", status_code=409, field="page_context")
     try:
+        if name == "products.search":
+            return _handle_products_search(page_services, session, page_context, args)
         if name in {"task.read", "task.plan", "memory.propose"}:
             from . import ledger, memory
             from .sessions import task_plan_id
