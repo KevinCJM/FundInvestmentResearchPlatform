@@ -232,3 +232,5 @@ flowchart LR
 - 本地日志与浏览器证据放在 `.run/agent-boundaries/`。新源码需与调用方一同提交；使用临时Git索引包含全部本轮候选进行路由/覆盖核验，真实暂存区不变。未提交、推送或部署，未调用真实模型。
 
 当前边界：公共DTO仍保留既有`draft`/`preview`字段，产品共享服务仍使用既有FastAPI错误/响应类型；本轮交付是项目内模块复用。统一SQLite提交边界和运行循环保留；将来出现新的业务成果或跨项目部署需求时，再针对实际契约扩展，不预建第二套实现。
+
+PR复审补充：`GET /api/agent/meta` 在读取模型配置和构建目录前检查当前应用的业务服务挂载；缺失时返回503 `AGENT_SERVICE_UNAVAILABLE`，不能因为模型已配置就展示可用状态。已挂载服务的目录构建失败继续保留原有空版本降级。回归 `test_meta_rejects_unmounted_service_but_tolerates_catalog_failure` 先复现200误报，再验证两种状态分别处理。

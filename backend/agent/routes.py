@@ -76,9 +76,10 @@ def _llm_client(session_id):
 
 @router.get("/api/agent/meta")
 def agent_meta(request: Request):
+    service = _call(lambda: resolve_service(request))
     settings = LlmSettingsStore().public()
     try:
-        version = build_catalog(resolve_service(request))["version"]
+        version = build_catalog(service)["version"]
     except Exception:
         version = ""
     return {"configured": settings["configured"], "provider": settings["provider"] if settings["configured"] else None,

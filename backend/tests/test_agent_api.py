@@ -221,6 +221,23 @@ def test_meta_unconfigured_and_message_503(harness: AgentHarness) -> None:
     assert response.json()["detail"]["code"] == "AGENT_NOT_CONFIGURED"
 
 
+def test_meta_rejects_unmounted_service_but_tolerates_catalog_failure(harness, monkeypatch):
+    harness.client.put('/api/settings/llm', json={'api_key': 'test-key-123456'})
+    del harness.client.app.state.agent_indicator_service
+    missing = harness.client.get('/api/agent/meta')
+    assert missing.status_code == 503
+    assert missing.json()['detail']['code'] == 'AGENT_SERVICE_UNAVAILABLE'
+
+    harness.client.app.state.agent_indicator_service = harness.fake
+    def unavailable_catalog():
+        raise RuntimeError('catalog temporarily unavailable')
+    monkeypatch.setattr(harness.fake, 'meta', unavailable_catalog)
+    degraded = harness.client.get('/api/agent/meta')
+    assert degraded.status_code == 200
+    assert degraded.json()['configured'] is True
+    assert degraded.json()['catalog_version'] == ''
+
+
 def test_sync_controller_entry_fails_before_creating_storage(tmp_path, monkeypatch):
     from starlette.requests import Request
     from agent import routes
