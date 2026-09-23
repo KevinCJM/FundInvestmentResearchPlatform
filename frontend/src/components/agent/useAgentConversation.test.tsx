@@ -1,3 +1,4 @@
+import { adoptIndicatorPreviewContext } from './useIndicatorPreview'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import useAgentConversation from './useAgentConversation'
@@ -455,8 +456,7 @@ it.each(['send', 'edit', 'queue', 'retry'] as const)('%s新运行不能用上一
     if (path.includes('/runs/')) return response(current)
     return response({ items: [], has_more: false })
   }))
-  const options = { adoptPreviewContext: (frozen: AgentPageContext, preview: AgentPreviewReference) => ({ ...frozen,
-    calculation: { ...frozen.calculation, targets: [preview.target], period: preview.period, as_of: preview.as_of || null } }) }
+  const options = { adoptContext: adoptIndicatorPreviewContext }
   const { result, rerender } = renderHook(({ page }) => useAgentConversation(page, true, options), { initialProps: { page: original } })
   await waitFor(() => { expect(result.current.run?.run_id).toBe(run.run_id); expect(result.current.restoring).toBe(false) })
   rerender({ page: { ...original, calculation: { ...original.calculation, period: '3Y' } } })
@@ -490,7 +490,7 @@ it('本轮试算回填可采纳，清除引用后保持该轮已采纳口径', a
   }))
   const adopt = (frozen: AgentPageContext, preview: AgentPreviewReference) => ({ ...frozen,
     calculation: { ...frozen.calculation, targets: [preview.target], period: preview.period, as_of: preview.as_of || null } })
-  const { result, rerender } = renderHook(({ page }) => useAgentConversation(page, true, { adoptPreviewContext: adopt }), { initialProps: { page: context } })
+  const { result, rerender } = renderHook(({ page }) => useAgentConversation(page, true, { adoptContext: adoptIndicatorPreviewContext }), { initialProps: { page: context } })
   await connected()
   rerender({ page: adopt(context, reference) })
   expect(result.current.contextChanged).toBe(false)
@@ -507,7 +507,7 @@ it('恢复口径拥有独立冻结副本，调用者原地修改不能扩大试�
   const fetcher = setup({ page_context: borrowed, preview })
   const adopt = (frozen: AgentPageContext, reference: AgentPreviewReference) => ({ ...frozen,
     calculation: { ...frozen.calculation, targets: [reference.target], period: reference.period, as_of: null } })
-  const { result, rerender } = renderHook(({ page }) => useAgentConversation(page, true, { adoptPreviewContext: adopt }), { initialProps: { page: context } })
+  const { result, rerender } = renderHook(({ page }) => useAgentConversation(page, true, { adoptContext: adoptIndicatorPreviewContext }), { initialProps: { page: context } })
   await connected()
   borrowed.context_revision = 1
   rerender({ page: adopt(borrowed, preview) })
@@ -916,4 +916,15 @@ describe('useAgentConversation message editing', () => {
     expect(result.current.messages.map(message => message.run_id)).toEqual(['run-1', 'run-1', 'run-3', 'run-3'])
     expect(requests).toHaveLength(1)
   })
+})
+
+it('公共会话传递试算回执但不读取指标结果或自行放宽页面条件', async () => {
+  const reference: AgentPreviewReference = { preview_id: 'preview', run_id: run.run_id, definition_hash: 'hash',
+    target: { kind: 'etf', product_id: '510300.SH' }, period: '1M', result_kind: 'scalar' }
+  const fetcher = setup({ preview: reference, draft: { valid: true, draft_revision: 1, definition_hash: 'hash', definition: {} } })
+  const { result } = renderHook(() => useAgentConversation(context, true))
+  await waitFor(() => expect(result.current.restoring).toBe(false))
+  expect(result.current.previewReference).toEqual(reference)
+  expect(fetcher.mock.calls.some(([url]) => url.includes('/previews/'))).toBe(false)
+  expect(result.current.matchesContext({ ...context, calculation: { ...context.calculation, period: '1M' } })).toBe(false)
 })

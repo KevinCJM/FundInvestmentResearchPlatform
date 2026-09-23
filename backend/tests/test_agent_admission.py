@@ -196,13 +196,12 @@ class ProofService(FakeIndicatorService):
 @pytest.fixture
 def harness(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CUSTOM_INDICATOR_DATA_DIR", str(tmp_path))
-    from services import custom_indicator_routes
     from agent import routes as agent_routes
     from services.llm_settings_routes import router as settings_router
 
     service = ProofService(tmp_path)
-    monkeypatch.setattr(custom_indicator_routes, "indicator_service", service)
     app = FastAPI()
+    app.state.agent_indicator_service = service
     app.include_router(settings_router)
     app.include_router(agent_routes.router)
     with TestClient(app) as client:

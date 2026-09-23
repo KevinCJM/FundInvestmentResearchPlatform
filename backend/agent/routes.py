@@ -45,9 +45,11 @@ def _call(fn):
         raise HTTPException(exc.status_code, detail=exc.detail(), headers=headers) from exc
 
 
-def resolve_service():
-    from services import custom_indicator_routes
-    return custom_indicator_routes.indicator_service
+def resolve_service(request: Request):
+    service = getattr(request.app.state, "agent_indicator_service", None)
+    if service is None:
+        raise AgentError("AGENT_SERVICE_UNAVAILABLE", "智能体业务服务尚未挂载。", status_code=503)
+    return service
 
 
 def session_store():
@@ -58,9 +60,8 @@ def controller(request):
     harness.require_controller_loop()
     instance = getattr(request.app.state, "agent_controller", None)
     if instance is None:
-        from .research_pages import runtime_callbacks
-        callbacks = getattr(request.app.state, 'agent_page_services', None)
-        instance = harness.RunController(session_store(), page_services=callbacks if callbacks is not None else runtime_callbacks())
+        callbacks = getattr(request.app.state, 'agent_page_services', {})
+        instance = harness.RunController(session_store(), page_services=callbacks)
         request.app.state.agent_controller = instance
     instance.reconcile()
     return instance
@@ -74,10 +75,10 @@ def _llm_client(session_id):
 
 
 @router.get("/api/agent/meta")
-def agent_meta():
+def agent_meta(request: Request):
     settings = LlmSettingsStore().public()
     try:
-        version = build_catalog(resolve_service())["version"]
+        version = build_catalog(resolve_service(request))["version"]
     except Exception:
         version = ""
     return {"configured": settings["configured"], "provider": settings["provider"] if settings["configured"] else None,
@@ -139,7 +140,7 @@ async def post_agent_message(session_id: str, request: AgentMessageRequest, http
             existing, replayed = instance.store.accept(session_id, request, {})
             return instance, existing, replayed
         llm = _llm_client(session_id)
-        return instance, *instance.submit(session_id, request, llm, resolve_service())
+        return instance, *instance.submit(session_id, request, llm, resolve_service(http_request))
     instance, run, replayed = _call(start)
     if response_mode == "async":
         return JSONResponse({**public_run(run), "replayed": replayed}, status_code=202)
@@ -208,13 +209,13 @@ async def agent_events(session_id: str, request: Request, after_seq: int = Query
 
 
 @router.post("/api/agent/sessions/{session_id}/commit-preview")
-def agent_commit_preview(session_id: str, request: CommitPreviewRequest):
-    return _call(lambda: commit_flow.preview(store=session_store(), session_id=session_id, request=request, service=resolve_service()))
+def agent_commit_preview(session_id: str, request: CommitPreviewRequest, http_request: Request):
+    return _call(lambda: commit_flow.preview(store=session_store(), session_id=session_id, request=request, service=resolve_service(http_request)))
 
 
 @router.post("/api/agent/sessions/{session_id}/commit")
-def agent_commit(session_id: str, request: CommitRequest):
-    return _call(lambda: commit_flow.commit(store=session_store(), session_id=session_id, request=request, service=resolve_service()))
+def agent_commit(session_id: str, request: CommitRequest, http_request: Request):
+    return _call(lambda: commit_flow.commit(store=session_store(), session_id=session_id, request=request, service=resolve_service(http_request)))
 
 
 @router.post("/api/agent/sessions/{session_id}/memory")

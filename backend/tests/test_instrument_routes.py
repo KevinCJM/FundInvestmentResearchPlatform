@@ -16,7 +16,8 @@ for path in (ROOT, BACKEND_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from backend.services import instrument_routes  # noqa: E402
+from backend.services.instrument_routes import router as instrument_router
+from backend.services import instrument_service  # noqa: E402
 from backend.services import instrument_analytics  # noqa: E402
 from backend import fit  # noqa: E402
 
@@ -61,12 +62,12 @@ def _write_info_files(data_dir: Path) -> None:
 
 def test_instrument_search_combines_etf_and_public_fund(monkeypatch, tmp_path: Path) -> None:
     _write_info_files(tmp_path)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
         "fund": tmp_path / "fund_info_df.parquet",
     })
 
-    response = instrument_routes.instrument_search(
+    response = instrument_service.instrument_search(
         q="华夏", kind="all", sort_by="name", sort_dir="asc", page=1, page_size=10
     )
 
@@ -99,13 +100,13 @@ def test_product_query_keeps_fund_universe_separate(monkeypatch, tmp_path: Path)
             },
         ]
     ).to_parquet(tmp_path / "fund_nav_df.parquet", index=False)
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
         "fund": tmp_path / "fund_info_df.parquet",
     })
 
-    response = instrument_routes.instrument_products(
+    response = instrument_service.instrument_products(
         kind="fund",
         q="",
         fund_type=None,
@@ -217,9 +218,9 @@ def _write_product_filter_fixture(data_dir: Path) -> None:
 
 
 def _product_filter_client(monkeypatch, data_dir: Path) -> TestClient:
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", data_dir)
+    monkeypatch.setattr(instrument_service, "DATA_DIR", data_dir)
     monkeypatch.setattr(
-        instrument_routes,
+        instrument_service,
         "INSTRUMENT_FILES",
         {
             "etf": data_dir / "etf_info_df.parquet",
@@ -228,7 +229,7 @@ def _product_filter_client(monkeypatch, data_dir: Path) -> TestClient:
     )
     instrument_analytics._read_small_parquet_cached.cache_clear()
     app = FastAPI()
-    app.include_router(instrument_routes.router)
+    app.include_router(instrument_router)
     return TestClient(app)
 
 
@@ -444,13 +445,13 @@ def test_public_fund_detail_uses_real_nav_timeseries(monkeypatch, tmp_path: Path
             {"ts_code": "000001.OF", "name": "华夏成长", "date": pd.Timestamp("2026-08-28"), "adj_nav": 2.1},
         ]
     ).to_parquet(tmp_path / "fund_nav_df.parquet", index=False)
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
         "fund": tmp_path / "fund_info_df.parquet",
     })
 
-    response = instrument_routes.instrument_product_detail("000001.OF", kind="fund")
+    response = instrument_service.instrument_product_detail("000001.OF", kind="fund")
 
     assert response["kind"] == "fund"
     assert response["name"] == "华夏成长"
@@ -507,13 +508,13 @@ def test_etf_detail_uses_real_nav_timeseries_without_synthetic_fallback(monkeypa
         ]
     ).to_parquet(tmp_path / "etf_share_size_df.parquet", index=False)
     instrument_analytics.rebuild_analytics_snapshot(tmp_path)
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
         "fund": tmp_path / "fund_info_df.parquet",
     })
 
-    response = instrument_routes.instrument_product_detail("510050.SH", kind="etf")
+    response = instrument_service.instrument_product_detail("510050.SH", kind="etf")
 
     assert response["kind"] == "etf"
     assert response["name"] == "上证50ETF"
@@ -572,8 +573,8 @@ def _write_chart_fixture(data_dir: Path, *, with_factors: bool = True) -> None:
 
 
 def _use_data_dir(monkeypatch, data_dir: Path) -> None:
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", data_dir)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+    monkeypatch.setattr(instrument_service, "DATA_DIR", data_dir)
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", {
         "etf": data_dir / "etf_info_df.parquet",
         "fund": data_dir / "fund_info_df.parquet",
     })
@@ -584,9 +585,9 @@ def test_price_series_serves_each_chart_basis_from_its_own_dataset(monkeypatch, 
     _write_chart_fixture(tmp_path)
     _use_data_dir(monkeypatch, tmp_path)
 
-    raw = instrument_routes.instrument_product_price_series("510050.SH", kind="etf", basis="raw_kline")
-    adjusted = instrument_routes.instrument_product_price_series("510050.SH", kind="etf", basis="adjusted_kline")
-    nav = instrument_routes.instrument_product_price_series("510050.SH", kind="etf", basis="adjusted_nav")
+    raw = instrument_service.instrument_product_price_series("510050.SH", kind="etf", basis="raw_kline")
+    adjusted = instrument_service.instrument_product_price_series("510050.SH", kind="etf", basis="adjusted_kline")
+    nav = instrument_service.instrument_product_price_series("510050.SH", kind="etf", basis="adjusted_nav")
 
     assert [point["close"] for point in raw["points"]] == [2.1, 2.3]
     # Back adjustment: price x factor, anchor fixed at 1.0, volume untouched.
@@ -605,7 +606,7 @@ def test_price_series_fails_closed_when_the_adjustment_factor_is_missing(monkeyp
     _write_chart_fixture(tmp_path, with_factors=False)
     _use_data_dir(monkeypatch, tmp_path)
 
-    response = instrument_routes.instrument_product_price_series(
+    response = instrument_service.instrument_product_price_series(
         "510050.SH", kind="etf", basis="adjusted_kline",
     )
 
@@ -614,7 +615,7 @@ def test_price_series_fails_closed_when_the_adjustment_factor_is_missing(monkeyp
     assert "复权因子" in response["reason"]
     assert [item["available"] for item in response["bases"]] == [True, False, True]
     # The other two bases stay usable, so the page can fall back by itself.
-    assert instrument_routes.instrument_product_price_series(
+    assert instrument_service.instrument_product_price_series(
         "510050.SH", kind="etf", basis="raw_kline",
     )["available"] is True
 
@@ -623,12 +624,12 @@ def test_price_series_rejects_a_basis_the_product_kind_cannot_have(monkeypatch, 
     _write_chart_fixture(tmp_path)
     _use_data_dir(monkeypatch, tmp_path)
 
-    rejected = instrument_routes.instrument_product_price_series(
+    rejected = instrument_service.instrument_product_price_series(
         "000001.OF", kind="fund", basis="raw_kline",
     )
 
     assert rejected.status_code == 422
-    assert [item["id"] for item in instrument_routes.instrument_product_price_series(
+    assert [item["id"] for item in instrument_service.instrument_product_price_series(
         "000001.OF", kind="fund", basis="adjusted_nav",
     )["bases"]] == ["adjusted_nav"]
 
@@ -638,10 +639,10 @@ def test_product_detail_can_skip_the_timeseries_it_no_longer_owns(monkeypatch, t
     _write_chart_fixture(tmp_path)
     _use_data_dir(monkeypatch, tmp_path)
 
-    assert instrument_routes.instrument_product_detail(
+    assert instrument_service.instrument_product_detail(
         "510050.SH", kind="etf", include_timeseries=False,
     )["timeseries"] == []
-    assert instrument_routes.instrument_product_detail("510050.SH", kind="etf")["timeseries"] != []
+    assert instrument_service.instrument_product_detail("510050.SH", kind="etf")["timeseries"] != []
 
 
 def test_fund_detail_does_not_substitute_net_asset_for_share_times_unit_nav(monkeypatch, tmp_path: Path) -> None:
@@ -658,13 +659,13 @@ def test_fund_detail_does_not_substitute_net_asset_for_share_times_unit_nav(monk
             }
         ]
     ).to_parquet(tmp_path / "fund_nav_df.parquet", index=False)
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
         "fund": tmp_path / "fund_info_df.parquet",
     })
 
-    response = instrument_routes.instrument_product_detail("000001.OF", kind="fund")
+    response = instrument_service.instrument_product_detail("000001.OF", kind="fund")
 
     assert response["metrics"]["current_size"] is None
     assert response["metrics"]["current_size_as_of"] is None
@@ -673,20 +674,20 @@ def test_fund_detail_does_not_substitute_net_asset_for_share_times_unit_nav(monk
 
 def test_product_detail_returns_empty_timeseries_when_real_nav_is_missing(monkeypatch, tmp_path: Path) -> None:
     _write_info_files(tmp_path)
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", {
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", {
         "etf": tmp_path / "etf_info_df.parquet",
         "fund": tmp_path / "fund_info_df.parquet",
     })
 
-    response = instrument_routes.instrument_product_detail("510050.SH", kind="etf")
+    response = instrument_service.instrument_product_detail("510050.SH", kind="etf")
 
     assert response["timeseries"] == []
 
 
 def test_rankings_api_rejects_active_only_false_without_reading_data() -> None:
     app = FastAPI()
-    app.include_router(instrument_routes.router)
+    app.include_router(instrument_router)
 
     response = TestClient(app).get("/api/instruments/analytics/rankings?active_only=false")
 
@@ -695,9 +696,9 @@ def test_rankings_api_rejects_active_only_false_without_reading_data() -> None:
 
 
 def test_instrument_json_helpers_drop_non_finite_values() -> None:
-    assert instrument_routes._serialize(np.inf) is None
-    assert instrument_routes._serialize(-np.inf) is None
-    assert instrument_routes._safe_stat(pd.Series([1.0, np.inf]), "sum") == 1.0
+    assert instrument_service._serialize(np.inf) is None
+    assert instrument_service._serialize(-np.inf) is None
+    assert instrument_service._safe_stat(pd.Series([1.0, np.inf]), "sum") == 1.0
 
 
 def _seed_research_series(data_dir: Path) -> None:
@@ -722,16 +723,16 @@ def test_product_research_series_stops_at_the_platform_research_day(monkeypatch,
 
     _seed_research_series(tmp_path)
     monkeypatch.setenv("TUSHARE_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
 
-    points, context, future = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    points, context, future = instrument_service._load_product_research_points("etf", "510300.SH", "adjusted_nav")
     assert points[-1]["date"] == "2015-01-06"
     assert context["asOf"] is None
     # No research day means no "after", so 未来模拟 has nothing to look back at.
     assert future == []
 
     PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-31")
-    cut, cut_context, cut_future = instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+    cut, cut_context, cut_future = instrument_service._load_product_research_points("etf", "510300.SH", "adjusted_nav")
     assert cut[-1]["date"] == "2014-12-31"
     assert cut_context["asOf"] == "2014-12-31"
     assert any("2014-12-31" in warning for warning in cut_context["warnings"])
@@ -742,7 +743,7 @@ def test_product_research_series_stops_at_the_platform_research_day(monkeypatch,
 
     PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2010-01-01")
     with pytest.raises(ValueError, match="2010-01-01"):
-        instrument_routes._load_product_research_points("etf", "510300.SH", "adjusted_nav")
+        instrument_service._load_product_research_points("etf", "510300.SH", "adjusted_nav")
 
 
 def test_current_size_moves_with_the_research_day(monkeypatch, tmp_path: Path) -> None:
@@ -768,20 +769,35 @@ def test_current_size_moves_with_the_research_day(monkeypatch, tmp_path: Path) -
         ]
     ).to_parquet(tmp_path / "etf_share_size_df.parquet", index=False)
     monkeypatch.setenv("TUSHARE_DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
 
     PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-31")
-    on_31 = instrument_routes._load_current_size("etf", "510300.SH")
+    on_31 = instrument_service._load_current_size("etf", "510300.SH")
     assert on_31["current_size_as_of"] == "2014-12-31"
     assert on_31["current_size"] == pytest.approx(2040.0)
     assert on_31["current_size_source"] == "etf_share_size_pit"
 
     # A day earlier is a different size, not the same number with a new label.
     PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2014-12-30")
-    on_30 = instrument_routes._load_current_size("etf", "510300.SH")
+    on_30 = instrument_service._load_current_size("etf", "510300.SH")
     assert on_30["current_size_as_of"] == "2014-12-30"
     assert on_30["current_size"] == pytest.approx(2020.0)
 
     # Before the series begins there is nothing to report, and nothing invented.
     PitSettingsRepository(tmp_path).update(None, "RESEARCH", as_of="2010-01-01")
-    assert instrument_routes._load_current_size("etf", "510300.SH")["current_size"] is None
+    assert instrument_service._load_current_size("etf", "510300.SH")["current_size"] is None
+
+
+def test_http_and_agent_share_product_operations_without_query_defaults(monkeypatch, tmp_path):
+    from agent.research_pages import runtime_callbacks
+    _write_info_files(tmp_path)
+    client = _product_filter_client(monkeypatch, tmp_path)
+    callbacks = runtime_callbacks(instruments=instrument_service)
+    http = client.get('/api/instruments/search', params={'q': '', 'kind': 'all'})
+    assert http.status_code == 200
+    assert callbacks['search']() == http.json()
+    http = client.get('/api/instruments/products', params={'kind': 'etf'})
+    assert http.status_code == 200
+    assert callbacks['catalog'](kind='etf') == http.json()
+    assert client.get('/api/instruments/products', params={'page_size': 201}).status_code == 422
+    assert client.get('/api/instruments/search', params={'kind': 'unknown'}).status_code == 422

@@ -715,9 +715,8 @@ def test_uncertain_commit_never_repeats_business_write(tmp_path):
 def test_async_api_status_event_stream_and_context_invalidation(tmp_path,monkeypatch):
     from agent import routes
     monkeypatch.setenv('CUSTOM_INDICATOR_DATA_DIR',str(tmp_path))
-    monkeypatch.setattr(routes,'resolve_service',lambda:FakeIndicatorService(tmp_path))
     monkeypatch.setattr(routes,'_llm_client',lambda session_id:FixtureLLMClient([{'content':'已讨论需求。'}]))
-    app=FastAPI();app.include_router(routes.router)
+    app=FastAPI();app.state.agent_indicator_service=FakeIndicatorService(tmp_path);app.include_router(routes.router)
     with TestClient(app) as client:
         page=authoring_context()
         sid=client.post('/api/agent/sessions',json={'page_context':page}).json()['session_id']

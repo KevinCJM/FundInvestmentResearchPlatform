@@ -327,6 +327,13 @@ from services.strategic_allocation_routes import router as strategic_allocation_
 from services.localization_routes import router as localization_router
 from services.llm_settings_routes import router as llm_settings_router
 from agent.routes import router as agent_router
+from agent.research_pages import runtime_callbacks
+from services import instrument_service
+from services.custom_indicator_routes import indicator_service as agent_indicator_service
+from services.portfolio_routes import portfolio_service as agent_portfolio_service
+
+app.state.agent_indicator_service = agent_indicator_service
+app.state.agent_page_services = runtime_callbacks(instruments=instrument_service, portfolio=agent_portfolio_service)
 
 app.include_router(data_router)
 app.include_router(pit_router)

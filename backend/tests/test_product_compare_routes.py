@@ -14,7 +14,7 @@ for path in (ROOT, BACKEND_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from backend.services import instrument_routes  # noqa: E402
+from backend.services import instrument_service  # noqa: E402
 
 
 def _points() -> list[dict[str, object]]:
@@ -25,8 +25,8 @@ def _points() -> list[dict[str, object]]:
     ]
 
 
-def _request() -> instrument_routes.ProductCompareAnalysisRequest:
-    return instrument_routes.ProductCompareAnalysisRequest(
+def _request() -> instrument_service.ProductCompareAnalysisRequest:
+    return instrument_service.ProductCompareAnalysisRequest(
         ranges={
             "performance": {"start_date": None, "end_date": None},
             "risk": {"start_date": None, "end_date": None},
@@ -39,9 +39,9 @@ def _request() -> instrument_routes.ProductCompareAnalysisRequest:
 
 
 def test_product_compare_route_delegates_to_fixed_signature_njit(monkeypatch) -> None:
-    monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda _kind, _code: _points())
+    monkeypatch.setattr(instrument_service, "_load_timeseries", lambda _kind, _code: _points())
 
-    response = instrument_routes.instrument_product_compare_analysis(
+    response = instrument_service.instrument_product_compare_analysis(
         "510300.SH",
         _request(),
         "etf",
@@ -61,10 +61,10 @@ def test_product_compare_route_delegates_to_fixed_signature_njit(monkeypatch) ->
 
 
 def test_product_compare_route_returns_404_without_real_series(monkeypatch) -> None:
-    monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda _kind, _code: [])
+    monkeypatch.setattr(instrument_service, "_load_timeseries", lambda _kind, _code: [])
 
     with pytest.raises(HTTPException) as exc_info:
-        instrument_routes.instrument_product_compare_analysis(
+        instrument_service.instrument_product_compare_analysis(
             "510300.SH",
             _request(),
             "etf",
@@ -74,12 +74,12 @@ def test_product_compare_route_returns_404_without_real_series(monkeypatch) -> N
 
 
 def test_product_compare_route_maps_invalid_window_to_chinese_400(monkeypatch) -> None:
-    monkeypatch.setattr(instrument_routes, "_load_timeseries", lambda _kind, _code: _points())
+    monkeypatch.setattr(instrument_service, "_load_timeseries", lambda _kind, _code: _points())
     request = _request()
     request.ranges.performance.start_date = "not-a-date"
 
     with pytest.raises(HTTPException) as exc_info:
-        instrument_routes.instrument_product_compare_analysis(
+        instrument_service.instrument_product_compare_analysis(
             "510300.SH",
             request,
             "etf",

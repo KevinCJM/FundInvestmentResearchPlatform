@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AgentApiError, agentEventUrl, cancelAgentRun, createAgentSession, fetchAgentEvents,
   fetchAgentRun, fetchAgentSession, fetchEarlierMessages, invalidateAgentContext, sendAgentMessage,
-  type AgentDraft, type AgentEvent, type AgentPageContext, type AgentRun, type AgentSession, type AgentPreview, type AgentPreviewReference,
+  type AgentDraft, type AgentEvent, type AgentPageContext, type AgentRun, type AgentSession, type AgentPreviewReference,
   type PageEvidenceSnapshot,
 } from '../../services/agent'
 
@@ -25,8 +25,7 @@ export const running = (run?: AgentRun | null) => !!run && ['queued', 'running',
 export type AgentConversationOptions = {
   enabled?: boolean
   cancelOnUnmount?: boolean
-  loadPreview?: (sessionId: string, previewId: string) => Promise<AgentPreview>
-  adoptPreviewContext?: (frozen: AgentPageContext, reference: AgentPreviewReference) => AgentPageContext | null
+  adoptContext?: (frozen: AgentPageContext, run: AgentRun, artifacts: AgentEvent['artifacts']) => AgentPageContext | null
   /** Called once per outgoing message; the returned copy travels with that message and is never re-read later. */
   capturePageSnapshot?: () => PageEvidenceSnapshot | null
 }
@@ -46,9 +45,6 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
   const [activity, setActivity] = useState<AgentEvent[]>([])
   const [draft, setDraft] = useState<AgentDraft | null>(null)
   const [previewReference, setPreviewReference] = useState<AgentPreviewReference | null>(null)
-  const [preview, setPreview] = useState<AgentPreview | null>(null)
-  const [previewError, setPreviewError] = useState('')
-  const [loadingPreview, setLoadingPreview] = useState(false)
   const [error, setError] = useState('')
   const [disconnected, setDisconnected] = useState(false)
   const [sending, setSending] = useState(false)
@@ -79,8 +75,8 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
   const editAttempt = useRef<Pending | null>(null)
   const replacedRuns = useRef(new Set<string>())
   const restoredActivity = useRef({ sessionId: '', seq: 0 })
-  const previewReferenceRef = useRef(previewReference)
-  previewReferenceRef.current = previewReference
+  const artifactsRef = useRef<AgentEvent['artifacts']>({})
+  artifactsRef.current = { draft, preview: previewReference }
   const captureSnapshot = useCallback(() => {
     // One immutable copy per message: later page edits or arriving results cannot rewrite it.
     const snapshot = optionsRef.current.capturePageSnapshot?.()
@@ -92,10 +88,8 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
     const frozen = binding?.frozen || current?.page_context
     if (!frozen) return false
     if ((binding?.key || contextKey(frozen)) === key || binding?.adoptedKey === key) return true
-    const reference = previewReferenceRef.current
-    // A historical preview cannot grant a new run permission to adopt changed controls.
-    if (!binding || !reference?.preview_id || reference.run_id !== binding.run.run_id) return false
-    const adopted = optionsRef.current.adoptPreviewContext?.(frozen, reference)
+    if (!binding) return false
+    const adopted = optionsRef.current.adoptContext?.(frozen, binding.run, artifactsRef.current)
     return !!adopted && key === contextKey(adopted)
   }, [])
   contextRef.current = pageContext
@@ -452,7 +446,7 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
           restorationPending.current = false
           try { sessionStorage.removeItem(storageKey) } catch { /* optional */ }
           publishCore(emptyCore()); cursor.current = 0; setActivity([])
-          setDraft(null); setPreviewReference(null); setPreview(null)
+          setDraft(null); setPreviewReference(null)
         } else { setDisconnected(true); timer = setTimeout(() => setReload(n => n + 1), 2000) }
       } finally { if (active) setRestoring(false) }
     })()
@@ -466,24 +460,6 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
       publishCore({ ...current, binding: { ...binding, adoptedKey: currentKey } })
     }
   }, [currentKey, run?.run_id, previewReference?.preview_id, pageContext, matchesContext, publishCore])
-  const previewId = previewReference?.preview_id
-  const previewMatchesDraft = !!previewReference && previewReference.definition_hash === draft?.definition_hash
-  const hasLegacyPreview = !!previewReference && !previewId
-  useEffect(() => {
-    let active = true
-    if (preview && preview.preview_id === previewId && previewMatchesDraft && matchesContext(pageContext)) return
-    setPreview(null); setPreviewError(''); setLoadingPreview(false)
-    if (hasLegacyPreview) { setPreviewError('这次旧试算未保存完整结果，请让助手重新试算。'); return }
-    const loadPreview = optionsRef.current.loadPreview
-    if (!loadPreview || !previewId || !session?.session_id || !previewMatchesDraft || !matchesContext(pageContext)) return
-    setLoadingPreview(true)
-    void loadPreview(session.session_id, previewId).then(value => {
-      if (active && matchesContext(contextRef.current)) setPreview(value)
-    }).catch(reason => {
-      if (active) setPreviewError(reason instanceof Error ? reason.message : '试算结果加载失败，请重新连接或重试。')
-    }).finally(() => { if (active) setLoadingPreview(false) })
-    return () => { active = false }
-  }, [previewId, session?.session_id, previewMatchesDraft, hasLegacyPreview, currentKey, reload])
   useEffect(() => {
     const current = coreRef.current.session, active = coreRef.current.binding?.run
     if (!current || !active || !running(active) || matchesContext(pageContext) || invalidated.current === `${active.run_id}:${currentKey}`) return
@@ -530,7 +506,7 @@ export default function useAgentConversation(pageContext: AgentPageContext, open
     if (!target?.id) { setError('找不到要重新发送的消息，请刷新后重试。'); return null }
     return submitEdit({ id: target.id, text: target.text || '' }, failed.text, failed)
   }
-  return { session, run, messages, activity, draft, preview, previewError, loadingPreview, error, setError, disconnected, restoring: restoring || restorationPending.current, sending: sending || waitingToSend, failed, cancelQueued,
+  return { session, run, messages, activity, draft, previewReference, matchesContext, refreshRevision: reload, error, setError, disconnected, restoring: restoring || restorationPending.current, sending: sending || waitingToSend, failed, cancelQueued,
     // Leaving an abandoned edit drops its failed receipt and its cached request identity.
     clearFailed: () => { editAttempt.current = null; setFailed(null) },
     contextChanged: !!(core.binding || core.session?.page_context) && !matchesContext(pageContext),

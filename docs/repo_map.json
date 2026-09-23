@@ -106,7 +106,7 @@
       "name": "AI research assistant and durable execution harness",
       "path": "backend/agent",
       "kind": "full_stack_research_module",
-      "purpose": "Shares one conversational assistant across indicator authoring, product research, comparison and immutable portfolio diagnosis. Registered tools reuse existing research services; signed projections keep raw market arrays out of every model request. SQLite owns sessions, execution lifecycle, tool receipts and human decisions. Pending work derives from the committed transcript; physical tool completion and content admission remain separate. Business saves and durable memory changes require independent human confirmation. LLM profiles are explicitly selected and keys are write-only at the HTTP boundary.",
+      "purpose": "Shares one conversational assistant across indicator authoring, product research, comparison and immutable portfolio diagnosis. Registered tools reuse existing research services; signed projections keep raw market arrays out of every model request. SQLite owns sessions, execution lifecycle, tool receipts and human decisions. Pending work derives from the committed transcript; physical tool completion and content admission remain separate. Business saves and durable memory changes require independent human confirmation. LLM profiles are explicitly selected and keys are write-only at the HTTP boundary. Application-owned service bindings are explicit; tools do not discover HTTP routers. Tool declarations own current-data versus immutable-run policy. Indicator preview loading and context adoption belong to the indicator frontend adapter.",
       "module_tags": [
         "agent",
         "llm",
@@ -163,7 +163,8 @@
         "docs/research/ai-agent-harness-progress-design-2026-09-20.md",
         "docs/research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md",
         "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md",
-        "docs/research/ai-assistant-conversation-ui-prototype-2026-09-20.html"
+        "docs/research/ai-assistant-conversation-ui-prototype-2026-09-20.html",
+        "frontend/src/components/agent/useIndicatorPreview.ts"
       ],
       "upstream_dependencies": [
         "backend_api_shell",
@@ -210,7 +211,8 @@
         "frontend/src/services/agentPageEvidence.test.ts",
         "frontend/e2e/agent-panel.spec.ts",
         "frontend/e2e/agent-research-pages.spec.ts",
-        "frontend/e2e/llm-settings.spec.ts"
+        "frontend/e2e/llm-settings.spec.ts",
+        "backend/tests/test_instrument_routes.py"
       ],
       "related_configs": [
         "frontend/playwright.agent-research.config.ts",
@@ -1568,7 +1570,7 @@
       "name": "ETF/public-fund universe, product research, and ETF detail API",
       "path": "backend/app.py",
       "kind": "backend_api_feature",
-      "purpose": "Unified ETF/public-fund search, paged products and product detail APIs live in services/instrument_routes.py. The compatibility ETF list/detail endpoints in backend/app.py delegate to the unified implementation; ETF analytics/trend endpoints delegate to instrument_analytics. Product detail returns real local price points, preserves missing fields as null and returns an empty timeseries when prices are unavailable; it does not generate synthetic prices.",
+      "purpose": "HTTP contracts live in services/instrument_routes.py; the unique shared business implementation lives in services/instrument_service.py and is consumed by HTTP and explicitly bound AI tools. Numerical and error semantics are preserved. The compatibility ETF list/detail endpoints in backend/app.py delegate to the unified implementation; ETF analytics/trend endpoints delegate to instrument_analytics. Product detail returns real local price points, preserves missing fields as null and returns an empty timeseries when prices are unavailable; it does not generate synthetic prices.",
       "module_tags": [
         "backend",
         "etf",
@@ -1602,6 +1604,7 @@
       ],
       "first_read_files": [
         "backend/services/instrument_routes.py",
+        "backend/services/instrument_service.py",
         "backend/app.py"
       ],
       "then_check_files": [
@@ -1627,7 +1630,9 @@
         "backend/tests/test_product_pool_service.py",
         "backend/tests/test_product_pools.py",
         "backend/tests/test_instrument_routes.py",
-        "backend/tests/test_legacy_etf_njit.py"
+        "backend/tests/test_legacy_etf_njit.py",
+        "backend/tests/test_product_analysis_routes.py",
+        "backend/tests/test_product_compare_routes.py"
       ],
       "related_configs": [
         "backend/requirements.txt"

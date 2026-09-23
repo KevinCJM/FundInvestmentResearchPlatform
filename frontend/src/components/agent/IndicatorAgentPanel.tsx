@@ -10,6 +10,7 @@ import { AgentApiError } from '../../services/agentClient'
 import { messageId, type AgentConversationState, type AgentConversationOptions } from './useAgentConversation'
 import type { SeriesOutputDefinition, SeriesParameterDefinition } from '../../services/customIndicators'
 import { useI18n } from '../../i18n/runtime'
+import { adoptIndicatorPreviewContext, emptyIndicatorPreview, useIndicatorPreview, type IndicatorPreviewState } from './useIndicatorPreview'
 
 type Props = {
   pageContext: AgentPageContext
@@ -35,22 +36,16 @@ const hasArtifacts = (event: AgentEvent, chat: AgentConversationState) => {
   return !!draft || !!preview
 }
 
-const conversationOptions: AgentConversationOptions = {
-  loadPreview: fetchAgentPreview,
-  adoptPreviewContext: (frozen, reference) => frozen.calculation.context_kind === 'single_product' ? {
-    ...frozen, calculation: { ...frozen.calculation,
-      targets: [{ kind: reference.target.kind, product_id: reference.target.product_id }],
-      period: reference.period, as_of: reference.as_of || null,
-    },
-  } : null,
-}
+const conversationOptions: AgentConversationOptions = { adoptContext: adoptIndicatorPreviewContext }
 
-function IndicatorSessionStatus({ chat, onPreview, onCommitted }: { chat: AgentConversationState; onPreview?: Props['onPreview']; onCommitted?: Props['onCommitted'] }) {
+function IndicatorSessionStatus({ chat, pageContext, onState, onPreview, onCommitted }: { chat: AgentConversationState; pageContext: AgentPageContext; onState: (state: IndicatorPreviewState) => void; onPreview?: Props['onPreview']; onCommitted?: Props['onCommitted'] }) {
   const { s } = useI18n()
-  useEffect(() => { onPreview?.(chat.preview) }, [chat.preview, onPreview])
+  const previewState = useIndicatorPreview(chat, pageContext)
+  useEffect(() => { onState(previewState) }, [previewState, onState])
+  useEffect(() => { onPreview?.(previewState.preview) }, [previewState.preview, onPreview])
   useEffect(() => { if (chat.session?.saved_commit) onCommitted?.() }, [chat.session?.saved_commit, onCommitted])
-  return chat.previewError && !chat.messages.some(event => event.run_id === chat.run?.run_id && event.artifacts?.preview)
-    ? <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p>{chat.previewError}</p><Button onClick={chat.refresh}>{s('agent.reloadPreview')}</Button></div> : null
+  return previewState.previewError && !chat.messages.some(event => event.run_id === chat.run?.run_id && event.artifacts?.preview)
+    ? <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p>{previewState.previewError}</p><Button onClick={chat.refresh}>{s('agent.reloadPreview')}</Button></div> : null
 }
 
 export default function IndicatorAgentPanel(props: Props) {
@@ -60,6 +55,7 @@ export default function IndicatorAgentPanel(props: Props) {
 function IndicatorIntegration(props: Props) {
   const { s } = useI18n()
   const [operation, setOperation] = useState('')
+  const [previewState, setPreviewState] = useState(emptyIndicatorPreview)
   // Own attempts above the floating panel: closing it cannot turn a retry into a new save.
   const commits = useRef(new Map<string, CommitAttempt>())
   const notifiedCommits = useRef(new Set<string>())
@@ -76,10 +72,10 @@ function IndicatorIntegration(props: Props) {
     ? { ...conversationOptions, capturePageSnapshot: props.capturePageSnapshot }
     : conversationOptions
   return <AgentPanel pageContext={props.pageContext} busy={!!operation} conversationOptions={options}
-    renderStatus={chat => <IndicatorSessionStatus chat={chat} onPreview={props.onPreview}
+    renderStatus={chat => <IndicatorSessionStatus chat={chat} pageContext={props.pageContext} onState={setPreviewState} onPreview={props.onPreview}
       onCommitted={() => notifyCommitted(`${chat.session?.session_id}:${chat.session?.saved_commit?.definition_hash}`)} />} hasArtifacts={hasArtifacts}
     renderWelcome={({ chat, fillInput }) => <><p className="mt-2 text-sm leading-6 text-slate-600">{s('agent.welcomeHelp')}</p>{props.pageContext.page === 'indicator-studio' && <div className="mt-4 flex flex-wrap gap-2">{[[s('agent.designIndicator'), s('agent.designPrompt')], [s('agent.explainFormula'), explainPrompt], [s('agent.findProduct'), chat.draft?.valid && !chat.draft.stale ? s('agent.previewPrompt') : s('agent.definePreviewPrompt')]].map(([label, prompt]) => <Button key={String(label)} onClick={() => fillInput(String(prompt))}>{label}</Button>)}</div>}</>}
-    renderArtifacts={context => <IndicatorArtifacts {...props} {...context} commits={commits.current} operation={operation} setOperation={setOperation}
+    renderArtifacts={context => <IndicatorArtifacts {...props} {...context} previewState={previewState} commits={commits.current} operation={operation} setOperation={setOperation}
       onCommitted={() => notifyCommitted(`${context.chat.session?.session_id}:${context.chat.draft?.definition_hash}`)} />} />
 }
 
@@ -118,7 +114,7 @@ function DraftFormula({ definition, children }: { definition: AgentDraft['defini
 }
 
 
-function IndicatorArtifacts({ pageContext, onApplyDraft, onCommitted, onPreview, onViewPreview, event, eventKey, isCurrent, chat, busy, close, operation, setOperation, commits }: Props & AgentArtifactContext & { operation: string; setOperation: (value: string) => void; commits: Map<string, CommitAttempt> }) {
+function IndicatorArtifacts({ pageContext, onApplyDraft, onCommitted, onPreview, onViewPreview, event, eventKey, isCurrent, chat, busy, close, operation, setOperation, commits, previewState }: Props & AgentArtifactContext & { previewState: IndicatorPreviewState; operation: string; setOperation: (value: string) => void; commits: Map<string, CommitAttempt> }) {
   const { s } = useI18n()
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
@@ -139,7 +135,7 @@ function IndicatorArtifacts({ pageContext, onApplyDraft, onCommitted, onPreview,
   }, [draftKey, savedRevision, s])
   const previewKey = `${eventKey}:${preview?.preview_id}`
   const series = turnDraft?.definition.result_kind === 'time_series' && Array.isArray(turnDraft.definition.series_outputs) ? turnDraft.definition.series_outputs as SeriesOutputDefinition[] : []
-  const result = chat.preview?.preview_id === preview?.preview_id ? chat.preview?.result.results[0] : undefined
+  const result = previewState.preview?.preview_id === preview?.preview_id ? previewState.preview?.result.results[0] : undefined
   const applyDraft = (draft: AgentDraft, key: string) => {
     if (!onApplyDraft || busy) return
     try { onApplyDraft(draft.definition); setActionFeedback(key, { text: saved ? s('agent.draftAppliedSaved') : s('agent.draftApplied') }) }
@@ -199,13 +195,13 @@ function IndicatorArtifacts({ pageContext, onApplyDraft, onCommitted, onPreview,
                 <ActionFeedback value={feedback[draftKey]} />
               </section>}
               {preview && <section aria-label={s('agent.previewRegion')} className="mt-3 space-y-2 rounded-xl border border-slate-200 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-slate-900">{s('agent.previewTitle')}</h3>{preview.preview_id && <Button className="px-2" aria-label={operation === previewKey ? s('agent.reading') : s('agent.viewPreview')} disabled={busy || (isCurrent && chat.loadingPreview)} onClick={() => void viewPreview(preview, previewKey)}>{operation === previewKey ? s('agent.reading') : s('agent.previewShort')}</Button>}</div><p className="text-xs text-slate-600">{s('agent.previewConditions', { product: preview.target.name ? s('agent.productWithCode', { name: preview.target.name, code: preview.target.product_id }) : preview.target.product_id, period: preview.period, date: preview.as_of || s('agent.unrestricted') })}</p>
-                {result && <><p className="text-xs text-slate-600">{s('agent.calculationStatus', { status: ({ ok: s('agent.calculable'), warning: s('agent.calculationWarning'), unavailable: s('agent.unavailable'), error: s('agent.calculationFailed') })[result.status] || s('agent.resultDetails') })}</p>{Object.entries(result.parameters || {}).map(([key, value]) => <p key={key} className="text-xs tabular-nums text-slate-600">{s('agent.parameterValue', { label: chat.preview?.definition.parameter_schema?.find(parameter => parameter.id === key)?.label || key, value })}</p>)}</>}
+                <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-slate-900">{s('agent.previewTitle')}</h3>{preview.preview_id && <Button className="px-2" aria-label={operation === previewKey ? s('agent.reading') : s('agent.viewPreview')} disabled={busy || (isCurrent && previewState.loadingPreview)} onClick={() => void viewPreview(preview, previewKey)}>{operation === previewKey ? s('agent.reading') : s('agent.previewShort')}</Button>}</div><p className="text-xs text-slate-600">{s('agent.previewConditions', { product: preview.target.name ? s('agent.productWithCode', { name: preview.target.name, code: preview.target.product_id }) : preview.target.product_id, period: preview.period, date: preview.as_of || s('agent.unrestricted') })}</p>
+                {result && <><p className="text-xs text-slate-600">{s('agent.calculationStatus', { status: ({ ok: s('agent.calculable'), warning: s('agent.calculationWarning'), unavailable: s('agent.unavailable'), error: s('agent.calculationFailed') })[result.status] || s('agent.resultDetails') })}</p>{Object.entries(result.parameters || {}).map(([key, value]) => <p key={key} className="text-xs tabular-nums text-slate-600">{s('agent.parameterValue', { label: previewState.preview?.definition.parameter_schema?.find(parameter => parameter.id === key)?.label || key, value })}</p>)}</>}
                 {!preview.preview_id && <p className="text-xs text-amber-900">{s('agent.legacyPreview')}</p>}
                 {busy && <p className="text-xs text-slate-600">{s('agent.previewBusy')}</p>}
                 <ActionFeedback value={feedback[previewKey]} />
-                {isCurrent && chat.previewError && !feedback[previewKey]?.error && <div role="alert" className="text-xs text-amber-900"><p>{chat.previewError}</p><Button onClick={chat.refresh}>{s('agent.reloadPreview')}</Button></div>}
+                {isCurrent && previewState.previewError && !feedback[previewKey]?.error && <div role="alert" className="text-xs text-amber-900"><p>{previewState.previewError}</p><Button onClick={chat.refresh}>{s('agent.reloadPreview')}</Button></div>}
               </section>}
-              {isCurrent && chat.loadingPreview && <p role="status" className="text-sm text-slate-600">{s('agent.loadingPreview')}</p>}
+              {isCurrent && previewState.loadingPreview && <p role="status" className="text-sm text-slate-600">{s('agent.loadingPreview')}</p>}
   </>
 }

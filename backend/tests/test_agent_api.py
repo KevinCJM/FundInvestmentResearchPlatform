@@ -1,7 +1,7 @@
 """End-to-end contract tests for the agent REST surface.
 
 A deterministic fixture LLM and a spy indicator service keep every assertion
-offline and prove the agent talks to the module-level service singleton rather
+offline and prove the agent talks to the application-mounted service rather
 than constructing a second one.
 """
 
@@ -185,13 +185,12 @@ def portfolio_context() -> dict[str, Any]:
 @pytest.fixture
 def harness(tmp_path: Path, monkeypatch) -> AgentHarness:
     monkeypatch.setenv("CUSTOM_INDICATOR_DATA_DIR", str(tmp_path))
-    from services import custom_indicator_routes
     from agent import routes as agent_routes
     from services.llm_settings_routes import router as settings_router
 
     fake = FakeIndicatorService(tmp_path)
-    monkeypatch.setattr(custom_indicator_routes, "indicator_service", fake)
     app = FastAPI()
+    app.state.agent_indicator_service = fake
     app.include_router(settings_router)
     app.include_router(agent_routes.router)
     with TestClient(app) as client:
@@ -364,10 +363,9 @@ def test_slow_preview_io_keeps_controller_routes_responsive_on_the_loop(harness:
     assert missing.status_code == 409 and missing.json()['detail']['code'] == 'AGENT_PREVIEW_STALE'
 
 
-def test_service_singleton_is_reused_and_preview_uses_validate_token(harness: AgentHarness, monkeypatch) -> None:
-    from services import custom_indicator_routes
+def test_mounted_service_is_reused_and_preview_uses_validate_token(harness: AgentHarness, monkeypatch) -> None:
 
-    assert harness.routes.resolve_service() is custom_indicator_routes.indicator_service
+    assert harness.client.app.state.agent_indicator_service is harness.fake
     harness.client.put("/api/settings/llm", json={"api_key": "test-key-123456"})
     script = harness.script(
         monkeypatch,
@@ -925,16 +923,15 @@ def test_conversation_draft_and_human_save_need_no_product(harness, monkeypatch)
 def test_preview_requires_real_target_and_can_use_searched_sample(harness, monkeypatch):
     from agent.tools import execute_tool
     from agent.sessions import apply_context
-    from services import instrument_routes
     target = {'kind': 'etf', 'product_id': '510300.SH'}
-    monkeypatch.setattr(instrument_routes, 'instrument_search', lambda **kwargs: {'items': [
+    harness.client.app.state.agent_page_services = {'search': lambda **kwargs: {'items': [
         {'ts_code': '510300.SH', 'name': '沪深300ETF', 'instrument_type': 'etf'},
-    ]})
+    ]}}
     context = PageContext.model_validate(authoring_context())
     state = {'scope': 'indicator_center'}
     apply_context(state, context)
     def run(name, args):
-        return execute_tool(name, args, session=state, page_context=context, service=harness.fake)
+        return execute_tool(name, args, session=state, page_context=context, service=harness.fake, page_services=harness.client.app.state.agent_page_services)
     run('metrics.validate', {'definition': DEFINITION})
     with pytest.raises(AgentError, match='查看实际结果'):
         run('metrics.preview', {})
@@ -1476,3 +1473,22 @@ def test_page_evidence_series_section_keeps_arrays_on_the_page_and_coverage_for_
     assert [channel['id'] for channel in summary['groups'][1]['channels']] == ['vol', 'level']
     assert not has_raw_sequence(summary), '逐点数组不得进入模型上下文'
     assert len(script.requests) == len(pages) + 1
+
+
+def test_agent_business_services_belong_to_the_request_application(tmp_path, monkeypatch):
+    from agent import routes
+    from starlette.requests import Request
+    first, second = FastAPI(), FastAPI()
+    first.state.agent_indicator_service = FakeIndicatorService(tmp_path / 'first')
+    second.state.agent_indicator_service = FakeIndicatorService(tmp_path / 'second')
+    for app in (first, second):
+        request = Request({'type': 'http', 'app': app})
+        assert routes.resolve_service(request) is app.state.agent_indicator_service
+    with pytest.raises(AgentError) as error:
+        routes.resolve_service(Request({'type': 'http', 'app': FastAPI()}))
+    assert error.value.code == 'AGENT_SERVICE_UNAVAILABLE'
+    # Missing page capabilities fail closed even when product HTTP modules are loaded.
+    from agent.research_pages import require_page_service
+    with pytest.raises(AgentError) as error:
+        require_page_service({}, 'search')
+    assert error.value.code == 'AGENT_PAGE_SERVICE_UNAVAILABLE'

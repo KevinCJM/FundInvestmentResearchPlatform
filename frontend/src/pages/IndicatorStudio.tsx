@@ -4,7 +4,6 @@ import IndicatorParameterInputs from '../components/indicator-parameters/Indicat
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import ReactECharts from 'echarts-for-react'
-import type { AgentPreview } from '../services/agent'
 import IndicatorGraphEditor, { type IndicatorGraphEditorHandle } from '../components/indicator-graph/IndicatorGraphEditor'
 import katex from 'katex'
 import ScalarOutputEditor from '../components/indicator-outputs/ScalarOutputEditor'
@@ -61,6 +60,7 @@ import {
 import { IndicatorInputDates, MetricUnavailableReason, MetricValue } from '../components/metrics/MetricDisplay'
 import { SearchDropdown } from '../components/FilterDropdown'
 import IndicatorAgentPanel from '../components/agent/IndicatorAgentPanel'
+import { useAdoptedIndicatorPreview } from '../components/agent/useIndicatorPreview'
 import { buildIndicatorStudioEvidence, submittedParameterOverrides, type FrozenPreviewRequest } from '../services/agentPageEvidence'
 
 const FALLBACK_PERIODS = [
@@ -1172,9 +1172,6 @@ export default function IndicatorStudio() {
   const [validation, setValidation] = useState<ValidationResponse | null>(null)
   const [results, setResults] = useState<EvaluationResult[]>([])
   const [seriesResults, setSeriesResults] = useState<TimeSeriesIndicatorResult[]>([])
-  const [agentPreview, setAgentPreview] = useState<AgentPreview | null>(null)
-  const [agentPreviewDefinition, setAgentPreviewDefinition] = useState<IndicatorDraft | null>(null)
-  const adoptedPreviewId = useRef('')
   const [runtimeParameters, setRuntimeParameters] = useState<Record<string, number>>({})
   const [parameterPending, setParameterPending] = useState(false)
   const [activeSeriesOutputId, setActiveSeriesOutputId] = useState('')
@@ -1186,11 +1183,7 @@ export default function IndicatorStudio() {
   const [asOf, setAsOf] = useState(searchParams.get('as_of') || '')
   const [mobileTab, setMobileTab] = useState<MobileTab>('library')
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(() => searchParams.get('ids') ? 'preview' : 'editor')
-  const receiveAgentPreview = React.useCallback((value: AgentPreview | null, explicit = false) => {
-    if (!explicit && value && adoptedPreviewId.current === value.preview_id) return
-    setAgentPreview(value)
-    if (!value) return
-    adoptedPreviewId.current = value.preview_id
+  const { preview: agentPreview, definition: agentPreviewDefinition, setPreview: setAgentPreview, receive: receiveAgentPreview } = useAdoptedIndicatorPreview(draft, selectedId, value => {
     const target = value.result.results[0]?.target ?? value.target
     setTargets([{ kind: target.kind as ProductKind, product_id: target.product_id, name: target.name || target.product_id }])
     setPeriod(value.period)
@@ -1198,14 +1191,13 @@ export default function IndicatorStudio() {
     setRuntimeParameters(Object.fromEntries((value.definition.parameter_schema ?? []).map(parameter => [
       parameter.id, value.result.results[0]?.parameters?.[parameter.id] ?? parameter.default,
     ])))
-    setAgentPreviewDefinition(value.definition)
     previewRequestRef.current += 1
     setPreviewing(false)
     setResults([])
     setSeriesResults([])
     setError(null)
     setMobileTab('preview'); setWorkspaceTab('preview')
-  }, [])
+  })
   const [catalogTab, setCatalogTab] = useState<CatalogTab>('variables')
   const [editorMode, setEditorMode] = useState<EditorMode>('guided')
   const [canvasPending, setCanvasPending] = useState(false)
@@ -1310,7 +1302,6 @@ export default function IndicatorStudio() {
   const previewReady = agentPreviewDefinition ? !loading && !!meta : hasDefinitionFormula
   previewContextRef.current = JSON.stringify({ draft: previewDefinition, selectedId, targets, activePeriod, asOf, canvasPending, runtimeParameters })
   const renderedPreviewContext = previewContextRef.current
-  useEffect(() => { setAgentPreviewDefinition(null); setAgentPreview(null) }, [draft, selectedId])
   const parameterSchemaKey = JSON.stringify(draft.parameter_schema ?? [])
   useEffect(() => {
     setRuntimeParameters({})
