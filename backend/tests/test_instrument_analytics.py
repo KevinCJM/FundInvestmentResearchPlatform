@@ -17,7 +17,8 @@ for path in (ROOT, BACKEND_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from backend.services import instrument_analytics, instrument_routes  # noqa: E402
+from backend.services import instrument_analytics, instrument_service
+from backend.services.instrument_routes import router as instrument_router  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -234,10 +235,10 @@ def test_event_dates_are_etf_list_date_and_fund_found_date(tmp_path: Path) -> No
 
 def test_missing_fund_data_is_partial_http_200(tmp_path: Path, monkeypatch) -> None:
     info_files = _write_info_files(tmp_path, include_fund=False)
-    monkeypatch.setattr(instrument_routes, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(instrument_routes, "INSTRUMENT_FILES", info_files)
+    monkeypatch.setattr(instrument_service, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(instrument_service, "INSTRUMENT_FILES", info_files)
     app = FastAPI()
-    app.include_router(instrument_routes.router)
+    app.include_router(instrument_router)
 
     response = TestClient(app).get("/api/instruments/analytics?kind=all")
 

@@ -12,7 +12,7 @@ import math
 from collections.abc import Mapping, Sequence
 
 
-MATH_NOTATION_VERSION = "1.5.0"
+MATH_NOTATION_VERSION = "1.5.1"
 
 
 _CANONICAL_OPERATOR_ALIASES = {
@@ -189,7 +189,7 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         "covariance": rf"\operatorname{{Cov}}\left({','.join(arguments)}\right)",
         "correlation": rf"\operatorname{{Corr}}\left({','.join(arguments)}\right)",
         "portfolio_returns": rf"{_group(first)}{_group(second)}",
-        "total_return": rf"\prod_i\left(1+{first}_i\right)-1",
+        "total_return": rf"\prod_i\left(1+{_indexed(first, 'i')}\right)-1",
     }
     if operator_id in unary:
         return unary[operator_id]
@@ -207,9 +207,9 @@ def render_operator_latex(operator_id: str, arguments: Sequence[str]) -> str:
         suffix = rf"_{{\mathrm{{ddof}}={ddof}}}" if ddof else ""
         return rf"\operatorname{{Std}}{suffix}{_group(first)}"
     if operator_id == "lag":
-        return rf"\left({first}_{{t-{second}}}\right)_t"
+        return rf"\left({_indexed(first, f't-{second}')}\right)_t"
     if operator_id == "difference":
-        return rf"\left(\Delta_{{{second}}}{first}_t\right)_t"
+        return rf"\left(\Delta_{{{second}}}{_indexed(first, 't')}\right)_t"
     if operator_id == "rolling_window":
         return rf"\mathcal{{W}}_{{t,{second}}}{_group(first)}"
     if operator_id == "finite_mask":

@@ -374,8 +374,8 @@ export interface IndicatorOperatorParameter {
   parameterizable?: boolean
   source_policy?: 'fixed_constant' | string
   constant_kind?: 'integer' | 'number' | string
-  minimum?: number
-  maximum?: number
+  minimum?: number | null
+  maximum?: number | null
 }
 
 export interface IndicatorOperatorParameterSet {

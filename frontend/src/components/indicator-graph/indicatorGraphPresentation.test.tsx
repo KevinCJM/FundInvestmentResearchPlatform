@@ -91,13 +91,20 @@ describe('画布中文展示，不改变计算协议', () => {
 
   it('截图中的参数面板、上游选项和输出类型不再显示原始代码', () => {
     const onNodeChange = vi.fn()
-    const { container } = render(<IndicatorNodeInspector graph={graph} selectedId="lt" variables={variables} operators={operators} types={types} isTimeSeries={false} onNodeChange={onNodeChange} onOutputChange={vi.fn()} onRemove={vi.fn()} onDuplicate={vi.fn()} />)
+    const boundedOperators = operators.map(operator => ({ ...operator, parameters: operator.parameters?.map(parameter => (
+      parameter.name === 'b' ? { ...parameter, source_policy: 'fixed_constant', minimum: 0, maximum: null } : parameter
+    )) }))
+    const { container } = render(<IndicatorNodeInspector graph={graph} selectedId="lt" variables={variables} operators={boundedOperators} types={types} isTimeSeries={false} onNodeChange={onNodeChange} onOutputChange={vi.fn()} onRemove={vi.fn()} onDuplicate={vi.fn()} />)
     expect(container.textContent).not.toMatch(/\b(?:returns|scalar|series|mask|time)\b|<T>|<A,B>/)
     expect(screen.getByText('已检查输出：时间条件序列（是／否） · 对齐维度：时间')).toBeInTheDocument()
     expect(screen.getByLabelText('输入 A当前输入')).toHaveTextContent('已连接：步骤 1 · 复权净值普通收益率 · 时间序列')
     const selector = screen.getByRole('combobox', { name: '输入 A输入来源' })
     expect(within(selector).getByRole('option', { name: '步骤 1 · 复权净值普通收益率 · 时间序列' })).toHaveValue('r')
-    fireEvent.change(screen.getByRole('spinbutton', { name: '输入 B常量' }), { target: { value: '2' } })
+    const constant = screen.getByRole('spinbutton', { name: '输入 B常量' })
+    expect(constant).toHaveAttribute('min', '0')
+    expect(constant).not.toHaveAttribute('max')
+    expect(container.textContent).not.toContain('最大值')
+    fireEvent.change(constant, { target: { value: '2' } })
     expect(onNodeChange).toHaveBeenCalledWith({ ...graph.nodes[1], arguments: { a: { source: 'node', node_id: 'r' }, b: { source: 'constant', value: 2 } } })
   })
 })

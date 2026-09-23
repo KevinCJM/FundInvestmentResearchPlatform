@@ -6,7 +6,6 @@ import {
   getCustomIndicatorMeta,
   indicatorsForContext,
   listCustomIndicators,
-  type EvaluationTarget,
   type EvaluationResult,
   type IndicatorDefinition,
   type ProductKind,
@@ -28,6 +27,12 @@ import {
   type ProductCompareAnalysisResponse,
   type ProductCompareMetrics,
 } from '../services/productCompare';
+import AgentPanel from '../components/agent/AgentPanel';
+import usePageContextRevision from '../components/agent/usePageContextRevision';
+import useResearchAgentView from '../components/agent/useResearchAgentView';
+import { buildProductCompareEvidence, frozenIndicatorRefs, shortStableId, pageResultReference, type PageResultRecord } from '../services/agentPageEvidence';
+import type { AgentPageContext } from '../services/agent';
+import { systemText as s } from '../i18n/runtime';
 
 interface TimeSeriesPoint {
   date: string;
@@ -863,6 +868,10 @@ export default function ProductCompare() {
   const [customIndicatorLoading, setCustomIndicatorLoading] = useState(false);
   const [customIndicatorError, setCustomIndicatorError] = useState<string | null>(null);
   const [customIndicatorAsOf, setCustomIndicatorAsOf] = useState('');
+  const agentView = useResearchAgentView();
+  const [loadedProductKey, setLoadedProductKey] = useState('');
+  const [metricRecord, setMetricRecord] = useState<PageResultRecord | null>(null);
+  const [comparisonRecord, setComparisonRecord] = useState<PageResultRecord | null>(null);
   const [definitionIndicator, setDefinitionIndicator] = useState<IndicatorDefinition | null>(null);
   const [metricPreference, setMetricPreference] = useMetricDisplayPreference(
     'product-compare',
@@ -905,6 +914,7 @@ export default function ProductCompare() {
   const limitedIds = useMemo(() => limitedTargets.map((target) => target.id), [limitedTargets]);
   const truncatedIds = !previewMode && targetsFromQuery.length > limitedTargets.length;
   const hasRemoteIds = limitedTargets.length > 0;
+  const productRequestKey = JSON.stringify([previewMode, limitedTargets, agentView.identity]);
   const comparisonProductKind = useMemo<ProductKind | null>(() => {
     if (previewMode) return defaultProductKind;
     const kinds = new Set(limitedTargets.map((target) => target.kind));
@@ -914,6 +924,7 @@ export default function ProductCompare() {
   useEffect(() => {
     if (previewMode) {
       setProducts(DEMO_PRODUCTS);
+      setLoadedProductKey(productRequestKey);
       setFailedIds([]);
       setError(null);
       setLoading(false);
@@ -921,6 +932,7 @@ export default function ProductCompare() {
     }
     if (!hasRemoteIds) {
       setProducts([]);
+      setLoadedProductKey(productRequestKey);
       setFailedIds([]);
       setError(null);
       setLoading(false);
@@ -960,6 +972,7 @@ export default function ProductCompare() {
           }
         });
         setProducts(succeeded);
+        setLoadedProductKey(productRequestKey);
         setFailedIds(failed);
         if (succeeded.length === 0) {
           setError('未能加载任何产品详情，请返回重新选择。');
@@ -978,7 +991,7 @@ export default function ProductCompare() {
     };
     fetchData();
     return () => controller.abort();
-  }, [hasRemoteIds, limitedTargets, previewMode]);
+  }, [productRequestKey]);
 
   const detailColumns = useMemo(
     () => [
@@ -1071,7 +1084,7 @@ export default function ProductCompare() {
 
   const productPresentations = useMemo(
     () =>
-      products.map((product, index) => {
+      (loadedProductKey === productRequestKey ? products : []).map((product, index) => {
         const candidateKey =
           (typeof product.product_id === 'string' && product.product_id.trim().length > 0 && product.product_id.trim()) ||
           (typeof product.base_info?.ts_code === 'string' && product.base_info.ts_code.trim().length > 0 && product.base_info.ts_code.trim()) ||
@@ -1090,7 +1103,7 @@ export default function ProductCompare() {
           '--';
         return { key, product, displayName, code, kind: product.instrument_kind ?? defaultProductKind };
       }),
-    [defaultProductKind, products],
+    [defaultProductKind, products, loadedProductKey, productRequestKey],
   );
 
   useEffect(() => {
@@ -1113,6 +1126,13 @@ export default function ProductCompare() {
     return () => { active = false; };
   }, [comparisonProductKind]);
 
+  const metricRequests = useMemo(() => groupIndicatorsByPeriod(metricPreference, '1Y').map(({ indicatorIds, period }) => ({
+    indicator_refs: frozenIndicatorRefs(indicatorIds, {}, customIndicators, period).map(({ period: _period, ...reference }) => reference),
+    targets: productPresentations.map(({ code, kind, product }) => ({ kind, product_id: code === '--' ? product.product_id ?? '' : code })).filter(target => target.product_id),
+    period, as_of: customIndicatorAsOf || undefined,
+  })).filter(request => request.indicator_refs.length), [metricPreference, customIndicators, productPresentations, customIndicatorAsOf]);
+  const metricsKey = JSON.stringify([metricRequests, agentView.identity]);
+
   useEffect(() => {
     if (metricPreference.indicatorIds.length === 0 || productPresentations.length === 0) {
       setCustomIndicatorResults([]);
@@ -1121,23 +1141,13 @@ export default function ProductCompare() {
     let active = true;
     setCustomIndicatorLoading(true);
     setCustomIndicatorError(null);
-    const targets = productPresentations.map<EvaluationTarget>(({ code, kind, product }) => ({
-      kind,
-      product_id: code === '--' ? product.product_id ?? '' : code,
-    })).filter((target) => target.product_id.length > 0);
-    Promise.all(groupIndicatorsByPeriod(metricPreference, '1Y').map(({ indicatorIds, period }) => (
-      evaluateCustomIndicators({
-        indicator_ids: indicatorIds,
-        targets,
-        period,
-        as_of: customIndicatorAsOf || undefined,
-      })
-    )))
-      .then((responses) => { if (active) setCustomIndicatorResults(responses.flatMap(({ results }) => results)); })
+    const frozenRecord: PageResultRecord = { key: metricsKey, request: { requests: structuredClone(metricRequests), pit_identity: agentView.identity }, completed: true };
+    Promise.all(metricRequests.map(request => evaluateCustomIndicators(request)))
+      .then((responses) => { if (active) { setCustomIndicatorResults(responses.flatMap(({ results }) => results)); setMetricRecord(frozenRecord); } })
       .catch(() => { if (active) setCustomIndicatorError('部分或全部产品暂时无法计算该指标。'); })
       .finally(() => { if (active) setCustomIndicatorLoading(false); });
     return () => { active = false; };
-  }, [customIndicatorAsOf, metricPreference.indicatorIds, metricPreference.periodsByIndicator, productPresentations]);
+  }, [metricsKey]);
 
   const selectedCustomIndicators = useMemo(() => metricPreference.indicatorIds
     .map((id) => customIndicators.find((indicator) => indicator.id === id))
@@ -1515,6 +1525,57 @@ export default function ProductCompare() {
     rollingWindowMax,
   );
 
+  // 助手只冻结页面实际加载并提交比较的产品；demo 预览只登记虚拟来源，不冒充真实计算。
+  const agentTargets = useMemo(() => productPresentations.flatMap(({ code, kind, product }) => {
+    const productId = code === '--' ? product.product_id ?? '' : code;
+    return productId ? [{ kind, product_id: productId, management_fee: product.metrics?.m_fee ?? null, custody_fee: product.metrics?.c_fee ?? null }] : [];
+  }), [productPresentations]);
+  const agentIndicators = metricRequests.flatMap(request => request.indicator_refs.map(reference => ({ ...reference, period: request.period })));
+  const agentAsOf = agentView.asOf;
+  const agentRanges = {
+    performance: { start_date: performanceRangeMeta.startDate, end_date: performanceRangeMeta.endDate },
+    risk: { start_date: riskRangeMeta.startDate, end_date: riskRangeMeta.endDate },
+    efficiency: { start_date: efficiencyRangeMeta.startDate, end_date: efficiencyRangeMeta.endDate },
+  };
+  const comparisonKey = JSON.stringify([agentTargets, agentRanges, effectiveRollingWindowDays, productRequestKey]);
+  // 只有语义条件变化才递增修订号；指标结果回包或产品详情重载不打断已发送的问题。
+  const agentContextRevision = usePageContextRevision(JSON.stringify([
+    previewMode, targetsFromQuery, performanceRange, riskRange, efficiencyRange, rollingWindowDays, customIndicatorAsOf,
+    metricPreference.indicatorIds, metricPreference.periodsByIndicator, agentView.identity,
+  ]));
+  const agentPageContext: AgentPageContext = {
+    page: 'product-compare',
+    // 页面对象由 URL 决定：产品详情还在加载时也不能换实例，否则已打开的对话会被重挂。
+    page_instance_id: `product-compare:${shortStableId(previewMode ? 'demo' : targetsFromQuery.map(target => `${target.kind}:${target.id}`).join(','))}`,
+    context_revision: agentContextRevision,
+    view_state: agentView.viewState,
+    calculation: { context_kind: 'single_product', targets: agentTargets.map(({ kind, product_id }) => ({ kind, product_id })), period: '1Y', as_of: agentAsOf },
+  };
+  // 没有明确比较产品时不提交页面快照：不把空批次或伪造 ID 送进页面的注册请求。
+  const captureAgentSnapshot = () => agentTargets.length === 0 ? null : buildProductCompareEvidence({
+    request: {
+      targets: agentTargets,
+      ranges: agentRanges,
+      rolling_window_days: effectiveRollingWindowDays,
+      indicators: agentIndicators,
+      as_of: agentAsOf,
+      metrics_as_of: customIndicatorAsOf || null,
+      source: previewMode ? 'demo' : 'actual',
+    },
+    displayed: {
+      source: previewMode ? 'demo-products' : 'instruments.products + compare-analysis',
+      refs: {
+        compared_products: agentTargets.length,
+        ranges_resolved: [agentRanges.performance, agentRanges.risk, agentRanges.efficiency]
+          .every(range => range.start_date !== null && range.end_date !== null),
+        indicator_results: customIndicatorResults.length,
+        demo: previewMode,
+        comparison: pageResultReference(comparisonRecord, comparisonKey, comparisonAnalysisLoading, comparisonAnalysisError),
+        metrics: pageResultReference(metricRecord, metricsKey, customIndicatorLoading, customIndicatorError),
+      },
+    },
+  });
+
   useEffect(() => {
     if (effectiveRollingWindowDays !== rollingWindowDays) {
       setRollingWindowDays(effectiveRollingWindowDays);
@@ -1540,6 +1601,7 @@ export default function ProductCompare() {
     setComparisonAnalysisLoading(true);
     setComparisonAnalysisError(null);
     setComparisonAnalyses(new Map());
+    const frozenRecord: PageResultRecord = { key: comparisonKey, request: { targets: structuredClone(agentTargets), ranges: structuredClone(agentRanges), rolling_window_days: effectiveRollingWindowDays, as_of: agentAsOf }, completed: true };
     Promise.allSettled(
       productPresentations.map(async ({ key, code, kind, product }) => {
         const productId = code === '--' ? product.product_id : code;
@@ -1587,6 +1649,7 @@ export default function ProductCompare() {
           }
         });
         setComparisonAnalyses(next);
+        setComparisonRecord(frozenRecord);
         setComparisonAnalysisError(
           failures.length ? `部分产品指标不可用。${failures.join('；')}` : null,
         );
@@ -2432,6 +2495,12 @@ export default function ProductCompare() {
           </section>
         </div>
       )}
+      <AgentPanel
+        pageContext={agentPageContext}
+        busy={loading || !!error || loadedProductKey !== productRequestKey || agentView.viewState === 'unknown'}
+        conversationOptions={{ capturePageSnapshot: captureAgentSnapshot, enabled: !loading && !error && loadedProductKey === productRequestKey && agentView.viewState !== 'unknown', cancelOnUnmount: true }}
+        renderStatus={() => previewMode ? <p role="status" className="text-sm text-slate-600">{s('agent.researchPage.demoData')}</p> : null}
+      />
     </div>
   );
 }

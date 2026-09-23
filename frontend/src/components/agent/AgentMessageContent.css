@@ -1,0 +1,26 @@
+.agent-message-content > :first-child { margin-top: 0; }
+.agent-message-content > :last-child { margin-bottom: 0; }
+.agent-message-content p { white-space: pre-line; }
+.agent-message-content p,
+.agent-message-content ul,
+.agent-message-content ol,
+.agent-message-content pre,
+.agent-message-content blockquote,
+.agent-message-content table { margin-block: 0.75rem; }
+.agent-message-content h1,
+.agent-message-content h2,
+.agent-message-content h3,
+.agent-message-content h4,
+.agent-message-content h5,
+.agent-message-content h6 { margin-block: 1rem 0.5rem; font-size: 1rem; line-height: 1.5; font-weight: 600; }
+.agent-message-content ul { list-style: disc; padding-left: 1.25rem; }
+.agent-message-content ol { list-style: decimal; padding-left: 1.25rem; }
+.agent-message-content li + li { margin-top: 0.25rem; }
+.agent-message-content li > p { margin-block: 0.25rem; }
+.agent-message-content blockquote { border-left: 2px solid currentColor; padding-left: 0.75rem; }
+.agent-message-content code { font-size: 0.875em; }
+.agent-message-content pre code { font-size: inherit; }
+.agent-message-content .katex-display { padding-block: 0.25rem; }
+.agent-message-content .katex-display > .katex { text-align: left; }
+.agent-message-content .contains-task-list { list-style: none; padding-left: 0; }
+.agent-message-content .task-list-item input { margin-right: 0.5rem; }

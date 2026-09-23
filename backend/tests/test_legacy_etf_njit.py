@@ -114,11 +114,11 @@ def _write_legacy_fixture(data_dir: Path) -> None:
 
 def _configure_modules(monkeypatch, data_dir: Path):
     analytics_module = sys.modules[app_module.build_legacy_etf_analytics_response.__module__]
-    routes_module = sys.modules[app_module.unified_instrument_products.__module__]
+    service_module = app_module.instrument_service
     monkeypatch.setattr(app_module, "DATA_DIR", data_dir)
-    monkeypatch.setattr(routes_module, "DATA_DIR", data_dir)
+    monkeypatch.setattr(service_module, "DATA_DIR", data_dir)
     monkeypatch.setattr(
-        routes_module,
+        service_module,
         "INSTRUMENT_FILES",
         {
             "etf": data_dir / "etf_info_df.parquet",

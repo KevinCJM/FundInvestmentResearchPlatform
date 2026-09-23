@@ -102,6 +102,182 @@
       }
     },
     {
+      "id": "ai_research_agent",
+      "name": "AI research assistant and durable execution harness",
+      "path": "backend/agent",
+      "kind": "full_stack_research_module",
+      "purpose": "Shares one conversational assistant across indicator authoring, product research, comparison and immutable portfolio diagnosis. Registered tools reuse existing research services; signed projections keep raw market arrays out of every model request. SQLite owns sessions, execution lifecycle, tool receipts and human decisions. Pending work derives from the committed transcript; physical tool completion and content admission remain separate. Business saves and durable memory changes require independent human confirmation. LLM profiles are explicitly selected and keys are write-only at the HTTP boundary. Application-owned service bindings are explicit; tools do not discover HTTP routers. Tool declarations own current-data versus immutable-run policy. Indicator preview loading and context adoption belong to the indicator frontend adapter.",
+      "module_tags": [
+        "agent",
+        "llm",
+        "research",
+        "context",
+        "durable-execution"
+      ],
+      "entry_files": [
+        "backend/agent",
+        "backend/services/llm_settings_routes.py",
+        "frontend/src/components/agent",
+        "frontend/src/pages/LlmSettings.tsx"
+      ],
+      "key_symbols": [
+        "RunController",
+        "AgentSessionStore",
+        "TOOL_REGISTRY",
+        "RunModel",
+        "AgentPanel",
+        "useAgentConversation",
+        "LlmSettingsStore"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "docs/research/ai-functions-design.md",
+        "docs/research/ai-agent-reusable-architecture-design-2026-09-21.md",
+        "backend/agent/routes.py",
+        "backend/agent/harness.py",
+        "backend/agent/sessions.py",
+        "frontend/src/components/agent/useAgentConversation.ts"
+      ],
+      "then_check_files": [
+        "backend/agent/data_policy.py",
+        "backend/agent/context.py",
+        "backend/agent/tools.py",
+        "backend/agent/ledger.py",
+        "backend/agent/memory.py",
+        "backend/agent/commit.py",
+        "backend/agent/research_pages.py",
+        "backend/agent/research_runtime.py",
+        "backend/agent/llm.py",
+        "backend/agent/llm_settings.py",
+        "backend/services/custom_indicator_contracts.py",
+        "backend/tests/agent_eval_fixtures.py",
+        "frontend/src/components/agent/AgentPanel.tsx",
+        "frontend/src/components/agent/IndicatorAgentPanel.tsx",
+        "frontend/src/services/agent.ts",
+        "frontend/src/services/agentClient.ts",
+        "frontend/src/services/agentContext.ts",
+        "frontend/src/services/agentPageEvidence.ts",
+        "frontend/src/services/indicatorAgent.ts",
+        "frontend/src/services/llmSettings.ts",
+        "docs/research/ai-agent-context-compaction-design-2026-09-20.md",
+        "docs/research/ai-agent-harness-progress-design-2026-09-20.md",
+        "docs/research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md",
+        "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md",
+        "docs/research/ai-assistant-conversation-ui-prototype-2026-09-20.html",
+        "frontend/src/components/agent/useIndicatorPreview.ts"
+      ],
+      "upstream_dependencies": [
+        "backend_api_shell",
+        "backend_custom_indicator_service",
+        "backend_portfolio_research",
+        "backend_etf_product_api",
+        "backend_data_storage",
+        "market_data_snapshot_lifecycle"
+      ],
+      "downstream_dependencies": [
+        "frontend_indicator_studio",
+        "frontend_etf_research_pages",
+        "frontend_portfolio_research",
+        "frontend_app_shell"
+      ],
+      "out_of_scope_dependencies": [
+        "Live model quality, cost and provider availability",
+        "Formal PIT certification or investment qualification",
+        "Automatic business publication, order execution or memory acceptance"
+      ],
+      "related_tests": [
+        "backend/tests/test_agent_admission.py",
+        "backend/tests/test_agent_api.py",
+        "backend/tests/test_agent_catalog.py",
+        "backend/tests/test_agent_context.py",
+        "backend/tests/test_agent_eval.py",
+        "backend/tests/test_agent_llm_client.py",
+        "backend/tests/test_agent_multiturn_eval.py",
+        "backend/tests/test_agent_native_admission.py",
+        "backend/tests/test_agent_progress.py",
+        "backend/tests/test_agent_registry.py",
+        "backend/tests/test_agent_research_pages.py",
+        "backend/tests/test_agent_runs.py",
+        "backend/tests/test_agent_series_summary.py",
+        "backend/tests/test_agent_task_state.py",
+        "backend/tests/test_llm_settings_routes.py",
+        "frontend/src/components/agent/AgentMemory.test.tsx",
+        "frontend/src/components/agent/AgentMessageContent.test.tsx",
+        "frontend/src/components/agent/AgentPanel.test.tsx",
+        "frontend/src/components/agent/IndicatorAgentPanel.i18n.test.tsx",
+        "frontend/src/components/agent/IndicatorAgentPanel.test.tsx",
+        "frontend/src/components/agent/useAgentConversation.test.tsx",
+        "frontend/src/services/agentClient.test.ts",
+        "frontend/src/services/agentPageEvidence.test.ts",
+        "frontend/e2e/agent-panel.spec.ts",
+        "frontend/e2e/agent-research-pages.spec.ts",
+        "frontend/e2e/llm-settings.spec.ts",
+        "backend/tests/test_instrument_routes.py"
+      ],
+      "related_configs": [
+        "frontend/playwright.agent-research.config.ts",
+        "frontend/playwright.config.ts",
+        "frontend/package.json",
+        "locales/system.json",
+        "locales/navigation.json"
+      ],
+      "minimum_regression": [
+        "env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_agent_admission.py backend/tests/test_agent_api.py backend/tests/test_agent_catalog.py backend/tests/test_agent_context.py backend/tests/test_agent_eval.py backend/tests/test_agent_llm_client.py backend/tests/test_agent_multiturn_eval.py backend/tests/test_agent_native_admission.py backend/tests/test_agent_progress.py backend/tests/test_agent_registry.py backend/tests/test_agent_research_pages.py backend/tests/test_agent_runs.py backend/tests/test_agent_series_summary.py backend/tests/test_agent_task_state.py backend/tests/test_llm_settings_routes.py -q",
+        "npm run test --prefix frontend -- --run",
+        "npm run build --prefix frontend",
+        "npm run test:e2e --prefix frontend -- agent-panel.spec.ts llm-settings.spec.ts --workers=1",
+        "npm run test:e2e --prefix frontend -- --config=playwright.agent-research.config.ts --workers=1"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P12",
+        "P14",
+        "P25"
+      ],
+      "risk_flags": [
+        "raw_data_model_admission",
+        "cancel_resume_and_checkpoint_ownership",
+        "physical_tool_fence_outlives_runner",
+        "batch_scoped_tool_call_identity",
+        "human_decisions_outlive_turn_snapshots",
+        "page_evidence_freshness",
+        "exact_definition_commit_idempotency",
+        "context_capacity_must_not_drop_constraints"
+      ],
+      "edit_risk": "high",
+      "blast_radius": [
+        "AI conversations and recovery",
+        "research page evidence",
+        "confirmed indicator saves",
+        "confirmed user memory",
+        "LLM settings"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "research_only",
+        "explicit_human_business_commit",
+        "offline_fixture_validation"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "backend/agent/harness.py",
+          "backend/agent/sessions.py",
+          "backend/agent/data_policy.py",
+          "backend/tests/test_agent_runs.py",
+          "backend/tests/test_agent_task_state.py",
+          "backend/tests/test_agent_admission.py",
+          "backend/tests/test_agent_context.py",
+          "frontend/src/components/agent/useAgentConversation.test.tsx",
+          "frontend/e2e/agent-panel.spec.ts",
+          "frontend/e2e/agent-research-pages.spec.ts",
+          "backend/tests/test_llm_settings_routes.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
       "id": "tactical_allocation_workbench",
       "name": "SAA-linked tactical decision workbench",
       "path": "backend/tactical_allocation",
@@ -874,7 +1050,8 @@
         "docs/governance/documentation.md",
         "docs/product/research-parameters.md",
         "docs/research/ai-agent-indicator-product-research-design-2026-09-18.md",
-        "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md"
+        "docs/research/pre-investment-institutional-gap-analysis-2026-09-19.md",
+        "docs/research/ai-functions-design.md"
       ],
       "upstream_dependencies": [],
       "downstream_dependencies": [
@@ -1393,7 +1570,7 @@
       "name": "ETF/public-fund universe, product research, and ETF detail API",
       "path": "backend/app.py",
       "kind": "backend_api_feature",
-      "purpose": "Unified ETF/public-fund search, paged products and product detail APIs live in services/instrument_routes.py. The compatibility ETF list/detail endpoints in backend/app.py delegate to the unified implementation; ETF analytics/trend endpoints delegate to instrument_analytics. Product detail returns real local price points, preserves missing fields as null and returns an empty timeseries when prices are unavailable; it does not generate synthetic prices.",
+      "purpose": "HTTP contracts live in services/instrument_routes.py; the unique shared business implementation lives in services/instrument_service.py and is consumed by HTTP and explicitly bound AI tools. Numerical and error semantics are preserved. The compatibility ETF list/detail endpoints in backend/app.py delegate to the unified implementation; ETF analytics/trend endpoints delegate to instrument_analytics. Product detail returns real local price points, preserves missing fields as null and returns an empty timeseries when prices are unavailable; it does not generate synthetic prices.",
       "module_tags": [
         "backend",
         "etf",
@@ -1427,6 +1604,7 @@
       ],
       "first_read_files": [
         "backend/services/instrument_routes.py",
+        "backend/services/instrument_service.py",
         "backend/app.py"
       ],
       "then_check_files": [
@@ -1452,7 +1630,9 @@
         "backend/tests/test_product_pool_service.py",
         "backend/tests/test_product_pools.py",
         "backend/tests/test_instrument_routes.py",
-        "backend/tests/test_legacy_etf_njit.py"
+        "backend/tests/test_legacy_etf_njit.py",
+        "backend/tests/test_product_analysis_routes.py",
+        "backend/tests/test_product_compare_routes.py"
       ],
       "related_configs": [
         "backend/requirements.txt"
@@ -1908,7 +2088,8 @@
         "backend/tests/test_evaluation_run_results.py",
         "backend/tests/test_instrument_routes.py",
         "backend/benchmark_indicator_engine.py",
-        "backend/custom_indicators/series_service.py"
+        "backend/custom_indicators/series_service.py",
+        "backend/services/custom_indicator_contracts.py"
       ],
       "upstream_dependencies": [
         "backend_indicator_runtime",
@@ -3324,7 +3505,8 @@
         "frontend/e2e/indicator-canvas.spec.ts",
         "frontend/e2e/indicator-formula-roundtrip.spec.ts",
         "frontend/src/components/indicator-graph/indicatorGraphPresentation.test.tsx",
-        "frontend/src/components/indicator-parameters/IndicatorParameters.test.tsx"
+        "frontend/src/components/indicator-parameters/IndicatorParameters.test.tsx",
+        "frontend/src/pages/IndicatorStudio.roundtrip.test.tsx"
       ],
       "related_configs": [
         "frontend/package.json",
@@ -5899,13 +6081,26 @@
         "read_when": "情景研究验收、限制与待复验问题"
       },
       {
+        "path": "docs/research/ai-functions-design.md",
+        "title": "AI 功能设计",
+        "topic": "研究草稿",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "project_docs",
+          "ai_research_agent"
+        ],
+        "read_when": "AI Harness当前实现、数据准入、任务与记忆、页面范围和验证边界；真实模型效果与工程回归分开核对"
+      },
+      {
         "path": "docs/research/ai-agent-indicator-product-research-design-2026-09-18.md",
         "title": "指标中心 × 产品研究：AI 智能体详细设计",
         "topic": "研究草稿",
         "role": "draft",
         "status": "draft",
         "modules": [
-          "project_docs"
+          "project_docs",
+          "ai_research_agent"
         ],
         "read_when": "未采纳研究草稿；实施前重新核对需求、代码和证据"
       },
@@ -5952,6 +6147,66 @@
           "backend_typed_indicator_v2"
         ],
         "read_when": "核对 AOT 契约验证的版本、范围、命令及生产迁移边界"
+      },
+      {
+        "path": "docs/research/ai-agent-context-compaction-design-2026-09-20.md",
+        "title": "AI 上下文压缩早期设计",
+        "topic": "研究草稿",
+        "role": "research",
+        "status": "historical",
+        "modules": [
+          "project_docs",
+          "ai_research_agent"
+        ],
+        "read_when": "回溯早期压缩选择；当前实现及验证以 AI 功能设计为准"
+      },
+      {
+        "path": "docs/research/ai-agent-harness-progress-design-2026-09-20.md",
+        "title": "AI Harness 进展检测设计",
+        "topic": "研究草稿",
+        "role": "research",
+        "status": "historical",
+        "modules": [
+          "project_docs",
+          "ai_research_agent"
+        ],
+        "read_when": "回溯停滞检测依据；当前门控、任务状态与验收以 AI 功能设计为准"
+      },
+      {
+        "path": "docs/research/ai-agent-indicator-product-research-implementation-design-2026-09-19.md",
+        "title": "AI 指标与产品研究早期实现设计",
+        "topic": "研究草稿",
+        "role": "research",
+        "status": "historical",
+        "modules": [
+          "project_docs",
+          "ai_research_agent"
+        ],
+        "read_when": "回溯初始实现契约；当前页面范围及接口以统一设计和代码为准"
+      },
+      {
+        "path": "docs/research/ai-agent-reusable-architecture-design-2026-09-21.md",
+        "title": "AI 助手共用架构与接入设计",
+        "topic": "研究草稿",
+        "role": "contract",
+        "status": "active",
+        "modules": [
+          "project_docs",
+          "ai_research_agent"
+        ],
+        "read_when": "接入公共对话、页面证据及业务适配；配合 AI 功能设计核对已验收范围"
+      },
+      {
+        "path": "docs/research/ai-assistant-conversation-ui-design-2026-09-20.md",
+        "title": "AI 对话界面设计依据",
+        "topic": "研究草稿",
+        "role": "research",
+        "status": "historical",
+        "modules": [
+          "project_docs",
+          "ai_research_agent"
+        ],
+        "read_when": "回溯对话交互设计；当前视觉契约以 frontend/README.md 为准"
       }
     ]
   }

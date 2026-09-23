@@ -81,7 +81,7 @@ def test_meta_operator_templates_round_trip_through_validator(tmp_path: Path) ->
     assert meta["numeric_backend"]["policy"][
         "one_dimensional_reductions_and_scans"
     ] == "numba_njit_fixed_signature"
-    assert meta["math_notation_version"] == "1.5.0"
+    assert meta["math_notation_version"] == "1.5.1"
     measure_ids = {item["id"] for item in meta["series_output_measures"]}
     assert {"auto", "raw_market_price", "virtual_nav", "bounded_0_1", "oscillator_0_100"}.issubset(measure_ids)
 
