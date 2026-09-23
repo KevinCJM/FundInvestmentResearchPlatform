@@ -83,7 +83,7 @@ def resolve(*, store: Any, session_id: str, request: MemoryRequest, root: Option
                     status_code=409,
                     field="decision",
                 )
-            return {**existing, "replayed": True}
+            return {**existing, "replayed": True, "session_id": session_id, "session_revision": state["session_revision"]}
         proposals = state.get("memory_proposals") or []
         proposal = next(
             (item for item in proposals if item.get("proposal_id") == request.proposal_id),
@@ -168,7 +168,7 @@ def resolve(*, store: Any, session_id: str, request: MemoryRequest, root: Option
             },
         )
         store.write(state)
-        return record
+        return {**record, "session_id": session_id, "session_revision": state["session_revision"]}
 
 
 def propose(*, store, session_id, state, source_message_id, quote, key, object_id='scope'):
@@ -239,7 +239,7 @@ def revoke(*, store, session_id, request):
             action = json.loads(old[0])
             if action['request_hash'] != digest:
                 raise AgentError('AGENT_MEMORY_DECISION_CONFLICT', '同一操作标识不能改变记忆决定。', status_code=409)
-            return {**action['result'], 'replayed': True}
+            return {**action['result'], 'replayed': True, 'session_id': session_id, 'session_revision': state['session_revision']}
         row = db.execute('SELECT body FROM memory_records WHERE id=?', (request.memory_id,)).fetchone()
         record = json.loads(row[0]) if row else None
         if not _valid_record(record) or record.get('scope') != state['scope'] or record['version'] != request.expected_version:
@@ -253,4 +253,4 @@ def revoke(*, store, session_id, request):
         state['session_revision'] += 1
         append_event(state, {'type': 'memory.revoked', 'data': result})
         store.write(state)
-        return result
+        return {**result, 'session_id': session_id, 'session_revision': state['session_revision']}

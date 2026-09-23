@@ -210,7 +210,7 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
       revokedMemoryIds.add(route.request().postDataJSON().memory_id)
       revision++
       if (options.loseMemoryReply === 'revoke') { memoryReadsUnavailable = true; return route.abort('failed') }
-      return route.fulfill({ json: { revoked: true } })
+      return route.fulfill({ json: { revoked: true, session_id: sessionId, session_revision: revision } })
     }
     if (path.endsWith('/memory')) {
       if (route.request().method() === 'POST') {
@@ -219,7 +219,7 @@ async function agentApi(page: Page, options: { delay?: boolean; running?: boolea
         if (memoryProposal) memoryProposal.status = decision === 'accept' ? 'accepted' : 'rejected'
         revision++
         if (options.loseMemoryReply === decision) { memoryReadsUnavailable = true; return route.abort('failed') }
-        return route.fulfill({ json: { decision } })
+        return route.fulfill({ json: { decision, session_id: sessionId, session_revision: revision } })
       }
       if (memoryReadsUnavailable) return route.fulfill({ status: 503, json: { detail: { message: '记忆暂时不可用，请重新读取。' } } })
       const items = memoryProposal?.status === 'accepted' ? [{ memory_id: 'memory-one', version: 1,
@@ -298,6 +298,36 @@ for (const failRestore of [false, true]) test(`记忆提案结束后即时确认
   await expect(input).toHaveValue('保留未发送的补充')
   expect(api.requests).toHaveLength(1)
   expect(api.commitWrites()).toBe(0)
+})
+
+for (const decision of ['accept', 'reject', 'revoke'] as const) test(`记忆${decision}成功但会话读取失败后继续对话使用最新版本`, async ({ page }) => {
+  await openStudio(page)
+  const api = await agentApi(page, { running: true, memory: true })
+  let fail = false
+  await page.route('**/api/agent/sessions/s', route => fail
+    ? route.fulfill({ status: 503, json: { detail: { message: '会话读取失败' } } }) : route.fallback())
+  await page.getByRole('button', { name: '打开 AI 助手' }).click()
+  const input = page.getByRole('textbox', { name: '发送消息' })
+  await input.fill('以后请用简洁中文回答。')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toBeVisible()
+  if (decision === 'revoke') api.finish('本轮研究已完成。')
+  else api.proposeMemory()
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0)
+  const summary = page.getByText(`偏好与记忆（${decision === 'revoke' ? 0 : 1} 项待确认）`, { exact: true })
+  await expect(summary).toBeVisible(); await summary.click()
+  const memory = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: /^偏好与记忆（/ }) })
+  const action = memory.getByRole('button', { name: { accept: '接受记忆', reject: '不记住', revoke: '撤销记忆' }[decision], exact: true })
+  await expect(action).toBeEnabled(); fail = true; await action.click()
+  await expect(memory.getByRole('alert')).toContainText('会话读取失败')
+  await input.fill('确认记忆后继续解释')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect.poll(() => api.requests.length).toBe(2)
+  expect(api.requests[1].expected_session_revision).toBe(2)
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toBeVisible()
+  expect(api.memoryDecisions).toEqual([decision])
+  expect(api.commitWrites()).toBe(0)
+  await expect(memory.getByRole('alert')).toContainText('会话读取失败')
 })
 
 for (const decision of ['accept', 'reject', 'revoke'] as const) test(`记忆${decision}响应丢失后重新读取恢复`, async ({ page }) => {

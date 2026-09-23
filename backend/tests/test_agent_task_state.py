@@ -474,6 +474,31 @@ def proposal_turn(store, page, sid, service, message, quote):
     return next(item for item in store.read(sid)['memory_proposals'] if item['source_message_id'] == message)
 
 
+@pytest.mark.parametrize('decision', ['accept', 'reject', 'revoke'])
+def test_memory_mutation_receipts_report_current_session_version_on_replay(tmp_path, decision):
+    store, page, session, service = setup(tmp_path)
+    sid = session['session_id']
+    proposal = proposal_turn(store, page, sid, service, 'receipt-source', '以后请简洁回答。')
+    if decision == 'revoke':
+        accepted = memory.resolve(store=store, session_id=sid, request=MemoryRequest(proposal_id=proposal['proposal_id'], decision='accept'), root=tmp_path / 'memory')
+        command = MemoryRevokeRequest(request_id='receipt-revoke', memory_id=accepted['memory_id'], expected_version=1)
+        mutate = lambda: memory.revoke(store=store, session_id=sid, request=command)
+    else:
+        command = MemoryRequest(proposal_id=proposal['proposal_id'], decision=decision)
+        mutate = lambda: memory.resolve(store=store, session_id=sid, request=command, root=tmp_path / 'memory')
+    before = store.read(sid)['session_revision']
+    result = mutate()
+    assert result['session_id'] == sid
+    assert result['session_revision'] == store.read(sid)['session_revision'] == before + 1
+    turn(store, page, sid, service, message='receipt-later', text='继续解释。', replies=[{'content': '已解释。'}])
+    current = store.read(sid)['session_revision']
+    assert current > result['session_revision']
+    replay = mutate()
+    assert replay['replayed'] and replay['session_id'] == sid
+    assert replay['session_revision'] == current == store.read(sid)['session_revision']
+    assert service.create_calls == []
+
+
 def test_memory_confirmation_scope_replace_revoke_and_new_session_isolation(tmp_path):
     store, page, session, service = setup(tmp_path); sid = session['session_id']
     p = proposal_turn(store, page, sid, service, 'remember', '以后请用中文回答。')
@@ -887,7 +912,9 @@ def test_edit_removes_unconfirmed_turn_outputs_but_keeps_human_memory_actions(tm
             assert [item['id'] for item in done['checkpoint']['task_state']['sources']] == ['edited']
             assert [item['text'] for item in memory.recall(store=store, session_id=sid)] == ['以后简洁回答']
             for command, decision in zip(commands, decisions):
-                assert memory.resolve(store=store, session_id=sid, request=command) == {**decision, 'replayed': True}
+                # The decision is unchanged; the response reports the session's current version.
+                assert memory.resolve(store=store, session_id=sid, request=command) == {
+                    **decision, 'replayed': True, 'session_revision': store.read(sid)['session_revision']}
             assert service.create_calls == []
         finally:
             await controller.close()

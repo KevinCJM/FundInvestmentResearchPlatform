@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button } from '../ui'
 import { useI18n } from '../../i18n/runtime'
-import { decideAgentMemory, fetchAgentMemory, fetchAgentSession, revokeAgentMemory, type AgentMemorySource } from '../../services/agent'
+import { decideAgentMemory, fetchAgentMemory, fetchAgentSession, revokeAgentMemory, type AgentMemorySource, type AgentSessionReceipt } from '../../services/agent'
 import type { AgentConversationState } from './useAgentConversation'
 
 /** Separate human approval for preferences; never invokes indicator saving. */
@@ -11,9 +11,12 @@ export default function AgentMemory({ chat, busy }: { chat: AgentConversationSta
   const [pending, setPending] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [actionError, setActionError] = useState('')
   const [legacyUnavailable, setLegacyUnavailable] = useState(false)
   const [reload, setReload] = useState(0)
   const session = chat.session
+  const failure = actionError || error
+  useEffect(() => { setActionError('') }, [session?.session_id])
   const memoryAvailable = !!session && ('memory_proposals' in session || 'memory_sources' in session)
   useEffect(() => {
     let active = true
@@ -26,17 +29,18 @@ export default function AgentMemory({ chat, busy }: { chat: AgentConversationSta
   }, [session?.session_id, session?.session_revision, memoryAvailable, reload])
   const proposals = (session?.memory_proposals || []).filter(item => item.status === 'pending')
   const used = session?.memory_sources || []
-  if (!session || (!proposals.length && !items.length && !used.length && !error && !legacyUnavailable)) return null
-  const act = async (operation?: () => Promise<unknown>) => {
+  if (!session || (!proposals.length && !items.length && !used.length && !failure && !legacyUnavailable)) return null
+  const act = async (operation?: () => Promise<AgentSessionReceipt>) => {
     if (pending || busy || loading) return
-    setPending(true); setError('')
+    setPending(true); setActionError('')
     try {
-      await operation?.()
+      const receipt = await operation?.()
+      if (receipt) chat.acceptSessionRevision(receipt.session_id, receipt.session_revision)
       // Reconcile proposals before reloading records, including after a lost decision response.
       chat.acceptSession(await fetchAgentSession(session.session_id))
       chat.refresh(); setReload(value => value + 1)
     }
-    catch (reason) { setError(reason instanceof Error ? reason.message : s('agent.memory.actionFailed')) }
+    catch (reason) { setActionError(reason instanceof Error ? reason.message : s('agent.memory.actionFailed')) }
     finally { setPending(false) }
   }
   return <details className="my-2 text-sm text-slate-700">
@@ -52,9 +56,9 @@ export default function AgentMemory({ chat, busy }: { chat: AgentConversationSta
           <p className="text-xs text-slate-600">{s('agent.memory.userSource')}</p>
           {replacing && <p className="text-xs text-slate-600">{s('agent.memory.replacing')}{replacing.text}</p>}
           <div className="flex flex-wrap gap-2">
-            <Button disabled={busy || pending || loading || !!error} onClick={() => void act(() => decideAgentMemory(session.session_id, proposal.proposal_id, 'accept', replacing))}>
+            <Button disabled={busy || pending || loading || !!failure} onClick={() => void act(() => decideAgentMemory(session.session_id, proposal.proposal_id, 'accept', replacing))}>
               {s(replacing ? 'agent.memory.replace' : 'agent.memory.accept')}</Button>
-            <Button disabled={busy || pending || loading || !!error} onClick={() => void act(() => decideAgentMemory(session.session_id, proposal.proposal_id, 'reject'))}>{s('agent.memory.reject')}</Button>
+            <Button disabled={busy || pending || loading || !!failure} onClick={() => void act(() => decideAgentMemory(session.session_id, proposal.proposal_id, 'reject'))}>{s('agent.memory.reject')}</Button>
           </div>
         </div>
       })}
@@ -63,10 +67,10 @@ export default function AgentMemory({ chat, busy }: { chat: AgentConversationSta
         <p className="text-xs text-slate-600">{s(used.some(source => source.memory_id === item.memory_id) ? 'agent.memory.used' : 'agent.memory.available')}</p>
         <p className="break-words text-xs text-slate-600">{s('agent.memory.confirmedAt', { date: item.accepted_at })}</p>
         <details className="text-xs text-slate-600"><summary className="flex min-h-10 cursor-pointer items-center">{s('agent.memory.sourceDetails')}</summary><p className="break-all">{item.source_session_id} / {item.source_message_id || item.memory_id}</p></details>
-        <Button disabled={busy || pending || loading || !!error} onClick={() => void act(() => revokeAgentMemory(session.session_id, item, crypto.randomUUID()))}>{s('agent.memory.revoke')}</Button>
+        <Button disabled={busy || pending || loading || !!failure} onClick={() => void act(() => revokeAgentMemory(session.session_id, item, crypto.randomUUID()))}>{s('agent.memory.revoke')}</Button>
       </div>)}
     </div>
-    {error && <p role="alert" className="text-sm text-rose-700">{error}<Button disabled={pending || busy || loading} onClick={() => void act()}>{s('agent.memory.retry')}</Button></p>}
+    {failure && <p role="alert" className="text-sm text-rose-700">{failure}<Button disabled={pending || busy || loading} onClick={() => void act()}>{s('agent.memory.retry')}</Button></p>}
     {loading && <p role="status" className="text-xs text-slate-600">{s('agent.loading')}</p>}
     {pending && <p role="status" className="text-xs text-slate-600">{s('agent.memory.saving')}</p>}
   </details>
