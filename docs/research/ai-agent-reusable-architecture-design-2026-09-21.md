@@ -2,7 +2,7 @@
 
 日期：2026-09-21。状态：已实施，功能回归通过；运行状态见验收记录。范围为现有 AI 助手前后端，不增加其他业务页入口、不改变数值算法、数据或保存授权。
 
-## 1. 当前链路与问题
+## 1. 首次抽象前的链路与问题（历史）
 
 `IndicatorStudio → AgentPanel → useAgentConversation → /api/agent → RunController → 工具 → 现有业务服务`。
 
@@ -55,11 +55,13 @@
 | 会话恢复、事件、串行发送、取消、上下文保护 | `frontend/src/components/agent/useAgentConversation.ts` |
 | 页面实例身份、规范化条件比较 | `frontend/src/services/agentContext.ts` |
 | 共享图标按钮、提示与动作反馈 | `frontend/src/components/agent/AgentControls.tsx` |
-| 指标建议、草稿卡片、人工保存、试算交付 | `frontend/src/components/agent/IndicatorAgentPanel.tsx` |
+| 指标建议、草稿卡片、人工保存、试算交付 | `frontend/src/components/agent/IndicatorAgentPanel.tsx` / `useIndicatorPreview.ts` |
 | 页面证据快照构造（信封、冻结口径、有界省略） | `frontend/src/services/agentPageEvidence.ts` |
 | 快照契约、校验与 `page.read` | `backend/agent/contracts.py` / `backend/agent/tools.py`（`RUNNER_TOOLS`） |
 | 公共传输与错误协议 / 会话 API | `frontend/src/services/agentClient.ts` / `agent.ts` |
 | 指标业务 API / 模型配置 API | `frontend/src/services/indicatorAgent.ts` / `llmSettings.ts` |
+| 应用内既有服务显式装配 | `backend/app.py` / `backend/agent/research_pages.py` |
+| HTTP 与 AI 共用的产品业务 | `backend/services/instrument_service.py`；HTTP 适配为 `instrument_routes.py` |
 | 模型/工具执行编排、循环与本地资源 | `backend/agent/harness.py` |
 | 运行执行准入、候选提交、终态与中断的持久权威 | `backend/agent/sessions.py` 的 admit / checkpoint / finish / interrupt |
 | 研究提示词、PIT 绑定与数据/目录身份 | `backend/agent/research_runtime.py` |
@@ -93,7 +95,7 @@ flowchart LR
 }} />
 ```
 
-指标页面继续传递完整 `draft`、`onApplyDraft`、`onCommitted`、`onPreview`、`onViewPreview` 给 `IndicatorAgentPanel`。共享外壳通过 `renderWelcome`、`hasArtifacts`、`renderArtifacts`、`renderStatus` 承接业务内容，`busy` 保护业务动作期间的清空与发送。`conversationOptions` 只由宿主提供试算读取和严格的已验证条件回填规则，默认不读取指标试算、不放宽页面条件匹配。
+指标页面继续传递完整 `draft`、`onApplyDraft`、`onCommitted`、`onPreview`、`onViewPreview` 给 `IndicatorAgentPanel`。共享外壳通过 `renderWelcome`、`hasArtifacts`、`renderArtifacts`、`renderStatus` 承接业务内容，`busy` 保护业务动作期间的清空与发送。`conversationOptions.adoptContext` 只接收宿主提供的同步条件采纳策略；指标适配校验当前运行的试算回执归属。完整试算读取、定义匹配与状态由 `useIndicatorPreview` 管理，公共 hook 默认不读取指标试算、不放宽页面条件匹配。
 
 ### 按需页面证据（page evidence）
 
@@ -176,3 +178,59 @@ flowchart LR
 ## 7. 门控与任务状态增量（2026-09-21）
 
 后续统一设计以 [AI 功能设计](ai-functions-design.md) 第8.1/8.2节为准：模型不再获得旧页面证据里的逐点series或未核验客户端数字。完整UI结果独立保存，门控在所有模型路径执行。任务来源/约束引用、服务端里程碑、失败证据由SQLite回执重建，工作集有界而原始任务档案可分页回读；记忆提案与确认操作使用共享 `AgentMemory` 详情，接受/替换/撤销都独立于指标保存。P2候选的定向/完整测试与剩余浏览器边界见本轮交付报告，以上历史验收不自动覆盖新候选。
+
+## 8. 共用边界优化设计（2026-09-23）
+
+本轮授权是依据代码审核整理前后端架构。目标为项目内复用，不新增业务入口、插件系统、微服务或依赖。既有 HTTP 路径、参数与错误、工具名、SQLite 数据、PIT/数值语义、人工保存和记忆确认契约保持不变。
+
+### 8.1 现状与目标
+
+| 现有耦合 | 优化后边界 | 验收依据 |
+| --- | --- | --- |
+| AI 从 `sys.modules` 寻找已加载产品/组合路由，产品搜索直接调用 HTTP 函数 | 应用装配时明确传入现有指标实例和产品/组合能力；缺失服务明确拒绝。产品 HTTP 与 AI 调用唯一业务函数 | 独立 FastAPI 应用可注入夹具；两应用不串用服务；产品接口回归 |
+| 公共会话 hook 执行指标试算读取、定义匹配、条件采纳 | 公共 hook 管理消息、运行、成果信封和上下文隔离；指标适配管理试算加载、匹配、展示及条件采纳规则 | 普通页面不加载指标试算；历史试算不能授权新运行；迟到结果/重连回归 |
+| 运行器根据具体工具名判断组合快照与当前数据 | 工具声明提供数据依赖判定，运行器统一在执行前后检查 | 不可变组合证据不受外部行情刷新影响；情景重算仍双向校验 |
+| 指标页面直接管理 AI 试算采纳状态 | 指标专用 hook 管理试算快照、活动定义与重复采纳；页面只负责应用产品/参数及既有展示 | 改参数仍按采纳定义重算/导出；编辑器不被覆盖 |
+
+### 8.2 后端设计
+
+1. 产品业务实现从 `instrument_routes.py` 移入 `instrument_service.py`，原路由保留签名、Query 校验和薄委托。所有算法、数据读取、预热调用和错误载荷沿用原实现；不复制算法、不新增实例。既有 FastAPI 错误/响应类型在此轮保留，服务层不宣称框架无关。
+2. `research_pages` 的装配函数接受明确传入的产品操作和组合实例，不导入路由、不查询进程模块表。比较仍先校验当前真实费率，再进入同一预热计算实现。
+3. `app.py` 在已有服务创建后完成装配。AI 路由只从请求所属应用读取指标服务和页面能力；配置不足返回稳定错误，不偷偷构造服务或借用其他应用实例。测试必须显式装配同样的依赖。
+4. 产品搜索通过同一能力映射调用。PIT 日期转换直接调用既有 PIT 上下文模块，并使用本次注入服务的市场数据目录，避免工具反向导入指标路由。
+5. `ToolDefinition` 增加可校验的数据依赖策略。默认按已有 `dependencies` 判定；组合指标、诊断与情景的差异由声明处的领域策略处理。运行器只消费策略结果，执行前后的数据版本门禁不变。
+6. `sessions.py` 仍拥有运行接纳、检查点、终态和工具回执的原子提交。不按文件长度拆成多个事务，也不迁移数据库。本次只把领域数据策略移入工具声明；不为缩短函数机械拆分主循环，保留原控制顺序与候选提交边界。
+
+### 8.3 前端设计
+
+1. `useAgentConversation` 保留单一 `ConversationCore`、发送/编辑/停止/排队身份、恢复、SSE 与轮询。草稿/试算作为既有 API 成果信封传递，公共 hook 不执行指标定义匹配和完整试算加载。
+2. 上下文采纳只提供一个同步的宿主策略入口，输入为当前绑定运行、冻结上下文和已接纳成果；指标适配负责检查 `preview_id`、`run_id` 并计算允许采纳的条件。没有策略时，只有完全一致的条件能继续运行。会话/运行身份和版本校验继续由公共层执行。
+3. 指标专用 preview hook 处理结果读取、加载/错误、定义哈希匹配、重试和迟到响应失效；由指标适配组件共享给状态和成果卡片，宿主仍通过原 `onPreview`/`onCommitted`/`onViewPreview` 消费结果。
+4. 指标工作台的采纳状态由指标专用 hook 保存：同一回执自动采纳一次，人工查看允许重复；结果失效与活动定义清除是两件事。修改产品/周期/参数仅清旧结果；修改编辑器定义或切换指标清除采纳定义。页面继续使用既有计算、导出和图表，不能为了消除分支改变语义。
+5. 不改浮窗布局、文案、焦点、关闭/卸载行为、会话存储键和公开协议。不新增全局 store，也不把服务端授权转移到浏览器。
+
+### 8.4 实施与验证顺序
+
+先完成服务装配与接口等价回归，再迁移指标适配，最后同步路由归属和当前说明。新增文件是唯一当前实现，替代逻辑必须同时从原文件移除。
+
+| ID | 状态 | 工作项 | 完成判据 | 证据/剩余事项 |
+| --- | --- | --- | --- | --- |
+| REUSE-01 | verified | 后端显式服务装配与工具依赖策略 | 无模块表探测/AI 反向路由导入；实例隔离、真实产品计算与数据门禁回归通过 | [本轮验收记录](#85-本轮验收记录2026-09-23) |
+| REUSE-02 | verified | 公共会话与指标适配分离 | 通用会话无指标试算 I/O；原恢复/采纳/保存/编辑行为通过回归 | [本轮验收记录](#85-本轮验收记录2026-09-23) |
+| REUSE-03 | verified | 工程与浏览器验收、文档同步 | agent 全量后端、受影响产品接口、前端测试/类型/构建、三视口浏览器及文档检查 | [本轮验收记录](#85-本轮验收记录2026-09-23)；离线夹具，不宣称真实模型或正式数据资格 |
+
+必须覆盖：未装配服务拒绝、不同应用实例隔离、目录/搜索/比较 HTTP 与 AI 等价、费率变化拒绝；不可变组合与当前行情重算区别；普通页面不发试算请求；恢复历史成果、新消息与旧试算、程序采纳与人工改条件、停止后迟到结果、保存响应丢失重试、记忆决定不回退。已有针对性测试优先复用，新增断言锁定本次边界。
+
+
+### 8.5 本轮验收记录（2026-09-23）
+
+- 后端 agent、LLM 配置、产品搜索/筛选/详情/比较/分析、历史情景引用：507 项通过；旧 ETF 兼容接口的三个夹具迁移到实际业务模块后3项复验通过，共510项完成验收。
+- 前端全量：171 个文件、1501 项通过（`--maxWorkers=2 --minWorkers=2`）。首次高并发执行有14项超时/伴随失败，限并发后完整复验通过；没有修改业务断言或放宽超时。
+- 浏览器：150 个原有场景中首轮148项通过，阶段事件场景在手机/平板暴露了夹具轮询竞争：新事件送达前阻塞运行读取，使下一轮事件无法送达。夹具现先返回冻结的旧运行回执，确认新事件已送达后再阻塞运行读取，仍防止新运行快照掩盖旧成果重放。该场景在320/768/1440px各重复3次，9次通过，完成全部150个场景的覆盖。
+- TypeScript、生产构建、设计棘轮、语言检查通过。构建保留原有大 chunk 警告，测试保留依赖弃用、React act 与 Numba 布局性能提示。
+- 结构等价核对：产品业务61个函数/类体与变更前AST一致，10个HTTP路由的签名、Query约束和装饰器一致；AI实现不再导入业务路由或扫描`sys.modules`。SQLite表和事务入口、数值实现、外部API及工具名保持原契约。
+- 本地日志与浏览器证据放在 `.run/agent-boundaries/`。新源码需与调用方一同提交；使用临时Git索引包含全部本轮候选进行路由/覆盖核验，真实暂存区不变。未提交、推送或部署，未调用真实模型。
+
+当前边界：公共DTO仍保留既有`draft`/`preview`字段，产品共享服务仍使用既有FastAPI错误/响应类型；本轮交付是项目内模块复用。统一SQLite提交边界和运行循环保留；将来出现新的业务成果或跨项目部署需求时，再针对实际契约扩展，不预建第二套实现。
+
+PR复审补充：`GET /api/agent/meta` 在读取模型配置和构建目录前检查当前应用的业务服务挂载；缺失时返回503 `AGENT_SERVICE_UNAVAILABLE`，不能因为模型已配置就展示可用状态。已挂载服务的目录构建失败继续保留原有空版本降级。回归 `test_meta_rejects_unmounted_service_but_tolerates_catalog_failure` 先复现200误报，再验证两种状态分别处理。

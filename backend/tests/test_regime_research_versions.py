@@ -10,7 +10,7 @@ from custom_indicators.errors import ValidationError
 from historical_regimes.v2_service import RegimeGraphV2Service
 from historical_regimes.v2_contracts import definition_content_hash, parse_definition_v2
 from historical_regimes.v2_templates import get_template_v2
-from services import historical_regime_routes, instrument_routes
+from services import historical_regime_routes, instrument_service
 from test_merrill_clock import write_macro
 
 
@@ -30,9 +30,9 @@ def test_merrill_save_is_reusable_in_product_research_and_not_taa(scenario, monk
     assert version['revision'] == 1
     assert version['series_summary']['row_count'] == 18
     assert version['available_for'] == ['product_research', 'research_display']
-    monkeypatch.setattr(instrument_routes, '_historical_regime_workspace_dir', lambda: service.workspace_data_dir)
-    resolved, lineage = instrument_routes._resolve_product_regime_reference(
-        instrument_routes.ProductAnalysisRegime(run_id=version['run_id'], publication_id=version['publication_id']))
+    monkeypatch.setattr(instrument_service, '_historical_regime_workspace_dir', lambda: service.workspace_data_dir)
+    resolved, lineage = instrument_service._resolve_product_regime_reference(
+        instrument_service.ProductAnalysisRegime(run_id=version['run_id'], publication_id=version['publication_id']))
     assert resolved['segments'] and {state['label'] for state in resolved['states']} == {'复苏', '过热', '滞胀', '衰退'}
     assert lineage['definition_revision'] == saved['revision']
     run = service.get_run(version['run_id'])

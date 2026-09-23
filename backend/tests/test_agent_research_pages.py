@@ -1,7 +1,6 @@
 """Frozen product page contracts and original-service adapters; offline only."""
 import copy
 import json
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -120,7 +119,6 @@ def test_page_read_model_requests_withhold_current_and_historical_fees(tmp_path,
     from agent import routes
     from agent.llm import FixtureLLMClient
 
-    monkeypatch.setattr(routes, 'resolve_service', lambda: FakeIndicatorService(tmp_path))
     model = FixtureLLMClient([
         {'tool_calls': [{'name': 'page.read', 'arguments': {'section': 'request', 'limit': 8000}}]},
         {'tool_calls': [{'name': 'page.read', 'arguments': {'section': 'results', 'limit': 8000}}]},
@@ -133,7 +131,7 @@ def test_page_read_model_requests_withhold_current_and_historical_fees(tmp_path,
     old = {**copy.deepcopy(request), 'as_of': '2019-12-31'}
     displayed = {'refs': {'comparison': {'status': 'error', 'frozen_request': old}}}
     context = page('product-compare', TARGETS)
-    app = FastAPI(); app.include_router(routes.router)
+    app = FastAPI(); app.state.agent_indicator_service = FakeIndicatorService(tmp_path); app.include_router(routes.router)
     with TestClient(app) as client:
         sid = client.post('/api/agent/sessions', json={'page_context': context.model_dump()}).json()['session_id']
         response = client.post(f'/api/agent/sessions/{sid}/messages', json={
@@ -270,19 +268,18 @@ def test_immutable_holding_summary_scenario_and_missing_run(tmp_path):
     assert error.value.code == 'PORTFOLIO_RUN_NOT_FOUND'
 
 
-def test_runtime_callbacks_reuse_loaded_native_routes_and_explicit_defaults(monkeypatch):
+def test_runtime_callbacks_use_explicit_services_and_preserve_fee_validation(monkeypatch):
     captured = []
     class Body:
         def __init__(self, **kw): self.fields = kw
     native = SimpleNamespace(
+        instrument_search=lambda **kw: {"items": []},
         instrument_products=lambda **kw: {'captured': kw},
         instrument_product_detail=lambda product_id, **kw: {'metrics': {'m_fee': 0.5, 'c_fee': 0.1}},
         ProductCompareAnalysisRequest=Body,
         instrument_product_compare_analysis=lambda product_id, body, **kw: captured.append((product_id, body.fields, kw)) or {'product_id': product_id})
     portfolio = SimpleNamespace(portfolio_service=SimpleNamespace(get_run=lambda id: {'id': id}, diagnose=lambda id, ids: {}, scenario=lambda id, **kw: {}))
-    monkeypatch.setitem(sys.modules, 'services.instrument_routes', native)
-    monkeypatch.setitem(sys.modules, 'services.portfolio_routes', portfolio)
-    callbacks = research_pages.runtime_callbacks()
+    callbacks = research_pages.runtime_callbacks(instruments=native, portfolio=portfolio.portfolio_service)
     callbacks['comparison']({**TARGETS[0], 'management_fee': 0.5, 'custody_fee': 0.1}, {'ranges': RANGES, 'rolling_window_days': 17})
     assert captured == [('510300.SH', {'ranges': RANGES, 'rolling_window_days': 17, 'management_fee': 0.5, 'custody_fee': 0.1}, {'kind': 'etf'})]
     with pytest.raises(AgentError) as error:
@@ -298,7 +295,6 @@ def test_api_captures_all_model_requests_and_context_reads_without_raw_values(tm
     from agent.llm import FixtureLLMClient
     from services.llm_settings_routes import router as settings_router
     service = FakeIndicatorService(tmp_path)
-    monkeypatch.setattr(routes, 'resolve_service', lambda: service)
     source = {'items': [{'ts_code': '510300.SH', 'name': '沪深300', 'snapshot_values': {'last_close': SENTINEL}}],
               'summary': {'filtered_total': 1, 'avg_m_fee': 0}, 'page': 3, 'page_size': 50, 'total': 1,
               'pit': {'snapshot_is_hindsight': True, 'as_of': None}}
@@ -312,7 +308,7 @@ def test_api_captures_all_model_requests_and_context_reads_without_raw_values(tm
     model = Model([{'tool_calls': [{'name': 'page.read', 'arguments': {'section': 'request'}}]},
                    {'tool_calls': [{'name': 'page.analyze', 'arguments': {'operation': operation}}]}, {'content': '已读取当前批次摘要。'}])
     monkeypatch.setattr(routes, '_llm_client', lambda id: model)
-    app = FastAPI(); app.state.agent_page_services = {
+    app = FastAPI(); app.state.agent_indicator_service = service; app.state.agent_page_services = {
         'catalog': lambda **kw: source,
         'comparison': lambda target, parameters: {'product_id': target['product_id'], 'ranges': {
             key: {'window': {'observation_count': 20}, 'metrics': {'cumulativeReturn': 0, 'volatility': None},
@@ -348,11 +344,11 @@ def test_compare_pagination_is_explicit_and_does_not_claim_all_targets(tmp_path)
 
 
 def test_native_compare_callback_uses_existing_preheated_service(monkeypatch, tmp_path):
-    from services import instrument_routes
+    from services import instrument_service
     from test_product_compare_routes import _points
-    monkeypatch.setattr(instrument_routes, '_load_timeseries', lambda kind, id: _points())
-    monkeypatch.setattr(instrument_routes, 'instrument_product_detail', lambda id, **kw: {'metrics': {'m_fee': 0.5, 'c_fee': 0.1}})
-    output = research_pages.runtime_callbacks()['comparison'](
+    monkeypatch.setattr(instrument_service, '_load_timeseries', lambda kind, id: _points())
+    monkeypatch.setattr(instrument_service, 'instrument_product_detail', lambda id, **kw: {'metrics': {'m_fee': 0.5, 'c_fee': 0.1}})
+    output = research_pages.runtime_callbacks(instruments=instrument_service)['comparison'](
         {**TARGETS[0], 'management_fee': 0.5, 'custody_fee': 0.1},
         {'ranges': {key: {'start_date': None, 'end_date': None} for key in RANGES}, 'rolling_window_days': 3})
     assert output['execution']['nopython'] is True and output['execution']['python_fallback'] == 0

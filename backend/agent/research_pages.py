@@ -5,7 +5,6 @@ code never imports a business router or creates another service/store.
 """
 from __future__ import annotations
 
-import sys
 import re
 from collections import defaultdict
 from datetime import date
@@ -200,13 +199,12 @@ def results_view(page, snapshot):
                     'page.analyze只按request分区重算，不能冒充旧图表的原结果。完整查询、费率、参数值和客户端结果数值不下发。'}
 
 
-def runtime_callbacks():
-    """Resolve existing router callbacks without importing/initializing routers."""
-    instruments = sys.modules.get('services.instrument_routes') or sys.modules.get('backend.services.instrument_routes')
-    portfolio = sys.modules.get('services.portfolio_routes') or sys.modules.get('backend.services.portfolio_routes')
+def runtime_callbacks(*, instruments, portfolio=None):
+    """Bind explicitly supplied business operations; never discover HTTP routers."""
     callbacks = {}
     if instruments is not None:
         callbacks['catalog'] = instruments.instrument_products
+        callbacks['search'] = instruments.instrument_search
         def compare(target, parameters):
             detail = instruments.instrument_product_detail(target['product_id'], kind=target['kind'], include_timeseries=False)
             if not isinstance(detail, dict):
@@ -219,12 +217,12 @@ def runtime_callbacks():
             return instruments.instrument_product_compare_analysis(target['product_id'], body, kind=target['kind'])
         callbacks['comparison'] = compare
     if portfolio is not None:
-        callbacks.update(run=portfolio.portfolio_service.get_run, diagnosis=portfolio.portfolio_service.diagnose,
-                         scenario=portfolio.portfolio_service.scenario)
+        callbacks.update(run=portfolio.get_run, diagnosis=portfolio.diagnose,
+                         scenario=portfolio.scenario)
     return callbacks
 
 
-def _callback(callbacks, name):
+def require_page_service(callbacks, name):
     callback = (callbacks or {}).get(name)
     if not callable(callback):
         raise _error('AGENT_PAGE_SERVICE_UNAVAILABLE', '此页面分析服务尚未挂载。')
@@ -336,7 +334,7 @@ def analyze(operation, page_context, snapshot, service, callbacks, *, target_off
     if page == 'holding-diagnosis':
         if page_context.context_kind != 'portfolio' or page_context.calculation.run_id != request.run_id:
             raise _error('AGENT_CONTEXT_CHANGED', '页面快照与组合运行对象不一致。')
-        run = _callback(callbacks, 'run')(request.run_id)
+        run = require_page_service(callbacks, 'run')(request.run_id)
         if not isinstance(run, dict) or run.get('id') != request.run_id or run.get('immutable') is not True:
             raise _error('AGENT_PORTFOLIO_RUN_INVALID', '只有真实不可变运行快照可用于诊断。')
         if operation == 'metrics':
@@ -344,14 +342,14 @@ def analyze(operation, page_context, snapshot, service, callbacks, *, target_off
         elif operation == 'scenario':
             if request.scenario is None or not request.scenario.start_date or not request.scenario.end_date:
                 raise _error('AGENT_SCENARIO_REQUEST_REQUIRED', '请先在页面明确情景起止日期。')
-            scenario = _callback(callbacks, 'scenario')(request.run_id, **request.scenario.model_dump())
+            scenario = require_page_service(callbacks, 'scenario')(request.run_id, **request.scenario.model_dump())
             if scenario.get('source_run_id') != request.run_id or scenario.get('locked_target_revision') != run.get('target_revision'):
                 raise _error('AGENT_CONTEXT_CHANGED', '情景来源与锁定策略不一致。')
             result['portfolio'] = _portfolio_summary(scenario)
             result.update(source_run_id=request.run_id, locked_target_revision=run['target_revision'],
                           provenance='current_data_scenario_locked_strategy_not_snapshot_replay')
         else:
-            diagnosis = _callback(callbacks, 'diagnosis')(request.run_id, [])
+            diagnosis = require_page_service(callbacks, 'diagnosis')(request.run_id, [])
             if diagnosis.get('run_id') != request.run_id:
                 raise _error('AGENT_CONTEXT_CHANGED', '诊断结果不属于请求的运行。')
             result['portfolio'] = _portfolio_summary(run, diagnosis)
@@ -373,7 +371,7 @@ def analyze(operation, page_context, snapshot, service, callbacks, *, target_off
                       'custodian', 'page', 'page_size', 'sort_by', 'sort_dir', 'snapshot_metrics', 'qdii_type')
             arguments = request.model_dump(include=set(fields))
             arguments['conditions'] = [f'{item.field}|{item.operator}|{item.value}' for item in request.conditions]
-            output = _callback(callbacks, 'catalog')(**arguments)
+            output = require_page_service(callbacks, 'catalog')(**arguments)
             if not isinstance(output, dict):
                 raise _error('AGENT_PRODUCT_UNAVAILABLE', '产品列表当前不可用。')
             result['catalog'] = _project(output, CATALOG_SCHEMA)
@@ -401,7 +399,7 @@ def analyze(operation, page_context, snapshot, service, callbacks, *, target_off
             parameters = request.model_dump(include={'ranges', 'rolling_window_days'})
             result['comparisons'] = []
             for target in request.targets:
-                output = _callback(callbacks, 'comparison')(target.model_dump(), parameters)
+                output = require_page_service(callbacks, 'comparison')(target.model_dump(), parameters)
                 if output.get('product_id') != target.product_id:
                     raise _error('AGENT_CONTEXT_CHANGED', '比较结果不属于当前产品。')
                 ranges = {}
