@@ -298,7 +298,7 @@ describe('DataModelCatalog', () => {
 
     render(<DataModelCatalog />)
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('数据模型服务不可用。')
+    expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法读取数据，请重试。')
     await act(async () => {
       await user.click(screen.getByRole('button', { name: '重试' }))
     })

@@ -184,7 +184,7 @@ export const prototypeConfigs: Record<string, PrototypeConfig> = {
   'product-pools': product('产品池构建', '依据准入条件、评价结论和研究标签形成可复用产品池。'),
   'pool-lifecycle': product('产品池版本与生命周期管理', '管理产品准入、观察、限制、替换、排除和版本发布。'),
 
-  'product-pool-selection': allocation('选择产品池版本', '选择已生效产品池版本，锁定本次组合研究的产品边界。'),
+  'product-pool-selection': allocation('选择研究路径与范围', '选定投资目标，选择 Product first 或 Strategy first 研究路径，并锁定本次投前研究的对应范围。'),
   taa: allocation('战术资产配置（TAA）', '展示市场状态、情景算法和相对 SAA 中枢的权重偏离研究。', {
     metrics: [
       { label: '当前状态', value: '低波扩张', hint: '示例情景识别' },
@@ -308,7 +308,10 @@ export const prototypeConfigs: Record<string, PrototypeConfig> = {
       ['公募基金评价口径', 'RP-R6', '同类基准；周频；复权净值', '产品研究 / 产品池'],
       ['真实组合绩效口径', 'RP-R3', 'TWR + XIRR；外部现金流分类', '投后分析'],
     ],
-    guidance: ['业务页面只选择并引用模板，不重复维护公共口径。', '研究任务启动时冻结模板及其依赖版本，后续模板变更不改写历史结果。', 'PIT 页面负责实际数据快照，指标中心负责公式；本中心负责组装研究口径。'],
+    guidance: ['业务页面只选择并引用模板，不重复维护公共口径。', '研究任务启动时冻结模板及其依赖版本，后续模板变更不改写历史结果。', 'PIT 页面负责实际数据快照，行情指标中心负责公式；本中心负责组装研究口径。'],
+  }),
+  'position-metrics': settings('持仓指标中心', '基于交易记录、持仓和现金流定义投中投后指标；与基于行情序列的行情指标中心分开。', {
+    tabs: ['指标目录', '成本口径', '收益与损益', '版本记录'],
   }),
   'scenario-algorithms': settings('情景算法中心', '研究、验证、保存和版本化情景算法，供各研究环节按版本引用。', {
     tabs: ['算法列表', '参数研究', '版本比较', '应用关系'],

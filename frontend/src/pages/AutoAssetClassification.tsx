@@ -1,3 +1,4 @@
+import { systemText, useI18n } from '../i18n/runtime'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import ClassFitPanel, { ClassConsistencyTable, type ClassFitResult } from '../components/ClassFitPanel'
@@ -95,33 +96,20 @@ interface AutoClassMeta {
   limits: { min_observations: number; max_auto_k: number; min_products: number }
 }
 
-const ALGORITHM_HINTS: Record<string, string> = {
-  rule: '按基金合同类型、投资类型、业绩基准与跟踪指数做确定性映射，直接输出所选层级的合同分类。大类个数由标签自然决定，是其它算法的对照基线。',
-  hierarchical: '在收益相关性距离上做凝聚层次聚类。默认选项：无需初值、结果确定，且“为什么这两个产品在一起”可以回溯到合并树。',
-  kmedoids: '以真实产品作为类中心，每个大类天然得到一只代表产品，适合直接拿来做大类代理。',
-  kmeans: '在标准化特征空间上做质心聚类。速度快，但类中心是虚拟点，对特征量纲更敏感。',
-  spectral: '把相关性距离变成图，按归一化割在特征向量空间上切分。不假设类是圆的：从沪深300一路过渡到创业板的产品链会留在同一类，而不是被半径切开。',
-  gmm: '高斯混合 + EM，每个大类有自己的形状与松紧程度，输出的是归属概率而非硬标签。适合边界模糊、货币类很紧而主题类很散的产品池。',
-}
-const FEATURE_HINTS: Record<string, string> = {
-  correlation: '用日收益相关性距离 √(0.5(1-ρ))。大类资产的本质是同涨同跌，这是最贴合的度量。',
-  denoised: '同样是相关性距离，但先用随机矩阵理论（Marchenko-Pastur）把落在噪声带内的特征值抹平，只留系统性模式。产品多、样本短时最有用。',
-  metrics: '用收益、波动、回撤、夏普、卡玛、折溢价与成交额画像做欧氏距离。',
-  pca: '对相关矩阵做特征分解，用前几个主成分载荷聚类，识别共同的系统性驱动。',
-  blend: '风险收益画像与主成分载荷拼接后聚类。',
-}
+
+
 
 // One place decides what each algorithm ignores; the control, its label, its
 // reason line and the hint panel all read from here so they cannot disagree.
 function inactiveReason(parameter: 'linkage' | 'blockBy' | 'k', algorithm: string): string {
   if (parameter === 'linkage' && algorithm !== 'hierarchical') {
-    return '仅层次聚类需要连接方式，该算法不读取此项'
+    return systemText('preInvestment.autoAssetClassification.linkageIsUsedOnlyByHierarchicalClustering')
   }
   if (parameter === 'blockBy' && algorithm === 'rule') {
-    return '规则映射本身就按合同分类，再分层没有意义'
+    return systemText('preInvestment.autoAssetClassification.ruleMappingAlreadyUsesContractCategoriesAdditional')
   }
   if (parameter === 'k' && algorithm === 'rule') {
-    return '规则映射的大类个数由合同标签自然决定'
+    return systemText('preInvestment.autoAssetClassification.contractLabelsDetermineTheNumberOfRule')
   }
   return ''
 }
@@ -133,12 +121,7 @@ function labelClass(inactive: boolean): string {
   return `mb-1 block font-medium ${inactive ? 'text-slate-600' : 'text-slate-700'}`
 }
 
-const BLOCK_HINTS: Record<string, string> = {
-  none: '只按净值行为聚类。相关性窗口可能把黄金 ETF 和权益 ETF 放进同一类。',
-  asset_class: '权益/固收/商品/货币/海外/混合 之间不可混合，统计聚类只在同一资产大类内部细分。做 SAA 时的推荐口径。',
-  category: '在资产大类之下再锁定二级类型（宽基规模/风格因子/行业/主题、利率债/信用债/可转债/同业存单…），聚类只区分同一类型内的差异。',
-  detail: '锁定到三级明细（大小盘、红利/低波/价值、八大行业、六大主题、国债/城投债…）。层级越细，块越多、每块可拆的类越少。',
-}
+
 
 const emptyMeta: AutoClassMeta = {
   algorithms: [],
@@ -151,6 +134,7 @@ const emptyMeta: AutoClassMeta = {
 }
 
 function SectionTitle({ title, hint }: { title: string; hint?: string }) {
+  useI18n()
   return (
     <div className="mb-3">
       <div className="flex items-center gap-2">
@@ -167,6 +151,28 @@ function formatNumber(value: number | null | undefined, digits = 3) {
 }
 
 export default function AutoAssetClassification() {
+  const ALGORITHM_HINTS: Record<string, string> = {
+  rule: systemText('preInvestment.autoAssetClassification.deterministicMappingFromFundContractTypeInvestment'),
+  hierarchical: systemText('preInvestment.autoAssetClassification.agglomerativeHierarchicalClusteringOnReturnCorrelationDistances'),
+  kmedoids: systemText('preInvestment.autoAssetClassification.usesActualProductsAsClassCentersNaturally'),
+  kmeans: systemText('preInvestment.autoAssetClassification.centroidClusteringInStandardizedFeatureSpaceFast'),
+  spectral: systemText('preInvestment.autoAssetClassification.transformsCorrelationDistancesIntoAGraphAnd'),
+  gmm: systemText('preInvestment.autoAssetClassification.gaussianMixtureWithEmGivesEachClass'),
+}
+  const FEATURE_HINTS: Record<string, string> = {
+  correlation: systemText('preInvestment.autoAssetClassification.usesDailyReturnCorrelationDistance05'),
+  denoised: systemText('preInvestment.autoAssetClassification.usesCorrelationDistanceAfterRandomMatrixDenoising'),
+  metrics: systemText('preInvestment.autoAssetClassification.euclideanDistanceOnProfilesOfReturnVolatility'),
+  pca: systemText('preInvestment.autoAssetClassification.decomposesTheCorrelationMatrixAndClustersLeading'),
+  blend: systemText('preInvestment.autoAssetClassification.clustersCombinedRiskReturnProfilesAndPrincipal'),
+}
+  const BLOCK_HINTS: Record<string, string> = {
+  none: systemText('preInvestment.autoAssetClassification.clustersNavBehaviorOnlyACorrelationWindow'),
+  asset_class: systemText('preInvestment.autoAssetClassification.keepsEquitiesFixedIncomeCommoditiesMoneyMarkets'),
+  category: systemText('preInvestment.autoAssetClassification.alsoFixesSecondLevelTypesWithinAsset'),
+  detail: systemText('preInvestment.autoAssetClassification.fixesThirdLevelDetailsSizeDividendLow'),
+}
+  useI18n()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const universeId = searchParams.get('universe') ?? ''
@@ -232,7 +238,7 @@ export default function AutoAssetClassification() {
       .catch((caught) => {
         if (!active) return
         setUniverse(null)
-        setUniverseError(caught instanceof Error ? caught.message : '无法加载可投资域快照。')
+        setUniverseError(caught instanceof Error ? caught.message : systemText('preInvestment.autoAssetClassification.unableToLoadTheInvestableUniverseSnapshot'))
       })
       .finally(() => { if (active) setUniverseLoading(false) })
     return () => { active = false }
@@ -270,7 +276,7 @@ export default function AutoAssetClassification() {
           setSearchTotal(0)
           // `universeError` only renders while the universe is missing, so a
           // failed product fetch used to leave an empty picker and no reason.
-          setProductsError(caught instanceof Error ? caught.message : '无法读取可投资域产品。')
+          setProductsError(caught instanceof Error ? caught.message : systemText('preInvestment.autoAssetClassification.unableToLoadInvestableUniverseProducts'))
         }
       })
     return () => controller.abort()
@@ -333,12 +339,12 @@ export default function AutoAssetClassification() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
-      if (!response.ok) throw new Error(`后端错误 ${response.status}`)
+      if (!response.ok) throw new Error(systemText('preInvestment.autoAssetClassification.backendError', { p0: response.status }))
       const data = await response.json() as ClassFitResult
-      assertNativeNumericalExecutionLanes(data.execution, '自动大类净值拟合')
+      assertNativeNumericalExecutionLanes(data.execution, systemText('preInvestment.autoAssetClassification.automaticAssetClassNavFitting'))
       setFitResult(data)
     } catch (reason: any) {
-      setFitError(`大类净值与指标计算失败：${reason?.message || reason}`)
+      setFitError(systemText('preInvestment.autoAssetClassification.assetClassNavAndMetricCalculationFailed', { p0: reason?.message || reason }))
     }
   }
 
@@ -346,15 +352,15 @@ export default function AutoAssetClassification() {
     setError('')
     setSaveMessage('')
     if (!universe) {
-      setError('请先选择并锁定产品池版本。')
+      setError(systemText('preInvestment.autoAssetClassification.selectAndLockAProductPoolVersion'))
       return
     }
     if (pool.length < meta.limits.min_products) {
-      setError(`请至少选择 ${meta.limits.min_products} 个产品`)
+      setError(systemText('preInvestment.autoAssetClassification.selectAtLeastProducts', { p0: meta.limits.min_products }))
       return
     }
     if (sizeMax < sizeMin) {
-      setError('每类最多产品数不能小于最少产品数')
+      setError(systemText('preInvestment.autoAssetClassification.maximumProductsPerClassMustNotBe'))
       return
     }
     setRunning(true)
@@ -381,8 +387,8 @@ export default function AutoAssetClassification() {
         }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(apiErrorMessage(data, `后端错误 ${response.status}`))
-      assertNativeNumericalExecution(data.execution, '自动构建大类')
+      if (!response.ok) throw new Error(apiErrorMessage(data, systemText('preInvestment.autoAssetClassification.backendError', { p0: response.status })))
+      assertNativeNumericalExecution(data.execution, systemText('preInvestment.autoAssetClassification.automaticAssetClassification'))
       setResult(data as AutoClassResult)
       await runFit((data as AutoClassResult).classes)
     } catch (reason: any) {
@@ -396,7 +402,7 @@ export default function AutoAssetClassification() {
     if (!result) return
     const name = saveName.trim()
     if (!name) {
-      setSaveMessage('配置名称不能为空')
+      setSaveMessage(systemText('preInvestment.autoAssetClassification.configurationNameCannotBeBlank'))
       return
     }
     try {
@@ -414,10 +420,10 @@ export default function AutoAssetClassification() {
         }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(apiErrorMessage(data, `错误 ${response.status}`))
-      setSaveMessage(`配置「${name}」已保存，可在大类资产配置与回测中引用`)
+      if (!response.ok) throw new Error(apiErrorMessage(data, systemText('preInvestment.autoAssetClassification.error', { p0: response.status })))
+      setSaveMessage(systemText('preInvestment.autoAssetClassification.configurationSavedAndAvailableInAssetAllocation', { p0: name }))
     } catch (reason: any) {
-      setSaveMessage(`保存失败：${reason?.message || reason}`)
+      setSaveMessage(systemText('preInvestment.autoAssetClassification.saveFailed', { p0: reason?.message || reason }))
     }
   }
 
@@ -446,35 +452,34 @@ export default function AutoAssetClassification() {
     <div className="mx-auto max-w-7xl px-4 py-6">
       <header className="mb-6">
         <p className="text-xs font-semibold uppercase tracking-wide text-accent-700">Pre-investment · SAA</p>
-        <h1 className="mt-1 text-2xl font-bold text-slate-900">自动构建大类</h1>
+        <h1 className="mt-1 text-2xl font-bold text-slate-900">{systemText('preInvestment.autoAssetClassification.automaticAssetClassification')}</h1>
         <p className="mt-2 max-w-4xl text-sm text-slate-600">
-          在已锁定可投资域内，按合同标签、收益相关性和风险特征自动划分资产大类；结果可保存或进入手动构建继续调整。
-        </p>
+          {systemText('preInvestment.autoAssetClassification.automaticallyClassifyTheLockedInvestableUniverseUsing')}</p>
       </header>
 
       {universe ? (
         <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          已锁定可投资域：<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} 只可用产品 · 研究日期 {universe.research_date}
+          {systemText('preInvestment.autoAssetClassification.lockedInvestableUniverse')}<b>{universe.name}</b> · {investableUniverseEligibleCount(universe)} {" " + systemText('preInvestment.autoAssetClassification.availableProductsResearchDate') + " "}{universe.research_date}
         </div>
       ) : (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          <span>{universeLoading ? '正在读取可投资域…' : universeError || '尚未锁定产品池版本，不能运行自动分类。'}</span>
-          <Link to="/pre-investment/product-pool" className="rounded-lg bg-amber-800 px-3 py-2 font-medium text-white">选择产品池版本</Link>
+          <span>{universeLoading ? systemText('preInvestment.autoAssetClassification.loadingInvestableUniverse') : universeError || systemText('preInvestment.autoAssetClassification.lockAProductPoolVersionBeforeRunning')}</span>
+          <Link to="/pre-investment/product-pool" className="rounded-lg bg-amber-800 px-3 py-2 font-medium text-white">{systemText('preInvestment.autoAssetClassification.selectProductPoolVersions')}</Link>
         </div>
       )}
 
       {/* 1. 产品池 */}
       <section className="rounded-xl border border-slate-200 bg-white p-4">
-        <SectionTitle title="① 从可投资域选择产品" hint="只展示所选产品池版本中当前可用于新增配置的产品。" />
+        <SectionTitle title={systemText('preInvestment.autoAssetClassification.1SelectProductsFromTheInvestableUniverse')} hint={systemText('preInvestment.autoAssetClassification.onlyProductsCurrentlyEligibleForNewConfigurations')} />
         <div className="grid gap-4 lg:grid-cols-2">
           <div>
             <div className="flex items-center gap-2">
               <input
                 className="w-full rounded-lg border px-2 py-1 text-sm"
-                placeholder="按代码、名称或评价方案搜索"
+                placeholder={systemText('preInvestment.autoAssetClassification.searchByCodeNameOrEvaluationPlan')}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                aria-label="可投资域产品搜索"
+                aria-label={systemText('preInvestment.autoAssetClassification.investableUniverseProductSearch')}
               />
             </div>
             <div className="mt-2 flex items-center justify-between gap-2">
@@ -485,15 +490,14 @@ export default function AutoAssetClassification() {
                   disabled={searchResults.length === 0}
                   checked={allVisibleSelected}
                   onChange={(event) => toggleAllVisible(event.target.checked)}
-                  aria-label="全选当前结果"
+                  aria-label={systemText('preInvestment.autoAssetClassification.selectAllCurrentResults')}
                 />
-                全选当前结果
-              </label>
-              <span className="text-xs text-slate-600">匹配 {searchTotal} 个产品，显示前 {searchResults.length} 个</span>
+                {systemText('preInvestment.autoAssetClassification.selectAllCurrentResults')}</label>
+              <span className="text-xs text-slate-600">{systemText('preInvestment.autoAssetClassification.matched') + " "}{searchTotal} {" " + systemText('preInvestment.autoAssetClassification.productsShowingTheFirst') + " "}{searchResults.length} {" " + systemText('preInvestment.autoAssetClassification.items')}</span>
             </div>
             {productsError && (
               <p className="mt-2 rounded-lg border border-red-300 bg-red-50 px-2 py-1 text-xs text-red-700">
-                读取可投资域产品失败：{productsError}
+                {systemText('preInvestment.autoAssetClassification.unableToLoadInvestableUniverseProducts2')}{productsError}
               </p>
             )}
             <ul className="mt-2 max-h-64 divide-y overflow-auto rounded-lg border">
@@ -505,13 +509,13 @@ export default function AutoAssetClassification() {
                       className="h-3.5 w-3.5 shrink-0"
                       checked={poolCodes.has(item.code)}
                       onChange={(event) => toggleProduct(item, event.target.checked)}
-                      aria-label={`选择 ${item.name}`}
+                      aria-label={systemText('preInvestment.autoAssetClassification.select', { p0: item.name })}
                     />
                     <span className="min-w-0 flex-1 truncate">
                       <span className="font-mono text-slate-600">{item.code}</span> {item.name}
                       {typeof item.max_weight === 'number' && (
                         <span className="ml-1 rounded-lg bg-amber-100 px-1 py-0.5 text-xs font-semibold text-amber-800">
-                          限额 {(item.max_weight * 100).toFixed(1)}%
+                          {systemText('preInvestment.autoAssetClassification.limit') + " "}{(item.max_weight * 100).toFixed(1)}%
                         </span>
                       )}
                       {item.pool_names && item.pool_names.length > 0 && (
@@ -522,34 +526,34 @@ export default function AutoAssetClassification() {
                 </li>
               ))}
               {searchResults.length === 0 && !productsError && (
-                <li className="px-2 py-3 text-xs text-slate-600">没有匹配的产品</li>
+                <li className="px-2 py-3 text-xs text-slate-600">{systemText('preInvestment.autoAssetClassification.noMatchingProducts')}</li>
               )}
             </ul>
-            <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">不允许粘贴任意代码，避免绕过产品池准入与使用限制。</p>
+            <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">{systemText('preInvestment.autoAssetClassification.arbitraryCodesCannotBePastedPreventingBypass')}</p>
           </div>
           <div>
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold">已选产品（{pool.length}）</h3>
-              <button className="rounded-lg border px-2 py-0.5 text-xs hover:bg-slate-50" onClick={() => setPool([])}>清空</button>
+              <h3 className="text-sm font-semibold">{systemText('preInvestment.autoAssetClassification.selectedProducts')}{pool.length}）</h3>
+              <button className="rounded-lg border px-2 py-0.5 text-xs hover:bg-slate-50" onClick={() => setPool([])}>{systemText('preInvestment.autoAssetClassification.clear')}</button>
             </div>
             <ul className="mt-2 max-h-80 divide-y overflow-auto rounded-lg border">
               {pool.map((item) => (
                 <li key={item.code} className="flex items-center justify-between gap-2 px-2 py-1 text-xs">
                   <span className="min-w-0 truncate">
-                    <span className="font-mono text-slate-600">{item.code}</span> {item.name || '（按代码解析）'}
+                    <span className="font-mono text-slate-600">{item.code}</span> {item.name || systemText('preInvestment.autoAssetClassification.resolvedByCode')}
                     {typeof item.max_weight === 'number' && (
                       <span className="ml-1 rounded-lg bg-amber-100 px-1 py-0.5 text-xs font-semibold text-amber-800">
-                        限额 {(item.max_weight * 100).toFixed(1)}%
+                        {systemText('preInvestment.autoAssetClassification.limit') + " "}{(item.max_weight * 100).toFixed(1)}%
                       </span>
                     )}
                     {item.pool_names && item.pool_names.length > 0 && (
                       <span className="ml-1 text-xs text-slate-600">{item.pool_names.join('/')}</span>
                     )}
                   </span>
-                  <button className="rounded-lg border px-2 py-0.5 text-xs" onClick={() => setPool((current) => current.filter((entry) => entry.code !== item.code))}>移除</button>
+                  <button className="rounded-lg border px-2 py-0.5 text-xs" onClick={() => setPool((current) => current.filter((entry) => entry.code !== item.code))}>{systemText('preInvestment.autoAssetClassification.remove')}</button>
                 </li>
               ))}
-              {pool.length === 0 && <li className="px-2 py-3 text-xs text-slate-600">尚未选择产品</li>}
+              {pool.length === 0 && <li className="px-2 py-3 text-xs text-slate-600">{systemText('preInvestment.autoAssetClassification.noProductsSelected')}</li>}
             </ul>
           </div>
         </div>
@@ -557,52 +561,52 @@ export default function AutoAssetClassification() {
 
       {/* 2. 参数 */}
       <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-        <SectionTitle title="② 分类参数" hint="算法只负责给出产品与大类的亲和度；“分几类、每类几个”由统一的容量约束选择器处理。" />
+        <SectionTitle title={systemText('preInvestment.autoAssetClassification.2ClassificationParameters')} hint={systemText('preInvestment.autoAssetClassification.algorithmsEstimateProductToClassAffinityA')} />
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <label className="text-sm">
-            <span className="mb-1 block font-medium text-slate-700">算法</span>
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.algorithm')}</span>
             <select className={SELECT_CLASS} value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}>
-              {meta.algorithms.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              {meta.algorithms.map((option) => <option key={option.id} value={option.id}>{systemText(`preInvestment.autoOptions.algorithms.${option.id}`, {}, option.label)}</option>)}
             </select>
           </label>
           <label className="text-sm">
-            <span className="mb-1 block font-medium text-slate-700">特征集</span>
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.featureSet')}</span>
             <select className={SELECT_CLASS} value={features} onChange={(event) => setFeatures(event.target.value)}>
-              {meta.features.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              {meta.features.map((option) => <option key={option.id} value={option.id}>{systemText(`preInvestment.autoOptions.features.${option.id}`, {}, option.label)}</option>)}
             </select>
           </label>
           <div>
             <label className="text-sm">
-              <span className={labelClass(Boolean(linkageInactive))}>连接方式（层次聚类）</span>
+              <span className={labelClass(Boolean(linkageInactive))}>{systemText('preInvestment.autoAssetClassification.linkageHierarchicalClustering')}</span>
               <select className={SELECT_CLASS} value={linkage} disabled={Boolean(linkageInactive)} onChange={(event) => setLinkage(event.target.value)}>
-                {meta.linkages.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                {meta.linkages.map((option) => <option key={option.id} value={option.id}>{systemText(`preInvestment.autoOptions.linkages.${option.id}`, {}, option.label)}</option>)}
               </select>
             </label>
             {linkageInactive && <p className="mt-1 text-xs text-slate-600">{linkageInactive}</p>}
           </div>
           <label className="text-sm">
-            <span className="mb-1 block font-medium text-slate-700">合同分类层级</span>
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.contractClassificationLevel')}</span>
             <select className={SELECT_CLASS} value={taxonomyLevel} onChange={(event) => setTaxonomyLevel(event.target.value)}>
-              {meta.taxonomy_levels.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              {meta.taxonomy_levels.map((option) => <option key={option.id} value={option.id}>{systemText(`preInvestment.autoOptions.taxonomy_levels.${option.id}`, {}, option.label)}</option>)}
             </select>
           </label>
           <div>
             <label className="text-sm">
-              <span className={labelClass(Boolean(blockInactive))}>按合同分层（硬约束）</span>
+              <span className={labelClass(Boolean(blockInactive))}>{systemText('preInvestment.autoAssetClassification.contractStratificationHardConstraint')}</span>
               <select className={SELECT_CLASS} value={blockBy} disabled={Boolean(blockInactive)} onChange={(event) => setBlockBy(event.target.value)}>
-                {meta.block_modes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                {meta.block_modes.map((option) => <option key={option.id} value={option.id}>{systemText(`preInvestment.autoOptions.block_modes.${option.id}`, {}, option.label)}</option>)}
               </select>
             </label>
             {blockInactive && <p className="mt-1 text-xs text-slate-600">{blockInactive}</p>}
           </div>
           <label className="text-sm">
-            <span className="mb-1 block font-medium text-slate-700">类内权重</span>
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.withinClassWeights')}</span>
             <select className={SELECT_CLASS} value={weightMode} onChange={(event) => setWeightMode(event.target.value)}>
-              {meta.weight_modes.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              {meta.weight_modes.map((option) => <option key={option.id} value={option.id}>{systemText(`preInvestment.autoOptions.weight_modes.${option.id}`, {}, option.label)}</option>)}
             </select>
           </label>
           <div className="text-sm">
-            <span className={labelClass(Boolean(kInactive))}>大类个数 K</span>
+            <span className={labelClass(Boolean(kInactive))}>{systemText('preInvestment.autoAssetClassification.numberOfClassesK')}</span>
             <div className="flex items-center gap-2">
               <input
                 type="number"
@@ -611,7 +615,7 @@ export default function AutoAssetClassification() {
                 value={k}
                 disabled={autoK || Boolean(kInactive)}
                 onChange={(event) => setK(Math.max(2, Number(event.target.value) || 2))}
-                aria-label="大类个数"
+                aria-label={systemText('preInvestment.autoAssetClassification.numberOfAssetClasses')}
               />
               <label className={`flex items-center gap-1 text-xs ${kInactive ? 'text-slate-600' : 'text-slate-600'}`}>
                 <input
@@ -619,37 +623,36 @@ export default function AutoAssetClassification() {
                   checked={autoK}
                   disabled={Boolean(kInactive)}
                   onChange={(event) => setAutoK(event.target.checked)}
-                  aria-label="自动建议大类个数"
+                  aria-label={systemText('preInvestment.autoAssetClassification.suggestNumberOfAssetClasses')}
                 />
-                自动建议
-              </label>
+                {systemText('preInvestment.autoAssetClassification.suggestAutomatically')}</label>
             </div>
             {kInactive && <p className="mt-1 text-xs text-slate-600">{kInactive}</p>}
           </div>
           <label className="text-sm">
-            <span className="mb-1 block font-medium text-slate-700">每类最少产品数</span>
-            <input type="number" min={1} className={SELECT_CLASS} value={sizeMin} onChange={(event) => setSizeMin(Math.max(1, Number(event.target.value) || 1))} aria-label="每类最少产品数" />
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.minimumProductsPerClass')}</span>
+            <input type="number" min={1} className={SELECT_CLASS} value={sizeMin} onChange={(event) => setSizeMin(Math.max(1, Number(event.target.value) || 1))} aria-label={systemText('preInvestment.autoAssetClassification.minimumProductsPerClass')} />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block font-medium text-slate-700">每类最多产品数</span>
-            <input type="number" min={1} className={SELECT_CLASS} value={sizeMax} onChange={(event) => setSizeMax(Math.max(1, Number(event.target.value) || 1))} aria-label="每类最多产品数" />
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.maximumProductsPerClass')}</span>
+            <input type="number" min={1} className={SELECT_CLASS} value={sizeMax} onChange={(event) => setSizeMax(Math.max(1, Number(event.target.value) || 1))} aria-label={systemText('preInvestment.autoAssetClassification.maximumProductsPerClass')} />
           </label>
           <label className="text-sm">
-            <span className="mb-1 block font-medium text-slate-700">样本开始日期</span>
-            <input type="date" className={SELECT_CLASS} value={startDate} onChange={(event) => setStartDate(event.target.value)} aria-label="样本开始日期" />
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.sampleStartDate')}</span>
+            <input type="date" className={SELECT_CLASS} value={startDate} onChange={(event) => setStartDate(event.target.value)} aria-label={systemText('preInvestment.autoAssetClassification.sampleStartDate')} />
           </label>
           <label className="text-sm md:col-span-2">
-            <span className="mb-1 block font-medium text-slate-700">装不下的产品</span>
+            <span className="mb-1 block font-medium text-slate-700">{systemText('preInvestment.autoAssetClassification.productsExceedingCapacity')}</span>
             <select className={SELECT_CLASS} value={unassignedPolicy} onChange={(event) => setUnassignedPolicy(event.target.value as 'park' | 'force')}>
-              <option value="park">进入待观察池（推荐）</option>
-              <option value="force">强制归入最相近大类</option>
+              <option value="park">{systemText('preInvestment.autoAssetClassification.moveToWatchlistRecommended')}</option>
+              <option value="force">{systemText('preInvestment.autoAssetClassification.assignToTheNearestClass')}</option>
             </select>
           </label>
         </div>
         <div className="mt-3 rounded-lg bg-accent-50 p-3 text-xs text-accent-900">
           <p><strong>{meta.algorithms.find((item) => item.id === algorithm)?.label ?? algorithm}</strong>：{ALGORITHM_HINTS[algorithm]}</p>
           <p className="mt-1"><strong>{meta.features.find((item) => item.id === features)?.label ?? features}</strong>：{FEATURE_HINTS[features]}</p>
-          {!blockInactive && <p className="mt-1"><strong>分层</strong>：{BLOCK_HINTS[blockBy]}</p>}
+          {!blockInactive && <p className="mt-1"><strong>{systemText('preInvestment.autoAssetClassification.stratification')}</strong>：{BLOCK_HINTS[blockBy]}</p>}
         </div>
         <div className="mt-3 flex items-center gap-3">
           <button
@@ -657,7 +660,7 @@ export default function AutoAssetClassification() {
             onClick={onRun}
             disabled={running || !universe}
           >
-            {running ? '计算中…' : '运行自动分类'}
+            {running ? systemText('preInvestment.autoAssetClassification.calculating') : systemText('preInvestment.autoAssetClassification.runAutomaticClassification')}
           </button>
           {error && <span className="text-sm text-red-600">{error}</span>}
         </div>
@@ -667,14 +670,14 @@ export default function AutoAssetClassification() {
         <>
           {/* 3. 诊断 */}
           <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-            <SectionTitle title="③ 分类诊断" hint="轮廓系数衡量类内紧密与类间分离，越接近 1 越好；负值说明该产品更像别的大类。" />
+            <SectionTitle title={systemText('preInvestment.autoAssetClassification.3ClassificationDiagnostics')} hint={systemText('preInvestment.autoAssetClassification.silhouetteScoresMeasureWithinClassCohesionAnd')} />
             <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
               {[
-                { label: '大类个数', value: String(result.k) },
-                { label: '整体轮廓系数', value: formatNumber(result.diagnostics.silhouette) },
-                { label: '共同样本交易日', value: String(result.observations) },
-                { label: '显著特征值数', value: String(result.diagnostics.significant_eigenvalues) },
-                { label: '样本区间', value: `${result.start_date} ~ ${result.end_date}` },
+                { label: systemText('preInvestment.autoAssetClassification.numberOfAssetClasses'), value: String(result.k) },
+                { label: systemText('preInvestment.autoAssetClassification.overallSilhouetteScore'), value: formatNumber(result.diagnostics.silhouette) },
+                { label: systemText('preInvestment.autoAssetClassification.commonSampleTradingDays'), value: String(result.observations) },
+                { label: systemText('preInvestment.autoAssetClassification.significantEigenvalueCount'), value: String(result.diagnostics.significant_eigenvalues) },
+                { label: systemText('preInvestment.autoAssetClassification.samplePeriod'), value: `${result.start_date} ~ ${result.end_date}` },
               ].map((card) => (
                 <div key={card.label} className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-xs text-slate-600">{card.label}</p>
@@ -684,7 +687,7 @@ export default function AutoAssetClassification() {
             </div>
             {result.diagnostics.k_suggestions.length > 0 && (
               <div className="mt-3">
-                <h4 className="text-xs font-semibold text-slate-700">K 建议（按轮廓系数）</h4>
+                <h4 className="text-xs font-semibold text-slate-700">{systemText('preInvestment.autoAssetClassification.suggestedKBySilhouetteScore')}</h4>
                 <div className="mt-1 flex flex-wrap gap-2">
                   {result.diagnostics.k_suggestions.map((item) => (
                     <span key={item.k} className={`rounded-lg border px-2 py-0.5 text-xs ${item.k === result.k ? 'border-accent-500 bg-accent-50 font-semibold text-accent-800' : 'text-slate-600'}`}>
@@ -703,7 +706,7 @@ export default function AutoAssetClassification() {
 
           {/* 4. 大类结果 */}
           <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-            <SectionTitle title="④ 大类映射草案" hint="★ 为该大类的代表产品（medoid）；权重按所选类内权重方式归一到 100%。" />
+            <SectionTitle title={systemText('preInvestment.autoAssetClassification.4DraftAssetClassMapping')} hint={systemText('preInvestment.autoAssetClassification.marksTheRepresentativeProductMedoidWeightsFollow')} />
             {/* Provenance rides with the result, not with the window frame. */}
             <PitProvenance lineage={result.pit} />
             <div className="grid gap-3 lg:grid-cols-2">
@@ -712,23 +715,23 @@ export default function AutoAssetClassification() {
                   <div className="flex items-baseline justify-between">
                     <h3 className="text-sm font-semibold text-accent-900">{group.name}</h3>
                     <span className="text-xs text-slate-600">
-                      {group.size} 个产品 · 类内相关 {formatNumber(group.mean_corr, 2)} · 轮廓 {formatNumber(group.silhouette, 2)}
+                      {group.size} {" " + systemText('preInvestment.autoAssetClassification.productsWithinClassCorrelation') + " "}{formatNumber(group.mean_corr, 2)} {" " + systemText('preInvestment.autoAssetClassification.silhouette') + " "}{formatNumber(group.silhouette, 2)}
                     </span>
                   </div>
                   <table className="mt-2 w-full text-xs">
                     <thead>
                       <tr className="text-left text-slate-600">
-                        <th scope="col" className="py-1">产品</th>
-                        <th scope="col" className="py-1">合同分类</th>
-                        <th scope="col" className="py-1 text-right">池限额</th>
-                        <th scope="col" className="py-1 text-right">权重(%)</th>
+                        <th scope="col" className="py-1">{systemText('preInvestment.autoAssetClassification.products')}</th>
+                        <th scope="col" className="py-1">{systemText('preInvestment.autoAssetClassification.contractClassification')}</th>
+                        <th scope="col" className="py-1 text-right">{systemText('preInvestment.autoAssetClassification.poolLimit')}</th>
+                        <th scope="col" className="py-1 text-right">{systemText('preInvestment.autoAssetClassification.weight')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {group.etfs.map((member) => (
                         <tr key={member.code} className="border-t border-accent-100">
                           <td className="py-1">
-                            {member.is_medoid && <span className="mr-1 text-amber-500" title="代表产品">★</span>}
+                            {member.is_medoid && <span className="mr-1 text-amber-500" title={systemText('preInvestment.autoAssetClassification.representativeProduct')}>★</span>}
                             <span className="font-mono text-slate-600">{member.code}</span> {member.name}
                           </td>
                           <td className="py-1 text-slate-600" title={member.taxonomy?.path ?? member.contract_label}>{member.contract_label}</td>
@@ -737,7 +740,7 @@ export default function AutoAssetClassification() {
                           </td>
                           <td className={`py-1 text-right font-medium ${member.capped ? 'text-amber-700' : ''}`}>
                             {member.weight.toFixed(2)}
-                            {member.capped && <span className="ml-1 text-xs" title="已被产品池限额压低">▼</span>}
+                            {member.capped && <span className="ml-1 text-xs" title={systemText('preInvestment.autoAssetClassification.reducedByProductPoolLimits')}>▼</span>}
                           </td>
                         </tr>
                       ))}
@@ -745,8 +748,7 @@ export default function AutoAssetClassification() {
                   </table>
                   {group.max_class_weight !== null && group.max_class_weight < 100 && (
                     <p className="mt-2 rounded-lg bg-amber-100 px-2 py-1 text-xs text-amber-900">
-                      成员限额合计 {group.max_class_weight.toFixed(1)}%：该大类的 SAA 权重不得超过此值，否则会突破产品池限额。
-                    </p>
+                      {systemText('preInvestment.autoAssetClassification.combinedMemberLimits') + " "}{group.max_class_weight.toFixed(1)}{systemText('preInvestment.autoAssetClassification.thisClassSSaaWeightMustNot')}</p>
                   )}
                 </div>
               ))}
@@ -755,18 +757,17 @@ export default function AutoAssetClassification() {
             {result.diagnostics.blocks.length > 0 && (
               <div className="mt-4 rounded-lg border border-accent-200 bg-accent-50 p-3">
                 <h4 className="text-xs font-semibold text-accent-900">
-                  合同分层（{meta.block_modes.find((item) => item.id === result.block_by)?.label ?? result.block_by}）
+                  {systemText('preInvestment.autoAssetClassification.contractStrata')}{meta.block_modes.find((item) => item.id === result.block_by)?.label ?? result.block_by}）
                 </h4>
                 <p className="mt-1 text-xs text-accent-800">
-                  每个合同块内部单独聚类，块之间不会合并，也不会互相拉产品。
-                </p>
+                  {systemText('preInvestment.autoAssetClassification.eachContractBlockIsClusteredSeparatelyBlocks')}</p>
                 <table className="mt-2 w-full text-xs">
                   <thead>
                     <tr className="text-left text-accent-700">
-                      <th scope="col" className="py-1">合同块</th>
-                      <th scope="col" className="py-1 text-right">产品数</th>
-                      <th scope="col" className="py-1 text-right">块内大类数</th>
-                      <th scope="col" className="py-1 text-right">块内轮廓系数</th>
+                      <th scope="col" className="py-1">{systemText('preInvestment.autoAssetClassification.contractBlock')}</th>
+                      <th scope="col" className="py-1 text-right">{systemText('preInvestment.autoAssetClassification.productCount')}</th>
+                      <th scope="col" className="py-1 text-right">{systemText('preInvestment.autoAssetClassification.classesWithinBlock')}</th>
+                      <th scope="col" className="py-1 text-right">{systemText('preInvestment.autoAssetClassification.withinBlockSilhouette')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -785,21 +786,21 @@ export default function AutoAssetClassification() {
 
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
               <div>
-                <h4 className="text-xs font-semibold text-slate-700">行为分类与合同分类的偏离（{result.diagnostics.contract_deviations.length}）</h4>
-                <p className="mt-1 text-xs text-slate-600">这些产品按净值行为进入的大类与合同标签不一致，是研究线索而不是错误。</p>
+                <h4 className="text-xs font-semibold text-slate-700">{systemText('preInvestment.autoAssetClassification.behavioralVersusContractClassificationDifferences')}{result.diagnostics.contract_deviations.length}）</h4>
+                <p className="mt-1 text-xs text-slate-600">{systemText('preInvestment.autoAssetClassification.theseProductsNavBasedClassesDifferFrom')}</p>
                 <ul className="mt-2 max-h-48 divide-y overflow-auto rounded-lg border text-xs">
                   {result.diagnostics.contract_deviations.map((item) => (
                     <li key={item.code} className="px-2 py-1">
                       <span className="font-mono text-slate-600">{item.code}</span> {item.name}
-                      <span className="ml-1 text-slate-600">：合同「{item.contract_label}」→ 归入「{item.assigned_class}」</span>
+                      <span className="ml-1 text-slate-600">{systemText('preInvestment.autoAssetClassification.contract')}{item.contract_label}{systemText('preInvestment.autoAssetClassification.assignedTo')}{item.assigned_class}」</span>
                     </li>
                   ))}
-                  {result.diagnostics.contract_deviations.length === 0 && <li className="px-2 py-2 text-slate-600">没有偏离项</li>}
+                  {result.diagnostics.contract_deviations.length === 0 && <li className="px-2 py-2 text-slate-600">{systemText('preInvestment.autoAssetClassification.noDifferences')}</li>}
                 </ul>
               </div>
               <div>
-                <h4 className="text-xs font-semibold text-slate-700">待观察与排除（{result.unassigned.length + result.skipped.length}）</h4>
-                <p className="mt-1 text-xs text-slate-600">超出每类上限、相似度不足，或样本期内缺少可用净值的产品。</p>
+                <h4 className="text-xs font-semibold text-slate-700">{systemText('preInvestment.autoAssetClassification.watchlistAndExclusions')}{result.unassigned.length + result.skipped.length}）</h4>
+                <p className="mt-1 text-xs text-slate-600">{systemText('preInvestment.autoAssetClassification.productsExceedingClassCapacityWithInsufficientSimilarity')}</p>
                 <ul className="mt-2 max-h-48 divide-y overflow-auto rounded-lg border text-xs">
                   {[...result.unassigned, ...result.skipped].map((item) => (
                     <li key={`${item.reason}-${item.code}`} className="px-2 py-1">
@@ -807,19 +808,19 @@ export default function AutoAssetClassification() {
                       <span className="ml-1 text-slate-600">（{item.detail}）</span>
                     </li>
                   ))}
-                  {result.unassigned.length + result.skipped.length === 0 && <li className="px-2 py-2 text-slate-600">全部产品已归类</li>}
+                  {result.unassigned.length + result.skipped.length === 0 && <li className="px-2 py-2 text-slate-600">{systemText('preInvestment.autoAssetClassification.allProductsClassified')}</li>}
                 </ul>
               </div>
             </div>
 
             {result.diagnostics.winsorized.length > 0 && (
               <div className="mt-4 rounded-lg bg-rose-50 p-3 text-xs text-rose-900">
-                <h4 className="font-semibold">复权净值疑似异常（{result.diagnostics.winsorized.length}）</h4>
-                <p className="mt-1">下列产品存在超出稳健区间的单日跳变，已在聚类特征中做稳健处理；展示的净值与绩效指标仍使用原始序列。</p>
+                <h4 className="font-semibold">{systemText('preInvestment.autoAssetClassification.suspectedAdjustedNavAnomalies')}{result.diagnostics.winsorized.length}）</h4>
+                <p className="mt-1">{systemText('preInvestment.autoAssetClassification.theseProductsHaveDailyJumpsOutsideRobust')}</p>
                 <ul className="mt-1">
                   {result.diagnostics.winsorized.map((item) => (
                     <li key={item.code}>
-                      · <span className="font-mono">{item.code}</span> {item.name}：{item.clipped} 个观测，最大单日 {item.max_raw_return === null ? '—' : `${(item.max_raw_return * 100).toFixed(1)}%`}
+                      · <span className="font-mono">{item.code}</span> {item.name}：{item.clipped} {" " + systemText('preInvestment.autoAssetClassification.observationsLargestOneDayChange') + " "}{item.max_raw_return === null ? '—' : `${(item.max_raw_return * 100).toFixed(1)}%`}
                     </li>
                   ))}
                 </ul>
@@ -829,33 +830,31 @@ export default function AutoAssetClassification() {
             <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-3">
               <input
                 className="rounded-lg border px-2 py-1 text-sm"
-                placeholder="保存为大类配置名称"
+                placeholder={systemText('preInvestment.autoAssetClassification.saveAsAssetConfigurationName')}
                 value={saveName}
                 onChange={(event) => setSaveName(event.target.value)}
-                aria-label="大类配置名称"
+                aria-label={systemText('preInvestment.autoAssetClassification.assetConfigurationName')}
               />
-              <button className="rounded-lg bg-accent-700 px-3 py-1 text-sm text-white hover:bg-accent-600" onClick={onSave}>保存为大类配置</button>
-              <button className="rounded-lg border px-3 py-1 text-sm hover:bg-slate-50" onClick={openInManualWorkspace}>在手动构建大类中打开</button>
+              <button className="rounded-lg bg-accent-700 px-3 py-1 text-sm text-white hover:bg-accent-600" onClick={onSave}>{systemText('preInvestment.autoAssetClassification.saveAssetConfiguration')}</button>
+              <button className="rounded-lg border px-3 py-1 text-sm hover:bg-slate-50" onClick={openInManualWorkspace}>{systemText('preInvestment.autoAssetClassification.openInManualAssetConstruction')}</button>
               {saveMessage && <span className="text-sm text-slate-700">{saveMessage}</span>}
             </div>
           </section>
 
           {/* 5. 净值与指标 */}
           <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-            <SectionTitle title="⑤ 大类净值与指标" hint="与手动构建大类使用同一条拟合链路：类内权重合成大类虚拟净值，再计算收益、风险与相关性。" />
+            <SectionTitle title={systemText('preInvestment.autoAssetClassification.5AssetClassNavAndMetrics')} hint={systemText('preInvestment.autoAssetClassification.usesTheSameFittingPipelineAsManual')} />
             {fitError && <p className="text-sm text-red-600">{fitError}</p>}
-            {!fitError && !fitResult && <p className="text-sm text-slate-600">正在计算大类净值…</p>}
+            {!fitError && !fitResult && <p className="text-sm text-slate-600">{systemText('preInvestment.autoAssetClassification.calculatingAssetClassNav')}</p>}
             {affectedClasses.length > 0 && (
               <div className="mb-4 rounded-lg border border-rose-300 bg-rose-50 p-3 text-xs text-rose-900">
-                <p className="font-semibold">以下大类的净值与指标不可直接采信</p>
+                <p className="font-semibold">{systemText('preInvestment.autoAssetClassification.reviewDataBeforeRelyingOnTheseClasses')}</p>
                 <p className="mt-1">
-                  聚类特征已对异常净值做稳健处理，但本节的净值、收益、波动与回撤走的是<b>原始复权净值序列</b>，
-                  仍包含下列产品的异常跳变。请先核实数据再解读这些大类的表现。
-                </p>
+                  {systemText('preInvestment.autoAssetClassification.clusteringFeaturesUseRobustTreatmentForAnomalous')}<b>{systemText('preInvestment.autoAssetClassification.originalAdjustedNavSeries')}</b>{systemText('preInvestment.autoAssetClassification.whichStillContainTheFollowingProductJumps')}</p>
                 <ul className="mt-1">
                   {affectedClasses.map((item) => (
                     <li key={item.className}>
-                      · <b>{item.className}</b> ← {item.products.map((product) => `${product.name}（${product.code}，单日 ${product.max_raw_return === null ? '—' : `${(product.max_raw_return * 100).toFixed(1)}%`}）`).join('、')}
+                      · <b>{item.className}</b> ← {item.products.map((product) => systemText('preInvestment.autoAssetClassification.oneDayChange', { p0: product.name, p1: product.code, p2: product.max_raw_return === null ? '—' : `${(product.max_raw_return * 100).toFixed(1)}%` })).join('、')}
                     </li>
                   ))}
                 </ul>
@@ -866,7 +865,7 @@ export default function AutoAssetClassification() {
 
           {fitResult && Array.isArray(fitResult.consistency) && fitResult.consistency.length > 0 && (
             <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-              <SectionTitle title="⑥ 同类资产一致性" hint="相关性均值 < 0.6、主成分解释度 < 80% 或跟踪误差 > 5% 时标红，说明该大类内部并不同质。" />
+              <SectionTitle title={systemText('preInvestment.autoAssetClassification.6WithinClassConsistency')} hint={systemText('preInvestment.autoAssetClassification.redHighlightsIndicateMeanCorrelation06')} />
               <ClassConsistencyTable rows={fitResult.consistency} />
             </section>
           )}

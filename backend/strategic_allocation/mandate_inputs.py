@@ -77,18 +77,15 @@ def effective_cash_floor(definition: dict, funding_floor: float) -> float:
 
 
 def effective_return_floor(definition: dict, cashflow_required_return: float | None) -> float | None:
-    """现金流按期支付所要求的收益也是一条收益下限，与填写的预期收益取大者。
+    """Only an explicitly arithmetic objective is a constant arithmetic floor.
 
-    None 表示本目标不使用算术收益下限（资金目标和相对收益目标各有自己的成功口径）。
-    现金流要求的是扣费前固定年复合收益，与填写的算术预期收益口径不同，取大者是
-    确定性筛选，不替代资金成功概率诊断。
+    The second argument remains for the existing callers' ABI. Compound funding
+    requirements are evaluated separately at the candidate's actual volatility.
     """
-    if definition.get("objective_kind", "absolute_return") != "absolute_return":
+    if (definition.get("objective_kind", "absolute_return") != "absolute_return"
+            or definition.get("target_return_basis", "annual_arithmetic") != "annual_arithmetic"):
         return None
-    stated = float(definition.get("target_return") or 0.)
-    if cashflow_required_return is None:
-        return stated
-    return max(stated, float(cashflow_required_return))
+    return float(definition.get("target_return") or 0.)
 
 
 def _freeze_reference_benchmark(resolved: dict, version: dict, level: int) -> None:
@@ -178,6 +175,8 @@ def require_resolved_authorization(definition: dict) -> None:
     """Saved research inputs are not necessarily usable investment constraints."""
     if definition.get("max_volatility") is None:
         raise ValidationError("MANDATE_AUTHORIZATION_PENDING", "此目标尚无已确认数值风险上限，请补齐授权后再计算SAA。")
+    if definition.get("objective_kind") == "benchmark_relative" and not definition.get("benchmark"):
+        raise ValidationError("MANDATE_BENCHMARK_REQUIRED", "相对收益目标尚无数值基准，请补齐基准后再计算。")
     if definition.get("schema_version", "1.0") == "2.0":
         policy = definition.get("boundary_policy")
         if not policy or definition.get("boundary_policy_hash") != digest_json(policy):

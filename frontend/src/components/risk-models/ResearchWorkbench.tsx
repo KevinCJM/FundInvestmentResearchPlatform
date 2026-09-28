@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../ui'
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
@@ -69,7 +70,7 @@ export default function ResearchWorkbench({ domain = 'product' }: { domain?: Res
   useEffect(() => {
     const controller = new AbortController(); setLoading(true)
     Promise.all([riskCatalog(domain, controller.signal), riskReleases(domain, {}, controller.signal)])
-      .then(([nextCatalog, nextReleases]) => { if (!controller.signal.aborted) { setCatalog(nextCatalog); setReleases(nextReleases) } })
+      .then(([nextCatalog, nextReleases]) => { if (!controller.signal.aborted) { setCatalog(nextCatalog); setReleases(nextReleases); setError('') } })
       .catch(caught => { if (!controller.signal.aborted) setError(caught instanceof Error ? caught.message : '研究目录加载失败。') })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
@@ -120,8 +121,8 @@ export default function ResearchWorkbench({ domain = 'product' }: { domain?: Res
   return <div className="min-w-0 space-y-5" data-testid={`${domain}-risk-workbench`}>
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold text-slate-950">{domain === 'product' ? '风险模型中心' : '宏观传导研究'}</h2><p className="mt-2 text-sm text-slate-600">{domain === 'product' ? '研究产品怕什么，验证并发布后，供产品和组合页面直接使用。' : '研究事件、经济与市场之间的条件关系；传导强度由数据估计，不手填系数。'}</p></div><button type="button" className={buttonClass} disabled={Boolean(busy)} onClick={resetResearch}>新建研究</button></div>
     <nav aria-label="研究中心工作区" className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">{([['research', '研究方案'], ['published', '已发布成果'], ['data', '数据与因子']] as const).map(([id, label]) => <button type="button" key={id} aria-current={pane === id ? 'page' : undefined} disabled={Boolean(busy)} className={pane === id ? primaryClass : buttonClass} onClick={() => setPane(id)}>{label}</button>)}</nav>
-    <Feedback error={error} notice={notice} />
-    {loading && !catalog ? <div role="status" className="rounded-xl bg-white p-6 text-sm text-slate-600">正在读取本地研究目录…</div> : !catalog ? <Empty title="研究目录暂不可用"><p>检查数据磁盘与后端连接后重试。</p><button type="button" className={`${buttonClass} mt-3`} onClick={() => setRefresh(old => old + 1)}>重新加载</button></Empty> : <>
+    <Feedback error={catalog ? error : undefined} notice={notice} />
+    {loading && !catalog ? <div role="status" className="rounded-xl bg-white p-6 text-sm text-slate-600">正在读取本地研究目录…</div> : !catalog ? <ErrorPanel onRetry={() => setRefresh(old => old + 1)} /> : <>
       {pane === 'research' && <>
         {domain === 'product' && <div className="flex flex-wrap gap-2" aria-label="研究方法"><button type="button" disabled={Boolean(busy)} aria-pressed={method === 'ols'} className={buttonClass} onClick={() => setMethod('ols')}>基金 / ETF 敏感度</button><button type="button" disabled={Boolean(busy)} aria-pressed={method === 'cashflow'} className={buttonClass} onClick={() => setMethod('cashflow')}>债券现金流估值</button></div>}
         {method === 'cashflow' ? <CashflowResearch onPublished={() => setRefresh(old => old + 1)} /> : <div className="min-w-0 space-y-4"><Steps labels={['选对象和数据', '计算与验证', '发布成果']} active={step} onChange={setStep} disabled={Boolean(busy)} />

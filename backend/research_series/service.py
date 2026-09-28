@@ -238,6 +238,12 @@ def _date_text(value: Any) -> str | None:
     return pd.Timestamp(value).strftime("%Y-%m-%d")
 
 
+def _catalog_matches(item: dict[str, Any], query: str | None) -> bool:
+    return not query or query.strip().casefold() in " ".join(
+        str(item.get(key) or "") for key in ("id", "name", "code", "category", "source_api")
+    ).casefold()
+
+
 def _file_checksum(path: Path) -> str:
     stat = path.stat()
     key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
@@ -682,36 +688,80 @@ class ResearchSeriesService:
         if not required.issubset(frame.columns):
             return {}
         return {
-            (str(row["source_api"]), str(row["ts_code"])): row.to_dict()
-            for _, row in frame.iterrows()
+            (str(row["source_api"]), str(row["ts_code"])): row
+            for row in frame.to_dict("records")
         }
+
+    @staticmethod
+    def _index_metadata(snapshot: Path) -> list[dict[str, Any]] | None:
+        catalog_path = snapshot / "index_catalog_df.parquet"
+        if not catalog_path.exists() or pq.ParquetFile(catalog_path).metadata.num_rows == 0:
+            return None
+        catalog = pd.read_parquet(catalog_path)
+        if not {"ts_code", "quote_source_api"}.issubset(catalog.columns):
+            return None
+        # Deduplicate before searching: later aliases must not change catalog identity.
+        unique = {}
+        for row in catalog.to_dict("records"):
+            code, source_api = _text(row.get("ts_code")), _text(row.get("quote_source_api"))
+            if code and source_api:
+                identifier = f"index:{source_api}:{code}"
+                unique.setdefault(identifier, {**row, "id": identifier, "code": code,
+                    "source_api": source_api, "name": _text(row.get("name")) or code,
+                    "category": _text(row.get("category")) or "指数"})
+        return list(unique.values())
+
+    def source_labels(self, series_ids: list[str]) -> dict[str, Any]:
+        """Display metadata only; a label never grants data or calculation eligibility."""
+        snapshot, manifest = self._active_snapshot()
+        requested = dict.fromkeys(series_ids)
+        labels = {}
+        if any(identifier.startswith("index:") for identifier in requested):
+            for item in self._index_metadata(snapshot) or []:
+                if item["id"] in requested:
+                    labels[item["id"]] = item["name"]
+        for kind, spec in PRODUCT_SOURCES.items():
+            if not any(identifier.startswith(kind + ":") for identifier in requested):
+                continue
+            path = snapshot / spec["info_file"]
+            if spec["info_file"] not in manifest.get("files", {}) or not path.is_file():
+                continue
+            rows = pd.read_parquet(path, columns=["ts_code", "name"]).drop_duplicates("ts_code")
+            for row in rows.to_dict("records"):
+                code = _text(row.get("ts_code"))
+                identifier = f"{kind}:{spec['source_api']}:{code}"
+                if code and identifier in requested:
+                    labels.setdefault(identifier, _text(row.get("name")) or code)
+        return {"labels": labels, "missing_ids": [key for key in requested if key not in labels]}
 
     def _index_catalog_items(
         self,
         snapshot: Path,
         manifest: dict[str, object],
+        query: str | None = None,
     ) -> list[dict[str, Any]]:
-        catalog_path = snapshot / "index_catalog_df.parquet"
-        if not catalog_path.exists() or pq.ParquetFile(catalog_path).metadata.num_rows == 0:
+        catalog = self._index_metadata(snapshot)
+        if catalog is None:
             return [self._missing_index_catalog_item()]
-        catalog = pd.read_parquet(catalog_path)
-        if not {"ts_code", "quote_source_api"}.issubset(catalog.columns):
-            return [self._missing_index_catalog_item()]
+        catalog = [item for item in catalog if _catalog_matches(item, query)]
+        if not catalog:
+            return []
         coverage_lookup = self._coverage_lookup(snapshot)
         schema_fields: dict[str, list[str]] = {}
         file_available: dict[str, bool] = {}
+        needed_sources = {item["source_api"] for item in catalog}
         for source_api, filename in INDEX_SOURCE_FILES.items():
+            if source_api not in needed_sources:
+                continue
             path = snapshot / filename
             available = path.exists() and pq.ParquetFile(path).metadata.num_rows > 0
             file_available[source_api] = available
             schema_fields[source_api] = _numeric_fields(path) if available else []
 
         items: list[dict[str, Any]] = []
-        for _, row in catalog.iterrows():
-            code = _text(row.get("ts_code"))
-            source_api = _text(row.get("quote_source_api"))
-            if not code or not source_api:
-                continue
+        file_checksums = {}
+        for row in catalog:
+            code, source_api = row["code"], row["source_api"]
             coverage = coverage_lookup.get((source_api, code))
             observation_count = int(coverage.get("rows") or 0) if coverage else 0
             available = file_available.get(source_api, False) and observation_count > 0
@@ -731,7 +781,9 @@ class ResearchSeriesService:
             missing_rate_value = _nullable_scalar(missing_rate)
             series_id = f"index:{source_api}:{code}"
             data_path = snapshot / str(INDEX_SOURCE_FILES.get(source_api) or "")
-            file_checksum = _file_checksum(data_path) if available else None
+            if available and data_path not in file_checksums:
+                file_checksums[data_path] = _file_checksum(data_path)
+            file_checksum = file_checksums.get(data_path) if available else None
             items.append(
                 {
                     "id": series_id,
@@ -781,12 +833,10 @@ class ResearchSeriesService:
                     },
                 }
             )
-        unique: dict[str, dict[str, Any]] = {}
-        for item in items:
-            unique.setdefault(str(item["id"]), item)
-        return list(unique.values())
+        return items
 
-    def _product_catalog_items(self, snapshot: Path, manifest: dict[str, object], kind: str) -> list[dict[str, Any]]:
+    def _product_catalog_items(self, snapshot: Path, manifest: dict[str, object], kind: str,
+                               query: str | None = None) -> list[dict[str, Any]]:
         spec = PRODUCT_SOURCES[kind]
         published = manifest.get("files", {})
         info_path = snapshot / spec["info_file"]
@@ -795,6 +845,14 @@ class ResearchSeriesService:
         info = pd.read_parquet(info_path, columns=["ts_code", "name"]).drop_duplicates("ts_code")
         # Each field pins the file it actually reads; NAV never borrows a price checksum.
         sources = [spec, product_source_spec(kind, "adj_nav")] if kind == "etf" else [spec]
+        rows = [row for row in info.to_dict("records") if any(_catalog_matches({
+            "id": f"{kind}:{spec['source_api']}:{_text(row.get('ts_code'))}",
+            "name": _text(row.get("name")) or _text(row.get("ts_code")),
+            "code": _text(row.get("ts_code")), "category": spec["label"],
+            "source_api": source["source_api"],
+        }, query) for source in sources)]
+        if not rows:
+            return []
         field_sources = []
         for source in sources:
             path = snapshot / source["filename"]
@@ -811,7 +869,7 @@ class ResearchSeriesService:
         factor_codes = present_product_codes(factor_path) if factor_path else frozenset()
         factor_checksum = _file_checksum(factor_path) if factor_path else None
         items = []
-        for row in info.to_dict("records"):
+        for row in rows:
             code = _text(row.get("ts_code"))
             if not code:
                 continue
@@ -1186,10 +1244,10 @@ class ResearchSeriesService:
             snapshot, manifest = self._active_snapshot()
         items: list[dict[str, Any]] = []
         if kind in {None, "index"}:
-            items.extend(self._index_catalog_items(snapshot, manifest))
+            items.extend(self._index_catalog_items(snapshot, manifest, query=query))
         for product_kind in PRODUCT_SOURCES:
             if kind in {None, product_kind}:
-                items.extend(self._product_catalog_items(snapshot, manifest, product_kind))
+                items.extend(self._product_catalog_items(snapshot, manifest, product_kind, query=query))
         if kind in {None, "macro"}:
             items.extend(self._macro_catalog_items(snapshot, manifest))
         if kind in {None, "indicator"}:
@@ -1199,14 +1257,7 @@ class ResearchSeriesService:
         if status:
             items = [item for item in items if item["status"] == status]
         if query:
-            needle = query.strip().casefold()
-            items = [
-                item
-                for item in items
-                if needle in " ".join(
-                    str(item.get(key) or "") for key in ("id", "name", "code", "category", "source_api")
-                ).casefold()
-            ]
+            items = [item for item in items if _catalog_matches(item, query)]
         items.sort(key=lambda item: (str(item["kind"]), str(item.get("name") or ""), str(item["id"])))
         total = len(items)
         return {

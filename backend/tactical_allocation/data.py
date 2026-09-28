@@ -30,6 +30,21 @@ MAX_ASSETS = 30
 MAX_PARQUET_BYTES = 256_000_000
 
 
+
+def common_daily_periods(loaded: dict) -> tuple[np.ndarray, list[str], int]:
+    """只保留相邻共同净值日之间的收益。
+
+    某个资产缺净值的日子整天退出共同样本，跨过它的那一段就不是单日收益；整段排除
+    而不是并入样本，避免把跨期收益当成日收益按 252 年化。
+    """
+    keep = loaded["period_complete"]
+    excluded = int(keep.size - keep.sum())
+    if not excluded:
+        return loaded["returns"], loaded["dates"], 0
+    kept_returns = np.ascontiguousarray(loaded["returns"][keep])
+    kept_returns.flags.writeable = False
+    return (kept_returns, [day for day, kept in zip(loaded["dates"], keep.tolist(), strict=True) if kept], excluded)
+
 def warm_tactical_data() -> dict[str, Any]:
     return warm_strategy_numba_kernels()
 
@@ -321,7 +336,13 @@ class TacticalAllocationData:
         strategic = baseline.get("strategic_universe_id")
         if strategic:
             from backend.strategic_allocation.sources import verify_strategic_snapshot
-            verify_strategic_snapshot(baseline)
+            source = verify_strategic_snapshot(baseline, require_complete=False)
+            if (source['implementation_status'] != 'complete'
+                    or any(asset.get('research_proxy') for asset in source['assets'])):
+                from .research_data import load_research_data
+                return load_research_data(self.data_dir, baseline, start, end, cutoff)
+            # Already supported product-backed histories without scope proxies
+            # retain their exact frozen source and integrity checks.
             mapping = baseline["implementation_mapping_snapshot"]
             if not mapping["definition"]["as_of"] <= cutoff < mapping["definition"]["valid_until"]:
                 raise ValidationError("SAA_MAPPING_EXPIRED", "实施映射不适用于本次TAA研究日。")
@@ -392,6 +413,10 @@ class TacticalAllocationData:
         # Strict intersection is explicit: no ffill, zero return, or hidden reweight.
         common = wide.notna().all(axis=1)
         excluded_incomplete = int((~common).sum())
+        # 跨过被排除日期的收益不是单日收益；消费方据此只取相邻共同日的收益期。
+        period_complete = np.diff(np.flatnonzero(common.to_numpy())) == 1
+        period_complete.flags.writeable = False
+        excluded_dates = wide.index[~common].strftime("%Y-%m-%d").tolist()
         wide = wide.loc[common]
         if len(wide) < 3:
             raise ValidationError("TAA_DATA_SHORT", "至少需要 3 个所有资产都有净值的共同观察日。")
@@ -444,6 +469,7 @@ class TacticalAllocationData:
         digest.update(memoryview(returns).cast("B"))
         digest.update(memoryview(available_at).cast("B"))
         return {"dates": dates[1:], "period_starts": dates[:-1], "returns": returns,
+                "period_complete": period_complete, "excluded_dates": excluded_dates,
                 "available_at": available_at, "lineage": lineage, "reasons": reasons,
                 "pit": {"status": "research_only", "reasons": reasons},
                 "source_hash": digest.hexdigest(), "execution": execution}

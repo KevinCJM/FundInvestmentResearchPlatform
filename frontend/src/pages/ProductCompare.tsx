@@ -1263,7 +1263,7 @@ export default function ProductCompare() {
       <table className="min-w-[720px] w-max divide-y divide-slate-100">
         <thead className="bg-slate-50">
           <tr>
-            <th scope="col" className="px-6 py-3 text-left text-xs font-semibold tracking-wide r text-slate-600">指标</th>
+            <th scope="col" className="px-6 py-3 text-left text-xs font-semibold tracking-wide text-slate-600">指标</th>
             {productPresentations.map(({ key, displayName, code }) => (
               <th scope="col" key={`${tableKey}-head-${key}`} className="px-6 py-3 text-center text-xs font-semibold uppercase tracking-wider text-accent-600">
                 <div className="flex flex-col items-center gap-0.5">
@@ -2176,7 +2176,7 @@ export default function ProductCompare() {
               <circle className="opacity-25" cx="12" cy="12" r="10" />
               <path className="opacity-75" d="M4 12a8 8 0 018-8" />
             </svg>
-            数据加载中...
+            数据加载中…
           </div>
         </div>
       )}
@@ -2226,7 +2226,7 @@ export default function ProductCompare() {
               <table className="min-w-[1100px] w-max divide-y divide-slate-100">
                 <thead className="bg-slate-50">
                   <tr>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-semibold tracking-wide r text-slate-600">产品</th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-semibold tracking-wide text-slate-600">产品</th>
                     {detailColumns.map((column) => (
                       <th scope="col" key={column.key} className="px-6 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-600">
                         {column.label}
@@ -2266,9 +2266,9 @@ export default function ProductCompare() {
                   <MetricSelector indicators={customIndicators} selectedIds={metricPreference.indicatorIds} onChange={(indicatorIds) => setMetricPreference((current) => withSelectedIndicators(current, indicatorIds, '1Y'))} maxSelected={10} label="选择比较指标" />
                   <label className="text-sm text-slate-600">截止日<input type="date" value={customIndicatorAsOf} onChange={(event) => setCustomIndicatorAsOf(event.target.value)} className="ml-2 min-h-11 rounded-lg border border-slate-200 px-3 text-sm" /></label>
                   {comparisonProductKind ? (
-                    <Link to={`/settings/indicators-models?kind=${comparisonProductKind}&ids=${encodeURIComponent(limitedIds.join(','))}`} className="inline-flex min-h-11 items-center rounded-lg border border-accent-200 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50">指标中心</Link>
+                    <Link to={`/settings/indicators-models?kind=${comparisonProductKind}&ids=${encodeURIComponent(limitedIds.join(','))}`} className="inline-flex min-h-11 items-center rounded-lg border border-accent-200 px-3 text-sm font-medium text-accent-700 hover:bg-accent-50">行情指标中心</Link>
                   ) : (
-                    <span title="混合产品对比请直接使用本页研究指标矩阵" className="inline-flex min-h-11 cursor-not-allowed items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-600">指标中心</span>
+                    <span title="混合产品对比请直接使用本页研究指标矩阵" className="inline-flex min-h-11 cursor-not-allowed items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-600">行情指标中心</span>
                   )}
                 </div>
               </div>

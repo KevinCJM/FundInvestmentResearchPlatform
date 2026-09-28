@@ -5,10 +5,13 @@ import { riskReference, type CmaDraft, type EconomicRole, type RiskReferenceRequ
 import { control, RateInput, useLtcmaTask, useLtcmaText } from './shared'
 
 const roles: EconomicRole[] = ['growth', 'rates', 'inflation', 'credit', 'liquidity', 'diversifier']
-type Props = { value: CmaDraft; onChange: (next: CmaDraft) => void }
+type Props = { value: CmaDraft; onChange: (next: CmaDraft) => void; assetLabels?: Record<string, string> }
 
-export default function LtcmaAssetFields({ value, onChange }: Props) {
+export default function LtcmaAssetFields({ value, onChange, assetLabels = {} }: Props) {
   const { t } = useLtcmaText(), manual = !value.model
+  const label = (id: string) => assetLabels[id] ?? id
+  const uncertainty = !value.model || ['black_litterman', 'scenario_mixture'].includes(value.model.method)
+  if (!manual && !uncertainty && value.strategic_universe_id) return null
   const change = (index: number, patch: Partial<CmaDraft['assets'][number]>) => onChange({
     ...value, assets: value.assets.map((asset, i) => i === index ? { ...asset, ...patch } : asset),
     ...('annual_volatility' in patch ? { risk_origin: 'manual' as const, risk_reference: null, risk_reference_hash: null } : {}),
@@ -19,27 +22,32 @@ export default function LtcmaAssetFields({ value, onChange }: Props) {
   })
   return <section className="space-y-4" aria-label={t('assetInputs')}>
     <h2 className="text-lg font-semibold">{t('assetInputs')}</h2>
-    <div className="divide-y divide-slate-200">{value.assets.map((asset, index) => <fieldset key={asset.id} className="min-w-0 space-y-3 py-4">
-      <legend className="text-base font-semibold">{asset.id}</legend>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <Field label={`${asset.id} · ${t('role')}`}><select className={control} value={asset.role} disabled={Boolean(value.strategic_universe_id)} onChange={event => change(index, { role: event.target.value as EconomicRole })}>
+    <div className="divide-y divide-slate-200">{value.assets.map((asset, index) => <fieldset key={asset.id} className="min-w-0 space-y-2 py-3">
+      <legend className="sr-only">{label(asset.id)}</legend>
+      <div className="grid items-center gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,2fr)]">
+        <h3 className="text-sm font-semibold">{label(asset.id)}</h3>
+        {manual && <><Field label={t('return')}><RateInput label={`${label(asset.id)} · ${t('return')}`} value={asset.annual_return} onChange={annual_return => change(index, { annual_return })} /></Field>
+          <Field label={t('volatility')}><RateInput label={`${label(asset.id)} · ${t('volatility')}`} value={asset.annual_volatility} onChange={annual_volatility => change(index, { annual_volatility })} /></Field></>}
+      </div>
+      {!value.strategic_universe_id && <details open={!asset.role || !asset.liquidity}><summary className="min-h-10 cursor-pointer text-sm text-slate-600">{t('classification')}</summary><div className="grid gap-3 sm:grid-cols-2">
+        <Field label={`${label(asset.id)} · ${t('role')}`}><select className={control} value={asset.role} onChange={event => change(index, { role: event.target.value as EconomicRole })}>
           <option value="">{t('choose')}</option>{roles.map(role => <option key={role} value={role}>{t(`role.${role}`)}</option>)}
         </select></Field>
-        <Field label={`${asset.id} · ${t('liquidity')}`}><select className={control} value={asset.liquidity} disabled={Boolean(value.strategic_universe_id)} onChange={event => change(index, { liquidity: event.target.value as 'liquid' | 'illiquid' })}>
+        <Field label={`${label(asset.id)} · ${t('liquidity')}`}><select className={control} value={asset.liquidity} onChange={event => change(index, { liquidity: event.target.value as 'liquid' | 'illiquid' })}>
           <option value="">{t('choose')}</option><option value="liquid">{t('liquid')}</option><option value="illiquid">{t('illiquid')}</option>
         </select></Field>
-        <Field label={`${asset.id} · ${t('rationale')}`}><input className={control} value={asset.rationale} maxLength={1000} onChange={event => change(index, { rationale: event.target.value })} /></Field>
-        {manual && <><Field label={`${asset.id} · ${t('return')}`}><RateInput value={asset.annual_return} onChange={annual_return => change(index, { annual_return })} /></Field>
-          <Field label={`${asset.id} · ${t('volatility')}`}><RateInput value={asset.annual_volatility} onChange={annual_volatility => change(index, { annual_volatility })} /></Field></>}
-      </div>
-      {(!value.model || value.model.method === 'black_litterman' || value.model.method === 'scenario_mixture') && <details><summary className="min-h-10 cursor-pointer text-sm font-medium">{t('uncertainty')}</summary>
-        <Field label={`${asset.id} · ${t('uncertainty')}`} hint={t('uncertaintyHint')}><RateInput value={asset.mean_uncertainty} onChange={mean_uncertainty => change(index, { mean_uncertainty })} /></Field>
-      </details>}
+      </div></details>}
     </fieldset>)}</div>
+    {uncertainty && <details><summary className="min-h-10 cursor-pointer text-sm font-medium">{t('uncertainty')}</summary>
+      <p className="mb-2 text-xs leading-5 text-slate-600">{t('uncertaintyHint')}</p>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{value.assets.map((asset, index) => <Field key={asset.id} label={label(asset.id)}>
+        <RateInput label={`${label(asset.id)} · ${t('uncertainty')}`} value={asset.mean_uncertainty} onChange={mean_uncertainty => change(index, { mean_uncertainty })} />
+      </Field>)}</div>
+    </details>}
     {manual && <details open={value.risk_origin !== 'historical_reference'}><summary className="min-h-10 cursor-pointer text-sm font-medium">{t('correlation')}</summary><p className="text-xs leading-5 text-slate-600">{t('matrixHint')}</p>
-      <div className="overflow-x-auto"><table className="w-full text-sm" aria-label={t('correlation')}><thead><tr><th scope="col" className="p-2 text-left">{t('asset')}</th>{value.assets.map(asset => <th key={asset.id} scope="col" className="min-w-28 p-2 text-right">{asset.id}</th>)}</tr></thead>
-        <tbody>{value.assets.map((asset, i) => <tr key={asset.id} className="border-b border-slate-200"><th scope="row" className="p-2 text-left font-medium">{asset.id}</th>{value.assets.map((other, j) => <td key={other.id} className="p-2 text-right tabular-nums">
-          {j > i ? <NumberInput aria-label={`${t('correlation')}: ${asset.id} / ${other.id}`} className={`${control} min-w-24 text-right`} min={-1} max={1} value={value.correlation[i]?.[j] ?? NaN} onValueChange={number => correlation(i, j, number)} /> : Number.isFinite(value.correlation[i]?.[j]) ? value.correlation[i][j].toFixed(3) : '—'}
+      <div className="overflow-x-auto"><table className="w-full text-sm" aria-label={t('correlation')}><thead><tr><th scope="col" className="p-2 text-left">{t('asset')}</th>{value.assets.map(asset => <th key={asset.id} scope="col" className="min-w-28 p-2 text-right">{label(asset.id)}</th>)}</tr></thead>
+        <tbody>{value.assets.map((asset, i) => <tr key={asset.id} className="border-b border-slate-200"><th scope="row" className="p-2 text-left font-medium">{label(asset.id)}</th>{value.assets.map((other, j) => <td key={other.id} className="p-2 text-right tabular-nums">
+          {j > i ? <NumberInput aria-label={`${t('correlation')}: ${label(asset.id)} / ${label(other.id)}`} className={`${control} min-w-24 text-right`} min={-1} max={1} value={value.correlation[i]?.[j] ?? NaN} onValueChange={number => correlation(i, j, number)} /> : Number.isFinite(value.correlation[i]?.[j]) ? value.correlation[i][j].toFixed(3) : '—'}
         </td>)}</tr>)}</tbody>
       </table></div>
     </details>}

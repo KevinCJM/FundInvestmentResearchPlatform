@@ -55,7 +55,7 @@ describe('RegimeLifecyclePanel', () => {
   it('正式运行必须由用户先显式预热，运行请求只传已保存引用和 token', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input)
-      if (path.endsWith(`/runs?definition_id=${definition.id}`)) return ok({ items: [] })
+      if (path.endsWith(`/runs?definition_id=${definition.id}&summary=true`)) return ok({ items: [] })
       if (path.endsWith('/prepare')) return ok({ plan_id: 'PLAN-3', compile_token: 'TOKEN-3', graph_hash: 'graph-3', runtime_audit: fixedExecution })
       if (path.endsWith('/run') && init?.method === 'POST') return ok(run)
       throw new Error(`Unexpected request: ${path} ${init?.method || 'GET'}`)
@@ -140,8 +140,8 @@ describe('RegimeLifecyclePanel', () => {
     const nextRun = { ...run, id: 'RUN-OTHER-DEFINITION', definition_id: nextDefinition.id, name: '另一份定义的运行' }
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input)
-      if (path.endsWith('/runs?definition_id=' + definition.id)) return ok({ items: [] })
-      if (path.endsWith('/runs?definition_id=' + nextDefinition.id)) return ok({ items: [nextRun] })
+      if (path.endsWith('/runs?definition_id=' + definition.id + '&summary=true')) return ok({ items: [] })
+      if (path.endsWith('/runs?definition_id=' + nextDefinition.id + '&summary=true')) return ok({ items: [nextRun] })
       if (path.endsWith('/prepare')) return ok({ plan_id: 'PLAN', compile_token: 'TOKEN', graph_hash: 'graph', runtime_audit: fixedExecution })
       if (path.endsWith('/run') && init?.method === 'POST') return pendingOld
       throw new Error('Unexpected request: ' + path)

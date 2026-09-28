@@ -1,10 +1,11 @@
+import { systemText } from '../../i18n/runtime'
 import type { EChartsOption, ScatterSeriesOption } from 'echarts'
 import { timingNumber, timingPercent, timingReason, type TimingPoint, type TimingTrade } from '../../services/timingResearch'
 
 function tradeSeries(trades: TimingTrade[], side: 'buy' | 'sell', dates: Set<string>): ScatterSeriesOption {
   const buying = side === 'buy'
   const letter = buying ? 'B' : 'S'
-  const name = buying ? '买入' : '卖出'
+  const name = buying ? systemText('preInvestment.timingPriceChart.buy') : systemText('preInvestment.timingPriceChart.sell')
   const color = buying ? '#be123c' : '#047857'
   return {
     id: `timing-${side}`, name, type: 'scatter', z: 5,
@@ -24,8 +25,8 @@ function tradeSeries(trades: TimingTrade[], side: 'buy' | 'sell', dates: Set<str
       formatter: params => {
         const item = Array.isArray(params) ? params[0] : params
         const point = item.data as { value: [string, number]; trade: TimingTrade }
-        return [`${letter} · ${name}`, point.value[0], `模拟成交价  ${timingNumber(point.value[1], 4)}`,
-          ...(buying ? [`信号日  ${point.trade.signal_date}`] : [`退出原因  ${timingReason(point.trade.reason)}`, `本笔净收益  ${timingPercent(point.trade.net_return)}`]),
+        return [`${letter} · ${name}`, point.value[0], systemText('preInvestment.timingPriceChart.simulatedExecutionPrice', { p0: timingNumber(point.value[1], 4) }),
+          ...(buying ? [systemText('preInvestment.timingPriceChart.signalDate', { p0: point.trade.signal_date })] : [systemText('preInvestment.timingPriceChart.exitReason', { p0: timingReason(point.trade.reason) }), systemText('preInvestment.timingPriceChart.tradeNetReturn', { p0: timingPercent(point.trade.net_return) })]),
         ].join('\n')
       },
     },
@@ -45,10 +46,10 @@ export function timingPriceOption(curve: TimingPoint[], trades: TimingTrade[]): 
     tooltip: { trigger: 'axis', confine: true, renderMode: 'richText', valueFormatter: value => timingNumber(typeof value === 'number' ? value : null, 4) },
     grid: { left: 50, right: 20, top: 38, bottom: 72 },
     xAxis: { type: 'category', data: dates, boundaryGap: true, axisLabel: { hideOverlap: true } },
-    yAxis: { type: 'value', scale: true, name: '研究价格', boundaryGap: ['12%', '12%'] },
+    yAxis: { type: 'value', scale: true, name: systemText('preInvestment.timingPriceChart.researchPrice'), boundaryGap: ['12%', '12%'] },
     dataZoom: [{ type: 'inside', xAxisIndex: 0, zoomOnMouseWheel: 'ctrl', moveOnMouseWheel: false }, { type: 'slider', xAxisIndex: 0, bottom: 8, height: 20 }],
     series: [
-      { name: '价格', type: 'line', showSymbol: false, connectNulls: false, data: curve.map(point => point.close), itemStyle: { color: '#475569' }, lineStyle: { width: 1.5 } },
+      { name: systemText('preInvestment.timingPriceChart.price'), type: 'line', showSymbol: false, connectNulls: false, data: curve.map(point => point.close), itemStyle: { color: '#475569' }, lineStyle: { width: 1.5 } },
       tradeSeries(trades, 'buy', visibleDates), tradeSeries(trades, 'sell', visibleDates),
     ],
   }

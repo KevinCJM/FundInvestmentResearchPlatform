@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import StaticDemoBanner from '../components/StaticDemoBanner'
+import { DataTable } from '../components/ui'
 import {
   algorithmRules,
   disclosureItems,
@@ -83,7 +84,19 @@ function PerformanceView({ solution }: { solution: (typeof portfolioSolutions)[n
     <div className="flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2" aria-label="表现区间">{['近1年', '近3年', '成立以来'].map((item) => <button key={item} type="button" onClick={() => setPeriod(item)} className={`rounded-lg px-4 py-2 text-sm font-semibold ${period === item ? 'bg-accent-700 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{item}</button>)}</div>
     <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="区间年化收益" value={solution.annualizedReturn} hint={`${period} · 示例`} /><MetricCard label="相对基准" value="+1.54%" hint="同口径年化超额" /><MetricCard label="最大回撤" value={solution.maxDrawdown} hint="组合 / 基准 -9.16%" /><MetricCard label="下行波动" value="4.83%" hint="仅统计负收益月份" /></section>
     <PerformanceLineChart />
-    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><table className="w-full min-w-[640px] text-sm"><thead className="bg-slate-50 text-left text-xs text-slate-600"><tr>{['区间', '组合收益', '基准收益', '相对收益'].map((item) => <th scope="col" key={item} className="px-4 py-3">{item}</th>)}</tr></thead><tbody>{periodPerformance.map((row) => <tr key={row[0]} className="border-t border-slate-100">{row.map((cell) => <td key={cell} className="px-4 py-3 text-slate-700">{cell}</td>)}</tr>)}</tbody></table></section>
+    <DataTable
+      caption="分区间收益对比"
+      minWidth="640px"
+      columns={[
+        { header: '区间', cell: (row) => row[0] },
+        { header: '组合收益', numeric: true, cell: (row) => row[1] },
+        { header: '基准收益', numeric: true, cell: (row) => row[2] },
+        { header: '相对收益', numeric: true, cell: (row) => row[3] },
+      ]}
+      rows={periodPerformance}
+      rowKey={(row) => row[0]}
+      empty="示例数据未载入，无法比较区间收益。"
+    />
   </div>
 }
 
@@ -113,7 +126,19 @@ function ScenarioView() {
 function RulesView({ solution }: { solution: (typeof portfolioSolutions)[number] }) {
   return <div className="space-y-5">
     <section className="border-y border-slate-200 bg-slate-50/60 px-4 py-4" aria-label="组合规则链说明（非交互）"><p className="text-xs font-semibold tracking-wide text-slate-600">规则链说明 · 非交互</p><ol className="mt-3 flex flex-col gap-2 text-sm text-slate-700 lg:flex-row lg:flex-wrap lg:items-center">{['目标与约束', 'SAA 配置中枢', 'TAA 状态偏离', '产品选择与替代', '再平衡与风控'].map((item, index) => <li key={item} className="flex items-center gap-2"><span className="font-mono text-xs text-accent-700">0{index + 1}</span><span className="font-medium">{item}</span>{index < 4 ? <span className="hidden text-slate-600 lg:inline" aria-hidden="true">→</span> : null}</li>)}</ol></section>
-    <div className="grid gap-5 xl:grid-cols-[0.7fr_1.3fr]"><section className="rounded-xl border border-slate-200 bg-white p-5"><h3 className="font-semibold text-slate-900">资产配置边界</h3><div className="mt-4 space-y-4">{solution.allocation.map((item) => <div key={item.label}><div className="flex justify-between text-sm"><span>{item.label}</span><span className="font-semibold">中枢 {item.value}% · 区间 ±5%</span></div><div className="mt-1 h-2 rounded-full bg-slate-100"><div className={`h-2 rounded-full ${item.color}`} style={{ width: `${item.value}%` }} /></div></div>)}</div></section><section className="overflow-hidden rounded-xl border border-slate-200 bg-white"><table className="w-full min-w-[720px] text-sm"><thead className="bg-slate-50 text-left text-xs text-slate-600"><tr>{['模块', '方法', '运行频率', '版本'].map((item) => <th scope="col" key={item} className="px-4 py-3">{item}</th>)}</tr></thead><tbody>{algorithmRules.map((row) => <tr key={row[0]} className="border-t border-slate-100">{row.map((cell) => <td key={cell} className="px-4 py-3 text-slate-700">{cell}</td>)}</tr>)}</tbody></table></section></div>
+    <div className="grid gap-5 xl:grid-cols-[0.7fr_1.3fr]"><section className="rounded-xl border border-slate-200 bg-white p-5"><h3 className="font-semibold text-slate-900">资产配置边界</h3><div className="mt-4 space-y-4">{solution.allocation.map((item) => <div key={item.label}><div className="flex justify-between text-sm"><span>{item.label}</span><span className="font-semibold">中枢 {item.value}% · 区间 ±5%</span></div><div className="mt-1 h-2 rounded-full bg-slate-100"><div className={`h-2 rounded-full ${item.color}`} style={{ width: `${item.value}%` }} /></div></div>)}</div></section><DataTable
+      caption="配置与算法规则链"
+      minWidth="720px"
+      columns={[
+        { header: '模块', cell: (row) => row[0] },
+        { header: '方法', cell: (row) => row[1] },
+        { header: '运行频率', nowrap: true, cell: (row) => row[2] },
+        { header: '版本', nowrap: true, cell: (row) => row[3] },
+      ]}
+      rows={algorithmRules}
+      rowKey={(row) => row[0]}
+      empty="示例数据未载入，无法展示规则链。"
+    /></div>
   </div>
 }
 

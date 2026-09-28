@@ -3,7 +3,7 @@ import { saveMandateFixture } from './helpers/mandates'
 import { fillLtcmaAsset, previewCurrentLtcma, publishCurrentLtcma } from './helpers/ltcma'
 import { auditTextContrast } from './helpers/contrast'
 
-test('real M1 objective → no-product scope → forward SAA → explicit mapping; responsive and readonly', async ({ page, request }, info) => {
+test('real M1 objective → no-product scope → LTCMA → SAA → explicit mapping; responsive and readonly', async ({ page, request }, info) => {
   const errors: string[] = [], posts: string[] = []
   page.on('pageerror', e => errors.push(e.message))
   await page.route('**/api/**', async route => {
@@ -13,9 +13,11 @@ test('real M1 objective → no-product scope → forward SAA → explicit mappin
     await route.fulfill({ response })
   })
   const day = new Date().toISOString().slice(0, 10)
+  // 同名范围现在按规则拒绝重复；夹具多次运行必须使用唯一名称。
+  const runTag = Date.now().toString(36)
   const review = new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10)
   const saved = await saveMandateFixture(request, 'http://127.0.0.1:8129/api/strategic-allocation', {
-    definition: { name: 'M1企业现金研究', as_of: day, review_date: review, target_return: 0, max_volatility: .2,
+    definition: { name: `M1企业现金研究-${runTag}`, as_of: day, review_date: review, target_return: 0, max_volatility: .2,
       boundary_reason: '明确现金支付与损失承受能力边界',
       institutional_context: { investor_type: 'corporate_treasury', purpose: '经营储备与长期风险资金分开研究',
         cash_reserve_weight: .2, balance_sheet: { as_of: day, currency: 'CNY', source: '离线浏览器测试经济快照',
@@ -27,38 +29,59 @@ test('real M1 objective → no-product scope → forward SAA → explicit mappin
   expect(diagnosis.review_blockers).toHaveLength(5)
   await page.goto(`/pre-investment/product-pool?mandate=${saved.version.id}`)
   await page.getByRole('link', { name: '先做战略研究：独立资产范围' }).click()
-  await page.getByLabel('战略范围名称').fill('M1独立战略')
-  await page.getByLabel('战略范围来源').fill('明确的离线风险与流动性研究')
-  for (const [i, id, name, role] of [[1, 'growth', '增长资产', 'growth'], [2, 'cash', '储备现金', 'liquidity']] as const) {
-    await page.getByRole('button', { name: '增加战略资产' }).click()
-    await page.getByLabel(new RegExp(`资产${i}稳定ID`)).fill(id)
-    await page.getByLabel(`资产${i}展示名称`).fill(name)
-    await page.getByLabel(`资产${i}经济角色`).selectOption(role)
-    await page.getByLabel(`资产${i}定义理由`).fill('明确的经济角色与资金用途')
-    await page.getByLabel(`资产${i}来源`, { exact: true }).fill('离线研究定义')
+  // 范围库已有记录时编辑器需显式新建，夹具重复运行也走同一条用户路径。
+  await page.getByRole('link', { name: '新建研究范围' }).click()
+  await page.getByLabel('战略范围名称').fill(`M1独立战略-${runTag}`)
+  await page.getByText('补充说明（非必填）').click()
+  await page.getByLabel('范围备注').fill('明确的离线风险与流动性研究')
+  const scopeAssetIds: Record<string, string> = {}
+  for (const [i, name, role, key] of [[1, '增长资产', 'growth', 'growth'], [2, '储备现金', 'liquidity', 'cash']] as const) {
+    await page.getByRole('button', { name: '添加参考大类' }).click()
+    const row = page.getByTestId('risk-reference-asset').nth(i - 1)
+    await row.getByLabel('大类名称').fill(name)
+    await row.getByLabel('资产类型').selectOption(role === 'liquidity' ? 'cash' : 'market')
   }
-  await page.getByRole('button', { name: '预览战略范围' }).click()
-  await expect(page.getByText(/定义已通过校验/)).toBeVisible()
+  const scopeRequest = page.waitForRequest(request => request.url().endsWith('/universes/preview') && request.method() === 'POST')
   expect(posts).not.toContain('/api/strategic-allocation/universes/confirm')
-  await page.getByRole('button', { name: '确认保存战略范围' }).click()
-  await expect(page.getByLabel('战略范围名称')).toBeDisabled()
-  const scopeId = await page.getByRole('link', { name: /先做前瞻CMA与SAA研究/ }).getAttribute('href').then(url => new URL(url!, 'http://test').searchParams.get('strategic_universe'))
+  await page.getByRole('button', { name: '保存战略范围' }).click()
+  const scopeAssets = (await scopeRequest).postDataJSON().assets
+  scopeAssetIds.growth = scopeAssets[0].id; scopeAssetIds.cash = scopeAssets[1].id
+  expect(scopeAssetIds.growth).toMatch(/^asset-[0-9a-f]{8}$/)
+  await expect(page.getByRole('table', { name: '只读战略资产摘要' })).toBeVisible()
+  const scopeId = await page.getByRole('link', { name: '下一步', exact: true }).getAttribute('href').then(url => new URL(url!, 'http://test').searchParams.get('strategic_universe'))
   expect(scopeId).toBeTruthy()
+  const scopeRead = await request.get(`http://127.0.0.1:8129/api/strategic-allocation/universes/${scopeId}`)
+  expect(await scopeRead.json()).toMatchObject({ mandate_id: saved.version.id, mandate_hash: saved.version.content_hash })
+  await page.evaluate(() => { localStorage.clear(); sessionStorage.clear() })
+  await page.goto(`/pre-investment/product-pool/new?scope=strategic&strategic_universe=${scopeId}&edit=1`)
+  const goalPanel = page.getByRole('region', { name: '当前投资目标与约束' })
+  await expect(goalPanel.getByRole('heading', { name: saved.version.name })).toBeVisible()
+  await expect(page.getByRole('button', { name: '保存修改' })).toBeEnabled()
+  await page.reload()
+  await expect(goalPanel.getByRole('heading', { name: saved.version.name })).toBeVisible()
+  await page.getByRole('button', { name: '取消编辑' }).click()
+  await expect(page.getByRole('table', { name: '只读战略资产摘要' })).toBeVisible()
   for (const width of [320, 768, 1440]) {
     await page.setViewportSize({ width, height: 1000 })
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+    // 颜色过渡结束后再断言稳定状态，避免把中间帧的透明度当成最终对比度。
+    await expect.poll(() => page.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('button')).find(node => node.textContent?.includes('重试读取范围目录'))
+      return button ? getComputedStyle(button).opacity : '1'
+    })).toBe('1')
     expect(await page.evaluate(auditTextContrast)).toEqual([])
     await page.screenshot({ path: info.outputPath(`scope-${width}.png`), fullPage: true })
   }
-  await page.getByRole('link', { name: /先做前瞻CMA与SAA研究/ }).click()
-  await page.getByRole('link', { name: '新建 LTCMA', exact: true }).click()
-  await page.getByLabel('名称', { exact: true }).fill('M1 独立战略 LTCMA')
+  await expect(page.getByRole('region', { name: '独立战略范围' }).locator('a[href*="/saa/"]')).toHaveCount(0)
+  await page.getByRole('link', { name: '下一步', exact: true }).click()
+  await expect(page).toHaveURL(/\/pre-investment\/ltcma\/new\?/)
+  await page.getByLabel('名称', { exact: true }).fill(`M1 独立战略 LTCMA-${runTag}`)
   await expect(page.getByRole('button', { name: '读取历史风险参考' })).toHaveCount(0)
   await page.getByLabel('假设依据', { exact: false }).fill('离线测试手工前瞻预期，非投资建议')
-  for (const [id, ret, vol] of [['growth', '6', '15'], ['cash', '2', '1']]) {
-    await fillLtcmaAsset(page, id, { annualReturn: ret, volatility: vol, uncertainty: '1' })
+  for (const [id, ret, vol] of [['增长资产', '6', '15'], ['储备现金', '2', '1']] as const) {
+    await fillLtcmaAsset(page, id, { rationale: '明确分类与前瞻假设依据，仅用于离线验收', annualReturn: ret, volatility: vol, uncertainty: '1' })
   }
-  await page.getByLabel('相关矩阵: growth / cash', { exact: true }).fill('0')
+  await page.getByLabel('相关矩阵: 增长资产 / 储备现金', { exact: true }).fill('0')
   await previewCurrentLtcma(page)
   await publishCurrentLtcma(page)
   await page.getByRole('button', { name: '用于 SAA', exact: true }).click()
@@ -69,8 +92,10 @@ test('real M1 objective → no-product scope → forward SAA → explicit mappin
   await page.getByRole('button', { name: '确认采用此长期政策' }).click()
   await expect(page.getByRole('button', { name: /进入 TAA，研究是否需要偏离/ })).toBeDisabled()
   await expect(page.getByText(/已保存纯前瞻政策/)).toBeVisible()
-  await page.goto(`/pre-investment/product-pool?scope=strategic&strategic_universe=${scopeId}`)
+  await page.goto(`/pre-investment/product-pool/new?scope=strategic&strategic_universe=${scopeId}`)
   await expect(page.getByText(/只读战略范围/)).toBeVisible()
+  // 实施映射默认折叠，先展开再填写。
+  await page.getByText('匹配真实代理产品（可稍后完成）', { exact: true }).click()
   await page.getByLabel('锁定的产品域').selectOption('m1-browser-domain')
   await page.getByLabel('实际代理大类方案').selectOption('浏览器离线股债')
   const later = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10)

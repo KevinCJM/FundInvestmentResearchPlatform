@@ -287,8 +287,8 @@ describe('audit regression: published horizon compatibility', () => {
 it('clears the scenario catalog error after a successful reload', async () => {
   vi.mocked(api.scenarioReleases).mockRejectedValueOnce(new Error('情景目录暂不可用'))
   const user = userEvent.setup(); mount(<PublishedScenarioCenter />)
-  await screen.findByText('情景目录暂不可用')
+  expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法读取数据，请重试。')
   await user.click(screen.getByRole('button', { name: /重新加载|重试|刷新/ }))
   await screen.findByText(scenarioReleaseFixture.name)
-  expect(screen.queryByText('情景目录暂不可用')).not.toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })

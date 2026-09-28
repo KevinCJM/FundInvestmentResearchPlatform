@@ -1,6 +1,6 @@
 """Single Pydantic/OpenAPI contract, also used to generate UI types."""
 from datetime import date
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from pydantic import Field, model_validator
 from .common_contracts import Contract, Number, Fingerprint, FrozenRef
 from .reference_contracts import ExplicitConfirm
@@ -335,6 +335,15 @@ class SourceCatalog(Contract):
     offset: int
     limit: int
     problems: list[Problem] = Field(default_factory=list)
+
+
+class SourceLabelsRequest(Contract):
+    series_ids: list[Annotated[str, Field(max_length=200, pattern=r'^(index|etf|fund):[^:\s]+:[^:\s]+$')]] = Field(min_length=1, max_length=300)
+
+
+class SourceLabelsResponse(Contract):
+    labels: dict[str, str]
+    missing_ids: list[str]
 
 
 class DeleteResponse(Contract):

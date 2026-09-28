@@ -1,3 +1,4 @@
+import { ErrorPanel, LoadingPanel } from '../ui'
 import { useEffect, useRef, useState } from 'react'
 import { factorApi, type FactorRun, type ReturnCatalog, type ReturnDataset, type ReturnPlan, type ReturnPlanDraft, type ReturnSource, type RunRecord } from '../../services/factorResearch'
 import { buttonClass, Card, Field, inputClass, secondaryClass, type Action } from './shared'
@@ -13,15 +14,22 @@ export default function ReturnConstructionWorkbench({ runs, action, busy, source
   const [draft, setDraft] = useState<ReturnPlanDraft>(() => ({ ...returnPlanDraft(), source_run_id: sourceRunId || null }))
   const [parent, setParent] = useState<FactorRun>()
   const [result, setResult] = useState<ReturnDataset>()
+  const [readFailed, setReadFailed] = useState(false)
+  const [reading, setReading] = useState(true)
+  const [readRetry, setReadRetry] = useState(0)
   const form = useRef<HTMLFormElement>(null)
   useEffect(() => {
     let active = true
-    void action('加载收益率构建目录', async () => {
-      const [info, saved, panels] = await Promise.all([factorApi.returnCatalog(), factorApi.returnPlans(), factorApi.returnSources()])
-      if (active) { setCatalog(info); setPlans(saved.items); setSources(panels.items) }
-    })
+    setReadFailed(false); setReading(true)
+    void (async () => {
+      try {
+        const [info, saved, panels] = await Promise.all([factorApi.returnCatalog(), factorApi.returnPlans(), factorApi.returnSources()])
+        if (active) { setCatalog(info); setPlans(saved.items); setSources(panels.items) }
+      } catch { if (active) setReadFailed(true) }
+      finally { if (active) setReading(false) }
+    })()
     return () => { active = false }
-  }, [action])
+  }, [action, readRetry])
   useEffect(() => {
     let active = true
     setParent(undefined)
@@ -48,6 +56,8 @@ export default function ReturnConstructionWorkbench({ runs, action, busy, source
     })
   }
   const panel = sources.find(source => source.id === draft.source_panel_id)
+  if (reading && !catalog) return <LoadingPanel text="正在读取收益率构建目录…" mascot={false} />
+  if (readFailed && !catalog) return <ErrorPanel onRetry={() => setReadRetry(value => value + 1)} />
   return <div className="min-w-0 space-y-5">
     <Card title="构建因子收益率">
       <p className="mb-4 text-sm leading-6 text-slate-600">先选构造算法，再锁定原始数据，生成逐日因子收益。保存方案方便修订；每次运行产生独立数据集，不覆盖历史。</p>

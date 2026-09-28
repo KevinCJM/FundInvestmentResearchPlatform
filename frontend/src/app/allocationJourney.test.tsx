@@ -5,6 +5,19 @@ import { allocationJourneyPath, readAllocationDraft, readAllocationJourney, upda
 beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 
 describe('allocation research continuity', () => {
+  it('resumes the complete CMA set and invalidates it when the scope changes', () => {
+    updateAllocationJourney({ strategicUniverseId: 'scope-1', mandateId: 'm1', ltcmaId: 'cma-1', ltcmaIds: ['cma-1', 'cma-2'], baselineId: 'baseline', taaRunId: 'taa' })
+    expect(new URLSearchParams(allocationJourneyPath('saa').split('?')[1]).getAll('cma')).toEqual(['cma-1', 'cma-2'])
+    updateAllocationJourney({ ltcmaId: 'cma-1', ltcmaIds: ['cma-1', 'cma-3'] })
+    expect(readAllocationJourney().baselineId).toBeUndefined()
+    expect(readAllocationJourney().taaRunId).toBeUndefined()
+    updateAllocationJourney({ mandateId: 'm2' })
+    expect(readAllocationJourney().ltcmaIds).toBeUndefined()
+    expect(readAllocationJourney().ltcmaId).toBeUndefined()
+    updateAllocationJourney({ ltcmaId: 'cma-4', ltcmaIds: ['cma-4', 'cma-5'] })
+    updateAllocationJourney({ ltcmaId: 'cma-4' })
+    expect(new URLSearchParams(allocationJourneyPath('saa').split('?')[1]).getAll('cma')).toEqual(['cma-4'])
+  })
   it('restores inputs after remount while keeping explicit universes separate', () => {
     const first = renderHook(({ scope }) => useAllocationDraft(scope, { products: [] as string[], start: '2020-01-01' }), { initialProps: { scope: 'classes:one' } })
     act(() => first.result.current[1]({ products: ['510300.SH'], start: '2021-01-01' }))
@@ -24,7 +37,7 @@ describe('allocation research continuity', () => {
     expect(context.result.current[0]).toEqual({ name: '新范围研究', universeId: 'two' })
     expect(readAllocationJourney().taaRunId).toBeUndefined()
     expect(allocationJourneyPath('saa', { allocationName: '股债 60/40', universeId: 'one' })).toBe('/pre-investment/saa/policy?alloc=%E8%82%A1%E5%80%BA+60%2F40&universe=one')
-    expect(allocationJourneyPath('pool', { universeId: 'two', poolVersionIds: ['version-b'] })).toBe('/pre-investment/product-pool?universe=two')
+    expect(allocationJourneyPath('pool', { universeId: 'two', poolVersionIds: ['version-b'] })).toBe('/pre-investment/product-pool/new?universe=two')
   })
 
   it('preserves the adopted SAA while clearing the old decision after a new baseline is selected', () => {
@@ -75,5 +88,30 @@ describe('allocation research continuity', () => {
     updateAllocationJourney({ universeId: 'three', name: '真实研究名', researchDate: '2026-09-03', poolVersionIds: ['new-version'] })
     updateAllocationJourney({ baselineId: 'next-baseline' })
     expect(readAllocationJourney()).toEqual({ universeId: 'three', name: '真实研究名', researchDate: '2026-09-03', poolVersionIds: ['new-version'], baselineId: 'next-baseline' })
+  })
+
+  it('改了目标或范围，选定的 LTCMA 连同其后的基线一起作废', () => {
+    updateAllocationJourney({ mandateId: 'm1', universeId: 'u1', allocationName: '60/40', ltcmaId: 'cma-7', baselineId: 'b1', taaRunId: 't1' })
+    expect(readAllocationJourney().ltcmaId).toBe('cma-7')
+    // LTCMA 的可用性绑定目标的币种与研究日区间，换目标就不能再沿用。
+    updateAllocationJourney({ mandateId: 'm2' })
+    expect(readAllocationJourney()).toEqual({ mandateId: 'm2', universeId: 'u1', allocationName: '60/40' })
+  })
+
+  it('换一版 LTCMA 会作废基于旧假设的基线和战术版本', () => {
+    updateAllocationJourney({ mandateId: 'm1', universeId: 'u1', allocationName: '60/40', ltcmaId: 'cma-7', baselineId: 'b1', taaRunId: 't1' })
+    updateAllocationJourney({ ltcmaId: 'cma-8' })
+    expect(readAllocationJourney()).toEqual({ mandateId: 'm1', universeId: 'u1', allocationName: '60/40', ltcmaId: 'cma-8' })
+  })
+
+  it('01 落点带回已选目标的详情，没有目标时才停在列表页', () => {
+    expect(allocationJourneyPath('objectives', {})).toBe('/pre-investment/objectives')
+    expect(allocationJourneyPath('objectives', { mandateId: 'm1' })).toBe('/pre-investment/objectives/new?view=m1')
+  })
+
+  it('SAA 落点带回已选假设，LTCMA 落点直接回到那一版', () => {
+    updateAllocationJourney({ mandateId: 'm1', universeId: 'u1', allocationName: '60/40', ltcmaId: 'cma-7' })
+    expect(allocationJourneyPath('saa')).toBe('/pre-investment/saa/policy?alloc=60%2F40&universe=u1&mandate=m1&cma=cma-7')
+    expect(allocationJourneyPath('ltcma')).toBe('/pre-investment/ltcma/cma-7')
   })
 })

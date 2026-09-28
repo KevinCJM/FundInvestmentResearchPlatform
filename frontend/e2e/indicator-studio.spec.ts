@@ -147,7 +147,7 @@ test('指标定义无周期选择，资源目录可键盘搜索', async ({ page 
 
 test('移动端三区切换、桌面双栏工作台无关键水平溢出', async ({ page }, testInfo) => {
   if ((page.viewportSize()?.width ?? 1440) < 1280) {
-    await expect(page.getByRole('tablist', { name: '指标中心区域' })).toBeVisible()
+    await expect(page.getByRole('tablist', { name: '行情指标中心区域' })).toBeVisible()
     await expect(page.getByRole('heading', { name: '校验与预览' })).toBeHidden()
     await page.getByRole('tab', { name: '预览' }).click()
     await expect(page.getByRole('heading', { name: '校验与预览' })).toBeVisible()

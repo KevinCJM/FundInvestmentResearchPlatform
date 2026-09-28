@@ -131,7 +131,7 @@ def frozen_mean_covariance(cma: dict, repository):
     """Read the model's mean covariance, never substitute return covariance or refit history."""
     frozen_assumptions(cma)
     model = cma.get("model_result", {})
-    key = ("mean_estimation_covariance" if model.get("method") == "historical_statistics"
+    key = ("mean_estimation_covariance" if model.get("method") in {"historical_statistics", "long_term_scenario"}
            else "posterior_mean_covariance")
     expected = model.get(key)
     if expected is None or key not in cma.get("arrays", {}):

@@ -78,11 +78,18 @@ def test_missing_date_shrinks_intersection_and_unknown_announcement_rejected(set
     path=svc.references.sources.data_dir/'synthetic-test-only'/'etf_daily_df.parquet'
     frame=pd.read_parquet(path)
     original=frame.copy()
+    complete=client.post(R+'/preview',json=source)
+    assert complete.status_code==200,complete.json()
     target=frame.index[frame['ts_code']=='900002.SH'][12]
     frame.drop(index=[target]).to_parquet(path,index=False)
     r=client.post(R+'/preview',json=source)
-    assert r.status_code==422,r.json()
-    assert r.json()['detail']['code']=='REFERENCE_SSE_CALENDAR_GAP'
+    # 少一天不再阻断：该日退出共同样本，跨过它的收益期整段排除，其余单日收益照常计算。
+    assert r.status_code==200,r.json()
+    quality=r.json()['quality']
+    assert quality['observations']==complete.json()['quality']['observations']-2
+    assert quality['missing']==1 and quality['excluded_return_periods']==1
+    assert quality['complete_intersection'] is False
+    assert 'COMMON_DATE_INTERSECTION' in [x['code'] for x in r.json()['warnings']]
     # Restore a complete market series, then make one common-date information clock unknown.
     target=original.index[original['ts_code']=='900002.SH'][12]
     original.loc[target,'ann_date']=pd.NaT

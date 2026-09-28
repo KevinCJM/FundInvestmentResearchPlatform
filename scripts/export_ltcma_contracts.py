@@ -29,6 +29,12 @@ def generate():
     methods = ["manual", *TypeAdapter(cma_model_contracts.CmaModelRequest).json_schema()["discriminator"]["mapping"]]
     result.extend(["", "export const cmaMethodIds = " + json.dumps(methods) + " as const",
                    "export type CmaMethodId = typeof cmaMethodIds[number]", ""])
+    fields = schema["$defs"]["BayesianCmaRequest"]["properties"]
+    bounds = [next(item for item in fields[name]["anyOf"] if item.get("type") == "number")
+              for name in ("mean_prior_observations", "covariance_prior_observations")]
+    assert bounds[0] == bounds[1], "NIW strengths must expose their individual bounds if they differ"
+    result.append("export const niwPriorObservationBounds = " + json.dumps({
+        "exclusiveMinimum": bounds[0]["exclusiveMinimum"], "maximum": bounds[0]["maximum"]}) + " as const\n")
     return "\n".join(result)
 
 

@@ -6,7 +6,7 @@
 
 - 了解产品与业务边界：[范围与路线图](product/requirements.md)、[领域语言](product/domain-language.md)。
 - 开展配置研究：[投前研究](pre-investment/README.md)；准备数据：[数据管理](data/README.md)。
-- 修改计算：[指标中心](indicators/README.md)、[数值规范](governance/numeric-computing.md)、[算子治理](governance/operator-contracts.md)。
+- 修改计算：[行情指标中心](indicators/README.md)、[数值规范](governance/numeric-computing.md)、[算子治理](governance/operator-contracts.md)。
 - 修改界面：[前端设计](frontend/README.md)；准备提交：[提交规范](governance/branch-submission-rules.md)及[执行流程](governance/submission-workflow.md)。
 - 任务收尾、更新计划或文档：[文档维护协议](governance/documentation.md)。
 
@@ -28,6 +28,7 @@
 | 投前研究 | [历史配置空间与有效前沿](pre-investment/historical-frontier.md) | 历史有效前沿、求解和诊断 |
 | 投前研究 | [产品实施、统一验证与研究定稿](pre-investment/implementation.md) | 产品风险、成本、余款续算、研究包验证和定稿 |
 | 投前研究 | [LTCMA：长期资本市场假设](pre-investment/ltcma.md) | 长期资本市场假设、模型与估计口径 |
+| 投前研究 | [投前产物的版本与依赖管理](pre-investment/versioning.md) | 上游版本变更、系列删除、等价范围与下游可用性 |
 | 投前研究 | [投资目标与约束](pre-investment/mandate.md) | 目标约束、版本确认及适用边界 |
 | 投前研究 | [Universal 风险标尺](pre-investment/risk-scale.md) | C1–C5 风险标尺、冻结输入与诊断 |
 | 投前研究 | [SAA：战略资产配置](pre-investment/saa.md) | 单/多 CMA 的战略配置与采纳规则 |
@@ -40,7 +41,7 @@
 | 数据管理 | [PIT：数据可得时点与决策时钟](data/pit.md) | 数据血缘、发布与时点可得性 |
 | 数据管理 | [数据存储与目录迁移](data/storage.md) | 共享数据目录、迁移、锁和只读边界 |
 | 数据管理 | [Tushare 下载、文件与数据状态契约](data/tushare-download.md) | 下载动作、输出文件、schema 与带日期的数据证据 |
-| 指标与计算图 | [指标中心：独立定义与共享执行](indicators/README.md) | 指标中心定义、运行及共享能力入口 |
+| 指标与计算图 | [行情指标中心：独立定义与共享执行](indicators/README.md) | 行情指标中心定义、运行及共享能力入口；持仓指标中心边界见领域语言 |
 | 指标与计算图 | [指标画布](indicators/canvas.md) | 画布节点、连线、展开及预览 |
 | 指标与计算图 | [因果性审计模块设计（未来函数 / 数据泄露检验）](indicators/causality.md) | 因果性、知识可得时点与审核 |
 | 指标与计算图 | [公用计算图与 ETL 画布](indicators/computation-graph.md) | DAG 类型、编译、执行与数据轴 |

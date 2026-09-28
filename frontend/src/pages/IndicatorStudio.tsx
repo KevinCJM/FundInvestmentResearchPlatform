@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../components/ui'
 import SeriesOutputFields from '../components/computation-graph/SeriesOutputFields'
 import IndicatorParameterEditor from '../components/indicator-parameters/IndicatorParameterEditor'
 import IndicatorParameterInputs from '../components/indicator-parameters/IndicatorParameterInputs'
@@ -1423,6 +1424,7 @@ export default function IndicatorStudio() {
     }
   }, [currentExpression, displayLatex])
 
+  const [bootstrapRetry, setBootstrapRetry] = useState(0)
   const refreshCatalog = async () => {
     const response = await listCustomIndicators({ contextKind: STUDIO_CONTEXT })
     setIndicators(response.items)
@@ -1463,7 +1465,7 @@ export default function IndicatorStudio() {
     }
     void load()
     return () => { active = false }
-  }, []) // load once; the selected formula is local state
+  }, [bootstrapRetry]) // Retrying metadata must preserve the selected formula and local draft.
 
   useEffect(() => {
     if (!hasNamedOutputs) {
@@ -2363,7 +2365,9 @@ export default function IndicatorStudio() {
     }
   }
 
-  const statusText = loading ? '正在加载指标中心…' : message
+  if (!loading && !meta && error) return <ErrorPanel onRetry={() => setBootstrapRetry(value => value + 1)} />
+
+  const statusText = loading ? '正在加载行情指标中心…' : message
 
   const activateWorkspaceTab = (tab: WorkspaceTab) => {
     setWorkspaceTab(tab)
@@ -2483,7 +2487,7 @@ export default function IndicatorStudio() {
         </div>
       </div>
 
-      <div className="mb-4 grid min-w-0 grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-white p-1 xl:hidden" role="tablist" aria-label="指标中心区域">
+      <div className="mb-4 grid min-w-0 grid-cols-3 gap-1 rounded-xl border border-slate-200 bg-white p-1 xl:hidden" role="tablist" aria-label="行情指标中心区域">
         {MOBILE_TABS.map(([id, label]) => (
           <button key={id} id={`indicator-tab-${id}`} type="button" role="tab" aria-controls={`indicator-panel-${id}`} aria-selected={mobileTab === id} tabIndex={mobileTab === id ? 0 : -1} onClick={() => activateMobileTab(id)} onKeyDown={(event) => handleMobileTabKeyDown(event, id)} className={`min-w-0 rounded-lg px-2 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-accent-500 ${mobileTab === id ? 'bg-accent-600 text-white' : 'text-slate-600'}`}>{label}</button>
         ))}

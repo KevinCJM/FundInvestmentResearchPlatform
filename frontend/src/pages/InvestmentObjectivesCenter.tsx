@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Badge, Button, Card, EmptyState } from '../components/ui'
+import { Badge, Button, Card, EmptyState, ErrorPanel, LoadingPanel } from '../components/ui'
+import { allocationJourneyPath, updateAllocationJourney } from '../app/allocationJourney'
 import { Feedback, percentText } from '../components/risk-models/ResearchUI'
-import { amountText } from '../components/investment-mandate/model'
+import { amountText, fundingReturnText } from '../components/investment-mandate/model'
 import { useMandateText } from '../components/investment-mandate/text'
-import { formatDate } from '../i18n/runtime'
+import { formatDate, systemText } from '../i18n/runtime'
 import { deleteMandate, getStrategicCatalog, type MandateDefinition, type MandateVersion } from '../services/strategicAllocation'
+import { VersionTag } from '../components/versioning'
 
 const linkClass = 'inline-flex min-h-10 items-center rounded-lg px-3 text-sm font-medium text-accent-700 focus-visible:ring-2 focus-visible:ring-accent-500'
 
@@ -51,18 +53,24 @@ export default function InvestmentObjectivesCenter() {
     }).finally(() => { if (token === generation.current) setBusy(false) })
   }
 
+  // 「添加」每次渲染重取令牌：两次新建不能撞上同一个草稿 key，也就不会捞回上一次没填完的草稿。
+  const addHref = `/pre-investment/objectives/new?fresh=${crypto.randomUUID().slice(0, 8)}`
+  // 目录没读出来时清单是空的，"还没有投资目标与约束"会把读取失败说成没有数据；这时整块换成错误态。
+  // 删除失败属于操作失败，清单还在屏幕上，仍按 15.2 留在纯文字提示里。
+  const loadFailed = Boolean(error) && !loading && !items.length
+
   return <div className="min-w-0 space-y-4 text-slate-900">
     <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-      <div><h1 className="text-2xl font-bold">{t('title')}</h1><p className="mt-1 text-sm leading-6 text-slate-600">{t('centerDescription')}</p></div>
-      <Link className="inline-flex min-h-10 items-center justify-center rounded-lg bg-accent-600 px-4 text-sm font-semibold text-white hover:bg-accent-700 focus-visible:ring-2 focus-visible:ring-accent-500" to="/pre-investment/objectives/new?fresh=1">{t('addObjective')}</Link>
+      <div className="min-w-0 max-w-5xl"><h1 className="text-2xl font-bold">{t('title')}</h1><p className="mt-2 text-sm leading-6 text-slate-600">{t('centerDescription')}</p><p className="mt-1 text-sm leading-6 text-slate-600">{t('centerWorkflow')}</p></div>
+      <Link className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg bg-accent-600 px-4 text-sm font-semibold text-white hover:bg-accent-700 focus-visible:ring-2 focus-visible:ring-accent-500" to={addHref}>{t('addObjective')}</Link>
     </header>
 
-    <Feedback error={error} notice={notice} />
-    {error && !loading && <Button onClick={load}>{t('retry')}</Button>}
-    {loading && <div role="status" aria-live="polite" className="space-y-2"><p className="text-sm text-slate-600">{t('loadingObjectives')}</p>{[0, 1, 2].map(row => <div key={row} className="h-12 animate-pulse rounded-lg bg-slate-200 motion-reduce:animate-none" />)}</div>}
+    {!loadFailed && <Feedback error={error} notice={notice} />}
+    {loading && <LoadingPanel text={t('loadingObjectives')} />}
+    {loadFailed && <ErrorPanel message={error} action={<Button onClick={load}>{t('retry')}</Button>} />}
 
-    {!loading && (items.length ? <Card className="overflow-hidden !p-0">
-      <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-sm" aria-label={t('objectivesTable')}>
+    {!loading && !loadFailed && (items.length ? <Card className="overflow-hidden !p-0">
+      <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-sm" aria-label={t('objectivesTable')}>
         <caption className="sr-only">{t('objectivesTable')}</caption>
         <thead className="bg-slate-50 text-slate-600"><tr>
           <th scope="col" className="px-4 py-3 text-left">{t('name')}</th>
@@ -78,13 +86,16 @@ export default function InvestmentObjectivesCenter() {
           const level = definition.risk_authorization?.selected_max_level ?? definition.risk_authorization?.authorized_max_level
           const cash = definition.effective_cash_reserve_weight ?? definition.min_cash_weight ?? 0
           return <tr key={item.id} className="border-t border-slate-200">
-            <th scope="row" className="px-4 py-3 text-left font-medium text-slate-900"><Link className={linkClass} to={`/pre-investment/objectives/new?view=${encodeURIComponent(item.id)}`}>{item.name}</Link></th>
-            <td className="px-3 py-3 text-slate-700">{objectiveText(definition, t)}</td>
+            <th scope="row" className="px-4 py-3 text-left font-medium text-slate-900"><Link className={linkClass} to={`/pre-investment/objectives/new?view=${encodeURIComponent(item.id)}`}>{item.name}</Link> <VersionTag version={item.version} /></th>
+            <td className="px-3 py-3 text-slate-700"><p>{objectiveText(definition, t)}</p>
+              {definition.objective_kind === 'funding_goal' && <p className="mt-1 text-xs leading-5 text-slate-600">{t('impactFundingReturn')}：<strong className="font-semibold text-slate-900 tabular-nums">{fundingReturnText(item.assessment?.funding ?? item.funding_summary)}</strong></p>}
+            </td>
             <td className="px-3 py-3 whitespace-nowrap text-slate-700">{definition.as_of}</td>
             <td className="px-3 py-3 text-right tabular-nums">{level ? `C${level}` : '—'}</td>
             <td className="px-3 py-3 text-right tabular-nums">{percentText(cash)}</td>
             <td className="px-3 py-3 whitespace-nowrap text-slate-600">{formatDate(item.created_at)}</td>
             <td className="px-4 py-2"><div className="flex justify-end gap-1">
+              <Link className={linkClass} to={allocationJourneyPath('pool', { mandateId: item.id })} onClick={() => updateAllocationJourney({ mandateId: item.id })}>{systemText('preInvestment.investmentObjectivesCenter.continueResearch')}</Link>
               <Link className={linkClass} to={`/pre-investment/objectives/new?editFrom=${encodeURIComponent(item.id)}`}>{t('editObjective')}</Link>
               <Button tone="danger" disabled={busy} onClick={() => setPendingDelete({ id: item.id, name: item.name })}>{t('deleteObjective')}</Button>
             </div></td>
@@ -95,6 +106,6 @@ export default function InvestmentObjectivesCenter() {
         <p className="text-sm leading-6 text-slate-700">{t('deleteObjectiveConfirm', { name: pendingDelete.name })}</p>
         <div className="flex gap-2"><Button disabled={busy} onClick={() => setPendingDelete(null)}>{t('cancel')}</Button><Button tone="danger" disabled={busy} onClick={remove}>{t('confirmDelete')}</Button></div>
       </div>}
-    </Card> : <EmptyState mascot={false} title={t('noObjectives')} hint={t('noObjectivesHint')} action={<Link className={linkClass} to="/pre-investment/objectives/new?fresh=1">{t('addObjective')}</Link>} />)}
+    </Card> : <EmptyState mascot={false} title={t('noObjectives')} hint={t('noObjectivesHint')} action={<Link className={linkClass} to={addHref}>{t('addObjective')}</Link>} />)}
   </div>
 }

@@ -78,7 +78,7 @@ const template = (id: string, name: string, nextDefinition: HistoricalRegimeDefi
 const meta = {
   schema_version: '1.0',
   modes: [{ id: 'realtime', label: '实时识别' }, { id: 'retrospective', label: '事后识别' }],
-  data_sources: [{ id: 'inline', label: '粘贴/上传数据' }, { id: 'index', label: '指数行情' }, { id: 'relative', label: '两序列相对强弱' }, { id: 'indicator', label: '指标中心版本' }],
+  data_sources: [{ id: 'inline', label: '粘贴/上传数据' }, { id: 'index', label: '指数行情' }, { id: 'relative', label: '两序列相对强弱' }, { id: 'indicator', label: '行情指标中心版本' }],
   features: [{ id: 'ema', label: '单边指数平滑', causal: true }, { id: 'zero_phase', label: '零相位双边滤波', causal: false, repaints: true }],
   algorithm_families: [{ id: 'causal_filter', label: '趋势滤波 + 滞回确认', supports_realtime: true }, { id: 'markov', label: 'Markov 状态切换', supports_realtime: true }, { id: 'change_point', label: '结构突变检测', supports_realtime: true }, { id: 'ensemble', label: '候选算法集成', supports_realtime: true }],
   templates: [
@@ -100,7 +100,7 @@ function makeFetch(options?: { runResult?: HistoricalRegimeRun; failRun?: boolea
     const path = String(input)
     if (path.endsWith('/meta')) return ok(meta)
     if (path.endsWith('/definitions') && (!init?.method || init.method === 'GET')) return ok({ items: [definition] })
-    if (path.endsWith('/runs') && (!init?.method || init.method === 'GET')) return ok({ items: [{ ...run, series: undefined, series_included: false, series_detail_endpoint: `/api/historical-regimes/runs/${run.id}` }] })
+    if (path.endsWith('/runs?summary=true') && (!init?.method || init.method === 'GET')) return ok({ items: [{ ...run, series: undefined, series_included: false, series_detail_endpoint: `/api/historical-regimes/runs/${run.id}` }] })
     if (path.endsWith(`/runs/${run.id}`) && (!init?.method || init.method === 'GET')) return ok(run)
     if (path.endsWith('/formulas/prepare') && init?.method === 'POST') {
       if (options?.failFormula) return { ok: false, status: 422, json: async () => ({ detail: { code: 'INVALID_FORMULA_FUNCTION', message: '公式使用了未允许的函数，请从白名单中选择。', field: 'features.formula' } }) } as Response
@@ -194,7 +194,7 @@ describe('HistoricalRegimeCenter', () => {
     expect(body.definition.algorithm.parameters.bull_enter).toBe(0.002)
   })
 
-  it('选择指标中心精确版本、产品与周期后提交独立 indicator target', async () => {
+  it('选择行情指标中心精确版本、产品与周期后提交独立 indicator target', async () => {
     const fetchMock = makeFetch()
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
@@ -202,7 +202,7 @@ describe('HistoricalRegimeCenter', () => {
     await screen.findByRole('heading', { name: '历史情景识别' })
 
     await user.selectOptions(screen.getByLabelText('数据结构'), 'indicator')
-    expect(screen.getByLabelText('指标中心版本')).toHaveValue('indicator-trend')
+    expect(screen.getByLabelText('行情指标中心版本')).toHaveValue('indicator-trend')
     expect(screen.getByText(/趋势强度 R3/)).toBeInTheDocument()
     expect(screen.getByText(/legacy\/Python 或未预热版本会被后端拒绝/)).toBeInTheDocument()
     await user.clear(screen.getByLabelText('指标产品编号'))

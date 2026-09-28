@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import type { RegimeStabilityPolicy, RegimeBootstrapPolicy, RegimeStabilityResult, RegimeConfidenceInterval, RegimeProbabilityEvidence, RegimeQualityRequest, RegimeQualityPreview, SavedRegimeQuality, RegimeQualityCatalogItem } from './regimeDiagnostics'
 import {
   assertCompliantExecutionGraph,
@@ -389,6 +390,8 @@ export interface RegimeFormalRun {
   definition_source?: string
   name: string
   mode: RegimeMode
+  /** Frozen run cutoff; null means unset, absent on some older records. */
+  as_of?: string | null
   created_at: string
   immutable?: boolean
   content_hash?: string
@@ -548,11 +551,11 @@ function errorDiagnostics(body: unknown): RegimeGraphDiagnostic[] {
   return Array.isArray(diagnostics) ? diagnostics.filter((item): item is RegimeGraphDiagnostic & { field?: string } =>
     item && typeof item.code === 'string' && typeof item.message === 'string').map(item => {
       const path = item.path ?? item.field
-      const feature = path === 'comparison_targets' ? '多节点对比' : path === 'preview_target' ? '独立节点预览' : undefined
+      const feature = path === 'comparison_targets' ? systemText('preInvestment.regimeGraph.multiNodeComparison') : path === 'preview_target' ? systemText('preInvestment.regimeGraph.independentNodePreview') : undefined
       return {
         ...item, path,
         message: item.code === 'extra_forbidden' && feature
-          ? `当前后端版本不支持${feature}，请更新并重启后端服务后重试。`
+          ? systemText('preInvestment.regimeGraph.theCurrentBackendDoesNotSupportUpdate', { p0: feature })
           : item.message,
       }
     }) : []
@@ -569,7 +572,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let body: unknown = null
     try { body = await response.json() } catch { /* keep stable fallback */ }
     const diagnostics = errorDiagnostics(body)
-    const message = errorMessage(body, `请求失败（${response.status}）`)
+    const message = errorMessage(body, systemText('preInvestment.regimeGraph.requestFailed', { p0: response.status }))
     const reasons = [...new Set(diagnostics.map(item => item.message).filter(item => item !== message))].slice(0, 3)
     throw new RegimeGraphApiError(response.status, [message, ...reasons].join(' '), diagnostics)
   }
@@ -602,20 +605,20 @@ function completedRunWithAudit(run: RegimePreviewRun) {
     ?? result?.calculation_audits
     ?? result?.runtime_audit
     ?? result?.diagnostics?.execution_audit
-  assertExecution(audit, '历史情景试算')
+  assertExecution(audit, systemText('preInvestment.regimeGraph.historicalRegimePreview'))
   return run
 }
 
 function formalRunWithAudit(run: RegimeFormalRun) {
   const audits = run.calculation_audits?.length ? run.calculation_audits : run.calculation_audit ? [run.calculation_audit] : []
-  assertCompliantExecutionGraph(audits, `历史情景正式运行「${run.name || run.id}」`)
+  assertCompliantExecutionGraph(audits, systemText('preInvestment.regimeGraph.historicalRegimeFormalRun', { p0: run.name || run.id }))
   return run
 }
 
 export function createBlankRegimeDefinition(): RegimeGraphDefinition {
   return {
     schema_version: '2.0',
-    name: '未命名历史情景研究',
+    name: systemText('preInvestment.regimeGraph.unnamedHistoricalRegimeStudy'),
     description: '',
     graph: { nodes: [], edges: [], outputs: {} },
     states: [],
@@ -717,7 +720,7 @@ export async function listRegimeBatchExperiments(definitionId?: string, signal?:
 
 export async function getRegimeBatchExperiment(experimentId: string, signal?: AbortSignal) {
   const experiment = await request<RegimeBatchExperiment>(`/api/historical-regimes/v2/experiments/${encodeURIComponent(experimentId)}`, { signal })
-  assertExecution(experiment.calculation_audit, '历史情景批量实验')
+  assertExecution(experiment.calculation_audit, systemText('preInvestment.regimeGraph.historicalRegimeBatchExperiment'))
   return experiment
 }
 
@@ -729,7 +732,7 @@ export async function runRegimeBatchExperiment(input: {
   parameterGrid: RegimeExperimentDimension[]
   rankingMetric: RegimeBatchExperiment['ranking_metric']
 }, signal?: AbortSignal) {
-  if (!input.definition.id || !input.definition.revision) throw new Error('批量实验必须引用已保存的精确定义版本。')
+  if (!input.definition.id || !input.definition.revision) throw new Error(systemText('preInvestment.regimeGraph.batchExperimentsMustReferenceAnExactSaved'))
   const experiment = await request<RegimeBatchExperiment>('/api/historical-regimes/v2/experiments', {
     method: 'POST',
     body: JSON.stringify({
@@ -742,7 +745,7 @@ export async function runRegimeBatchExperiment(input: {
     }),
     signal,
   })
-  assertExecution(experiment.calculation_audit, '历史情景批量实验')
+  assertExecution(experiment.calculation_audit, systemText('preInvestment.regimeGraph.historicalRegimeBatchExperiment'))
   return experiment
 }
 
@@ -765,7 +768,7 @@ export async function createRegimeGraphDefinition(definition: RegimeGraphDefinit
 }
 
 export async function updateRegimeGraphDefinition(definition: RegimeGraphDefinition, signal?: AbortSignal) {
-  if (!definition.id || !definition.revision) throw new Error('保存修订版前需要已保存的定义 ID 与 revision。')
+  if (!definition.id || !definition.revision) throw new Error(systemText('preInvestment.regimeGraph.aSavedDefinitionIdAndRevisionAre'))
   return request<RegimeGraphDefinition>(`/api/historical-regimes/v2/definitions/${encodeURIComponent(definition.id)}`, {
     method: 'PUT',
     body: JSON.stringify({ definition: definitionForRequest(definition), revision: definition.revision }),
@@ -822,7 +825,7 @@ export async function prepareRegimeGraph(definition: RegimeGraphDefinition, sign
     body: JSON.stringify({ definition: definitionForRequest(definition), preview_target: previewTarget, comparison_targets: comparisonTargets?.length ? comparisonTargets : undefined }),
     signal,
   })
-  assertExecution(response.runtime_audit, '历史情景预热计划')
+  assertExecution(response.runtime_audit, systemText('preInvestment.regimeGraph.historicalRegimeWarmupPlan'))
   return response
 }
 
@@ -876,7 +879,7 @@ export async function getRegimePreviewSeries(
     `/api/historical-regimes/preview-runs/${encodeURIComponent(runId)}/series?${params.toString()}`,
     { signal },
   )
-  if (page.execution !== undefined) assertExecution(page.execution, '历史情景节点序列')
+  if (page.execution !== undefined) assertExecution(page.execution, systemText('preInvestment.regimeGraph.historicalRegimeNodeSeries'))
   const raw = page as RegimeSeriesPage & { id?: string; items?: Array<RegimeSeriesRow & { observation_date?: string }> }
   return {
     ...page,
@@ -894,7 +897,7 @@ export async function getAllRegimePreviewSeries(runId: string, nodeId: string, p
     const part = await getRegimePreviewSeries(runId, { nodeId, port, offset, limit: 5000 }, signal)
     if (!Number.isInteger(part.total) || part.total < 0 || part.run_id !== runId || part.node_id !== nodeId || part.port !== port || part.offset !== offset ||
       (total !== undefined && part.total !== total) || (!part.items.length && offset < part.total) || offset + part.items.length > part.total) {
-      throw new Error('节点结果分页不完整或与当前预览不一致，请重新预览。')
+      throw new Error(systemText('preInvestment.regimeGraph.nodeResultPaginationIsIncompleteOrDiffers'))
     }
     total = part.total
     items.push(...part.items)
@@ -918,7 +921,7 @@ export interface RegimeNormalizedChart {
 export async function getRegimeNormalizedChart(runId: string, nodeId: string, port: string, baseIndex: number, signal?: AbortSignal) {
   const params = new URLSearchParams({ node_id: nodeId, port, base_index: String(baseIndex) })
   const result = await request<RegimeNormalizedChart>(`/api/historical-regimes/preview-runs/${encodeURIComponent(runId)}/normalized-chart?${params}`, { signal })
-  assertExecution(result.execution, '区间归一化')
+  assertExecution(result.execution, systemText('preInvestment.regimeGraph.intervalNormalization'))
   return result
 }
 
@@ -929,7 +932,7 @@ export async function runSavedRegimeGraph(
   asOf?: string,
   signal?: AbortSignal,
 ) {
-  if (!definition.id || !definition.revision) throw new Error('正式运行必须引用已保存的精确定义版本。')
+  if (!definition.id || !definition.revision) throw new Error(systemText('preInvestment.regimeGraph.formalRunsMustReferenceAnExactSaved'))
   const run = await request<RegimeFormalRun>('/api/historical-regimes/run', {
     method: 'POST',
     body: JSON.stringify({
@@ -944,8 +947,8 @@ export async function runSavedRegimeGraph(
 }
 
 export async function listRegimeFormalRuns(definitionId?: string, signal?: AbortSignal) {
-  const query = definitionId ? `?definition_id=${encodeURIComponent(definitionId)}` : ''
-  return listFrom<RegimeFormalRun>(await request<unknown>(`/api/historical-regimes/runs${query}`, { signal }))
+  const query = new URLSearchParams({ ...(definitionId ? { definition_id: definitionId } : {}), summary: 'true' })
+  return listFrom<RegimeFormalRun>(await request<unknown>(`/api/historical-regimes/runs?${query}`, { signal }))
 }
 
 export interface RegimeResearchVersion {
@@ -979,7 +982,7 @@ export async function compareRegimeFormalRuns(runIds: string[], referenceRunId?:
     body: JSON.stringify({ run_ids: runIds, ...(referenceRunId ? { reference_run_id: referenceRunId } : {}) }),
     signal,
   })
-  assertExecution(response.execution, '历史情景正式运行比较')
+  assertExecution(response.execution, systemText('preInvestment.regimeGraph.historicalRegimeFormalRunComparison'))
   return response
 }
 

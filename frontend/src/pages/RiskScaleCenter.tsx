@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Badge, Button, Card, EmptyState } from '../components/ui'
+import { Badge, Button, Card, EmptyState, ErrorPanel } from '../components/ui'
 import { ErrorNotice, linkClass, Loading, useRiskTask, useRiskText } from '../components/risk-scales/shared'
 import { formatDate } from '../i18n/runtime'
 import { riskScales, RiskScaleError, type CatalogResponse, type DefaultsResponse } from '../services/riskScales'
@@ -89,7 +89,7 @@ export default function RiskScaleCenter() {
       <Link className={`${linkClass} justify-center bg-accent-600 !px-4 !text-white hover:bg-accent-700`} to="/settings/risk-scales/new">{t('new')}</Link>
     </header>
 
-    <ErrorNotice error={loadTask.error} retry={reload} />
+    {loadTask.error && !catalog ? <ErrorPanel onRetry={reload} /> : <ErrorNotice error={loadTask.error} retry={reload} />}
     <ErrorNotice error={actionTask.error} />
     <label className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={includeRetired} disabled={actionTask.busy} onChange={event => setIncludeRetired(event.target.checked)} />{t('includeRetired')}</label>
     {notice && <p role="status" className="text-sm text-emerald-800">{notice}</p>}

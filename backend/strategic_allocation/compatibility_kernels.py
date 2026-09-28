@@ -271,7 +271,7 @@ for kernel in KERNELS:
 def execution_audit():
     complete = _WARMED_PID == os.getpid() and all(len(k.signatures) == 1 and k.nopython_signatures
         and not k._can_compile and not any(o.objectmode for o in k.overloads.values()) for k in KERNELS)
-    return {'backend': 'numba_njit_fixed_signature', 'kernel_version': 'multi-cma-outer-approximation/1.1.0',
+    return {'backend': 'numba_njit_fixed_signature', 'kernel_version': 'multi-cma-outer-approximation/1.1.1',
             'complete': bool(complete), 'fully_warmed': bool(complete), 'nopython': bool(complete),
             'object_mode': 0, 'python_fallback': 0, 'request_time_compilation': 0,
             'kernel_signatures': {k.__name__: [str(s) for s in k.signatures] for k in KERNELS}}

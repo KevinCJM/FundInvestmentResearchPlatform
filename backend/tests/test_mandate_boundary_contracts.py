@@ -9,6 +9,7 @@ from backend.tests.test_strategic_allocation import workspace, warm, saved_input
 from backend.strategic_allocation.contracts import MandateRequest, MandateStudyRequest, ConfirmMandateRequest, PolicyRequest, PublishPolicyRequest
 from backend.strategic_allocation.policy_gate import check_policy
 from backend.strategic_allocation.mandate_inputs import cash_success_required, effective_return_floor
+from backend.strategic_allocation.return_targets import requirements, required_mean
 from backend.strategic_allocation.planning import funding_inputs, diagnose_funding, require_goal_checks
 from backend.custom_indicators.errors import ConflictError, ValidationError
 
@@ -76,6 +77,32 @@ def test_budget_is_not_the_success_standard_and_has_single_money_source(workspac
     assert frozen["definition"]["cash_budget"]["total_capital"] == 1000.
     assert frozen["definition"]["funding_plan"] is None
     assert frozen["definition"]["boundary_policy_hash"]
+
+
+def test_catalog_echoes_frozen_cashflow_return_without_recalculation(workspace, monkeypatch):
+    service, _ = workspace
+    data = new_definition(objective_kind="funding_goal", horizon_years=5,
+        cash_budget=budget(total_capital=100000., outside_reserve=0., inflation=0.,
+            flows=[{"name": "每三个月支出", "kind": "withdrawal", "amount": 500.,
+                    "first_month": 1, "last_month": 58, "every_months": 3}]),
+        funding_target={"amount": 100000., "amount_basis": "nominal"})
+    request = MandateStudyRequest(definition=MandateRequest.model_validate(data))
+    preview = service.preview_mandate(request)
+    frozen = service.confirm_mandate(ConfirmMandateRequest(
+        request=request, preview_hash=preview["preview_hash"], acknowledge_limits=True))
+    funding = frozen["assessment"]["funding"]
+    assert funding["cashflow_required_return"] == pytest.approx(.020218343484683543)
+    assert funding["total_withdrawals"] == 10000.
+
+    def no_recalculation(*args, **kwargs):
+        pytest.fail("Reading the catalog must not recalculate a frozen objective")
+    monkeypatch.setattr("backend.strategic_allocation.service.funding_inputs", no_recalculation)
+    listed = next(item for item in service.catalog()["mandates"] if item["id"] == frozen["id"])
+    assert listed["funding_summary"] == {key: funding[key] for key in (
+        "cashflow_required_return", "cashflow_required_return_status", "required_effective_return", "root_status")}
+    assert "monthly_cashflows" not in listed["funding_summary"]
+    assert listed["definition"]["effective_target_return"] is None
+    assert service.get_mandate(frozen["id"]) == frozen
 
 
 def test_cashflows_can_define_a_cash_floor_without_becoming_a_hidden_success_probability(workspace):
@@ -328,8 +355,8 @@ def test_saa_rejects_colliding_seeds_in_an_existing_frozen_mandate(workspace, mo
     assert service.baselines.list_baselines() == before
 
 
-def test_cashflow_required_return_raises_the_stated_return_floor():
-    """填了预期收益又填了现金流时，收益下限取两者较大的一个。"""
+def test_cashflow_and_stated_returns_keep_their_distinct_bases():
+    """资金复利要求不能直接覆盖算术收益下限。"""
     # 900 investable capital against 1200 of scheduled payments: the flows themselves demand a return.
     data = new_definition(boundary_policy=None, target_return=.02, cash_budget=budget(flows=[stream()]))
     definition = MandateRequest.model_validate(data).model_dump(mode="json")
@@ -339,7 +366,10 @@ def test_cashflow_required_return_raises_the_stated_return_floor():
     assert result["required_effective_return"] is None
     required = result["cashflow_required_return"]
     assert required is not None and required > .02
-    assert effective_return_floor(definition, required) == pytest.approx(required)
+    assert effective_return_floor(definition, required) == pytest.approx(.02)
+    targets = requirements(definition)
+    assert targets["compound_floor"] == pytest.approx(required)
+    assert required_mean(targets, .2) > required
 
     modest = MandateRequest.model_validate(new_definition(boundary_policy=None, target_return=.90,
         cash_budget=budget(flows=[stream()]))).model_dump(mode="json")
@@ -359,8 +389,7 @@ def test_terminal_floor_raises_the_required_return_above_a_bare_payment_plan():
     strict, _, _ = funding_inputs(protected)
     assert strict["cashflow_required_return"] > loose["cashflow_required_return"]
     assert strict["required_effective_return"] == pytest.approx(strict["cashflow_required_return"])
-    assert (effective_return_floor(protected, strict["cashflow_required_return"])
-            > effective_return_floor(bare, loose["cashflow_required_return"]))
+    assert required_mean(requirements(protected), .1) > required_mean(requirements(bare), .1)
 
 
 def test_return_floor_only_applies_to_absolute_return_objectives():
@@ -378,8 +407,8 @@ def test_preview_freezes_the_effective_return_floor_for_the_policy_gate(workspac
     request = MandateStudyRequest(definition=MandateRequest.model_validate(data))
     preview = service.preview_mandate(request)
     floor = preview["definition"]["effective_target_return"]
-    assert floor == pytest.approx(preview["funding"]["cashflow_required_return"])
-    assert floor > .02
+    assert floor == pytest.approx(.02)
+    assert preview["return_requirements"]["compound_floor"] == pytest.approx(preview["funding"]["cashflow_required_return"])
 
 
 def test_funding_echo_is_the_same_arithmetic_as_the_preview(workspace):
@@ -390,17 +419,21 @@ def test_funding_echo_is_the_same_arithmetic_as_the_preview(workspace):
     echo, preview = service.mandate_funding(request), service.preview_mandate(request)
     assert echo["funding"]["cashflow_required_return"] == pytest.approx(preview["funding"]["cashflow_required_return"])
     assert echo["effective_target_return"] == pytest.approx(preview["definition"]["effective_target_return"])
-    assert echo["effective_target_return"] > .02
+    assert echo["effective_target_return"] == pytest.approx(.02)
+    assert echo["return_requirements"] == preview["return_requirements"]
     assert echo["execution"]["python_fallback"] == 0 and echo["execution"]["complete"]
     bare = MandateStudyRequest(definition=MandateRequest.model_validate(new_definition(target_return=.03)))
-    assert service.mandate_funding(bare) == {"funding": None, "effective_target_return": pytest.approx(.03),
-                                             "execution": echo["execution"]}
+    result = service.mandate_funding(bare)
+    assert result["funding"] is None and result["effective_target_return"] == pytest.approx(.03)
+    assert result["return_requirements"]["arithmetic_floor"] == pytest.approx(.03)
 
 
 def test_contract_benchmark_text_is_evidence_only_and_cannot_linger_on_other_objectives():
     """合同基准原文只做留痕：相对目标可以记，其他目标不能残留一个不参与计算的基准。"""
     stated = "沪深300×60%＋中债综合财富×40%"
-    relative = new_definition(objective_kind="benchmark_relative", target_excess_return=.03, stated_benchmark=stated)
+    relative = new_definition(objective_kind="benchmark_relative", target_excess_return=.03, stated_benchmark=stated,
+        benchmark={"name": "真实基准", "alloc_name": "test", "weights": {"stock": .6, "bond": .4},
+                   "target_excess_return": .03, "max_tracking_error": .1})
     assert MandateRequest.model_validate(relative).stated_benchmark == stated
     with pytest.raises(InputError):
         MandateRequest.model_validate(new_definition(stated_benchmark=stated))

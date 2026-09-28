@@ -91,7 +91,7 @@
 
 内置时序指标都开放一个 `window`（窗口期数，2–1000，默认沿用原固定值），名称为「N 日…」。
 
-`parameter_contract_version === '1.0'` 且 `parameter_schema` 非空的指标，行内直接渲染既有的 `IndicatorParameterInputs`（编辑不计算，点「应用参数」才重算，卡片回显服务端实际取值）。其余显示「固定参数」一行，并指向指标中心。参数不落 localStorage：选了哪些指标是「我常看什么」，参数值是「我现在问什么」。
+`parameter_contract_version === '1.0'` 且 `parameter_schema` 非空的指标，行内直接渲染既有的 `IndicatorParameterInputs`（编辑不计算，点「应用参数」才重算，卡片回显服务端实际取值）。其余显示「固定参数」一行，并指向行情指标中心。参数不落 localStorage：选了哪些指标是「我常看什么」，参数值是「我现在问什么」。
 
 ### 图表装配
 
@@ -117,7 +117,7 @@
 - `zip(..., strict=True)`：结果条数与实例条数一旦不等立即失败，不做静默截断。
 
 不改的：算子、缓存键（本来就含参数）、
-其他调用方（指标中心预览、Excel 导出各自只发一条实例，`instance_key` 为 `None`）。
+其他调用方（行情指标中心预览、Excel 导出各自只发一条实例，`instance_key` 为 `None`）。
 
 ### 前端：一条实例一行
 

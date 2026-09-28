@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { riskScales, RiskScaleError } from './riskScales'
 import { riskDefinition } from '../test/riskScaleFixtures'
-afterEach(() => { vi.unstubAllGlobals() })
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 describe('risk scales API boundary', () => {
   it('posts decimal values and preserves exact preview identity', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'saved' })))
@@ -20,5 +20,22 @@ describe('risk scales API boundary', () => {
   it('distinguishes network errors', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('internal transport details')))
     await expect(riskScales.defaults()).rejects.toBeInstanceOf(RiskScaleError)
+  })
+  it.each(['timeout', 'navigation'])('aborts the batch label lookup on %s', async cause => {
+    vi.useFakeTimers()
+    let requestSignal!: AbortSignal
+    const fetcher = vi.fn().mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+      requestSignal = options.signal
+      requestSignal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+    }))
+    vi.stubGlobal('fetch', fetcher)
+    const controller = new AbortController()
+    const result = riskScales.sourceLabels(['index:index_daily:000300.SH'], controller.signal).catch(error => error)
+    if (cause === 'timeout') await vi.advanceTimersByTimeAsync(10_000)
+    else controller.abort()
+    expect(await result).toMatchObject({ name: 'AbortError' })
+    expect(requestSignal.aborted).toBe(true)
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual({ series_ids: ['index:index_daily:000300.SH'] })
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

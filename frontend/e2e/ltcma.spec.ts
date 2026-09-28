@@ -1,9 +1,17 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test'
 import { auditTextContrast } from './helpers/contrast'
 
-const api = 'http://127.0.0.1:8128'
-type Fixture = { today: string; allocation: string; manual_id: string; historical_id: string; bl_id: string; scenario_id: string; mandate_id: string; universe_id: string; regime_id: string }
+const api = process.env.LTCMA_TEST_API || 'http://127.0.0.1:8128'
+type Fixture = { today: string; allocation: string; manual_id: string; historical_id: string; bl_id: string; scenario_id: string; mandate_id: string; universe_id: string; regime_id: string; scenario_reference_id: string; scenario_publication_id: string; scenario_realtime_id: string; facts_universe_id: string; facts_cma_ids: string[]; facts_start: string; facts_end: string }
 let fixture: Fixture
+async function selectMethod(page: Page, method: string) {
+  await page.getByRole('button', { name: '生成方法', exact: true }).click()
+  await page.locator(`button[role="menuitemradio"][value="${method}"]`).click()
+}
+async function selectScenario(page: Page, label: string, value: string) {
+  await page.getByRole('button', { name: label, exact: true }).click()
+  await page.getByRole('menu', { name: label, exact: true }).locator(`button[role="menuitemradio"][value="${value}"]`).click()
+}
 async function layout(page: Page, info: TestInfo, name: string) {
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
   // Measure settled CSS states, not the transient disabled-to-enabled transition.
@@ -14,20 +22,24 @@ async function layout(page: Page, info: TestInfo, name: string) {
 async function preview(page: Page) {
   await page.getByRole('checkbox', { name: /我已核对资产范围/ }).check()
   const result = page.waitForResponse(response => response.url().includes('/cma/preview') && response.request().method() === 'POST')
-  await page.getByRole('button', { name: '计算预览', exact: true }).click()
+  await page.getByRole('button', { name: /^(计算预览|重新计算)$/ }).click()
   const response = await result
   expect(response.ok(), await response.text()).toBe(true)
   const value = await response.json()
+  expect(value.definition).not.toHaveProperty('horizon_years')
+  expect(response.request().postDataJSON()).not.toHaveProperty('horizon_years')
   expect(value.execution.python_fallback).toBe(0)
   expect(value.execution.request_time_compilation).toBe(0)
   if (value.model_result) expect(value.model_result.execution.python_fallback).toBe(0)
   await expect(page.getByRole('table', { name: '收益与风险假设', exact: true })).toBeVisible()
   return value
 }
-async function publish(page: Page) {
+async function publish(page: Page, editing = false) {
   await page.getByRole('checkbox', { name: /我已阅读结果和限制/ }).check()
-  const result = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/cma') && response.request().method() === 'POST')
-  await page.getByRole('button', { name: '确认保存版本', exact: true }).click()
+  const result = page.waitForResponse(response => editing
+    ? /\/cma\/[^/]+$/.test(new URL(response.url()).pathname) && response.request().method() === 'PATCH'
+    : new URL(response.url()).pathname.endsWith('/cma') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: editing ? '保存修改' : '确认保存版本', exact: true }).click()
   const response = await result
   expect(response.ok(), await response.text()).toBe(true)
   const value = await response.json()
@@ -36,7 +48,23 @@ async function publish(page: Page) {
   return value
 }
 
-test.beforeEach(async ({ page, request }) => {
+test.beforeEach(async ({ page, request }, info) => {
+  if (info.tags.includes('@offline-help')) {
+    await page.route('**/api/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      if (path.endsWith('/cma/capabilities')) return route.fulfill({ json: {
+        methods: ['manual', 'historical_statistics', 'bayesian_niw', 'black_litterman', 'scenario_mixture', 'historical_regime_occupancy', 'long_term_scenario', 'conditional_scenario'].map(id => ({ id, name: id, available: id !== 'conditional_scenario', reason: null })),
+        maximum_assets: 30, maximum_scenarios: 60, historical_frequency: 'daily', historical_currency: 'CNY',
+      } })
+      if (path.endsWith('/cma/study-options')) return route.fulfill({ json: { allocations: [], strategic_universes: [], assumptions: [], regime_runs: [], existing_names: [] } })
+      if (path === '/api/pit/settings') return route.fulfill({ json: {
+        settings: { active_release_id: null, as_of: '2019-12-31', run_mode: 'RESEARCH', updated_at: null, note: '' }, release: null, release_error: null, can_apply: true, available_releases: [],
+        effective: { no_pit: false, as_of: '2019-12-31', run_mode: 'RESEARCH', label: '2019-12-31' },
+      } })
+      return route.fulfill({ status: 503, json: { detail: 'Unrelated API unavailable in this offline UI test' } })
+    })
+    return
+  }
   fixture = await (await request.get(`${api}/fixture/ltcma`)).json()
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url())
@@ -47,15 +75,535 @@ test.beforeEach(async ({ page, request }) => {
 
 test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'wait' }) })
 
+for (const locale of ['zh-CN', 'en-US']) test(`long-term scenario worked example supports hover and keyboard in ${locale}`, { tag: '@offline-help' }, async ({ page }, info) => {
+  const mutations: string[] = []
+  page.on('request', request => { if (request.url().includes('/api/strategic-allocation/') && request.method() !== 'GET') mutations.push(request.url()) })
+  await page.goto('/pre-investment/ltcma/new')
+  if (locale === 'en-US') await page.getByRole('combobox', { name: '当前浏览器语言', exact: true }).selectOption(locale)
+  const method = page.getByRole('button', { name: locale === 'zh-CN' ? '生成方法' : 'Method', exact: true })
+  const initialMethod = await method.getAttribute('value')
+  const label = locale === 'zh-CN' ? '查看长期情景计算说明' : 'Explain Long-term scenarios'
+  const closeLabel = locale === 'zh-CN' ? '关闭计算说明' : 'Close calculation guide'
+  const trigger = page.getByRole('menuitem', { name: label, exact: true })
+  const choice = page.locator('button[role="menuitemradio"][value="long_term_scenario"]')
+  const menu = page.getByRole('menu', { name: locale === 'zh-CN' ? '生成方法' : 'Method', exact: true })
+  const panel = page.getByRole('dialog', { name: locale === 'zh-CN' ? '计算说明 · 长期情景' : 'Calculation guide · Long-term scenarios', exact: true })
+  await expect(trigger).not.toBeVisible()
+  await method.click()
+  await expect(menu).toBeVisible()
+  await expect(panel).not.toBeVisible()
+  await expect(choice).toHaveAttribute('aria-checked', 'false')
+  await expect(page.locator('button[role="menuitemradio"][value="conditional_scenario"]')).toBeDisabled()
+  const helpBox = await trigger.boundingBox(), choiceBox = await choice.boundingBox()
+  expect(Math.abs(helpBox!.y - choiceBox!.y)).toBeLessThanOrEqual(1)
+  expect(helpBox!.x - choiceBox!.x - choiceBox!.width).toBeLessThanOrEqual(4)
+  await page.screenshot({ path: info.outputPath(`method-options-${locale}.png`) })
+  await trigger.hover()
+  await expect(panel).toBeVisible()
+  await panel.hover()
+  await page.waitForTimeout(250)
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText('14%')
+  await expect(panel).toContainText('6.8%')
+  await expect(panel).toContainText('256')
+  await expect(method).toHaveAttribute('value', initialMethod!)
+  if (locale === 'en-US') expect(await panel.innerText()).not.toMatch(/[\u4e00-\u9fff]/)
+  await page.keyboard.press('Escape')
+  await expect(panel).not.toBeVisible()
+  await expect(trigger).toBeFocused()
+  await expect(menu).toBeVisible()
+  await page.keyboard.press('ArrowUp')
+  await expect(choice).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(panel).toBeVisible()
+  await page.keyboard.press('Enter')
+  await expect(panel).toBeFocused()
+  const box = await panel.boundingBox(), size = page.viewportSize()!
+  expect(box!.x).toBeGreaterThanOrEqual(0)
+  expect(box!.y).toBeGreaterThanOrEqual(0)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(size.width)
+  expect(box!.y + box!.height).toBeLessThanOrEqual(size.height)
+  expect(await page.evaluate(auditTextContrast)).toEqual([])
+  await page.screenshot({ path: info.outputPath(`long-term-help-${locale}.png`) })
+  await page.keyboard.press('End')
+  await expect(panel.locator('p').last()).toBeInViewport()
+  await panel.getByRole('button', { name: closeLabel, exact: true }).click()
+  await expect(panel).not.toBeVisible()
+  await expect(trigger).toBeFocused()
+  await trigger.click()
+  await expect(panel).toBeFocused()
+  await expect(method).toHaveAttribute('value', initialMethod!)
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('ArrowUp')
+  await page.keyboard.press('Enter')
+  await expect(method).toHaveAttribute('value', 'long_term_scenario')
+  await expect(menu).not.toBeVisible()
+  await expect(trigger).not.toBeVisible()
+  await expect(method).toBeFocused()
+  await page.mouse.move(2, 2)
+  await method.press('ArrowDown')
+  await expect(choice).toBeFocused()
+  await expect(choice).toHaveAttribute('aria-checked', 'true')
+  await page.keyboard.press('Escape')
+  await expect(menu).not.toBeVisible()
+  await expect(method).toBeFocused()
+  await method.click()
+  await page.mouse.click(2, 2)
+  await expect(menu).not.toBeVisible()
+  await expect(method).toHaveAttribute('value', 'long_term_scenario')
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+  expect(mutations).toEqual([])
+})
+
+for (const locale of ['zh-CN', 'en-US']) test(`all generation methods explain their calculation without changing inputs in ${locale}`, { tag: '@offline-help' }, async ({ page }, info) => {
+  test.setTimeout(60000)
+  const mutations: string[] = []
+  page.on('request', request => { if (request.url().includes('/api/strategic-allocation/') && request.method() !== 'GET') mutations.push(request.url()) })
+  await page.goto('/pre-investment/ltcma/new')
+  if (locale === 'en-US') await page.getByRole('combobox', { name: '当前浏览器语言', exact: true }).selectOption(locale)
+  const method = page.getByRole('button', { name: locale === 'zh-CN' ? '生成方法' : 'Method', exact: true })
+  const closeLabel = locale === 'zh-CN' ? '关闭计算说明' : 'Close calculation guide'
+  const cases = [
+    ['manual', '直接假设', 'Direct assumptions', '0.0015'],
+    ['historical_statistics', '历史统计', 'Historical statistics', '15.87%'],
+    ['bayesian_niw', '贝叶斯更新（NIW）', 'Bayesian update (NIW)', '7%'],
+    ['black_litterman', '基准与观点（BL）', 'Benchmark and views (BL)', 'τΣ'],
+    ['scenario_mixture', '人工情景', 'Explicit scenarios', '13.56%'],
+    ['historical_regime_occupancy', '历史情景', 'Historical scenarios', 'n−1'],
+    ['long_term_scenario', '长期情景', 'Long-term scenarios', '256'],
+    ['conditional_scenario', '条件情景', 'Conditional scenarios', '63.75%'],
+  ]
+  for (const [id, zh, en, evidence] of cases) {
+    await method.click()
+    const initial = await method.getAttribute('value')
+    const trigger = page.getByRole('menuitem', { name: locale === 'zh-CN' ? `查看${zh}计算说明` : `Explain ${en}`, exact: true })
+    if (info.project.use.hasTouch) await trigger.tap()
+    else await trigger.click()
+    const panel = page.getByRole('dialog', { name: locale === 'zh-CN' ? `计算说明 · ${zh}` : `Calculation guide · ${en}`, exact: true })
+    await expect(panel).toBeFocused()
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    await expect(panel).toContainText(evidence)
+    await expect(method).toHaveAttribute('value', initial!)
+    expect(await panel.innerText()).not.toContain('ltcma.')
+    if (locale === 'en-US') expect(await panel.innerText()).not.toMatch(/[\u4e00-\u9fff]/)
+    const box = await panel.boundingBox(), size = page.viewportSize()!
+    expect(box!.x).toBeGreaterThanOrEqual(0)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(size.width)
+    expect(box!.y + box!.height).toBeLessThanOrEqual(size.height)
+    if (size.width === 1440) expect(box!.width).toBeGreaterThanOrEqual(850)
+    expect(await panel.evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1)
+    expect(await page.evaluate(auditTextContrast)).toEqual([])
+    await page.screenshot({ path: info.outputPath(`${id}-${locale}.png`) })
+    await panel.press('End')
+    await expect(panel.locator('p').last()).toBeInViewport()
+    const close = panel.getByRole('button', { name: closeLabel, exact: true })
+    if (info.project.use.hasTouch) await close.tap()
+    else await close.click()
+    await expect(panel).not.toBeVisible()
+    await expect(trigger).toBeFocused()
+    const choice = page.locator(`button[role="menuitemradio"][value="${id}"]`)
+    if (id === 'conditional_scenario') {
+      await expect(choice).toBeDisabled()
+      await page.keyboard.press('Escape')
+    } else {
+      await choice.click()
+      await expect(method).toHaveAttribute('value', id)
+      const summary = page.locator(`[id="${await method.getAttribute('aria-describedby')}"]`)
+      await expect(summary).toBeVisible()
+      expect(await summary.evaluate(node => node.tagName)).toBe('P')
+      expect(await summary.innerText()).not.toMatch(/需要什么|如何计算|如何理解结果|Inputs:|Calculation:/)
+    }
+    await expect(page.getByRole('menu')).not.toBeVisible()
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+  }
+  expect(mutations).toEqual([])
+})
+
+test('center row actions update one study and delete it while retaining frozen history', async ({ page, request }, info) => {
+  const root = `${api}/api/strategic-allocation/cma`
+  const seed = await (await request.get(`${root}/${fixture.manual_id}`)).json()
+  const definition = { ...seed.definition, name: `原方案修改验证 ${info.project.name}` }
+  const initialPreview = await (await request.post(`${root}/preview`, { data: definition })).json()
+  const created = await request.post(root, { data: { request: definition, preview_hash: initialPreview.preview_hash,
+    confirm: true, idempotency_key: `edit-fixture-${info.project.name}`, copied_from_id: seed.id } })
+  expect(created.ok(), await created.text()).toBe(true)
+  const original = await created.json()
+  await page.goto('/pre-investment/ltcma')
+  await page.getByLabel('搜索名称', { exact: true }).fill(original.name)
+  const originalRow = page.locator(`a[href="/pre-investment/ltcma/${original.id}"]`).locator('xpath=ancestor::tr')
+  await expect(originalRow.getByRole('link', { name: '复制为新研究', exact: true })).toBeVisible()
+  await expect(originalRow.getByRole('button', { name: '删除', exact: true })).toBeEnabled()
+  await layout(page, info, 'row-actions')
+  await originalRow.getByRole('link', { name: '修改', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '修改 LTCMA', exact: true })).toBeVisible()
+  await expect(page.getByText('保存后更新当前 LTCMA 方案，列表不会新增一份；已有研究引用保留其当时的结果。')).toBeVisible()
+  await expect(page.getByLabel('名称', { exact: true })).toHaveValue(original.name)
+  const name = original.name
+  const countBefore = (await (await request.get(root)).json()).total
+  const returnInput = page.getByLabel(/预期年收益（%）/).first()
+  await returnInput.fill('7.1')
+  await layout(page, info, 'edit-existing-study')
+  await preview(page)
+  const saved = await publish(page, true)
+  expect(saved.study_id).toBe(original.study_id ?? original.id)
+  expect(saved.supersedes_cma_id).toBe(original.id)
+  expect(saved).not.toHaveProperty('copied_from_id')
+  expect((await (await request.get(root)).json()).total).toBe(countBefore)
+  await page.goto('/pre-investment/ltcma')
+  await page.getByLabel('搜索名称', { exact: true }).fill(name)
+  const row = page.locator(`a[href="/pre-investment/ltcma/${saved.id}"]`).locator('xpath=ancestor::tr')
+  await expect(originalRow).toHaveCount(0)
+  await expect(page.getByRole('table', { name: '已确认版本', exact: true }).locator('tbody tr')).toHaveCount(1)
+  await row.getByRole('link', { name: '复制为新研究', exact: true }).click()
+  const copyName = `独立复制验证 ${info.project.name}`
+  await page.getByLabel('名称', { exact: true }).fill(copyName)
+  await preview(page)
+  const copied = await publish(page)
+  expect(copied.copied_from_id).toBe(saved.id)
+  expect(copied).not.toHaveProperty('supersedes_cma_id')
+  expect((await (await request.get(root)).json()).total).toBe(countBefore + 1)
+  await page.goto('/pre-investment/ltcma')
+  await page.getByLabel('搜索名称', { exact: true }).fill(name)
+  await row.getByRole('checkbox').check()
+  const trigger = row.getByRole('button', { name: '删除', exact: true })
+  await trigger.click()
+  const dialog = page.getByRole('dialog', { name: '删除此 LTCMA 版本？' })
+  const cancel = dialog.getByRole('button', { name: '取消', exact: true })
+  await expect(cancel).toBeFocused()
+  await expect(dialog).toContainText('已有 SAA、TAA 等研究引用及历史记录会保留')
+  await page.keyboard.press('Shift+Tab')
+  await expect(dialog.getByRole('button', { name: '确认删除', exact: true })).toBeFocused()
+  await layout(page, info, 'delete-confirmation')
+  await page.keyboard.press('Escape')
+  await expect(dialog).not.toBeVisible()
+  await expect(trigger).toBeFocused()
+  await trigger.click(); await cancel.click()
+  await expect(trigger).toBeFocused()
+  let attempts = 0
+  await page.route(`**/cma/${saved.id}/retire`, async route => {
+    if (++attempts === 1) await route.fulfill({ status: 503, json: { detail: { message: '暂时无法删除，请重试。' } } })
+    else await route.fallback()
+  })
+  await trigger.click()
+  await dialog.getByRole('button', { name: '确认删除', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toContainText('暂时无法删除，请重试。')
+  await layout(page, info, 'delete-failed')
+  await dialog.getByRole('button', { name: '确认删除', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(row).toHaveCount(0)
+  await expect(page.getByRole('region', { name: '用于 SAA 的 CMA' })).toContainText('已选 0 个 CMA')
+  await expect(page.getByRole('button', { name: '下一步：战略资产配置 →' })).toBeDisabled()
+  await expect(page.getByText(`已删除“${name}”：停止新引用，历史记录已保留。`, { exact: true })).toBeVisible()
+  await layout(page, info, 'delete-success')
+  await page.getByRole('checkbox', { name: '显示已停止引用的版本', exact: true }).check()
+  await expect(row.getByRole('button', { name: '删除', exact: true })).toBeDisabled()
+  await expect(row.getByRole('checkbox')).toBeDisabled()
+  await expect(row.getByRole('link', { name: '修改', exact: true })).toBeVisible()
+  await layout(page, info, 'retained-history')
+  expect(await (await request.get(`${root}/${original.id}`)).json()).toEqual(original)
+  expect(await (await request.get(`${root}/${saved.id}`)).json()).toEqual(saved)
+  expect((await (await request.get(`${root}/${saved.id}/view`)).json()).retired).toBe(true)
+})
+
+test('configuration facts allow NIW and SAA across saved records', async ({ page, request }, info) => {
+  const root = `${api}/api/strategic-allocation`
+  const scope = await (await request.get(`${root}/universes/${fixture.facts_universe_id}`)).json()
+  const checked = await (await request.post(`${root}/universes/preview`, { data: scope.definition })).json()
+  const unchanged = await request.post(`${root}/universes/confirm`, { data: {
+    request: scope.definition, preview_hash: checked.preview_hash, replaces_universe_id: scope.id,
+  } })
+  expect(unchanged.ok(), await unchanged.text()).toBe(true)
+  expect((await unchanged.json()).id).toBe(scope.id)
+  await page.goto(`/pre-investment/ltcma/new?strategic_universe=${scope.id}`)
+  await selectMethod(page, 'bayesian_niw')
+  const prior = page.getByLabel('先验 LTCMA 版本', { exact: true })
+  await expect(prior.locator(`option[value="${fixture.facts_cma_ids[0]}"]`)).toBeEnabled()
+  await prior.selectOption(fixture.facts_cma_ids[0])
+  await page.getByLabel('历史取样窗口', { exact: true }).selectOption('custom')
+  await page.getByLabel('样本开始', { exact: true }).fill(fixture.facts_start)
+  await page.getByLabel('样本结束', { exact: true }).fill(fixture.facts_end)
+  await page.getByLabel('均值先验等效日观察数', { exact: true }).fill('20')
+  await page.getByLabel('风险先验等效日观察数', { exact: true }).fill('30')
+  await page.getByRole('checkbox', { name: /已核对并明确接受先验与样本/ }).check()
+  await page.getByText('查看不适用原因', { exact: true }).click()
+  await layout(page, info, 'facts-prior-selection')
+  const result = await preview(page)
+  expect(result.definition.model.prior_ref.id).toBe(fixture.facts_cma_ids[0])
+  expect(result.definition.strategic_universe_id).toBe(scope.id)
+  await publish(page)
+  await page.goto(`/pre-investment/saa/policy?strategic_universe=${scope.id}&mandate=${fixture.mandate_id}&cma=${fixture.facts_cma_ids[0]}`)
+  const pending = page.waitForResponse(r => r.url().endsWith('/policy/preview') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: '比较符合目标的政策候选' }).click()
+  expect((await pending).ok()).toBe(true)
+  await layout(page, info, 'facts-saa-single')
+  await page.goto('/pre-investment/ltcma')
+  await page.getByLabel('搜索名称').fill('配置事实')
+  for (const id of fixture.facts_cma_ids) {
+    await page.locator(`a[href="/pre-investment/ltcma/${id}"]`).locator('xpath=ancestor::tr').getByRole('checkbox').check()
+  }
+  await page.getByRole('button', { name: '下一步：战略资产配置 →' }).click()
+  await page.getByLabel('CMA 使用方式').selectOption('parameter_average')
+  await page.getByRole('button', { name: '确认使用等权' }).click()
+  await page.getByRole('button', { name: '核对权重并进入政策比较' }).click()
+  const combined = page.waitForResponse(r => r.url().endsWith('/policy/preview') && r.request().method() === 'POST')
+  await page.getByRole('button', { name: '比较符合目标的政策候选' }).click()
+  expect((await combined).ok()).toBe(true)
+  await layout(page, info, 'facts-saa-multiple')
+})
+
+test('scenario history requires a choice even for one candidate and offers configuration for an empty list', async ({ page }, info) => {
+  let empty = false
+  await page.route('**/cma/study-options?**', async route => {
+    const url = new URL(route.request().url())
+    const response = await route.fetch({ url: `${api}${url.pathname}${url.search}` })
+    const data = await response.json()
+    if (!data.scenario_options) return route.fulfill({ response, json: data })
+    const candidates = data.scenario_options.historical_references.filter((item: { id: string; available: boolean }) => item.id === fixture.scenario_reference_id && item.available).slice(0, 1)
+    expect(candidates).toHaveLength(1)
+    data.scenario_options.historical_references = empty ? [] : candidates
+    await route.fulfill({ response, json: data })
+  })
+  for (const state of ['single', 'empty']) {
+    empty = state === 'empty'
+    await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}`)
+    await page.getByLabel('名称', { exact: true }).fill(`情景明确选择 ${info.project.name}`)
+    await selectMethod(page, 'long_term_scenario')
+    const history = page.getByLabel('历史情景研究', { exact: true })
+    await expect(history).toHaveAttribute('value', '')
+    await expect(page.getByText(/选择历史情景研究，系统用分段历史检验/)).toBeVisible()
+    await page.getByRole('checkbox', { name: /我已核对资产范围/ }).check()
+    await expect(page.getByRole('button', { name: '计算预览', exact: true })).toBeDisabled()
+    if (!empty) {
+      await selectScenario(page, '历史情景研究', `${fixture.scenario_reference_id}:${fixture.scenario_publication_id}`)
+      await expect(page.getByRole('button', { name: '计算预览', exact: true })).toBeEnabled()
+      await selectScenario(page, '历史情景研究', '')
+      await expect(history).toHaveAttribute('value', '')
+      await expect(page.getByRole('button', { name: '计算预览', exact: true })).toBeDisabled()
+    }
+    await layout(page, info, `scenario-explicit-history-${state}`)
+    await history.click()
+    await page.getByRole('menuitem', { name: '打开情景算法中心配置事后情景' }).click()
+    await expect(page).toHaveURL(/\/settings\/scenario-algorithms\?center=market-state&stage=historical$/)
+    await expect(page.getByRole('heading', { name: '定义历史参考', exact: true })).toBeVisible()
+    await page.waitForLoadState('networkidle')
+  }
+})
+
+test('long-term scenarios use published references and preserve editable inputs', async ({ page }, info) => {
+  await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}`)
+  await page.getByLabel('名称', { exact: true }).fill(`长期情景验收 ${info.project.name}`)
+  await selectMethod(page, 'long_term_scenario')
+  await selectScenario(page, '历史情景研究', `${fixture.scenario_reference_id}:${fixture.scenario_publication_id}`)
+  await expect(page.getByLabel('预测区间', { exact: true })).toHaveCount(0)
+  await expect(page.getByLabel('收缩强度', { exact: true })).toHaveCount(0)
+  await layout(page, info, 'long-scenario-input')
+  const result = await preview(page)
+  expect(result.definition.model.historical_reference.publication_id).toBe(fixture.scenario_publication_id)
+  expect(result.model_result.model_audit.model_validation.downstream_eligible).toBe(true)
+  await expect(page.getByRole('table', { name: '情景占比与概率', exact: true })).toBeVisible()
+  await layout(page, info, 'long-scenario-result')
+  await page.getByRole('button', { name: '返回修改输入', exact: true }).click()
+  await expect(page.getByLabel('历史情景研究', { exact: true })).toHaveAttribute('value', `${fixture.scenario_reference_id}:${fixture.scenario_publication_id}`)
+  await preview(page)
+  const saved = await publish(page)
+  await page.reload()
+  await expect(page.getByRole('button', { name: '用于 SAA', exact: true })).toBeEnabled()
+  await expect(page.getByRole('heading', { name: saved.name, exact: true })).toBeVisible()
+})
+
+test('conditional scenarios calculate horizons and save without authorizing SAA', async ({ page, request }, info) => {
+  await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}`)
+  await page.getByLabel('名称', { exact: true }).fill(`条件情景验收 ${info.project.name}`)
+  await selectMethod(page, 'conditional_scenario')
+  await selectScenario(page, '历史情景研究', `${fixture.scenario_reference_id}:${fixture.scenario_publication_id}`)
+  await expect(page.getByText('已校准当前判断', { exact: true })).toBeVisible()
+  await page.getByLabel('预测区间', { exact: true }).selectOption('21')
+  await layout(page, info, 'conditional-input')
+  const result = await preview(page)
+  expect(result.definition.model.realtime_ref.id).toBe(fixture.scenario_realtime_id)
+  expect(result.model_result.model_audit.horizon_distribution.horizon_days).toBe(21)
+  expect(result.model_result.model_audit.model_validation.downstream_eligible).toBe(false)
+  const probabilities = page.getByRole('table', { name: '情景占比与概率', exact: true })
+  for (const name of ['当前概率', '期末概率', '期间平均占比']) await expect(probabilities.getByRole('columnheader', { name, exact: true })).toBeVisible()
+  await expect(page.getByRole('table', { name: '预测区间内的累计收益', exact: true })).toBeVisible()
+  await layout(page, info, 'conditional-result')
+  await page.getByRole('checkbox', { name: /我已阅读结果；此条件情景/ }).check()
+  const pending = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/cma') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: '保存情景研究', exact: true }).click()
+  const response = await pending
+  expect(response.ok(), await response.text()).toBe(true)
+  const saved = await response.json()
+  await expect(page).toHaveURL(new RegExp(`/ltcma/${saved.id}`))
+  await expect(page.getByRole('button', { name: '用于 SAA', exact: true })).toBeDisabled()
+  await page.reload()
+  await expect(page.getByRole('table', { name: '预测区间内的累计收益', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '用于 SAA', exact: true })).toBeDisabled()
+  const blocked = await request.post(`${api}/api/strategic-allocation/policy/preview`, { data: {
+    mandate_id: fixture.mandate_id, cma_id: saved.id, candidate_count: 300,
+  } })
+  expect(blocked.status()).toBe(422)
+  expect(await blocked.text()).toContain('LTCMA_DOWNSTREAM_UNAVAILABLE')
+  await layout(page, info, 'conditional-saved')
+})
+
+test('scenario evidence refresh explains loading, failure and date exclusions', async ({ page }, info) => {
+  await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}`)
+  await selectMethod(page, 'long_term_scenario')
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const failedOptions = '**/cma/study-options?as_of=2000-01-01'
+  await page.route(failedOptions, async route => {
+    await pending
+    await route.fulfill({ status: 503, json: { detail: '情景资料暂时无法读取，请重试。' } })
+  })
+  try {
+    await page.getByLabel('研究日', { exact: true }).fill('2000-01-01')
+    await expect(page.getByText('正在按研究日匹配情景研究…', { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: '计算预览', exact: true })).toBeDisabled()
+    await layout(page, info, 'scenario-evidence-loading')
+  } finally { release() }
+  await expect(page.getByText('情景资料暂时无法读取，请重试。', { exact: false }).first()).toBeVisible()
+  await layout(page, info, 'scenario-evidence-failure')
+  await page.unroute(failedOptions)
+  await page.getByRole('button', { name: '重试', exact: true }).click()
+  await expect(page.getByText('已有情景研究，但均不符合当前研究日或数据要求。', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '计算预览', exact: true })).toBeDisabled()
+  await layout(page, info, 'scenario-evidence-date-excluded')
+  await page.getByLabel('研究日', { exact: true }).fill(fixture.today)
+  await expect(page.getByText('已有情景研究，但均不符合当前研究日或数据要求。', { exact: true })).toHaveCount(0)
+  await selectScenario(page, '历史情景研究', `${fixture.scenario_reference_id}:${fixture.scenario_publication_id}`)
+  await page.getByRole('checkbox', { name: /我已核对资产范围/ }).check()
+  await expect(page.getByRole('button', { name: '计算预览', exact: true })).toBeEnabled()
+})
+
+test('center hands one or multiple selected CMAs to SAA after their scope is replaced', async ({ page, request }, info) => {
+  const post = async (path: string, data: unknown) => {
+    const response = await request.post(`${api}/api/strategic-allocation${path}`, { data })
+    expect(response.ok(), await response.text()).toBe(true)
+    return response.json()
+  }
+  const source = await (await request.get(`${api}/api/strategic-allocation/cma/${fixture.manual_id}`)).json()
+  const scope = { name: `CMA 交接范围 ${info.project.name}`, as_of: fixture.today, currency: 'CNY', source: '',
+    assets: source.definition.assets.map((asset: { id: string; role: string; liquidity: string }, index: number) => ({ id: `asset-${index}`, name: asset.id, currency: 'CNY', role: asset.role, liquidity: asset.liquidity, source: '', rationale: '' })) }
+  const scopePreview = await post('/universes/preview', scope)
+  const savedScope = await post('/universes/confirm', { request: scope, preview_hash: scopePreview.preview_hash, mandate_id: fixture.mandate_id })
+  const versions = []
+  for (const index of [1, 2]) {
+    const definition = { ...source.definition, name: `交接方案 ${index} ${info.project.name}`, alloc_name: null, strategic_universe_id: savedScope.id,
+      assets: source.definition.assets.map((asset: { annual_return: number }, assetIndex: number) => ({ ...asset, id: `asset-${assetIndex}`, annual_return: asset.annual_return + (index - 1) * .005 })) }
+    const preview = await post('/cma/preview', definition)
+    versions.push(await post('/cma', { request: definition, preview_hash: preview.preview_hash, confirm: true, idempotency_key: `handoff-${info.project.name}-${index}` }))
+  }
+  // Editing the scope hides its predecessor from the picker, but must not break saved CMAs.
+  const replacement = { ...scope, source: '修改范围备注后保存的新版本' }
+  const replacementPreview = await post('/universes/preview', replacement)
+  const newScope = await post('/universes/confirm', { request: replacement, preview_hash: replacementPreview.preview_hash, replaces_universe_id: savedScope.id })
+  const catalog = await (await request.get(`${api}/api/strategic-allocation/catalog`)).json()
+  expect(catalog.strategic_universes.some((item: { id: string }) => item.id === savedScope.id)).toBe(false)
+  expect(catalog.strategic_universes.some((item: { id: string }) => item.id === newScope.id)).toBe(true)
+  await page.goto('/pre-investment/ltcma')
+  await page.getByLabel('搜索名称', { exact: true }).fill(`交接方案`)
+  await expect(page.getByRole('button', { name: '下一步：战略资产配置 →' })).toBeDisabled()
+  await page.getByRole('checkbox', { name: `选择 ${versions[0].name}`, exact: true }).check()
+  await layout(page, info, 'center-single-selection')
+  await page.getByRole('button', { name: '下一步：战略资产配置 →' }).click()
+  await expect(page.getByRole('button', { name: '比较符合目标的政策候选' })).toBeVisible()
+  expect(new URL(page.url()).searchParams.get('mandate')).toBe(fixture.mandate_id)
+  expect(new URL(page.url()).searchParams.get('strategic_universe')).toBe(savedScope.id)
+  await page.reload()
+  await expect(page.getByRole('button', { name: '比较符合目标的政策候选' })).toBeVisible()
+  await page.getByRole('button', { name: '1. 研究范围', exact: true }).click()
+  await expect(page.getByRole('combobox', { name: '研究范围', exact: true })).toHaveValue(`strategic:${savedScope.id}`)
+  await expect(page.getByRole('combobox', { name: '投资目标版本', exact: true })).toHaveValue(fixture.mandate_id)
+  await page.getByRole('button', { name: '3. 政策比较', exact: true }).click()
+  const singleResult = page.waitForResponse(response => response.url().includes('/policy/preview') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
+  const singleResponse = await singleResult
+  expect(singleResponse.ok(), await singleResponse.text()).toBe(true)
+  const singlePreview = await singleResponse.json()
+  expect(singlePreview.source_snapshot.strategic_universe_id).toBe(savedScope.id)
+  expect(singlePreview.source_snapshot.lineage.strategic_universe_hash).toBe(savedScope.content_hash)
+  await page.goto('/pre-investment/ltcma')
+  await page.getByLabel('搜索名称', { exact: true }).fill(`交接方案`)
+  for (const version of versions) await page.getByRole('checkbox', { name: `选择 ${version.name}`, exact: true }).check()
+  await layout(page, info, 'center-multiple-selection')
+  await page.getByRole('button', { name: '下一步：战略资产配置 →' }).click()
+  const mode = page.getByRole('combobox', { name: 'CMA 使用方式', exact: true })
+  await expect(mode).toBeEnabled()
+  await expect(mode).toHaveValue('')
+  await expect(page.getByRole('button', { name: '3. 政策比较', exact: true })).toBeDisabled()
+  expect(new URL(page.url()).searchParams.getAll('cma')).toEqual(versions.map(version => version.id))
+  await layout(page, info, 'saa-explicit-mode')
+  await mode.selectOption('parameter_average')
+  await expect(page.getByRole('button', { name: '核对权重并进入政策比较' })).toBeDisabled()
+  await page.getByRole('button', { name: '确认使用等权', exact: true }).click()
+  await page.reload()
+  await expect(page.getByRole('button', { name: '核对权重并进入政策比较' })).toBeEnabled()
+  await page.getByRole('button', { name: '核对权重并进入政策比较' }).click()
+  const compare = async (expectedMode: string) => {
+    const result = page.waitForResponse(response => response.url().includes('/policy/preview') && response.request().method() === 'POST')
+    await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
+    const response = await result
+    expect(response.ok(), await response.text()).toBe(true)
+    const body = response.request().postDataJSON()
+    expect(body.mode).toBe(expectedMode)
+    expect(body.cma_refs.map((ref: { cma_id: string }) => ref.cma_id)).toEqual(versions.map(version => version.id))
+    expect(body.cma_refs.map((ref: { weight: number | null }) => ref.weight)).toEqual(expectedMode === 'parameter_average' ? [.5, .5] : [null, null])
+    const preview = await response.json()
+    expect(preview.execution.python_fallback).toBe(0)
+    expect(preview.source_snapshot.strategic_universe_id).toBe(savedScope.id)
+    expect(preview.source_snapshot.lineage.strategic_universe_hash).toBe(savedScope.content_hash)
+  }
+  await compare('parameter_average')
+  await page.getByRole('button', { name: '2. 选择 LTCMA', exact: true }).click()
+  await mode.selectOption('compatible_all_models')
+  await expect(page.getByRole('button', { name: '确认使用等权' })).toHaveCount(0)
+  await layout(page, info, 'saa-common-selection')
+  await page.getByRole('button', { name: '核对模型并进入共同配置' }).click()
+  await compare('compatible_all_models')
+})
+
+test('history list distinguishes same-name versions by saved samples', async ({ page, request }, info) => {
+  const original = await (await request.get(`${api}/api/strategic-allocation/cma/${fixture.historical_id}`)).json()
+  const definition = structuredClone(original.definition)
+  const evidence = original.model_result.model_audit.evidence
+  const midpoint = new Date((Date.parse(evidence.actual_start) + Date.parse(evidence.actual_end)) / 2).toISOString().slice(0, 10)
+  definition.model.window = { kind: 'custom', start_date: midpoint, end_date: evidence.actual_end }
+  const previewResponse = await request.post(`${api}/api/strategic-allocation/cma/preview`, { data: definition })
+  expect(previewResponse.ok()).toBe(true)
+  const preview = await previewResponse.json()
+  const savedResponse = await request.post(`${api}/api/strategic-allocation/cma`, { data: {
+    request: definition, preview_hash: preview.preview_hash, confirm: true,
+    idempotency_key: `history-list-${info.project.name}`,
+  } })
+  expect(savedResponse.ok()).toBe(true)
+  const saved = await savedResponse.json()
+  await page.goto('/pre-investment/ltcma')
+  await selectMethod(page, 'historical_statistics')
+  const row = (id: string) => page.getByRole('row').filter({ has: page.locator(`a[href="/pre-investment/ltcma/${id}"]`) })
+  await expect(row(original.id)).toContainText('历史统计 · 共同可用起点')
+  await expect(row(saved.id)).toContainText('历史统计 · 自定义区间')
+  await expect(row(saved.id)).not.toContainText('个日收益样本')
+  await expect(row(original.id)).not.toContainText(`${evidence.actual_start} 至 ${evidence.actual_end}`)
+  await expect(row(original.id)).not.toContainText('数据：')
+  await expect(page.getByRole('columnheader', { name: '资产范围', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('columnheader', { name: '预测期限（年）', exact: true })).toHaveCount(0)
+  await layout(page, info, 'history-list')
+  await row(saved.id).getByRole('link', { name: saved.name, exact: true }).click()
+  await expect(page.getByRole('heading', { name: saved.name, exact: true })).toBeVisible()
+})
+
 test('manual copy, immutable publication, exact SAA handoff and retirement', async ({ page }, info) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.goto('/pre-investment/ltcma')
+  await page.getByLabel('搜索名称', { exact: true }).fill('离线基础 LTCMA')
   await expect(page.locator(`a[href="/pre-investment/ltcma/${fixture.manual_id}"]`)).toBeVisible()
   await layout(page, info, 'list')
   await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}&mandate=${fixture.mandate_id}`)
   await expect(page.getByLabel('名称', { exact: true })).toHaveValue('离线基础 LTCMA')
   await page.getByLabel('名称', { exact: true }).fill(`浏览器手动版本 ${info.project.name}`)
+  await expect(page.getByLabel('预测期限（年）', { exact: true })).toHaveCount(0)
   await layout(page, info, 'manual-input')
   const calculated = await preview(page)
   expect(calculated.definition).not.toHaveProperty('mandate_id')
@@ -100,17 +648,17 @@ test('manual copy, immutable publication, exact SAA handoff and retirement', asy
 test('historical and NIW use real saved evidence and independently frozen results', async ({ page }, info) => {
   await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}`)
   await page.getByLabel('名称', { exact: true }).fill(`浏览器历史 ${info.project.name}`)
-  await page.getByLabel('生成方法', { exact: true }).selectOption('historical_statistics')
+  await selectMethod(page, 'historical_statistics')
   await page.getByLabel('历史取样窗口', { exact: true }).selectOption('common_since_inception')
   const history = await preview(page)
   expect(history.model_result.model_audit.evidence.observations).toBe(300)
   expect(history.model_result.model_audit.uncertainty_status).toBe('estimated_iid')
   await expect(page.getByRole('columnheader', { name: '均值模型标准误', exact: true })).toBeVisible()
-  await expect(page.getByRole('region', { name: '样本窗口与预测期限', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: '历史样本覆盖', exact: true })).toBeVisible()
   await layout(page, info, 'historical-results')
   const historicalVersion = await publish(page)
   await page.goto(`/pre-investment/ltcma/new?copy=${historicalVersion.id}`)
-  await page.getByLabel('生成方法', { exact: true }).selectOption('bayesian_niw')
+  await selectMethod(page, 'bayesian_niw')
   const split = new Date(`${fixture.today}T00:00:00Z`)
   split.setUTCDate(split.getUTCDate() - 90)
   await page.getByLabel('历史取样窗口', { exact: true }).selectOption('custom')
@@ -144,20 +692,23 @@ test('historical and NIW use real saved evidence and independently frozen result
 test('BL, explicit scenarios and historical regimes remain separate methods', async ({ page }, info) => {
   for (const [id, method] of [[fixture.bl_id, 'black_litterman'], [fixture.scenario_id, 'scenario_mixture']] as const) {
     await page.goto(`/pre-investment/ltcma/new?copy=${id}`)
-    await expect(page.getByLabel('生成方法', { exact: true })).toHaveValue(method)
+    await page.getByLabel('名称', { exact: true }).fill(`多方法验收 ${info.project.name} ${method}`)
+    await expect(page.getByLabel('生成方法', { exact: true })).toHaveAttribute('value', method)
     const value = await preview(page)
     expect(value.model_result.method).toBe(method)
     await layout(page, info, `${method}-results`)
   }
   await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}`)
-  await page.getByLabel('生成方法', { exact: true }).selectOption('historical_regime_occupancy')
+  await page.getByLabel('名称', { exact: true }).fill(`多方法验收 ${info.project.name}`)
+  await selectMethod(page, 'historical_regime_occupancy')
   await page.getByLabel('历史取样窗口', { exact: true }).selectOption('common_since_inception')
-  await page.getByLabel('已保存的事后状态研究', { exact: true }).selectOption(fixture.regime_id)
+  await selectScenario(page, '已保存的事后状态研究', fixture.regime_id)
   const regime = await preview(page)
   expect(regime.model_result.model_audit.detected_probabilities).toEqual([.5, .5])
   expect(regime.model_result.model_audit.counts).toEqual([150, 150])
   expect(regime.model_result.model_audit.annualization_method).toBe('historical_occupancy_iid_annualization')
   const stateTable = page.getByRole('table', { name: '历史状态与应用概率', exact: true })
+  if (!await stateTable.isVisible()) await page.getByText('计算依据与冻结输入', { exact: true }).click()
   await expect(stateTable).toBeVisible()
   await expect(stateTable.getByRole('columnheader', { name: '历史占用率', exact: true })).toBeVisible()
   await expect(stateTable.getByRole('columnheader', { name: '本次应用概率', exact: true })).toBeVisible()
@@ -260,4 +811,129 @@ test('errors, empty results and keyboard-visible retry', async ({ page }, info) 
   await page.getByLabel('搜索名称', { exact: true }).fill('不存在的合成测试版本')
   await expect(page.getByText('没有匹配的 LTCMA', { exact: true })).toBeVisible()
   await layout(page, info, 'empty-state')
+})
+
+test('compact strategic inputs, optional notes and PIT date alignment', async ({ page }, info) => {
+  await page.route('**/api/pit/settings', route => route.fulfill({ json: {
+    settings: { active_release_id: null }, available_releases: [],
+    effective: { no_pit: false, as_of: fixture.today, run_mode: 'RESEARCH', label: '离线 PIT 研究日' },
+  } }))
+  await page.goto(`/pre-investment/ltcma/new?strategic_universe=${fixture.universe_id}`)
+  await expect(page.getByLabel('研究日', { exact: true })).toHaveValue(fixture.today)
+  await expect(page.getByLabel('研究日', { exact: true })).toBeDisabled()
+  await expect(page.getByLabel('名称', { exact: true })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: /经济用途|流动性/ })).toHaveCount(0)
+  for (const [asset, mean, vol] of [['股票', '7', '18'], ['债券', '3', '5']]) {
+    await page.getByLabel(`${asset} · 预期年收益（%）`, { exact: true }).fill(mean)
+    await page.getByLabel(`${asset} · 年化波动（%）`, { exact: true }).fill(vol)
+  }
+  await page.getByLabel('相关矩阵: 股票 / 债券', { exact: true }).fill('-0.1')
+  await layout(page, info, 'compact-strategic-input')
+  const result = await preview(page)
+  expect(result.definition.name).toContain('离线独立战略范围')
+  expect(result.definition.source).toBe('')
+  const saved = await publish(page)
+  expect(saved.definition.as_of).toBe(fixture.today)
+  await page.route('**/api/pit/settings', route => route.fulfill({ json: {
+    settings: { active_release_id: null }, available_releases: [],
+    effective: { no_pit: true, as_of: null, run_mode: 'RESEARCH', label: '离线关闭 PIT' },
+  } }))
+  await page.goto(`/pre-investment/ltcma/new?copy=${saved.id}`)
+  await expect(page.getByLabel('研究日', { exact: true })).toBeEnabled()
+  await page.getByLabel('研究日', { exact: true }).fill('2020-01-01')
+  await expect(page.getByLabel('研究日', { exact: true })).toHaveValue('2020-01-01')
+})
+
+test('SAA compares and saves without requiring real products', async ({ page, request }, info) => {
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  const catalog = await (await request.get(`${api}/api/strategic-allocation/catalog`)).json()
+  const universe = catalog.strategic_universes.find((item: { id: string }) => item.id === fixture.facts_universe_id)
+  expect(universe).toBeTruthy()
+  await page.goto(`/pre-investment/saa/policy?strategic_universe=${universe.id}&mandate=${fixture.mandate_id}`)
+  const selector = page.getByRole('combobox', { name: '研究范围', exact: true })
+  await expect(selector).toHaveValue(`strategic:${universe.id}`)
+  await expect(page.getByRole('combobox', { name: '使用已保存的产品配置' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: '前往此范围配置实际产品' })).toHaveCount(0)
+  await expect(page.getByText(/SAA 确定长期大类权重，无需配置实际投资产品/)).toBeVisible()
+  await layout(page, info, 'saa-research-scope')
+  await selector.selectOption(`allocation:${fixture.allocation}`)
+  await selector.selectOption(`strategic:${universe.id}`)
+  await page.getByRole('button', { name: '选择已确认 LTCMA', exact: true }).click()
+  await page.getByRole('combobox', { name: '选择已确认 LTCMA', exact: true }).selectOption(fixture.facts_cma_ids[0])
+  const pending = page.waitForResponse(response => response.url().endsWith('/policy/preview') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
+  const response = await pending
+  expect(response.ok(), await response.text()).toBe(true)
+  const preview = await response.json()
+  expect(preview.current_application_eligible).toBe(false)
+  expect(preview.source_snapshot.implementation_mapping_id).toBeNull()
+  expect(preview.application_blockers.some((message: string) => message.includes('缺少真实代理产品'))).toBe(true)
+  const candidates = page.getByRole('table', { name: '长期政策候选比较' })
+  await expect(candidates).toBeVisible()
+  await expect(page.getByText(/缺少真实代理产品|当前应用条件尚未满足/)).toHaveCount(0)
+  await layout(page, info, 'saa-candidates-without-products')
+  await candidates.getByRole('button', { name: '复核此候选' }).first().click()
+  await expect(page.getByText(/缺少真实代理产品|当前应用条件尚未满足/)).toHaveCount(0)
+  await page.getByLabel('政策版本名称', { exact: true }).fill(`无产品 SAA ${info.project.name}`)
+  await page.getByLabel('采纳理由与复核关注点', { exact: false }).fill('确认长期大类权重，具体产品留待产品配置阶段研究。')
+  const published = page.waitForResponse(response => response.url().endsWith('/policies') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: '确认采用此长期政策', exact: true }).click()
+  const publication = await published
+  expect(publication.ok(), await publication.text()).toBe(true)
+  const baseline = await publication.json()
+  expect(baseline.implementation_mapping_id).toBeNull()
+  expect(baseline.assets.every((asset: { products: unknown[] }) => asset.products.length === 0)).toBe(true)
+  await expect(page.getByRole('button', { name: /进入 TAA，研究是否需要偏离/ })).toBeEnabled()
+  await layout(page, info, 'saa-confirmed-without-products')
+  await page.goto(`/pre-investment/saa/policy?baseline=${baseline.id}`)
+  await expect(page.getByRole('link', { name: '返回此政策的 TAA 研究' })).toBeVisible()
+  await expect(page.getByText(/缺少真实代理产品|映射未完成/)).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('scenario choices explain unavailable intervals on hover focus and click', async ({ page }, info) => {
+  const reason = '这份情景使用了研究日之后的数据，请重新计算截至研究日的版本。'
+  await page.route('**/cma/study-options?**', async route => {
+    const url = new URL(route.request().url())
+    const response = await route.fetch({ url: `${api}${url.pathname}${url.search}` })
+    const data = await response.json()
+    if (data.scenario_options) {
+      const valid = data.scenario_options.historical_references.find((item: { id: string }) => item.id === fixture.scenario_reference_id)
+      data.scenario_options.historical_references.push({ ...valid, id: 'future-intervals', name: '使用未来数据的历史情景',
+        reference: null, available: false, reasons: [{ code: 'after_research_day', message: reason }] })
+    }
+    if (data.regime_runs?.length) data.regime_runs.push({ ...data.regime_runs[0], id: 'future-intervals', name: '使用未来数据的历史情景',
+      available: false, reasons: [{ code: 'after_research_day', message: reason }] })
+    await route.fulfill({ response, json: data })
+  })
+  await page.goto(`/pre-investment/ltcma/new?copy=${fixture.manual_id}`)
+  for (const method of ['long_term_scenario', 'historical_regime_occupancy']) {
+    await selectMethod(page, method)
+    const label = method === 'long_term_scenario' ? '历史情景研究' : '已保存的事后状态研究'
+    const trigger = page.getByRole('button', { name: label, exact: true })
+    await trigger.scrollIntoViewIfNeeded()
+    await trigger.click()
+    const unavailable = page.getByRole('menuitemradio', { name: /使用未来数据的历史情景/ })
+    await unavailable.scrollIntoViewIfNeeded()
+    const before = await unavailable.boundingBox()
+    await unavailable.hover()
+    await expect(page.getByRole('tooltip')).toHaveText(reason)
+    const after = await unavailable.boundingBox()
+    expect(Math.abs(after!.y - before!.y)).toBeLessThanOrEqual(1)
+    await expect(unavailable).toHaveAttribute('aria-disabled', 'true')
+    await unavailable.click({ force: true })
+    await expect(trigger).toHaveAttribute('value', '')
+    await unavailable.focus()
+    await page.keyboard.press('Enter')
+    await expect(trigger).toHaveAttribute('value', '')
+    await expect(page.getByRole('tooltip')).toBeVisible()
+    await layout(page, info, `${method}-unavailable-explanation`)
+    await page.keyboard.press('Escape')
+    await expect(trigger).toBeFocused()
+    await expect(page.getByRole('menu', { name: label })).toHaveCount(0)
+    const value = method === 'long_term_scenario' ? `${fixture.scenario_reference_id}:${fixture.scenario_publication_id}` : fixture.regime_id
+    await selectScenario(page, label, value)
+    await expect(trigger).toHaveAttribute('value', value)
+  }
 })

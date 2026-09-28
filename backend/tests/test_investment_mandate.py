@@ -171,7 +171,8 @@ def test_real_cma_diagnosis_and_saa_consume_the_same_goal_gate(workspace):
     policy_request = PolicyRequest(mandate_id=saved["id"], cma_id=cma["id"])
     policy = service.preview_policy(policy_request)
     assert policy["funding"] == preview["funding"]
-    assert policy["candidates"] == preview["candidates"]
+    # The policy page adds maximum-Sharpe and minimum-drawdown rows; the shared four keep the same gate.
+    assert [{k: v for k, v in c.items() if k != "risk_adjusted"} for c in policy["candidates"][:4]] == preview["candidates"]
     chosen = next(c for c in policy["candidates"] if c["goal_check"]["within_limits"])
     published = service.publish_policy(PublishPolicyRequest(request=policy_request, preview_hash=policy["preview_hash"],
                                       candidate_id=chosen["id"], name="诊断后政策", reason="资金目标通过本次诊断门槛"))
@@ -203,7 +204,7 @@ def test_benchmark_and_mandate_bounds_are_consumed_not_just_stored(workspace):
     for item in result["candidates"]:
         assert item["weights"] == pytest.approx({"股票": .6, "债券": .4})
         assert item["benchmark_check"]["tracking_error"] == pytest.approx(0.)
-    definition_data.update(objective_kind="absolute_return", benchmark=None, allocation_scope="股债",
+    definition_data.update(name="绝对收益边界目标", objective_kind="absolute_return", benchmark=None, allocation_scope="股债",
         asset_limits={"股票": {"min_weight": .1, "max_weight": .2, "max_abs_tilt": .01}})
     saved = confirmed_mandate(service, MandateRequest.model_validate(definition_data))
     result = service.preview_policy(request.model_copy(update={"mandate_id": saved["id"]}))
@@ -252,12 +253,26 @@ def test_new_api_roundtrip_recompute_and_model_mismatch(workspace):
         assert client.post("/api/strategic-allocation/mandates/preview", json=request).status_code == 422
 
 
-def test_cma_time_currency_and_horizon_cannot_be_silently_substituted(workspace):
+def test_cma_time_and_currency_cannot_be_silently_substituted(workspace):
     service, _ = workspace
     _, cma, _ = saved_inputs(service)
-    for patch in ({"currency": "USD"}, {"horizon_years": 5}, {"as_of": str(date.today()-timedelta(days=1))}):
+    for patch in ({"currency": "USD"}, {"as_of": str(date.today()-timedelta(days=1))}):
         with pytest.raises(ValidationError, match="同研究日"):
             service.preview_mandate(MandateStudyRequest(definition=mandate(**patch), cma_id=cma["id"]))
+
+
+def test_investment_horizon_still_controls_funding_with_the_same_cma(workspace):
+    service, _ = workspace
+    _, cma, _ = saved_inputs(service)
+    floors = []
+    for years in (5, 10):
+        target = mandate(horizon_years=years)
+        result = service.preview_mandate(MandateStudyRequest(definition=target, cma_id=cma["id"]))
+        assert result["cma"]["id"] == cma["id"]
+        summary, inflows, outflows = funding_inputs(target.model_dump(mode="json"))
+        assert len(inflows) == len(outflows) == years * 12
+        floors.append(summary["required_effective_return"])
+    assert floors[0] > floors[1]
 
 
 def test_no_feasible_candidate_is_explicit_diagnosis(workspace):

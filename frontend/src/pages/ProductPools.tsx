@@ -255,7 +255,7 @@ function PoolWorkspace({ pool, evaluationPlans, busy, setBusy, onPool, onMessage
   return <div className="min-w-0 space-y-5">
     <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
       <div><h2 className="font-semibold text-emerald-950">本池产品与研究进度</h2><p className="mt-1 text-sm text-emerald-900">可用 {approvedCount} 只 · 待复核 {pendingCount} 只 · {pool.current_version_id ? '有已发布版本可用于研究' : '复核完成后发布，才能继续配置研究'}</p></div>
-      {pool.current_version_id && <Link to={`/pre-investment/product-pool?version=${encodeURIComponent(pool.current_version_id)}`} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white">使用已发布版本开展配置研究 →</Link>}
+      {pool.current_version_id && <Link to={`/pre-investment/product-pool/new?version=${encodeURIComponent(pool.current_version_id)}`} className="rounded-lg bg-emerald-800 px-4 py-2 text-sm font-semibold text-white">使用已发布版本开展配置研究 →</Link>}
     </section>
     <CandidateReviewTable
       pool={pool}

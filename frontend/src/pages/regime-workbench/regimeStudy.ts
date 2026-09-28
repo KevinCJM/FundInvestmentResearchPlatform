@@ -30,6 +30,11 @@ export function scenarioCenterFromQuery(params: URLSearchParams): 'historical' |
 
 export const studyMode = (purpose: RegimeStudy['purpose']) => purpose === 'historical_reference' ? 'retrospective' : 'realtime'
 
+/** 归档判定：旧版本没有 study 声明时按识别方式归位。列表与工作台侧栏共用，避免两处过滤漂移。 */
+export function studyBelongsToPurpose(definition: Pick<RegimeGraphDefinition, 'study' | 'default_mode'>, purpose: RegimeStudy['purpose']) {
+  return definition.study ? definition.study.purpose === purpose : !definition.default_mode || definition.default_mode === studyMode(purpose)
+}
+
 // Only new drafts adopt the task contract automatically. Stored revisions stay untouched.
 export function studyDraft(definition: RegimeGraphDefinition, purpose?: RegimeStudy['purpose']): RegimeGraphDefinition {
   return purpose && !definition.id ? { ...definition, default_mode: studyMode(purpose), study: { purpose, family: definition.study?.family || 'custom' } } : definition

@@ -1,3 +1,4 @@
+import type { Versioned } from './versioning'
 export type EvidenceStatus = 'passed' | 'failed' | 'unavailable' | 'not_applicable'
 export interface AllocationSourceRef { kind: 'saa_policy' | 'taa_decision'; id: string; content_hash: string; implementation_mapping_id?: string | null }
 export interface ImplementationProduct {
@@ -45,7 +46,7 @@ export interface ImplementationReport {
   product_paths?: {status: EvidenceStatus; assumptions:string[]; results:Array<{model_id:string;name:string;enforced:boolean;status:EvidenceStatus;original_plan_missed_payment:boolean;metrics:{success_probability:number;probability_lower:number;payment_failure_probability:number;terminal_median:number;expected_path_cost:number;first_payment_gap_month:number}}>}
   scenarios?: {results:Array<{impact:{id:string;name:string;summary:{terminal_return:number;max_drawdown:number;pnl_amount:number}}}>}
 }
-export interface ResearchPackage { id: string; scheme_id: string; name: string; revision: number; stage: string; candidate: ImplementationCandidate; candidate_hash: string; report_id: string | null; validation_report_hash?: string; copied_from_id?: string | null }
+export interface ResearchPackage extends Versioned { id: string; scheme_id: string; name: string; revision: number; stage: string; candidate: ImplementationCandidate; candidate_hash: string; report_id: string | null; validation_report_hash?: string; copied_from_id?: string | null }
 export interface PackageView { package: ResearchPackage; report: ImplementationReport | null; history: ResearchPackage[]; current_eligibility: {status: string; reasons: string[]} }
 const base = '/api/pre-investment'
 async function request<T>(path: string, body?: unknown, signal?: AbortSignal, method = body === undefined ? 'GET' : 'POST'): Promise<T> {

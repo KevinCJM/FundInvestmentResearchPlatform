@@ -169,6 +169,54 @@ def test_active_metrics_match_independent_sample_variance_reference():
     assert metrics["score"] == pytest.approx(np.mean(active) * 252 - expected_te ** 2)
 
 
+def test_irregular_duration_risk_uses_each_interval_and_only_training_time(monkeypatch):
+    request = inputs()
+    request['returns'][:, 0] = np.tile([.03, -.02, .01, -.005], 20)
+    backing = np.tile([1., 9., 3., 9., 7., 9., 2., 9.], 20) / 365.25
+    years = backing[::2]
+    years.setflags(write=False)
+    original = numeric.path_metrics_kernel
+    seen = []
+    def check(path, assets, factor, penalty, objective, interval):
+        seen.append(np.shares_memory(interval, backing))
+        return original(path, assets, factor, penalty, objective, interval)
+    monkeypatch.setattr(numeric, 'path_metrics_kernel', check)
+    signatures = {k.__name__: tuple(k.signatures) for k in numeric.KERNELS}
+    result = numeric.evaluate_candidates(**request, period_years=years, selected_candidate_id='scale-4')
+    path = result['selected_path']
+    active = path[:, 11] - path[:, 9]
+    dt = years[40:]
+    drift = active.sum() / dt.sum()
+    variance = np.sum((active - drift * dt) ** 2 / dt) / (len(dt) - 1)
+    taa = path[:, 11]
+    vol = np.sqrt(np.sum((taa - taa.sum() / dt.sum() * dt) ** 2 / dt) / (len(dt) - 1))
+    metric = result['candidates'][4]['validation']
+    assert metric['annual_volatility'] == pytest.approx(vol)
+    assert metric['tracking_error'] == pytest.approx(np.sqrt(variance))
+    assert metric['score'] == pytest.approx(drift - variance)
+    changed = years.copy(); changed[40:] *= 3
+    repeated = numeric.evaluate_candidates(**request, period_years=changed)
+    assert [c['train'] for c in result['candidates']] == [c['train'] for c in repeated['candidates']]
+    assert result['auto_selected_id'] == repeated['auto_selected_id']
+    assert all(seen[:14])  # First evaluation shares the caller's readonly strided time axis.
+    assert all(tuple(k.signatures) == signatures[k.__name__] for k in numeric.KERNELS)
+
+
+@pytest.mark.parametrize('durations', [np.zeros(80), np.full(80, np.nan), np.full(80, np.inf), np.ones(79), np.full(80, -1.)])
+def test_invalid_interval_lengths_fail_closed(durations):
+    with pytest.raises(ValueError, match='TAA_INTERVAL_DURATION'):
+        numeric.evaluate_candidates(**inputs(), period_years=durations)
+
+
+def test_cash_compounds_across_weekends_and_holidays():
+    years = numeric.interval_years_kernel(np.array([0, 1, 4, 11], dtype=np.int64))
+    returns = numeric.cash_interval_returns_kernel(years, .05)
+    np.testing.assert_allclose(returns, 1.05 ** (np.array([1, 3, 7]) / 365.25) - 1)
+    assert np.prod(1 + returns) == pytest.approx(1.05 ** (11 / 365.25))
+    with pytest.raises(ValueError):
+        numeric.interval_years_kernel(np.array([1, 1], dtype=np.int64))
+
+
 def test_negative_stride_input_and_invalid_flags():
     request = inputs()
     request["returns"] = request["returns"][::-1]

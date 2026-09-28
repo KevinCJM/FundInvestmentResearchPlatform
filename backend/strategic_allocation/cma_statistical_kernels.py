@@ -20,9 +20,40 @@ from backend.historical_regimes.numba_kernels import transition_matrix_kernel
 V = types.Array(float64, 1, 'A', readonly=True)
 M = types.Array(float64, 2, 'A', readonly=True)
 I = types.Array(int64, 1, 'A', readonly=True)
-VERSION = "ltcma-statistics/1.1.0"
+VERSION = "ltcma-statistics/1.3.1"
 _WARMED_PID = None
 _WARMED_FINGERPRINT = None
+
+
+@njit((I, I, I, I), cache=True, nogil=True)
+def align_regime_intervals(observed, codes, available, targets):
+    """Project closed same-state intervals onto return-end dates.
+
+    Exact observations retain their labels. Between two observations, membership
+    is known only when both labels match. Never bridge unknowns, extend the tail,
+    or guess a boundary between different states. Both endpoints must be known.
+    """
+    size = observed.size
+    if codes.size != size or available.size != size:
+        raise ValueError("LTCMA_REGIME_AXIS")
+    for i in range(size):
+        if (i and observed[i] <= observed[i - 1]) or codes[i] < -1 or available[i] < observed[i]:
+            raise ValueError("LTCMA_REGIME_AXIS")
+    result = np.full(targets.size, -1, np.int64)
+    knowledge = np.full(targets.size, -1, np.int64)
+    right = 0
+    for i in range(targets.size):
+        day = targets[i]
+        if i and day <= targets[i - 1]:
+            raise ValueError("LTCMA_REGIME_AXIS")
+        while right < size and observed[right] < day:
+            right += 1
+        if right < size and observed[right] == day:
+            result[i], knowledge[i] = codes[right], available[right]
+        elif right > 0 and right < size and codes[right - 1] >= 0 and codes[right - 1] == codes[right]:
+            result[i] = codes[right]
+            knowledge[i] = max(available[right - 1], available[right])
+    return result, knowledge
 
 
 @njit((float64, float64, float64), cache=True, nogil=True)
@@ -297,21 +328,35 @@ def annualize_moments(mean, covariance, periods):
     return mean * periods, covariance * periods
 
 
-@njit((I, int64), cache=True, nogil=True)
-def regime_transition_diagnostics_kernel(states, state_count):
+@njit((I, int64, I), cache=True, nogil=True)
+def regime_transition_diagnostics_kernel(states, state_count, contiguous):
     """Reuse transition counts; unknown labels break adjacency and missing rows stay unknown.
 
     The existing shared counter requires mutable C-contiguous int64. Its one
-    code-vector ABI copy is explicit; no return panel or per-state panel is copied.
+    code-vector ABI copy inserts unknown separators at date gaps; no return
+    panel or per-state panel is copied, and neither endpoint label is discarded.
     Status: 0 unique irreducible stationary distribution; 1 missing row;
     2 reducibility not certified; 3 numerical stationary solve unavailable.
     """
-    if state_count < 1 or state_count > 60:
+    if state_count < 1 or state_count > 60 or contiguous.size != states.size:
         raise ValueError("LTCMA_STATE_AXIS")
+    if np.any((contiguous != 0) & (contiguous != 1)):
+        raise ValueError("LTCMA_PERIOD_CONTIGUITY")
     for value in states:
         if value < -1 or value >= state_count:
             raise ValueError("LTCMA_STATE_CODE")
-    counts, probabilities = transition_matrix_kernel(states.copy(), state_count)
+    gaps = 0
+    for t in range(1, states.size):
+        gaps += not contiguous[t]
+    separated = np.empty(states.size + gaps, dtype=np.int64)
+    offset = 0
+    for t in range(states.size):
+        if t > 0 and not contiguous[t]:
+            separated[offset] = -1
+            offset += 1
+        separated[offset] = states[t]
+        offset += 1
+    counts, probabilities = transition_matrix_kernel(separated, state_count)
     duration = np.full(state_count, np.nan)
     stationary = np.full(state_count, np.nan)
     status = 0
@@ -357,18 +402,18 @@ def regime_transition_diagnostics_kernel(states, state_count):
     return counts, probabilities, duration, candidate, 0
 
 
-@njit((int64, int64), cache=True, nogil=True)
-def sample_horizon_diagnostics_kernel(observations, horizon_years):
-    if observations < 0 or horizon_years < 1 or horizon_years > 30:
-        raise ValueError("LTCMA_SAMPLE_HORIZON")
+@njit((int64,), cache=True, nogil=True)
+def sample_window_diagnostics_kernel(observations):
+    if observations < 0:
+        raise ValueError("LTCMA_SAMPLE_WINDOW")
     years = observations / 252.0
-    return years, years < 3.0, years / horizon_years
+    return years, years < 3.0
 
 
-KERNELS = (beta_fraction, regularized_beta, student_t_quantile, statistical_covariance_diagnostics,
+KERNELS = (align_regime_intervals, beta_fraction, regularized_beta, student_t_quantile, statistical_covariance_diagnostics,
            manual_covariance_with_cash, historical_estimate, niw_update, recenter_niw_prior,
            conditional_state_moments, occupancy_probabilities, annualize_moments,
-           regime_transition_diagnostics_kernel, sample_horizon_diagnostics_kernel)
+           regime_transition_diagnostics_kernel, sample_window_diagnostics_kernel)
 for kernel in KERNELS:
     kernel.disable_compile()
 
@@ -393,6 +438,9 @@ def require_ready():
 def warm():
     global _WARMED_PID, _WARMED_FINGERPRINT
     _WARMED_PID = None
+    axis = np.arange(8, dtype=np.int64)[::2]
+    axis.flags.writeable = False
+    align_regime_intervals(axis, axis, axis, axis)
     raw = np.column_stack((np.sin(np.arange(40)) * .01, np.cos(np.arange(40)) * .002))
     returns = raw[::-1]
     returns.flags.writeable = False
@@ -404,8 +452,11 @@ def warm():
     statistical_covariance_diagnostics(np.diag(np.array([0., .01])))
     manual_covariance_with_cash(np.array([0., .1]), np.eye(2))
     annualize_moments(mean / 252., cov / 252., 252)
-    regime_transition_diagnostics_kernel(np.arange(40, dtype=np.int64) % 2, 2)
-    sample_horizon_diagnostics_kernel(40, 10)
+    contiguous = np.ones(80, dtype=np.int64)[::2]
+    contiguous[10] = False
+    contiguous.flags.writeable = False
+    regime_transition_diagnostics_kernel(np.arange(40, dtype=np.int64) % 2, 2, contiguous)
+    sample_window_diagnostics_kernel(40)
     _WARMED_PID = os.getpid()
     _WARMED_FINGERPRINT = execution_audit()["fingerprint"]
     return execution_audit()

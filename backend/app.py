@@ -333,7 +333,11 @@ from services.custom_indicator_routes import indicator_service as agent_indicato
 from services.portfolio_routes import portfolio_service as agent_portfolio_service
 
 app.state.agent_indicator_service = agent_indicator_service
-app.state.agent_page_services = runtime_callbacks(instruments=instrument_service, portfolio=agent_portfolio_service)
+from agent.regimes import runtime_callbacks as regime_agent_callbacks
+from services.research_series_routes import research_series_service
+from services.historical_regime_routes import regime_graph_v2_service
+app.state.agent_page_services = {**runtime_callbacks(instruments=instrument_service, portfolio=agent_portfolio_service),
+                                 **regime_agent_callbacks(regime_graph_v2_service, research_series_service)}
 
 app.include_router(data_router)
 app.include_router(pit_router)

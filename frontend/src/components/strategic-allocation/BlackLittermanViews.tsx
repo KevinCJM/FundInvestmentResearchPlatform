@@ -5,7 +5,7 @@ import type { BlackLittermanRequest } from '../../services/cmaModelTypes'
 import { control, useLtcmaText } from '../ltcma/shared'
 
 type View = BlackLittermanRequest['views'][number]
-export default function BlackLittermanViews({ value, onChange }: { value: BlackLittermanRequest; onChange: (value: BlackLittermanRequest) => void }) {
+export default function BlackLittermanViews({ value, onChange, assetLabels = {} }: { assetLabels?: Record<string, string>; value: BlackLittermanRequest; onChange: (value: BlackLittermanRequest) => void }) {
   const { t } = useLtcmaText()
   const replace = (index: number, next: View) => onChange({ ...value, views: value.views.map((v, i) => i === index ? next : v) })
   const kind = (index: number, next: View['kind']) => {
@@ -26,10 +26,10 @@ export default function BlackLittermanViews({ value, onChange }: { value: BlackL
             <option value="absolute">{t('viewAbsolute')}</option><option value="relative">{t('viewRelative')}</option><option value="basket">{t('viewBasket')}</option>
           </select></Field>
           {view.kind !== 'basket' && <Field label={label('viewAsset')}><select className={control} value={view.asset_id} onChange={e => replace(index, { ...view, asset_id: e.target.value })}>
-            <option value="">{t('choose')}</option>{value.asset_ids.map(a => <option key={a}>{a}</option>)}
+            <option value="">{t('choose')}</option>{value.asset_ids.map(a => <option key={a} value={a}>{assetLabels[a] ?? a}</option>)}
           </select></Field>}
           {view.kind === 'relative' && <Field label={label('viewComparison')}><select className={control} value={view.relative_to ?? ''} onChange={e => replace(index, { ...view, relative_to: e.target.value || null })}>
-            <option value="">{t('choose')}</option>{value.asset_ids.map(a => <option key={a} disabled={a === view.asset_id}>{a}</option>)}
+            <option value="">{t('choose')}</option>{value.asset_ids.map(a => <option key={a} value={a} disabled={a === view.asset_id}>{assetLabels[a] ?? a}</option>)}
           </select></Field>}
           {view.kind === 'basket' && <Field label={label('viewBasis')}><select className={control} value={view.basis} onChange={e => replace(index, { ...view, basis: e.target.value as 'absolute' | 'relative' })}>
             <option value="absolute">{t('viewAbsolute')}</option><option value="relative">{t('viewRelative')}</option>
@@ -42,7 +42,7 @@ export default function BlackLittermanViews({ value, onChange }: { value: BlackL
         </div>
         {view.kind === 'basket' && <div className="space-y-3">
           <p className="text-xs leading-5 text-slate-600">{t('basketHint')}</p>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{view.legs.map((leg, position) => <Field key={leg.asset_id} label={t('basketCoefficient', { index: index + 1, asset: leg.asset_id })}>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{view.legs.map((leg, position) => <Field key={leg.asset_id} label={t('basketCoefficient', { index: index + 1, asset: assetLabels[leg.asset_id] ?? leg.asset_id })}>
             <NumberInput className={`${control} tabular-nums`} min={-4} max={4} value={leg.coefficient} onValueChange={coefficient => replace(index, { ...view, legs: view.legs.map((v, i) => i === position ? { ...v, coefficient } : v) })} />
           </Field>)}</div>
         </div>}

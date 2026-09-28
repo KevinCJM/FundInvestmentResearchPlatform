@@ -39,8 +39,10 @@ def strategic_source(universe: dict, mapping: dict | None, as_of: str) -> dict:
                        'max_weight': 1.0, 'max_abs_tilt': 0.1,
                        'products': copy.deepcopy(proxy['products']) if proxy else [],
                        'proxy_asset_id': proxy['id'] if proxy else None})
-    gaps = [a['id'] for a in assets if not a['products']]
-    reasons = [f"战略资产 {identifier} 缺少真实代理产品。" for identifier in gaps]
+    missing = [a for a in assets if not a['products']]
+    gaps = [a['id'] for a in missing]
+    # 缺口提示按大类名称展示，内部 ID 不进用户可见文本（docs/pre-investment/saa.md）。
+    reasons = [f"战略资产 {a['name']} 缺少真实代理产品。" for a in missing]
     if mapping and not mapping['definition']['as_of'] <= as_of < mapping['definition']['valid_until']:
         raise ValidationError('SAA_MAPPING_EXPIRED', '映射尚未生效或已到复核日，请确认适用的新映射。')
     source.update(name=definition['name'], as_of=as_of, assets=assets, group_limits=[],
@@ -77,5 +79,5 @@ def verify_strategic_snapshot(baseline: dict, *, require_complete: bool = True) 
     if expected['lineage'] != baseline['lineage'] or expected['universe_snapshot_id'] != baseline.get('universe_snapshot_id'):
         raise ValidationError('SAA_MAPPING_LINEAGE', '实施映射的产品域或源血缘不一致。')
     if require_complete and expected['implementation_status'] != 'complete':
-        raise ValidationError('SAA_IMPLEMENTATION_INCOMPLETE', '战略范围尚有产品映射缺口；可继续前瞻SAA研究，补齐映射后才能进入TAA或产品应用。')
+        raise ValidationError('SAA_IMPLEMENTATION_INCOMPLETE', '尚未完成实际交易产品配置；可继续 SAA/TAA 大类研究，产品应用前须补齐映射。')
     return expected

@@ -90,7 +90,7 @@ describe('research landing homepage', () => {
     screen.getByRole('tab', { name: '研究示例' }).focus()
     await user.keyboard('{ArrowRight}')
     expect(screen.getByRole('tab', { name: '最近打开' })).toHaveFocus()
-    expect(within(screen.getByRole('tabpanel')).getByRole('link', { name: '指标中心' })).toHaveAttribute('href', '/settings/indicators-models')
+    expect(within(screen.getByRole('tabpanel')).getByRole('link', { name: '行情指标中心' })).toHaveAttribute('href', '/settings/indicators-models')
     await user.click(screen.getByRole('button', { name: systemText('landing.clearHistory') }))
     expect(within(screen.getByRole('tabpanel')).queryByRole('link')).not.toBeInTheDocument()
   })

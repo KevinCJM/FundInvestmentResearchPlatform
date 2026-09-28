@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../components/ui'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
 import type { EChartsOption } from 'echarts'
@@ -381,6 +382,8 @@ export default function ResearchDataLab({ embedded = false, boundSeriesIds = [],
   const [loading, setLoading] = useState(true)
   const [profiling, setProfiling] = useState(false)
   const [error, setError] = useState('')
+  const [catalogFailed, setCatalogFailed] = useState(false)
+  const [catalogRetry, setCatalogRetry] = useState(0)
   const catalogRequest = useRef(0)
   const profileRequest = useRef(0)
   const comparisonRequest = useRef(0)
@@ -390,7 +393,7 @@ export default function ResearchDataLab({ embedded = false, boundSeriesIds = [],
     const requestId = ++catalogRequest.current
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
-      setLoading(true); setError('')
+      setLoading(true); setError(''); setCatalogFailed(false)
       void listResearchSeries({ query, kind, status }, controller.signal)
         .then((response) => {
           if (requestId !== catalogRequest.current) return
@@ -399,12 +402,12 @@ export default function ResearchDataLab({ embedded = false, boundSeriesIds = [],
         })
         .catch((reason) => {
           if (controller.signal.aborted || requestId !== catalogRequest.current) return
-          setError(reason instanceof Error ? reason.message : '研究数据目录加载失败。')
+          setCatalogFailed(true); setError(reason instanceof Error ? reason.message : '研究数据目录加载失败。')
         })
         .finally(() => { if (requestId === catalogRequest.current) setLoading(false) })
     }, 180)
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [kind, query, status])
+  }, [kind, query, status, catalogRetry])
 
   const selected = catalog?.items.find((item) => item.id === selectedId) ?? null
   useEffect(() => {
@@ -496,6 +499,8 @@ export default function ResearchDataLab({ embedded = false, boundSeriesIds = [],
       if (requestId === comparisonRequest.current) setError(reason instanceof Error ? reason.message : '多序列比较失败。')
     } finally { if (requestId === comparisonRequest.current) setComparing(false) }
   }
+
+  if (!loading && catalogFailed && !catalog) return <div><LabHeader embedded={embedded} onClose={onClose} /><ErrorPanel onRetry={() => setCatalogRetry(value => value + 1)} /></div>
 
   return (
     <div className={`${embedded ? 'min-h-0' : 'min-h-[720px] rounded-xl border border-slate-200'} overflow-hidden bg-slate-50 shadow-sm`} data-testid="research-data-lab">

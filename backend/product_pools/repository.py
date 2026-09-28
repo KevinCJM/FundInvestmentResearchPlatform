@@ -47,6 +47,7 @@ class AtomicProductPoolStore:
             "pools": [],
             "versions": [],
             "universe_snapshots": [],
+            "universe_retirements": [],
         }
 
     @contextmanager
@@ -83,6 +84,12 @@ class AtomicProductPoolStore:
                     "PRODUCT_POOL_STORAGE_CORRUPT",
                     f"产品池存储字段 {key} 格式无效。",
                 )
+        if "universe_retirements" in payload and not isinstance(payload["universe_retirements"], list):
+            raise ProductPoolValidationError(
+                "PRODUCT_POOL_STORAGE_CORRUPT",
+                "产品池存储字段 universe_retirements 格式无效。",
+            )
+        payload.setdefault("universe_retirements", [])
         payload["schema_version"] = SCHEMA_VERSION
         return payload
 
@@ -309,6 +316,51 @@ class ProductPoolRepository:
             "INVESTABLE_UNIVERSE_NOT_FOUND",
             "未找到指定可投资域快照。",
         )
+
+    def list_universe_snapshots(self) -> list[dict[str, Any]]:
+        with self.store.locked():
+            payload = self.store.read_unlocked()
+        return [copy.deepcopy(item) for item in payload["universe_snapshots"]]
+
+    def list_universe_retirements(self) -> list[dict[str, Any]]:
+        with self.store.locked():
+            payload = self.store.read_unlocked()
+        return [copy.deepcopy(item) for item in payload["universe_retirements"]]
+
+    def retire_universe_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        """Idempotent removal from the active library; the snapshot stays frozen."""
+
+        with self.store.locked():
+            payload = self.store.read_unlocked()
+            snapshot = next(
+                (item for item in payload["universe_snapshots"] if item.get("id") == snapshot_id),
+                None,
+            )
+            if snapshot is None:
+                raise ProductPoolNotFoundError(
+                    "INVESTABLE_UNIVERSE_NOT_FOUND",
+                    "未找到指定可投资域快照。",
+                )
+            existing = next(
+                (
+                    item
+                    for item in payload["universe_retirements"]
+                    if item.get("snapshot_id") == snapshot_id
+                ),
+                None,
+            )
+            if existing is not None:
+                return copy.deepcopy(existing)
+            retirement = {
+                "artifact_type": "universe_retirement",
+                "snapshot_id": snapshot_id,
+                "snapshot_hash": snapshot.get("content_hash"),
+                "name": snapshot.get("name"),
+                "removed_at": utc_now(),
+            }
+            payload["universe_retirements"].append(retirement)
+            self.store.write_unlocked(payload)
+            return copy.deepcopy(retirement)
 
 
 class InvestableUniverseRepository:

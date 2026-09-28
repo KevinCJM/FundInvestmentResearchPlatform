@@ -12,8 +12,8 @@ async function layout(page: Page, info: TestInfo, name: string) {
   await page.screenshot({ path: info.outputPath(`${name}.png`), fullPage: true })
 }
 async function add(page: Page, id: string) {
-  await page.getByRole('combobox', { name: '添加已确认 CMA', exact: true }).selectOption(id)
-  await expect(page.getByRole('combobox', { name: '添加已确认 CMA', exact: true })).toBeEnabled()
+  await page.getByRole('combobox', { name: '添加其他 LTCMA', exact: true }).selectOption(id)
+  await expect(page.getByRole('combobox', { name: '添加其他 LTCMA', exact: true })).toBeEnabled()
 }
 test.beforeEach(async ({ page, request }) => {
   fixture = await (await request.get(`${api}/fixture/ltcma`)).json()
@@ -152,3 +152,81 @@ test('inconsistent model floors produce a proof and no adoption action', async (
   await expect(page.getByRole('button', { name: '4. 确认与交接', exact: true })).toBeDisabled()
   await layout(page, info, 'common-infeasible')
 })
+
+async function frontierState(page: Page) {
+  return page.getByTestId('saa-frontier-chart').locator('.echarts-for-react').evaluate(async element => {
+    const url = performance.getEntriesByType('resource').map(r => r.name).find(url => url.includes('/echarts-for-react.js?v='))!
+    const { default: Chart } = await import(url)
+    const chart = new Chart({ option: {} }).echarts.getInstanceByDom(element)
+    const option = chart.getOption(), visible: string[] = []
+    chart.getModel().eachSeries((series: any) => visible.push(series.id))
+    const coordinate = chart.getModel().getComponent('grid').coordinateSystem, rect = coordinate.getRect()
+    return { visible, series: option.series, x: option.xAxis, y: option.yAxis, zoom: option.dataZoom,
+      extent: coordinate.getCartesians()[0].getAxis('x').scale.getExtent(),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }
+  })
+}
+
+for (const mode of ['compatible_all_models', 'parameter_average']) {
+  test(`frontier overlay follows ${mode} and preserves chart interactions`, async ({ page }, info) => {
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
+    await page.goto(`/pre-investment/saa/policy?alloc=${encodeURIComponent(fixture.allocation)}&mandate=${fixture.common_mandate_id}`)
+    await page.getByRole('combobox', { name: 'CMA 使用方式', exact: true }).selectOption(mode)
+    for (const id of fixture.common_ids) await add(page, id)
+    if (mode === 'parameter_average') {
+      await page.getByRole('button', { name: '确认使用等权', exact: true }).click()
+      await page.getByLabel('共同约束模型 1 · 研究权重（%）', { exact: true }).fill('70')
+      await page.getByLabel('共同约束模型 2 · 研究权重（%）', { exact: true }).fill('30')
+    }
+    await page.getByRole('button', { name: mode === 'parameter_average' ? '核对权重并进入政策比较' : '核对模型并进入共同配置', exact: true }).click()
+    const panel = page.getByRole('region', { name: '目标与有效前沿', exact: true })
+    await expect(panel.getByTestId('saa-frontier-chart')).toBeVisible()
+    const initial = await frontierState(page)
+    expect(initial.visible.filter(id => id.startsWith('configured:'))).toHaveLength(mode === 'parameter_average' ? 1 : 2)
+    expect(initial.visible.filter(id => id.startsWith('reference:'))).toHaveLength(0)
+    await expect(panel.getByRole('combobox')).toHaveCount(0)
+    if (mode === 'parameter_average') await expect(panel.getByRole('checkbox', { name: '融合参数前沿' })).toBeChecked()
+    const calculation = page.waitForResponse(r => r.url().endsWith('/policy/preview') && r.request().method() === 'POST')
+    await page.getByRole('button', { name: '比较符合目标的政策候选', exact: true }).click()
+    const response = await calculation; expect(response.ok(), await response.text()).toBe(true)
+    const result = await response.json()
+    if (mode === 'compatible_all_models') {
+      await expect(panel.getByRole('table', { name: '共同组合在各 LTCMA 下的结果' })).toBeVisible()
+      const state = await frontierState(page)
+      const dots = state.series.filter((s: any) => s.id?.startsWith('candidate:'))
+      expect(dots).toHaveLength(2)
+      result.candidates[0].cross_model_results.forEach((row: any) => {
+        const dot = dots.find((s: any) => s.id === `candidate:compatible:${row.cma_id}`)
+        expect(dot.data[0].value[0]).toBeCloseTo(row.metrics.volatility * 100)
+        expect(dot.data[0].value[1]).toBeCloseTo(row.metrics.expected_return * 100)
+      })
+    } else await expect(panel.getByRole('checkbox', { name: /^候选 1/ })).toBeVisible()
+    const count = { value: 0 }; page.on('request', r => { if (r.url().includes('/policy/')) count.value++ })
+    const before = await frontierState(page)
+    const first = panel.getByRole('checkbox', { name: mode === 'parameter_average' ? '融合参数前沿' : '1. 共同约束模型 1', exact: true })
+    await first.focus(); await page.keyboard.press('Space'); await expect(first).not.toBeChecked()
+    await panel.getByRole('checkbox', { name: '显示无额外约束参考线' }).check()
+    const after = await frontierState(page)
+    expect(after.x).toEqual(before.x); expect(after.y).toEqual(before.y)
+    expect(after.visible.filter(id => id.startsWith('reference:'))).toHaveLength(mode === 'parameter_average' ? 1 : 2)
+    await panel.getByRole('button', { name: '框选放大' }).click(); await page.keyboard.press('Escape')
+    await expect(panel.getByRole('button', { name: '框选放大' })).toHaveAttribute('aria-pressed', 'false')
+    await panel.getByRole('button', { name: '框选放大' }).click()
+    const chart = panel.getByTestId('saa-frontier-chart'); await chart.scrollIntoViewIfNeeded()
+    const box = (await chart.boundingBox())!, { rect } = await frontierState(page)
+    await page.mouse.move(box.x + rect.x + rect.width * .2, box.y + rect.y + rect.height * .2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + rect.x + rect.width * .8, box.y + rect.y + rect.height * .8, { steps: 10 })
+    await page.mouse.up()
+    await expect.poll(async () => (await frontierState(page)).extent[1] - (await frontierState(page)).extent[0]).toBeLessThan(before.extent[1] - before.extent[0])
+    await panel.getByRole('button', { name: '恢复全图' }).click(); await expect(first).not.toBeChecked()
+    await panel.getByRole('button', { name: '全部隐藏' }).click()
+    await expect(panel.getByText('图中内容已全部隐藏，可勾选图例或点击“全部显示”恢复。')).toBeVisible()
+    await panel.getByRole('button', { name: '全部显示' }).click()
+    expect((await frontierState(page)).series.map((s: any) => s.data)).toEqual(after.series.map((s: any) => s.data))
+    expect(count.value).toBe(0)
+    await layout(page, info, `frontier-${mode}`)
+    await panel.screenshot({ path: info.outputPath(`frontier-panel-${mode}.png`) })
+    expect(errors).toEqual([])
+  })
+}

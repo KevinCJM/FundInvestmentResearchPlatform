@@ -5,6 +5,8 @@ import { RegimeGraphApiError, cancelRegimePreviewRun, cloneRegimeGraphDefinition
 import { alignRegimeBinaryInputs } from './regimeGraphEditing'
 import { regimePortLabel } from './regimeDisplay'
 import RegimeResultDock from './RegimeResultDock'
+import { useRegimeAsOf } from './useRegimeAsOf'
+import { useResearchContextIdentity } from '../../app/ResearchContext'
 
 export default function RegimeNodePreviewPanel({ fixedMode, definition, schemas, initialNodeId, initialMode, initialAsOf, onChange }: {
   fixedMode?: RegimeMode; definition: RegimeGraphDefinition; schemas: RegimeNodeSchema[]; initialNodeId?: string | null; initialMode: RegimeMode; initialAsOf: string; onChange?: (next: RegimeGraphDefinition) => void
@@ -16,7 +18,8 @@ export default function RegimeNodePreviewPanel({ fixedMode, definition, schemas,
   const outputPort = port || schema?.outputs.find(item => item.id === 'value')?.id || schema?.outputs[0]?.id || ''
   const [legacyMode, setMode] = useState(initialMode)
   const mode = fixedMode || legacyMode
-  const [asOf, setAsOf] = useState(initialAsOf)
+  const [asOf, setAsOf] = useRegimeAsOf(initialAsOf)
+  const researchContext = useResearchContextIdentity()
   const [comparisons, setComparisons] = useState<RegimeGraphConnection[]>([])
   const comparisonChoices = useMemo(() => comparisonOptions(definition, schemas, { node_id: nodeId, port: outputPort }, mode), [definition, schemas, nodeId, outputPort, mode])
   const comparisonTargets = comparisons.filter(ref => ref.node_id !== nodeId || ref.port !== outputPort)
@@ -41,16 +44,21 @@ export default function RegimeNodePreviewPanel({ fixedMode, definition, schemas,
   }
   const controllerRef = useRef<AbortController>()
   const jobRef = useRef('')
-  const currentSignature = JSON.stringify([definitionForRequest(definition), nodeId, outputPort, mode, asOf, comparisonTargets])
+  const currentSignature = JSON.stringify([definitionForRequest(definition), nodeId, outputPort, mode, asOf, comparisonTargets, researchContext])
   const stale = Boolean(signature && currentSignature !== signature)
   const alignmentSchema = schemas.find(item => item.id === 'align.strict_intersection' && item.available !== false)
   const alignmentNodes = definition.graph.nodes.filter(item =>
     ['math.add', 'math.subtract', 'math.multiply', 'math.divide'].includes(item.type) && item.inputs.left && item.inputs.right &&
     diagnostics.some(issue => issue.code === 'EXPLICIT_ALIGNMENT_REQUIRED' && (issue.node_id === item.id || issue.path === `graph.nodes.${item.id}.inputs`)))
-  useEffect(() => () => {
-    controllerRef.current?.abort()
-    if (jobRef.current) void cancelRegimePreviewRun(jobRef.current).catch(() => undefined)
-  }, [])
+  useEffect(() => {
+    setBusy(false)
+    setRun(current => current && ['queued', 'preparing', 'running'].includes(current.status) ? { ...current, status: 'cancelled' } : current)
+    return () => {
+      controllerRef.current?.abort()
+      if (jobRef.current) void cancelRegimePreviewRun(jobRef.current).catch(() => undefined)
+      jobRef.current = ''
+    }
+  }, [researchContext])
 
   const preview = async (draft = definition) => {
     if (!node || !outputPort || comparisonError) return
@@ -60,7 +68,7 @@ export default function RegimeNodePreviewPanel({ fixedMode, definition, schemas,
     const snapshot = cloneRegimeGraphDefinition(draft)
     const target = { node_id: nodeId, port: outputPort }
     setBusy(true); setError(''); setDiagnostics([]); setPage(null)
-    setSignature(JSON.stringify([definitionForRequest(snapshot), nodeId, outputPort, mode, asOf, comparisonTargets]))
+    setSignature(JSON.stringify([definitionForRequest(snapshot), nodeId, outputPort, mode, asOf, comparisonTargets, researchContext]))
     setRun({ id: '', status: 'preparing', message: '正在检查所选节点及其上游。' })
     try {
       const prepared = await prepareRegimeGraph(snapshot, controller.signal, target, comparisonTargets)
@@ -108,7 +116,7 @@ export default function RegimeNodePreviewPanel({ fixedMode, definition, schemas,
       <label className="text-xs font-semibold text-slate-600">预览节点<select aria-label="待预览节点" value={nodeId} onChange={event => { setNodeId(event.target.value); setPort('') }} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2">{definition.graph.nodes.map(item => <option key={item.id} value={item.id}>{item.label || schemas.find(s => [s.id, s.type, s.type_id].includes(item.type))?.label || item.id}</option>)}</select></label>
       <label className="text-xs font-semibold text-slate-600">输出数据<select aria-label="预览输出端口" value={outputPort} onChange={event => setPort(event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2">{schema?.outputs.map(item => <option key={item.id} value={item.id}>{regimePortLabel(item)}</option>)}</select></label>
       {!fixedMode && <label className="text-xs font-semibold text-slate-600">分析方式<select aria-label="节点预览分析方式" value={mode} onChange={event => setMode(event.target.value as RegimeMode)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2"><option value="realtime">实时分析</option><option value="retrospective">事后研究</option></select></label>}
-      <label className="text-xs font-semibold text-slate-600">截至日<input aria-label="节点预览截至日" type="date" value={asOf} onChange={event => setAsOf(event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2" /></label>
+      <label className="text-xs font-semibold text-slate-600">本次截至日<input aria-label="节点预览截至日" type="date" value={asOf} onChange={event => setAsOf(event.target.value)} className="mt-1 min-h-10 w-full rounded-xl border border-slate-300 bg-white px-2" /><span className="mt-1 block font-normal">默认沿用工作台截至日；清空恢复默认。</span></label>
     </div>
     <RegimeComparisonPicker detailsRef={comparisonPickerRef} options={comparisonChoices} selected={comparisonTargets} onChange={setComparisons} disabled={busy} />
     {comparisonError && <p role="alert" className="text-sm text-amber-800">{comparisonError} 请移除该对比项或调整分析方式。</p>}

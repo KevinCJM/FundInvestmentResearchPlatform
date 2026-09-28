@@ -6,6 +6,8 @@ M x N moments are materialized at this boundary; historical panels stay mapped.
 """
 from __future__ import annotations
 
+from .return_targets import requirements, check_return
+
 import copy
 import json
 import numpy as np
@@ -18,6 +20,7 @@ from .cma_application import frozen_assumptions, frozen_model_lineage, frozen_nu
 from .planning import diagnose_funding, require_goal_checks
 from .reference_inputs import automatic_research_day
 from .mandate_inputs import cash_success_required
+from .scope_facts import cma_scope_difference, research_proxy_facts, SCOPE_MESSAGES
 
 METRICS = ("expected_return", "volatility", "conservative_return", "nominal_utility", "robust_utility")
 # Explicit admission bounds, not a promise about runtime. The ordinary maximum
@@ -90,22 +93,23 @@ def _compatibility(artifacts):
                 or semantics.get("fx_hedging_basis") != definition["fx_hedging_basis"]):
             raise ValidationError("SAA_MULTI_CMA_SEMANTICS", "冻结协方差或收益语义不完整，不能猜测或混合不同风险口径。")
         if any(definition.get(key) != basis.get(key) for key in
-               ("currency", "horizon_years", "return_basis", "moment_semantics", "fee_basis", "fx_hedging_basis", "as_of")):
-            raise ValidationError("SAA_MULTI_CMA_BASIS", "融合来源须具有相同研究日、币种、预测期限、收益矩、费用和汇率口径；本版不自动延展旧预测。")
-        if ([(a["id"], a["role"], a["liquidity"]) for a in definition["assets"]] != axis
-                or any(definition.get(key) != basis.get(key) for key in ("alloc_name", "strategic_universe_id"))):
+               ("currency", "return_basis", "moment_semantics", "fee_basis", "fx_hedging_basis", "as_of")):
+            raise ValidationError("SAA_MULTI_CMA_BASIS", "融合来源须具有相同研究日、币种、收益矩、费用和汇率口径；本版不自动延展旧预测。")
+        if [(a["id"], a["role"], a["liquidity"]) for a in definition["assets"]] != axis:
             raise ValidationError("SAA_MULTI_CMA_AXIS", "融合来源的资产定义、顺序及经济角色须完全一致，不能按同名自动对齐或补零。")
+        issue = cma_scope_difference(first, item)
+        if issue:
+            raise ValidationError("SAA_MULTI_CMA_AXIS", SCOPE_MESSAGES[issue])
         if any(item["source_snapshot"]["lineage"].get(key) != first["source_snapshot"]["lineage"].get(key)
-               for key in ("config_hash", "strategic_universe_hash", "implementation_mapping_hash")):
+               for key in ("config_hash", "implementation_mapping_hash")):
             raise ValidationError("SAA_MULTI_CMA_SOURCE", "融合来源绑定不同的大类定义、战略范围或实施映射，不能转移资产含义。")
         audit = item.get("model_result", {}).get("model_audit", {})
         if audit.get("covariance_role", "asset_return") != "asset_return" or "mean_estimation" in audit.get("included_uncertainty_components", []):
             raise ValidationError("SAA_MULTI_CMA_RISK_ROLE", "含均值估计风险的预测协方差不能与资产收益协方差直接平均。")
-        inputs = (definition.get("model") or {}).get("proxy_inputs")
-        if inputs is not None:
+        identity = research_proxy_facts(definition.get("model"))
+        if identity is not None:
             # Windows may differ; asset proxy definitions may not. Direct manual
             # assumptions refer to the same economic scope without a fitted proxy.
-            identity = inputs.get("assets")
             if proxy is not None and proxy != identity:
                 raise ValidationError("SAA_MULTI_CMA_PROXY", "统计来源采用不同研究代理定义，不能因战略资产同名而融合。")
             proxy = identity
@@ -233,11 +237,10 @@ def cross_model_results(multi, weights, mandate, *, penalty=1., paths=None, seed
         violations = []
         if metrics[1] > mandate["max_volatility"] + 1e-10:
             violations.append("原 CMA 下预期波动超过授权上限。")
-        floor = mandate.get("effective_target_return")
-        if floor is None and mandate.get("objective_kind", "absolute_return") == "absolute_return":
-            floor = mandate["target_return"]
-        if floor is not None and metrics[0] < floor - 1e-10:
-            violations.append("原 CMA 下预期收益低于授权下限。")
+        returns = requirements(mandate, means=means, ids=names)
+        row["return_check"] = check_return(returns, metrics[0], metrics[1])
+        if not row["return_check"]["within_limits"]:
+            violations.append("原 CMA 下未达到同口径收益要求。")
         benchmark = mandate.get("benchmark")
         if benchmark:
             base = np.asarray([benchmark["weights"][name] for name in names], dtype=np.float64)

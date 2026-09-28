@@ -1,9 +1,11 @@
+import RegimeAgentPanel from '../components/agent/RegimeAgentPanel'
 import RegimeQualityPanel from './regime-workbench/RegimeQualityPanel'
 import RegimeReliabilityPanel from './regime-workbench/RegimeReliabilityPanel'
 import { useResearchContextIdentity } from '../app/ResearchContext'
+import { useRegimeAsOf } from './regime-workbench/useRegimeAsOf'
 import RegimeReferenceBinding, { referenceKey } from './regime-workbench/RegimeReferenceBinding'
-import { Badge, Button } from '../components/ui'
-import { adoptStudyQualification, bindStudyReference, invalidateStudyQualification, scenarioCenterFromQuery, studyDraft, studyMode } from './regime-workbench/regimeStudy'
+import { Badge, Button, ErrorPanel } from '../components/ui'
+import { adoptStudyQualification, bindStudyReference, invalidateStudyQualification, scenarioCenterFromQuery, studyBelongsToPurpose, studyDraft, studyMode } from './regime-workbench/regimeStudy'
 import type { RegimeStudy } from '../services/regimeGraph'
 import { eventStudyHref, isManualEventDefinition, isManualEventTemplate, MANUAL_EVENT_NODE, MANUAL_EVENT_TEMPLATE, type RegimeWorkspace } from './regime-workbench/regimeWorkspace'
 import RegimeTemporalPanel from './regime-workbench/RegimeTemporalPanel'
@@ -206,7 +208,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
   const [legacyMode, setLegacyMode] = useState<RegimeMode>(eventWorkspace ? 'retrospective' : 'realtime')
   const mode = fixedMode || legacyMode
   const setMode = (next: RegimeMode) => { if (!fixedMode) setLegacyMode(next) }
-  const [asOf, setAsOf] = useState('')
+  const [asOf, setAsOf] = useRegimeAsOf()
   const [run, setRun] = useState<RegimePreviewRun | null>(null)
   const [preparedPlan, setPreparedPlan] = useState<PreparedRegimeGraph | null>(null)
   const [runDefinitionSignature, setRunDefinitionSignature] = useState('')
@@ -267,7 +269,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
   const realtimeBlockedNodes = mode === 'realtime' && temporal && !temporal.realtime_supported ? definition.graph.nodes.filter(node => temporal.reasons.some(r => r.node_id === node.id)) : []
   const purposeMatches = !purpose || !definition.study || definition.study.purpose === purpose
   const workspaceMatches = isManualEventDefinition(definition) === eventWorkspace && purposeMatches
-  const workspaceDefinitions = savedDefinitions.filter(item => isManualEventDefinition(item) === eventWorkspace && (!purpose || (item.study ? item.study.purpose === purpose : !item.default_mode || item.default_mode === fixedMode)))
+  const workspaceDefinitions = savedDefinitions.filter(item => isManualEventDefinition(item) === eventWorkspace && (!purpose || studyBelongsToPurpose(item, purpose)))
   const referenceReady = referenceStatus.valid && referenceStatus.key === referenceKey(definition.study?.reference)
   const explorationDraft = realtimeTask && !definition.study?.reference && (exploring || Boolean(definition.id))
   const referenceRequired = realtimeTask && !referenceReady && !explorationDraft
@@ -324,18 +326,23 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
     setRun(current => current && ['queued', 'preparing', 'running'].includes(current.status) ? { ...current, status: 'cancelled' } : current)
   }, [apiSignature, mode, asOf, researchContext])
 
+  const [routeReadFailed, setRouteReadFailed] = useState(false)
+  const [routeRetry, setRouteRetry] = useState(0)
+  const [catalogRetry, setCatalogRetry] = useState(0)
+  const [catalogFailed, setCatalogFailed] = useState(false)
   useEffect(() => {
     const controller = new AbortController()
+    setCatalogFailed(false)
     setLoadingCatalog(true); setError('')
     void Promise.all([getRegimeNodeCatalog(controller.signal), getRegimeGraphTemplates(controller.signal)])
       .then(([nextSchemas, nextTemplates]) => {
         setSchemas(nextSchemas.filter(item => eventWorkspace || schemaId(item) !== MANUAL_EVENT_NODE))
         setTemplates(nextTemplates.filter(item => isManualEventTemplate(item) === eventWorkspace))
       })
-      .catch((reason) => { if (!controller.signal.aborted) setError(errorText(reason, '节点目录或模板加载失败。')) })
+      .catch((reason) => { if (!controller.signal.aborted) { setCatalogFailed(true); setError(errorText(reason, '节点目录或模板加载失败。')) } })
       .finally(() => { if (!controller.signal.aborted) setLoadingCatalog(false) })
     return () => controller.abort()
-  }, [])
+  }, [catalogRetry])
 
 
   useEffect(() => {
@@ -347,10 +354,10 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
   }, [])
 
   useEffect(() => {
-    if (!routeLoadKey) { setLoadingDefinition(false); return }
+    if (!routeLoadKey) { setLoadingDefinition(false); setRouteReadFailed(false); return }
     if (loadingCatalog) return
     const controller = new AbortController()
-    setLoadingDefinition(true); setError(''); setNotice('')
+    setLoadingDefinition(true); setRouteReadFailed(false); setError(''); setNotice('')
     const startingSignature = latestApiSignature.current
     const startingContext = researchContext
     const routeStillCurrent = () => !controller.signal.aborted && latestApiSignature.current === startingSignature && latestResearchContext.current === startingContext
@@ -379,7 +386,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
           nodeSequence.current = next.graph.nodes.length + 1
           setNotice(`已从目录载入 ${next.name} · r${next.revision || revision}。`)
         })
-        .catch((reason) => { if (!controller.signal.aborted) setError(errorText(reason, '精确定义版本载入失败。')) })
+        .catch((reason) => { if (!controller.signal.aborted) { setRouteReadFailed(true); setError(errorText(reason, '精确定义版本载入失败。')) } })
         .finally(() => { if (!controller.signal.aborted) setLoadingDefinition(false) })
       return () => controller.abort()
     }
@@ -401,10 +408,10 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
         nodeSequence.current = draft.graph.nodes.length + 1
         setNotice('已从目录实例化模板为独立草稿；保存前不会覆盖模板。')
       })
-      .catch((reason) => { if (!controller.signal.aborted) setError(errorText(reason, '目录模板实例化失败。')) })
+      .catch((reason) => { if (!controller.signal.aborted) { setRouteReadFailed(true); setError(errorText(reason, '目录模板实例化失败。')) } })
       .finally(() => { if (!controller.signal.aborted) setLoadingDefinition(false) })
     return () => controller.abort()
-  }, [routeDefinitionId, routeLoadKey, routeRevisionRaw, routeTemplateId, loadingCatalog])
+  }, [routeDefinitionId, routeLoadKey, routeRevisionRaw, routeTemplateId, loadingCatalog, routeRetry])
 
   useEffect(() => {
     const requestId = ++inferenceRequest.current
@@ -800,6 +807,9 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
   }
 
 
+  if (!loadingCatalog && catalogFailed && !schemas.length) return <ErrorPanel onRetry={() => setCatalogRetry(value => value + 1)} />
+  if (!loadingDefinition && routeReadFailed) return <ErrorPanel onRetry={() => setRouteRetry(value => value + 1)} />
+
   return (
     <div className={focused ? 'fixed inset-0 z-[100] overflow-auto bg-slate-50 p-3 sm:p-5' : `mx-auto min-w-0 py-6 ${editorMode === 'canvas' ? 'max-w-[1920px]' : 'max-w-[1440px]'}`} data-testid="historical-regime-workbench" onKeyDown={event => { if (focused && !drawer && event.key === 'Escape') { event.preventDefault(); setFocused(false) } }}>
       {!focused && <header aria-label="历史情景工作台命令栏" className="mb-6 flex flex-col gap-4 rounded-xl bg-gradient-to-r from-slate-950 via-slate-900 to-accent-950 px-5 py-5 text-white shadow-lg sm:px-7 sm:py-6 lg:flex-row lg:items-center lg:justify-between">
@@ -898,7 +908,7 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
             <div className="flex flex-wrap items-end gap-4">
               {!purpose && <fieldset><legend className="mb-2 text-xs font-semibold text-slate-600">识别方式</legend><div role="radiogroup" aria-label="V2 识别模式" className="flex rounded-lg border border-slate-200 bg-slate-50 p-1"><button type="button" role="radio" disabled={eventWorkspace} title={eventWorkspace ? '人工事件仅用于事后研究' : undefined} aria-checked={mode === 'realtime'} onClick={() => { if (running) keepEditing.current = true; setMode('realtime') }} className={`min-h-10 rounded-lg px-3 text-sm font-semibold ${mode === 'realtime' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'}`}>实时识别</button><button type="button" role="radio" aria-checked={mode === 'retrospective'} onClick={() => { if (running) keepEditing.current = true; setMode('retrospective') }} className={`min-h-10 rounded-lg px-3 text-sm font-semibold ${mode === 'retrospective' ? 'bg-white text-amber-800 shadow-sm' : 'text-slate-600'}`}>事后研究</button></div></fieldset>}
               {purpose && <p className="text-sm text-slate-600">{historicalTask ? '历史参考 · 固定事后口径' : '实时识别 · 仅使用当时可得信息'}</p>}
-              <label className="text-xs font-semibold text-slate-600">截至日<input aria-label="V2 截至日" type="date" value={asOf} onChange={event => { if (running) keepEditing.current = true; setAsOf(event.target.value) }} className="mt-2 block min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm" /></label>
+              <label className="text-xs font-semibold text-slate-600">本次截至日<input aria-label="V2 截至日" type="date" value={asOf} onChange={event => { if (running) keepEditing.current = true; setAsOf(event.target.value) }} className="mt-2 block min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm" /><span className="mt-1 block font-normal">默认跟随顶部 PIT；手动修改仅影响本次计算，清空恢复默认。</span></label>
               <button type="button" disabled={!canRun || running} onClick={() => void runPreview()} className="min-h-11 rounded-lg bg-accent-600 px-5 text-sm font-semibold text-white disabled:opacity-40">{running ? '计算中…' : historicalTask ? '生成历史区间' : '运行识别'}</button>
               <button type="button" onClick={() => setDrawer('issues')} className="min-h-11 rounded-lg border border-slate-200 px-3 text-sm font-semibold text-slate-700">校验定义</button>
             </div>
@@ -942,6 +952,14 @@ export default function HistoricalRegimeWorkbench({ onExit, initialDefinition, w
         </RegimeWorkbenchDrawer> : null}
         {dataLabOpen ? <div className="fixed inset-0 z-[120] min-w-0 overflow-auto bg-slate-50"><ResearchDataLab embedded boundSeriesIds={boundSeriesIds} onBindSeries={bindSeries} onClose={() => setDataLabOpen(false)} /></div> : null}
       {running || notice || loadingCatalog || loadingDefinition ? <footer role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-t border-slate-200 bg-white px-3 py-2 text-xs text-slate-600"><span className="min-w-0 flex-1">{loadingCatalog ? '正在加载模板与可用节点…' : loadingDefinition ? '正在加载方案…' : running ? `${run?.stage || '正在识别'} · ${Math.round((run?.progress || 0) * 100)}%` : notice}</span>{running ? <button type="button" onClick={() => void cancelRun()} className="font-bold text-rose-700">取消识别</button> : null}{run?.status === 'completed' && view !== 'result' ? <button type="button" onClick={() => { if (run?.id) setDisplayedResult({ id: run.id, kind: 'preview' }); changeView('result') }} className="font-bold text-accent-700">查看结果</button> : null}{notice && !running ? <button type="button" aria-label="关闭状态提示" onClick={() => setNotice('')} className="px-2 font-bold text-slate-600">关闭</button> : null}</footer> : null}
+      {active && !eventWorkspace && <RegimeAgentPanel definition={definition} mode={mode} asOf={asOf}
+        selectedNodeId={selectedNodeId || undefined} busy={formulaPending || formulaBusy || running || savingResearch || savingDefinition || loadingDefinition || loadingTemplate || loadingCatalog}
+        onApply={next => {
+          editDefinition(next)
+          clearRunDisplay()
+          setSelectedNodeId(next.graph.nodes[0]?.id || '')
+          nodeSequence.current = next.graph.nodes.length + 1
+        }} />}
     </div>
   )
 }

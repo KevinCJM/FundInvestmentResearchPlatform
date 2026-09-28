@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import RegimeAgentPanel from '../components/agent/RegimeAgentPanel'
 import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
-import type { RegimeStudy } from '../services/regimeGraph'
+import RegimeStudyList from './regime-workbench/RegimeStudyList'
+import { actionClass } from '../components/ui'
+import type { RegimeGraphDefinition, RegimeStudy } from '../services/regimeGraph'
 import { marketStateStageFromQuery, type MarketStateStage } from './regime-workbench/regimeStudy'
 
 const steps: Array<{ id: MarketStateStage; index: string; title: string; description: string }> = [
@@ -10,35 +13,46 @@ const steps: Array<{ id: MarketStateStage; index: string; title: string; descrip
   { id: 'validation', index: '3', title: '验证识别能力与应用', description: '检查准确性、校准与前瞻证据，再判断可用范围。' },
 ]
 
-export default function MarketStateResearchCenter() {
+export default function MarketStateResearchCenter({ active = true }: { active?: boolean }) {
+  const [agentSeeds, setAgentSeeds] = useState<Partial<Record<'historical' | 'realtime', { definition: RegimeGraphDefinition; serial: number }>>>({})
   const [params, setParams] = useSearchParams()
   const stage = marketStateStageFromQuery(params)
-  const [visited, setVisited] = useState({ historical: stage === 'historical', realtime: stage !== 'historical' })
+  // 一条路由两种页面：地址栏带上研究身份才进工作台，否则停在该步骤的已保存清单。
+  const editing = Boolean(params.get('definition') || params.get('template') || params.get('new'))
+  const [opened, setOpened] = useState({ historical: editing && stage === 'historical', realtime: editing && stage !== 'historical' })
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [reference, setReference] = useState<RegimeStudy['reference']>()
 
   useEffect(() => {
-    setVisited(current => stage === 'historical'
+    if (!editing) return
+    setOpened(current => stage === 'historical'
       ? current.historical ? current : { ...current, historical: true }
       : current.realtime ? current : { ...current, realtime: true })
-  }, [stage])
+  }, [stage, editing])
 
-  const activate = (nextStage: MarketStateStage) => {
-    setVisited(current => nextStage === 'historical' ? { ...current, historical: true } : { ...current, realtime: true })
-    setParams(previous => {
-      const next = new URLSearchParams(previous)
-      const previousStage = marketStateStageFromQuery(previous)
-      next.set('center', 'market-state')
-      next.set('stage', nextStage)
-      next.delete('mode')
-      // Historical and realtime are different immutable definitions. Do not
-      // accidentally carry one workspace's exact version into the other.
-      if ((previousStage === 'historical') !== (nextStage === 'historical')) {
-        for (const key of ['definition', 'revision', 'template']) next.delete(key)
-      }
-      return next
-    })
+  /**
+   * `keep` 沿用同侧的精确版本（实时↔验证是同一份草稿），`list` 回到清单，`new` 开一份空白研究。
+   * 历史与实时是两份不可变定义，跨步骤一律不把一边的版本带进另一边。
+   */
+  const stageSearch = (nextStage: MarketStateStage, intent: 'keep' | 'list' | 'new', extra?: Record<string, string>) => {
+    const next = new URLSearchParams(params)
+    const crossing = (marketStateStageFromQuery(params) === 'historical') !== (nextStage === 'historical')
+    next.set('center', 'market-state')
+    next.set('stage', nextStage)
+    next.delete('mode')
+    if (intent !== 'keep' || crossing) for (const key of ['definition', 'revision', 'template', 'new']) next.delete(key)
+    if (intent === 'new') next.set('new', '1')
+    for (const [key, value] of Object.entries(extra ?? {})) next.set(key, value)
+    return `?${next}`
   }
+
+  const activate = (nextStage: MarketStateStage, intent: 'keep' | 'list' | 'new' = 'keep') => {
+    if (intent === 'new') setOpened(current => ({ ...current, [nextStage === 'historical' ? 'historical' : 'realtime']: true }))
+    setParams(new URLSearchParams(stageSearch(nextStage, intent).slice(1)))
+  }
+
+  const openStudy = (nextStage: MarketStateStage) => (definition: RegimeGraphDefinition) =>
+    stageSearch(nextStage, 'list', { definition: definition.id ?? '', revision: String(definition.revision ?? 1) })
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -48,6 +62,10 @@ export default function MarketStateResearchCenter() {
     activate(steps[nextIndex].id)
     tabRefs.current[nextIndex]?.focus()
   }
+
+  const backToList = (nextStage: MarketStateStage, label: string) => <div className="mb-4">
+    <Link className={actionClass()} to={{ search: stageSearch(nextStage, 'list') }}>返回{label}清单</Link>
+  </div>
 
   return <section className="min-w-0" aria-label="市场状态研究">
     <div className="mb-5 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
@@ -79,17 +97,48 @@ export default function MarketStateResearchCenter() {
     </div>
 
     <section id="market-state-stage-historical" role="tabpanel" hidden={stage !== 'historical'}>
-      {visited.historical && <HistoricalRegimeWorkbench purpose="historical_reference" active={stage === 'historical'} onReferenceReady={setReference} onNextResearchStep={() => activate('realtime')} />}
+      {!editing && stage === 'historical' && <RegimeStudyList
+        stage="historical"
+        studyHref={openStudy('historical')}
+        newHref={stageSearch('historical', 'new')}
+      />}
+      {opened.historical && <div hidden={!editing}>
+        {backToList('historical', '历史参考')}
+        <HistoricalRegimeWorkbench
+          key={`historical-${agentSeeds.historical?.serial || 0}`}
+          initialDefinition={agentSeeds.historical?.definition}
+          purpose="historical_reference"
+          active={active && stage === 'historical' && editing}
+          onReferenceReady={setReference}
+          onNextResearchStep={() => activate('realtime', 'new')}
+        />
+      </div>}
     </section>
     <section id="market-state-stage-realtime" role="tabpanel" hidden={stage === 'historical'}>
-      {visited.realtime && <HistoricalRegimeWorkbench
-        purpose="realtime_recognition"
-        incomingReference={reference}
-        active={stage !== 'historical'}
-        taskFocus={stage === 'validation' ? 'validation' : 'authoring'}
-        onHistoricalReference={() => activate('historical')}
-        onNextResearchStep={() => activate('validation')}
+      {!editing && stage !== 'historical' && <RegimeStudyList
+        stage={stage === 'validation' ? 'validation' : 'realtime'}
+        studyHref={openStudy(stage === 'validation' ? 'validation' : 'realtime')}
+        newHref={stage === 'validation' ? undefined : stageSearch('realtime', 'new')}
       />}
+      {opened.realtime && <div hidden={!editing}>
+        {backToList(stage === 'validation' ? 'validation' : 'realtime', stage === 'validation' ? '待验证模型' : '实时识别模型')}
+        <HistoricalRegimeWorkbench
+          key={`realtime-${agentSeeds.realtime?.serial || 0}`}
+          initialDefinition={agentSeeds.realtime?.definition}
+          purpose="realtime_recognition"
+          incomingReference={reference}
+          active={active && stage !== 'historical' && editing}
+          taskFocus={stage === 'validation' ? 'validation' : 'authoring'}
+          onHistoricalReference={() => activate('historical', 'list')}
+          onNextResearchStep={() => activate('validation')}
+        />
+      </div>}
     </section>
+    {active && !editing && <RegimeAgentPanel mode={stage === 'historical' ? 'retrospective' : 'realtime'}
+      onApply={definition => {
+        const side = stage === 'historical' ? 'historical' : 'realtime'
+        setAgentSeeds(previous => ({ ...previous, [side]: { definition, serial: (previous[side]?.serial || 0) + 1 } }))
+        activate(stage, 'new')
+      }} />}
   </section>
 }

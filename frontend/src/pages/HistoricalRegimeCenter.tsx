@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import ReactECharts from 'echarts-for-react'
-import { EmptyState } from '../components/ui'
+import { EmptyState, ErrorPanel } from '../components/ui'
 import type { EChartsOption } from 'echarts'
 import HistoricalRegimeWorkbench from './HistoricalRegimeWorkbench'
 import { copyHistoricalRegimeDefinitionToV2, type RegimeGraphDefinition } from '../services/regimeGraph'
@@ -575,9 +575,9 @@ function DataPanel({
         ) : null}
         {draft.target.kind === 'indicator' ? (
           <>
-            <label className="text-sm font-semibold text-slate-700 sm:col-span-2">指标中心版本
+            <label className="text-sm font-semibold text-slate-700 sm:col-span-2">行情指标中心版本
               <select
-                aria-label="指标中心版本"
+                aria-label="行情指标中心版本"
                 value={draft.target.indicator_id || ''}
                 onChange={(event) => {
                   const indicator = meta.indicator_catalog?.find((item) => item.id === event.target.value)
@@ -649,7 +649,7 @@ function FeaturePanel({ meta, draft, onChange }: { meta: HistoricalRegimeMeta; d
   const formulaExamples = ['log(value)', 'growth - inflation', 'difference(log(value), 20)']
   return (
     <section className="space-y-5">
-      <SectionHeading eyebrow="02 / Features" title="构建指标与特征管线" detail="配置原始变换、滤波和斜率窗口，也可引用指标中心中的版本化指标。" />
+      <SectionHeading eyebrow="02 / Features" title="构建指标与特征管线" detail="配置原始变换、滤波和斜率窗口，也可引用行情指标中心中的版本化指标。" />
       <div>
         <p className="mb-2 text-xs font-bold text-slate-600">滤波方法</p>
         <div role="radiogroup" aria-label="滤波方法" className="grid gap-2 sm:grid-cols-2">
@@ -684,7 +684,7 @@ function FeaturePanel({ meta, draft, onChange }: { meta: HistoricalRegimeMeta; d
           <div className="mt-2 space-y-2 leading-5 text-slate-600"><p>可用变量：数据源返回的数值列；统一别名为 <code>value</code>，相对序列另可用 <code>numerator</code>、<code>denominator</code>。</p><p>运算符：{meta.formula_language?.operators?.join('  ') || '+  -  *  /'}。窗口与滞后参数必须是正整数常量；不允许属性访问、下标、关键字参数、未来函数或全样本归约。</p><div className="flex flex-wrap gap-1.5">{formulaFunctions.map((name) => <code key={name} className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-700">{name}</code>)}</div>{meta.formula_language?.variable_rule ? <p>{meta.formula_language.variable_rule}</p> : null}<p className="font-medium text-emerald-700">所有可用算子均走 typed AST → DAG → NJIT 固定签名内核；无 Python 回退。</p></div>
         </details>
       </div>
-      <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-3 text-xs leading-5 text-slate-600"><strong className="text-slate-800">指标中心版本引用：</strong>已作为独立的数据源接入。请在“数据”步骤选择“指标中心版本”，锁定指标修订、产品和逐期窗口；旧的 <code>features.indicator_ref</code> 不会被静默执行。</div>
+      <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-3 text-xs leading-5 text-slate-600"><strong className="text-slate-800">行情指标中心版本引用：</strong>已作为独立的数据源接入。请在“数据”步骤选择“行情指标中心版本”，锁定指标修订、产品和逐期窗口；旧的 <code>features.indicator_ref</code> 不会被静默执行。</div>
       <div className={cx('rounded-xl border px-4 py-3 text-xs leading-5', activeFilter?.causal === false ? 'border-rose-200 bg-rose-50 text-rose-900' : 'border-emerald-200 bg-emerald-50 text-emerald-900')}>
         {activeFilter?.causal === false ? '该滤波使用未来样本或会重绘，只能运行事后划分，不能发布到正式回测或 TAA。' : '该滤波按单边序列计算；最终实时资格仍以后端逐日可用性诊断为准。'}
       </div>
@@ -982,7 +982,7 @@ function CalculationAuditPanel({ run }: { run: HistoricalRegimeRun }) {
     : run.calculation_audit
       ? [run.calculation_audit]
       : []
-  if (!audits.length) return <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-600">本次运行没有公式或指标中心计算计划。</p>
+  if (!audits.length) return <p className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-600">本次运行没有公式或行情指标中心计算计划。</p>
   return (
     <div className="space-y-5" aria-label="计算计划审计">
       {audits.map((audit, auditIndex) => {
@@ -1206,13 +1206,7 @@ export default function HistoricalRegimeCenter() {
 
   if (loading) return <div role="status" className="grid min-h-[520px] place-items-center rounded-xl border border-slate-200 bg-white"><div className="text-center"><span className="mx-auto block h-8 w-8 animate-spin rounded-full border-4 border-accent-200 border-t-accent-600" /><p className="mt-3 text-sm font-semibold text-slate-600">正在加载历史情景元数据与版本…</p></div></div>
 
-  if (!meta || !draft) return (
-    <section role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-6">
-      <h2 className="text-lg font-bold text-rose-950">历史情景识别暂不可用</h2>
-      <p className="mt-2 text-sm text-rose-900">{error || '接口未返回工作台所需数据。'}</p>
-      <button type="button" onClick={() => window.location.reload()} className="mt-4 min-h-10 rounded-xl bg-rose-800 px-4 text-sm font-bold text-white">重新加载</button>
-    </section>
-  )
+  if (!meta || !draft) return <ErrorPanel onRetry={() => window.location.reload()} />
 
   const signature = definitionSignature(draft)
   const saveDirty = signature !== savedSignature

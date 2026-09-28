@@ -12,7 +12,10 @@
         "stale_effective_cma",
         "cash_liquidity_conflation",
         "execution_clock_leakage",
-        "direct_bridge_bypass"
+        "direct_bridge_bypass",
+        "recognition_forecast_conflation",
+        "research_only_eligibility_bypass",
+        "mean_uncertainty_return_risk_conflation"
       ],
       "symptoms": [
         "Pure forward SAA is blocked by product-only navigation, or missing products erase strategic budgets.",
@@ -30,6 +33,8 @@
         "backend/tactical_allocation/clocks.py",
         "backend/tactical_allocation/signals.py",
         "backend/tactical_allocation/portfolio_bridge.py",
+        "backend/tactical_allocation/research_data.py",
+        "backend/tests/test_tactical_research_proxies.py",
         "frontend/src/layouts/StageLayout.tsx",
         "backend/tactical_allocation/service.py",
         "frontend/src/pages/TacticalAllocationWorkspace.tsx",
@@ -38,12 +43,31 @@
         "backend/strategic_allocation/compatibility.py",
         "backend/strategic_allocation/compatibility_solver.py",
         "backend/strategic_allocation/compatibility_kernels.py",
-        "backend/qp_numba.py"
+        "backend/qp_numba.py",
+        "frontend/src/services/ltcmaHandoff.ts",
+        "frontend/src/pages/LtcmaHandoff.test.tsx",
+        "backend/strategic_allocation/cma_scenario_evidence.py",
+        "backend/strategic_allocation/cma_scenario_models.py",
+        "backend/strategic_allocation/cma_scenario_kernels.py",
+        "backend/strategic_allocation/cma_selection.py",
+        "frontend/src/components/ltcma/LtcmaScenarioFields.tsx",
+        "frontend/src/components/ltcma/LtcmaScenarioResults.tsx",
+        "backend/strategic_allocation/policy_frontier.py",
+        "backend/tests/test_policy_frontier.py",
+        "frontend/src/components/strategic-allocation/PolicyFrontier.test.tsx",
+        "backend/strategic_allocation/policy_catalog.py",
+        "backend/tests/test_saa_policy_catalog.py",
+        "frontend/src/pages/SaaCenter.tsx",
+        "frontend/src/pages/SaaCenter.test.tsx",
+        "frontend/e2e/saa-center.spec.ts",
+        "backend/strategic_allocation/return_targets.py",
+        "backend/tests/test_return_requirements.py"
       ],
       "affected_modules": [
         "strategic_allocation_policy",
         "tactical_allocation_workbench",
-        "frontend_allocation_workflows"
+        "frontend_allocation_workflows",
+        "backend_regime_research"
       ],
       "blast_radius": [
         "policy validity",
@@ -53,25 +77,46 @@
         "product budget preservation"
       ],
       "check_before_edit": [
-        "Preserve product-first workflows. Independent strategic definitions may support CMA/SAA without NAV; missing maps remain explicit and block TAA/product implementation. Completing a map creates new versions, never rewrites old policies.",
+        "Preserve product-first workflows. Independent strategic definitions may support CMA/SAA without NAV; missing maps remain explicit and block product implementation, not class-level TAA research. Confirmed strategic SAA uses frozen research proxies with real source availability; missing proxies block calculation with asset names. Never infer trading products from research proxies. Completing a map creates new versions, never rewrites old policies. SAA scope, comparison, confirmation and saved-policy screens must not require real products or surface downstream implementation blockers as SAA research problems. Preserve explicit historical mapping references and backend product-application gates; verify no-products comparison/save and TAA continuation.",
         "Consume frozen effective moments through cma_application in search, funding and policy risk. Preserve raw model identity and hashes; posterior mean uncertainty is not asset-return risk. Never refit historical artifacts.",
         "LTCMA V2 does not require mandate or product implementation mapping. Select the mapping at SAA policy creation without changing CMA evidence; old mapping-bound records retain their original contract. Retirement blocks new SAA/prior use while historical versions remain readable. NIW publication must recheck prior eligibility and save under the retirement governance lock; completed idempotent replay remains historical. Switching the editor to continuation clears recenter strengths and reuse consent. The SAA CMA deep link initializes once and must not override subsequent user selection or clearing during pending reads.",
+        "LTCMA has no generic forecast-horizon label: ordinary annual moments do not depend on it. Strip retired horizon_years from old requests and copied drafts, never rewrite frozen artifacts or gate NIW/SAA use by that field. Conditional scenario horizon_days is a separate real numerical input: it determines Markov transitions, period occupancy, compounded-return moments and compute budgets; preserve it and reject unsupported work explicitly. Mandate horizon_years still controls funding months and budgets. Verify old read/copy, no-horizon statistical publication, conditional horizon sensitivity and unchanged annual-model behavior.",
         "Historical LTCMA needs an SSE calendar covering the requested end, including closed dates. A stale calendar and equally truncated NAV must not silently shorten the sample. Switching a statistical draft from strategic proxies to a product allocation clears proxy_inputs. State occupancy, applied probabilities, unestimated states and NIW asset-risk versus mean-uncertainty evidence remain distinct.",
-        "Cash-purpose floors require explicit liquid liquidity-role assets. Institutional manual evidence retains every topic, date and reason; researcher records are not independent approval.",
+        "Cash-purpose floors consume frozen liquid liquidity-role assets. For typed strategic scope inputs, derive this classification from research_proxy.asset_type at the backend boundary: cash is liquid liquidity-role, market cannot retain a cash role. The UI exposes only asset type; preserve pre-existing non-cash liquidity restrictions and untyped historical contracts. Institutional manual evidence retains every topic, date and reason; researcher records are not independent approval.",
         "Preserve original four-candidate and daily-target outputs. Risk budgets compare signed Euler shares over finite candidates; zero variance is unavailable. New kernels require actual invocation, fixed signatures and PID-bound warmup.",
         "Box mean uncertainty and the opt-in single-CMA ellipsoid are distinct models. Preserve default box request echoes and frozen history; never substitute return covariance for missing mean covariance. Gaussian, NIW-t and finite-sample Hotelling radii have different calibrations. Nonzero variance coordinates, not numerical rank thresholds, determine the implemented dimension; singular or shrunk sample plug-in coverage needs explicit approximation consent. Multi-CMA mean-error dependence is not inferred. BL basket views reuse the original Gaussian update; diagnostics must not change asset risk or declared half-widths. State ML denominators preserve the total-moment identity, transition diagnostics do not create a multi-year forecast, and moment-proxy funding does not preserve native scenario tails.",
         "Separate observation, decision and execution clocks. Preserve drift, lag, explicit cost basis, actual-path budget diagnostics and training-only selection. Fixed-target stress is not strategy replay.",
         "Every positive-weight signal component must be known, complete and unexpired, without missing-component renormalization. External value/carry/macro labels do not license fabricating scores from NAV.",
-        "Use actual dated holdings for thresholds and recheck current holdings at the shared product bridge. Policy/mapping expiry needs explicit reasons. Navigation references are not current eligibility proofs.",
+        "Use actual dated holdings for thresholds and recheck current holdings at the shared product bridge. Policy/mapping expiry needs explicit reasons. Navigation references are not current eligibility proofs. Scope-page continuation must lead to LTCMA, not directly to SAA. New-research SAA journey navigation requires a confirmed LTCMA reference; an existing policy remains returnable because it already freezes its assumptions.",
         "Composite recommendation expiry uses each positive component age/expiry at the adopted lag-mature decision, capped by research and policy review dates; never reuse the old momentum/regime global age or a pending signal expiry.",
         "Restoring a TAA baseline or saved decision atomically restores its frozen mandate, strategic universe and mapping references, explicitly clearing absent references. Immutable mapping reads are independent of PIT initialization; clock changes invalidate computations, not saved history.",
+        "Saved scope viewing, editing, copying and new research require distinct editor identities. Editing saves an immutable replacement; deletion retires the active entry while preserving historical IDs and hashes. Active names share a trim/casefold namespace across product and strategic stores under one lock, using the configured storage roots and rejecting corrupt peer reads. Exclude only the edited record from uniqueness checks; legacy duplicates still require renaming. Every successful save writes its new ID to the URL and clears draft/source parameters; do not use a stored journey to open an editor implicitly. Delayed deletion must inspect the latest URL and journey so it cannot clear a newer selection. Switching identity invalidates pending reads and saves; React StrictMode cleanup must not prevent the next history read. New asset IDs stay unchanged when labels or the common currency change. Descriptive annotations may be empty; actual references and quantitative gates remain required. Strategic research proxies and cash-return defaults must survive scope save/read/copy and initialize LTCMA inputs; they support class-level TAA after SAA confirmation and data checks, but never create an implementation mapping or authorize product application. Preserve cash-role/liquidity checks, adjusted-product fields, explicit weights and preview-hash invalidation. Strategic scope uses one visible save action that awaits preview and confirms with the same draft and fresh hash; check cancellation between both calls so stale validation cannot trigger a write. Show blocking reasons and request errors next to save, retain the draft after failure, and allow retry. Translate structured scope validation errors using asset names and form labels. extra_forbidden for research_proxy is a frontend/backend contract mismatch, not user input error; never drop proxy fields to make an old backend accept the request. Check the owning checkout, frontend proxy target and live OpenAPI before reloading only the affected service; source support does not prove a running process has loaded the new contract. Missing proxies are a valid scope but not complete historical evidence. Batch reference selection persists across filters/pages, applies atomically and never normalizes existing weights.",
         "Changing an external signal kind resets both its visible JSON and submitted observations; preserve incomplete JSON while typing and block calculation until it is valid.",
         "For parameter-average SAA, validate every source hash, V2 semantic basis, economic/proxy identity and retirement state. E2 uses the shared mixture kernel within covariance, never its total covariance or squared model weights. Preserve the fused policy marker and complete frozen multi_cma evidence; missing evidence must not fall back to legacy manual assumptions. Cross-model failures remain visible diagnostics, not an implicit all-model gate. Bound total funding work and final metadata before writing so an accepted policy remains readable.",
-        "Compatible-all-model policies require every frozen source to pass; display-only average moments cannot authorize adoption or TAA. Preserve the mode, compatibility gate and source hashes together. Solver timeout, iteration exhaustion and unresolved Phase I are not infeasibility. The compiled outer state machine owns iteration state, cut accumulation, objective bounds and numerical stopping; Python only schedules wall-clock checks between masters. Warm and audit this state machine itself, not only its LP substeps. A positive normalized Phase-I objective lower bound may certify a conflict; zero relaxed objective still requires original risk checks. Funding failure applies only to the generated common candidate, not the full feasible set; confirm using an independent stream for each model. Numeric execution audits must include the shared frontend backend/nopython/object_mode fields as well as PID-bound warmup."
+        "Compatible-all-model policies require every frozen source to pass; display-only average moments cannot authorize adoption or TAA. Preserve the mode, compatibility gate and source hashes together. Solver timeout, iteration exhaustion and unresolved Phase I are not infeasibility. The compiled outer state machine owns iteration state, cut accumulation, objective bounds and numerical stopping; Python only schedules wall-clock checks between masters. Warm and audit this state machine itself, not only its LP substeps. A positive normalized Phase-I objective lower bound may certify a conflict; zero relaxed objective still requires original risk checks. Funding failure applies only to the generated common candidate, not the full feasible set; confirm using an independent stream for each model. Numeric execution audits must include the shared frontend backend/nopython/object_mode fields as well as PID-bound warmup.",
+        "Persist exact mandate_id and mandate_hash on both saved scope types. Scope details, catalog and library actions restore that binding before showing the goal or enabling save; editing inherits it and rejects replacement with another mandate. The URL selects the saved scope; its persisted association overrides a conflicting mandate parameter. A legacy association may be filled once from an explicitly chosen mandate under the shared governance lock, separately from immutable scope bytes. Never infer the historical association from allocationJourney, even if its scope ID matches: viewing another scope can retain an unrelated goal in that bookmark. Verify reopening without mandate parameters or browser storage, edit/refresh, and unchanged historical hashes.",
+        "CMA center handoff carries every explicitly selected version via repeated cma query parameters and a CMA-set-specific SAA draft. A primary ltcmaId is not a multi-model study: preserve ltcmaIds in journey links, clear them on upstream changes, and require an explicit multi-CMA mode and weights. Resolve the mandate from the persisted scope binding, never from the previous browser journey. A missing optional field must not invalidate existing single-CMA drafts. Verify this in LtcmaHandoff, MultiCmaWorkspace and allocationJourney tests. Current catalogs exclude superseded strategic scopes, but saved CMA references remain immutable and readable. On center handoff and SAA refresh, getStrategicCatalog must fetch the explicitly referenced missing scope by exact ID, restore its bound mandate and asset constraints, and never substitute a same-named active scope. Check the scope hash against frozen CMA lineage before handoff; preserve backend source and retirement gates. The scope-replacement regression in LtcmaHandoff and the ltcma browser test covers single and multiple CMA continuation.",
+        "Scenario CMA reuses exact historical run/publication/content hashes and calibrated causal recognition bound to that same reference. Recheck snapshot hashes and data/label information cutoffs against PIT. Historical and long-term scenarios accept any classification frequency and archive date: project only closed observed same-state intervals onto daily return-end dates, leave transition gaps and tails unknown, and never truncate a future-fitted run to simulate PIT. Publication identity remains exact. Conditional current probabilities still require daily causal recognition, calibrated availability/expiry, matching return dates and qualified positive-probability states. LTCMA must read the validated immutable realtime snapshot and attach calibration directly; resolve_taa_run and realtime formal-publication records belong only to TAA admission. A saved or research-display-only run with valid evidence can support conditional research; missing calibration stays unavailable with its own reason. Preserve exact historical publication binding and the unchanged TAA formal gate; test options, conditional save and TAA rejection against the same unpublished fixture. Keep every publication reference selectable for the same run/hash: retaining only the first hides realtime studies bound to a later publication. Options expose unavailable reasons on hover, keyboard focus and touch without selecting unavailable entries. Historical references require explicit user selection even when only one is eligible; preserve the dropdown and the retrospective-identification center action for empty, filtered and selected states. Restore saved bindings without choosing a new study on options refresh. The current conditional UI still auto-binds a sole eligible real-time run after matching the exact historical publication; review that behavior separately against user-selection requirements rather than generalizing it to historical evidence. Unknown state observations break transitions rather than becoming neutral states or connecting nonadjacent dates. Do not relax the existing reliability.cma_evidence restriction.",
+        "Current-state recognition probabilities, retrospective transition diagnostics and independently validated future-state forecasts are different evidence. The conditional Markov model computes research projections, period-average occupancy and compounded moments without claiming future validation. Its method is research-only: server-side SAA, NIW-prior and multi-CMA guards must reject it even if copied metadata sets downstream_eligible=true or omits validation fields. Frozen history remains readable; mutable UI state and audit flags cannot authorize downstream use.",
+        "Long-term scenario return covariance describes asset risk; block-bootstrap mean_estimation_covariance and declared marginal half-widths describe mean-estimation error. Keep both frozen and distinct, allow the existing default box uncertainty, and do not infer an ellipsoid radius from the new covariance without model-specific calibration. Seeds depend on numerical evidence and immutable references, not human notes. Readonly fixed-signature kernels must be warmed before requests; admit finite-horizon analytical work and account for all simulation batches without silently shortening the requested horizon.",
+        "Separate saved scope identity from economic compatibility. Identical ordered assets, currencies, roles, liquidity and research proxy facts may reuse CMA across scope record IDs; names, notes and saved timestamps are not economic facts. Compare actual fitted proxies separately and preserve date, return/fee/FX, retirement and research-only gates. Unchanged strategic-scope edits return the original record under the governance lock. Read derived facts from frozen snapshots without rewriting history; validate each original source hash independently in multi-CMA handoff. Scope equality does not rebind implementation mappings or choose another mandate. Wait for the initial PIT state before requesting LTCMA options; do not temporarily request today and strand initialization when a historical cutoff loads later. Configuration compatibility does not remove the existing NIW positive-definite-prior requirement; fixed zero-risk cash remains a separate numerical limitation.",
+        "SAA frontier diagnostics must remain independent of candidate feasibility: overlay the absolute return floor and risk cap rather than filtering away the curve. Use frozen effective moments and the same weight/cash/liquidity boundaries; show each original model separately in common mode. Failed grid points are gaps, not zeros or proof of infeasibility. Disable policy comparison only after a verified return upper bound or the warmed continuous solver certifies target infeasibility; discrete grid misses and exhausted budgets are not proof. Common mode must test one weight vector across all original models. Keep benchmark and funding gates separate, invalidate both graph and comparison state immediately on input or PIT changes, and show an adjacent human-readable reason; unresolved checks retain candidate comparison. SAA interaction tests must mock policy/frontier with typed execution and target evidence, await the enabled comparison button, and verify the chart loaded so API-error fallback cannot produce a false pass. Finding the button only proves it exists while the debounced frontier request may still be pending. Mock only the chart renderer in jsdom, not the frontier gate; LtcmaHandoff also covers pending and certified-infeasible responses preventing policy/preview requests.",
+        "Step-02 scope screening reuses historical evidence and continuous SAA solvers; never infer infeasibility from missing grid intersections. Require a verified candidate or certified bound, respect the earliest mandate/risk-reference expiry, resolve products by their explicit market code while retaining product_id identity, and leave unclassified cash/liquidity requirements undetermined. Preview product selections must reuse save assembly without writing records. Invalidate charts and conclusions immediately on scope, goal, window or PIT changes; screening does not publish LTCMA or certify funding success. A funding-pending overall verdict must not hide a verified target_check verdict: show the passed historical risk/weight check separately from unvalidated funding-path success. Echo step-01 cashflow_required_return with its solver status and compound-return basis; do not plot it as an arithmetic-return target or replace target_check with a frontier-presence heuristic. Funding comparison may project all three curves to median-path annual compound growth using the existing daily-moment adapter, retaining raw arithmetic evidence. Never compare a compound hurdle directly against arithmetic returns or double-charge fees. Only validated current-scope points can pass the hurdle screen; reference curves and finite-grid misses cannot establish feasibility or infeasibility. Keep the full funding-probability gate separate from this display verdict.",
+        "LTCMA edit and copy have different lifecycle contracts: PATCH keeps one current study entry via supersedes_cma_id and stable study_id; POST copy creates an independent study. Preserve immutable old IDs/hashes and existing SAA/TAA/NIW references, exclude only the edited record from name conflicts, and retain editing_ref in saved drafts. Recheck stale edits and deletes under the governance lock, preserve exact idempotent retry/recovery, and never resurrect a predecessor after retiring its replacement. NIW study-options must restore an explicitly selected historical prior without listing every superseded result as a new study. Verify test_ltcma_lifecycle, LtcmaCenter and the center-row browser flow.",
+        "SAA common-model frontiers overlay each frozen source. Plot a common candidate only from complete ID/hash-matched cross_model_results, including failed candidates; never plot its worst-per-metric summary as one distribution. Fusion plots the solved frontier of averaged moments, never averaged curves. Reference visibility and model legend switches must not change requests, constraints or conclusions.",
+        "SAA 方案列表只从冻结政策读取目标、范围和所有 CMA 来源，不能改用当前目录补齐同名记录或把无 policy 的回测基线列为已采纳方案；新建入口使用独立 URL token 隔离草稿。",
+        "At a full-rank LP active vertex, the face direction is exactly zero. Nearly parallel variance cuts can amplify saddle-KKT roundoff beyond the stopping tolerance and falsely report numerical_failure before the common solve. Solve the active transpose for multipliers and release a violating face instead; do not relax risk or substitute averaged moments. Regress frozen four-asset cash models against independent QCQP anchors and joint objectives in test_multi_cma_compatibility.py.",
+        "TAA research proxies align price endpoints on common observations and retain every full interval return. Market calendar differences must not fail the whole research or delete intervening P&L. Actual interval years drive cash compounding, risk, TE and utility in training, holdout, walk-forward and historical scenarios; never derive training annualization from holdout dates. Date-only proxy signals wait until after publication day, while label maturity retains the original publication date. Without complete per-market calendars, report unobserved dates as unverified closures or gaps, not confirmed missing data. Preserve frozen histories and product-only equal-period contracts; tests cover test_tactical_research_proxies.py and test_tactical_allocation_numeric.py.",
+        "Normalize requirements through return_targets: preserve arithmetic versus annual-compound basis, invert the declared moment adapter at actual portfolio volatility, and never double-charge fees. Relative explicit-numeric goals require a complete benchmark; calculate benchmark return per frozen model. Check compound requirements in reference search, SAA and fixed-weight TAA gates; preserve capital-adjustment diagnostics and separate funding probability. Historical missing basis remains arithmetic. A relaxed common-model solve followed by a failed compound candidate is not an infeasibility proof. A separate unresolved solver must not hide a numerically verified single-model frontier weight that passes all applicable return/risk bounds; failed points, unchecked benchmarks and per-model different weights cannot establish feasibility.",
+        "Copying a product research scope must carry excluded_product_keys into its independent draft and next save, just as editing does. Restoring only pool version IDs silently reintroduces excluded products."
       ],
       "safe_observation_methods": [
         "/usr/bin/env PYTHONPATH=.:backend python3 -m pytest backend/tests/test_cma_model_integration.py backend/tests/test_bettersaataa_m1.py backend/tests/test_tactical_allocation_clocks_signals.py backend/tests/test_bettersaataa_final_audit.py -q",
-        "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1"
+        "npm run test:e2e --prefix frontend -- --config=playwright.better-saataa.config.ts --workers=1",
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_ltcma_scenarios.py backend/tests/test_ltcma_scenario_evidence.py backend/tests/test_ltcma_regime_intervals.py backend/tests/test_cma_scenario_selection.py -q",
+        "npm run test --prefix frontend -- --run LtcmaScenarioFields.test.tsx LtcmaScenarioSelect.test.tsx LtcmaStatisticsFields.test.tsx LtcmaCenter.test.tsx LtcmaHandoff.test.tsx",
+        "npm run test:e2e --prefix frontend -- --config=playwright.ltcma.config.ts",
+        "Run backend/tests/test_saa_policy_catalog.py and frontend SaaCenter / StrategicAllocationWorkspace tests; e2e/saa-center.spec.ts covers saved links, fresh draft isolation, retries and 320/768/1440px layouts."
       ]
     },
     {
@@ -170,7 +215,6 @@
         "backend/factor_research/numba_kernels.py",
         "backend/factor_research/service.py",
         "backend/services/product_pool_routes.py",
-        "frontend/src/components/FactorEvidencePanel.tsx",
         "frontend/e2e/factor-research-live.spec.ts",
         "docs/verification/factors.md"
       ],
@@ -544,7 +588,8 @@
         "Frontend pages have many direct fetch calls whose payloads must match backend route models.",
         "Vitest can cover state and API flows while ECharts, KaTeX, responsive layout, and keyboard focus still require browser acceptance.",
         "A route or mobile navigation change can create duplicate or inaccessible links.",
-        "Root ProcessHome uses the single existing router and shared localization; recent visits store allowlisted module IDs only. Keep landing CSS scoped and preserve workspace PIT badges. Verify dialog focus in StrictMode and a real browser. Process navigation tests use the data-free business_numeric_app fixture, not the real backend."
+        "Root ProcessHome uses the single existing router and shared localization; recent visits store allowlisted module IDs only. Keep landing CSS scoped and preserve workspace PIT badges. Verify dialog focus in StrictMode and a real browser. Process navigation tests use the data-free business_numeric_app fixture, not the real backend.",
+        "LAN HTTP can return HTML and API health 200 while React renders a blank page: native crypto.randomUUID is unavailable outside secure contexts."
       ],
       "trigger_actions": [
         "edit frontend pages",
@@ -574,7 +619,18 @@
         "backend/services/instrument_routes.py",
         "backend/services/data_routes.py",
         "backend/services/analytics_routes.py",
-        "backend/services/strategy_routes.py"
+        "backend/services/strategy_routes.py",
+        "frontend/src/components/ltcma/LtcmaInputFields.tsx",
+        "frontend/src/pages/LtcmaWorkspace.tsx",
+        "frontend/src/services/ltcma.ts",
+        "frontend/e2e/ltcma.spec.ts",
+        "docs/frontend/i18n.md",
+        "frontend/src/i18n",
+        "scripts/check_i18n.mjs",
+        "frontend/src/main.tsx",
+        "frontend/src/utils/browserCompatibility.ts",
+        "frontend/src/utils/browserCompatibility.test.ts",
+        "frontend/e2e/browser-compatibility.spec.ts"
       ],
       "affected_modules": [
         "frontend_app_shell",
@@ -585,7 +641,8 @@
         "backend_instrument_analytics",
         "backend_etf_product_api",
         "backend_strategy_routes",
-        "backend_analytics_routes"
+        "backend_analytics_routes",
+        "strategic_allocation_policy"
       ],
       "blast_radius": [
         "all frontend routes",
@@ -595,8 +652,13 @@
       "check_before_edit": [
         "Run full Vitest and Vite build after modifying routes, payloads, or dependencies.",
         "Compare each changed fetch payload with the backend request model or query parameters.",
+        "Required markers, visible length hints, disabled explanations and click guards must agree with the backend contract. SAA adoption trims boundary whitespace and requires 5-2000 rationale characters; expose the exact remaining input and preserve draft text after failed saves. Native required attributes do not explain a disabled button. Verify empty, short, valid, busy, failed and saved states in the browser.",
         "A failed PIT-settings read leaves the system convention unknown, not RESEARCH/no-PIT; preserve explicit tab choices separately and offer retry. Missing quality summaries or unavailable rules cannot become zero affected products or a green pass. Only completed checks justify a zero-result success.",
-        "Keep chart data available as text/table and use browser checks at 320px, 768px, and 1440px when available."
+        "Keep chart data available as text/table and use browser checks at 320px, 768px, and 1440px when available.",
+        "Risk Scale editor bootstrap must not wait for proxy display names. Resolve missing names in one metadata-only batch, preserve saved/frozen names, and guard independent responses against navigation and edits. Display labels never establish source eligibility; catalog search filters metadata before expanding details and preserves exact source IDs, first-record deduplication, status and pagination. LTCMA first paint loads base options only; priors/regimes/scenarios load on demand without overwriting edits. Read-only regime catalogs pin one request-local JSON snapshot and ID index, never reuse mutable publication eligibility across requests. Use summary=true for run pickers, fetch exact-ID details for series/audits, and retain full backend eligibility checks.",
+        "LTCMA method help is an independent action beside every method option, including unavailable methods. Opening or closing help must not select the method, alter inputs or submit research. Use one shared popup, one short inline summary and bilingual detailed examples; verify first click/tap, hover-to-panel movement, keyboard navigation, Escape/focus return, one visible dialog and viewport bounds. Focus-triggered viewport clamping can cover the question button before pointerup, so preserve pointerdown activation as well as keyboard/click handling. Offline study-options fixtures must include the required existing_names array; omitting it crashes workspace initialization before the method controls render and is not evidence of a popup failure. Browser acceptance remains partial: after repairing the fixture only in an external diagnostic copy, one desktop English all-method case reopened a help dialog during pointer movement and the dialog intercepted selection of Historical statistics. Reproduce the close-to-option pointer transition before claiming full acceptance; successful keyboard or mobile cases do not close this observation.",
+        "A complete English catalog does not prove page coverage: inspect JSX text, accessible attributes, validation helpers, server diagnostic fields, module-initialized option labels and memoized chart/table text. Resolve display labels during rendering or through getters, include language in display memo dependencies, and verify switching both ways preserves research inputs. Translate legacy diagnostic text only at explicit system-message display boundaries; never rewrite saved names, notes, identity markers or frozen artifacts. Browser coverage must exercise loaded, empty and failed states rather than counting catalog entries alone.",
+        "Keep main.tsx browserCompatibility import before App. UUID v4 compatibility uses getRandomValues and preserves native randomUUID; do not use predictable IDs. Verify actual LAN-IP HTTP rendering and new-draft navigation, not just localhost, HTML or health responses."
       ],
       "safe_observation_methods": [
         "rg -n \"fetch\\(|/api/\" frontend/src backend/app.py backend/services",
@@ -1223,7 +1285,10 @@
         "Treat null and omitted operator parameter bounds as unbounded, not zero. Preserve explicit zero/lower/upper bounds and validate real JSON metadata in formula-builder round-trip tests; derive fixed-window browser fixtures explicitly instead of relying on a renamed parameterized built-in.",
         "Bind commit-preview revision and full definition hash to the durable current draft; freeze the stored definition and recheck its identity before a new business commit, including confirmations written by older code. New resumes may reference only the latest session run; reject older pending batches before acceptance while preserving idempotent replay of already accepted messages and completed saves. Compare every definition field with JSON numeric round-trip equivalence only (0 and 0.0); boolean/string aliases remain distinct, and preserve the stored definition hash rather than changing global receipt hashing.",
         "AI business services are explicitly mounted on the request application; never recover missing bindings by importing HTTP routers, scanning sys.modules or creating another service. Product HTTP adapters and agent callbacks use the same instrument_service implementation. Tool declarations own current-data policies: immutable portfolio evaluation/diagnosis must stay separate from scenario recomputation. Keep indicator preview loading and same-run adoption in the indicator adapter; the shared conversation owns identity/version/cancellation and only transports existing artifact DTOs. Keep SQLite run transitions atomic when separating domain code. Metadata must reject a missing application service with 503 before the best-effort catalog catch; configured LLM settings alone do not prove the agent service is mounted.",
-        "A save button cannot pre-authorize an unseen commit-preview impact. Persist the server preview, show its frozen definition/context and same-name creation warning, then require a separate human confirmation before commit. Cancellation performs no business write; retries of an already confirmed uncertain request retain its confirmation and idempotency key. Test both cancellation and acceptance, localized/multi-channel previews and response-loss recovery. Commit-preview itself increments session_revision. Admit that authoritative receipt through the shared conversation input before asking for confirmation, even if the user cancels or a later commit fails. Advance only the matching session version, preserve run/context/memory ownership, reject stale or foreign receipts, and test cancellation followed by another message against a version-enforcing fixture. Apply the same version-only admission to successful commit receipts before refreshing the full snapshot; a failed follow-up read must not erase the acknowledged save version. Memory accept/reject/replace/revoke receipts, including idempotent replay, return the current session ID and version from their transaction and use the same frontend receipt admission. Keep decision/snapshot errors separate from list-read errors so a late successful list read cannot unlock unresolved memory actions. Audit all session-mutating HTTP paths when changing this protocol."
+        "A save button cannot pre-authorize an unseen commit-preview impact. Persist the server preview, show its frozen definition/context and same-name creation warning, then require a separate human confirmation before commit. Cancellation performs no business write; retries of an already confirmed uncertain request retain its confirmation and idempotency key. Test both cancellation and acceptance, localized/multi-channel previews and response-loss recovery. Commit-preview itself increments session_revision. Admit that authoritative receipt through the shared conversation input before asking for confirmation, even if the user cancels or a later commit fails. Advance only the matching session version, preserve run/context/memory ownership, reject stale or foreign receipts, and test cancellation followed by another message against a version-enforcing fixture. Apply the same version-only admission to successful commit receipts before refreshing the full snapshot; a failed follow-up read must not erase the acknowledged save version. Memory accept/reject/replace/revoke receipts, including idempotent replay, return the current session ID and version from their transaction and use the same frontend receipt admission. Keep decision/snapshot errors separate from list-read errors so a late successful list read cannot unlock unresolved memory actions. Audit all session-mutating HTTP paths when changing this protocol.",
+        "Scenario AI drafts must use the regime_graph domain and registered scalar parameter contracts; inline observations, qualification receipts and business identity cannot enter authored DTOs. Applying revalidates the merged graph, fences late responses with editor context identity, preserves editor-owned references, and invalidates old qualifications. Hidden retained workbenches must not mount portal assistants. Verify test_agent_regimes.py and RegimeAgentPanel.test.tsx.",
+        "Scenario library questions must search saved definitions separately from built-in templates. Read by explicit ID and revision through the mounted graph service, retain duplicate-name choices and pagination, and project only registered scalar settings and graph structure. An empty editor snapshot is not an empty saved library; definition access does not certify PIT availability or trigger calculation. Verify saved-library HTTP model-admission tests in test_agent_regimes.py.",
+        "Indicator write requests must reach metrics.validate and a saveable draft before the existing human-confirmed commit. task.read/task.plan are optional task records, not write prerequisites. Keep strict case-sensitive argument schemas; on validation failure or blocked repeated calls, return registry-owned field guidance without exception text, unknown keys or input values. Do not ask users for an existing write API or treat argument errors as missing permissions. Verify capitalized task.read recovery, draft delivery, confirmation and idempotent saves in test_agent_api.py."
       ],
       "safe_observation_methods": [
         "/bin/sh -c 'cd backend && /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest tests/test_custom_indicator_service.py tests/test_custom_indicator_routes.py tests/test_custom_indicator_variables.py tests/test_instrument_routes.py -q'",
@@ -1608,6 +1673,469 @@
       "safe_observation_methods": [
         "python3 scripts/check_documentation.py --staged --json",
         "python3 -m pytest scripts/tests/test_documentation.py -q"
+      ]
+    },
+    {
+      "id": "P26",
+      "title": "workbench_shell_registry_keys_overlay_layer_and_table_semantics",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "duplicate_registry_path_keys",
+        "overlay_below_page_drawers",
+        "unnamed_table_regions",
+        "text_only_loading_states"
+      ],
+      "symptoms": [
+        "A registry-derived list keeps stale rows after filtering: two stages publish the same accounting route under different labels, so a path-only React key collides.",
+        "An overlay rendered inside the sticky header paints below page-level drawers, which already claim z-[110] to z-[200].",
+        "Several tables on one page are announced only as \"table 1/2/3\" because neither a caption nor an aria-label is present.",
+        "A loading state replaces the whole block with one line of text, so the layout jumps when data arrives.",
+        "The pre-investment overview can mislabel the last browser bookmark as the current research and show unrelated completed steps before the user selects a study."
+      ],
+      "trigger_actions": [
+        "add, reorder or cross-list entries in processRegistry",
+        "add a global overlay, dialog or command surface to the workbench shell",
+        "add a business table or migrate one to the shared primitive"
+      ],
+      "related_paths": [
+        "frontend/src/app/processRegistry.ts",
+        "frontend/src/components/CommandPalette.tsx",
+        "frontend/src/components/Header.tsx",
+        "frontend/src/components/ui.tsx",
+        "scripts/check_frontend_design.mjs",
+        "docs/frontend/README.md",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/layouts/StageLayout.test.tsx",
+        "frontend/e2e/process-framework.spec.ts",
+        "frontend/src/pages/PreInvestmentOverview.tsx",
+        "frontend/src/pages/PreInvestmentOverview.test.tsx"
+      ],
+      "affected_modules": [
+        "frontend_app_shell",
+        "frontend_investment_process_framework"
+      ],
+      "blast_radius": [
+        "navigation findability",
+        "accessible naming of tabular data",
+        "overlay layering",
+        "perceived loading stability"
+      ],
+      "check_before_edit": [
+        "processRegistry paths are not unique: the two fund-accounting workspaces are cross-listed from another stage with different labels. Key registry-derived lists by stage plus path, and keep both rows so either name finds the page.",
+        "The header is position:sticky with its own z-index, so it forms a stacking context. Render global overlays through createPortal to document.body; a z-index inside the header cannot beat a page drawer.",
+        "Tables need a caption or an aria-label. The unnamed-tables budget in check_frontend_design.mjs is a ratchet locked at the measured value and may only go down; writing a table tag inside a comment also counts.",
+        "Loading states keep the final shape. Use the Skeleton and DataTable primitives in components/ui.tsx rather than replacing a block with a line of text.",
+        "StageLayout must hide the current-research badge, allocation progress bar and resume prompt on the pre-investment overview, including trailing slash/query variants. Preserve stored studies and drafts; directory links stay identity-free. Verify overview-to-module and return navigation, and keep selected-study behavior covered in StageLayout.test.tsx and process-framework.spec.ts.",
+        "The pre-investment overview groups registered nodes into three workflow phases; resolve names, numbers and links from processRegistry, and never turn the static guide into selected-study progress. Keep confirmed LTCMA before SAA, mark TAA optional, and explain direct SAA-to-product handoff. Preserve naked directory URLs and bookmarks. Verify keyboard details expansion, Chinese/English long labels, reduced motion, contrast and 320/768/1440px layouts."
+      ],
+      "safe_observation_methods": [
+        "npm run design:check --prefix frontend",
+        "npx vitest run src/components/ui.test.tsx src/components/CommandPalette.test.tsx"
+      ]
+    },
+    {
+      "id": "P27",
+      "title": "allocation_journey_step_gates_must_match_real_destinations_and_inpage_selection",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "gate_on_state_chosen_inside_the_gated_page",
+        "ready_step_redirects_elsewhere",
+        "stale_upstream_reference_survives_scope_change",
+        "browser_gate_mistaken_for_authorization",
+        "implicit_journey_fallback_renders_a_phantom_selection",
+        "flow_bar_unlocks_downstream_from_the_bookmark_while_the_page_renders_unselected"
+      ],
+      "symptoms": [
+        "A flow step is lit and clickable, but allocationJourneyPath rewrites it to a different step, so the click lands on the previous page.",
+        "Gating the SAA step on a selected LTCMA deadlocks the chain: the LTCMA is chosen inside the SAA policy page itself (its second wizard step), so the gate blocks the only way to satisfy it.",
+        "A previously selected LTCMA or baseline stays in the journey after the mandate, product range, allocation, strategic universe or implementation mapping changes, and the page then loads an assumption the server will reject.",
+        "A step state stored in sessionStorage/localStorage is read as proof of eligibility; another browser or a cleared cache shows a different chain while the saved artifacts are unchanged.",
+        "A page reads params.get(x) ?? journey.x, so the same URL shows a different selection per browser or tab and the user cannot tell what is selected or when it was chosen.",
+        "The page renders nothing selected because the URL carries no identity, yet the flow bar still marks the step done and unlocks the next one, because StageLayout ready/done read allocationJourney instead of the address bar."
+      ],
+      "trigger_actions": [
+        "add or re-gate a step in the StageLayout allocation flow bar",
+        "add a new identity field to AllocationJourney or change its cascade",
+        "change allocationJourneyPath destinations or query identity",
+        "move a selection between the standalone centre page and the workspace that consumes it",
+        "read an identity (mandate, universe, strategic_universe, mapping, version, alloc, cma, baseline, decision, view) on a pre-investment page",
+        "change how the StageLayout flow bar derives ready, done or its step links"
+      ],
+      "related_paths": [
+        "frontend/src/app/allocationJourney.ts",
+        "frontend/src/layouts/StageLayout.tsx",
+        "frontend/src/pages/StrategicAllocationWorkspace.tsx",
+        "frontend/src/pages/ProductPoolSelection.tsx",
+        "backend/strategic_allocation/service.py",
+        "backend/strategic_allocation/policy_gate.py",
+        "docs/frontend/README.md",
+        "frontend/src/components/ResumeResearch.tsx",
+        "frontend/src/pages/TacticalAllocationWorkspace.tsx",
+        "frontend/src/pages/PortfolioConstruction.tsx"
+      ],
+      "affected_modules": [
+        "frontend_app_shell",
+        "frontend_allocation_workflows",
+        "strategic_allocation_policy"
+      ],
+      "blast_radius": [
+        "pre-investment step navigation",
+        "resumed research identity",
+        "perceived eligibility of a saved policy"
+      ],
+      "check_before_edit": [
+        "A step's ready must agree with its real destination. allocationJourneyPath redirects the products step back to TAA when no handoff draft exists; both sides read productsHandoffReady so a lit step always lands where it says.",
+        "Do not gate a step on state that is chosen inside that same step. LtcmaSelection lives in the SAA policy page, so SAA ready stays on scope readiness; the LTCMA gate is enforced server-side by preview_policy (SAA_MANDATE_CMA_BASIS, SAA_MANDATE_EXPIRED, SAA_CMA_SOURCE_CHANGED).",
+        "Any new upstream identity must be added to the journeyFrom whitelist and to the cascade in updateAllocationJourney, or a stale reference outlives the scope change that invalidated it. CMA_SCOPE_KEYS lists the identities an LTCMA is bound to.",
+        "The flow bar is guidance, not authorization. Journey state is per-browser; the authoritative checks are preview_policy and policy_gate.require_policy_application, and in-page blockers such as mandateBlockedReason.",
+        "Identities come from the URL only; allocationJourney is a bookmark. Never fall back to journey.x for an identity, and never let navigation write the journey: updateAllocationJourney cascades, so writing mandateId: undefined on a bare-URL page deletes ltcmaId, baselineId and taaRunId. Resume is offered explicitly by ResumeResearch. Only date defaults (researchDate, endDate), the portfolioResearchImport handoff payload, and save-time write-preserve keep reading the journey.",
+        "The flow bar must share the page's source of truth. StageLayout computes bookmarkSteps from the journey, then marks the bar detached when the current page is a pre-investment flow step whose URL carries none of RESUME_IDENTITY_KEYS (LTCMA carries its identity in /ltcma/:id); a detached bar renders as not started, builds its links from an empty journey and shows the research header as unselected. Overview, tool pages and /product-research/pools stay bookmark annotations."
+      ],
+      "safe_observation_methods": [
+        "npx vitest run src/layouts/StageLayout.test.tsx src/app/allocationJourney.test.tsx",
+        "rg -n \"allocationJourneyPath|productsHandoffReady\" frontend/src",
+        "npx vitest run src/components/ResumeResearch.test.tsx",
+        "Render StageLayout at a bare flow-step URL with a populated allocation-journey:v1 and assert the next step is a blocked span, not a link; fixtures that write identity only into the journey are stale under this contract."
+      ]
+    },
+    {
+      "id": "P28",
+      "title": "daily_return_alignment_uses_common_adjacent_periods_not_full_sse_coverage",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "cross_calendar_proxy_blocks_the_whole_screening",
+        "multi_day_return_annualised_as_a_daily_return",
+        "silent_sample_shrink_without_reporting",
+        "whole_market_data_gap_hidden_by_intersection"
+      ],
+      "symptoms": [
+        "Scope screening stays 暂无法判断 with LTCMA_PROXY_GAPS and renders no frontier or candidate point, because one research proxy trades on another exchange calendar (SPX misses 39 SSE open days over five years and adds 78 days SSE is closed).",
+        "Evidence building raises before the frontier solver runs, so result.frontier stays null and the UI shows only the reason text.",
+        "Intersecting dates alone silently turns a period that spans a gap into one 'daily' return, which then gets annualised by 252 and inflates volatility."
+      ],
+      "trigger_actions": [
+        "add or change a research proxy whose source trades on a non-SSE calendar",
+        "relax or tighten the daily alignment rules in CmaEvidence._proxies, CmaEvidence._product, ReferenceInputs._input_calculation or StrategicAllocationService._validate_daily_risk_axis",
+        "change TacticalAllocationData.load_data's strict intersection, period_complete or excluded_dates",
+        "change the 252 annualisation basis or the observation count reported to the UI"
+      ],
+      "related_paths": [
+        "backend/strategic_allocation/cma_evidence.py",
+        "backend/strategic_allocation/reference_inputs.py",
+        "backend/strategic_allocation/service.py",
+        "backend/strategic_allocation/scope_feasibility.py",
+        "backend/tactical_allocation/data.py",
+        "frontend/src/components/strategic-scope/ScopeFeasibility.tsx",
+        "docs/pre-investment/ltcma.md",
+        "docs/pre-investment/risk-scale.md"
+      ],
+      "affected_modules": [
+        "strategic_allocation_policy",
+        "tactical_allocation_workbench",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "LTCMA historical evidence",
+        "SAA historical risk reference",
+        "risk scale frozen reference inputs",
+        "scope screening frontier"
+      ],
+      "check_before_edit": [
+        "Alignment is two rules, not one. common_return_periods intersects the source dates AND keeps only periods that are one adjacent step in every source's own dates; a period that spans a gap for any source is dropped whole. Dropping only by date intersection would annualise multi-day returns as daily.",
+        "A trading day missing from every source is a data gap, not a calendar difference: adjacency cannot see it, so LTCMA_PROXY_GAPS / SAA_RISK_GAPPED_DATES / REFERENCE_SSE_CALENDAR_GAP still block it. Only apply that guard when at least one source trades solely on SSE open days, otherwise an all-overseas scope is rejected for Chinese holidays.",
+        "The holding path still advances over every common day; only the sample excludes the cross-day periods, so buy_and_hold and monthly rebalancing keep their drift.",
+        "Any dropped period must be reported: observations, excluded_return_periods and missing_trading_days travel with the sample and the screening panel renders them.",
+        "Before intersecting proxy dates, verify each source covers the requested outer window against the known SSE boundary days. Do not restrict the completeness check to the already shortened intersection. Report source support and require an explicit window change when boundary coverage is unproven; do not invent foreign holiday evidence. Internal cross-calendar intersections remain supported.",
+        "LTCMA transition estimation must receive period_contiguous from the retained return intervals on both product and strategic proxy paths. A preceding return end must equal the next start; row adjacency alone is insufficient after filtering. Training counts, regularization validation and complete holdout horizons must honor the mask. Persist the int64 0/1 evidence and hash; keep endpoint states and ordinary return-moment samples unchanged.",
+        "Long-term scenario mean-error bootstrap and complete-episode diagnostics must also consume period_contiguous. Estimate lag-one dependence only on connected known-state pairs. For gapped returns, resample disjoint blocks bounded by each continuous segment, retain short tails, normalize by resampled known-row counts and disclose singleton fallback; never fabricate adjacency from retained row positions. Continuous samples retain their circular-block contract; frozen histories are not refitted."
+      ],
+      "safe_observation_methods": [
+        "python -m pytest tests/test_scope_feasibility.py tests/test_risk_scale_reference.py tests/test_ltcma_evidence.py tests/test_ltcma_statistics.py tests/test_strategic_allocation.py -q",
+        "rg -n \"common_return_periods|common_daily_periods|period_complete\" backend",
+        "Compare a proxy's dates against SSE open days from data/trade_day_df.parquet before assuming a coverage error is a bug"
+      ]
+    },
+    {
+      "id": "P29",
+      "title": "shared_ui_primitive_hides_mascot_from_the_filename_forbidden_zone_check",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "static_check_bypassed_through_indirection",
+        "mascot_rendered_next_to_allocation_data",
+        "two_mascots_on_one_screen"
+      ],
+      "symptoms": [
+        "check_frontend_design.mjs reports mascot-in-forbidden-zone 0 while an Allocation/Portfolio/Risk named page really does render the mascot, because the page imports ui.tsx's LoadingPanel instead of Mascot.",
+        "The 使用处 list in the same report stops naming the pages that actually show it."
+      ],
+      "trigger_actions": [
+        "wrap Mascot in a shared primitive in frontend/src/components/ui.tsx",
+        "adopt LoadingPanel or EmptyState on a page whose filename matches the forbidden-zone regex",
+        "add a second waiting state to a page that already shows one"
+      ],
+      "related_paths": [
+        "scripts/check_frontend_design.mjs",
+        "frontend/src/components/ui.tsx",
+        "frontend/src/components/Mascot.tsx",
+        "docs/frontend/README.md"
+      ],
+      "affected_modules": [
+        "frontend_allocation_workflows",
+        "frontend_app_shell"
+      ],
+      "blast_radius": [
+        "pre-investment 01-09 loading states",
+        "frontend design static check"
+      ],
+      "check_before_edit": [
+        "The forbidden-zone rule matches file names, not render trees. Any new shared primitive that renders Mascot must be added to the detection in check_frontend_design.mjs, together with its opt-out prop (mascot={false}), or the mechanical barrier silently stops working.",
+        "Exceptions live in MASCOT_LOADING_EXCEPTIONS and must be listed in docs/frontend/README.md 15.3 item 8 at the same time; the exemption only covers LoadingPanel, direct Mascot or a mascot-bearing EmptyState in the same file still counts.",
+        "15.3 item 5 allows one mascot per screen. Before adopting LoadingPanel check the other waiting states on that page are mutually exclusive with it; if they can show together, pass mascot={false} on the second one.",
+        "A waiting state that sits next to numbers already on screen (a recalculation over a previous result, a panel inside a page that already rendered data) keeps plain text: 15.2 item 1 forbids the mascot beside values."
+      ],
+      "safe_observation_methods": [
+        "node scripts/check_frontend_design.mjs   # 看 mascot-in-forbidden-zone 与 使用处 列表",
+        "rg -n \"<LoadingPanel|<EmptyState|<Mascot\" frontend/src",
+        "npx vitest run src/components/ui.test.tsx"
+      ]
+    },
+    {
+      "id": "P30",
+      "title": "use_allocation_draft_ignores_its_initial_value_when_the_same_key_already_has_a_draft",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "stale_draft_restored_into_a_new_study",
+        "draft_identity_missing_from_the_url"
+      ],
+      "symptoms": [
+        "Clicking 「添加投资目标与约束」/「新建研究范围」 opens a form already filled with the previous, unfinished study.",
+        "The page's own initializer clearly returns a blank object for the new-entry branch, yet the blank never reaches the screen."
+      ],
+      "trigger_actions": [
+        "call useAllocationDraft with a constant scope and express 'start blank' inside the initial-value function",
+        "add a new 「新建」 entry link without a per-render token in the URL",
+        "strip the fresh token from the URL after mount while the draft key still depends on it"
+      ],
+      "related_paths": [
+        "frontend/src/app/allocationJourney.ts",
+        "frontend/src/pages/InvestmentObjectivesCenter.tsx",
+        "frontend/src/pages/InvestmentObjectivesWorkspace.tsx",
+        "frontend/src/pages/ProductPoolSelection.tsx",
+        "frontend/src/pages/ProductPoolWorkspacePage.tsx",
+        "frontend/src/components/strategic-scope/StrategicScopeWorkspace.tsx"
+      ],
+      "affected_modules": [
+        "frontend_allocation_workflows",
+        "frontend_app_shell"
+      ],
+      "blast_radius": [
+        "pre-investment 01 objectives editor",
+        "pre-investment 02 research scope editor"
+      ],
+      "check_before_edit": [
+        "useAllocationDraft reads localStorage first: decode(stored(key), fresh()) only uses the initial value as a fallback. Identity belongs in the scope key, never in the initializer - that is what the hook's own comment means by 'scope must include the explicit identity'.",
+        "A 「新建」 link must carry a token that is recomputed on every render (crypto.randomUUID().slice(0, 8) in 01, Date.now() in 02); a constant token makes the second click reopen the first click's abandoned draft. A frozen test clock also freezes Date.now(), so a clock-based token is not unique under page.clock.setFixedTime.",
+        "Keep the token in the URL while editing, otherwise the key flips on the next render and the stale draft comes back; on save write the confirmed draft to the stable key before switching the URL to ?view=<id>.",
+        "The stable key still serves the 'resume the unfinished draft' entry (bare /objectives/new), so do not clear it when a fresh study starts."
+      ],
+      "safe_observation_methods": [
+        "rg -n \"useAllocationDraft\\(\" frontend/src   # 每个 scope 是否带身份",
+        "npx vitest run src/pages/InvestmentObjectivesWorkspace.test.tsx src/pages/InvestmentObjectivesCenter.test.tsx",
+        "浏览器：列表页点「添加」→ 填一半 → 返回列表 → 再点「添加」，第二次必须是空表单"
+      ]
+    },
+    {
+      "id": "P31",
+      "title": "a_failed_read_that_falls_back_to_the_empty_state_tells_the_user_there_is_no_data",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "failed_read_rendered_as_empty_state",
+        "mascot_state_reused_across_two_semantics"
+      ],
+      "symptoms": [
+        "The backend is unreachable, yet the page says 「还没有投资目标与约束」 / 「范围库读取失败；请重试。」 inside an otherwise empty table, so the user goes off to create a record that may already exist.",
+        "The failure reason is a single red line far from the content area, or it appears twice - once in the page-level Feedback and once in the panel."
+      ],
+      "trigger_actions": [
+        "render a load failure as a bare red line plus the normal empty state",
+        "pass a load error into DataTable's `empty` text or into EmptyState",
+        "show the same error message both in the page-level Feedback and in the panel that replaces the content"
+      ],
+      "related_paths": [
+        "frontend/src/components/ui.tsx",
+        "frontend/src/components/Mascot.tsx",
+        "scripts/check_frontend_design.mjs",
+        "docs/frontend/README.md",
+        "frontend/src/pages/InvestmentObjectivesCenter.tsx",
+        "frontend/src/pages/LtcmaCenter.tsx",
+        "frontend/src/pages/ProductPoolSelection.tsx",
+        "frontend/src/pages/RiskScaleWorkspace.tsx",
+        "frontend/src/pages/LanguageTerminology.tsx"
+      ],
+      "affected_modules": [
+        "frontend_allocation_workflows",
+        "frontend_app_shell"
+      ],
+      "blast_radius": [
+        "pre-investment 01-06 read failures",
+        "product research trend panel",
+        "settings catalogues, editors and nested research workspaces"
+      ],
+      "check_before_edit": [
+        "整块区域读取失败、且该区域此刻没有别的内容时用 ui.tsx 的 ErrorPanel（居中 error 形象 + 失败原因 + 重试），它与 LoadingPanel 占同一块预留高度、互斥出现；不要把失败塞进 EmptyState 或 DataTable 的 empty 文案里，「还没有数据」会把「没读出来」说成「本来就没有」。",
+        "判定条件是「失败且该区域没有内容」（loadFailed / catalogFailed），不是「有 error 就换面板」：同一个 error state 往往同时承载保存、删除、重算这些操作失败，那时业务数值还在屏幕上，按设计准则 15.2 第 1 条只能是纯文字。",
+        "换成面板后要把同一条消息从顶部 Feedback 里摘掉（只留 PIT、研究日这类仍然成立的提示），否则一条失败原因出现两次。",
+        "ErrorPanel 与 LoadingPanel 都算吉祥物使用处：文件名命中 check_frontend_design.mjs 的 MASCOT_FORBIDDEN 时，必须在 MASCOT_PANEL_EXCEPTIONS 里登记并同步设计准则 15.3 第 8 条，直接用 Mascot 或带形象的 EmptyState 仍然算违规。",
+        "error 与 noresult 共用 0011 抓头疑惑姿势，是 15.1 一对一契约里唯一写明的例外（用户 2026-09-23 要求读取失败展示带问号的形象）；换姿势要按 15.3 的 magick 管线替换同名资产，不要改 Mascot.tsx 的状态键或在代码里引用 images/*.png 原图。",
+        "设置页的初始读取错误使用 ErrorPanel 默认可读说明与 onRetry，不向用户直出 HTTP/数据库内部报错。业务校验失败仍保留可操作原因；保存、计算失败不得清空草稿或替换已有结果。子页读取不得吞掉异常后再由父 action 宣布加载成功。"
+      ],
+      "safe_observation_methods": [
+        "rg -n \"role=\\\"alert\\\"\" frontend/src | rg -i \"读取|failed|catalog\"   # 还有哪些整块读取失败是纯红字",
+        "npx vitest run src/components/ui.test.tsx",
+        "node scripts/check_frontend_design.mjs   # mascot-in-forbidden-zone 必须仍为 0",
+        "浏览器：Playwright 里 page.route('**/api/**', r => r.abort('failed'))，看页面中间是否给出形象、原因和重试，且同屏只有 1 个形象"
+      ]
+    },
+    {
+      "id": "P32",
+      "title": "ltcma_study_name_uniqueness",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "indistinguishable_research_versions",
+        "late_publication_rejection"
+      ],
+      "symptoms": [
+        "Two saved LTCMA rows carry the same auto-generated name and cannot be told apart in the center list.",
+        "A fixture or test publishes a second LTCMA from the shared definition and fails with CMA_NAME_CONFLICT.",
+        "The user renames a study at the confirm step, which clears the preview and forces a full recompute."
+      ],
+      "trigger_actions": [
+        "publish, copy or edit an LTCMA version",
+        "add or change backend test fixtures that publish more than one LTCMA",
+        "change the LTCMA input step layout or study-options payload"
+      ],
+      "related_paths": [
+        "backend/strategic_allocation/cma_service.py",
+        "backend/tests/test_ltcma_lifecycle.py",
+        "backend/tests/test_ltcma_statistics.py",
+        "backend/tests/test_ltcma_evidence.py",
+        "frontend/src/pages/LtcmaWorkspace.tsx",
+        "frontend/src/components/ltcma/LtcmaInputFields.tsx",
+        "frontend/src/services/ltcma.ts",
+        "frontend/src/pages/LtcmaCenter.test.tsx",
+        "frontend/e2e/ltcma.spec.ts"
+      ],
+      "affected_modules": [
+        "strategic_allocation_policy",
+        "frontend_allocation_workflows"
+      ],
+      "blast_radius": [
+        "LTCMA publication acceptance",
+        "backend fixtures that publish several studies in one workspace",
+        "LTCMA input-step layout and study-options payload"
+      ],
+      "check_before_edit": [
+        "Names are unique across versions that are still referable, compared after trimming and case folding; retiring a version releases its name. The check runs inside the governance lock in CmaResearchService.publish and after the idempotent replay, so replays stay historical.",
+        "Any fixture publishing more than one LTCMA in a workspace must give each publication its own name; the shared helpers derive it from the idempotency key.",
+        "The frontend blocks the preview on a duplicate name using existing_names from /cma/study-options?section=base. That is guidance only; the backend conflict remains the authority. Renaming clears the preview, so never move the check to the confirm step."
+      ],
+      "safe_observation_methods": [
+        "/usr/bin/env PYTHONPATH=.:backend /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_ltcma_lifecycle.py backend/tests/test_ltcma_statistics.py backend/tests/test_ltcma_evidence.py -q",
+        "npm run test --prefix frontend -- --run LtcmaCenter.test.tsx"
+      ]
+    },
+    {
+      "id": "P33",
+      "title": "regime_run_cutoff_must_resolve_pit_before_async_dispatch",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "missing_asof_reads_future_data",
+        "thread_loses_request_context",
+        "frozen_result_mistaken_for_current_pit"
+      ],
+      "symptoms": [
+        "The header shows a historical PIT date while a regime preview reaches the last date on disk."
+      ],
+      "trigger_actions": [
+        "edit historical regime compute routes, preview workers, cutoff controls or frozen result views"
+      ],
+      "related_paths": [
+        "backend/services/historical_regime_routes.py",
+        "frontend/src/pages/HistoricalRegimeWorkbench.tsx",
+        "frontend/src/pages/regime-workbench/useRegimeAsOf.ts",
+        "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.tsx",
+        "frontend/src/pages/regime-workbench/RegimeResultView.tsx",
+        "backend/tests/test_historical_regime_v2.py",
+        "frontend/src/pages/HistoricalRegimeWorkbench.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeNodePreviewPanel.test.tsx",
+        "frontend/src/pages/regime-workbench/RegimeResultView.test.tsx"
+      ],
+      "affected_modules": [
+        "backend_regime_research",
+        "frontend_regime_research"
+      ],
+      "blast_radius": [
+        "regime classification inputs, evaluation targets, saved research cutoff and chart provenance"
+      ],
+      "check_before_edit": [
+        "Resolve omitted as_of with the shared request context at the API boundary, before starting a thread; worker ContextVars do not carry per-tab overrides. Preserve explicit per-run dates and explicit PIT-off behavior; unreadable settings must fail rather than read all data.",
+        "Use the effective cutoff for full and node previews, saved runs, research version activation and parameter experiments. Compare actual output dates, not only request payloads or chart bounds.",
+        "Keep frozen results immutable and show their original cutoff alongside the current PIT when different. Cropping a retrospective all-data result does not make it a historical-cutoff calculation."
+      ],
+      "safe_observation_methods": [
+        "CUSTOM_INDICATOR_DATA_DIR=/private/tmp/bst-regime-pit-tests /Users/chenjunming/Desktop/myenv_312/bin/python3.12 -m pytest backend/tests/test_historical_regime_v2.py -q",
+        "npm run test --prefix frontend -- --run HistoricalRegimeWorkbench.test.tsx RegimeNodePreviewPanel.test.tsx RegimeResultView.test.tsx"
+      ]
+    },
+    {
+      "id": "P34",
+      "title": "pre_investment_version_state_must_come_from_shared_versioning_module",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "superseded_upstream_accepted_downstream",
+        "list_selectable_but_calculation_rejects",
+        "duplicate_current_version_logic"
+      ],
+      "symptoms": [
+        "A list lets users select an artifact whose objective or scope was revised, and SAA or TAA rejects it only after clicking next.",
+        "Two lists disagree on whether the same upstream version is current."
+      ],
+      "trigger_actions": [
+        "edit list endpoints, selection gates or edit flows for mandates, scopes, LTCMA, SAA, TAA or research packages"
+      ],
+      "related_paths": [
+        "backend/strategic_allocation/versioning.py",
+        "backend/strategic_allocation/cma_service.py",
+        "backend/product_pools/scope_lifecycle.py",
+        "backend/tactical_allocation/service.py",
+        "frontend/src/components/versioning.tsx",
+        "docs/pre-investment/versioning.md",
+        "backend/tests/test_cma_upstream_group.py"
+      ],
+      "affected_modules": [
+        "strategic_allocation_policy",
+        "tactical_allocation_workbench",
+        "pre_investment_implementation"
+      ],
+      "blast_radius": [
+        "all pre-investment list pages and SAA/TAA/package entry gates"
+      ],
+      "check_before_edit": [
+        "Derive version/upstream/usable through ResearchVersions instead of new supersedes scans.",
+        "Superseded remains a historical version identity. Retiring the series head must propagate blocked usability to older versions and all dependants; a superseded ref with no latest_id is not upgradeable. Scope equivalence requires matching economic fingerprints AND canonical weight limits; compare frozen definitions at read time without changing old hashes.",
+        "NIW prior menus and restored selections must honor usable.status before numerical compatibility checks. A stale or blocked prior must not be offered as selectable merely because retired is false."
+      ],
+      "safe_observation_methods": [
+        "Run backend/tests/test_cma_upstream_group.py and the SaaCenter / LtcmaCenter vitest suites."
       ]
     }
   ]

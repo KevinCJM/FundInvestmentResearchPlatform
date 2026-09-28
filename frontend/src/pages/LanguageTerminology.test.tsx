@@ -166,3 +166,17 @@ describe('code-first multilingual management', () => {
     await waitFor(() => expect(api.applyTranslationImport).toHaveBeenCalledWith(0, pack, 'a'.repeat(64)))
   })
 })
+
+it('历史标签页读取失败不展示空表，重试后恢复历史', async () => {
+  vi.mocked(api.getTranslationHistory).mockRejectedValueOnce(new Error('database unavailable'))
+  const user = userEvent.setup()
+  const view = render(<LanguageTerminology />)
+  await screen.findByRole('grid', { name: '系统翻译（内置只读）' })
+  await user.click(screen.getByRole('tab', { name: '修改历史' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法读取数据，请重试。')
+  expect(view.container.querySelector('img[src*="mascot-error"]')).not.toBeNull()
+  expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '重试' }))
+  expect(await screen.findByRole('table')).toBeInTheDocument()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})

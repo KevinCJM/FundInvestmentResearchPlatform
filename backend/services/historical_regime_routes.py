@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from custom_indicators.errors import ConflictError, IndicatorDomainError, NotFoundError
 from historical_regimes.service import HistoricalRegimeService
 from historical_regimes.v2_service import RegimeGraphV2Service
+from pit.context import PitContextError, resolve_request_context
 from services.custom_indicator_routes import StableValidationRoute, indicator_service
 
 
@@ -160,6 +161,14 @@ def _call(method, *args, **kwargs):
         raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
 
 
+def _run_as_of(stated: Optional[str], service) -> Optional[str]:
+    # Resolve before queuing: preview workers do not inherit request ContextVars.
+    try:
+        return resolve_request_context(service.market_data_dir, stated).as_of
+    except PitContextError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 from historical_regimes.event_routes import install_event_routes
 
 install_event_routes(router, lambda: regime_graph_v2_service, _call)
@@ -249,7 +258,7 @@ def create_regime_graph_preview(request: RegimeGraphPreviewRequest):
         request.definition,
         compile_token=request.compile_token,
         mode=request.mode,
-        as_of=request.as_of,
+        as_of=_run_as_of(request.as_of, regime_graph_v2_service),
         ttl_seconds=request.ttl_seconds,
         audit_temporal=request.audit_temporal,
         preview_target=request.preview_target,
@@ -398,7 +407,7 @@ def create_regime_graph_experiment(request: RegimeExperimentRequest):
         [item.model_dump() for item in request.parameter_grid],
         compile_token=request.compile_token,
         mode=request.mode,
-        as_of=request.as_of,
+        as_of=_run_as_of(request.as_of, regime_graph_v2_service),
         ranking_metric=request.ranking_metric,
     )
 
@@ -454,7 +463,7 @@ def run_historical_regime(request: RunRequest):
             regime_graph_v2_service.run_saved,
             request.definition,
             request.mode,
-            request.as_of,
+            _run_as_of(request.as_of, regime_graph_v2_service),
             request.compile_token,
         )
     return _call(_raise_v1_run_read_only)
@@ -466,22 +475,22 @@ def prepare_historical_regime_formula(request: FormulaPrepareRequest):
         historical_regime_service.prepare_formula,
         request.definition,
         request.mode,
-        request.as_of,
+        _run_as_of(request.as_of, historical_regime_service),
     )
 
 
 @router.post("/api/historical-regimes/research-versions")
 def enable_regime_research_version(request: ResearchVersionRequest):
     return _call(regime_graph_v2_service.enable_research_version, request.definition,
-                 request.mode, request.as_of, request.compile_token)
+                 request.mode, _run_as_of(request.as_of, regime_graph_v2_service), request.compile_token)
 
 
 @router.get("/api/historical-regimes/runs")
-def list_historical_regime_runs(definition_id: Optional[str] = None):
+def list_historical_regime_runs(definition_id: Optional[str] = None, summary: bool = False):
     if _run_stores_are_shared():
-        return {"items": _call(regime_graph_v2_service.list_runs, definition_id)}
-    classic = _call(historical_regime_service.list_runs, definition_id)
-    graph = _call(regime_graph_v2_service.list_runs, definition_id)
+        return {"items": _call(regime_graph_v2_service.list_runs, definition_id, summary)}
+    classic = _call(historical_regime_service.list_runs, definition_id, summary)
+    graph = _call(regime_graph_v2_service.list_runs, definition_id, summary)
     merged = {str(item.get("id")): item for item in [*classic, *graph]}
     return {"items": list(merged.values())}
 

@@ -10,7 +10,7 @@ from .risk_scale_contracts import (
     PreviewRequest, ConfirmRequest, DraftWrite, DraftUpdate, RevisionRequest, ActivateRequest, RetireRequest,
     CompareRequest, ClassifyRequest, PreviewResponse, VersionView, CatalogResponse, DefaultsResponse,
     DefaultBinding, DraftView, Capabilities, CompareResponse, ClassifyResponse, ReferencePreview, ReferenceVersion,
-    SourceCatalog, Summary, StudyOptionsResponse, DeleteResponse, ErrorResponse,
+    SourceCatalog, SourceLabelsRequest, SourceLabelsResponse, Summary, StudyOptionsResponse, DeleteResponse, ErrorResponse,
 )
 from .reference_contracts import ReferenceInputRequest, ConfirmReferenceInput
 from .reference_inputs import problem
@@ -118,6 +118,10 @@ def build_router(service):
         return call(service.classify, identifier, body)
 
     shared = '/reference-inputs'
+
+    @router.post(shared + '/labels', response_model=SourceLabelsResponse)
+    def source_labels(body: SourceLabelsRequest):
+        return call(service.references.sources.labels, body.series_ids)
 
     @router.get(shared + '/catalog', response_model=SourceCatalog)
     def source_catalog(kind: str = Query('index', pattern='^(index|etf|fund)$'), q: str = Query('', max_length=120),

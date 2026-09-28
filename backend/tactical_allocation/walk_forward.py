@@ -121,6 +121,7 @@ def evaluate_walk_forward(request, data, signals, base, lower, upper, caps, grou
             max_tracking_error=request.max_tracking_error, max_turnover=request.max_turnover,
             objective=request.objective, selected_candidate_id=None if request.search else "scale-1",
             validation_start_index=validation_start - start,
+            period_years=None if "period_years" not in data else data["period_years"][start:end],
             allow_infeasible_selected=not request.search,
             decision_policy=request.decision_policy,
             clock=None if plan is None else {k: v[start:end] for k, v in plan.items()},

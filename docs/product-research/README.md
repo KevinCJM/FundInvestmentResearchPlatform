@@ -8,7 +8,7 @@
 | [ETF 产品择时研究](timing.md) | ETF 择时图、训练/验证和版本绑定 |
 | [产品走势图与时序指标](trend-chart.md) | 趋势图、指标叠加、轴和批量请求 |
 
-本页是单产品标量分析及跨产品对比的主要入口。定义来自[指标中心](../indicators/README.md)，时序曲线见[走势图](trend-chart.md)，情景统计见[产品情景](scenario-research.md)。
+本页是单产品标量分析及跨产品对比的主要入口。定义来自[行情指标中心](../indicators/README.md)，时序曲线见[走势图](trend-chart.md)，情景统计见[产品情景](scenario-research.md)。
 
 ## 如何使用
 

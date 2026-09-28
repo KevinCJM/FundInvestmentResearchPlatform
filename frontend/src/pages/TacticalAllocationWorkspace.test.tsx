@@ -41,6 +41,28 @@ beforeEach(() => { vi.spyOn(ResearchUI, 'today').mockReturnValue('2026-09-12') }
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); sessionStorage.clear(); localStorage.clear() })
 
 describe('TacticalAllocationWorkspace', () => {
+  it('无实际产品时允许计算和保存 TAA，并明确区分产品应用限制', async () => {
+    const baseline = { ...taaBaseline, alloc_name: null, strategic_universe_id: 'scope-unmapped',
+      implementation_status: 'incomplete', implementation_mapping_id: null, apply_eligible: false,
+      assets: taaBaseline.assets.map(asset => ({ ...asset, products: [] })) }
+    const { user, fetchMock } = setup((path, body) => {
+      if (path.endsWith('/catalog')) return ok({ ...taaCatalog, allocations: [], baselines: [baseline] })
+      if (path.endsWith('/baselines/SAA-1')) return ok(baseline)
+      if (path.endsWith('/preview')) return ok({ ...taaPreview, baseline, request: body })
+      if (path.endsWith('/decisions') && body) return ok({ id: 'research-only', name: body.name, created_at: '2026-09-12',
+        preview: { ...taaPreview, baseline, request: body.request }, scenarios: [] })
+    }, '/pre-investment/taa?baseline=SAA-1')
+    expect(await screen.findByText(/无需先配置实际交易产品/)).toBeVisible()
+    await calculate(user)
+    await user.click(screen.getByRole('tab', { name: '版本与审计' }))
+    expect(screen.getByRole('button', { name: '保存研究版本' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: '保存研究版本' }))
+    await screen.findByRole('button', { name: '当前研究版本已保存' })
+    expect(screen.getByRole('button', { name: '带入产品配置' })).toBeDisabled()
+    expect(screen.getByText(/尚未配置实际交易产品：/)).toBeVisible()
+    expect(fetchMock.mock.calls.some(([path]) => String(path).endsWith('/product-allocation'))).toBe(false)
+  })
+
   it.each(['baseline', 'decision'])('从 %s 恢复完整的冻结上游引用，返回02不混入另一研究', async entry => {
     updateAllocationJourney({ mandateId: 'mandate-A', strategicUniverseId: 'scope-A', implementationMappingId: 'map-A', universeId: 'domain-A', baselineId: 'baseline-A', taaRunId: 'run-A' })
     const baseline = { ...taaBaseline, strategic_universe_id: 'scope-B', implementation_mapping_id: 'map-B',
@@ -51,7 +73,7 @@ describe('TacticalAllocationWorkspace', () => {
     `/pre-investment/taa?${entry === 'baseline' ? 'baseline=SAA-1' : 'decision=run-B'}`)
     await waitFor(() => expect(readAllocationJourney()).toMatchObject({
       mandateId: 'mandate-B', strategicUniverseId: 'scope-B', implementationMappingId: 'map-B',
-      universeId: taaBaseline.universe_snapshot_id, allocationName: taaBaseline.alloc_name, baselineId: 'SAA-1',
+      universeId: taaBaseline.universe_snapshot_id, allocationName: taaBaseline.alloc_name!, baselineId: 'SAA-1',
     }))
     expect(readAllocationJourney().taaRunId).toBe(entry === 'decision' ? 'run-B' : undefined)
     const query = new URL(allocationJourneyPath('pool'), 'http://localhost').searchParams
@@ -60,7 +82,7 @@ describe('TacticalAllocationWorkspace', () => {
 
   it.each(['baseline', 'decision'])('从 %s 恢复原产品基线时显式清除无关的战略引用', async entry => {
     // Same domain/allocation: upstream identity must still be cleared explicitly.
-    updateAllocationJourney({ mandateId: 'mandate-A', strategicUniverseId: 'scope-A', implementationMappingId: 'map-A', universeId: taaBaseline.universe_snapshot_id!, allocationName: taaBaseline.alloc_name, baselineId: 'baseline-A' })
+    updateAllocationJourney({ mandateId: 'mandate-A', strategicUniverseId: 'scope-A', implementationMappingId: 'map-A', universeId: taaBaseline.universe_snapshot_id!, allocationName: taaBaseline.alloc_name!, baselineId: 'baseline-A' })
     const saved = { id: 'original', name: '原产品研究', created_at: '2026-09-12', preview: taaPreview, scenarios: [] }
     setup(path => path.endsWith('/decisions/original') ? ok(saved) : undefined,
       `/pre-investment/taa?${entry === 'baseline' ? 'baseline=SAA-1' : 'decision=original'}`)
@@ -68,7 +90,7 @@ describe('TacticalAllocationWorkspace', () => {
     expect(readAllocationJourney().mandateId).toBeUndefined()
     expect(readAllocationJourney().strategicUniverseId).toBeUndefined()
     expect(readAllocationJourney().implementationMappingId).toBeUndefined()
-    expect(allocationJourneyPath('pool')).toBe('/pre-investment/product-pool?universe=UNIVERSE-1')
+    expect(allocationJourneyPath('pool')).toBe('/pre-investment/product-pool/new?universe=UNIVERSE-1')
   })
 
   it('显示实际有效信号期数，零信号不能搜索且固定假设必须明确选择', async () => {
@@ -127,7 +149,7 @@ describe('TacticalAllocationWorkspace', () => {
   })
 
   it('修改 TAA 决策日期不会冒充上游范围研究日', async () => {
-    updateAllocationJourney({ universeId: taaBaseline.universe_snapshot_id!, allocationName: taaBaseline.alloc_name, baselineId: taaBaseline.id, researchDate: '2026-09-10' })
+    updateAllocationJourney({ universeId: taaBaseline.universe_snapshot_id!, allocationName: taaBaseline.alloc_name!, baselineId: taaBaseline.id, researchDate: '2026-09-10' })
     const { user } = setup()
     await screen.findByText('本次准备怎么配？')
     await user.click(screen.getByRole('button', { name: '修改日期与费用' }))
@@ -465,7 +487,7 @@ it.each([
     states: [{ id: 'BearRef', label: '参考压力' }, { id: 'BullRef', label: '参考正常' }],
     publications: [{ id: 'ref-publication', usage, run_id: 'reference-run', definition_revision: 1, run_content_hash: refHash }], calculation_audit: taaExecution }
   const { user, fetchMock } = setup(path => {
-    if (path === '/api/historical-regimes/runs') return ok({ items: [run] })
+    if (path === '/api/historical-regimes/runs?summary=true') return ok({ items: [run] })
     if (path.endsWith('/runs/mapped-run')) return ok(run)
     if (path.endsWith('/runs/reference-run')) return ok(reference)
   }, '/pre-investment/taa?baseline=SAA-1')

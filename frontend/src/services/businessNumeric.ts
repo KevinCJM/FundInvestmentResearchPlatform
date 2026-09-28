@@ -1,3 +1,4 @@
+import { systemText } from '../i18n/runtime'
 import {
   assertNativeNumericalExecution,
   type NativeNumericalExecutionAudit,
@@ -61,9 +62,9 @@ async function requestBusinessNumeric<T extends { execution: BusinessNumericExec
   })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new Error(payload?.detail || `业务数值内核返回错误 ${response.status}`)
+    throw new Error(payload?.detail || systemText('preInvestment.businessNumeric.businessNumericKernelReturnedError', { p0: response.status }))
   }
-  assertNativeNumericalExecution(payload?.execution, '业务数值内核')
+  assertNativeNumericalExecution(payload?.execution, systemText('preInvestment.businessNumeric.businessNumericKernel'))
   return payload as T
 }
 

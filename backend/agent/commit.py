@@ -48,6 +48,8 @@ def _same_definition(left, right):
 def preview(*, store: Any, session_id: str, request: CommitPreviewRequest, service: Any) -> dict[str, Any]:
     state = store.read(session_id)
     assert_mutable(state)
+    if state.get("scope") == "scenario_center":
+        raise AgentError("AGENT_TOOL_DOMAIN_MISMATCH", "情景草稿请应用到情景编辑器后保存。", status_code=409)
     base_revision = state["session_revision"]
     draft = state.get("draft") or {}
     if not draft.get("valid"):

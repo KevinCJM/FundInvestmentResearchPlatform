@@ -47,7 +47,7 @@ function installFetch(
       return response({ default_start: '2024-01-02', count: 30 })
     }
     if (url.startsWith('/api/load-allocation')) return response(allocation)
-    if (url === '/api/historical-regimes/runs') return response({ items: historicalRuns })
+    if (url === '/api/historical-regimes/runs?summary=true') return response({ items: historicalRuns })
     if (url === '/api/strategy/equal-weights') {
       expect(init?.method).toBe('POST')
       expect(JSON.parse(String(init?.body))).toEqual({ asset_count: 3, max_leverage: 0 })
@@ -122,7 +122,8 @@ describe('ClassAllocation fixed-signature equal weights', () => {
       '/api/tactical-allocation/baselines': { id: 'saa-frozen', name: '已冻结基线' },
     })
     const user = userEvent.setup()
-    render(<MemoryRouter><ClassAllocation /></MemoryRouter>)
+    // 页面身份只认地址栏：范围要写在 URL 上，否则保存基线会把旅程当成"换了范围"而级联清空。
+    render(<MemoryRouter initialEntries={['/pre-investment/saa/allocation-lab?universe=range-test']}><ClassAllocation /></MemoryRouter>)
     await loadAllocation(user)
     fireEvent.change(screen.getByLabelText('研究区间结束'), { target: { value: '2026-09-04' } })
     await user.click(screen.getByRole('button', { name: '固定比例' }))

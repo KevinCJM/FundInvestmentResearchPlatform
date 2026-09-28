@@ -6,13 +6,17 @@ import StrategicAllocationWorkspace from './StrategicAllocationWorkspace'
 import LtcmaWorkspace from './LtcmaWorkspace'
 import LtcmaVersionView from './LtcmaVersionView'
 import { writeAllocationDraft } from '../app/allocationJourney'
-import { cmaDefinition, cmaPreview, cmaVersion, strategicCatalog, policyPreview } from '../test/strategicAllocationFixtures'
+import { cmaDefinition, cmaPreview, cmaVersion, strategicCatalog, policyFrontierFixture, policyPreview } from '../test/strategicAllocationFixtures'
 import { ltcmaCapabilities, ltcmaOptions } from '../test/ltcmaFixtures'
 import { taaExecution } from '../test/tacticalAllocationFixtures'
 import type { BlackLittermanRequest } from '../services/cmaModelTypes'
 
 const clock = vi.hoisted(() => ({ day: '2026-09-12' as string | undefined }))
 vi.mock('../app/ResearchContext', () => ({ useResearchDay: () => clock.day }))
+vi.mock('echarts-for-react', async () => {
+  const { forwardRef } = await import('react')
+  return { default: forwardRef(() => <div />) }
+})
 const model: BlackLittermanRequest = { method: 'black_litterman', asset_ids: ['equity','bond'], as_of: cmaDefinition.as_of,
   currency: 'CNY', source: '模型风险输入来源', covariance: [[.04,0],[0,.01]], risk_covariance_basis: 'input_covariance',
   market_weights: { equity: .6, bond: .4 }, market_weight_source: '显式市场权重来源', delta: 3, tau: .05, risk_free_rate: .02, views: [] }
@@ -29,11 +33,12 @@ function install(overrides: Record<string,(init?: RequestInit)=>Promise<Response
     if (overrides[url]) return overrides[url](init)
     if(url.endsWith('/catalog')) return response(strategicCatalog)
     if(url.endsWith('/cma/capabilities')) return response(ltcmaCapabilities)
-    if(url.endsWith('/cma/study-options')) return response(ltcmaOptions)
+    if(url.split('?')[0].endsWith('/cma/study-options')) return response(ltcmaOptions)
     if(url.endsWith('/cma/cma-1')) return response({ ...cmaVersion,...result })
     if(url.endsWith('/cma/cma-1/view')) return response({ version: { ...cmaVersion,...result }, retired: false })
     if(url.endsWith('/cma/preview')) return response(result)
     if(url.endsWith('/cma')) return response({ ...cmaVersion,...result })
+    if(url.endsWith('/policy/frontier')) return response(policyFrontierFixture(JSON.parse(String(init?.body))))
     if(url.endsWith('/policy/preview')) return response({ ...policyPreview, request: JSON.parse(String(init?.body)) })
     throw new Error(url)
   })
@@ -76,6 +81,8 @@ it('discards late model preview when clock changes',async()=>{
   const user=userEvent.setup(), view=render(tree(true)); await screen.findByLabelText('生成方法')
   await user.click(screen.getByRole('checkbox',{name:/我已核对资产范围/}))
   await user.click(screen.getByRole('button',{name:'计算预览'}))
+  // 输入步骤计算中屏幕上没有结果数值，按 15.2 可以出形象；结果步骤保存时只留文字。
+  expect(view.container.querySelector('img[src*="mascot-working"]')).toBeInTheDocument()
   clock.day=undefined;view.rerender(tree(true))
   await act(async()=>resolve(await response(result)))
   expect(screen.queryByRole('table',{name:'收益与风险假设'})).toBeNull()
@@ -84,13 +91,16 @@ it('discards late model preview when clock changes',async()=>{
 
 it('switching methods in LTCMA clears stale manual values and certifications',async()=>{
   install();render(tree(true));const user=userEvent.setup(); await screen.findByLabelText('生成方法')
-  await user.selectOptions(screen.getByLabelText('生成方法'),'scenario_mixture')
+  await user.click(screen.getByLabelText('生成方法'))
+  await user.click(screen.getByRole('menuitemradio',{name:'人工情景'}))
   expect(screen.queryByLabelText('equity · 预期年收益（%）')).toBeNull()
   expect(screen.getByText(/尚无情景，请添加/)).toBeInTheDocument()
-  await user.selectOptions(screen.getByLabelText('生成方法'),'black_litterman')
+  await user.click(screen.getByLabelText('生成方法'))
+  await user.click(screen.getByRole('menuitemradio',{name:'基准与观点（BL）'}))
   expect(screen.getByLabelText('equity市场权重（%）')).toHaveValue('')
   expect(screen.getByRole('button',{name:'计算预览'})).toBeDisabled()
-  await user.selectOptions(screen.getByLabelText('生成方法'),'manual')
+  await user.click(screen.getByLabelText('生成方法'))
+  await user.click(screen.getByRole('menuitemradio',{name:'直接假设'}))
   expect(screen.getByLabelText('equity · 预期年收益（%）')).toHaveValue('')
   expect(screen.getByRole('button',{name:'读取历史风险参考'})).toBeInTheDocument()
 })
@@ -102,9 +112,11 @@ it('SAA consumes a saved model and sends optional risk budgets through its polic
   await screen.findByRole('button',{name:'比较符合目标的政策候选'})
   fireEvent.click(screen.getByLabelText('增加风险预算候选'))
   expect(screen.getByRole('button',{name:'比较符合目标的政策候选'})).toBeDisabled()
-  fireEvent.change(screen.getByLabelText('equity风险预算（%）'),{target:{value:'30'}})
-  fireEvent.change(screen.getByLabelText('bond风险预算（%）'),{target:{value:'70'}})
-  fireEvent.click(screen.getByRole('button',{name:'比较符合目标的政策候选'}))
+  fireEvent.change(screen.getByLabelText('权益风险预算（%）'),{target:{value:'30'}})
+  fireEvent.change(screen.getByLabelText('债券风险预算（%）'),{target:{value:'70'}})
+  await waitFor(()=>expect(screen.getByRole('button',{name:'比较符合目标的政策候选'})).toBeEnabled())
+  expect(screen.getByTestId('saa-frontier-chart')).toBeInTheDocument()
+  await user.click(screen.getByRole('button',{name:'比较符合目标的政策候选'}))
   await screen.findByRole('table',{name:'长期政策候选比较'})
   expect(JSON.parse(String(fetch.mock.calls.find(([u])=>String(u).endsWith('/policy/preview'))![1]?.body)).risk_budget).toEqual({equity:.3,bond:.7})
   expect(fetch.mock.calls.some(([u])=>String(u).endsWith('/cma/preview'))).toBe(false)
@@ -126,10 +138,10 @@ it('changing scope discards late saved model responses', async()=>{
   install({ '/api/strategic-allocation/cma/cma-1':()=>new Promise(done=>{resolve=done}) })
   render(tree());const user=userEvent.setup(); await screen.findByLabelText('选择已确认 LTCMA')
   await user.selectOptions(screen.getByLabelText('选择已确认 LTCMA'),'cma-1')
-  fireEvent.change(screen.getByLabelText('已保存的大类配置'),{target:{value:''}})
+  fireEvent.change(screen.getByLabelText('研究范围'),{target:{value:''}})
   await act(async()=>resolve(await response({...cmaVersion,...result})))
   expect(screen.queryByRole('button',{name:'比较符合目标的政策候选'})).toBeNull()
-  fireEvent.change(screen.getByLabelText('已保存的大类配置'),{target:{value:'股债分类'}})
+  fireEvent.change(screen.getByLabelText('研究范围'),{target:{value:'allocation:股债分类'}})
   await waitFor(()=>expect(screen.getByRole('button',{name:'选择已确认 LTCMA'})).toBeEnabled())
   expect(screen.getByLabelText('选择已确认 LTCMA')).toHaveValue('')
 })

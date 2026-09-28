@@ -551,7 +551,7 @@ describe('ProductDetail custom indicators', () => {
     vi.unstubAllGlobals()
   })
 
-  it('展示已保存指标的当前值、百分比格式并可进入指标中心', async () => {
+  it('展示已保存指标的当前值、百分比格式并可进入行情指标中心', async () => {
     const user = userEvent.setup()
     render(<MemoryRouter initialEntries={['/product/510300.SH?kind=etf']}><Routes><Route path="/product/:productId" element={<ProductDetail />} /></Routes></MemoryRouter>)
 
@@ -650,7 +650,7 @@ describe('ProductDetail custom indicators', () => {
     await user.click(screen.getByRole('button', { name: '移除区间 近 1 年' }))
     expect(screen.queryByRole('columnheader', { name: /近 1 年/ })).not.toBeInTheDocument()
     expect(screen.getByRole('columnheader', { name: /近 1 月/ })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '在指标中心分析' })).toHaveAttribute('href', '/settings/indicators-models?kind=etf&ids=510300.SH')
+    expect(screen.getByRole('link', { name: '在行情指标中心分析' })).toHaveAttribute('href', '/settings/indicators-models?kind=etf&ids=510300.SH')
 
     await user.click(screen.getByRole('button', { name: '移除指标 区间累计收益' }))
     expect(screen.queryByText('12.34%')).not.toBeInTheDocument()

@@ -6,11 +6,36 @@ import copy
 import hashlib
 import json
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
 
 from custom_indicators.errors import ConflictError, NotFoundError
 from custom_indicators.repository import AtomicJsonStore, utc_now
+from backend.data_storage import guard_path
+
+RUN_SUMMARY_KEYS = (
+    "id", "schema_version", "definition_id", "definition_revision", "definition_source",
+    "name", "mode", "created_at", "immutable", "content_hash", "definition_snapshot_hash",
+    "frequency", "as_of", "states", "causality", "governance", "publications",
+    "application_bindings", "series_summary",
+)
+
+
+def run_summary(item: dict[str, Any]) -> dict[str, Any]:
+    """List/selector metadata; frozen numerical results are fetched by ID."""
+    result = {key: item[key] for key in RUN_SUMMARY_KEYS if key in item}
+    result.update(series_included=False,
+                  series_detail_endpoint=f"/api/historical-regimes/runs/{item.get('id')}")
+    # Scenario selectors need target identities and artifact bindings, not metrics.
+    if "evaluation_results" in item:
+        result["evaluation_results"] = {key: {field: value[field] for field in ("id", "name") if field in value}
+                                        for key, value in item["evaluation_results"].items()}
+    evaluation = (item.get("artifact_manifest") or {}).get("evaluation_targets")
+    if evaluation is not None:
+        result["artifact_manifest"] = {"evaluation_targets": evaluation}
+    return copy.deepcopy(result)
 
 
 class RegimeDefinitionRepository:
@@ -81,19 +106,46 @@ class RegimeDefinitionRepository:
 class RegimeRunRepository:
     def __init__(self, path: Path) -> None:
         self.store = AtomicJsonStore(path)
+        self._read_snapshot = ContextVar(f"regime_runs:{path}", default=None)
 
-    def list(self, definition_id: Optional[str] = None) -> list[dict[str, Any]]:
-        with self.store.locked():
-            payload = self.store.read_unlocked()
-        items = payload["items"]
+    def read_items(self) -> list[dict[str, Any]]:
+        """Internal borrowed read; callers must not mutate the returned rows."""
+        guard_path(self.store.path)
+        snapshot = self._read_snapshot.get()
+        return snapshot[0] if snapshot is not None else self.store.read_unlocked()["items"]
+
+    @contextmanager
+    def read_snapshot(self, items: list[dict[str, Any]] | None = None):
+        """Pin one atomic file read during a read-only operation, never across requests."""
+        if self._read_snapshot.get() is not None:
+            yield
+            return
+        if items is None:
+            items = self.read_items()
+        by_id = {}
+        for item in items:
+            by_id.setdefault(item.get("id"), item)
+        token = self._read_snapshot.set((items, by_id))
+        try:
+            yield
+        finally:
+            self._read_snapshot.reset(token)
+
+    def list(self, definition_id: Optional[str] = None, *, summary: bool = False) -> list[dict[str, Any]]:
+        items = self.read_items()
         if definition_id:
             items = [item for item in items if item.get("definition_id") == definition_id]
-        return [copy.deepcopy(item) for item in reversed(items)]
+        return [run_summary(item) if summary else copy.deepcopy(item) for item in reversed(items)]
 
     def get(self, run_id: str) -> dict[str, Any]:
-        with self.store.locked():
-            payload = self.store.read_unlocked()
-        for item in payload["items"]:
+        guard_path(self.store.path)
+        snapshot = self._read_snapshot.get()
+        if snapshot is not None:
+            item = snapshot[1].get(run_id)
+            if item is not None:
+                return copy.deepcopy(item)
+            raise NotFoundError("REGIME_RUN_NOT_FOUND", "未找到指定的历史情景运行快照。")
+        for item in self.read_items():
             if item.get("id") == run_id:
                 return copy.deepcopy(item)
         raise NotFoundError("REGIME_RUN_NOT_FOUND", "未找到指定的历史情景运行快照。")

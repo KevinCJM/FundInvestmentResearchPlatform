@@ -1,7 +1,9 @@
 """Independent numerical references and all-model policy lifecycle tests."""
 import copy
+import json
 import time
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -313,3 +315,59 @@ def test_deadline_between_compiled_iterations_preserves_budget_status(monkeypatc
     assert result['status'] == 'time_budget' and result['iterations'] == 2
     assert result['support_cuts'] > 0 and result['weights'] is None
     assert result['phase_one_lower_bound'] is None
+
+
+@pytest.mark.parametrize('indices', [(1,), (2,), (1, 2), (2, 1), (0, 1, 2), (0, 1, 2, 3)])
+@pytest.mark.parametrize('objective', [0, 1])
+def test_near_parallel_risk_cuts_with_cash_match_independent_qcqp(indices, objective):
+    """A full-rank LP vertex must release a face, not follow KKT roundoff.
+
+    These frozen moments previously failed on both single-model anchors before
+    the common solve even started. Check actual feasibility AND optimality;
+    returning any vaguely feasible portfolio would hide the original defect.
+    """
+    fixture = json.loads((Path(__file__).with_name('fixtures') /
+        'saa_common_near_parallel.json').read_text())
+    means = np.asarray(fixture['means'])[list(indices)]
+    risks = np.asarray(fixture['covariances'])[list(indices)]
+    floor, cap = fixture['target_return'], fixture['max_volatility']
+    cash = fixture['cash_floor']
+    bounds = np.tile([0., 1.], (4, 1))
+    groups, lows, highs = np.array([[0., 0., 0., 1.]]), np.array([cash]), np.ones(1)
+    common = (bounds, groups, lows, highs, np.empty(0), floor, cap, 1., 0.)
+    constraints = [dict(type='eq', fun=lambda x: x[:4].sum()-1,
+                        jac=lambda x: np.r_[np.ones(4), 0.])]
+    references = []
+    seed = np.array([.6, .3, 0., .1, 0.])
+    for mu, cov in zip(means, risks):
+        single = [dict(type='eq', fun=lambda w: w.sum()-1, jac=lambda w: np.ones(4)),
+            dict(type='ineq', fun=lambda w: mu@w-floor, jac=lambda w: mu),
+            dict(type='ineq', fun=lambda w: cap**2-w@cov@w, jac=lambda w: -2*cov@w)]
+        ref = minimize(lambda w: -mu@w, seed[:4], jac=lambda w: -mu, method='SLSQP',
+            bounds=[(0, 1)]*3+[(cash, 1)], constraints=single, options={'ftol': 1e-12, 'maxiter': 1000})
+        assert ref.success, ref.message
+        anchor = solve(mu[None], cov[None], *common, np.zeros(1), 0)
+        assert anchor['status'] == 'converged', anchor
+        assert anchor['objective_value'] == pytest.approx(ref.fun, abs=2e-8)
+        references.append(-anchor['objective_value'])
+        constraints.extend([
+            dict(type='ineq', fun=lambda x, mu=mu: mu@x[:4]-floor,
+                 jac=lambda x, mu=mu: np.r_[mu, 0.]),
+            dict(type='ineq', fun=lambda x, cov=cov: cap**2-x[:4]@cov@x[:4],
+                 jac=lambda x, cov=cov: np.r_[-2*cov@x[:4], 0.]),
+            dict(type='ineq', fun=lambda x, mu=mu, best=-ref.fun: mu@x[:4]+x[4]-objective*best,
+                 jac=lambda x, mu=mu: np.r_[mu, 1.])])
+    ref = minimize(lambda x: x[4], seed, jac=lambda x: np.r_[np.zeros(4), 1.], method='SLSQP',
+        bounds=[(0, 1)]*3+[(cash, 1), (0 if objective else -1, 1)], constraints=constraints,
+        options={'ftol': 1e-12, 'maxiter': 1000})
+    assert ref.success, ref.message
+    result = solve(means, risks, *common, np.asarray(references), objective)
+    assert result['status'] == 'converged', result
+    assert result['objective_value'] == pytest.approx(ref.fun, abs=2e-8)
+    assert result['lower_bound'] <= ref.fun + 1e-9
+    weights = result['weights']
+    assert weights.sum() == pytest.approx(1., abs=1e-10)
+    assert weights.min() >= -1e-10 and weights[3] >= cash-1e-10
+    assert np.all(means@weights >= floor-1e-10)
+    for cov in risks:
+        assert np.sqrt(weights@cov@weights) <= cap+1e-10

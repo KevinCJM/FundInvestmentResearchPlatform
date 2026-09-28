@@ -1,3 +1,4 @@
+import { ErrorPanel } from '../components/ui'
 import { useEffect, useMemo, useState } from 'react'
 import {
   fetchDataModelCatalog,
@@ -294,14 +295,7 @@ function CatalogContent({ scope }: { scope: DataModelScope }) {
     return <div className="rounded-xl border border-slate-200 bg-white p-8 text-sm text-slate-600">正在读取系统数据模型…</div>
   }
 
-  if (error || !catalog) {
-    return (
-      <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-800">
-        <p>{error ?? '系统数据模型不可用。'}</p>
-        <button type="button" onClick={() => setRetryCount((current) => current + 1)} className="mt-3 rounded-lg border border-rose-300 px-3 py-2 font-semibold">重试</button>
-      </div>
-    )
-  }
+  if (error || !catalog) return <ErrorPanel onRetry={() => setRetryCount(current => current + 1)} />
 
   return (
     <div className="space-y-5">

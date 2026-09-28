@@ -18,6 +18,7 @@ export default function DataStoragePanel() {
   const [mode, setMode] = useState<'migrate' | 'attach'>('migrate')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [readError, setReadError] = useState('')
   const [notice, setNotice] = useState('')
   const [retry, setRetry] = useState(0)
   const [confirm, setConfirm] = useState(false)
@@ -29,9 +30,9 @@ export default function DataStoragePanel() {
     const poll = async () => {
       try {
         const value = await getDataStorage(controller.signal)
-        if (!controller.signal.aborted) setStatus(value)
+        if (!controller.signal.aborted) { setStatus(value); setReadError('') }
       } catch (reason) {
-        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : '存储状态暂不可用。')
+        if (!controller.signal.aborted) setReadError('无法读取存储状态，请重试。')
       }
       if (!controller.signal.aborted) timer = setTimeout(poll, 10000)
     }
@@ -80,8 +81,8 @@ export default function DataStoragePanel() {
   const attaching = plan?.operation === 'attach'
   const transferable = Boolean(status?.online && status.editing_enabled && !status.active && !plan)
   return <section aria-label="数据存储位置" className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
-    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-bold">数据存储位置<Help text="包括下载分片、原始响应、检查点、快照和研究数据。源码、依赖及服务日志不会迁移。" /></h2><button type="button" className={buttonClass} disabled={busy} onClick={() => { setError(''); setRetry(v => v + 1) }}>刷新存储状态</button></div>
-    {!status ? <p role="status" className="text-sm text-slate-600">正在检查存储目录…</p> : <>
+    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-bold">数据存储位置<Help text="包括下载分片、原始响应、检查点、快照和研究数据。源码、依赖及服务日志不会迁移。" /></h2><button type="button" className={buttonClass} disabled={busy} onClick={() => { setReadError(''); setRetry(v => v + 1) }}>刷新存储状态</button></div>
+    {!status ? readError ? null : <p role="status" className="text-sm text-slate-600">正在检查存储目录…</p> : <>
       <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-3"><div className="min-w-0 sm:col-span-2"><dt className="text-slate-600">实际数据目录</dt><dd className="mt-1 break-all font-medium">{status.actual_path || status.active?.target || status.logical_path}</dd></div><div><dt className="text-slate-600">磁盘剩余空间</dt><dd className="mt-1 font-medium">{storageSize(status.free_bytes)} / {storageSize(status.total_bytes)}</dd></div></dl>
       {!status.online ? <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{status.error || '数据磁盘不可用。'} 不会自动写回本机旧副本。</p> : status.free_bytes !== null && status.free_bytes < 5 * 1024 ** 3 ? <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">当前磁盘空间偏少。迁移后还需确认清理原本机副本，才能释放本机容量。</p> : null}
       {status.active ? <div className="space-y-2 text-sm"><p className="text-emerald-800">已启用指定目录；新的数据下载和处理均使用该数据区。</p><p className="text-xs text-slate-600">数据目录不绑定项目，兼容的项目可接入同一目录，共用配置、研究记录和凭据。此处不执行再次跨盘搬迁。</p>{status.active.operation === 'attach' ? <><p>已接入已有数据，未复制、下载或更改目录归属。</p>{status.active.backup ? <p className="break-all">本项目原数据另行保留，未合并：{status.active.backup}</p> : null}</> : !status.active.backup_removed ? <details className="rounded-lg bg-amber-50 p-3"><summary className="cursor-pointer font-semibold">原本机副本仍保留：确认后清理释放空间</summary><p className="my-2 break-all">{status.active.backup}</p><p>确认数据可用后，先停止服务和下载，再执行以下命令。删除不可恢复，不影响指定磁盘上的活动数据。</p><code className="my-2 block break-all text-xs">./start_services.sh storage-cleanup {status.active.id}</code></details> : <p>原本机副本已清理。</p>}</div> : null}
@@ -97,6 +98,7 @@ export default function DataStoragePanel() {
       {checked ? <div className="space-y-2 rounded-lg bg-slate-50 p-3 text-sm"><p>{checked.value.message}</p><p>剩余 {storageSize(checked.value.free_bytes)}，预留 {storageSize(checked.value.reserve_bytes)}。</p>{checked.value.same_device ? <p className="text-amber-900">目标与当前数据在同一文件系统；搬到这里通常不能解决本机容量不足。</p> : null}<label className="flex items-start gap-2"><input type="checkbox" aria-label="确认保存迁移计划" checked={confirm} onChange={e => setConfirm(e.target.checked)} /><span>我了解：保存只生成计划，重启前迁移；原本机副本不会自动删除。</span></label><button type="button" className={primaryClass} disabled={busy || !confirm || !transferable} onClick={save}>保存迁移计划</button></div> : null}
       </>}
     </div></details> : null}
+    {readError && <p role="alert" className="text-sm text-rose-700">{readError}</p>}
     {error ? <p role="alert" className="text-sm text-rose-700">{error}</p> : null}
     {notice ? <p role="status" className="text-sm text-emerald-800">{notice}</p> : null}
   </section>

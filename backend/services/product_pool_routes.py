@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -97,10 +98,14 @@ class IndicatorEvaluationGateway:
 
 _workspace_dir = Path(indicator_service.workspace_data_dir)
 _market_data_root = Path(__file__).resolve().parents[2] / "data"
+# Cross-path scope names must read the actually configured strategic root, not
+# a hardcoded sibling of the product workspace.
+_strategic_root = Path(os.getenv("STRATEGIC_ALLOCATION_DATA_DIR", str(_workspace_dir)))
 _product_pool_repository = ProductPoolRepository(_workspace_dir / "product_pools.json")
 product_pool_service = ProductPoolService(
     _product_pool_repository,
     IndicatorEvaluationGateway(),
+    strategic_root=_strategic_root,
 )
 product_pool_review_service = ProductPoolReviewDataService(
     _product_pool_repository,
@@ -189,6 +194,13 @@ class InvestableUniverseCreate(BaseModel):
     research_date: str
     version_ids: list[str] = Field(min_length=1)
     excluded_product_keys: list[str] = Field(default_factory=list)
+    # 编辑保存：以新不可变版本替代同一名称的当前版本，旧快照保留只读。
+    replaces_snapshot_id: str | None = Field(default=None, max_length=120)
+    mandate_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class InvestableUniverseMandateBinding(BaseModel):
+    mandate_id: str = Field(min_length=1, max_length=120)
 
 
 @router.get("/api/product-pools")
@@ -366,6 +378,21 @@ def search_investable_universe_products(
     )
 
 
+@router.get("/api/investable-universe-snapshots")
+def list_investable_universe_snapshots():
+    return _call(product_pool_service.list_universe_snapshots)
+
+
 @router.get("/api/investable-universe-snapshots/{snapshot_id}")
 def get_investable_universe_snapshot(snapshot_id: str):
     return _call(product_pool_service.get_universe_snapshot, snapshot_id)
+
+
+@router.post("/api/investable-universe-snapshots/{snapshot_id}/mandate")
+def bind_investable_universe_mandate(snapshot_id: str, request: InvestableUniverseMandateBinding):
+    return _call(product_pool_service.bind_universe_mandate, snapshot_id, request.mandate_id)
+
+
+@router.delete("/api/investable-universe-snapshots/{snapshot_id}")
+def retire_investable_universe_snapshot(snapshot_id: str):
+    return _call(product_pool_service.retire_universe_snapshot, snapshot_id)

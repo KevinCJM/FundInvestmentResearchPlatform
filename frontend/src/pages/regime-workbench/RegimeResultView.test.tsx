@@ -3,12 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getRegimeFormalRun, getRegimePreviewOverview, getRegimePreviewSeries } from '../../services/regimeGraph'
 import { resultFixture } from './regimeResultFixtures'
 import RegimeResultView from './RegimeResultView'
+import * as researchContext from '../../app/ResearchContext'
 
 vi.mock('../../services/regimeGraph', () => ({
   getRegimeFormalRun: vi.fn(), getRegimePreviewOverview: vi.fn(), getRegimePreviewSeries: vi.fn(),
 }))
 vi.mock('echarts-for-react', () => ({ default: () => <div data-testid="chart" /> }))
-afterEach(() => { vi.clearAllMocks() })
+afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks() })
 
 describe('RegimeResultView frozen run loading', () => {
   it('后端普通识别返回空人工事件摘要时仍显示完整结果', async () => {
@@ -64,4 +65,15 @@ describe('RegimeResultView frozen run loading', () => {
     expect(getRegimePreviewOverview).not.toHaveBeenCalled()
     expect(getRegimePreviewSeries).not.toHaveBeenCalled()
   })
+})
+
+
+it('跨 PIT 查看冻结运行会明确提示，不截断或改写旧结果', async () => {
+  vi.spyOn(researchContext, 'useResearchDay').mockReturnValue('2019-12-31')
+  const { overview, rows } = resultFixture('old-full-data', 600)
+  vi.mocked(getRegimePreviewOverview).mockResolvedValue({ ...overview, as_of: null })
+  vi.mocked(getRegimePreviewSeries).mockResolvedValue({ run_id: overview.run_id, items: rows, total: rows.length, offset: 0, limit: 5000 })
+  render(<RegimeResultView runId={overview.run_id} />)
+  expect(await screen.findByText(/本结果的计算截至日：未设置/)).toHaveTextContent('当前 PIT：2019-12-31')
+  expect(screen.getByLabelText('全样本情景摘要')).toHaveTextContent('600')
 })

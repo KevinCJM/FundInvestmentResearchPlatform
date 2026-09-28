@@ -32,13 +32,19 @@
 ③ 验证识别能力
 ```
 
+每一步的落地页是**该步骤已保存研究的清单**，不是算法编辑器。清单给出名称、状态徽章（历史参考：已确认参考 / 已运行未确认 / 尚未运行；实时模型：已发布 / 已运行未发布 / 尚未运行；验证：已验证可识别 / 已出报告未达可识别 / 尚未验证）、绑定的历史参考或研究结构、精确版本号、PIT 日期、正式运行次数和最近更新时间。右上角是该步骤的新建入口。
+
+PIT 日期读取当前定义 ID、修订号与研究模式对应的最近一次正式运行 `as_of`。它是运行的数据截止日，不是定义保存时间，也不代表已通过时点可用性验证；不能用其他修订、绑定的历史参考或当前全局 PIT 日期代替。当前版本无匹配运行显示“当前版本尚未运行”，运行未设截止日显示“未设置”，旧记录缺少字段显示“未记录”；运行目录读取失败时明确提示并支持重试。已有冻结记录、计算和保存流程不变。
+
+清单与工作台共用同一条路由 `/settings/scenario-algorithms`：地址栏带上 `definition`（+`revision`）、`template` 或 `new` 这类研究身份才进入工作台，否则停在清单；工作台顶部提供“返回…清单”，返回时清掉这些身份参数。这与投前各页“地址栏确定页面身份”的约定一致，既有深链接不受影响。
+
 #### 第一步：定义历史参考
 
 用户看到的是“先定义什么叫这个市场状态”，而不是技术上的 retrospective mode。
 
 核心操作：
 
-- 选择或创建 Historical Reference 算法；
+- 在清单中打开已保存的 Historical Reference 算法，或新建一个；
 - 查看完整历史区间；
 - 检查状态支持、独立 Episode 和 Horizon Profile；
 - 保存为不可变 Historical Reference；
@@ -48,6 +54,7 @@
 
 核心操作：
 
+- 在清单中打开已保存的实时模型，或新建一个；
 - 选择精确 Historical Reference 版本；
 - 构建只使用当时可得信息的识别模型；
 - 运行 realtime replay；
@@ -68,16 +75,34 @@ Historical Reference 与 Realtime Model 是不同对象，不做隐式复制或�
 - `verified / insufficient_evidence / failed`；
 - prospective qualification。
 
+### 计算截至日与全局 PIT
+
+整图预览、独立节点预览、正式运行、研究版本启用和参数实验在未填写 `as_of` 时，使用当前浏览器临时 PIT 或系统 PIT。后端复用 `resolve_request_context`，在创建异步任务之前解析并冻结截至日；后续切换 PIT 不改变已排队任务或已保存结果。设置读取失败时报错，不按全量数据继续计算。
+
+工作台“本次截至日”默认显示当前 PIT，节点预览默认沿用工作台日期。手动填写仍是本次研究的显式覆盖；清空恢复默认，切换 PIT 后不沿用旧手动日期。关闭 PIT 后才默认使用全部可用数据。分类源、节点输出和评估对象按同一截止日重新计算，不只裁剪图表横轴。
+
+已保存结果保持原有日期、数值与血缘。结果截止日与当前 PIT 不一致时，页面同时展示两者并提示重新运行；不能把旧全样本色带裁到 2019 年就称为 PIT2019 结果，事后平滑和峰谷识别可能利用了后续数据。日期截断也不自动取得历史数据修订或前瞻应用资格。
+
 ### 用户体验原则
 
 - 一级模块少：用户只需理解“市场状态 / 历史事件 / 模拟压测”。
+- 每一步先看见自己已经保存了什么，点名称继续研究、点新建才进编辑器；不把用户直接丢进画布。
 - 三步研究关系一直可见，不需要来回跳两个工作区。
 - 桌面、平板、320px 手机使用同一逻辑。
 - Step 切换支持鼠标、键盘左右键、Home、End。
 - Historical 草稿与 Realtime 草稿分别保留。
 - Realtime → Validation 复用同一草稿。
-- 跨 Historical / Realtime 时，不携带另一个对象的 `definition/revision/template`，避免错误加载。
+- 跨 Historical / Realtime 时，不携带另一个对象的 `definition/revision/template/new`，避免错误加载；跨步骤后落在目标步骤的清单上。
+- “下一步：建立实时识别”直接打开一份空白实时模型（`new=1`）并带着刚保存的历史参考，交接提示与原来一致。
 - 旧 `center=historical`、`center=realtime` 深链接继续兼容到新流程。
+
+### AI 辅助设计算法
+
+历史参考、实时识别清单和算法工作台提供与行情指标中心一致的 AI 助手。清单可以按名称询问已保存算法，也可描述需求生成新提案；工作台可以解释或修改当前算法。助手从保存库查找算法，按准确修订读取步骤、参数与时点边界，不要求先打开编辑器；同名多条需先区分。模板、节点和数据源目录独立检索，沿用当前研究日与历史/实时模式。读取事后保存的定义不代表算法或结果在 PIT 当时可得。
+
+提案经过结构校验后，由用户点击“打开编辑器检查”或“应用到编辑器”。回填支持撤销，保留当前研究关联；预览、验证、保存仍使用原流程。AI 不自动发布或授予实时资格，内联观测与人工事件记录留在编辑器处理。切换中心后隐藏工作台不保留浮层。
+
+工具、数据边界和验收范围见 [情景算法中心智能体设计](../research/ai-functions-design.md#41-情景算法中心智能体2026-09-23)。全球事件库与模拟压测的业务对象不由此入口生成。
 
 底层 immutable artifact 不融合：
 
@@ -92,6 +117,14 @@ Prospective Qualification
 
 ---
 
+## 列表摘要与完整详情
+
+前端运行清单统一请求 `GET /api/historical-regimes/runs?summary=true`，可同时按 `definition_id` 过滤。V1 与 V2 均只投影身份、日期、状态轴、发布与资格展示字段；情景模拟选择器保留评价目标名称及制品绑定元数据。列表不附带逐日序列、分段结果或完整计算审计，返回 `series_included=false` 与详情地址。投影先于深拷贝，排序和过滤规则保持不变。
+
+产品叠加、历史结果、正式运行与 TAA 读取选中 ID 的详情后再消费序列或审计。完整记录及校验未删减；不传 `summary` 的既有列表 API 保持原响应契约。摘要只用于展示和选择，不代替实际计算、发布或下游使用时的权威校验。
+
+运行存储通过 `RegimeRunRepository.read_snapshot()` 在单次只读目录操作内复用已解析数据和 ID 索引；发布写锁、原子保存、冻结内容与 hash 不变。上下文退出后不保留旧发布状态。LTCMA 候选和历史参考目录共用此能力；其他调用继续按当前文件读取。
+
 ## LTCMA / TAA 消费边界
 
 正式边界：
@@ -99,6 +132,7 @@ Prospective Qualification
 ```text
 Historical Regime ──→ LTCMA Research
 Realtime Regime   ──→ TAA / Product PIT / Monitoring
+Historical Reference + Calibrated Realtime ──→ Conditional CMA Research
 ```
 
 Realtime Reliability 新结果使用 `recognition_evidence` 语义，不再把 realtime 报告称为 CMA evidence。
@@ -111,7 +145,7 @@ LTCMA 后续应消费 Historical Reference 侧的：
 - state occupancy；
 - conditional-estimation readiness。
 
-而不是 realtime confidence。
+而不是 realtime confidence。2026-09-22 新增的 LTCMA 长期／条件情景桥接复用情景中心不可变参考与校准服务；条件模式另外估计未来转移、计算期限分布，保存为研究结果，当前不赋予长期 SAA 使用资格。识别有效性、未来预测验证和 SAA 适配分别判断；旧 `cma_evidence` 禁用接口不重新启用。具体输入、PIT 和消费边界见 [LTCMA 自动情景契约](../pre-investment/ltcma.md#自动长期情景与条件情景)。
 
 ---
 

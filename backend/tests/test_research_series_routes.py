@@ -174,6 +174,46 @@ def _client(monkeypatch, service: ResearchSeriesService) -> TestClient:
     return TestClient(app)
 
 
+def test_index_search_filters_before_details_and_hashes_each_file_once(tmp_path, monkeypatch):
+    from backend.research_series import service as module
+    service = _write_fixture(tmp_path)
+    snapshot, _ = service._active_snapshot()
+    path = snapshot / 'index_catalog_df.parquet'
+    rows = pd.read_parquet(path)
+    rows.loc[1, 'name'] = 'Later duplicate alias'
+    pd.concat([rows, rows.iloc[[0]].assign(ts_code='000301.SH', name='Second index')]).to_parquet(path)
+    coverage_path = snapshot / 'index_coverage_snapshot.parquet'
+    coverage = pd.read_parquet(coverage_path)
+    pd.concat([coverage, coverage.assign(ts_code='000301.SH')]).to_parquet(coverage_path)
+    calls = []
+    original = module._file_checksum
+    def checksum(path):
+        calls.append(path.name)
+        return original(path)
+    monkeypatch.setattr(module, '_file_checksum', checksum)
+    full = service.catalog(kind='index')
+    assert calls == ['index_daily_df.parquet']
+    for query in ['沪深', '000300.sh', 'index_daily', '全球指数', 'Later duplicate alias', 'absent', '  ']:
+        expected = [row for row in full['items'] if query.strip().casefold() in ' '.join(
+            str(row.get(key) or '') for key in ('id', 'name', 'code', 'category', 'source_api')).casefold()]
+        for status in [None, 'available', 'not_downloaded']:
+            selected = [row for row in expected if status is None or row['status'] == status]
+            result = service.catalog(kind='index', query=query, status=status, offset=1, limit=1)
+            assert result['total'] == len(selected)
+            assert result['items'] == selected[1:2]
+    def forbidden(*args):
+        raise AssertionError('An unmatched search must not inspect historical data')
+    monkeypatch.setattr(service, '_coverage_lookup', forbidden)
+    assert service.catalog(kind='index', query='absent')['items'] == []
+    # Existing content-based source binding still changes when the underlying file changes.
+    monkeypatch.undo()
+    before = service.catalog(kind='index', query='000300.SH')['items'][0]['binding_parameters']['file_checksum']
+    data_path = snapshot / 'index_daily_df.parquet'
+    frame = pd.read_parquet(data_path); frame.loc[0, 'close'] += 1; frame.to_parquet(data_path)
+    after = service.catalog(kind='index', query='000300.SH')['items'][0]['binding_parameters']['file_checksum']
+    assert before != after
+
+
 def test_catalog_discovers_active_index_macro_indicator_and_upload(monkeypatch, tmp_path: Path) -> None:
     client = _client(monkeypatch, _write_fixture(tmp_path))
 
@@ -629,6 +669,7 @@ def test_main_app_mounts_research_series_and_warms_njit_against_index_only_snaps
     (isolated_project / "data").mkdir(parents=True)
     monkeypatch.setattr(data_storage, "_manager", data_storage.StorageManager(isolated_project))
     main_app = importlib.import_module("app")
+    monkeypatch.setattr(main_app, "StorageManager", lambda: data_storage._manager)
     app_routes = importlib.import_module("services.research_series_routes")
     monkeypatch.setattr(app_routes, "research_series_service", service)
     from backend.data_sources import store as source_store_module

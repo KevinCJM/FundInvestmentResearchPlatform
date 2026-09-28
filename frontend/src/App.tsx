@@ -44,11 +44,12 @@ import ProductResearch from './pages/ProductResearch'
 import ProductPools from './pages/ProductPools'
 import ProductPoolLifecycle from './pages/ProductPoolLifecycle'
 import ProductPoolSelection from './pages/ProductPoolSelection'
+import ProductPoolWorkspacePage from './pages/ProductPoolWorkspacePage'
 import PrototypeWorkspace from './pages/PrototypeWorkspace'
 import ResearchDataLab from './pages/ResearchDataLab'
 import ScenarioCenters from './pages/ScenarioCenters'
 import StageOverview from './pages/StageOverview'
-import ToolHubPage from './pages/ToolHubPage'
+import SaaCenter from './pages/SaaCenter'
 import TradeAllocationWorkspace from './pages/TradeAllocationWorkspace'
 import TacticalAllocationWorkspace from './pages/TacticalAllocationWorkspace'
 import TimingResearch from './pages/TimingResearch'
@@ -59,19 +60,6 @@ import RiskScaleCompare from './pages/RiskScaleCompare'
 import LlmSettings from './pages/LlmSettings'
 
 const prototypePage = (pageKey: string) => <PrototypeWorkspace key={pageKey} pageKey={pageKey} />
-
-const saaHub = (
-  <ToolHubPage
-    title="战略资产配置（SAA）"
-    description="从投资目标和长期假设形成政策权重；历史配置实验用于辅助验证，不直接冒充未来预期。"
-    tools={[
-      { label: '长期政策配置', description: '投资目标 → 经济大类与资本市场假设 → 稳健候选比较 → 政策确认 → TAA。', path: '/pre-investment/saa/policy' },
-      { label: '大类资产构建', description: '定义大类及 ETF/公募基金代理，完成拟合、相关性与配置保存。', path: '/pre-investment/saa/asset-classes' },
-      { label: '大类资产配置与策略回测', description: '研究有效前沿、风险预算、目标权重和配置回测。', path: '/pre-investment/saa/allocation-lab' },
-      { label: '自动构建大类', description: '按收益相关性、风险画像或主成分自动划分大类，并给出代表产品、类内权重与分类诊断。', path: '/pre-investment/saa/auto-classification' },
-    ]}
-  />
-)
 
 export default function App() {
   return (
@@ -104,7 +92,8 @@ export default function App() {
               <Route path="objectives" element={<InvestmentObjectivesCenter />} />
               <Route path="objectives/new" element={<InvestmentObjectivesWorkspace />} />
               <Route path="product-pool" element={<ProductPoolSelection />} />
-              <Route path="saa" element={saaHub} />
+              <Route path="product-pool/new" element={<ProductPoolWorkspacePage />} />
+              <Route path="saa" element={<SaaCenter />} />
               <Route path="saa/asset-classes" element={<ManualConstruction />} />
               <Route path="saa/auto-classification" element={<AutoAssetClassification />} />
               <Route path="saa/allocation-lab" element={<ClassAllocation />} />
@@ -210,6 +199,7 @@ export default function App() {
               <Route path="risk-scales/drafts/:draftId" element={<RiskScaleWorkspace />} />
               <Route path="risk-scales/versions/:versionId" element={<RiskScaleVersionView />} />
               <Route path="indicators-models" element={<IndicatorStudio />} />
+              <Route path="position-metrics" element={prototypePage('position-metrics')} />
               <Route path="llm-api" element={<LlmSettings />} />
               <Route path="factor-research" element={<FactorResearchCenter />} />
               <Route path="risk-models" element={<RiskModelCenter />} />

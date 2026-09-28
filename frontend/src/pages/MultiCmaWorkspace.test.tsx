@@ -1,10 +1,12 @@
+import { ltcmaVersion as cmaVersion } from '../test/ltcmaFixtures'
+import { cmaChoice } from '../services/cmaCompatibility'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import StrategicAllocationWorkspace from './StrategicAllocationWorkspace'
 import { writeAllocationDraft } from '../app/allocationJourney'
-import { cmaVersion, policyBaseline, policyPreview, strategicCatalog } from '../test/strategicAllocationFixtures'
+import { policyBaseline, policyPreview, strategicCatalog } from '../test/strategicAllocationFixtures'
 import { previewPolicy, type MultiCmaEvidence, type PolicyRequest, type CompatibilityEvidence, type PolicyPreview } from '../services/strategicAllocation'
 
 const clock = vi.hoisted(() => ({ day: '2026-09-12' as string | undefined }))
@@ -29,7 +31,7 @@ function install(overrides: Record<string, (init?: RequestInit) => Promise<Respo
   const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (overrides[url]) return overrides[url](init)
-    if (url === `${root}/catalog`) return response({ ...strategicCatalog, assumptions: versions.map(version => ({ ...strategicCatalog.assumptions[0], id: version.id, name: version.name })) })
+    if (url === `${root}/catalog`) return response({ ...strategicCatalog, assumptions: versions.map(version => ({ ...strategicCatalog.assumptions[0], ...cmaChoice(version), name: version.name })) })
     const version = versions.find(version => url === `${root}/cma/${version.id}`)
     if (version) return response(version)
     if (url === `${root}/policy/preview`) return response(preview(JSON.parse(String(init?.body))))
@@ -43,9 +45,9 @@ const tree = (path = '/pre-investment/saa/policy?alloc=股债分类&mandate=mand
 async function selectMultiple(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByLabelText('CMA 使用方式')
   await user.selectOptions(screen.getByLabelText('CMA 使用方式'), 'parameter_average')
-  await user.selectOptions(screen.getByLabelText('添加已确认 CMA'), 'cma-1')
-  await waitFor(() => expect(screen.getByLabelText('添加已确认 CMA')).toBeEnabled())
-  await user.selectOptions(screen.getByLabelText('添加已确认 CMA'), 'cma-2')
+  await user.selectOptions(screen.getByLabelText('添加其他 LTCMA'), 'cma-1')
+  await waitFor(() => expect(screen.getByLabelText('添加其他 LTCMA')).toBeEnabled())
+  await user.selectOptions(screen.getByLabelText('添加其他 LTCMA'), 'cma-2')
   await waitFor(() => expect(screen.getByRole('button', { name: '确认使用等权' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '确认使用等权' }))
 }
@@ -79,6 +81,7 @@ it('common mode removes weights and risk-budget inputs, restores references, and
   await user.click(screen.getByRole('button', { name: '核对模型并进入共同配置' }))
   expect(screen.queryByLabelText('随机候选数')).not.toBeInTheDocument()
   await user.selectOptions(screen.getByLabelText('共同配置的选择目标'), 'maximin_return')
+  await waitFor(() => expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '比较符合目标的政策候选' }))
   await screen.findByRole('region', { name: '共同配置求解结果' })
   await user.click(screen.getByRole('button', { name: '复核此候选' }))
@@ -95,6 +98,7 @@ it('shows failed common candidates but does not offer adoption', async () => {
   const user = userEvent.setup(); render(tree()); await selectMultiple(user)
   await user.selectOptions(screen.getByLabelText('CMA 使用方式'), 'compatible_all_models')
   await user.click(screen.getByRole('button', { name: '核对模型并进入共同配置' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '比较符合目标的政策候选' }))
   await screen.findByRole('region', { name: '共同配置求解结果' })
   expect(screen.getAllByText(/原模型资金检查未通过/).length).toBeGreaterThan(0)
@@ -106,6 +110,7 @@ it('switching out of common mode invalidates results and requires explicit avera
   const user = userEvent.setup(); render(tree()); await selectMultiple(user)
   await user.selectOptions(screen.getByLabelText('CMA 使用方式'), 'compatible_all_models')
   await user.click(screen.getByRole('button', { name: '核对模型并进入共同配置' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '比较符合目标的政策候选' }))
   await screen.findByRole('region', { name: '共同配置求解结果' })
   await user.click(screen.getByRole('button', { name: '2. 选择 LTCMA' }))
@@ -129,6 +134,7 @@ it('keeps explicit source weights and permits aggregate adoption while showing o
   const fetch = install(), user = userEvent.setup(); render(tree()); await selectMultiple(user)
   expect(screen.getByLabelText(`${second.name} · 研究权重（%）`)).toHaveValue('50')
   await user.click(screen.getByRole('button', { name: '核对权重并进入政策比较' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '比较符合目标的政策候选' }))
   const table = await screen.findByRole('table', { name: '原 CMA 交叉评估' })
   expect(table).toHaveTextContent(second.name)
@@ -149,6 +155,7 @@ it('invalid weights block comparison and editing weights discards a late preview
   expect(screen.getByRole('button', { name: '核对权重并进入政策比较' })).toBeDisabled()
   await user.click(screen.getByRole('button', { name: '确认使用等权' }))
   await user.click(screen.getByRole('button', { name: '核对权重并进入政策比较' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '比较符合目标的政策候选' }))
   const body = JSON.parse(String(fetch.mock.calls.find(([url]) => String(url) === `${root}/policy/preview`)![1]?.body))
   await user.click(screen.getByRole('button', { name: '2. 选择 LTCMA' }))
@@ -204,7 +211,7 @@ it('switching mode discards an in-flight member read instead of restoring a stal
   const user = userEvent.setup(); render(tree())
   await screen.findByLabelText('CMA 使用方式')
   await user.selectOptions(screen.getByLabelText('CMA 使用方式'), 'parameter_average')
-  await user.selectOptions(screen.getByLabelText('添加已确认 CMA'), 'cma-2')
+  await user.selectOptions(screen.getByLabelText('添加其他 LTCMA'), 'cma-2')
   await user.selectOptions(screen.getByLabelText('CMA 使用方式'), 'single')
   await act(async () => resolve(await response(second)))
   expect(screen.getByLabelText('选择已确认 LTCMA')).toHaveValue('')
@@ -217,6 +224,7 @@ it('changing the knowledge cutoff invalidates every member and the pending polic
   const fetch = install({ [`${root}/policy/preview`]: () => new Promise(done => { resolve = done }) })
   const user = userEvent.setup(), view = render(tree()); await selectMultiple(user)
   await user.click(screen.getByRole('button', { name: '核对权重并进入政策比较' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: '比较符合目标的政策候选' })).toBeEnabled())
   await user.click(screen.getByRole('button', { name: '比较符合目标的政策候选' }))
   const body = JSON.parse(String(fetch.mock.calls.find(([url]) => String(url) === `${root}/policy/preview`)![1]?.body))
   clock.day = '2026-09-11'; view.rerender(tree())
