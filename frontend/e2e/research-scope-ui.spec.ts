@@ -726,6 +726,12 @@ for (const locale of ['zh-CN', 'en-US']) test(`审核回归：NIW 禁用需更�
     if (path === '/api/pit/settings') return route.fulfill({ json: { settings: { active_release_id: null },
       effective: { no_pit: false, as_of: ltcmaItem.as_of, run_mode: 'RESEARCH', label: ltcmaItem.as_of }, available_releases: [] } })
     if (path.endsWith('/cma/capabilities')) return route.fulfill({ json: ltcmaCapabilities })
+    if (path.endsWith('/cma/sample')) return route.fulfill({ json: {
+      requested_start: '2020-01-01', requested_end: ltcmaItem.as_of,
+      actual_start: '2020-01-02', actual_end: ltcmaItem.as_of, observations: 158,
+      excluded_return_periods: 1, observation_frequency: 'daily', periods_per_year: 252,
+      source_hash: 'a'.repeat(64), return_panel_hash: 'b'.repeat(64),
+    } })
     if (path.endsWith('/cma/study-options')) return route.fulfill({ json: { ...ltcmaOptions, assumptions: [
       { ...ltcmaItem, name: 'Stale prior', usable: { status: 'stale', reasons: [] } },
       { ...ltcmaItem, id: 'ready-prior', name: 'Ready prior' },
@@ -743,6 +749,9 @@ for (const locale of ['zh-CN', 'en-US']) test(`审核回归：NIW 禁用需更�
   const priorSelect = page.getByRole('combobox', { name: locale === 'zh-CN' ? '先验 LTCMA 版本' : 'Prior LTCMA version', exact: true })
   await priorSelect.selectOption('ready-prior')
   await expect(priorSelect).toHaveValue('ready-prior')
+  await page.getByRole('button', { name: locale === 'zh-CN' ? '查看样本参考' : 'Check sample', exact: true }).click()
+  await expect(page.getByText(locale === 'zh-CN' ? /160 个共同净值日/ : /160 common NAV dates/)).toBeVisible()
+  await expect(page.getByText(locale === 'zh-CN' ? '本次样本：158 个日收益观察' : 'Current sample: 158 daily return observations')).toBeVisible()
   await expectNoOverflow(page)
   expect(await page.evaluate(auditTextContrast)).toEqual([])
   await page.screenshot({ path: info.outputPath(`niw-priors-${locale}.png`), fullPage: true })

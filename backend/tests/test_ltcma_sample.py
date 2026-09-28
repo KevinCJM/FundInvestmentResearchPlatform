@@ -59,6 +59,10 @@ def test_sample_excludes_cross_day_periods_instead_of_counting_a_truncated_windo
     assert response.status_code == 200, response.text
     assert response.json()["excluded_return_periods"] == 1
     assert response.json()["observations"] == complete.json()["observations"] - 2
+    # The remaining common price axis has 160 dates, even though only 158
+    # adjacent returns survive. Count excluded intervals before adding one.
+    result = response.json()
+    assert result["observations"] + result["excluded_return_periods"] + 1 == 160
 
 
 def test_sample_uses_the_same_strategic_proxy_panel(scope_case):

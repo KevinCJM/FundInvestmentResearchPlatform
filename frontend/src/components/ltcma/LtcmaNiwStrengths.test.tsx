@@ -19,6 +19,14 @@ function initial() {
 }
 afterEach(() => { vi.restoreAllMocks() })
 
+it.each([[158, 1, 160], [156, 3, 160]])('样本有缺口时，%i 个收益和 %i 个排除期对应 %i 个共同净值日', async (observations, excluded, nav) => {
+  vi.spyOn(ltcma, 'sample').mockResolvedValue({ ...sample, observations, excluded_return_periods: excluded })
+  render(<LtcmaNiwStrengths value={initial()} onChange={() => {}} />)
+  fireEvent.click(screen.getByRole('button', { name: '查看样本参考' }))
+  expect(await screen.findByText(`本次样本：${observations} 个日收益观察`)).toBeVisible()
+  expect(screen.getByText(new RegExp(`${nav} 个共同净值日`))).toBeVisible()
+})
+
 it('无需先验强度即可查看真实样本，输入后显示均值权重和风险倍数，并拦截上限', async () => {
   const load = vi.spyOn(ltcma, 'sample').mockResolvedValue(sample)
   let latest = initial()

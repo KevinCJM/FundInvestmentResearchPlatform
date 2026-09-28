@@ -43,7 +43,7 @@ export default function LtcmaNiwStrengths({ value, onChange }: { value: CmaDraft
       {task.error && <p role="alert" className="text-sm leading-6 text-rose-700">{task.error}</p>}
       {sample && <div role="status" className="space-y-2 text-sm leading-6 text-slate-700 tabular-nums">
         <p className="font-semibold">{t('niwSampleCount', { count: number(sample.observations) })}</p>
-        <p>{t('niwSampleDates', { start: sample.actual_start, end: sample.actual_end, nav: number(sample.observations + 1) })}</p>
+        <p>{t('niwSampleDates', { start: sample.actual_start, end: sample.actual_end, nav: number(sample.observations + sample.excluded_return_periods + 1) })}</p>
         <p>{t('niwSampleExamples', { quarter: number(sample.observations / 4), equal: number(sample.observations), four: number(sample.observations * 4) })}</p>
         <p>{t('niwSampleLimits')}</p>
       </div>}
